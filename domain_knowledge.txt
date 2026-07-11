@@ -1,0 +1,201 @@
+
+## 항목별 입력 기준
+
+아래 블록들은 Domain Saving Flow에 하나씩 넣기 위한 기준 입력입니다.
+
+
+DP 또는 D/P 공정 그룹은 OPER_NAME 값 WET1, WET2, L/T1, L/T2, B/G1, B/G2, H/S1, H/S2, W/S1, W/S2, WSD1, WSD2, WEC1, WEC2, WLS1, WLS2, WVI, UV, C/C1을 포함해.
+
+WET 공정 그룹은 OPER_NAME 값 WET1, WET2를 포함해.
+
+LT 또는 L/T 공정 그룹은 OPER_NAME 값 L/T1, L/T2를 포함해.
+
+BG 또는 B/G 공정 그룹은 OPER_NAME 값 B/G1, B/G2를 포함해.
+
+HS 또는 H/S 공정 그룹은 OPER_NAME 값 H/S1, H/S2를 포함해.
+
+WS 또는 W/S 공정 그룹은 OPER_NAME 값 W/S1, W/S2를 포함해.
+
+WSD 공정 그룹은 OPER_NAME 값 WSD1, WSD2를 포함해.
+
+WEC 공정 그룹은 OPER_NAME 값 WEC1, WEC2를 포함해.
+
+WLS 공정 그룹은 OPER_NAME 값 WLS1, WLS2를 포함해.
+
+D/A 또는 DA 공정 그룹은 OPER_NAME 값 D/A1, D/A2, D/A3, D/A4, D/A5, D/A6를 포함해.
+
+PCO 공정 그룹은 OPER_NAME 값 PCO1, PCO2, PCO3, PCO4, PCO5, PCO6를 포함해.
+
+D/C 공정 그룹은 OPER_NAME 값 D/C1, D/C2, D/C3, D/C4를 포함해.
+
+D/I 또는 DI 또는 DVI 공정 그룹은 OPER_NAME 값 D/I를 의미해.
+
+D/S 또는 DS 공정 그룹은 OPER_NAME 값 D/S1을 의미하고 PKG_TYPE1 조건은 없어.
+
+FCB 공정 그룹은 OPER_NAME 값 FCB1, FCB2, FCB/H를 포함해.
+
+FCB/H 또는 FCBH 공정 그룹은 OPER_NAME 값 FCB/H를 의미해.
+
+B/M 또는 BM 또는 비엠 공정 그룹은 OPER_NAME 값 B/M을 의미해.
+
+P/C 공정 그룹은 OPER_NAME 값 P/C1, P/C2, P/C3, P/C4, P/C5를 포함해.
+
+W/B 또는 WB 공정 그룹은 OPER_NAME 값 W/B1, W/B2, W/B3, W/B4, W/B5, W/B6를 포함해.
+
+QCSPC 공정 그룹은 OPER_NAME 값 QCSPC1, QCSPC2, QCSPC3, QCSPC4를 포함해.
+
+SAT 공정 그룹은 OPER_NAME 값 SAT1, SAT2를 포함해.
+
+P/L 또는 PLH 공정 그룹은 OPER_NAME 값 PLH를 의미해.
+
+S/G 또는 SG 또는 S/G공정 또는 SG공정은 OPER_NAME 값이 S/G인 공정을 의미해.
+
+SBM 또는 SBM공정은 OPER_NAME 값이 SBM인 공정을 의미해.
+
+공정 차수 표현 규칙을 등록해줘.
+이 블록은 공정 그룹을 새로 등록하는 것이 아니라 차수 표현을 해석하는 analysis recipe 규칙으로 저장해줘.
+아래 예시는 규칙 설명을 위한 예시일 뿐이므로 D/A1, W/B2 같은 예시 공정을 별도 process_groups item으로 만들지 마.
+전용 내부 필드가 없으면 calculation_rule 또는 pandas_generation_rule에 자연어 규칙으로 보존해도 돼.
+공정명 뒤에 N차처럼 차수 번호가 붙으면 해당 공정 그룹 전체가 아니라 그 숫자가 붙은 단일 세부 공정을 의미해.
+1차는 공정명 뒤에 1이 붙은 OPER_NAME, 2차는 2가 붙은 OPER_NAME, 3차는 3이 붙은 OPER_NAME, 4차는 4가 붙은 OPER_NAME처럼 차수 번호 N을 공정명 뒤 숫자 N과 매칭해서 해석해.
+예를 들어 D/A 1차, DA 1차, D/A1차, DA1차는 D/A1 공정을 의미해.
+W/B 2차, WB 2차, W/B2차, WB2차는 W/B2 공정을 의미해.
+공정 차수 표현은 broad 공정 그룹 필터가 아니라 해당 숫자가 붙은 단일 OPER_NAME 필터로 적용해.
+사용자가 "차수별로 보여줘"처럼 특정 차수를 지정하지 않고 전체 차수별 분해를 요청하면 공정 그룹에 포함된 세부 OPER_NAME 기준으로 group by 해서 보여줘.
+
+Shift와 조 조건을 등록해줘.
+Shift A조, A조, 1조는 같은 의미이고 SHIFT 값이 1인 데이터를 뜻해.
+07:00~15:00, 07:00 ~ 15:00, 07:00-15:00, 07시부터 15시까지, 7시부터 15시까지라고 말하면 A조 조건으로 해석해.
+Shift B조, B조, 2조는 같은 의미이고 SHIFT 값이 2인 데이터를 뜻해.
+15:00~23:00, 15:00 ~ 23:00, 15:00-23:00, 15시부터 23시까지라고 말하면 B조 조건으로 해석해.
+Shift C조, C조, 3조는 같은 의미이고 SHIFT 값이 3인 데이터를 뜻해.
+23:00~07:00, 23:00 ~ 07:00, 23:00-07:00, 23시부터 다음날 7시까지라고 말하면 C조 조건으로 해석해.
+조별 실적, Shift별 실적, A조 실적처럼 물으면 해당 SHIFT 조건을 필터로 사용해.
+
+제품, PRODUCT, DEVICE, 자재는 같은 의미를 가진 분석 대상 표현이야.
+이건 특정 제품 조건이 아니라 사용자가 제품 단위 분석을 요청했다는 표현으로 해석하는 analysis recipe 규칙으로 저장해줘.
+
+POP 제품 조건을 등록해줘.
+POP 제품은 MODE가 LP로 시작하고, PKG_TYPE1이 LFBGA, TFBGA, UFBGA, VFBGA, WFBGA 중 하나이며, MCP_NO 값이 존재하고 NULL 또는 빈칸이 아닌 제품이야.
+
+MOBILE 제품 조건을 등록해줘.
+section은 product_terms이고 key는 MOBILE_PRODUCT야.
+display_name은 MOBILE 제품이고 aliases는 MOBILE 제품, MOBILE이야.
+MOBILE 제품은 MODE가 LP로 시작하고, PKG_TYPE1이 LFBGA, TFBGA, UFBGA, VFBGA, WFBGA 중 하나이며, MCP_NO 값이 NULL이거나 빈칸인 제품이야.
+production, wip, lot, equipment, capacity 계열 모두 같은 조건을 condition_by_family로 저장해.
+
+AUTO향 제품 조건을 등록해줘.
+AUTO향, 오토모티브향, 오토향은 MCP_NO 값이 존재하고 MCP_NO 맨 뒷자리 문자가 I, O, N, P, Q, V 중 하나인 제품을 말해.
+
+HBM, 3DS, TSV 제품 조건을 등록해줘.
+HBM, 3DS, TSV 제품은 TSV_DIE_TYP 값이 존재하고 NULL 또는 빈칸이 아닌 제품으로 판단해.
+
+적층 단수 제품 조건을 등록해줘.
+2Hi 제품은 TSV_DIE_TYP 값이 2Hi인 제품이야.
+4Hi 제품은 TSV_DIE_TYP 값이 4Hi인 제품이야.
+8Hi 제품은 TSV_DIE_TYP 값이 8Hi인 제품이야.
+2Hi, 4Hi, 8Hi 같은 적층 단수 구분은 TSV_DIE_TYP 컬럼 값으로 구분해.
+
+
+제품 찾기 질문에서 사용자가 "2048G H-HBM16E 제품 찾아줘"처럼 제품 속성 토큰을 자유롭게 입력하면,
+일반 제품군 조건으로 해석하지 말고 pandas_function_cases의 component_token_product_lookup 케이스로 저장해줘.
+이 케이스는 match_product_tokens helper를 사용해서 조회된 제품 데이터에서 일치하는 제품 row를 찾는 용도야.
+
+
+DEVICE 첨자 용어를 등록해줘.
+DEVICE 첨자, Device 첨자, 첨자, DEVICE CODE, Device Code는 DEVICE 컬럼을 말해.
+DEVICE_DESC는 제품 설명 컬럼이고 DEVICE CODE와는 구분해.
+사용자가 DEVICE 첨자를 알려달라고 하면 결과 컬럼에 DEVICE를 포함해.
+이건 제품 키 정의가 아니라 질문에 따라 출력 컬럼을 선택하는 analysis_recipes 규칙으로 저장해줘.
+
+세부 공정별 결과 표시 규칙을 등록해줘.
+세부 공정, 상세 공정은 OPER_NAME 기준으로 결과를 나누어 보여달라는 뜻이야.
+이 항목은 analysis_recipes로 저장해줘.
+
+공정 차수별 결과 표시 규칙을 등록해줘.
+공정명과 함께 1차, 2차처럼 특정 차수를 말하면 해당 숫자가 붙은 단일 OPER_NAME으로 필터링해.
+특정 차수를 지정하지 않고 차수별, 공정 차수별로 보여달라고 하면 공정 그룹에 포함된 세부 OPER_NAME 기준으로 결과를 나누어 보여줘.
+
+
+공정 구간 조회 규칙을 등록해줘.
+이름은 공정 구간 OPER_SEQ 범위 필터 정도로 해줘.
+사용자가 D/A1~W/B6, D/A1-W/B6, D/A1W/B6처럼 시작 공정과 끝 공정을 이어서 말하면 공정 그룹을 펼치는 뜻이 아니라 공정 순서 구간을 말하는 거야.
+이때 D/A1과 W/B6 두 공정만 보는 게 아니라, D/A1의 OPER_SEQ부터 W/B6의 OPER_SEQ 사이에 있는 모든 공정을 봐야 해.
+OPER_SEQ는 문자로 비교하지 말고 숫자로 바꿔서 비교해.
+조회할 때는 OPER_NAME과 OPER_SEQ가 필요해.
+최종 필터를 OPER_NAME이 D/A1 또는 W/B6인 행으로 만들면 안 되고, 시작 공정과 끝 공정의 OPER_SEQ를 찾은 다음 그 사이 구간으로 필터링해야 해.
+이 규칙은 생산량이나 재공처럼 OPER_NAME과 OPER_SEQ가 있는 데이터에서 공정 구간을 물어볼 때 사용해.
+
+수량 용어를 등록해줘.
+재공, 재공수량, WIP, 공정 물량은 wip 계열 데이터의 WIP 컬럼 합계를 의미해.
+
+현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.
+
+생산량, 생산실적, 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.
+OUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.
+
+특정 공정의 OUTPUT, 실적을 물으면 production 계열 데이터에서 해당 OPER_NAME 조건을 적용하고 PRODUCTION을 집계해.
+
+투입량, INPUT, input, INPUT실적, INPUT생산량, 투입 실적은 PKG INPUT 공정의 생산 실적을 의미하고, production 계열 데이터에서 OPER_NAME 값이 'INPUT'인 행의 PRODUCTION 합계로 계산해.
+
+
+계획, 스케쥴, 스케줄, SCHD, 투입계획, 일별 투입계획, 생산계획은 target 계열 데이터를 의미해.
+계획이나 스케쥴 문자가 질문에 포함되지 않으면 target 계열 데이터는 사용하지 않아.
+
+장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.
+
+BOH 재공과 아침 재공 기준일 규칙을 등록해줘.
+아침 재공, BOH 재공, BOH, 07시 기준 재공, 7시 기준 재공은 하루 시작 시점의 재공을 뜻해.
+재공 이력 테이블의 DATE는 해당 일자의 EOH, 즉 끝나는 시점 재공이야.
+그래서 특정 일자의 BOH 재공은 그 전일 DATE의 wip 이력 데이터를 조회해야 해.
+예를 들어 6/20 아침 재공, 6/20 BOH 재공, 6/20 07시 기준 재공은 wip 이력 데이터에 DATE=6/19를 넣어 조회한 결과가 6/20 BOH 값이야.
+오늘 또는 금일 아침 재공, 오늘 BOH, 금일 07시 기준 재공은 wip_today를 사용하지 않고 wip 이력 데이터에 어제 DATE를 넣어 조회해.
+반대로 현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.
+특정 일자의 EOH 재공, 마감 재공, 종료 재공을 물으면 wip 이력 데이터에 해당 일자 DATE를 그대로 넣어 조회해.
+분석 계획에서는 사용자가 요청한 기준일과 실제 조회 DATE를 구분해. 결과에는 BOH 기준일을 표시하고, retrieval job의 DATE 파라미터에는 기준일의 전일을 넣어.
+
+계산 로직을 등록해줘.
+Wafer기준 실적, Wafer기반 실적, Wafer Out 수량은 production 계열 데이터에서 PRODUCTION / NETDIE_300_CNT로 계산해.
+NETDIE_300_CNT 값이 0보다 큰 경우에만 WAFER_OUT_QTY를 계산하고, NETDIE_300_CNT가 0 또는 NULL이라 나눌 수 없는 경우에는 해당 PRODUCTION 값을 FAIL_UNIT_QTY 컬럼으로 옆에 보여줘.
+Wafer기준 실적은 먼저 row 단위로 WAFER_OUT_QTY와 FAIL_UNIT_QTY를 만든 뒤, 사용자가 요청한 grain 또는 전체 기준으로 합산해.
+생산달성률, 생산달성율, 달성률, 달성율은 단순 metric formula가 아니라 생산 달성율 분석 recipe를 우선 사용해.
+달성률을 평균내지 말고, recipe에서 정한 기준으로 실적수량과 계획수량을 먼저 집계한 뒤 비율을 계산해.
+
+
+제품 기준 join rule을 등록해줘.
+production, wip, target, equipment 데이터를 제품 기준으로 결합할 때는 TECH, DEN, MODE, PKG_TYPE1, PKG_TYPE2, LEAD, MCP_NO를 기본 제품 키로 사용해.
+dataset마다 PKG1, PKG2, PKG_TYP1, PKG_TYP2, DENSITY처럼 물리 컬럼명이 달라도 table catalog의 mapping을 통해 PKG_TYPE1, PKG_TYPE2, DEN 같은 표준 컬럼으로 맞춘 뒤 pandas에서 조인해.
+사용자가 제품별이라고 하면 제품 키 기준으로 group by 해.
+사용자가 DEVICE별이라고 하면 DEVICE 기준으로 group by 해.
+사용자가 전체, 총, 합계를 물으면 별도 group by 없이 합계를 보여줘.
+
+사용자가 원본, RAW DATA, 세부 데이터, 전체 데이터를 물으면 그룹화하지 않고 detail rows를 보여줘.
+
+
+pandas function case 등록 규칙을 등록해줘.
+아래 항목들은 실제 함수 구현을 저장하는 용도가 아니라, 의도 분석 단계에서 어떤 data analysis runtime helper를 선택할지 판단하기 위한 pandas_function_cases metadata야.
+함수 구현, 함수 시그니처, pandas 코드 예시는 domain metadata에 저장하지 말고 function_name과 선택 규칙만 저장해.
+
+제품 속성 token 매칭 function case를 등록해줘.
+section은 pandas_function_cases이고 key는 product_token_match야.
+display_name은 제품 속성 token 매칭이야.
+function_name은 match_product_tokens야.
+이 case는 사용자가 "RG 32G DDR4 FBGA 96 DDP 제품", "SP 16G DDR5 2ND X4 78 FCBGA SDP 제품", "DA 16G GDDR6 180 제품"처럼 제품 속성 token을 자연어로 이어서 말했을 때 선택해.
+input_text에는 날짜, 공정, 수량 표현을 제외하고 제품 속성 token 묶음만 남겨.
+source_alias에는 helper를 적용할 DataFrame alias를 남겨.
+제품 속성 token이 여러 컬럼에 흩어져 있어 일반 column filter만으로 안정적으로 표현하기 어려운 경우에만 선택해.
+일반 column filter로 명확히 표현 가능한 단순 조건에는 이 case를 과도하게 선택하지 마.
+이 case가 선택되면 data analysis flow의 pandas 생성 단계에서 match_product_tokens helper를 먼저 적용하고, 그 결과에 대해 groupby, 집계, join, 정렬을 수행하게 해.
+사용자가 x16, X8처럼 x 또는 X와 숫자를 붙여 ORG를 말하면 helper가 먼저 원문 token을 매칭하고, 매칭되지 않을 때 x 또는 X를 제거해 ORG 컬럼 값 16, 8 같은 값과 매칭해.
+사용자가 FC78, FC96처럼 FC와 숫자를 붙여 말하면 PKG_TYPE1 또는 PKG1은 FCBGA, LEAD는 붙어 있는 숫자 값으로 해석해.
+사용자가 F78, F96처럼 F와 숫자를 붙여 말하면 FCBGA, VFBGA, UFBGA 등 package type이 다양할 수 있으므로 PKG_TYPE1 조건은 만들지 말고 LEAD는 붙어 있는 숫자 값으로 helper에 맡겨.
+사용자가 L-218, A-663처럼 A- 또는 L-로 시작하는 MCP_NO 앞부분만 말하면 정확히 같은 값이 아니라 MCP_NO에 해당 token이 포함된 제품을 찾도록 helper에 맡겨.
+한 질문에 여러 제품이 콤마로 구분되어 들어오면 콤마 기준으로 제품 token 묶음을 나누고, 제품 묶음 내부는 모두 만족해야 하며 여러 제품 묶음은 OR 조건으로 매칭해.
+RG, CP 같은 짧은 영문 token은 TECH 또는 FAMILY를 우선 보고, 16G 같은 용량 token은 DEN 또는 DENSITY, DDR4 같은 mode token은 MODE, FCBGA 같은 package token은 PKG_TYPE1 또는 PKG1, SDP/DDP 같은 package token은 PKG_TYPE2 또는 PKG2, 96 같은 숫자 token은 LEAD를 우선 매칭해.
+
+다중 helper 형식 확인용 더미 function case를 등록해줘.
+section은 pandas_function_cases이고 key는 sample_passthrough_demo야.
+display_name은 다중 helper 형식 확인 더미야.
+function_name은 sample_passthrough_helper야.
+이 case는 실제 운영 분석 로직에는 사용하지 않고, 여러 pandas_function_cases가 의도 분석 결과와 pandas prompt에 어떻게 전달되는지 확인할 때만 선택해.
+운영 질문에서는 사용자가 명시적으로 테스트나 형식 확인을 요청한 경우에만 선택해.

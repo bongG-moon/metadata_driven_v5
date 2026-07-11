@@ -1,0 +1,239 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+from lfx.custom.custom_component.component import Component
+from lfx.io import DataInput, DropdownInput, Output
+from lfx.schema.data import Data
+
+UNTRUSTED_JOB_KEYS = {
+    "source_type",
+    "source_config",
+    "db_key",
+    "query_template",
+    "sql_template",
+    "oracle_sql",
+    "sql",
+    "query",
+    "endpoint",
+    "url",
+    "api_url",
+    "headers",
+}
+SECRET_KEYS = {
+    "password",
+    "passwd",
+    "pw",
+    "token",
+    "secret",
+    "api_key",
+    "apikey",
+    "credential",
+    "credentials",
+    "mongo_uri",
+    "mongodb_uri",
+}
+
+
+def hydrate_retrieval_jobs(
+    payload_value: Any,
+    table_catalog_items_value: Any = None,
+    retrieval_mode: Any = "dummy",
+) -> dict[str, Any]:
+    payload = _payload(payload_value)
+    next_payload = deepcopy(payload)
+    plan = _dict(next_payload.get("intent_plan"))
+    jobs = _list(plan.get("retrieval_jobs"))
+    catalog_items = _catalog_items(table_catalog_items_value)
+    catalog_index = {
+        key: item
+        for item in catalog_items
+        if (key := _dataset_key(item))
+    }
+    mode = _mode(retrieval_mode)
+    request = next_payload.get("request")
+    if not isinstance(request, dict):
+        request = {}
+        next_payload["request"] = request
+    request["retrieval_mode"] = mode
+
+    hydrated: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    used_refs: list[dict[str, Any]] = []
+
+    for index, raw_job in enumerate(jobs):
+        if not isinstance(raw_job, dict):
+            errors.append(_issue("invalid_retrieval_job", "retrieval job이 object가 아닙니다.", index=index))
+            continue
+        dataset_key = str(raw_job.get("dataset_key") or "").strip()
+        clean_job = {
+            str(key): deepcopy(value)
+            for key, value in raw_job.items()
+            if str(key) not in UNTRUSTED_JOB_KEYS
+        }
+        catalog_item = catalog_index.get(dataset_key)
+        if not catalog_item:
+            issue = _issue(
+                "unknown_dataset_key",
+                f"active table catalog에서 dataset_key를 찾지 못했습니다: {dataset_key or '(empty)'}",
+                dataset_key=dataset_key,
+                index=index,
+            )
+            if mode == "live":
+                errors.append(issue)
+                continue
+            warnings.append({**issue, "message": issue["message"] + " dummy mode에서는 source_config 없이 계속합니다."})
+            clean_job["source_type"] = "dummy"
+            clean_job["trusted_catalog"] = False
+            clean_job["dummy_only"] = True
+            hydrated.append(clean_job)
+            continue
+
+        catalog_payload = _dict(catalog_item.get("payload")) or catalog_item
+        source_type = str(catalog_payload.get("source_type") or catalog_item.get("source_type") or "").strip()
+        source_config = _sanitize_trusted_config(
+            _dict(catalog_payload.get("source_config")) or _dict(catalog_item.get("source_config"))
+        )
+        required_names = _required_param_names(catalog_payload, catalog_item)
+        supplied_params = _dict(clean_job.get("required_params")) or _dict(clean_job.get("params"))
+        missing_params = [name for name in required_names if supplied_params.get(name) in (None, "", [], {})]
+
+        clean_job["source_type"] = source_type or str(clean_job.get("source_type") or "")
+        clean_job["source_config"] = source_config
+        clean_job["required_param_names"] = required_names
+        clean_job["trusted_catalog"] = True
+        clean_job["catalog_ref"] = f"table_catalog:{dataset_key}"
+        if missing_params:
+            warnings.append(
+                _issue(
+                    "missing_catalog_required_params",
+                    f"catalog 필수 파라미터 값이 없습니다: {', '.join(missing_params)}",
+                    dataset_key=dataset_key,
+                    missing_params=missing_params,
+                )
+            )
+        hydrated.append(clean_job)
+        used_refs.append({"type": "table_catalog", "key": dataset_key})
+
+    plan["retrieval_jobs"] = hydrated
+    next_payload["intent_plan"] = plan
+    next_payload["metadata_refs"] = _merge_refs(_list(next_payload.get("metadata_refs")), used_refs)
+    trace = next_payload.setdefault("trace", {})
+    trace.setdefault("warnings", []).extend(warnings)
+    trace.setdefault("errors", []).extend(errors)
+    trace.setdefault("inspection", {})["catalog_hydration"] = {
+        "stage": "04a_trusted_retrieval_job_hydrator",
+        "status": "error" if errors else ("warning" if warnings else "ok"),
+        "retrieval_mode": mode,
+        "input_job_count": len(jobs),
+        "hydrated_job_count": len(hydrated),
+        "catalog_item_count": len(catalog_items),
+        "trusted_dataset_keys": [job.get("dataset_key") for job in hydrated if job.get("trusted_catalog")],
+        "dummy_only_dataset_keys": [job.get("dataset_key") for job in hydrated if job.get("dummy_only")],
+    }
+    return next_payload
+
+
+def _catalog_items(value: Any) -> list[dict[str, Any]]:
+    data = getattr(value, "data", value)
+    if isinstance(data, list):
+        return [deepcopy(item) for item in data if isinstance(item, dict)]
+    if not isinstance(data, dict):
+        return []
+    items = data.get("table_catalog_items")
+    if not isinstance(items, list) and isinstance(data.get("metadata_candidates"), dict):
+        items = data["metadata_candidates"].get("table_catalog_items")
+    return [deepcopy(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _dataset_key(item: dict[str, Any]) -> str:
+    payload = _dict(item.get("payload"))
+    return str(item.get("dataset_key") or item.get("key") or payload.get("dataset_key") or payload.get("key") or "").strip()
+
+
+def _required_param_names(*values: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        raw = value.get("required_params") or value.get("required_param_names") or []
+        if isinstance(raw, dict):
+            raw = list(raw)
+        if not isinstance(raw, (list, tuple, set)):
+            raw = [raw]
+        for item in raw:
+            if isinstance(item, dict):
+                item = item.get("name") or item.get("key")
+            text = str(item or "").strip()
+            if text and text not in result:
+                result.append(text)
+    return result
+
+
+def _sanitize_trusted_config(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_trusted_config(item)
+            for key, item in value.items()
+            if str(key).lower() not in SECRET_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_trusted_config(item) for item in value]
+    return deepcopy(value)
+
+
+def _merge_refs(existing: list[Any], additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in [*existing, *additions]:
+        if not isinstance(value, dict):
+            continue
+        ref_type = str(value.get("type") or value.get("section") or "").strip()
+        key = str(value.get("key") or value.get("dataset_key") or "").strip()
+        marker = (ref_type, key)
+        if not key or marker in seen:
+            continue
+        seen.add(marker)
+        result.append(deepcopy(value))
+    return result
+
+
+def _issue(issue_type: str, message: str, **extra: Any) -> dict[str, Any]:
+    return {"type": issue_type, "message": message, **extra}
+
+
+def _mode(value: Any) -> str:
+    return "live" if str(value or "").strip().lower() in {"live", "real", "actual", "true", "1"} else "dummy"
+
+
+def _payload(value: Any) -> dict[str, Any]:
+    data = getattr(value, "data", value)
+    return deepcopy(data) if isinstance(data, dict) else {}
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+class TrustedRetrievalJobHydrator(Component):
+    display_name = "04A 신뢰 카탈로그 조회 작업 구성기"
+    description = "LLM job의 source 설정을 버리고 active table catalog의 신뢰 가능한 설정으로 다시 구성합니다."
+    inputs = [
+        DataInput(name="payload", display_name="의도 페이로드", required=True),
+        DataInput(name="table_catalog_items", display_name="전체 테이블 카탈로그", required=True),
+        DropdownInput(name="retrieval_mode", display_name="데이터 조회 모드", options=["dummy", "live"], value="dummy"),
+    ]
+    outputs = [Output(name="payload_out", display_name="신뢰 조회 작업 페이로드", method="build_payload")]
+
+    def build_payload(self) -> Data:
+        return Data(
+            data=hydrate_retrieval_jobs(
+                getattr(self, "payload", None),
+                getattr(self, "table_catalog_items", None),
+                getattr(self, "retrieval_mode", "dummy"),
+            )
+        )

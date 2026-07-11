@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import os
+from copy import deepcopy
+from importlib import import_module
+from typing import Any
+
+from lfx.custom.custom_component.component import Component
+from lfx.io import DataInput, MessageTextInput, Output
+from lfx.schema.data import Data
+
+DEFAULT_DATABASE = "datagov"
+DEFAULT_COLLECTION = "agent_v4_main_flow_filters"
+COLLECTION_ENV = "MONGODB_MAIN_FLOW_FILTER_COLLECTION"
+
+
+def check_similarity(payload_value: Any, existing_items_value: Any = None, mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> dict[str, Any]:
+    payload = _payload(payload_value)
+    items = [item for item in payload.get("items", []) if isinstance(item, dict)]
+    existing = _items(existing_items_value) or _items(payload.get("existing_items"))
+    existing_by_id = {_doc_id(item): item for item in existing if _doc_id(item)}
+    missing_items = _missing_candidates(items, existing_by_id)
+    load = {
+        "status": "provided",
+        "count": len(existing_by_id),
+        "provided_count": len(existing_by_id),
+        "queried_candidate_count": 0,
+        "loaded_count": 0,
+        "errors": [],
+    }
+    if missing_items:
+        loaded, load = _load_candidates(missing_items, mongo_uri, mongo_database, collection_name)
+        loaded_count = 0
+        for item in loaded:
+            doc_id = _doc_id(item)
+            if doc_id:
+                existing_by_id[doc_id] = item
+                loaded_count += 1
+        load["provided_count"] = len(existing)
+        load["queried_candidate_count"] = len(missing_items)
+        load["loaded_count"] = loaded_count
+        load["count"] = len(existing_by_id)
+    matches = []
+    for item in items:
+        doc_id = _doc_id(item)
+        if doc_id and doc_id in existing_by_id:
+            key = str(item.get("filter_key") or "")
+            matches.append({"new_key": key, "existing_key": key, "match_type": "same_key", "recommended_action": "merge", "reason": "같은 filter_key가 이미 존재합니다.", "existing_item": deepcopy(existing_by_id[doc_id])})
+    next_payload = deepcopy(payload)
+    next_payload.pop("existing_items", None)
+    next_payload["existing_matches"] = matches
+    next_payload["conflict_warnings"] = [{"severity": "blocker", "message": "같은 filter_key가 있어 처리 방식 선택이 필요합니다.", "new_item_key": item["new_key"]} for item in matches]
+    next_payload.setdefault("trace", {})["duplicate_lookup"] = load
+    return next_payload
+
+
+def _missing_candidates(items: list[dict[str, Any]], existing_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    missing = []
+    seen = set()
+    for item in items:
+        doc_id = _doc_id(item)
+        if doc_id and doc_id not in existing_by_id and doc_id not in seen:
+            missing.append(item)
+            seen.add(doc_id)
+    return missing
+
+
+def _load_candidates(items: list[dict[str, Any]], mongo_uri: str, mongo_database: str, collection_name: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    uri, database, collection = _resolve_mongo_config(mongo_uri, mongo_database, collection_name)
+    if not uri:
+        return [], {"status": "skipped", "database": database, "collection_name": collection, "count": 0, "errors": [{"type": "missing_mongo_uri", "message": "MONGODB_URI가 없어 동일 key 조회를 건너뛰었습니다."}]}
+    client = None
+    try:
+        client = getattr(import_module("pymongo"), "MongoClient")(uri, serverSelectionTimeoutMS=5000)
+        target = client[database][collection]
+        docs = []
+        for doc_id in dict.fromkeys(_doc_id(item) for item in items if _doc_id(item)):
+            doc = target.find_one({"_id": doc_id})
+            if isinstance(doc, dict):
+                docs.append(deepcopy(doc))
+        return docs, {"status": "ok", "database": database, "collection_name": collection, "count": len(docs), "errors": []}
+    except Exception as exc:
+        return [], {"status": "error", "database": database, "collection_name": collection, "count": 0, "errors": [{"type": "mongo_duplicate_lookup_error", "message": str(exc)}]}
+    finally:
+        if client is not None:
+            client.close()
+
+
+def _resolve_mongo_config(mongo_uri: str, mongo_database: str, collection_name: str) -> tuple[str, str, str]:
+    return (mongo_uri or os.getenv("MONGODB_URI", ""), mongo_database or os.getenv("MONGODB_DATABASE", DEFAULT_DATABASE), collection_name or os.getenv(COLLECTION_ENV, DEFAULT_COLLECTION))
+
+
+def _doc_id(item: dict[str, Any]) -> str:
+    key = str(item.get("filter_key") or item.get("key") or "").strip()
+    return str(item.get("_id") or (f"main_flow_filter:{key}" if key else ""))
+
+
+def _payload(value: Any) -> dict[str, Any]:
+    data = getattr(value, "data", value)
+    return deepcopy(data) if isinstance(data, dict) else {}
+
+
+def _items(value: Any) -> list[dict[str, Any]]:
+    data = getattr(value, "data", value)
+    if isinstance(data, list):
+        raw = data
+    elif isinstance(data, dict):
+        raw = data.get("existing_items") or data.get("items") or []
+    else:
+        raw = []
+    return [deepcopy(item) for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+
+class MainFlowFilterSimilarityChecker(Component):
+    display_name = "05 메인 플로우 필터 동일 Key 조회기"
+    description = "생성 후보가 정해진 뒤 해당 filter_key만 MongoDB에서 조회하여 중복 payload를 최소화합니다."
+    inputs = [DataInput(name="payload", display_name="페이로드", required=True), DataInput(name="existing_items", display_name="기존 항목(호환용)", required=False), MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=True), MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, value=DEFAULT_DATABASE, advanced=True), MessageTextInput(name="collection_name", display_name="컬렉션 이름", required=False, value=DEFAULT_COLLECTION, advanced=True)]
+    outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload", types=["Data"])]
+
+    def build_payload(self) -> Data:
+        return Data(data=check_similarity(getattr(self, "payload", None), getattr(self, "existing_items", None), getattr(self, "mongo_uri", ""), getattr(self, "mongo_database", ""), getattr(self, "collection_name", "")))

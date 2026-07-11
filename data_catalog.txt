@@ -1,0 +1,264 @@
+text
+당일용 생산 실적 데이터는 production_today로 등록해줘.
+화면에 보일 이름은 Production Today이면 돼.
+당일 생산 실적 질문에 사용하는 Oracle 데이터야.
+production_today는 production 계열의 당일용 생산 실적 source야.
+조회할 때 DATE 값은 WORK_DT 컬럼에 넣어서 조회하고, DATE는 조회 필수 기준일이야.
+DATE는 YYYYMMDD 형식이야.
+수량은 PRODUCTION 컬럼을 사용하고, 이 값은 생산량이야.
+source는 oracle이고 db_key는 PNT_RPT야.
+
+query_template:
+
+--쿼리 작성
+SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1
+        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER
+        , OPER_NAME, OPER_SEQ, PRODUCTION 
+FROM PROD_TABLE
+WHERE 1=1
+AND WORK_DATE = {DATE}
+
+filter_mappings는 DATE -> WORK_DATE, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, TSV_DIE_TYP -> TSV_DIE_TYP, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC, OPER_NUM -> OPER, OPER_NAME -> OPER_NAME로 연결해줘.
+
+
+Production History
+
+text
+이력 생산 실적 데이터는 production으로 등록해줘.
+화면에 보일 이름은 Production History이면 돼.
+production은 production 계열의 이력 생산 실적 source야.
+조회할 때 DATE 값은 WORK_DT 컬럼에 넣어서 조회하고, DATE는 조회 필수 기준일이야. DATE는 YYYYMMDD형식이야
+수량은 PRODUCTION 컬럼을 사용하고, 이 값은 생산량이야.
+source는 oracle이고 db_key는 PNT_RPT야.
+
+query_template:
+SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1
+        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER
+        , OPER_NAME, OPER_SEQ, PRODUCTION 
+FROM PROD_TABLE2
+WHERE 1=1
+AND WORK_DATE = {DATE}
+
+filter_mappings는 DATE -> WORK_DATE, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, TSV_DIE_TYP -> TSV_DIE_TYP, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC, OPER_NUM -> OPER, OPER_NAME -> OPER_NAME로 연결해줘.
+
+
+<!-- single_wip_today:start -->
+WIP Today
+
+text
+당일용 재공 데이터는 wip_today로 등록해줘.
+화면에 보일 이름은 WIP Today이면 돼.
+당일 재공 질문에 사용하는 Oracle 데이터야.
+wip_today는 wip 계열의 당일용 재공 source야.
+조회할 때 DATE 값은 WORK_DT 컬럼에 넣어서 조회하고, DATE는 조회 필수 기준일이야.
+수량은 WIP 컬럼을 사용하고, 이 값은 재공 수량이야.
+source는 oracle이고 db_key는 PNT_RPT야.
+
+query_template:
+
+SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1
+        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER
+        , OPER_NAME, OPER_SEQ
+        , WIP
+FROM WIP_TABLE
+WHERE 1=1
+AND WORK_DATE = {DATE}
+
+filter_mappings는 DATE -> WORK_DATE, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, TSV_DIE_TYP -> TSV_DIE_TYP, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC, OPER_NUM -> OPER, OPER_NAME -> OPER_NAME으로 연결해줘.
+
+<!-- single_wip_today:end -->
+
+WIP History
+
+text
+이력 재공 데이터는 wip으로 등록해줘.
+화면에 보일 이름은 WIP History이면 돼.
+wip은 wip 계열의 이력 재공 source야.
+조회할 때 DATE 값은 WORK_DT 컬럼에 넣어서 조회하고, DATE는 조회 필수 기준일이야.
+수량은 WIP 컬럼을 사용하고, 이 값은 재공 수량이야.
+source는 oracle이고 db_key는 PNT_RPT야.
+
+query_template:
+
+--쿼리 작성
+SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1
+        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER
+        , OPER_NAME, OPER_SEQ
+        , WIP
+FROM WIP_TABLE2
+WHERE 1=1
+AND WORK_DATE = {DATE}
+
+filter_mappings는 DATE -> WORK_DATE, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, TSV_DIE_TYP -> TSV_DIE_TYP, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC, OPER_NUM -> OPER, OPER_NAME -> OPER_NAME으로 연결해줘.
+
+
+Target2 Goodocs Plan
+
+text
+PKG 계획 데이터는 target으로 등록해줘.
+화면에 보일 이름은 PKG Target Goodocs Plan이면 돼.
+Goodocs PKG 계획 문서에서 일자와 제품 속성별 INPUT계획, OUT계획을 가져오는 데이터야.
+이 데이터는 Goodocs source이고 별도 필수 조회 파라미터는 없어.
+이게 중요한데 이 데이터에서 사용하는 DATE형식은 'YYYYMMDD'가 아니라 'YYYY-MM-DD'형식이라서 형식 변환이 필요해
+계획 수량은 'INPUT 계획'과 'OUT 계획' 두 컬럼에 있는 값을 모두 사용해. 두 컬럼 모두 분석 수량으로 쓰는 계획 수량 컬럼이야.
+Goodocs 문서 ID는 1212121212121212121212 이야
+목표2 문서에는 DATE, Mode, DEN, TECH, PKG1, PKG2, LEAD, ORG, MCP NO, INPUT 계획, OUT 계획 컬럼이 있어.
+
+filter_mappings는 DATE -> DATE, MODE -> Mode, DEN -> DEN, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP NO로 연결해줘.
+
+'INPUT 계획'은 투입계획이라고도 부르고 'OUT 계획'은 TARGET,생산목표라고도 불러.
+
+
+Equipment Status
+
+text
+장비 Assign 현황 데이터는 equipment_assign으로 등록해줘.
+이 데이터는 Oracle기반 조회고 db_key는 PNT_RPT야
+화면에 보일 이름은 Equipment Assign현황 이면 돼.
+Oracle PNT_RPT의 EQP_TABLE에서 설비별 보유 현황을 가져오는 데이터야.
+이 데이터는 필수 파라미터 없이 조회해.
+주요 수량 정보는 없고 
+장비 수를 물어볼때는 이 데이터의 EQUIP_ID(표준컬럼 EQP_ID) 컬럼값의 중복 제거된 ROW COUNT가 장비 대수야. 따로 장비대수 컬럼은 없고 계산해줘야해.
+
+query_template:
+
+SELECT 
+  BAY_ID, 
+  EQUIP_ID, 
+  EQUIP_MODEL, 
+  PRESS_CNT,
+  OPER,
+  OPER_NM,
+  MODE, 
+  DENSITY, 
+  TECH, 
+  PKG1, 
+  PKG2, 
+  LEAD, 
+  ORG,
+  PKGSIZE,  
+  MCP_NO,
+  DEVICE,
+  DEVICE_DESC,
+  LOT_ID,
+  RECIPE_ID
+FROM  EQP_TABLE
+WHERE 1=1 
+
+filter_mappings는 EQP_ID -> EQUIP_ID, EQP_MODEL -> EQPIP_MODEL, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, ORG -> ORG, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC, OPER_NUM -> OPER, OPER_NAME -> OPER_NM, LOT_ID -> LOT_ID, RECIPE_ID -> RECIPE_ID 로 연결해줘.
+
+
+Equipment Recipe UPH
+
+text
+장비모델/제품별 UPH 데이터는 eqp_uph로 등록해줘.
+이 데이터는 Oracle기반 조회고 db_key는 GMS_DB야
+화면에 보일 이름은 Equipment UPH이면 돼.
+Oracle GMS_DB의 UPH 테이블에서 장비모델/공정/제품의 평균 UPH를 가져오는 데이터야.
+이 데이터는 필수 파라미터 없이 조회해.
+제품/장비모델별 UPH 값은 UPH 컬럼에 나와있어.
+
+query_template:
+
+SELECT 
+
+  EQUIP_MODEL
+  ,OPER
+  ,OPER_NAME
+  ,PRESS_CNT
+  ,PROD_TYP AS "MODE"
+  ,TECH
+  ,ORG
+  ,DENSITY
+  ,PKG_TYP AS PKG1
+  ,PKG_TYP_2 AS PKG2
+  ,LEAD_CNT AS LEAD
+  ,MCP_NO
+  ,RECIPE_ID 
+  ,round(AVG_UPH_VAL,2) AS UPH
+  ,WORK_DT AS LOAD_DT
+  ,BASE_DT
+FROM UPH
+WHERE 1=1
+
+filter_mappings는 EQP_MODEL -> EQUIP_MODEL, OPER_NAME -> OPER_NAME, OPER_NUM -> OPER, MODE -> MODE, TECH -> TECH, ORG -> ORG, DEN -> DENSITY, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, RECIPE_ID -> RECIPE_ID로 연결해줘.
+
+
+LOT Status
+
+text
+LOT 정보조회 데이터는 lot_status로 등록해줘.
+화면에 보일 이름은 LOT Status이면 돼.
+현재 재공에서 작업중 Lot 수량, 작업대기 Lot 수량, Hold Lot 수량, Lot별 TAT를 확인하는 Oracle 데이터야.
+이 데이터는 필수 조회 조건이 없어. (LOAD_DT와 BASE_DT는 단순 확인용 값)
+수량/지표로는 PROD_QTY, WF_QTY, IN_TAT, CUM_TAT를 사용해.
+특정 LOT들을 물어볼때는 LOT_ID컬럼에 IN조건을 걸면 돼
+Lot 건수는 LOT_ID를 count해야하고,
+DIE수량이나 UNIT수량을 물어볼때는 PROD_QTY값의 합을 구해야해.
+그리고 Wafer수량, 웨이퍼수량을 물어볼때 사용하는게 WF_QTY컬럼이야.
+
+IN_TAT는 현재 공정 유입 이후 TAT이고 CUM_TAT는 누적 TAT야.
+HOLD여부는 HOLD_STAT컬럼이 'OnHold'값을 가지는 경우를 말해(OnHold, NotOnHold)
+
+source는 oracle이고 db_key는 PNT_RPT야.
+
+query_template:
+/*Current Wip Status*/
+SELECT
+ERM_ID,OPER,OPER_NAME,FAB,OWNER,GRADE,DEVICE,LOT_ID,SUB_LOT_ID,PROD_QTY,WF_QTY,IN_TAT,CUM_TAT,EQP_ID,FLOW_ID,OPER_IN_TM,FAC_IN_TIME,HOLD_STAT,HOLD_REASON,FAMILY,MODE,DENSITY,TECH,ORG,PKG1,PKG2,PKG3,LEAD,MCP_NO,THK_CD,LOT_STAT,LOT_GRP,PKG_SIZE,HOT_LOT,HOT_LEVEL,PKG_COMPOSIT,DURABLE_ID,DURABLE_TYP,SUB_QTY,TSV_DIE_TYPE,EVENT_DESC,MOVE_IN_TM,PAD_ABNORMAL,SWR_REQ_NO,INSP_TARGET
+FROM WIP_STATE
+WHERE 1=1
+
+filter_mappings는 OPER_NAME -> OPER_NAME, OPER_NUM -> OPER, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, TSV_DIE_TYP -> TSV_DIE_TYPE, EQP_ID -> EQP_ID, LOT_ID -> LOT_ID로 연결해줘.
+
+
+<!-- single_hold_history:start -->
+HOLD History
+
+text
+HOLD 이력 조회 데이터는 hold_history로 등록해줘.
+화면에 보일 이름은 HOLD History이면 돼.
+이 데이터는 Oracle기반 조회고 db_key는 PNT_RPT야.
+HOLD된 LOT의 HOLD 발생 사유, HOLD 발생 시각, 해제 예정일, HOLD 설명을 확인하는 Oracle 데이터야.
+LOT_ID가 조회 필수 조건이야.
+HOLD Lot 건수는 LOT_ID의 UNIQUE수량를 count해야하고,
+HOLD DIE수량이나 UNIT수량을 물어볼때는 OLD_SUB_PROD_QTY값의 합을 구해야해.
+HOLD_TM은 HOLD 발생 시각이고 HOLD_CD는 HOLD CODE를 말하는거야
+HOLD DESC는 상세 사유를 담은 컬럼이야
+
+query_template:
+/*HOLD_LOT_HISTORY*/
+
+        SELECT
+
+            LOT_ID,
+            PROD_QTY,
+            OPER,
+            OPER_NAME,
+            HOLD_TM,
+            HOLD_CD,
+            HOLD_USER,
+            HOLD_DESC,
+            FAB,
+            FAMILY,
+            MODE,
+            DENSITY,
+            TECH,
+            ORG,
+            PKG1,
+            PKG2,
+            LEAD,
+            MCP_NO,
+            GRADE,
+            OWNER,
+            
+            DEVICE,
+            DEVICE_DESC,
+            PKG_SIZE,
+            THK_CD,
+            flow_id   
+        FROM HOLD_HIS
+        WHERE LOT_ID = {LOT_ID}
+
+filter_mappings는 LOT_ID -> LOT_ID, OPER_NAME -> OPER_NAME, OPER_NUM -> OPER,, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, TSV_DIE_TYP -> TSV_DIE_TYPE, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC 로 연결해줘.
+

@@ -1,0 +1,41 @@
+[기준일/공정 필터]
+DATE는 기준일 필터야. 날짜, 일자, 기준일, 작업일, 오늘, 금일, 어제, 전일, date, work date는 DATE 조건으로 해석해줘.
+OPER_NAME은 공정명 필터야. 공정, 작업공정, operation, process, oper name은 OPER_NAME 조건으로 해석해줘.
+OPER_NUM은 공정 번호/차수 필터야. 공정번호, 공정 차수, oper num, oper no는 OPER_NUM 조건으로 해석해줘.
+
+[제품 속성 필터]
+TECH는 제품 기술, DEN은 제품 용량, MODE는 제품 모드 필터야.
+PKG_TYPE1은 package type 1, PKG_TYPE2는 package type 2 필터야.
+ORG는 제품 ORG/조직 코드 필터야.
+ORG 값은 x16, X8처럼 x 또는 X와 숫자를 붙여 말할 수 있고, 이 경우 실제 ORG 값은 16, 8처럼 x 또는 X를 제외한 값으로 해석해.
+LEAD는 lead count 필터야.
+MCP_NO는 제품 코드 필터야. MCP_NO, MCP NO, MCP_SALES_NO, MCP_SALE_CD, MCPSALENO는 같은 의미 후보야.
+DEVICE_DESC는 사용자가 DEVICE_DESC 또는 제품 설명을 명시적으로 말했을 때만 사용하는 설명 필터야.
+TSV_DIE_TYP은 HBM/3DS/TSV 또는 2Hi/4Hi/8Hi 같은 TSV die type 판별 필터야.
+
+[장비/Lot/Recipe 필터]
+EQP_ID는 장비 ID 필터야. EQP_ID와 EQPID는 같은 의미 후보야.
+EQP_MODEL은 장비 모델 필터야.
+LOT_ID는 Lot ID 필터야.
+RECIPE_ID는 Recipe ID 필터야.
+```
+
+## 단일 항목 예시
+
+<!-- single_org:start -->
+```text
+ORG는 제품 ORG 또는 조직 코드 필터야.
+사용자가 ORG, 조직, organization code라고 말하면 ORG 조건으로 해석해줘.
+실제 컬럼 후보는 ORG, ORGANIZ_CD, organiz_cd야.
+사용자가 x16, X8처럼 말하면 ORG 값 16, 8을 의미하는 표현으로 해석해줘.
+```
+<!-- single_org:end -->
+
+<!-- single_eqp_model:start -->
+```text
+장비 모델 조건은 EQP_MODEL로 사용해줘.
+사용자가 eqp model, equipment model, 장비 모델, 설비 모델이라고 말하면 EQP_MODEL 조건으로 해석해줘.
+실제 컬럼 후보는 EQP_MODEL, EQP_MODEL_CD야.
+문자 값이 여러 개 들어오면 in 조건으로 적용해줘.
+```
+<!-- single_eqp_model:end -->

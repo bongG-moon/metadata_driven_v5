@@ -1,0 +1,131 @@
+{
+  "bundle": "metadata_driven_v5_complete_20260710",
+  "langflow_version": "1.8.2",
+  "lfx_version": "0.3.4",
+  "flow_count": 7,
+  "endpoint_prefix": "metadata-driven-v5-complete-20260710",
+  "mongodb_contract": {
+    "strategy": "reuse_v4_collections_without_copy",
+    "database": "datagov",
+    "domain": "agent_v4_domain_items",
+    "table_catalog": "agent_v4_table_catalog_items",
+    "main_flow_filter": "agent_v4_main_flow_filters",
+    "result": "agent_v4_result_store",
+    "session_state": "agent_v4_session_states"
+  },
+  "retrieval_mode_contract": {
+    "single_control": "04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode",
+    "values": [
+      "dummy",
+      "live"
+    ],
+    "default": "dummy",
+    "router_has_separate_mode_input": false
+  },
+  "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
+  "single_file_ui_import_sha256": "227f9b4688853b3c40cd234fa04947374669fa3d79a819d88c3fe3fb2dbe913f",
+  "flows": [
+    {
+      "order": 1,
+      "file": "01_data_analysis_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_data_analysis",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
+      "nodes": 41,
+      "edges": 65,
+      "sha256": "fca87c92b9e24bf69d01d5b556e74b44cc264d94e12bcf9b0c65ce6d285bc01d"
+    },
+    {
+      "order": 2,
+      "file": "02_domain_saving_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_domain_saving",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
+      "nodes": 13,
+      "edges": 14,
+      "sha256": "9cbe53ce5baf3b1e00186a52a12979f8b5b6909e69d3bf1364a88dfa6f4b0445"
+    },
+    {
+      "order": 3,
+      "file": "03_table_catalog_saving_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_table_catalog_saving",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-table-catalog-saving",
+      "nodes": 13,
+      "edges": 14,
+      "sha256": "19964967a42db52e32b8752d3aa40a882a8856be4db05bcad68e7e846826b1c7"
+    },
+    {
+      "order": 4,
+      "file": "04_main_flow_filter_saving_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_main_flow_filter_saving",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-main-flow-filter-saving",
+      "nodes": 13,
+      "edges": 14,
+      "sha256": "e5da037161a828ec4047cdb133e0da6474f561a5d26d5cf7e2ba94d89b865d1b"
+    },
+    {
+      "order": 5,
+      "file": "05_metadata_qa_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_metadata_qa",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
+      "nodes": 13,
+      "edges": 16,
+      "sha256": "d3fe1585870e70d47390a464285cbba69002914c723c161bd9c17a6583b16e4e"
+    },
+    {
+      "order": 6,
+      "file": "06_api_router_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_api_router",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-api-router",
+      "nodes": 14,
+      "edges": 13,
+      "sha256": "f7bb89603d851f9586015a1291660827372187b7a2279b18d5a90c11ddb45928"
+    },
+    {
+      "order": 7,
+      "file": "07_agent_tool_router_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_agent_tool_router",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
+      "nodes": 8,
+      "edges": 7,
+      "sha256": "5a2f4001d057aaf1bfe134372f24faf552d779b9493953fa8e219bee94e205ef"
+    }
+  ],
+  "router_configuration": {
+    "base_url_env": [
+      "LANGFLOW_BASE_URL",
+      "LANGFLOW_API_BASE_URL"
+    ],
+    "default_base_url": "http://127.0.0.1:7860",
+    "api_key_env": "LANGFLOW_API_KEY",
+    "manual_edge_rewiring_required": false,
+    "manual_flow_id_replacement_required": false,
+    "api_router": "Smart Router plus five Run API callers",
+    "agent_tool_router": "Agent plus five name-resolved cached Flow tools"
+  },
+  "validation": {
+    "pytest": "221 passed",
+    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 75/75 custom nodes to 67 real Python sources; 0 missing",
+    "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
+    "langflow_frontend_edge_handles": "286/286 parsed and matched edge.data",
+    "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
+    "langflow_lfx_node_templates": "115/115 passed",
+    "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter directly to their ChatOutput; 0 gate nodes",
+    "router_single_entry_topology": "Chat Input has exactly one outgoing edge to Smart Router; 0 API-caller session fan-out edges",
+    "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra Chat Input edges",
+    "langflow_http_import": "7/7 returned HTTP 201",
+    "single_chat_output": "5/5 child flows and 1/1 Agent Tool Router have exactly one ChatOutput",
+    "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
+    "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
+    "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
+    "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
+    "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
+    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Agent Tool Router has 5/5 name-resolved tools with cache_flow=true and blank exported IDs",
+    "agent_tool_schema_policy": "5/5 tools expose only the target ChatInput.input_value; Data Analysis schema reduced from 26338 to 356 bytes",
+    "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
+    "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
+    "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
+    "metadata_existing_loader": "3/3 saving flows connect ExistingLoader directly to Matcher",
+    "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
+    "metadata_mongo_defaults": "17/17 MongoDB nodes expose explicit database and collection defaults",
+    "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes"
+  }
+}
