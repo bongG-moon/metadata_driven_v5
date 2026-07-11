@@ -78,7 +78,7 @@ Langflow upload는 export JSON의 Flow ID를 그대로 보존하지 않고 새 D
 
 ## 검증 결과
 
-- pytest: 221 passed
+- pytest: 222 passed
 - 대표 Data Analysis dummy 질문: 23/23 passed
 - frontend edge handle: 286/286 parse 및 `edge.data` 일치
 - LFX node template: 115/115 passed

@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 18 답변 생성 변수 생성기
+# 역할: Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 답변 생성 변수를 제공합니다.
+# 주요 입력: 페이로드 (payload) · 필수
+# 주요 출력: 사용자 질문 (question), 결과 요약 JSON (result_summary_json), 적용 범위 JSON (applied_scope_json), 답변 컨텍스트 JSON
+#        (answer_context_json), 경고/오류 JSON (warnings_errors_json)
+# 처리 흐름: 최종 답변 LLM에 필요한 질문·결과 요약·적용 조건·근거·경고만 안전한 크기로 압축합니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -10,6 +21,8 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
 from lfx.schema.message import Message
 
+# 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_variables(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     return {
@@ -339,6 +352,8 @@ def _json_ready(value: Any) -> Any:
     return str(value)
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class AnswerVariablesBuilder(Component):
     display_name = "18 답변 생성 변수 생성기"
     description = "Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 답변 생성 변수를 제공합니다."
@@ -351,18 +366,27 @@ class AnswerVariablesBuilder(Component):
         Output(name="warnings_errors_json", display_name="경고/오류 JSON", method="build_warnings_errors", types=["Message"], group_outputs=True),
     ]
 
+    # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_question(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["question"])
 
+    # Langflow 출력 함수: '결과 요약 JSON (result_summary_json)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_result_summary(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["result_summary_json"])
 
+    # Langflow 출력 함수: '적용 범위 JSON (applied_scope_json)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_applied_scope(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["applied_scope_json"])
 
+    # Langflow 출력 함수: '답변 컨텍스트 JSON (answer_context_json)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_answer_context(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["answer_context_json"])
 
+    # Langflow 출력 함수: '경고/오류 JSON (warnings_errors_json)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_warnings_errors(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["warnings_errors_json"])
-

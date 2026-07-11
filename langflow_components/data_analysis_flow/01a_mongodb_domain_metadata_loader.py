@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 01A MongoDB 도메인 메타데이터 로더
+# 역할: MongoDB에서 도메인 메타데이터만 불러와 의도 분석 후보로 전달합니다.
+# 주요 입력: MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 도메인 컬렉션 (collection_name), 조회 제한 (limit), 상태
+#        필터 (status_filter)
+# 주요 출력: 도메인 메타데이터 (domain_items)
+# 처리 흐름: 활성 도메인 용어·별칭·공정 그룹을 MongoDB에서 읽어 원본 분석 페이로드에 덧붙입니다.
+# 유지보수 포인트: 연결 설정은 노드 입력→환경변수→기본값 순으로 해석하며, 오류는 숨기지 않고 trace/status에 남기고 연결은 반드시 닫습니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import os
@@ -14,6 +25,8 @@ DEFAULT_COLLECTION = "agent_v4_domain_items"
 COLLECTION_ENV = "MONGODB_DOMAIN_COLLECTION"
 
 
+# 주요 함수: 외부 저장소의 필요한 항목을 읽어 현재 페이로드에 안전하게 합칩니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def load_domain_metadata(
     mongo_uri: str = "",
     mongo_database: str = "",
@@ -76,6 +89,8 @@ def _status_query(status_filter: str) -> dict[str, Any]:
     return {"status": value}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MongoDBDomainMetadataLoader(Component):
     display_name = "01A MongoDB 도메인 메타데이터 로더"
     description = "MongoDB에서 도메인 메타데이터만 불러와 의도 분석 후보로 전달합니다."
@@ -88,6 +103,8 @@ class MongoDBDomainMetadataLoader(Component):
     ]
     outputs = [Output(name="domain_items", display_name="도메인 메타데이터", method="build_payload", types=["Data"])]
 
+    # Langflow 출력 함수: '도메인 메타데이터 (domain_items)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=load_domain_metadata(

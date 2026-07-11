@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 09 Oracle 쿼리 조회기
+# 역할: table catalog의 Oracle source_config와 Oracle 설정/TNS를 사용해 실제 SQL 조회를 실행합니다.
+# 주요 입력: 페이로드 (payload) · 필수, Oracle 설정/TNS (oracle_config), 조회 제한 건수 (fetch_limit)
+# 주요 출력: 조회 페이로드 (retrieval_payload)
+# 처리 흐름: 카탈로그의 SQL 템플릿과 파라미터를 검증하고 Oracle 연결·조회·행 변환·오류 표준화를 한 경계에서 처리합니다.
+# 유지보수 포인트: 실행 오류를 다른 source의 성공처럼 위장하는 과도한 fallback은 만들지 말고 공통 errors 계약으로 전달합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import ast
@@ -22,6 +32,8 @@ SINGLE_ORACLE_CONFIG_KEY = "__single_oracle_config__"
 PREVIEW_LIMIT = 5
 
 
+# 주요 함수: Oracle SQL 작업을 실행하고 결과 행 또는 표준 오류를 반환합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def retrieve_oracle_data(payload_value: Any, oracle_config: Any = "", fetch_limit: Any = "") -> dict[str, Any]:
     payload = _payload(payload_value)
     jobs = _jobs_for_source(payload)
@@ -52,6 +64,8 @@ def retrieve_oracle_data(payload_value: Any, oracle_config: Any = "", fetch_limi
     }
 
 
+# 주요 함수: 선택적 외부 패키지를 확인하고 허용된 경우에만 준비합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def ensure_package(package_name: str, import_name: str | None = None) -> None:
     module_name = import_name or package_name
     if importlib.util.find_spec(module_name) is None:
@@ -96,6 +110,7 @@ def _run_oracle_job(job: dict[str, Any], oracle_config: dict[str, Any], fetch_li
         return _error_result(job, "oracle_retrieval_failed", f"Oracle 조회 실패: {exc}", params=params)
 
 
+# 내부 연동 도우미 클래스: 외부 라이브러리나 클라이언트 차이를 이 파일의 표준 호출 형태로 감쌉니다.
 class OracleConnector:
     def __init__(self, config: dict[str, Any], oracle_module: Any | None = None):
         self.config = config
@@ -109,6 +124,8 @@ class OracleConnector:
         self.oracle_module = import_module("oracledb")
         return self.oracle_module
 
+    # 주요 메서드: 설정에서 Oracle 연결 객체를 만들고 호출자에게 반환합니다.
+    # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
     def get_connection(self, target_db: str) -> Any:
         resolved = next((key for key in self.config if _normalize_key(key) == _normalize_key(target_db)), "")
         if not resolved and len(self.config) == 1:
@@ -125,6 +142,8 @@ class OracleConnector:
             return self._oracledb().connect(user=user, password=password, dsn=dsn)
         return self._oracledb().connect(dsn=dsn)
 
+    # 주요 메서드: Oracle cursor 실행 결과를 컬럼명 기반 dict 행으로 변환합니다.
+    # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
     def execute_query(self, target_db: str, sql: str, fetch_limit: int | None = None) -> list[dict[str, Any]]:
         conn = None
         cursor = None
@@ -430,6 +449,8 @@ def _payload(value: Any) -> dict[str, Any]:
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class OracleQueryRetriever(Component):
     oracledb = None
 
@@ -442,5 +463,7 @@ class OracleQueryRetriever(Component):
     ]
     outputs = [Output(name="retrieval_payload", display_name="조회 페이로드", method="build_payload")]
 
+    # Langflow 출력 함수: '조회 페이로드 (retrieval_payload)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=retrieve_oracle_data(getattr(self, "payload", None), getattr(self, "oracle_config", ""), getattr(self, "fetch_limit", "")))

@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 01 MongoDB 세션 상태 저장기
+# 역할: flow 실행 후 다음 질문에서 사용할 compact state를 MongoDB에 저장합니다.
+# 주요 입력: 응답 페이로드 (response_payload) · 필수, Mongo URI 선택값 (mongo_uri), Mongo Database 선택값 (mongo_database), 세션 상태 컬렉션
+#        (session_collection_name), 사용 여부 (enabled), Preview 행 제한 (preview_row_limit), History 제한 (history_limit)
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: 응답의 next state를 압축하고 turn count를 증가시켜 세션 문서를 replace-upsert한 뒤 저장 상태를 반환합니다.
+# 유지보수 포인트: 세션 상태에는 runtime_sources와 대용량 rows를 그대로 넣지 말고 후속 질문에 필요한 요약과 data_ref만 남깁니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -18,6 +29,8 @@ DEFAULT_HISTORY_LIMIT = 10
 ENABLED_OPTIONS = ["true", "false"]
 
 
+# 주요 함수: 현재 응답의 next state를 세션 문서에 원자적으로 갱신합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def write_session_state(
     response_payload_value: Any,
     mongo_uri: Any = "",
@@ -292,6 +305,8 @@ def _json_ready(value: Any) -> Any:
         return value
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MongoDBSessionStateWriter(Component):
     display_name = "01 MongoDB 세션 상태 저장기"
     description = "flow 실행 후 다음 질문에서 사용할 compact state를 MongoDB에 저장합니다."
@@ -308,6 +323,8 @@ class MongoDBSessionStateWriter(Component):
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload", types=["Data"])]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         payload = write_session_state(
             getattr(self, "response_payload", None),

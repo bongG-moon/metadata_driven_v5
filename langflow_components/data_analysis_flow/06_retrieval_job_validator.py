@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 06 데이터 조회 작업 검증기
+# 역할: 의도 계획의 데이터 조회 작업 구조를 검증하고 실행 가능한 작업만 남깁니다.
+# 주요 입력: 페이로드 (payload) · 필수
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: 조회 작업의 데이터셋·source type·필수 설정을 검사하고 실행 가능한 작업과 검증 오류를 분리합니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -10,6 +20,8 @@ from lfx.schema.data import Data
 ALLOWED_SOURCE_TYPES = {"dummy", "oracle", "h_api", "datalake", "goodocs"}
 
 
+# 주요 함수: 조회 작업별 필수 필드와 허용 source type을 검사합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def validate_retrieval_payload(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
@@ -57,11 +69,15 @@ def _error(error_type: str, message: str, **extra: Any) -> dict[str, Any]:
     return error
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class RetrievalJobValidator(Component):
     display_name = "06 데이터 조회 작업 검증기"
     description = "의도 계획의 데이터 조회 작업 구조를 검증하고 실행 가능한 작업만 남깁니다."
     inputs = [DataInput(name="payload", display_name="페이로드", required=True)]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=validate_retrieval_payload(getattr(self, "payload", None)))

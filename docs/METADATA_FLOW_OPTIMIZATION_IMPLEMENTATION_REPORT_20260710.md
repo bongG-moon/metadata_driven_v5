@@ -88,7 +88,7 @@ API Router는 고정 endpoint를 사용하고 Agent Tool Router는 이름으로 
 
 ### Python 계약 테스트
 
-- 전체 test suite: 221 passed
+- 전체 test suite: 222 passed
 - 포함 범위: Data Analysis 기존 회귀, metadata saving, QA, Router, web response normalization, standalone export 구조
 
 ### 실제 Langflow/LFX

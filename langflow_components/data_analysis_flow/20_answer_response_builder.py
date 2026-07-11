@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 20 답변 응답 생성기
+# 역할: Langflow 에이전트/LLM 답변 문장과 결정된 데이터를 합쳐 페이로드를 완성합니다.
+# 주요 입력: 페이로드 (payload) · 필수, 답변 문장 (answer_text)
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: LLM 답변과 결정론적 분석 결과를 합쳐 answer sections, evidence, 현재 상태와 후속 상태를 구성합니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -12,6 +22,8 @@ from lfx.schema.data import Data
 TABLE_PREVIEW_LIMIT = 10
 
 
+# 주요 함수: LLM 문장과 분석 결과를 합쳐 최종 구조화 답변과 다음 상태를 만듭니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_answer_response(payload_value: Any, answer_text: Any = "") -> dict[str, Any]:
     payload = _payload(payload_value)
     structured_answer = _answer_payload(answer_text)
@@ -554,11 +566,15 @@ def _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class AnswerResponseBuilder(Component):
     display_name = "20 답변 응답 생성기"
     description = "Langflow 에이전트/LLM 답변 문장과 결정된 데이터를 합쳐 페이로드를 완성합니다."
     inputs = [DataInput(name="payload", display_name="페이로드", required=True), MessageTextInput(name="answer_text", display_name="답변 문장", required=False)]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=build_answer_response(getattr(self, "payload", None), getattr(self, "answer_text", "")))

@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 11 데이터레이크 조회기
+# 역할: table catalog의 Datalake source_config와 LakeHouse 계열 client를 사용해 실제 SQL 조회를 실행합니다.
+# 주요 입력: 페이로드 (payload) · 필수, Datalake 모듈명 (module_name), Datalake 클래스명 (class_name), LakeHouse 사용자 ID (user_id),
+#        LakeHouse 토큰 (token), S3 접근 키 (s3_access_key), S3 보안 키 (s3_secret_key), 조회 제한 건수 (fetch_limit)
+# 주요 출력: 조회 페이로드 (retrieval_payload)
+# 처리 흐름: 사내 Datalake 클라이언트를 동적으로 준비하고 SQL 결과의 다양한 반환 형식을 표준 rows로 변환합니다.
+# 유지보수 포인트: 실행 오류를 다른 source의 성공처럼 위장하는 과도한 fallback은 만들지 말고 공통 errors 계약으로 전달합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import os
@@ -16,6 +27,8 @@ from lfx.schema.data import Data
 PREVIEW_LIMIT = 5
 
 
+# 주요 함수: Datalake SQL 작업을 실행하고 결과 객체를 표준 행 목록으로 바꿉니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def datalake_retrieve(
     payload_value: Any,
     module_name: Any = "",
@@ -88,6 +101,7 @@ def _run_datalake_job(job: dict[str, Any], client_factory: "DatalakeClientFactor
         return _error_result(job, "datalake_retrieval_failed", f"Datalake 조회 실패: {exc}", params=params)
 
 
+# 내부 연동 도우미 클래스: 외부 라이브러리나 클라이언트 차이를 이 파일의 표준 호출 형태로 감쌉니다.
 class DatalakeClientFactory:
     def __init__(
         self,
@@ -107,6 +121,8 @@ class DatalakeClientFactory:
         self.s3_secret_key = s3_secret_key
         self.client_cls = client_cls
 
+    # 주요 메서드: Datalake 클라이언트에 SQL을 전달하고 원시 결과를 반환합니다.
+    # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
     def execute_sql(self, sql: str, source_config: dict[str, Any], fetch_limit: int) -> list[dict[str, Any]]:
         self._prepare_environment()
         client = self._create_client()
@@ -404,6 +420,8 @@ def _skipped(source_type: str, reason: str) -> dict[str, Any]:
     return {"source_type": source_type, "status": "skipped", "skipped": True, "skip_reason": reason, "source_results": [], "errors": [], "warnings": []}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class DatalakeRetriever(Component):
     display_name = "11 데이터레이크 조회기"
     description = "table catalog의 Datalake source_config와 LakeHouse 계열 client를 사용해 실제 SQL 조회를 실행합니다."
@@ -419,6 +437,8 @@ class DatalakeRetriever(Component):
     ]
     outputs = [Output(name="retrieval_payload", display_name="조회 페이로드", method="build_payload")]
 
+    # Langflow 출력 함수: '조회 페이로드 (retrieval_payload)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=datalake_retrieve(

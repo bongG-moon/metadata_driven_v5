@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 12 Goodocs 조회기
+# 역할: Goodocs 문서 기반 source job을 실행하고, 인증 또는 문서 설정이 없으면 dummy fallback으로 대체합니다.
+# 주요 입력: 페이로드 (payload) · 필수, Goodocs 사용자 ID (user_id), Goodocs 토큰 소스 (token_source), Goodocs 토큰 키 (token_key), 조회
+#        제한 건수 (fetch_limit)
+# 주요 출력: 조회 페이로드 (retrieval_payload)
+# 처리 흐름: Goodocs 문서 또는 inline rows를 읽고 시스템 컬럼을 정리해 공통 source result 형식으로 반환합니다.
+# 유지보수 포인트: 실행 오류를 다른 source의 성공처럼 위장하는 과도한 fallback은 만들지 말고 공통 errors 계약으로 전달합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -16,14 +27,19 @@ GOODOCS_SYSTEM_COLUMNS = {"ROW_INDEX", "LastUser", "LastTime", "LastEditType", "
 PREVIEW_LIMIT = 5
 
 
+# 내부 연동 도우미 클래스: 외부 라이브러리나 클라이언트 차이를 이 파일의 표준 호출 형태로 감쌉니다.
 class Goodocs:
     def __init__(self, auth: dict[str, Any]):
         self.auth = auth
 
+    # 주요 메서드: Goodocs 클라이언트에서 문서의 전체 행을 읽습니다.
+    # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
     def read_all(self) -> Any:
         raise RuntimeError("Goodocs class implementation is not configured. Paste the real Goodocs class into this component.")
 
 
+# 주요 함수: Goodocs 또는 inline 데이터를 읽어 분석용 표준 행 목록으로 바꿉니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def goodocs_retrieve(
     payload_value: Any,
     user_id: Any = "",
@@ -410,6 +426,8 @@ def _skipped(source_type: str, reason: str) -> dict[str, Any]:
     return {"source_type": source_type, "status": "skipped", "skipped": True, "skip_reason": reason, "source_results": [], "errors": [], "warnings": []}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class GoodocsRetriever(Component):
     goodocs_class = None
 
@@ -424,6 +442,8 @@ class GoodocsRetriever(Component):
     ]
     outputs = [Output(name="retrieval_payload", display_name="조회 페이로드", method="build_payload")]
 
+    # Langflow 출력 함수: '조회 페이로드 (retrieval_payload)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=goodocs_retrieve(

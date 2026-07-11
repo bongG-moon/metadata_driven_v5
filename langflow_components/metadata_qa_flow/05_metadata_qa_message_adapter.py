@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 05 메타데이터 QA 메시지 어댑터
+# 역할: 메타데이터 QA 페이로드를 Playground 채팅용 한국어 markdown 메시지로 변환합니다.
+# 주요 입력: 페이로드 (payload) · 필수
+# 주요 출력: 메시지 (message)
+# 처리 흐름: QA 결과를 답변·표·SQL·관련 메타데이터·경고 순서의 Markdown Message 하나로 렌더링합니다.
+# 유지보수 포인트: 이 노드만 최종 Chat Output에 연결해 중간 질문이나 JSON이 대화 기록에 중복 출력되지 않게 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -12,6 +22,8 @@ TABLE_LIMIT = 12
 CELL_LIMIT = 160
 
 
+# 주요 함수: 구조화 결과를 사용자가 읽을 수 있는 단일 Markdown Message로 변환합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_message(payload_value: Any) -> str:
     payload = _payload(payload_value)
     if not payload:
@@ -247,11 +259,15 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MetadataQaMessageAdapter(Component):
     display_name = "05 메타데이터 QA 메시지 어댑터"
     description = "메타데이터 QA 페이로드를 Playground 채팅용 한국어 markdown 메시지로 변환합니다."
     inputs = [DataInput(name="payload", display_name="페이로드", required=True)]
     outputs = [Output(name="message", display_name="메시지", method="build_output_message", types=["Message"])]
 
+    # Langflow 출력 함수: '메시지 (message)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_message(self) -> Message:
         return Message(text=build_message(getattr(self, "payload", None)))

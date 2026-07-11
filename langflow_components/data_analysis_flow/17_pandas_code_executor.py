@@ -1,3 +1,15 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 17 pandas 실행/1회 복구기
+# 역할: pandas 코드를 안전 실행하고 실제 오류일 때만 repair LLM을 최대 1회 호출해 수정 코드를 재실행합니다.
+# 주요 입력: 페이로드 (payload) · 필수, pandas 코드 LLM 응답 (llm_response) · 필수, 선택 Function Case Helper
+#        (function_case_helper_code), pandas 복구 프롬프트 (repair_prompt_template) · 필수, 복구 언어 모델 (model) · 필수, 복구 API 키
+#        (api_key), 최대 Repair 횟수 (max_repair_attempts)
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: 생성 코드를 AST로 검사하고 제한된 pandas/numpy 환경에서 실행하며, 실패하면 이전 코드와 오류를 포함해 LLM 복구를 최대 한 번 수행합니다.
+# 유지보수 포인트: 파일·네트워크 I/O와 임의 import는 차단하고 pandas/numpy alias만 허용합니다. 복구 호출은 실행 오류당 최대 한 번입니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import ast
@@ -93,6 +105,8 @@ FORBIDDEN_IO_ATTRIBUTES = {
 }
 
 
+# 주요 함수: 안전성 검사를 통과한 pandas 코드를 제한된 namespace에서 한 번 실행합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     parsed = _json(llm_response)
@@ -228,6 +242,8 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
         )
 
 
+# 주요 함수: 최초 실행 실패 시 이전 코드와 오류를 전달해 최대 한 번 복구한 결과를 반환합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def execute_pandas_with_repair(
     payload_value: Any,
     llm_response: Any,
@@ -306,6 +322,8 @@ def execute_pandas_with_repair(
     return _with_repair_trace(retry, base_trace)
 
 
+# 주요 함수: 복구 LLM이 원인과 기존 코드를 함께 볼 수 있도록 수정 프롬프트를 조립합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_pandas_repair_prompt(payload_value: Any, template: Any, function_case_helper_code: str = "") -> str:
     payload = _payload(payload_value)
     prompt_template = _text_value(template).strip()
@@ -1048,6 +1066,8 @@ def _text_value(value: Any) -> str:
     return str(value or "")
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class PandasCodeExecutor(Component):
     display_name = "17 pandas 실행/1회 복구기"
     description = "pandas 코드를 안전 실행하고 실제 오류일 때만 repair LLM을 최대 1회 호출해 수정 코드를 재실행합니다."
@@ -1062,6 +1082,8 @@ class PandasCodeExecutor(Component):
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
+    # 주요 메서드: 모델 선택에 따라 동적 입력 필드를 갱신하는 Langflow 빌드 lifecycle 함수입니다.
+    # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
     def update_build_config(self, build_config: dict, field_value: str, field_name: str | None = None):
         from lfx.base.models.unified_models import (
             apply_provider_variable_config_to_build_config,
@@ -1100,6 +1122,8 @@ class PandasCodeExecutor(Component):
         response = llm.invoke(prompt)
         return getattr(response, "content", response)
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=execute_pandas_with_repair(

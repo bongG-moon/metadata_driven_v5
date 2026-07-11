@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 15A 선택 helper 코드 생성기
+# 역할: 전체 helper library에서 intent가 실제 선택한 standalone 함수 정의만 pandas prompt로 전달합니다.
+# 주요 입력: Function Case 선택 JSON (function_case_selection_json) · 필수, 전체 helper library (helper_library)
+# 주요 출력: 선택 helper 코드 (selected_helper_code)
+# 처리 흐름: 전체 helper 라이브러리에서 의도 계획이 선택한 함수 정의만 찾아 코드 생성 프롬프트에 전달합니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import ast
@@ -10,6 +20,8 @@ from lfx.io import MessageTextInput, Output
 from lfx.schema.message import Message
 
 
+# 주요 함수: 선택된 function case에 해당하는 helper 함수 코드만 추출합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_selected_helper_code(selection_value: Any, helper_library_value: Any = "") -> str:
     selection = _json(selection_value)
     library = _text(helper_library_value)
@@ -77,6 +89,8 @@ def _text(value: Any) -> str:
     return str(value)
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class SelectedHelperCodeBuilder(Component):
     display_name = "15A 선택 helper 코드 생성기"
     description = "전체 helper library에서 intent가 실제 선택한 standalone 함수 정의만 pandas prompt로 전달합니다."
@@ -86,6 +100,8 @@ class SelectedHelperCodeBuilder(Component):
     ]
     outputs = [Output(name="selected_helper_code", display_name="선택 helper 코드", method="build_code", types=["Message"])]
 
+    # Langflow 출력 함수: '선택 helper 코드 (selected_helper_code)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_code(self) -> Message:
         return Message(
             text=build_selected_helper_code(

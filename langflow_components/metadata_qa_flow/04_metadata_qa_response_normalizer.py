@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 04 메타데이터 QA 응답 정규화기
+# 역할: Langflow Agent/LLM 응답을 메타데이터 QA 표준 페이로드로 정규화합니다.
+# 주요 입력: 페이로드 (payload) · 필수, LLM 응답 (llm_response)
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: LLM 응답을 정규화하고 authoritative context로 표와 source 참조를 보강해 결정론적 QA 결과를 만듭니다.
+# 유지보수 포인트: 표의 실제 rows와 source 참조는 메타데이터 context를 authoritative 근거로 사용하고 LLM 임의 값을 그대로 신뢰하지 않습니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -18,6 +28,8 @@ AUTHORITATIVE_CONTEXT_TABLE_TYPES = {
 ALWAYS_USE_CONTEXT_TABLE_TYPES = {"available_sources"}
 
 
+# 주요 함수: LLM QA 결과를 근거 문맥과 결합해 안정적인 답변 계약으로 정규화합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any = "") -> dict[str, Any]:
     payload = _payload(payload_value)
     context = _dict(payload.get("metadata_qa_context"))
@@ -465,6 +477,8 @@ def _columns_from_rows(rows: list[dict[str, Any]]) -> list[str]:
     return columns
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MetadataQaResponseNormalizer(Component):
     display_name = "04 메타데이터 QA 응답 정규화기"
     description = "Langflow Agent/LLM 응답을 메타데이터 QA 표준 페이로드로 정규화합니다."
@@ -474,5 +488,7 @@ class MetadataQaResponseNormalizer(Component):
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload", types=["Data"])]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=normalize_metadata_qa_response(getattr(self, "payload", None), getattr(self, "llm_response", "")))

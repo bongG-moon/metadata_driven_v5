@@ -1,3 +1,15 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 01D 질문 기반 메타데이터 후보 생성기
+# 역할: 도메인은 관련 항목 최대 10건, 테이블은 관련 후보 최소 5/최대 10건, 메인 필터는 전체를 32KB 안에서 선별합니다.
+# 주요 입력: 질문 페이로드 (payload) · 필수, 도메인 메타데이터 (domain_items), 테이블 카탈로그 (table_catalog_items), 메인 변수
+#        (main_flow_filters), 도메인 최대 후보 수 (max_domain_items), 테이블 최소 후보 수 (min_table_items), 테이블 최대 후보 수
+#        (max_table_items), 최대 후보 바이트 (max_bytes)
+# 주요 출력: 메타데이터 후보 (metadata_candidates)
+# 처리 흐름: 질문 토큰으로 도메인·테이블을 각각 점수화하고, 테이블 최소 후보와 전체 메인 필터를 보장한 뒤 바이트 제한에 맞게 압축합니다.
+# 유지보수 포인트: 도메인/테이블/메인 필터 quota는 서로 독립적이며, 테이블 최소 후보와 max_bytes 계약을 함께 지켜야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -147,6 +159,8 @@ UNTRUSTED_PROMPT_CONFIG_KEYS = {
 }
 
 
+# 주요 함수: 질문과 세 종류의 메타데이터에서 관련 후보를 독립 정책으로 선택합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_metadata_candidates(
     payload_value: Any = None,
     domain_items_value: Any = None,
@@ -671,6 +685,8 @@ def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MetadataCandidatesBuilder(Component):
     display_name = "01D 질문 기반 메타데이터 후보 생성기"
     description = "도메인은 관련 항목 최대 10건, 테이블은 관련 후보 최소 5/최대 10건, 메인 필터는 전체를 32KB 안에서 선별합니다."
@@ -686,6 +702,8 @@ class MetadataCandidatesBuilder(Component):
     ]
     outputs = [Output(name="metadata_candidates", display_name="메타데이터 후보", method="build_payload")]
 
+    # Langflow 출력 함수: '메타데이터 후보 (metadata_candidates)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=build_metadata_candidates(

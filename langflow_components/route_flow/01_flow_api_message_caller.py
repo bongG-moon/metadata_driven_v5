@@ -1,3 +1,15 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 01 선택 Flow API 메시지 호출기
+# 역할: Smart Router가 선택한 branch의 원문 메시지를 하위 Langflow Run API로 전달하고, 하위 flow의 표시 메시지만 반환합니다.
+# 주요 입력: Flow 입력 (flow_input) · 필수, 하위 Flow endpoint/URL (api_url) · 필수, Langflow API 키 (api_key), 세션 ID
+#        (session_id), Route 이름 (route_name), 연결 제한 시간(초) (connect_timeout_seconds), 응답 제한 시간(초)
+#        (read_timeout_seconds)
+# 주요 출력: 메시지 (message), 호출 상태 (status_data)
+# 처리 흐름: Smart Router가 선택한 하위 Flow Run API에 원문 질문과 부모 세션을 한 번만 전달하고 최종 Message를 추출합니다.
+# 유지보수 포인트: Smart Router의 비선택 분기는 호출하지 않으며, 부모 session_id와 connect/read timeout을 하위 Flow에 일관되게 전달합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -19,6 +31,8 @@ DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_READ_TIMEOUT_SECONDS = 240
 
 
+# 주요 함수: 선택된 하위 Flow API를 호출하고 중간 출력이 아닌 최종 Message만 반환합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def run_flow_api_message(
     flow_input_value: Any,
     *,
@@ -331,6 +345,8 @@ def _duration_ms(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class FlowApiMessageCaller(Component):
     display_name = "01 선택 Flow API 메시지 호출기"
     description = "Smart Router가 선택한 branch의 원문 메시지를 하위 Langflow Run API로 전달하고, 하위 flow의 표시 메시지만 반환합니다."
@@ -384,10 +400,14 @@ class FlowApiMessageCaller(Component):
             )
         return self._cached_result
 
+    # Langflow 출력 함수: '메시지 (message)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_message(self) -> Message:
         result = self._run_once()
         return Message(text=_clean(result.get("message")))
 
+    # Langflow 출력 함수: '호출 상태 (status_data)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_status(self) -> Data:
         result = self._run_once()
         return Data(

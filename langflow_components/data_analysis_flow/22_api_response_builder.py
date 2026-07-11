@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 22 API 응답 생성기
+# 역할: 최종 API 응답을 만들고 전체 런타임 소스 데이터를 제거합니다.
+# 주요 입력: 페이로드 (payload) · 필수, 채팅 표시 메시지 (display_message)
+# 주요 출력: API 응답 (api_response)
+# 처리 흐름: 웹/API 소비자가 필요한 결과만 남기고 runtime source와 대용량 내부 필드를 제거한 응답 envelope을 만듭니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -7,6 +17,8 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
+# 주요 함수: 내부 실행 필드를 제거하고 외부 API가 소비할 안정적인 응답을 만듭니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_api_response(payload_value: Any, display_message_value: Any = "") -> dict[str, Any]:
     payload = _payload(payload_value)
     answer_message = str(payload.get("answer_message") or "")
@@ -61,6 +73,8 @@ def _text(value: Any) -> str:
     return str(text).strip()
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class ApiResponseBuilder(Component):
     display_name = "22 API 응답 생성기"
     description = "최종 API 응답을 만들고 전체 런타임 소스 데이터를 제거합니다."
@@ -70,5 +84,7 @@ class ApiResponseBuilder(Component):
     ]
     outputs = [Output(name="api_response", display_name="API 응답", method="build_payload")]
 
+    # Langflow 출력 함수: 'API 응답 (api_response)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=build_api_response(getattr(self, "payload", None), getattr(self, "display_message", "")))

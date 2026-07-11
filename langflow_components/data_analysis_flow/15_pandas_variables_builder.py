@@ -1,3 +1,15 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 15 pandas 변수 생성기
+# 역할: Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 pandas 코드 생성 변수를 제공합니다. function case 선택 정보는 16번 Prompt Template에 연결하고, 실제 함수
+#     코드는 별도 입력으로 넣습니다.
+# 주요 입력: 페이로드 (payload) · 필수
+# 주요 출력: 의도 계획 JSON (intent_plan_json), 소스 스키마 JSON (source_schema_json), 소스 미리보기 JSON (source_preview_json),
+#        Function Case 선택 정보 JSON (function_case_selection_json), 출력 계약 JSON (output_contract_json)
+# 처리 흐름: pandas 코드 LLM에 전달할 의도 계획, source schema/preview, 선택 helper와 출력 계약을 분리해 만듭니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -8,6 +20,8 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
 from lfx.schema.message import Message
 
+# 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_variables(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     schemas = _source_schemas(payload)
@@ -125,6 +139,8 @@ def _dedupe_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class PandasVariablesBuilder(Component):
     display_name = "15 pandas 변수 생성기"
     description = "Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 pandas 코드 생성 변수를 제공합니다. function case 선택 정보는 16번 Prompt Template에 연결하고, 실제 함수 코드는 별도 입력으로 넣습니다."
@@ -137,18 +153,27 @@ class PandasVariablesBuilder(Component):
         Output(name="output_contract_json", display_name="출력 계약 JSON", method="build_output_contract_json", types=["Message"], group_outputs=True),
     ]
 
+    # Langflow 출력 함수: '의도 계획 JSON (intent_plan_json)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_intent_plan_json(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["intent_plan_json"])
 
+    # Langflow 출력 함수: '소스 스키마 JSON (source_schema_json)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_source_schema_json(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["source_schema_json"])
 
+    # Langflow 출력 함수: '소스 미리보기 JSON (source_preview_json)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_source_preview_json(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["source_preview_json"])
 
+    # Langflow 출력 함수: 'Function Case 선택 정보 JSON (function_case_selection_json)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_function_case_selection_json(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["function_case_selection_json"])
 
+    # Langflow 출력 함수: '출력 계약 JSON (output_contract_json)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_contract_json(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None))["output_contract_json"])
-

@@ -453,19 +453,19 @@ def write_flows() -> list[dict[str, Any]]:
     for spec in SAVING_SPECS:
         flow = build_saving_flow(donor, spec)
         path = EXPORT_ROOT / f"{spec.slug}_saving_flow_v5_standalone.json"
-        path.write_text(json.dumps(flow, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_bytes((json.dumps(flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
         outputs.append({"path": str(path), "nodes": len(flow["data"]["nodes"]), "edges": len(flow["data"]["edges"])})
     qa = build_metadata_qa_flow(donor)
     qa_path = EXPORT_ROOT / "metadata_qa_flow_v5_standalone.json"
-    qa_path.write_text(json.dumps(qa, ensure_ascii=False, indent=2), encoding="utf-8")
+    qa_path.write_bytes((json.dumps(qa, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     outputs.append({"path": str(qa_path), "nodes": len(qa["data"]["nodes"]), "edges": len(qa["data"]["edges"])})
     router = build_router_flow(donor)
     router_path = EXPORT_ROOT / "api_router_flow_v5_standalone.json"
-    router_path.write_text(json.dumps(router, ensure_ascii=False, indent=2), encoding="utf-8")
+    router_path.write_bytes((json.dumps(router, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     outputs.append({"path": str(router_path), "nodes": len(router["data"]["nodes"]), "edges": len(router["data"]["edges"])})
     tool_router = build_agent_tool_router_flow(donor)
     tool_router_path = EXPORT_ROOT / "agent_tool_router_flow_v5_standalone.json"
-    tool_router_path.write_text(json.dumps(tool_router, ensure_ascii=False, indent=2), encoding="utf-8")
+    tool_router_path.write_bytes((json.dumps(tool_router, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     outputs.append(
         {
             "path": str(tool_router_path),

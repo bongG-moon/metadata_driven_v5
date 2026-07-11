@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 05 테이블 카탈로그 동일 Key 조회기
+# 역할: 생성 후보가 정해진 뒤 해당 dataset_key만 MongoDB에서 조회하여 중복 payload를 최소화합니다.
+# 주요 입력: 페이로드 (payload) · 필수, 기존 항목(호환용) (existing_items), MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스
+#        (mongo_database), 컬렉션 이름 (collection_name)
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: 테이블 카탈로그 후보와 기존 문서의 canonical key 또는 허용된 identity 충돌을 찾아 저장 정책 결정에 필요한 match 정보를 만듭니다.
+# 유지보수 포인트: LLM은 후보 작성에만 사용하고 key 충돌·필수 필드·비밀값·실제 저장 여부는 Python에서 결정론적으로 판정합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import os
@@ -14,6 +25,8 @@ DEFAULT_COLLECTION = "agent_v4_table_catalog_items"
 COLLECTION_ENV = "MONGODB_TABLE_CATALOG_COLLECTION"
 
 
+# 주요 함수: 신규 후보와 기존 문서의 정확 key 또는 identity 충돌을 판정합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def check_similarity(payload_value: Any, existing_items_value: Any = None, mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> dict[str, Any]:
     payload = _payload(payload_value)
     items = [item for item in payload.get("items", []) if isinstance(item, dict)]
@@ -111,11 +124,15 @@ def _items(value: Any) -> list[dict[str, Any]]:
     return [deepcopy(item) for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class TableCatalogSimilarityChecker(Component):
     display_name = "05 테이블 카탈로그 동일 Key 조회기"
     description = "생성 후보가 정해진 뒤 해당 dataset_key만 MongoDB에서 조회하여 중복 payload를 최소화합니다."
     inputs = [DataInput(name="payload", display_name="페이로드", required=True), DataInput(name="existing_items", display_name="기존 항목(호환용)", required=False), MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=True), MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, value=DEFAULT_DATABASE, advanced=True), MessageTextInput(name="collection_name", display_name="컬렉션 이름", required=False, value=DEFAULT_COLLECTION, advanced=True)]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload", types=["Data"])]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=check_similarity(getattr(self, "payload", None), getattr(self, "existing_items", None), getattr(self, "mongo_uri", ""), getattr(self, "mongo_database", ""), getattr(self, "collection_name", "")))

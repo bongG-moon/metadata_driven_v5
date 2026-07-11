@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 00 테이블 카탈로그 기존 항목 로더
+# 역할: MongoDB에서 기존 테이블 카탈로그 메타데이터를 불러와 중복 검사에 사용합니다.
+# 주요 입력: MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 컬렉션 이름 (collection_name), 조회 제한 (limit)
+# 주요 출력: 기존 항목 (existing_items)
+# 처리 흐름: 테이블 카탈로그 등록 후보와 비교할 기존 문서를 MongoDB에서 최소 projection으로 읽고 registration trace 같은 불필요 필드를 제거합니다.
+# 유지보수 포인트: 연결 설정은 노드 입력→환경변수→기본값 순으로 해석하며, 오류는 숨기지 않고 trace/status에 남기고 연결은 반드시 닫습니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import os
@@ -14,6 +24,8 @@ DEFAULT_COLLECTION = "agent_v4_table_catalog_items"
 COLLECTION_ENV = "MONGODB_TABLE_CATALOG_COLLECTION"
 
 
+# 주요 함수: 등록 후보와 비교할 기존 MongoDB 문서를 최소 필드로 읽습니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def load_existing_items(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "", limit: str = "500") -> dict[str, Any]:
     mongo_uri, mongo_database, collection_name = _resolve_mongo_config(mongo_uri, mongo_database, collection_name)
     load_limit = _int(limit, 500)
@@ -70,6 +82,8 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class TableCatalogExistingItemsLoader(Component):
     display_name = "00 테이블 카탈로그 기존 항목 로더"
     description = "MongoDB에서 기존 테이블 카탈로그 메타데이터를 불러와 중복 검사에 사용합니다."
@@ -81,5 +95,7 @@ class TableCatalogExistingItemsLoader(Component):
     ]
     outputs = [Output(name="existing_items", display_name="기존 항목", method="build_payload")]
 
+    # Langflow 출력 함수: '기존 항목 (existing_items)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=load_existing_items(getattr(self, "mongo_uri", ""), getattr(self, "mongo_database", ""), getattr(self, "collection_name", ""), getattr(self, "limit", "500")))

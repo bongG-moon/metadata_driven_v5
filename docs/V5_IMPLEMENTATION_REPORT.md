@@ -93,7 +93,7 @@ Domain/Table Catalog/Main Flow Filter 저장 Flow는 Existing Loader의 full doc
 ## 검증 결과
 
 - 전체 Python compile 성공
-- 전체 pytest 221개 성공
+- 전체 pytest 222개 성공
 - 대표 질문 23개 deterministic dummy 실행 23/23 성공
 - 각 대표 질문에서 trusted catalog hydration, retrieval job/filter, pandas row/필수 컬럼, dummy 고지 message/API 계약 확인
 - Flow export 재생성 결과와 저장된 JSON byte-level 구조 일치

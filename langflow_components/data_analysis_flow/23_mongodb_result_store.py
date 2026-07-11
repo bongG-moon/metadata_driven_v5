@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 23 MongoDB 결과 저장소
+# 역할: pandas 분석 결과와 런타임 조회 결과를 MongoDB result store에 저장하고 data_ref를 페이로드에 남깁니다.
+# 주요 입력: 페이로드 (payload) · 필수, MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 결과 컬렉션 (collection_name),
+#        데이터 보관 시간(시간) (ttl_hours)
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: 후속 질문에 필요한 분석 결과를 압축 저장하고 TTL과 data_ref를 관리한 뒤 원래 페이로드에 저장 상태를 기록합니다.
+# 유지보수 포인트: 연결 설정은 노드 입력→환경변수→기본값 순으로 해석하며, 오류는 숨기지 않고 trace/status에 남기고 연결은 반드시 닫습니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import os
@@ -19,6 +30,8 @@ MAX_TTL_HOURS = 24 * 7
 TTL_INDEX_NAME = "agent_v4_result_store_expires_at_ttl"
 
 
+# 주요 함수: 후속 질문 재사용에 필요한 결과를 MongoDB에 저장하고 data_ref를 발급합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def store_result(
     payload_value: Any,
     mongo_uri: str = "",
@@ -318,6 +331,8 @@ def _payload(value: Any) -> dict[str, Any]:
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MongoDBResultStore(Component):
     display_name = "23 MongoDB 결과 저장소"
     description = "pandas 분석 결과와 런타임 조회 결과를 MongoDB result store에 저장하고 data_ref를 페이로드에 남깁니다."
@@ -330,6 +345,8 @@ class MongoDBResultStore(Component):
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=store_result(

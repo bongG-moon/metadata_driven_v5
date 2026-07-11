@@ -38,7 +38,7 @@
 
 ## 최종 검증
 
-- 전체 pytest: 221/221 통과
+- 전체 pytest: 222/222 통과
 - 대표 Data Analysis dummy 질문: 23/23 통과
 - source validator: 활성 Custom Component 67개, 지원 helper 1개, 비활성 Python 0개
 - Langflow 1.8.2 / LFX 0.3.4 node template: 115/115 통과

@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 06 메타데이터 QA API 응답 생성기
+# 역할: 메타데이터 QA 결과를 Web/Run API에서 읽을 수 있는 구조화 응답으로 변환합니다.
+# 주요 입력: 페이로드 (payload) · 필수, 채팅 표시 메시지 (display_message)
+# 주요 출력: API 응답 (api_response), API 메시지 (api_message)
+# 처리 흐름: 최종 QA API 응답에서 큰 내부 context를 제거하고 구조화 data와 Message envelope을 제공합니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -10,6 +20,8 @@ from lfx.schema.data import Data
 from lfx.schema.message import Message
 
 
+# 주요 함수: 내부 실행 필드를 제거하고 외부 API가 소비할 안정적인 응답을 만듭니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_api_response(payload_value: Any, display_message_value: Any = "") -> dict[str, Any]:
     payload = _payload(payload_value)
     message = _text(display_message_value) or str(payload.get("answer_message") or payload.get("message") or "").strip()
@@ -50,6 +62,8 @@ def _text(value: Any) -> str:
     return str(text).strip()
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MetadataQaApiResponseBuilder(Component):
     display_name = "06 메타데이터 QA API 응답 생성기"
     description = "메타데이터 QA 결과를 Web/Run API에서 읽을 수 있는 구조화 응답으로 변환합니다."
@@ -62,9 +76,13 @@ class MetadataQaApiResponseBuilder(Component):
         Output(name="api_message", display_name="API 메시지", method="build_message", types=["Message"], group_outputs=True),
     ]
 
+    # Langflow 출력 함수: 'API 응답 (api_response)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=build_api_response(getattr(self, "payload", None), getattr(self, "display_message", "")))
 
+    # Langflow 출력 함수: 'API 메시지 (api_message)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_message(self) -> Message:
         response = build_api_response(getattr(self, "payload", None), getattr(self, "display_message", ""))
         return Message(text=json.dumps({"api_response": response}, ensure_ascii=False, default=str))

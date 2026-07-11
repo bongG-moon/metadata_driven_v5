@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 08 메인 플로우 필터 등록 응답 정규화기
+# 역할: 메인 플로우 필터 등록 결과를 메시지/API에서 재사용할 수 있는 구조화 페이로드로 정리합니다.
+# 주요 입력: 페이로드 (payload) · 필수
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: 메인 플로우 필터 등록 상태와 요청 key/실제 canonical key를 사람이 확인하기 쉬운 구조화 응답으로 요약합니다.
+# 유지보수 포인트: LLM은 후보 작성에만 사용하고 key 충돌·필수 필드·비밀값·실제 저장 여부는 Python에서 결정론적으로 판정합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -11,6 +21,8 @@ METADATA_TYPE = "main_flow_filter"
 METADATA_LABEL = "메인 플로우 필터"
 
 
+# 주요 함수: 저장 결과와 canonical target을 사용자 응답용 요약으로 바꿉니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_response(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     write_result = _dict(payload.get("write_result"))
@@ -206,11 +218,15 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MainFlowFilterSavingResponseBuilder(Component):
     display_name = "08 메인 플로우 필터 등록 응답 정규화기"
     description = "메인 플로우 필터 등록 결과를 메시지/API에서 재사용할 수 있는 구조화 페이로드로 정리합니다."
     inputs = [DataInput(name="payload", display_name="페이로드", required=True)]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload", types=["Data"])]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=build_response(getattr(self, "payload", None)))

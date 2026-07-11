@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 04 의도 계획 정규화기
+# 역할: Langflow 에이전트/LLM의 의도 JSON을 표준 의도 계획으로 정규화합니다.
+# 주요 입력: 페이로드 (payload) · 필수, 의도 LLM 응답 (llm_response) · 필수
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: LLM JSON을 추출해 분석 범위, 조건 변경 내역, 조회 작업, pandas 단계와 후속 질문 전략을 표준 형태로 정규화합니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -10,6 +20,8 @@ from lfx.io import DataInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
 
+# 주요 함수: LLM 의도 결과를 신뢰 가능한 실행 계획 계약으로 정규화합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     parsed = _json(llm_response)
@@ -280,11 +292,15 @@ def _text_value(value: Any) -> str:
     return str(value or "")
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class IntentPlanNormalizer(Component):
     display_name = "04 의도 계획 정규화기"
     description = "Langflow 에이전트/LLM의 의도 JSON을 표준 의도 계획으로 정규화합니다."
     inputs = [DataInput(name="payload", display_name="페이로드", required=True), MessageTextInput(name="llm_response", display_name="의도 LLM 응답", required=True)]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=normalize_intent_plan(getattr(self, "payload", None), getattr(self, "llm_response", "")))

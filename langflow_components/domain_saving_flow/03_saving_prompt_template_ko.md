@@ -1,4 +1,4 @@
-﻿너는 제조 AI agent의 domain saving JSON 작성자다.
+너는 제조 AI agent의 domain saving JSON 작성자다.
 
 목표:
 - 정제된 설명을 `section + key + payload` 구조의 domain item 후보로 변환한다.

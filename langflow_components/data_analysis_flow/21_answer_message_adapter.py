@@ -1,3 +1,16 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 21 답변 메시지 어댑터
+# 역할: 최종 답변과 결과 테이블을 서비스 채팅 출력용 메시지로 변환합니다.
+# 주요 입력: 페이로드 (payload) · 필수, 다운로드 링크 Base URL (download_base_url), 개발자 진단 포함 (include_diagnostics), 결과 테이블 표시
+#        (show_result_table), 중간 산출물/helper 결과 표시 (show_analysis_evidence), 다운로드 링크 표시 (show_download_links), 경고/참고
+#        표시 (show_notices), 적용 기준 표시 (show_applied_criteria), 다음 질문 표시 (show_next_questions), 의도 분석 표시
+#        (show_intent_analysis), 데이터 조회 진단 표시 (show_data_retrieval), pandas 코드 표시 (show_pandas_code)
+# 주요 출력: 메시지 (message)
+# 처리 흐름: 구조화 답변을 표·진단·조회 계획이 포함된 Markdown Message 하나로 렌더링합니다.
+# 유지보수 포인트: 이 노드만 최종 Chat Output에 연결해 중간 질문이나 JSON이 대화 기록에 중복 출력되지 않게 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import base64
@@ -16,6 +29,8 @@ VALUE_TEXT_LIMIT = 900
 DEFAULT_DOWNLOAD_BASE_URL = "http://localhost:8765"
 
 
+# 주요 함수: 구조화 결과를 사용자가 읽을 수 있는 단일 Markdown Message로 변환합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_message(
     payload_value: Any,
     download_base_url: Any = "",
@@ -1035,6 +1050,8 @@ def _option_enabled(value: Any, default: bool) -> bool:
     return _truthy(value)
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class AnswerMessageAdapter(Component):
     display_name = "21 답변 메시지 어댑터"
     description = "최종 답변과 결과 테이블을 서비스 채팅 출력용 메시지로 변환합니다."
@@ -1120,6 +1137,8 @@ class AnswerMessageAdapter(Component):
     ]
     outputs = [Output(name="message", display_name="메시지", method="build_output_message", types=["Message"])]
 
+    # Langflow 출력 함수: '메시지 (message)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_message(self) -> Message:
         return Message(
             text=build_message(

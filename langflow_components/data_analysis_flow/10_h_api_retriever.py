@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 10 H-API 데이터 조회기
+# 역할: table catalog의 H-API source_config를 사용해 실제 API 조회를 실행합니다.
+# 주요 입력: 페이로드 (payload) · 필수, H-API 토큰 (api_token), 요청 제한 시간(초) (timeout_seconds), 조회 제한 건수 (fetch_limit)
+# 주요 출력: 조회 페이로드 (retrieval_payload)
+# 처리 흐름: 카탈로그 설정으로 HTTP 요청을 만들고 응답 경로에서 행을 추출해 공통 source result 형식으로 반환합니다.
+# 유지보수 포인트: 실행 오류를 다른 source의 성공처럼 위장하는 과도한 fallback은 만들지 말고 공통 errors 계약으로 전달합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -19,6 +29,8 @@ from lfx.schema.data import Data
 PREVIEW_LIMIT = 5
 
 
+# 주요 함수: HTTP API 작업을 실행하고 지정된 응답 경로에서 결과 행을 꺼냅니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def h_api_retrieve(
     payload_value: Any,
     api_token: Any = "",
@@ -439,6 +451,8 @@ def _skipped(source_type: str, reason: str) -> dict[str, Any]:
     return {"source_type": source_type, "status": "skipped", "skipped": True, "skip_reason": reason, "source_results": [], "errors": [], "warnings": []}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class HApiRetriever(Component):
     display_name = "10 H-API 데이터 조회기"
     description = "table catalog의 H-API source_config를 사용해 실제 API 조회를 실행합니다."
@@ -450,6 +464,8 @@ class HApiRetriever(Component):
     ]
     outputs = [Output(name="retrieval_payload", display_name="조회 페이로드", method="build_payload")]
 
+    # Langflow 출력 함수: '조회 페이로드 (retrieval_payload)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=h_api_retrieve(

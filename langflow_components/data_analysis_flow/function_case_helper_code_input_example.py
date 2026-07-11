@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: pandas Function Case Helper Library
+# 역할: 선택된 pandas 분석에서만 주입하는 재사용 helper 함수 모음입니다.
+# 주요 입력: 사용자 표현 (input_text) · 필수, 원본 DataFrame (frame) · 필수
+# 주요 출력: 필터링된 DataFrame (result)
+# 처리 흐름: pandas executor가 선택적으로 주입하는 제품 토큰 helper 예시이며, 원본 DataFrame을 바꾸지 않고 필터 결과를 반환합니다.
+# 유지보수 포인트: helper는 원본 DataFrame을 변경하지 않아야 하며, executor가 주입한 record_function_case_result가 있으면 실행 근거를 기록합니다.
+# =============================================================================
+
 try:
     record_function_case_result
 except NameError:
@@ -20,6 +30,8 @@ except NameError:
         )
         return result_value
 
+# 주요 함수: 질문의 제품 토큰을 표준 제품 컬럼에 역할별로 매칭해 DataFrame을 필터링합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def match_product_tokens(input_text, frame, token_columns=None, output_order=None):
     # 원본 DataFrame을 변경하지 않기 위해 copy본에서 필터링을 수행한다.
     result = frame.copy()
@@ -239,6 +251,8 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
         pass
     return filtered
 
+# 주요 함수: 여러 helper 선택 형식을 검증하기 위해 DataFrame 복사본을 그대로 반환합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def sample_passthrough_helper(input_text, frame, note=None):
     # 여러 helper를 동시에 넣는 형식을 검증하기 위한 더미 helper다.
     # 실제 분석 로직은 수행하지 않고 DataFrame copy만 반환한다.

@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 01B 메타데이터 QA 테이블 카탈로그 로더
+# 역할: MongoDB에서 테이블 카탈로그 메타데이터를 읽기 전용으로 불러옵니다.
+# 주요 입력: MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 테이블 카탈로그 컬렉션 (collection_name), 조회 제한 (limit),
+#        상태 필터 (status_filter)
+# 주요 출력: 테이블 카탈로그 (table_catalog_items)
+# 처리 흐름: 데이터셋·source type·조회 파라미터·컬럼을 설명할 활성 테이블 카탈로그 문서를 읽습니다.
+# 유지보수 포인트: 연결 설정은 노드 입력→환경변수→기본값 순으로 해석하며, 오류는 숨기지 않고 trace/status에 남기고 연결은 반드시 닫습니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import os
@@ -14,6 +25,8 @@ DEFAULT_COLLECTION = "agent_v4_table_catalog_items"
 COLLECTION_ENV = "MONGODB_TABLE_CATALOG_COLLECTION"
 
 
+# 주요 함수: 외부 저장소의 필요한 항목을 읽어 현재 페이로드에 안전하게 합칩니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def load_table_catalog_metadata(
     mongo_uri: str = "",
     mongo_database: str = "",
@@ -77,6 +90,8 @@ def _status_query(status_filter: str) -> dict[str, Any]:
     return {"status": value}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MetadataQaTableCatalogLoader(Component):
     display_name = "01B 메타데이터 QA 테이블 카탈로그 로더"
     description = "MongoDB에서 테이블 카탈로그 메타데이터를 읽기 전용으로 불러옵니다."
@@ -89,6 +104,8 @@ class MetadataQaTableCatalogLoader(Component):
     ]
     outputs = [Output(name="table_catalog_items", display_name="테이블 카탈로그", method="build_payload", types=["Data"])]
 
+    # Langflow 출력 함수: '테이블 카탈로그 (table_catalog_items)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         result = load_table_catalog_metadata(
             getattr(self, "mongo_uri", ""),

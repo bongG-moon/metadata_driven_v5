@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 02 메타데이터 QA 컨텍스트 생성기
+# 역할: 질문과 MongoDB 메타데이터를 읽어 QA에 필요한 후보만 선별합니다.
+# 주요 입력: 페이로드 (payload) · 필수, 도메인 메타데이터 (domain_items), 테이블 카탈로그 (table_catalog_items), 메인 필터 (main_flow_filters),
+#        최대 후보 수 (max_items), 최대 Context 바이트 (max_bytes)
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: 질문 유형을 판정하고 비밀값을 제거한 뒤 도메인·테이블·필터 후보를 점수화·projection·바이트 제한해 QA 문맥을 만듭니다.
+# 유지보수 포인트: secret/credential/raw trace를 문맥에 넣지 않고 max_items·max_bytes 제한을 넘으면 낮은 우선순위 후보부터 줄입니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -34,6 +45,8 @@ DEFAULT_MAX_ITEMS = 50
 DEFAULT_MAX_BYTES = 65536
 
 
+# 주요 함수: 질문 유형에 맞는 안전하고 작은 메타데이터 근거 문맥을 구성합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_metadata_qa_context(
     payload_value: Any,
     domain_items_value: Any = None,
@@ -553,6 +566,8 @@ def _omit_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MetadataQaContextBuilder(Component):
     display_name = "02 메타데이터 QA 컨텍스트 생성기"
     description = "질문과 MongoDB 메타데이터를 읽어 QA에 필요한 후보만 선별합니다."
@@ -566,6 +581,8 @@ class MetadataQaContextBuilder(Component):
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload", types=["Data"])]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=build_metadata_qa_context(

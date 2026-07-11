@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 08 더미 데이터 조회기
+# 역할: 실제 소스 조회가 꺼져 있을 때 데이터 조회 작업을 data_catalog 구조와 같은 더미 행으로 실행합니다.
+# 주요 입력: 페이로드 (payload) · 필수
+# 주요 출력: 조회 페이로드 (retrieval_payload)
+# 처리 흐름: 실데이터 없이도 대표 질문을 검증할 수 있도록 데이터셋별 fixture에 날짜·제품·공정 조건을 동일한 규칙으로 적용합니다.
+# 유지보수 포인트: 실행 오류를 다른 source의 성공처럼 위장하는 과도한 fallback은 만들지 말고 공통 errors 계약으로 전달합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -153,6 +163,8 @@ PROCESSES = [
 ]
 
 
+# 주요 함수: 테스트 fixture를 실제 조회 결과와 같은 source result 계약으로 반환합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def retrieve_dummy_data(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     bundle = payload.get("retrieval_job_bundle") if isinstance(payload.get("retrieval_job_bundle"), dict) else {}
@@ -960,11 +972,15 @@ def _payload(value: Any) -> dict[str, Any]:
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class DummyDataRetriever(Component):
     display_name = "08 더미 데이터 조회기"
     description = "실제 소스 조회가 꺼져 있을 때 데이터 조회 작업을 data_catalog 구조와 같은 더미 행으로 실행합니다."
     inputs = [DataInput(name="payload", display_name="페이로드", required=True)]
     outputs = [Output(name="retrieval_payload", display_name="조회 페이로드", method="build_payload")]
 
+    # Langflow 출력 함수: '조회 페이로드 (retrieval_payload)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(data=retrieve_dummy_data(getattr(self, "payload", None)))

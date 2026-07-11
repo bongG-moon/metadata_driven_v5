@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 05 MongoDB 이전 결과 로더
+# 역할: payload/state 안의 data_ref를 자동으로 찾아 MongoDB result store의 이전 분석 결과를 복원합니다.
+# 주요 입력: 페이로드 (payload) · 필수, MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 결과 컬렉션 (collection_name)
+# 주요 출력: 페이로드 출력 (payload_out)
+# 처리 흐름: 이전 상태의 data_ref를 따라 저장된 분석 결과를 복원하고 source alias·columns·rows를 후속 분석용으로 재구성합니다.
+# 유지보수 포인트: 연결 설정은 노드 입력→환경변수→기본값 순으로 해석하며, 오류는 숨기지 않고 trace/status에 남기고 연결은 반드시 닫습니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import os
@@ -14,6 +24,8 @@ DEFAULT_COLLECTION = "agent_v4_result_store"
 RESULT_PREVIEW_LIMIT = 50
 
 
+# 주요 함수: 저장된 이전 분석 결과를 찾아 후속 분석에서 재사용 가능한 source로 복원합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> dict[str, Any]:
     payload = _payload(payload_value)
     ref = _find_data_ref(payload)
@@ -212,6 +224,8 @@ def _payload(value: Any) -> dict[str, Any]:
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MongoDBResultLoader(Component):
     display_name = "05 MongoDB 이전 결과 로더"
     description = "payload/state 안의 data_ref를 자동으로 찾아 MongoDB result store의 이전 분석 결과를 복원합니다."
@@ -223,6 +237,8 @@ class MongoDBResultLoader(Component):
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
+    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=load_previous_result(

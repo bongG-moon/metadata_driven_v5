@@ -470,7 +470,7 @@ def main() -> None:
     args = parser.parse_args()
     flow = build_flow(args.source)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(flow, ensure_ascii=False, indent=2), encoding="utf-8")
+    args.output.write_bytes((json.dumps(flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     print(json.dumps({"output": str(args.output), "nodes": len(flow["data"]["nodes"]), "edges": len(flow["data"]["edges"])}, ensure_ascii=False))
 
 

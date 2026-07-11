@@ -55,7 +55,7 @@ python tools/validate_flow_component_sources.py
 ## 2026-07-12 실행 결과
 
 - source validator: 3개 JSON 계층 모두 75/75 커스텀 노드 매핑 성공, 오류 0
-- 전체 Python 계약 테스트: 221/221 통과
+- 전체 Python 계약 테스트: 222/222 통과
 - 대표 Data Analysis dummy 질문: 23/23 통과
 - Langflow 1.8.2 / LFX 0.3.4 node template: 115/115 통과
 - 격리 Langflow 서버 import: 7/7 HTTP 201

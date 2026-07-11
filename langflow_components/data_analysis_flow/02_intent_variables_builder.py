@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 02 의도 분석 변수 생성기
+# 역할: Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 의도 분석 변수를 제공합니다.
+# 주요 입력: 페이로드 (payload) · 필수, 메타데이터 후보 (metadata_candidates_in)
+# 주요 출력: 사용자 질문 (question), 상태/요청 컨텍스트 JSON (state_summary), 메타데이터 후보 JSON (metadata_candidates), 출력 스키마 JSON
+#        (output_schema)
+# 처리 흐름: 의도 LLM에 필요한 질문·이전 상태·후보 메타데이터·출력 스키마만 각각의 Message로 분리합니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -8,6 +19,8 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
 from lfx.schema.message import Message
 
+# 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_variables(payload_value: Any, metadata_candidates_value: Any = None) -> dict[str, Any]:
     payload = _payload(payload_value)
     metadata_candidates = _compact_metadata_candidates(_payload(metadata_candidates_value) or {})
@@ -138,6 +151,8 @@ def _omit_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class IntentVariablesBuilder(Component):
     display_name = "02 의도 분석 변수 생성기"
     description = "Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 의도 분석 변수를 제공합니다."
@@ -152,15 +167,22 @@ class IntentVariablesBuilder(Component):
         Output(name="output_schema", display_name="출력 스키마 JSON", method="build_output_schema", types=["Message"], group_outputs=True),
     ]
 
+    # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_question(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None), getattr(self, "metadata_candidates_in", None))["question"])
 
+    # Langflow 출력 함수: '상태/요청 컨텍스트 JSON (state_summary)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_state_summary(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None), getattr(self, "metadata_candidates_in", None))["state_summary"])
 
+    # Langflow 출력 함수: '메타데이터 후보 JSON (metadata_candidates)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_metadata_candidates(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None), getattr(self, "metadata_candidates_in", None))["metadata_candidates"])
 
+    # Langflow 출력 함수: '출력 스키마 JSON (output_schema)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_schema(self) -> Message:
         return Message(text=build_variables(getattr(self, "payload", None), getattr(self, "metadata_candidates_in", None))["output_schema"])
-

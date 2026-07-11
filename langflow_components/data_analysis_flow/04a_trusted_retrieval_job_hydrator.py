@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 04A 신뢰 카탈로그 조회 작업 구성기
+# 역할: LLM job의 source 설정을 버리고 active table catalog의 신뢰 가능한 설정으로 다시 구성합니다.
+# 주요 입력: 의도 페이로드 (payload) · 필수, 전체 테이블 카탈로그 (table_catalog_items) · 필수, 데이터 조회 모드 (retrieval_mode)
+# 주요 출력: 신뢰 조회 작업 페이로드 (payload_out)
+# 처리 흐름: LLM이 제안한 데이터셋 키를 활성 카탈로그와 다시 대조해 신뢰할 수 있는 source 설정과 필수 파라미터만 복원합니다.
+# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
+# =============================================================================
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -36,6 +46,8 @@ SECRET_KEYS = {
 }
 
 
+# 주요 함수: 활성 카탈로그를 기준으로 조회 작업의 source 설정을 다시 구성합니다.
+# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def hydrate_retrieval_jobs(
     payload_value: Any,
     table_catalog_items_value: Any = None,
@@ -219,6 +231,8 @@ def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
+# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class TrustedRetrievalJobHydrator(Component):
     display_name = "04A 신뢰 카탈로그 조회 작업 구성기"
     description = "LLM job의 source 설정을 버리고 active table catalog의 신뢰 가능한 설정으로 다시 구성합니다."
@@ -229,6 +243,8 @@ class TrustedRetrievalJobHydrator(Component):
     ]
     outputs = [Output(name="payload_out", display_name="신뢰 조회 작업 페이로드", method="build_payload")]
 
+    # Langflow 출력 함수: '신뢰 조회 작업 페이로드 (payload_out)' 포트가 요청될 때 실행됩니다.
+    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
         return Data(
             data=hydrate_retrieval_jobs(
