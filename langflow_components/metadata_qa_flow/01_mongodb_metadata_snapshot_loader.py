@@ -87,7 +87,8 @@ def _load_metadata_snapshot_unlocked(
     loads: dict[str, dict[str, Any]] = {}
     specs = (
         ("domain_items", config["domain_collection_name"], {"_id": 0, "section": 1, "key": 1, "status": 1, "payload": 1}),
-        ("table_catalog_items", config["table_collection_name"], {"_id": 0, "dataset_key": 1, "status": 1, "payload": 1}),
+        # v4 초기 문서는 dataset_key 대신 top-level key만 가진 경우가 있어 두 필드를 함께 읽습니다.
+        ("table_catalog_items", config["table_collection_name"], {"_id": 0, "dataset_key": 1, "key": 1, "status": 1, "payload": 1}),
         ("main_flow_filters", config["filter_collection_name"], {"_id": 0, "filter_key": 1, "status": 1, "payload": 1}),
     )
     try:
@@ -96,17 +97,38 @@ def _load_metadata_snapshot_unlocked(
         database = client[config["mongo_database"]]
         for metadata_kind, collection_name, projection in specs:
             try:
+                item_limit = limits[metadata_kind]
                 docs = list(
                     database[collection_name]
                     .find(_status_query(status_filter), projection)
-                    .limit(limits[metadata_kind])
+                    .limit(item_limit + 1)
                 )
-                items = [deepcopy(doc) for doc in docs if isinstance(doc, dict)]
+                truncated = len(docs) > item_limit
+                items = [deepcopy(doc) for doc in docs[:item_limit] if isinstance(doc, dict)]
                 items_by_kind[metadata_kind] = items
-                loads[metadata_kind] = _load_status("ok", metadata_kind, config["mongo_database"], collection_name, len(items), status_filter, [])
+                loads[metadata_kind] = _load_status(
+                    "ok",
+                    metadata_kind,
+                    config["mongo_database"],
+                    collection_name,
+                    len(items),
+                    status_filter,
+                    [],
+                    limit=item_limit,
+                    truncated=truncated,
+                )
             except Exception as exc:
                 error = {"type": "mongo_load_error", "message": str(exc), "metadata_kind": metadata_kind}
-                loads[metadata_kind] = _load_status("error", metadata_kind, config["mongo_database"], collection_name, 0, status_filter, [error])
+                loads[metadata_kind] = _load_status(
+                    "error",
+                    metadata_kind,
+                    config["mongo_database"],
+                    collection_name,
+                    0,
+                    status_filter,
+                    [error],
+                    limit=limits[metadata_kind],
+                )
     except Exception as exc:
         error = {"type": "mongo_snapshot_connection_error", "message": str(exc)}
         return _empty_result("error", config, limits, status_filter, [error], generation)
@@ -183,7 +205,16 @@ def _empty_result(
         "main_flow_filters": config["filter_collection_name"],
     }
     loads = {
-        kind: _load_status(status, kind, config["mongo_database"], collection, 0, status_filter, deepcopy(errors))
+        kind: _load_status(
+            status,
+            kind,
+            config["mongo_database"],
+            collection,
+            0,
+            status_filter,
+            deepcopy(errors),
+            limit=limits[kind],
+        )
         for kind, collection in collection_by_kind.items()
     }
     result = _snapshot_result({kind: [] for kind in collection_by_kind}, loads, config, generation, cache_hit=False)
@@ -201,8 +232,10 @@ def _load_status(
     count: int,
     status_filter: str,
     errors: list[dict[str, Any]],
+    limit: int | None = None,
+    truncated: bool = False,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "status": status,
         "metadata_kind": metadata_kind,
         "database": database,
@@ -212,6 +245,13 @@ def _load_status(
         "cache_hit": False,
         "errors": deepcopy(errors),
     }
+    if limit is not None:
+        result["limit"] = int(limit)
+        result["truncated"] = bool(truncated)
+        if truncated:
+            # limit+1 조회로 적어도 한 건이 더 있다는 사실을 보존해 "최소 N건"을 과소 표시하지 않습니다.
+            result["total_count_lower_bound"] = int(count) + 1
+    return result
 
 
 # 함수 설명: `_output_payload()`는 통합 snapshot에서 한 output에 필요한 목록과 load 상태만 projection합니다.

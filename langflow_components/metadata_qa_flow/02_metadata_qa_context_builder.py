@@ -41,6 +41,13 @@ PRUNED_METADATA_KEYS = {
 SECRET_KEY_PATTERNS = ("password", "passwd", "token", "secret", "api_key", "apikey", "mongo_uri", "uri")
 CALCULATION_SECTIONS = {"analysis_recipes", "metric_terms", "pandas_function_cases", "calculation_rules", "quantity_terms"}
 LIST_ALL_TABLE_MODES = {"available_sources"}
+NO_DOMAIN_CANDIDATE_MODES = {
+    "available_sources",
+    "dataset_sql",
+    "dataset_detail",
+    "required_params",
+    "data_analysis_redirect",
+}
 DEFAULT_MAX_ITEMS = 50
 DEFAULT_MAX_BYTES = 65536
 DETERMINISTIC_ANSWER_MODES = {
@@ -80,6 +87,7 @@ def build_metadata_qa_context(
     filter_items = [_sanitize(item) for item in filter_items]
 
     answer_mode = _infer_answer_mode(question)
+    inventory_request_kind = _inventory_request_kind(question, answer_mode)
     matched_domain = [_project_domain_item(item, answer_mode) for item in _select_domain_items(question, answer_mode, domain_items, limit)]
     matched_tables = [_project_table_item(item, answer_mode) for item in _select_table_items(question, answer_mode, table_items, limit)]
     matched_filters = [_project_filter_item(item) for item in _select_filter_items(question, answer_mode, filter_items, limit)]
@@ -91,6 +99,14 @@ def build_metadata_qa_context(
         "table_catalog_items": _compact_load(table_load),
         "main_flow_filters": _compact_load(filter_load),
     }
+    catalog_summary = _catalog_summary(
+        answer_mode,
+        inventory_request_kind,
+        len(table_items),
+        len(candidate_rows),
+        limit,
+        table_load,
+    )
     warnings = []
     if not source_refs:
         warnings.append({"type": "metadata_qa_no_matches", "message": "질문과 직접 매칭되는 메타데이터 후보가 없습니다."})
@@ -116,9 +132,22 @@ def build_metadata_qa_context(
             "reason": "deterministic_answer_mode" if answer_mode in DETERMINISTIC_ANSWER_MODES else "llm_synthesis_required",
         },
     }
+    if catalog_summary:
+        context["catalog_summary"] = catalog_summary
     if answer_mode == "available_sources":
         context["matched_datasets"] = []
     context, context_trimmed = _fit_context_bytes(context, byte_limit)
+    _refresh_catalog_summary(context)
+    if _json_bytes(context) > byte_limit:
+        context, additionally_trimmed = _fit_context_bytes(context, byte_limit)
+        context_trimmed = context_trimmed or additionally_trimmed
+        _refresh_catalog_summary(context)
+    final_source_refs = context.get("source_refs") if isinstance(context.get("source_refs"), list) else []
+    if source_refs and not final_source_refs:
+        warnings.append({"type": "metadata_qa_all_candidates_trimmed", "message": "Context 바이트 제한으로 메타데이터 후보가 모두 제외되었습니다."})
+    if _json_bytes(context) > byte_limit:
+        warnings.append({"type": "metadata_qa_minimum_context_exceeds_budget", "message": f"필수 Context가 설정한 {byte_limit} bytes를 초과합니다."})
+    next_payload["metadata_route"]["confidence"] = "high" if final_source_refs else "low"
     if context_trimmed:
         warnings.append({"type": "metadata_qa_context_trimmed", "message": f"LLM context를 {byte_limit} bytes 이하로 축소했습니다."})
     next_payload["metadata_qa_context"] = context
@@ -127,13 +156,14 @@ def build_metadata_qa_context(
     trace.setdefault("errors", []).extend(_load_errors(load_summary))
     trace.setdefault("inspection", {})["metadata_qa_context"] = {
         "stage": "02_metadata_qa_context_builder",
-        "status": "ok" if source_refs else "warning",
+        "status": "ok" if final_source_refs else "warning",
         "answer_mode": answer_mode,
-        "domain_match_count": len(matched_domain),
-        "dataset_match_count": len(matched_tables),
-        "filter_match_count": len(matched_filters),
+        "domain_match_count": len(context.get("matched_domain_items")) if isinstance(context.get("matched_domain_items"), list) else 0,
+        "dataset_match_count": int(_dict(context.get("catalog_summary")).get("returned_count", 0)) if answer_mode == "available_sources" else len(context.get("matched_datasets")) if isinstance(context.get("matched_datasets"), list) else 0,
+        "filter_match_count": len(context.get("matched_filters")) if isinstance(context.get("matched_filters"), list) else 0,
         "context_bytes": _json_bytes(context),
         "context_trimmed": context_trimmed,
+        "catalog_summary": deepcopy(_dict(context.get("catalog_summary"))),
     }
     next_payload["trace"] = trace
     return next_payload
@@ -183,10 +213,18 @@ def _infer_answer_mode(question: str) -> str:
     lowered = question.lower()
     if any(token in lowered for token in ("쿼리", "sql", "query", "select", "with문")):
         return "dataset_sql"
-    if _looks_like_data_value_question(lowered):
-        return "data_analysis_redirect"
+    if _looks_like_specific_dataset_required_params(lowered):
+        return "required_params"
+    if _looks_like_specific_dataset_detail(lowered):
+        return "dataset_detail"
+    if _looks_like_task_dataset_selection(lowered):
+        return "question_to_dataset"
+    # 명시적인 카탈로그 목록·건수 질문은 "현재 장비 테이블 목록"처럼 실제 값 질문과
+    # 일부 단어가 겹쳐도 MongoDB 카탈로그의 결정론적 목록 경로를 우선합니다.
     if _looks_like_available_sources_question(lowered):
         return "available_sources"
+    if _looks_like_data_value_question(lowered) or _looks_like_table_data_question(lowered):
+        return "data_analysis_redirect"
     if any(token in lowered for token in ("필수 파라미터", "필수조건", "필수 조건", "required param", "required_param")):
         return "required_params"
     if any(token in lowered for token in ("어떤 데이터", "무슨 데이터", "어느 데이터", "어떤 테이블", "무슨 테이블", "어떤 source", "무슨 source", "어떤 소스")):
@@ -220,16 +258,207 @@ def _looks_like_data_value_question(lowered: str) -> bool:
     return has_metric and asks_value and has_time_or_target
 
 
+# 함수 설명: `_has_specific_dataset_reference()`는 영문 dataset key나 현재 v4 카탈로그의 대표 key가 질문에 명시됐는지 판정합니다.
+def _has_specific_dataset_reference(lowered: str) -> bool:
+    known_dataset_keys = (
+        "production_today",
+        "production",
+        "wip_today",
+        "wip",
+        "target",
+        "equipment_assign",
+        "eqp_uph",
+        "lot_status",
+        "hold_history",
+    )
+    if any(re.search(rf"(?<![0-9a-z_]){re.escape(key)}(?![0-9a-z_])", lowered) for key in known_dataset_keys):
+        return True
+    return bool(re.search(r"(?<![0-9a-z])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![0-9a-z])", lowered))
+
+
+# 함수 설명: `_looks_like_specific_dataset_required_params()`는 특정 dataset의 필수 파라미터 질문을 전체 카탈로그 질문보다 먼저 식별합니다.
+def _looks_like_specific_dataset_required_params(lowered: str) -> bool:
+    required_tokens = ("필수 파라미터", "필수조건", "필수 조건", "required param", "required_param")
+    return _has_specific_dataset_reference(lowered) and any(token in lowered for token in required_tokens)
+
+
+# 함수 설명: `_looks_like_specific_dataset_detail()`은 특정 dataset의 컬럼·스키마·연결 상세 질문을 전체 목록과 구분합니다.
+def _looks_like_specific_dataset_detail(lowered: str) -> bool:
+    detail_tokens = (
+        "컬럼",
+        "column",
+        "스키마",
+        "schema",
+        "상세",
+        "설명",
+        "구조",
+        "연결 방식",
+        "연결방식",
+        "source type",
+        "소스 유형",
+        "어떤 데이터야",
+    )
+    return _has_specific_dataset_reference(lowered) and any(token in lowered for token in detail_tokens)
+
+
+# 함수 설명: `_looks_like_table_data_question()`은 카탈로그 문서가 아니라 특정 테이블의 실제 행·값·건수를 묻는 요청인지 판정합니다.
+def _looks_like_table_data_question(lowered: str) -> bool:
+    explicit_catalog_tokens = ("메타데이터", "metadata", "테이블 카탈로그", "데이터 카탈로그", "table catalog", "data catalog")
+    specific_dataset = _has_specific_dataset_reference(lowered)
+    if any(token in lowered for token in explicit_catalog_tokens) and not specific_dataset:
+        return False
+    has_table_subject = specific_dataset or any(token in lowered for token in ("테이블", "데이터셋", "dataset", "table"))
+    if not has_table_subject:
+        return False
+    row_value_tokens = (
+        "전체 데이터",
+        "원본 데이터",
+        "실제 데이터",
+        "데이터를 보여",
+        "데이터 보여",
+        "전체 행",
+        "행을 보여",
+        "레코드",
+        "record",
+        "rows",
+        "row ",
+        "값을 보여",
+        "건수",
+        "몇 건",
+    )
+    business_tokens = (
+        "생산량",
+        "생산 실적",
+        "재공",
+        "투입",
+        "uph",
+        "hold",
+        "lot",
+        "assign",
+        "장비",
+        "공정",
+        "제품",
+    )
+    time_tokens = ("오늘", "어제", "전일", "금일", "현재", "현시간", "월", "일", "202")
+    has_row_value = any(token in lowered for token in row_value_tokens)
+    has_business = any(token in lowered for token in business_tokens)
+    has_time = any(token in lowered for token in time_tokens)
+    has_list_word = any(token in lowered for token in ("테이블 목록", "데이터 목록", "table list"))
+    return (has_row_value and (specific_dataset or has_business or has_time)) or (has_list_word and has_business and has_time)
+
+
 # 함수 설명: `_looks_like_available_sources_question()`는 입력값이 LIKE·사용 가능 항목·sources·question 조건에 해당하는지 부작용 없이 bool로
 #        판정합니다.
 def _looks_like_available_sources_question(lowered: str) -> bool:
-    catalog_tokens = ("조회 가능", "조회가능", "데이터셋", "데이터들", "데이터 목록", "data catalog", "연결 방식", "연결방식")
-    list_tokens = ("목록", "전체", "각 데이터", "각 source", "각 소스", "뭐가", "무엇", "list", "표", "정리", "보여")
-    return any(token in lowered for token in catalog_tokens) and any(token in lowered for token in list_tokens)
+    catalog_subject_tokens = (
+        "데이터셋",
+        "데이터 세트",
+        "데이터 목록",
+        "데이터들",
+        "테이블 카탈로그",
+        "데이터 카탈로그",
+        "테이블",
+        "data catalog",
+        "table catalog",
+        "dataset",
+        "data source",
+        "source",
+        "소스",
+        "연결 방식",
+        "연결방식",
+    )
+    inventory_tokens = (
+        "등록된",
+        "등록되어",
+        "등록한",
+        "조회 가능",
+        "조회가능",
+        "사용 가능",
+        "사용가능",
+        "목록",
+        "전체",
+        "전부",
+        "나열",
+        "뭐가 있",
+        "무엇이 있",
+        "list",
+        "총",
+        "몇 개",
+        "몇개",
+        "개수",
+        "건수",
+    )
+    has_subject = any(token in lowered for token in catalog_subject_tokens)
+    has_inventory_intent = any(token in lowered for token in inventory_tokens)
+    if not has_subject or not has_inventory_intent:
+        return False
+
+    # 구체 업무용 데이터셋 선택, 특정 dataset 상세, 실제 행 조회는 전체 카탈로그 목록이 아닙니다.
+    if (
+        _looks_like_task_dataset_selection(lowered)
+        or _looks_like_specific_dataset_required_params(lowered)
+        or _looks_like_specific_dataset_detail(lowered)
+        or _looks_like_table_data_question(lowered)
+    ):
+        return False
+    return True
+
+
+# 함수 설명: `_looks_like_task_dataset_selection()`은 전체 목록이 아니라 구체 업무 질문에 사용할 데이터셋을 고르는 표현인지 판정합니다.
+def _looks_like_task_dataset_selection(lowered: str) -> bool:
+    selection_tokens = (
+        "어떤 테이블",
+        "무슨 테이블",
+        "어느 테이블",
+        "어떤 데이터셋",
+        "무슨 데이터셋",
+        "어느 데이터셋",
+        "필요한 테이블",
+        "필요한 데이터셋",
+        "적합한 테이블",
+        "적합한 데이터셋",
+        "사용할 수 있는 테이블",
+        "사용할 수 있는 데이터셋",
+        "사용할 테이블",
+        "사용할 데이터셋",
+        "테이블 중 어떤",
+        "데이터셋 중 어떤",
+        "소스 중 어떤",
+    )
+    usage_tokens = ("써야", "사용해야", "사용할", "필요", "적합", "조회하려면", "보려면", "답하려면", "사용할 수 있는")
+    task_tokens = (
+        "생산량",
+        "생산 실적",
+        "재공",
+        "투입",
+        "uph",
+        "hold",
+        "lot",
+        "assign",
+        "장비 배정",
+        "공정",
+        "제품",
+    )
+    return (
+        any(token in lowered for token in selection_tokens)
+        and any(token in lowered for token in task_tokens)
+        and any(token in lowered for token in usage_tokens)
+    )
+
+
+# 함수 설명: `_inventory_request_kind()`는 카탈로그 질문이 목록 조회인지 건수 확인인지 응답 요약에 기록합니다.
+def _inventory_request_kind(question: str, answer_mode: str) -> str:
+    if answer_mode != "available_sources":
+        return ""
+    lowered = str(question or "").lower()
+    count_tokens = ("총", "몇 개", "몇개", "개수", "건수", "how many", "count")
+    return "count" if any(token in lowered for token in count_tokens) else "list"
 
 
 # 함수 설명: `_select_domain_items()`는 질문 token 점수로 관련 도메인 항목만 max_items 범위에서 선택합니다.
 def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if answer_mode in NO_DOMAIN_CANDIDATE_MODES:
+        return []
     if answer_mode == "calculation_logic_list":
         selected = [item for item in items if str(item.get("section") or "") in CALCULATION_SECTIONS]
         return selected[:limit]
@@ -241,10 +470,9 @@ def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, 
         return _ranked(question + " quantity_terms metric_terms analysis_recipes", items, limit)
     if answer_mode in {"domain_info", "question_to_dataset"}:
         return _ranked(question, items, limit)
-    if answer_mode == "data_analysis_redirect":
-        return []
     selected = _ranked(question, items, limit)
-    return selected if selected else items[: min(limit, 5)]
+    # 점수가 0인 임의의 앞 5건은 질문 근거가 아니므로 후보와 confidence를 오염시키지 않습니다.
+    return selected
 
 
 # 함수 설명: `_select_table_items()`는 질문과 답변 모드에 맞는 테이블 카탈로그 후보를 점수순으로 선택합니다.
@@ -276,6 +504,60 @@ def _list_limit(limit: int, items: list[dict[str, Any]]) -> int:
     if not items:
         return 0
     return min(len(items), limit)
+
+
+# 함수 설명: `_catalog_summary()`는 전체 조회 건수와 실제 반환 건수를 분리해 목록 제한을 투명하게 기록합니다.
+def _catalog_summary(
+    answer_mode: str,
+    request_kind: str,
+    loaded_item_count: int,
+    returned_count: int,
+    limit: int,
+    table_load: dict[str, Any],
+) -> dict[str, Any]:
+    if answer_mode != "available_sources":
+        return {}
+    try:
+        load_count = max(0, int(table_load.get("count", loaded_item_count)))
+    except Exception:
+        load_count = loaded_item_count
+    try:
+        lower_bound_count = max(0, int(table_load.get("total_count_lower_bound", load_count)))
+    except Exception:
+        lower_bound_count = load_count
+    try:
+        load_limit = max(1, int(table_load.get("limit", limit)))
+    except Exception:
+        load_limit = max(1, int(limit))
+    response_limit = max(1, int(limit))
+    total_count = max(loaded_item_count, load_count, lower_bound_count)
+    total_count_exact = not bool(table_load.get("truncated"))
+    return {
+        "request_kind": request_kind or "list",
+        "total_count": total_count,
+        "returned_count": max(0, int(returned_count)),
+        "truncated": (not total_count_exact) or returned_count < total_count,
+        "total_count_exact": total_count_exact,
+        "limit": min(response_limit, load_limit),
+        "response_limit": response_limit,
+        "load_limit": load_limit,
+    }
+
+
+# 함수 설명: `_refresh_catalog_summary()`는 바이트 제한으로 행이 줄어든 뒤 summary와 실제 rows 건수를 다시 맞춥니다.
+def _refresh_catalog_summary(context: dict[str, Any]) -> None:
+    summary = _dict(context.get("catalog_summary"))
+    if not summary:
+        return
+    returned_count = len(context.get("candidate_rows")) if isinstance(context.get("candidate_rows"), list) else 0
+    try:
+        total_count = max(0, int(summary.get("total_count", returned_count)))
+    except Exception:
+        total_count = returned_count
+    total_count_exact = bool(summary.get("total_count_exact", True))
+    summary["returned_count"] = returned_count
+    summary["truncated"] = (not total_count_exact) or returned_count < total_count
+    context["catalog_summary"] = summary
 
 
 # 함수 설명: `_ranked()`는 메타데이터 항목을 질문 일치 점수와 원래 순서로 안정 정렬합니다.
@@ -398,6 +680,24 @@ def _fit_context_bytes(context: dict[str, Any], byte_limit: int) -> tuple[dict[s
                 if str(_dict(refs[index]).get("key") or "") == removed_key:
                     refs.pop(index)
                     break
+    if _json_bytes(fitted) > byte_limit:
+        for key in ("matched_domain_items", "matched_datasets", "matched_filters", "candidate_rows", "source_refs"):
+            if fitted.get(key) == []:
+                fitted.pop(key, None)
+    if _json_bytes(fitted) > byte_limit and isinstance(fitted.get("load_summary"), dict):
+        fitted["load_summary"] = {
+            key: _omit_empty(
+                {
+                    "status": _dict(value).get("status"),
+                    "count": _dict(value).get("count"),
+                    "truncated": _dict(value).get("truncated"),
+                    "total_count_lower_bound": _dict(value).get("total_count_lower_bound"),
+                }
+            )
+            for key, value in fitted["load_summary"].items()
+        }
+    if _json_bytes(fitted) > byte_limit:
+        fitted.pop("load_summary", None)
     return fitted, trimmed
 
 
@@ -474,6 +774,7 @@ def _dataset_detail_row(item: dict[str, Any]) -> dict[str, Any]:
             "source_type": payload.get("source_type") or source_config.get("source_type"),
             "db_key": source_config.get("db_key"),
             "required_params": _compact_list(payload.get("required_params")),
+            "columns": _compact_list(payload.get("columns")),
             "quantity_columns": _quantity_columns(payload),
             "filter_mappings": _compact_list(payload.get("filter_mappings")),
             "description": payload.get("description"),
@@ -595,6 +896,9 @@ def _compact_load(load: dict[str, Any]) -> dict[str, Any]:
             "database": load.get("database"),
             "collection_name": load.get("collection_name"),
             "count": load.get("count"),
+            "limit": load.get("limit"),
+            "truncated": load.get("truncated"),
+            "total_count_lower_bound": load.get("total_count_lower_bound"),
             "cache_hit": load.get("cache_hit"),
             "errors": load.get("errors"),
         }

@@ -54,13 +54,15 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
     table = fallback_table if use_context_table else (parsed_table or fallback_table)
     columns = _string_list(table.get("columns")) or _columns_from_rows(_row_list(table.get("rows")))
     rows = _row_list(table.get("rows"))
+    catalog_summary = _catalog_summary_for_response(context, len(rows))
     source_refs = _source_refs_for_answer(answer_type, context, parsed, use_context_table)
     warnings = _list(parsed.get("warnings"))
     sql_blocks = _list(parsed_sections.get("sql_blocks")) or _list(parsed.get("sql_blocks")) or fallback.get("sql_blocks", [])
     answer_sections = parsed_sections or fallback.get("answer_sections") or _build_answer_sections(answer_type, answer_message, summary, table, sql_blocks, source_refs, context, warnings)
     if use_context_table:
-        answer_sections = _sync_answer_sections_from_context(answer_sections, answer_type, answer_message, summary, table, source_refs)
+        answer_sections = _sync_answer_sections_from_context(answer_sections, answer_type, answer_message, summary, table, source_refs, context)
     answer_sections = _compact_answer_sections(answer_sections, columns, len(rows))
+    answer_sections = _attach_catalog_summary(answer_sections, catalog_summary)
 
     next_payload = payload
     next_payload["response_type"] = "metadata_qa"
@@ -77,6 +79,8 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
         "answer_mode": context.get("answer_mode") or _dict(next_payload.get("metadata_route")).get("answer_mode"),
         "source_refs": source_refs,
     }
+    if catalog_summary:
+        next_payload["metadata_qa"]["catalog_summary"] = catalog_summary
     next_payload["data"] = {"columns": columns, "rows": rows, "row_count": len(rows)}
     next_payload["state"] = {
         **_dict(next_payload.get("state")),
@@ -96,6 +100,7 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
         "llm_skipped": skip_llm,
         "llm_skip_reason": str(llm_control.get("reason") or "") if skip_llm else "",
         "used_context_table": use_context_table,
+        "catalog_summary": deepcopy(catalog_summary),
     }
     next_payload["trace"] = trace
     return next_payload
@@ -155,6 +160,42 @@ def _compact_answer_sections(answer_sections: dict[str, Any], columns: list[str]
     return sections
 
 
+# 함수 설명: `_catalog_summary_for_response()`는 Context 집계와 최종 반환 행 수를 일치시킨 카탈로그 요약을 만듭니다.
+def _catalog_summary_for_response(context: dict[str, Any], returned_count: int) -> dict[str, Any]:
+    if str(context.get("answer_mode") or "") != "available_sources":
+        return {}
+    summary = deepcopy(_dict(context.get("catalog_summary")))
+    try:
+        total_count = max(0, int(summary.get("total_count", returned_count)))
+    except Exception:
+        total_count = returned_count
+    total_count_exact = bool(summary.get("total_count_exact", True))
+    summary.update(
+        {
+            "request_kind": str(summary.get("request_kind") or "list"),
+            "total_count": total_count,
+            "returned_count": max(0, int(returned_count)),
+            "truncated": (not total_count_exact) or returned_count < total_count,
+            "total_count_exact": total_count_exact,
+        }
+    )
+    return summary
+
+
+# 함수 설명: `_attach_catalog_summary()`는 rows를 복제하지 않고 detail table에 전체·반환·잘림 건수만 덧붙입니다.
+def _attach_catalog_summary(answer_sections: dict[str, Any], catalog_summary: dict[str, Any]) -> dict[str, Any]:
+    sections = deepcopy(answer_sections) if isinstance(answer_sections, dict) else {}
+    if not catalog_summary:
+        return sections
+    detail = _dict(sections.get("detail_table"))
+    detail["total_count"] = catalog_summary.get("total_count", 0)
+    detail["returned_count"] = catalog_summary.get("returned_count", 0)
+    detail["truncated"] = bool(catalog_summary.get("truncated"))
+    detail["total_count_exact"] = bool(catalog_summary.get("total_count_exact", True))
+    sections["detail_table"] = detail
+    return sections
+
+
 # 함수 설명: `_should_use_context_table()`는 현재 답변 모드에서 LLM 표 대신 authoritative metadata context 표를 써야 하는지 판정합니다.
 def _should_use_context_table(answer_type: str, context: dict[str, Any], parsed_table: dict[str, Any], fallback_table: dict[str, Any]) -> bool:
     context_mode = str(context.get("answer_mode") or "").strip()
@@ -189,6 +230,7 @@ def _sync_answer_sections_from_context(
     summary: str,
     table: dict[str, Any],
     source_refs: list[Any],
+    context: dict[str, Any],
 ) -> dict[str, Any]:
     sections = deepcopy(answer_sections) if isinstance(answer_sections, dict) else {}
     rows = _row_list(table.get("rows"))
@@ -197,7 +239,7 @@ def _sync_answer_sections_from_context(
     columns = _string_list(table.get("columns")) or _columns_from_rows(rows)
     current = _dict(sections.get("detail_table"))
     sections["summary"] = {"headline": answer_message, "description": summary}
-    sections["key_points"] = _key_points(answer_type, rows)
+    sections["key_points"] = _key_points(answer_type, rows, context)
     title = _table_title(answer_type) if answer_type in {"available_sources"} else str(current.get("title") or _table_title(answer_type))
     sections["detail_table"] = {
         "title": title,
@@ -238,7 +280,7 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
         message = f"{target}에 등록된 조회 설정과 query_template 기준으로 정리했습니다."
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, sql_blocks, source_refs, context)
     if answer_mode == "available_sources":
-        message = _available_sources_message(rows)
+        message = _available_sources_message(rows, context)
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "dataset_detail":
         target = str(rows[0].get("display_name") or rows[0].get("key") or "요청한 데이터셋") if rows else "요청한 데이터셋"
@@ -306,7 +348,7 @@ def _build_answer_sections(
     columns = _string_list(table.get("columns")) or _columns_from_rows(rows)
     return {
         "summary": {"headline": answer_message, "description": summary},
-        "key_points": _key_points(answer_type, rows),
+        "key_points": _key_points(answer_type, rows, context),
         "detail_table": {
             "title": _table_title(answer_type),
             "columns": columns,
@@ -377,27 +419,45 @@ def _family_label(value: Any) -> str:
 
 
 # 함수 설명: `_available_sources_message()`는 sources·Message 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
-def _available_sources_message(rows: list[dict[str, Any]]) -> str:
+def _available_sources_message(rows: list[dict[str, Any]], context: dict[str, Any] | None = None) -> str:
     rows = [_available_source_row(row) for row in rows] if rows and "연결 방식" not in rows[0] else rows
-    total = len(rows)
+    catalog_summary = _catalog_summary_for_response(_dict(context), len(rows))
+    total = int(catalog_summary.get("total_count", len(rows)))
+    returned_count = int(catalog_summary.get("returned_count", len(rows)))
+    total_count_exact = bool(catalog_summary.get("total_count_exact", True))
+    truncated = bool(catalog_summary.get("truncated"))
     source_counts = _count_by(rows, "연결 방식")
     required_count = sum(1 for row in rows if str(row.get("필수 조건") or "").strip() not in {"", "없음"})
-    no_required_count = total - required_count
+    no_required_count = returned_count - required_count
     source_text = ", ".join(f"{key} {value}개" for key, value in source_counts.items() if key) or "연결 방식 미등록"
+    total_text = f"총 {total}개" if total_count_exact else f"최소 {total}개"
+    display_text = f" 이 중 {returned_count}개를 표시합니다." if truncated else ""
+    scope_text = "표시된 목록에서 " if truncated else ""
     return (
-        f"현재 등록된 조회 데이터셋은 총 {total}개입니다. "
-        f"연결 방식은 {source_text}로 구성되어 있고, "
+        f"현재 등록된 조회 데이터셋은 {total_text}입니다.{display_text} "
+        f"{scope_text}연결 방식은 {source_text}로 구성되어 있고, "
         f"필수 조건이 있는 데이터셋은 {required_count}개, 별도 필수 조건이 없는 데이터셋은 {no_required_count}개입니다."
     )
 
 
 # 함수 설명: `_key_points()`는 구조화 응답에서 사용자가 먼저 확인할 핵심 요약 문장을 추출합니다.
-def _key_points(answer_type: str, rows: list[dict[str, Any]]) -> list[str]:
+def _key_points(answer_type: str, rows: list[dict[str, Any]], context: dict[str, Any] | None = None) -> list[str]:
     if answer_type != "available_sources" or not rows:
         return []
+    catalog_summary = _catalog_summary_for_response(_dict(context), len(rows))
+    total_count = int(catalog_summary.get("total_count", len(rows)))
+    returned_count = int(catalog_summary.get("returned_count", len(rows)))
+    total_count_exact = bool(catalog_summary.get("total_count_exact", True))
+    truncated = bool(catalog_summary.get("truncated"))
     source_counts = _count_by(rows, "연결 방식")
     required_rows = [row for row in rows if str(row.get("필수 조건") or "").strip() not in {"", "없음"}]
-    points = [f"총 {len(rows)}개 데이터셋이 등록되어 있습니다."]
+    if total_count_exact:
+        count_point = f"총 {total_count}개 데이터셋이 등록되어 있습니다."
+    else:
+        count_point = f"등록된 데이터셋은 최소 {total_count}개입니다."
+    if truncated:
+        count_point += f" 현재 {returned_count}개를 표시합니다."
+    points = [count_point]
     if source_counts:
         points.append("연결 방식: " + ", ".join(f"{key} {value}개" for key, value in source_counts.items() if key))
     if required_rows:

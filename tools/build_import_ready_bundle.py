@@ -124,9 +124,9 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "agent_tool_router": "Agent plus five name-resolved cached Flow tools",
         },
         "validation": {
-            "pytest": "250 passed",
+            "pytest": "254 passed",
             "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 77/77 custom nodes to 68 real Python sources; 0 missing",
-            "korean_component_documentation": "69/69 Python sources and 1076/1076 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 231 embedded custom-code instances preserve 3570/3570 documented function instances; strict UTF-8/JSON checks passed",
+            "korean_component_documentation": "69/69 Python sources and 1086/1086 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 231 embedded custom-code instances preserve 3600/3600 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
@@ -567,9 +567,9 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 250 passed
+- 전체 pytest: 254 passed
 - 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 77/77 노드가 실제 Python 원본 68개에 매핑, 누락 0
-- 한글 설명/인코딩: Python 69/69와 함수 1076/1076, JSON 내장 함수 3570/3570 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
+- 한글 설명/인코딩: Python 69/69와 함수 1086/1086, JSON 내장 함수 3600/3600 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 23/23 통과
 - Langflow 1.8.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건

@@ -5408,6 +5408,63 @@ def test_metadata_qa_snapshot_loader_uses_one_client_and_short_process_cache(mon
     assert refreshed["metadata_snapshot"]["cache_hit"] is False
 
 
+def test_metadata_qa_snapshot_loader_preserves_v4_key_only_table_documents(monkeypatch):
+    setattr(builtins, "_metadata_driven_v5_qa_snapshot_cache_v1", {"generation": 0, "entries": {}})
+    store = install_fake_pymongo(monkeypatch)
+    store["datagov"] = {
+        "agent_v4_domain_items": {},
+        "agent_v4_table_catalog_items": {
+            "table_catalog:legacy_production": {
+                "_id": "table_catalog:legacy_production",
+                "key": "legacy_production",
+                "status": "active",
+                "payload": {"display_name": "Legacy Production", "source_type": "oracle"},
+            },
+            "table_catalog:legacy_wip": {
+                "_id": "table_catalog:legacy_wip",
+                "key": "legacy_wip",
+                "status": "active",
+                "payload": {"display_name": "Legacy WIP", "source_type": "oracle"},
+            },
+        },
+        "agent_v4_main_flow_filters": {},
+    }
+    snapshot_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "01_mongodb_metadata_snapshot_loader.py")
+    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    request = {
+        "request": {"question": "등록된 테이블 목록 보여줘"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    snapshot = snapshot_loader.load_metadata_snapshot(
+        request,
+        "mongodb://fake",
+        "datagov",
+        table_limit="1",
+        cache_ttl_seconds="0",
+    )
+    table_output = snapshot_loader._output_payload(snapshot, "table_catalog_items")
+    result = context_builder.build_metadata_qa_context(request, {}, table_output, {})
+
+    assert snapshot["table_catalog_items"][0]["key"] == "legacy_production"
+    assert result["metadata_qa_context"]["candidate_rows"][0]["key"] == "legacy_production"
+    assert result["metadata_qa_context"]["source_refs"] == [
+        {"metadata_type": "table_catalog", "key": "legacy_production"}
+    ]
+    assert table_output["metadata_load"]["truncated"] is True
+    assert table_output["metadata_load"]["total_count_lower_bound"] == 2
+    assert result["metadata_qa_context"]["catalog_summary"] == {
+        "request_kind": "list",
+        "total_count": 2,
+        "returned_count": 1,
+        "truncated": True,
+        "total_count_exact": False,
+        "limit": 1,
+        "response_limit": 50,
+        "load_limit": 1,
+    }
+
+
 def test_successful_metadata_write_invalidates_same_process_qa_snapshot(monkeypatch):
     setattr(builtins, "_metadata_driven_v5_qa_snapshot_cache_v1", {"generation": 0, "entries": {}})
     store = install_fake_pymongo(monkeypatch)
@@ -5714,6 +5771,7 @@ def test_metadata_qa_available_sources_keeps_complete_context_table():
 
 def test_metadata_qa_available_sources_question_honors_small_limit():
     context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
     table_items = {
         "table_catalog_items": [
             {
@@ -5738,6 +5796,129 @@ def test_metadata_qa_available_sources_question_honors_small_limit():
     assert context_payload["trace"]["inspection"]["metadata_qa_context"]["dataset_match_count"] == 5
     assert len(context_payload["metadata_qa_context"]["candidate_rows"]) == 5
     assert [row["key"] for row in context_payload["metadata_qa_context"]["candidate_rows"]] == [f"dataset_{index}" for index in range(1, 6)]
+    assert context_payload["metadata_qa_context"]["catalog_summary"] == {
+        "request_kind": "list",
+        "total_count": 9,
+        "returned_count": 5,
+        "truncated": True,
+        "total_count_exact": True,
+        "limit": 5,
+        "response_limit": 5,
+        "load_limit": 5,
+    }
+
+    answer = normalizer.normalize_metadata_qa_response(context_payload, "")
+
+    assert "총 9개" in answer["answer_message"]
+    assert "5개를 표시" in answer["answer_message"]
+    assert answer["metadata_qa"]["catalog_summary"]["truncated"] is True
+    assert answer["answer_sections"]["detail_table"]["total_count"] == 9
+
+
+def test_metadata_qa_catalog_inventory_phrases_use_only_table_catalog_and_skip_llm():
+    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    guarded_agent = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_guarded_agent.py")
+    normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
+    domain_items = {
+        "domain_items": [
+            {"section": "process_groups", "key": key, "payload": {"display_name": key}}
+            for key in ("DP", "WET", "LT", "BG", "HS")
+        ]
+    }
+    table_items = {
+        "table_catalog_items": [
+            {
+                "dataset_key": f"dataset_{index}",
+                "status": "active",
+                "payload": {
+                    "display_name": f"Dataset {index}",
+                    "dataset_family": "production",
+                    "source_type": "oracle",
+                    "required_params": ["DATE"],
+                },
+            }
+            for index in range(1, 10)
+        ]
+    }
+    questions = (
+        "메타데이터에 등록된 테이블 list보여줘",
+        "등록된 테이블 목록 알려줘",
+        "테이블 카탈로그 전체 보여줘",
+        "지금 등록된 데이터 카탈로그는 총 몇개야?",
+        "어떤 테이블들이 등록되어 있어?",
+        "사용 가능한 소스 목록을 보여줘",
+        "등록된 테이블 건수 알려줘",
+    )
+
+    for question in questions:
+        payload = {
+            "request": {"question": question},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        }
+        context_payload = context_builder.build_metadata_qa_context(payload, domain_items, table_items, {})
+        context = context_payload["metadata_qa_context"]
+
+        assert context_payload["metadata_route"]["answer_mode"] == "available_sources", question
+        assert context["matched_domain_items"] == [], question
+        assert len(context["candidate_rows"]) == 9, question
+        assert all(row["metadata_type"] == "table_catalog" for row in context["candidate_rows"]), question
+        assert len(context["source_refs"]) == 9, question
+        assert all(ref["metadata_type"] == "table_catalog" for ref in context["source_refs"]), question
+        assert context["catalog_summary"]["total_count"] == 9, question
+        assert context["catalog_summary"]["truncated"] is False, question
+        assert guarded_agent.should_skip_agent(context_payload) is True, question
+
+        answer = normalizer.normalize_metadata_qa_response(
+            context_payload,
+            '{"answer_message":"무관한 LLM 답변","warnings":[{"type":"information_missing"}]}',
+        )
+        assert answer["status"] == "ok", question
+        assert answer["data"]["row_count"] == 9, question
+        assert "총 9개" in answer["answer_message"], question
+        assert answer["trace"]["inspection"]["metadata_qa_response"]["used_llm_response"] is False, question
+
+
+def test_metadata_qa_catalog_inventory_does_not_capture_task_specific_dataset_selection():
+    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    cases = {
+        "오늘 생산량을 보려면 어떤 테이블을 써야 해?": "question_to_dataset",
+        "생산량 조회에 사용할 수 있는 테이블 목록은?": "question_to_dataset",
+        "WB 재공 분석에 필요한 데이터셋은?": "question_to_dataset",
+        "생산량을 계산할 때 등록된 테이블 중 어떤 걸 써야 해?": "question_to_dataset",
+        "전체 생산량을 보려면 어떤 테이블을 사용해야 해?": "question_to_dataset",
+        "오늘 장비 테이블 전체 데이터를 보여줘": "data_analysis_redirect",
+        "production_today 테이블 전체 행을 보여줘": "data_analysis_redirect",
+        "wip_today 테이블에 등록된 데이터를 보여줘": "data_analysis_redirect",
+        "장비 테이블 건수 알려줘": "data_analysis_redirect",
+        "오늘 생산량 테이블 목록 보여줘": "data_analysis_redirect",
+        "production_today 테이블에 등록된 필수 조건 알려줘": "required_params",
+        "production_today 테이블 전체 컬럼 목록 보여줘": "dataset_detail",
+    }
+
+    for question, expected_mode in cases.items():
+        assert context_builder._infer_answer_mode(question) == expected_mode, question
+
+
+def test_metadata_qa_general_search_has_no_unrelated_first_five_domain_fallback():
+    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    payload = {
+        "request": {"question": "존재하지 않는 XYZ 메타정보를 찾아줘"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    domain_items = {
+        "domain_items": [
+            {"section": "process_groups", "key": key, "payload": {"display_name": key}}
+            for key in ("DP", "WET", "LT", "BG", "HS")
+        ]
+    }
+
+    result = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
+
+    assert result["metadata_route"]["answer_mode"] == "general_metadata_search"
+    assert result["metadata_route"]["confidence"] == "low"
+    assert result["metadata_qa_context"]["matched_domain_items"] == []
+    assert result["metadata_qa_context"]["candidate_rows"] == []
+    assert result["metadata_qa_context"]["source_refs"] == []
 
 
 def test_metadata_qa_variables_keep_static_policy_inside_prompt_template():
@@ -5781,6 +5962,28 @@ def test_metadata_qa_available_sources_context_excludes_sql_and_honors_byte_budg
     assert len(variables["metadata_context_json"].encode("utf-8")) <= 12000 + 2000
     assert "query_template" not in variables["metadata_context_json"]
     assert result["trace"]["inspection"]["metadata_qa_context"]["context_bytes"] <= 12000
+    context = result["metadata_qa_context"]
+    assert context["catalog_summary"]["returned_count"] == len(context.get("candidate_rows", []))
+    assert len(context.get("candidate_rows", [])) == len(context.get("source_refs", []))
+    assert result["trace"]["inspection"]["metadata_qa_context"]["dataset_match_count"] == len(context.get("candidate_rows", []))
+    assert context["catalog_summary"]["truncated"] is True
+
+    tiny = context_builder.build_metadata_qa_context(
+        {"request": {"question": "등록된 테이블 목록 보여줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}},
+        {},
+        table_items,
+        {},
+        max_items="10",
+        max_bytes="500",
+    )
+    tiny_context = tiny["metadata_qa_context"]
+    tiny_refs = tiny_context.get("source_refs", [])
+    assert tiny["metadata_route"]["confidence"] == ("high" if tiny_refs else "low")
+    assert tiny["trace"]["inspection"]["metadata_qa_context"]["dataset_match_count"] == len(tiny_context.get("candidate_rows", []))
+    assert (
+        tiny["trace"]["inspection"]["metadata_qa_context"]["context_bytes"] <= 500
+        or any(warning.get("type") == "metadata_qa_minimum_context_exceeds_budget" for warning in tiny["trace"]["warnings"])
+    )
 
 
 def test_metadata_qa_dataset_sql_context_includes_only_selected_sql():

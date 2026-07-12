@@ -25,7 +25,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "fbf8e617340088bd9ac499e62fef1d8216fd2d31f647df13a16effeefb9fc250",
+  "single_file_ui_import_sha256": "2be3d8ee05234d6df3634c15c05575294a5358b33e783cef387c3c4b0980dc00",
   "flows": [
     {
       "order": 1,
@@ -70,7 +70,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
       "nodes": 11,
       "edges": 18,
-      "sha256": "70c20922c789ec947b59a90981d5cbc34b5d1afe66432e5c87093d102a31c772"
+      "sha256": "31c14ecbf49426cae272a3f9848e0aa791f5de91c72c7e84826ec985295fb9f4"
     },
     {
       "order": 6,
@@ -104,9 +104,9 @@
     "agent_tool_router": "Agent plus five name-resolved cached Flow tools"
   },
   "validation": {
-    "pytest": "250 passed",
+    "pytest": "254 passed",
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 77/77 custom nodes to 68 real Python sources; 0 missing",
-    "korean_component_documentation": "69/69 Python sources and 1076/1076 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 231 embedded custom-code instances preserve 3570/3570 documented function instances; strict UTF-8/JSON checks passed",
+    "korean_component_documentation": "69/69 Python sources and 1086/1086 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 231 embedded custom-code instances preserve 3600/3600 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
     "langflow_frontend_edge_handles": "296/296 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
