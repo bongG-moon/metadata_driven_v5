@@ -18,6 +18,7 @@ ENCODING_HEADER = "# -*- coding: utf-8 -*-"
 OVERVIEW_MARKER = "# 컴포넌트 개요:"
 CUSTOM_MODULE_PREFIXES = ("custom_components.", "v5_auxiliary.")
 BROKEN_TEXT_PATTERNS = ("\ufffd", "占쏙옙", "\x00")
+FUNCTION_COMMENT_MARKERS = ("# 주요 함수:", "# Langflow 출력 함수:", "# 주요 메서드:", "# 함수 설명:")
 EMBEDDED_TEXT_TARGETS = {
     "data_analysis_flow/03_intent_prompt_template_ko.md": (
         "flow_exports/data_analysis_flow_v5_standalone.json",
@@ -89,15 +90,18 @@ def _decorated_start(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
 
 
 def _preceding_comment(lines: list[str], line_number: int, markers: tuple[str, ...]) -> bool:
-    start = max(0, line_number - 5)
-    block = "\n".join(lines[start : line_number - 1])
-    return any(marker in block for marker in markers)
+    index = line_number - 2
+    block: list[str] = []
+    while index >= 0 and lines[index].lstrip().startswith("#"):
+        block.append(lines[index].lstrip())
+        index -= 1
+    return any(marker in line for line in block for marker in markers)
 
 
-def _validate_python(path: Path) -> list[str]:
+def _validate_python(path: Path) -> tuple[list[str], int, int]:
     text, errors = _decode_utf8(path)
     if not text:
-        return errors
+        return errors, 0, 0
     lines = text.splitlines()
     relative = path.relative_to(ROOT).as_posix()
     if not lines or lines[0] != ENCODING_HEADER:
@@ -111,22 +115,24 @@ def _validate_python(path: Path) -> list[str]:
         tree = ast.parse(text, filename=str(path))
     except SyntaxError as exc:
         errors.append(f"{relative}: Python AST parse 실패: {exc}")
-        return errors
+        return errors, 0, 0
 
+    function_count = 0
+    documented_functions = 0
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
-            if not _preceding_comment(lines, _decorated_start(node), ("# 주요 함수:",)):
-                errors.append(f"{relative}:{node.lineno}: 공개 함수 {node.name} 설명 누락")
         if not isinstance(node, ast.ClassDef):
             continue
         if not _preceding_comment(lines, _decorated_start(node), ("# Langflow 컴포넌트 클래스:", "# 내부 연동 도우미 클래스:")):
             errors.append(f"{relative}:{node.lineno}: 클래스 {node.name} 설명 누락")
-        for method in node.body:
-            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) or method.name.startswith("_"):
-                continue
-            if not _preceding_comment(lines, _decorated_start(method), ("# Langflow 출력 함수:", "# 주요 메서드:")):
-                errors.append(f"{relative}:{method.lineno}: 공개 메서드 {method.name} 설명 누락")
-    return errors
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        function_count += 1
+        if _preceding_comment(lines, _decorated_start(node), FUNCTION_COMMENT_MARKERS):
+            documented_functions += 1
+        else:
+            errors.append(f"{relative}:{node.lineno}: 함수 {node.name} 설명 누락")
+    return errors, function_count, documented_functions
 
 
 def _walk(value: Any):
@@ -157,28 +163,40 @@ def _custom_codes(value: Any) -> list[str]:
     return codes
 
 
-def _validate_json(path: Path) -> tuple[list[str], Any | None, int]:
+def _validate_json(path: Path) -> tuple[list[str], Any | None, int, int, int]:
     text, errors = _decode_utf8(path)
     if not text:
-        return errors, None, 0
+        return errors, None, 0, 0, 0
     relative = path.relative_to(ROOT).as_posix()
     try:
         value = json.loads(text)
     except json.JSONDecodeError as exc:
-        return [*errors, f"{relative}: JSON parse 실패: {exc}"], None, 0
+        return [*errors, f"{relative}: JSON parse 실패: {exc}"], None, 0, 0, 0
     codes = _custom_codes(value)
+    function_count = 0
+    documented_functions = 0
     for index, code in enumerate(codes, start=1):
         if not code.startswith(ENCODING_HEADER + "\n"):
             errors.append(f"{relative}: custom code #{index} UTF-8 선언 누락")
         if OVERVIEW_MARKER not in code:
             errors.append(f"{relative}: custom code #{index} 한글 개요 누락")
         try:
-            ast.parse(code)
+            code_tree = ast.parse(code)
         except SyntaxError as exc:
             errors.append(f"{relative}: custom code #{index} AST parse 실패: {exc}")
+            continue
+        code_lines = code.splitlines()
+        for node in ast.walk(code_tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            function_count += 1
+            if _preceding_comment(code_lines, _decorated_start(node), FUNCTION_COMMENT_MARKERS):
+                documented_functions += 1
+            else:
+                errors.append(f"{relative}: custom code #{index} 함수 {node.name} 설명 누락")
     if codes and OVERVIEW_MARKER not in text:
         errors.append(f"{relative}: JSON 원문에 literal 한글 주석이 보존되지 않았습니다")
-    return errors, value, len(codes)
+    return errors, value, len(codes), function_count, documented_functions
 
 
 def _contains_exact_string(value: Any, expected: str) -> bool:
@@ -188,8 +206,13 @@ def _contains_exact_string(value: Any, expected: str) -> bool:
 def audit() -> dict[str, Any]:
     errors: list[str] = []
     python_paths = sorted(path for path in COMPONENT_ROOT.rglob("*.py") if "__pycache__" not in path.parts)
+    python_function_count = 0
+    documented_python_functions = 0
     for path in python_paths:
-        errors.extend(_validate_python(path))
+        path_errors, function_count, documented_functions = _validate_python(path)
+        errors.extend(path_errors)
+        python_function_count += function_count
+        documented_python_functions += documented_functions
 
     component_text_paths = sorted(COMPONENT_ROOT.rglob("*.md"))
     component_texts: dict[str, str] = {}
@@ -201,10 +224,14 @@ def audit() -> dict[str, Any]:
     json_paths = sorted(FLOW_EXPORT_ROOT.glob("*_v5_standalone.json")) + sorted(IMPORT_READY_ROOT.glob("*.json"))
     parsed: dict[str, Any] = {}
     embedded_count = 0
+    embedded_function_count = 0
+    documented_embedded_functions = 0
     for path in json_paths:
-        path_errors, value, count = _validate_json(path)
+        path_errors, value, count, function_count, documented_functions = _validate_json(path)
         errors.extend(path_errors)
         embedded_count += count
+        embedded_function_count += function_count
+        documented_embedded_functions += documented_functions
         if value is not None:
             parsed[path.relative_to(ROOT).as_posix()] = value
 
@@ -261,10 +288,14 @@ def audit() -> dict[str, Any]:
     return {
         "status": "ok" if not errors else "error",
         "python_files": len(python_paths),
+        "python_function_definitions": python_function_count,
+        "documented_python_functions": documented_python_functions,
         "component_text_files": len(component_text_paths),
         "embedded_text_sources": len(EMBEDDED_TEXT_TARGETS),
         "json_files": len(json_paths),
         "embedded_custom_code_instances": embedded_count,
+        "embedded_function_definitions": embedded_function_count,
+        "documented_embedded_functions": documented_embedded_functions,
         "zip_entries": zip_entries,
         "errors": errors,
     }

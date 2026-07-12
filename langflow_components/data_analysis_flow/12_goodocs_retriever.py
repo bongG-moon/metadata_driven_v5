@@ -29,6 +29,7 @@ PREVIEW_LIMIT = 5
 
 # 내부 연동 도우미 클래스: 외부 라이브러리나 클라이언트 차이를 이 파일의 표준 호출 형태로 감쌉니다.
 class Goodocs:
+    # 함수 설명: `__init__()`는 외부 클라이언트나 실행 설정을 인스턴스에 보관해 뒤의 메서드가 같은 연결 문맥을 사용하게 합니다.
     def __init__(self, auth: dict[str, Any]):
         self.auth = auth
 
@@ -76,6 +77,7 @@ def goodocs_retrieve(
 retrieve_goodocs_data = goodocs_retrieve
 
 
+# 함수 설명: `_run_goodocs_job()`는 goodocs·조회 작업 실행 경계를 담당하고 성공 결과와 오류를 공통 계약으로 반환합니다.
 def _run_goodocs_job(
     job: dict[str, Any],
     user_id: str,
@@ -129,6 +131,7 @@ def _run_goodocs_job(
         return _error_result(job, "goodocs_retrieval_failed", f"Goodocs 조회 실패: {exc}", params=params)
 
 
+# 함수 설명: `_goodocs_class()`는 테스트 override가 있으면 우선 사용하고 아니면 기본 Goodocs 클라이언트 class를 가져옵니다.
 def _goodocs_class() -> Any:
     override = getattr(GoodocsRetriever, "goodocs_class", None) if "GoodocsRetriever" in globals() else None
     if override is not None:
@@ -136,6 +139,7 @@ def _goodocs_class() -> Any:
     return Goodocs
 
 
+# 함수 설명: `_jobs_for_source()`는 전체 조회 작업 중 지정한 source type에 해당하는 작업만 골라냅니다.
 def _jobs_for_source(payload: dict[str, Any]) -> list[dict[str, Any]]:
     bundle = payload.get("retrieval_job_bundle") if isinstance(payload.get("retrieval_job_bundle"), dict) else {}
     bundle_jobs = bundle.get("jobs") if isinstance(bundle.get("jobs"), list) else []
@@ -155,6 +159,7 @@ def _jobs_for_source(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+# 함수 설명: `_source_config()`는 조회 작업 또는 카탈로그에서 허용된 데이터 소스 설정만 dict로 꺼냅니다.
 def _source_config(job: dict[str, Any]) -> dict[str, Any]:
     config = deepcopy(job.get("source_config")) if isinstance(job.get("source_config"), dict) else {}
     for key in ("doc_id", "document_id", "sheet_name", "sheet", "range", "table_name", "columns", "required_columns", "rows", "data", "items"):
@@ -165,6 +170,7 @@ def _source_config(job: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+# 함수 설명: `_job_params()`는 조회 작업의 params를 안전한 dict로 정리해 retriever에 전달합니다.
 def _job_params(job: dict[str, Any]) -> dict[str, Any]:
     if isinstance(job.get("params"), dict):
         return deepcopy(job["params"])
@@ -173,6 +179,7 @@ def _job_params(job: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# 함수 설명: `_required_param_names()`는 카탈로그 설정에서 실행 전에 반드시 있어야 하는 파라미터 이름을 추출합니다.
 def _required_param_names(job: dict[str, Any], source_config: dict[str, Any]) -> list[Any]:
     if isinstance(source_config.get("required_params"), (list, tuple, set)):
         return _as_list(source_config.get("required_params"))
@@ -183,6 +190,7 @@ def _required_param_names(job: dict[str, Any], source_config: dict[str, Any]) ->
     return []
 
 
+# 함수 설명: `_standard_result()`는 정상 조회 결과를 dataset/source alias와 rows가 포함된 공통 결과 구조로 만듭니다.
 def _standard_result(
     job: dict[str, Any],
     rows: list[dict[str, Any]],
@@ -221,6 +229,7 @@ def _standard_result(
     }
 
 
+# 함수 설명: `_error_result()`는 예외 정보를 공통 errors 배열과 status가 포함된 실패 결과 구조로 만듭니다.
 def _error_result(job: dict[str, Any], error_type: str, message: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     error = {"type": error_type, "message": message, "dataset_key": job.get("dataset_key", "")}
     return {
@@ -247,6 +256,7 @@ def _error_result(job: dict[str, Any], error_type: str, message: str, params: di
     }
 
 
+# 함수 설명: `_dummy_rows()`는 행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _dummy_rows(job: dict[str, Any], doc_id: str) -> list[dict[str, Any]]:
     params = _job_params(job)
     rows = []
@@ -269,6 +279,7 @@ def _dummy_rows(job: dict[str, Any], doc_id: str) -> list[dict[str, Any]]:
     return rows
 
 
+# 함수 설명: `_frame_to_rows()`는 TO·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _frame_to_rows(frame: Any) -> list[dict[str, Any]]:
     if hasattr(frame, "reset_index"):
         try:
@@ -285,6 +296,7 @@ def _frame_to_rows(frame: Any) -> list[dict[str, Any]]:
     return _drop_system_columns([_row_dict(row) for row in _rows_from_value(frame)])
 
 
+# 함수 설명: `_inline_rows()`는 행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _inline_rows(source_config: dict[str, Any]) -> list[Any]:
     for key in ("rows", "data", "items"):
         if isinstance(source_config.get(key), list):
@@ -292,10 +304,12 @@ def _inline_rows(source_config: dict[str, Any]) -> list[Any]:
     return []
 
 
+# 함수 설명: `_has_inline_rows()`는 입력값이 inline·행 목록 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _has_inline_rows(source_config: dict[str, Any]) -> bool:
     return bool(_inline_rows(source_config))
 
 
+# 함수 설명: `_rows_from_value()`는 외부 클라이언트의 DataFrame·list·dict 결과를 공통 dict 행 목록으로 변환합니다.
 def _rows_from_value(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
@@ -318,16 +332,19 @@ def _rows_from_value(value: Any) -> list[Any]:
     return [{"value": value}]
 
 
+# 함수 설명: `_drop_system_columns()`는 system·컬럼에서 후속 단계에 불필요하거나 노출하면 안 되는 부분을 제거합니다.
 def _drop_system_columns(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{key: value for key, value in row.items() if str(key) not in GOODOCS_SYSTEM_COLUMNS} for row in rows]
 
 
+# 함수 설명: `_row_dict()`는 객체·매핑·튜플 형태의 한 행을 컬럼명이 있는 dict 행으로 변환합니다.
 def _row_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return {str(key): _json_ready(item) for key, item in value.items()}
     return {"value": _json_ready(value)}
 
 
+# 함수 설명: `_rows_columns()`는 행 목록과 명시 컬럼을 함께 정규화해 표준 rows/columns 쌍을 만듭니다.
 def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     columns: list[str] = []
     for row in rows:
@@ -338,6 +355,7 @@ def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.
 def _json_ready(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -357,6 +375,7 @@ def _json_ready(value: Any) -> Any:
     return str(value)
 
 
+# 함수 설명: `_missing_required_params()`는 필수 파라미터 중 실제 작업 값에 없는 항목을 찾아 오류 목록으로 반환합니다.
 def _missing_required_params(params: dict[str, Any], required_params: Any) -> list[str]:
     missing = []
     for item in _as_list(required_params):
@@ -366,6 +385,7 @@ def _missing_required_params(params: dict[str, Any], required_params: Any) -> li
     return missing
 
 
+# 함수 설명: `_fetch_limit()`는 설정된 조회 제한을 안전한 정수 범위로 보정합니다.
 def _fetch_limit(value: Any) -> int:
     try:
         return max(1, int(value or 5000))
@@ -373,14 +393,17 @@ def _fetch_limit(value: Any) -> int:
         return 5000
 
 
+# 함수 설명: `_source_type()`는 조회 작업의 source type을 표준 소문자 식별자로 정규화합니다.
 def _source_type(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+# 함수 설명: `_normalize_key()`는 key의 대소문자·공백·구분자 차이를 제거해 비교 가능한 표준 식별자로 바꿉니다.
 def _normalize_key(value: Any) -> str:
     return str(value or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
 
 
+# 함수 설명: `_dict_get_ci()`는 키의 대소문자 차이를 무시하고 dict에서 요청한 값을 찾습니다.
 def _dict_get_ci(mapping: dict[str, Any], key: Any, default: Any = None) -> Any:
     if not isinstance(mapping, dict):
         return default
@@ -394,6 +417,7 @@ def _dict_get_ci(mapping: dict[str, Any], key: Any, default: Any = None) -> Any:
     return default
 
 
+# 함수 설명: `_as_list()`는 단일 값과 여러 값 입력을 모두 같은 list 형태로 맞춰 반복 처리를 단순화합니다.
 def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -406,6 +430,7 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
@@ -422,6 +447,7 @@ def _payload(value: Any) -> dict[str, Any]:
     return {}
 
 
+# 함수 설명: `_skipped()`는 설정이나 대상 작업이 없어 실행하지 않은 이유를 표준 skipped 결과로 남깁니다.
 def _skipped(source_type: str, reason: str) -> dict[str, Any]:
     return {"source_type": source_type, "status": "skipped", "skipped": True, "skip_reason": reason, "source_results": [], "errors": [], "warnings": []}
 

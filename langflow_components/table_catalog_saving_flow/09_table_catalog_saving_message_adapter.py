@@ -47,6 +47,7 @@ def build_message(payload_value: Any) -> str:
     return "\n\n".join(sections) if sections else json.dumps(payload, ensure_ascii=False, default=str)
 
 
+# 함수 설명: `_table_section()`는 구조화 rows/columns를 최종 답변의 표 section 계약으로 변환합니다.
 def _table_section(table: dict[str, Any], data: dict[str, Any]) -> str:
     rows = _row_list(table.get("rows")) or (_row_list(data.get("rows")) if table.get("row_source") == "data.rows" else [])
     if not rows:
@@ -58,6 +59,7 @@ def _table_section(table: dict[str, Any], data: dict[str, Any]) -> str:
     return f"### {title}\n" + _markdown_table(preview_rows, columns) + note
 
 
+# 함수 설명: `_notices_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _notices_section(value: Any) -> str:
     notices = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
     if not notices:
@@ -71,6 +73,7 @@ def _notices_section(value: Any) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+# 함수 설명: `_next_steps_section()`는 steps·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _next_steps_section(value: Any) -> str:
     steps = [str(item).strip() for item in value if str(item or "").strip()] if isinstance(value, list) else []
     if not steps:
@@ -78,6 +81,7 @@ def _next_steps_section(value: Any) -> str:
     return "### 다음 단계\n" + "\n".join(f"- {step}" for step in steps[:5])
 
 
+# 함수 설명: `_markdown_table()`는 컬럼과 행을 길이 제한·escape 규칙이 적용된 Markdown 표로 렌더링합니다.
 def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     header = "| " + " | ".join(_escape(column) for column in columns) + " |"
     divider = "| " + " | ".join("---" for _ in columns) + " |"
@@ -85,27 +89,33 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     return "\n".join([header, divider] + body)
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# 함수 설명: `_row_list()`는 여러 입력 형태에서 dict인 행만 골라 표준 행 목록으로 반환합니다.
 def _row_list(value: Any) -> list[dict[str, Any]]:
     return [dict(row) for row in value if isinstance(row, dict)] if isinstance(value, list) else []
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_columns_from_rows()`는 행 목록의 key 등장 순서를 유지하면서 결과 테이블의 컬럼 목록을 계산합니다.
 def _columns_from_rows(rows: list[dict[str, Any]]) -> list[str]:
     columns = []
     for row in rows:
@@ -115,6 +125,7 @@ def _columns_from_rows(rows: list[dict[str, Any]]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_escape()`는 Markdown 표 셀을 깨뜨리는 구분자와 줄바꿈 문자를 안전하게 escape합니다.
 def _escape(value: Any) -> str:
     text = "" if value is None else str(value)
     text = text.replace("\n", "<br>").replace("|", "\\|")

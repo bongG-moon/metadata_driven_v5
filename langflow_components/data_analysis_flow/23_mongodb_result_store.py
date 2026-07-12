@@ -101,6 +101,7 @@ def store_result(
             client.close()
 
 
+# 함수 설명: `_resolve_config()`는 노드 입력·환경변수·카탈로그 기본값의 우선순위로 실제 실행 설정을 확정합니다.
 def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> tuple[str, str, str]:
     return (
         mongo_uri or os.getenv("MONGODB_URI", ""),
@@ -109,6 +110,7 @@ def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_na
     )
 
 
+# 함수 설명: `_effective_ttl_hours()`는 요청값과 기본값을 해석해 결과 문서에 적용할 유효 TTL 시간을 결정합니다.
 def _effective_ttl_hours(value: Any) -> int:
     text = str(value or "").strip()
     try:
@@ -118,6 +120,7 @@ def _effective_ttl_hours(value: Any) -> int:
     return max(1, min(parsed, MAX_TTL_HOURS))
 
 
+# 함수 설명: `_ensure_ttl_index()`는 TTL·index이 실행·저장 계약을 만족하는지 검사하고 위반 내용을 명시적으로 반환합니다.
 def _ensure_ttl_index(collection: Any) -> str:
     create_index = getattr(collection, "create_index", None)
     if not callable(create_index):
@@ -129,10 +132,12 @@ def _ensure_ttl_index(collection: Any) -> str:
     return ""
 
 
+# 함수 설명: `_to_iso()`는 datetime 또는 문자열 시간을 UTC ISO 형식으로 변환합니다.
 def _to_iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.
 def _json_ready(value: Any) -> Any:
     if value is None or type(value) in (str, int, bool):
         return value
@@ -160,6 +165,7 @@ def _json_ready(value: Any) -> Any:
     return str(value)
 
 
+# 함수 설명: `_result_rows_for_store()`는 행 목록·대상·store에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _result_rows_for_store(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows = payload.get("_full_result_rows")
     if rows is None:
@@ -170,6 +176,7 @@ def _result_rows_for_store(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return rows if isinstance(rows, list) else []
 
 
+# 함수 설명: `_compact_analysis_for_store()`는 분석·대상·store에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_analysis_for_store(value: Any) -> dict[str, Any]:
     analysis = value if isinstance(value, dict) else {}
     keep_keys = (
@@ -187,12 +194,14 @@ def _compact_analysis_for_store(value: Any) -> dict[str, Any]:
     return {key: deepcopy(analysis[key]) for key in keep_keys if key in analysis and key != "rows"}
 
 
+# 함수 설명: `_compact_data_for_store()`는 데이터·대상·store에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_data_for_store(value: Any) -> dict[str, Any]:
     data = value if isinstance(value, dict) else {}
     keep_keys = ("columns", "row_count", "data_ref")
     return {key: deepcopy(data[key]) for key in keep_keys if key in data and key != "rows"}
 
 
+# 함수 설명: `_build_data_ref()`는 데이터·참조 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def _build_data_ref(payload: dict[str, Any]) -> str:
     existing = payload.get("data", {}).get("data_ref") if isinstance(payload.get("data"), dict) else ""
     if isinstance(existing, dict):
@@ -203,6 +212,7 @@ def _build_data_ref(payload: dict[str, Any]) -> str:
     return f"result:{session_id}:{uuid.uuid4().hex}"
 
 
+# 함수 설명: `_build_data_refs()`는 데이터·참조 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def _build_data_refs(payload: dict[str, Any], ref_id: str, database: str, collection_name: str) -> list[dict[str, Any]]:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     result_ref = _data_ref_object(
@@ -241,6 +251,7 @@ def _build_data_refs(payload: dict[str, Any], ref_id: str, database: str, collec
     return refs
 
 
+# 함수 설명: `_data_ref_object()`는 문자열 또는 dict 참조를 ref_id 중심의 표준 data_ref 객체로 바꿉니다.
 def _data_ref_object(
     ref_id: str,
     database: str,
@@ -265,6 +276,7 @@ def _data_ref_object(
     return result
 
 
+# 함수 설명: `_has_value()`는 입력값이 값 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _has_value(value: Any) -> bool:
     if value is None:
         return False
@@ -275,6 +287,7 @@ def _has_value(value: Any) -> bool:
     return True
 
 
+# 함수 설명: `_source_result_by_alias()`는 결과·BY·alias 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _source_result_by_alias(value: Any) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     if not isinstance(value, list):
@@ -288,6 +301,7 @@ def _source_result_by_alias(value: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
+# 함수 설명: `_columns_from_rows()`는 행 목록의 key 등장 순서를 유지하면서 결과 테이블의 컬럼 목록을 계산합니다.
 def _columns_from_rows(rows: list[Any]) -> list[str]:
     columns: list[str] = []
     for row in rows:
@@ -300,6 +314,7 @@ def _columns_from_rows(rows: list[Any]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_mark_skipped()`는 현재 작업 payload에 실행 생략 상태와 구체적인 사유를 기록합니다.
 def _mark_skipped(payload: dict[str, Any], database: str, collection_name: str, message: str) -> dict[str, Any]:
     payload.setdefault("trace", {}).setdefault("warnings", []).append({"type": "missing_mongo_uri", "message": message})
     payload.setdefault("trace", {}).setdefault("inspection", {})["result_store"] = {
@@ -313,6 +328,7 @@ def _mark_skipped(payload: dict[str, Any], database: str, collection_name: str, 
     return payload
 
 
+# 함수 설명: `_mark_error()`는 현재 작업 payload에 오류 상태와 정규화된 오류 정보를 기록합니다.
 def _mark_error(payload: dict[str, Any], database: str, collection_name: str, data_ref: str, errors: list[dict[str, Any]]) -> dict[str, Any]:
     payload.setdefault("trace", {}).setdefault("errors", []).extend(errors)
     payload.setdefault("trace", {}).setdefault("inspection", {})["result_store"] = {
@@ -326,6 +342,7 @@ def _mark_error(payload: dict[str, Any], database: str, collection_name: str, da
     return payload
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}

@@ -68,6 +68,7 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
             client.close()
 
 
+# 함수 설명: `_resolve_config()`는 노드 입력·환경변수·카탈로그 기본값의 우선순위로 실제 실행 설정을 확정합니다.
 def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> tuple[str, str, str]:
     return (
         mongo_uri or os.getenv("MONGODB_URI", ""),
@@ -76,6 +77,7 @@ def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_na
     )
 
 
+# 함수 설명: `_find_data_ref()`는 입력 조건과 일치하는 데이터·참조을 찾아 비교·필터 결과로 반환합니다.
 def _find_data_ref(payload: dict[str, Any]) -> str:
     data = payload.get("data", {}) if isinstance(payload.get("data"), dict) else {}
     state = payload.get("state", {}) if isinstance(payload.get("state"), dict) else {}
@@ -87,12 +89,14 @@ def _find_data_ref(payload: dict[str, Any]) -> str:
     return ""
 
 
+# 함수 설명: `_ref_id()`는 여러 data_ref 표현에서 실제 MongoDB 결과 참조 ID를 추출합니다.
 def _ref_id(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("ref_id") or value.get("data_ref") or value.get("_id") or "").strip()
     return str(value or "").strip()
 
 
+# 함수 설명: `_build_data_refs()`는 데이터·참조 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def _build_data_refs(stored_payload: dict[str, Any], ref_id: str, database: str, collection_name: str) -> list[dict[str, Any]]:
     data = _restore_data_from_stored_payload(stored_payload)
     refs = [
@@ -131,6 +135,7 @@ def _build_data_refs(stored_payload: dict[str, Any], ref_id: str, database: str,
     return refs
 
 
+# 함수 설명: `_data_ref_object()`는 문자열 또는 dict 참조를 ref_id 중심의 표준 data_ref 객체로 바꿉니다.
 def _data_ref_object(ref_id: str, database: str, collection_name: str, path: str, role: str, label: str, **extra: Any) -> dict[str, Any]:
     result = {
         "store": "mongodb",
@@ -147,6 +152,7 @@ def _data_ref_object(ref_id: str, database: str, collection_name: str, path: str
     return result
 
 
+# 함수 설명: `_source_result_by_alias()`는 결과·BY·alias 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _source_result_by_alias(value: Any) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     if not isinstance(value, list):
@@ -160,6 +166,7 @@ def _source_result_by_alias(value: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
+# 함수 설명: `_columns_from_rows()`는 행 목록의 key 등장 순서를 유지하면서 결과 테이블의 컬럼 목록을 계산합니다.
 def _columns_from_rows(rows: list[Any]) -> list[str]:
     columns: list[str] = []
     for row in rows:
@@ -172,6 +179,8 @@ def _columns_from_rows(rows: list[Any]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_restore_data_from_stored_payload()`는 저장 payload의 rows·columns·source alias를 후속 분석용 data/runtime_sources로
+#        복원합니다.
 def _restore_data_from_stored_payload(stored_payload: dict[str, Any]) -> dict[str, Any]:
     data = deepcopy(stored_payload.get("data")) if isinstance(stored_payload.get("data"), dict) else {}
     result_rows = stored_payload.get("result_rows") if isinstance(stored_payload.get("result_rows"), list) else []
@@ -184,6 +193,7 @@ def _restore_data_from_stored_payload(stored_payload: dict[str, Any]) -> dict[st
     return data
 
 
+# 함수 설명: `_mark_skipped()`는 현재 작업 payload에 실행 생략 상태와 구체적인 사유를 기록합니다.
 def _mark_skipped(
     payload: dict[str, Any],
     database: str,
@@ -206,6 +216,7 @@ def _mark_skipped(
     return payload
 
 
+# 함수 설명: `_mark_error()`는 현재 작업 payload에 오류 상태와 정규화된 오류 정보를 기록합니다.
 def _mark_error(payload: dict[str, Any], database: str, collection_name: str, data_ref: str, errors: list[dict[str, Any]]) -> dict[str, Any]:
     payload.setdefault("trace", {}).setdefault("errors", []).extend(errors)
     payload.setdefault("trace", {}).setdefault("inspection", {})["result_loader"] = {
@@ -219,6 +230,7 @@ def _mark_error(payload: dict[str, Any], database: str, collection_name: str, da
     return payload
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}

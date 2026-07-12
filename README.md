@@ -90,8 +90,8 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 
 ## 한글 소스 설명과 JSON 동기화
 
-- `langflow_components`의 Python 68개에는 역할·입력·출력·처리 흐름·유지보수 포인트와 공개 주요 함수 설명이 들어 있습니다.
+- `langflow_components`의 Python 68개에는 역할·입력·출력·처리 흐름·유지보수 포인트와 전체 함수 997/997의 인접 한글 설명이 들어 있습니다. private helper, 클래스 메서드, async 함수와 중첩 함수도 포함합니다.
 - JSON 문법은 구조 주석을 허용하지 않으므로, 한글 설명은 각 Custom Component의 `template.code.value`에 Python 주석으로 포함됩니다. Langflow 코드 편집기에서 원본과 동일하게 확인할 수 있습니다.
 - `.editorconfig`와 각 Python 파일 첫 줄의 UTF-8 선언으로 Windows 편집기의 인코딩 오저장을 예방합니다.
-- `python tools/add_korean_component_comments.py --check`와 `python tools/validate_korean_component_documentation.py`로 누락·BOM·깨짐 문자·JSON 내장 코드·ZIP을 재검증할 수 있습니다.
+- `python tools/add_korean_component_comments.py --check`와 `python tools/validate_korean_component_documentation.py`로 함수별 설명 누락·BOM·깨짐 문자·JSON 내장 코드·ZIP을 재검증할 수 있습니다. 자동 설명 규칙을 개선한 뒤에는 `--refresh-functions`로 기존 자동 주석을 갱신할 수 있습니다.
 - 자세한 적용 범위와 검증 결과는 `docs/KOREAN_COMPONENT_DOCUMENTATION_20260712.md`를 참고하세요.

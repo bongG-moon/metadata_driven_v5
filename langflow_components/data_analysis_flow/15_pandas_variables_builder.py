@@ -35,11 +35,13 @@ def build_variables(payload_value: Any) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_source_schemas()`는 schemas 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _source_schemas(payload: dict[str, Any]) -> dict[str, list[str]]:
     schemas: dict[str, list[str]] = {}
     for source in payload.get("source_results", []) if isinstance(payload.get("source_results"), list) else []:
@@ -60,10 +62,12 @@ def _source_schemas(payload: dict[str, Any]) -> dict[str, list[str]]:
     return schemas
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_function_case_selection()`는 Function Case·selection 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _function_case_selection(payload: dict[str, Any]) -> dict[str, Any]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
@@ -81,6 +85,7 @@ def _function_case_selection(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_helpers_from_selected_cases()`는 선택 Function Case 항목에서 pandas 프롬프트에 제공할 helper 이름만 추출합니다.
 def _helpers_from_selected_cases(selected_cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     helpers = []
     for item in selected_cases:
@@ -102,6 +107,7 @@ def _helpers_from_selected_cases(selected_cases: list[dict[str, Any]]) -> list[d
     return helpers
 
 
+# 함수 설명: `_selected_function_cases()`는 의도 계획에서 실제 pandas 실행에 선택된 Function Case 항목만 정리합니다.
 def _selected_function_cases(plan: dict[str, Any], selected_steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cases = []
     single = plan.get("pandas_function_case")
@@ -122,6 +128,7 @@ def _selected_function_cases(plan: dict[str, Any], selected_steps: list[dict[str
     return _dedupe_cases(cases)
 
 
+# 함수 설명: `_dedupe_cases()`는 cases의 중복을 제거하고 최초 등장 순서를 유지합니다.
 def _dedupe_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str]] = set()

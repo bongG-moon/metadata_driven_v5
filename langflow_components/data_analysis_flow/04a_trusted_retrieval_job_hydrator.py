@@ -148,6 +148,7 @@ def hydrate_retrieval_jobs(
     return next_payload
 
 
+# 함수 설명: `_catalog_items()`는 MongoDB 로드 결과에서 active 테이블 카탈로그 항목만 안전하게 꺼냅니다.
 def _catalog_items(value: Any) -> list[dict[str, Any]]:
     data = getattr(value, "data", value)
     if isinstance(data, list):
@@ -160,11 +161,13 @@ def _catalog_items(value: Any) -> list[dict[str, Any]]:
     return [deepcopy(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else []
 
 
+# 함수 설명: `_dataset_key()`는 key 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _dataset_key(item: dict[str, Any]) -> str:
     payload = _dict(item.get("payload"))
     return str(item.get("dataset_key") or item.get("key") or payload.get("dataset_key") or payload.get("key") or "").strip()
 
 
+# 함수 설명: `_required_param_names()`는 카탈로그 설정에서 실행 전에 반드시 있어야 하는 파라미터 이름을 추출합니다.
 def _required_param_names(*values: dict[str, Any]) -> list[str]:
     result: list[str] = []
     for value in values:
@@ -182,6 +185,7 @@ def _required_param_names(*values: dict[str, Any]) -> list[str]:
     return result
 
 
+# 함수 설명: `_sanitize_trusted_config()`는 trusted·설정에서 비밀값·내부 필드·직렬화 불가 값을 제거하거나 마스킹합니다.
 def _sanitize_trusted_config(value: Any) -> Any:
     if isinstance(value, dict):
         return {
@@ -194,6 +198,7 @@ def _sanitize_trusted_config(value: Any) -> Any:
     return deepcopy(value)
 
 
+# 함수 설명: `_merge_refs()`는 여러 참조 값을 순서와 중복 정책을 지키며 하나의 결과로 합칩니다.
 def _merge_refs(existing: list[Any], additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -210,23 +215,28 @@ def _merge_refs(existing: list[Any], additions: list[dict[str, Any]]) -> list[di
     return result
 
 
+# 함수 설명: `_issue()`는 조회 작업 hydration 중 발견한 문제를 type·dataset·message 구조로 만듭니다.
 def _issue(issue_type: str, message: str, **extra: Any) -> dict[str, Any]:
     return {"type": issue_type, "message": message, **extra}
 
 
+# 함수 설명: `_mode()`는 retrieval_mode 입력을 dummy/live 중 하나로 정규화합니다.
 def _mode(value: Any) -> str:
     return "live" if str(value or "").strip().lower() in {"live", "real", "actual", "true", "1"} else "dummy"
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 

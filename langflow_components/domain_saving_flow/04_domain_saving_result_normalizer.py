@@ -49,15 +49,18 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
     return next_payload
 
 
+# 함수 설명: `_key()`는 메타데이터 항목에서 비교·표시에 사용할 논리 key를 안전하게 꺼냅니다.
 def _key(item: dict[str, Any]) -> str:
     return f"{item.get('section', '')}:{item.get('key', '')}" if item.get("section") else str(item.get("key", ""))
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_json()`는 Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.
 def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)

@@ -39,6 +39,7 @@ def build_api_response(payload_value: Any, display_message_value: Any = "") -> d
     }
 
 
+# 함수 설명: `_data_mode()`는 payload의 retrieval_mode와 source 결과를 확인해 dummy/live 응답 표시 모드를 결정합니다.
 def _data_mode(payload: dict[str, Any]) -> str:
     source_results = payload.get("source_results") if isinstance(payload.get("source_results"), list) else []
     for source in source_results:
@@ -54,6 +55,7 @@ def _data_mode(payload: dict[str, Any]) -> str:
     return "live"
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     payload = deepcopy(data) if isinstance(data, dict) else {}
@@ -64,6 +66,7 @@ def _payload(value: Any) -> dict[str, Any]:
     return payload
 
 
+# 함수 설명: `_text()`는 Message나 일반 값을 앞뒤 공백이 정리된 문자열로 변환합니다.
 def _text(value: Any) -> str:
     if value is None:
         return ""

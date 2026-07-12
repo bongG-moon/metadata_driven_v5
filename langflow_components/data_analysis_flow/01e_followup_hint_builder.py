@@ -117,6 +117,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     return next_payload
 
 
+# 함수 설명: `_previous_context()`는 이전 질문·의도·조건·결과 컬럼에서 후속 질문 판단에 필요한 문맥만 추출합니다.
 def _previous_context(state: dict[str, Any]) -> dict[str, Any]:
     current_data = _dict(state.get("current_data"))
     last_intent = _dict(state.get("last_intent_plan"))
@@ -144,6 +145,7 @@ def _previous_context(state: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_compact_intent_plan()`는 의도 계획·PLAN에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_intent_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return _omit_empty(
         {
@@ -156,6 +158,7 @@ def _compact_intent_plan(plan: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_compact_retrieval_jobs()`는 데이터 조회·조회 작업에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_retrieval_jobs(jobs: list[Any]) -> list[dict[str, Any]]:
     result = []
     for job in jobs:
@@ -175,6 +178,7 @@ def _compact_retrieval_jobs(jobs: list[Any]) -> list[dict[str, Any]]:
     return result
 
 
+# 함수 설명: `_compact_applied_criteria()`는 적용 조건·적용 기준에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_applied_criteria(criteria: dict[str, Any]) -> dict[str, Any]:
     return _omit_empty(
         {
@@ -188,6 +192,7 @@ def _compact_applied_criteria(criteria: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_date_change_hint()`는 change·힌트 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _date_change_hint(question: str, reference_date: Any) -> dict[str, Any]:
     text = str(question or "")
     if not DATE_CUE_PATTERN.search(text):
@@ -206,6 +211,7 @@ def _date_change_hint(question: str, reference_date: Any) -> dict[str, Any]:
     return _omit_empty({"expression": _date_expression(text), "resolved_value": date_value})
 
 
+# 함수 설명: `_explicit_date()`는 사용자 질문에 명시된 절대/상대 날짜 표현을 찾아 표준 날짜로 해석합니다.
 def _explicit_date(text: str, ref_date: datetime | None) -> str:
     slash = re.search(r"\b(\d{1,2})/(\d{1,2})\b", text)
     korean = re.search(r"\b(\d{1,2})월\s*(\d{1,2})일\b", text)
@@ -221,11 +227,13 @@ def _explicit_date(text: str, ref_date: datetime | None) -> str:
         return ""
 
 
+# 함수 설명: `_date_expression()`는 expression 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _date_expression(text: str) -> str:
     match = DATE_CUE_PATTERN.search(text)
     return match.group(0) if match else ""
 
 
+# 함수 설명: `_parse_reference_date()`는 복합 입력이나 응답에서 reference·날짜을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _parse_reference_date(value: Any) -> datetime | None:
     text = str(value or "").strip()
     try:
@@ -234,6 +242,7 @@ def _parse_reference_date(value: Any) -> datetime | None:
         return None
 
 
+# 함수 설명: `_matched_previous_columns()`는 입력 조건과 일치하는 이전 값·컬럼을 찾아 비교·필터 결과로 반환합니다.
 def _matched_previous_columns(question: str, columns: list[str], expand_cues: list[str]) -> list[str]:
     if not columns or not expand_cues:
         return []
@@ -245,6 +254,7 @@ def _matched_previous_columns(question: str, columns: list[str], expand_cues: li
     return result
 
 
+# 함수 설명: `_available_previous_columns()`는 이전 값·컬럼 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _available_previous_columns(state: dict[str, Any]) -> list[str]:
     current_data = _dict(state.get("current_data"))
     columns: list[str] = []
@@ -260,6 +270,7 @@ def _available_previous_columns(state: dict[str, Any]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_column_aliases()`는 aliases 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _column_aliases(column: str) -> list[str]:
     raw = str(column or "").strip()
     if not raw:
@@ -274,6 +285,7 @@ def _column_aliases(column: str) -> list[str]:
     return sorted(aliases, key=len, reverse=True)
 
 
+# 함수 설명: `_looks_context_dependent()`는 입력값이 문맥·dependent 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _looks_context_dependent(question: str) -> bool:
     text = str(question or "")
     compact = re.sub(r"\s+", "", text)
@@ -282,11 +294,13 @@ def _looks_context_dependent(question: str) -> bool:
     return len(compact) <= 18
 
 
+# 함수 설명: `_matched_cues()`는 입력 조건과 일치하는 CUES을 찾아 비교·필터 결과로 반환합니다.
 def _matched_cues(question: str, cues: tuple[str, ...]) -> list[str]:
     normalized_question = _normalize(question)
     return [cue for cue in cues if _normalize(cue) in normalized_question]
 
 
+# 함수 설명: `_notes()`는 후속 질문 해석에서 사용자에게 알릴 조건 상속·변경 주의사항을 구성합니다.
 def _notes(scope_hint: str, reuse_strategy: str, requested_columns: list[str], date_hint: dict[str, Any]) -> list[str]:
     notes = []
     if scope_hint == "new_analysis":
@@ -304,44 +318,53 @@ def _notes(scope_hint: str, reuse_strategy: str, requested_columns: list[str], d
     return notes
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_extend_unique()`는 대상 목록에 새 문자열을 중복 없이 원래 순서대로 추가합니다.
 def _extend_unique(target: list[str], values: list[str]) -> None:
     for value in values:
         if value not in target:
             target.append(value)
 
 
+# 함수 설명: `_compact_source_columns()`는 데이터 소스·컬럼에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_source_columns(value: Any) -> dict[str, list[str]]:
     if not isinstance(value, dict):
         return {}
     return {str(key): _string_list(columns)[:80] for key, columns in value.items() if str(key or "").strip() and _string_list(columns)}
 
 
+# 함수 설명: `_normalize()`는 normalize의 표기·자료형 차이를 비교와 저장에 사용할 표준 형태로 정규화합니다.
 def _normalize(value: Any) -> str:
     return re.sub(r"[^0-9a-z가-힣]+", "", str(value or "").lower())
 
 
+# 함수 설명: `_clip_text()`는 문자열을 허용 길이 안으로 자르되 비어 있는 값과 말줄임 표시를 일관되게 처리합니다.
 def _clip_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text[:limit] if len(text) > limit else text
 
 
+# 함수 설명: `_omit_empty()`는 dict에서 빈 문자열·빈 목록·None 항목을 제거해 전달 payload를 작게 유지합니다.
 def _omit_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 

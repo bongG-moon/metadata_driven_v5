@@ -182,10 +182,12 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
         step_outputs: list[dict[str, Any]] = []
         function_case_results: list[dict[str, Any]] = []
 
+        # 함수 설명: `record_step()`는 pandas 실행 중 단계별 DataFrame 크기와 설명을 trace에 기록합니다.
         def record_step(key: Any, value: Any, description: Any = "", role: Any = "") -> Any:
             step_outputs.append(_recorded_output(key, value, description, role))
             return value
 
+        # 함수 설명: `record_function_case_result()`는 선택 helper 실행 결과의 함수명·입력·행 수를 분석 근거로 기록합니다.
         def record_function_case_result(function_name: Any, input_text: Any, result_value: Any, description: Any = "") -> Any:
             function_case_results.append(_recorded_function_case(function_name, input_text, result_value, description))
             return result_value
@@ -372,6 +374,7 @@ def build_pandas_repair_prompt(payload_value: Any, template: Any, function_case_
         raise ValueError(f"unknown repair prompt variable: {exc.args[0]}") from exc
 
 
+# 함수 설명: `_repair_function_case_selection()`는 복구 프롬프트에 전달할 선택 Function Case와 실행 단계만 작은 구조로 복사합니다.
 def _repair_function_case_selection(plan: dict[str, Any]) -> dict[str, Any]:
     steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
     selected_steps = [deepcopy(step) for step in steps if isinstance(step, dict) and str(step.get("operation") or "") == "apply_pandas_function_case"]
@@ -385,6 +388,7 @@ def _repair_function_case_selection(plan: dict[str, Any]) -> dict[str, Any]:
     return {"selected_cases": selected_cases, "selected_steps": selected_steps}
 
 
+# 함수 설명: `_pandas_execution_trace()`는 payload trace에서 기존 pandas 실행 기록을 안전한 dict로 꺼냅니다.
 def _pandas_execution_trace(payload: dict[str, Any]) -> dict[str, Any]:
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     inspection = trace.get("inspection") if isinstance(trace.get("inspection"), dict) else {}
@@ -392,28 +396,33 @@ def _pandas_execution_trace(payload: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_initial_failed_code()`는 실패 trace와 분석 결과에서 최초 생성 코드를 우선순위대로 복원합니다.
 def _initial_failed_code(payload: dict[str, Any]) -> str:
     pandas_trace = _pandas_execution_trace(payload)
     analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
     return str(pandas_trace.get("llm_generated_code") or analysis.get("llm_generated_code") or pandas_trace.get("generated_code") or analysis.get("analysis_code") or "")
 
 
+# 함수 설명: `_analysis_status()`는 분석 payload의 현재 pandas 실행 상태를 표준 문자열로 읽습니다.
 def _analysis_status(payload: dict[str, Any]) -> str:
     analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
     return str(analysis.get("status") or "").strip().lower()
 
 
+# 함수 설명: `_analysis_error_value()`는 분석 payload에 기록된 실행 오류를 안전한 dict로 꺼냅니다.
 def _analysis_error_value(payload: dict[str, Any]) -> Any:
     analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
     return analysis.get("error") or analysis.get("errors") or []
 
 
+# 함수 설명: `_with_repair_trace()`는 최초 코드·오류·수정 코드·재실행 결과를 한 번의 repair trace로 합칩니다.
 def _with_repair_trace(payload_value: dict[str, Any], repair_trace: dict[str, Any]) -> dict[str, Any]:
     payload = deepcopy(payload_value)
     payload.setdefault("trace", {}).setdefault("inspection", {})["pandas_repair"] = deepcopy(repair_trace)
     return payload
 
 
+# 함수 설명: `_nonnegative_int()`는 입력값을 0 이상의 정수로 제한해 횟수·크기 설정에 음수가 들어가지 않게 합니다.
 def _nonnegative_int(value: Any, default: int) -> int:
     try:
         return max(0, int(value))
@@ -421,6 +430,7 @@ def _nonnegative_int(value: Any, default: int) -> int:
         return default
 
 
+# 함수 설명: `_normalize_safe_imports()`는 허용된 pandas/numpy import 문만 제거하고 executor가 주입한 신뢰 namespace를 사용하게 합니다.
 def _normalize_safe_imports(code: str) -> tuple[str, dict[str, Any]]:
     raw_code = str(code or "")
     removed_imports: list[str] = []
@@ -459,6 +469,7 @@ def _normalize_safe_imports(code: str) -> tuple[str, dict[str, Any]]:
     }
 
 
+# 함수 설명: `_safe_import_name()`는 import 문이 정확히 허용된 pandas/numpy alias 형태인지 확인합니다.
 def _safe_import_name(line: str) -> str:
     patterns = {
         "import pandas as pd": r"import[ \t]+pandas[ \t]+as[ \t]+pd(?:[ \t]*#.*)?",
@@ -470,6 +481,7 @@ def _safe_import_name(line: str) -> str:
     return ""
 
 
+# 함수 설명: `_safe_numpy_namespace()`는 허용 attribute만 노출하는 제한된 numpy namespace를 구성합니다.
 def _safe_numpy_namespace() -> Any:
     import numpy as numpy_module  # type: ignore
 
@@ -482,6 +494,7 @@ def _safe_numpy_namespace() -> Any:
     return namespace
 
 
+# 함수 설명: `_safe_import_trace()`는 허용 import 정규화 내역을 실행 근거에 남길 수 있는 작은 trace로 만듭니다.
 def _safe_import_trace(value: dict[str, Any]) -> dict[str, Any]:
     removed = [str(item) for item in value.get("removed_imports", []) if str(item).strip()]
     if not removed:
@@ -496,6 +509,7 @@ def _safe_import_trace(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_guard_code()`는 생성된 pandas 코드 AST를 검사해 import·파일·네트워크·위험 builtin 사용을 차단합니다.
 def _guard_code(code: str) -> str:
     try:
         tree = ast.parse(code)
@@ -513,6 +527,7 @@ def _guard_code(code: str) -> str:
     return ""
 
 
+# 함수 설명: `_result_to_rows()`는 DataFrame·list·dict·scalar 실행 결과를 rows와 columns 계약으로 변환합니다.
 def _result_to_rows(result: Any, payload: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     if result is None:
         return [], []
@@ -542,6 +557,7 @@ def _result_to_rows(result: Any, payload: dict[str, Any] | None = None) -> tuple
     return rows, columns
 
 
+# 함수 설명: `_ordered_columns()`는 원본 컬럼 순서를 우선 유지하고 새 결과 컬럼을 뒤에 추가합니다.
 def _ordered_columns(rows: list[dict[str, Any]], preferred: list[str] | None = None) -> list[str]:
     columns: list[str] = []
     for column in preferred or []:
@@ -558,6 +574,7 @@ def _ordered_columns(rows: list[dict[str, Any]], preferred: list[str] | None = N
     return columns
 
 
+# 함수 설명: `_scalar_result_row()`는 스칼라 pandas 결과를 지표명과 조건 문맥이 포함된 한 행 결과로 만듭니다.
 def _scalar_result_row(value: Any, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     row = _scalar_context_row(payload)
     metric_label = _scalar_metric_label(payload)
@@ -567,6 +584,7 @@ def _scalar_result_row(value: Any, payload: dict[str, Any] | None = None) -> dic
     return row
 
 
+# 함수 설명: `_scalar_context_row()`는 첫 조회 작업에서 날짜·공정·제품 조건을 스칼라 결과 표시 문맥으로 추출합니다.
 def _scalar_context_row(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = payload if isinstance(payload, dict) else {}
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
@@ -591,6 +609,7 @@ def _scalar_context_row(payload: dict[str, Any] | None = None) -> dict[str, Any]
     return row
 
 
+# 함수 설명: `_filter_display_value()`는 필터의 단일/복수 값을 사람이 읽을 수 있는 짧은 표시값으로 변환합니다.
 def _filter_display_value(condition: Any) -> Any:
     if not isinstance(condition, dict):
         return condition
@@ -604,6 +623,7 @@ def _filter_display_value(condition: Any) -> Any:
     return condition
 
 
+# 함수 설명: `_scalar_metric_label()`는 출력 계약과 질문을 바탕으로 스칼라 결과의 지표명을 결정합니다.
 def _scalar_metric_label(payload: dict[str, Any] | None = None) -> str:
     payload = payload if isinstance(payload, dict) else {}
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
@@ -630,6 +650,7 @@ def _scalar_metric_label(payload: dict[str, Any] | None = None) -> str:
     return "결과값"
 
 
+# 함수 설명: `_recorded_output()`는 pandas 단계 실행 결과를 행 수·컬럼·제한 preview가 포함된 trace 항목으로 만듭니다.
 def _recorded_output(key: Any, value: Any, description: Any = "", role: Any = "") -> dict[str, Any]:
     rows, columns, row_count = _preview_rows_columns_count(value)
     return _json_ready(
@@ -644,6 +665,7 @@ def _recorded_output(key: Any, value: Any, description: Any = "", role: Any = ""
     )
 
 
+# 함수 설명: `_recorded_function_case()`는 Function Case 실행 결과를 함수명·입력·행 수·preview가 포함된 trace 항목으로 만듭니다.
 def _recorded_function_case(function_name: Any, input_text: Any, result_value: Any, description: Any = "") -> dict[str, Any]:
     rows, columns, row_count = _preview_rows_columns_count(result_value)
     return _json_ready(
@@ -658,6 +680,7 @@ def _recorded_function_case(function_name: Any, input_text: Any, result_value: A
     )
 
 
+# 함수 설명: `_preview_rows_columns_count()`는 대형 실행 결과에서 제한된 preview rows·columns·전체 행 수만 계산합니다.
 def _preview_rows_columns_count(value: Any) -> tuple[list[dict[str, Any]], list[str], int]:
     if hasattr(value, "head") and hasattr(value, "to_dict"):
         try:
@@ -677,6 +700,7 @@ def _preview_rows_columns_count(value: Any) -> tuple[list[dict[str, Any]], list[
     return rows[:TRACE_PREVIEW_LIMIT], columns, len(rows)
 
 
+# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.
 def _json_ready(value: Any) -> Any:
     if value is None or type(value) in (str, int, bool):
         return value
@@ -704,6 +728,7 @@ def _json_ready(value: Any) -> Any:
     return str(value)
 
 
+# 함수 설명: `_analysis_error()`는 실행 예외를 type·message·짧은 traceback이 포함된 공개 가능한 오류로 정리합니다.
 def _analysis_error(
     payload: dict[str, Any],
     error_type: str,
@@ -744,6 +769,7 @@ def _analysis_error(
     return payload
 
 
+# 함수 설명: `_runtime_helper_trace()`는 생성 코드가 실제 호출한 inline helper와 원본 정보를 실행 trace로 정리합니다.
 def _runtime_helper_trace(code: str) -> dict[str, Any]:
     helper_names = _used_inline_helpers(code)
     return {
@@ -753,6 +779,7 @@ def _runtime_helper_trace(code: str) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_used_inline_helpers()`는 생성 코드 AST에서 실제 호출된 helper 함수 이름만 찾아냅니다.
 def _used_inline_helpers(code: str) -> list[str]:
     try:
         tree = ast.parse(code or "")
@@ -772,6 +799,7 @@ def _used_inline_helpers(code: str) -> list[str]:
     return used
 
 
+# 함수 설명: `_as_list()`는 단일 값과 여러 값 입력을 모두 같은 list 형태로 맞춰 반복 처리를 단순화합니다.
 def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
@@ -782,6 +810,7 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+# 함수 설명: `_pandas_filter_plan()`는 조회 작업의 filter를 source alias별 결정론적 pandas 필터 계획으로 바꿉니다.
 def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
@@ -798,6 +827,7 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return filter_plan
 
 
+# 함수 설명: `_with_pandas_filter_preamble()`는 생성 코드 앞에 결정론적 필터 preamble을 한 번만 결합합니다.
 def _with_pandas_filter_preamble(code: Any, filter_plan: list[dict[str, Any]]) -> str:
     base_code = str(code or "").strip()
     preamble = _pandas_filter_preamble(filter_plan)
@@ -806,6 +836,7 @@ def _with_pandas_filter_preamble(code: Any, filter_plan: list[dict[str, Any]]) -
     return preamble + "\n\n" + base_code
 
 
+# 함수 설명: `_pandas_filter_preamble()`는 의도 계획의 필터 조건을 생성 코드보다 먼저 적용할 안전한 pandas 전처리 코드로 만듭니다.
 def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for job_index, item in enumerate(filter_plan, start=1):
@@ -824,6 +855,7 @@ def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_condition_code()`는 단일 필터 조건을 pandas boolean mask 표현식으로 변환합니다.
 def _condition_code(df_var: str, job_index: int, condition_index: int, condition: dict[str, Any]) -> list[str]:
     field = str(condition.get("field") or "").strip()
     operator = _normalize_filter_operator(condition.get("operator") or "eq")
@@ -863,6 +895,7 @@ def _condition_code(df_var: str, job_index: int, condition_index: int, condition
     return lines
 
 
+# 함수 설명: `_normalize_filter_operator()`는 필터 연산자의 여러 alias를 executor가 지원하는 표준 연산자로 바꿉니다.
 def _normalize_filter_operator(value: Any) -> str:
     text = re.sub(r"[\s-]+", "_", str(value or "eq").strip()).lower()
     aliases = {
@@ -898,6 +931,7 @@ def _normalize_filter_operator(value: Any) -> str:
     return aliases.get(text, text)
 
 
+# 함수 설명: `_null_empty_condition_lines()`는 null·not null·empty·not empty 조건에 해당하는 pandas mask 코드를 만듭니다.
 def _null_empty_condition_lines(df_var: str, col_var: str, mask_var: str, operator: str) -> list[str]:
     series = f"{df_var}[{col_var}]"
     if operator == "is_null":
@@ -913,10 +947,12 @@ def _null_empty_condition_lines(df_var: str, col_var: str, mask_var: str, operat
     return ["        pass"]
 
 
+# 함수 설명: `_has_operator_dict()`는 복합 필터 값이 operator를 가진 조건 dict인지 판정합니다.
 def _has_operator_dict(values: list[Any]) -> bool:
     return any(isinstance(item, dict) and (item.get("operator") or item.get("op")) for item in values)
 
 
+# 함수 설명: `_compound_condition_lines()`는 AND/OR 복합 필터 구조를 pandas mask 코드 여러 줄로 변환합니다.
 def _compound_condition_lines(df_var: str, col_var: str, mask_var: str, values: list[Any]) -> list[str]:
     series = f"{df_var}[{col_var}]"
     lines = [f"        {mask_var} = False"]
@@ -945,6 +981,7 @@ def _compound_condition_lines(df_var: str, col_var: str, mask_var: str, values: 
     return lines
 
 
+# 함수 설명: `_column_choice_expression()`는 컬럼 alias 후보 중 실제 DataFrame에 존재하는 첫 컬럼을 선택하는 코드를 만듭니다.
 def _column_choice_expression(df_var: str, candidates: list[str]) -> str:
     expression = "''"
     for candidate in reversed(candidates):
@@ -952,6 +989,7 @@ def _column_choice_expression(df_var: str, candidates: list[str]) -> str:
     return expression
 
 
+# 함수 설명: `_filter_conditions()`는 dict/list 형태의 필터를 field·operator·values 조건 목록으로 정규화합니다.
 def _filter_conditions(filters: Any) -> list[dict[str, Any]]:
     if isinstance(filters, list):
         items = [(condition.get("field") or condition.get("column"), condition) for condition in filters if isinstance(condition, dict)]
@@ -980,6 +1018,7 @@ def _filter_conditions(filters: Any) -> list[dict[str, Any]]:
     return result
 
 
+# 함수 설명: `_as_values()`는 단일 필터 값과 목록 값을 같은 값 목록 형태로 맞춥니다.
 def _as_values(value: Any) -> list[Any]:
     if isinstance(value, list):
         return [item for item in value if item not in (None, "")]
@@ -990,6 +1029,7 @@ def _as_values(value: Any) -> list[Any]:
     return [value]
 
 
+# 함수 설명: `_field_candidates()`는 표준 필터 field에 대응할 수 있는 실제 컬럼 alias 후보를 반환합니다.
 def _field_candidates(field: str) -> list[str]:
     aliases = {
         "DATE": ["DATE", "WORK_DATE", "WORK_DT", "LOAD_DT", "BASE_DT"],
@@ -1008,16 +1048,19 @@ def _field_candidates(field: str) -> list[str]:
     return aliases.get(field, [field])
 
 
+# 함수 설명: `_safe_name()`는 생성 코드에서 사용할 문자열을 안전한 Python 식별자 조각으로 정리합니다.
 def _safe_name(value: str) -> str:
     cleaned = re.sub(r"\W+", "_", value)
     return cleaned.strip("_") or "source"
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_source_columns_by_alias()`는 컬럼·BY·alias 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _source_columns_by_alias(payload: dict[str, Any]) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
     for source in payload.get("source_results", []) if isinstance(payload.get("source_results"), list) else []:
@@ -1030,10 +1073,12 @@ def _source_columns_by_alias(payload: dict[str, Any]) -> dict[str, list[str]]:
     return result
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_json()`는 Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.
 def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
@@ -1053,6 +1098,7 @@ def _json(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+# 함수 설명: `_text_value()`는 Langflow Message/Data에서 실제 문자열 값을 꺼내 공통 텍스트 형식으로 맞춥니다.
 def _text_value(value: Any) -> str:
     for attr in ("text", "content", "message"):
         text = getattr(value, attr, None)
@@ -1109,6 +1155,7 @@ class PandasCodeExecutor(Component):
                 provider = get_provider_for_model_name(str(selected["name"]))
         return apply_provider_variable_config_to_build_config(build_config, provider) if provider else build_config
 
+    # 함수 설명: `_invoke_repair_model()`는 기존 코드와 실제 오류가 포함된 프롬프트로 복구 모델을 정확히 한 번 호출합니다.
     def _invoke_repair_model(self, prompt: str) -> Any:
         from lfx.base.models.unified_models import get_llm
 

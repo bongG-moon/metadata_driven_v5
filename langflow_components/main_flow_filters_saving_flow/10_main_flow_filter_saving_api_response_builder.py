@@ -41,11 +41,13 @@ def build_api_response(payload_value: Any, display_message_value: Any = "") -> d
     }
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_text()`는 Message나 일반 값을 앞뒤 공백이 정리된 문자열로 변환합니다.
 def _text(value: Any) -> str:
     text = getattr(value, "text", value)
     return "" if text is None else str(text).strip()

@@ -44,6 +44,7 @@ def build_request(question: Any, previous_state_value: Any = None, session_id: s
     }
 
 
+# 함수 설명: `_resolve_session_id()`는 여러 세션·ID 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
 def _resolve_session_id(previous_state_value: Any = None, session_id: Any = "") -> str:
     text = str(session_id or "").strip()
     if text:
@@ -59,10 +60,12 @@ def _resolve_session_id(previous_state_value: Any = None, session_id: Any = "") 
     return "demo-session"
 
 
+# 함수 설명: `_korea_today()`는 현재 시각을 한국 시간 기준 YYYYMMDD 날짜 문자열로 반환합니다.
 def _korea_today() -> str:
     return datetime.now(_korea_timezone()).strftime("%Y%m%d")
 
 
+# 함수 설명: `_korea_timezone()`는 표준 zoneinfo를 우선 사용하고 불가능할 때만 고정 KST timezone을 반환합니다.
 def _korea_timezone():
     try:
         zoneinfo = import_module("zoneinfo")
@@ -71,6 +74,7 @@ def _korea_timezone():
         return timezone(timedelta(hours=9), "KST")
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}

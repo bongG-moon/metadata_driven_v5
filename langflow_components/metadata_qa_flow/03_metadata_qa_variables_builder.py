@@ -33,6 +33,7 @@ def build_variables(payload_value: Any) -> dict[str, str]:
     }
 
 
+# 함수 설명: `_output_schema()`는 LLM이 반드시 따라야 할 JSON 출력 필드와 자료형 계약을 만듭니다.
 def _output_schema() -> dict[str, Any]:
     return {
         "answer_type": "string",
@@ -53,19 +54,23 @@ def _output_schema() -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_json_dumps()`는 datetime·Decimal 같은 값까지 JSON-safe 형태로 바꾼 뒤 문자열로 직렬화합니다.
 def _json_dumps(value: Any) -> str:
     return json.dumps(_json_ready(value), ensure_ascii=False, indent=2)
 
 
+# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.
 def _json_ready(value: Any) -> Any:
     if value is None or type(value) in (str, int, bool):
         return value

@@ -19,6 +19,7 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import BoolInput, MessageTextInput, MultilineInput, Output, StrInput
 
 
+# 함수 설명: `_as_iso_text()`는 datetime 등 시간 값을 캐시 갱신 비교에 사용할 ISO 문자열로 변환합니다.
 def _as_iso_text(value: Any) -> str | None:
     if value in (None, ""):
         return None
@@ -149,6 +150,7 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         description = graph.description or str(getattr(self, "tool_description", "") or "")
         return description, [field for field in fields if field.get("tool_mode", False)]
 
+    # 함수 설명: `_get_tools()`는 입력 또는 외부 저장소에서 tools을 읽고 호출자가 사용할 형태로 반환합니다.
     async def _get_tools(self):
         tools = await super()._get_tools()
         if len(tools) != 1:
@@ -165,6 +167,7 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         self.status = f"{tool.name}: {tool.description}"
         return [tool]
 
+    # 함수 설명: `_pre_run_setup()`는 명시 session_id가 없으면 부모 graph 세션을 상속하고 Flow tool 실행 전 상태를 준비합니다.
     def _pre_run_setup(self) -> None:
         super()._pre_run_setup()
         explicit = str(getattr(self, "session_id", "") or "").strip()

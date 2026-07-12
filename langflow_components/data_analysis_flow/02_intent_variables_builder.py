@@ -32,10 +32,12 @@ def build_variables(payload_value: Any, metadata_candidates_value: Any = None) -
     }
 
 
+# 함수 설명: `_compact_json()`는 JSON에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+# 함수 설명: `_state_summary()`는 요약의 건수·조건·상태를 진단과 답변에 쓸 짧은 요약으로 만듭니다.
 def _state_summary(payload: dict[str, Any]) -> dict[str, Any]:
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     followup_hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
@@ -48,6 +50,7 @@ def _state_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_schema()`는 의도 분석 LLM이 반환해야 할 JSON 스키마를 작은 dict로 구성합니다.
 def _schema() -> dict[str, Any]:
     return {
         "intent_plan": {
@@ -77,6 +80,7 @@ def _schema() -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_compact_metadata_candidates()`는 메타데이터·후보에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_metadata_candidates(value: dict[str, Any]) -> dict[str, Any]:
     candidates = value.get("metadata_candidates") if isinstance(value.get("metadata_candidates"), dict) else value
     result: dict[str, Any] = {}
@@ -93,6 +97,7 @@ def _compact_metadata_candidates(value: dict[str, Any]) -> dict[str, Any]:
     } if isinstance(candidates, dict) else {}
 
 
+# 함수 설명: `_compact_state()`는 상태에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_state(state: dict[str, Any]) -> dict[str, Any]:
     current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
     result: dict[str, Any] = {}
@@ -123,6 +128,7 @@ def _compact_state(state: dict[str, Any]) -> dict[str, Any]:
     return _omit_empty(result)
 
 
+# 함수 설명: `_compact_source_columns()`는 데이터 소스·컬럼에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_source_columns(value: Any) -> dict[str, list[str]]:
     if not isinstance(value, dict):
         return {}
@@ -133,20 +139,24 @@ def _compact_source_columns(value: Any) -> dict[str, list[str]]:
     }
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_clip_text()`는 문자열을 허용 길이 안으로 자르되 비어 있는 값과 말줄임 표시를 일관되게 처리합니다.
 def _clip_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text[:limit] if len(text) > limit else text
 
 
+# 함수 설명: `_omit_empty()`는 dict에서 빈 문자열·빈 목록·None 항목을 제거해 전달 payload를 작게 유지합니다.
 def _omit_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 

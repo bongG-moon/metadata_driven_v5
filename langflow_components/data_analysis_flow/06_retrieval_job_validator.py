@@ -56,6 +56,7 @@ def validate_retrieval_payload(payload_value: Any) -> dict[str, Any]:
     return next_payload
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
@@ -63,6 +64,7 @@ def _payload(value: Any) -> dict[str, Any]:
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_error()`는 조회 작업 검증 오류를 dataset·field·message가 포함된 표준 오류 dict로 만듭니다.
 def _error(error_type: str, message: str, **extra: Any) -> dict[str, Any]:
     error = {"type": error_type, "message": message}
     error.update(extra)

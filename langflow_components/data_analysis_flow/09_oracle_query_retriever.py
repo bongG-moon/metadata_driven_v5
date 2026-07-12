@@ -72,6 +72,7 @@ def ensure_package(package_name: str, import_name: str | None = None) -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--trusted-host", "nexus.skhynix.com", package_name])
 
 
+# 함수 설명: `_run_oracle_job()`는 oracle·조회 작업 실행 경계를 담당하고 성공 결과와 오류를 공통 계약으로 반환합니다.
 def _run_oracle_job(job: dict[str, Any], oracle_config: dict[str, Any], fetch_limit: int, oracle_module: Any | None = None) -> dict[str, Any]:
     source_config = _source_config(job)
     params = _job_params(job)
@@ -112,11 +113,13 @@ def _run_oracle_job(job: dict[str, Any], oracle_config: dict[str, Any], fetch_li
 
 # 내부 연동 도우미 클래스: 외부 라이브러리나 클라이언트 차이를 이 파일의 표준 호출 형태로 감쌉니다.
 class OracleConnector:
+    # 함수 설명: `__init__()`는 외부 클라이언트나 실행 설정을 인스턴스에 보관해 뒤의 메서드가 같은 연결 문맥을 사용하게 합니다.
     def __init__(self, config: dict[str, Any], oracle_module: Any | None = None):
         self.config = config
         self.oracle_module = oracle_module
         self.last_columns: list[str] = []
 
+    # 함수 설명: `_oracledb()`는 테스트에서 주입된 Oracle driver를 우선 사용하고 없으면 실제 oracledb 모듈을 준비합니다.
     def _oracledb(self) -> Any:
         if self.oracle_module is not None:
             return self.oracle_module
@@ -162,6 +165,7 @@ class OracleConnector:
                 conn.close()
 
 
+# 함수 설명: `_jobs_for_source()`는 전체 조회 작업 중 지정한 source type에 해당하는 작업만 골라냅니다.
 def _jobs_for_source(payload: dict[str, Any]) -> list[dict[str, Any]]:
     bundle = payload.get("retrieval_job_bundle") if isinstance(payload.get("retrieval_job_bundle"), dict) else {}
     bundle_jobs = bundle.get("jobs") if isinstance(bundle.get("jobs"), list) else []
@@ -172,6 +176,7 @@ def _jobs_for_source(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [deepcopy(job) for job in jobs if isinstance(job, dict) and _source_type(job.get("source_type")) in {"oracle", "oracle_db", "oracledb"}]
 
 
+# 함수 설명: `_source_config()`는 조회 작업 또는 카탈로그에서 허용된 데이터 소스 설정만 dict로 꺼냅니다.
 def _source_config(job: dict[str, Any]) -> dict[str, Any]:
     config = deepcopy(job.get("source_config")) if isinstance(job.get("source_config"), dict) else {}
     for key in ("db_key", "query_template", "sql_template", "oracle_sql", "sql", "query"):
@@ -180,6 +185,7 @@ def _source_config(job: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+# 함수 설명: `_job_params()`는 조회 작업의 params를 안전한 dict로 정리해 retriever에 전달합니다.
 def _job_params(job: dict[str, Any]) -> dict[str, Any]:
     if isinstance(job.get("params"), dict):
         return deepcopy(job["params"])
@@ -188,6 +194,7 @@ def _job_params(job: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# 함수 설명: `_required_param_names()`는 카탈로그 설정에서 실행 전에 반드시 있어야 하는 파라미터 이름을 추출합니다.
 def _required_param_names(job: dict[str, Any], source_config: dict[str, Any]) -> list[Any]:
     if isinstance(source_config.get("required_params"), (list, tuple, set)):
         return _as_list(source_config.get("required_params"))
@@ -198,6 +205,7 @@ def _required_param_names(job: dict[str, Any], source_config: dict[str, Any]) ->
     return []
 
 
+# 함수 설명: `_standard_result()`는 정상 조회 결과를 dataset/source alias와 rows가 포함된 공통 결과 구조로 만듭니다.
 def _standard_result(job: dict[str, Any], rows: list[dict[str, Any]], params: dict[str, Any], db_key: str, sql: str, columns: list[str] | None = None) -> dict[str, Any]:
     result_columns = _rows_columns(rows) or _string_list(columns)
     return {
@@ -225,6 +233,7 @@ def _standard_result(job: dict[str, Any], rows: list[dict[str, Any]], params: di
     }
 
 
+# 함수 설명: `_error_result()`는 예외 정보를 공통 errors 배열과 status가 포함된 실패 결과 구조로 만듭니다.
 def _error_result(job: dict[str, Any], error_type: str, message: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     error = {"type": error_type, "message": message, "dataset_key": job.get("dataset_key", "")}
     return {
@@ -245,10 +254,12 @@ def _error_result(job: dict[str, Any], error_type: str, message: str, params: di
     }
 
 
+# 함수 설명: `_skipped()`는 설정이나 대상 작업이 없어 실행하지 않은 이유를 표준 skipped 결과로 남깁니다.
 def _skipped(source_type: str, reason: str) -> dict[str, Any]:
     return {"source_type": source_type, "status": "skipped", "skipped": True, "skip_reason": reason, "source_results": [], "errors": [], "warnings": []}
 
 
+# 함수 설명: `_oracle_config_from_value()`는 dict·JSON·TNS 텍스트 입력을 DB key별 Oracle 연결 설정으로 변환합니다.
 def _oracle_config_from_value(value: Any) -> tuple[dict[str, Any], list[str]]:
     if value in (None, "", {}, []):
         return {}, []
@@ -268,6 +279,7 @@ def _oracle_config_from_value(value: Any) -> tuple[dict[str, Any], list[str]]:
     return {}, ["Oracle 설정은 JSON 객체 또는 TNS block이어야 합니다."]
 
 
+# 함수 설명: `_parse_jsonish()`는 복합 입력이나 응답에서 jsonish을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _parse_jsonish(value: Any) -> tuple[Any, list[str]]:
     if isinstance(value, (dict, list)):
         return deepcopy(value), []
@@ -290,20 +302,24 @@ def _parse_jsonish(value: Any) -> tuple[Any, list[str]]:
     return {}, errors
 
 
+# 함수 설명: `_normalize_triple_quoted_json()`는 triple·quoted·JSON의 표기·자료형 차이를 비교와 저장에 사용할 표준 형태로 정규화합니다.
 def _normalize_triple_quoted_json(text: str) -> str:
     return re.sub(r'("""|\'\'\')(.*?)(\1)', lambda match: json.dumps(match.group(2)), str(text or ""), flags=re.DOTALL)
 
 
+# 함수 설명: `_looks_like_tns()`는 입력값이 LIKE·TNS 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _looks_like_tns(text: str) -> bool:
     upper_text = str(text or "").upper()
     return "(DESCRIPTION=" in upper_text or ("(ADDRESS=" in upper_text and "(CONNECT_DATA=" in upper_text)
 
 
+# 함수 설명: `_parse_named_tns_blocks()`는 복합 입력이나 응답에서 named·TNS·blocks을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _parse_named_tns_blocks(text: str) -> dict[str, Any]:
     configs: dict[str, Any] = {}
     current_key = ""
     current_lines: list[str] = []
 
+    # 함수 설명: `save_current()`는 현재까지 읽은 TNS alias와 여러 줄 설정을 완성된 설정 항목으로 저장하고 버퍼를 초기화합니다.
     def save_current() -> None:
         nonlocal current_key, current_lines
         tns = "\n".join(current_lines).strip()
@@ -328,9 +344,11 @@ def _parse_named_tns_blocks(text: str) -> dict[str, Any]:
     return configs
 
 
+# 함수 설명: `_render_template()`는 검증된 파라미터를 SQL·URL·본문 템플릿에 치환해 실제 요청 문자열을 만듭니다.
 def _render_template(template: str, params: dict[str, Any]) -> tuple[str, list[str]]:
     missing: list[str] = []
 
+    # 함수 설명: `replace()`는 Oracle SQL 템플릿 placeholder를 자료형에 맞는 SQL literal로 치환하고 누락 key를 기록합니다.
     def replace(match: re.Match[str]) -> str:
         key = match.group(1).strip()
         value = _dict_get_ci(params, key)
@@ -342,6 +360,7 @@ def _render_template(template: str, params: dict[str, Any]) -> tuple[str, list[s
     return re.sub(r"\{([^{}]+)\}", replace, str(template or "")), missing
 
 
+# 함수 설명: `_sql_literal()`는 SQL 템플릿 파라미터를 자료형에 맞는 안전한 literal 표현으로 변환합니다.
 def _sql_literal(value: Any) -> str:
     if value is None:
         return "NULL"
@@ -356,6 +375,7 @@ def _sql_literal(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+# 함수 설명: `_missing_required_params()`는 필수 파라미터 중 실제 작업 값에 없는 항목을 찾아 오류 목록으로 반환합니다.
 def _missing_required_params(params: dict[str, Any], required_params: Any) -> list[str]:
     missing = []
     for item in _as_list(required_params):
@@ -365,6 +385,7 @@ def _missing_required_params(params: dict[str, Any], required_params: Any) -> li
     return missing
 
 
+# 함수 설명: `_rows_columns()`는 행 목록과 명시 컬럼을 함께 정규화해 표준 rows/columns 쌍을 만듭니다.
 def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     columns: list[str] = []
     for row in rows:
@@ -375,10 +396,12 @@ def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.
 def _json_ready(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -398,6 +421,7 @@ def _json_ready(value: Any) -> Any:
     return str(value)
 
 
+# 함수 설명: `_fetch_limit()`는 설정된 조회 제한을 안전한 정수 범위로 보정합니다.
 def _fetch_limit(value: Any) -> int:
     try:
         return max(1, int(value or 5000))
@@ -405,18 +429,22 @@ def _fetch_limit(value: Any) -> int:
         return 5000
 
 
+# 함수 설명: `_config_has_values()`는 Oracle 설정 dict에 실제 접속값이 하나 이상 존재하는지 판정합니다.
 def _config_has_values(config: Any) -> bool:
     return isinstance(config, dict) and any(value not in (None, "", [], {}) for value in config.values())
 
 
+# 함수 설명: `_source_type()`는 조회 작업의 source type을 표준 소문자 식별자로 정규화합니다.
 def _source_type(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+# 함수 설명: `_normalize_key()`는 key의 대소문자·공백·구분자 차이를 제거해 비교 가능한 표준 식별자로 바꿉니다.
 def _normalize_key(value: Any) -> str:
     return re.sub(r"[\s_-]+", "", str(value or "").strip().lower())
 
 
+# 함수 설명: `_dict_get_ci()`는 키의 대소문자 차이를 무시하고 dict에서 요청한 값을 찾습니다.
 def _dict_get_ci(mapping: dict[str, Any], key: Any, default: Any = None) -> Any:
     if not isinstance(mapping, dict):
         return default
@@ -430,6 +458,7 @@ def _dict_get_ci(mapping: dict[str, Any], key: Any, default: Any = None) -> Any:
     return default
 
 
+# 함수 설명: `_as_list()`는 단일 값과 여러 값 입력을 모두 같은 list 형태로 맞춰 반복 처리를 단순화합니다.
 def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -442,6 +471,7 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)

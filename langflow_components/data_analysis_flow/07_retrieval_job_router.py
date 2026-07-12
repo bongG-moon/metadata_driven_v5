@@ -54,12 +54,14 @@ def route_retrieval_jobs(payload_value: Any, target_source_type: str) -> dict[st
     }
 
 
+# 함수 설명: `_retrieval_mode()`는 payload와 작업 설정에서 실제 dummy/live 조회 모드를 결정합니다.
 def _retrieval_mode(payload: dict[str, Any]) -> str:
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     mode = str(request.get("retrieval_mode") or "").strip().lower()
     return "live" if mode in {"live", "actual", "real", "실제", "true", "on", "1", "yes"} else "dummy"
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)

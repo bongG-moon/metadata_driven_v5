@@ -57,6 +57,7 @@ def build_message(payload_value: Any) -> str:
     return "\n\n".join(sections) if sections else json.dumps(payload, ensure_ascii=False, default=str)
 
 
+# 함수 설명: `_message_from_answer_sections()`는 원본·답변·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _message_from_answer_sections(payload: dict[str, Any], answer_sections: dict[str, Any]) -> list[str]:
     sections: list[str] = []
     summary = _dict(answer_sections.get("summary"))
@@ -95,6 +96,7 @@ def _message_from_answer_sections(payload: dict[str, Any], answer_sections: dict
     return sections
 
 
+# 함수 설명: `_key_points_section()`는 핵심 항목·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _key_points_section(value: Any) -> str:
     points = [str(item).strip() for item in value if str(item or "").strip()] if isinstance(value, list) else []
     if not points:
@@ -104,6 +106,7 @@ def _key_points_section(value: Any) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_detail_table_section()`는 표·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _detail_table_section(detail_table: dict[str, Any], data: dict[str, Any]) -> str:
     rows = _row_list(detail_table.get("rows")) or (_row_list(data.get("rows")) if detail_table.get("row_source") == "data.rows" else [])
     columns = _string_list(detail_table.get("columns")) or _columns_from_rows(rows)
@@ -117,6 +120,7 @@ def _detail_table_section(detail_table: dict[str, Any], data: dict[str, Any]) ->
     return f"### {title}\n" + _markdown_table(preview_rows, columns) + note
 
 
+# 함수 설명: `_usage_examples_section()`는 examples·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _usage_examples_section(value: Any) -> str:
     examples = [str(item).strip() for item in value if str(item or "").strip()] if isinstance(value, list) else []
     if not examples:
@@ -126,6 +130,7 @@ def _usage_examples_section(value: Any) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_route_hint_section()`는 힌트·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _route_hint_section(route_hint: dict[str, Any]) -> str:
     if not route_hint:
         return ""
@@ -139,6 +144,7 @@ def _route_hint_section(route_hint: dict[str, Any]) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+# 함수 설명: `_section_warnings()`는 경고을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _section_warnings(value: Any) -> str:
     warnings = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
     if not warnings:
@@ -151,6 +157,7 @@ def _section_warnings(value: Any) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+# 함수 설명: `_sql_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _sql_section(sql_blocks_value: Any) -> str:
     blocks = [block for block in sql_blocks_value if isinstance(block, dict)] if isinstance(sql_blocks_value, list) else []
     if not blocks:
@@ -166,6 +173,7 @@ def _sql_section(sql_blocks_value: Any) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_table_section()`는 구조화 rows/columns를 최종 답변의 표 section 계약으로 변환합니다.
 def _table_section(data: dict[str, Any]) -> str:
     rows = _row_list(data.get("rows"))
     columns = _string_list(data.get("columns")) or _columns_from_rows(rows)
@@ -176,6 +184,7 @@ def _table_section(data: dict[str, Any]) -> str:
     return "### 관련 메타데이터\n" + _markdown_table(preview_rows, columns) + note
 
 
+# 함수 설명: `_refs_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _refs_section(value: Any) -> str:
     refs = [ref for ref in value if isinstance(ref, dict)] if isinstance(value, list) else []
     if not refs:
@@ -189,6 +198,7 @@ def _refs_section(value: Any) -> str:
     return "### 사용한 메타데이터\n" + "\n".join(f"- `{label}`" for label in labels if label)
 
 
+# 함수 설명: `_warning_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _warning_section(trace: dict[str, Any]) -> str:
     warnings = _list(trace.get("warnings"))
     errors = _list(trace.get("errors"))
@@ -202,6 +212,7 @@ def _warning_section(trace: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_markdown_table()`는 컬럼과 행을 길이 제한·escape 규칙이 적용된 Markdown 표로 렌더링합니다.
 def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     header = "| " + " | ".join(_escape(column) for column in columns) + " |"
     divider = "| " + " | ".join("---" for _ in columns) + " |"
@@ -211,27 +222,33 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     return "\n".join([header, divider] + body)
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# 함수 설명: `_row_list()`는 여러 입력 형태에서 dict인 행만 골라 표준 행 목록으로 반환합니다.
 def _row_list(value: Any) -> list[dict[str, Any]]:
     return [dict(row) for row in value if isinstance(row, dict)] if isinstance(value, list) else []
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_columns_from_rows()`는 행 목록의 key 등장 순서를 유지하면서 결과 테이블의 컬럼 목록을 계산합니다.
 def _columns_from_rows(rows: list[dict[str, Any]]) -> list[str]:
     columns = []
     for row in rows:
@@ -241,17 +258,20 @@ def _columns_from_rows(rows: list[dict[str, Any]]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_escape()`는 Markdown 표 셀을 깨뜨리는 구분자와 줄바꿈 문자를 안전하게 escape합니다.
 def _escape(value: Any) -> str:
     text = _display(value).replace("\n", "<br>").replace("|", "\\|")
     return text[: CELL_LIMIT - 3] + "..." if len(text) > CELL_LIMIT else text
 
 
+# 함수 설명: `_display()`는 표시값을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, default=str)
     return "" if value is None else str(value)
 
 
+# 함수 설명: `_int()`는 문자열이나 숫자 입력을 정수로 변환하고 실패하면 안전한 기본값을 사용합니다.
 def _int(value: Any, default: int) -> int:
     try:
         return max(1, int(value))

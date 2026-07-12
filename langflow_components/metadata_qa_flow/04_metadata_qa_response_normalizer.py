@@ -93,6 +93,7 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
     return next_payload
 
 
+# 함수 설명: `_compact_answer_sections()`는 큰 rows는 data.rows 한 곳에 두고 answer section에는 표시 정보만 남겨 중복 payload를 줄입니다.
 def _compact_answer_sections(answer_sections: dict[str, Any], columns: list[str], row_count: int) -> dict[str, Any]:
     sections = deepcopy(answer_sections) if isinstance(answer_sections, dict) else {}
     detail = _dict(sections.get("detail_table"))
@@ -106,6 +107,7 @@ def _compact_answer_sections(answer_sections: dict[str, Any], columns: list[str]
     return sections
 
 
+# 함수 설명: `_should_use_context_table()`는 현재 답변 모드에서 LLM 표 대신 authoritative metadata context 표를 써야 하는지 판정합니다.
 def _should_use_context_table(answer_type: str, context: dict[str, Any], parsed_table: dict[str, Any], fallback_table: dict[str, Any]) -> bool:
     context_mode = str(context.get("answer_mode") or "").strip()
     if answer_type in ALWAYS_USE_CONTEXT_TABLE_TYPES or context_mode in ALWAYS_USE_CONTEXT_TABLE_TYPES:
@@ -119,6 +121,7 @@ def _should_use_context_table(answer_type: str, context: dict[str, Any], parsed_
     return len(parsed_rows) < len(fallback_rows)
 
 
+# 함수 설명: `_source_refs_for_answer()`는 참조·대상·답변 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _source_refs_for_answer(answer_type: str, context: dict[str, Any], parsed: dict[str, Any], use_context_table: bool) -> list[Any]:
     context_refs = _list(context.get("source_refs"))
     parsed_refs = _list(parsed.get("source_refs"))
@@ -130,6 +133,7 @@ def _source_refs_for_answer(answer_type: str, context: dict[str, Any], parsed: d
     return parsed_refs or context_refs
 
 
+# 함수 설명: `_sync_answer_sections_from_context()`는 답변·응답 section·원본·문맥을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _sync_answer_sections_from_context(
     answer_sections: dict[str, Any],
     answer_type: str,
@@ -160,10 +164,12 @@ def _sync_answer_sections_from_context(
     return sections
 
 
+# 함수 설명: `_display_limit()`는 제한값을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_limit(answer_type: str) -> int:
     return 50 if answer_type in {"available_sources"} else 12
 
 
+# 함수 설명: `_fallback_answer()`는 LLM 출력이 비어도 답변 모드와 실제 context에 근거한 결정론적 기본 답변을 만듭니다.
 def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
     answer_mode = str(context.get("answer_mode") or "general_metadata_search")
     rows = _row_list(context.get("candidate_rows"))
@@ -216,6 +222,7 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
     return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
 
 
+# 함수 설명: `_fallback_payload()`는 LLM 응답이 비거나 잘못됐을 때 실제 metadata context로 결정론적 QA payload를 만듭니다.
 def _fallback_payload(
     answer_type: str,
     message: str,
@@ -236,6 +243,7 @@ def _fallback_payload(
     }
 
 
+# 함수 설명: `_build_answer_sections()`는 답변·응답 section 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def _build_answer_sections(
     answer_type: str,
     answer_message: str,
@@ -267,6 +275,7 @@ def _build_answer_sections(
     }
 
 
+# 함수 설명: `_service_table()`는 현재 metadata context를 사용 가능한 데이터 서비스 목록 표로 구성합니다.
 def _service_table(answer_type: str, table: dict[str, Any]) -> dict[str, Any]:
     rows = _row_list(table.get("rows"))
     if answer_type == "available_sources":
@@ -277,6 +286,7 @@ def _service_table(answer_type: str, table: dict[str, Any]) -> dict[str, Any]:
     return table
 
 
+# 함수 설명: `_available_source_row()`는 데이터 소스·행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _available_source_row(row: dict[str, Any]) -> dict[str, Any]:
     source_type = str(row.get("source_type") or "").strip()
     db_source = str(row.get("db_key") or "").strip()
@@ -294,6 +304,7 @@ def _available_source_row(row: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in result.items() if item not in (None, "", [], {})}
 
 
+# 함수 설명: `_source_type_label()`는 유형·표시 라벨의 내부 식별자를 사용자가 이해할 표시 라벨로 변환합니다.
 def _source_type_label(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -302,6 +313,7 @@ def _source_type_label(value: Any) -> str:
     return labels.get(text.lower(), text)
 
 
+# 함수 설명: `_family_label()`는 표시 라벨의 내부 식별자를 사용자가 이해할 표시 라벨로 변환합니다.
 def _family_label(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -316,6 +328,7 @@ def _family_label(value: Any) -> str:
     return labels.get(text.lower(), text)
 
 
+# 함수 설명: `_available_sources_message()`는 sources·Message 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _available_sources_message(rows: list[dict[str, Any]]) -> str:
     rows = [_available_source_row(row) for row in rows] if rows and "연결 방식" not in rows[0] else rows
     total = len(rows)
@@ -330,6 +343,7 @@ def _available_sources_message(rows: list[dict[str, Any]]) -> str:
     )
 
 
+# 함수 설명: `_key_points()`는 구조화 응답에서 사용자가 먼저 확인할 핵심 요약 문장을 추출합니다.
 def _key_points(answer_type: str, rows: list[dict[str, Any]]) -> list[str]:
     if answer_type != "available_sources" or not rows:
         return []
@@ -345,6 +359,7 @@ def _key_points(answer_type: str, rows: list[dict[str, Any]]) -> list[str]:
     return points
 
 
+# 함수 설명: `_count_by()`는 BY의 일치도나 건수를 계산해 후보 비교와 요약에 사용합니다.
 def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
@@ -355,6 +370,7 @@ def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
     return counts
 
 
+# 함수 설명: `_table_title()`는 title을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
 def _table_title(answer_type: str) -> str:
     return {
         "available_sources": "조회 가능한 데이터",
@@ -372,6 +388,7 @@ def _table_title(answer_type: str) -> str:
     }.get(answer_type, "관련 메타데이터")
 
 
+# 함수 설명: `_usage_examples()`는 선택된 메타데이터 항목에 등록된 질문·사용 예시를 중복 없이 모읍니다.
 def _usage_examples(answer_type: str, context: dict[str, Any]) -> list[str]:
     question = str(context.get("question") or "").strip()
     examples = {
@@ -392,12 +409,14 @@ def _usage_examples(answer_type: str, context: dict[str, Any]) -> list[str]:
     return examples.get(answer_type, [])
 
 
+# 함수 설명: `_route_hint()`는 현재 질문이 Metadata QA와 Data Analysis 중 어디로 가야 하는지 짧은 안내를 만듭니다.
 def _route_hint(answer_type: str) -> dict[str, str]:
     if answer_type == "data_analysis_redirect":
         return {"target_route": "data_analysis", "message": "실제 수량 계산은 data_analysis flow에서 실행합니다."}
     return {}
 
 
+# 함수 설명: `_sql_block()`는 선택한 테이블 카탈로그의 SQL 템플릿을 답변용 코드 블록 정보로 구성합니다.
 def _sql_block(item: Any) -> dict[str, str]:
     table = _dict(item)
     payload = _dict(table.get("payload"))
@@ -408,12 +427,14 @@ def _sql_block(item: Any) -> dict[str, str]:
     return {"label": _display_name(table), "sql": sql}
 
 
+# 함수 설명: `_display_name()`는 NAME을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_name(item: Any) -> str:
     table = _dict(item)
     payload = _dict(table.get("payload"))
     return str(payload.get("display_name") or table.get("display_name") or table.get("dataset_key") or table.get("key") or "").strip()
 
 
+# 함수 설명: `_parse_llm_response()`는 복합 입력이나 응답에서 LLM·응답을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _parse_llm_response(value: Any) -> dict[str, Any]:
     text = _text(value)
     if not text:
@@ -434,11 +455,13 @@ def _parse_llm_response(value: Any) -> dict[str, Any]:
     return {"answer_message": text}
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_text()`는 Message나 일반 값을 앞뒤 공백이 정리된 문자열로 변환합니다.
 def _text(value: Any) -> str:
     if value is None:
         return ""
@@ -452,22 +475,27 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# 함수 설명: `_row_list()`는 여러 입력 형태에서 dict인 행만 골라 표준 행 목록으로 반환합니다.
 def _row_list(value: Any) -> list[dict[str, Any]]:
     return [dict(row) for row in value if isinstance(row, dict)] if isinstance(value, list) else []
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_columns_from_rows()`는 행 목록의 key 등장 순서를 유지하면서 결과 테이블의 컬럼 목록을 계산합니다.
 def _columns_from_rows(rows: list[dict[str, Any]]) -> list[str]:
     columns = []
     for row in rows:

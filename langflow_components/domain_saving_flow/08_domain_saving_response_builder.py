@@ -77,6 +77,7 @@ def build_response(payload_value: Any) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_status()`는 여러 단계의 실행 결과를 우선순위에 따라 최종 상태 문자열로 결정합니다.
 def _status(write_result: dict[str, Any], review: dict[str, Any]) -> str:
     if _list(write_result.get("errors")):
         return "error"
@@ -91,6 +92,7 @@ def _status(write_result: dict[str, Any], review: dict[str, Any]) -> str:
     return "not_saved"
 
 
+# 함수 설명: `_summary()`는 현재 처리 결과의 건수·상태·핵심 정보를 짧은 요약 dict로 만듭니다.
 def _summary(status: str, write_result: dict[str, Any], items: list[Any]) -> str:
     saved_count = _int(write_result.get("saved_count"), 0)
     would_save_count = _int(write_result.get("would_save_count"), len(items))
@@ -107,6 +109,7 @@ def _summary(status: str, write_result: dict[str, Any], items: list[Any]) -> str
     return write_result.get("message") or "도메인 메타데이터를 저장하지 않았습니다."
 
 
+# 함수 설명: `_key_points()`는 구조화 응답에서 사용자가 먼저 확인할 핵심 요약 문장을 추출합니다.
 def _key_points(status: str, write_result: dict[str, Any], review: dict[str, Any], payload: dict[str, Any], items: list[Any]) -> list[str]:
     points = [f"생성된 등록 후보는 {len(items)}건입니다."]
     if status == "saved":
@@ -125,6 +128,7 @@ def _key_points(status: str, write_result: dict[str, Any], review: dict[str, Any
     return points
 
 
+# 함수 설명: `_item_row()`는 행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _item_row(item: Any, write_result: dict[str, Any]) -> dict[str, Any]:
     item = _dict(item)
     payload = _dict(item.get("payload"))
@@ -143,6 +147,7 @@ def _item_row(item: Any, write_result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_item_status()`는 여러 실행 결과를 확인해 상태의 최종 상태를 결정합니다.
 def _item_status(write_result: dict[str, Any], operation: dict[str, Any] | None = None) -> str:
     operation = _dict(operation)
     if operation.get("operation") == "skipped":
@@ -154,6 +159,7 @@ def _item_status(write_result: dict[str, Any], operation: dict[str, Any] | None 
     return "확인 필요"
 
 
+# 함수 설명: `_operation_for_key()`는 대상·key을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
 def _operation_for_key(write_result: dict[str, Any], requested_key: str) -> dict[str, Any]:
     operations = [_dict(item) for item in _list(write_result.get("operation_by_key"))]
     requested_lower = requested_key.lower()
@@ -168,6 +174,7 @@ def _operation_for_key(write_result: dict[str, Any], requested_key: str) -> dict
     return {}
 
 
+# 함수 설명: `_operation_label()`는 표시 라벨의 내부 식별자를 사용자가 이해할 표시 라벨로 변환합니다.
 def _operation_label(operation: str, dry_run: bool) -> str:
     labels = {
         "inserted": "신규 저장",
@@ -181,6 +188,7 @@ def _operation_label(operation: str, dry_run: bool) -> str:
     return f"{label} 예정" if dry_run and operation != "skipped" else label
 
 
+# 함수 설명: `_operation_summary()`는 요약의 건수·조건·상태를 진단과 답변에 쓸 짧은 요약으로 만듭니다.
 def _operation_summary(write_result: dict[str, Any]) -> str:
     counts: dict[str, int] = {}
     for item in _list(write_result.get("operation_by_key")):
@@ -191,11 +199,13 @@ def _operation_summary(write_result: dict[str, Any]) -> str:
     return ", ".join(f"{label} {count}건" for label, count in counts.items())
 
 
+# 함수 설명: `_split_logical_key()`는 논리 조건·key을 의미 있는 단위로 나눠 개별 처리할 수 있는 목록으로 만듭니다.
 def _split_logical_key(value: str) -> tuple[str, str]:
     section, separator, key = str(value or "").partition(":")
     return (section, key) if separator else ("", section)
 
 
+# 함수 설명: `_notices()`는 warnings와 errors를 사용자에게 보여 줄 중복 없는 안내 목록으로 정리합니다.
 def _notices(write_result: dict[str, Any], review: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, str]]:
     notices = []
     for error in _list(write_result.get("errors")) + _list(review.get("errors")):
@@ -211,6 +221,7 @@ def _notices(write_result: dict[str, Any], review: dict[str, Any], payload: dict
     return notices
 
 
+# 함수 설명: `_next_steps()`는 현재 상태와 오류 여부에 맞는 사용자 다음 단계 안내를 구성합니다.
 def _next_steps(status: str, write_result: dict[str, Any]) -> list[str]:
     if status == "dry_run":
         return ["저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.", "저장 후 Metadata QA에서 등록 내용을 확인하세요."]
@@ -223,6 +234,7 @@ def _next_steps(status: str, write_result: dict[str, Any]) -> list[str]:
     return ["입력 원문과 검수 결과를 확인한 뒤 다시 실행하세요."]
 
 
+# 함수 설명: `_keys()`는 저장 요청·operation에서 사용자에게 표시할 논리 key를 중복 없이 모읍니다.
 def _keys(write_result: dict[str, Any], items: list[Any]) -> list[str]:
     keys = [str(key) for key in _list(write_result.get("keys")) if str(key).strip()]
     if keys:
@@ -243,6 +255,7 @@ def _keys(write_result: dict[str, Any], items: list[Any]) -> list[str]:
     return result
 
 
+# 함수 설명: `_compact_write_result()`는 MongoDB 저장 결과에서 사용자 응답에 필요한 상태와 key 정보만 남깁니다.
 def _compact_write_result(write_result: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "success",
@@ -263,19 +276,23 @@ def _compact_write_result(write_result: dict[str, Any]) -> dict[str, Any]:
     return {key: deepcopy(value) for key, value in write_result.items() if key in allowed}
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# 함수 설명: `_int()`는 문자열이나 숫자 입력을 정수로 변환하고 실패하면 안전한 기본값을 사용합니다.
 def _int(value: Any, default: int) -> int:
     try:
         return int(value)

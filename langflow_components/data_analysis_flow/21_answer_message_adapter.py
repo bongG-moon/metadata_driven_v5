@@ -98,6 +98,7 @@ def build_message(
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+# 함수 설명: `_message_sections_from_answer_sections()`는 응답 section·원본·답변을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _message_sections_from_answer_sections(
     payload: dict[str, Any],
     answer_sections: dict[str, Any],
@@ -137,6 +138,8 @@ def _message_sections_from_answer_sections(
     return sections
 
 
+# 함수 설명: `_result_table_section_from_answer_sections()`는 표·응답 section·원본·답변을 최종 Message에 넣을 독립 Markdown section으로
+#        렌더링합니다.
 def _result_table_section_from_answer_sections(answer_sections: dict[str, Any], payload: dict[str, Any] | None = None) -> str:
     result_table = answer_sections.get("result_table") if isinstance(answer_sections.get("result_table"), dict) else {}
     rows = result_table.get("display_rows")
@@ -170,6 +173,8 @@ def _result_table_section_from_answer_sections(answer_sections: dict[str, Any], 
     return "### 결과 테이블\n" + _markdown_table(preview_rows, columns, column_labels) + note
 
 
+# 함수 설명: `_applied_criteria_section_from_answer_sections()`는 적용 기준·응답 section·원본·답변을 최종 Message에 넣을 독립 Markdown
+#        section으로 렌더링합니다.
 def _applied_criteria_section_from_answer_sections(answer_sections: dict[str, Any]) -> str:
     criteria = answer_sections.get("applied_criteria") if isinstance(answer_sections.get("applied_criteria"), dict) else {}
     if not criteria:
@@ -189,6 +194,7 @@ def _applied_criteria_section_from_answer_sections(answer_sections: dict[str, An
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+# 함수 설명: `_criteria_display_lines()`는 표시값·lines 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _criteria_display_lines(label: str, value: Any) -> list[str]:
     if value in (None, "", [], {}):
         return []
@@ -197,6 +203,7 @@ def _criteria_display_lines(label: str, value: Any) -> list[str]:
     return lines
 
 
+# 함수 설명: `_criteria_items()`는 항목 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _criteria_items(value: Any) -> list[str]:
     if isinstance(value, dict):
         items: list[str] = []
@@ -211,6 +218,7 @@ def _criteria_items(value: Any) -> list[str]:
     return [_criteria_item_text(value)]
 
 
+# 함수 설명: `_criteria_item_text()`는 항목·문자열 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _criteria_item_text(value: Any) -> str:
     if isinstance(value, dict):
         pairs = []
@@ -224,6 +232,7 @@ def _criteria_item_text(value: Any) -> str:
     return _display_value(value)
 
 
+# 함수 설명: `_notice_section_from_answer_sections()`는 응답 section·원본·답변을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _notice_section_from_answer_sections(answer_sections: dict[str, Any]) -> str:
     notices = answer_sections.get("notices")
     notices = notices if isinstance(notices, list) else []
@@ -240,6 +249,8 @@ def _notice_section_from_answer_sections(answer_sections: dict[str, Any]) -> str
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+# 함수 설명: `_next_questions_section_from_answer_sections()`는 questions·응답 section·원본·답변을 최종 Message에 넣을 독립 Markdown
+#        section으로 렌더링합니다.
 def _next_questions_section_from_answer_sections(answer_sections: dict[str, Any]) -> str:
     questions = answer_sections.get("next_questions")
     questions = [str(item).strip() for item in questions if str(item or "").strip()] if isinstance(questions, list) else []
@@ -250,11 +261,13 @@ def _next_questions_section_from_answer_sections(answer_sections: dict[str, Any]
     return "\n".join(lines)
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_contains_markdown_table()`는 입력값이 markdown·표 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _contains_markdown_table(text: str) -> bool:
     lines = [line.strip() for line in str(text or "").splitlines()]
     for index in range(len(lines) - 1):
@@ -266,10 +279,12 @@ def _contains_markdown_table(text: str) -> bool:
     return False
 
 
+# 함수 설명: `_answer_markdown()`는 markdown에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _answer_markdown(text: Any) -> str:
     return _escape_markdown_tilde(_readable_answer_text(str(text or "").strip()))
 
 
+# 함수 설명: `_display_answer_text()`는 답변·문자열을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_answer_text(text: str, options: dict[str, bool]) -> str:
     disabled_headings: list[str] = []
     if not options.get("result_table"):
@@ -293,6 +308,7 @@ def _display_answer_text(text: str, options: dict[str, bool]) -> str:
     return _strip_markdown_sections(text, disabled_headings)
 
 
+# 함수 설명: `_strip_markdown_sections()`는 markdown·응답 section에서 후속 단계에 불필요하거나 노출하면 안 되는 부분을 제거합니다.
 def _strip_markdown_sections(text: str, headings: list[str]) -> str:
     if not text or not headings:
         return text
@@ -317,6 +333,7 @@ def _strip_markdown_sections(text: str, headings: list[str]) -> str:
     return "\n".join(kept).strip()
 
 
+# 함수 설명: `_markdown_heading()`는 heading을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _markdown_heading(line: str) -> tuple[int, str] | None:
     match = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$", str(line or ""))
     if not match:
@@ -325,10 +342,12 @@ def _markdown_heading(line: str) -> tuple[int, str] | None:
     return len(match.group(1)), title
 
 
+# 함수 설명: `_normalize_heading()`는 heading의 표기·자료형 차이를 비교와 저장에 사용할 표준 형태로 정규화합니다.
 def _normalize_heading(value: Any) -> str:
     return re.sub(r"[\s`*_:\-/]+", "", str(value or "").strip()).lower()
 
 
+# 함수 설명: `_readable_answer_text()`는 LLM 답변에서 불필요한 wrapper를 제거하고 사용자에게 표시할 본문만 남깁니다.
 def _readable_answer_text(text: str) -> str:
     clean = re.sub(r"[ \t]+", " ", str(text or "").strip())
     if not clean:
@@ -345,11 +364,13 @@ def _readable_answer_text(text: str) -> str:
     return "\n\n".join(sentences)
 
 
+# 함수 설명: `_split_sentences()`는 sentences을 의미 있는 단위로 나눠 개별 처리할 수 있는 목록으로 만듭니다.
 def _split_sentences(text: str) -> list[str]:
     sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+(?=\S)", text) if item.strip()]
     return sentences if sentences else [text]
 
 
+# 함수 설명: `_result_table_section()`는 표·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _result_table_section(payload: dict[str, Any]) -> str:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     rows = data.get("rows") if isinstance(data.get("rows"), list) else []
@@ -374,6 +395,7 @@ def _result_table_section(payload: dict[str, Any]) -> str:
     return "### 결과 테이블\n" + _markdown_table(preview_rows, columns, column_labels) + note
 
 
+# 함수 설명: `_step_outputs_section()`는 outputs·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _step_outputs_section(payload: dict[str, Any]) -> str:
     outputs = _analysis_items(payload, "step_outputs")
     if not outputs:
@@ -396,6 +418,8 @@ def _step_outputs_section(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_function_case_results_section()`는 Function Case·결과·응답 section을 최종 Message에 넣을 독립 Markdown section으로
+#        렌더링합니다.
 def _function_case_results_section(payload: dict[str, Any]) -> str:
     results = _analysis_items(payload, "function_case_results")
     if not results:
@@ -435,6 +459,7 @@ def _function_case_results_section(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_function_case_product_columns()`는 Function Case·product·컬럼 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _function_case_product_columns(columns: list[Any], rows: list[Any]) -> list[str]:
     existing = [str(column) for column in columns if str(column or "").strip()]
     if not existing:
@@ -460,6 +485,7 @@ def _function_case_product_columns(columns: list[Any], rows: list[Any]) -> list[
     return [column for column in priority if column in existing]
 
 
+# 함수 설명: `_compact_function_case_preview()`는 함수·Function Case·미리보기에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_function_case_preview(rows: list[Any], columns: list[Any], display_columns: list[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     existing = [str(column) for column in columns if str(column or "").strip()]
     if not existing:
@@ -482,6 +508,7 @@ def _compact_function_case_preview(rows: list[Any], columns: list[Any], display_
     return compact_rows, compact_columns
 
 
+# 함수 설명: `_analysis_items()`는 항목에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _analysis_items(payload: dict[str, Any], key: str) -> list[Any]:
     analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
     items = analysis.get(key)
@@ -493,6 +520,7 @@ def _analysis_items(payload: dict[str, Any], key: str) -> list[Any]:
     return items if isinstance(items, list) else []
 
 
+# 함수 설명: `_intent_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _intent_section(payload: dict[str, Any]) -> str:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     metadata_refs = payload.get("metadata_refs") if isinstance(payload.get("metadata_refs"), list) else []
@@ -532,6 +560,7 @@ def _intent_section(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_intent_decision_reasons()`는 의도 계획의 근거를 우선 사용하고 없으면 실행 계획에서 결정론적 근거를 만듭니다.
 def _intent_decision_reasons(plan: dict[str, Any], intent_trace: dict[str, Any]) -> list[Any]:
     raw_reasons = _list_value(intent_trace.get("decision_reason")) or _list_value(plan.get("decision_reason"))
     if raw_reasons and not _looks_like_english_reasons(raw_reasons):
@@ -540,6 +569,7 @@ def _intent_decision_reasons(plan: dict[str, Any], intent_trace: dict[str, Any])
     return derived or raw_reasons
 
 
+# 함수 설명: `_looks_like_english_reasons()`는 입력값이 LIKE·english·reasons 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _looks_like_english_reasons(reasons: list[Any]) -> bool:
     texts = [str(reason or "") for reason in reasons if str(reason or "").strip()]
     if not texts:
@@ -564,6 +594,7 @@ def _looks_like_english_reasons(reasons: list[Any]) -> bool:
     return latin_count > max(hangul_count * 2, 20) and any(marker in lower for marker in english_markers)
 
 
+# 함수 설명: `_derived_korean_intent_reasons()`는 조회 데이터셋·조건·지표·그룹 정보를 자연스러운 한글 판단 근거로 변환합니다.
 def _derived_korean_intent_reasons(plan: dict[str, Any], intent_trace: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     request_scope = str(plan.get("request_scope") or intent_trace.get("request_scope") or "").strip()
@@ -615,6 +646,7 @@ def _derived_korean_intent_reasons(plan: dict[str, Any], intent_trace: dict[str,
     return _dedupe_texts(reasons)[:8]
 
 
+# 함수 설명: `_retrieval_dataset_summary()`는 데이터셋·요약의 건수·조건·상태를 진단과 답변에 쓸 짧은 요약으로 만듭니다.
 def _retrieval_dataset_summary(retrieval_jobs: list[Any]) -> str:
     datasets = []
     for job in retrieval_jobs:
@@ -629,6 +661,7 @@ def _retrieval_dataset_summary(retrieval_jobs: list[Any]) -> str:
     return ", ".join(_dedupe_texts(datasets))
 
 
+# 함수 설명: `_retrieval_required_params_summary()`는 필수 항목·파라미터·요약의 건수·조건·상태를 진단과 답변에 쓸 짧은 요약으로 만듭니다.
 def _retrieval_required_params_summary(retrieval_jobs: list[Any]) -> str:
     parts = []
     for job in retrieval_jobs:
@@ -641,6 +674,7 @@ def _retrieval_required_params_summary(retrieval_jobs: list[Any]) -> str:
     return "; ".join(parts)
 
 
+# 함수 설명: `_retrieval_filters_summary()`는 필터·요약의 건수·조건·상태를 진단과 답변에 쓸 짧은 요약으로 만듭니다.
 def _retrieval_filters_summary(retrieval_jobs: list[Any]) -> str:
     parts = []
     for job in retrieval_jobs:
@@ -653,6 +687,7 @@ def _retrieval_filters_summary(retrieval_jobs: list[Any]) -> str:
     return "; ".join(parts)
 
 
+# 함수 설명: `_group_columns_summary()`는 컬럼·요약의 건수·조건·상태를 진단과 답변에 쓸 짧은 요약으로 만듭니다.
 def _group_columns_summary(pandas_plan: list[Any]) -> str:
     columns = []
     for step in pandas_plan:
@@ -667,6 +702,7 @@ def _group_columns_summary(pandas_plan: list[Any]) -> str:
     return ", ".join(_dedupe_texts(columns))
 
 
+# 함수 설명: `_dedupe_texts()`는 texts의 중복을 제거하고 최초 등장 순서를 유지합니다.
 def _dedupe_texts(items: list[Any]) -> list[str]:
     result: list[str] = []
     for item in items:
@@ -676,6 +712,7 @@ def _dedupe_texts(items: list[Any]) -> list[str]:
     return result
 
 
+# 함수 설명: `_retrieval_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _retrieval_section(payload: dict[str, Any]) -> str:
     source_results = payload.get("source_results") if isinstance(payload.get("source_results"), list) else []
     retrieval_trace = _inspection(payload).get("data_retrieval")
@@ -700,6 +737,7 @@ def _retrieval_section(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_pandas_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _pandas_section(payload: dict[str, Any]) -> str:
     analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
     inspection = _inspection(payload)
@@ -760,6 +798,7 @@ def _pandas_section(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_notice_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _notice_section(payload: dict[str, Any]) -> str:
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     warnings = _list_value(trace.get("warnings")) + _list_value(payload.get("warnings"))
@@ -779,6 +818,7 @@ def _notice_section(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_download_links_section()`는 links·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _download_links_section(payload: dict[str, Any], download_base_url: Any = "") -> str:
     refs = _downloadable_data_refs(payload)
     if not refs:
@@ -792,6 +832,7 @@ def _download_links_section(payload: dict[str, Any], download_base_url: Any = ""
     return "\n".join(lines)
 
 
+# 함수 설명: `_downloadable_data_refs()`는 사용자가 내려받을 수 있는 저장 결과 data_ref만 중복 없이 선별합니다.
 def _downloadable_data_refs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     for ref in _list_value(payload.get("data_refs")):
@@ -804,6 +845,7 @@ def _downloadable_data_refs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return refs
 
 
+# 함수 설명: `_append_ref()`는 여러 참조 값을 순서와 중복 정책을 지키며 하나의 결과로 합칩니다.
 def _append_ref(refs: list[dict[str, Any]], ref: dict[str, Any]) -> None:
     ref_id = str(ref.get("ref_id") or "").strip()
     if not ref_id:
@@ -814,6 +856,7 @@ def _append_ref(refs: list[dict[str, Any]], ref: dict[str, Any]) -> None:
     refs.append(ref)
 
 
+# 함수 설명: `_download_label()`는 표시 라벨의 내부 식별자를 사용자가 이해할 표시 라벨로 변환합니다.
 def _download_label(ref: dict[str, Any]) -> str:
     label = str(ref.get("label") or "").strip()
     if label:
@@ -827,12 +870,14 @@ def _download_label(ref: dict[str, Any]) -> str:
     return "저장 데이터 CSV 다운로드"
 
 
+# 함수 설명: `_download_url()`는 URL에 접근할 URL을 설정과 식별자로부터 안전하게 구성합니다.
 def _download_url(ref: dict[str, Any], download_base_url: Any = "") -> str:
     base_url = str(download_base_url or "").strip() or DEFAULT_DOWNLOAD_BASE_URL
     token = base64.urlsafe_b64encode(json.dumps(ref, ensure_ascii=False, default=str).encode("utf-8")).decode("ascii").rstrip("=")
     return f"{base_url.rstrip('/')}/?download_ref={token}"
 
 
+# 함수 설명: `_diagnostic_sections()`는 표시 옵션이 켜진 경우에만 의도·조회·pandas 진단 section을 최종 Message에 추가합니다.
 def _diagnostic_sections(payload: dict[str, Any], options: dict[str, bool]) -> list[str]:
     sections = []
     if options.get("intent_analysis"):
@@ -844,12 +889,14 @@ def _diagnostic_sections(payload: dict[str, Any], options: dict[str, bool]) -> l
     return sections
 
 
+# 함수 설명: `_inspection()`는 payload trace에서 진단 표시용 inspection dict만 안전하게 꺼냅니다.
 def _inspection(payload: dict[str, Any]) -> dict[str, Any]:
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     inspection = trace.get("inspection")
     return inspection if isinstance(inspection, dict) else {}
 
 
+# 함수 설명: `_retrieval_job_label()`는 조회 작업·표시 라벨의 내부 식별자를 사용자가 이해할 표시 라벨로 변환합니다.
 def _retrieval_job_label(job: Any) -> str:
     if not isinstance(job, dict):
         return _display_value(job)
@@ -867,6 +914,7 @@ def _retrieval_job_label(job: Any) -> str:
     return ", ".join(parts) if parts else _display_value(job)
 
 
+# 함수 설명: `_source_result_label()`는 결과·표시 라벨의 내부 식별자를 사용자가 이해할 표시 라벨로 변환합니다.
 def _source_result_label(source: Any) -> str:
     if not isinstance(source, dict):
         return _display_value(source)
@@ -895,6 +943,7 @@ def _source_result_label(source: Any) -> str:
     return ", ".join(parts) if parts else _display_value(source)
 
 
+# 함수 설명: `_markdown_table()`는 컬럼과 행을 길이 제한·escape 규칙이 적용된 Markdown 표로 렌더링합니다.
 def _markdown_table(rows: list[Any], columns: list[Any], column_labels: dict[str, Any] | None = None) -> str:
     cleaned_columns = [str(column) for column in columns if str(column or "").strip()]
     if not cleaned_columns:
@@ -908,6 +957,7 @@ def _markdown_table(rows: list[Any], columns: list[Any], column_labels: dict[str
     return "\n".join([header, divider] + body)
 
 
+# 함수 설명: `_display_columns()`는 컬럼을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_columns(columns: list[Any], rows: list[Any], preferred_columns: list[str] | None = None) -> list[str]:
     existing = [str(column) for column in columns if str(column or "").strip()]
     if not existing:
@@ -918,6 +968,7 @@ def _display_columns(columns: list[Any], rows: list[Any], preferred_columns: lis
     return ordered
 
 
+# 함수 설명: `_display_column_label()`는 컬럼·표시 라벨을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_column_label(column: Any, column_labels: dict[str, Any] | None = None) -> str:
     text = str(column or "")
     labels = column_labels or {}
@@ -925,6 +976,7 @@ def _display_column_label(column: Any, column_labels: dict[str, Any] | None = No
     return str(label) if label not in (None, "") else text
 
 
+# 함수 설명: `_columns_from_rows()`는 행 목록의 key 등장 순서를 유지하면서 결과 테이블의 컬럼 목록을 계산합니다.
 def _columns_from_rows(rows: list[Any]) -> list[str]:
     columns: list[str] = []
     for row in rows:
@@ -937,6 +989,7 @@ def _columns_from_rows(rows: list[Any]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_escape_table_cell()`는 표 셀 안의 파이프·줄바꿈을 escape해 Markdown 열 구조가 깨지지 않게 합니다.
 def _escape_table_cell(value: Any) -> str:
     if isinstance(value, (dict, list)):
         text = json.dumps(value, ensure_ascii=False, default=str)
@@ -947,10 +1000,12 @@ def _escape_table_cell(value: Any) -> str:
     return _escape_markdown_tilde(text.replace("|", "\\|"))
 
 
+# 함수 설명: `_escape_markdown_tilde()`는 markdown·tilde을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _escape_markdown_tilde(text: str) -> str:
     return re.sub(r"(?<!\\)~", r"\\~", text)
 
 
+# 함수 설명: `_display_value()`는 None·숫자·복합 값을 사용자에게 읽기 좋은 짧은 문자열로 표시합니다.
 def _display_value(value: Any) -> str:
     if isinstance(value, bool):
         return "예" if value else "아니오"
@@ -964,6 +1019,7 @@ def _display_value(value: Any) -> str:
     return str(value)
 
 
+# 함수 설명: `_format_display_number()`는 표시값·number을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _format_display_number(value: Any) -> str | None:
     if value is None or isinstance(value, bool):
         return None
@@ -981,24 +1037,29 @@ def _format_display_number(value: Any) -> str | None:
     return f"{int(number):,}" if float(number).is_integer() else f"{number:,.1f}"
 
 
+# 함수 설명: `_display_text()`는 문자열을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_text(value: Any) -> str:
     if isinstance(value, str):
         return _escape_markdown_tilde(value.strip())
     return "`" + _display_value(value) + "`"
 
 
+# 함수 설명: `_list_value()`는 값을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
 def _list_value(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# 함수 설명: `_dict_value()`는 입력값이 dict인지 확인해 Message 렌더링 helper가 안전하게 key를 읽도록 합니다.
 def _dict_value(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_safe_int()`는 예외를 발생시키지 않고 값을 정수로 바꾸며 허용되지 않는 값은 기본값으로 처리합니다.
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -1006,18 +1067,21 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+# 함수 설명: `_truncate()`는 표시 또는 저장 한도를 넘는 텍스트를 안전하게 줄입니다.
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(limit - 3, 0)] + "..."
 
 
+# 함수 설명: `_truthy()`는 입력값이 활성/참 의미로 해석되는지 공통 규칙으로 판정합니다.
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "예", "사용", "표시"}
 
 
+# 함수 설명: `_message_options()`는 options에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _message_options(
     include_diagnostics: Any,
     show_result_table: Any,
@@ -1044,6 +1108,7 @@ def _message_options(
     }
 
 
+# 함수 설명: `_option_enabled()`는 메시지 표시 옵션의 문자열·불리언 값을 기본값과 함께 해석합니다.
 def _option_enabled(value: Any, default: bool) -> bool:
     if value in (None, ""):
         return bool(default)

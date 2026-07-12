@@ -122,6 +122,7 @@ def build_metadata_qa_context(
     return next_payload
 
 
+# 함수 설명: `_extract_items()`는 복합 입력이나 응답에서 항목을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _extract_items(value: Any, key: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     data = getattr(value, "data", value)
     if not isinstance(data, dict):
@@ -131,6 +132,7 @@ def _extract_items(value: Any, key: str) -> tuple[list[dict[str, Any]], dict[str
     return [deepcopy(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else [], deepcopy(load)
 
 
+# 함수 설명: `_infer_answer_mode()`는 질문 표현을 정의·소스 목록·SQL 설명·실데이터 redirect 등 QA 답변 모드로 분류합니다.
 def _infer_answer_mode(question: str) -> str:
     lowered = question.lower()
     if any(token in lowered for token in ("쿼리", "sql", "query", "select", "with문")):
@@ -162,6 +164,7 @@ def _infer_answer_mode(question: str) -> str:
     return "general_metadata_search"
 
 
+# 함수 설명: `_looks_like_data_value_question()`는 입력값이 LIKE·데이터·값·question 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _looks_like_data_value_question(lowered: str) -> bool:
     if any(token in lowered for token in ("메타데이터", "metadata", "등록", "정의", "무슨 컬럼", "어떤 컬럼", "쿼리", "sql", "query", "데이터셋", "필수 조건")):
         return False
@@ -171,12 +174,15 @@ def _looks_like_data_value_question(lowered: str) -> bool:
     return has_metric and asks_value and has_time_or_target
 
 
+# 함수 설명: `_looks_like_available_sources_question()`는 입력값이 LIKE·사용 가능 항목·sources·question 조건에 해당하는지 부작용 없이 bool로
+#        판정합니다.
 def _looks_like_available_sources_question(lowered: str) -> bool:
     catalog_tokens = ("조회 가능", "조회가능", "데이터셋", "데이터들", "데이터 목록", "data catalog", "연결 방식", "연결방식")
     list_tokens = ("목록", "전체", "각 데이터", "각 source", "각 소스", "뭐가", "무엇", "list", "표", "정리", "보여")
     return any(token in lowered for token in catalog_tokens) and any(token in lowered for token in list_tokens)
 
 
+# 함수 설명: `_select_domain_items()`는 질문 token 점수로 관련 도메인 항목만 max_items 범위에서 선택합니다.
 def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     if answer_mode == "calculation_logic_list":
         selected = [item for item in items if str(item.get("section") or "") in CALCULATION_SECTIONS]
@@ -195,6 +201,7 @@ def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, 
     return selected if selected else items[: min(limit, 5)]
 
 
+# 함수 설명: `_select_table_items()`는 질문과 답변 모드에 맞는 테이블 카탈로그 후보를 점수순으로 선택합니다.
 def _select_table_items(question: str, answer_mode: str, items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     if answer_mode in LIST_ALL_TABLE_MODES:
         return items[: _list_limit(limit, items)]
@@ -207,6 +214,7 @@ def _select_table_items(question: str, answer_mode: str, items: list[dict[str, A
     return selected[: min(limit, 5)]
 
 
+# 함수 설명: `_select_filter_items()`는 메인 필터 후보를 질문 token과 별칭 일치 기준으로 선택합니다.
 def _select_filter_items(question: str, answer_mode: str, items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     if answer_mode == "available_sources":
         return []
@@ -217,12 +225,14 @@ def _select_filter_items(question: str, answer_mode: str, items: list[dict[str, 
     return _ranked(question, items, min(limit, 6))
 
 
+# 함수 설명: `_list_limit()`는 QA 후보 최대 개수를 허용 범위 안의 정수로 보정합니다.
 def _list_limit(limit: int, items: list[dict[str, Any]]) -> int:
     if not items:
         return 0
     return min(len(items), limit)
 
 
+# 함수 설명: `_ranked()`는 메타데이터 항목을 질문 일치 점수와 원래 순서로 안정 정렬합니다.
 def _ranked(question: str, items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     tokens = _tokens(question)
     scored = []
@@ -234,6 +244,7 @@ def _ranked(question: str, items: list[dict[str, Any]], limit: int) -> list[dict
     return [item for _, item in scored[:limit]]
 
 
+# 함수 설명: `_score()`는 질문 token과 후보 메타데이터의 일치 정도를 점수로 계산합니다.
 def _score(tokens: set[str], item: dict[str, Any]) -> int:
     if not tokens:
         return 0
@@ -245,6 +256,7 @@ def _score(tokens: set[str], item: dict[str, Any]) -> int:
     return score
 
 
+# 함수 설명: `_tokens()`는 문자열을 비교 가능한 검색 token 목록으로 분리·정규화합니다.
 def _tokens(text: str) -> set[str]:
     raw = re.findall(r"[0-9a-zA-Z가-힣_/.-]+", str(text or "").lower())
     aliases = {"생산량": {"production", "output", "실적"}, "재공": {"wip"}, "투입": {"input"}, "쿼리": {"query", "sql"}}
@@ -254,6 +266,7 @@ def _tokens(text: str) -> set[str]:
     return result
 
 
+# 함수 설명: `_project_domain_item()`는 도메인 문서에서 QA 답변에 필요한 설명·별칭·공정 정보만 projection합니다.
 def _project_domain_item(item: dict[str, Any], answer_mode: str) -> dict[str, Any]:
     payload = _dict(item.get("payload"))
     keys = {"display_name", "aliases", "description", "usage_rule", "column", "aggregation_method"}
@@ -273,6 +286,7 @@ def _project_domain_item(item: dict[str, Any], answer_mode: str) -> dict[str, An
     )
 
 
+# 함수 설명: `_project_table_item()`는 테이블 문서에서 dataset/source/컬럼/조회 설명만 안전하게 projection합니다.
 def _project_table_item(item: dict[str, Any], answer_mode: str) -> dict[str, Any]:
     payload = _dict(item.get("payload"))
     payload_keys = {
@@ -297,6 +311,7 @@ def _project_table_item(item: dict[str, Any], answer_mode: str) -> dict[str, Any
     )
 
 
+# 함수 설명: `_project_filter_item()`는 메인 필터 문서에서 별칭·연산자·값 형식만 안전하게 projection합니다.
 def _project_filter_item(item: dict[str, Any]) -> dict[str, Any]:
     payload = _dict(item.get("payload"))
     keys = {"display_name", "aliases", "description", "semantic_role", "operator", "value_type", "value_shape", "column_candidates"}
@@ -309,10 +324,12 @@ def _project_filter_item(item: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_project_dict()`는 DICT에서 현재 질문과 응답에 필요한 허용 필드만 projection합니다.
 def _project_dict(value: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
     return {key: deepcopy(item) for key, item in value.items() if key in allowed and item not in (None, "", [], {})}
 
 
+# 함수 설명: `_fit_context_bytes()`는 QA context가 max_bytes를 넘으면 낮은 우선순위 후보와 긴 문자열부터 단계적으로 줄입니다.
 def _fit_context_bytes(context: dict[str, Any], byte_limit: int) -> tuple[dict[str, Any], bool]:
     fitted = _truncate_context_strings(deepcopy(context))
     if _json_bytes(fitted) <= byte_limit:
@@ -338,6 +355,7 @@ def _fit_context_bytes(context: dict[str, Any], byte_limit: int) -> tuple[dict[s
     return fitted, trimmed
 
 
+# 함수 설명: `_truncate_context_strings()`는 문맥·strings이 허용된 개수·길이·바이트 제한을 넘지 않도록 안전하게 줄입니다.
 def _truncate_context_strings(value: Any, key_name: str = "") -> Any:
     if isinstance(value, dict):
         return {key: _truncate_context_strings(item, str(key)) for key, item in value.items()}
@@ -349,10 +367,12 @@ def _truncate_context_strings(value: Any, key_name: str = "") -> Any:
     return deepcopy(value)
 
 
+# 함수 설명: `_json_bytes()`는 현재 값을 UTF-8 JSON으로 직렬화했을 때의 실제 바이트 크기를 계산합니다.
 def _json_bytes(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":")).encode("utf-8"))
 
 
+# 함수 설명: `_candidate_rows()`는 QA 답변 모드에 맞춰 도메인·테이블·필터 후보를 공통 표 행으로 변환합니다.
 def _candidate_rows(answer_mode: str, domain_items: list[dict[str, Any]], table_items: list[dict[str, Any]], filter_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if answer_mode in {"dataset_sql", "available_sources"}:
         return [_dataset_row(item) for item in table_items]
@@ -377,6 +397,7 @@ def _candidate_rows(answer_mode: str, domain_items: list[dict[str, Any]], table_
     return rows
 
 
+# 함수 설명: `_dataset_row()`는 행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _dataset_row(item: dict[str, Any]) -> dict[str, Any]:
     payload = _dict(item.get("payload"))
     source_config = _dict(payload.get("source_config"))
@@ -394,6 +415,7 @@ def _dataset_row(item: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_dataset_detail_row()`는 상세 정보·행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _dataset_detail_row(item: dict[str, Any]) -> dict[str, Any]:
     payload = _dict(item.get("payload"))
     source_config = _dict(payload.get("source_config"))
@@ -413,6 +435,7 @@ def _dataset_detail_row(item: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_required_param_row()`는 파라미터·행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _required_param_row(item: dict[str, Any]) -> dict[str, Any]:
     payload = _dict(item.get("payload"))
     source_config = _dict(payload.get("source_config"))
@@ -429,6 +452,7 @@ def _required_param_row(item: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_quantity_columns()`는 테이블 카탈로그 컬럼 중 수량·실적·계획 지표로 설명할 컬럼만 선별합니다.
 def _quantity_columns(payload: dict[str, Any]) -> str:
     columns = []
     for key in ("quantity_column", "quantity_columns", "metric_columns", "measure_columns", "value_columns"):
@@ -442,6 +466,7 @@ def _quantity_columns(payload: dict[str, Any]) -> str:
     return ", ".join(item for item in columns if item)
 
 
+# 함수 설명: `_domain_row()`는 행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _domain_row(item: dict[str, Any], include_section: bool = False) -> dict[str, Any]:
     payload = _dict(item.get("payload"))
     return _omit_empty(
@@ -458,6 +483,7 @@ def _domain_row(item: dict[str, Any], include_section: bool = False) -> dict[str
     )
 
 
+# 함수 설명: `_filter_row()`는 조건과 우선순위에 맞는 행만 골라 원래 순서를 유지해 반환합니다.
 def _filter_row(item: dict[str, Any]) -> dict[str, Any]:
     payload = _dict(item.get("payload"))
     return _omit_empty(
@@ -473,6 +499,7 @@ def _filter_row(item: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_source_refs()`는 선택된 메타데이터 후보의 section/key를 중복 없는 근거 참조 목록으로 만듭니다.
 def _source_refs(domain_items: list[dict[str, Any]], table_items: list[dict[str, Any]], filter_items: list[dict[str, Any]]) -> list[dict[str, str]]:
     refs = []
     refs.extend({"metadata_type": "domain", "section": str(item.get("section") or ""), "key": str(item.get("key") or "")} for item in domain_items)
@@ -481,11 +508,13 @@ def _source_refs(domain_items: list[dict[str, Any]], table_items: list[dict[str,
     return [ref for ref in refs if ref.get("key")]
 
 
+# 함수 설명: `_sanitize()`는 sanitize에서 비밀값·내부 필드·직렬화 불가 값을 제거하거나 마스킹합니다.
 def _sanitize(item: dict[str, Any]) -> dict[str, Any]:
     value = _sanitize_value(item)
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_sanitize_value()`는 LLM 문맥에서 trace·credential·내부 필드를 제거하고 비밀값을 마스킹합니다.
 def _sanitize_value(value: Any, key_name: str = "") -> Any:
     if isinstance(value, dict):
         result = {}
@@ -505,11 +534,13 @@ def _sanitize_value(value: Any, key_name: str = "") -> Any:
     return deepcopy(value)
 
 
+# 함수 설명: `_is_secret_key()`는 필드 이름이 credential·token·password 등 저장 금지 비밀 key인지 판정합니다.
 def _is_secret_key(key: str) -> bool:
     lowered = str(key or "").lower()
     return any(pattern in lowered for pattern in SECRET_KEY_PATTERNS)
 
 
+# 함수 설명: `_compact_load()`는 조회 상태에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_load(load: dict[str, Any]) -> dict[str, Any]:
     return _omit_empty(
         {
@@ -523,6 +554,7 @@ def _compact_load(load: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_load_errors()`는 입력 또는 외부 저장소에서 오류을 읽고 호출자가 사용할 형태로 반환합니다.
 def _load_errors(load_summary: dict[str, Any]) -> list[dict[str, Any]]:
     errors = []
     for load in load_summary.values():
@@ -531,15 +563,18 @@ def _load_errors(load_summary: dict[str, Any]) -> list[dict[str, Any]]:
     return errors
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_int()`는 문자열이나 숫자 입력을 정수로 변환하고 실패하면 안전한 기본값을 사용합니다.
 def _int(value: Any, default: int) -> int:
     try:
         return max(1, int(value))
@@ -547,6 +582,7 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
+# 함수 설명: `_text_blob()`는 메타데이터의 주요 문자열 값을 하나의 검색용 텍스트로 합칩니다.
 def _text_blob(value: Any) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, default=str)
@@ -554,6 +590,7 @@ def _text_blob(value: Any) -> str:
         return str(value)
 
 
+# 함수 설명: `_compact_list()`는 목록의 개수와 각 항목 크기를 제한해 LLM·상태 payload가 과도하게 커지지 않게 합니다.
 def _compact_list(value: Any) -> str:
     if isinstance(value, list):
         return ", ".join(str(item) for item in value[:12] if str(item or "").strip())
@@ -562,6 +599,7 @@ def _compact_list(value: Any) -> str:
     return str(value) if value not in (None, "", [], {}) else ""
 
 
+# 함수 설명: `_omit_empty()`는 dict에서 빈 문자열·빈 목록·None 항목을 제거해 전달 payload를 작게 유지합니다.
 def _omit_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 

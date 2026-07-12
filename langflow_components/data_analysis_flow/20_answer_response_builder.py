@@ -38,11 +38,13 @@ def build_answer_response(payload_value: Any, answer_text: Any = "") -> dict[str
     return next_payload
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_answer_text()`는 문자열에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _answer_text(value: Any) -> str:
     if isinstance(value, dict):
         text = _answer_text_from_dict(value)
@@ -57,6 +59,7 @@ def _answer_text(value: Any) -> str:
     return text
 
 
+# 함수 설명: `_answer_payload()`는 페이로드에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _answer_payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
@@ -67,6 +70,7 @@ def _answer_payload(value: Any) -> dict[str, Any]:
     return _json_text(text)
 
 
+# 함수 설명: `_answer_text_from_dict()`는 문자열·원본·DICT에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _answer_text_from_dict(value: dict[str, Any]) -> str:
     for key in ("answer_message", "answer", "text", "message", "output"):
         item = value.get(key)
@@ -78,6 +82,7 @@ def _answer_text_from_dict(value: dict[str, Any]) -> str:
     return ""
 
 
+# 함수 설명: `_message_text()`는 문자열에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _message_text(value: Any) -> str:
     for attr in ("text", "content", "message"):
         text = getattr(value, attr, None)
@@ -91,6 +96,7 @@ def _message_text(value: Any) -> str:
     return str(value or "")
 
 
+# 함수 설명: `_json_text()`는 LLM 답변에서 Markdown fence를 제거하고 JSON object 문자열만 추출합니다.
 def _json_text(text: str) -> dict[str, Any]:
     if not text:
         return {}
@@ -107,6 +113,7 @@ def _json_text(text: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+# 함수 설명: `_build_answer_sections()`는 답변·응답 section 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def _build_answer_sections(payload: dict[str, Any], answer_message: str, section_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     data = _dict(payload.get("data"))
     overrides = _dict(section_overrides)
@@ -144,6 +151,7 @@ def _build_answer_sections(payload: dict[str, Any], answer_message: str, section
     }
 
 
+# 함수 설명: `_applied_criteria()`는 조회 작업과 pandas 계획에서 실제 적용된 날짜·제품·공정·지표 조건을 구성합니다.
 def _applied_criteria(payload: dict[str, Any]) -> dict[str, Any]:
     plan = _dict(payload.get("intent_plan"))
     retrieval_jobs = _list(plan.get("retrieval_jobs"))
@@ -196,6 +204,7 @@ def _applied_criteria(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_evidence()`는 조회·pandas 실행 trace에서 답변 수치의 데이터셋과 조건 근거를 구성합니다.
 def _evidence(payload: dict[str, Any]) -> dict[str, Any]:
     analysis = _dict(payload.get("analysis"))
     pandas_execution = _dict(_dict(_dict(payload.get("trace")).get("inspection")).get("pandas_execution"))
@@ -211,6 +220,7 @@ def _evidence(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_notices()`는 warnings와 errors를 사용자에게 보여 줄 중복 없는 안내 목록으로 정리합니다.
 def _notices(payload: dict[str, Any], row_count: int, rows: list[Any]) -> list[dict[str, Any]]:
     notices: list[dict[str, Any]] = []
     if row_count == 0 and not rows:
@@ -232,6 +242,7 @@ def _notices(payload: dict[str, Any], row_count: int, rows: list[Any]) -> list[d
     return notices
 
 
+# 함수 설명: `_downloads()`는 저장된 data_ref에서 최종 답변에 제공할 다운로드 항목을 구성합니다.
 def _downloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
     refs = []
     for ref in _list(payload.get("data_refs")):
@@ -243,6 +254,7 @@ def _downloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return _dedupe_dicts(refs)
 
 
+# 함수 설명: `_summary_basis()`는 답변 요약이 어떤 rows·지표·조건을 기준으로 작성됐는지 근거를 구성합니다.
 def _summary_basis(applied_criteria: dict[str, Any]) -> list[str]:
     basis = []
     if applied_criteria.get("required_params"):
@@ -254,6 +266,7 @@ def _summary_basis(applied_criteria: dict[str, Any]) -> list[str]:
     return basis
 
 
+# 함수 설명: `_next_questions()`는 questions 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _next_questions(payload: dict[str, Any]) -> list[str]:
     data = _dict(payload.get("data"))
     row_count = _int(data.get("row_count"), len(_list(data.get("rows"))))
@@ -262,6 +275,7 @@ def _next_questions(payload: dict[str, Any]) -> list[str]:
     return ["이 결과를 제품별 또는 공정별로 더 나눠볼까요?", "원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?"]
 
 
+# 함수 설명: `_compact_source_results()`는 데이터 소스·결과에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_source_results(source_results: list[Any]) -> list[dict[str, Any]]:
     compact = []
     for source in source_results:
@@ -283,6 +297,7 @@ def _compact_source_results(source_results: list[Any]) -> list[dict[str, Any]]:
     return compact
 
 
+# 함수 설명: `_build_next_turn_state()`는 다음 단계·TURN·상태 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def _build_next_turn_state(payload: dict[str, Any]) -> dict[str, Any]:
     state = deepcopy(_dict(payload.get("state")))
     state.pop("runtime_sources", None)
@@ -307,6 +322,7 @@ def _build_next_turn_state(payload: dict[str, Any]) -> dict[str, Any]:
     return _omit_empty(state)
 
 
+# 함수 설명: `_current_data_state()`는 현재 결과의 rows·columns·row_count·data_ref를 다음 질문용 작은 상태로 만듭니다.
 def _current_data_state(payload: dict[str, Any]) -> dict[str, Any]:
     data = _dict(payload.get("data"))
     rows = _list(data.get("rows"))
@@ -325,6 +341,7 @@ def _current_data_state(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_followup_source_results()`는 후속 질문이 재사용할 source result를 preview와 참조 중심으로 압축합니다.
 def _followup_source_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
     runtime_sources = _dict(payload.get("runtime_sources"))
     result = []
@@ -351,6 +368,7 @@ def _followup_source_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in result if item]
 
 
+# 함수 설명: `_runtime_source_refs()`는 메모리의 runtime source를 직접 저장하지 않고 재조회 가능한 source 참조만 구성합니다.
 def _runtime_source_refs(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     refs: dict[str, dict[str, Any]] = {}
     for ref in _list(payload.get("data_refs")):
@@ -364,6 +382,7 @@ def _runtime_source_refs(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return refs
 
 
+# 함수 설명: `_source_aliases()`는 aliases 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _source_aliases(payload: dict[str, Any]) -> list[str]:
     aliases = []
     for source in _list(payload.get("source_results")):
@@ -378,6 +397,7 @@ def _source_aliases(payload: dict[str, Any]) -> list[str]:
     return aliases
 
 
+# 함수 설명: `_source_dataset_keys()`는 데이터셋·key 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _source_dataset_keys(payload: dict[str, Any]) -> list[str]:
     keys = []
     for source in _list(payload.get("source_results")):
@@ -388,6 +408,7 @@ def _source_dataset_keys(payload: dict[str, Any]) -> list[str]:
     return keys
 
 
+# 함수 설명: `_source_columns_by_alias()`는 컬럼·BY·alias 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
 def _source_columns_by_alias(payload: dict[str, Any]) -> dict[str, list[str]]:
     runtime_sources = _dict(payload.get("runtime_sources"))
     result: dict[str, list[str]] = {}
@@ -409,6 +430,7 @@ def _source_columns_by_alias(payload: dict[str, Any]) -> dict[str, list[str]]:
     return result
 
 
+# 함수 설명: `_compact_intent_plan()`는 의도 계획·PLAN에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_intent_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return _omit_empty(
         {
@@ -424,6 +446,7 @@ def _compact_intent_plan(plan: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# 함수 설명: `_compact_retrieval_jobs()`는 데이터 조회·조회 작업에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_retrieval_jobs(jobs: list[Any]) -> list[dict[str, Any]]:
     compact = []
     for job in jobs:
@@ -443,6 +466,7 @@ def _compact_retrieval_jobs(jobs: list[Any]) -> list[dict[str, Any]]:
     return compact
 
 
+# 함수 설명: `_group_by_columns()`는 의도 계획의 pandas 단계에서 실제 그룹 기준 컬럼을 추출합니다.
 def _group_by_columns(pandas_plan: list[Any]) -> list[str]:
     columns: list[str] = []
     for step in pandas_plan:
@@ -460,6 +484,7 @@ def _group_by_columns(pandas_plan: list[Any]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_metric_columns()`는 결과 컬럼 중 수량·실적·비율처럼 답변 지표로 사용할 컬럼을 선별합니다.
 def _metric_columns(payload: dict[str, Any]) -> list[str]:
     data = _dict(payload.get("data"))
     columns = _string_list(data.get("columns")) or _columns_from_rows(_list(data.get("rows")))
@@ -467,6 +492,7 @@ def _metric_columns(payload: dict[str, Any]) -> list[str]:
     return [column for column in columns if _column_has_numeric_value(rows, column)]
 
 
+# 함수 설명: `_column_has_numeric_value()`는 HAS·numeric·값 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _column_has_numeric_value(rows: list[Any], column: str) -> bool:
     for row in rows:
         if not isinstance(row, dict):
@@ -484,12 +510,14 @@ def _column_has_numeric_value(rows: list[Any], column: str) -> bool:
     return False
 
 
+# 함수 설명: `_display_row()`는 행을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_row(row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
     if not columns:
         columns = [str(key) for key in row]
     return {column: _display_value(row.get(column, "")) for column in columns}
 
 
+# 함수 설명: `_display_value()`는 None·숫자·복합 값을 사용자에게 읽기 좋은 짧은 문자열로 표시합니다.
 def _display_value(value: Any) -> Any:
     formatted = _format_number(value)
     if formatted is not None:
@@ -499,6 +527,7 @@ def _display_value(value: Any) -> Any:
     return value
 
 
+# 함수 설명: `_format_number()`는 number을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _format_number(value: Any) -> str | None:
     if value is None or isinstance(value, bool) or isinstance(value, str):
         return None
@@ -514,6 +543,7 @@ def _format_number(value: Any) -> str | None:
     return f"{int(number):,}" if float(number).is_integer() else f"{number:,.1f}"
 
 
+# 함수 설명: `_columns_from_rows()`는 행 목록의 key 등장 순서를 유지하면서 결과 테이블의 컬럼 목록을 계산합니다.
 def _columns_from_rows(rows: list[Any]) -> list[str]:
     columns: list[str] = []
     for row in rows:
@@ -526,18 +556,22 @@ def _columns_from_rows(rows: list[Any]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
 
 
+# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_int()`는 문자열이나 숫자 입력을 정수로 변환하고 실패하면 안전한 기본값을 사용합니다.
 def _int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -545,15 +579,18 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+# 함수 설명: `_clip_text()`는 문자열을 허용 길이 안으로 자르되 비어 있는 값과 말줄임 표시를 일관되게 처리합니다.
 def _clip_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     return text[:limit] if len(text) > limit else text
 
 
+# 함수 설명: `_omit_empty()`는 dict에서 빈 문자열·빈 목록·None 항목을 제거해 전달 payload를 작게 유지합니다.
 def _omit_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
+# 함수 설명: `_dedupe_dicts()`는 dicts의 중복을 제거하고 최초 등장 순서를 유지합니다.
 def _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     result: list[dict[str, Any]] = []

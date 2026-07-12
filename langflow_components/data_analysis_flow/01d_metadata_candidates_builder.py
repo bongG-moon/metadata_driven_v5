@@ -300,6 +300,7 @@ def build_metadata_candidates(
     }
 
 
+# 함수 설명: `_select_candidates()`는 조건과 우선순위에 맞는 후보만 골라 원래 순서를 유지해 반환합니다.
 def _select_candidates(
     search_text: str,
     domain_items: list[dict[str, Any]],
@@ -348,10 +349,12 @@ def _select_candidates(
     }
 
 
+# 함수 설명: `_rank()`는 RANK의 일치도나 건수를 계산해 후보 비교와 요약에 사용합니다.
 def _rank(items: list[dict[str, Any]], tokens: list[str]) -> list[dict[str, Any]]:
     return [entry[4] for entry in _rank_entries(items, tokens)]
 
 
+# 함수 설명: `_rank_entries()`는 entries의 일치도나 건수를 계산해 후보 비교와 요약에 사용합니다.
 def _rank_entries(
     items: list[dict[str, Any]],
     tokens: list[str],
@@ -364,10 +367,12 @@ def _rank_entries(
     return ranked
 
 
+# 함수 설명: `_score()`는 질문 token과 후보 메타데이터의 일치 정도를 점수로 계산합니다.
 def _score(item: dict[str, Any], tokens: list[str]) -> int:
     return _score_details(item, tokens)[0]
 
 
+# 함수 설명: `_score_details()`는 details의 일치도나 건수를 계산해 후보 비교와 요약에 사용합니다.
 def _score_details(item: dict[str, Any], tokens: list[str]) -> tuple[int, int]:
     if not tokens:
         return 0, 0
@@ -414,6 +419,7 @@ def _score_details(item: dict[str, Any], tokens: list[str]) -> tuple[int, int]:
     return score, strong_hits
 
 
+# 함수 설명: `_fit_bytes()`는 bytes이 허용된 개수·길이·바이트 제한을 넘지 않도록 안전하게 줄입니다.
 def _fit_bytes(
     candidates: dict[str, Any],
     max_bytes: int,
@@ -446,6 +452,7 @@ def _fit_bytes(
     }
 
 
+# 함수 설명: `_is_non_runtime_function_case()`는 입력값이 NON·runtime·함수·Function Case 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _is_non_runtime_function_case(item: dict[str, Any]) -> bool:
     if str(item.get("section") or "") != "pandas_function_cases":
         return False
@@ -453,6 +460,7 @@ def _is_non_runtime_function_case(item: dict[str, Any]) -> bool:
     return not bool(runtime_helper.get("selectable_for_intent"))
 
 
+# 함수 설명: `_structured_search_values()`는 메타데이터 항목의 key·별칭·payload에서 질문 검색에 쓸 구조화 문자열을 재귀 수집합니다.
 def _structured_search_values(value: Any, parent_key: str = "") -> list[str]:
     if isinstance(value, dict):
         result: list[str] = []
@@ -471,6 +479,7 @@ def _structured_search_values(value: Any, parent_key: str = "") -> list[str]:
     return []
 
 
+# 함수 설명: `_scalar_texts()`는 복합 입력 안의 문자열·숫자·불리언 값을 검색 가능한 문자열 목록으로 평탄화합니다.
 def _scalar_texts(value: Any) -> list[str]:
     if isinstance(value, dict):
         result = []
@@ -486,6 +495,7 @@ def _scalar_texts(value: Any) -> list[str]:
     return [str(value)] if value not in (None, "") else []
 
 
+# 함수 설명: `_stable_identity()`는 메타데이터 후보의 section과 key로 순서가 변하지 않는 중복 제거 식별자를 만듭니다.
 def _stable_identity(item: dict[str, Any]) -> str:
     payload = _dict(item.get("payload"))
     parts = [
@@ -498,6 +508,7 @@ def _stable_identity(item: dict[str, Any]) -> str:
     return "|".join(part.strip().lower() for part in parts)
 
 
+# 함수 설명: `_contains_token()`는 입력값이 token 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _contains_token(text: str, token: str) -> bool:
     if not text or not token:
         return False
@@ -506,6 +517,7 @@ def _contains_token(text: str, token: str) -> bool:
     return token in text.lower()
 
 
+# 함수 설명: `_extract()`는 복합 입력이나 응답에서 extract을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _extract(value: Any, key: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     data = getattr(value, "data", value)
     if isinstance(data, dict):
@@ -519,6 +531,7 @@ def _extract(value: Any, key: str) -> tuple[list[dict[str, Any]], dict[str, Any]
     return [], {}
 
 
+# 함수 설명: `_sanitize_items()`는 항목에서 비밀값·내부 필드·직렬화 불가 값을 제거하거나 마스킹합니다.
 def _sanitize_items(items: list[dict[str, Any]], metadata_type: str) -> list[dict[str, Any]]:
     return [
         _sanitize_metadata_item(item, metadata_type)
@@ -527,11 +540,13 @@ def _sanitize_items(items: list[dict[str, Any]], metadata_type: str) -> list[dic
     ]
 
 
+# 함수 설명: `_sanitize_metadata_item()`는 메타데이터·항목에서 비밀값·내부 필드·직렬화 불가 값을 제거하거나 마스킹합니다.
 def _sanitize_metadata_item(item: dict[str, Any], metadata_type: str) -> dict[str, Any]:
     sanitized = _sanitize_value(item, metadata_type == "table_catalog")
     return sanitized if isinstance(sanitized, dict) else {}
 
 
+# 함수 설명: `_sanitize_value()`는 복합 값에서 비밀 필드와 불필요한 내부 값을 제거하고 JSON-safe 형태로 바꿉니다.
 def _sanitize_value(value: Any, compact_source_config: bool = False) -> Any:
     if isinstance(value, dict):
         result: dict[str, Any] = {}
@@ -548,6 +563,7 @@ def _sanitize_value(value: Any, compact_source_config: bool = False) -> Any:
     return deepcopy(value)
 
 
+# 함수 설명: `_annotate_runtime_function_cases()`는 선택 가능한 Function Case에 runtime 사용 가능 여부와 선택 근거를 덧붙입니다.
 def _annotate_runtime_function_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     helper_by_name = {item["function_name"]: item for item in RUNTIME_FUNCTION_HELPERS}
     annotated = []
@@ -572,6 +588,7 @@ def _annotate_runtime_function_cases(items: list[dict[str, Any]]) -> list[dict[s
     return annotated
 
 
+# 함수 설명: `_function_name()`는 Function Case 항목의 여러 호환 필드에서 실제 helper 함수 이름을 결정합니다.
 def _function_name(item: dict[str, Any]) -> str:
     payload = _dict(item.get("payload"))
     explicit = str(item.get("function_name") or payload.get("function_name") or payload.get("helper_name") or "").strip()
@@ -584,6 +601,7 @@ def _function_name(item: dict[str, Any]) -> str:
     return str(item.get("key") or "").strip()
 
 
+# 함수 설명: `_looks_like_legacy_metadata_call()`는 입력값이 LIKE·legacy·메타데이터·CALL 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _looks_like_legacy_metadata_call(
     payload_value: Any,
     domain_items_value: Any,
@@ -596,6 +614,7 @@ def _looks_like_legacy_metadata_call(
     return isinstance(data, dict) and "domain_items" in data and "request" not in data
 
 
+# 함수 설명: `_tokens()`는 문자열을 비교 가능한 검색 token 목록으로 분리·정규화합니다.
 def _tokens(value: str) -> list[str]:
     stop = {
         "알려줘",
@@ -620,6 +639,7 @@ def _tokens(value: str) -> list[str]:
     return result[:60]
 
 
+# 함수 설명: `_token_variants()`는 질문 token의 구분자 제거·영숫자 결합 등 비교용 표기 변형을 만듭니다.
 def _token_variants(token: str) -> list[str]:
     variants = [token]
     ascii_with_korean_suffix = re.fullmatch(r"([a-z0-9_]+)[가-힣]+", token)
@@ -640,6 +660,7 @@ def _token_variants(token: str) -> list[str]:
     return list(dict.fromkeys(expanded))
 
 
+# 함수 설명: `_compact_state_terms()`는 상태·terms에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_state_terms(state: dict[str, Any]) -> str:
     current = _dict(state.get("current_data"))
     plan = _dict(state.get("last_intent_plan"))
@@ -651,6 +672,7 @@ def _compact_state_terms(state: dict[str, Any]) -> str:
     return " ".join(item for item in values if item)
 
 
+# 함수 설명: `_combined_status()`는 여러 MongoDB 로드 결과의 오류·성공·생략 상태를 하나의 최종 상태로 합칩니다.
 def _combined_status(loads: dict[str, dict[str, Any]]) -> str:
     statuses = [str(load.get("status") or "") for load in loads.values() if isinstance(load, dict)]
     if any(status == "error" for status in statuses):
@@ -660,10 +682,12 @@ def _combined_status(loads: dict[str, dict[str, Any]]) -> str:
     return "skipped"
 
 
+# 함수 설명: `_json_bytes()`는 현재 값을 UTF-8 JSON으로 직렬화했을 때의 실제 바이트 크기를 계산합니다.
 def _json_bytes(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":")).encode("utf-8"))
 
 
+# 함수 설명: `_bounded_int()`는 INT이 허용된 개수·길이·바이트 제한을 넘지 않도록 안전하게 줄입니다.
 def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     try:
         parsed = int(value)
@@ -672,15 +696,18 @@ def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 

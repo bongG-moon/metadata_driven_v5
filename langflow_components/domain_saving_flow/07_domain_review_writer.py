@@ -59,6 +59,7 @@ def review_and_write(payload_value: Any, review_response: Any = "", mongo_uri: s
     return next_payload
 
 
+# 함수 설명: `_deterministic_review()`는 스키마·필수 필드·비밀값·중복 정책을 Python 규칙으로 검증해 저장 가능 여부를 결정합니다.
 def _deterministic_review(payload: dict[str, Any]) -> dict[str, Any]:
     errors = []
     for item in payload.get("items", []):
@@ -80,6 +81,7 @@ def _deterministic_review(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ready_to_save": bool(payload.get("items")) and not errors, "item_reviews": [{"key": _key(item), "ready_to_save": not errors, "warnings": [], "errors": errors} for item in payload.get("items", []) if isinstance(item, dict)], "errors": errors, "supplement_requests": []}
 
 
+# 함수 설명: `_identity_lookup_errors()`는 lookup·오류을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
 def _identity_lookup_errors(payload: dict[str, Any], action: str) -> list[dict[str, Any]]:
     if action == "create_new":
         return []
@@ -96,6 +98,7 @@ def _identity_lookup_errors(payload: dict[str, Any], action: str) -> list[dict[s
     ]
 
 
+# 함수 설명: `_merge_review()`는 결정론적 검증 결과와 선택적 추가 검수 결과를 하나의 저장 판단으로 합칩니다.
 def _merge_review(llm_review: dict[str, Any], deterministic_review: dict[str, Any]) -> dict[str, Any]:
     if not llm_review:
         return deepcopy(deterministic_review)
@@ -109,6 +112,7 @@ def _merge_review(llm_review: dict[str, Any], deterministic_review: dict[str, An
     return merged
 
 
+# 함수 설명: `_dry_run_result()`는 실제 DB를 변경하지 않고 실행 예정 작업만 보여 주는 dry-run 결과를 만듭니다.
 def _dry_run_result(payload: dict[str, Any], action: str) -> dict[str, Any]:
     matched = _match_groups(payload)
     operations = []
@@ -147,6 +151,7 @@ def _dry_run_result(payload: dict[str, Any], action: str) -> dict[str, Any]:
     return {"success": True, "ready_to_save": True, "dry_run": True, "saved_count": 0, "would_save_count": would_save, "skipped_count": len(operations) - would_save, "operation_by_key": operations, "message": "드라이런입니다. MongoDB에는 저장하지 않았습니다.", "keys": [item["key"] for item in operations], "errors": []}
 
 
+# 함수 설명: `_write_to_mongodb()`는 검증을 통과한 작업만 duplicate action에 맞춰 MongoDB에 저장하고 결과를 기록합니다.
 def _write_to_mongodb(payload: dict[str, Any], action: str, mongo_uri: str, mongo_database: str, collection_name: str) -> dict[str, Any]:
     mongo_uri, mongo_database, collection_name = _resolve_mongo_config(mongo_uri, mongo_database, collection_name)
     if not mongo_uri or not mongo_database or not collection_name:
@@ -248,6 +253,7 @@ def _write_to_mongodb(payload: dict[str, Any], action: str, mongo_uri: str, mong
             client.close()
 
 
+# 함수 설명: `_match_groups()`는 신규 key별 similarity 결과를 묶어 유일·없음·모호함 상태를 계산합니다.
 def _match_groups(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     result: dict[str, list[dict[str, Any]]] = {}
     for match in _list(payload.get("existing_matches")):
@@ -258,6 +264,7 @@ def _match_groups(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     return result
 
 
+# 함수 설명: `_resolve_match()`는 similarity 결과에서 유일한 기존 canonical 문서만 merge/replace 대상으로 확정합니다.
 def _resolve_match(matches: list[dict[str, Any]]) -> dict[str, Any]:
     if any(_dict(match).get("identity_resolution") == "ambiguous" or _dict(match).get("match_type") == "ambiguous_identity" for match in matches):
         candidates = []
@@ -273,22 +280,26 @@ def _resolve_match(matches: list[dict[str, Any]]) -> dict[str, Any]:
     return {"status": "unique", "existing_item": deepcopy(_dict(match.get("existing_item"))), "match_type": str(match.get("match_type") or ""), "existing_key": str(match.get("existing_key") or "")}
 
 
+# 함수 설명: `_resolution_error()`는 canonical 대상이 없거나 여러 개인 경우 저장을 차단할 identity 오류를 만듭니다.
 def _resolution_error(error_type: str, requested_key: str, resolution: dict[str, Any]) -> dict[str, Any]:
     message = "기존 도메인 항목 후보가 여러 건이라 대상을 하나로 확정할 수 없습니다."
     return {"type": error_type, "message": message, "key": requested_key, "existing_candidate_keys": deepcopy(resolution.get("candidate_keys", []))}
 
 
+# 함수 설명: `_canonical_identity()`는 replace 후에도 유지해야 하는 기존 문서의 canonical section/key/_id를 결정합니다.
 def _canonical_identity(existing: dict[str, Any], fallback_section: str, fallback_key: str) -> tuple[str, str]:
     section = str(existing.get("section") or fallback_section).strip()
     key = str(existing.get("key") or fallback_key).strip()
     return section, key
 
 
+# 함수 설명: `_canonical_key()`는 저장 작업이 실제로 대상으로 삼는 canonical key를 계산합니다.
 def _canonical_key(existing: dict[str, Any]) -> str:
     section, key = _canonical_identity(existing, "", "")
     return f"{section}:{key}" if section and key else key
 
 
+# 함수 설명: `_operation_record()`는 요청 key와 실제 target key를 함께 담은 저장 예정/완료 operation trace를 만듭니다.
 def _operation_record(requested_key: str, target_key: str, operation: str, existing: dict[str, Any] | None = None, match_type: str = "") -> dict[str, Any]:
     existing = _dict(existing)
     target_section, target_item_key = _split_logical_key(target_key)
@@ -306,11 +317,13 @@ def _operation_record(requested_key: str, target_key: str, operation: str, exist
     return record
 
 
+# 함수 설명: `_split_logical_key()`는 논리 조건·key을 의미 있는 단위로 나눠 개별 처리할 수 있는 목록으로 만듭니다.
 def _split_logical_key(value: str) -> tuple[str, str]:
     section, separator, key = str(value or "").partition(":")
     return (section, key) if separator else ("", section)
 
 
+# 함수 설명: `_next_key()`는 create_new 정책에서 기존 key와 충돌하지 않는 다음 저장 key를 계산합니다.
 def _next_key(collection: Any, section: str, key: str) -> str:
     base = f"{key}_copy"
     candidate = base
@@ -321,6 +334,7 @@ def _next_key(collection: Any, section: str, key: str) -> str:
     return candidate
 
 
+# 함수 설명: `_deep_merge()`는 중첩 dict를 재귀 병합하되 새 값이 지정된 필드만 기존 문서에 반영합니다.
 def _deep_merge(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     merged = deepcopy(existing)
     for key, value in incoming.items():
@@ -333,6 +347,7 @@ def _deep_merge(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str,
     return merged
 
 
+# 함수 설명: `_secret_paths()`는 저장 후보 내부에서 password·token 등 비밀값으로 의심되는 필드 경로를 재귀 탐색합니다.
 def _secret_paths(value: Any, prefix: str = "") -> list[str]:
     paths = []
     if isinstance(value, dict):
@@ -350,16 +365,19 @@ def _secret_paths(value: Any, prefix: str = "") -> list[str]:
     return paths
 
 
+# 함수 설명: `_is_secret_key()`는 필드 이름이 credential·token·password 등 저장 금지 비밀 key인지 판정합니다.
 def _is_secret_key(key: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", str(key or "").lower())
     return any(pattern in normalized for pattern in SECRET_PATTERNS)
 
 
+# 함수 설명: `_redact_raw_text()`는 등록 원문에 포함될 수 있는 credential 값을 응답·trace에서 마스킹합니다.
 def _redact_raw_text(value: str, limit: int = 2000) -> str:
     pattern = re.compile(r"(?i)(password|passwd|token|secret|api[_-]?key|authorization|credential)([\"']?\s*[:=]\s*[\"']?)([^\s,;\"'}]+)")
     return pattern.sub(r"\1\2***", str(value or ""))[:limit]
 
 
+# 함수 설명: `_duplicate_action()`는 요청에 지정된 skip/merge/replace/create_new 중복 처리 정책을 안전한 기본값과 함께 해석합니다.
 def _duplicate_action(payload: dict[str, Any]) -> str:
     request = _dict(payload.get("request"))
     decision = _dict(payload.get("duplicate_decision"))
@@ -367,10 +385,12 @@ def _duplicate_action(payload: dict[str, Any]) -> str:
     return action if action in {"merge", "replace", "skip", "create_new"} else "skip"
 
 
+# 함수 설명: `_resolve_mongo_config()`는 컴포넌트 입력→환경변수→기본값 순서로 MongoDB database와 collection 설정을 확정합니다.
 def _resolve_mongo_config(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> tuple[str, str, str]:
     return (mongo_uri or os.getenv("MONGODB_URI", ""), mongo_database or os.getenv("MONGODB_DATABASE", DEFAULT_DATABASE), collection_name or os.getenv(COLLECTION_ENV, DEFAULT_COLLECTION))
 
 
+# 함수 설명: `_unique_errors()`는 중복 오류 메시지를 최초 발생 순서대로 하나씩만 남깁니다.
 def _unique_errors(errors: list[Any]) -> list[dict[str, Any]]:
     result = []
     seen = set()
@@ -383,15 +403,18 @@ def _unique_errors(errors: list[Any]) -> list[dict[str, Any]]:
     return result
 
 
+# 함수 설명: `_key()`는 메타데이터 항목에서 비교·표시에 사용할 논리 key를 안전하게 꺼냅니다.
 def _key(item: dict[str, Any]) -> str:
     return f"{item.get('section', '')}:{item.get('key', '')}" if item.get("section") else str(item.get("key", ""))
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_json()`는 Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.
 def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
@@ -406,10 +429,12 @@ def _json(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 

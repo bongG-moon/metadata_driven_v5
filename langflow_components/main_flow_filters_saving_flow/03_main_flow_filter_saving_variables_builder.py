@@ -26,6 +26,7 @@ def build_variables(payload_value: Any) -> dict[str, Any]:
     return {"source_text": str(refinement.get("refined_text") or request.get("raw_text") or ""), "metadata_type": "main_flow_filter"}
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}

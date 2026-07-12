@@ -204,10 +204,12 @@ def retrieve_dummy_data(payload_value: Any) -> dict[str, Any]:
     return {"source_type": "dummy", "status": "ok", "skipped": False, "source_results": results, "errors": [], "warnings": []}
 
 
+# 함수 설명: `_skipped()`는 설정이나 대상 작업이 없어 실행하지 않은 이유를 표준 skipped 결과로 남깁니다.
 def _skipped(source_type: str, reason: str) -> dict[str, Any]:
     return {"source_type": source_type, "status": "skipped", "skipped": True, "skip_reason": reason, "source_results": [], "errors": [], "warnings": []}
 
 
+# 함수 설명: `_rows_for_dataset()`는 dataset_key에 해당하는 dummy fixture 행을 복사해 조회 조건 적용 전 원본으로 제공합니다.
 def _rows_for_dataset(dataset_key: str) -> list[dict[str, Any]]:
     today = _korea_today()
     yesterday = _date_delta(today, -1)
@@ -228,10 +230,12 @@ def _rows_for_dataset(dataset_key: str) -> list[dict[str, Any]]:
     return deepcopy(rows)
 
 
+# 함수 설명: `_korea_today()`는 현재 시각을 한국 시간 기준 YYYYMMDD 날짜 문자열로 반환합니다.
 def _korea_today() -> str:
     return datetime.now(_korea_timezone()).strftime("%Y%m%d")
 
 
+# 함수 설명: `_korea_timezone()`는 표준 zoneinfo를 우선 사용하고 불가능할 때만 고정 KST timezone을 반환합니다.
 def _korea_timezone():
     try:
         zoneinfo = import_module("zoneinfo")
@@ -240,6 +244,7 @@ def _korea_timezone():
         return timezone(timedelta(hours=9), "KST")
 
 
+# 함수 설명: `_date_delta()`는 delta 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _date_delta(date_text: str, days: int) -> str:
     try:
         base = datetime.strptime(str(date_text), "%Y%m%d")
@@ -248,6 +253,7 @@ def _date_delta(date_text: str, days: int) -> str:
     return (base + timedelta(days=days)).strftime("%Y%m%d")
 
 
+# 함수 설명: `_unique_dates()`는 dates의 중복을 제거하고 최초 등장 순서를 유지합니다.
 def _unique_dates(values: list[str]) -> list[str]:
     result: list[str] = []
     for value in values:
@@ -257,6 +263,7 @@ def _unique_dates(values: list[str]) -> list[str]:
     return result
 
 
+# 함수 설명: `_production_rows()`는 행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _production_rows(work_dates: list[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for work_date in work_dates:
@@ -271,6 +278,7 @@ def _production_rows(work_dates: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
+# 함수 설명: `_wip_rows()`는 행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _wip_rows(work_dates: list[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for work_date in work_dates:
@@ -294,6 +302,7 @@ def _wip_rows(work_dates: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
+# 함수 설명: `_validation_production_rows()`는 production·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _validation_production_rows(work_date: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if work_date == "20260630":
@@ -409,6 +418,7 @@ def _validation_production_rows(work_date: str) -> list[dict[str, Any]]:
     return rows
 
 
+# 함수 설명: `_validation_wip_rows()`는 WIP·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _validation_wip_rows(work_date: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if work_date == "20260630":
@@ -470,6 +480,7 @@ def _validation_wip_rows(work_date: str) -> list[dict[str, Any]]:
     return rows
 
 
+# 함수 설명: `_scenario_row()`는 행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _scenario_row(
     work_date: str,
     product_index: int,
@@ -484,6 +495,7 @@ def _scenario_row(
     return row
 
 
+# 함수 설명: `_bg_decoy_rows()`는 decoy·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _bg_decoy_rows(work_date: str, quantity_field: str, quantities: list[int]) -> list[dict[str, Any]]:
     variants = [
         {"LEAD": "78", "DEVICE": "DEV-RG-DECOY-LEAD78", "DEVICE_DESC": "RG 32G DDR4 FBGA 78 DDP decoy"},
@@ -496,6 +508,7 @@ def _bg_decoy_rows(work_date: str, quantity_field: str, quantities: list[int]) -
     ]
 
 
+# 함수 설명: `_rank_identity()`는 식별자의 일치도나 건수를 계산해 후보 비교와 요약에 사용합니다.
 def _rank_identity(index: int) -> dict[str, Any]:
     number = index + 1
     return {
@@ -516,6 +529,7 @@ def _rank_identity(index: int) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_zero_semantics_identity()`는 0값이 미집계인지 실제 0인지 구분하는 dummy 검증용 제품 식별자를 만듭니다.
 def _zero_semantics_identity(label: str, mcp_no: str) -> dict[str, Any]:
     return {
         "FAMILY": "VALIDATION",
@@ -535,6 +549,7 @@ def _zero_semantics_identity(label: str, mcp_no: str) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_production_processes_for_product()`는 지정 제품의 dummy 생산 실적이 존재하는 세부 공정 목록을 반환합니다.
 def _production_processes_for_product(product_index: int) -> list[str]:
     da_steps = ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
     wb_steps = ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"]
@@ -554,6 +569,7 @@ def _production_processes_for_product(product_index: int) -> list[str]:
     return common
 
 
+# 함수 설명: `_wip_processes_for_product()`는 지정 제품의 dummy 재공이 존재하는 세부 공정 목록을 반환합니다.
 def _wip_processes_for_product(product_index: int) -> list[str]:
     da_steps = ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
     wb_steps = ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"]
@@ -573,6 +589,7 @@ def _wip_processes_for_product(product_index: int) -> list[str]:
     return common
 
 
+# 함수 설명: `_process_index()`는 공정명을 정렬·fixture 계산에 사용할 안정적인 순번으로 변환합니다.
 def _process_index(oper_name: str) -> int:
     for index, process in enumerate(PROCESSES):
         if process["OPER_NAME"] == oper_name or process["OPER"] == oper_name:
@@ -580,11 +597,13 @@ def _process_index(oper_name: str) -> int:
     return 0
 
 
+# 함수 설명: `_quantity_value()`는 제품·공정·일자 조합에서 재현 가능한 dummy 수량 값을 계산합니다.
 def _quantity_value(work_date: str, product_index: int, process_index: int, base: int) -> int:
     date_factor = int(str(work_date)[-2:]) if str(work_date)[-2:].isdigit() else 1
     return base + product_index * 37 + process_index * 11 + date_factor
 
 
+# 함수 설명: `_target_rows()`는 행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _target_rows() -> list[dict[str, Any]]:
     rows = []
     for index, product in enumerate(PRODUCTS):
@@ -614,6 +633,7 @@ def _target_rows() -> list[dict[str, Any]]:
     return rows
 
 
+# 함수 설명: `_product_token_fixture_rows()`는 token·fixture·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _product_token_fixture_rows(work_dates: list[str]) -> list[dict[str, Any]]:
     fixtures = [
         {"FAMILY": "DDR", "TECH": "RG", "DENSITY": "8G", "DEN": "8G", "MODE": "DDR4", "ORG": "16", "PKG1": "FCBGA", "PKG_TYPE1": "FCBGA", "PKG2": "SDP", "PKG_TYPE2": "SDP", "LEAD": "96", "MCP_NO": "L-218K8H", "DEVICE": "RG-X16", "DEVICE_DESC": "RG 8G DDR4 X16 96 FCBGA SDP", "WIP": 10, "PRODUCTION": 100},
@@ -653,6 +673,7 @@ def _product_token_fixture_rows(work_dates: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
+# 함수 설명: `_equipment_assign_rows()`는 assign·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _equipment_assign_rows() -> list[dict[str, Any]]:
     rows = []
     models = ["EQM-A", "EQM-HBM", "EQM-MOBILE", "EQM-FCB", "EQM-BG"]
@@ -695,6 +716,7 @@ def _equipment_assign_rows() -> list[dict[str, Any]]:
     return rows
 
 
+# 함수 설명: `_eqp_uph_rows()`는 UPH·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _eqp_uph_rows() -> list[dict[str, Any]]:
     rows = []
     models = ["EQM-A", "EQM-HBM", "EQM-MOBILE", "EQM-FCB", "EQM-BG"]
@@ -742,6 +764,7 @@ def _eqp_uph_rows() -> list[dict[str, Any]]:
     return rows
 
 
+# 함수 설명: `_lot_status_rows()`는 상태·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _lot_status_rows() -> list[dict[str, Any]]:
     return [
         _lot_row(_product_process_row("20260701", 0, 0), "T1234567GEN1", "OnHold", "WAITING", 100, 25, 12.5, 40.0, "검증용 HOLD"),
@@ -751,6 +774,7 @@ def _lot_status_rows() -> list[dict[str, Any]]:
     ]
 
 
+# 함수 설명: `_hold_history_rows()`는 history·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _hold_history_rows() -> list[dict[str, Any]]:
     return [
         {
@@ -762,6 +786,7 @@ def _hold_history_rows() -> list[dict[str, Any]]:
     ]
 
 
+# 함수 설명: `_product_process_row()`는 process·행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _product_process_row(work_date: str, product_index: int, process_index: int, **overrides: Any) -> dict[str, Any]:
     product = PRODUCTS[product_index % len(PRODUCTS)]
     process = PROCESSES[process_index % len(PROCESSES)]
@@ -799,6 +824,7 @@ def _product_process_row(work_date: str, product_index: int, process_index: int,
     return row
 
 
+# 함수 설명: `_lot_row()`는 행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _lot_row(base: dict[str, Any], lot_id: str, hold_stat: str, lot_stat: str, prod_qty: int, wf_qty: int, in_tat: float, cum_tat: float, hold_reason: str) -> dict[str, Any]:
     return {
         "ERM_ID": "ERM-PKG",
@@ -855,6 +881,7 @@ def _lot_row(base: dict[str, Any], lot_id: str, hold_stat: str, lot_stat: str, p
     }
 
 
+# 함수 설명: `_hold_row()`는 행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
 def _hold_row(base: dict[str, Any], lot_id: str, hold_cd: str, hold_desc: str) -> dict[str, Any]:
     return {
         "LOT_ID": lot_id,
@@ -891,6 +918,7 @@ def _hold_row(base: dict[str, Any], lot_id: str, hold_cd: str, hold_desc: str) -
     }
 
 
+# 함수 설명: `_apply_params()`는 더미 행에 날짜·공정·제품 등 조회 파라미터 조건을 적용합니다.
 def _apply_params(rows: list[dict[str, Any]], params: Any) -> list[dict[str, Any]]:
     if not isinstance(params, dict):
         return rows
@@ -902,6 +930,7 @@ def _apply_params(rows: list[dict[str, Any]], params: Any) -> list[dict[str, Any
     return filtered
 
 
+# 함수 설명: `_apply_filters()`는 더미 행에 표준 field/operator/value 필터 조건을 순서대로 적용합니다.
 def _apply_filters(rows: list[dict[str, Any]], filters: Any) -> list[dict[str, Any]]:
     if isinstance(filters, list):
         items = [(condition.get("field"), condition) for condition in filters if isinstance(condition, dict)]
@@ -925,6 +954,7 @@ def _apply_filters(rows: list[dict[str, Any]], filters: Any) -> list[dict[str, A
     return filtered
 
 
+# 함수 설명: `_filter_rows()`는 조건과 우선순위에 맞는 행 목록만 골라 원래 순서를 유지해 반환합니다.
 def _filter_rows(rows: list[dict[str, Any]], field: str, values: list[Any], operator: str, keep_if_missing: bool) -> list[dict[str, Any]]:
     candidates = _field_candidates(field)
     if not any(any(candidate in row for candidate in candidates) for row in rows):
@@ -939,6 +969,7 @@ def _filter_rows(rows: list[dict[str, Any]], field: str, values: list[Any], oper
     return rows
 
 
+# 함수 설명: `_field_candidates()`는 표준 필터 field에 대응할 수 있는 실제 컬럼 alias 후보를 반환합니다.
 def _field_candidates(field: str) -> list[str]:
     aliases = {
         "DATE": ["DATE", "WORK_DATE", "WORK_DT", "LOAD_DT", "BASE_DT"],
@@ -957,6 +988,7 @@ def _field_candidates(field: str) -> list[str]:
     return aliases.get(field, [field])
 
 
+# 함수 설명: `_normalize()`는 normalize의 표기·자료형 차이를 비교와 저장에 사용할 표준 형태로 정규화합니다.
 def _normalize(value: Any) -> str:
     text = str(value if value is not None else "").strip().upper()
     digits = "".join(character for character in text if character.isdigit())
@@ -965,6 +997,7 @@ def _normalize(value: Any) -> str:
     return text
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)

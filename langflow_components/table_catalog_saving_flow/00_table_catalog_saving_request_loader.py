@@ -39,11 +39,13 @@ def build_request(raw_text: Any, duplicate_action: str = "skip", dry_run: Any = 
     }
 
 
+# 함수 설명: `_duplicate_action()`는 요청에 지정된 skip/merge/replace/create_new 중복 처리 정책을 안전한 기본값과 함께 해석합니다.
 def _duplicate_action(value: Any) -> str:
     action = str(value or "skip").strip().lower()
     return action if action in ALLOWED_DUPLICATE_ACTIONS else "skip"
 
 
+# 함수 설명: `_bool()`는 문자열·숫자·불리언 표기를 일관된 bool 값으로 해석합니다.
 def _bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value

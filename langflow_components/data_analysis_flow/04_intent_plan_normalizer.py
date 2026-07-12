@@ -64,6 +64,7 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
     return next_payload
 
 
+# 함수 설명: `_request_scope()`는 분석 범위에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _request_scope(plan: dict[str, Any]) -> str:
     value = str(plan.get("request_scope") or "").strip()
     allowed = {
@@ -77,6 +78,7 @@ def _request_scope(plan: dict[str, Any]) -> str:
     return value if value in allowed else "new_analysis"
 
 
+# 함수 설명: `_reuse_strategy()`는 의도 계획의 이전 결과 재사용 전략을 허용된 값으로 정규화합니다.
 def _reuse_strategy(plan: dict[str, Any]) -> str:
     value = str(plan.get("reuse_strategy") or "").strip()
     allowed = {
@@ -89,6 +91,7 @@ def _reuse_strategy(plan: dict[str, Any]) -> str:
     return value if value in allowed else "none"
 
 
+# 함수 설명: `_condition_resolution()`는 이전 조건의 inherited·changed·dropped·new 내역을 표준 구조로 정리합니다.
 def _condition_resolution(plan: dict[str, Any]) -> dict[str, Any]:
     value = plan.get("condition_resolution")
     if not isinstance(value, dict):
@@ -100,6 +103,8 @@ def _condition_resolution(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_uses_previous_data_without_new_retrieval()`는 04 의도 계획 정규화기 처리 중 이전 값·데이터·without·NEW·데이터 조회 관련 값을 계산·변환하는
+#        내부 helper입니다.
 def _uses_previous_data_without_new_retrieval(plan: dict[str, Any]) -> bool:
     request_scope = str(plan.get("request_scope") or "").strip()
     reuse_strategy = str(plan.get("reuse_strategy") or "").strip()
@@ -110,6 +115,7 @@ def _uses_previous_data_without_new_retrieval(plan: dict[str, Any]) -> bool:
     return request_scope in {"followup_transform", "followup_expand_source"} and reuse_strategy in {"previous_result", "previous_source", "trace_only"}
 
 
+# 함수 설명: `_function_case_items()`는 Function Case·항목 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _function_case_items(plan: dict[str, Any], retrieval_jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     single = plan.get("pandas_function_case")
@@ -125,6 +131,7 @@ def _function_case_items(plan: dict[str, Any], retrieval_jobs: list[dict[str, An
     return _dedupe_cases([_normalize_case(item, retrieval_jobs) for item in items])
 
 
+# 함수 설명: `_normalize_case()`는 Function Case의 표기·자료형 차이를 비교와 저장에 사용할 표준 형태로 정규화합니다.
 def _normalize_case(item: dict[str, Any], retrieval_jobs: list[dict[str, Any]]) -> dict[str, Any]:
     case = deepcopy(item)
     if case.get("function_case_key") and not case.get("key"):
@@ -143,6 +150,7 @@ def _normalize_case(item: dict[str, Any], retrieval_jobs: list[dict[str, Any]]) 
     return case
 
 
+# 함수 설명: `_dedupe_cases()`는 cases의 중복을 제거하고 최초 등장 순서를 유지합니다.
 def _dedupe_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str, str]] = set()
@@ -161,6 +169,7 @@ def _dedupe_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+# 함수 설명: `_ensure_function_case_steps()`는 함수·Function Case·steps이 실행·저장 계약을 만족하는지 검사하고 위반 내용을 명시적으로 반환합니다.
 def _ensure_function_case_steps(function_cases: list[dict[str, Any]], pandas_plan: list[Any], retrieval_jobs: list[dict[str, Any]]) -> list[Any]:
     if not function_cases:
         return pandas_plan
@@ -190,6 +199,7 @@ def _ensure_function_case_steps(function_cases: list[dict[str, Any]], pandas_pla
     return [*steps_to_add, *pandas_plan]
 
 
+# 함수 설명: `_has_function_case_step()`는 입력값이 함수·Function Case·STEP 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _has_function_case_step(steps: list[Any], function_name: str, case_key: str, input_text: str, source_alias: str) -> bool:
     for step in steps:
         if not isinstance(step, dict) or str(step.get("operation") or "") != "apply_pandas_function_case":
@@ -206,11 +216,13 @@ def _has_function_case_step(steps: list[Any], function_name: str, case_key: str,
     return False
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_json()`는 Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.
 def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
@@ -230,6 +242,7 @@ def _json(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+# 함수 설명: `_partial_intent_plan()`는 LLM 응답이 완전하지 않아도 복구 가능한 의도 계획 필드만 우선 추출합니다.
 def _partial_intent_plan(text: str) -> dict[str, Any]:
     plan_text = _extract_json_value(text, "intent_plan")
     if not plan_text:
@@ -244,6 +257,7 @@ def _partial_intent_plan(text: str) -> dict[str, Any]:
     return {"intent_plan": plan} if isinstance(plan, dict) else {}
 
 
+# 함수 설명: `_extract_json_value()`는 복합 입력이나 응답에서 JSON·값을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _extract_json_value(text: str, key: str) -> str:
     match = re.search(rf'"{re.escape(key)}"\s*:', text)
     if not match:
@@ -279,6 +293,7 @@ def _extract_json_value(text: str, key: str) -> str:
     return ""
 
 
+# 함수 설명: `_text_value()`는 Langflow Message/Data에서 실제 문자열 값을 꺼내 공통 텍스트 형식으로 맞춥니다.
 def _text_value(value: Any) -> str:
     for attr in ("text", "content", "message"):
         text = getattr(value, attr, None)

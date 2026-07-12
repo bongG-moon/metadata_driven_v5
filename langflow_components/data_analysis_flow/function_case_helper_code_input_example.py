@@ -13,6 +13,7 @@ try:
 except NameError:
     _function_case_results = []
 
+    # 함수 설명: `record_function_case_result()`는 선택 helper 실행 결과의 함수명·입력·행 수를 분석 근거로 기록합니다.
     def record_function_case_result(function_name, input_text, result_value, description=""):
         # 17 pandas executor가 아닌 로컬/단독 검증에서만 사용하는 fallback이다.
         # Langflow 실행 중에는 executor가 주입한 같은 이름의 함수를 그대로 사용한다.
@@ -39,6 +40,7 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
         return result
 
     # 비교 안정성을 위해 값에서 영문/숫자만 남기고 대문자로 정규화한다.
+    # 함수 설명: `_norm()`는 제품 token 비교를 위해 값을 영문·숫자 중심의 표준 문자열로 정규화합니다.
     def _norm(value):
         text = str('' if value is None else value).strip().upper()
         if '.' in text:
@@ -49,6 +51,7 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
 
     # LEAD 컬럼은 현업 질문/원천값에서 78Lead, 152ball처럼 단위/설명이 붙는 경우가 있다.
     # 이 suffix는 LEAD 역할 비교에만 제거하고 다른 제품 속성에는 적용하지 않는다.
+    # 함수 설명: `_lead_norm()`는 LEAD 값에서 Lead/Ball suffix를 제거해 숫자 역할 값으로 비교할 수 있게 합니다.
     def _lead_norm(value):
         text = _norm(value)
         for suffix in ('LEAD', 'BALL'):
@@ -56,6 +59,7 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
                 return text[:-len(suffix)]
         return text
 
+    # 함수 설명: `_lead_suffix_number()`는 Lead/Ball 단위 접미사가 붙은 표현에서 앞쪽 숫자만 추출합니다.
     def _lead_suffix_number(value):
         text = _norm(value)
         for suffix in ('LEAD', 'BALL'):
@@ -64,6 +68,7 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
         return ''
 
     # 컬럼명은 PKG_TYPE1, MCP NO처럼 표기 차이가 있어도 같은 key로 비교한다.
+    # 함수 설명: `_col_key()`는 컬럼명 표기 차이를 대문자 underscore key로 정규화합니다.
     def _col_key(value):
         text = str(value).upper()
         chars = []
@@ -79,6 +84,7 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
 
     # 사용자 입력 문장에서 제품 식별에 필요한 token만 추출한다.
     # 공정/수량/일자처럼 제품 속성이 아닌 흔한 단어는 stopwords로 제거한다.
+    # 함수 설명: `_tokens()`는 문자열을 비교 가능한 검색 token 목록으로 분리·정규화합니다.
     def _tokens(value):
         stopwords = {'PRODUCT', 'DEVICE', 'PKG', 'WIP', 'INPUT', 'OUTPUT', 'OUT', 'PRODUCTION', 'TODAY', 'YESTERDAY', 'WB', 'FCB', 'BG', 'SBM'}
         raw_items = []
@@ -142,10 +148,12 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
         for column in columns
     }
 
+    # 함수 설명: `_has_rows()`는 pandas boolean mask에 실제로 선택된 행이 하나 이상 있는지 확인합니다.
     def _has_rows(mask):
         return mask is not None and bool(mask.any())
 
     # 지정한 역할군의 컬럼들에서 token을 exact 또는 prefix 방식으로 찾는다.
+    # 함수 설명: `_match()`는 선택한 제품 역할 컬럼들을 exact·contains·prefix 방식으로 OR 매칭합니다.
     def _match(roles, token, mode):
         selected_columns = []
         for role in roles:
@@ -169,6 +177,7 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
 
     # token 하나를 DataFrame mask로 변환한다.
     # 특수 규칙은 여기서 처리한다.
+    # 함수 설명: `_token_mask()`는 제품 token 하나를 역할별 컬럼 조건이 반영된 DataFrame boolean mask로 변환합니다.
     def _token_mask(raw_token):
         raw_text = str(raw_token or '').strip().upper()
         token = _norm(raw_text)
@@ -208,6 +217,7 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
             matched = matched | desc_matched
         return matched if _has_rows(matched) else None
 
+    # 함수 설명: `_looks_mcp_no_prefix()`는 입력 token이 영문 1자리-숫자 3자리 형태의 MCP_NO prefix인지 판정합니다.
     def _looks_mcp_no_prefix(value):
         text = str(value or '').strip().upper()
         if '-' not in text:

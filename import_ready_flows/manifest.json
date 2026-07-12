@@ -23,7 +23,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "2f5724bf7dbc36351bb55ca818075ab09a49b34d7a7779861652068980264432",
+  "single_file_ui_import_sha256": "b5c07d884859b2c207b7afd05f4be7df6bf41c17ff85f86deba8f553a0f985e8",
   "flows": [
     {
       "order": 1,
@@ -32,7 +32,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 41,
       "edges": 65,
-      "sha256": "c6de7a91e10e2f44d48e3e85ace05f3c369f8e0417d1b42aeb08ddf950c2581e"
+      "sha256": "f6982b418dbeb175210b69f5e5b93729b9493863eb4a797e3b7fc2cf9e920a7e"
     },
     {
       "order": 2,
@@ -41,7 +41,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "0928908c352a629a40379f236c303c7f8fdc33bcfadccf21871dd8e1c30a5d2d"
+      "sha256": "8bd79bec9c95324378fff2d4bf42c5bda95d84c148a54b306f076216823edbb0"
     },
     {
       "order": 3,
@@ -50,7 +50,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-table-catalog-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "395aa2c94c5ea5911f92cd060e2cac034f0f2fe887712f74dda8718d016918c9"
+      "sha256": "d4f0e4116b1bf129157e17457d52cbd006dd03cbfc4afd86558b04a7664f12af"
     },
     {
       "order": 4,
@@ -59,7 +59,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-main-flow-filter-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "5dafcddf8a6b5a5ba8f44f7e8251ef16ea999f320f8699934f2ce377d080aad2"
+      "sha256": "e5c987aba01c429ec6ad1fefe5d8a2b65606e284c379fb1771c9dffd7a76c855"
     },
     {
       "order": 5,
@@ -68,7 +68,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
       "nodes": 13,
       "edges": 16,
-      "sha256": "0fb9f22dd226c7594bec23657978a20404ea79d92f88a70d461c0c804f9b3214"
+      "sha256": "c16d64b7d2e39d77b64b954305f1a1e5a30c19119e3feb30dbf2a9c628a3e969"
     },
     {
       "order": 6,
@@ -77,7 +77,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-api-router",
       "nodes": 14,
       "edges": 13,
-      "sha256": "89f825c47d6221bf15827271767f4c517e1fb3ee104a98ca852ff798e2f3e78c"
+      "sha256": "c0905f76f4af6ac212d85f4ab885b9e9781b4c4baeb1a630744378417814a8c2"
     },
     {
       "order": 7,
@@ -86,7 +86,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
       "nodes": 8,
       "edges": 7,
-      "sha256": "d2e221894609f2794f60adf6f6b894db1c1feb879d9f73185a3d7c70d226aa6d"
+      "sha256": "f3d25f6612ffdf37a548d8de4b00ffc956437dbfd4ce8e1856772da8688e3ab8"
     }
   ],
   "router_configuration": {
@@ -104,7 +104,7 @@
   "validation": {
     "pytest": "222 passed",
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 75/75 custom nodes to 67 real Python sources; 0 missing",
-    "korean_component_documentation": "68/68 Python sources documented; 26 component text sources and 9 embedded prompts are BOM-free; 225 embedded custom-code instances preserve literal Korean comments; strict UTF-8/JSON checks passed",
+    "korean_component_documentation": "68/68 Python sources and 997/997 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 225 embedded custom-code instances preserve 3255/3255 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
     "langflow_frontend_edge_handles": "286/286 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",

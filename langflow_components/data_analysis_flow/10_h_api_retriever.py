@@ -60,6 +60,7 @@ def h_api_retrieve(
     }
 
 
+# 함수 설명: `_run_h_api_job()`는 H·API·조회 작업 실행 경계를 담당하고 성공 결과와 오류를 공통 계약으로 반환합니다.
 def _run_h_api_job(job: dict[str, Any], api_token: str, timeout: int, fetch_limit: int, opener: Any = None) -> dict[str, Any]:
     source_config = _source_config(job)
     params = _job_params(job)
@@ -112,6 +113,7 @@ def _run_h_api_job(job: dict[str, Any], api_token: str, timeout: int, fetch_limi
         return _error_result(job, "h_api_retrieval_failed", f"H-API 조회 실패: {exc}", params=params)
 
 
+# 함수 설명: `_jobs_for_source()`는 전체 조회 작업 중 지정한 source type에 해당하는 작업만 골라냅니다.
 def _jobs_for_source(payload: dict[str, Any]) -> list[dict[str, Any]]:
     bundle = payload.get("retrieval_job_bundle") if isinstance(payload.get("retrieval_job_bundle"), dict) else {}
     bundle_jobs = bundle.get("jobs") if isinstance(bundle.get("jobs"), list) else []
@@ -122,6 +124,7 @@ def _jobs_for_source(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [deepcopy(job) for job in jobs if isinstance(job, dict) and _source_type(job.get("source_type")) in {"h_api", "hapi"}]
 
 
+# 함수 설명: `_source_config()`는 조회 작업 또는 카탈로그에서 허용된 데이터 소스 설정만 dict로 꺼냅니다.
 def _source_config(job: dict[str, Any]) -> dict[str, Any]:
     config = deepcopy(job.get("source_config")) if isinstance(job.get("source_config"), dict) else {}
     for key in ("api_url", "url", "endpoint_url", "endpoint", "path", "method", "headers", "params", "query_params", "body", "payload"):
@@ -130,6 +133,7 @@ def _source_config(job: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+# 함수 설명: `_api_url()`는 URL에 접근할 URL을 설정과 식별자로부터 안전하게 구성합니다.
 def _api_url(source_config: dict[str, Any]) -> str:
     direct_url = str(source_config.get("api_url") or source_config.get("url") or source_config.get("endpoint_url") or "").strip()
     if direct_url:
@@ -143,6 +147,7 @@ def _api_url(source_config: dict[str, Any]) -> str:
     return base_url.rstrip("/") + "/" + endpoint.lstrip("/") if base_url else endpoint
 
 
+# 함수 설명: `_job_params()`는 조회 작업의 params를 안전한 dict로 정리해 retriever에 전달합니다.
 def _job_params(job: dict[str, Any]) -> dict[str, Any]:
     if isinstance(job.get("params"), dict):
         return deepcopy(job["params"])
@@ -151,6 +156,7 @@ def _job_params(job: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# 함수 설명: `_required_param_names()`는 카탈로그 설정에서 실행 전에 반드시 있어야 하는 파라미터 이름을 추출합니다.
 def _required_param_names(job: dict[str, Any], source_config: dict[str, Any]) -> list[Any]:
     if isinstance(source_config.get("required_params"), (list, tuple, set)):
         return _as_list(source_config.get("required_params"))
@@ -161,6 +167,7 @@ def _required_param_names(job: dict[str, Any], source_config: dict[str, Any]) ->
     return []
 
 
+# 함수 설명: `_merge_query_params()`는 여러 쿼리·파라미터 값을 순서와 중복 정책을 지키며 하나의 결과로 합칩니다.
 def _merge_query_params(source_config: dict[str, Any], params: dict[str, Any], include_job_params: bool) -> dict[str, Any]:
     query = {}
     for key in ("query_params", "params"):
@@ -172,6 +179,7 @@ def _merge_query_params(source_config: dict[str, Any], params: dict[str, Any], i
     return query
 
 
+# 함수 설명: `_request_body()`는 BODY에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _request_body(source_config: dict[str, Any], params: dict[str, Any], method: str) -> Any:
     for key in ("body", "payload", "json_body"):
         if source_config.get(key) not in (None, "", [], {}):
@@ -181,6 +189,7 @@ def _request_body(source_config: dict[str, Any], params: dict[str, Any], method:
     return None
 
 
+# 함수 설명: `_request_headers()`는 headers에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _request_headers(source_config: dict[str, Any], api_token: str) -> dict[str, str]:
     headers = {}
     if isinstance(source_config.get("headers"), dict):
@@ -192,6 +201,7 @@ def _request_headers(source_config: dict[str, Any], api_token: str) -> dict[str,
     return headers
 
 
+# 함수 설명: `_append_query()`는 여러 쿼리 값을 순서와 중복 정책을 지키며 하나의 결과로 합칩니다.
 def _append_query(url: str, params: dict[str, Any]) -> str:
     clean_params = {key: value for key, value in params.items() if value not in (None, "", [], {})}
     if not clean_params:
@@ -200,6 +210,7 @@ def _append_query(url: str, params: dict[str, Any]) -> str:
     return url + separator + urllib.parse.urlencode(clean_params, doseq=True)
 
 
+# 함수 설명: `_read_response_payload()`는 입력 또는 외부 저장소에서 응답·페이로드을 읽고 호출자가 사용할 형태로 반환합니다.
 def _read_response_payload(response: Any) -> Any:
     raw = response.read() if hasattr(response, "read") else response
     text = _safe_decode(raw)
@@ -211,12 +222,14 @@ def _read_response_payload(response: Any) -> Any:
         return {"value": text}
 
 
+# 함수 설명: `_extract_rows()`는 복합 입력이나 응답에서 행 목록을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _extract_rows(value: Any, response_path: Any = "") -> list[dict[str, Any]]:
     selected = _select_path(value, response_path)
     rows = _rows_from_value(selected)
     return [_row_dict(row) for row in rows]
 
 
+# 함수 설명: `_select_path()`는 조건과 우선순위에 맞는 PATH만 골라 원래 순서를 유지해 반환합니다.
 def _select_path(value: Any, response_path: Any = "") -> Any:
     current = value
     for part in [item for item in str(response_path or "").split(".") if item]:
@@ -229,6 +242,7 @@ def _select_path(value: Any, response_path: Any = "") -> Any:
     return current
 
 
+# 함수 설명: `_rows_from_value()`는 외부 클라이언트의 DataFrame·list·dict 결과를 공통 dict 행 목록으로 변환합니다.
 def _rows_from_value(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
@@ -249,6 +263,7 @@ def _rows_from_value(value: Any) -> list[Any]:
     return [{"value": value}]
 
 
+# 함수 설명: `_first_nested_list()`는 알려진 응답 key가 없을 때 중첩 dict에서 첫 번째 행 목록 후보를 찾습니다.
 def _first_nested_list(value: Any) -> list[Any]:
     if isinstance(value, dict):
         for item in value.values():
@@ -260,12 +275,14 @@ def _first_nested_list(value: Any) -> list[Any]:
     return []
 
 
+# 함수 설명: `_row_dict()`는 객체·매핑·튜플 형태의 한 행을 컬럼명이 있는 dict 행으로 변환합니다.
 def _row_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return {str(key): _json_ready(item) for key, item in value.items()}
     return {"value": _json_ready(value)}
 
 
+# 함수 설명: `_standard_result()`는 정상 조회 결과를 dataset/source alias와 rows가 포함된 공통 결과 구조로 만듭니다.
 def _standard_result(job: dict[str, Any], rows: list[dict[str, Any]], params: dict[str, Any], method: str, url: str) -> dict[str, Any]:
     return {
         "source_alias": job.get("source_alias") or job.get("dataset_key"),
@@ -292,6 +309,7 @@ def _standard_result(job: dict[str, Any], rows: list[dict[str, Any]], params: di
     }
 
 
+# 함수 설명: `_error_result()`는 예외 정보를 공통 errors 배열과 status가 포함된 실패 결과 구조로 만듭니다.
 def _error_result(job: dict[str, Any], error_type: str, message: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     error = {"type": error_type, "message": message, "dataset_key": job.get("dataset_key", "")}
     return {
@@ -312,6 +330,7 @@ def _error_result(job: dict[str, Any], error_type: str, message: str, params: di
     }
 
 
+# 함수 설명: `_render_any()`는 ANY을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _render_any(value: Any, params: dict[str, Any], url_encode: bool) -> tuple[Any, list[str]]:
     if isinstance(value, str):
         return _render_template(value, params, url_encode=url_encode)
@@ -334,9 +353,11 @@ def _render_any(value: Any, params: dict[str, Any], url_encode: bool) -> tuple[A
     return value, []
 
 
+# 함수 설명: `_render_template()`는 검증된 파라미터를 SQL·URL·본문 템플릿에 치환해 실제 요청 문자열을 만듭니다.
 def _render_template(template: str, params: dict[str, Any], url_encode: bool) -> tuple[str, list[str]]:
     missing: list[str] = []
 
+    # 함수 설명: `replace()`는 HTTP URL·본문 템플릿 placeholder를 요청 파라미터 값으로 치환하고 누락 key를 기록합니다.
     def replace(match: re.Match[str]) -> str:
         key = match.group(1).strip()
         value = _dict_get_ci(params, key)
@@ -349,6 +370,7 @@ def _render_template(template: str, params: dict[str, Any], url_encode: bool) ->
     return re.sub(r"\{([^{}]+)\}", replace, str(template or "")), missing
 
 
+# 함수 설명: `_missing_required_params()`는 필수 파라미터 중 실제 작업 값에 없는 항목을 찾아 오류 목록으로 반환합니다.
 def _missing_required_params(params: dict[str, Any], required_params: Any) -> list[str]:
     missing = []
     for item in _as_list(required_params):
@@ -358,6 +380,7 @@ def _missing_required_params(params: dict[str, Any], required_params: Any) -> li
     return missing
 
 
+# 함수 설명: `_rows_columns()`는 행 목록과 명시 컬럼을 함께 정규화해 표준 rows/columns 쌍을 만듭니다.
 def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     columns: list[str] = []
     for row in rows:
@@ -368,6 +391,7 @@ def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.
 def _json_ready(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -387,6 +411,7 @@ def _json_ready(value: Any) -> Any:
     return str(value)
 
 
+# 함수 설명: `_timeout()`는 HTTP timeout 입력을 허용 범위의 초 단위 숫자로 보정합니다.
 def _timeout(value: Any) -> int:
     try:
         return max(1, int(value or 30))
@@ -394,6 +419,7 @@ def _timeout(value: Any) -> int:
         return 30
 
 
+# 함수 설명: `_fetch_limit()`는 설정된 조회 제한을 안전한 정수 범위로 보정합니다.
 def _fetch_limit(value: Any) -> int:
     try:
         return max(1, int(value or 5000))
@@ -401,14 +427,17 @@ def _fetch_limit(value: Any) -> int:
         return 5000
 
 
+# 함수 설명: `_source_type()`는 조회 작업의 source type을 표준 소문자 식별자로 정규화합니다.
 def _source_type(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+# 함수 설명: `_normalize_key()`는 key의 대소문자·공백·구분자 차이를 제거해 비교 가능한 표준 식별자로 바꿉니다.
 def _normalize_key(value: Any) -> str:
     return re.sub(r"[\s_-]+", "", str(value or "").strip().lower())
 
 
+# 함수 설명: `_dict_get_ci()`는 키의 대소문자 차이를 무시하고 dict에서 요청한 값을 찾습니다.
 def _dict_get_ci(mapping: dict[str, Any], key: Any, default: Any = None) -> Any:
     if not isinstance(mapping, dict):
         return default
@@ -422,6 +451,7 @@ def _dict_get_ci(mapping: dict[str, Any], key: Any, default: Any = None) -> Any:
     return default
 
 
+# 함수 설명: `_as_list()`는 단일 값과 여러 값 입력을 모두 같은 list 형태로 맞춰 반복 처리를 단순화합니다.
 def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -434,12 +464,14 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+# 함수 설명: `_safe_decode()`는 bytes 응답을 UTF-8로 해석하고 실패해도 예외 대신 읽을 수 있는 문자열을 반환합니다.
 def _safe_decode(value: Any) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value or "")
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
@@ -447,6 +479,7 @@ def _payload(value: Any) -> dict[str, Any]:
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_skipped()`는 설정이나 대상 작업이 없어 실행하지 않은 이유를 표준 skipped 결과로 남깁니다.
 def _skipped(source_type: str, reason: str) -> dict[str, Any]:
     return {"source_type": source_type, "status": "skipped", "skipped": True, "skip_reason": reason, "source_results": [], "errors": [], "warnings": []}
 

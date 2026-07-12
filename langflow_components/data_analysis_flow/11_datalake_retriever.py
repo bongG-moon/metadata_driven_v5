@@ -69,6 +69,7 @@ def datalake_retrieve(
     }
 
 
+# 함수 설명: `_run_datalake_job()`는 datalake·조회 작업 실행 경계를 담당하고 성공 결과와 오류를 공통 계약으로 반환합니다.
 def _run_datalake_job(job: dict[str, Any], client_factory: "DatalakeClientFactory", fetch_limit: int) -> dict[str, Any]:
     source_config = _source_config(job)
     params = _job_params(job)
@@ -103,6 +104,7 @@ def _run_datalake_job(job: dict[str, Any], client_factory: "DatalakeClientFactor
 
 # 내부 연동 도우미 클래스: 외부 라이브러리나 클라이언트 차이를 이 파일의 표준 호출 형태로 감쌉니다.
 class DatalakeClientFactory:
+    # 함수 설명: `__init__()`는 외부 클라이언트나 실행 설정을 인스턴스에 보관해 뒤의 메서드가 같은 연결 문맥을 사용하게 합니다.
     def __init__(
         self,
         module_name: str,
@@ -133,6 +135,7 @@ class DatalakeClientFactory:
         rows = self._read_result(client, raw_result)
         return [_row_dict(row) for row in _rows_from_value(rows)[:fetch_limit]]
 
+    # 함수 설명: `_prepare_environment()`는 명시적으로 제공된 Datalake 인증·접속 설정만 실행 환경변수에 반영합니다.
     def _prepare_environment(self) -> None:
         for key, value in {
             "LAKEHOUSE_USER_ID": self.user_id,
@@ -143,6 +146,7 @@ class DatalakeClientFactory:
             if value:
                 os.environ[key] = value
 
+    # 함수 설명: `_create_client()`는 client 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
     def _create_client(self) -> Any:
         cls = self.client_cls or getattr(import_module(self.module_name), self.class_name)
         attempts = (
@@ -160,6 +164,7 @@ class DatalakeClientFactory:
             raise last_error
         return cls()
 
+    # 함수 설명: `_run_query_method()`는 쿼리·method 실행 경계를 담당하고 성공 결과와 오류를 공통 계약으로 반환합니다.
     def _run_query_method(self, client: Any, sql: str) -> Any:
         if hasattr(client, "auto_run_sync_paragraph"):
             return self._call_with_fallback(client.auto_run_sync_paragraph, {"code": sql}, [sql])
@@ -168,6 +173,7 @@ class DatalakeClientFactory:
                 return self._call_with_fallback(getattr(client, method_name), {"sql": sql}, [sql])
         raise AttributeError("Datalake client에 실행 메서드(auto_run_sync_paragraph/run_sql/query/execute)가 없습니다.")
 
+    # 함수 설명: `_read_result()`는 입력 또는 외부 저장소에서 결과을 읽고 호출자가 사용할 형태로 반환합니다.
     def _read_result(self, client: Any, raw_result: Any) -> Any:
         if raw_result not in (None, ""):
             return raw_result
@@ -177,6 +183,7 @@ class DatalakeClientFactory:
             return client.get_result()
         return raw_result
 
+    # 함수 설명: `_call_with_fallback()`는 WITH·fallback 실행 경계를 담당하고 성공 결과와 오류를 공통 계약으로 반환합니다.
     @staticmethod
     def _call_with_fallback(method: Any, kwargs: dict[str, Any], args: list[Any]) -> Any:
         try:
@@ -185,6 +192,7 @@ class DatalakeClientFactory:
             return method(*args)
 
 
+# 함수 설명: `_jobs_for_source()`는 전체 조회 작업 중 지정한 source type에 해당하는 작업만 골라냅니다.
 def _jobs_for_source(payload: dict[str, Any]) -> list[dict[str, Any]]:
     bundle = payload.get("retrieval_job_bundle") if isinstance(payload.get("retrieval_job_bundle"), dict) else {}
     bundle_jobs = bundle.get("jobs") if isinstance(bundle.get("jobs"), list) else []
@@ -195,6 +203,7 @@ def _jobs_for_source(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [deepcopy(job) for job in jobs if isinstance(job, dict) and _source_type(job.get("source_type")) in {"datalake", "data_lake", "lakehouse"}]
 
 
+# 함수 설명: `_source_config()`는 조회 작업 또는 카탈로그에서 허용된 데이터 소스 설정만 dict로 꺼냅니다.
 def _source_config(job: dict[str, Any]) -> dict[str, Any]:
     config = deepcopy(job.get("source_config")) if isinstance(job.get("source_config"), dict) else {}
     for key in ("query_template", "sql_template", "datalake_sql", "sql", "query", "cluster_type"):
@@ -203,6 +212,7 @@ def _source_config(job: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+# 함수 설명: `_job_params()`는 조회 작업의 params를 안전한 dict로 정리해 retriever에 전달합니다.
 def _job_params(job: dict[str, Any]) -> dict[str, Any]:
     if isinstance(job.get("params"), dict):
         return deepcopy(job["params"])
@@ -211,6 +221,7 @@ def _job_params(job: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# 함수 설명: `_required_param_names()`는 카탈로그 설정에서 실행 전에 반드시 있어야 하는 파라미터 이름을 추출합니다.
 def _required_param_names(job: dict[str, Any], source_config: dict[str, Any]) -> list[Any]:
     if isinstance(source_config.get("required_params"), (list, tuple, set)):
         return _as_list(source_config.get("required_params"))
@@ -221,6 +232,7 @@ def _required_param_names(job: dict[str, Any], source_config: dict[str, Any]) ->
     return []
 
 
+# 함수 설명: `_standard_result()`는 정상 조회 결과를 dataset/source alias와 rows가 포함된 공통 결과 구조로 만듭니다.
 def _standard_result(
     job: dict[str, Any],
     rows: list[dict[str, Any]],
@@ -255,6 +267,7 @@ def _standard_result(
     }
 
 
+# 함수 설명: `_error_result()`는 예외 정보를 공통 errors 배열과 status가 포함된 실패 결과 구조로 만듭니다.
 def _error_result(job: dict[str, Any], error_type: str, message: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     error = {"type": error_type, "message": message, "dataset_key": job.get("dataset_key", "")}
     return {
@@ -275,9 +288,11 @@ def _error_result(job: dict[str, Any], error_type: str, message: str, params: di
     }
 
 
+# 함수 설명: `_render_template()`는 검증된 파라미터를 SQL·URL·본문 템플릿에 치환해 실제 요청 문자열을 만듭니다.
 def _render_template(template: str, params: dict[str, Any]) -> tuple[str, list[str]]:
     missing: list[str] = []
 
+    # 함수 설명: `replace()`는 Datalake SQL 템플릿 placeholder를 자료형에 맞는 SQL literal로 치환하고 누락 key를 기록합니다.
     def replace(match: re.Match[str]) -> str:
         key = match.group(1).strip()
         value = _dict_get_ci(params, key)
@@ -289,6 +304,7 @@ def _render_template(template: str, params: dict[str, Any]) -> tuple[str, list[s
     return re.sub(r"\{([^{}]+)\}", replace, str(template or "")), missing
 
 
+# 함수 설명: `_sql_literal()`는 SQL 템플릿 파라미터를 자료형에 맞는 안전한 literal 표현으로 변환합니다.
 def _sql_literal(value: Any) -> str:
     if value is None:
         return "NULL"
@@ -303,6 +319,7 @@ def _sql_literal(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+# 함수 설명: `_missing_required_params()`는 필수 파라미터 중 실제 작업 값에 없는 항목을 찾아 오류 목록으로 반환합니다.
 def _missing_required_params(params: dict[str, Any], required_params: Any) -> list[str]:
     missing = []
     for item in _as_list(required_params):
@@ -312,6 +329,7 @@ def _missing_required_params(params: dict[str, Any], required_params: Any) -> li
     return missing
 
 
+# 함수 설명: `_rows_from_value()`는 외부 클라이언트의 DataFrame·list·dict 결과를 공통 dict 행 목록으로 변환합니다.
 def _rows_from_value(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
@@ -334,12 +352,14 @@ def _rows_from_value(value: Any) -> list[Any]:
     return [{"value": value}]
 
 
+# 함수 설명: `_row_dict()`는 객체·매핑·튜플 형태의 한 행을 컬럼명이 있는 dict 행으로 변환합니다.
 def _row_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return {str(key): _json_ready(item) for key, item in value.items()}
     return {"value": _json_ready(value)}
 
 
+# 함수 설명: `_rows_columns()`는 행 목록과 명시 컬럼을 함께 정규화해 표준 rows/columns 쌍을 만듭니다.
 def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     columns: list[str] = []
     for row in rows:
@@ -350,6 +370,7 @@ def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.
 def _json_ready(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -369,6 +390,7 @@ def _json_ready(value: Any) -> Any:
     return str(value)
 
 
+# 함수 설명: `_fetch_limit()`는 설정된 조회 제한을 안전한 정수 범위로 보정합니다.
 def _fetch_limit(value: Any) -> int:
     try:
         return max(1, int(value or 5000))
@@ -376,14 +398,17 @@ def _fetch_limit(value: Any) -> int:
         return 5000
 
 
+# 함수 설명: `_source_type()`는 조회 작업의 source type을 표준 소문자 식별자로 정규화합니다.
 def _source_type(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+# 함수 설명: `_normalize_key()`는 key의 대소문자·공백·구분자 차이를 제거해 비교 가능한 표준 식별자로 바꿉니다.
 def _normalize_key(value: Any) -> str:
     return re.sub(r"[\s_-]+", "", str(value or "").strip().lower())
 
 
+# 함수 설명: `_dict_get_ci()`는 키의 대소문자 차이를 무시하고 dict에서 요청한 값을 찾습니다.
 def _dict_get_ci(mapping: dict[str, Any], key: Any, default: Any = None) -> Any:
     if not isinstance(mapping, dict):
         return default
@@ -397,6 +422,7 @@ def _dict_get_ci(mapping: dict[str, Any], key: Any, default: Any = None) -> Any:
     return default
 
 
+# 함수 설명: `_as_list()`는 단일 값과 여러 값 입력을 모두 같은 list 형태로 맞춰 반복 처리를 단순화합니다.
 def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -409,6 +435,7 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
@@ -416,6 +443,7 @@ def _payload(value: Any) -> dict[str, Any]:
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_skipped()`는 설정이나 대상 작업이 없어 실행하지 않은 이유를 표준 skipped 결과로 남깁니다.
 def _skipped(source_type: str, reason: str) -> dict[str, Any]:
     return {"source_type": source_type, "status": "skipped", "skipped": True, "skip_reason": reason, "source_results": [], "errors": [], "warnings": []}
 

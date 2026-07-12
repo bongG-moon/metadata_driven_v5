@@ -48,6 +48,7 @@ def load_existing_items(mongo_uri: str = "", mongo_database: str = "", collectio
             client.close()
 
 
+# 함수 설명: `_resolve_mongo_config()`는 컴포넌트 입력→환경변수→기본값 순서로 MongoDB database와 collection 설정을 확정합니다.
 def _resolve_mongo_config(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> tuple[str, str, str]:
     return (
         mongo_uri or os.getenv("MONGODB_URI", ""),
@@ -56,6 +57,7 @@ def _resolve_mongo_config(mongo_uri: str = "", mongo_database: str = "", collect
     )
 
 
+# 함수 설명: `_result()`는 현재 처리 상태·행·오류를 공통 source result 계약으로 묶습니다.
 def _result(status: str, items: list[dict[str, Any]], database: str, collection: str, errors: list[dict[str, Any]]) -> dict[str, Any]:
     safe_items = []
     for item in items:
@@ -75,6 +77,7 @@ def _result(status: str, items: list[dict[str, Any]], database: str, collection:
     }
 
 
+# 함수 설명: `_int()`는 문자열이나 숫자 입력을 정수로 변환하고 실패하면 안전한 기본값을 사용합니다.
 def _int(value: Any, default: int) -> int:
     try:
         return max(1, int(value))

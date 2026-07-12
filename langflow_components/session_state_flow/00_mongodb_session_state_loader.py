@@ -103,6 +103,7 @@ def load_session_state(
             close()
 
 
+# 함수 설명: `_compact_state()`는 세션 상태에서 runtime source와 큰 rows를 제거하고 후속 질문에 필요한 요약만 남깁니다.
 def _compact_state(state: Any, preview_limit: int) -> dict[str, Any]:
     if not isinstance(state, dict):
         return {}
@@ -121,6 +122,7 @@ def _compact_state(state: Any, preview_limit: int) -> dict[str, Any]:
     return _json_ready(result)
 
 
+# 함수 설명: `_compact_current_data()`는 현재·데이터에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_current_data(current_data: Any, preview_limit: int) -> dict[str, Any]:
     if not isinstance(current_data, dict):
         return {}
@@ -146,6 +148,7 @@ def _compact_current_data(current_data: Any, preview_limit: int) -> dict[str, An
     return result
 
 
+# 함수 설명: `_compact_source_result()`는 데이터 소스·결과에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_source_result(source: dict[str, Any], preview_limit: int) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in (
@@ -170,6 +173,7 @@ def _compact_source_result(source: dict[str, Any], preview_limit: int) -> dict[s
     return result
 
 
+# 함수 설명: `_state_from_value()`는 원본·값에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _state_from_value(value: Any) -> dict[str, Any]:
     payload = _payload(value)
     if not payload:
@@ -181,6 +185,7 @@ def _state_from_value(value: Any) -> dict[str, Any]:
     return {}
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
@@ -205,20 +210,24 @@ def _payload(value: Any) -> dict[str, Any]:
     return {}
 
 
+# 함수 설명: `_connect_collection()`는 짧은 server selection timeout으로 MongoDB client와 대상 collection을 생성합니다.
 def _connect_collection(uri: str, database: str, collection_name: str) -> tuple[Any, Any]:
     pymongo = import_module("pymongo")
     client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=5000)
     return client, client[database][collection_name]
 
 
+# 함수 설명: `_collection_name()`는 입력·환경변수·기본값으로 실제 세션 상태 collection 이름을 결정합니다.
 def _collection_name(value: Any) -> str:
     return _clean(value) or os.getenv("MONGODB_SESSION_STATE_COLLECTION", DEFAULT_SESSION_COLLECTION)
 
 
+# 함수 설명: `_document_id()`는 session_id로 `session_state:{id}` 형식의 canonical 문서 ID를 만듭니다.
 def _document_id(session_id: str) -> str:
     return f"session_state:{session_id}"
 
 
+# 함수 설명: `_session_id_from_state()`는 ID·원본·상태을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
 def _session_id_from_state(state: dict[str, Any]) -> str:
     for key in ("session_id", "conversation_id", "chat_id", "thread_id"):
         if state.get(key) not in (None, ""):
@@ -229,6 +238,7 @@ def _session_id_from_state(state: dict[str, Any]) -> str:
     return ""
 
 
+# 함수 설명: `_session_id_from_value()`는 ID·원본·값을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
 def _session_id_from_value(value: Any) -> str:
     for attr in ("session_id", "conversation_id", "chat_id", "thread_id"):
         text = str(getattr(value, attr, "") or "").strip()
@@ -237,6 +247,7 @@ def _session_id_from_value(value: Any) -> str:
     return _session_id_from_state(_payload(value))
 
 
+# 함수 설명: `_rows_from()`는 복합 데이터에서 저장/표시에 사용할 dict 행 목록을 추출합니다.
 def _rows_from(value: dict[str, Any]) -> list[dict[str, Any]]:
     rows = value.get("rows")
     if not isinstance(rows, list):
@@ -248,6 +259,7 @@ def _rows_from(value: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+# 함수 설명: `_rows_columns()`는 행 목록과 명시 컬럼을 함께 정규화해 표준 rows/columns 쌍을 만듭니다.
 def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     columns: list[str] = []
     for row in rows:
@@ -258,12 +270,14 @@ def _rows_columns(rows: list[dict[str, Any]]) -> list[str]:
     return columns
 
 
+# 함수 설명: `_truthy()`는 입력값이 활성/참 의미로 해석되는지 공통 규칙으로 판정합니다.
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() not in {"", "0", "false", "no", "n", "off", "disabled"}
 
 
+# 함수 설명: `_positive_int()`는 입력 숫자를 1 이상의 정수로 제한해 preview·history 한도에 사용합니다.
 def _positive_int(value: Any, default: int) -> int:
     try:
         parsed = int(value)
@@ -272,10 +286,12 @@ def _positive_int(value: Any, default: int) -> int:
     return max(0, parsed)
 
 
+# 함수 설명: `_clean()`는 선택 입력을 안전한 문자열로 바꾸고 불필요한 앞뒤 공백을 제거합니다.
 def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.
 def _json_ready(value: Any) -> Any:
     try:
         return json.loads(json.dumps(value, ensure_ascii=False, default=str))
@@ -301,6 +317,7 @@ class MongoDBSessionStateLoader(Component):
     ]
     outputs = [Output(name="loaded_state", display_name="불러온 이전 상태", method="build_state", types=["Data"])]
 
+    # 함수 설명: `_result()`는 현재 처리 상태·행·오류를 공통 source result 계약으로 묶습니다.
     def _result(self) -> dict[str, Any]:
         cached = getattr(self, "_cached_session_state_payload", None)
         if isinstance(cached, dict):

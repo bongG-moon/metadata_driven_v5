@@ -155,6 +155,7 @@ def check_similarity(
     return next_payload
 
 
+# 함수 설명: `_identity_matches()`는 같은 section 안에서 신규 항목의 key·alias·display name과 겹치는 기존 canonical 문서를 찾습니다.
 def _identity_matches(item: dict[str, Any], existing_items: list[dict[str, Any]]) -> list[tuple[dict[str, Any], list[str]]]:
     section = str(item.get("section") or "").strip().casefold()
     candidate_identity = _identity_parts(item)
@@ -178,6 +179,7 @@ def _identity_matches(item: dict[str, Any], existing_items: list[dict[str, Any]]
     return result
 
 
+# 함수 설명: `_identity_parts()`는 도메인 항목의 key·별칭·표시명을 identity 비교용 원문 조각으로 모읍니다.
 def _identity_parts(item: dict[str, Any]) -> dict[str, Any]:
     payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
     aliases = payload.get("aliases") if isinstance(payload.get("aliases"), list) else []
@@ -189,6 +191,7 @@ def _identity_parts(item: dict[str, Any]) -> dict[str, Any]:
     return {"key": key, "aliases": alias_tokens, "display": display, "all": all_tokens}
 
 
+# 함수 설명: `_identity_token()`는 NFKC·대소문자·구분자 정규화를 적용해 identity 비교 token을 만듭니다.
 def _identity_token(value: Any, allow_compact: bool) -> str:
     text = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
     strict = " ".join(text.split())
@@ -201,10 +204,12 @@ def _identity_token(value: Any, allow_compact: bool) -> str:
     return token if len(token) >= 2 and token not in generic_tokens else ""
 
 
+# 함수 설명: `_normalize_generic()`는 generic의 표기·자료형 차이를 비교와 저장에 사용할 표준 형태로 정규화합니다.
 def _normalize_generic(value: Any) -> str:
     return " ".join(unicodedata.normalize("NFKC", str(value or "")).strip().casefold().split())
 
 
+# 함수 설명: `_conflict_warning()`는 한 후보가 여러 기존 문서와 겹칠 때 ambiguous 저장 차단 경고를 구성합니다.
 def _conflict_warning(match: dict[str, Any]) -> dict[str, Any]:
     if match.get("identity_resolution") == "ambiguous":
         return {
@@ -222,6 +227,7 @@ def _conflict_warning(match: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_missing_candidates()`는 현재 전달된 기존 문서만으로 비교할 수 없어 추가 조회가 필요한 후보를 찾습니다.
 def _missing_candidates(items: list[dict[str, Any]], existing_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     missing = []
     seen = set()
@@ -233,6 +239,7 @@ def _missing_candidates(items: list[dict[str, Any]], existing_by_id: dict[str, d
     return missing
 
 
+# 함수 설명: `_load_candidates()`는 후보 key에 해당하는 기존 MongoDB 문서만 추가 조회해 비교 범위를 최소화합니다.
 def _load_candidates(items: list[dict[str, Any]], mongo_uri: str, mongo_database: str, collection_name: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     uri, database, collection = _resolve_mongo_config(mongo_uri, mongo_database, collection_name)
     if not uri:
@@ -268,6 +275,7 @@ def _load_candidates(items: list[dict[str, Any]], mongo_uri: str, mongo_database
             client.close()
 
 
+# 함수 설명: `_resolve_mongo_config()`는 컴포넌트 입력→환경변수→기본값 순서로 MongoDB database와 collection 설정을 확정합니다.
 def _resolve_mongo_config(mongo_uri: str, mongo_database: str, collection_name: str) -> tuple[str, str, str]:
     return (
         mongo_uri or os.getenv("MONGODB_URI", ""),
@@ -276,6 +284,7 @@ def _resolve_mongo_config(mongo_uri: str, mongo_database: str, collection_name: 
     )
 
 
+# 함수 설명: `_identity_query()`는 후보 identity와 겹칠 수 있는 기존 도메인 문서만 조회하는 MongoDB 조건을 만듭니다.
 def _identity_query(item: dict[str, Any]) -> dict[str, Any]:
     section = str(item.get("section") or "").strip()
     payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
@@ -299,23 +308,27 @@ def _identity_query(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 함수 설명: `_doc_id()`는 메타데이터 항목의 section/key 계약으로 canonical MongoDB 문서 ID를 계산합니다.
 def _doc_id(item: dict[str, Any]) -> str:
     section = str(item.get("section") or "").strip()
     key = str(item.get("key") or "").strip()
     return str(item.get("_id") or (f"domain:{section}:{key}" if section and key else ""))
 
 
+# 함수 설명: `_key()`는 메타데이터 항목에서 비교·표시에 사용할 논리 key를 안전하게 꺼냅니다.
 def _key(item: dict[str, Any]) -> str:
     section = str(item.get("section") or "").strip()
     key = str(item.get("key") or "").strip()
     return f"{section}:{key}" if section and key else key
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_items()`는 Langflow 값이나 payload에서 저장·비교 대상 items 목록만 안전하게 꺼냅니다.
 def _items(value: Any) -> list[dict[str, Any]]:
     data = getattr(value, "data", value)
     if isinstance(data, list):

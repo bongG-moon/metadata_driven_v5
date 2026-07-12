@@ -67,6 +67,7 @@ def check_similarity(payload_value: Any, existing_items_value: Any = None, mongo
     return next_payload
 
 
+# 함수 설명: `_missing_candidates()`는 현재 전달된 기존 문서만으로 비교할 수 없어 추가 조회가 필요한 후보를 찾습니다.
 def _missing_candidates(items: list[dict[str, Any]], existing_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     missing = []
     seen = set()
@@ -78,6 +79,7 @@ def _missing_candidates(items: list[dict[str, Any]], existing_by_id: dict[str, d
     return missing
 
 
+# 함수 설명: `_load_candidates()`는 후보 key에 해당하는 기존 MongoDB 문서만 추가 조회해 비교 범위를 최소화합니다.
 def _load_candidates(items: list[dict[str, Any]], mongo_uri: str, mongo_database: str, collection_name: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     uri, database, collection = _resolve_mongo_config(mongo_uri, mongo_database, collection_name)
     if not uri:
@@ -99,20 +101,24 @@ def _load_candidates(items: list[dict[str, Any]], mongo_uri: str, mongo_database
             client.close()
 
 
+# 함수 설명: `_resolve_mongo_config()`는 컴포넌트 입력→환경변수→기본값 순서로 MongoDB database와 collection 설정을 확정합니다.
 def _resolve_mongo_config(mongo_uri: str, mongo_database: str, collection_name: str) -> tuple[str, str, str]:
     return (mongo_uri or os.getenv("MONGODB_URI", ""), mongo_database or os.getenv("MONGODB_DATABASE", DEFAULT_DATABASE), collection_name or os.getenv(COLLECTION_ENV, DEFAULT_COLLECTION))
 
 
+# 함수 설명: `_doc_id()`는 메타데이터 항목의 section/key 계약으로 canonical MongoDB 문서 ID를 계산합니다.
 def _doc_id(item: dict[str, Any]) -> str:
     key = str(item.get("filter_key") or item.get("key") or "").strip()
     return str(item.get("_id") or (f"main_flow_filter:{key}" if key else ""))
 
 
+# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: `_items()`는 Langflow 값이나 payload에서 저장·비교 대상 items 목록만 안전하게 꺼냅니다.
 def _items(value: Any) -> list[dict[str, Any]]:
     data = getattr(value, "data", value)
     if isinstance(data, list):

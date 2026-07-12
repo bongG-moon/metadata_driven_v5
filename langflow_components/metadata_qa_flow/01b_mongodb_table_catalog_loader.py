@@ -53,6 +53,7 @@ def load_table_catalog_metadata(
             client.close()
 
 
+# 함수 설명: `_resolve_config()`는 노드 입력·환경변수·카탈로그 기본값의 우선순위로 실제 실행 설정을 확정합니다.
 def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> dict[str, str]:
     return {
         "mongo_uri": mongo_uri or os.getenv("MONGODB_URI", ""),
@@ -61,6 +62,7 @@ def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_na
     }
 
 
+# 함수 설명: `_result()`는 현재 처리 상태·행·오류를 공통 source result 계약으로 묶습니다.
 def _result(status: str, items: list[dict[str, Any]], config: dict[str, str], status_filter: str, errors: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "table_catalog_items": deepcopy(items),
@@ -76,6 +78,7 @@ def _result(status: str, items: list[dict[str, Any]], config: dict[str, str], st
     }
 
 
+# 함수 설명: `_int()`는 문자열이나 숫자 입력을 정수로 변환하고 실패하면 안전한 기본값을 사용합니다.
 def _int(value: Any, default: int) -> int:
     try:
         return max(1, int(value))
@@ -83,6 +86,7 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
+# 함수 설명: `_status_query()`는 active/all 선택에 맞는 MongoDB status 조회 조건을 만듭니다.
 def _status_query(status_filter: str) -> dict[str, Any]:
     value = str(status_filter or "active").strip()
     if not value or value.lower() == "all":

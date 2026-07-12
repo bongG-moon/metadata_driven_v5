@@ -43,6 +43,7 @@ def build_selected_helper_code(selection_value: Any, helper_library_value: Any =
     return "\n\n".join(block for block in blocks if block)
 
 
+# 함수 설명: `_selected_names()`는 Function Case 선택 JSON에서 실제로 요청된 helper 함수 이름만 순서대로 추출합니다.
 def _selected_names(selection: dict[str, Any]) -> list[str]:
     result: list[str] = []
     for key in ("available_helpers", "selected_cases", "selected_steps"):
@@ -58,6 +59,7 @@ def _selected_names(selection: dict[str, Any]) -> list[str]:
     return result
 
 
+# 함수 설명: `_json()`는 Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.
 def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -74,6 +76,7 @@ def _json(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+# 함수 설명: `_text()`는 Message나 일반 값을 앞뒤 공백이 정리된 문자열로 변환합니다.
 def _text(value: Any) -> str:
     if value is None:
         return ""

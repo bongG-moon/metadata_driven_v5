@@ -143,6 +143,7 @@ def run_flow_api_message(
     return result
 
 
+# 함수 설명: `_message_result()`는 하위 Flow 호출 상태와 최종 Message를 Router 공통 결과 구조로 묶습니다.
 def _message_result(
     *,
     status: str,
@@ -170,6 +171,7 @@ def _message_result(
     }
 
 
+# 함수 설명: `_looks_like_route_message()`는 입력값이 LIKE·라우팅·Message 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _looks_like_route_message(value: Any) -> bool:
     parsed = _parse_json_dict(str(value or ""))
     if not parsed:
@@ -178,14 +180,17 @@ def _looks_like_route_message(value: Any) -> bool:
     return bool(keys & {"route", "selected_route", "route_name"}) and len(keys) <= 3
 
 
+# 함수 설명: `_format_errors()`는 오류을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _format_errors(errors: list[dict[str, Any]]) -> str:
     return "\n".join(f"- {error.get('message', '')}" for error in errors if error.get("message"))
 
 
+# 함수 설명: `_extract_message_text()`는 Langflow Run API의 중첩 응답에서 최종 사용자 Message 텍스트를 우선순위대로 찾습니다.
 def _extract_message_text(value: Any) -> str:
     return _extract_message_text_inner(value, set())
 
 
+# 함수 설명: `_extract_child_status()`는 하위 Flow 응답의 status를 여러 envelope 형식에서 우선순위대로 추출합니다.
 def _extract_child_status(value: Any) -> str:
     if not isinstance(value, dict):
         return ""
@@ -204,6 +209,7 @@ def _extract_child_status(value: Any) -> str:
     return ""
 
 
+# 함수 설명: `_extract_message_text_inner()`는 복합 입력이나 응답에서 Message·문자열·inner을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _extract_message_text_inner(value: Any, seen: set[int]) -> str:
     if value is None:
         return ""
@@ -237,6 +243,7 @@ def _extract_message_text_inner(value: Any, seen: set[int]) -> str:
     return ""
 
 
+# 함수 설명: `_parse_json_dict()`는 복합 입력이나 응답에서 JSON·DICT을 찾아 검증 가능한 기본 Python 값으로 변환합니다.
 def _parse_json_dict(value: str) -> dict[str, Any]:
     text = _clean(value)
     if not text:
@@ -252,6 +259,7 @@ def _parse_json_dict(value: str) -> dict[str, Any]:
     return deepcopy(parsed) if isinstance(parsed, dict) else {}
 
 
+# 함수 설명: `_input_text()`는 Message/Data/JSON 입력에서 하위 Flow에 그대로 전달할 원문 질문을 추출합니다.
 def _input_text(value: Any, *, preserve: bool = False) -> str:
     if value is None:
         return ""
@@ -270,6 +278,7 @@ def _input_text(value: Any, *, preserve: bool = False) -> str:
     return ""
 
 
+# 함수 설명: `_session_id()`는 명시 입력과 부모 Message의 session 정보를 우선순위대로 해석합니다.
 def _session_id(source_value: Any, explicit_session_id: Any) -> str:
     explicit = _clean(explicit_session_id)
     if explicit:
@@ -294,12 +303,14 @@ def _session_id(source_value: Any, explicit_session_id: Any) -> str:
     return ""
 
 
+# 함수 설명: `_clean()`는 선택 입력을 안전한 문자열로 바꾸고 불필요한 앞뒤 공백을 제거합니다.
 def _clean(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
 
 
+# 함수 설명: `_resolve_api_url()`는 여러 API·URL 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
 def _resolve_api_url(value: Any) -> str:
     configured = _clean(value)
     if not configured:
@@ -318,6 +329,7 @@ def _resolve_api_url(value: Any) -> str:
     return f"{base_url}/api/v1/run/{configured}"
 
 
+# 함수 설명: `_secret_text()`는 SecretStr 또는 일반 입력에서 노출 없이 실제 credential 문자열만 꺼냅니다.
 def _secret_text(value: Any) -> str:
     getter = getattr(value, "get_secret_value", None)
     if callable(getter):
@@ -325,6 +337,7 @@ def _secret_text(value: Any) -> str:
     return _clean(value)
 
 
+# 함수 설명: `_safe_int()`는 예외를 발생시키지 않고 값을 정수로 바꾸며 허용되지 않는 값은 기본값으로 처리합니다.
 def _safe_int(value: Any, default: int) -> int:
     try:
         return max(1, int(str(value or "").strip()))
@@ -332,6 +345,7 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
+# 함수 설명: `_timeout_value()`는 호환 timeout 입력과 connect/read timeout을 requests가 요구하는 값으로 정규화합니다.
 def _timeout_value(timeout_seconds: Any, connect_timeout_seconds: Any, read_timeout_seconds: Any) -> Any:
     if timeout_seconds not in (None, ""):
         return _safe_int(timeout_seconds, default=DEFAULT_READ_TIMEOUT_SECONDS)
@@ -341,6 +355,7 @@ def _timeout_value(timeout_seconds: Any, connect_timeout_seconds: Any, read_time
     )
 
 
+# 함수 설명: `_duration_ms()`는 시작 시각부터 현재까지의 API 호출 시간을 밀리초 정수로 계산합니다.
 def _duration_ms(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
 
@@ -382,6 +397,7 @@ class FlowApiMessageCaller(Component):
         Output(name="status_data", display_name="호출 상태", method="build_status", types=["Data"], group_outputs=True),
     ]
 
+    # 함수 설명: `_run_once()`는 같은 Langflow 노드 실행에서 하위 Flow API가 중복 호출되지 않도록 결과를 한 번만 계산해 재사용합니다.
     def _run_once(self) -> dict[str, Any]:
         if not hasattr(self, "_cached_result"):
             session_id = getattr(self, "session_id", "")
