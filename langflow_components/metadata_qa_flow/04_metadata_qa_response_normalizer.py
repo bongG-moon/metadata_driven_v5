@@ -34,7 +34,12 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
     payload = _payload(payload_value)
     context = _dict(payload.get("metadata_qa_context"))
     question = str(_dict(payload.get("request")).get("question") or context.get("question") or "").strip()
-    parsed = _parse_llm_response(llm_response_value)
+    if not question:
+        return _empty_question_response(payload, context)
+
+    llm_control = _dict(context.get("llm_control"))
+    skip_llm = bool(llm_control.get("skip"))
+    parsed = {} if skip_llm else _parse_llm_response(llm_response_value)
     fallback = _fallback_answer(question, context)
     answer_type = str(parsed.get("answer_type") or fallback.get("answer_type") or context.get("answer_mode") or "general_metadata_search").strip()
     answer_message = str(parsed.get("answer_message") or parsed.get("answer") or fallback["answer_message"]).strip()
@@ -57,9 +62,11 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
         answer_sections = _sync_answer_sections_from_context(answer_sections, answer_type, answer_message, summary, table, source_refs)
     answer_sections = _compact_answer_sections(answer_sections, columns, len(rows))
 
-    next_payload = deepcopy(payload)
+    next_payload = payload
     next_payload["response_type"] = "metadata_qa"
-    next_payload["status"] = "ok"
+    trace = _dict(next_payload.get("trace"))
+    trace_errors = [item for item in _list(trace.get("errors")) if isinstance(item, dict)]
+    next_payload["status"] = "partial" if trace_errors and source_refs else "error" if trace_errors else "ok"
     next_payload["direct_response_ready"] = True
     next_payload["answer_type"] = answer_type
     next_payload["answer_message"] = answer_message
@@ -79,15 +86,56 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
             "source_refs": source_refs[:10],
         },
     }
-    trace = _dict(next_payload.get("trace"))
     trace.setdefault("warnings", []).extend(warnings)
     trace.setdefault("inspection", {})["metadata_qa_response"] = {
         "stage": "04_metadata_qa_response_normalizer",
-        "status": "ok",
+        "status": next_payload["status"],
         "answer_type": answer_type,
         "row_count": len(rows),
         "used_llm_response": bool(parsed),
+        "llm_skipped": skip_llm,
+        "llm_skip_reason": str(llm_control.get("reason") or "") if skip_llm else "",
         "used_context_table": use_context_table,
+    }
+    next_payload["trace"] = trace
+    return next_payload
+
+
+# 함수 설명: `_empty_question_response()`는 빈 질문을 LLM 답변처럼 포장하지 않고 명시적인 오류 응답으로 종료합니다.
+def _empty_question_response(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    message = "메타데이터 QA 질문이 비어 있습니다. 확인할 메타데이터 내용을 입력해 주세요."
+    table = {"columns": [], "rows": []}
+    sections = _compact_answer_sections(
+        _build_answer_sections("invalid_request", message, message, table, [], [], context, []),
+        [],
+        0,
+    )
+    next_payload = payload
+    next_payload.update(
+        {
+            "response_type": "metadata_qa",
+            "status": "error",
+            "direct_response_ready": True,
+            "answer_type": "invalid_request",
+            "answer_message": message,
+            "answer_sections": sections,
+            "metadata_qa": {"summary": message, "answer_type": "invalid_request", "answer_mode": "invalid_request", "source_refs": []},
+            "data": {"columns": [], "rows": [], "row_count": 0},
+        }
+    )
+    trace = _dict(next_payload.get("trace"))
+    errors = trace.setdefault("errors", [])
+    if not any(isinstance(item, dict) and item.get("type") == "empty_question" for item in errors):
+        errors.append({"type": "empty_question", "message": "메타데이터 QA 질문이 비어 있습니다."})
+    trace.setdefault("inspection", {})["metadata_qa_response"] = {
+        "stage": "04_metadata_qa_response_normalizer",
+        "status": "error",
+        "answer_type": "invalid_request",
+        "row_count": 0,
+        "used_llm_response": False,
+        "llm_skipped": True,
+        "llm_skip_reason": "empty_question",
+        "used_context_table": False,
     }
     next_payload["trace"] = trace
     return next_payload

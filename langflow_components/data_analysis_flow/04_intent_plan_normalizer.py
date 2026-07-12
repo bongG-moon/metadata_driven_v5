@@ -44,7 +44,7 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
     else:
         normalized_plan.pop("pandas_function_cases", None)
 
-    next_payload = deepcopy(payload)
+    next_payload = payload
     next_payload["intent_plan"] = normalized_plan
     next_payload["metadata_refs"] = parsed.get("metadata_refs", plan.get("metadata_refs", [])) if isinstance(parsed.get("metadata_refs", plan.get("metadata_refs", [])), list) else []
     previous_data_reuse = _uses_previous_data_without_new_retrieval(normalized_plan)

@@ -109,11 +109,13 @@ FORBIDDEN_IO_ATTRIBUTES = {
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
+    if _execution_blocked(payload):
+        return _blocked_execution_payload(payload)
     parsed = _json(llm_response)
     llm_code = str(parsed.get("code") or parsed.get("pandas_code") or "")
     normalized_llm_code, safe_imports = _normalize_safe_imports(llm_code)
     code = normalized_llm_code
-    next_payload = deepcopy(payload)
+    next_payload = payload
     if not normalized_llm_code.strip():
         return _analysis_error(
             next_payload,
@@ -257,6 +259,8 @@ def execute_pandas_with_repair(
     """Execute once and invoke one prompt-based repair only for an actual execution error."""
 
     original_payload = _payload(payload_value)
+    if _execution_blocked(original_payload):
+        return _blocked_execution_payload(original_payload)
     initial = execute_pandas_code(original_payload, llm_response)
     initial_status = _analysis_status(initial)
     current_attempt = _nonnegative_int(original_payload.get("pandas_retry_attempt"), 0)
@@ -765,6 +769,36 @@ def _analysis_error(
         "used_helpers": helper_trace["used_helpers"],
         "helper_sources": helper_trace["helper_sources"],
         "error": {"type": error_type, "message": message, "traceback_summary": tb[:1000]},
+    }
+    return payload
+
+
+# 함수 설명: `_execution_blocked()`는 필수 조회 실패 gate가 pandas와 repair 실행을 금지했는지 확인합니다.
+def _execution_blocked(payload: dict[str, Any]) -> bool:
+    gate = payload.get("execution_gate") if isinstance(payload.get("execution_gate"), dict) else {}
+    return str(gate.get("status") or "").strip().lower() == "blocked"
+
+
+# 함수 설명: `_blocked_execution_payload()`는 코드 파싱·pandas·repair 모델을 호출하지 않고 기존 조회 오류를 유지합니다.
+def _blocked_execution_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    payload.setdefault("analysis", {}).setdefault("status", "error")
+    payload.setdefault("data", {"columns": [], "rows": [], "row_count": 0, "data_ref": ""})
+    payload.setdefault("trace", {}).setdefault("inspection", {})["pandas_execution"] = {
+        "stage": "17_pandas_code_executor",
+        "status": "skipped",
+        "reason": "required_source_retrieval_failed",
+        "llm_called": False,
+        "repair_attempted": False,
+    }
+    payload["trace"]["inspection"]["pandas_repair"] = {
+        "stage": "17_pandas_code_executor",
+        "initial_status": "skipped",
+        "max_attempts": 0,
+        "attempt": 0,
+        "attempted": False,
+        "llm_called": False,
+        "selected": "blocked",
+        "reason": "필수 조회 실패로 pandas 및 repair 실행을 생략했습니다.",
     }
     return payload
 

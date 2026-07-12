@@ -79,6 +79,8 @@ def build_response(payload_value: Any) -> dict[str, Any]:
 
 # 함수 설명: `_status()`는 여러 단계의 실행 결과를 우선순위에 따라 최종 상태 문자열로 결정합니다.
 def _status(write_result: dict[str, Any], review: dict[str, Any]) -> str:
+    if write_result.get("status") == "needs_input":
+        return "needs_input"
     if _list(write_result.get("errors")):
         return "error"
     if write_result.get("status") == "skipped":
@@ -216,6 +218,10 @@ def _notices(write_result: dict[str, Any], review: dict[str, Any], payload: dict
         message = str(request.get("question") if isinstance(request, dict) else request).strip()
         if message:
             notices.append({"type": "supplement", "title": "추가 확인 필요", "message": message})
+    for assumption in _list(review.get("assumptions")):
+        message = str(assumption).strip()
+        if message:
+            notices.append({"type": "info", "title": "적용 가정", "message": message})
     if payload.get("conflict_warnings"):
         notices.append({"type": "warning", "title": "충돌 가능성", "message": f"충돌 가능성 {len(_list(payload.get('conflict_warnings')))}건이 있습니다."})
     return notices
@@ -272,6 +278,7 @@ def _compact_write_result(write_result: dict[str, Any]) -> dict[str, Any]:
         "skipped_count",
         "status",
         "partial_success",
+        "metadata_qa_snapshot_invalidated",
     }
     return {key: deepcopy(value) for key, value in write_result.items() if key in allowed}
 

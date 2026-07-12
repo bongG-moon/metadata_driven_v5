@@ -5,12 +5,11 @@
 # 주요 입력: 페이로드 (payload) · 필수, MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 결과 컬렉션 (collection_name)
 # 주요 출력: 페이로드 출력 (payload_out)
 # 처리 흐름: 이전 상태의 data_ref를 따라 저장된 분석 결과를 복원하고 source alias·columns·rows를 후속 분석용으로 재구성합니다.
-# 유지보수 포인트: 연결 설정은 노드 입력→환경변수→기본값 순으로 해석하며, 오류는 숨기지 않고 trace/status에 남기고 연결은 반드시 닫습니다.
+# 유지보수 포인트: standalone Flow의 노드 입력으로 연결 설정을 받고, 오류는 숨기지 않고 trace/status에 남기며 연결은 반드시 닫습니다.
 # =============================================================================
 
 from __future__ import annotations
 
-import os
 from copy import deepcopy
 from importlib import import_module
 from typing import Any
@@ -30,11 +29,11 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
     payload = _payload(payload_value)
     ref = _find_data_ref(payload)
     mongo_uri, mongo_database, collection_name = _resolve_config(mongo_uri, mongo_database, collection_name)
-    next_payload = deepcopy(payload)
+    next_payload = payload
     if not ref:
         return _mark_skipped(next_payload, mongo_database, collection_name, "missing_data_ref", "data_ref가 없어 이전 결과를 불러오지 않았습니다.", add_warning=False)
     if not mongo_uri:
-        return _mark_skipped(next_payload, mongo_database, collection_name, "missing_mongo_uri", "MONGODB_URI가 없어 이전 결과를 불러오지 않았습니다.", ref)
+        return _mark_skipped(next_payload, mongo_database, collection_name, "missing_mongo_uri", "MongoDB 연결 URI 노드 입력이 비어 있어 이전 결과를 불러오지 않았습니다.", ref)
 
     client = None
     try:
@@ -68,12 +67,12 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
             client.close()
 
 
-# 함수 설명: `_resolve_config()`는 노드 입력·환경변수·카탈로그 기본값의 우선순위로 실제 실행 설정을 확정합니다.
+# 함수 설명: `_resolve_config()`는 standalone 노드 입력과 코드 기본값만으로 실제 실행 설정을 확정합니다.
 def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> tuple[str, str, str]:
     return (
-        mongo_uri or os.getenv("MONGODB_URI", ""),
-        mongo_database or os.getenv("MONGODB_DATABASE", DEFAULT_DATABASE),
-        collection_name or os.getenv("MONGODB_RESULT_COLLECTION", DEFAULT_COLLECTION),
+        str(mongo_uri or "").strip(),
+        str(mongo_database or DEFAULT_DATABASE).strip(),
+        str(collection_name or DEFAULT_COLLECTION).strip(),
     )
 
 
@@ -243,9 +242,9 @@ class MongoDBResultLoader(Component):
     description = "payload/state 안의 data_ref를 자동으로 찾아 MongoDB result store의 이전 분석 결과를 복원합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
-        MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=True),
-        MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, advanced=True),
-        MessageTextInput(name="collection_name", display_name="결과 컬렉션", required=False, advanced=True),
+        MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=False),
+        MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, value=DEFAULT_DATABASE, advanced=False),
+        MessageTextInput(name="collection_name", display_name="결과 컬렉션", required=False, value=DEFAULT_COLLECTION, advanced=False),
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 

@@ -15,6 +15,9 @@ DEFAULT_TARGET = ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json"
 REPAIR_PROMPT_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "17b_pandas_repair_prompt_template_ko.md"
 HELPER_LIBRARY_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "function_case_helper_code_input_example.py"
 REPAIR_PROMPT_NODE_ID = "TextInput-v5RepairPrompt"
+GUARDED_AGENT_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "14b_retrieval_guarded_agent.py"
+GUARDED_AGENT_NODE_IDS = {"Agent-SRcFc", "Agent-ynb4D"}
+MONGO_GLOBAL_VARIABLE = "MONGO_URL"
 
 COMPONENT_FILES = {
     "CustomComponent-xpbhS": "data_analysis_flow/00_analysis_request_loader.py",
@@ -75,6 +78,12 @@ NEW_COMPONENTS = {
             ("message", "helper_library", "전체 helper library", False, ""),
         ],
         "outputs": [("Message", "selected_helper_code", "선택 helper 코드", "build_code")],
+    },
+    "CustomComponent-v5ExecutionGate": {
+        "file": "data_analysis_flow/14a_retrieval_execution_gate.py",
+        "position": {"x": 1690.0, "y": 1510.0},
+        "inputs": [("data", "payload", "조회 페이로드", True, None)],
+        "outputs": [("Data", "payload_out", "실행 제어 페이로드", "build_payload")],
     },
     "CustomComponent-v5Oracle": {
         "file": "data_analysis_flow/09_oracle_query_retriever.py",
@@ -206,6 +215,22 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     node_index["CustomComponent-s3mf1"]["data"]["node"]["template"]["max_repair_attempts"]["options"] = ["0", "1"]
 
     _apply_component_spec(
+        node_index["CustomComponent-AUrFb"],
+        [
+            ("data", "payload", "페이로드", True, None),
+            ("message", "mongo_uri", "MongoDB 연결 URI", False, ""),
+            ("message", "mongo_database", "MongoDB 데이터베이스", False, "datagov"),
+            ("message", "collection_name", "결과 컬렉션", False, "agent_v4_result_store"),
+            ("message", "ttl_hours", "데이터 보관 시간(시간)", False, "24"),
+            ("message", "max_result_rows", "저장 결과 최대 행 수", False, "20000"),
+            ("message", "max_source_rows_per_alias", "소스별 저장 최대 행 수", False, "10000"),
+            ("message", "max_document_bytes", "결과 문서 최대 바이트", False, "8388608"),
+        ],
+        [("Data", "payload_out", "페이로드 출력", "build_payload")],
+        node_index,
+    )
+
+    _apply_component_spec(
         node_index["CustomComponent-x6NXu"],
         [("data", "payload", "페이로드", True, None)],
         [
@@ -231,6 +256,11 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         if edge["source"] not in REMOVED_REPAIR_NODES and edge["target"] not in REMOVED_REPAIR_NODES
     ]
 
+    # 기존 Agent 구현을 재작성하지 않고 공식 AgentComponent를 상속한 guard만 씌웁니다.
+    # 정상 경로는 super().message_response()를 그대로 호출하고 blocked 경로만 모델 호출 전에 반환합니다.
+    for agent_id in GUARDED_AGENT_NODE_IDS:
+        _apply_retrieval_guard_to_agent(node_index[agent_id], node_index)
+
     _apply_standalone_defaults(nodes)
 
     removals = {
@@ -238,6 +268,8 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         ("TextInput-AXG9a", "text", "Prompt Template-xtzD5", "function_case_helper_code"),
         ("CustomComponent-BVItv", "payload_out", "CustomComponent-A5y0b", "payload"),
         ("CustomComponent-BVItv", "payload_out", "CustomComponent-3eVde", "payload"),
+        ("CustomComponent-bhiAG", "payload_out", "CustomComponent-fc0Vb", "payload"),
+        ("CustomComponent-bhiAG", "payload_out", "CustomComponent-s3mf1", "payload"),
     }
     edges[:] = [edge for edge in edges if _edge_key(edge) not in removals]
 
@@ -251,7 +283,12 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         ("CustomComponent-v5Helper", "selected_helper_code", "Prompt Template-xtzD5", "function_case_helper_code"),
         ("CustomComponent-v5Helper", "selected_helper_code", "CustomComponent-s3mf1", "function_case_helper_code"),
         (REPAIR_PROMPT_NODE_ID, "text", "CustomComponent-s3mf1", "repair_prompt_template"),
+        ("CustomComponent-bhiAG", "payload_out", "CustomComponent-v5ExecutionGate", "payload"),
+        ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-fc0Vb", "payload"),
+        ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-s3mf1", "payload"),
+        ("CustomComponent-v5ExecutionGate", "payload_out", "Agent-SRcFc", "control_payload"),
         ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload"),
+        ("CustomComponent-AUrFb", "payload_out", "Agent-ynb4D", "control_payload"),
         ("CustomComponent-fXdS4", "payload_out", "CustomComponent-A5y0b", "payload"),
         ("CustomComponent-fXdS4", "payload_out", "CustomComponent-3eVde", "payload"),
         ("CustomComponent-x6NXu", "oracle_jobs", "CustomComponent-v5Oracle", "payload"),
@@ -265,12 +302,13 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     ]
     for source_id, source_name, target_id, target_name in additions:
         edges.append(_make_edge(node_index, source_id, source_name, target_id, target_name))
+    _refresh_edge_source_types(edges, node_index)
 
     flow["name"] = "metadata_driven_v5_data_analysis_standalone"
     flow["description"] = (
         "v5 standalone flow (dummy default, live retrievers included): bounded metadata candidates, "
         "trusted catalog hydration, thin retrieval branches, selected helper code, visible raw Repair Prompt, failure-only one-attempt pandas repair, "
-        "one finalization path, and compact API payload with explicit repair audit details."
+        "required-source execution gating with guarded Agents, one finalization path, and compact API payload with explicit repair audit details."
     )
     flow["endpoint_name"] = "metadata-driven-v5-data-analysis"
     flow["tags"] = sorted(set([*flow.get("tags", []), "v5", "dummy-default", "live-ready", "standalone"]))
@@ -283,15 +321,41 @@ def _component_path(relative_path: str) -> Path:
 
 def _apply_standalone_defaults(nodes: list[dict[str, Any]]) -> None:
     for node in nodes:
+        node_type = str(node.get("data", {}).get("type") or "")
         template = node.get("data", {}).get("node", {}).get("template", {})
         if not isinstance(template, dict):
             continue
+        if node_type == "Agent" or node.get("id") in GUARDED_AGENT_NODE_IDS:
+            # Data Analysis의 세 LLM 단계는 도구 선택 Agent가 아니라 단일 Prompt 실행 단계입니다.
+            # 후속 문맥은 MongoDB session state가 담당하므로 Langflow message history는 전달하지 않습니다.
+            for field_name, value in (
+                ("n_messages", 0),
+                ("max_iterations", 1),
+                ("add_current_date_tool", False),
+                ("max_tokens", 8192),
+                ("verbose", False),
+            ):
+                field = template.get(field_name)
+                if isinstance(field, dict):
+                    field["value"] = value
         for field_name, field in template.items():
             if not isinstance(field, dict):
                 continue
+            if field_name == "should_store_message":
+                # 직접 Playground에서는 Langflow message 저장이 꺼지면 완성된 ChatOutput도 화면에 나타나지 않습니다.
+                # Router의 nested 호출만 request tweak로 저장을 끄고, child Flow 기본값은 direct 실행을 위해 켭니다.
+                field["value"] = True
             if field_name == "mongo_uri":
-                field["value"] = ""
+                # 실제 URI를 JSON에 넣지 않고 Langflow Credential Global Variable을
+                # standalone 노드 입력으로 명시 바인딩합니다. OS 환경변수는 사용하지 않습니다.
+                field["value"] = MONGO_GLOBAL_VARIABLE
+                field["load_from_db"] = True
+                field["advanced"] = False
+                field["show"] = True
+            if field_name in {"mongo_database", "collection_name", "session_collection_name"}:
                 field["load_from_db"] = False
+                field["advanced"] = False
+                field["show"] = True
             value = field.get("value")
             if isinstance(value, str) and "agent_v5" in value:
                 field["value"] = value.replace("agent_v5", "agent_v4")
@@ -299,7 +363,7 @@ def _apply_standalone_defaults(nodes: list[dict[str, Any]]) -> None:
 
 def _refresh_component_node(node: dict[str, Any], path: Path) -> None:
     code = path.read_text(encoding="utf-8")
-    class_match = re.search(r"^class\s+(\w+)\(Component\):", code, flags=re.MULTILINE)
+    class_match = re.search(r"^class\s+(\w+)\([^\n)]*Component\):", code, flags=re.MULTILINE)
     display_match = re.search(r'^\s+display_name\s*=\s*"([^"]+)"', code, flags=re.MULTILINE)
     description_match = re.search(r'^\s+description\s*=\s*"([^"]+)"', code, flags=re.MULTILINE)
     if not class_match or not display_match:
@@ -311,6 +375,45 @@ def _refresh_component_node(node: dict[str, Any], path: Path) -> None:
     component.setdefault("metadata", {})["code_hash"] = hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
     component["metadata"]["module"] = f"custom_components.{path.stem}"
     node["data"]["type"] = class_match.group(1)
+
+
+def _apply_retrieval_guard_to_agent(node: dict[str, Any], node_index: dict[str, dict[str, Any]]) -> None:
+    """기존 Agent template/provider 설정을 보존하면서 control payload 입력과 상속 guard code만 추가합니다."""
+
+    _refresh_component_node(node, GUARDED_AGENT_SOURCE)
+    component = node["data"]["node"]
+    template = component["template"]
+    template["control_payload"] = _input_template(
+        "data",
+        "control_payload",
+        "실행 제어 페이로드",
+        True,
+        None,
+        node_index,
+    )
+    field_order = [name for name in component.get("field_order", []) if name != "control_payload"]
+    # subclass 선언은 `[*AgentComponent.inputs, control_payload]` 순서이므로
+    # 직렬화 field_order도 정확히 같은 마지막 위치에 둡니다.
+    field_order.append("control_payload")
+    component["field_order"] = field_order
+
+
+def _refresh_edge_source_types(edges: list[dict[str, Any]], node_index: dict[str, dict[str, Any]]) -> None:
+    """현재 node 계약으로 edge의 data·문자열 handle·ID를 함께 다시 직렬화합니다."""
+
+    # Langflow JSON은 같은 handle을 edge.data, sourceHandle/targetHandle 문자열,
+    # edge ID에 중복 보관합니다. guarded Agent처럼 node type이 바뀌면 세 위치를
+    # 모두 갱신해야 import 시 연결이 제거되지 않습니다.
+    for index, edge in enumerate(list(edges)):
+        source_id = str(edge.get("source") or "")
+        target_id = str(edge.get("target") or "")
+        source_data = edge.get("data", {}).get("sourceHandle", {})
+        target_data = edge.get("data", {}).get("targetHandle", {})
+        source_name = str(source_data.get("name") or "") if isinstance(source_data, dict) else ""
+        target_name = str(target_data.get("fieldName") or "") if isinstance(target_data, dict) else ""
+        if source_id not in node_index or target_id not in node_index or not source_name or not target_name:
+            continue
+        edges[index] = _make_edge(node_index, source_id, source_name, target_id, target_name)
 
 
 def _apply_component_spec(
@@ -372,6 +475,10 @@ def _input_template(
         "max_bytes",
         "max_attempts",
         "max_repair_attempts",
+        "ttl_hours",
+        "max_result_rows",
+        "max_source_rows_per_alias",
+        "max_document_bytes",
         "api_key",
     }
     return template

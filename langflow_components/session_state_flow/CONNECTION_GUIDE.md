@@ -26,10 +26,11 @@ Chat Input.message
 
 | 항목 | 기본값 |
 | --- | --- |
+| Mongo URI 노드 입력 | Langflow Credential Global Variable `MONGO_URL` |
 | Database | `datagov` |
 | Collection | `agent_v4_session_states` |
-| Env URI | `MONGODB_URI` |
-| Env Collection | `MONGODB_SESSION_STATE_COLLECTION` |
+
+URI는 OS 환경변수에서 읽지 않는다. import JSON은 실제 URI 대신 `MONGO_URL` 변수 이름만 포함하며, Langflow가 해당 Credential 값을 노드 입력으로 주입한다.
 
 저장 문서 `_id`는 `session_state:<session_id>` 형식이다.
 

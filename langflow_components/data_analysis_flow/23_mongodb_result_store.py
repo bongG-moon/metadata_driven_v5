@@ -3,15 +3,15 @@
 # 컴포넌트 개요: 23 MongoDB 결과 저장소
 # 역할: pandas 분석 결과와 런타임 조회 결과를 MongoDB result store에 저장하고 data_ref를 페이로드에 남깁니다.
 # 주요 입력: 페이로드 (payload) · 필수, MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 결과 컬렉션 (collection_name),
-#        데이터 보관 시간(시간) (ttl_hours)
+#        데이터 보관 시간(시간) (ttl_hours), 저장 결과/소스 행 상한, 결과 문서 바이트 상한
 # 주요 출력: 페이로드 출력 (payload_out)
-# 처리 흐름: 후속 질문에 필요한 분석 결과를 압축 저장하고 TTL과 data_ref를 관리한 뒤 원래 페이로드에 저장 상태를 기록합니다.
-# 유지보수 포인트: 연결 설정은 노드 입력→환경변수→기본값 순으로 해석하며, 오류는 숨기지 않고 trace/status에 남기고 연결은 반드시 닫습니다.
+# 처리 흐름: 후속 질문에 필요한 분석 결과를 상한 안에서 저장하고, 불완전 저장이 필요하면 정상 data_ref를 만들지 않는 fail-closed 정책을 적용합니다.
+# 유지보수 포인트: standalone Flow의 노드 입력으로 연결 설정을 받고, 오류는 숨기지 않고 trace/status에 남기며 연결은 반드시 닫습니다.
 # =============================================================================
 
 from __future__ import annotations
 
-import os
+import json
 import uuid
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
@@ -28,6 +28,10 @@ DEFAULT_COLLECTION = "agent_v4_result_store"
 DEFAULT_TTL_HOURS = 24
 MAX_TTL_HOURS = 24 * 7
 TTL_INDEX_NAME = "agent_v4_result_store_expires_at_ttl"
+DEFAULT_MAX_RESULT_ROWS = 20000
+DEFAULT_MAX_SOURCE_ROWS_PER_ALIAS = 10000
+DEFAULT_MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
+MAX_DOCUMENT_BYTES = 14 * 1024 * 1024
 
 
 # 주요 함수: 후속 질문 재사용에 필요한 결과를 MongoDB에 저장하고 data_ref를 발급합니다.
@@ -38,12 +42,17 @@ def store_result(
     mongo_database: str = "",
     collection_name: str = "",
     ttl_hours: Any = "",
+    max_result_rows: Any = "",
+    max_source_rows_per_alias: Any = "",
+    max_document_bytes: Any = "",
 ) -> dict[str, Any]:
     payload = _payload(payload_value)
     mongo_uri, mongo_database, collection_name = _resolve_config(mongo_uri, mongo_database, collection_name)
-    next_payload = deepcopy(payload)
+    next_payload = payload
+    if _execution_blocked(next_payload):
+        return _mark_execution_blocked(next_payload, mongo_database, collection_name)
     if not mongo_uri:
-        return _mark_skipped(next_payload, mongo_database, collection_name, "MONGODB_URI가 없어 분석 결과를 result store에 저장하지 않았습니다.")
+        return _mark_skipped(next_payload, mongo_database, collection_name, "MongoDB 연결 URI 노드 입력이 비어 있어 분석 결과를 result store에 저장하지 않았습니다.")
 
     client = None
     data_ref = _build_data_ref(next_payload)
@@ -55,6 +64,28 @@ def store_result(
         client = mongo_client_cls(mongo_uri, serverSelectionTimeoutMS=5000)
         collection = client[mongo_database][collection_name]
         ttl_index_error = _ensure_ttl_index(collection)
+        max_result_rows_value = _bounded_positive_int(
+            max_result_rows,
+            DEFAULT_MAX_RESULT_ROWS,
+            upper=1_000_000,
+        )
+        max_source_rows_value = _bounded_positive_int(
+            max_source_rows_per_alias,
+            DEFAULT_MAX_SOURCE_ROWS_PER_ALIAS,
+            upper=1_000_000,
+        )
+        max_document_bytes_value = _bounded_positive_int(
+            max_document_bytes,
+            DEFAULT_MAX_DOCUMENT_BYTES,
+            lower=1024,
+            upper=MAX_DOCUMENT_BYTES,
+        )
+        stored_payload, storage_manifest = _compact_store_payload(
+            next_payload,
+            max_result_rows=max_result_rows_value,
+            max_source_rows_per_alias=max_source_rows_value,
+            max_document_bytes=max_document_bytes_value,
+        )
         doc = {
             "_id": data_ref,
             "data_ref": data_ref,
@@ -64,19 +95,28 @@ def store_result(
             "expires_at": expires_at,
             "expires_at_iso": _to_iso(expires_at),
             "ttl_hours": ttl_hours_value,
-            "payload": {
-                "request": _json_ready(next_payload.get("request", {})),
-                "metadata_refs": _json_ready(next_payload.get("metadata_refs", [])),
-                "intent_plan": _json_ready(next_payload.get("intent_plan", {})),
-                "source_results": _json_ready(next_payload.get("source_results", [])),
-                "runtime_sources": _json_ready(next_payload.get("runtime_sources", {})),
-                "result_rows": _json_ready(_result_rows_for_store(next_payload)),
-                "analysis": _json_ready(_compact_analysis_for_store(next_payload.get("analysis", {}))),
-                "data": _json_ready(_compact_data_for_store(next_payload.get("data", {}))),
-            },
+            "payload": stored_payload,
         }
+        storage_manifest["estimated_document_bytes"] = _json_size(doc)
+        stored_payload["storage_manifest"] = storage_manifest
+        if _json_size(doc) > max_document_bytes_value:
+            return _mark_error(
+                next_payload,
+                mongo_database,
+                collection_name,
+                data_ref,
+                [{"type": "result_store_document_too_large", "message": "안전 압축 후에도 결과 문서가 설정된 바이트 상한을 초과했습니다."}],
+            )
+        if storage_manifest.get("compacted"):
+            return _mark_followup_unavailable(
+                next_payload,
+                mongo_database,
+                collection_name,
+                data_ref,
+                storage_manifest,
+            )
         collection.replace_one({"_id": data_ref}, doc, upsert=True)
-        data_refs = _build_data_refs(next_payload, data_ref, mongo_database, collection_name)
+        data_refs = _build_data_refs(next_payload, data_ref, mongo_database, collection_name, storage_manifest)
         result_ref = data_refs[0] if data_refs else _data_ref_object(data_ref, mongo_database, collection_name, "payload.result_rows", "analysis_result", "분석 결과")
         next_payload.setdefault("data", {})["data_ref"] = result_ref
         next_payload["data_refs"] = data_refs
@@ -89,6 +129,7 @@ def store_result(
             "data_refs": data_refs,
             "ttl_hours": ttl_hours_value,
             "expires_at": _to_iso(expires_at),
+            "storage_manifest": deepcopy(storage_manifest),
             "errors": [],
         }
         if ttl_index_error:
@@ -101,12 +142,12 @@ def store_result(
             client.close()
 
 
-# 함수 설명: `_resolve_config()`는 노드 입력·환경변수·카탈로그 기본값의 우선순위로 실제 실행 설정을 확정합니다.
+# 함수 설명: `_resolve_config()`는 standalone 노드 입력과 코드 기본값만으로 실제 실행 설정을 확정합니다.
 def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> tuple[str, str, str]:
     return (
-        mongo_uri or os.getenv("MONGODB_URI", ""),
-        mongo_database or os.getenv("MONGODB_DATABASE", DEFAULT_DATABASE),
-        collection_name or os.getenv("MONGODB_RESULT_COLLECTION", DEFAULT_COLLECTION),
+        str(mongo_uri or "").strip(),
+        str(mongo_database or DEFAULT_DATABASE).strip(),
+        str(collection_name or DEFAULT_COLLECTION).strip(),
     )
 
 
@@ -165,6 +206,125 @@ def _json_ready(value: Any) -> Any:
     return str(value)
 
 
+# 함수 설명: `_bounded_positive_int()`는 standalone 노드 입력값을 안전한 양의 정수 범위로 제한합니다.
+def _bounded_positive_int(value: Any, default: int, lower: int = 1, upper: int = 1_000_000) -> int:
+    try:
+        parsed = int(float(str(value).strip())) if str(value or "").strip() else default
+    except Exception:
+        parsed = default
+    return max(lower, min(parsed, upper))
+
+
+# 주요 함수: 저장 행 수와 추정 JSON 바이트를 함께 제한하고, 잘린 여부를 명시하는 호환 payload를 만듭니다.
+def _compact_store_payload(
+    payload: dict[str, Any],
+    max_result_rows: int,
+    max_source_rows_per_alias: int,
+    max_document_bytes: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    original_result_rows = _result_rows_for_store(payload)
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    stored_result_rows = _json_ready(original_result_rows[:max_result_rows])
+    stored_runtime_sources = {
+        str(alias): _json_ready(rows[:max_source_rows_per_alias])
+        for alias, rows in runtime_sources.items()
+        if isinstance(rows, list)
+    }
+    original_source_counts = {
+        str(alias): len(rows)
+        for alias, rows in runtime_sources.items()
+        if isinstance(rows, list)
+    }
+    stored_payload = {
+        "request": _json_ready(payload.get("request", {})),
+        "metadata_refs": _json_ready(payload.get("metadata_refs", [])),
+        "intent_plan": _json_ready(payload.get("intent_plan", {})),
+        "source_results": _json_ready(payload.get("source_results", [])),
+        "runtime_sources": stored_runtime_sources,
+        "result_rows": stored_result_rows,
+        "analysis": _json_ready(_compact_analysis_for_store(payload.get("analysis", {}))),
+        "data": _json_ready(_compact_data_for_store(payload.get("data", {}))),
+    }
+    manifest = {
+        "version": 1,
+        "policy": "bounded_compact",
+        "max_document_bytes": max_document_bytes,
+        "max_result_rows": max_result_rows,
+        "max_source_rows_per_alias": max_source_rows_per_alias,
+        "result_rows": {},
+        "runtime_sources": {},
+        "compacted": False,
+    }
+    stored_payload["storage_manifest"] = manifest
+    _refresh_storage_manifest(manifest, original_result_rows, original_source_counts, stored_payload)
+
+    # MongoDB envelope와 BSON 오버헤드를 위해 설정값의 약 10%를 여유로 둡니다.
+    target_payload_bytes = max(512, max_document_bytes - min(64 * 1024, max_document_bytes // 10))
+    while _json_size(stored_payload) > target_payload_bytes:
+        candidate = _largest_stored_row_group(stored_payload)
+        if candidate is None:
+            break
+        kind, alias = candidate
+        rows = stored_payload["result_rows"] if kind == "result_rows" else stored_payload["runtime_sources"].get(alias, [])
+        next_size = len(rows) // 2 if len(rows) > 1 else 0
+        if kind == "result_rows":
+            stored_payload["result_rows"] = rows[:next_size]
+        else:
+            stored_payload["runtime_sources"][alias] = rows[:next_size]
+        _refresh_storage_manifest(manifest, original_result_rows, original_source_counts, stored_payload)
+
+    manifest["estimated_payload_bytes"] = _json_size(stored_payload)
+    return stored_payload, manifest
+
+
+# 함수 설명: `_largest_stored_row_group()`는 바이트 상한을 넘길 때 가장 큰 행 묶음부터 줄이도록 대상을 고릅니다.
+def _largest_stored_row_group(stored_payload: dict[str, Any]) -> tuple[str, str] | None:
+    candidates: list[tuple[int, str, str]] = []
+    result_rows = stored_payload.get("result_rows") if isinstance(stored_payload.get("result_rows"), list) else []
+    if result_rows:
+        candidates.append((_json_size(result_rows), "result_rows", ""))
+    runtime_sources = stored_payload.get("runtime_sources") if isinstance(stored_payload.get("runtime_sources"), dict) else {}
+    for alias, rows in runtime_sources.items():
+        if isinstance(rows, list) and rows:
+            candidates.append((_json_size(rows), "runtime_sources", str(alias)))
+    if not candidates:
+        return None
+    _, kind, alias = max(candidates, key=lambda item: item[0])
+    return kind, alias
+
+
+# 함수 설명: `_refresh_storage_manifest()`는 원본·저장 행 수와 완전성 표시를 현재 압축 결과에 맞게 갱신합니다.
+def _refresh_storage_manifest(
+    manifest: dict[str, Any],
+    original_result_rows: list[Any],
+    original_source_counts: dict[str, int],
+    stored_payload: dict[str, Any],
+) -> None:
+    stored_result_rows = stored_payload.get("result_rows") if isinstance(stored_payload.get("result_rows"), list) else []
+    result_complete = len(stored_result_rows) == len(original_result_rows)
+    manifest["result_rows"] = {
+        "original_count": len(original_result_rows),
+        "stored_count": len(stored_result_rows),
+        "complete": result_complete,
+    }
+    runtime_sources = stored_payload.get("runtime_sources") if isinstance(stored_payload.get("runtime_sources"), dict) else {}
+    source_manifest = {}
+    for alias, original_count in original_source_counts.items():
+        stored_rows = runtime_sources.get(alias) if isinstance(runtime_sources.get(alias), list) else []
+        source_manifest[alias] = {
+            "original_count": original_count,
+            "stored_count": len(stored_rows),
+            "complete": len(stored_rows) == original_count,
+        }
+    manifest["runtime_sources"] = source_manifest
+    manifest["compacted"] = not result_complete or any(not item["complete"] for item in source_manifest.values())
+
+
+# 함수 설명: `_json_size()`는 BSON 상한보다 보수적인 UTF-8 JSON 직렬화 크기를 계산합니다.
+def _json_size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+
+
 # 함수 설명: `_result_rows_for_store()`는 행 목록·대상·store에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _result_rows_for_store(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows = payload.get("_full_result_rows")
@@ -213,7 +373,13 @@ def _build_data_ref(payload: dict[str, Any]) -> str:
 
 
 # 함수 설명: `_build_data_refs()`는 데이터·참조 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
-def _build_data_refs(payload: dict[str, Any], ref_id: str, database: str, collection_name: str) -> list[dict[str, Any]]:
+def _build_data_refs(
+    payload: dict[str, Any],
+    ref_id: str,
+    database: str,
+    collection_name: str,
+    storage_manifest: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     result_ref = _data_ref_object(
         ref_id,
@@ -328,6 +494,29 @@ def _mark_skipped(payload: dict[str, Any], database: str, collection_name: str, 
     return payload
 
 
+# 함수 설명: `_execution_blocked()`는 필수 source 조회 실패로 후속 결과 저장이 금지됐는지 확인합니다.
+def _execution_blocked(payload: dict[str, Any]) -> bool:
+    gate = payload.get("execution_gate") if isinstance(payload.get("execution_gate"), dict) else {}
+    return str(gate.get("status") or "").strip().lower() == "blocked"
+
+
+# 함수 설명: `_mark_execution_blocked()`는 MongoDB 연결·index·write 없이 저장 생략 상태만 trace에 기록합니다.
+def _mark_execution_blocked(payload: dict[str, Any], database: str, collection_name: str) -> dict[str, Any]:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    data.pop("data_ref", None)
+    payload.pop("data_refs", None)
+    payload.setdefault("trace", {}).setdefault("inspection", {})["result_store"] = {
+        "stage": "23_mongodb_result_store",
+        "status": "skipped",
+        "reason": "required_source_retrieval_failed",
+        "database": database,
+        "collection_name": collection_name,
+        "data_ref": "",
+        "errors": [],
+    }
+    return payload
+
+
 # 함수 설명: `_mark_error()`는 현재 작업 payload에 오류 상태와 정규화된 오류 정보를 기록합니다.
 def _mark_error(payload: dict[str, Any], database: str, collection_name: str, data_ref: str, errors: list[dict[str, Any]]) -> dict[str, Any]:
     payload.setdefault("trace", {}).setdefault("errors", []).extend(errors)
@@ -338,6 +527,36 @@ def _mark_error(payload: dict[str, Any], database: str, collection_name: str, da
         "collection_name": collection_name,
         "data_ref": data_ref,
         "errors": errors,
+    }
+    return payload
+
+
+# 함수 설명: `_mark_followup_unavailable()`는 불완전 저장본을 정상 ref로 노출하지 않고 현재 답변만 유지하도록 fail-closed 처리합니다.
+def _mark_followup_unavailable(
+    payload: dict[str, Any],
+    database: str,
+    collection_name: str,
+    data_ref: str,
+    storage_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    warning = {
+        "type": "result_store_limit_exceeded",
+        "message": "결과 저장 상한을 초과해 불완전한 data_ref를 만들지 않았습니다. 현재 답변은 정상이며 이 결과를 이용한 후속 재사용은 불가합니다.",
+    }
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    data.pop("data_ref", None)
+    payload.pop("data_refs", None)
+    payload.setdefault("trace", {}).setdefault("warnings", []).append(warning)
+    payload.setdefault("trace", {}).setdefault("inspection", {})["result_store"] = {
+        "stage": "23_mongodb_result_store",
+        "status": "followup_unavailable",
+        "database": database,
+        "collection_name": collection_name,
+        "data_ref": "",
+        "attempted_data_ref": data_ref,
+        "storage_manifest": deepcopy(storage_manifest),
+        "warnings": [warning],
+        "errors": [],
     }
     return payload
 
@@ -355,10 +574,19 @@ class MongoDBResultStore(Component):
     description = "pandas 분석 결과와 런타임 조회 결과를 MongoDB result store에 저장하고 data_ref를 페이로드에 남깁니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
-        MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=True),
-        MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, advanced=True),
-        MessageTextInput(name="collection_name", display_name="결과 컬렉션", required=False, advanced=True),
+        MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=False),
+        MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, value=DEFAULT_DATABASE, advanced=False),
+        MessageTextInput(name="collection_name", display_name="결과 컬렉션", required=False, value=DEFAULT_COLLECTION, advanced=False),
         MessageTextInput(name="ttl_hours", display_name="데이터 보관 시간(시간)", value=str(DEFAULT_TTL_HOURS), required=False, advanced=True),
+        MessageTextInput(name="max_result_rows", display_name="저장 결과 최대 행 수", value=str(DEFAULT_MAX_RESULT_ROWS), required=False, advanced=True),
+        MessageTextInput(
+            name="max_source_rows_per_alias",
+            display_name="소스별 저장 최대 행 수",
+            value=str(DEFAULT_MAX_SOURCE_ROWS_PER_ALIAS),
+            required=False,
+            advanced=True,
+        ),
+        MessageTextInput(name="max_document_bytes", display_name="결과 문서 최대 바이트", value=str(DEFAULT_MAX_DOCUMENT_BYTES), required=False, advanced=True),
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
@@ -372,5 +600,8 @@ class MongoDBResultStore(Component):
                 getattr(self, "mongo_database", ""),
                 getattr(self, "collection_name", ""),
                 getattr(self, "ttl_hours", ""),
+                getattr(self, "max_result_rows", ""),
+                getattr(self, "max_source_rows_per_alias", ""),
+                getattr(self, "max_document_bytes", ""),
             )
         )

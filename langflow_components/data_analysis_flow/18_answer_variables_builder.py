@@ -389,27 +389,36 @@ class AnswerVariablesBuilder(Component):
         Output(name="warnings_errors_json", display_name="경고/오류 JSON", method="build_warnings_errors", types=["Message"], group_outputs=True),
     ]
 
+    # 함수 설명: `_variables_once()`는 결과 요약·적용 범위·경고 변수를 동일 payload에서 한 번만 계산해 대용량 행 복사를 줄입니다.
+    def _variables_once(self) -> dict[str, Any]:
+        payload = getattr(self, "payload", None)
+        cache_key = id(payload)
+        if getattr(self, "_variables_cache_key", None) != cache_key:
+            self._variables_cache_key = cache_key
+            self._variables_cache = build_variables(payload)
+        return self._variables_cache
+
     # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_question(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None))["question"])
+        return Message(text=self._variables_once()["question"])
 
     # Langflow 출력 함수: '결과 요약 JSON (result_summary_json)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_result_summary(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None))["result_summary_json"])
+        return Message(text=self._variables_once()["result_summary_json"])
 
     # Langflow 출력 함수: '적용 범위 JSON (applied_scope_json)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_applied_scope(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None))["applied_scope_json"])
+        return Message(text=self._variables_once()["applied_scope_json"])
 
     # Langflow 출력 함수: '답변 컨텍스트 JSON (answer_context_json)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_answer_context(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None))["answer_context_json"])
+        return Message(text=self._variables_once()["answer_context_json"])
 
     # Langflow 출력 함수: '경고/오류 JSON (warnings_errors_json)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_warnings_errors(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None))["warnings_errors_json"])
+        return Message(text=self._variables_once()["warnings_errors_json"])

@@ -7,7 +7,7 @@
 #        (read_timeout_seconds)
 # 주요 출력: 메시지 (message), 호출 상태 (status_data)
 # 처리 흐름: Smart Router가 선택한 하위 Flow Run API에 원문 질문과 부모 세션을 한 번만 전달하고 최종 Message를 추출합니다.
-# 유지보수 포인트: Smart Router의 비선택 분기는 호출하지 않으며, 부모 session_id와 connect/read timeout을 하위 Flow에 일관되게 전달합니다.
+# 유지보수 포인트: nested child의 Chat 저장만 request tweak로 끄고 부모 Router가 세션 메시지를 한 번만 소유합니다.
 # =============================================================================
 
 from __future__ import annotations
@@ -29,6 +29,10 @@ _HTTP_SESSION = requests.Session()
 DEFAULT_LANGFLOW_BASE_URL = "http://127.0.0.1:7860"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_READ_TIMEOUT_SECONDS = 240
+NESTED_CHAT_STORAGE_TWEAKS = {
+    "Chat Input": {"should_store_message": False},
+    "Chat Output": {"should_store_message": False},
+}
 
 
 # 주요 함수: 선택된 하위 Flow API를 호출하고 중간 출력이 아닌 최종 Message만 반환합니다.
@@ -86,6 +90,9 @@ def run_flow_api_message(
         "input_value": flow_input,
         "input_type": "chat",
         "output_type": "chat",
+        # Child Flow는 direct Playground 표시를 위해 저장을 기본 활성화합니다.
+        # Router nested 호출에서만 display_name 기반 tweak로 child 질문/답변 저장을 끕니다.
+        "tweaks": deepcopy(NESTED_CHAT_STORAGE_TWEAKS),
     }
     if session_id_value:
         request_body["session_id"] = session_id_value

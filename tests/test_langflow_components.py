@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import builtins
+import asyncio
 import importlib.util
 import json
 import sys
@@ -46,6 +48,13 @@ def install_lfx_test_stubs() -> None:
     class SecretStrInput(InputBase):
         pass
 
+    class AgentComponent(Component):
+        inputs = []
+        outputs = [InputBase(name="response", method="message_response", types=["Message"])]
+
+        async def message_response(self):
+            return Message(text=getattr(self, "_stub_response", "stub agent response"))
+
     modules = {
         "lfx": types.ModuleType("lfx"),
         "lfx.custom": types.ModuleType("lfx.custom"),
@@ -54,6 +63,9 @@ def install_lfx_test_stubs() -> None:
         "lfx.base": types.ModuleType("lfx.base"),
         "lfx.base.tools": types.ModuleType("lfx.base.tools"),
         "lfx.base.tools.run_flow": types.ModuleType("lfx.base.tools.run_flow"),
+        "lfx.components": types.ModuleType("lfx.components"),
+        "lfx.components.models_and_agents": types.ModuleType("lfx.components.models_and_agents"),
+        "lfx.components.models_and_agents.agent": types.ModuleType("lfx.components.models_and_agents.agent"),
         "lfx.io": types.ModuleType("lfx.io"),
         "lfx.schema": types.ModuleType("lfx.schema"),
         "lfx.schema.data": types.ModuleType("lfx.schema.data"),
@@ -66,6 +78,7 @@ def install_lfx_test_stubs() -> None:
     )
     sys.modules["lfx.custom.custom_component.component"].get_component_toolkit = lambda: None
     sys.modules["lfx.base.tools.run_flow"].RunFlowBaseComponent = RunFlowBaseComponent
+    sys.modules["lfx.components.models_and_agents.agent"].AgentComponent = AgentComponent
     io_module = sys.modules["lfx.io"]
     io_module.BoolInput = getattr(io_module, "BoolInput", BoolInput)
     io_module.DataInput = getattr(io_module, "DataInput", InputBase)
@@ -105,6 +118,7 @@ def function_case_source(*function_names: str) -> str:
 
 def install_fake_pymongo(monkeypatch):
     store = {}
+    metrics = {"client_count": 0}
 
     class FakeCursor:
         def __init__(self, docs):
@@ -164,6 +178,7 @@ def install_fake_pymongo(monkeypatch):
 
     class FakeMongoClient:
         def __init__(self, uri, serverSelectionTimeoutMS=5000):
+            metrics["client_count"] += 1
             self.uri = uri
             self.server_selection_timeout_ms = serverSelectionTimeoutMS
 
@@ -175,6 +190,7 @@ def install_fake_pymongo(monkeypatch):
 
     module = types.ModuleType("pymongo")
     module.MongoClient = FakeMongoClient
+    module.metrics = metrics
     monkeypatch.setitem(sys.modules, "pymongo", module)
     return store
 
@@ -368,6 +384,137 @@ def test_retrieval_router_live_mode_routes_by_source_type():
     assert [job["dataset_key"] for job in goodocs["retrieval_job_bundle"]["jobs"]] == ["target"]
 
 
+def test_retrieval_merger_keeps_rows_once_and_uses_compact_trace_summary():
+    merger = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "13_source_retrieval_merger.py")
+    rows = [{"DEVICE": "DEV-A", "QTY": 7}]
+    merged = merger.merge_source_retrieval_payloads(
+        {"trace": {"warnings": [], "errors": [], "inspection": {}}},
+        {
+            "source_type": "goodocs",
+            "status": "ok",
+            "source_results": [
+                {
+                    "source_alias": "target_data",
+                    "dataset_key": "target",
+                    "source_type": "goodocs",
+                    "status": "ok",
+                    "row_count": 1,
+                    "preview_rows": rows,
+                    "rows": rows,
+                    "data": rows,
+                    "source_execution": {"used_dummy_data": False},
+                    "errors": [],
+                }
+            ],
+            "errors": [],
+            "warnings": [],
+        },
+    )
+
+    assert merged["_runtime_rows_by_alias"] == {"target_data": rows}
+    assert "rows" not in merged["source_results"][0]
+    assert "data" not in merged["source_results"][0]
+    trace_source = merged["trace"]["inspection"]["data_retrieval"]["sources"][0]
+    assert trace_source == {
+        "source_alias": "target_data",
+        "dataset_key": "target",
+        "source_type": "goodocs",
+        "status": "ok",
+        "row_count": 1,
+        "used_dummy_data": False,
+        "error_count": 0,
+    }
+
+
+def test_retrieval_merger_preserves_job_validation_failure_status():
+    merger = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "13_source_retrieval_merger.py")
+    merged = merger.merge_source_retrieval_payloads(
+        {
+            "trace": {
+                "warnings": [],
+                "errors": [{"type": "missing_retrieval_job_field", "message": "source_alias is required"}],
+                "inspection": {"data_retrieval": {"job_validation": {"error_count": 1}}},
+            }
+        }
+    )
+
+    retrieval = merged["trace"]["inspection"]["data_retrieval"]
+    assert retrieval["job_validation"]["error_count"] == 1
+    assert retrieval["status"] == "error"
+
+
+def test_retrieval_execution_gate_blocks_required_source_failure_by_default():
+    gate = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py")
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "production_data", "source_type": "oracle"}
+            ]
+        },
+        "source_results": [
+            {
+                "dataset_key": "production",
+                "source_alias": "production_data",
+                "source_type": "oracle",
+                "status": "error",
+                "errors": [{"type": "timeout", "message": "Oracle timeout"}],
+            }
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = gate.apply_retrieval_execution_gate(payload)
+
+    assert result["execution_gate"]["status"] == "blocked"
+    assert result["execution_gate"]["pandas_llm_allowed"] is False
+    assert result["execution_gate"]["answer_llm_allowed"] is False
+    assert result["analysis"]["status"] == "error"
+    assert result["data"]["rows"] == []
+    assert "production_data" in result["answer_message"]
+
+
+def test_retrieval_execution_gate_continues_when_only_optional_source_fails():
+    gate = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py")
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "production_data", "required": True},
+                {"dataset_key": "uph", "source_alias": "uph_data", "required": False},
+            ]
+        },
+        "source_results": [
+            {"source_alias": "production_data", "status": "ok", "errors": []},
+            {"source_alias": "uph_data", "status": "error", "errors": [{"type": "timeout", "message": "timeout"}]},
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = gate.apply_retrieval_execution_gate(payload)
+
+    assert result["execution_gate"]["status"] == "continue"
+    assert result["execution_gate"]["critical_failures"] == []
+    assert result["execution_gate"]["optional_failures"][0]["source_alias"] == "uph_data"
+    assert result["execution_gate"]["pandas_llm_allowed"] is True
+    assert result["trace"]["warnings"][-1]["type"] == "optional_source_retrieval_failed"
+
+
+def test_retrieval_guarded_agent_skips_model_only_when_gate_is_blocked():
+    guarded = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14b_retrieval_guarded_agent.py")
+
+    blocked_agent = guarded.RetrievalGuardedAgent()
+    blocked_agent.control_payload = {"execution_gate": {"status": "blocked"}}
+    blocked_message = asyncio.run(blocked_agent.message_response())
+
+    success_agent = guarded.RetrievalGuardedAgent()
+    success_agent.control_payload = {"execution_gate": {"status": "continue"}}
+    success_agent._stub_response = "agent-success"
+    success_message = asyncio.run(success_agent.message_response())
+
+    assert blocked_message.text == ""
+    assert "생략" in blocked_agent.status
+    assert success_message.text == "agent-success"
+
+
 def test_h_api_retriever_executes_configured_http_request():
     retriever = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "10_h_api_retriever.py")
     captured = {}
@@ -532,6 +679,34 @@ def test_goodocs_retriever_keeps_inline_rows_for_local_fixture():
     assert result["status"] == "ok"
     assert source_result["rows"] == [{"DEVICE": "D1", "TARGET": 100}]
     assert source_result["source_execution"]["source_configured"] is True
+    assert "data" not in source_result
+
+
+def test_goodocs_live_mode_never_falls_back_to_dummy_without_credentials():
+    retriever = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "12_goodocs_retriever.py")
+    payload = {
+        "request": {"retrieval_mode": "live"},
+        "retrieval_job_bundle": {
+            "retrieval_mode": "live",
+            "jobs": [
+                {
+                    "dataset_key": "target",
+                    "source_alias": "target_data",
+                    "source_type": "goodocs",
+                    "source_config": {"doc_id": "doc-1"},
+                }
+            ],
+        },
+    }
+
+    result = retriever.goodocs_retrieve(payload)
+    source_result = result["source_results"][0]
+
+    assert result["status"] == "error"
+    assert source_result["status"] == "error"
+    assert source_result["failure_type"] == "missing_goodocs_credentials"
+    assert source_result["source_execution"]["used_dummy_data"] is False
+    assert "data" not in source_result
 
 
 def test_analysis_request_loader_defaults_reference_date_to_korea_today():
@@ -577,9 +752,21 @@ def test_session_state_flow_roundtrips_compact_state_in_shared_v4_collection(mon
         },
     }
 
-    written = writer.write_session_state(response_payload, preview_row_limit="1")
+    written = writer.write_session_state(
+        response_payload,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        session_collection_name="agent_v4_session_states",
+        preview_row_limit="1",
+    )
     doc = store["datagov"]["agent_v4_session_states"]["session_state:session-1"]
-    loaded = loader.load_session_state(types.SimpleNamespace(text="어제 생산량은?", session_id="session-1"), preview_row_limit="1")
+    loaded = loader.load_session_state(
+        types.SimpleNamespace(text="어제 생산량은?", session_id="session-1"),
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        session_collection_name="agent_v4_session_states",
+        preview_row_limit="1",
+    )
 
     assert written["session_state_write"]["saved"] is True
     assert doc["session_id"] == "session-1"
@@ -600,7 +787,12 @@ def test_session_state_loader_returns_session_id_even_when_state_is_missing(monk
     monkeypatch.setenv("MONGODB_DATABASE", "datagov")
     monkeypatch.setenv("MONGODB_SESSION_STATE_COLLECTION", "agent_v4_session_states")
 
-    loaded = loader.load_session_state(types.SimpleNamespace(text="첫 질문", session_id="new-session"))
+    loaded = loader.load_session_state(
+        types.SimpleNamespace(text="첫 질문", session_id="new-session"),
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        session_collection_name="agent_v4_session_states",
+    )
 
     assert loaded["state"] == {"session_id": "new-session"}
     assert loaded["session_state_load"]["source"] == "mongodb_not_found"
@@ -1008,7 +1200,9 @@ def test_data_analysis_langflow_dummy_path_reaches_api_response():
     response = api_builder.build_api_response(payload)
 
     assert response["status"] == "ok"
-    assert response["message"] == "D/A1 공정의 WIP 합계는 120입니다."
+    assert response["message"] == "분석 결과 OPER_NAME=D/A1, wip_sum=363입니다."
+    assert response["answer_sections"]["summary"]["headline"] == response["message"]
+    assert response["trace"]["inspection"]["answer_grounding"]["unsupported_numeric_claims"] == ["120"]
     assert response["data"]["row_count"] == 1
     assert response["intent_plan"]["pandas_execution_plan"][0]["step"] == "sum_wip"
     assert "analysis_code" not in response["analysis"]
@@ -1413,6 +1607,20 @@ def test_answer_response_accepts_19_special_guidance_display_metadata():
     assert payload["answer_sections"]["result_table"]["display_columns"] == ["wip_sum", "OPER_NAME"]
     assert "| WIP 합계 | 공정 |" in message
     assert "| 12.5K | D/A1 |" in message
+
+
+def test_answer_grounding_accepts_percentage_display_of_authoritative_value():
+    answer_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py")
+    payload = {
+        "analysis": {"status": "ok"},
+        "data": {"columns": ["달성률"], "rows": [{"달성률": 75}], "row_count": 1},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = answer_builder.build_answer_response(payload, "INPUT 계획 대비 달성률은 75%입니다.")
+
+    assert result["answer_message"] == "INPUT 계획 대비 달성률은 75%입니다."
+    assert "answer_grounding" not in result["trace"]["inspection"]
 
 
 def test_intent_normalizer_parses_langflow_message_text_with_nested_json():
@@ -2264,6 +2472,67 @@ def test_api_response_builder_uses_chat_display_message_when_connected():
     assert response["data_mode"] == "live"
 
 
+def test_api_response_builder_marks_error_when_one_required_source_fails():
+    api_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py")
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "production_data"},
+                {"dataset_key": "wip", "source_alias": "wip_data"},
+            ]
+        },
+        "source_results": [
+            {"source_alias": "production_data", "status": "ok", "success": True, "errors": []},
+            {"source_alias": "wip_data", "status": "error", "success": False, "errors": [{"type": "timeout"}]},
+        ],
+        "analysis": {"status": "ok"},
+        "data": {"rows": [{"PRODUCTION": 10}], "columns": ["PRODUCTION"], "row_count": 1},
+    }
+
+    response = api_builder.build_api_response(payload)
+
+    assert response["status"] == "error"
+    assert response["stage_status"] == {"overall": "error", "retrieval": "error", "analysis": "ok"}
+
+
+def test_api_response_builder_marks_partial_when_only_optional_source_fails():
+    api_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py")
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "production_data"},
+                {"dataset_key": "uph", "source_alias": "uph_data", "required": False},
+            ]
+        },
+        "source_results": [
+            {"source_alias": "production_data", "status": "ok", "success": True, "errors": []},
+            {"source_alias": "uph_data", "status": "error", "success": False, "errors": [{"type": "timeout"}]},
+        ],
+        "analysis": {"status": "ok"},
+        "data": {"rows": [{"PRODUCTION": 10}], "columns": ["PRODUCTION"], "row_count": 1},
+    }
+
+    response = api_builder.build_api_response(payload)
+
+    assert response["status"] == "partial"
+    assert response["stage_status"] == {"overall": "partial", "retrieval": "partial", "analysis": "ok"}
+
+
+def test_api_response_builder_marks_error_when_required_source_is_missing():
+    api_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py")
+    payload = {
+        "intent_plan": {"retrieval_jobs": [{"dataset_key": "wip", "source_alias": "wip_data"}]},
+        "source_results": [],
+        "analysis": {"status": "ok"},
+        "data": {"rows": [], "columns": [], "row_count": 0},
+    }
+
+    response = api_builder.build_api_response(payload)
+
+    assert response["status"] == "error"
+    assert response["stage_status"]["retrieval"] == "error"
+
+
 def test_pandas_executor_outputs_json_ready_numeric_rows():
     pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
     payload = {"runtime_sources": {}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
@@ -2286,6 +2555,31 @@ def test_pandas_executor_outputs_json_ready_numeric_rows():
     assert result["data"]["rows"] == [{"DEVICE": "DEV-A", "EMPTY": None, "QTY": 7, "RATIO": 1.5}]
     assert result["_full_result_rows"] == [{"DEVICE": "DEV-A", "EMPTY": None, "QTY": 7, "RATIO": 1.5}]
     assert "_runtime_result_rows" not in result
+
+
+def test_pandas_executor_and_repair_are_not_invoked_after_required_retrieval_failure():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    repair_calls = []
+    payload = {
+        "execution_gate": {"status": "blocked"},
+        "analysis": {
+            "status": "error",
+            "error": {"type": "required_source_retrieval_failed", "message": "required source failed"},
+        },
+        "data": {"columns": [], "rows": [], "row_count": 0},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = pandas_executor.execute_pandas_with_repair(
+        payload,
+        {"code": "raise RuntimeError('must not run')"},
+        repair_invoker=lambda prompt: repair_calls.append(prompt),
+    )
+
+    assert repair_calls == []
+    assert result["analysis"]["error"]["type"] == "required_source_retrieval_failed"
+    assert result["trace"]["inspection"]["pandas_execution"]["status"] == "skipped"
+    assert result["trace"]["inspection"]["pandas_repair"]["llm_called"] is False
 
 
 def test_pandas_executor_wraps_scalar_result_with_meaningful_columns():
@@ -2388,7 +2682,12 @@ def test_answer_variables_accept_numpy_scalars_after_result_store(monkeypatch):
         },
     }
 
-    stored = result_store.store_result(payload)
+    stored = result_store.store_result(
+        payload,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+    )
     variables = answer_variables.build_variables(stored)
     result_summary = json.loads(variables["result_summary_json"])
     applied_scope = json.loads(variables["applied_scope_json"])
@@ -2424,7 +2723,12 @@ def test_result_store_accepts_legacy_runtime_result_rows(monkeypatch):
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
-    stored = result_store.store_result(payload)
+    stored = result_store.store_result(
+        payload,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+    )
     ref_id = stored["data"]["data_ref"]["ref_id"]
 
     assert mongo_store["datagov"]["agent_v4_result_store"][ref_id]["payload"]["result_rows"] == [{"DEVICE": "LEGACY", "QTY": 3}]
@@ -3365,7 +3669,7 @@ def test_langflow_dummy_fixture_has_auxiliary_multirow_join_controls():
     ]
 
 
-def test_data_analysis_split_mongodb_metadata_loaders_use_shared_v4_env_defaults(monkeypatch):
+def test_data_analysis_split_mongodb_metadata_loaders_use_standalone_v4_node_inputs(monkeypatch):
     store = install_fake_pymongo(monkeypatch)
     set_shared_v4_mongo_env(monkeypatch)
     store["datagov"] = {
@@ -3384,9 +3688,24 @@ def test_data_analysis_split_mongodb_metadata_loaders_use_shared_v4_env_defaults
     main_variable_loader = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01c_mongodb_main_variable_loader.py")
     candidates_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py")
 
-    domain_result = domain_loader.load_domain_metadata(limit="50")
-    table_result = table_loader.load_table_catalog_metadata(limit="50")
-    main_variable_result = main_variable_loader.load_main_variable_metadata(limit="50")
+    domain_result = domain_loader.load_domain_metadata(
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_domain_items",
+        limit="50",
+    )
+    table_result = table_loader.load_table_catalog_metadata(
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_table_catalog_items",
+        limit="50",
+    )
+    main_variable_result = main_variable_loader.load_main_variable_metadata(
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_main_flow_filters",
+        limit="50",
+    )
     result = candidates_builder.build_metadata_candidates(domain_result, table_result, main_variable_result)
 
     assert result["metadata_load"]["status"] == "ok"
@@ -3527,7 +3846,13 @@ def test_data_analysis_mongodb_result_store_and_loader_round_trip(monkeypatch):
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
-    stored = result_store.store_result(payload, ttl_hours="3")
+    stored = result_store.store_result(
+        payload,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+        ttl_hours="3",
+    )
     data_ref = stored["data"]["data_ref"]
     ref_id = data_ref["ref_id"]
     restored = result_loader.load_previous_result(
@@ -3535,7 +3860,10 @@ def test_data_analysis_mongodb_result_store_and_loader_round_trip(monkeypatch):
             "request": {"session_id": "s1", "question": "이전 결과 다시 보여줘"},
             "state": {"current_data": {"data_ref": data_ref}},
             "trace": {"warnings": [], "errors": [], "inspection": {}},
-        }
+        },
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
     )
 
     assert ref_id.startswith("result:s1:")
@@ -3584,7 +3912,10 @@ def test_mongodb_result_loader_accepts_legacy_data_rows(monkeypatch):
         {
             "data": {"data_ref": "legacy-ref"},
             "trace": {"warnings": [], "errors": [], "inspection": {}},
-        }
+        },
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
     )
 
     assert restored["trace"]["inspection"]["result_loader"]["status"] == "ok"
@@ -3598,6 +3929,121 @@ def test_data_analysis_mongodb_result_store_has_ttl_input():
     input_names = {item.kwargs.get("name") for item in result_store.MongoDBResultStore.inputs}
 
     assert "ttl_hours" in input_names
+    assert {"max_result_rows", "max_source_rows_per_alias", "max_document_bytes"} <= input_names
+
+
+def test_result_store_fails_closed_instead_of_exposing_truncated_followup_ref(monkeypatch):
+    mongo_store = install_fake_pymongo(monkeypatch)
+    set_shared_v4_mongo_env(monkeypatch)
+    result_store = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py")
+    rows = [{"DEVICE": "DEV-A", "QTY": 1}, {"DEVICE": "DEV-B", "QTY": 2}]
+    payload = {
+        "request": {"session_id": "s-limit", "question": "전체 결과"},
+        "runtime_sources": {"production_data": rows},
+        "source_results": [{"source_alias": "production_data", "row_count": 2}],
+        "analysis": {"status": "ok", "row_count": 2, "columns": ["DEVICE", "QTY"]},
+        "data": {"columns": ["DEVICE", "QTY"], "rows": rows, "row_count": 2},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    stored = result_store.store_result(
+        payload,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+        max_result_rows="1",
+    )
+
+    assert stored["trace"]["inspection"]["result_store"]["status"] == "followup_unavailable"
+    assert stored["trace"]["inspection"]["result_store"]["data_ref"] == ""
+    assert stored["trace"]["inspection"]["result_store"]["storage_manifest"]["result_rows"] == {
+        "original_count": 2,
+        "stored_count": 1,
+        "complete": False,
+    }
+    assert "data_ref" not in stored["data"]
+    assert mongo_store.get("datagov", {}).get("agent_v4_result_store", {}) == {}
+
+
+def test_result_store_skips_mongodb_after_required_retrieval_failure(monkeypatch):
+    mongo_store = install_fake_pymongo(monkeypatch)
+    set_shared_v4_mongo_env(monkeypatch)
+    result_store = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py")
+    payload = {
+        "execution_gate": {"status": "blocked"},
+        "analysis": {"status": "error"},
+        "data": {"columns": [], "rows": [], "row_count": 0},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    stored = result_store.store_result(payload)
+
+    assert stored["trace"]["inspection"]["result_store"]["status"] == "skipped"
+    assert stored["trace"]["inspection"]["result_store"]["reason"] == "required_source_retrieval_failed"
+    assert mongo_store == {}
+
+
+def test_answer_builder_preserves_deterministic_gate_error_when_answer_agent_is_skipped():
+    answer_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py")
+    payload = {
+        "execution_gate": {"status": "blocked"},
+        "answer_message": "필수 데이터 조회에 실패하여 pandas 분석과 답변 LLM을 실행하지 않았습니다.",
+        "analysis": {"status": "error"},
+        "data": {"columns": [], "rows": [], "row_count": 0},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    answered = answer_builder.build_answer_response(payload, "")
+
+    assert answered["answer_message"] == payload["answer_message"]
+    assert answered["answer_sections"]["summary"]["headline"] == payload["answer_message"]
+
+
+def test_required_retrieval_failure_short_circuits_to_single_deterministic_api_response(monkeypatch):
+    mongo_store = install_fake_pymongo(monkeypatch)
+    set_shared_v4_mongo_env(monkeypatch)
+    gate = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py")
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    result_store = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py")
+    answer_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py")
+    api_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py")
+    repair_calls = []
+    payload = {
+        "request": {"retrieval_mode": "live", "question": "생산량 알려줘"},
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "production_data", "source_type": "oracle"}
+            ]
+        },
+        "source_results": [
+            {
+                "dataset_key": "production",
+                "source_alias": "production_data",
+                "source_type": "oracle",
+                "status": "error",
+                "errors": [{"type": "timeout", "message": "Oracle timeout"}],
+            }
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    gated = gate.apply_retrieval_execution_gate(payload)
+    executed = pandas_executor.execute_pandas_with_repair(
+        gated,
+        {"code": "raise RuntimeError('must not execute')"},
+        repair_invoker=lambda prompt: repair_calls.append(prompt),
+    )
+    stored = result_store.store_result(executed)
+    answered = answer_builder.build_answer_response(stored, "")
+    response = api_builder.build_api_response(answered)
+
+    assert repair_calls == []
+    assert mongo_store == {}
+    assert response["status"] == "error"
+    assert response["stage_status"] == {"overall": "error", "retrieval": "error", "analysis": "error"}
+    assert response["message"] == gated["answer_message"]
+    assert response["trace"]["inspection"]["pandas_execution"]["status"] == "skipped"
+    assert response["trace"]["inspection"]["result_store"]["status"] == "skipped"
 
 
 def test_data_ref_store_rejects_expired_document():
@@ -4152,6 +4598,75 @@ def test_domain_writer_keeps_deterministic_blockers_even_when_review_is_ready():
     assert result["write_result"]["errors"][0]["type"] == "domain_source_config_forbidden"
 
 
+def test_metadata_writers_preserve_refinement_and_fail_closed_on_missing_information():
+    specs = [
+        (
+            "domain_saving_flow/00_domain_saving_request_loader.py",
+            "domain_saving_flow/04_domain_saving_result_normalizer.py",
+            "domain_saving_flow/07_domain_review_writer.py",
+            "domain_saving_flow/08_domain_saving_response_builder.py",
+            {"items": [{"section": "process_groups", "key": "DA", "payload": {"display_name": "D/A"}}]},
+        ),
+        (
+            "table_catalog_saving_flow/00_table_catalog_saving_request_loader.py",
+            "table_catalog_saving_flow/04_table_catalog_saving_result_normalizer.py",
+            "table_catalog_saving_flow/07_table_catalog_review_writer.py",
+            "table_catalog_saving_flow/08_table_catalog_saving_response_builder.py",
+            {"items": [{"dataset_key": "wip_today", "payload": {"source_type": "oracle", "source_config": {"source_type": "oracle", "query_template": "SELECT 1"}}}]},
+        ),
+        (
+            "main_flow_filters_saving_flow/00_main_flow_filter_saving_request_loader.py",
+            "main_flow_filters_saving_flow/04_main_flow_filter_saving_result_normalizer.py",
+            "main_flow_filters_saving_flow/07_main_flow_filter_review_writer.py",
+            "main_flow_filters_saving_flow/08_main_flow_filter_saving_response_builder.py",
+            {"items": [{"filter_key": "DATE", "payload": {"display_name": "기준일", "operator": "eq", "value_type": "date", "value_shape": "scalar"}}]},
+        ),
+    ]
+    for request_path, normalizer_path, writer_path, response_path, llm_result in specs:
+        request_loader = load_module(ROOT / "langflow_components" / request_path)
+        normalizer = load_module(ROOT / "langflow_components" / normalizer_path)
+        writer = load_module(ROOT / "langflow_components" / writer_path)
+        response_builder = load_module(ROOT / "langflow_components" / response_path)
+        payload = request_loader.build_request("정보가 덜 들어간 등록 요청", "replace", False)
+        llm_result = deepcopy(llm_result)
+        llm_result["missing_information"] = ["저장 대상의 필수 설명을 추가해 주세요."]
+        llm_result["assumptions"] = ["현재 입력만으로 source를 추정하지 않습니다."]
+
+        normalized = normalizer.normalize_authoring(payload, llm_result)
+        result = writer.review_and_write(normalized, {"ready_to_save": True, "errors": [], "supplement_requests": []})
+        response = response_builder.build_response(result)
+
+        assert normalized["refinement"]["needs_more_input"] is True
+        assert normalized["refinement"]["missing_information"] == ["저장 대상의 필수 설명을 추가해 주세요."]
+        assert normalized["refinement"]["assumptions"] == ["현재 입력만으로 source를 추정하지 않습니다."]
+        assert result["review"]["ready_to_save"] is False
+        assert result["review"]["assumptions"] == ["현재 입력만으로 source를 추정하지 않습니다."]
+        assert result["write_result"]["status"] == "needs_input"
+        assert result["write_result"]["saved_count"] == 0
+        assert response["status"] == "needs_input"
+        assert any(notice["title"] == "적용 가정" for notice in response["answer_sections"]["notices"])
+
+
+def test_metadata_writers_block_unparseable_authoring_response():
+    specs = [
+        ("domain_saving_flow/00_domain_saving_request_loader.py", "domain_saving_flow/04_domain_saving_result_normalizer.py", "domain_saving_flow/07_domain_review_writer.py"),
+        ("table_catalog_saving_flow/00_table_catalog_saving_request_loader.py", "table_catalog_saving_flow/04_table_catalog_saving_result_normalizer.py", "table_catalog_saving_flow/07_table_catalog_review_writer.py"),
+        ("main_flow_filters_saving_flow/00_main_flow_filter_saving_request_loader.py", "main_flow_filters_saving_flow/04_main_flow_filter_saving_result_normalizer.py", "main_flow_filters_saving_flow/07_main_flow_filter_review_writer.py"),
+    ]
+    for request_path, normalizer_path, writer_path in specs:
+        request_loader = load_module(ROOT / "langflow_components" / request_path)
+        normalizer = load_module(ROOT / "langflow_components" / normalizer_path)
+        writer = load_module(ROOT / "langflow_components" / writer_path)
+        payload = request_loader.build_request("등록 요청", "replace", False)
+
+        normalized = normalizer.normalize_authoring(payload, "not-json")
+        result = writer.review_and_write(normalized, {"ready_to_save": True, "errors": [], "supplement_requests": []})
+
+        assert any(error["type"] == "llm_response_parse_error" for error in normalized["errors"])
+        assert result["write_result"]["success"] is False
+        assert result["write_result"]["status"] == "error"
+
+
 def test_table_catalog_langflow_writer_blocks_truncated_query():
     request_loader = load_module(ROOT / "langflow_components" / "table_catalog_saving_flow" / "00_table_catalog_saving_request_loader.py")
     normalizer = load_module(ROOT / "langflow_components" / "table_catalog_saving_flow" / "04_table_catalog_saving_result_normalizer.py")
@@ -4271,6 +4786,7 @@ def test_table_and_filter_writers_respect_negative_review_response():
 
 
 def test_authoring_writers_use_shared_v4_mongo_env_defaults(monkeypatch):
+    setattr(builtins, "_metadata_driven_v5_qa_snapshot_cache_v1", {"generation": 0, "entries": {"stale": {}}})
     store = install_fake_pymongo(monkeypatch)
     set_shared_v4_mongo_env(monkeypatch)
     domain_request_loader = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "00_domain_saving_request_loader.py")
@@ -4317,6 +4833,12 @@ def test_authoring_writers_use_shared_v4_mongo_env_defaults(monkeypatch):
     assert "domain:process_groups:DA" in store["datagov"]["agent_v4_domain_items"]
     assert "table_catalog:wip_today" in store["datagov"]["agent_v4_table_catalog_items"]
     assert "main_flow_filter:DATE" in store["datagov"]["agent_v4_main_flow_filters"]
+    assert domain_result["write_result"]["metadata_qa_snapshot_invalidated"] is True
+    assert table_result["write_result"]["metadata_qa_snapshot_invalidated"] is True
+    assert filter_result["write_result"]["metadata_qa_snapshot_invalidated"] is True
+    registry = getattr(builtins, "_metadata_driven_v5_qa_snapshot_cache_v1")
+    assert registry["generation"] == 3
+    assert registry["entries"] == {}
 
 
 def test_authoring_existing_item_loaders_use_shared_v4_mongo_env_defaults(monkeypatch):
@@ -4817,7 +5339,175 @@ def test_metadata_saving_response_message_and_api_nodes_are_separated():
         assert api_outputs == ["api_response", "api_message"]
 
 
+def test_metadata_qa_empty_question_stops_loaders_and_returns_error():
+    request_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "00_metadata_qa_request_loader.py")
+    snapshot_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "01_mongodb_metadata_snapshot_loader.py")
+    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    guarded_agent = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_guarded_agent.py")
+    normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
+    payload = request_loader.build_request("")
+
+    snapshot = snapshot_loader.load_metadata_snapshot(payload, mongo_uri="mongodb://must-not-connect")
+    assert snapshot["metadata_snapshot"]["status"] == "skipped"
+    assert snapshot["metadata_snapshot"]["errors"][0]["type"] == "empty_question"
+    assert snapshot["domain_items"] == snapshot["table_catalog_items"] == snapshot["main_flow_filters"] == []
+
+    context_payload = context_builder.build_metadata_qa_context(
+        payload,
+        {"domain_items": [{"section": "process_groups", "key": "DA", "payload": {}}]},
+        {"table_catalog_items": [{"dataset_key": "production_today", "payload": {}}]},
+        {"main_flow_filters": [{"filter_key": "DATE", "payload": {}}]},
+    )
+    answer = normalizer.normalize_metadata_qa_response(context_payload, '{"answer_message":"사용하면 안 되는 LLM 답변"}')
+    assert guarded_agent.should_skip_agent(context_payload) is True
+
+    assert context_payload["metadata_qa_context"]["llm_control"] == {"skip": True, "reason": "empty_question"}
+    assert context_payload["metadata_qa_context"]["source_refs"] == []
+    assert answer["status"] == "error"
+    assert answer["answer_type"] == "invalid_request"
+    assert "질문이 비어" in answer["answer_message"]
+    assert answer["trace"]["inspection"]["metadata_qa_response"]["used_llm_response"] is False
+
+
+def test_metadata_qa_snapshot_loader_uses_one_client_and_short_process_cache(monkeypatch):
+    setattr(builtins, "_metadata_driven_v5_qa_snapshot_cache_v1", {"generation": 0, "entries": {}})
+    store = install_fake_pymongo(monkeypatch)
+    store["datagov"] = {
+        "agent_v4_domain_items": {
+            "domain:process_groups:DA": {"_id": "domain:process_groups:DA", "section": "process_groups", "key": "DA", "status": "active", "payload": {"processes": ["D/A1"]}},
+        },
+        "agent_v4_table_catalog_items": {
+            "table_catalog:production_today": {"_id": "table_catalog:production_today", "dataset_key": "production_today", "status": "active", "payload": {"source_type": "oracle"}},
+        },
+        "agent_v4_main_flow_filters": {
+            "main_flow_filter:DATE": {"_id": "main_flow_filter:DATE", "filter_key": "DATE", "status": "active", "payload": {"operator": "eq"}},
+        },
+    }
+    loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "01_mongodb_metadata_snapshot_loader.py")
+    request = {"request": {"question": "등록된 메타데이터를 알려줘"}}
+
+    first = loader.load_metadata_snapshot(request, "mongodb://fake", "datagov", cache_ttl_seconds="30")
+    first_client_count = sys.modules["pymongo"].metrics["client_count"]
+    store["datagov"]["agent_v4_domain_items"]["domain:process_groups:BG"] = {
+        "_id": "domain:process_groups:BG",
+        "section": "process_groups",
+        "key": "BG",
+        "status": "active",
+        "payload": {"processes": ["B/G1"]},
+    }
+    cached = loader.load_metadata_snapshot(request, "mongodb://fake", "datagov", cache_ttl_seconds="30")
+    refreshed = loader.load_metadata_snapshot(request, "mongodb://fake", "datagov", cache_ttl_seconds="0")
+
+    assert first["metadata_snapshot"]["count"] == 3
+    assert first["metadata_snapshot"]["cache_hit"] is False
+    assert first_client_count == 1
+    assert sys.modules["pymongo"].metrics["client_count"] == 2
+    assert cached["metadata_snapshot"]["count"] == 3
+    assert cached["metadata_snapshot"]["cache_hit"] is True
+    assert refreshed["metadata_snapshot"]["count"] == 4
+    assert refreshed["metadata_snapshot"]["cache_hit"] is False
+
+
+def test_successful_metadata_write_invalidates_same_process_qa_snapshot(monkeypatch):
+    setattr(builtins, "_metadata_driven_v5_qa_snapshot_cache_v1", {"generation": 0, "entries": {}})
+    store = install_fake_pymongo(monkeypatch)
+    store["datagov"] = {
+        "agent_v4_domain_items": {},
+        "agent_v4_table_catalog_items": {},
+        "agent_v4_main_flow_filters": {},
+    }
+    snapshot_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "01_mongodb_metadata_snapshot_loader.py")
+    request_loader = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "00_domain_saving_request_loader.py")
+    normalizer = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "04_domain_saving_result_normalizer.py")
+    writer = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "07_domain_review_writer.py")
+    qa_request = {"request": {"question": "등록된 공정 그룹을 알려줘"}}
+
+    first = snapshot_loader.load_metadata_snapshot(qa_request, "mongodb://fake", "datagov", cache_ttl_seconds="30")
+    authoring = request_loader.build_request("CMP는 CMP1 공정입니다.", "replace", False)
+    authoring = normalizer.normalize_authoring(
+        authoring,
+        {"items": [{"section": "process_groups", "key": "CMP", "payload": {"display_name": "CMP", "aliases": ["CMP"], "processes": ["CMP1"]}}]},
+    )
+    write_result = writer.review_and_write(authoring, mongo_uri="mongodb://fake", mongo_database="datagov", collection_name="agent_v4_domain_items")
+    refreshed = snapshot_loader.load_metadata_snapshot(qa_request, "mongodb://fake", "datagov", cache_ttl_seconds="30")
+
+    assert first["metadata_snapshot"]["count"] == 0
+    assert write_result["write_result"]["success"] is True
+    assert write_result["write_result"]["metadata_qa_snapshot_invalidated"] is True
+    assert refreshed["metadata_snapshot"]["cache_hit"] is False
+    assert refreshed["metadata_snapshot"]["generation"] == 1
+    assert refreshed["metadata_snapshot"]["count"] == 1
+
+
+def test_metadata_qa_deterministic_mode_stops_llm_branch_and_uses_direct_answer():
+    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    guarded_agent = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_guarded_agent.py")
+    normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
+    payload = {"request": {"question": "DA공정에는 어떤 세부 공정이 있어?"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
+    domain_items = {"domain_items": [{"section": "process_groups", "key": "DA", "payload": {"display_name": "D/A", "aliases": ["DA"], "processes": ["D/A1", "D/A2"]}}]}
+
+    context_payload = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
+    agent = guarded_agent.MetadataQaGuardedAgent()
+    agent.control_payload = context_payload
+    agent._stub_response = '{"answer_message":"사용되면 안 되는 LLM 답변"}'
+    agent_response = asyncio.run(agent.message_response())
+    answer = normalizer.normalize_metadata_qa_response(context_payload, agent_response)
+
+    assert context_payload["metadata_qa_context"]["llm_control"]["eligible_to_skip"] is True
+    assert context_payload["metadata_qa_context"]["llm_control"]["skip"] is True
+    assert agent_response.text == ""
+    assert agent.status.startswith("LLM skipped")
+    assert answer["answer_message"] != "사용되면 안 되는 LLM 답변"
+    assert answer["trace"]["inspection"]["metadata_qa_response"]["llm_skipped"] is True
+
+
+def test_metadata_qa_free_form_mode_keeps_llm_branch_and_embedded_response():
+    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    guarded_agent = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_guarded_agent.py")
+    normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
+    payload = {"request": {"question": "생산량이라는 용어를 쉽게 설명해줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
+    domain_items = {"domain_items": [{"section": "quantity_terms", "key": "production_quantity", "payload": {"display_name": "생산량", "aliases": ["생산실적"], "column": "PRODUCTION"}}]}
+
+    context_payload = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
+    agent = guarded_agent.MetadataQaGuardedAgent()
+    agent.control_payload = context_payload
+    agent._stub_response = '{"answer_type":"term_definition","answer_message":"생산량은 일정 기간 실제로 생산된 수량입니다."}'
+    agent_response = asyncio.run(agent.message_response())
+    answer = normalizer.normalize_metadata_qa_response(context_payload, agent_response)
+
+    assert context_payload["metadata_qa_context"]["llm_control"]["skip"] is False
+    assert agent.status == "LLM enabled: free-form metadata QA"
+    assert answer["answer_message"] == "생산량은 일정 기간 실제로 생산된 수량입니다."
+    assert answer["trace"]["inspection"]["metadata_qa_response"]["used_llm_response"] is True
+
+
+def test_metadata_qa_response_status_reflects_upstream_load_errors():
+    normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
+    payload = {
+        "request": {"question": "DA 공정 그룹을 알려줘"},
+        "metadata_qa_context": {
+            "question": "DA 공정 그룹을 알려줘",
+            "answer_mode": "process_group",
+            "candidate_rows": [{"metadata_type": "domain", "key": "DA", "display_name": "D/A"}],
+            "source_refs": [{"metadata_type": "domain", "section": "process_groups", "key": "DA"}],
+            "llm_control": {"skip": False},
+        },
+        "trace": {"warnings": [], "errors": [{"type": "mongo_load_error", "message": "table loader failed"}], "inspection": {}},
+    }
+
+    partial = normalizer.normalize_metadata_qa_response(payload, '{"answer_message":"D/A 공정 그룹입니다."}')
+    failed_payload = deepcopy(payload)
+    failed_payload["metadata_qa_context"]["candidate_rows"] = []
+    failed_payload["metadata_qa_context"]["source_refs"] = []
+    failed = normalizer.normalize_metadata_qa_response(failed_payload, '{"answer_message":"조회할 수 없습니다."}')
+
+    assert partial["status"] == "partial"
+    assert partial["trace"]["inspection"]["metadata_qa_response"]["status"] == "partial"
+    assert failed["status"] == "error"
+
+
 def test_metadata_qa_flow_reads_shared_v4_metadata_and_emits_api_contract(monkeypatch):
+    setattr(builtins, "_metadata_driven_v5_qa_snapshot_cache_v1", {"generation": 0, "entries": {}})
     store = install_fake_pymongo(monkeypatch)
     set_shared_v4_mongo_env(monkeypatch)
     store["datagov"] = {
@@ -4864,9 +5554,7 @@ def test_metadata_qa_flow_reads_shared_v4_metadata_and_emits_api_contract(monkey
         },
     }
     request_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "00_metadata_qa_request_loader.py")
-    domain_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "01a_mongodb_domain_metadata_loader.py")
-    table_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "01b_mongodb_table_catalog_loader.py")
-    filter_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "01c_mongodb_main_filter_loader.py")
+    snapshot_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "01_mongodb_metadata_snapshot_loader.py")
     context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
     variables_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_variables_builder.py")
     normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
@@ -4874,9 +5562,10 @@ def test_metadata_qa_flow_reads_shared_v4_metadata_and_emits_api_contract(monkey
     api_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "06_metadata_qa_api_response_builder.py")
 
     payload = request_loader.build_request("생산량 데이터 관련 쿼리문은 어떤건지 알려줘")
-    domain = domain_loader.load_domain_metadata()
-    table = table_loader.load_table_catalog_metadata()
-    main_filter = filter_loader.load_main_filter_metadata()
+    snapshot = snapshot_loader.load_metadata_snapshot(payload)
+    domain = snapshot_loader._output_payload(snapshot, "domain_items")
+    table = snapshot_loader._output_payload(snapshot, "table_catalog_items")
+    main_filter = snapshot_loader._output_payload(snapshot, "main_flow_filters")
     context_payload = context_builder.build_metadata_qa_context(payload, domain, table, main_filter)
     variables = variables_builder.build_variables(context_payload)
     qa_payload = normalizer.normalize_metadata_qa_response(context_payload, "")
@@ -4893,6 +5582,7 @@ def test_metadata_qa_flow_reads_shared_v4_metadata_and_emits_api_contract(monkey
     assert api_response["response_type"] == "metadata_qa"
     assert "metadata_qa_context" not in api_response
     assert "agent_v4_result_store" not in store["datagov"]
+    assert sys.modules["pymongo"].metrics["client_count"] == 1
 
 
 def test_metadata_qa_sections_support_process_group_and_data_redirect():
@@ -5127,8 +5817,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 67
-    assert result["all_component_python_files"] == 68
+    assert result["active_unique_source_files"] == 68
+    assert result["all_component_python_files"] == 69
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -5137,9 +5827,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 7, 75, 67),
-        ("import_ready_individual", 7, 75, 67),
-        ("import_ready_bundle", 7, 75, 67),
+        ("flow_exports", 7, 77, 68),
+        ("import_ready_individual", 7, 77, 68),
+        ("import_ready_bundle", 7, 77, 68),
     }
 
 
@@ -5234,6 +5924,10 @@ def test_route_flow_calls_langflow_api_with_branch_message_as_input():
         "input_value": "오늘 DA공정 생산량 알려줘",
         "input_type": "chat",
         "output_type": "chat",
+        "tweaks": {
+            "Chat Input": {"should_store_message": False},
+            "Chat Output": {"should_store_message": False},
+        },
         "session_id": "router-session-1",
     }
     assert calls == [
@@ -5243,6 +5937,10 @@ def test_route_flow_calls_langflow_api_with_branch_message_as_input():
                 "input_value": "오늘 DA공정 생산량 알려줘",
                 "input_type": "chat",
                 "output_type": "chat",
+                "tweaks": {
+                    "Chat Input": {"should_store_message": False},
+                    "Chat Output": {"should_store_message": False},
+                },
                 "session_id": "router-session-1",
             },
             "headers": {"Content-Type": "application/json", "x-api-key": "secret"},
@@ -5430,7 +6128,7 @@ def test_route_flow_docs_and_component_expose_message_and_status_contract():
     assert "Message" in design and "Data" in design
 
 
-def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contract():
+def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contract(monkeypatch):
     path = ROOT / "langflow_components" / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
     component = load_module(path)
     inputs = {item.kwargs.get("name"): item.kwargs for item in _component_inputs(component)}
@@ -5453,18 +6151,34 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert outputs["component_as_tool"]["types"] == ["Tool"]
     source = path.read_text(encoding="utf-8")
     assert '.get("type") == "ChatInput"' in source
+    assert '.get("type") == "ChatOutput"' in source
+    assert '"should_store_message": False' in source
     assert '"name": "question"' in source
-    assert 'f"{chat_input_id}{self.IOPUT_SEP}input_value"' in source
+    assert 'name="lazy_flow_result"' in source
+    assert "def _run_selected_flow" in source
+    assert "get_new_fields_from_graph" not in source
     assert "def _build_flow_tweak_data" in source
     assert "flow_id_selected=None" in source
     assert "tool.return_direct" in source
     assert "parent_session" in source
     assert "session_source" not in source
 
-    vertices = [types.SimpleNamespace(id="ChatInput-runtime", data={"type": "ChatInput"}, display_name="Chat Input")]
+    vertices = [
+        types.SimpleNamespace(id="ChatInput-runtime", data={"type": "ChatInput"}, display_name="Chat Input"),
+        types.SimpleNamespace(id="ChatOutput-runtime", data={"type": "ChatOutput"}, display_name="Chat Output"),
+    ]
     assert component._single_chat_input_id(vertices) == "ChatInput-runtime"
-    assert component._question_tweaks("ChatInput-runtime", {"question": "현재 등록된 데이터셋 알려줘"}) == {
-        "ChatInput-runtime": {"input_value": "현재 등록된 데이터셋 알려줘"}
+    assert component._single_chat_output_id(vertices) == "ChatOutput-runtime"
+    assert component._question_tweaks(
+        "ChatInput-runtime",
+        {"question": "현재 등록된 데이터셋 알려줘"},
+        "ChatOutput-runtime",
+    ) == {
+        "ChatInput-runtime": {
+            "input_value": "현재 등록된 데이터셋 알려줘",
+            "should_store_message": False,
+        },
+        "ChatOutput-runtime": {"should_store_message": False},
     }
 
     class ToolQuestion:
@@ -5473,9 +6187,14 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
 
     instance = component.CachedNamedRunFlowTool()
     instance._resolved_chat_input_id = "ChatInput-imported"
+    instance._resolved_chat_output_id = "ChatOutput-imported"
     instance._attributes = {"flow_tweak_data": ToolQuestion()}
     assert instance._build_flow_tweak_data() == {
-        "ChatInput-imported": {"input_value": "현재 등록된 계산 로직 알려줘"}
+        "ChatInput-imported": {
+            "input_value": "현재 등록된 계산 로직 알려줘",
+            "should_store_message": False,
+        },
+        "ChatOutput-imported": {"should_store_message": False},
     }
 
     try:
@@ -5484,6 +6203,111 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         assert "사용자 질문이 비어" in str(exc)
     else:
         raise AssertionError("node-ID 기반 또는 provider 정규화 키를 question으로 허용하면 안 됩니다.")
+
+    question_field = component._question_tool_field()
+    assert question_field == {
+        "name": "question",
+        "display_name": "사용자 질문",
+        "info": "현재 사용자 질문 원문입니다.",
+        "required": True,
+        "value": "",
+        "tool_mode": True,
+        "type": str,
+        "input_types": [],
+        "is_list": False,
+    }
+
+    synced_outputs = []
+    instance.tool_description = "metadata qa"
+    instance._sync_flow_outputs = lambda outputs: synced_outputs.extend(outputs)
+    instance.get_graph = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("Tool schema build must not resolve a child graph")
+    )
+    description, fields = asyncio.run(instance.get_required_data())
+    assert description == "metadata qa"
+    assert fields == [question_field]
+    assert len(synced_outputs) == 1
+    assert synced_outputs[0].kwargs == {
+        "name": "lazy_flow_result",
+        "display_name": "하위 Flow 결과",
+        "method": "_run_selected_flow",
+        "types": ["Message", "Data", "Text"],
+        "tool_mode": True,
+    }
+
+    graph_calls = []
+    graph = types.SimpleNamespace(
+        vertices=[
+            types.SimpleNamespace(
+                id="ChatInput-current",
+                data={"type": "ChatInput"},
+                display_name="Chat Input",
+                is_output=False,
+                outputs=[],
+            ),
+            types.SimpleNamespace(
+                id="ChatOutput-current",
+                data={"type": "ChatOutput"},
+                display_name="Chat Output",
+                is_output=True,
+                outputs=[{"name": "message"}],
+            ),
+        ],
+        successor_map={"ChatInput-current": ["ChatOutput-current"], "ChatOutput-current": []},
+    )
+
+    async def fake_get_flow(self, flow_name_selected=None, flow_id_selected=None):
+        graph_calls.append(("resolve", flow_name_selected, flow_id_selected))
+        return types.SimpleNamespace(data={"id": "current-flow-id", "updated_at": "2026-07-12T10:00:00Z"})
+
+    async def fake_get_graph(self, flow_name_selected=None, flow_id_selected=None, updated_at=None):
+        graph_calls.append(("build", flow_name_selected, flow_id_selected, updated_at))
+        return graph
+
+    base = component.RunFlowBaseComponent
+    monkeypatch.setattr(base, "get_flow", fake_get_flow, raising=False)
+    monkeypatch.setattr(base, "get_graph", fake_get_graph, raising=False)
+    runtime_instance = component.CachedNamedRunFlowTool()
+    runtime_instance._attributes = {}
+    assert asyncio.run(runtime_instance.get_graph("Metadata QA", "stale-export-id", None)) is graph
+    assert graph_calls == [
+        ("resolve", "Metadata QA", None),
+        ("build", "Metadata QA", "current-flow-id", "2026-07-12T10:00:00Z"),
+    ]
+    assert runtime_instance._resolved_chat_input_id == "ChatInput-current"
+    assert runtime_instance._resolved_flow_output_target == ("ChatOutput-current", "message")
+
+    graph.vertices[-1].outputs.append({"name": "data"})
+    try:
+        component._single_graph_output_target(graph)
+    except ValueError as exc:
+        assert "최종 출력이 정확히 하나" in str(exc)
+    else:
+        raise AssertionError("두 개 이상의 하위 Flow 출력을 Agent 도구 계약으로 허용하면 안 됩니다.")
+    graph.vertices[-1].outputs.pop()
+
+    run_calls = []
+
+    async def fake_run_outputs(*, user_id, output_type):
+        assert runtime_instance._last_run_outputs is None
+        run_calls.append(("run", user_id, output_type))
+        runtime_instance._resolved_flow_output_target = ("ChatOutput-current", "message")
+        runtime_instance._last_run_outputs = ["fresh"]
+        return runtime_instance._last_run_outputs
+
+    async def fake_resolve(*, vertex_id, output_name):
+        run_calls.append(("resolve_output", vertex_id, output_name))
+        return "child answer"
+
+    runtime_instance.user_id = "user-1"
+    runtime_instance._last_run_outputs = ["stale"]
+    runtime_instance._get_cached_run_outputs = fake_run_outputs
+    runtime_instance._resolve_flow_output = fake_resolve
+    assert asyncio.run(runtime_instance._run_selected_flow()) == "child answer"
+    assert run_calls == [
+        ("run", "user-1", "any"),
+        ("resolve_output", "ChatOutput-current", "message"),
+    ]
 
 
 def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
@@ -5561,24 +6385,34 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         )
         assert all(node["data"]["node"]["template"]["mongo_database"]["load_from_db"] is False for node in mongo_nodes)
         assert all(node["data"]["node"]["template"]["collection_name"]["load_from_db"] is False for node in mongo_nodes)
-        assert all(node["data"]["node"]["template"]["mongo_uri"]["value"] == "" for node in mongo_nodes)
-        assert all(node["data"]["node"]["template"]["mongo_uri"]["load_from_db"] is False for node in mongo_nodes)
+        assert all(node["data"]["node"]["template"]["mongo_uri"]["value"] == "MONGO_URL" for node in mongo_nodes)
+        assert all(node["data"]["node"]["template"]["mongo_uri"]["load_from_db"] is True for node in mongo_nodes)
+        assert all(node["data"]["node"]["template"]["mongo_uri"]["advanced"] is False for node in mongo_nodes)
 
     metadata_qa = json.loads(exports["metadata_qa"].read_text(encoding="utf-8"))
-    qa_expected = {
-        "Loader-domain-metadata-qa": "agent_v4_domain_items",
-        "Loader-table-metadata-qa": "agent_v4_table_catalog_items",
-        "Loader-filter-metadata-qa": "agent_v4_main_flow_filters",
-    }
     qa_nodes = {node["id"]: node for node in metadata_qa["data"]["nodes"]}
-    for node_id, collection_name in qa_expected.items():
-        template = qa_nodes[node_id]["data"]["node"]["template"]
-        assert template["mongo_database"]["value"] == "datagov"
-        assert template["collection_name"]["value"] == collection_name
-        assert template["mongo_database"]["load_from_db"] is False
-        assert template["collection_name"]["load_from_db"] is False
-        assert template["mongo_uri"]["value"] == ""
-        assert template["mongo_uri"]["load_from_db"] is False
+    qa_edges = {
+        (edge["source"], edge["data"]["sourceHandle"]["name"], edge["target"], edge["data"]["targetHandle"]["fieldName"])
+        for edge in metadata_qa["data"]["edges"]
+    }
+    assert len(qa_nodes) == 11
+    assert len(metadata_qa["data"]["edges"]) == 18
+    assert not {"Loader-domain-metadata-qa", "Loader-table-metadata-qa", "Loader-filter-metadata-qa"}.intersection(qa_nodes)
+    snapshot_template = qa_nodes["SnapshotLoader-metadata-qa"]["data"]["node"]["template"]
+    assert snapshot_template["mongo_database"]["value"] == "datagov"
+    assert snapshot_template["domain_collection_name"]["value"] == "agent_v4_domain_items"
+    assert snapshot_template["table_collection_name"]["value"] == "agent_v4_table_catalog_items"
+    assert snapshot_template["filter_collection_name"]["value"] == "agent_v4_main_flow_filters"
+    assert snapshot_template["cache_ttl_seconds"]["value"] == "15"
+    assert snapshot_template["mongo_uri"]["value"] == "MONGO_URL"
+    assert snapshot_template["mongo_uri"]["load_from_db"] is True
+    assert snapshot_template["mongo_uri"]["advanced"] is False
+    assert qa_nodes["Agent-metadata-qa"]["data"]["type"] == "MetadataQaGuardedAgent"
+    assert ("Context-metadata-qa", "payload_out", "Agent-metadata-qa", "control_payload") in qa_edges
+    assert ("Prompt-metadata-qa", "prompt", "Agent-metadata-qa", "input_value") in qa_edges
+    assert ("Agent-metadata-qa", "response", "Normalizer-metadata-qa", "llm_response") in qa_edges
+    assert not any("Branch" in node_id or "ExecutionRouter" in node_id or "Attacher" in node_id for node_id in qa_nodes)
+    assert len([node for node in qa_nodes.values() if node["data"].get("type") == "ChatOutput"]) == 1
 
     router = json.loads(exports["router"].read_text(encoding="utf-8"))
     assert len(router["data"]["nodes"]) == 14

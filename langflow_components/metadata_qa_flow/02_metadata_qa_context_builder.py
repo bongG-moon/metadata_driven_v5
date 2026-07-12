@@ -43,6 +43,15 @@ CALCULATION_SECTIONS = {"analysis_recipes", "metric_terms", "pandas_function_cas
 LIST_ALL_TABLE_MODES = {"available_sources"}
 DEFAULT_MAX_ITEMS = 50
 DEFAULT_MAX_BYTES = 65536
+DETERMINISTIC_ANSWER_MODES = {
+    "available_sources",
+    "dataset_detail",
+    "dataset_sql",
+    "required_params",
+    "calculation_logic_list",
+    "process_group",
+    "data_analysis_redirect",
+}
 
 
 # 주요 함수: 질문 유형에 맞는 안전하고 작은 메타데이터 근거 문맥을 구성합니다.
@@ -59,6 +68,9 @@ def build_metadata_qa_context(
     question = str(_dict(payload.get("request")).get("question") or "").strip()
     limit = _int(max_items, DEFAULT_MAX_ITEMS)
     byte_limit = _int(max_bytes, DEFAULT_MAX_BYTES)
+
+    if not question:
+        return _empty_question_context(payload)
 
     domain_items, domain_load = _extract_items(domain_items_value, "domain_items")
     table_items, table_load = _extract_items(table_catalog_items_value, "table_catalog_items")
@@ -83,7 +95,7 @@ def build_metadata_qa_context(
     if not source_refs:
         warnings.append({"type": "metadata_qa_no_matches", "message": "질문과 직접 매칭되는 메타데이터 후보가 없습니다."})
 
-    next_payload = deepcopy(payload)
+    next_payload = payload
     next_payload["metadata_route"] = {
         "route": "metadata_qa",
         "answer_mode": answer_mode,
@@ -98,6 +110,11 @@ def build_metadata_qa_context(
         "matched_filters": matched_filters,
         "candidate_rows": candidate_rows,
         "source_refs": source_refs,
+        "llm_control": {
+            "skip": answer_mode in DETERMINISTIC_ANSWER_MODES,
+            "eligible_to_skip": answer_mode in DETERMINISTIC_ANSWER_MODES,
+            "reason": "deterministic_answer_mode" if answer_mode in DETERMINISTIC_ANSWER_MODES else "llm_synthesis_required",
+        },
     }
     if answer_mode == "available_sources":
         context["matched_datasets"] = []
@@ -117,6 +134,35 @@ def build_metadata_qa_context(
         "filter_match_count": len(matched_filters),
         "context_bytes": _json_bytes(context),
         "context_trimmed": context_trimmed,
+    }
+    next_payload["trace"] = trace
+    return next_payload
+
+
+# 함수 설명: `_empty_question_context()`는 빈 질문을 메타데이터 조회·LLM 실행 없이 종료할 수 있는 명시적 계약으로 만듭니다.
+def _empty_question_context(payload: dict[str, Any]) -> dict[str, Any]:
+    next_payload = payload
+    next_payload["metadata_route"] = {"route": "metadata_qa", "answer_mode": "invalid_request", "confidence": "none", "status": "error"}
+    next_payload["metadata_qa_context"] = {
+        "question": "",
+        "answer_mode": "invalid_request",
+        "load_summary": {},
+        "matched_domain_items": [],
+        "matched_datasets": [],
+        "matched_filters": [],
+        "candidate_rows": [],
+        "source_refs": [],
+        "llm_control": {"skip": True, "reason": "empty_question"},
+    }
+    trace = _dict(next_payload.get("trace"))
+    errors = trace.setdefault("errors", [])
+    if not any(isinstance(item, dict) and item.get("type") == "empty_question" for item in errors):
+        errors.append({"type": "empty_question", "message": "메타데이터 QA 질문이 비어 있습니다."})
+    trace.setdefault("inspection", {})["metadata_qa_context"] = {
+        "stage": "02_metadata_qa_context_builder",
+        "status": "skipped",
+        "reason": "empty_question",
+        "context_bytes": 0,
     }
     next_payload["trace"] = trace
     return next_payload
@@ -549,6 +595,7 @@ def _compact_load(load: dict[str, Any]) -> dict[str, Any]:
             "database": load.get("database"),
             "collection_name": load.get("collection_name"),
             "count": load.get("count"),
+            "cache_hit": load.get("cache_hit"),
             "errors": load.get("errors"),
         }
     )

@@ -23,9 +23,11 @@ def build_api_response(payload_value: Any, display_message_value: Any = "") -> d
     payload = _payload(payload_value)
     answer_message = str(payload.get("answer_message") or "")
     display_message = _text(display_message_value) or answer_message
+    status, stage_status = _pipeline_status(payload)
     return {
         "response_type": "data_analysis",
-        "status": "ok" if payload.get("analysis", {}).get("status") == "ok" else "error",
+        "status": status,
+        "stage_status": stage_status,
         "message": display_message,
         "data_mode": _data_mode(payload),
         "answer_sections": payload.get("answer_sections", {}),
@@ -37,6 +39,102 @@ def build_api_response(payload_value: Any, display_message_value: Any = "") -> d
         "state": payload.get("state", {}),
         "trace": payload.get("trace", {}),
     }
+
+
+# 함수 설명: `_pipeline_status()`는 조회와 pandas 분석 상태를 함께 평가해 ok·partial·error를 결정합니다.
+def _pipeline_status(payload: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    analysis_status = _normalize_status(analysis.get("status"), default="error")
+    retrieval_status = _retrieval_status(payload)
+
+    if analysis_status == "error" or retrieval_status == "error":
+        overall = "error"
+    elif analysis_status == "partial" or retrieval_status == "partial":
+        overall = "partial"
+    else:
+        overall = "ok"
+    return overall, {"overall": overall, "retrieval": retrieval_status, "analysis": analysis_status}
+
+
+# 함수 설명: `_retrieval_status()`는 필수 조회 작업별 성공·실패와 검증 오류를 집계합니다.
+def _retrieval_status(payload: dict[str, Any]) -> str:
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    inspection = trace.get("inspection") if isinstance(trace.get("inspection"), dict) else {}
+    retrieval_inspection = inspection.get("data_retrieval") if isinstance(inspection.get("data_retrieval"), dict) else {}
+    validation = retrieval_inspection.get("job_validation") if isinstance(retrieval_inspection.get("job_validation"), dict) else {}
+    hydration = inspection.get("catalog_hydration") if isinstance(inspection.get("catalog_hydration"), dict) else {}
+    if _positive_int(validation.get("error_count")) or _normalize_status(hydration.get("status"), default="ok") == "error":
+        return "error"
+    inspection_status = _normalize_status(retrieval_inspection.get("status"), default="ok")
+
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = [job for job in plan.get("retrieval_jobs", []) if isinstance(job, dict)] if isinstance(plan.get("retrieval_jobs"), list) else []
+    source_results = [item for item in payload.get("source_results", []) if isinstance(item, dict)] if isinstance(payload.get("source_results"), list) else []
+    # 조회 작업이 없는 직접/재사용 응답은 분석 단계 상태만으로 판단합니다.
+    if not jobs and not source_results and not retrieval_inspection:
+        return "ok"
+
+    result_by_alias = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip(): item
+        for item in source_results
+        if str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    statuses: list[tuple[str, bool]] = []
+    for job in jobs:
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if not alias:
+            continue
+        result = result_by_alias.get(alias)
+        statuses.append(("error" if result is None else _source_status(result), _job_required(job)))
+    if not statuses:
+        statuses = [(_source_status(item), True) for item in source_results]
+
+    if not statuses:
+        return "error" if inspection_status == "error" else inspection_status
+    required_failed = any(status == "error" and required for status, required in statuses)
+    optional_failed = any(status == "error" and not required for status, required in statuses)
+    if required_failed:
+        return "error"
+    if optional_failed:
+        return "partial"
+    if inspection_status == "error":
+        return "error"
+    return "partial" if any(status == "partial" for status, _ in statuses) else "ok"
+
+
+# 함수 설명: `_source_status()`는 개별 source result의 status·success·errors를 하나의 상태로 정규화합니다.
+def _source_status(source: dict[str, Any]) -> str:
+    if source.get("success") is False or source.get("errors"):
+        return "error"
+    return _normalize_status(source.get("status"), default="ok")
+
+
+# 함수 설명: `_job_required()`는 required=false가 명시된 source만 선택 항목으로 판정합니다.
+def _job_required(job: dict[str, Any]) -> bool:
+    value = job.get("required", True)
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() not in {"false", "0", "no", "off", "optional", "선택"}
+
+
+# 함수 설명: `_normalize_status()`는 다양한 내부 상태 문자열을 외부 계약의 ok·partial·error로 제한합니다.
+def _normalize_status(value: Any, default: str = "ok") -> str:
+    text = str(value or "").strip().lower()
+    if text in {"error", "failed", "failure", "invalid"}:
+        return "error"
+    if text in {"partial", "warning", "degraded"}:
+        return "partial"
+    if text in {"ok", "success", "completed", "complete"}:
+        return "ok"
+    return default
+
+
+# 함수 설명: `_positive_int()`는 오류 개수처럼 0보다 큰 값인지 안전하게 확인합니다.
+def _positive_int(value: Any) -> bool:
+    try:
+        return int(value or 0) > 0
+    except Exception:
+        return False
 
 
 # 함수 설명: `_data_mode()`는 payload의 retrieval_mode와 source 결과를 확인해 dummy/live 응답 표시 모드를 결정합니다.
@@ -58,12 +156,10 @@ def _data_mode(payload: dict[str, Any]) -> str:
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
-    payload = deepcopy(data) if isinstance(data, dict) else {}
-    payload.pop("runtime_sources", None)
-    payload.pop("_runtime_rows_by_alias", None)
-    payload.pop("_full_result_rows", None)
-    payload.pop("_runtime_result_rows", None)
-    return payload
+    if not isinstance(data, dict):
+        return {}
+    excluded = {"runtime_sources", "_runtime_rows_by_alias", "_full_result_rows", "_runtime_result_rows"}
+    return {key: deepcopy(item) for key, item in data.items() if key not in excluded}
 
 
 # 함수 설명: `_text()`는 Message나 일반 값을 앞뒤 공백이 정리된 문자열로 변환합니다.

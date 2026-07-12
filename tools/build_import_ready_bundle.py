@@ -23,6 +23,7 @@ MONGODB_CONTRACT = {
     "session_state": "agent_v4_session_states",
 }
 ROUTER_READ_TIMEOUT_SECONDS = "240"
+MONGO_GLOBAL_VARIABLE = "MONGO_URL"
 
 FLOW_SPECS = [
     ("data_analysis_flow_v5_standalone.json", "data-analysis", "data_analysis"),
@@ -100,6 +101,8 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
         "endpoint_prefix": ENDPOINT_PREFIX,
         "mongodb_contract": {
             "strategy": "reuse_v4_collections_without_copy",
+            "configuration_source": "langflow_node_input",
+            "credential_global_variable": MONGO_GLOBAL_VARIABLE,
             **MONGODB_CONTRACT,
         },
         "retrieval_mode_contract": {
@@ -121,15 +124,15 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "agent_tool_router": "Agent plus five name-resolved cached Flow tools",
         },
         "validation": {
-            "pytest": "222 passed",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 75/75 custom nodes to 67 real Python sources; 0 missing",
-            "korean_component_documentation": "68/68 Python sources and 1000/1000 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 225 embedded custom-code instances preserve 3300/3300 documented function instances; strict UTF-8/JSON checks passed",
+            "pytest": "250 passed",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 77/77 custom nodes to 68 real Python sources; 0 missing",
+            "korean_component_documentation": "69/69 Python sources and 1076/1076 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 231 embedded custom-code instances preserve 3570/3570 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "115/115 passed",
+            "langflow_lfx_node_templates": "114/114 passed",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter directly to their ChatOutput; 0 gate nodes",
             "router_single_entry_topology": "Chat Input has exactly one outgoing edge to Smart Router; 0 API-caller session fan-out edges",
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra Chat Input edges",
@@ -147,7 +150,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
             "metadata_existing_loader": "3/3 saving flows connect ExistingLoader directly to Matcher",
             "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-            "metadata_mongo_defaults": "17/17 MongoDB nodes expose explicit database and collection defaults",
+            "metadata_mongo_defaults": "17 MongoDB nodes bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
             "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
         },
     }
@@ -247,6 +250,16 @@ def _validate_bundle(
         for node in router_callers
     ):
         raise ValueError("Every Router API caller must use the 240-second child read timeout.")
+    for caller in router_callers:
+        caller_code = str(
+            caller.get("data", {}).get("node", {}).get("template", {}).get("code", {}).get("value", "")
+        )
+        if (
+            "NESTED_CHAT_STORAGE_TWEAKS" not in caller_code
+            or '"Chat Input": {"should_store_message": False}' not in caller_code
+            or '"Chat Output": {"should_store_message": False}' not in caller_code
+        ):
+            raise ValueError("Every Router API caller must suppress nested child Chat Input/Output storage.")
     router_edges = router.get("data", {}).get("edges", [])
     chat_input_edges = [edge for edge in router_edges if edge.get("source") == "ChatInput-api-router"]
     if len(chat_input_edges) != 1 or chat_input_edges[0].get("target") != "SmartRouter-api-router":
@@ -306,6 +319,7 @@ def _validate_bundle(
         if name != "datagov" and name not in all_text:
             raise ValueError(f"Single-file UI bundle is missing the shared v4 MongoDB collection: {name}")
     mongo_default_nodes = 0
+    snapshot_default_nodes = 0
     allowed_mongo_collections = {
         MONGODB_CONTRACT["domain"],
         MONGODB_CONTRACT["table_catalog"],
@@ -315,6 +329,19 @@ def _validate_bundle(
     validated_edge_handle_count = 0
     for flow in all_payload["flows"]:
         node_by_id = {node.get("id"): node for node in flow.get("data", {}).get("nodes", [])}
+        is_child_flow = not str(flow.get("endpoint_name") or "").endswith(("-api-router", "-agent-tool-router"))
+        if is_child_flow:
+            child_chat_nodes = [
+                node
+                for node in node_by_id.values()
+                if node.get("data", {}).get("type") in {"ChatInput", "ChatOutput"}
+            ]
+            if not child_chat_nodes or any(
+                node.get("data", {}).get("node", {}).get("template", {}).get("should_store_message", {}).get("value")
+                is not True
+                for node in child_chat_nodes
+            ):
+                raise ValueError("Child Flow Chat Input/Output must store messages by default for direct Playground use.")
         for node_id, node in node_by_id.items():
             template = node.get("data", {}).get("node", {}).get("template", {})
             node_config = node.get("data", {}).get("node", {})
@@ -330,6 +357,41 @@ def _validate_bundle(
                     raise ValueError(f"Run Flow tool {node_id} must set cache_flow=true.")
             database_field = template.get("mongo_database") if isinstance(template, dict) else None
             collection_field = template.get("collection_name") if isinstance(template, dict) else None
+            snapshot_fields = {
+                "domain_collection_name": MONGODB_CONTRACT["domain"],
+                "table_collection_name": MONGODB_CONTRACT["table_catalog"],
+                "filter_collection_name": MONGODB_CONTRACT["main_flow_filter"],
+            }
+            is_snapshot_node = isinstance(database_field, dict) and all(
+                isinstance(template.get(field_name), dict) for field_name in snapshot_fields
+            )
+            if is_snapshot_node:
+                snapshot_default_nodes += 1
+                database_value = str(database_field.get("value") or "").strip()
+                if database_value != MONGODB_CONTRACT["database"]:
+                    raise ValueError(f"MongoDB snapshot node {node_id} has unexpected database default: {database_value!r}.")
+                code_value = str(template.get("code", {}).get("value") or "")
+                for field_name, expected_collection in snapshot_fields.items():
+                    field = template[field_name]
+                    collection_value = str(field.get("value") or "").strip()
+                    if collection_value != expected_collection or expected_collection not in code_value:
+                        raise ValueError(
+                            f"MongoDB snapshot node {node_id}.{field_name} has unexpected collection default: {collection_value!r}."
+                        )
+                    if field.get("load_from_db") is not False:
+                        raise ValueError(f"MongoDB snapshot node {node_id}.{field_name} must not load defaults as secrets.")
+                if database_field.get("load_from_db") is not False:
+                    raise ValueError(f"MongoDB snapshot node {node_id} database default must not be a secret DB variable.")
+                uri_field = template.get("mongo_uri")
+                if not isinstance(uri_field, dict) or (
+                    str(uri_field.get("value") or "").strip() != MONGO_GLOBAL_VARIABLE
+                    or uri_field.get("load_from_db") is not True
+                    or uri_field.get("advanced") is not False
+                ):
+                    raise ValueError(
+                        f"MongoDB snapshot node {node_id} must bind visible mongo_uri to {MONGO_GLOBAL_VARIABLE}."
+                    )
+                continue
             if not isinstance(database_field, dict) or not isinstance(collection_field, dict):
                 continue
             mongo_default_nodes += 1
@@ -348,10 +410,12 @@ def _validate_bundle(
             if database_field.get("load_from_db") is not False or collection_field.get("load_from_db") is not False:
                 raise ValueError(f"MongoDB node {node_id} database/collection defaults must not be secret DB variables.")
             uri_field = template.get("mongo_uri")
-            if isinstance(uri_field, dict) and (
-                str(uri_field.get("value") or "").strip() or uri_field.get("load_from_db") is not False
+            if not isinstance(uri_field, dict) or (
+                str(uri_field.get("value") or "").strip() != MONGO_GLOBAL_VARIABLE
+                or uri_field.get("load_from_db") is not True
+                or uri_field.get("advanced") is not False
             ):
-                raise ValueError(f"MongoDB node {node_id} must keep mongo_uri blank and load_from_db=false.")
+                raise ValueError(f"MongoDB node {node_id} must bind visible mongo_uri to {MONGO_GLOBAL_VARIABLE}.")
         for edge in flow.get("data", {}).get("edges", []):
             for text_key, data_key in (("sourceHandle", "sourceHandle"), ("targetHandle", "targetHandle")):
                 handle_text = edge.get(text_key)
@@ -375,8 +439,11 @@ def _validate_bundle(
                     f"Edge {edge.get('id')} targets advanced input {edge.get('target')}.{target_field}; "
                     "Langflow 1.8.2 removes connections to advanced component fields during template refresh."
                 )
-    if mongo_default_nodes != 17:
-        raise ValueError(f"Expected 17 MongoDB nodes with explicit database/collection defaults, found {mongo_default_nodes}.")
+    if mongo_default_nodes != 14 or snapshot_default_nodes != 1:
+        raise ValueError(
+            "Expected 14 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
+            f"found standard={mongo_default_nodes}, snapshot={snapshot_default_nodes}."
+        )
     return validated_edge_handle_count
 
 
@@ -421,7 +488,12 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
         if "session_source" in template:
             raise ValueError(f"{node_id} must inherit graph.session_id without a session-source port.")
         code = str(template.get("code", {}).get("value") or "")
-        if '"name": "question"' not in code or "def _question_tweaks" not in code:
+        if (
+            '"name": "question"' not in code
+            or "def _question_tweaks" not in code
+            or "def _single_chat_output_id" not in code
+            or '"should_store_message": False' not in code
+        ):
             raise ValueError(f"{node_id} does not embed the stable question schema policy.")
         if "allowed_names" in code:
             raise ValueError(f"{node_id} still exposes node-ID based Tool fields.")
@@ -484,23 +556,24 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Router 하위 Flow read timeout: 240초
 - 외부 Web/API client timeout 권장값: 300초 (`LANGFLOW_TIMEOUT_SECONDS=300`)
 - Gemini/provider credential: Langflow Model Providers 또는 Global Variable 설정
-- MongoDB: `MONGODB_URI`, `MONGODB_DATABASE` 및 metadata collection 환경변수 설정
+- MongoDB: Langflow Credential Global Variable `MONGO_URL` 생성 후 import된 Mongo 노드의 바인딩 확인
 - MongoDB database: `datagov`
 - v4 공유 collection: `agent_v4_domain_items`, `agent_v4_table_catalog_items`, `agent_v4_main_flow_filters`, `agent_v4_result_store`, `agent_v4_session_states`
 - v4 데이터를 v5로 복사하지 않고 기존 collection을 직접 사용
+- 실제 Mongo URI는 JSON에 포함되지 않으며 Python 컴포넌트는 OS `MONGODB_URI` fallback을 사용하지 않음
 - Data Analysis dummy/live 단일 설정: `04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode`
 - `07 데이터 조회 작업 라우터`에는 별도 모드 설정이 없으며 `04A`가 payload에 기록한 값을 사용
 - 저장 Flow: 안전을 위해 `dry_run=true`가 기본값이며 실제 저장 시에만 의도적으로 끕니다.
 
 ## 검증 결과
 
-- 전체 pytest: 222 passed
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 75/75 노드가 실제 Python 원본 67개에 매핑, 누락 0
-- 한글 설명/인코딩: Python 68/68와 함수 1000/1000, JSON 내장 함수 3300/3300 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
+- 전체 pytest: 250 passed
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 77/77 노드가 실제 Python 원본 68개에 매핑, 누락 0
+- 한글 설명/인코딩: Python 69/69와 함수 1076/1076, JSON 내장 함수 3570/3570 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 23/23 통과
 - Langflow 1.8.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.8.2 / LFX 0.3.4 node template: 115/115 passed
+- Langflow 1.8.2 / LFX 0.3.4 node template: 114/114 passed
 - API Router 직접 응답/명확화 분기: 예전 정상 Flow와 같은 Smart Router -> Chat Output 직접 edge 2/2, FinalGate 0개
 - API Router 단일 진입 구조: Chat Input -> Smart Router edge 1개, API caller용 session fan-out edge 0개
 - Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
@@ -515,7 +588,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. Chat Input은 Agent에만 한 번 연결됩니다.
 - 격리 import에서 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
 - Metadata 저장 Flow 3종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/Chat Output 사용
-- Metadata 저장·조회 MongoDB 노드: database와 collection 기본값 17/17 명시
+- Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
 - Metadata 후보: 도메인 관련 항목 최대 10건, 테이블 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증
 """
 

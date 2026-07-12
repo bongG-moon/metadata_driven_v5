@@ -29,6 +29,8 @@ COLLECTION_ENV = "MONGODB_MAIN_FLOW_FILTER_COLLECTION"
 def load_existing_items(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "", limit: str = "500") -> dict[str, Any]:
     mongo_uri, mongo_database, collection_name = _resolve_mongo_config(mongo_uri, mongo_database, collection_name)
     load_limit = _int(limit, 500)
+    if load_limit == 0:
+        return _result("skipped", [], mongo_database, collection_name, [])
     if not mongo_uri:
         return _result("skipped", [], mongo_database, collection_name, [{"type": "missing_mongo_uri", "message": "MONGODB_URI가 없어 기존 항목을 불러오지 않았습니다."}])
     client = None
@@ -80,7 +82,7 @@ def _result(status: str, items: list[dict[str, Any]], database: str, collection:
 # 함수 설명: `_int()`는 문자열이나 숫자 입력을 정수로 변환하고 실패하면 안전한 기본값을 사용합니다.
 def _int(value: Any, default: int) -> int:
     try:
-        return max(1, int(value))
+        return max(0, int(value))
     except Exception:
         return default
 

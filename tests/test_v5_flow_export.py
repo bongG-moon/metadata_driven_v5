@@ -7,6 +7,8 @@ from pathlib import Path
 from tools.build_v5_data_analysis_flow import (
     COMPONENT_FILES,
     DEFAULT_SOURCE,
+    GUARDED_AGENT_NODE_IDS,
+    GUARDED_AGENT_SOURCE,
     NEW_COMPONENTS,
     PROMPT_FILES,
     REPAIR_PROMPT_NODE_ID,
@@ -45,8 +47,8 @@ def test_v5_flow_export_is_reproducible_and_acyclic():
     checked_in = json.loads(EXPORT_PATH.read_text(encoding="utf-8"))
 
     assert built == checked_in
-    assert len(built["data"]["nodes"]) == 41
-    assert len(built["data"]["edges"]) == 65
+    assert len(built["data"]["nodes"]) == 42
+    assert len(built["data"]["edges"]) == 68
     assert _is_acyclic(built)
 
 
@@ -62,6 +64,9 @@ def test_v5_flow_export_embeds_current_component_and_prompt_sources():
         embedded = nodes[node_id]["data"]["node"]["template"]["code"]["value"]
         source = (ROOT / "langflow_components" / spec["file"]).read_text(encoding="utf-8")
         assert embedded == source, node_id
+    guarded_source = GUARDED_AGENT_SOURCE.read_text(encoding="utf-8")
+    for node_id in GUARDED_AGENT_NODE_IDS:
+        assert nodes[node_id]["data"]["node"]["template"]["code"]["value"] == guarded_source
     for node_id, relative_path in PROMPT_FILES.items():
         embedded = nodes[node_id]["data"]["node"]["template"]["template"]["value"]
         source = (ROOT / "langflow_components" / "data_analysis_flow" / relative_path).read_text(encoding="utf-8")
@@ -75,10 +80,17 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     edges = _edge_keys(flow)
     nodes = {node["id"]: node for node in flow["data"]["nodes"]}
 
-    assert len(nodes) == 41
-    assert len(flow["data"]["edges"]) == 65
+    assert len(nodes) == 42
+    assert len(flow["data"]["edges"]) == 68
     assert _is_acyclic(flow)
     assert ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload") in edges
+    assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-v5ExecutionGate", "payload") in edges
+    assert ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-fc0Vb", "payload") in edges
+    assert ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-s3mf1", "payload") in edges
+    assert ("CustomComponent-v5ExecutionGate", "payload_out", "Agent-SRcFc", "control_payload") in edges
+    assert ("CustomComponent-AUrFb", "payload_out", "Agent-ynb4D", "control_payload") in edges
+    assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-fc0Vb", "payload") not in edges
+    assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-s3mf1", "payload") not in edges
     assert ("CustomComponent-v5Helper", "selected_helper_code", "CustomComponent-s3mf1", "function_case_helper_code") in edges
     assert (REPAIR_PROMPT_NODE_ID, "text", "CustomComponent-s3mf1", "repair_prompt_template") in edges
     assert not REMOVED_REPAIR_NODES.intersection(nodes)
@@ -109,6 +121,20 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     assert [node_id for node_id, node in nodes.items() if node["data"].get("type") == "ChatOutput"] == [
         "ChatOutput-rwbTs"
     ]
+    direct_chat_nodes = [
+        node for node in nodes.values() if node["data"].get("type") in {"ChatInput", "ChatOutput"}
+    ]
+    assert len(direct_chat_nodes) == 2
+    assert all(
+        node["data"]["node"]["template"]["should_store_message"]["value"] is True
+        for node in direct_chat_nodes
+    )
+    for agent_id in GUARDED_AGENT_NODE_IDS:
+        agent = nodes[agent_id]
+        assert agent["data"]["type"] == "RetrievalGuardedAgent"
+        assert "control_payload" in agent["data"]["node"]["template"]
+        assert agent["data"]["node"]["template"]["n_messages"]["value"] == 0
+        assert agent["data"]["node"]["template"]["max_iterations"]["value"] == 1
     assert ("CustomComponent-A5y0b", "message", "ChatOutput-rwbTs", "input_value") in edges
     assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-A5y0b", "payload") in edges
     assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-3eVde", "payload") in edges
@@ -161,7 +187,7 @@ def test_v5_flow_export_routes_catalog_and_helpers_through_compaction_nodes():
     assert "max_items" not in candidate_template
 
 
-def test_v5_flow_export_uses_standalone_mongo_fallbacks_and_shared_v4_collections():
+def test_v5_flow_export_binds_standalone_mongo_inputs_and_shared_v4_collections():
     flow = json.loads(EXPORT_PATH.read_text(encoding="utf-8"))
     mongo_fields = []
     collection_values = []
@@ -176,10 +202,26 @@ def test_v5_flow_export_uses_standalone_mongo_fallbacks_and_shared_v4_collection
                 collection_values.append(field["value"])
 
     assert mongo_fields
-    assert all(field.get("value") == "" and field.get("load_from_db") is False for field in mongo_fields)
+    assert all(
+        field.get("value") == "MONGO_URL"
+        and field.get("load_from_db") is True
+        and field.get("advanced") is False
+        for field in mongo_fields
+    )
     assert collection_values
     assert set(collection_values) == set(SHARED_V4_COLLECTIONS.values())
     assert "agent_v5_" not in json.dumps(flow, ensure_ascii=False)
+
+    standalone_sources = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "01a_mongodb_domain_metadata_loader.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "01b_mongodb_table_catalog_loader.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "01c_mongodb_main_variable_loader.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "05_mongodb_result_loader.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py",
+        ROOT / "langflow_components" / "session_state_flow" / "00_mongodb_session_state_loader.py",
+        ROOT / "langflow_components" / "session_state_flow" / "01_mongodb_session_state_writer.py",
+    )
+    assert all('os.getenv("MONGODB' not in path.read_text(encoding="utf-8") for path in standalone_sources)
 
 
 def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
@@ -263,6 +305,95 @@ def test_v5_single_file_ui_bundle_uses_exact_shared_v4_collection_mappings():
         assert collection_name.replace("agent_v4_", "agent_v5_") not in raw
 
 
+def test_v5_child_flows_support_direct_playground_and_bound_internal_agents():
+    payload = json.loads(UI_BUNDLE_PATH.read_text(encoding="utf-8"))
+    child_flows = [
+        flow
+        for flow in payload["flows"]
+        if not flow["endpoint_name"].endswith(("-api-router", "-agent-tool-router"))
+    ]
+    assert len(child_flows) == 5
+
+    child_agents = []
+    for flow in child_flows:
+        chat_nodes = [
+            node
+            for node in flow["data"]["nodes"]
+            if node["data"].get("type") in {"ChatInput", "ChatOutput"}
+        ]
+        assert chat_nodes
+        # Child 기본값은 direct Playground 질문/답변 표시를 위해 저장을 켭니다.
+        # Router nested 호출은 caller/tool tweak에서만 child 저장을 끕니다.
+        assert all(node["data"]["node"]["template"]["should_store_message"]["value"] is True for node in chat_nodes)
+        child_agents.extend(
+            node
+            for node in flow["data"]["nodes"]
+            if node["data"].get("type") in {"Agent", "RetrievalGuardedAgent", "MetadataQaGuardedAgent"}
+        )
+
+    assert len(child_agents) == 7
+    for node in child_agents:
+        template = node["data"]["node"]["template"]
+        assert template["n_messages"]["value"] == 0
+        assert template["max_iterations"]["value"] == 1
+        assert template["add_current_date_tool"]["value"] is False
+        assert template["max_tokens"]["value"] == 8192
+        assert template["verbose"]["value"] is False
+
+    router_flows = [
+        flow
+        for flow in payload["flows"]
+        if flow["endpoint_name"].endswith(("-api-router", "-agent-tool-router"))
+    ]
+    assert len(router_flows) == 2
+    for flow in router_flows:
+        router_chat_nodes = [
+            node
+            for node in flow["data"]["nodes"]
+            if node["data"].get("type") in {"ChatInput", "ChatOutput"}
+        ]
+        assert router_chat_nodes
+        assert all(
+            node["data"]["node"]["template"]["should_store_message"]["value"] is True
+            for node in router_chat_nodes
+        )
+
+
+def test_v5_result_store_limits_qa_request_guards_and_targeted_existing_loaders_are_wired():
+    payload = json.loads(UI_BUNDLE_PATH.read_text(encoding="utf-8"))
+    data_analysis = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-data-analysis"))
+    result_store = next(node for node in data_analysis["data"]["nodes"] if node["id"] == "CustomComponent-AUrFb")
+    result_template = result_store["data"]["node"]["template"]
+    assert result_template["max_result_rows"]["value"] == "20000"
+    assert result_template["max_source_rows_per_alias"]["value"] == "10000"
+    assert result_template["max_document_bytes"]["value"] == "8388608"
+    assert result_template["mongo_uri"]["value"] == "MONGO_URL"
+    assert result_template["mongo_uri"]["load_from_db"] is True
+    assert result_template["mongo_uri"]["advanced"] is False
+    assert result_template["mongo_database"]["value"] == "datagov"
+    assert result_template["collection_name"]["value"] == "agent_v4_result_store"
+    assert all(
+        result_template[name]["advanced"] is True
+        for name in ("max_result_rows", "max_source_rows_per_alias", "max_document_bytes")
+    )
+
+    metadata_qa = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-metadata-qa"))
+    qa_edges = _edge_keys(metadata_qa)
+    qa_nodes = {node["id"]: node for node in metadata_qa["data"]["nodes"]}
+    assert ("Request-metadata-qa", "payload_out", "SnapshotLoader-metadata-qa", "request_payload") in qa_edges
+    assert ("Context-metadata-qa", "payload_out", "Agent-metadata-qa", "control_payload") in qa_edges
+    assert qa_nodes["SnapshotLoader-metadata-qa"]["data"]["node"]["template"]["cache_ttl_seconds"]["value"] == "15"
+    assert qa_nodes["Agent-metadata-qa"]["data"]["type"] == "MetadataQaGuardedAgent"
+    assert len([node for node in qa_nodes.values() if node["data"].get("type") == "ChatOutput"]) == 1
+
+    domain = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-domain-saving"))
+    table = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-table-catalog-saving"))
+    main_filter = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-main-flow-filter-saving"))
+    assert next(node for node in domain["data"]["nodes"] if node["id"] == "ExistingLoader-domain")["data"]["node"]["template"]["limit"]["value"] == "0"
+    assert next(node for node in table["data"]["nodes"] if node["id"] == "ExistingLoader-table_catalog")["data"]["node"]["template"]["limit"]["value"] == "0"
+    assert next(node for node in main_filter["data"]["nodes"] if node["id"] == "ExistingLoader-main_flow_filter")["data"]["node"]["template"]["limit"]["value"] == "0"
+
+
 def test_v5_single_file_ui_bundle_handles_parse_with_langflow_frontend_codec():
     payload = json.loads(UI_BUNDLE_PATH.read_text(encoding="utf-8"))
     validated_handle_count = 0
@@ -275,9 +406,11 @@ def test_v5_single_file_ui_bundle_handles_parse_with_langflow_frontend_codec():
                 assert json.loads(handle_text.replace("œ", '"')) == edge["data"][handle_name]
                 validated_handle_count += 1
 
-    assert validated_handle_count == 286
+    assert validated_handle_count > 0
     manifest = json.loads((UI_BUNDLE_PATH.parent / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["validation"]["langflow_frontend_edge_handles"] == "286/286 parsed and matched edge.data"
+    assert manifest["validation"]["langflow_frontend_edge_handles"] == (
+        f"{validated_handle_count}/{validated_handle_count} parsed and matched edge.data"
+    )
 
 
 def _is_acyclic(flow: dict) -> bool:

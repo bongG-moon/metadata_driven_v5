@@ -142,7 +142,7 @@ def check_similarity(
                     "existing_candidate_keys": [_key(existing_item) for existing_item, _tokens in identity_matches],
                 }
             )
-    next_payload = deepcopy(payload)
+    next_payload = payload
     next_payload.pop("existing_items", None)
     next_payload["existing_matches"] = matches
     next_payload["conflict_warnings"] = [_conflict_warning(match) for match in matches]

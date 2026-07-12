@@ -6,12 +6,11 @@
 #        필터 (status_filter)
 # 주요 출력: 도메인 메타데이터 (domain_items)
 # 처리 흐름: 활성 도메인 용어·별칭·공정 그룹을 MongoDB에서 읽어 원본 분석 페이로드에 덧붙입니다.
-# 유지보수 포인트: 연결 설정은 노드 입력→환경변수→기본값 순으로 해석하며, 오류는 숨기지 않고 trace/status에 남기고 연결은 반드시 닫습니다.
+# 유지보수 포인트: standalone Flow의 노드 입력으로 연결 설정을 받고, 오류는 숨기지 않고 trace/status에 남기며 연결은 반드시 닫습니다.
 # =============================================================================
 
 from __future__ import annotations
 
-import os
 from copy import deepcopy
 from importlib import import_module
 from typing import Any
@@ -22,7 +21,6 @@ from lfx.schema.data import Data
 
 DEFAULT_DATABASE = "datagov"
 DEFAULT_COLLECTION = "agent_v4_domain_items"
-COLLECTION_ENV = "MONGODB_DOMAIN_COLLECTION"
 
 
 # 주요 함수: 외부 저장소의 필요한 항목을 읽어 현재 페이로드에 안전하게 합칩니다.
@@ -37,7 +35,7 @@ def load_domain_metadata(
     config = _resolve_config(mongo_uri, mongo_database, collection_name)
     load_limit = _int(limit, 1000)
     if not config["mongo_uri"]:
-        return _result("skipped", [], config, status_filter, [{"type": "missing_mongo_uri", "message": "MONGODB_URI가 없어 도메인 메타데이터를 불러오지 않았습니다."}])
+        return _result("skipped", [], config, status_filter, [{"type": "missing_mongo_uri", "message": "MongoDB 연결 URI 노드 입력이 비어 있어 도메인 메타데이터를 불러오지 않았습니다."}])
 
     client = None
     try:
@@ -52,12 +50,12 @@ def load_domain_metadata(
             client.close()
 
 
-# 함수 설명: `_resolve_config()`는 노드 입력·환경변수·카탈로그 기본값의 우선순위로 실제 실행 설정을 확정합니다.
+# 함수 설명: `_resolve_config()`는 standalone 노드 입력과 코드 기본값만으로 실제 실행 설정을 확정합니다.
 def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> dict[str, str]:
     return {
-        "mongo_uri": mongo_uri or os.getenv("MONGODB_URI", ""),
-        "mongo_database": mongo_database or os.getenv("MONGODB_DATABASE", DEFAULT_DATABASE),
-        "collection_name": collection_name or os.getenv(COLLECTION_ENV, DEFAULT_COLLECTION),
+        "mongo_uri": str(mongo_uri or "").strip(),
+        "mongo_database": str(mongo_database or DEFAULT_DATABASE).strip(),
+        "collection_name": str(collection_name or DEFAULT_COLLECTION).strip(),
     }
 
 
@@ -99,9 +97,9 @@ class MongoDBDomainMetadataLoader(Component):
     display_name = "01A MongoDB 도메인 메타데이터 로더"
     description = "MongoDB에서 도메인 메타데이터만 불러와 의도 분석 후보로 전달합니다."
     inputs = [
-        MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=True),
-        MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, value=DEFAULT_DATABASE, advanced=True),
-        MessageTextInput(name="collection_name", display_name="도메인 컬렉션", required=False, value=DEFAULT_COLLECTION, advanced=True),
+        MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=False),
+        MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, value=DEFAULT_DATABASE, advanced=False),
+        MessageTextInput(name="collection_name", display_name="도메인 컬렉션", required=False, value=DEFAULT_COLLECTION, advanced=False),
         MessageTextInput(name="limit", display_name="조회 제한", required=False, value="1000", advanced=True),
         MessageTextInput(name="status_filter", display_name="상태 필터", required=False, value="active", advanced=True),
     ]

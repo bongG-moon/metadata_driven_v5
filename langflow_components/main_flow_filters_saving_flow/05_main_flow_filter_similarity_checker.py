@@ -59,7 +59,7 @@ def check_similarity(payload_value: Any, existing_items_value: Any = None, mongo
         if doc_id and doc_id in existing_by_id:
             key = str(item.get("filter_key") or "")
             matches.append({"new_key": key, "existing_key": key, "match_type": "same_key", "recommended_action": "merge", "reason": "같은 filter_key가 이미 존재합니다.", "existing_item": deepcopy(existing_by_id[doc_id])})
-    next_payload = deepcopy(payload)
+    next_payload = payload
     next_payload.pop("existing_items", None)
     next_payload["existing_matches"] = matches
     next_payload["conflict_warnings"] = [{"severity": "blocker", "message": "같은 filter_key가 있어 처리 방식 선택이 필요합니다.", "new_item_key": item["new_key"]} for item in matches]

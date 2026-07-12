@@ -54,7 +54,7 @@ def hydrate_retrieval_jobs(
     retrieval_mode: Any = "dummy",
 ) -> dict[str, Any]:
     payload = _payload(payload_value)
-    next_payload = deepcopy(payload)
+    next_payload = payload
     plan = _dict(next_payload.get("intent_plan"))
     jobs = _list(plan.get("retrieval_jobs"))
     catalog_items = _catalog_items(table_catalog_items_value)

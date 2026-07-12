@@ -8,7 +8,7 @@
 - Prompt는 같은 폴더의 `*_prompt_template_ko.md`를 `Langflow Prompt Template`에 넣습니다.
 - 모델 호출은 `Langflow Agent/LLM`을 사용합니다.
 - custom component 사이의 repo-local import는 사용하지 않습니다.
-- API key, DB password, token은 Flow JSON이나 코드에 저장하지 않고 Langflow Global Variable 또는 서버 환경변수로 제공합니다.
+- API key, DB password, token은 Flow JSON이나 코드에 저장하지 않습니다. MongoDB URI는 Langflow Credential Global Variable `MONGO_URL`을 노드 입력으로 주입합니다.
 - 현재 Agent 노드는 Langflow Global Variable `GOOGLE_API_KEY`를 참조합니다. 회사 표준 Model Providers 설정을 쓸 경우 import 후 provider/key 연결을 그 설정에 맞게 교체합니다.
 
 ## 2. 요청, 상태, 메타데이터 후보
@@ -165,18 +165,19 @@ Dummy source를 사용한 경우 `19`는 답변 본문에서 dummy 결과임을 
 
 `21.show_analysis_evidence` 기본값은 OFF입니다. 분석 산출물/helper 결과가 필요한 디버깅에서만 켭니다. `include_diagnostics`, `show_intent_analysis`, `show_data_retrieval`, `show_pandas_code`도 운영 화면에서는 OFF를 권장합니다.
 
-## 9. v5 환경 기본값
+## 9. v5 MongoDB 노드 입력 기본값
 
-```dotenv
-MONGODB_DATABASE=datagov
-MONGODB_DOMAIN_COLLECTION=agent_v4_domain_items
-MONGODB_TABLE_CATALOG_COLLECTION=agent_v4_table_catalog_items
-MONGODB_MAIN_FLOW_FILTER_COLLECTION=agent_v4_main_flow_filters
-MONGODB_RESULT_COLLECTION=agent_v4_result_store
-MONGODB_SESSION_STATE_COLLECTION=agent_v4_session_states
-```
+| 입력 | 값 |
+| --- | --- |
+| MongoDB 연결 URI | Langflow Credential Global Variable `MONGO_URL` |
+| Database | `datagov` |
+| Domain collection | `agent_v4_domain_items` |
+| Table catalog collection | `agent_v4_table_catalog_items` |
+| Main filter collection | `agent_v4_main_flow_filters` |
+| Result store collection | `agent_v4_result_store` |
+| Session state collection | `agent_v4_session_states` |
 
-v5는 위 v4 collection을 직접 사용하므로 별도 metadata 복사나 seed 이동이 필요하지 않습니다. dummy/live 전환은 환경변수가 아니라 `04A.retrieval_mode`에서 수행합니다.
+v5는 위 v4 collection을 직접 사용하므로 별도 metadata 복사나 seed 이동이 필요하지 않습니다. Mongo 설정은 OS 환경변수가 아니라 노드 입력으로 전달하며, dummy/live 전환은 `04A.retrieval_mode`에서 수행합니다.
 
 ## 10. 운영 전 체크리스트
 

@@ -44,7 +44,7 @@ def validate_retrieval_payload(payload_value: Any) -> dict[str, Any]:
         next_job = deepcopy(job)
         next_job.setdefault("job_id", f"job_{index + 1}")
         valid_jobs.append(next_job)
-    next_payload = deepcopy(payload)
+    next_payload = payload
     next_payload.setdefault("intent_plan", {})["retrieval_jobs"] = valid_jobs
     trace = next_payload.setdefault("trace", {})
     trace.setdefault("errors", []).extend(errors)

@@ -78,13 +78,22 @@ class MetadataQaApiResponseBuilder(Component):
         Output(name="api_message", display_name="API 메시지", method="build_message", types=["Message"], group_outputs=True),
     ]
 
+    # 함수 설명: `_response_once()`는 Data와 Message terminal이 같은 QA 응답을 두 번 deepcopy·직렬화하지 않도록 결과를 재사용합니다.
+    def _response_once(self) -> dict[str, Any]:
+        payload = getattr(self, "payload", None)
+        message = getattr(self, "display_message", "")
+        cache_key = (id(payload), id(message))
+        if getattr(self, "_response_cache_key", None) != cache_key:
+            self._response_cache_key = cache_key
+            self._response_cache = build_api_response(payload, message)
+        return self._response_cache
+
     # Langflow 출력 함수: 'API 응답 (api_response)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
-        return Data(data=build_api_response(getattr(self, "payload", None), getattr(self, "display_message", "")))
+        return Data(data=self._response_once())
 
     # Langflow 출력 함수: 'API 메시지 (api_message)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_message(self) -> Message:
-        response = build_api_response(getattr(self, "payload", None), getattr(self, "display_message", ""))
-        return Message(text=json.dumps({"api_response": response}, ensure_ascii=False, default=str))
+        return Message(text=json.dumps({"api_response": self._response_once()}, ensure_ascii=False, default=str))

@@ -25,6 +25,11 @@ SOURCE_TYPES = ("dummy", "oracle", "h_api", "datalake", "goodocs")
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def route_retrieval_jobs(payload_value: Any, target_source_type: str) -> dict[str, Any]:
     payload = _payload(payload_value)
+    return _route_retrieval_jobs_from_payload(payload, target_source_type)
+
+
+# 함수 설명: `_route_retrieval_jobs_from_payload()`는 이미 분리된 payload에서 선택 source의 최소 job bundle만 만듭니다.
+def _route_retrieval_jobs_from_payload(payload: dict[str, Any], target_source_type: str) -> dict[str, Any]:
     jobs = payload.get("intent_plan", {}).get("retrieval_jobs", [])
     jobs = jobs if isinstance(jobs, list) else []
     retrieval_mode = _retrieval_mode(payload)
@@ -83,27 +88,40 @@ class RetrievalJobRouter(Component):
         Output(name="goodocs_jobs", display_name="Goodocs 작업", method="goodocs_jobs_out", group_outputs=True),
     ]
 
+    # 함수 설명: `_routes_once()`는 다섯 source output이 같은 main payload를 다섯 번 deepcopy하지 않도록 한 번만 분기합니다.
+    def _routes_once(self) -> dict[str, dict[str, Any]]:
+        payload_value = getattr(self, "payload", None)
+        cache_key = id(payload_value)
+        if getattr(self, "_routes_cache_key", None) != cache_key:
+            payload = _payload(payload_value)
+            self._routes_cache_key = cache_key
+            self._routes_cache = {
+                source_type: _route_retrieval_jobs_from_payload(payload, source_type)
+                for source_type in SOURCE_TYPES
+            }
+        return self._routes_cache
+
     # Langflow 출력 함수: '더미 작업 (dummy_jobs)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def dummy_jobs_out(self) -> Data:
-        return Data(data=route_retrieval_jobs(getattr(self, "payload", None), "dummy"))
+        return Data(data=self._routes_once()["dummy"])
 
     # Langflow 출력 함수: 'Oracle 작업 (oracle_jobs)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def oracle_jobs_out(self) -> Data:
-        return Data(data=route_retrieval_jobs(getattr(self, "payload", None), "oracle"))
+        return Data(data=self._routes_once()["oracle"])
 
     # Langflow 출력 함수: 'H-API 작업 (h_api_jobs)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def h_api_jobs_out(self) -> Data:
-        return Data(data=route_retrieval_jobs(getattr(self, "payload", None), "h_api"))
+        return Data(data=self._routes_once()["h_api"])
 
     # Langflow 출력 함수: '데이터레이크 작업 (datalake_jobs)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def datalake_jobs_out(self) -> Data:
-        return Data(data=route_retrieval_jobs(getattr(self, "payload", None), "datalake"))
+        return Data(data=self._routes_once()["datalake"])
 
     # Langflow 출력 함수: 'Goodocs 작업 (goodocs_jobs)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def goodocs_jobs_out(self) -> Data:
-        return Data(data=route_retrieval_jobs(getattr(self, "payload", None), "goodocs"))
+        return Data(data=self._routes_once()["goodocs"])

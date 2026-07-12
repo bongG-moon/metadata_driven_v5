@@ -177,22 +177,32 @@ class IntentVariablesBuilder(Component):
         Output(name="output_schema", display_name="출력 스키마 JSON", method="build_output_schema", types=["Message"], group_outputs=True),
     ]
 
+    # 함수 설명: `_variables_once()`는 한 vertex 실행에서 여러 group output이 같은 payload를 반복 직렬화하지 않도록 결과를 재사용합니다.
+    def _variables_once(self) -> dict[str, Any]:
+        payload = getattr(self, "payload", None)
+        metadata = getattr(self, "metadata_candidates_in", None)
+        cache_key = (id(payload), id(metadata))
+        if getattr(self, "_variables_cache_key", None) != cache_key:
+            self._variables_cache_key = cache_key
+            self._variables_cache = build_variables(payload, metadata)
+        return self._variables_cache
+
     # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_question(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None), getattr(self, "metadata_candidates_in", None))["question"])
+        return Message(text=self._variables_once()["question"])
 
     # Langflow 출력 함수: '상태/요청 컨텍스트 JSON (state_summary)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_state_summary(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None), getattr(self, "metadata_candidates_in", None))["state_summary"])
+        return Message(text=self._variables_once()["state_summary"])
 
     # Langflow 출력 함수: '메타데이터 후보 JSON (metadata_candidates)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_metadata_candidates(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None), getattr(self, "metadata_candidates_in", None))["metadata_candidates"])
+        return Message(text=self._variables_once()["metadata_candidates"])
 
     # Langflow 출력 함수: '출력 스키마 JSON (output_schema)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_schema(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None), getattr(self, "metadata_candidates_in", None))["output_schema"])
+        return Message(text=self._variables_once()["output_schema"])

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 # 컴포넌트 개요: 12 Goodocs 조회기
-# 역할: Goodocs 문서 기반 source job을 실행하고, 인증 또는 문서 설정이 없으면 dummy fallback으로 대체합니다.
+# 역할: Goodocs 문서 기반 source job을 실행하고, dummy 모드에서만 인증이 없을 때 fixture fallback을 허용합니다.
 # 주요 입력: 페이로드 (payload) · 필수, Goodocs 사용자 ID (user_id), Goodocs 토큰 소스 (token_source), Goodocs 토큰 키 (token_key), 조회
 #        제한 건수 (fetch_limit)
 # 주요 출력: 조회 페이로드 (retrieval_payload)
@@ -57,8 +57,9 @@ def goodocs_retrieve(
     resolved_user_id = str(user_id or os.getenv("GOODOCS_USER_ID", "")).strip()
     resolved_token_source = str(token_source or os.getenv("GOODOCS_TOKEN_SOURCE", "")).strip()
     resolved_token_key = str(token_key or os.getenv("GOODOCS_TOKEN_KEY") or os.getenv("GOODOCS_TOKEN", "")).strip()
+    retrieval_mode = _retrieval_mode(payload)
     results = [
-        _run_goodocs_job(job, resolved_user_id, resolved_token_source, resolved_token_key, limit)
+        _run_goodocs_job(job, resolved_user_id, resolved_token_source, resolved_token_key, limit, retrieval_mode)
         for job in jobs
     ]
     errors = [error for result in results for error in result.get("errors", []) if isinstance(error, dict)]
@@ -84,6 +85,7 @@ def _run_goodocs_job(
     token_source: str,
     token_key: str,
     fetch_limit: int,
+    retrieval_mode: str,
 ) -> dict[str, Any]:
     source_config = _source_config(job)
     params = _job_params(job)
@@ -103,6 +105,13 @@ def _run_goodocs_job(
 
     credentials = {"USER_ID": user_id, "TOKEN_SOURCE": token_source, "TOKEN_KEY": token_key}
     if not any(str(value or "").strip() for value in credentials.values()):
+        if retrieval_mode == "live":
+            return _error_result(
+                job,
+                "missing_goodocs_credentials",
+                "live 모드에서는 Goodocs 인증 누락 시 dummy fallback을 사용하지 않습니다.",
+                params=params,
+            )
         rows = _dummy_rows(job, doc_id)[:fetch_limit]
         return _standard_result(job, rows, params, source_config, used_dummy_data=True, source_configured=False)
 
@@ -209,7 +218,6 @@ def _standard_result(
         "columns": _rows_columns(rows),
         "preview_rows": rows[:PREVIEW_LIMIT],
         "rows": rows,
-        "data": rows,
         "applied_params": deepcopy(params),
         "applied_filters": deepcopy(job.get("filters", [])),
         "pandas_filters": deepcopy(job.get("filters", {})),
@@ -242,7 +250,6 @@ def _error_result(job: dict[str, Any], error_type: str, message: str, params: di
         "columns": [],
         "preview_rows": [],
         "rows": [],
-        "data": [],
         "applied_params": deepcopy(params if params is not None else _job_params(job)),
         "applied_filters": deepcopy(job.get("filters", [])),
         "pandas_filters": deepcopy(job.get("filters", {})),
@@ -398,6 +405,14 @@ def _source_type(value: Any) -> str:
     return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+# 함수 설명: `_retrieval_mode()`는 request와 routed bundle에서 현재 dummy/live 실행 모드를 확인합니다.
+def _retrieval_mode(payload: dict[str, Any]) -> str:
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    bundle = payload.get("retrieval_job_bundle") if isinstance(payload.get("retrieval_job_bundle"), dict) else {}
+    mode = str(request.get("retrieval_mode") or bundle.get("retrieval_mode") or "dummy").strip().lower()
+    return "live" if mode in {"live", "actual", "real", "실제", "true", "on", "1", "yes"} else "dummy"
+
+
 # 함수 설명: `_normalize_key()`는 key의 대소문자·공백·구분자 차이를 제거해 비교 가능한 표준 식별자로 바꿉니다.
 def _normalize_key(value: Any) -> str:
     return str(value or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
@@ -458,7 +473,7 @@ class GoodocsRetriever(Component):
     goodocs_class = None
 
     display_name = "12 Goodocs 조회기"
-    description = "Goodocs 문서 기반 source job을 실행하고, 인증 또는 문서 설정이 없으면 dummy fallback으로 대체합니다."
+    description = "Goodocs 문서 기반 source job을 실행하며, live 모드에서는 인증 누락을 오류로 반환합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         MessageTextInput(name="user_id", display_name="Goodocs 사용자 ID", required=False, value="", advanced=True),

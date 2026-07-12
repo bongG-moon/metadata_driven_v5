@@ -27,32 +27,64 @@ def merge_source_retrieval_payloads(main_payload_value: Any, *retrieval_values: 
     errors = []
     warnings = []
     for value in retrieval_values:
-        retrieval = _payload(value)
+        retrieval = _payload_view(value)
         if retrieval.get("skipped"):
             skipped_sources.append({"source_type": retrieval.get("source_type"), "skip_reason": retrieval.get("skip_reason")})
             continue
-        source_results.extend([deepcopy(item) for item in retrieval.get("source_results", []) if isinstance(item, dict)])
+        source_results.extend([item for item in retrieval.get("source_results", []) if isinstance(item, dict)])
         errors.extend(retrieval.get("errors", []))
         warnings.extend(retrieval.get("warnings", []))
-    next_payload = deepcopy(payload)
-    compact_results = [{key: value for key, value in item.items() if key != "rows"} for item in source_results]
+    next_payload = payload
+    compact_results = [{key: deepcopy(value) for key, value in item.items() if key not in {"rows", "data"}} for item in source_results]
     if compact_results:
         next_payload["source_results"] = compact_results
-        next_payload["_runtime_rows_by_alias"] = {item.get("source_alias"): item.get("rows", []) for item in source_results if item.get("source_alias")}
+        next_payload["_runtime_rows_by_alias"] = {
+            item.get("source_alias"): item.get("rows", [])
+            for item in source_results
+            if item.get("source_alias")
+        }
     else:
         next_payload["source_results"] = deepcopy(payload.get("source_results", []))
     trace = next_payload.setdefault("trace", {})
     trace.setdefault("errors", []).extend(errors)
     trace.setdefault("warnings", []).extend(warnings)
-    trace.setdefault("inspection", {})["data_retrieval"] = {
-        "stage": "13_source_retrieval_merger",
-        "status": "error" if errors else "ok",
-        "executed_source_count": len(compact_results),
-        "sources": compact_results or deepcopy(payload.get("source_results", [])),
-        "skipped_sources": skipped_sources,
-        "preserved_existing_runtime_sources": not compact_results and bool(payload.get("runtime_sources")),
-    }
+    inspection = trace.setdefault("inspection", {})
+    retrieval_inspection = deepcopy(inspection.get("data_retrieval")) if isinstance(inspection.get("data_retrieval"), dict) else {}
+    validation = retrieval_inspection.get("job_validation") if isinstance(retrieval_inspection.get("job_validation"), dict) else {}
+    validation_failed = int(validation.get("error_count") or 0) > 0
+    retrieval_inspection.update(
+        {
+            "stage": "13_source_retrieval_merger",
+            "status": "error" if errors or validation_failed else "ok",
+            "executed_source_count": len(compact_results),
+            "sources": _trace_source_summaries(compact_results or payload.get("source_results", [])),
+            "skipped_sources": skipped_sources,
+            "preserved_existing_runtime_sources": not compact_results and bool(payload.get("runtime_sources")),
+        }
+    )
+    inspection["data_retrieval"] = retrieval_inspection
     return next_payload
+
+
+# 함수 설명: `_trace_source_summaries()`는 trace에 전체 preview/config를 복제하지 않고 상태 확인용 필드만 남깁니다.
+def _trace_source_summaries(source_results: Any) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for item in source_results if isinstance(source_results, list) else []:
+        if not isinstance(item, dict):
+            continue
+        execution = item.get("source_execution") if isinstance(item.get("source_execution"), dict) else {}
+        summaries.append(
+            {
+                "source_alias": item.get("source_alias"),
+                "dataset_key": item.get("dataset_key"),
+                "source_type": item.get("source_type"),
+                "status": item.get("status"),
+                "row_count": item.get("row_count"),
+                "used_dummy_data": execution.get("used_dummy_data") is True,
+                "error_count": len(item.get("errors", [])) if isinstance(item.get("errors"), list) else 0,
+            }
+        )
+    return summaries
 
 
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
@@ -61,6 +93,14 @@ def _payload(value: Any) -> dict[str, Any]:
         return deepcopy(value)
     data = getattr(value, "data", None)
     return deepcopy(data) if isinstance(data, dict) else {}
+
+
+# 함수 설명: `_payload_view()`는 조회 branch 결과를 수정하지 않는 읽기 전용 view로 꺼내 대용량 rows 재복사를 피합니다.
+def _payload_view(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    data = getattr(value, "data", None)
+    return data if isinstance(data, dict) else {}
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.

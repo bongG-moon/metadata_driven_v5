@@ -105,17 +105,26 @@ class MetadataQaVariablesBuilder(Component):
         Output(name="output_schema_json", display_name="출력 스키마 JSON", method="build_output_schema", types=["Message"], group_outputs=True),
     ]
 
+    # 함수 설명: `_variables_once()`는 세 Prompt output이 동일 QA context를 반복 직렬화하지 않도록 한 번만 계산합니다.
+    def _variables_once(self) -> dict[str, Any]:
+        payload = getattr(self, "payload", None)
+        cache_key = id(payload)
+        if getattr(self, "_variables_cache_key", None) != cache_key:
+            self._variables_cache_key = cache_key
+            self._variables_cache = build_variables(payload)
+        return self._variables_cache
+
     # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_question(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None))["question"])
+        return Message(text=self._variables_once()["question"])
 
     # Langflow 출력 함수: '메타데이터 컨텍스트 JSON (metadata_context_json)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_metadata_context(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None))["metadata_context_json"])
+        return Message(text=self._variables_once()["metadata_context_json"])
 
     # Langflow 출력 함수: '출력 스키마 JSON (output_schema_json)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_schema(self) -> Message:
-        return Message(text=build_variables(getattr(self, "payload", None))["output_schema_json"])
+        return Message(text=self._variables_once()["output_schema_json"])

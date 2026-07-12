@@ -26,14 +26,14 @@ def build_request(question: Any, previous_state_value: Any = None) -> dict[str, 
     return {
         "request": {"question": text},
         "state": _payload(previous_state_value),
-        "metadata_route": {"route": "metadata_qa", "status": "ready" if text else "warning"},
+        "metadata_route": {"route": "metadata_qa", "status": "ready" if text else "error"},
         "trace": {
             "warnings": [],
             "errors": errors,
             "inspection": {
                 "metadata_qa_request": {
                     "stage": "00_metadata_qa_request_loader",
-                    "status": "ok" if text else "warning",
+                    "status": "ok" if text else "error",
                 }
             },
         },

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import re
@@ -28,6 +29,7 @@ DEFAULT_COLLECTION = "agent_v4_domain_items"
 COLLECTION_ENV = "MONGODB_DOMAIN_COLLECTION"
 SAFE_REFERENCE_KEYS = {"token_source", "token_key"}
 SECRET_PATTERNS = ("password", "passwd", "token", "secret", "api_key", "apikey", "authorization", "credential", "access_key", "private_key", "cookie")
+QA_SNAPSHOT_CACHE_REGISTRY = "_metadata_driven_v5_qa_snapshot_cache_v1"
 
 
 # 주요 함수: 결정론적 검증과 duplicate 정책을 적용하고 dry-run 계획 또는 실제 저장을 수행합니다.
@@ -48,20 +50,46 @@ def review_and_write(payload_value: Any, review_response: Any = "", mongo_uri: s
     llm_review = _json(review_response)
     review = _merge_review(llm_review, deterministic_review)
     ready = bool(review.get("ready_to_save"))
-    next_payload = deepcopy(payload)
+    next_payload = payload
     next_payload["review"] = review
     if not ready:
-        next_payload["write_result"] = {"success": False, "ready_to_save": False, "saved_count": 0, "message": "필수 검증을 통과하지 못해 저장하지 않았습니다.", "errors": review.get("errors", [])}
+        needs_input = bool(_list(review.get("supplement_requests")))
+        next_payload["write_result"] = {
+            "success": False,
+            "ready_to_save": False,
+            "status": "needs_input" if needs_input else "error",
+            "saved_count": 0,
+            "message": "추가 정보가 필요해 저장하지 않았습니다." if needs_input else "필수 검증을 통과하지 못해 저장하지 않았습니다.",
+            "errors": review.get("errors", []),
+            "supplement_requests": deepcopy(_list(review.get("supplement_requests"))),
+        }
     elif dry_run:
         next_payload["write_result"] = _dry_run_result(payload, action)
     else:
         next_payload["write_result"] = _write_to_mongodb(payload, action, mongo_uri, mongo_database, collection_name)
+        if next_payload["write_result"].get("success") and int(next_payload["write_result"].get("saved_count") or 0) > 0:
+            next_payload["write_result"]["metadata_qa_snapshot_invalidated"] = _invalidate_metadata_qa_snapshot_cache()
     return next_payload
+
+
+# 함수 설명: `_invalidate_metadata_qa_snapshot_cache()`는 실제 저장 성공 후 같은 worker의 QA snapshot generation을 증가시킵니다.
+def _invalidate_metadata_qa_snapshot_cache() -> bool:
+    registry = getattr(builtins, QA_SNAPSHOT_CACHE_REGISTRY, None)
+    if not isinstance(registry, dict):
+        registry = {"generation": 0, "entries": {}}
+        setattr(builtins, QA_SNAPSHOT_CACHE_REGISTRY, registry)
+    try:
+        registry["generation"] = max(0, int(registry.get("generation", 0))) + 1
+    except Exception:
+        registry["generation"] = 1
+    registry["entries"] = {}
+    return True
 
 
 # 함수 설명: `_deterministic_review()`는 스키마·필수 필드·비밀값·중복 정책을 Python 규칙으로 검증해 저장 가능 여부를 결정합니다.
 def _deterministic_review(payload: dict[str, Any]) -> dict[str, Any]:
-    errors = []
+    upstream = _upstream_review(payload)
+    errors = deepcopy(upstream["errors"])
     for item in payload.get("items", []):
         if not isinstance(item, dict):
             continue
@@ -78,7 +106,26 @@ def _deterministic_review(payload: dict[str, Any]) -> dict[str, Any]:
         for path in _secret_paths(item):
             errors.append({"type": "credential_field_forbidden", "message": f"credential/secret 필드는 저장할 수 없습니다: {path}", "key": key, "field": path})
     errors = _unique_errors(errors)
-    return {"ready_to_save": bool(payload.get("items")) and not errors, "item_reviews": [{"key": _key(item), "ready_to_save": not errors, "warnings": [], "errors": errors} for item in payload.get("items", []) if isinstance(item, dict)], "errors": errors, "supplement_requests": []}
+    return {
+        "ready_to_save": bool(payload.get("items")) and not errors and not upstream["supplement_requests"],
+        "item_reviews": [{"key": _key(item), "ready_to_save": not errors and not upstream["supplement_requests"], "warnings": [], "errors": errors} for item in payload.get("items", []) if isinstance(item, dict)],
+        "errors": errors,
+        "supplement_requests": upstream["supplement_requests"],
+        "assumptions": upstream["assumptions"],
+        "refinement": upstream["refinement"],
+    }
+
+
+# 함수 설명: `_upstream_review()`는 요청/정규화 단계의 오류와 보완 필요 정보를 저장 직전 차단 조건으로 변환합니다.
+def _upstream_review(payload: dict[str, Any]) -> dict[str, Any]:
+    refinement = deepcopy(_dict(payload.get("refinement")))
+    errors = _unique_errors(deepcopy(_list(payload.get("errors"))))
+    missing = [str(item).strip() for item in _list(refinement.get("missing_information")) if str(item or "").strip()]
+    supplements = list(missing)
+    if bool(refinement.get("needs_more_input")) and not supplements:
+        supplements.append("저장에 필요한 정보를 원문에 보완해 주세요.")
+    assumptions = [str(item).strip() for item in _list(refinement.get("assumptions")) if str(item or "").strip()]
+    return {"errors": errors, "supplement_requests": supplements, "assumptions": assumptions, "refinement": refinement}
 
 
 # 함수 설명: `_identity_lookup_errors()`는 lookup·오류을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
@@ -104,12 +151,26 @@ def _merge_review(llm_review: dict[str, Any], deterministic_review: dict[str, An
         return deepcopy(deterministic_review)
     merged = deepcopy(llm_review)
     errors = _unique_errors(_list(merged.get("errors")) + _list(deterministic_review.get("errors")))
-    supplements = _list(merged.get("supplement_requests"))
+    supplements = _unique_text_items(_list(merged.get("supplement_requests")) + _list(deterministic_review.get("supplement_requests")))
     merged["errors"] = errors
     merged["supplement_requests"] = supplements
     merged["ready_to_save"] = bool(merged.get("ready_to_save")) and bool(deterministic_review.get("ready_to_save")) and not errors and not supplements
+    merged["assumptions"] = _unique_text_items(_list(merged.get("assumptions")) + _list(deterministic_review.get("assumptions")))
+    merged["refinement"] = deepcopy(_dict(deterministic_review.get("refinement")))
     merged.setdefault("deterministic_review", deterministic_review)
     return merged
+
+
+# 함수 설명: `_unique_text_items()`는 문자열 또는 질문 dict 형태의 보완 요청을 순서를 유지하며 중복 제거합니다.
+def _unique_text_items(values: list[Any]) -> list[Any]:
+    result = []
+    seen = set()
+    for value in values:
+        marker = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str) if isinstance(value, dict) else str(value).strip()
+        if marker and marker not in seen:
+            seen.add(marker)
+            result.append(deepcopy(value))
+    return result
 
 
 # 함수 설명: `_dry_run_result()`는 실제 DB를 변경하지 않고 실행 예정 작업만 보여 주는 dry-run 결과를 만듭니다.

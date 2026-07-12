@@ -192,6 +192,25 @@ def test_existing_loader_keeps_full_document_without_registration_trace(
     assert "registration_trace" not in result["existing_items"][0]
 
 
+@pytest.mark.parametrize("loader_path,_matcher_path,collection,_doc_id,_missing_id,_key_fields,_missing_fields", SPECS)
+def test_existing_loader_zero_limit_delegates_to_targeted_matcher(
+    loader_path, _matcher_path, collection, _doc_id, _missing_id, _key_fields, _missing_fields
+):
+    loader = _load_module(ROOT / "langflow_components" / loader_path)
+
+    result = loader.load_existing_items(
+        mongo_uri="mongodb://must-not-connect",
+        mongo_database="datagov",
+        collection_name=collection,
+        limit="0",
+    )
+
+    assert result["metadata_load"]["status"] == "skipped"
+    assert result["metadata_load"]["count"] == 0
+    assert result["metadata_load"]["errors"] == []
+    assert result["existing_items"] == []
+
+
 @pytest.mark.parametrize("_loader_path,matcher_path,collection,doc_id,missing_id,key_fields,missing_fields", SPECS)
 def test_matcher_exact_queries_candidates_missing_from_provided_loader_window(
     monkeypatch, _loader_path, matcher_path, collection, doc_id, missing_id, key_fields, missing_fields
@@ -237,6 +256,7 @@ def test_domain_matcher_targeted_identity_query_finds_alias_outside_loader_windo
         "payload": {"display_name": "BG", "aliases": ["BG", "B/G"], "processes": ["B/G1", "B/G2"]},
     }
     store["datagov"] = {"agent_v4_domain_items": {existing["_id"]: existing}}
+    loader = _load_module(ROOT / "langflow_components" / "domain_saving_flow" / "00_domain_existing_items_loader.py")
     matcher = _load_module(ROOT / "langflow_components" / "domain_saving_flow" / "05_domain_similarity_checker.py")
     payload = {
         "items": [
@@ -248,14 +268,22 @@ def test_domain_matcher_targeted_identity_query_finds_alias_outside_loader_windo
         ]
     }
 
+    existing_window = loader.load_existing_items(
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_domain_items",
+        limit="0",
+    )
     result = matcher.check_similarity(
         payload,
-        {"existing_items": []},
+        existing_window,
         mongo_uri="mongodb://fake",
         mongo_database="datagov",
         collection_name="agent_v4_domain_items",
     )
 
+    assert existing_window["metadata_load"]["status"] == "skipped"
+    assert existing_window["existing_items"] == []
     assert queries == [{"_id": "domain:process_groups:BG_PROCESS_GROUP"}]
     assert result["existing_matches"][0]["existing_key"] == "process_groups:BG"
     assert result["existing_matches"][0]["match_type"] == "identity_overlap"

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from math import isclose
 from copy import deepcopy
 from typing import Any
 
@@ -29,13 +30,152 @@ def build_answer_response(payload_value: Any, answer_text: Any = "") -> dict[str
     structured_answer = _answer_payload(answer_text)
     message = (_answer_text_from_dict(structured_answer) if structured_answer else _answer_text(answer_text)).strip()
     if not message:
+        message = str(payload.get("answer_message") or "").strip()
+    if not message:
         row_count = payload.get("data", {}).get("row_count", 0)
         message = f"분석 결과 {row_count}건을 확인했습니다." if payload.get("analysis", {}).get("status") == "ok" else "분석을 완료하지 못했습니다. trace의 오류를 확인해 주세요."
-    next_payload = deepcopy(payload)
+    next_payload = payload
+    message, grounding = _ground_answer_message(next_payload, message)
+    if grounding:
+        trace = next_payload.setdefault("trace", {})
+        trace.setdefault("warnings", []).append(
+            {
+                "type": "answer_value_grounded",
+                "message": "LLM 답변의 수치가 실제 결과 행과 일치하지 않아 결과 행 기준 문장으로 교정했습니다.",
+            }
+        )
+        trace.setdefault("inspection", {})["answer_grounding"] = grounding
     next_payload["answer_message"] = message
     next_payload["answer_sections"] = _build_answer_sections(next_payload, message, _dict(structured_answer.get("answer_sections")))
     next_payload["state"] = _build_next_turn_state(next_payload)
     return next_payload
+
+
+# 함수 설명: `_ground_answer_message()`는 LLM 문장에 결과 행으로 확인되지 않는 수치가 있을 때 재호출 없이 결정론적으로 교정합니다.
+def _ground_answer_message(payload: dict[str, Any], message: str) -> tuple[str, dict[str, Any]]:
+    analysis = _dict(payload.get("analysis"))
+    data = _dict(payload.get("data"))
+    rows = _list(data.get("rows"))
+    if analysis.get("status") != "ok" or not rows or not message:
+        return message, {}
+
+    unsupported = _unsupported_numeric_claims(payload, message)
+    if not unsupported:
+        return message, {}
+
+    grounded_message = _authoritative_result_message(data)
+    if not grounded_message:
+        return message, {}
+    return grounded_message, {
+        "stage": "20_answer_response_builder",
+        "status": "corrected",
+        "unsupported_numeric_claims": unsupported,
+        "policy": "deterministic_data_rows",
+    }
+
+
+# 함수 설명: `_unsupported_numeric_claims()`는 질문 조건이나 실제 결과에 없는 LLM 수치 주장만 선별합니다.
+def _unsupported_numeric_claims(payload: dict[str, Any], message: str) -> list[str]:
+    known_values = _known_numeric_values(payload)
+    unsupported: list[str] = []
+    for raw, number in _numeric_claims(message):
+        claim_values = [number, number * 100] if raw.endswith("%") else [number]
+        if any(
+            isclose(claim, known, rel_tol=1e-9, abs_tol=1e-9)
+            for claim in claim_values
+            for known in known_values
+        ):
+            continue
+        unsupported.append(raw)
+    return unsupported
+
+
+# 함수 설명: `_known_numeric_values()`는 결과 행과 질문 조건에서 답변에 나타나도 되는 수치 집합을 구성합니다.
+def _known_numeric_values(payload: dict[str, Any]) -> list[float]:
+    data = _dict(payload.get("data"))
+    values: list[float] = []
+    for row in _list(data.get("rows")):
+        if not isinstance(row, dict):
+            continue
+        for value in row.values():
+            values.extend(_numbers_from_value(value))
+    values.extend(_numbers_from_value(data.get("row_count")))
+    values.extend(_numbers_from_value(_dict(payload.get("request"))))
+    values.extend(_numbers_from_value(_dict(payload.get("intent_plan")).get("retrieval_jobs")))
+    return _dedupe_numbers(values)
+
+
+# 함수 설명: `_numbers_from_value()`는 숫자와 날짜형 문자열을 재귀적으로 읽어 비교 가능한 실수 값으로 바꿉니다.
+def _numbers_from_value(value: Any) -> list[float]:
+    if value is None or isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        try:
+            number = float(value)
+        except Exception:
+            return []
+        return [] if number != number else [number]
+    if isinstance(value, dict):
+        return [number for item in value.values() for number in _numbers_from_value(item)]
+    if isinstance(value, (list, tuple, set)):
+        return [number for item in value for number in _numbers_from_value(item)]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    numbers = [number for _, number in _numeric_claims(text)]
+    for date_text in re.findall(r"(?<!\d)(\d{8})(?!\d)", text):
+        numbers.extend([float(date_text[:4]), float(date_text[4:6]), float(date_text[6:8])])
+    return numbers
+
+
+# 함수 설명: `_numeric_claims()`는 제품 코드 안의 숫자는 제외하고 일반 수치·K/M 단위·퍼센트 표현을 파싱합니다.
+def _numeric_claims(text: str) -> list[tuple[str, float]]:
+    pattern = re.compile(r"(?<![A-Za-z0-9_/.-])([+-]?\d[\d,]*(?:\.\d+)?)([KkMm]?)(%)?(?![A-Za-z0-9_/.-])")
+    claims: list[tuple[str, float]] = []
+    for match in pattern.finditer(str(text or "")):
+        raw = match.group(0).strip()
+        try:
+            number = float(match.group(1).replace(",", ""))
+        except Exception:
+            continue
+        unit = match.group(2).lower()
+        if unit == "k":
+            number *= 1000
+        elif unit == "m":
+            number *= 1_000_000
+        if match.group(3):
+            number /= 100
+        claims.append((raw, number))
+    return claims
+
+
+# 함수 설명: `_authoritative_result_message()`는 실제 data.rows만 이용해 수치 모순이 없는 짧은 대체 문장을 만듭니다.
+def _authoritative_result_message(data: dict[str, Any]) -> str:
+    rows = [row for row in _list(data.get("rows")) if isinstance(row, dict)]
+    if not rows:
+        return ""
+    columns = _string_list(data.get("columns")) or _columns_from_rows(rows)
+    first_row = rows[0]
+    facts = []
+    for column in columns[:6]:
+        if column not in first_row:
+            continue
+        value = _display_value(first_row.get(column))
+        facts.append(f"{column}={value}")
+    row_count = _int(data.get("row_count"), len(rows))
+    if row_count <= 1:
+        return f"분석 결과 {', '.join(facts)}입니다." if facts else "분석 결과 1건입니다."
+    prefix = f"분석 결과 총 {row_count:,}건입니다."
+    return f"{prefix} 첫 번째 결과는 {', '.join(facts)}입니다." if facts else prefix
+
+
+# 함수 설명: `_dedupe_numbers()`는 부동소수 비교 오차를 고려해 숫자 목록의 중복을 제거합니다.
+def _dedupe_numbers(values: list[float]) -> list[float]:
+    result: list[float] = []
+    for value in values:
+        if not any(isclose(value, existing, rel_tol=1e-12, abs_tol=1e-12) for existing in result):
+            result.append(value)
+    return result
 
 
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.

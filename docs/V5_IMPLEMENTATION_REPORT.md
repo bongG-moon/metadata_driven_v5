@@ -120,7 +120,7 @@ Domain/Table Catalog/Main Flow Filter 저장 Flow는 Existing Loader의 full doc
 ### 실제 Langflow 검증에서 발견해 수정한 호환 문제
 
 1. `15A 선택 helper 코드 생성기`의 `MessageTextInput(multiline=True)`는 `lfx 0.3.4` 스키마에서 허용되지 않았습니다. multiline 옵션을 제거한 뒤 template build를 재검증했습니다.
-2. v4 export에 직렬화돼 있던 `MONGO_URL`/`MONGO_URL_GEN` Global Variable 참조가 standalone 서버에서 코드의 환경변수 fallback보다 먼저 실패했습니다. v5 export builder는 `mongo_uri`를 빈 값/`load_from_db=false`로 정규화했습니다. 초기에는 별도 v5 collection 기본값을 적용했으나, 최종 운영 결정에 따라 `agent_v4_*`를 직접 공유하도록 변경했으며 데이터 복사나 migration은 하지 않습니다.
+2. 초기 v5 export는 Mongo URI를 공란/환경변수 fallback으로 정규화했으나 현재 standalone 운영 계약과 맞지 않아 폐기했습니다. 현재 builder는 실제 URI 대신 Langflow Credential Global Variable 이름 `MONGO_URL`만 직렬화하고, 모든 Mongo 컴포넌트가 노드 입력으로 값을 받습니다. database/collection은 `datagov`와 `agent_v4_*`를 직접 공유하며 데이터 복사나 migration은 하지 않습니다.
 3. Langflow 1.8.2 frontend는 타입과 handle이 일치해도 `advanced=true` 입력에 연결된 edge를 제거합니다. `15A -> 17` 선택 helper, 저장 Flow 3종의 Existing Loader -> Matcher, API Router 5개 session source 입력을 모두 일반 연결 포트로 변경했고, bundle 생성기가 connected advanced input을 발견하면 실패하도록 검증을 추가했습니다.
 
 호환 수정과 Router 정리 후 현재 export 기준 전체 bundle 115/115 template build를 다시 실행해 전부 통과했습니다.
@@ -128,7 +128,7 @@ Domain/Table Catalog/Main Flow Filter 저장 Flow는 Existing Loader의 full doc
 ## 운영 전 남은 확인
 
 1. 사용 모델/provider를 회사 표준 모델로 교체하고 timeout/retry 정책 확정
-2. `agent_v4_*` collection 접근 권한과 환경변수 연결 확인. 별도 seed 업로드나 v5용 migration은 수행하지 않음
+2. `MONGO_URL` Langflow Credential Global Variable, `agent_v4_*` collection 접근 권한과 각 노드 입력 바인딩 확인. 별도 seed 업로드나 v5용 migration은 수행하지 않음
 3. source별 live smoke test
 4. 대표 질문과 후속질문 2-turn 검증
 5. MongoDB TTL/index 권한 및 세션 저장 실패 처리 정책 확정

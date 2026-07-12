@@ -108,7 +108,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             "notes": _notes(scope_hint, reuse_strategy_hint, requested_columns, date_hint),
         }
     )
-    next_payload = deepcopy(payload)
+    next_payload = payload
     next_payload["followup_hint"] = hint
     next_payload.setdefault("trace", {}).setdefault("inspection", {})["followup_hint"] = {
         "stage": "01e_followup_hint_builder",

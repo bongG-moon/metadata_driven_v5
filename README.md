@@ -52,9 +52,9 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 - 각 `langflow_components/**/*.py`는 Langflow Custom Component 한 노드에 파일 전체를 붙여 넣을 수 있도록 작성했습니다.
 - Prompt와 모델 호출은 custom component에 숨기지 않고 Langflow 기본 Prompt Template 및 Agent/LLM 노드에 둡니다.
 - 저장소 내부 모듈을 import하지 않아도 각 custom component가 동작하도록 구성합니다.
-- 운영 비밀값은 코드나 Flow JSON에 넣지 않고 Langflow 전역변수 또는 프로세스 환경변수로 제공합니다.
+- 운영 비밀값은 코드나 Flow JSON에 넣지 않습니다. MongoDB는 Langflow Credential Global Variable `MONGO_URL`을 각 Mongo 노드 입력에 바인딩하고, 실제 URI는 Langflow가 주입합니다.
 - v5는 별도 데이터 복제 없이 v4와 같은 `datagov` 데이터베이스의 `agent_v4_domain_items`, `agent_v4_table_catalog_items`, `agent_v4_main_flow_filters`, `agent_v4_result_store`, `agent_v4_session_states` collection을 직접 재사용합니다.
-- Flow 이름과 API endpoint는 v5로 유지되며, MongoDB collection만 v4와 공유합니다. 환경변수로 다른 full collection name을 지정한 경우에는 그 값이 우선합니다.
+- Flow 이름과 API endpoint는 v5로 유지되며, MongoDB database/collection은 노드 입력에 명시된 v4 공유 기본값을 사용합니다.
 
 ## v5에서 달라진 핵심
 
@@ -71,26 +71,27 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 11. Router를 제외한 모든 Flow는 Chat Output을 하나만 사용합니다. 저장 Flow 3종은 dry/live 그래프 분기와 두 번째 review LLM을 제거하고 단일 Writer 경로로 통합했습니다.
 12. 저장 Flow는 기존 v4 문서를 `registration_trace`만 제외해 Matcher로 직접 전달하며, Domain은 같은 section의 exact key와 유일한 normalized key/alias/display_name identity를 canonical target으로 사용합니다. `replace`에서 유사 항목이 있으면 교체하고 없으면 신규 저장하며, 복수 target으로 모호할 때만 저장하지 않습니다. 기존 전체 문서는 Request나 LLM prompt에 전달하지 않습니다.
 13. standalone 실행을 대기·재개하지 못하는 `ask` 중복 모드는 제거했습니다. 기본값은 기존 문서를 보존하는 `skip`이며, 기존 `ask` 입력도 `skip`으로 안전하게 정규화합니다.
-14. Metadata QA와 저장 Flow의 MongoDB 입력에는 `datagov` 및 각 `agent_v4_*` collection 기본값을 명시합니다. `mongo_uri`는 비밀값이므로 계속 비워 두고 환경변수로 제공합니다.
+14. 모든 MongoDB 노드는 URI 입력을 화면에 노출하고 Langflow Credential Global Variable `MONGO_URL`에 바인딩합니다. database/collection은 `datagov` 및 각 `agent_v4_*` 기본값을 직접 사용하며, Python 컴포넌트는 OS의 `MONGODB_URI` fallback에 의존하지 않습니다.
 15. API Router의 `direct_answer`와 `clarification`은 예전 정상 Flow와 동일하게 Smart Router에서 각 Chat Output으로 직접 연결합니다. 추가 terminal Gate는 질문 JSON 카드를 별도로 표시하므로 제거했습니다. 또한 Chat Input은 Smart Router에만 연결하고 API caller 5개로 향하던 `session_source` fan-out edge를 제거했습니다. Langflow가 caller의 `session_id` 입력에 부모 세션을 자동 주입하므로 세션은 유지하면서 Smart Router 재빌드와 질문 Message 반복을 막습니다.
 16. Router 하위 Flow read timeout은 240초, 외부 Web/API client 기본 timeout은 300초입니다. timeout 상향은 장기 실행을 실패로 오판하지 않기 위한 여유이며 실행시간 자체를 줄이는 최적화는 아닙니다.
 17. pandas 안전 실행 namespace에 `zip`을 명시적으로 제공하고 최초/repair 프롬프트에 같은 builtin 계약을 노출해 `dict(zip(...))`가 불필요한 1회 repair를 유발하지 않도록 했습니다. 기존 오류 시 최대 1회 repair 계약은 그대로 유지합니다.
 18. 운영 기본 Router는 결정된 API 방식이며 Native Run Flow 노드가 없습니다. API caller 5개는 240초 read timeout과 원본 session 전달을 유지합니다.
 19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 이름 기반 Tool 5개는 import 후 실제 Flow ID를 다시 해석하고 `cache_flow=true`로 그래프만 캐시합니다. Tool schema에는 node ID가 없는 필수 `question` 하나만 포함하고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 변환합니다. `return_direct=true`로 추가 Agent 재작성을 생략하며, 각 Tool은 부모 `graph.session_id`를 자동 상속합니다.
+20. 하위 Flow를 직접 Playground에서 실행할 때는 Chat Input/Output 저장을 켜 답변을 정상 표시합니다. Router nested 호출에서는 API tweak 또는 runtime node-ID tweak로 하위 저장만 끄고 부모 Router가 질문·답변을 한 번만 저장합니다.
 
 ## 검증 상태와 현재 제약
 
 - 이 작업 환경에서는 실제 Oracle/H-API/Datalake/Goodocs 자격증명과 원천 데이터가 없어 dummy 경로로 검증했습니다.
 - 제공 예시 질문 23개는 trusted catalog hydration, 선택 helper, pandas 실행, 답변/API adapter를 포함한 deterministic dummy 경로에서 23/23 통과했습니다. 기존 13개뿐 아니라 target·장비·UPH·LOT/HOLD·0건·다중 source 질문도 포함합니다.
-- 전체 pytest 222개와 대표 dummy 질문 23/23이 통과했습니다.
-- 이 PC의 Langflow Desktop 런타임(`langflow 1.8.2`, `lfx 0.3.4`)에서 현재 7개 Flow의 115/115 node template build와 격리 서버 7/7 JSON import(HTTP 201)를 확인했습니다. Agent Tool Router는 실제 import로 새로 발급된 하위 Flow ID를 이름으로 찾고 `CachedFlowTool-data_analysis`까지 partial build에 성공했습니다.
+- 전체 pytest 250개와 대표 dummy 질문 23/23이 통과했습니다.
+- 이 PC의 Langflow Desktop 런타임(`langflow 1.8.2`, `lfx 0.3.4`)에서 현재 7개 Flow의 114/114 node template build와 격리 서버 7/7 JSON import(HTTP 201)를 확인했습니다. Agent Tool Router는 실제 import로 새로 발급된 하위 Flow ID를 이름으로 찾고 `CachedFlowTool-data_analysis`까지 partial build에 성공했습니다.
 - 실제 문제 실행 기록에서는 기존 06 Router의 session fan-out 때문에 ChatInput/SmartRouter가 각각 2회 빌드되고 비선택 direct/clarification Chat Output이 질문을 두 번 저장한 사실을 확인했습니다. 수정 JSON은 Chat Input outgoing edge를 Smart Router 한 개로 제한하며, 운영 provider를 사용한 최종 화면 재검증은 새 06을 import한 뒤 수행합니다.
 - 격리 Langflow 서버에는 `GOOGLE_API_KEY` Global Variable이 없어 Agent/LLM을 포함한 전체 Flow 실행은 수행하지 않았습니다. 운영 인스턴스에서는 같은 이름의 Global Variable 또는 회사 표준 provider 설정이 필요합니다.
 - 운영 전에는 Data Analysis Flow의 단일 설정인 `04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode=live`로 전환한 뒤 source별 최소 한 건 smoke test와 2-turn 후속질문 검증이 필요합니다. `07`에는 별도 모드 설정이 없습니다.
 
 ## 한글 소스 설명과 JSON 동기화
 
-- `langflow_components`의 Python 68개에는 역할·입력·출력·처리 흐름·유지보수 포인트와 전체 함수 1000/1000의 인접 한글 설명이 들어 있습니다. private helper, 클래스 메서드, async 함수와 중첩 함수도 포함합니다.
+- `langflow_components`의 Python 69개에는 역할·입력·출력·처리 흐름·유지보수 포인트와 전체 함수 1076/1076의 인접 한글 설명이 들어 있습니다. private helper, 클래스 메서드, async 함수와 중첩 함수도 포함합니다.
 - JSON 문법은 구조 주석을 허용하지 않으므로, 한글 설명은 각 Custom Component의 `template.code.value`에 Python 주석으로 포함됩니다. Langflow 코드 편집기에서 원본과 동일하게 확인할 수 있습니다.
 - `.editorconfig`와 각 Python 파일 첫 줄의 UTF-8 선언으로 Windows 편집기의 인코딩 오저장을 예방합니다.
 - `python tools/add_korean_component_comments.py --check`와 `python tools/validate_korean_component_documentation.py`로 함수별 설명 누락·BOM·깨짐 문자·JSON 내장 코드·ZIP을 재검증할 수 있습니다. 자동 설명 규칙을 개선한 뒤에는 `--refresh-functions`로 기존 자동 주석을 갱신할 수 있습니다.

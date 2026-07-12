@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import json
-import os
 from copy import deepcopy
 from importlib import import_module
 from typing import Any
@@ -62,8 +61,8 @@ def load_session_state(
         status["source"] = "disabled"
         return {"state": {"session_id": session}, "session_state_load": status}
 
-    uri = _clean(mongo_uri) or os.getenv("MONGODB_URI", "") or os.getenv("MONGO_URI", "")
-    database = _clean(mongo_database) or os.getenv("MONGODB_DATABASE", DEFAULT_DATABASE)
+    uri = _clean(mongo_uri)
+    database = _clean(mongo_database) or DEFAULT_DATABASE
     missing = []
     if not uri:
         missing.append("Mongo URI is empty.")
@@ -179,9 +178,11 @@ def _state_from_value(value: Any) -> dict[str, Any]:
     if not payload:
         return {}
     if isinstance(payload.get("state"), dict):
-        return deepcopy(payload["state"])
+        # `_payload()`가 입력 경계에서 이미 전체 값을 한 번 복사했으므로
+        # 여기서는 그 복사본의 하위 state를 그대로 반환해 대용량 세션을 재복사하지 않습니다.
+        return payload["state"]
     if any(key in payload for key in ("session_id", "chat_history", "context", "current_data", "followup_source_results")):
-        return deepcopy(payload)
+        return payload
     return {}
 
 
@@ -217,9 +218,9 @@ def _connect_collection(uri: str, database: str, collection_name: str) -> tuple[
     return client, client[database][collection_name]
 
 
-# 함수 설명: `_collection_name()`는 입력·환경변수·기본값으로 실제 세션 상태 collection 이름을 결정합니다.
+# 함수 설명: `_collection_name()`는 standalone 노드 입력과 코드 기본값으로 실제 세션 상태 collection 이름을 결정합니다.
 def _collection_name(value: Any) -> str:
-    return _clean(value) or os.getenv("MONGODB_SESSION_STATE_COLLECTION", DEFAULT_SESSION_COLLECTION)
+    return _clean(value) or DEFAULT_SESSION_COLLECTION
 
 
 # 함수 설명: `_document_id()`는 session_id로 `session_state:{id}` 형식의 canonical 문서 ID를 만듭니다.
@@ -309,9 +310,9 @@ class MongoDBSessionStateLoader(Component):
     inputs = [
         MessageTextInput(name="question", display_name="사용자 질문", required=True, tool_mode=True),
         DataInput(name="fallback_state", display_name="직접 전달 상태", required=False, advanced=True),
-        MessageTextInput(name="mongo_uri", display_name="Mongo URI 선택값", value="", advanced=True),
-        MessageTextInput(name="mongo_database", display_name="Mongo Database 선택값", value=DEFAULT_DATABASE, advanced=True),
-        MessageTextInput(name="session_collection_name", display_name="세션 상태 컬렉션", value=DEFAULT_SESSION_COLLECTION, advanced=True),
+        MessageTextInput(name="mongo_uri", display_name="Mongo URI 선택값", value="", advanced=False),
+        MessageTextInput(name="mongo_database", display_name="Mongo Database 선택값", value=DEFAULT_DATABASE, advanced=False),
+        MessageTextInput(name="session_collection_name", display_name="세션 상태 컬렉션", value=DEFAULT_SESSION_COLLECTION, advanced=False),
         DropdownInput(name="enabled", display_name="사용 여부", options=ENABLED_OPTIONS, value="true", advanced=True),
         MessageTextInput(name="preview_row_limit", display_name="Preview 행 제한", value=str(DEFAULT_PREVIEW_ROW_LIMIT), advanced=True),
     ]

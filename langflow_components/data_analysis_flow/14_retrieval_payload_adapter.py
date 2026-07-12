@@ -21,7 +21,7 @@ from lfx.schema.data import Data
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_retrieval_payload(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
-    next_payload = deepcopy(payload)
+    next_payload = payload
     if "_runtime_rows_by_alias" in next_payload:
         next_payload["runtime_sources"] = next_payload.pop("_runtime_rows_by_alias", {})
     return next_payload

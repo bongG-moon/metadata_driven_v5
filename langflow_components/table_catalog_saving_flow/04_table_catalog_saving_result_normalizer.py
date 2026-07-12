@@ -27,6 +27,10 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
     raw_items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
     items = []
     errors = []
+    if not parsed:
+        errors.append({"type": "llm_response_parse_error", "message": "LLM 등록 응답을 JSON object로 해석하지 못했습니다."})
+    elif not isinstance(parsed.get("items"), list):
+        errors.append({"type": "invalid_items", "message": "LLM 등록 응답의 items는 배열이어야 합니다."})
     for index, raw in enumerate(raw_items):
         if not isinstance(raw, dict):
             errors.append({"type": "invalid_item", "message": f"items[{index}]가 object가 아닙니다."})
@@ -43,11 +47,43 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
         if source_config:
             item["payload"]["source_config"] = source_config
         items.append(item)
-    next_payload = deepcopy(payload)
+    next_payload = payload
     next_payload["items"] = items
+    next_payload["refinement"] = _refinement(payload, parsed)
+    if not items and not next_payload["refinement"]["needs_more_input"] and not errors:
+        errors.append({"type": "no_valid_items", "message": "저장할 수 있는 테이블 카탈로그 후보가 생성되지 않았습니다."})
     next_payload.setdefault("errors", []).extend(errors)
     next_payload.setdefault("trace", {})["generated_items_preview"] = [{"key": item.get("dataset_key", ""), "payload_keys": sorted(item.get("payload", {}).keys())} for item in items]
     return next_payload
+
+
+# 함수 설명: `_refinement()`는 LLM이 반환한 보완 필요 정보와 가정을 저장 전 검수 단계까지 보존합니다.
+def _refinement(payload: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:
+    current = deepcopy(payload.get("refinement")) if isinstance(payload.get("refinement"), dict) else {}
+    parsed_refinement = parsed.get("refinement") if isinstance(parsed.get("refinement"), dict) else {}
+    missing = _string_list(parsed.get("missing_information")) or _string_list(parsed_refinement.get("missing_information"))
+    assumptions = _string_list(parsed.get("assumptions")) or _string_list(parsed_refinement.get("assumptions"))
+    current.update(
+        {
+            "refined_text": str(parsed_refinement.get("refined_text") or current.get("refined_text") or ""),
+            "needs_more_input": _truthy(parsed.get("needs_more_input")) or _truthy(parsed_refinement.get("needs_more_input")) or bool(missing),
+            "missing_information": missing,
+            "assumptions": assumptions,
+        }
+    )
+    return current
+
+
+# 함수 설명: `_string_list()`는 보완 질문과 가정을 빈 문자열 없이 표준 문자열 목록으로 정리합니다.
+def _string_list(value: Any) -> list[str]:
+    return [str(item).strip() for item in value if str(item or "").strip()] if isinstance(value, list) else []
+
+
+# 함수 설명: `_truthy()`는 LLM의 bool 또는 문자열 값을 안전한 참/거짓 값으로 해석합니다.
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.

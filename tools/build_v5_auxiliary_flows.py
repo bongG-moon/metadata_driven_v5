@@ -18,6 +18,7 @@ EXPORT_ROOT = ROOT / "flow_exports"
 DONOR_PATH = EXPORT_ROOT / "data_analysis_flow_v5_standalone.json"
 COMPONENT_INDEX = Path.home() / "AppData" / "Local" / "com.LangflowDesktop" / ".langflow-venv" / "Lib" / "site-packages" / "lfx" / "_assets" / "component_index.json"
 ROUTER_READ_TIMEOUT_SECONDS = "240"
+MONGO_GLOBAL_VARIABLE = "MONGO_URL"
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,34 @@ def custom_node(proto: dict[str, Any], node_id: str, path: Path, x: float, y: fl
     node = _clone_node(proto, node_id, x, y)
     node["data"]["type"] = instance.__class__.__name__
     node["data"]["node"] = config
+    _apply_standalone_mongo_inputs(node)
     return node
+
+
+def _apply_standalone_mongo_inputs(node: dict[str, Any]) -> None:
+    """MongoDB 연결값을 OS 환경변수 대신 Langflow 노드 입력으로 직렬화합니다."""
+
+    template = node.get("data", {}).get("node", {}).get("template", {})
+    mongo_uri = template.get("mongo_uri") if isinstance(template, dict) else None
+    if not isinstance(mongo_uri, dict):
+        return
+    mongo_uri["value"] = MONGO_GLOBAL_VARIABLE
+    mongo_uri["load_from_db"] = True
+    mongo_uri["advanced"] = False
+    mongo_uri["show"] = True
+    for field_name in (
+        "mongo_database",
+        "collection_name",
+        "session_collection_name",
+        "domain_collection_name",
+        "table_collection_name",
+        "filter_collection_name",
+    ):
+        field = template.get(field_name)
+        if isinstance(field, dict):
+            field["load_from_db"] = False
+            field["advanced"] = False
+            field["show"] = True
 
 
 def prompt_node(proto: dict[str, Any], node_id: str, prompt_text: str, x: float, y: float) -> dict[str, Any]:
@@ -110,7 +138,44 @@ def agent_node(proto: dict[str, Any], node_id: str, x: float, y: float, system_p
     template = node["data"]["node"]["template"]
     _set_value(template, "api_key", "")
     _set_value(template, "system_prompt", system_prompt)
+    # 저장/QA 내부 Agent는 별도 도구나 Langflow chat history가 필요하지 않습니다.
+    # 현재 요청은 Prompt에 완전히 포함되므로 Agent wrapper의 반복·기억·날짜 도구를 비활성화합니다.
+    _set_value(template, "n_messages", 0)
     _set_value(template, "max_iterations", 1)
+    _set_value(template, "add_current_date_tool", False)
+    _set_value(template, "max_tokens", 8192)
+    _set_value(template, "verbose", False)
+    _set_value(template, "tools", "")
+    return node
+
+
+def guarded_agent_node(
+    custom_proto: dict[str, Any],
+    agent_proto: dict[str, Any],
+    node_id: str,
+    path: Path,
+    x: float,
+    y: float,
+    system_prompt: str,
+) -> dict[str, Any]:
+    """기존 Agent provider 값을 보존한 Metadata QA 조건부 Agent custom node를 만듭니다."""
+    node = custom_node(custom_proto, node_id, path, x, y)
+    template = node["data"]["node"]["template"]
+    donor_template = agent_proto["data"]["node"]["template"]
+    for field_name, field in template.items():
+        # custom guarded subclass의 code는 반드시 새 Python 원본을 유지합니다.
+        # donor Agent에서는 provider/model 등 런타임 설정값만 복사합니다.
+        if field_name == "code":
+            continue
+        donor_field = donor_template.get(field_name)
+        if isinstance(field, dict) and isinstance(donor_field, dict) and "value" in donor_field:
+            field["value"] = deepcopy(donor_field["value"])
+    _set_value(template, "api_key", "")
+    _set_value(template, "system_prompt", system_prompt)
+    _set_value(template, "n_messages", 0)
+    _set_value(template, "max_iterations", 1)
+    _set_value(template, "add_current_date_tool", False)
+    _set_value(template, "max_tokens", 8192)
     _set_value(template, "verbose", False)
     _set_value(template, "tools", "")
     return node
@@ -118,6 +183,12 @@ def agent_node(proto: dict[str, Any], node_id: str, x: float, y: float, system_p
 
 def native_node(proto: dict[str, Any], node_id: str, x: float, y: float) -> dict[str, Any]:
     return _clone_node(proto, node_id, x, y)
+
+
+def _set_message_storage(node: dict[str, Any], enabled: bool) -> None:
+    """ChatInput/ChatOutput의 Langflow message DB 저장 여부를 명시적으로 설정합니다."""
+    template = node.get("data", {}).get("node", {}).get("template", {})
+    _set_value(template, "should_store_message", enabled)
 
 
 def _clone_node(proto: dict[str, Any], node_id: str, x: float, y: float) -> dict[str, Any]:
@@ -192,6 +263,7 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
         return node
 
     chat = add("chat", native_node(proto["chat_input"], f"ChatInput-{spec.slug}", 0, 0))
+    _set_message_storage(chat, True)
     request = add("request", custom_node(proto["custom"], f"Request-{spec.slug}", folder / spec.request, 320, 0))
     _set_value(request["data"]["node"]["template"], "dry_run", True)
     duplicate_action = request["data"]["node"]["template"].get("duplicate_action")
@@ -204,12 +276,15 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
     extraction_agent = add("extract_agent", agent_node(proto["agent"], f"AgentExtract-{spec.slug}", 1250, 0, "Return only the JSON object requested by the prompt. Do not add markdown or prose."))
     normalizer = add("normalizer", custom_node(proto["custom"], f"Normalizer-{spec.slug}", folder / spec.normalizer, 1550, 0))
     existing_loader = add("existing_loader", custom_node(proto["custom"], f"ExistingLoader-{spec.slug}", folder / spec.existing_loader, 1550, 340))
+    # 세 matcher 모두 생성 후보가 정해진 뒤 exact key 또는 section/key/alias 후보만 조회하므로 선행 전체 scan을 생략합니다.
+    _set_value(existing_loader["data"]["node"]["template"], "limit", "0")
     matcher = add("matcher", custom_node(proto["custom"], f"Matcher-{spec.slug}", folder / spec.matcher, 1850, 0))
     writer = add("writer", custom_node(proto["custom"], f"Writer-{spec.slug}", folder / spec.writer, 2150, 0))
     response = add("response", custom_node(proto["custom"], f"Response-{spec.slug}", folder / spec.response, 2450, 0))
     message = add("message", custom_node(proto["custom"], f"Message-{spec.slug}", folder / spec.message, 2750, -100))
     api = add("api", custom_node(proto["custom"], f"Api-{spec.slug}", folder / spec.api, 3050, 100))
     output = add("chat_output", native_node(proto["chat_output"], f"ChatOutput-{spec.slug}", 3050, -180))
+    _set_message_storage(output, True)
 
     add_edge(flow, chat, "message", request, "raw_text")
     add_edge(flow, request, "payload_out", variables, "payload")
@@ -240,31 +315,46 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
         return node
 
     chat = add("chat", native_node(proto["chat_input"], "ChatInput-metadata-qa", 0, 0))
+    _set_message_storage(chat, True)
     request = add("request", custom_node(proto["custom"], "Request-metadata-qa", folder / "00_metadata_qa_request_loader.py", 320, 0))
-    domain = add("domain", custom_node(proto["custom"], "Loader-domain-metadata-qa", folder / "01a_mongodb_domain_metadata_loader.py", 320, 350))
-    table = add("table", custom_node(proto["custom"], "Loader-table-metadata-qa", folder / "01b_mongodb_table_catalog_loader.py", 650, 350))
-    filters = add("filters", custom_node(proto["custom"], "Loader-filter-metadata-qa", folder / "01c_mongodb_main_filter_loader.py", 980, 350))
-    context = add("context", custom_node(proto["custom"], "Context-metadata-qa", folder / "02_metadata_qa_context_builder.py", 1300, 0))
+    snapshot = add("snapshot", custom_node(proto["custom"], "SnapshotLoader-metadata-qa", folder / "01_mongodb_metadata_snapshot_loader.py", 650, 320))
+    context = add("context", custom_node(proto["custom"], "Context-metadata-qa", folder / "02_metadata_qa_context_builder.py", 980, 0))
     _set_value(context["data"]["node"]["template"], "max_items", "50")
     _set_value(context["data"]["node"]["template"], "max_bytes", "65536")
-    variables = add("variables", custom_node(proto["custom"], "Variables-metadata-qa", folder / "03_metadata_qa_variables_builder.py", 1600, 0))
+    variables = add("variables", custom_node(proto["custom"], "Variables-metadata-qa", folder / "03_metadata_qa_variables_builder.py", 1280, 0))
     prompt_text = (folder / "03_metadata_qa_prompt_template_ko.md").read_text(encoding="utf-8")
-    prompt = add("prompt", prompt_node(proto["prompt"], "Prompt-metadata-qa", prompt_text, 1900, 0))
-    agent = add("agent", agent_node(proto["agent"], "Agent-metadata-qa", 2200, 0, "Answer only from the supplied metadata context and return the requested JSON object."))
-    normalizer = add("normalizer", custom_node(proto["custom"], "Normalizer-metadata-qa", folder / "04_metadata_qa_response_normalizer.py", 2500, 0))
-    message = add("message", custom_node(proto["custom"], "Message-metadata-qa", folder / "05_metadata_qa_message_adapter.py", 2800, -100))
-    api = add("api", custom_node(proto["custom"], "Api-metadata-qa", folder / "06_metadata_qa_api_response_builder.py", 3100, 100))
-    output = add("output", native_node(proto["chat_output"], "ChatOutput-metadata-qa", 3100, -160))
+    prompt = add("prompt", prompt_node(proto["prompt"], "Prompt-metadata-qa", prompt_text, 1580, 0))
+    agent = add(
+        "agent",
+        guarded_agent_node(
+            proto["custom"],
+            proto["agent"],
+            "Agent-metadata-qa",
+            folder / "03_metadata_qa_guarded_agent.py",
+            1880,
+            0,
+            "Answer only from the supplied metadata context and return the requested JSON object.",
+        ),
+    )
+    normalizer = add("normalizer", custom_node(proto["custom"], "Normalizer-metadata-qa", folder / "04_metadata_qa_response_normalizer.py", 2180, 0))
+    message = add("message", custom_node(proto["custom"], "Message-metadata-qa", folder / "05_metadata_qa_message_adapter.py", 2480, -100))
+    api = add("api", custom_node(proto["custom"], "Api-metadata-qa", folder / "06_metadata_qa_api_response_builder.py", 2780, 100))
+    output = add("output", native_node(proto["chat_output"], "ChatOutput-metadata-qa", 2780, -160))
+    _set_message_storage(output, True)
 
     add_edge(flow, chat, "message", request, "question")
+    # 통합 snapshot loader는 빈 질문을 MongoDB 연결 전에 차단하고 cache miss에도 MongoClient를 한 번만 생성합니다.
+    add_edge(flow, request, "payload_out", snapshot, "request_payload")
     add_edge(flow, request, "payload_out", context, "payload")
-    add_edge(flow, domain, "domain_items", context, "domain_items")
-    add_edge(flow, table, "table_catalog_items", context, "table_catalog_items")
-    add_edge(flow, filters, "main_flow_filters", context, "main_flow_filters")
+    add_edge(flow, snapshot, "domain_items", context, "domain_items")
+    add_edge(flow, snapshot, "table_catalog_items", context, "table_catalog_items")
+    add_edge(flow, snapshot, "main_flow_filters", context, "main_flow_filters")
     add_edge(flow, context, "payload_out", variables, "payload")
     for output_name in ("question", "metadata_context_json", "output_schema_json"):
         add_edge(flow, variables, output_name, prompt, output_name)
     add_edge(flow, prompt, "prompt", agent, "input_value")
+    # Guarded Agent는 direct mode에서 get_agent_requirements() 전에 반환해 실제 모델 호출을 생략합니다.
+    add_edge(flow, context, "payload_out", agent, "control_payload")
     add_edge(flow, context, "payload_out", normalizer, "payload")
     add_edge(flow, agent, "response", normalizer, "llm_response")
     add_edge(flow, normalizer, "payload_out", message, "payload")
@@ -378,6 +468,7 @@ def build_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         ]
     )
     chat = native_node(proto["chat_input"], "ChatInput-api-router", 0, 0)
+    _set_message_storage(chat, True)
     router = smart_router_node(proto["custom"], proto["agent"], "SmartRouter-api-router", routes, 350, 0)
     flow["data"]["nodes"].extend([chat, router])
     add_edge(flow, chat, "message", router, "input_text")
@@ -391,6 +482,7 @@ def build_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         _set_value(template, "api_url", f"/api/v1/run/{ROUTE_ENDPOINTS[route_name]}")
         _set_value(template, "read_timeout_seconds", ROUTER_READ_TIMEOUT_SECONDS)
         output = native_node(proto["chat_output"], f"ChatOutput-{route_name}", 1180, y)
+        _set_message_storage(output, True)
         flow["data"]["nodes"].extend([caller, output])
         add_edge(flow, router, f"category_{index_value}_result", caller, "flow_input")
         add_edge(flow, caller, "message", output, "input_value")
@@ -399,6 +491,7 @@ def build_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         route_name = routes[route_index - 1]["route_category"]
         y = 1600 + offset * 260
         output = native_node(proto["chat_output"], f"ChatOutput-{route_name}", 1180, y)
+        _set_message_storage(output, True)
         flow["data"]["nodes"].append(output)
         add_edge(flow, router, f"category_{route_index}_result", output, "input_value")
     return flow
@@ -417,6 +510,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     tool_path = COMPONENT_ROOT / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
 
     chat = native_node(proto["chat_input"], "ChatInput-agent-tool-router", 0, 0)
+    _set_message_storage(chat, True)
     agent = agent_node(proto["agent"], "Agent-agent-tool-router", 850, 0, system_prompt)
     agent_template = agent["data"]["node"]["template"]
     _set_value(agent_template, "max_iterations", 3)
@@ -425,6 +519,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     _set_value(agent_template, "handle_parsing_errors", True)
     _set_value(agent_template, "verbose", False)
     output = native_node(proto["chat_output"], "ChatOutput-agent-tool-router", 1250, 0)
+    _set_message_storage(output, True)
     flow["data"]["nodes"].extend([chat, agent, output])
     add_edge(flow, chat, "message", agent, "input_value")
 

@@ -6,13 +6,16 @@
 
 ```text
 Chat Input.message -> 00 Request Loader.question
+00.payload_out -> 01 Snapshot Loader.request_payload
 00.payload_out -> 02 Context Builder.payload
-01A.domain_items -> 02.domain_items
-01B.table_catalog_items -> 02.table_catalog_items
-01C.main_flow_filters -> 02.main_flow_filters
+01.domain_items -> 02.domain_items
+01.table_catalog_items -> 02.table_catalog_items
+01.main_flow_filters -> 02.main_flow_filters
 02.payload_out -> 03 Variables.payload
 03 outputs -> Prompt Template variables
-Prompt -> Agent -> 04 Normalizer.llm_response
+Prompt -> 03 Guarded Agent.input_value
+02.payload_out -> 03 Guarded Agent.control_payload
+03 Guarded Agent.response -> 04 Normalizer.llm_response
 02.payload_out -> 04 Normalizer.payload
 04.payload_out -> 05 Message Adapter.payload
 04.payload_out -> 06 API Response.payload
@@ -22,12 +25,17 @@ Prompt -> Agent -> 04 Normalizer.llm_response
 ## Payload 정책
 
 - MongoDB loader projection은 identity, `status`, `payload`만 읽고 등록 trace와 writer 상태는 조회하지 않는다.
+- 통합 Snapshot Loader는 한 MongoClient로 세 컬렉션을 순차 조회하고 빈 질문이면 접속 전에 `skipped`로 종료한다.
+- 정상 전체 snapshot은 프로세스 안에서 기본 15초간 캐시한다. partial/error 결과는 캐시하지 않으며 `METADATA_QA_CACHE_TTL_SECONDS=0`이면 비활성화된다.
+- 실제 metadata 저장 성공 시 같은 worker의 snapshot generation을 증가시켜 즉시 무효화한다. 다른 worker의 오래된 snapshot은 TTL 안에서만 유지될 수 있다.
 - `02`는 질문 모드를 먼저 결정한 뒤 필요한 필드만 LLM context에 포함한다.
 - `available_sources`: compact candidate rows만 전달하고 `query_template`은 제외한다.
 - `dataset_sql`: 선택된 dataset의 SQL만 포함한다.
 - 기본 최대 후보는 50, 기본 context 제한은 65,536 bytes다.
 - `max_items`와 `max_bytes`는 실제 상한으로 동작하며 축소 시 trace warning을 남긴다.
 - secret 값은 `***`로 마스킹한다.
+- 결정론적 답변이 가능한 모드는 `llm_control.skip=true`로 표시한다. Guarded Agent는 이 값을 보고 부모 Agent 초기화 전에 빈 Message를 반환하므로 실제 모델 호출이 발생하지 않는다.
+- 자유 서술이 필요한 모드는 `skip=false`이며 기존 Langflow Agent provider/model 경로를 그대로 실행한다.
 
 ## 응답 계약
 
