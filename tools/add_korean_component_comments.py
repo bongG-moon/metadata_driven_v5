@@ -55,7 +55,7 @@ PROCESS_NOTES: dict[str, str] = {
     "metadata_qa_flow/05_metadata_qa_message_adapter.py": "QA 결과를 답변·표·SQL·관련 메타데이터·경고 순서의 Markdown Message 하나로 렌더링합니다.",
     "metadata_qa_flow/06_metadata_qa_api_response_builder.py": "최종 QA API 응답에서 큰 내부 context를 제거하고 구조화 data와 Message envelope을 제공합니다.",
     "route_flow/01_flow_api_message_caller.py": "Smart Router가 선택한 하위 Flow Run API에 원문 질문과 부모 세션을 한 번만 전달하고 최종 Message를 추출합니다.",
-    "route_flow_v2/01_cached_named_run_flow_tool.py": "Flow 이름을 현재 ID로 해석해 그래프만 캐시하는 Agent 도구이며, 부모 세션과 단일 Chat Input/Output 계약을 유지합니다.",
+    "route_flow_v2/01_cached_named_run_flow_tool.py": "Flow 이름을 현재 ID로 해석하고 고정 question 인자를 현재 그래프의 단일 Chat Input으로 변환하는 Agent 도구입니다.",
     "session_state_flow/00_mongodb_session_state_loader.py": "직접 전달된 상태를 우선 사용하고, 없으면 session ID로 MongoDB 상태를 읽어 runtime 데이터를 제거한 작은 이전 상태를 만듭니다.",
     "session_state_flow/01_mongodb_session_state_writer.py": "응답의 next state를 압축하고 turn count를 증가시켜 세션 문서를 replace-upsert한 뒤 저장 상태를 반환합니다.",
 }

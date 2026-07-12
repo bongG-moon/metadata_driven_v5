@@ -27,9 +27,11 @@ Agent.response -> Chat Output.input_value
 | `save_table_catalog_metadata` | `metadata_driven_v5_complete_20260710_table_catalog_saving` |
 | `save_main_flow_filter_metadata` | `metadata_driven_v5_complete_20260710_main_flow_filter_saving` |
 
-## Tool schema 절감
+## Tool schema 절감과 안정화
 
-표준 Run Flow Tool은 Data Analysis Flow의 편집 가능한 Text Input 프롬프트까지 Agent 인자로 노출할 수 있습니다. 현재 export를 LFX 0.3.4 schema builder로 측정하면 표준 5개 필드는 26,338 bytes이고, 이 구현의 `ChatInput.input_value` 한 필드는 356 bytes입니다. 내부 지시문, helper 코드, repair prompt는 기존 canvas에서 계속 편집할 수 있지만 Router Agent 토큰에는 포함되지 않습니다.
+표준 Run Flow Tool은 Data Analysis Flow의 편집 가능한 Text Input 프롬프트까지 Agent 인자로 노출할 수 있습니다. 현재 export를 LFX 0.3.4 schema builder로 측정하면 표준 5개 필드는 26,338 bytes이고, 이 구현의 필수 `question` 한 필드는 339 bytes입니다. 내부 지시문, helper 코드, repair prompt는 기존 canvas에서 계속 편집할 수 있지만 Router Agent 토큰에는 포함되지 않습니다.
+
+외부 Tool 인자는 항상 `flow_tweak_data.question`입니다. 실행 직전에 현재 그래프의 단일 Chat Input ID를 찾아 내부 `ChatInput-...~input_value` tweak로 변환합니다. 따라서 standalone import가 node ID를 다시 발급하거나 모델/provider가 Tool 필드명의 특수문자를 정규화하더라도 질문 필드가 바뀌지 않습니다.
 
 ## 성능 특성
 

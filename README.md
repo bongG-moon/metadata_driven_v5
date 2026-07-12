@@ -76,7 +76,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 16. Router 하위 Flow read timeout은 240초, 외부 Web/API client 기본 timeout은 300초입니다. timeout 상향은 장기 실행을 실패로 오판하지 않기 위한 여유이며 실행시간 자체를 줄이는 최적화는 아닙니다.
 17. pandas 안전 실행 namespace에 `zip`을 명시적으로 제공하고 최초/repair 프롬프트에 같은 builtin 계약을 노출해 `dict(zip(...))`가 불필요한 1회 repair를 유발하지 않도록 했습니다. 기존 오류 시 최대 1회 repair 계약은 그대로 유지합니다.
 18. 운영 기본 Router는 결정된 API 방식이며 Native Run Flow 노드가 없습니다. API caller 5개는 240초 read timeout과 원본 session 전달을 유지합니다.
-19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 이름 기반 Tool 5개는 import 후 실제 Flow ID를 다시 해석하고 `cache_flow=true`로 그래프만 캐시합니다. Tool schema에는 하위 Flow의 `ChatInput.input_value` 하나만 포함하며, `return_direct=true`로 Tool 결과 뒤 추가 Agent 재작성 호출을 생략합니다. `session_source` 포트는 제거했고 각 Tool이 부모 `graph.session_id`를 자동 상속합니다.
+19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 이름 기반 Tool 5개는 import 후 실제 Flow ID를 다시 해석하고 `cache_flow=true`로 그래프만 캐시합니다. Tool schema에는 node ID가 없는 필수 `question` 하나만 포함하고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 변환합니다. `return_direct=true`로 추가 Agent 재작성을 생략하며, 각 Tool은 부모 `graph.session_id`를 자동 상속합니다.
 
 ## 검증 상태와 현재 제약
 
@@ -90,7 +90,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 
 ## 한글 소스 설명과 JSON 동기화
 
-- `langflow_components`의 Python 68개에는 역할·입력·출력·처리 흐름·유지보수 포인트와 전체 함수 997/997의 인접 한글 설명이 들어 있습니다. private helper, 클래스 메서드, async 함수와 중첩 함수도 포함합니다.
+- `langflow_components`의 Python 68개에는 역할·입력·출력·처리 흐름·유지보수 포인트와 전체 함수 1000/1000의 인접 한글 설명이 들어 있습니다. private helper, 클래스 메서드, async 함수와 중첩 함수도 포함합니다.
 - JSON 문법은 구조 주석을 허용하지 않으므로, 한글 설명은 각 Custom Component의 `template.code.value`에 Python 주석으로 포함됩니다. Langflow 코드 편집기에서 원본과 동일하게 확인할 수 있습니다.
 - `.editorconfig`와 각 Python 파일 첫 줄의 UTF-8 선언으로 Windows 편집기의 인코딩 오저장을 예방합니다.
 - `python tools/add_korean_component_comments.py --check`와 `python tools/validate_korean_component_documentation.py`로 함수별 설명 누락·BOM·깨짐 문자·JSON 내장 코드·ZIP을 재검증할 수 있습니다. 자동 설명 규칙을 개선한 뒤에는 `--refresh-functions`로 기존 자동 주석을 갱신할 수 있습니다.

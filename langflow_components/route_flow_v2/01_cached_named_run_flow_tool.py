@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 # 컴포넌트 개요: 01 이름 기반 Cached Run Flow 도구
-# 역할: 같은 프로젝트의 Flow를 이름으로 찾아 실제 ID 기반 그래프 캐시와 함께 Agent 도구로 제공합니다.
-# 주요 입력: 대상 Flow 이름 (flow_name_selected) · 필수, 해석된 Flow ID (flow_id_selected), 세션 ID (session_id), Flow 그래프 캐시
-#        (cache_flow), 도구 이름 (tool_name) · 필수, 도구 설명 (tool_description) · 필수, 결과 직접 반환 (return_direct)
+# 역할: 같은 프로젝트의 Flow를 이름으로 찾아 고정 question 입력과 실제 ID 기반 그래프 캐시를 사용하는 Agent 도구로 제공합니다.
+# 주요 입력: 런타임 사용자 질문 (question) · 필수, 대상 Flow 이름 (flow_name_selected) · 필수, 해석된 Flow ID (flow_id_selected),
+#        세션 ID (session_id), Flow 그래프 캐시 (cache_flow), 도구 이름 (tool_name) · 필수, 도구 설명 (tool_description) · 필수,
+#        결과 직접 반환 (return_direct)
 # 주요 출력: Flow 도구 (component_as_tool)
-# 처리 흐름: Flow 이름을 현재 ID로 해석해 그래프만 캐시하는 Agent 도구이며, 부모 세션과 단일 Chat Input/Output 계약을 유지합니다.
-# 유지보수 포인트: cache_flow는 그래프 빌드만 재사용하고 답변은 캐시하지 않습니다. return_direct와 부모 세션 상속 계약을 유지합니다.
+# 처리 흐름: Flow 이름을 현재 ID로 해석하고, 고정 question 인자를 현재 그래프의 단일 Chat Input으로 변환해 실행합니다.
+# 유지보수 포인트: 외부 Tool schema에 node ID를 노출하지 않습니다. cache_flow는 그래프만 재사용하고 답변은 캐시하지 않습니다.
 # =============================================================================
 
 from __future__ import annotations
@@ -26,11 +27,41 @@ def _as_iso_text(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
+# 함수 설명: 현재 하위 Flow에서 사용자 입력을 받을 Chat Input ID를 정확히 하나만 확정합니다.
+# Flow import로 node ID가 바뀌어도 실행 시점 그래프를 기준으로 다시 찾습니다.
+def _single_chat_input_id(vertices: Any) -> str:
+    chat_input_ids = [
+        str(vertex.id)
+        for vertex in list(vertices or [])
+        if (getattr(vertex, "data", {}) or {}).get("type") == "ChatInput"
+        or getattr(vertex, "display_name", "") == "Chat Input"
+    ]
+    if len(chat_input_ids) != 1:
+        raise ValueError("대상 Flow에는 사용자 입력용 Chat Input이 정확히 하나 있어야 합니다.")
+    return chat_input_ids[0]
+
+
+# 함수 설명: Agent가 고정 question 필드로 전달한 값을 현재 Chat Input용 Run Flow tweak로 변환합니다.
+# `-`와 `~`가 포함된 내부 node key는 LLM Tool schema 밖에서만 생성해 provider의 필드명 정규화를 피합니다.
+def _question_tweaks(chat_input_id: Any, flow_tweak_data: Any) -> dict[str, dict[str, str]]:
+    node_id = str(chat_input_id or "").strip()
+    if not node_id:
+        raise ValueError("현재 하위 Flow의 Chat Input ID를 확인할 수 없습니다.")
+
+    tool_values = flow_tweak_data.model_dump() if hasattr(flow_tweak_data, "model_dump") else flow_tweak_data
+    if not isinstance(tool_values, dict):
+        tool_values = {}
+    question = str(tool_values.get("question") or "").strip()
+    if not question:
+        raise ValueError("하위 Flow에 전달할 사용자 질문이 비어 있습니다.")
+    return {node_id: {"input_value": question}}
+
+
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class CachedNamedRunFlowTool(RunFlowBaseComponent):
     display_name = "01 이름 기반 Cached Run Flow 도구"
-    description = "같은 프로젝트의 Flow를 이름으로 찾아 실제 ID 기반 그래프 캐시와 함께 Agent 도구로 제공합니다."
+    description = "Flow를 이름으로 찾고 고정 question을 현재 Chat Input으로 변환해 캐시된 그래프로 실행합니다."
     name = "CachedNamedRunFlowTool"
     icon = "Workflow"
 
@@ -120,26 +151,37 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         self._attributes["flow_id_selected"] = actual_id
         self._attributes["flow_name_selected_updated_at"] = actual_updated_at
         self._cached_flow_updated_at = actual_updated_at
-        return await super().get_graph(
+        graph = await super().get_graph(
             flow_name_selected=flow_name,
             flow_id_selected=actual_id,
             updated_at=actual_updated_at,
         )
+        self._resolved_chat_input_id = _single_chat_input_id(getattr(graph, "vertices", []))
+        return graph
 
-    # 주요 메서드: 대상 Flow의 실제 Chat Input만 Agent tool schema로 노출합니다.
+    # 주요 메서드: 대상 Flow의 실제 Chat Input을 고정 question Agent tool schema로 노출합니다.
     # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
     def get_new_fields(self, inputs_vertex):
-        chat_input_ids = {
-            vertex.id
-            for vertex in inputs_vertex
-            if vertex.data.get("type") == "ChatInput" or vertex.display_name == "Chat Input"
-        }
+        chat_input_id = _single_chat_input_id(inputs_vertex)
+        self._resolved_chat_input_id = chat_input_id
         fields = super().get_new_fields(inputs_vertex)
-        allowed_names = {f"{node_id}{self.IOPUT_SEP}input_value" for node_id in chat_input_ids}
-        compact_fields = [field for field in fields if field.get("name") in allowed_names]
+        internal_name = f"{chat_input_id}{self.IOPUT_SEP}input_value"
+        compact_fields = [field for field in fields if field.get("name") == internal_name]
         if len(compact_fields) != 1:
-            raise ValueError("대상 Flow에는 사용자 입력용 Chat Input이 정확히 하나 있어야 합니다.")
-        return compact_fields
+            raise ValueError("대상 Flow의 Chat Input 입력 필드를 확인할 수 없습니다.")
+
+        question_field = compact_fields[0]
+        question_field.update(
+            {
+                "name": "question",
+                "display_name": "사용자 질문",
+                "info": "현재 사용자 질문 원문입니다.",
+                "required": True,
+                "value": "",
+                "tool_mode": True,
+            }
+        )
+        return [question_field]
 
     # 주요 메서드: Flow tool 실행에 필요한 그래프와 입력 정보를 준비합니다.
     # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
@@ -149,6 +191,14 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         fields = self.update_input_types(self.get_new_fields_from_graph(graph))
         description = graph.description or str(getattr(self, "tool_description", "") or "")
         return description, [field for field in fields if field.get("tool_mode", False)]
+
+    # 주요 메서드: 고정 question Tool 인자를 현재 그래프의 Chat Input node tweak로 변환합니다.
+    # 기본 Run Flow의 node-ID 기반 외부 인자명을 사용하지 않아 모델/provider별 특수문자 변형을 차단합니다.
+    def _build_flow_tweak_data(self) -> dict[str, dict[str, str]]:
+        return _question_tweaks(
+            getattr(self, "_resolved_chat_input_id", ""),
+            self._attributes.get("flow_tweak_data"),
+        )
 
     # 함수 설명: `_get_tools()`는 입력 또는 외부 저장소에서 tools을 읽고 호출자가 사용할 형태로 반환합니다.
     async def _get_tools(self):

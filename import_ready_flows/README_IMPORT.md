@@ -53,7 +53,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 - 전체 pytest: 222 passed
 - 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 75/75 노드가 실제 Python 원본 67개에 매핑, 누락 0
-- 한글 설명/인코딩: Python 68/68와 함수 997/997, JSON 내장 함수 3255/3255 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
+- 한글 설명/인코딩: Python 68/68와 함수 1000/1000, JSON 내장 함수 3300/3300 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 23/23 통과
 - Langflow 1.8.2 frontend edge handle codec: 286/286 parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
@@ -68,7 +68,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
 - pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
 - API Router는 Run Flow 노드가 0개입니다. Agent Tool Router는 이름 기반 Cached Run Flow Tool 5개 모두 `cache_flow=true`, `return_direct=true`, 고정 Flow ID 없음으로 구성됩니다.
-- Agent Tool Router의 Tool schema에는 각 하위 Flow의 `ChatInput.input_value` 하나만 포함합니다. Data Analysis 기준 표준 26,338 bytes에서 356 bytes로 줄었고 내부 Prompt/Helper/Repair Text Input은 제외됩니다.
+- Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환하며, Data Analysis 기준 표준 26,338 bytes에서 339 bytes로 줄었습니다. 내부 Prompt/Helper/Repair Text Input은 제외됩니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. Chat Input은 Agent에만 한 번 연결됩니다.
 - 격리 import에서 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
 - Metadata 저장 Flow 3종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/Chat Output 사용

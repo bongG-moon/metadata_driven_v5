@@ -5452,12 +5452,38 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert list(outputs) == ["component_as_tool"]
     assert outputs["component_as_tool"]["types"] == ["Tool"]
     source = path.read_text(encoding="utf-8")
-    assert 'vertex.data.get("type") == "ChatInput"' in source
-    assert 'f"{node_id}{self.IOPUT_SEP}input_value"' in source
+    assert '.get("type") == "ChatInput"' in source
+    assert '"name": "question"' in source
+    assert 'f"{chat_input_id}{self.IOPUT_SEP}input_value"' in source
+    assert "def _build_flow_tweak_data" in source
     assert "flow_id_selected=None" in source
     assert "tool.return_direct" in source
     assert "parent_session" in source
     assert "session_source" not in source
+
+    vertices = [types.SimpleNamespace(id="ChatInput-runtime", data={"type": "ChatInput"}, display_name="Chat Input")]
+    assert component._single_chat_input_id(vertices) == "ChatInput-runtime"
+    assert component._question_tweaks("ChatInput-runtime", {"question": "현재 등록된 데이터셋 알려줘"}) == {
+        "ChatInput-runtime": {"input_value": "현재 등록된 데이터셋 알려줘"}
+    }
+
+    class ToolQuestion:
+        def model_dump(self):
+            return {"question": "현재 등록된 계산 로직 알려줘"}
+
+    instance = component.CachedNamedRunFlowTool()
+    instance._resolved_chat_input_id = "ChatInput-imported"
+    instance._attributes = {"flow_tweak_data": ToolQuestion()}
+    assert instance._build_flow_tweak_data() == {
+        "ChatInput-imported": {"input_value": "현재 등록된 계산 로직 알려줘"}
+    }
+
+    try:
+        component._question_tweaks("ChatInput-runtime", {"ChatInput_runtime_input_value": "잘못된 키"})
+    except ValueError as exc:
+        assert "사용자 질문이 비어" in str(exc)
+    else:
+        raise AssertionError("node-ID 기반 또는 provider 정규화 키를 question으로 허용하면 안 됩니다.")
 
 
 def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():

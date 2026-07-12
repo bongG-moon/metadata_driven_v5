@@ -123,7 +123,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
         "validation": {
             "pytest": "222 passed",
             "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 75/75 custom nodes to 67 real Python sources; 0 missing",
-            "korean_component_documentation": "68/68 Python sources and 997/997 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 225 embedded custom-code instances preserve 3255/3255 documented function instances; strict UTF-8/JSON checks passed",
+            "korean_component_documentation": "68/68 Python sources and 1000/1000 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 225 embedded custom-code instances preserve 3300/3300 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
@@ -141,7 +141,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
             "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
             "run_flow_cache_policy": "API Router has 0 Run Flow tools; Agent Tool Router has 5/5 name-resolved tools with cache_flow=true and blank exported IDs",
-            "agent_tool_schema_policy": "5/5 tools expose only the target ChatInput.input_value; Data Analysis schema reduced from 26338 to 356 bytes",
+            "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current ChatInput ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
             "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
             "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
             "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
@@ -421,8 +421,10 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
         if "session_source" in template:
             raise ValueError(f"{node_id} must inherit graph.session_id without a session-source port.")
         code = str(template.get("code", {}).get("value") or "")
-        if "ChatInput" not in code or "allowed_names" not in code:
-            raise ValueError(f"{node_id} does not embed the compact ChatInput-only schema policy.")
+        if '"name": "question"' not in code or "def _question_tweaks" not in code:
+            raise ValueError(f"{node_id} does not embed the stable question schema policy.")
+        if "allowed_names" in code:
+            raise ValueError(f"{node_id} still exposes node-ID based Tool fields.")
         if tool["data"]["node"].get("tool_mode") is not True:
             raise ValueError(f"{node_id} must be exported in Tool Mode.")
         expected_edges = {(node_id, "component_as_tool", "Agent-agent-tool-router", "tools")}
@@ -494,7 +496,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 - 전체 pytest: 222 passed
 - 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 75/75 노드가 실제 Python 원본 67개에 매핑, 누락 0
-- 한글 설명/인코딩: Python 68/68와 함수 997/997, JSON 내장 함수 3255/3255 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
+- 한글 설명/인코딩: Python 68/68와 함수 1000/1000, JSON 내장 함수 3300/3300 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 23/23 통과
 - Langflow 1.8.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
@@ -509,7 +511,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
 - pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
 - API Router는 Run Flow 노드가 0개입니다. Agent Tool Router는 이름 기반 Cached Run Flow Tool 5개 모두 `cache_flow=true`, `return_direct=true`, 고정 Flow ID 없음으로 구성됩니다.
-- Agent Tool Router의 Tool schema에는 각 하위 Flow의 `ChatInput.input_value` 하나만 포함합니다. Data Analysis 기준 표준 26,338 bytes에서 356 bytes로 줄었고 내부 Prompt/Helper/Repair Text Input은 제외됩니다.
+- Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환하며, Data Analysis 기준 표준 26,338 bytes에서 339 bytes로 줄었습니다. 내부 Prompt/Helper/Repair Text Input은 제외됩니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. Chat Input은 Agent에만 한 번 연결됩니다.
 - 격리 import에서 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
 - Metadata 저장 Flow 3종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/Chat Output 사용

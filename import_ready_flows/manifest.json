@@ -23,7 +23,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "b5c07d884859b2c207b7afd05f4be7df6bf41c17ff85f86deba8f553a0f985e8",
+  "single_file_ui_import_sha256": "6e0d6d1084a62a96a8f75fc5315569b6d646fdb86f6a8c0d2bba8f8ee04994ab",
   "flows": [
     {
       "order": 1,
@@ -86,7 +86,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
       "nodes": 8,
       "edges": 7,
-      "sha256": "f3d25f6612ffdf37a548d8de4b00ffc956437dbfd4ce8e1856772da8688e3ab8"
+      "sha256": "b5cf206a4113c16333eeced950a096d72703bbbf9e39a68d07f1b49ceda8ac90"
     }
   ],
   "router_configuration": {
@@ -104,7 +104,7 @@
   "validation": {
     "pytest": "222 passed",
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 75/75 custom nodes to 67 real Python sources; 0 missing",
-    "korean_component_documentation": "68/68 Python sources and 997/997 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 225 embedded custom-code instances preserve 3255/3255 documented function instances; strict UTF-8/JSON checks passed",
+    "korean_component_documentation": "68/68 Python sources and 1000/1000 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 225 embedded custom-code instances preserve 3300/3300 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
     "langflow_frontend_edge_handles": "286/286 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
@@ -120,7 +120,7 @@
     "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
     "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
     "run_flow_cache_policy": "API Router has 0 Run Flow tools; Agent Tool Router has 5/5 name-resolved tools with cache_flow=true and blank exported IDs",
-    "agent_tool_schema_policy": "5/5 tools expose only the target ChatInput.input_value; Data Analysis schema reduced from 26338 to 356 bytes",
+    "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current ChatInput ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
     "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
     "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
     "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",

@@ -8,4 +8,4 @@
 | `save_table_catalog_metadata` | source type, query template, 필수 파라미터, 컬럼 스키마의 등록·변경 | 도메인 용어, 공통 필터 |
 | `save_main_flow_filter_metadata` | DATE, OPER_NAME, ORG 등 공통 필터 정의의 등록·변경 | 도메인, 테이블 카탈로그 |
 
-모든 Tool은 사용자 원문을 한 개의 Chat Input 인자로 받고, 한 요청에서 정확히 하나만 선택됩니다.
+모든 Tool은 사용자 원문을 node ID가 없는 필수 `question` 인자로 받고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 내부 변환됩니다. 한 요청에서는 정확히 하나만 선택됩니다.

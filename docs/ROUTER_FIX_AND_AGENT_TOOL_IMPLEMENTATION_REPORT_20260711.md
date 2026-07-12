@@ -52,8 +52,9 @@ Langflow upload는 export JSON의 Flow ID를 그대로 보존하지 않고 새 D
 
 1. 고정 ID 대신 정확한 Flow 이름을 저장합니다.
 2. 실행 시 같은 프로젝트 DB에서 현재 Flow ID와 `updated_at`을 조회합니다.
-3. 실제 `user_id + flow_id`로 Langflow shared graph cache를 사용합니다.
-4. 대상 Flow가 갱신되면 `updated_at` 비교로 오래된 graph cache를 무효화합니다.
+3. 현재 그래프에서 단일 Chat Input ID를 확인하고 고정 `question` 인자를 내부 tweak로 변환합니다.
+4. 실제 `user_id + flow_id`로 Langflow shared graph cache를 사용합니다.
+5. 대상 Flow가 갱신되면 `updated_at` 비교로 오래된 graph cache를 무효화합니다.
 
 `cache_flow=true`는 그래프 파싱·구성 비용만 줄입니다. 데이터 조회, pandas, 하위 LLM 답변 결과는 매 요청 다시 실행합니다. 따라서 warm 실행에서 일부 단축을 기대할 수 있지만 API Smart Router보다 항상 빠르다는 의미는 아닙니다.
 
@@ -62,9 +63,20 @@ Langflow upload는 export JSON의 Flow ID를 그대로 보존하지 않고 새 D
 표준 Run Flow Tool은 Data Analysis의 편집용 Intent/Pandas/Answer/Repair Text Input까지 Agent-controlled schema로 노출했습니다.
 
 - 표준 필드: 5개, schema 26,338 bytes
-- 개선 필드: `ChatInput.input_value` 1개, schema 356 bytes
+- 개선 필드: 필수 `question` 1개, schema 339 bytes
 
-내부 prompt, helper, repair prompt는 Data Analysis canvas에서 계속 편집할 수 있지만 Router Agent 요청에는 포함되지 않습니다. Tool 5개는 `return_direct=true`이므로 하위 Flow가 만든 최종 답변을 다시 쓰기 위한 추가 Agent LLM 단계도 생략합니다.
+내부 prompt, helper, repair prompt는 Data Analysis canvas에서 계속 편집할 수 있지만 Router Agent 요청에는 포함되지 않습니다. 외부 schema에 `ChatInput-...~input_value`처럼 import마다 바뀌는 node ID를 노출하지 않으므로 모델/provider의 필드명 정규화에도 영향을 받지 않습니다. Tool 5개는 `return_direct=true`이므로 하위 Flow가 만든 최종 답변을 다시 쓰기 위한 추가 Agent LLM 단계도 생략합니다.
+
+## 2026-07-12 질문 전달 안정화
+
+라이브 실행을 읽기 전용으로 점검했을 때 기존 node-ID 기반 Tool 필드 `ChatInput-...~input_value`가 Agent/provider 계층에서 underscore 형식으로 정규화되어 하위 Flow의 `input_value`가 빈 문자열이 되는 사례를 확인했습니다. 세션 ID는 정상 상속됐지만 Data Analysis는 빈 질문 검증이 없어 이전 세션 상태로 정상처럼 보였고, Metadata QA는 `empty_question`을 표시했습니다.
+
+현재 구현은 외부 Tool schema를 필수 `flow_tweak_data.question`으로 고정했습니다. 실행 직전에 이름으로 찾은 최신 그래프에서 단일 Chat Input ID를 확인하고 내부 tweak를 생성합니다. 세션 이력으로 질문을 복구하는 fallback은 추가하지 않았습니다.
+
+- 다섯 하위 Flow schema: `question` 1개, required 5/5
+- 라이브 DB에 import된 서로 다른 Chat Input ID: 현재 ID로 내부 변환 5/5
+- LFX 0.3.4 Data Analysis schema: 339 bytes
+- node-ID 또는 underscore 변형 키: 질문으로 허용하지 않고 명시적 오류
 
 ## 산출물
 
