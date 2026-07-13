@@ -23,9 +23,11 @@ AUTHORITATIVE_CONTEXT_TABLE_TYPES = {
     "available_sources",
     "required_params",
     "calculation_logic_list",
+    "product_domain_info",
+    "product_condition",
     "question_to_dataset",
 }
-ALWAYS_USE_CONTEXT_TABLE_TYPES = {"available_sources"}
+ALWAYS_USE_CONTEXT_TABLE_TYPES = {"available_sources", "calculation_logic_list", "product_domain_info", "product_condition"}
 
 
 # 주요 함수: LLM QA 결과를 근거 문맥과 결합해 안정적인 답변 계약으로 정규화합니다.
@@ -41,14 +43,18 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
     skip_llm = bool(llm_control.get("skip"))
     parsed = {} if skip_llm else _parse_llm_response(llm_response_value)
     fallback = _fallback_answer(question, context)
-    answer_type = str(parsed.get("answer_type") or fallback.get("answer_type") or context.get("answer_mode") or "general_metadata_search").strip()
+    context_mode = str(context.get("answer_mode") or "").strip()
+    parsed_answer_type = str(parsed.get("answer_type") or fallback.get("answer_type") or context_mode or "general_metadata_search").strip()
+    answer_type = context_mode if context_mode in AUTHORITATIVE_CONTEXT_TABLE_TYPES else parsed_answer_type
     answer_message = str(parsed.get("answer_message") or parsed.get("answer") or fallback["answer_message"]).strip()
     summary = str(parsed.get("summary") or fallback["summary"]).strip()
     parsed_sections = _dict(parsed.get("answer_sections"))
     parsed_table = _dict(parsed.get("table")) or _dict(parsed_sections.get("detail_table"))
     fallback_table = _service_table(answer_type, fallback["table"])
     use_context_table = _should_use_context_table(answer_type, context, parsed_table, fallback_table)
-    if use_context_table:
+    if use_context_table and (
+        not parsed or answer_type == "available_sources" or str(context.get("answer_mode") or "") == "available_sources"
+    ):
         answer_message = str(fallback["answer_message"]).strip()
         summary = str(fallback["summary"]).strip()
     table = fallback_table if use_context_table else (parsed_table or fallback_table)
@@ -373,7 +379,64 @@ def _service_table(answer_type: str, table: dict[str, Any]) -> dict[str, Any]:
             "columns": ["데이터셋", "데이터셋 키", "분류", "연결 방식", "DB/소스", "필수 조건"],
             "rows": [_available_source_row(row) for row in rows],
         }
+    if answer_type in {"product_domain_info", "product_condition"}:
+        return {
+            "columns": ["제품 그룹", "메타데이터 키", "별칭", "기본 조건", "데이터 계열별 조건", "데이터셋별 조건", "설명"],
+            "rows": [_product_domain_row(row) for row in rows],
+        }
+    if answer_type == "calculation_logic_list":
+        return {
+            "columns": ["구분", "메타데이터 키", "표시명", "제품 기준 컬럼", "집계 grain", "고정 group by", "수량 컬럼", "집계 방식", "계산식", "설명"],
+            "rows": [_calculation_rule_row(row) for row in rows],
+        }
     return table
+
+
+# 함수 설명: `_product_domain_row()`는 제품 조건 문서의 기본 조건과 source별 조건을 사람이 비교할 수 있는 표 행으로 바꿉니다.
+def _product_domain_row(row: dict[str, Any]) -> dict[str, Any]:
+    return _omit_empty(
+        {
+            "제품 그룹": row.get("display_name") or row.get("key"),
+            "메타데이터 키": row.get("key"),
+            "별칭": row.get("aliases"),
+            "기본 조건": row.get("condition") or row.get("filters"),
+            "데이터 계열별 조건": row.get("condition_by_family"),
+            "데이터셋별 조건": row.get("condition_by_dataset"),
+            "설명": row.get("description"),
+        }
+    )
+
+
+# 함수 설명: `_calculation_rule_row()`는 제품 키·recipe·metric 문서를 역할별 집계 근거가 드러나는 공통 표 행으로 바꿉니다.
+def _calculation_rule_row(row: dict[str, Any]) -> dict[str, Any]:
+    return _omit_empty(
+        {
+            "구분": _domain_section_label(row.get("section")),
+            "메타데이터 키": row.get("key"),
+            "표시명": row.get("display_name") or row.get("key"),
+            "제품 기준 컬럼": row.get("columns"),
+            "집계 grain": row.get("grain_policy"),
+            "고정 group by": row.get("group_by"),
+            "수량 컬럼": row.get("quantity_column") or row.get("column"),
+            "집계 방식": row.get("aggregation") or row.get("aggregation_method") or row.get("calculation_rule"),
+            "계산식": row.get("formula"),
+            "설명": row.get("description"),
+        }
+    )
+
+
+# 함수 설명: `_domain_section_label()`은 내부 domain section 식별자를 사용자용 역할명으로 변환합니다.
+def _domain_section_label(value: Any) -> str:
+    text = str(value or "").strip()
+    labels = {
+        "product_key_columns": "제품 키",
+        "analysis_recipes": "분석 규칙",
+        "quantity_terms": "수량 기준",
+        "metric_terms": "계산 지표",
+        "calculation_rules": "계산 규칙",
+        "pandas_function_cases": "분석 함수",
+    }
+    return labels.get(text, text)
 
 
 # 함수 설명: `_available_source_row()`는 데이터 소스·행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
@@ -611,6 +674,11 @@ def _columns_from_rows(rows: list[dict[str, Any]]) -> list[str]:
             if key not in columns:
                 columns.append(str(key))
     return columns
+
+
+# 함수 설명: `_omit_empty()`는 표 행에서 값이 없는 컬럼만 제거하고 dict/list 같은 구조화 근거는 원형대로 보존합니다.
+def _omit_empty(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.

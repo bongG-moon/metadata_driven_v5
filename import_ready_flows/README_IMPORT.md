@@ -22,7 +22,7 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 7개 Flow를 한 번에 import
 | 4 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 13 | 14 |
 | 5 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 11 | 18 |
 | 6 | `06_api_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-api-router` | 14 | 13 |
-| 7 | `07_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 8 | 7 |
+| 7 | `07_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 9 | 8 |
 
 ## 수동 연결 여부
 
@@ -52,13 +52,13 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 254 passed
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 77/77 노드가 실제 Python 원본 68개에 매핑, 누락 0
-- 한글 설명/인코딩: Python 69/69와 함수 1086/1086, JSON 내장 함수 3600/3600 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
+- 전체 pytest: 269 passed
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 78/78 노드가 실제 Python 원본 69개에 매핑, 누락 0
+- 한글 설명/인코딩: Python 70/70와 함수 1119/1119, JSON 내장 함수 3699/3699 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 23/23 통과
-- Langflow 1.8.2 frontend edge handle codec: 296/296 parse 및 `edge.data` 일치
+- Langflow 1.8.2 frontend edge handle codec: 298/298 parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.8.2 / LFX 0.3.4 node template: 114/114 passed
+- Langflow 1.8.2 / LFX 0.3.4 node template: 115/115 passed
 - API Router 직접 응답/명확화 분기: 예전 정상 Flow와 같은 Smart Router -> Chat Output 직접 edge 2/2, FinalGate 0개
 - API Router 단일 진입 구조: Chat Input -> Smart Router edge 1개, API caller용 session fan-out edge 0개
 - Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
@@ -72,6 +72,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환하며, Data Analysis 기준 표준 26,338 bytes에서 339 bytes로 줄었습니다. 내부 Prompt/Helper/Repair Text Input은 제외됩니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. Chat Input은 Agent에만 한 번 연결됩니다.
 - 격리 import에서 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
+- Route V2 진단 Tool은 명시적인 진단 요청에서만 현재 호출 사용자의 Flow 가시성·정확한 이름/`(1)` suffix·런타임 계약·하위 topology를 검사합니다. 하위 Flow를 실행하지 않고 원본 사용자/Flow ID와 비밀값을 출력하지 않으며 결과를 직접 반환합니다.
 - Metadata 저장 Flow 3종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/Chat Output 사용
 - Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
 - Metadata 후보: 도메인 관련 항목 최대 10건, 테이블 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증

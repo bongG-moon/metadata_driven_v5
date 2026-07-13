@@ -43,7 +43,7 @@
 | `04.payload_out` | `04A 신뢰 카탈로그 조회 작업 구성기.payload` |
 | `01B.table_catalog_items` | `04A 신뢰 카탈로그 조회 작업 구성기.table_catalog_items` |
 
-Intent LLM은 `dataset_key`, `source_alias`, `required_params`, `filters`만 선택합니다. `04A`가 LLM이 출력한 source 설정을 버리고 active table catalog의 설정을 주입합니다.
+Intent LLM은 plan 수준의 선택적 `shared_required_params`와 job별 `dataset_key`, `source_alias`, `required_params`, `filters`만 선택합니다. 공통 파라미터는 질문에서 전체 job에 같은 값이 적용된다고 명확할 때만 사용하고, 대상별 값은 각 job에 따로 둡니다. `04A`가 LLM이 출력한 source 설정을 버리고 active table catalog의 설정을 주입합니다.
 
 - `04A.retrieval_mode=dummy`: 모르는 dataset도 `source_type=dummy`, `dummy_only=true`로 유지해 더미 조회기로 전달합니다.
 - `04A.retrieval_mode=live`: active catalog에 없는 dataset은 제거하고 error를 기록합니다.

@@ -40,6 +40,8 @@ PRUNED_METADATA_KEYS = {
 
 SECRET_KEY_PATTERNS = ("password", "passwd", "token", "secret", "api_key", "apikey", "mongo_uri", "uri")
 CALCULATION_SECTIONS = {"analysis_recipes", "metric_terms", "pandas_function_cases", "calculation_rules", "quantity_terms"}
+PRODUCT_DOMAIN_SECTIONS = {"product_terms"}
+PRODUCT_AGGREGATION_SECTIONS = {"product_key_columns", "analysis_recipes"}
 LIST_ALL_TABLE_MODES = {"available_sources"}
 NO_DOMAIN_CANDIDATE_MODES = {
     "available_sources",
@@ -87,6 +89,7 @@ def build_metadata_qa_context(
     filter_items = [_sanitize(item) for item in filter_items]
 
     answer_mode = _infer_answer_mode(question)
+    query_scope = _infer_query_scope(question, answer_mode)
     inventory_request_kind = _inventory_request_kind(question, answer_mode)
     matched_domain = [_project_domain_item(item, answer_mode) for item in _select_domain_items(question, answer_mode, domain_items, limit)]
     matched_tables = [_project_table_item(item, answer_mode) for item in _select_table_items(question, answer_mode, table_items, limit)]
@@ -117,9 +120,13 @@ def build_metadata_qa_context(
         "answer_mode": answer_mode,
         "confidence": "high" if source_refs else "low",
     }
+    llm_skip = answer_mode in DETERMINISTIC_ANSWER_MODES and not (
+        answer_mode == "calculation_logic_list" and query_scope.get("request_kind") == "how_to"
+    )
     context = {
         "question": question,
         "answer_mode": answer_mode,
+        "query_scope": query_scope,
         "load_summary": load_summary,
         "matched_domain_items": matched_domain,
         "matched_datasets": matched_tables,
@@ -127,9 +134,9 @@ def build_metadata_qa_context(
         "candidate_rows": candidate_rows,
         "source_refs": source_refs,
         "llm_control": {
-            "skip": answer_mode in DETERMINISTIC_ANSWER_MODES,
+            "skip": llm_skip,
             "eligible_to_skip": answer_mode in DETERMINISTIC_ANSWER_MODES,
-            "reason": "deterministic_answer_mode" if answer_mode in DETERMINISTIC_ANSWER_MODES else "llm_synthesis_required",
+            "reason": "deterministic_answer_mode" if llm_skip else "llm_synthesis_required",
         },
     }
     if catalog_summary:
@@ -231,8 +238,10 @@ def _infer_answer_mode(question: str) -> str:
         return "question_to_dataset"
     if any(token in lowered for token in ("공정 그룹", "세부 공정", "포함", "차수", "공정에는")) and "공정" in lowered:
         return "process_group"
-    if "pop" in lowered and any(token in lowered for token in ("도메인", "정의", "무엇", "뭐야", "설명")):
+    if _looks_like_product_domain_question(lowered):
         return "product_domain_info"
+    if _looks_like_product_aggregation_rule_question(lowered):
+        return "calculation_logic_list"
     if any(token in lowered for token in ("제품 조건", "제품군", "hbm", "mobile", "pop", "tsv", "3ds")):
         return "product_condition"
     if any(token in lowered for token in ("제품 표현", "제품 token", "제품 토큰", "어떻게 찾", "매칭", "token")):
@@ -246,6 +255,75 @@ def _infer_answer_mode(question: str) -> str:
     if "도메인" in lowered or "domain" in lowered:
         return "domain_info"
     return "general_metadata_search"
+
+
+# 함수 설명: `_looks_like_product_domain_question()`은 제품 그룹·제품군의 등록 정보나 조건 설명을 묻는 QA 표현을 식별합니다.
+def _looks_like_product_domain_question(lowered: str) -> bool:
+    product_group_tokens = ("제품 그룹", "제품그룹", "제품군", "제품 조건", "product group")
+    metadata_detail_tokens = (
+        "도메인",
+        "domain",
+        "메타데이터",
+        "metadata",
+        "등록",
+        "정보",
+        "목록",
+        "뭐가 있",
+        "무엇이 있",
+        "뭐야",
+        "정의",
+        "설명",
+    )
+    if any(token in lowered for token in product_group_tokens) and any(token in lowered for token in metadata_detail_tokens):
+        return True
+    return "pop" in lowered and any(token in lowered for token in ("도메인", "정의", "무엇", "뭐야", "설명"))
+
+
+# 함수 설명: `_looks_like_product_aggregation_rule_question()`은 실제 값 조회가 아닌 제품 단위 집계 grain·컬럼·규칙 설명 질문을 판정합니다.
+def _looks_like_product_aggregation_rule_question(lowered: str) -> bool:
+    product_tokens = ("제품", "product")
+    aggregation_tokens = ("집계", "그룹핑", "그루핑", "group by", "groupby", "group_by", "묶어서")
+    explanation_tokens = (
+        "어떻게",
+        "기준",
+        "규칙",
+        "어떤 컬럼",
+        "무슨 컬럼",
+        "컬럼으로",
+        "메타데이터",
+        "metadata",
+        "등록",
+        "설명",
+    )
+    return (
+        any(token in lowered for token in product_tokens)
+        and any(token in lowered for token in aggregation_tokens)
+        and any(token in lowered for token in explanation_tokens)
+    )
+
+
+# 함수 설명: `_infer_query_scope()`는 answer_type을 바꾸지 않고 조회 대상과 요청 형태를 구조화해 후보 선택과 LLM 설명에 제공합니다.
+def _infer_query_scope(question: str, answer_mode: str) -> dict[str, str]:
+    lowered = str(question or "").lower()
+    if answer_mode == "product_domain_info":
+        subject = "product_terms"
+        aspect = "group_condition"
+    elif answer_mode == "calculation_logic_list" and _looks_like_product_aggregation_rule_question(lowered):
+        subject = "product_aggregation"
+        aspect = "grain_and_grouping"
+    else:
+        subject = "general"
+        aspect = ""
+
+    if any(token in lowered for token in ("총", "몇 개", "몇개", "개수", "건수", "count")):
+        request_kind = "count"
+    elif any(token in lowered for token in ("목록", "list", "뭐가 있", "무엇이 있", "전부", "전체")):
+        request_kind = "list"
+    elif any(token in lowered for token in ("어떻게", "기준", "규칙", "컬럼으로", "group by", "groupby", "그룹핑", "그루핑")):
+        request_kind = "how_to"
+    else:
+        request_kind = "detail"
+    return _omit_empty({"subject": subject, "aspect": aspect, "request_kind": request_kind})
 
 
 # 함수 설명: `_looks_like_data_value_question()`는 입력값이 LIKE·데이터·값·question 조건에 해당하는지 부작용 없이 bool로 판정합니다.
@@ -460,10 +538,25 @@ def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, 
     if answer_mode in NO_DOMAIN_CANDIDATE_MODES:
         return []
     if answer_mode == "calculation_logic_list":
+        if _looks_like_product_aggregation_rule_question(question.lower()):
+            return _select_product_aggregation_items(question, items, limit)
         selected = [item for item in items if str(item.get("section") or "") in CALCULATION_SECTIONS]
-        return selected[:limit]
-    if answer_mode in {"product_domain_info", "product_condition", "product_token_rule"}:
-        return _ranked(question + " pop product 제품", items, limit)
+        ranked = _ranked(question, selected, limit)
+        return ranked if ranked else selected[:limit]
+    if answer_mode == "product_domain_info":
+        product_items = [item for item in items if str(item.get("section") or "") in PRODUCT_DOMAIN_SECTIONS]
+        if _looks_like_product_domain_inventory(question.lower()):
+            return product_items[:limit]
+        ranked = _ranked(question + " product_terms 제품군 제품 조건", product_items, limit)
+        return ranked if ranked else product_items[:limit]
+    if answer_mode == "product_condition":
+        product_items = [item for item in items if str(item.get("section") or "") in PRODUCT_DOMAIN_SECTIONS]
+        ranked = _ranked(question + " product_terms 제품군 제품 조건", product_items, limit)
+        return ranked if ranked else product_items[:limit]
+    if answer_mode == "product_token_rule":
+        function_items = [item for item in items if str(item.get("section") or "") == "pandas_function_cases"]
+        ranked = _ranked(question + " product token match_product_tokens 제품 토큰", function_items, limit)
+        return ranked if ranked else function_items[:limit]
     if answer_mode == "process_group":
         return _ranked(question + " process_groups 공정", items, limit)
     if answer_mode == "term_definition":
@@ -473,6 +566,74 @@ def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, 
     selected = _ranked(question, items, limit)
     # 점수가 0인 임의의 앞 5건은 질문 근거가 아니므로 후보와 confidence를 오염시키지 않습니다.
     return selected
+
+
+# 함수 설명: `_looks_like_product_domain_inventory()`는 특정 제품 하나가 아니라 등록된 제품 그룹 전체를 묻는 표현인지 판정합니다.
+def _looks_like_product_domain_inventory(lowered: str) -> bool:
+    group_tokens = ("제품 그룹", "제품그룹", "제품군", "product group")
+    inventory_tokens = ("등록", "목록", "뭐가 있", "무엇이 있", "전부", "전체", "관련")
+    return any(token in lowered for token in group_tokens) and any(token in lowered for token in inventory_tokens)
+
+
+# 함수 설명: `_select_product_aggregation_items()`는 제품 grain 설명에 필요한 제품 키와 관련 recipe만 우선 선택하고 지표가 명시된 경우만 계산 항목을 보강합니다.
+def _select_product_aggregation_items(question: str, items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    aggregation_items = [item for item in items if str(item.get("section") or "") in PRODUCT_AGGREGATION_SECTIONS]
+    product_keys = [item for item in aggregation_items if str(item.get("section") or "") == "product_key_columns"]
+    selected.extend(_ranked(question + " product_key_columns 제품 키 제품별 group_by", product_keys, limit) or product_keys)
+
+    recipes = [item for item in aggregation_items if str(item.get("section") or "") == "analysis_recipes"]
+    product_recipes = [item for item in recipes if _is_product_aggregation_item(item)]
+    selected.extend(_ranked(question + " product aggregation grain group_by 제품 집계", product_recipes, limit) or product_recipes)
+
+    if _has_named_metric(question.lower()):
+        metric_items = [item for item in items if str(item.get("section") or "") in {"quantity_terms", "metric_terms", "calculation_rules"}]
+        selected.extend(_ranked(question, metric_items, limit))
+
+    deduped = []
+    seen = set()
+    for item in selected:
+        identity = (str(item.get("section") or ""), str(item.get("key") or ""))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(item)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+# 함수 설명: `_is_product_aggregation_item()`은 recipe payload가 제품 단위 grain·group by 규칙을 실제로 설명하는지 확인합니다.
+def _is_product_aggregation_item(item: dict[str, Any]) -> bool:
+    payload = _dict(item.get("payload"))
+    if any(payload.get(key) not in (None, "", [], {}) for key in ("grain_policy", "group_by")):
+        blob = _text_blob(item).lower()
+        return any(token in blob for token in ("제품", "product", "product_key", "question_or_product_grain"))
+    return False
+
+
+# 함수 설명: `_has_named_metric()`은 제품 집계 설명에 수량·지표 메타데이터까지 포함해야 하는 구체 지표 표현을 찾습니다.
+def _has_named_metric(lowered: str) -> bool:
+    return any(
+        token in lowered
+        for token in (
+            "생산량",
+            "생산실적",
+            "생산 실적",
+            "재공",
+            "투입",
+            "input",
+            "output",
+            "uph",
+            "달성률",
+            "달성율",
+            "계획",
+            "lot 수",
+            "lot수",
+            "unit 수",
+            "unit수",
+        )
+    )
 
 
 # 함수 설명: `_select_table_items()`는 질문과 답변 모드에 맞는 테이블 카탈로그 후보를 점수순으로 선택합니다.
@@ -586,11 +747,18 @@ def _score(tokens: set[str], item: dict[str, Any]) -> int:
 
 # 함수 설명: `_tokens()`는 문자열을 비교 가능한 검색 token 목록으로 분리·정규화합니다.
 def _tokens(text: str) -> set[str]:
-    raw = re.findall(r"[0-9a-zA-Z가-힣_/.-]+", str(text or "").lower())
+    lowered = str(text or "").lower()
+    raw = re.findall(r"[0-9a-zA-Z가-힣_/.-]+", lowered)
     aliases = {"생산량": {"production", "output", "실적"}, "재공": {"wip"}, "투입": {"input"}, "쿼리": {"query", "sql"}}
     result = {token.strip() for token in raw if len(token.strip()) >= 2}
     for token in list(result):
         result.update(aliases.get(token, set()))
+    if any(token in lowered for token in ("제품 그룹", "제품그룹", "제품군", "product group")):
+        result.update({"제품군", "제품 조건", "product", "product_terms"})
+    if any(token in lowered for token in ("집계", "그룹핑", "그루핑", "group by", "groupby", "group_by")):
+        result.update({"집계", "aggregation", "group_by", "grain"})
+    if "제품" in lowered or "product" in lowered:
+        result.update({"제품", "product"})
     return result
 
 
@@ -601,9 +769,56 @@ def _project_domain_item(item: dict[str, Any], answer_mode: str) -> dict[str, An
     if answer_mode == "process_group":
         keys.update({"processes", "process_groups", "members"})
     if answer_mode in {"product_domain_info", "product_condition", "product_token_rule"}:
-        keys.update({"conditions", "condition", "patterns", "tokens", "include", "exclude", "product_key_columns"})
+        keys.update(
+            {
+                "conditions",
+                "condition",
+                "condition_by_family",
+                "condition_by_dataset",
+                "filters",
+                "patterns",
+                "tokens",
+                "include",
+                "exclude",
+                "product_key_columns",
+                "question_cues",
+                "required_question_cues",
+                "examples",
+                "usage_examples",
+            }
+        )
     if answer_mode == "calculation_logic_list":
-        keys.update({"formula", "required_inputs", "outputs", "applicability", "conditions", "pseudocode", "function_name", "logic"})
+        keys.update(
+            {
+                "formula",
+                "calculation",
+                "calculation_rule",
+                "aggregation",
+                "required_inputs",
+                "outputs",
+                "output_column",
+                "output_columns",
+                "applicability",
+                "conditions",
+                "pseudocode",
+                "function_name",
+                "logic",
+                "columns",
+                "product_key_columns",
+                "grain_policy",
+                "group_by",
+                "step_plan_template",
+                "required_quantity_terms",
+                "required_dataset_families",
+                "metric_terms",
+                "question_cues",
+                "required_question_cues",
+                "forbidden_question_cues",
+                "quantity_column",
+                "dataset_key",
+                "dataset_family",
+            }
+        )
     return _omit_empty(
         {
             "section": item.get("section"),
@@ -825,6 +1040,23 @@ def _domain_row(item: dict[str, Any], include_section: bool = False) -> dict[str
             "aliases": _compact_list(payload.get("aliases")),
             "column": payload.get("column"),
             "aggregation_method": payload.get("aggregation_method"),
+            "aggregation": payload.get("aggregation"),
+            "condition": payload.get("condition") or payload.get("conditions"),
+            "condition_by_family": payload.get("condition_by_family"),
+            "condition_by_dataset": payload.get("condition_by_dataset"),
+            "filters": payload.get("filters"),
+            "columns": payload.get("columns") or payload.get("product_key_columns"),
+            "grain_policy": payload.get("grain_policy"),
+            "group_by": payload.get("group_by"),
+            "formula": payload.get("formula") or payload.get("calculation"),
+            "calculation_rule": payload.get("calculation_rule"),
+            "quantity_column": payload.get("quantity_column"),
+            "required_quantity_terms": payload.get("required_quantity_terms"),
+            "required_dataset_families": payload.get("required_dataset_families"),
+            "output_column": payload.get("output_column"),
+            "output_columns": payload.get("output_columns"),
+            "step_plan_template": payload.get("step_plan_template"),
+            "question_cues": payload.get("question_cues") or payload.get("required_question_cues"),
             "description": payload.get("description") or payload.get("usage_rule"),
         }
     )

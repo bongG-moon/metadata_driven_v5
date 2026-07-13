@@ -7,5 +7,6 @@
 | `save_domain_metadata` | 용어·별칭, 공정/제품 그룹, 분석 규칙의 등록·변경 | 테이블 스키마, 공통 필터 |
 | `save_table_catalog_metadata` | source type, query template, 필수 파라미터, 컬럼 스키마의 등록·변경 | 도메인 용어, 공통 필터 |
 | `save_main_flow_filter_metadata` | DATE, OPER_NAME, ORG 등 공통 필터 정의의 등록·변경 | 도메인, 테이블 카탈로그 |
+| `diagnose_route_v2_environment` | Route V2, Run Flow, user_id, Flow 이름·소유권·버전 오류의 명시적 진단 | 일반 데이터 조회, 메타데이터 QA·저장 |
 
-모든 Tool은 사용자 원문을 node ID가 없는 필수 `question` 인자로 받고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 내부 변환됩니다. 한 요청에서는 정확히 하나만 선택됩니다.
+하위 Flow Tool 5개는 사용자 원문을 node ID가 없는 필수 `question` 인자로 받고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 내부 변환됩니다. 진단 Tool은 `diagnostic_request` 한 필드만 받으며 하위 Flow를 실행하지 않습니다. 한 요청에서는 정확히 하나만 선택됩니다.

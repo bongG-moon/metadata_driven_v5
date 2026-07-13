@@ -15,6 +15,8 @@ from tools.build_v5_data_analysis_flow import (
     REPAIR_PROMPT_SOURCE,
     REMOVED_REPAIR_NODES,
     ROOT,
+    SPECIALIZED_PROMPT_NODE_ID,
+    SPECIALIZED_PROMPT_SOURCE,
     build_flow,
 )
 
@@ -72,6 +74,7 @@ def test_v5_flow_export_embeds_current_component_and_prompt_sources():
         source = (ROOT / "langflow_components" / "data_analysis_flow" / relative_path).read_text(encoding="utf-8")
         assert embedded == source, node_id
     assert nodes[REPAIR_PROMPT_NODE_ID]["data"]["node"]["template"]["input_value"]["value"] == REPAIR_PROMPT_SOURCE.read_text(encoding="utf-8")
+    assert nodes[SPECIALIZED_PROMPT_NODE_ID]["data"]["node"]["template"]["input_value"]["value"] == SPECIALIZED_PROMPT_SOURCE.read_text(encoding="utf-8")
     assert nodes["CustomComponent-s3mf1"]["data"]["node"]["template"]["repair_prompt_template"]["value"] == ""
 
 
@@ -262,6 +265,11 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
 
     tool_router = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-agent-tool-router"))
     tools = [node for node in tool_router["data"]["nodes"] if str(node.get("id") or "").startswith("CachedFlowTool-")]
+    diagnostic = next(
+        node
+        for node in tool_router["data"]["nodes"]
+        if str(node.get("id") or "") == "RouteV2Diagnostic-agent-tool-router"
+    )
     assert len(tools) == 5
     assert len([node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]) == 1
     assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
@@ -282,6 +290,16 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
             "metadata_driven_v5_complete_20260710_"
         )
         for node in tools
+    )
+    assert set(json.loads(diagnostic["data"]["node"]["template"]["target_flow_names_json"]["value"])) == {
+        node["data"]["node"]["template"]["flow_name_selected"]["value"] for node in tools
+    }
+    assert any(
+        edge["source"] == "RouteV2Diagnostic-agent-tool-router"
+        and edge["target"] == "Agent-agent-tool-router"
+        and edge["data"]["sourceHandle"]["name"] == "component_as_tool"
+        and edge["data"]["targetHandle"]["fieldName"] == "tools"
+        for edge in tool_router["data"]["edges"]
     )
 
 

@@ -502,12 +502,13 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow = empty_flow(
         donor,
         "metadata_driven_v5_agent_tool_router_standalone",
-        "LLM Agent router with five compact name-resolved cached Flow tools, shared session propagation, direct child responses, and one final Chat Output.",
+        "LLM Agent router with five compact name-resolved cached Flow tools, one safe runtime diagnostic tool, shared session propagation, direct responses, and one final Chat Output.",
         "metadata-driven-v5-agent-tool-router",
         ["v5", "standalone", "agent-router", "tool-mode", "cached-flow", "optimized"],
     )
     system_prompt = (COMPONENT_ROOT / "route_flow_v2" / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
     tool_path = COMPONENT_ROOT / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
+    diagnostic_path = COMPONENT_ROOT / "route_flow_v2" / "02_route_v2_runtime_diagnostic_tool.py"
 
     chat = native_node(proto["chat_input"], "ChatInput-agent-tool-router", 0, 0)
     _set_message_storage(chat, True)
@@ -537,6 +538,22 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         _set_value(template, "return_direct", True)
         flow["data"]["nodes"].append(tool)
         add_edge(flow, tool, "component_as_tool", agent, "tools")
+
+    diagnostic = custom_node(
+        proto["custom"],
+        "RouteV2Diagnostic-agent-tool-router",
+        diagnostic_path,
+        350,
+        780,
+    )
+    diagnostic_template = diagnostic["data"]["node"]["template"]
+    _set_value(
+        diagnostic_template,
+        "target_flow_names_json",
+        json.dumps([spec.flow_name for spec in TOOL_ROUTE_SPECS], ensure_ascii=False, indent=2),
+    )
+    flow["data"]["nodes"].append(diagnostic)
+    add_edge(flow, diagnostic, "component_as_tool", agent, "tools")
 
     add_edge(flow, agent, "response", output, "input_value")
     return flow

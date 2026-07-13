@@ -44,8 +44,6 @@ SECRET_KEYS = {
     "mongo_uri",
     "mongodb_uri",
 }
-
-
 # 주요 함수: 활성 카탈로그를 기준으로 조회 작업의 source 설정을 다시 구성합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def hydrate_retrieval_jobs(
@@ -74,6 +72,16 @@ def hydrate_retrieval_jobs(
     warnings: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     used_refs: list[dict[str, Any]] = []
+    shared_param_values, conflicting_shared_param_names = _explicit_shared_required_param_values(plan, jobs)
+    propagated_required_params: dict[str, dict[str, str]] = {}
+    if conflicting_shared_param_names:
+        warnings.append(
+            _issue(
+                "conflicting_shared_required_params",
+                "공통 필수 파라미터 값이 job별 값과 충돌하여 자동 전파하지 않았습니다.",
+                param_names=sorted(conflicting_shared_param_names),
+            )
+        )
 
     for index, raw_job in enumerate(jobs):
         if not isinstance(raw_job, dict):
@@ -108,9 +116,32 @@ def hydrate_retrieval_jobs(
         source_config = _sanitize_trusted_config(
             _dict(catalog_payload.get("source_config")) or _dict(catalog_item.get("source_config"))
         )
-        required_names = _required_param_names(catalog_payload, catalog_item)
-        supplied_params = _dict(clean_job.get("required_params")) or _dict(clean_job.get("params"))
-        missing_params = [name for name in required_names if supplied_params.get(name) in (None, "", [], {})]
+        required_names = _required_param_names(catalog_payload, source_config, catalog_item)
+        raw_supplied_params = _dict(clean_job.get("required_params")) or _dict(clean_job.get("params"))
+        supplied_params: dict[str, Any] = {}
+        for name in required_names:
+            supplied_value = _param_value(raw_supplied_params, name)
+            if supplied_value not in (None, "", [], {}):
+                supplied_params[str(name)] = deepcopy(supplied_value)
+        clean_job.pop("params", None)
+        propagated_for_job: dict[str, str] = {}
+        for name in required_names:
+            if _param_value(supplied_params, name) not in (None, "", [], {}):
+                continue
+            normalized_name = _normalize_param_name(name)
+            propagated_value = None
+            propagation_source = ""
+            if normalized_name not in conflicting_shared_param_names:
+                propagated_value = shared_param_values.get(normalized_name)
+                if propagated_value not in (None, "", [], {}):
+                    propagation_source = "shared_required_params"
+            if propagated_value in (None, "", [], {}):
+                continue
+            _set_param_value(supplied_params, name, propagated_value)
+            propagated_for_job[name] = propagation_source
+        if required_names or supplied_params:
+            clean_job["required_params"] = supplied_params
+        missing_params = [name for name in required_names if _param_value(supplied_params, name) in (None, "", [], {})]
 
         clean_job["source_type"] = source_type or str(clean_job.get("source_type") or "")
         clean_job["source_config"] = source_config
@@ -128,8 +159,12 @@ def hydrate_retrieval_jobs(
             )
         hydrated.append(clean_job)
         used_refs.append({"type": "table_catalog", "key": dataset_key})
+        if propagated_for_job:
+            propagated_required_params[str(clean_job.get("source_alias") or dataset_key)] = propagated_for_job
 
     plan["retrieval_jobs"] = hydrated
+    # 공통 binding은 job별 값으로 materialize한 뒤 제거해 후속 payload 중복과 재전파를 막습니다.
+    plan.pop("shared_required_params", None)
     next_payload["intent_plan"] = plan
     next_payload["metadata_refs"] = _merge_refs(_list(next_payload.get("metadata_refs")), used_refs)
     trace = next_payload.setdefault("trace", {})
@@ -144,6 +179,9 @@ def hydrate_retrieval_jobs(
         "catalog_item_count": len(catalog_items),
         "trusted_dataset_keys": [job.get("dataset_key") for job in hydrated if job.get("trusted_catalog")],
         "dummy_only_dataset_keys": [job.get("dataset_key") for job in hydrated if job.get("dummy_only")],
+        "shared_required_param_names": sorted(shared_param_values),
+        "conflicting_shared_required_param_names": sorted(conflicting_shared_param_names),
+        "propagated_required_params": propagated_required_params,
     }
     return next_payload
 
@@ -183,6 +221,56 @@ def _required_param_names(*values: dict[str, Any]) -> list[str]:
             if text and text not in result:
                 result.append(text)
     return result
+
+
+# 함수 설명: `_explicit_shared_required_param_values()`는 planner가 공통 scope로 명시한 값만 전파 대상으로 인정하고 job별 값과의 충돌을 차단합니다.
+def _explicit_shared_required_param_values(plan: dict[str, Any], jobs: list[Any]) -> tuple[dict[str, Any], set[str]]:
+    raw_shared = _dict(plan.get("shared_required_params"))
+    shared = {
+        normalized_name: deepcopy(value)
+        for name, value in raw_shared.items()
+        if (normalized_name := _normalize_param_name(name)) and value not in (None, "", [], {})
+    }
+    conflicts: set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        params = _dict(job.get("required_params")) or _dict(job.get("params"))
+        for name, value in params.items():
+            if value in (None, "", [], {}):
+                continue
+            normalized_name = _normalize_param_name(name)
+            if normalized_name in shared and value != shared[normalized_name]:
+                conflicts.add(normalized_name)
+    for name in conflicts:
+        shared.pop(name, None)
+    return shared, conflicts
+
+
+# 함수 설명: `_param_value()`는 required parameter key의 대소문자 차이를 허용해 현재 값을 찾습니다.
+def _param_value(params: dict[str, Any], name: Any) -> Any:
+    normalized_name = _normalize_param_name(name)
+    for key, value in params.items():
+        if _normalize_param_name(key) == normalized_name:
+            return value
+    return None
+
+
+# 함수 설명: `_set_param_value()`는 기존 key 표기를 보존하면서 공통 required parameter 값을 채웁니다.
+def _set_param_value(params: dict[str, Any], name: Any, value: Any) -> None:
+    normalized_name = _normalize_param_name(name)
+    target_name = str(name or "").strip()
+    for key in params:
+        if _normalize_param_name(key) == normalized_name:
+            target_name = str(key)
+            break
+    if target_name:
+        params[target_name] = deepcopy(value)
+
+
+# 함수 설명: `_normalize_param_name()`은 required parameter 이름을 대소문자와 공백 차이가 없는 비교 key로 변환합니다.
+def _normalize_param_name(value: Any) -> str:
+    return str(value or "").strip().upper()
 
 
 # 함수 설명: `_sanitize_trusted_config()`는 trusted·설정에서 비밀값·내부 필드·직렬화 불가 값을 제거하거나 마스킹합니다.

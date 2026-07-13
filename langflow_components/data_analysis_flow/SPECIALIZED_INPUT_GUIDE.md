@@ -35,6 +35,13 @@ PKG OUT은 제품별 생산실적 중 PKG 완료 조건을 우선 확인하고, 
 - 특정 질문 하나만 맞추기 위한 과도한 fallback 규칙은 넣지 않는다.
 - metadata와 충돌하면 metadata를 우선한다.
 
+### 재공과 LOT 상세 데이터 구분
+
+- 일반 `재공`, `재공수량`, `WIP`는 공정/제품 기준 집계 metric이므로 당일은 `wip_today`, 과거일은 `wip`를 선택한다.
+- `lot_status`는 사용자가 `LOT`, `랏`, `로트`, `LOT_ID`, LOT 상태·건수, HOLD LOT, TAT, wafer/die/unit 수량처럼 LOT grain을 명시한 경우에만 선택한다.
+- 재공과 생산량을 함께 요청하면 `wip_today|wip`와 `production_today|production`을 각각 조회한 뒤 pandas 단계에서 같은 공정/제품 기준으로 결합한다.
+- 여러 dataset이 동일한 파라미터 값을 사용한다는 scope가 질문에서 명확하면 `intent_plan.shared_required_params`에 공통 값을 명시할 수 있다. `04A 신뢰 카탈로그 조회 작업 구성기`는 이 명시적 값만 누락 job에 적용하며, 질문 전체의 첫 날짜나 다른 job의 값을 공통값으로 추정하지 않는다. 대상별 날짜·PLANT·FAB·SHIFT 값이 다르면 각 retrieval job의 `required_params`에 별도로 넣는다.
+
 ## 2. 특화 함수 값은 어디에 넣는가
 
 특화 함수는 Langflow 화면에서 pandas 코드 생성 노드에 직접 입력하는 값이 아니다.

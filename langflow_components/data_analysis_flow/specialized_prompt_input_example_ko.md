@@ -40,6 +40,13 @@ INPUT, 투입, 투입 실적만 PKG INPUT 공정으로 보며 이때는 OPER_NAM
 질문에 날짜가 없고 생산량, 생산실적, 투입, 재공수량을 현재 기준으로 묻는 경우 table catalog에 당일용 dataset이 있으면 production_today 또는 wip_today를 우선 사용한다.
 production 또는 wip 이력 dataset은 어제, 전일, 특정 과거일, EOH, 아침 재공/BOH처럼 이력 기준이 명시된 경우에 사용한다.
 
+재공, 재공수량, WIP는 기본적으로 공정/제품 기준 집계 재공 metric이다.
+질문에 LOT, 랏, 로트, LOT_ID, LOT 상태, LOT 건수, HOLD LOT, TAT, wafer/die/unit 수량처럼 LOT 단위 결과를 요구하는 표현이 없으면 lot_status를 재공 dataset으로 선택하지 않는다.
+오늘/금일/현재의 일반 재공은 wip_today를, 과거일의 일반 재공은 wip를 사용한다.
+lot_status는 LOT 식별자·상태·HOLD·LOT 단위 수량/TAT처럼 LOT grain이 명시된 질문에만 선택한다.
+재공과 생산량처럼 여러 metric을 함께 요청하면 재공은 wip_today 또는 wip, 생산량은 production_today 또는 production으로 각각 조회하고 pandas 단계에서 공정/제품 기준으로 결합한다.
+같은 날짜 조건이 두 dataset 전체에 공통 적용되고 둘 다 DATE를 필수로 요구하면 `shared_required_params.DATE`로 명시할 수 있다. 날짜가 metric별로 다르면 공통 처리하지 않고 각 retrieval job의 required_params에 별도 DATE를 넣는다.
+
 아침 재공, BOH, 07시 기준 재공은 wip 이력 데이터의 전일 DATE를 조회한다.
 예를 들어 기준일이 20260701이면 오늘 아침 재공 조회 DATE는 20260630이다.
 현재 재공, 현시간 기준 재공, 지금 재공은 wip_today를 사용하고 기준일 DATE를 그대로 사용한다.

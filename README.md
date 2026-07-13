@@ -76,22 +76,22 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 16. Router 하위 Flow read timeout은 240초, 외부 Web/API client 기본 timeout은 300초입니다. timeout 상향은 장기 실행을 실패로 오판하지 않기 위한 여유이며 실행시간 자체를 줄이는 최적화는 아닙니다.
 17. pandas 안전 실행 namespace에 `zip`을 명시적으로 제공하고 최초/repair 프롬프트에 같은 builtin 계약을 노출해 `dict(zip(...))`가 불필요한 1회 repair를 유발하지 않도록 했습니다. 기존 오류 시 최대 1회 repair 계약은 그대로 유지합니다.
 18. 운영 기본 Router는 결정된 API 방식이며 Native Run Flow 노드가 없습니다. API caller 5개는 240초 read timeout과 원본 session 전달을 유지합니다.
-19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 이름 기반 Tool 5개는 import 후 실제 Flow ID를 다시 해석하고 `cache_flow=true`로 그래프만 캐시합니다. Tool schema에는 node ID가 없는 필수 `question` 하나만 포함하고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 변환합니다. `return_direct=true`로 추가 Agent 재작성을 생략하며, 각 Tool은 부모 `graph.session_id`를 자동 상속합니다.
+19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 이름 기반 Tool 5개는 import 후 실제 Flow ID를 다시 해석하고 `cache_flow=true`로 그래프만 캐시합니다. Tool schema에는 node ID가 없는 필수 `question` 하나만 포함하고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 변환합니다. `return_direct=true`로 추가 Agent 재작성을 생략하며, 각 Tool은 부모 `graph.session_id`를 자동 상속합니다. 여기에 명시적인 진단 요청에서만 동작하는 `diagnose_route_v2_environment` Tool을 추가해 실제 호출 사용자의 하위 Flow 가시성, 정확한 이름/`(1)` suffix, Langflow/LFX 내부 계약과 하위 topology를 하위 Flow 실행 없이 확인합니다. 원본 사용자·Flow ID와 비밀값은 반환하지 않습니다.
 20. 하위 Flow를 직접 Playground에서 실행할 때는 Chat Input/Output 저장을 켜 답변을 정상 표시합니다. Router nested 호출에서는 API tweak 또는 runtime node-ID tweak로 하위 저장만 끄고 부모 Router가 질문·답변을 한 번만 저장합니다.
 
 ## 검증 상태와 현재 제약
 
 - 이 작업 환경에서는 실제 Oracle/H-API/Datalake/Goodocs 자격증명과 원천 데이터가 없어 dummy 경로로 검증했습니다.
 - 제공 예시 질문 23개는 trusted catalog hydration, 선택 helper, pandas 실행, 답변/API adapter를 포함한 deterministic dummy 경로에서 23/23 통과했습니다. 기존 13개뿐 아니라 target·장비·UPH·LOT/HOLD·0건·다중 source 질문도 포함합니다.
-- 전체 pytest 254개와 대표 dummy 질문 23/23이 통과했습니다.
-- 이 PC의 Langflow Desktop 런타임(`langflow 1.8.2`, `lfx 0.3.4`)에서 현재 7개 Flow의 114/114 node template build와 격리 서버 7/7 JSON import(HTTP 201)를 확인했습니다. Agent Tool Router는 실제 import로 새로 발급된 하위 Flow ID를 이름으로 찾고 `CachedFlowTool-data_analysis`까지 partial build에 성공했습니다.
+- 전체 pytest 269개와 대표 dummy 질문 23/23이 통과했습니다.
+- 이 PC의 Langflow Desktop 런타임(`langflow 1.8.2`, `lfx 0.3.4`)에서 현재 7개 Flow의 115/115 node template build와 격리 서버 7/7 JSON import(HTTP 201)를 확인했습니다. Agent Tool Router는 실제 import로 새로 발급된 하위 Flow ID를 이름으로 찾고 `CachedFlowTool-data_analysis`까지 partial build에 성공했습니다.
 - 실제 문제 실행 기록에서는 기존 06 Router의 session fan-out 때문에 ChatInput/SmartRouter가 각각 2회 빌드되고 비선택 direct/clarification Chat Output이 질문을 두 번 저장한 사실을 확인했습니다. 수정 JSON은 Chat Input outgoing edge를 Smart Router 한 개로 제한하며, 운영 provider를 사용한 최종 화면 재검증은 새 06을 import한 뒤 수행합니다.
 - 격리 Langflow 서버에는 `GOOGLE_API_KEY` Global Variable이 없어 Agent/LLM을 포함한 전체 Flow 실행은 수행하지 않았습니다. 운영 인스턴스에서는 같은 이름의 Global Variable 또는 회사 표준 provider 설정이 필요합니다.
 - 운영 전에는 Data Analysis Flow의 단일 설정인 `04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode=live`로 전환한 뒤 source별 최소 한 건 smoke test와 2-turn 후속질문 검증이 필요합니다. `07`에는 별도 모드 설정이 없습니다.
 
 ## 한글 소스 설명과 JSON 동기화
 
-- `langflow_components`의 Python 69개에는 역할·입력·출력·처리 흐름·유지보수 포인트와 전체 함수 1086/1086의 인접 한글 설명이 들어 있습니다. private helper, 클래스 메서드, async 함수와 중첩 함수도 포함합니다.
+- `langflow_components`의 Python 70개에는 역할·입력·출력·처리 흐름·유지보수 포인트와 전체 함수 1119/1119의 인접 한글 설명이 들어 있습니다. private helper, 클래스 메서드, async 함수와 중첩 함수도 포함합니다.
 - JSON 문법은 구조 주석을 허용하지 않으므로, 한글 설명은 각 Custom Component의 `template.code.value`에 Python 주석으로 포함됩니다. Langflow 코드 편집기에서 원본과 동일하게 확인할 수 있습니다.
 - `.editorconfig`와 각 Python 파일 첫 줄의 UTF-8 선언으로 Windows 편집기의 인코딩 오저장을 예방합니다.
 - `python tools/add_korean_component_comments.py --check`와 `python tools/validate_korean_component_documentation.py`로 함수별 설명 누락·BOM·깨짐 문자·JSON 내장 코드·ZIP을 재검증할 수 있습니다. 자동 설명 규칙을 개선한 뒤에는 `--refresh-functions`로 기존 자동 주석을 갱신할 수 있습니다.

@@ -14,6 +14,8 @@ DEFAULT_SOURCE = ROOT / "flow_exports" / "data_analysis_flow_v4_reference.json"
 DEFAULT_TARGET = ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json"
 REPAIR_PROMPT_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "17b_pandas_repair_prompt_template_ko.md"
 HELPER_LIBRARY_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "function_case_helper_code_input_example.py"
+SPECIALIZED_PROMPT_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "specialized_prompt_input_example_ko.md"
+SPECIALIZED_PROMPT_NODE_ID = "TextInput-GRnAm"
 REPAIR_PROMPT_NODE_ID = "TextInput-v5RepairPrompt"
 GUARDED_AGENT_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "14b_retrieval_guarded_agent.py"
 GUARDED_AGENT_NODE_IDS = {"Agent-SRcFc", "Agent-ynb4D"}
@@ -151,6 +153,9 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
 
     node_index["TextInput-AXG9a"]["data"]["node"]["template"]["input_value"]["value"] = (
         HELPER_LIBRARY_SOURCE.read_text(encoding="utf-8")
+    )
+    node_index[SPECIALIZED_PROMPT_NODE_ID]["data"]["node"]["template"]["input_value"]["value"] = (
+        SPECIALIZED_PROMPT_SOURCE.read_text(encoding="utf-8")
     )
 
     _apply_component_spec(

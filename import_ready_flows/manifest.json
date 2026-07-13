@@ -25,7 +25,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "2be3d8ee05234d6df3634c15c05575294a5358b33e783cef387c3c4b0980dc00",
+  "single_file_ui_import_sha256": "094315119f9f61413f3e17ba3070169e27d6542694b126954af65d1e5276f4c6",
   "flows": [
     {
       "order": 1,
@@ -34,7 +34,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 42,
       "edges": 68,
-      "sha256": "f9875d1d62f808586ef2ba70d00d3fce8ab534bd12d4257e257d709e3c92a7ba"
+      "sha256": "7013132f5ba8e642063488f85fe2a094e075ef398469c24bb6857ca813edb566"
     },
     {
       "order": 2,
@@ -70,7 +70,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
       "nodes": 11,
       "edges": 18,
-      "sha256": "31c14ecbf49426cae272a3f9848e0aa791f5de91c72c7e84826ec985295fb9f4"
+      "sha256": "3914457b0428b863a97757694b7b03b894d6b54faa200f0af419febd19c5cb4d"
     },
     {
       "order": 6,
@@ -86,9 +86,9 @@
       "file": "07_agent_tool_router_flow_v5_standalone.json",
       "name": "metadata_driven_v5_complete_20260710_agent_tool_router",
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
-      "nodes": 8,
-      "edges": 7,
-      "sha256": "22a70712cdeb1b1c83833673e945edf67c6c4626063009b9654318b9acddea10"
+      "nodes": 9,
+      "edges": 8,
+      "sha256": "589e2eabb747d654b535d0d96833dc45215441852fe0085094b37eecdfa10493"
     }
   ],
   "router_configuration": {
@@ -101,16 +101,16 @@
     "manual_edge_rewiring_required": false,
     "manual_flow_id_replacement_required": false,
     "api_router": "Smart Router plus five Run API callers",
-    "agent_tool_router": "Agent plus five name-resolved cached Flow tools"
+    "agent_tool_router": "Agent plus five name-resolved cached Flow tools and one safe runtime diagnostic tool"
   },
   "validation": {
-    "pytest": "254 passed",
-    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 77/77 custom nodes to 68 real Python sources; 0 missing",
-    "korean_component_documentation": "69/69 Python sources and 1086/1086 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 231 embedded custom-code instances preserve 3600/3600 documented function instances; strict UTF-8/JSON checks passed",
+    "pytest": "269 passed",
+    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 78/78 custom nodes to 69 real Python sources; 0 missing",
+    "korean_component_documentation": "70/70 Python sources and 1119/1119 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 234 embedded custom-code instances preserve 3699/3699 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
-    "langflow_frontend_edge_handles": "296/296 parsed and matched edge.data",
+    "langflow_frontend_edge_handles": "298/298 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-    "langflow_lfx_node_templates": "114/114 passed",
+    "langflow_lfx_node_templates": "115/115 passed",
     "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter directly to their ChatOutput; 0 gate nodes",
     "router_single_entry_topology": "Chat Input has exactly one outgoing edge to Smart Router; 0 API-caller session fan-out edges",
     "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra Chat Input edges",
@@ -126,6 +126,7 @@
     "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
     "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
     "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
+    "route_v2_runtime_diagnostic": "1/1 direct-return diagnostic tool checks current-user identity, exact target names and suffixes, runtime/private API compatibility, and child topology without executing child flows or exposing raw IDs",
     "metadata_existing_loader": "3/3 saving flows connect ExistingLoader directly to Matcher",
     "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
     "metadata_mongo_defaults": "17 MongoDB nodes bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",

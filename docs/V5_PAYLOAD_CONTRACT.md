@@ -27,7 +27,7 @@ Metadata 후보의 기본 정책은 도메인 관련 항목 최대 10건, 테이
 
 ### Intent LLM 출력
 
-`retrieval_jobs`의 LLM 소유 필드는 아래로 제한합니다.
+`retrieval_jobs`의 LLM 소유 필드는 아래로 제한합니다. job마다 적용 대상에 맞는 필수 파라미터 값을 직접 작성합니다.
 
 ```json
 {
@@ -37,6 +37,17 @@ Metadata 후보의 기본 정책은 도메인 관련 항목 최대 10건, 테이
   "filters": {"OPER_NAME": {"operator": "in", "value": ["D/A1"]}}
 }
 ```
+
+같은 필수 파라미터 값이 해당 파라미터를 요구하는 모든 job에 공통 적용된다는 것이 질문에서 명확할 때만 plan 수준의 `shared_required_params`를 사용할 수 있습니다.
+
+```json
+{
+  "shared_required_params": {"DATE": "20260710"},
+  "retrieval_jobs": []
+}
+```
+
+`어제 재공과 오늘 생산량`처럼 대상별 값이 다르면 `shared_required_params`를 사용하지 않고 각 job의 `required_params.DATE`를 별도로 작성합니다. 이 scope 규칙은 `DATE`뿐 아니라 `PLANT`, `FAB`, `SHIFT` 등 모든 catalog 필수 파라미터에 동일하게 적용합니다. `04A`는 질문의 첫 날짜나 다른 job의 값을 공통값으로 추정하지 않습니다.
 
 LLM이 `source_type`, `source_config`, SQL 또는 URL을 출력해도 `04A 신뢰 카탈로그 조회 작업 구성기`가 버립니다.
 
@@ -49,6 +60,7 @@ Active table catalog에서 다음을 주입합니다.
 - `source_type`
 - sanitized `source_config`
 - `required_param_names`
+- catalog key로 정규화된 job별 `required_params`
 - `trusted_catalog=true`
 - `catalog_ref`
 

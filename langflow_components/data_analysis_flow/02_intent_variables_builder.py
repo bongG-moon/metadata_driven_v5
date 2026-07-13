@@ -63,6 +63,7 @@ def _schema() -> dict[str, Any]:
                 "dropped": {},
                 "new": {},
             },
+            "shared_required_params": {"DATA_CATALOG_REQUIRED_PARAM": "value shared by every applicable retrieval job"},
             "pandas_function_cases": [],
             "retrieval_jobs": [
                 {

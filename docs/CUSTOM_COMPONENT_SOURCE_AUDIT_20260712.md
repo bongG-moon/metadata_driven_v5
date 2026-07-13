@@ -4,8 +4,8 @@
 
 ## 결론
 
-- 로컬 커스텀 노드 인스턴스 75개는 모두 `langflow_components/**/*.py` 원본을 가집니다.
-- 고유 커스텀 Python 원본은 67개이며 JSON에만 존재하는 커스텀 코드는 없습니다.
+- 로컬 커스텀 노드 인스턴스 78개는 모두 `langflow_components/**/*.py` 원본을 가집니다.
+- 고유 커스텀 Python 원본은 69개이며 JSON에만 존재하는 커스텀 코드는 없습니다.
 - `flow_exports`, 개별 import-ready JSON, 통합 import JSON의 노드-원본 매핑은 같습니다.
 - Langflow 기본 노드인 Chat Input/Output, Agent, Prompt Template, Text Input, Smart Router는 `lfx`가 제공하므로 이 저장소에 별도 `.py`를 복제하지 않는 것이 정상입니다.
 
@@ -13,16 +13,16 @@
 
 | 번호 | Flow | 커스텀 노드 인스턴스 | 고유 `.py` 원본 |
 | --- | --- | ---: | ---: |
-| 01 | Data Analysis | 29 | 29 |
+| 01 | Data Analysis | 32 | 31 |
 | 02 | Domain Saving | 9 | 9 |
 | 03 | Table Catalog Saving | 9 | 9 |
 | 04 | Main Flow Filter Saving | 9 | 9 |
-| 05 | Metadata QA | 9 | 9 |
+| 05 | Metadata QA | 8 | 8 |
 | 06 | API Router (`route_flow`) | 5 | 1 |
-| 07 | Agent + Tool Router (`route_flow_v2`) | 5 | 1 |
-| 합계 |  | 75 | 67 |
+| 07 | Agent + Tool Router (`route_flow_v2`) | 6 | 2 |
+| 합계 |  | 78 | 69 |
 
-06의 API 호출기 5개는 `langflow_components/route_flow/01_flow_api_message_caller.py` 하나를 route별 설정으로 재사용합니다. 07의 Tool 5개도 `langflow_components/route_flow_v2/01_cached_named_run_flow_tool.py` 하나를 대상 Flow와 Tool 설명만 달리해 재사용합니다.
+06의 API 호출기 5개는 `langflow_components/route_flow/01_flow_api_message_caller.py` 하나를 route별 설정으로 재사용합니다. 07의 하위 Flow Tool 5개도 `langflow_components/route_flow_v2/01_cached_named_run_flow_tool.py` 하나를 대상 Flow와 Tool 설명만 달리해 재사용하며, 별도의 `02_route_v2_runtime_diagnostic_tool.py`는 실제 호출 사용자 기준 사전 진단만 수행합니다.
 
 ## Router 소스 정리
 
@@ -38,7 +38,7 @@ langflow_components/
 
 ## 비활성 구현 정리
 
-전체 Python 원본은 68개입니다. 현재 7개 Flow가 사용하는 Custom Component 원본은 67개이고, 나머지 1개인 `function_case_helper_code_input_example.py`는 15A가 선택된 helper 정의를 추출할 때 사용하는 지원 라이브러리입니다. 현재 Flow와 무관한 비활성 Python은 없습니다.
+전체 Python 원본은 70개입니다. 현재 7개 Flow가 사용하는 Custom Component 원본은 69개이고, 나머지 1개인 `function_case_helper_code_input_example.py`는 15A가 선택된 helper 정의를 추출할 때 사용하는 지원 라이브러리입니다. 현재 Flow와 무관한 비활성 Python은 없습니다.
 
 이전 분리형 pandas repair 컴포넌트 3개와 Metadata Saving의 옛 text-refinement/review 컴포넌트 12개, 대응 prompt 6개는 현재 통합 executor·단일 Writer 계약에 맞춰 제거했습니다. 회귀 테스트와 대표 질문 검증기도 현재 실행 경로를 직접 검증하도록 변경했습니다.
 
@@ -54,8 +54,8 @@ python tools/validate_flow_component_sources.py
 
 ## 2026-07-12 실행 결과
 
-- source validator: 3개 JSON 계층 모두 75/75 커스텀 노드 매핑 성공, 오류 0
-- 전체 Python 계약 테스트: 222/222 통과
+- source validator: 3개 JSON 계층 모두 78/78 커스텀 노드 매핑 성공, 오류 0
+- 전체 Python 계약 테스트: 269/269 통과
 - 대표 Data Analysis dummy 질문: 23/23 통과
 - Langflow 1.8.2 / LFX 0.3.4 node template: 115/115 통과
 - 격리 Langflow 서버 import: 7/7 HTTP 201
