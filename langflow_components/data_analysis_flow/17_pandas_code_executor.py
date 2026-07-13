@@ -779,7 +779,7 @@ def _execution_blocked(payload: dict[str, Any]) -> bool:
     return str(gate.get("status") or "").strip().lower() == "blocked"
 
 
-# 함수 설명: `_blocked_execution_payload()`는 코드 파싱·pandas·repair 모델을 호출하지 않고 기존 조회 오류를 유지합니다.
+# 함수 설명: `_blocked_execution_payload()`는 upstream 모델 응답을 사용하지 않고 pandas·repair 실행 없이 기존 조회 오류를 유지합니다.
 def _blocked_execution_payload(payload: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("analysis", {}).setdefault("status", "error")
     payload.setdefault("data", {"columns": [], "rows": [], "row_count": 0, "data_ref": ""})
@@ -787,7 +787,8 @@ def _blocked_execution_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "stage": "17_pandas_code_executor",
         "status": "skipped",
         "reason": "required_source_retrieval_failed",
-        "llm_called": False,
+        "model_response_policy": "ignored",
+        "code_execution_attempted": False,
         "repair_attempted": False,
     }
     payload["trace"]["inspection"]["pandas_repair"] = {

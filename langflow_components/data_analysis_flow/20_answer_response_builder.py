@@ -27,14 +27,28 @@ TABLE_PREVIEW_LIMIT = 10
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_answer_response(payload_value: Any, answer_text: Any = "") -> dict[str, Any]:
     payload = _payload(payload_value)
-    structured_answer = _answer_payload(answer_text)
-    message = (_answer_text_from_dict(structured_answer) if structured_answer else _answer_text(answer_text)).strip()
+    received_structured_answer = _answer_payload(answer_text)
+    received_message = (
+        _answer_text_from_dict(received_structured_answer)
+        if received_structured_answer
+        else _answer_text(answer_text)
+    ).strip()
+    blocked = _execution_blocked(payload)
+    structured_answer = {} if blocked else received_structured_answer
+    message = str(payload.get("answer_message") or "").strip() if blocked else received_message
     if not message:
         message = str(payload.get("answer_message") or "").strip()
     if not message:
         row_count = payload.get("data", {}).get("row_count", 0)
         message = f"분석 결과 {row_count}건을 확인했습니다." if payload.get("analysis", {}).get("status") == "ok" else "분석을 완료하지 못했습니다. trace의 오류를 확인해 주세요."
     next_payload = payload
+    next_payload.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"] = {
+        "stage": "20_answer_response_builder",
+        "received": bool(received_message or received_structured_answer),
+        "used": not blocked and bool(received_message or received_structured_answer),
+        "ignored": blocked and bool(received_message or received_structured_answer),
+        "policy": "ignore" if blocked else "use",
+    }
     message, grounding = _ground_answer_message(next_payload, message)
     if grounding:
         trace = next_payload.setdefault("trace", {})
@@ -49,6 +63,12 @@ def build_answer_response(payload_value: Any, answer_text: Any = "") -> dict[str
     next_payload["answer_sections"] = _build_answer_sections(next_payload, message, _dict(structured_answer.get("answer_sections")))
     next_payload["state"] = _build_next_turn_state(next_payload)
     return next_payload
+
+
+# 함수 설명: `_execution_blocked()`는 필수 조회 실패 시 기본 Language Model 응답을 최종 답변에 사용하지 않도록 판정합니다.
+def _execution_blocked(payload: dict[str, Any]) -> bool:
+    gate = _dict(payload.get("execution_gate"))
+    return str(gate.get("status") or "").strip().lower() == "blocked"
 
 
 # 함수 설명: `_ground_answer_message()`는 LLM 문장에 결과 행으로 확인되지 않는 수치가 있을 때 재호출 없이 결정론적으로 교정합니다.

@@ -59,13 +59,55 @@ def load_donor() -> dict[str, Any]:
 
 def prototypes(donor: dict[str, Any]) -> dict[str, dict[str, Any]]:
     by_id = {node["id"]: node for node in donor["data"]["nodes"]}
+    provider_source = by_id.get("LanguageModel-intent") or by_id.get("Agent-mevnw")
+    if provider_source is None:
+        raise RuntimeError("Data Analysis donor does not contain a model provider source")
+    component_index = json.loads(COMPONENT_INDEX.read_text(encoding="utf-8"))
     return {
         "custom": by_id["CustomComponent-5o0CN"],
         "prompt": by_id["Prompt Template-AUpQz"],
-        "agent": by_id["Agent-mevnw"],
+        "agent": _native_component_prototype(
+            by_id["CustomComponent-5o0CN"],
+            provider_source,
+            _find_component(component_index, "Agent"),
+            "Agent",
+        ),
+        "language_model": _native_component_prototype(
+            by_id["CustomComponent-5o0CN"],
+            provider_source,
+            _find_component(component_index, "Language Model"),
+            "LanguageModelComponent",
+        ),
         "chat_input": by_id["ChatInput-Xs7uo"],
         "chat_output": by_id["ChatOutput-rwbTs"],
     }
+
+
+def _native_component_prototype(
+    shell: dict[str, Any],
+    provider_source: dict[str, Any],
+    component_config: dict[str, Any],
+    node_type: str,
+) -> dict[str, Any]:
+    """기본 LFX 컴포넌트와 기존 standalone provider 선택값을 결합합니다."""
+
+    if not component_config:
+        raise RuntimeError(f"Native component template not found: {node_type}")
+    node = deepcopy(shell)
+    config = deepcopy(component_config)
+    config["lf_version"] = "1.8.2"
+    source_template = provider_source["data"]["node"]["template"]
+    for field_name in ("model", "api_key"):
+        source_field = source_template.get(field_name)
+        target_field = config.get("template", {}).get(field_name)
+        if not isinstance(source_field, dict) or not isinstance(target_field, dict):
+            continue
+        for attribute in ("value", "load_from_db", "advanced", "show"):
+            if attribute in source_field:
+                target_field[attribute] = deepcopy(source_field[attribute])
+    node["data"]["type"] = node_type
+    node["data"]["node"] = config
+    return node
 
 
 def empty_flow(donor: dict[str, Any], name: str, description: str, endpoint: str, tags: list[str]) -> dict[str, Any]:
@@ -138,8 +180,7 @@ def agent_node(proto: dict[str, Any], node_id: str, x: float, y: float, system_p
     template = node["data"]["node"]["template"]
     _set_value(template, "api_key", "")
     _set_value(template, "system_prompt", system_prompt)
-    # 저장/QA 내부 Agent는 별도 도구나 Langflow chat history가 필요하지 않습니다.
-    # 현재 요청은 Prompt에 완전히 포함되므로 Agent wrapper의 반복·기억·날짜 도구를 비활성화합니다.
+    # 실제 Tool이 연결되는 Router Agent만 이 factory를 사용합니다.
     _set_value(template, "n_messages", 0)
     _set_value(template, "max_iterations", 1)
     _set_value(template, "add_current_date_tool", False)
@@ -149,35 +190,22 @@ def agent_node(proto: dict[str, Any], node_id: str, x: float, y: float, system_p
     return node
 
 
-def guarded_agent_node(
-    custom_proto: dict[str, Any],
-    agent_proto: dict[str, Any],
+def language_model_node(
+    proto: dict[str, Any],
     node_id: str,
-    path: Path,
     x: float,
     y: float,
-    system_prompt: str,
+    system_message: str,
 ) -> dict[str, Any]:
-    """기존 Agent provider 값을 보존한 Metadata QA 조건부 Agent custom node를 만듭니다."""
-    node = custom_node(custom_proto, node_id, path, x, y)
+    """Tool schema를 전송하지 않는 Langflow 기본 Language Model 노드를 만듭니다."""
+
+    node = _clone_node(proto, node_id, x, y)
     template = node["data"]["node"]["template"]
-    donor_template = agent_proto["data"]["node"]["template"]
-    for field_name, field in template.items():
-        # custom guarded subclass의 code는 반드시 새 Python 원본을 유지합니다.
-        # donor Agent에서는 provider/model 등 런타임 설정값만 복사합니다.
-        if field_name == "code":
-            continue
-        donor_field = donor_template.get(field_name)
-        if isinstance(field, dict) and isinstance(donor_field, dict) and "value" in donor_field:
-            field["value"] = deepcopy(donor_field["value"])
     _set_value(template, "api_key", "")
-    _set_value(template, "system_prompt", system_prompt)
-    _set_value(template, "n_messages", 0)
-    _set_value(template, "max_iterations", 1)
-    _set_value(template, "add_current_date_tool", False)
+    _set_value(template, "system_message", system_message)
+    _set_value(template, "stream", False)
+    _set_value(template, "temperature", 0.1)
     _set_value(template, "max_tokens", 8192)
-    _set_value(template, "verbose", False)
-    _set_value(template, "tools", "")
     return node
 
 
@@ -273,7 +301,16 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
     variables = add("variables", custom_node(proto["custom"], f"Variables-{spec.slug}", folder / spec.variables, 650, 0))
     extraction_prompt_text = (folder / spec.prompt).read_text(encoding="utf-8")
     extraction_prompt = add("extract_prompt", prompt_node(proto["prompt"], f"PromptExtract-{spec.slug}", extraction_prompt_text, 950, 0))
-    extraction_agent = add("extract_agent", agent_node(proto["agent"], f"AgentExtract-{spec.slug}", 1250, 0, "Return only the JSON object requested by the prompt. Do not add markdown or prose."))
+    extraction_model = add(
+        "extract_model",
+        language_model_node(
+            proto["language_model"],
+            f"LanguageModelExtract-{spec.slug}",
+            1250,
+            0,
+            "Return only the JSON object requested by the prompt. Do not add markdown or prose.",
+        ),
+    )
     normalizer = add("normalizer", custom_node(proto["custom"], f"Normalizer-{spec.slug}", folder / spec.normalizer, 1550, 0))
     existing_loader = add("existing_loader", custom_node(proto["custom"], f"ExistingLoader-{spec.slug}", folder / spec.existing_loader, 1550, 340))
     # 세 matcher 모두 생성 후보가 정해진 뒤 exact key 또는 section/key/alias 후보만 조회하므로 선행 전체 scan을 생략합니다.
@@ -289,9 +326,9 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
     add_edge(flow, chat, "message", request, "raw_text")
     add_edge(flow, request, "payload_out", variables, "payload")
     add_edge(flow, variables, "source_text", extraction_prompt, "source_text")
-    add_edge(flow, extraction_prompt, "prompt", extraction_agent, "input_value")
+    add_edge(flow, extraction_prompt, "prompt", extraction_model, "input_value")
     add_edge(flow, request, "payload_out", normalizer, "payload")
-    add_edge(flow, extraction_agent, "response", normalizer, "llm_response")
+    add_edge(flow, extraction_model, "text_output", normalizer, "llm_response")
     add_edge(flow, normalizer, "payload_out", matcher, "payload")
     add_edge(flow, existing_loader, "existing_items", matcher, "existing_items")
     add_edge(flow, matcher, "payload_out", writer, "payload")
@@ -324,13 +361,11 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
     variables = add("variables", custom_node(proto["custom"], "Variables-metadata-qa", folder / "03_metadata_qa_variables_builder.py", 1280, 0))
     prompt_text = (folder / "03_metadata_qa_prompt_template_ko.md").read_text(encoding="utf-8")
     prompt = add("prompt", prompt_node(proto["prompt"], "Prompt-metadata-qa", prompt_text, 1580, 0))
-    agent = add(
-        "agent",
-        guarded_agent_node(
-            proto["custom"],
-            proto["agent"],
-            "Agent-metadata-qa",
-            folder / "03_metadata_qa_guarded_agent.py",
+    model = add(
+        "model",
+        language_model_node(
+            proto["language_model"],
+            "LanguageModel-metadata-qa",
             1880,
             0,
             "Answer only from the supplied metadata context and return the requested JSON object.",
@@ -352,11 +387,9 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, context, "payload_out", variables, "payload")
     for output_name in ("question", "metadata_context_json", "output_schema_json"):
         add_edge(flow, variables, output_name, prompt, output_name)
-    add_edge(flow, prompt, "prompt", agent, "input_value")
-    # Guarded Agent는 direct mode에서 get_agent_requirements() 전에 반환해 실제 모델 호출을 생략합니다.
-    add_edge(flow, context, "payload_out", agent, "control_payload")
+    add_edge(flow, prompt, "prompt", model, "input_value")
     add_edge(flow, context, "payload_out", normalizer, "payload")
-    add_edge(flow, agent, "response", normalizer, "llm_response")
+    add_edge(flow, model, "text_output", normalizer, "llm_response")
     add_edge(flow, normalizer, "payload_out", message, "payload")
     add_edge(flow, normalizer, "payload_out", api, "payload")
     add_edge(flow, message, "message", api, "display_message")
@@ -502,13 +535,12 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow = empty_flow(
         donor,
         "metadata_driven_v5_agent_tool_router_standalone",
-        "LLM Agent router with five compact name-resolved cached Flow tools, one safe runtime diagnostic tool, shared session propagation, direct responses, and one final Chat Output.",
+        "LLM Agent router with five compact name-resolved cached Flow tools, shared session propagation, direct child responses, and one final Chat Output.",
         "metadata-driven-v5-agent-tool-router",
         ["v5", "standalone", "agent-router", "tool-mode", "cached-flow", "optimized"],
     )
     system_prompt = (COMPONENT_ROOT / "route_flow_v2" / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
     tool_path = COMPONENT_ROOT / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
-    diagnostic_path = COMPONENT_ROOT / "route_flow_v2" / "02_route_v2_runtime_diagnostic_tool.py"
 
     chat = native_node(proto["chat_input"], "ChatInput-agent-tool-router", 0, 0)
     _set_message_storage(chat, True)
@@ -538,22 +570,6 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         _set_value(template, "return_direct", True)
         flow["data"]["nodes"].append(tool)
         add_edge(flow, tool, "component_as_tool", agent, "tools")
-
-    diagnostic = custom_node(
-        proto["custom"],
-        "RouteV2Diagnostic-agent-tool-router",
-        diagnostic_path,
-        350,
-        780,
-    )
-    diagnostic_template = diagnostic["data"]["node"]["template"]
-    _set_value(
-        diagnostic_template,
-        "target_flow_names_json",
-        json.dumps([spec.flow_name for spec in TOOL_ROUTE_SPECS], ensure_ascii=False, indent=2),
-    )
-    flow["data"]["nodes"].append(diagnostic)
-    add_edge(flow, diagnostic, "component_as_tool", agent, "tools")
 
     add_edge(flow, agent, "response", output, "input_value")
     return flow

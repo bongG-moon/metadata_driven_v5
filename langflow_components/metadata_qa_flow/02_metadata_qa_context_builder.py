@@ -58,6 +58,7 @@ DETERMINISTIC_ANSWER_MODES = {
     "dataset_sql",
     "required_params",
     "calculation_logic_list",
+    "product_domain_info",
     "process_group",
     "data_analysis_redirect",
 }
@@ -120,9 +121,7 @@ def build_metadata_qa_context(
         "answer_mode": answer_mode,
         "confidence": "high" if source_refs else "low",
     }
-    llm_skip = answer_mode in DETERMINISTIC_ANSWER_MODES and not (
-        answer_mode == "calculation_logic_list" and query_scope.get("request_kind") == "how_to"
-    )
+    deterministic_answer = answer_mode in DETERMINISTIC_ANSWER_MODES
     context = {
         "question": question,
         "answer_mode": answer_mode,
@@ -133,10 +132,10 @@ def build_metadata_qa_context(
         "matched_filters": matched_filters,
         "candidate_rows": candidate_rows,
         "source_refs": source_refs,
-        "llm_control": {
-            "skip": llm_skip,
-            "eligible_to_skip": answer_mode in DETERMINISTIC_ANSWER_MODES,
-            "reason": "deterministic_answer_mode" if llm_skip else "llm_synthesis_required",
+        "answer_policy": {
+            "mode": "deterministic_context" if deterministic_answer else "model_assisted",
+            "use_model_response": not deterministic_answer,
+            "reason": "authoritative_context_answer" if deterministic_answer else "model_synthesis_required",
         },
     }
     if catalog_summary:
@@ -189,7 +188,7 @@ def _empty_question_context(payload: dict[str, Any]) -> dict[str, Any]:
         "matched_filters": [],
         "candidate_rows": [],
         "source_refs": [],
-        "llm_control": {"skip": True, "reason": "empty_question"},
+        "answer_policy": {"mode": "invalid_request", "use_model_response": False, "reason": "empty_question"},
     }
     trace = _dict(next_payload.get("trace"))
     errors = trace.setdefault("errors", [])

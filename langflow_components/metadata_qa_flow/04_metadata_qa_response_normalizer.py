@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 # 컴포넌트 개요: 04 메타데이터 QA 응답 정규화기
-# 역할: Langflow Agent/LLM 응답을 메타데이터 QA 표준 페이로드로 정규화합니다.
+# 역할: Langflow 기본 Language Model 응답을 메타데이터 QA 표준 페이로드로 정규화합니다.
 # 주요 입력: 페이로드 (payload) · 필수, LLM 응답 (llm_response)
 # 주요 출력: 페이로드 출력 (payload_out)
-# 처리 흐름: LLM 응답을 정규화하고 authoritative context로 표와 source 참조를 보강해 결정론적 QA 결과를 만듭니다.
+# 처리 흐름: 모델 응답과 authoritative context를 결합하고 결정론 모드에서는 context 응답을 우선합니다.
 # 유지보수 포인트: 표의 실제 rows와 source 참조는 메타데이터 context를 authoritative 근거로 사용하고 LLM 임의 값을 그대로 신뢰하지 않습니다.
 # =============================================================================
 
@@ -37,11 +37,13 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
     context = _dict(payload.get("metadata_qa_context"))
     question = str(_dict(payload.get("request")).get("question") or context.get("question") or "").strip()
     if not question:
-        return _empty_question_response(payload, context)
+        return _empty_question_response(payload, context, llm_response_value)
 
-    llm_control = _dict(context.get("llm_control"))
-    skip_llm = bool(llm_control.get("skip"))
-    parsed = {} if skip_llm else _parse_llm_response(llm_response_value)
+    answer_policy = _dict(context.get("answer_policy"))
+    use_model_response = bool(answer_policy.get("use_model_response", True))
+    model_response_text = _text(llm_response_value)
+    received_response = _parse_llm_response(llm_response_value)
+    parsed = received_response if use_model_response else {}
     fallback = _fallback_answer(question, context)
     context_mode = str(context.get("answer_mode") or "").strip()
     parsed_answer_type = str(parsed.get("answer_type") or fallback.get("answer_type") or context_mode or "general_metadata_search").strip()
@@ -103,8 +105,10 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
         "answer_type": answer_type,
         "row_count": len(rows),
         "used_llm_response": bool(parsed),
-        "llm_skipped": skip_llm,
-        "llm_skip_reason": str(llm_control.get("reason") or "") if skip_llm else "",
+        "llm_response_received": bool(model_response_text),
+        "llm_response_ignored": bool(model_response_text) and not use_model_response,
+        "answer_policy": str(answer_policy.get("mode") or "model_assisted"),
+        "answer_policy_reason": str(answer_policy.get("reason") or ""),
         "used_context_table": use_context_table,
         "catalog_summary": deepcopy(catalog_summary),
     }
@@ -113,7 +117,11 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
 
 
 # 함수 설명: `_empty_question_response()`는 빈 질문을 LLM 답변처럼 포장하지 않고 명시적인 오류 응답으로 종료합니다.
-def _empty_question_response(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def _empty_question_response(
+    payload: dict[str, Any],
+    context: dict[str, Any],
+    llm_response_value: Any = "",
+) -> dict[str, Any]:
     message = "메타데이터 QA 질문이 비어 있습니다. 확인할 메타데이터 내용을 입력해 주세요."
     table = {"columns": [], "rows": []}
     sections = _compact_answer_sections(
@@ -144,8 +152,10 @@ def _empty_question_response(payload: dict[str, Any], context: dict[str, Any]) -
         "answer_type": "invalid_request",
         "row_count": 0,
         "used_llm_response": False,
-        "llm_skipped": True,
-        "llm_skip_reason": "empty_question",
+        "llm_response_received": bool(_text(llm_response_value)),
+        "llm_response_ignored": bool(_text(llm_response_value)),
+        "answer_policy": "invalid_request",
+        "answer_policy_reason": "empty_question",
         "used_context_table": False,
     }
     next_payload["trace"] = trace
@@ -296,10 +306,14 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
         message = f"질문과 관련된 데이터셋의 필수 조회 조건 {len(rows)}건을 정리했습니다."
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "calculation_logic_list":
-        message = f"등록된 계산/분석 관련 메타데이터 후보 {len(rows)}개를 정리했습니다. 실제 계산 실행은 data_analysis_flow의 pandas 단계에서 수행됩니다."
+        query_scope = _dict(context.get("query_scope"))
+        if query_scope.get("subject") == "product_aggregation":
+            message = f"제품 집계에 사용하는 제품 키와 grain/group by 규칙 {len(rows)}건을 등록 메타데이터 기준으로 정리했습니다."
+        else:
+            message = f"등록된 계산/분석 관련 메타데이터 후보 {len(rows)}개를 정리했습니다. 실제 계산 실행은 data_analysis_flow의 pandas 단계에서 수행됩니다."
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode in {"product_domain_info", "product_condition"}:
-        message = f"제품/POP 조건과 관련된 도메인 메타데이터 후보 {len(rows)}개를 정리했습니다."
+        message = f"등록된 제품 그룹 {len(rows)}건의 별칭과 기본·데이터 계열별·데이터셋별 조건을 정리했습니다."
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "product_token_rule":
         message = f"제품 속성 token 해석과 관련된 메타데이터 후보 {len(rows)}개를 정리했습니다. 실제 제품 매칭은 data_analysis_flow의 분석 단계에서 수행됩니다."

@@ -38,7 +38,7 @@
 - 후속 질문에서 이전 원본/결과를 재사용할 경우에도 `pandas_execution_plan`에는 어떤 이전 데이터 기준으로 어떤 재분석을 할지 적는다.
 - 데이터 조회가 필요한 경우 `intent_plan.retrieval_jobs`를 반드시 작성한다.
 - 각 retrieval job은 `dataset_key`, `source_alias`, `required_params`, `filters`만 포함한다.
-- `intent_plan.shared_required_params`는 질문에서 같은 파라미터 값이 그 파라미터를 요구하는 모든 retrieval job에 공통 적용된다고 명확할 때만 사용한다. 한 job에만 값이 있거나 공통 여부가 불명확하면 사용하지 않는다.
+- 각 retrieval job의 `required_params`는 다른 job을 참조하지 않아도 바로 실행할 수 있는 완성된 값이어야 한다. plan 수준의 공통 파라미터나 다른 job의 값을 조회 단계에서 복사한다고 가정하지 않는다.
 - `source_type`, `source_config`, `db_key`, query/endpoint는 작성하지 않는다. 다음 deterministic component가 `dataset_key`를 active table catalog와 대조해 신뢰 가능한 설정을 주입한다.
 - `required_params`에는 table catalog/source_config가 필수로 요구하는 파라미터만 넣는다. 필수 파라미터는 데이터 조회 시 SQL/API/template에 적용된다.
 - `filters`에는 사용자가 말한 공정, 제품, 상태, 장비, LOT 등 분석 조건을 넣는다. `filters`는 데이터 조회기가 아니라 pandas 전처리 단계에서 적용된다.
@@ -48,8 +48,8 @@
 - 예를 들어 집계 재공수량과 LOT별 상태/수량은 서로 다른 grain이다. 사용자가 LOT·랏·로트·LOT_ID·LOT 상태·LOT 건수·HOLD LOT·TAT·wafer/die/unit 같은 LOT 단위 근거를 명시하지 않았다면 일반 `재공`, `재공수량`, `WIP` 요청을 LOT 상세 dataset으로 바꾸지 않는다.
 - 여러 metric이 서로 다른 dataset을 요구하면 metric별 retrieval job을 각각 작성한다. 한 dataset에 다른 metric을 억지로 계산시키거나, 한 job의 조회 실패를 0으로 간주하지 않는다.
 - 질문을 metric/dataset별 절로 먼저 나누고, 각 절에 붙은 날짜·공장·FAB·조·기타 조회 파라미터 값을 해당 retrieval job의 `required_params`에 각각 넣는다. 한 job의 값을 다른 job의 값으로 추정하지 않는다.
-- 질문의 하나의 조건이 여러 retrieval job 전체에 공통 적용되고 각 catalog가 같은 필수 파라미터를 요구하면 `shared_required_params`에 그 값을 넣을 수 있다. Hydrator는 이 명시적 공통 값만 누락 job에 적용한다.
-- 같은 파라미터라도 대상별 값이 다르면 `shared_required_params`에 넣지 않는다. 예를 들어 `어제 재공과 오늘 생산량`은 재공 job의 DATE와 생산 job의 DATE를 서로 다르게 작성한다.
+- 질문의 하나의 조건이 여러 retrieval job 전체에 공통 적용되고 각 catalog가 같은 필수 파라미터를 요구하면, 같은 확정값을 해당하는 모든 job의 `required_params`에 각각 반복해서 작성한다.
+- 같은 파라미터라도 대상별 값이 다르면 각 job에 서로 다른 값을 작성한다. 예를 들어 `어제 재공과 오늘 생산량`은 재공 job의 DATE와 생산 job의 DATE를 서로 다르게 작성한다.
 - DATE뿐 아니라 PLANT, FAB, SHIFT 등 모든 필수 파라미터에 동일한 scope 원칙을 적용한다. `A FAB 장비와 B FAB UPH`처럼 대상별 값이 다르면 각 job에 별도로 넣는다.
 - 상대 날짜의 확정값은 날짜가 하나일 때 `state_summary.followup_hint.changed_conditions_hint.date.resolved_value`를 사용할 수 있다. `date.mentions`가 있으면 전역 날짜로 복사하지 말고 각 표현이 수식하는 metric/dataset job에 바인딩한다.
 - pandas 분석 계획에는 `filters`를 먼저 적용한 뒤 집계, 정렬, top/bottom, join 등을 수행한다는 순서를 드러낸다.
@@ -69,4 +69,3 @@
 - `request_scope`, `reuse_strategy`, `dataset_key`, column명, operator명 같은 schema 값은 영문 값을 유지해도 되지만, 설명 문장 전체를 영어로 작성하지 않는다.
 - 출력은 설명 문장 없이 JSON 하나만 반환한다.
 - 반환 JSON 구조는 입력으로 제공된 `출력 schema`를 따른다.
-

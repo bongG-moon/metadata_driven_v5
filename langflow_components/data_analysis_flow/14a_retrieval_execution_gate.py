@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 # 컴포넌트 개요: 14A 필수 조회 실행 게이트
-# 역할: 필수 source 조회 실패를 판정해 이후 LLM·pandas 실행을 결정론적으로 차단합니다.
+# 역할: 필수 source 조회 실패를 판정해 모델 응답 사용과 pandas 실행을 결정론적으로 차단합니다.
 # 주요 입력: 조회 어댑터가 만든 페이로드 (payload) · 필수
 # 주요 출력: 실행 제어 정보가 추가된 페이로드 (payload_out)
 # 처리 흐름: retrieval job은 required=false가 명시된 경우만 선택 항목으로 보고, 그 외 누락·오류는 필수 실패로 처리합니다.
-# 유지보수 포인트: Langflow 분기 stop/merge를 사용하지 않고 control payload를 전달하므로 한 개의 최종 ChatOutput/API 경로를 유지합니다.
+# 유지보수 포인트: 기본 Language Model은 실행되더라도 blocked 상태에서는 그 응답을 사용하지 않고 한 개의 최종 ChatOutput/API 경로를 유지합니다.
 # =============================================================================
 
 from __future__ import annotations
@@ -54,9 +54,8 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
         "required_source_policy": "required_by_default",
         "critical_failures": critical_failures,
         "optional_failures": optional_failures,
-        "pandas_llm_allowed": not blocked,
         "pandas_execution_allowed": not blocked,
-        "answer_llm_allowed": not blocked,
+        "model_response_policy": "ignore" if blocked else "use",
     }
     payload["execution_gate"] = deepcopy(gate)
     trace = payload.setdefault("trace", {})
@@ -160,7 +159,7 @@ def _blocked_message(failures: list[dict[str, Any]]) -> str:
         if alias and alias not in aliases:
             aliases.append(alias)
     suffix = f" 실패 source: {', '.join(aliases)}." if aliases else ""
-    return "필수 데이터 조회에 실패하여 pandas 분석과 답변 LLM을 실행하지 않았습니다." + suffix
+    return "필수 데이터 조회에 실패하여 pandas 분석을 실행하지 않았고 모델 응답도 사용하지 않았습니다." + suffix
 
 
 # 함수 설명: `_first_error_message()`는 source errors 배열에서 첫 번째 사람이 읽을 수 있는 메시지를 반환합니다.
@@ -194,7 +193,7 @@ def _payload(value: Any) -> dict[str, Any]:
 # Langflow 컴포넌트 클래스: 단일 output을 사용해 stop/merge 없이 downstream control payload를 전달합니다.
 class RetrievalExecutionGate(Component):
     display_name = "14A 필수 조회 실행 게이트"
-    description = "필수 source 조회 실패 시 LLM·pandas 실행을 차단하는 control payload를 만듭니다."
+    description = "필수 source 조회 실패 시 모델 응답 사용과 pandas 실행을 차단하는 control payload를 만듭니다."
     inputs = [DataInput(name="payload", display_name="조회 페이로드", required=True)]
     outputs = [Output(name="payload_out", display_name="실행 제어 페이로드", method="build_payload")]
 

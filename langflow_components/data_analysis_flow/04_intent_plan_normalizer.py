@@ -37,11 +37,6 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
     normalized_plan["request_scope"] = _request_scope(plan)
     normalized_plan["reuse_strategy"] = _reuse_strategy(plan)
     normalized_plan["condition_resolution"] = _condition_resolution(plan)
-    shared_required_params = _shared_required_params(plan)
-    if shared_required_params:
-        normalized_plan["shared_required_params"] = shared_required_params
-    else:
-        normalized_plan.pop("shared_required_params", None)
     normalized_plan["retrieval_jobs"] = retrieval_jobs
     normalized_plan["pandas_execution_plan"] = pandas_plan
     if function_cases:
@@ -105,18 +100,6 @@ def _condition_resolution(plan: dict[str, Any]) -> dict[str, Any]:
         key: deepcopy(value.get(key))
         for key in ("inherited", "changed", "dropped", "new")
         if value.get(key) not in (None, "", [], {})
-    }
-
-
-# 함수 설명: `_shared_required_params()`는 planner가 명시한 공통 필수 파라미터에서 빈 key/value를 제거하고 job hydration용 dict로 정규화합니다.
-def _shared_required_params(plan: dict[str, Any]) -> dict[str, Any]:
-    value = plan.get("shared_required_params")
-    if not isinstance(value, dict):
-        return {}
-    return {
-        str(key).strip(): deepcopy(item)
-        for key, item in value.items()
-        if str(key or "").strip() and item not in (None, "", [], {})
     }
 
 

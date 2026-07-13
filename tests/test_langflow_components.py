@@ -466,8 +466,8 @@ def test_retrieval_execution_gate_blocks_required_source_failure_by_default():
     result = gate.apply_retrieval_execution_gate(payload)
 
     assert result["execution_gate"]["status"] == "blocked"
-    assert result["execution_gate"]["pandas_llm_allowed"] is False
-    assert result["execution_gate"]["answer_llm_allowed"] is False
+    assert result["execution_gate"]["pandas_execution_allowed"] is False
+    assert result["execution_gate"]["model_response_policy"] == "ignore"
     assert result["analysis"]["status"] == "error"
     assert result["data"]["rows"] == []
     assert "production_data" in result["answer_message"]
@@ -494,25 +494,9 @@ def test_retrieval_execution_gate_continues_when_only_optional_source_fails():
     assert result["execution_gate"]["status"] == "continue"
     assert result["execution_gate"]["critical_failures"] == []
     assert result["execution_gate"]["optional_failures"][0]["source_alias"] == "uph_data"
-    assert result["execution_gate"]["pandas_llm_allowed"] is True
+    assert result["execution_gate"]["pandas_execution_allowed"] is True
+    assert result["execution_gate"]["model_response_policy"] == "use"
     assert result["trace"]["warnings"][-1]["type"] == "optional_source_retrieval_failed"
-
-
-def test_retrieval_guarded_agent_skips_model_only_when_gate_is_blocked():
-    guarded = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14b_retrieval_guarded_agent.py")
-
-    blocked_agent = guarded.RetrievalGuardedAgent()
-    blocked_agent.control_payload = {"execution_gate": {"status": "blocked"}}
-    blocked_message = asyncio.run(blocked_agent.message_response())
-
-    success_agent = guarded.RetrievalGuardedAgent()
-    success_agent.control_payload = {"execution_gate": {"status": "continue"}}
-    success_agent._stub_response = "agent-success"
-    success_message = asyncio.run(success_agent.message_response())
-
-    assert blocked_message.text == ""
-    assert "생략" in blocked_agent.status
-    assert success_message.text == "agent-success"
 
 
 def test_h_api_retriever_executes_configured_http_request():
@@ -909,6 +893,38 @@ def test_followup_hint_builder_keeps_complete_question_as_new_analysis():
 
     assert hint["followup_candidate"] is False
     assert hint["request_scope_hint"] == "new_analysis"
+
+
+def test_followup_hint_builder_keeps_multiple_dates_scoped_to_each_metric():
+    hint_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
+    payload = {
+        "request": {
+            "question": "어제 재공과 오늘 생산량 알려줘",
+            "reference_date": "20260713",
+        },
+        "state": {},
+    }
+
+    result = hint_builder.build_followup_hint(payload)
+    date_hint = result["followup_hint"]["changed_conditions_hint"]["date"]
+
+    assert date_hint["scope"] == "multiple"
+    assert "resolved_value" not in date_hint
+    assert [(item["expression"], item["resolved_value"]) for item in date_hint["mentions"]] == [
+        ("어제", "20260712"),
+        ("오늘", "20260713"),
+    ]
+
+
+def test_intent_prompt_requires_complete_params_per_retrieval_job_without_shared_contract():
+    prompt_text = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "03_intent_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+
+    assert "각 retrieval job의 `required_params`" in prompt_text
+    assert "같은 확정값을 해당하는 모든 job의 `required_params`에 각각 반복" in prompt_text
+    assert "`어제 재공과 오늘 생산량`" in prompt_text
+    assert "shared_required_params" not in prompt_text
 
 
 def test_intent_variables_builder_includes_followup_hint_and_compact_previous_context():
@@ -1657,33 +1673,6 @@ def test_intent_normalizer_parses_langflow_message_text_with_nested_json():
     assert normalized["metadata_refs"] == [{"type": "table_catalog", "key": "production_today"}]
     assert normalized["trace"]["inspection"]["intent"]["retrieval_job_count"] == 1
     assert not any(warning.get("type") == "missing_retrieval_jobs" for warning in normalized["trace"]["warnings"])
-
-
-def test_intent_shared_required_params_contract_is_explicit_and_normalized():
-    variables_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "02_intent_variables_builder.py")
-    intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
-    schema = variables_builder._schema()["intent_plan"]
-    prompt = (ROOT / "langflow_components" / "data_analysis_flow" / "03_intent_prompt_template_ko.md").read_text(encoding="utf-8")
-
-    assert "shared_required_params" in schema
-    assert "한 job의 값을 다른 job의 값으로 추정하지 않는다" in prompt
-    assert "DATE뿐 아니라 PLANT, FAB, SHIFT" in prompt
-
-    normalized = intent_normalizer.normalize_intent_plan(
-        {"trace": {"warnings": [], "errors": [], "inspection": {}}},
-        {
-            "intent_plan": {
-                "analysis_kind": "shared_plant_equipment_analysis",
-                "shared_required_params": {" PLANT ": "PNT", "EMPTY": ""},
-                "retrieval_jobs": [
-                    {"dataset_key": "equipment_assign", "source_alias": "equipment_data", "required_params": {}},
-                    {"dataset_key": "eqp_uph", "source_alias": "uph_data", "required_params": {}},
-                ],
-            }
-        },
-    )
-
-    assert normalized["intent_plan"]["shared_required_params"] == {"PLANT": "PNT"}
 
 
 def test_intent_normalizer_accepts_llm_json_with_literal_sql_newlines():
@@ -3808,6 +3797,64 @@ def test_metadata_candidates_remove_authoring_trace_but_keep_runtime_catalog_fie
     assert "domain_items" not in result
 
 
+def test_metadata_candidates_prioritize_wip_not_lot_for_generic_wip_question():
+    candidates_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    table_items = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "lot_status",
+                "payload": {
+                    "display_name": "LOT Status",
+                    "dataset_family": "lot",
+                    "description": "LOT_ID 단위 상태와 LOT 상세 수량",
+                },
+            },
+            {
+                "dataset_key": "wip_today",
+                "payload": {
+                    "display_name": "Today WIP",
+                    "dataset_family": "wip",
+                    "description": "당일 공정별 재공수량 집계",
+                },
+            },
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "display_name": "Today Production",
+                    "dataset_family": "production",
+                    "description": "당일 공정별 생산량 집계",
+                },
+            },
+            {
+                "dataset_key": "wip",
+                "payload": {"display_name": "WIP History", "dataset_family": "wip"},
+            },
+            {
+                "dataset_key": "production",
+                "payload": {"display_name": "Production History", "dataset_family": "production"},
+            },
+        ]
+    }
+
+    result = candidates_builder.build_metadata_candidates(
+        {"request": {"question": "오늘 WB공정 재공이랑 생산량 알려줘"}},
+        {"domain_items": []},
+        table_items,
+        {"main_flow_filters": []},
+        min_table_items=2,
+        max_table_items=5,
+    )
+    selected_keys = [
+        item["dataset_key"]
+        for item in result["metadata_candidates"]["table_catalog_items"]
+    ]
+
+    assert set(selected_keys[:2]) == {"wip_today", "production_today"}
+    assert "lot_status" not in selected_keys
+
+
 def test_metadata_candidates_mark_non_runtime_pandas_function_cases():
     candidates_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py")
     result = candidates_builder.build_metadata_candidates(
@@ -4010,20 +4057,27 @@ def test_result_store_skips_mongodb_after_required_retrieval_failure(monkeypatch
     assert mongo_store == {}
 
 
-def test_answer_builder_preserves_deterministic_gate_error_when_answer_agent_is_skipped():
+def test_answer_builder_ignores_native_model_response_after_required_retrieval_failure():
     answer_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py")
     payload = {
         "execution_gate": {"status": "blocked"},
-        "answer_message": "필수 데이터 조회에 실패하여 pandas 분석과 답변 LLM을 실행하지 않았습니다.",
+        "answer_message": "필수 데이터 조회에 실패하여 pandas 분석을 실행하지 않았고 모델 응답도 사용하지 않았습니다.",
         "analysis": {"status": "error"},
         "data": {"columns": [], "rows": [], "row_count": 0},
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
-    answered = answer_builder.build_answer_response(payload, "")
+    answered = answer_builder.build_answer_response(payload, "조회 실패와 무관한 모델 답변")
 
     assert answered["answer_message"] == payload["answer_message"]
     assert answered["answer_sections"]["summary"]["headline"] == payload["answer_message"]
+    assert answered["trace"]["inspection"]["answer_model_response"] == {
+        "stage": "20_answer_response_builder",
+        "received": True,
+        "used": False,
+        "ignored": True,
+        "policy": "ignore",
+    }
 
 
 def test_required_retrieval_failure_short_circuits_to_single_deterministic_api_response(monkeypatch):
@@ -4251,7 +4305,7 @@ def test_oracle_retriever_parses_named_tns_block():
     assert config == {"PNT_RPT": {"tns": "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP))(CONNECT_DATA=(SERVICE_NAME=PNT)))"}}
 
 
-def test_langflow_prompt_templates_are_external_files_for_agent_nodes():
+def test_langflow_prompt_templates_are_external_files_for_native_model_nodes():
     prompt_files = [
         ROOT / "langflow_components" / "data_analysis_flow" / "03_intent_prompt_template_ko.md",
         ROOT / "langflow_components" / "data_analysis_flow" / "16_pandas_prompt_template_ko.md",
@@ -4272,7 +4326,7 @@ def test_langflow_prompt_templates_are_external_files_for_agent_nodes():
     ]:
         guide = (ROOT / "langflow_components" / guide_name / "CONNECTION_GUIDE.md").read_text(encoding="utf-8")
         assert "Langflow Prompt Template" in guide
-        assert "Langflow Agent/LLM" in guide
+        assert "Langflow Agent/LLM" in guide or "Language Model" in guide
 
 
 def test_metadata_saving_guide_uses_current_writer_ports():
@@ -5370,7 +5424,6 @@ def test_metadata_qa_empty_question_stops_loaders_and_returns_error():
     request_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "00_metadata_qa_request_loader.py")
     snapshot_loader = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "01_mongodb_metadata_snapshot_loader.py")
     context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
-    guarded_agent = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_guarded_agent.py")
     normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
     payload = request_loader.build_request("")
 
@@ -5386,14 +5439,18 @@ def test_metadata_qa_empty_question_stops_loaders_and_returns_error():
         {"main_flow_filters": [{"filter_key": "DATE", "payload": {}}]},
     )
     answer = normalizer.normalize_metadata_qa_response(context_payload, '{"answer_message":"사용하면 안 되는 LLM 답변"}')
-    assert guarded_agent.should_skip_agent(context_payload) is True
 
-    assert context_payload["metadata_qa_context"]["llm_control"] == {"skip": True, "reason": "empty_question"}
+    assert context_payload["metadata_qa_context"]["answer_policy"] == {
+        "mode": "invalid_request",
+        "use_model_response": False,
+        "reason": "empty_question",
+    }
     assert context_payload["metadata_qa_context"]["source_refs"] == []
     assert answer["status"] == "error"
     assert answer["answer_type"] == "invalid_request"
     assert "질문이 비어" in answer["answer_message"]
     assert answer["trace"]["inspection"]["metadata_qa_response"]["used_llm_response"] is False
+    assert answer["trace"]["inspection"]["metadata_qa_response"]["llm_response_ignored"] is True
 
 
 def test_metadata_qa_snapshot_loader_uses_one_client_and_short_process_cache(monkeypatch):
@@ -5523,44 +5580,169 @@ def test_successful_metadata_write_invalidates_same_process_qa_snapshot(monkeypa
     assert refreshed["metadata_snapshot"]["count"] == 1
 
 
-def test_metadata_qa_deterministic_mode_stops_llm_branch_and_uses_direct_answer():
+def test_metadata_qa_deterministic_mode_ignores_model_response_and_uses_direct_answer():
     context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
-    guarded_agent = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_guarded_agent.py")
     normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
     payload = {"request": {"question": "DA공정에는 어떤 세부 공정이 있어?"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
     domain_items = {"domain_items": [{"section": "process_groups", "key": "DA", "payload": {"display_name": "D/A", "aliases": ["DA"], "processes": ["D/A1", "D/A2"]}}]}
 
     context_payload = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
-    agent = guarded_agent.MetadataQaGuardedAgent()
-    agent.control_payload = context_payload
-    agent._stub_response = '{"answer_message":"사용되면 안 되는 LLM 답변"}'
-    agent_response = asyncio.run(agent.message_response())
-    answer = normalizer.normalize_metadata_qa_response(context_payload, agent_response)
+    answer = normalizer.normalize_metadata_qa_response(
+        context_payload,
+        '{"answer_message":"사용되면 안 되는 LLM 답변"}',
+    )
 
-    assert context_payload["metadata_qa_context"]["llm_control"]["eligible_to_skip"] is True
-    assert context_payload["metadata_qa_context"]["llm_control"]["skip"] is True
-    assert agent_response.text == ""
-    assert agent.status.startswith("LLM skipped")
+    assert context_payload["metadata_qa_context"]["answer_policy"] == {
+        "mode": "deterministic_context",
+        "use_model_response": False,
+        "reason": "authoritative_context_answer",
+    }
     assert answer["answer_message"] != "사용되면 안 되는 LLM 답변"
-    assert answer["trace"]["inspection"]["metadata_qa_response"]["llm_skipped"] is True
+    inspection = answer["trace"]["inspection"]["metadata_qa_response"]
+    assert inspection["llm_response_received"] is True
+    assert inspection["llm_response_ignored"] is True
+    assert inspection["used_llm_response"] is False
 
 
-def test_metadata_qa_free_form_mode_keeps_llm_branch_and_embedded_response():
+def test_metadata_qa_product_group_details_use_only_registered_product_terms():
+    context_builder = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py"
+    )
+    domain_items = {
+        "domain_items": [
+            {
+                "section": "product_terms",
+                "key": "MOBILE",
+                "payload": {
+                    "display_name": "MOBILE",
+                    "aliases": ["MOBILE", "모바일"],
+                    "condition": {"Mode": ["LPDDR4", "LPDDR5"]},
+                    "condition_by_family": {
+                        "production": {"MODE": ["LPDDR4", "LPDDR5"]},
+                        "wip": {"Mode": ["LPDDR4", "LPDDR5"]},
+                    },
+                    "condition_by_dataset": {
+                        "production_today": {"MODE": ["LPDDR4", "LPDDR5"]}
+                    },
+                },
+            },
+            {
+                "section": "process_groups",
+                "key": "WB",
+                "payload": {"display_name": "W/B", "processes": ["W/B1"]},
+            },
+        ]
+    }
+    payload = {
+        "request": {"question": "제품 그룹 관련 등록된 도메인 정보를 알려줘"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    context_payload = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
+    context = context_payload["metadata_qa_context"]
+    answer = normalizer.normalize_metadata_qa_response(
+        context_payload,
+        '{"answer_message":"등록값과 다른 임의 답변"}',
+    )
+
+    assert context_payload["metadata_route"]["answer_mode"] == "product_domain_info"
+    assert context["query_scope"]["subject"] == "product_terms"
+    assert context["answer_policy"]["mode"] == "deterministic_context"
+    assert context["answer_policy"]["use_model_response"] is False
+    assert [(row["section"], row["key"]) for row in context["candidate_rows"]] == [
+        ("product_terms", "MOBILE")
+    ]
+    assert answer["trace"]["inspection"]["metadata_qa_response"]["used_llm_response"] is False
+    assert answer["data"]["rows"][0]["제품 그룹"] == "MOBILE"
+    assert answer["data"]["rows"][0]["데이터 계열별 조건"] == {
+        "production": {"MODE": ["LPDDR4", "LPDDR5"]},
+        "wip": {"Mode": ["LPDDR4", "LPDDR5"]},
+    }
+
+
+def test_metadata_qa_product_aggregation_explains_keys_and_grain_without_llm():
+    context_builder = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py"
+    )
+    domain_items = {
+        "domain_items": [
+            {
+                "section": "product_key_columns",
+                "key": "standard_product_keys",
+                "payload": {
+                    "display_name": "표준 제품 키",
+                    "columns": ["TECH", "DEN", "Mode", "ORG", "PKG1", "PKG2", "LEAD", "MCP NO"],
+                },
+            },
+            {
+                "section": "analysis_recipes",
+                "key": "product_aggregation",
+                "payload": {
+                    "display_name": "제품 단위 집계",
+                    "grain_policy": "question_or_product_grain",
+                    "group_by": ["TECH", "DEN", "Mode", "ORG", "PKG1", "PKG2", "LEAD", "MCP NO"],
+                    "description": "제품별 질문은 표준 제품 키로 집계한다.",
+                },
+            },
+            {
+                "section": "quantity_terms",
+                "key": "unrelated_inventory",
+                "payload": {"display_name": "재공수량", "column": "WIP_QTY"},
+            },
+        ]
+    }
+    payload = {
+        "request": {"question": "제품 집계는 어떻게 해?"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    context_payload = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
+    context = context_payload["metadata_qa_context"]
+    answer = normalizer.normalize_metadata_qa_response(context_payload, "")
+
+    assert context_payload["metadata_route"]["answer_mode"] == "calculation_logic_list"
+    assert context["query_scope"] == {
+        "subject": "product_aggregation",
+        "aspect": "grain_and_grouping",
+        "request_kind": "how_to",
+    }
+    assert context["answer_policy"]["mode"] == "deterministic_context"
+    assert context["answer_policy"]["use_model_response"] is False
+    assert {(row["section"], row["key"]) for row in context["candidate_rows"]} == {
+        ("product_key_columns", "standard_product_keys"),
+        ("analysis_recipes", "product_aggregation"),
+    }
+    assert "제품 키와 grain/group by 규칙" in answer["answer_message"]
+    assert any(row.get("제품 기준 컬럼") for row in answer["data"]["rows"])
+    assert any(row.get("집계 grain") == "question_or_product_grain" for row in answer["data"]["rows"])
+
+
+def test_metadata_qa_product_value_question_still_redirects_to_data_analysis():
+    context_builder = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
+    )
+
+    assert context_builder._infer_answer_mode("오늘 제품별 생산량 알려줘") == "data_analysis_redirect"
+
+
+def test_metadata_qa_free_form_mode_uses_native_model_response():
     context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
-    guarded_agent = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_guarded_agent.py")
     normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
     payload = {"request": {"question": "생산량이라는 용어를 쉽게 설명해줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
     domain_items = {"domain_items": [{"section": "quantity_terms", "key": "production_quantity", "payload": {"display_name": "생산량", "aliases": ["생산실적"], "column": "PRODUCTION"}}]}
 
     context_payload = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
-    agent = guarded_agent.MetadataQaGuardedAgent()
-    agent.control_payload = context_payload
-    agent._stub_response = '{"answer_type":"term_definition","answer_message":"생산량은 일정 기간 실제로 생산된 수량입니다."}'
-    agent_response = asyncio.run(agent.message_response())
-    answer = normalizer.normalize_metadata_qa_response(context_payload, agent_response)
+    model_response = '{"answer_type":"term_definition","answer_message":"생산량은 일정 기간 실제로 생산된 수량입니다."}'
+    answer = normalizer.normalize_metadata_qa_response(context_payload, model_response)
 
-    assert context_payload["metadata_qa_context"]["llm_control"]["skip"] is False
-    assert agent.status == "LLM enabled: free-form metadata QA"
+    assert context_payload["metadata_qa_context"]["answer_policy"]["mode"] == "model_assisted"
+    assert context_payload["metadata_qa_context"]["answer_policy"]["use_model_response"] is True
     assert answer["answer_message"] == "생산량은 일정 기간 실제로 생산된 수량입니다."
     assert answer["trace"]["inspection"]["metadata_qa_response"]["used_llm_response"] is True
 
@@ -5574,7 +5756,7 @@ def test_metadata_qa_response_status_reflects_upstream_load_errors():
             "answer_mode": "process_group",
             "candidate_rows": [{"metadata_type": "domain", "key": "DA", "display_name": "D/A"}],
             "source_refs": [{"metadata_type": "domain", "section": "process_groups", "key": "DA"}],
-            "llm_control": {"skip": False},
+            "answer_policy": {"mode": "model_assisted", "use_model_response": True},
         },
         "trace": {"warnings": [], "errors": [{"type": "mongo_load_error", "message": "table loader failed"}], "inspection": {}},
     }
@@ -5842,9 +6024,8 @@ def test_metadata_qa_available_sources_question_honors_small_limit():
     assert answer["answer_sections"]["detail_table"]["total_count"] == 9
 
 
-def test_metadata_qa_catalog_inventory_phrases_use_only_table_catalog_and_skip_llm():
+def test_metadata_qa_catalog_inventory_phrases_use_only_table_catalog_and_ignore_model_response():
     context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
-    guarded_agent = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_guarded_agent.py")
     normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
     domain_items = {
         "domain_items": [
@@ -5893,7 +6074,8 @@ def test_metadata_qa_catalog_inventory_phrases_use_only_table_catalog_and_skip_l
         assert all(ref["metadata_type"] == "table_catalog" for ref in context["source_refs"]), question
         assert context["catalog_summary"]["total_count"] == 9, question
         assert context["catalog_summary"]["truncated"] is False, question
-        assert guarded_agent.should_skip_agent(context_payload) is True, question
+        assert context["answer_policy"]["mode"] == "deterministic_context", question
+        assert context["answer_policy"]["use_model_response"] is False, question
 
         answer = normalizer.normalize_metadata_qa_response(
             context_payload,
@@ -5903,6 +6085,7 @@ def test_metadata_qa_catalog_inventory_phrases_use_only_table_catalog_and_skip_l
         assert answer["data"]["row_count"] == 9, question
         assert "총 9개" in answer["answer_message"], question
         assert answer["trace"]["inspection"]["metadata_qa_response"]["used_llm_response"] is False, question
+        assert answer["trace"]["inspection"]["metadata_qa_response"]["llm_response_ignored"] is True, question
 
 
 def test_metadata_qa_catalog_inventory_does_not_capture_task_specific_dataset_selection():
@@ -5946,243 +6129,6 @@ def test_metadata_qa_general_search_has_no_unrelated_first_five_domain_fallback(
     assert result["metadata_qa_context"]["matched_domain_items"] == []
     assert result["metadata_qa_context"]["candidate_rows"] == []
     assert result["metadata_qa_context"]["source_refs"] == []
-
-
-def test_metadata_qa_product_group_questions_select_product_terms_and_preserve_conditions():
-    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
-    condition_by_family = {
-        "production": {"MODE": ["LPDDR5", "LPDDR5X"]},
-        "wip": {"PRODUCT_FAMILY": ["MOBILE"]},
-    }
-    domain_items = {
-        "domain_items": [
-            {
-                "section": "product_terms",
-                "key": "MOBILE",
-                "status": "active",
-                "payload": {
-                    "display_name": "MOBILE 제품 그룹",
-                    "aliases": ["MOBILE", "모바일", "제품 그룹"],
-                    "condition_by_family": condition_by_family,
-                    "description": "모바일 제품군을 데이터셋 계열별 조건으로 정의합니다.",
-                },
-            },
-            {
-                "section": "process_groups",
-                "key": "BG",
-                "status": "active",
-                "payload": {
-                    "display_name": "BG 공정 그룹",
-                    "aliases": ["BG", "B/G"],
-                    "processes": ["B/G1", "B/G2"],
-                },
-            },
-            {
-                "section": "quantity_terms",
-                "key": "production_quantity",
-                "status": "active",
-                "payload": {
-                    "display_name": "생산량",
-                    "column": "PRODUCTION",
-                    "aggregation_method": "sum",
-                },
-            },
-        ]
-    }
-
-    questions = (
-        "제품 그룹 관련 등록된 도메인 정보를 알려줘",
-        "등록된 제품군 도메인 목록을 보여줘",
-        "제품그룹 메타데이터가 뭐가 있어?",
-    )
-    for question in questions:
-        payload = {
-            "request": {"question": question},
-            "trace": {"warnings": [], "errors": [], "inspection": {}},
-        }
-        result = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
-        context = result["metadata_qa_context"]
-
-        assert result["metadata_route"]["answer_mode"] == "product_domain_info", question
-        assert {item["section"] for item in context["matched_domain_items"]} == {"product_terms"}, question
-        assert {row["section"] for row in context["candidate_rows"]} == {"product_terms"}, question
-        assert context["matched_domain_items"][0]["payload"]["condition_by_family"] == condition_by_family, question
-        assert context["candidate_rows"][0]["condition_by_family"] == condition_by_family, question
-        assert context["source_refs"] == [
-            {"metadata_type": "domain", "section": "product_terms", "key": "MOBILE"}
-        ], question
-
-
-def test_metadata_qa_product_aggregation_questions_select_grain_metadata_and_preserve_rules():
-    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
-    product_columns = ["TECH", "DEN", "Mode", "ORG", "PKG1", "PKG2", "LEAD", "MCP NO"]
-    grain_policy = {
-        "product": {"group_by": product_columns},
-        "total": {"group_by": []},
-    }
-    domain_items = {
-        "domain_items": [
-            {
-                "section": "product_key_columns",
-                "key": "standard_product_keys",
-                "status": "active",
-                "payload": {
-                    "display_name": "표준 제품 키",
-                    "aliases": ["제품 집계", "제품별", "제품 그룹핑"],
-                    "columns": product_columns,
-                    "description": "제품 단위 집계에 사용하는 표준 컬럼입니다.",
-                },
-            },
-            {
-                "section": "analysis_recipes",
-                "key": "product_aggregation",
-                "status": "active",
-                "payload": {
-                    "display_name": "제품 집계 규칙",
-                    "aliases": ["제품 집계", "제품별 집계", "제품 그룹핑"],
-                    "grain_policy": grain_policy,
-                    "group_by": product_columns,
-                    "description": "제품별 요청과 전체 요청의 집계 grain을 구분합니다.",
-                },
-            },
-            {
-                "section": "process_groups",
-                "key": "BG",
-                "status": "active",
-                "payload": {"display_name": "BG 공정 그룹", "processes": ["B/G1", "B/G2"]},
-            },
-            {
-                "section": "quantity_terms",
-                "key": "production_quantity",
-                "status": "active",
-                "payload": {"display_name": "생산량", "column": "PRODUCTION", "aggregation_method": "sum"},
-            },
-        ]
-    }
-
-    questions = (
-        "제품 집계는 어떻게 해?",
-        "제품별 집계 기준을 설명해줘",
-        "제품을 어떤 컬럼으로 그룹핑해?",
-    )
-    for question in questions:
-        payload = {
-            "request": {"question": question},
-            "trace": {"warnings": [], "errors": [], "inspection": {}},
-        }
-        result = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
-        context = result["metadata_qa_context"]
-        matched_by_section = {item["section"]: item for item in context["matched_domain_items"]}
-        rows_by_section = {row["section"]: row for row in context["candidate_rows"]}
-
-        assert result["metadata_route"]["answer_mode"] == "calculation_logic_list", question
-        assert set(matched_by_section) == {"product_key_columns", "analysis_recipes"}, question
-        assert set(rows_by_section) == {"product_key_columns", "analysis_recipes"}, question
-        assert matched_by_section["product_key_columns"]["payload"]["columns"] == product_columns, question
-        assert rows_by_section["product_key_columns"]["columns"] == product_columns, question
-        assert matched_by_section["analysis_recipes"]["payload"]["grain_policy"] == grain_policy, question
-        assert rows_by_section["analysis_recipes"]["grain_policy"] == grain_policy, question
-
-
-def test_metadata_qa_product_aggregation_rule_phrases_do_not_capture_actual_data_requests():
-    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
-    actual_data_questions = (
-        "오늘 제품별 생산량을 집계해서 알려줘",
-        "7월 1일 제품별 생산량 합계를 보여줘",
-    )
-
-    for question in actual_data_questions:
-        assert context_builder._infer_answer_mode(question) == "data_analysis_redirect", question
-
-
-def test_metadata_qa_product_detail_tables_use_authoritative_context_and_keep_llm_explanation():
-    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
-    normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
-    condition_by_family = {
-        "production": {"MODE": {"starts_with": "LP"}},
-        "equipment": {"PKG_TYPE1": "MOBILE"},
-    }
-    domain_items = {
-        "domain_items": [
-            {
-                "section": "product_terms",
-                "key": "MOBILE",
-                "status": "active",
-                "payload": {
-                    "display_name": "MOBILE 제품",
-                    "aliases": ["MOBILE", "모바일 제품"],
-                    "condition_by_family": condition_by_family,
-                },
-            }
-        ]
-    }
-    payload = {"request": {"question": "제품 그룹 관련 등록된 도메인 정보를 알려줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
-    context_payload = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
-    llm_response = json.dumps(
-        {
-            "answer_type": "product_domain_info",
-            "answer_message": "등록된 제품 그룹 조건을 데이터 계열별로 정리했습니다.",
-            "table": {
-                "columns": ["제품 그룹", "데이터 계열별 조건"],
-                "rows": [{"제품 그룹": "잘못된 LLM 값", "데이터 계열별 조건": {"wrong": True}}],
-            },
-        },
-        ensure_ascii=False,
-    )
-
-    answer = normalizer.normalize_metadata_qa_response(context_payload, llm_response)
-
-    assert answer["answer_message"] == "등록된 제품 그룹 조건을 데이터 계열별로 정리했습니다."
-    assert answer["trace"]["inspection"]["metadata_qa_response"]["used_context_table"] is True
-    assert answer["data"]["rows"][0]["제품 그룹"] == "MOBILE 제품"
-    assert answer["data"]["rows"][0]["데이터 계열별 조건"] == condition_by_family
-    assert "잘못된 LLM 값" not in json.dumps(answer["data"], ensure_ascii=False)
-
-
-def test_metadata_qa_product_aggregation_how_to_uses_llm_only_for_explanation_and_context_for_rules():
-    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
-    normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
-    product_columns = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
-    grain_policy = {"product": {"group_by": product_columns}, "total": {"group_by": []}}
-    domain_items = {
-        "domain_items": [
-            {
-                "section": "product_key_columns",
-                "key": "standard_product_keys",
-                "payload": {"display_name": "표준 제품 키", "columns": product_columns},
-            },
-            {
-                "section": "analysis_recipes",
-                "key": "product_aggregation",
-                "payload": {
-                    "display_name": "제품 집계 규칙",
-                    "aliases": ["제품 집계", "제품별 집계"],
-                    "grain_policy": grain_policy,
-                    "group_by": product_columns,
-                },
-            },
-        ]
-    }
-    payload = {"request": {"question": "제품 집계는 어떻게 해?"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
-    context_payload = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
-    assert context_payload["metadata_qa_context"]["llm_control"]["skip"] is False
-    llm_response = json.dumps(
-        {
-            "answer_type": "calculation_logic_list",
-            "answer_message": "제품별 요청은 표준 제품 키로 묶고 전체 요청은 별도 group by 없이 집계합니다.",
-            "table": {"columns": ["임의"], "rows": [{"임의": "LLM 재작성 값"}, {"임의": "LLM 재작성 값 2"}]},
-        },
-        ensure_ascii=False,
-    )
-
-    answer = normalizer.normalize_metadata_qa_response(context_payload, llm_response)
-
-    assert answer["answer_message"].startswith("제품별 요청은 표준 제품 키로 묶고")
-    assert answer["trace"]["inspection"]["metadata_qa_response"]["used_context_table"] is True
-    rows_by_type = {row["구분"]: row for row in answer["data"]["rows"]}
-    assert rows_by_type["제품 키"]["제품 기준 컬럼"] == product_columns
-    assert rows_by_type["분석 규칙"]["집계 grain"] == grain_policy
-    assert "LLM 재작성 값" not in json.dumps(answer["data"], ensure_ascii=False)
 
 
 def test_metadata_qa_variables_keep_static_policy_inside_prompt_template():
@@ -6273,10 +6219,7 @@ def test_route_flow_source_layout_matches_current_06_and_07_routers():
     route_v2_dir = ROOT / "langflow_components" / "route_flow_v2"
 
     assert sorted(path.name for path in route_dir.glob("*.py")) == ["01_flow_api_message_caller.py"]
-    assert sorted(path.name for path in route_v2_dir.glob("*.py")) == [
-        "01_cached_named_run_flow_tool.py",
-        "02_route_v2_runtime_diagnostic_tool.py",
-    ]
+    assert sorted(path.name for path in route_v2_dir.glob("*.py")) == ["01_cached_named_run_flow_tool.py"]
     for obsolete in ("router_flow", "router_flow_v2", "router_flow_v3", "router_tool_flow"):
         assert not (ROOT / "langflow_components" / obsolete).exists()
 
@@ -6287,8 +6230,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 69
-    assert result["all_component_python_files"] == 70
+    assert result["active_unique_source_files"] == 66
+    assert result["all_component_python_files"] == 67
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -6297,9 +6240,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 7, 78, 69),
-        ("import_ready_individual", 7, 78, 69),
-        ("import_ready_bundle", 7, 78, 69),
+        ("flow_exports", 7, 74, 66),
+        ("import_ready_individual", 7, 74, 66),
+        ("import_ready_bundle", 7, 74, 66),
     }
 
 
@@ -6321,7 +6264,7 @@ def test_route_flow_06_docs_cover_current_api_router_contract():
     assert "Message" in design and "Data" in design
 
 
-def test_route_flow_v2_docs_cover_five_child_tools_and_runtime_diagnostic():
+def test_route_flow_v2_docs_cover_exactly_five_current_tools():
     route_dir = ROOT / "langflow_components" / "route_flow_v2"
     guide = (route_dir / "CONNECTION_GUIDE.md").read_text(encoding="utf-8")
     system_prompt = (route_dir / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
@@ -6337,7 +6280,6 @@ def test_route_flow_v2_docs_cover_five_child_tools_and_runtime_diagnostic():
         "save_domain_metadata",
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
-        "diagnose_route_v2_environment",
     ):
         assert slug in guide
         assert slug in system_prompt
@@ -6781,159 +6723,6 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     ]
 
 
-def test_route_v2_runtime_diagnostic_classifies_visibility_suffix_and_safe_errors(monkeypatch):
-    path = ROOT / "langflow_components" / "route_flow_v2" / "02_route_v2_runtime_diagnostic_tool.py"
-    component = load_module(path)
-    inputs = {item.kwargs.get("name"): item.kwargs for item in _component_inputs(component)}
-    outputs = {item.kwargs.get("name"): item.kwargs for item in _component_outputs(component)}
-    assert list(inputs) == ["target_flow_names_json", "expected_langflow_version", "expected_lfx_version"]
-    assert inputs["expected_langflow_version"]["value"] == "1.8.2"
-    assert inputs["expected_lfx_version"]["value"] == "0.3.4"
-    assert list(outputs) == ["component_as_tool"]
-    assert outputs["component_as_tool"]["types"] == ["Tool"]
-    assert outputs["component_as_tool"]["tool_mode"] is True
-
-    target_names = ["child_data", "child_qa"]
-
-    def flow(name, flow_id):
-        return types.SimpleNamespace(
-            data={
-                "id": flow_id,
-                "name": name,
-                "data": {
-                    "nodes": [
-                        {
-                            "id": "ChatInput-1",
-                            "data": {"type": "ChatInput", "node": {"outputs": [{"name": "message"}]}},
-                        },
-                        {
-                            "id": "ChatOutput-1",
-                            "data": {"type": "ChatOutput", "node": {"outputs": [{"name": "message"}]}},
-                        },
-                    ],
-                    "edges": [{"source": "ChatInput-1", "target": "ChatOutput-1"}],
-                },
-            }
-        )
-
-    monkeypatch.setattr(component, "_package_version", lambda name: {"langflow": "1.8.2", "lfx": "0.3.4"}[name])
-    monkeypatch.setattr(
-        component,
-        "_run_flow_contract",
-        lambda: {
-            "module": "lfx.base.tools.run_flow",
-            "contract_ok": True,
-            "missing_methods": [],
-            "signature_mismatches": [],
-        },
-    )
-
-    class FakeComponent:
-        user_id = "11111111-1111-1111-1111-111111111111"
-        graph = types.SimpleNamespace(user_id=user_id)
-
-        async def alist_flows(self):
-            return [flow("child_data", "flow-data"), flow("child_qa", "flow-qa")]
-
-    report = asyncio.run(
-        component.diagnose_route_v2_environment(
-            component=FakeComponent(),
-            target_flow_names=target_names,
-        )
-    )
-    assert report["conclusion_code"] == "PREFLIGHT_OK_CHILD_EXECUTION_FAILED"
-    assert all(item["exact_visible"] for item in report["targets"])
-    assert all(item["graph_contract"]["contract_ok"] for item in report["targets"])
-    serialized = json.dumps(report, ensure_ascii=False)
-    assert FakeComponent.user_id not in serialized
-    assert "flow-data" not in serialized
-    assert "flow-qa" not in serialized
-
-    class SuffixComponent(FakeComponent):
-        async def alist_flows(self):
-            return [flow("child_data", "flow-data"), flow("child_qa (1)", "flow-qa-copy")]
-
-    suffix_report = asyncio.run(
-        component.diagnose_route_v2_environment(
-            component=SuffixComponent(),
-            target_flow_names=target_names,
-        )
-    )
-    assert suffix_report["conclusion_code"] == "TARGET_NAME_SUFFIX_MISMATCH"
-    assert suffix_report["targets"][1]["suffix_variants"] == ["(1)"]
-
-    class MissingUserComponent:
-        user_id = ""
-        graph = types.SimpleNamespace(user_id="")
-
-        async def alist_flows(self):
-            raise AssertionError("사용자 ID가 없을 때 Flow 목록을 조회하면 안 됩니다.")
-
-    missing_user_report = asyncio.run(
-        component.diagnose_route_v2_environment(
-            component=MissingUserComponent(),
-            target_flow_names=target_names,
-        )
-    )
-    assert missing_user_report["conclusion_code"] == "RUNTIME_USER_MISSING"
-
-    class InvalidUserComponent:
-        user_id = "not-a-valid-user-uuid"
-        graph = types.SimpleNamespace(user_id=user_id)
-
-        async def alist_flows(self):
-            raise AssertionError("잘못된 사용자 UUID로 Flow 목록을 조회하면 안 됩니다.")
-
-    invalid_user_report = asyncio.run(
-        component.diagnose_route_v2_environment(
-            component=InvalidUserComponent(),
-            target_flow_names=target_names,
-        )
-    )
-    assert invalid_user_report["conclusion_code"] == "RUNTIME_USER_INVALID"
-    assert invalid_user_report["flow_list_status"] == "not_attempted"
-
-    class MismatchedGraphUserComponent(FakeComponent):
-        graph = types.SimpleNamespace(user_id="22222222-2222-2222-2222-222222222222")
-
-    mismatch_report = asyncio.run(
-        component.diagnose_route_v2_environment(
-            component=MismatchedGraphUserComponent(),
-            target_flow_names=target_names,
-        )
-    )
-    assert mismatch_report["conclusion_code"] == "USER_CONTEXT_MISMATCH"
-
-    class ErrorComponent(FakeComponent):
-        async def alist_flows(self):
-            raise ValueError("mongodb://admin:password@db.local sk-secret C:/private/file")
-
-    error_report = asyncio.run(
-        component.diagnose_route_v2_environment(
-            component=ErrorComponent(),
-            target_flow_names=target_names,
-        )
-    )
-    error_text = json.dumps(error_report, ensure_ascii=False)
-    assert error_report["conclusion_code"] == "CURRENT_USER_FLOW_LIST_FAILED"
-    for secret in ("admin", "password", "db.local", "sk-secret", "C:/private/file"):
-        assert secret not in error_text
-
-
-def test_route_v2_runtime_diagnostic_tool_is_explicit_and_return_direct():
-    path = ROOT / "langflow_components" / "route_flow_v2" / "02_route_v2_runtime_diagnostic_tool.py"
-    component = load_module(path)
-    instance = component.RouteV2RuntimeDiagnosticTool()
-    tools = asyncio.run(instance.build_tool())
-
-    assert len(tools) == 1
-    assert tools[0].name == "diagnose_route_v2_environment"
-    assert tools[0].return_direct is True
-    schema = tools[0].args_schema.model_json_schema()
-    assert set(schema.get("properties", {})) == {"diagnostic_request"}
-    assert "일반 데이터 조회" in tools[0].description
-
-
 def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     assert not list((ROOT / "flow_exports").glob("dummy_*_flow_v5_standalone.json"))
     exports = {
@@ -6984,6 +6773,21 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         assert not any(node_id.startswith("WriterDry-") or node_id.startswith("WriterLive-") for node_id in ids)
         assert len([node_id for node_id in ids if node_id.startswith("Writer-")]) == 1
         assert len(nodes_by_type.get("ChatOutput", [])) == 1
+        language_models = [
+            node for node in flow["data"]["nodes"] if node["data"].get("type") == "LanguageModelComponent"
+        ]
+        assert len(language_models) == 1
+        model = language_models[0]
+        model_template = model["data"]["node"]["template"]
+        assert model["id"].startswith("LanguageModelExtract-")
+        assert "tools" not in model_template
+        assert "add_current_date_tool" not in model_template
+        assert any(
+            edge["source"] == model["id"]
+            and edge["data"]["sourceHandle"]["name"] == "text_output"
+            and edge["data"]["targetHandle"]["fieldName"] == "llm_response"
+            for edge in flow["data"]["edges"]
+        )
         assert len([node_id for node_id in ids if node_id.startswith("Response-")]) == 1
         assert len([node_id for node_id in ids if node_id.startswith("Message-")]) == 1
         loader_id = next(node_id for node_id in ids if node_id.startswith("ExistingLoader-"))
@@ -7020,7 +6824,7 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         for edge in metadata_qa["data"]["edges"]
     }
     assert len(qa_nodes) == 11
-    assert len(metadata_qa["data"]["edges"]) == 18
+    assert len(metadata_qa["data"]["edges"]) == 17
     assert not {"Loader-domain-metadata-qa", "Loader-table-metadata-qa", "Loader-filter-metadata-qa"}.intersection(qa_nodes)
     snapshot_template = qa_nodes["SnapshotLoader-metadata-qa"]["data"]["node"]["template"]
     assert snapshot_template["mongo_database"]["value"] == "datagov"
@@ -7031,11 +6835,19 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     assert snapshot_template["mongo_uri"]["value"] == "MONGO_URL"
     assert snapshot_template["mongo_uri"]["load_from_db"] is True
     assert snapshot_template["mongo_uri"]["advanced"] is False
-    assert qa_nodes["Agent-metadata-qa"]["data"]["type"] == "MetadataQaGuardedAgent"
-    assert ("Context-metadata-qa", "payload_out", "Agent-metadata-qa", "control_payload") in qa_edges
-    assert ("Prompt-metadata-qa", "prompt", "Agent-metadata-qa", "input_value") in qa_edges
-    assert ("Agent-metadata-qa", "response", "Normalizer-metadata-qa", "llm_response") in qa_edges
+    qa_model = qa_nodes["LanguageModel-metadata-qa"]
+    qa_model_template = qa_model["data"]["node"]["template"]
+    assert qa_model["data"]["type"] == "LanguageModelComponent"
+    assert ("Prompt-metadata-qa", "prompt", "LanguageModel-metadata-qa", "input_value") in qa_edges
+    assert ("LanguageModel-metadata-qa", "text_output", "Normalizer-metadata-qa", "llm_response") in qa_edges
+    assert "control_payload" not in qa_model_template
+    assert "tools" not in qa_model_template
+    assert "add_current_date_tool" not in qa_model_template
     assert not any("Branch" in node_id or "ExecutionRouter" in node_id or "Attacher" in node_id for node_id in qa_nodes)
+    assert not any(
+        node["data"].get("type") in {"LoopComponent", "ParserComponent", "ConditionalPromptRequestBuilder"}
+        for node in qa_nodes.values()
+    )
     assert len([node for node in qa_nodes.values() if node["data"].get("type") == "ChatOutput"]) == 1
 
     router = json.loads(exports["router"].read_text(encoding="utf-8"))
@@ -7084,18 +6896,12 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         )
 
     tool_router = json.loads(exports["tool_router"].read_text(encoding="utf-8"))
-    assert len(tool_router["data"]["nodes"]) == 9
-    assert len(tool_router["data"]["edges"]) == 8
+    assert len(tool_router["data"]["nodes"]) == 8
+    assert len(tool_router["data"]["edges"]) == 7
     tools = [node for node in tool_router["data"]["nodes"] if node["id"].startswith("CachedFlowTool-")]
-    diagnostics = [
-        node
-        for node in tool_router["data"]["nodes"]
-        if node["id"] == "RouteV2Diagnostic-agent-tool-router"
-    ]
     agents = [node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "Agent"]
     outputs = [node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]
     assert len(tools) == 5
-    assert len(diagnostics) == 1
     assert len(agents) == 1
     assert len(outputs) == 1
     agent_template = agents[0]["data"]["node"]["template"]
@@ -7135,17 +6941,6 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     }
     for tool in tools:
         assert (tool["id"], "component_as_tool", "Agent-agent-tool-router", "tools") in edge_keys
-    assert (
-        "RouteV2Diagnostic-agent-tool-router",
-        "component_as_tool",
-        "Agent-agent-tool-router",
-        "tools",
-    ) in edge_keys
-    diagnostic_template = diagnostics[0]["data"]["node"]["template"]
-    assert set(json.loads(diagnostic_template["target_flow_names_json"]["value"])) == {
-        node["data"]["node"]["template"]["flow_name_selected"]["value"] for node in tools
-    }
-    assert "diagnose_route_v2_environment" in diagnostic_template["code"]["value"]
     assert {
         edge for edge in edge_keys if edge[0] == "ChatInput-agent-tool-router"
     } == {("ChatInput-agent-tool-router", "message", "Agent-agent-tool-router", "input_value")}
@@ -7186,51 +6981,6 @@ def test_metadata_saving_duplicate_mode_has_no_non_resumable_ask_option():
     for relative_path in request_paths[:3]:
         module = load_module(ROOT / "langflow_components" / relative_path)
         assert "existing_items" not in [item.kwargs.get("name") for item in _component_inputs(module)]
-
-
-def test_v5_plain_wip_and_production_question_prefers_metric_grain_catalogs_before_lot_status():
-    builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py")
-    catalogs = {
-        "table_catalog_items": [
-            {"dataset_key": "lot_status", "payload": {"description": "LOT 상태와 LOT 단위 수량", "required_params": []}},
-            {"dataset_key": "production_today", "payload": {"description": "오늘 생산량 production", "required_params": ["DATE"]}},
-            {"dataset_key": "wip_today", "payload": {"description": "오늘 공정별 재공 WIP", "required_params": ["DATE"]}},
-            {"dataset_key": "production", "payload": {"description": "생산량 이력 production history", "required_params": ["DATE"]}},
-            {"dataset_key": "wip", "payload": {"description": "재공 이력 WIP history", "required_params": ["DATE"]}},
-        ]
-    }
-
-    result = builder.build_metadata_candidates(
-        {"request": {"question": "오늘 WB공정 재공이랑 생산량 알려줘"}},
-        {"domain_items": []},
-        catalogs,
-        {"main_flow_filters": []},
-        min_table_items=5,
-        max_table_items=5,
-    )
-
-    selected_keys = [item["dataset_key"] for item in result["metadata_candidates"]["table_catalog_items"]]
-    assert set(selected_keys[:2]) == {"wip_today", "production_today"}
-    assert selected_keys.index("wip_today") < selected_keys.index("lot_status")
-    assert selected_keys.index("production_today") < selected_keys.index("lot_status")
-
-    history_result = builder.build_metadata_candidates(
-        {"request": {"question": "어제 WB공정 재공이랑 생산량 알려줘"}},
-        {"domain_items": []},
-        catalogs,
-        {"main_flow_filters": []},
-        min_table_items=5,
-        max_table_items=5,
-    )
-    history_keys = [item["dataset_key"] for item in history_result["metadata_candidates"]["table_catalog_items"]]
-    assert set(history_keys[:2]) == {"wip", "production"}
-
-    intent_prompt = (ROOT / "langflow_components" / "data_analysis_flow" / "03_intent_prompt_template_ko.md").read_text(encoding="utf-8")
-    specialized_prompt = (ROOT / "langflow_components" / "data_analysis_flow" / "specialized_prompt_input_example_ko.md").read_text(encoding="utf-8")
-    assert "일반 `재공`, `재공수량`, `WIP` 요청을 LOT 상세 dataset으로 바꾸지 않는다" in intent_prompt
-    assert "같은 필수 파라미터를 요구하면" in intent_prompt
-    assert "질문에 LOT, 랏, 로트, LOT_ID" in specialized_prompt
-    assert "날짜가 metric별로 다르면 공통 처리하지 않고" in specialized_prompt
 
 
 def test_v5_metadata_candidates_apply_per_pool_policy_for_equipment_uph_question():
@@ -7427,6 +7177,7 @@ def test_v5_trusted_catalog_hydrator_replaces_llm_source_settings():
             }
         ]
     }
+
     result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
     job = result["intent_plan"]["retrieval_jobs"][0]
     assert job["source_type"] == "oracle"
@@ -7441,103 +7192,35 @@ def test_v5_trusted_catalog_hydrator_replaces_llm_source_settings():
     assert result["trace"]["inspection"]["catalog_hydration"]["status"] == "ok"
 
 
-def test_v5_trusted_catalog_hydrator_applies_explicit_common_date_to_every_required_job():
-    hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
-    followup_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
-    validator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py")
-    router = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "07_retrieval_job_router.py")
-    dummy_retriever = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
+def test_v5_trusted_catalog_hydrator_preserves_job_specific_params_without_cross_job_copy():
+    hydrator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py"
+    )
     catalog = {
         "table_catalog_items": [
             {
-                "dataset_key": dataset_key,
+                "dataset_key": "wip",
                 "payload": {
                     "source_type": "oracle",
-                    "required_params": ["DATE"],
-                    "source_config": {"db_key": "PNT_RPT", "query_template": f"SELECT * FROM {dataset_key} WHERE WORK_DATE = {{DATE}}"},
-                },
-            }
-            for dataset_key in ("wip_today", "production_today")
-        ]
-    }
-    production_payload = catalog["table_catalog_items"][1]["payload"]
-    production_payload.pop("required_params")
-    production_payload["source_config"]["required_params"] = ["DATE"]
-    payload = {
-        "request": {
-            "question": "오늘 WB공정 재공이랑 생산량 알려줘",
-            "reference_date": "20260701",
-        },
-        "state": {},
-        "intent_plan": {
-            "shared_required_params": {"DATE": "20260701"},
-            "retrieval_jobs": [
-                {
-                    "dataset_key": "wip_today",
-                    "source_alias": "wip_data",
-                    "required_params": {},
-                    "filters": {"OPER_NAME": {"operator": "contains", "value": "W/B"}},
-                },
-                {
-                    "dataset_key": "production_today",
-                    "source_alias": "production_data",
-                    "required_params": {},
-                    "filters": {"OPER_NAME": {"operator": "contains", "value": "W/B"}},
-                },
-            ]
-        },
-        "trace": {"warnings": [], "errors": [], "inspection": {}},
-    }
-
-    payload = followup_builder.build_followup_hint(payload)
-    assert payload["followup_hint"]["changed_conditions_hint"]["date"]["resolved_value"] == "20260701"
-    result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
-    jobs = {job["dataset_key"]: job for job in result["intent_plan"]["retrieval_jobs"]}
-
-    assert jobs["wip_today"]["required_params"] == {"DATE": "20260701"}
-    assert jobs["production_today"]["required_params"] == {"DATE": "20260701"}
-    assert not any(item.get("type") == "missing_catalog_required_params" for item in result["trace"]["warnings"])
-    inspection = result["trace"]["inspection"]["catalog_hydration"]
-    assert inspection["shared_required_param_names"] == ["DATE"]
-    assert inspection["propagated_required_params"] == {
-        "wip_data": {"DATE": "shared_required_params"},
-        "production_data": {"DATE": "shared_required_params"},
-    }
-
-    dummy_hydrated = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="dummy")
-    dummy_validated = validator.validate_retrieval_payload(dummy_hydrated)
-    dummy_bundle = router.route_retrieval_jobs(dummy_validated, "dummy")
-    retrieved = dummy_retriever.retrieve_dummy_data(dummy_bundle)
-    retrieved_by_key = {item["dataset_key"]: item for item in retrieved["source_results"]}
-    assert retrieved_by_key["wip_today"]["row_count"] > 0
-    assert retrieved_by_key["production_today"]["row_count"] > 0
-    assert retrieved_by_key["wip_today"]["applied_params"] == {"DATE": "20260701"}
-    assert retrieved_by_key["production_today"]["applied_params"] == {"DATE": "20260701"}
-
-def test_v5_trusted_catalog_hydrator_preserves_explicit_job_dates_for_mixed_relative_dates():
-    hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
-    followup_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
-    catalog = {
-        "table_catalog_items": [
-            {
-                "dataset_key": dataset_key,
-                "payload": {
-                    "source_type": "oracle",
-                    "required_params": ["DATE"],
                     "source_config": {
                         "db_key": "PNT_RPT",
-                        "query_template": f"SELECT * FROM {dataset_key} WHERE WORK_DATE = {{DATE}}",
+                        "required_params": ["DATE"],
                     },
                 },
-            }
-            for dataset_key in ("wip", "production_today")
+            },
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "source_type": "oracle",
+                    "source_config": {
+                        "db_key": "PNT_RPT",
+                        "required_params": ["DATE"],
+                    },
+                },
+            },
         ]
     }
     payload = {
-        "request": {
-            "question": "어제 재공과 오늘 생산량을 알려줘",
-            "reference_date": "20260713",
-        },
         "intent_plan": {
             "retrieval_jobs": [
                 {
@@ -7555,209 +7238,22 @@ def test_v5_trusted_catalog_hydrator_preserves_explicit_job_dates_for_mixed_rela
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
-    hinted = followup_builder.build_followup_hint(payload)
-    date_hint = hinted["followup_hint"]["changed_conditions_hint"]["date"]
-    assert date_hint["scope"] == "multiple"
-    assert "resolved_value" not in date_hint
-    assert [(item["expression"], item["resolved_value"]) for item in date_hint["mentions"]] == [
-        ("어제", "20260712"),
-        ("오늘", "20260713"),
-    ]
+    hydrated = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
+    jobs = hydrated["intent_plan"]["retrieval_jobs"]
 
-    result = hydrator.hydrate_retrieval_jobs(hinted, catalog, retrieval_mode="live")
-    jobs = {job["source_alias"]: job for job in result["intent_plan"]["retrieval_jobs"]}
+    assert jobs[0]["required_params"] == {"DATE": "20260712"}
+    assert jobs[1]["required_params"] == {"DATE": "20260713"}
+    assert jobs[0]["required_param_names"] == jobs[1]["required_param_names"] == ["DATE"]
+    assert hydrated["trace"]["inspection"]["catalog_hydration"]["status"] == "ok"
 
-    assert jobs["wip_data"]["required_params"] == {"DATE": "20260712"}
-    assert jobs["production_data"]["required_params"] == {"DATE": "20260713"}
-    inspection = result["trace"]["inspection"]["catalog_hydration"]
-    assert inspection["shared_required_param_names"] == []
-    assert inspection["conflicting_shared_required_param_names"] == []
-    assert inspection["propagated_required_params"] == {}
+    missing_payload = deepcopy(payload)
+    missing_payload["intent_plan"]["retrieval_jobs"][1].pop("required_params")
+    missing = hydrator.hydrate_retrieval_jobs(missing_payload, catalog, retrieval_mode="live")
+    missing_jobs = missing["intent_plan"]["retrieval_jobs"]
 
-
-def test_v5_trusted_catalog_hydrator_applies_explicit_plan_shared_date_to_all_required_jobs():
-    hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
-    catalog = {
-        "table_catalog_items": [
-            {
-                "dataset_key": dataset_key,
-                "payload": {
-                    "source_type": "oracle",
-                    "required_params": ["DATE"],
-                    "source_config": {
-                        "db_key": "PNT_RPT",
-                        "query_template": f"SELECT * FROM {dataset_key} WHERE WORK_DATE = {{DATE}}",
-                    },
-                },
-            }
-            for dataset_key in ("wip", "production")
-        ]
-    }
-    payload = {
-        "request": {"question": "같은 기준일의 재공과 생산량을 알려줘"},
-        "intent_plan": {
-            # job 사이에 전파해도 되는 값은 plan 수준에서 명시적으로 공통 binding합니다.
-            "shared_required_params": {"DATE": "20260701"},
-            "retrieval_jobs": [
-                {"dataset_key": "wip", "source_alias": "wip_data", "required_params": {}},
-                {"dataset_key": "production", "source_alias": "production_data", "required_params": {}},
-            ],
-        },
-        "trace": {"warnings": [], "errors": [], "inspection": {}},
-    }
-
-    result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
-    jobs = {job["source_alias"]: job for job in result["intent_plan"]["retrieval_jobs"]}
-
-    assert jobs["wip_data"]["required_params"] == {"DATE": "20260701"}
-    assert jobs["production_data"]["required_params"] == {"DATE": "20260701"}
-    assert "shared_required_params" not in result["intent_plan"]
-    assert result["trace"]["inspection"]["catalog_hydration"]["propagated_required_params"] == {
-        "wip_data": {"DATE": "shared_required_params"},
-        "production_data": {"DATE": "shared_required_params"},
-    }
-
-
-def test_v5_trusted_catalog_hydrator_does_not_leak_non_date_params_without_explicit_shared_binding():
-    hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
-    catalog = {
-        "table_catalog_items": [
-            {
-                "dataset_key": dataset_key,
-                "payload": {
-                    "source_type": "oracle",
-                    "required_params": ["PLANT"],
-                    "source_config": {
-                        "db_key": "PNT_RPT",
-                        "query_template": f"SELECT * FROM {dataset_key} WHERE PLANT = {{PLANT}}",
-                    },
-                },
-            }
-            for dataset_key in ("equipment_assign", "eqp_uph")
-        ]
-    }
-    payload = {
-        "request": {"question": "장비 배정과 모델별 UPH를 함께 알려줘"},
-        "intent_plan": {
-            "retrieval_jobs": [
-                {
-                    "dataset_key": "equipment_assign",
-                    "source_alias": "equipment_data",
-                    "required_params": {"PLANT": "PNT"},
-                },
-                {
-                    "dataset_key": "eqp_uph",
-                    "source_alias": "uph_data",
-                    "required_params": {},
-                },
-            ]
-        },
-        "trace": {"warnings": [], "errors": [], "inspection": {}},
-    }
-
-    isolated = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
-    isolated_jobs = {job["source_alias"]: job for job in isolated["intent_plan"]["retrieval_jobs"]}
-    assert isolated_jobs["equipment_data"]["required_params"] == {"PLANT": "PNT"}
-    assert isolated_jobs["uph_data"].get("required_params", {}) == {}
-    assert any(
-        item.get("type") == "missing_catalog_required_params" and item.get("dataset_key") == "eqp_uph"
-        for item in isolated["trace"]["warnings"]
-    )
-
-    explicitly_shared_payload = deepcopy(payload)
-    explicitly_shared_payload["intent_plan"]["shared_required_params"] = {"PLANT": "PNT"}
-    explicitly_shared_payload["intent_plan"]["retrieval_jobs"][0]["required_params"] = {}
-    shared = hydrator.hydrate_retrieval_jobs(explicitly_shared_payload, catalog, retrieval_mode="live")
-    shared_jobs = {job["source_alias"]: job for job in shared["intent_plan"]["retrieval_jobs"]}
-    assert shared_jobs["equipment_data"]["required_params"] == {"PLANT": "PNT"}
-    assert shared_jobs["uph_data"]["required_params"] == {"PLANT": "PNT"}
-    assert shared["trace"]["inspection"]["catalog_hydration"]["propagated_required_params"] == {
-        "equipment_data": {"PLANT": "shared_required_params"},
-        "uph_data": {"PLANT": "shared_required_params"},
-    }
-
-
-def test_v5_trusted_catalog_hydrator_blocks_conflicting_explicit_shared_binding():
-    hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
-    catalog = {
-        "table_catalog_items": [
-            {
-                "dataset_key": dataset_key,
-                "payload": {
-                    "source_type": "oracle",
-                    "required_params": ["DATE"],
-                    "source_config": {"query_template": f"SELECT * FROM {dataset_key} WHERE DATE = {{DATE}}"},
-                },
-            }
-            for dataset_key in ("wip", "production_today")
-        ]
-    }
-    payload = {
-        "intent_plan": {
-            "shared_required_params": {"DATE": "20260713"},
-            "retrieval_jobs": [
-                {"dataset_key": "wip", "source_alias": "wip_data", "required_params": {"DATE": "20260712"}},
-                {"dataset_key": "production_today", "source_alias": "production_data", "required_params": {}},
-            ],
-        },
-        "trace": {"warnings": [], "errors": [], "inspection": {}},
-    }
-
-    result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
-    jobs = {job["source_alias"]: job for job in result["intent_plan"]["retrieval_jobs"]}
-
-    assert jobs["wip_data"]["required_params"] == {"DATE": "20260712"}
-    assert jobs["production_data"]["required_params"] == {}
-    inspection = result["trace"]["inspection"]["catalog_hydration"]
-    assert inspection["conflicting_shared_required_param_names"] == ["DATE"]
-    assert inspection["propagated_required_params"] == {}
-    assert any(item.get("type") == "conflicting_shared_required_params" for item in result["trace"]["warnings"])
-    assert any(
-        item.get("type") == "missing_catalog_required_params" and item.get("dataset_key") == "production_today"
-        for item in result["trace"]["warnings"]
-    )
-
-
-def test_v5_trusted_catalog_hydrator_canonicalizes_job_specific_non_date_params():
-    hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
-    catalog = {
-        "table_catalog_items": [
-            {
-                "dataset_key": dataset_key,
-                "payload": {
-                    "source_type": "oracle",
-                    "required_params": ["FAB"],
-                    "source_config": {"query_template": f"SELECT * FROM {dataset_key} WHERE FAB = {{FAB}}"},
-                },
-            }
-            for dataset_key in ("equipment_assign", "eqp_uph")
-        ]
-    }
-    payload = {
-        "intent_plan": {
-            "retrieval_jobs": [
-                {
-                    "dataset_key": "equipment_assign",
-                    "source_alias": "equipment_data",
-                    "required_params": {"fab": "A", "UNREGISTERED": "drop-me"},
-                },
-                {
-                    "dataset_key": "eqp_uph",
-                    "source_alias": "uph_data",
-                    "params": {"FAB": "B", "UNREGISTERED": "drop-me"},
-                },
-            ]
-        },
-        "trace": {"warnings": [], "errors": [], "inspection": {}},
-    }
-
-    result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
-    jobs = {job["source_alias"]: job for job in result["intent_plan"]["retrieval_jobs"]}
-
-    assert jobs["equipment_data"]["required_params"] == {"FAB": "A"}
-    assert jobs["uph_data"]["required_params"] == {"FAB": "B"}
-    assert "params" not in jobs["uph_data"]
-    assert result["trace"]["inspection"]["catalog_hydration"]["propagated_required_params"] == {}
+    assert "required_params" not in missing_jobs[1]
+    assert missing["trace"]["warnings"][-1]["type"] == "missing_catalog_required_params"
+    assert missing["trace"]["warnings"][-1]["dataset_key"] == "production_today"
 
 
 def test_v5_trusted_catalog_hydrator_blocks_unknown_live_dataset_but_allows_dummy():

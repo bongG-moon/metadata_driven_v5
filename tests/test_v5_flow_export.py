@@ -7,16 +7,13 @@ from pathlib import Path
 from tools.build_v5_data_analysis_flow import (
     COMPONENT_FILES,
     DEFAULT_SOURCE,
-    GUARDED_AGENT_NODE_IDS,
-    GUARDED_AGENT_SOURCE,
+    LANGUAGE_MODEL_NODE_IDS,
     NEW_COMPONENTS,
     PROMPT_FILES,
     REPAIR_PROMPT_NODE_ID,
     REPAIR_PROMPT_SOURCE,
     REMOVED_REPAIR_NODES,
     ROOT,
-    SPECIALIZED_PROMPT_NODE_ID,
-    SPECIALIZED_PROMPT_SOURCE,
     build_flow,
 )
 
@@ -50,7 +47,7 @@ def test_v5_flow_export_is_reproducible_and_acyclic():
 
     assert built == checked_in
     assert len(built["data"]["nodes"]) == 42
-    assert len(built["data"]["edges"]) == 68
+    assert len(built["data"]["edges"]) == 66
     assert _is_acyclic(built)
 
 
@@ -66,15 +63,17 @@ def test_v5_flow_export_embeds_current_component_and_prompt_sources():
         embedded = nodes[node_id]["data"]["node"]["template"]["code"]["value"]
         source = (ROOT / "langflow_components" / spec["file"]).read_text(encoding="utf-8")
         assert embedded == source, node_id
-    guarded_source = GUARDED_AGENT_SOURCE.read_text(encoding="utf-8")
-    for node_id in GUARDED_AGENT_NODE_IDS:
-        assert nodes[node_id]["data"]["node"]["template"]["code"]["value"] == guarded_source
+    for node_id in LANGUAGE_MODEL_NODE_IDS.values():
+        node = nodes[node_id]
+        assert node["data"]["type"] == "LanguageModelComponent"
+        assert node["data"]["node"]["metadata"]["module"] == (
+            "lfx.components.models_and_agents.language_model.LanguageModelComponent"
+        )
     for node_id, relative_path in PROMPT_FILES.items():
         embedded = nodes[node_id]["data"]["node"]["template"]["template"]["value"]
         source = (ROOT / "langflow_components" / "data_analysis_flow" / relative_path).read_text(encoding="utf-8")
         assert embedded == source, node_id
     assert nodes[REPAIR_PROMPT_NODE_ID]["data"]["node"]["template"]["input_value"]["value"] == REPAIR_PROMPT_SOURCE.read_text(encoding="utf-8")
-    assert nodes[SPECIALIZED_PROMPT_NODE_ID]["data"]["node"]["template"]["input_value"]["value"] == SPECIALIZED_PROMPT_SOURCE.read_text(encoding="utf-8")
     assert nodes["CustomComponent-s3mf1"]["data"]["node"]["template"]["repair_prompt_template"]["value"] == ""
 
 
@@ -84,14 +83,18 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     nodes = {node["id"]: node for node in flow["data"]["nodes"]}
 
     assert len(nodes) == 42
-    assert len(flow["data"]["edges"]) == 68
+    assert len(flow["data"]["edges"]) == 66
     assert _is_acyclic(flow)
     assert ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload") in edges
     assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-v5ExecutionGate", "payload") in edges
     assert ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-fc0Vb", "payload") in edges
     assert ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-s3mf1", "payload") in edges
-    assert ("CustomComponent-v5ExecutionGate", "payload_out", "Agent-SRcFc", "control_payload") in edges
-    assert ("CustomComponent-AUrFb", "payload_out", "Agent-ynb4D", "control_payload") in edges
+    assert ("Prompt Template-AUpQz", "prompt", "LanguageModel-intent", "input_value") in edges
+    assert ("LanguageModel-intent", "text_output", "CustomComponent-5o0CN", "llm_response") in edges
+    assert ("Prompt Template-xtzD5", "prompt", "LanguageModel-pandas", "input_value") in edges
+    assert ("LanguageModel-pandas", "text_output", "CustomComponent-s3mf1", "llm_response") in edges
+    assert ("Prompt Template-ELVKc", "prompt", "LanguageModel-answer", "input_value") in edges
+    assert ("LanguageModel-answer", "text_output", "CustomComponent-BVItv", "answer_text") in edges
     assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-fc0Vb", "payload") not in edges
     assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-s3mf1", "payload") not in edges
     assert ("CustomComponent-v5Helper", "selected_helper_code", "CustomComponent-s3mf1", "function_case_helper_code") in edges
@@ -124,6 +127,10 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     assert [node_id for node_id, node in nodes.items() if node["data"].get("type") == "ChatOutput"] == [
         "ChatOutput-rwbTs"
     ]
+    assert not any(
+        node["data"].get("type") in {"LoopComponent", "ParserComponent", "ConditionalPromptRequestBuilder"}
+        for node in nodes.values()
+    )
     direct_chat_nodes = [
         node for node in nodes.values() if node["data"].get("type") in {"ChatInput", "ChatOutput"}
     ]
@@ -132,12 +139,16 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
         node["data"]["node"]["template"]["should_store_message"]["value"] is True
         for node in direct_chat_nodes
     )
-    for agent_id in GUARDED_AGENT_NODE_IDS:
-        agent = nodes[agent_id]
-        assert agent["data"]["type"] == "RetrievalGuardedAgent"
-        assert "control_payload" in agent["data"]["node"]["template"]
-        assert agent["data"]["node"]["template"]["n_messages"]["value"] == 0
-        assert agent["data"]["node"]["template"]["max_iterations"]["value"] == 1
+    language_models = [node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]
+    assert len(language_models) == 3
+    for model in language_models:
+        template = model["data"]["node"]["template"]
+        assert template["max_tokens"]["value"] == 8192
+        assert template["stream"]["value"] is False
+        assert template["temperature"]["value"] == 0.1
+        assert "tools" not in template
+        assert "add_current_date_tool" not in template
+        assert "control_payload" not in template
     assert ("CustomComponent-A5y0b", "message", "ChatOutput-rwbTs", "input_value") in edges
     assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-A5y0b", "payload") in edges
     assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-3eVde", "payload") in edges
@@ -265,11 +276,6 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
 
     tool_router = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-agent-tool-router"))
     tools = [node for node in tool_router["data"]["nodes"] if str(node.get("id") or "").startswith("CachedFlowTool-")]
-    diagnostic = next(
-        node
-        for node in tool_router["data"]["nodes"]
-        if str(node.get("id") or "") == "RouteV2Diagnostic-agent-tool-router"
-    )
     assert len(tools) == 5
     assert len([node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]) == 1
     assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
@@ -290,16 +296,6 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
             "metadata_driven_v5_complete_20260710_"
         )
         for node in tools
-    )
-    assert set(json.loads(diagnostic["data"]["node"]["template"]["target_flow_names_json"]["value"])) == {
-        node["data"]["node"]["template"]["flow_name_selected"]["value"] for node in tools
-    }
-    assert any(
-        edge["source"] == "RouteV2Diagnostic-agent-tool-router"
-        and edge["target"] == "Agent-agent-tool-router"
-        and edge["data"]["sourceHandle"]["name"] == "component_as_tool"
-        and edge["data"]["targetHandle"]["fieldName"] == "tools"
-        for edge in tool_router["data"]["edges"]
     )
 
 
@@ -323,7 +319,7 @@ def test_v5_single_file_ui_bundle_uses_exact_shared_v4_collection_mappings():
         assert collection_name.replace("agent_v4_", "agent_v5_") not in raw
 
 
-def test_v5_child_flows_support_direct_playground_and_bound_internal_agents():
+def test_v5_child_flows_support_direct_playground_and_native_language_models():
     payload = json.loads(UI_BUNDLE_PATH.read_text(encoding="utf-8"))
     child_flows = [
         flow
@@ -332,7 +328,7 @@ def test_v5_child_flows_support_direct_playground_and_bound_internal_agents():
     ]
     assert len(child_flows) == 5
 
-    child_agents = []
+    child_models = []
     for flow in child_flows:
         chat_nodes = [
             node
@@ -343,20 +339,22 @@ def test_v5_child_flows_support_direct_playground_and_bound_internal_agents():
         # Child 기본값은 direct Playground 질문/답변 표시를 위해 저장을 켭니다.
         # Router nested 호출은 caller/tool tweak에서만 child 저장을 끕니다.
         assert all(node["data"]["node"]["template"]["should_store_message"]["value"] is True for node in chat_nodes)
-        child_agents.extend(
+        child_models.extend(
             node
             for node in flow["data"]["nodes"]
-            if node["data"].get("type") in {"Agent", "RetrievalGuardedAgent", "MetadataQaGuardedAgent"}
+            if node["data"].get("type") == "LanguageModelComponent"
         )
 
-    assert len(child_agents) == 7
-    for node in child_agents:
+    assert len(child_models) == 7
+    for node in child_models:
         template = node["data"]["node"]["template"]
-        assert template["n_messages"]["value"] == 0
-        assert template["max_iterations"]["value"] == 1
-        assert template["add_current_date_tool"]["value"] is False
         assert template["max_tokens"]["value"] == 8192
-        assert template["verbose"]["value"] is False
+        assert template["stream"]["value"] is False
+        assert template["temperature"]["value"] == 0.1
+        assert "tools" not in template
+        assert "add_current_date_tool" not in template
+        assert "n_messages" not in template
+        assert "max_iterations" not in template
 
     router_flows = [
         flow
@@ -399,9 +397,10 @@ def test_v5_result_store_limits_qa_request_guards_and_targeted_existing_loaders_
     qa_edges = _edge_keys(metadata_qa)
     qa_nodes = {node["id"]: node for node in metadata_qa["data"]["nodes"]}
     assert ("Request-metadata-qa", "payload_out", "SnapshotLoader-metadata-qa", "request_payload") in qa_edges
-    assert ("Context-metadata-qa", "payload_out", "Agent-metadata-qa", "control_payload") in qa_edges
+    assert ("Prompt-metadata-qa", "prompt", "LanguageModel-metadata-qa", "input_value") in qa_edges
+    assert ("LanguageModel-metadata-qa", "text_output", "Normalizer-metadata-qa", "llm_response") in qa_edges
     assert qa_nodes["SnapshotLoader-metadata-qa"]["data"]["node"]["template"]["cache_ttl_seconds"]["value"] == "15"
-    assert qa_nodes["Agent-metadata-qa"]["data"]["type"] == "MetadataQaGuardedAgent"
+    assert qa_nodes["LanguageModel-metadata-qa"]["data"]["type"] == "LanguageModelComponent"
     assert len([node for node in qa_nodes.values() if node["data"].get("type") == "ChatOutput"]) == 1
 
     domain = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-domain-saving"))

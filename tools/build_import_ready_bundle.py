@@ -121,18 +121,19 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "manual_edge_rewiring_required": False,
             "manual_flow_id_replacement_required": False,
             "api_router": "Smart Router plus five Run API callers",
-            "agent_tool_router": "Agent plus five name-resolved cached Flow tools and one safe runtime diagnostic tool",
+            "agent_tool_router": "Agent plus five name-resolved cached Flow tools",
         },
         "validation": {
-            "pytest": "269 passed",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 78/78 custom nodes to 69 real Python sources; 0 missing",
-            "korean_component_documentation": "70/70 Python sources and 1119/1119 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 234 embedded custom-code instances preserve 3699/3699 documented function instances; strict UTF-8/JSON checks passed",
+            "pytest": "260 passed",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 74/74 custom nodes to 66 real Python sources; 0 missing",
+            "korean_component_documentation": "67/67 Python sources and 1093/1093 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 222 embedded custom-code instances preserve 3615/3615 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "115/115 passed",
+            "langflow_lfx_node_templates": "114/114 passed",
+            "native_language_model_policy": "7/7 tool-free LLM stages use the native Language Model component; only Route V2 keeps one native Agent with five real tools",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter directly to their ChatOutput; 0 gate nodes",
             "router_single_entry_topology": "Chat Input has exactly one outgoing edge to Smart Router; 0 API-caller session fan-out edges",
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra Chat Input edges",
@@ -148,11 +149,12 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
             "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
             "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
-            "route_v2_runtime_diagnostic": "1/1 direct-return diagnostic tool checks current-user identity, exact target names and suffixes, runtime/private API compatibility, and child topology without executing child flows or exposing raw IDs",
             "metadata_existing_loader": "3/3 saving flows connect ExistingLoader directly to Matcher",
             "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
             "metadata_mongo_defaults": "17 MongoDB nodes bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
             "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
+            "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
+            "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes",
         },
     }
     (output_dir / "manifest.json").write_bytes((json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
@@ -197,12 +199,8 @@ def _configure_router(flow: dict[str, Any], endpoint_by_route: dict[str, str]) -
 
 def _configure_tool_router(flow: dict[str, Any]) -> None:
     configured: set[str] = set()
-    diagnostic_nodes: list[dict[str, Any]] = []
     for node in flow.get("data", {}).get("nodes", []):
         node_id = str(node.get("id") or "")
-        if node_id == "RouteV2Diagnostic-agent-tool-router":
-            diagnostic_nodes.append(node)
-            continue
         if not node_id.startswith("CachedFlowTool-"):
             continue
         route_name = node_id.removeprefix("CachedFlowTool-")
@@ -221,14 +219,6 @@ def _configure_tool_router(flow: dict[str, Any]) -> None:
         raise ValueError(
             f"Agent Tool routes mismatch: configured={sorted(configured)}, expected={sorted(CHILD_ROUTE_NAMES)}"
         )
-    if len(diagnostic_nodes) != 1:
-        raise ValueError("Agent Tool Router must contain exactly one Route V2 runtime diagnostic component.")
-    diagnostic_template = diagnostic_nodes[0].get("data", {}).get("node", {}).get("template", {})
-    diagnostic_template["target_flow_names_json"]["value"] = json.dumps(
-        [f"metadata_driven_v5_complete_{BUNDLE_VERSION}_{name}" for name in sorted(CHILD_ROUTE_NAMES)],
-        ensure_ascii=False,
-        indent=2,
-    )
 
 
 def _validate_bundle(
@@ -464,15 +454,10 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
     nodes = flow.get("data", {}).get("nodes", [])
     edges = flow.get("data", {}).get("edges", [])
     tools = [node for node in nodes if str(node.get("id") or "").startswith("CachedFlowTool-")]
-    diagnostic_tools = [
-        node for node in nodes if str(node.get("id") or "") == "RouteV2Diagnostic-agent-tool-router"
-    ]
     agents = [node for node in nodes if node.get("data", {}).get("type") == "Agent"]
     chat_outputs = [node for node in nodes if node.get("data", {}).get("type") == "ChatOutput"]
-    if len(tools) != 5 or len(diagnostic_tools) != 1 or len(agents) != 1 or len(chat_outputs) != 1:
-        raise ValueError(
-            "Agent Tool Router must contain five child tools, one runtime diagnostic tool, one Agent, and one ChatOutput."
-        )
+    if len(tools) != 5 or len(agents) != 1 or len(chat_outputs) != 1:
+        raise ValueError("Agent Tool Router must contain five tools, one Agent, and one ChatOutput.")
 
     expected_tool_names = {
         "run_data_analysis",
@@ -522,33 +507,6 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
             raise ValueError(f"{node_id} is missing its Agent tool edge.")
     if actual_tool_names != expected_tool_names:
         raise ValueError(f"Agent Tool names mismatch: {sorted(actual_tool_names)}")
-
-    diagnostic = diagnostic_tools[0]
-    diagnostic_template = diagnostic.get("data", {}).get("node", {}).get("template", {})
-    try:
-        diagnostic_targets = set(json.loads(diagnostic_template["target_flow_names_json"]["value"]))
-    except Exception as exc:
-        raise ValueError("Route V2 diagnostic target Flow names must be a JSON array.") from exc
-    expected_diagnostic_targets = {
-        f"metadata_driven_v5_complete_{BUNDLE_VERSION}_{route_name}" for route_name in CHILD_ROUTE_NAMES
-    }
-    if diagnostic_targets != expected_diagnostic_targets:
-        raise ValueError("Route V2 diagnostic targets must match the five cached child Flow names.")
-    diagnostic_code = str(diagnostic_template.get("code", {}).get("value") or "")
-    if (
-        "diagnose_route_v2_environment" not in diagnostic_code
-        or "PREFLIGHT_OK_CHILD_EXECUTION_FAILED" not in diagnostic_code
-        or "return_direct=True" not in diagnostic_code
-    ):
-        raise ValueError("Route V2 diagnostic component does not embed the safe preflight Tool contract.")
-    diagnostic_edge = (
-        "RouteV2Diagnostic-agent-tool-router",
-        "component_as_tool",
-        "Agent-agent-tool-router",
-        "tools",
-    )
-    if diagnostic_edge not in actual_edges:
-        raise ValueError("Route V2 diagnostic Tool is not connected to Agent.tools.")
 
     if ("Agent-agent-tool-router", "response", "ChatOutput-agent-tool-router", "input_value") not in actual_edges:
         raise ValueError("Agent Tool Router must have one Agent response to ChatOutput edge.")
@@ -612,13 +570,14 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 269 passed
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 78/78 노드가 실제 Python 원본 69개에 매핑, 누락 0
-- 한글 설명/인코딩: Python 70/70와 함수 1119/1119, JSON 내장 함수 3699/3699 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
+- 전체 pytest: 260 passed
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 74/74 노드가 실제 Python 원본 66개에 매핑, 누락 0
+- 한글 설명/인코딩: Python 67/67와 함수 1093/1093, JSON 내장 함수 3615/3615 및 ZIP 10개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 23/23 통과
 - Langflow 1.8.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.8.2 / LFX 0.3.4 node template: 115/115 passed
+- Langflow 1.8.2 / LFX 0.3.4 node template: 114/114 passed
+- Tool 없는 모델 단계 7개는 기본 Language Model을 사용하고, 실제 Tool 5개가 연결된 Route V2만 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: 예전 정상 Flow와 같은 Smart Router -> Chat Output 직접 edge 2/2, FinalGate 0개
 - API Router 단일 진입 구조: Chat Input -> Smart Router edge 1개, API caller용 session fan-out edge 0개
 - Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
@@ -632,10 +591,11 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환하며, Data Analysis 기준 표준 26,338 bytes에서 339 bytes로 줄었습니다. 내부 Prompt/Helper/Repair Text Input은 제외됩니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. Chat Input은 Agent에만 한 번 연결됩니다.
 - 격리 import에서 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
-- Route V2 진단 Tool은 명시적인 진단 요청에서만 현재 호출 사용자의 Flow 가시성·정확한 이름/`(1)` suffix·런타임 계약·하위 topology를 검사합니다. 하위 Flow를 실행하지 않고 원본 사용자/Flow ID와 비밀값을 출력하지 않으며 결과를 직접 반환합니다.
 - Metadata 저장 Flow 3종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/Chat Output 사용
 - Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
 - Metadata 후보: 도메인 관련 항목 최대 10건, 테이블 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증
+- Data Analysis 파라미터: 각 retrieval job이 독립 실행 가능한 `required_params`를 가지며, 공통 조건은 각 job에 반복하고 `어제 재공과 오늘 생산량`처럼 범위가 다르면 서로 다른 값을 유지
+- Metadata QA 제품 설명: 제품 그룹은 `product_terms`, 제품 집계는 `product_key_columns`와 관련 `analysis_recipes`만 근거로 결정론적 표를 만들고 추가 LLM 호출을 생략
 """
 
 

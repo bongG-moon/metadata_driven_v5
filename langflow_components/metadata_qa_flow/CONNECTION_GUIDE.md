@@ -13,9 +13,8 @@ Chat Input.message -> 00 Request Loader.question
 01.main_flow_filters -> 02.main_flow_filters
 02.payload_out -> 03 Variables.payload
 03 outputs -> Prompt Template variables
-Prompt -> 03 Guarded Agent.input_value
-02.payload_out -> 03 Guarded Agent.control_payload
-03 Guarded Agent.response -> 04 Normalizer.llm_response
+Prompt -> 기본 Language Model.input_value
+기본 Language Model.text_output -> 04 Normalizer.llm_response
 02.payload_out -> 04 Normalizer.payload
 04.payload_out -> 05 Message Adapter.payload
 04.payload_out -> 06 API Response.payload
@@ -34,8 +33,10 @@ Prompt -> 03 Guarded Agent.input_value
 - 기본 최대 후보는 50, 기본 context 제한은 65,536 bytes다.
 - `max_items`와 `max_bytes`는 실제 상한으로 동작하며 축소 시 trace warning을 남긴다.
 - secret 값은 `***`로 마스킹한다.
-- 결정론적 답변이 가능한 모드는 `llm_control.skip=true`로 표시한다. Guarded Agent는 이 값을 보고 부모 Agent 초기화 전에 빈 Message를 반환하므로 실제 모델 호출이 발생하지 않는다.
-- 자유 서술이 필요한 모드는 `skip=false`이며 기존 Langflow Agent provider/model 경로를 그대로 실행한다.
+- Tool이 필요 없는 QA 생성은 Langflow 기본 `Language Model`을 사용하므로 외부 모델 요청에 빈 `tools` 배열을 전달하지 않는다.
+- 결정론적 답변 모드는 `answer_policy.mode=deterministic_context`로 표시하고 모델 응답이 있더라도 표·답변은 authoritative context를 우선한다.
+- 자유 서술 모드는 `answer_policy.mode=model_assisted`이며 기본 Language Model 응답을 정규화해 사용한다.
+- 단순한 단일 출력 구조를 유지하기 위해 기본 Language Model은 모든 유효 질문에서 실행된다. 결정론 모드의 응답 사용 여부는 04 Normalizer trace에서 확인한다.
 
 ## 응답 계약
 

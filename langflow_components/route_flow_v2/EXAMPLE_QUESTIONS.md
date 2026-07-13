@@ -8,6 +8,5 @@
 | `BG 또는 B/G 그룹에 B/G1부터 B/G5까지 포함하도록 replace해줘` | `save_domain_metadata` 1회 |
 | `eqp_uph 테이블의 query template과 컬럼을 등록해줘` | `save_table_catalog_metadata` 1회 |
 | `OPER_NAME 필터 정의를 저장해줘` | `save_main_flow_filter_metadata` 1회 |
-| `Route V2에서 Error running flow가 나는데 사용자와 Flow 이름을 진단해줘` | `diagnose_route_v2_environment` 1회, 하위 Flow 실행 없음 |
 | `안녕, 어떤 일을 할 수 있어?` | Tool 없이 직접 안내 |
 | `이거 처리해줘` | Tool 없이 구체적인 확인 질문 1회 |

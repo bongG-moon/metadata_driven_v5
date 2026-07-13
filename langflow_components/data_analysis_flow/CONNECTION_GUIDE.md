@@ -6,10 +6,10 @@
 
 - `langflow_components/data_analysis_flow/*.py` 파일 하나가 Custom Component 노드 하나입니다. 파일 전체를 붙여 넣습니다.
 - Prompt는 같은 폴더의 `*_prompt_template_ko.md`를 `Langflow Prompt Template`에 넣습니다.
-- 모델 호출은 `Langflow Agent/LLM`을 사용합니다.
+- Tool이 없는 모델 호출은 Langflow 기본 `Language Model`, 실제 Tool 선택은 기본 `Agent`를 사용합니다.
 - custom component 사이의 repo-local import는 사용하지 않습니다.
 - API key, DB password, token은 Flow JSON이나 코드에 저장하지 않습니다. MongoDB URI는 Langflow Credential Global Variable `MONGO_URL`을 노드 입력으로 주입합니다.
-- 현재 Agent 노드는 Langflow Global Variable `GOOGLE_API_KEY`를 참조합니다. 회사 표준 Model Providers 설정을 쓸 경우 import 후 provider/key 연결을 그 설정에 맞게 교체합니다.
+- 현재 Language Model 노드는 Langflow Global Variable `GOOGLE_API_KEY`를 참조합니다. 회사 표준 Model Providers 설정을 쓸 경우 import 후 provider/key 연결을 그 설정에 맞게 교체합니다.
 
 ## 2. 요청, 상태, 메타데이터 후보
 
@@ -37,13 +37,13 @@
 | `02.metadata_candidates` | `03 Intent Prompt.metadata_candidates` |
 | `02.output_schema` | `03 Intent Prompt.output_schema` |
 | optional `Text Input.text` | `03 Intent Prompt.specialized_prompt` |
-| `03 Intent Prompt.prompt` | `Intent Agent/LLM.input` |
+| `03 Intent Prompt.prompt` | `Intent Language Model.input_value` |
 | `01E.payload_out` | `04 의도 계획 정규화기.payload` |
-| `Intent Agent/LLM.response` | `04 의도 계획 정규화기.llm_response` |
+| `Intent Language Model.text_output` | `04 의도 계획 정규화기.llm_response` |
 | `04.payload_out` | `04A 신뢰 카탈로그 조회 작업 구성기.payload` |
 | `01B.table_catalog_items` | `04A 신뢰 카탈로그 조회 작업 구성기.table_catalog_items` |
 
-Intent LLM은 plan 수준의 선택적 `shared_required_params`와 job별 `dataset_key`, `source_alias`, `required_params`, `filters`만 선택합니다. 공통 파라미터는 질문에서 전체 job에 같은 값이 적용된다고 명확할 때만 사용하고, 대상별 값은 각 job에 따로 둡니다. `04A`가 LLM이 출력한 source 설정을 버리고 active table catalog의 설정을 주입합니다.
+Intent LLM은 `dataset_key`, `source_alias`, `required_params`, `filters`만 선택합니다. `04A`가 LLM이 출력한 source 설정을 버리고 active table catalog의 설정을 주입합니다.
 
 - `04A.retrieval_mode=dummy`: 모르는 dataset도 `source_type=dummy`, `dummy_only=true`로 유지해 더미 조회기로 전달합니다.
 - `04A.retrieval_mode=live`: active catalog에 없는 dataset은 제거하고 error를 기록합니다.
@@ -98,9 +98,9 @@ Intent LLM은 plan 수준의 선택적 `shared_required_params`와 job별 `datas
 | `15A.selected_helper_code` | `16 pandas Prompt.function_case_helper_code` |
 | `15A.selected_helper_code` | `17 pandas 실행/1회 복구기.function_case_helper_code` |
 | `17B pandas 복구 프롬프트 템플릿.text` | `17 pandas 실행/1회 복구기.repair_prompt_template` |
-| `16 pandas Prompt.prompt` | `Pandas Agent/LLM.input` |
+| `16 pandas Prompt.prompt` | `Pandas Language Model.input_value` |
 | `14.payload_out` | `17 pandas 실행/1회 복구기.payload` |
-| `Pandas Agent/LLM.response` | `17 pandas 실행/1회 복구기.llm_response` |
+| `Pandas Language Model.text_output` | `17 pandas 실행/1회 복구기.llm_response` |
 
 전체 helper library에는 `function_case_helper_code_input_example.py` 내용을 넣습니다. Prompt에는 `15A`가 실제 선택된 함수만 전달합니다. function case가 선택되지 않으면 빈 문자열입니다.
 
@@ -145,9 +145,9 @@ Intent LLM은 plan 수준의 선택적 `shared_required_params`와 job별 `datas
 | `18.answer_context_json` | `19 답변 Prompt.answer_context_json` |
 | `18.warnings_errors_json` | `19 답변 Prompt.warnings_errors_json` |
 | optional 답변 지침 `Text Input.text` | `19 답변 Prompt.domain_answer_guidance` |
-| `19 답변 Prompt.prompt` | `Answer Agent/LLM.input` |
+| `19 답변 Prompt.prompt` | `Answer Language Model.input_value` |
 | `23.payload_out` | `20 답변 응답 생성기.payload` |
-| `Answer Agent/LLM.response` | `20.answer_text` |
+| `Answer Language Model.text_output` | `20.answer_text` |
 
 Dummy source를 사용한 경우 `19`는 답변 본문에서 dummy 결과임을 반드시 밝힙니다.
 

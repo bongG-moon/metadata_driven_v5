@@ -25,7 +25,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "094315119f9f61413f3e17ba3070169e27d6542694b126954af65d1e5276f4c6",
+  "single_file_ui_import_sha256": "68672101cd145123442a870a87f7c93e6058859e4ddfef0721ce08dce042aa5b",
   "flows": [
     {
       "order": 1,
@@ -33,8 +33,8 @@
       "name": "metadata_driven_v5_complete_20260710_data_analysis",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 42,
-      "edges": 68,
-      "sha256": "7013132f5ba8e642063488f85fe2a094e075ef398469c24bb6857ca813edb566"
+      "edges": 66,
+      "sha256": "aaa21b006d6fa249410127c9b68a80c93403ece3d375f460e18c81a45a792fd6"
     },
     {
       "order": 2,
@@ -43,7 +43,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "8f1763247ed2bbf4b80a88511a7565ab4964e02febfa02545a533c6f1281e5c8"
+      "sha256": "b0d36b0120414bc527109d6532d0081f6dca3d0fb07c7d0c57a0c3547cb46ceb"
     },
     {
       "order": 3,
@@ -52,7 +52,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-table-catalog-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "da2828e7279c8508428554055d1a5d51f3847ae738c2419de083ba5cb6c78642"
+      "sha256": "67bfc3b5d42147c3e0c4e1cdf9261dd3cdb0e3ffdffe10f0773b65c7c3376c3e"
     },
     {
       "order": 4,
@@ -61,7 +61,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-main-flow-filter-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "55fa8e4803ed74851ca71e3c7aa03fab53794f41fb791995fdab125d2869cc5c"
+      "sha256": "cd27ab8464f267beefaf036fe89226edd0165c99e3c5f707bba61d08cda5075d"
     },
     {
       "order": 5,
@@ -69,8 +69,8 @@
       "name": "metadata_driven_v5_complete_20260710_metadata_qa",
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
       "nodes": 11,
-      "edges": 18,
-      "sha256": "3914457b0428b863a97757694b7b03b894d6b54faa200f0af419febd19c5cb4d"
+      "edges": 17,
+      "sha256": "1e2e59320c3612a1268f01dc3eada56d0e1d51370b0dee76966d00bb0050dabc"
     },
     {
       "order": 6,
@@ -79,16 +79,16 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-api-router",
       "nodes": 14,
       "edges": 13,
-      "sha256": "ea9579fe48cec0bfd5ed297fee26abe2bc29679974065368aff459384918b37c"
+      "sha256": "0745afcd8f582ad0c618eaf88c9bf3c55f026a881ebecc93bbd09ff15eced87b"
     },
     {
       "order": 7,
       "file": "07_agent_tool_router_flow_v5_standalone.json",
       "name": "metadata_driven_v5_complete_20260710_agent_tool_router",
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
-      "nodes": 9,
-      "edges": 8,
-      "sha256": "589e2eabb747d654b535d0d96833dc45215441852fe0085094b37eecdfa10493"
+      "nodes": 8,
+      "edges": 7,
+      "sha256": "3dc2d242dab13c1592906a410cf18101b452a2c41e67c4ba2b146da28e3a6394"
     }
   ],
   "router_configuration": {
@@ -101,16 +101,17 @@
     "manual_edge_rewiring_required": false,
     "manual_flow_id_replacement_required": false,
     "api_router": "Smart Router plus five Run API callers",
-    "agent_tool_router": "Agent plus five name-resolved cached Flow tools and one safe runtime diagnostic tool"
+    "agent_tool_router": "Agent plus five name-resolved cached Flow tools"
   },
   "validation": {
-    "pytest": "269 passed",
-    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 78/78 custom nodes to 69 real Python sources; 0 missing",
-    "korean_component_documentation": "70/70 Python sources and 1119/1119 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 234 embedded custom-code instances preserve 3699/3699 documented function instances; strict UTF-8/JSON checks passed",
+    "pytest": "260 passed",
+    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 74/74 custom nodes to 66 real Python sources; 0 missing",
+    "korean_component_documentation": "67/67 Python sources and 1093/1093 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 222 embedded custom-code instances preserve 3615/3615 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
-    "langflow_frontend_edge_handles": "298/298 parsed and matched edge.data",
+    "langflow_frontend_edge_handles": "290/290 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-    "langflow_lfx_node_templates": "115/115 passed",
+    "langflow_lfx_node_templates": "114/114 passed",
+    "native_language_model_policy": "7/7 tool-free LLM stages use the native Language Model component; only Route V2 keeps one native Agent with five real tools",
     "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter directly to their ChatOutput; 0 gate nodes",
     "router_single_entry_topology": "Chat Input has exactly one outgoing edge to Smart Router; 0 API-caller session fan-out edges",
     "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra Chat Input edges",
@@ -126,10 +127,11 @@
     "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
     "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
     "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
-    "route_v2_runtime_diagnostic": "1/1 direct-return diagnostic tool checks current-user identity, exact target names and suffixes, runtime/private API compatibility, and child topology without executing child flows or exposing raw IDs",
     "metadata_existing_loader": "3/3 saving flows connect ExistingLoader directly to Matcher",
     "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
     "metadata_mongo_defaults": "17 MongoDB nodes bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
-    "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes"
+    "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
+    "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
+    "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes"
   }
 }
