@@ -282,6 +282,12 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     assert all(node["data"]["node"]["template"]["return_direct"]["value"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in tools)
     assert all("session_source" not in node["data"]["node"]["template"] for node in tools)
+    assert all(
+        'runtime_user_id = str(getattr(self, "user_id"' in node["data"]["node"]["template"]["code"]["value"]
+        and "self.user_id =" not in node["data"]["node"]["template"]["code"]["value"]
+        and "UUID(requested_flow_id)" in node["data"]["node"]["template"]["code"]["value"]
+        for node in tools
+    )
     tool_chat_edges = [
         edge for edge in tool_router["data"]["edges"] if edge["source"] == "ChatInput-agent-tool-router"
     ]

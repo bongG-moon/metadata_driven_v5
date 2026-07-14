@@ -41,7 +41,7 @@ Chat Input
 -> Chat Output 1개
 ```
 
-이 Router는 import 후 바뀐 Flow ID를 export에 고정하지 않고 이름으로 실제 ID를 해석합니다. `cache_flow=true`는 하위 Flow 그래프만 캐시하며 데이터 조회와 답변 결과는 캐시하지 않습니다. 각 Tool은 node ID가 없는 필수 `question`만 Agent 인자로 노출하고, 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환합니다. `return_direct=true`로 Tool 뒤 추가 답변 재작성을 생략합니다.
+이 Router는 import 후 바뀐 Flow ID를 export에 고정하지 않습니다. Langflow가 component에 주입한 현재 실행 `user_id` 범위에서 최초 이름으로 실제 ID를 해석하고, 이후에는 해석된 ID를 우선 재사용합니다. `cache_flow=true`는 하위 Flow 그래프만 캐시하며 데이터 조회와 답변 결과는 캐시하지 않습니다. 각 Tool은 node ID가 없는 필수 `question`만 Agent 인자로 노출하고, 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환합니다. `return_direct=true`로 Tool 뒤 추가 답변 재작성을 생략합니다.
 
 ## Main Router Flow
 

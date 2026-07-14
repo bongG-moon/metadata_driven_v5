@@ -51,9 +51,9 @@ Langflow upload는 export JSON의 Flow ID를 그대로 보존하지 않고 새 D
 새 `CachedNamedRunFlowTool`은 다음 순서로 동작합니다.
 
 1. 고정 ID 대신 정확한 Flow 이름을 저장합니다.
-2. 실행 시 같은 프로젝트 DB에서 현재 Flow ID와 `updated_at`을 조회합니다.
+2. Langflow가 component에 주입한 현재 실행 `user_id`를 사용하고, 최초 실행 시 같은 사용자 소유의 정확한 Flow 이름으로 현재 ID와 `updated_at`을 조회합니다.
 3. 현재 그래프에서 단일 Chat Input ID를 확인하고 고정 `question` 인자를 내부 tweak로 변환합니다.
-4. 실제 `user_id + flow_id`로 Langflow shared graph cache를 사용합니다.
+4. 한 번 해석한 실제 ID를 이후 실행에 우선 사용하고, 실제 `user_id + flow_id`로 Langflow shared graph cache를 사용합니다.
 5. 대상 Flow가 갱신되면 `updated_at` 비교로 오래된 graph cache를 무효화합니다.
 
 `cache_flow=true`는 그래프 파싱·구성 비용만 줄입니다. 데이터 조회, pandas, 하위 LLM 답변 결과는 매 요청 다시 실행합니다. 따라서 warm 실행에서 일부 단축을 기대할 수 있지만 API Smart Router보다 항상 빠르다는 의미는 아닙니다.

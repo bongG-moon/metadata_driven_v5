@@ -30,6 +30,10 @@ def install_lfx_test_stubs() -> None:
     class RunFlowBaseComponent(Component):
         IOPUT_SEP = "~"
 
+        @property
+        def user_id(self):
+            return getattr(self, "_user_id", None) or getattr(getattr(self, "graph", None), "user_id", None)
+
     class Data:
         def __init__(self, data=None):
             self.data = data or {}
@@ -6572,6 +6576,9 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert "get_new_fields_from_graph" not in source
     assert "def _build_flow_tweak_data" in source
     assert "flow_id_selected=None" in source
+    assert "UUID(requested_flow_id)" in source
+    assert 'runtime_user_id = str(getattr(self, "user_id"' in source
+    assert "self.user_id =" not in source
     assert "tool.return_direct" in source
     assert "parent_session" in source
     assert "session_source" not in source
@@ -6669,9 +6676,17 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         successor_map={"ChatInput-current": ["ChatOutput-current"], "ChatOutput-current": []},
     )
 
+    current_flow_id = "11111111-1111-4111-8111-111111111111"
+
     async def fake_get_flow(self, flow_name_selected=None, flow_id_selected=None):
         graph_calls.append(("resolve", flow_name_selected, flow_id_selected))
-        return types.SimpleNamespace(data={"id": "current-flow-id", "updated_at": "2026-07-12T10:00:00Z"})
+        return types.SimpleNamespace(
+            data={
+                "id": flow_id_selected or current_flow_id,
+                "name": "Metadata QA",
+                "updated_at": "2026-07-12T10:00:00Z",
+            }
+        )
 
     async def fake_get_graph(self, flow_name_selected=None, flow_id_selected=None, updated_at=None):
         graph_calls.append(("build", flow_name_selected, flow_id_selected, updated_at))
@@ -6682,13 +6697,27 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     monkeypatch.setattr(base, "get_graph", fake_get_graph, raising=False)
     runtime_instance = component.CachedNamedRunFlowTool()
     runtime_instance._attributes = {}
+    runtime_instance._user_id = ""
+    runtime_instance.graph = types.SimpleNamespace(user_id="parent-user", session_id="parent-session")
     assert asyncio.run(runtime_instance.get_graph("Metadata QA", "stale-export-id", None)) is graph
     assert graph_calls == [
         ("resolve", "Metadata QA", None),
-        ("build", "Metadata QA", "current-flow-id", "2026-07-12T10:00:00Z"),
+        ("build", "Metadata QA", current_flow_id, "2026-07-12T10:00:00Z"),
     ]
+    assert runtime_instance.user_id == "parent-user"
+    assert runtime_instance.flow_id_selected == current_flow_id
     assert runtime_instance._resolved_chat_input_id == "ChatInput-current"
     assert runtime_instance._resolved_flow_output_target == ("ChatOutput-current", "message")
+
+    graph_calls.clear()
+    cached_instance = component.CachedNamedRunFlowTool()
+    cached_instance._attributes = {}
+    cached_instance._user_id = "parent-user"
+    assert asyncio.run(cached_instance.get_graph("Metadata QA", current_flow_id, None)) is graph
+    assert graph_calls == [
+        ("resolve", None, current_flow_id),
+        ("build", "Metadata QA", current_flow_id, "2026-07-12T10:00:00Z"),
+    ]
 
     graph.vertices[-1].outputs.append({"name": "data"})
     try:
@@ -6712,7 +6741,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         run_calls.append(("resolve_output", vertex_id, output_name))
         return "child answer"
 
-    runtime_instance.user_id = "user-1"
+    runtime_instance._user_id = "user-1"
     runtime_instance._last_run_outputs = ["stale"]
     runtime_instance._get_cached_run_outputs = fake_run_outputs
     runtime_instance._resolve_flow_output = fake_resolve
@@ -6920,6 +6949,9 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     cached_tool_source = (
         ROOT / "langflow_components" / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
     ).read_text(encoding="utf-8")
+    assert 'runtime_user_id = str(getattr(self, "user_id"' in cached_tool_source
+    assert "self.user_id =" not in cached_tool_source
+    assert "UUID(requested_flow_id)" in cached_tool_source
     assert all(node["data"]["node"]["template"]["code"]["value"] == cached_tool_source for node in tools)
     assert {
         node["data"]["node"]["template"]["tool_name"]["value"] for node in tools

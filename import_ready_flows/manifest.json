@@ -25,7 +25,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "68672101cd145123442a870a87f7c93e6058859e4ddfef0721ce08dce042aa5b",
+  "single_file_ui_import_sha256": "a4686ddf2871110ea00f85a7ee8a69e2d4f187351f5f998c80c53a5f36e4fe9c",
   "flows": [
     {
       "order": 1,
@@ -88,7 +88,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
       "nodes": 8,
       "edges": 7,
-      "sha256": "3dc2d242dab13c1592906a410cf18101b452a2c41e67c4ba2b146da28e3a6394"
+      "sha256": "abf636305316738e1aad3b62df161ffa94fdaa5ff3c9a390a214c861c4b82520"
     }
   ],
   "router_configuration": {
@@ -122,7 +122,7 @@
     "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
     "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
     "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Agent Tool Router has 5/5 name-resolved tools with cache_flow=true and blank exported IDs",
+    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Agent Tool Router has 5/5 runtime-user-scoped name-resolved tools with cache_flow=true, runtime ID reuse, and blank exported IDs",
     "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current ChatInput ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
     "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
     "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",

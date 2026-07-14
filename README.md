@@ -76,7 +76,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 16. Router 하위 Flow read timeout은 240초, 외부 Web/API client 기본 timeout은 300초입니다. timeout 상향은 장기 실행을 실패로 오판하지 않기 위한 여유이며 실행시간 자체를 줄이는 최적화는 아닙니다.
 17. pandas 안전 실행 namespace에 `zip`을 명시적으로 제공하고 최초/repair 프롬프트에 같은 builtin 계약을 노출해 `dict(zip(...))`가 불필요한 1회 repair를 유발하지 않도록 했습니다. 기존 오류 시 최대 1회 repair 계약은 그대로 유지합니다.
 18. 운영 기본 Router는 결정된 API 방식이며 Native Run Flow 노드가 없습니다. API caller 5개는 240초 read timeout과 원본 session 전달을 유지합니다.
-19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 이름 기반 Tool 5개는 import 후 실제 Flow ID를 다시 해석하고 `cache_flow=true`로 그래프만 캐시합니다. Tool schema에는 node ID가 없는 필수 `question` 하나만 포함하고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 변환합니다. `return_direct=true`로 추가 Agent 재작성을 생략하며, 각 Tool은 부모 `graph.session_id`를 자동 상속합니다.
+19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 이름 기반 Tool 5개는 Langflow가 주입한 현재 실행 `user_id` 범위에서 최초 실제 Flow ID를 해석하고, 이후에는 그 ID와 `cache_flow=true` 그래프 캐시를 재사용합니다. Tool schema에는 node ID가 없는 필수 `question` 하나만 포함하고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 변환합니다. `return_direct=true`로 추가 Agent 재작성을 생략하며, 각 Tool은 부모 `graph.session_id`도 자동 상속합니다.
 20. 하위 Flow를 직접 Playground에서 실행할 때는 Chat Input/Output 저장을 켜 답변을 정상 표시합니다. Router nested 호출에서는 API tweak 또는 runtime node-ID tweak로 하위 저장만 끄고 부모 Router가 질문·답변을 한 번만 저장합니다.
 21. Data Analysis의 각 `retrieval_job.required_params`는 다른 job에 의존하지 않는 완성된 값으로 작성합니다. 하나의 날짜·FAB·조 조건이 여러 데이터셋에 공통이면 각 job에 반복하고, `어제 재공과 오늘 생산량`처럼 범위가 다르면 job별 값을 분리합니다. 일반 재공 요청은 WIP grain을 사용하며 LOT·랏·LOT_ID 등 LOT 단위 근거가 있을 때만 `lot_status`를 선택합니다.
 22. Metadata QA의 제품 그룹 질문은 `product_terms`, 제품 집계 방법 질문은 `product_key_columns`와 관련 `analysis_recipes`만 선택합니다. 조건·제품 키·grain/group by 표는 등록 메타데이터를 authoritative 근거로 결정론적으로 만들며, 기본 Language Model 응답이 있더라도 해당 모드에서는 사용하지 않습니다.

@@ -6,14 +6,15 @@
 #        세션 ID (session_id), Flow 그래프 캐시 (cache_flow), 도구 이름 (tool_name) · 필수, 도구 설명 (tool_description) · 필수,
 #        결과 직접 반환 (return_direct)
 # 주요 출력: Flow 도구 (component_as_tool)
-# 처리 흐름: 고정 question schema를 먼저 노출하고, 선택된 Tool만 runtime Chat I/O ID를 찾아 질문 전달과 child message 저장 차단 tweak를 적용합니다.
-# 유지보수 포인트: 외부 Tool schema에 node ID를 노출하지 않으며 부모 Router만 질문·답변 메시지를 저장합니다.
+# 처리 흐름: Langflow 실행 사용자로 이름을 실제 ID에 해석한 뒤, 선택된 Tool만 runtime Chat I/O ID를 찾아 실행합니다.
+# 유지보수 포인트: 실제 ID는 캐시에 재사용하되 export에는 고정하지 않으며, 부모 Router만 질문·답변 메시지를 저장합니다.
 # =============================================================================
 
 from __future__ import annotations
 
 import re
 from typing import Any
+from uuid import UUID
 
 from lfx.base.tools.run_flow import RunFlowBaseComponent
 from lfx.custom.custom_component.component import Component
@@ -186,7 +187,7 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         )
     ]
 
-    # 주요 메서드: 대상 Flow 이름을 ID로 해석하고 재사용 가능한 그래프를 가져옵니다.
+    # 주요 메서드: Langflow 실행 사용자로 대상 Flow 이름 또는 이미 해석된 ID를 조회해 재사용 가능한 그래프를 가져옵니다.
     # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
     async def get_graph(
         self,
@@ -194,17 +195,45 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         flow_id_selected: str | None = None,
         updated_at: str | None = None,
     ):
-        del flow_id_selected, updated_at
         flow_name = str(flow_name_selected or getattr(self, "flow_name_selected", "") or "").strip()
         if not flow_name:
             raise ValueError("대상 Flow 이름이 필요합니다.")
 
-        flow = await super().get_flow(flow_name_selected=flow_name, flow_id_selected=None)
+        # Component.user_id는 Langflow가 주입한 _user_id를 우선 사용하고, 없으면 부모 graph.user_id를 반환합니다.
+        # 읽기 전용 속성이므로 직접 변경하지 않고 이름/ID 조회와 캐시에서 같은 런타임 값을 사용합니다.
+        runtime_user_id = str(getattr(self, "user_id", "") or "").strip()
+        if not runtime_user_id:
+            raise ValueError(
+                "Router 실행 사용자 ID가 없어 하위 Flow를 조회할 수 없습니다. "
+                "Router와 하위 Flow를 같은 사용자로 import하고 같은 사용자/API key로 실행하세요."
+            )
+        # 최초 import에서는 ID가 비어 있으므로 이름으로 해석하되, 한 번 얻은 실제 ID는 이후 실행과 캐시에 우선 사용합니다.
+        # UUID가 아니거나 현재 이름과 다른 ID는 export/import 과정의 오래된 값으로 보고 정확한 이름으로 다시 해석합니다.
+        resolved_flow = None
+        requested_flow_id = str(flow_id_selected or getattr(self, "flow_id_selected", "") or "").strip()
+        if requested_flow_id:
+            try:
+                UUID(requested_flow_id)
+            except (TypeError, ValueError, AttributeError):
+                requested_flow_id = ""
+
+        if requested_flow_id:
+            id_flow = await super().get_flow(flow_name_selected=None, flow_id_selected=requested_flow_id)
+            id_flow_data = getattr(id_flow, "data", None) or {}
+            id_flow_name = str(id_flow_data.get("name") or "").strip()
+            if id_flow_data.get("id") and (not id_flow_name or id_flow_name == flow_name):
+                resolved_flow = id_flow
+
+        flow = resolved_flow or await super().get_flow(flow_name_selected=flow_name, flow_id_selected=None)
         flow_data = getattr(flow, "data", None) or {}
         actual_id = str(flow_data.get("id") or "").strip()
-        actual_updated_at = _as_iso_text(flow_data.get("updated_at"))
+        actual_updated_at = _as_iso_text(flow_data.get("updated_at")) or _as_iso_text(updated_at)
         if not actual_id:
-            raise ValueError(f"대상 Flow를 찾지 못했거나 ID가 없습니다: {flow_name}")
+            raise ValueError(
+                "현재 Router 실행 사용자에게서 대상 Flow를 찾지 못했거나 ID가 없습니다. "
+                f"flow_name={flow_name!r}, user_id={runtime_user_id!r}. "
+                "실제 Flow 이름에 '(1)' 등이 붙지 않았는지와 하위 Flow 소유자가 같은지 확인하세요."
+            )
 
         self.flow_name_selected = flow_name
         self.flow_id_selected = actual_id
