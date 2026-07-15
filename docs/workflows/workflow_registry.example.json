@@ -1,0 +1,55 @@
+{
+  "contract_version": "workflow.registry.v1",
+  "workflows": [
+    {
+      "workflow_key": "wb_daily_production_metadata",
+      "title": "WB 당일 생산량과 공정 그룹 정의 조회",
+      "description": "오늘 WB 생산량을 먼저 조회한 뒤 등록된 WB 공정 그룹 정의를 조회합니다.",
+      "steps": [
+        {
+          "step_id": "production",
+          "tool_name": "run_data_analysis",
+          "question": "오늘 WB 공정 생산량을 조회해.",
+          "depends_on": [],
+          "handoff": "none",
+          "on_error": "stop"
+        },
+        {
+          "step_id": "metadata",
+          "tool_name": "run_metadata_qa",
+          "question": "메타데이터에 등록된 WB 공정 그룹 정의와 포함 공정을 알려줘.",
+          "depends_on": [
+            "production"
+          ],
+          "handoff": "none",
+          "on_error": "continue"
+        }
+      ]
+    },
+    {
+      "workflow_key": "anomaly_lot_hold_history",
+      "title": "이상 LOT과 HOLD 이력 연계 조회",
+      "description": "이상 LOT을 조회한 뒤 실제 결과 참조를 사용해 해당 LOT의 HOLD 이력을 조회합니다.",
+      "steps": [
+        {
+          "step_id": "anomaly_lots",
+          "tool_name": "run_data_analysis",
+          "question": "오늘 이상 LOT을 조회하고 LOT_ID를 결과에 포함해줘.",
+          "depends_on": [],
+          "handoff": "none",
+          "on_error": "stop"
+        },
+        {
+          "step_id": "hold_history",
+          "tool_name": "run_data_analysis",
+          "question": "앞 단계에서 조회된 LOT만 대상으로 HOLD 이력을 조회해.",
+          "depends_on": [
+            "anomaly_lots"
+          ],
+          "handoff": "result_ref",
+          "on_error": "stop"
+        }
+      ]
+    }
+  ]
+}

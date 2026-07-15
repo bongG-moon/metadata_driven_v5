@@ -23,8 +23,26 @@ def build_retrieval_payload(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     next_payload = payload
     if "_runtime_rows_by_alias" in next_payload:
-        next_payload["runtime_sources"] = next_payload.pop("_runtime_rows_by_alias", {})
+        existing_sources = (
+            next_payload.get("runtime_sources")
+            if isinstance(next_payload.get("runtime_sources"), dict)
+            else {}
+        )
+        retrieved_sources = next_payload.pop("_runtime_rows_by_alias", {})
+        next_payload["runtime_sources"] = _merge_sources_by_alias(existing_sources, retrieved_sources)
     return next_payload
+
+
+# 함수 설명: `_merge_sources_by_alias()`는 MongoDB에서 복원한 upstream_result를 보존하고 같은 alias의 실제 신규 조회만 교체합니다.
+def _merge_sources_by_alias(existing: dict[str, Any], additions: Any) -> dict[str, Any]:
+    result = {str(alias): rows for alias, rows in existing.items() if str(alias or "").strip()}
+    if not isinstance(additions, dict):
+        return result
+    for alias, rows in additions.items():
+        text = str(alias or "").strip()
+        if text:
+            result[text] = rows
+    return result
 
 
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.

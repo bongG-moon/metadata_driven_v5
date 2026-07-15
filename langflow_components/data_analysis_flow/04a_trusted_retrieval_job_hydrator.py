@@ -74,6 +74,9 @@ def hydrate_retrieval_jobs(
     warnings: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     used_refs: list[dict[str, Any]] = []
+    deferred_upstream_params: list[dict[str, Any]] = []
+    orchestration = _dict(next_payload.get("orchestration"))
+    explicit_upstream = bool(str(orchestration.get("upstream_result_ref") or "").strip())
 
     for index, raw_job in enumerate(jobs):
         if not isinstance(raw_job, dict):
@@ -113,12 +116,17 @@ def hydrate_retrieval_jobs(
         required_names = _required_param_names(catalog_payload, source_config, catalog_item)
         supplied_params = _dict(clean_job.get("required_params")) or _dict(clean_job.get("params"))
         missing_params = [name for name in required_names if supplied_params.get(name) in (None, "", [], {})]
+        upstream_targets = _upstream_target_params(source_config) if explicit_upstream else []
+        deferred = [name for name in missing_params if name.casefold() in {item.casefold() for item in upstream_targets}]
+        missing_params = [name for name in missing_params if name not in deferred]
 
         clean_job["source_type"] = source_type or str(clean_job.get("source_type") or "")
         clean_job["source_config"] = source_config
         clean_job["required_param_names"] = required_names
         clean_job["trusted_catalog"] = True
         clean_job["catalog_ref"] = f"table_catalog:{dataset_key}"
+        if deferred:
+            deferred_upstream_params.append({"dataset_key": dataset_key, "params": deferred})
         if missing_params:
             warnings.append(
                 _issue(
@@ -146,6 +154,7 @@ def hydrate_retrieval_jobs(
         "catalog_item_count": len(catalog_items),
         "trusted_dataset_keys": [job.get("dataset_key") for job in hydrated if job.get("trusted_catalog")],
         "dummy_only_dataset_keys": [job.get("dataset_key") for job in hydrated if job.get("dummy_only")],
+        "deferred_upstream_params": deferred_upstream_params,
     }
     return next_payload
 
@@ -184,6 +193,21 @@ def _required_param_names(*values: dict[str, Any]) -> list[str]:
             text = str(item or "").strip()
             if text and text not in result:
                 result.append(text)
+    return result
+
+
+# 함수 설명: `_upstream_target_params()`는 신뢰 source_config의 binding이 후속 단계에서 채울 파라미터 이름만 추출합니다.
+def _upstream_target_params(source_config: dict[str, Any]) -> list[str]:
+    bindings = source_config.get("upstream_bindings")
+    if not isinstance(bindings, list):
+        return []
+    result: list[str] = []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        target = str(binding.get("target_param") or "").strip()
+        if target and target.casefold() not in {item.casefold() for item in result}:
+            result.append(target)
     return result
 
 

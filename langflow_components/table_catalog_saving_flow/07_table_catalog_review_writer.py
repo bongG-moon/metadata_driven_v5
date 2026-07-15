@@ -30,6 +30,7 @@ COLLECTION_ENV = "MONGODB_TABLE_CATALOG_COLLECTION"
 ALLOWED_SOURCE_CONFIG_KEYS = {
     "source_type", "db_key", "query_template", "api_url", "url", "endpoint", "endpoint_id", "method",
     "headers", "params", "query_params", "body", "payload", "response_path", "doc_id", "sheet_name", "token_source", "token_key",
+    "upstream_bindings",
 }
 SAFE_REFERENCE_KEYS = {"token_source", "token_key"}
 SECRET_PATTERNS = ("password", "passwd", "token", "secret", "api_key", "apikey", "authorization", "credential", "access_key", "private_key", "cookie")
@@ -107,9 +108,87 @@ def _deterministic_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for field in sc:
             if str(field) not in ALLOWED_SOURCE_CONFIG_KEYS:
                 errors.append({"type": "forbidden_source_config_key", "message": f"허용되지 않은 source_config 필드입니다: {field}", "key": item_key, "field": str(field)})
+        errors.extend(_upstream_binding_errors(sc.get("upstream_bindings"), item_key))
         for path in _secret_paths(item):
             errors.append({"type": "credential_field_forbidden", "message": f"credential/secret 필드는 저장할 수 없습니다: {path}", "key": item_key, "field": path})
     return _unique_errors(errors)
+
+
+# 함수 설명: `_upstream_binding_errors()`는 Flow 간 결과 전달에 쓰는 metadata binding을 추측 없이 실행 가능한 최소 스키마로 검증합니다.
+def _upstream_binding_errors(value: Any, item_key: str) -> list[dict[str, Any]]:
+    if value in (None, "", []):
+        return []
+    if not isinstance(value, list):
+        return [{
+            "type": "invalid_upstream_bindings",
+            "message": "source_config.upstream_bindings는 object 목록이어야 합니다.",
+            "key": item_key,
+        }]
+
+    errors: list[dict[str, Any]] = []
+    seen_targets: set[str] = set()
+    allowed_fields = {"entity_type", "source_alias", "source_column", "target_param", "operator", "max_values"}
+    for index, binding in enumerate(value):
+        location = {"key": item_key, "binding_index": index}
+        if not isinstance(binding, dict):
+            errors.append({
+                "type": "invalid_upstream_binding",
+                "message": "upstream_bindings의 각 항목은 object여야 합니다.",
+                **location,
+            })
+            continue
+        unknown = [str(field) for field in binding if str(field) not in allowed_fields]
+        for field in unknown:
+            errors.append({
+                "type": "forbidden_upstream_binding_key",
+                "message": f"허용되지 않은 upstream binding 필드입니다: {field}",
+                "field": field,
+                **location,
+            })
+        for field in ("entity_type", "source_column", "target_param"):
+            if not str(binding.get(field) or "").strip():
+                errors.append({
+                    "type": "missing_upstream_binding_field",
+                    "message": f"upstream binding 필수 필드가 없습니다: {field}",
+                    "field": field,
+                    **location,
+                })
+        source_alias = str(binding.get("source_alias") or "upstream_result").strip()
+        if source_alias != "upstream_result":
+            errors.append({
+                "type": "unsupported_upstream_source_alias",
+                "message": "현재 upstream binding의 source_alias는 upstream_result만 지원합니다.",
+                **location,
+            })
+        operator = str(binding.get("operator") or "in").strip().lower()
+        if operator not in {"in", "eq"}:
+            errors.append({
+                "type": "unsupported_upstream_operator",
+                "message": f"지원하지 않는 upstream binding operator입니다: {operator}",
+                **location,
+            })
+        target_param = str(binding.get("target_param") or "").strip()
+        target_marker = target_param.casefold()
+        if target_marker and target_marker in seen_targets:
+            errors.append({
+                "type": "ambiguous_upstream_target_param",
+                "message": f"같은 target_param이 둘 이상 선언되었습니다: {target_param}",
+                **location,
+            })
+        if target_marker:
+            seen_targets.add(target_marker)
+        max_values = binding.get("max_values", 200)
+        try:
+            max_values_int = int(str(max_values).strip())
+        except Exception:
+            max_values_int = 0
+        if not 1 <= max_values_int <= 10_000:
+            errors.append({
+                "type": "invalid_upstream_max_values",
+                "message": "upstream binding max_values는 1~10000 정수여야 합니다.",
+                **location,
+            })
+    return errors
 
 
 # 함수 설명: `_merge_review()`는 결정론적 검증 결과와 선택적 추가 검수 결과를 하나의 저장 판단으로 합칩니다.

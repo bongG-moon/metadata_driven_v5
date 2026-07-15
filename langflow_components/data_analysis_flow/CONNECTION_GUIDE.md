@@ -54,11 +54,16 @@ Intent LLM은 `dataset_key`, `source_alias`, `required_params`, `filters`만 선
 | From node.output | To node.input |
 | --- | --- |
 | `04A.payload_out` | `05 MongoDB 이전 결과 로더.payload` |
-| `05.payload_out` | `06 조회 작업 검증기.payload` |
+| `05.payload_out` | `05A 상위 결과 파라미터 바인더.payload` |
+| `05A.payload_out` | `06 조회 작업 검증기.payload` |
 | `06.payload_out` | `07 데이터 조회 작업 라우터.payload` |
 | `06.payload_out` | `13 소스 조회 결과 병합기.main_payload` |
 
 `05`는 `data_ref`가 없으면 skip합니다. 이전 결과 재사용이 필요 없는 첫 질문도 같은 연결을 유지할 수 있습니다.
+
+Route V3가 `00 분석 요청 로더.upstream_result_ref`를 명시하면 `05`는 이 참조를 기존 후속 질문 state보다 우선합니다. 같은 `session_id`의 완전한 `payload.result_rows`만 `runtime_sources.upstream_result`로 복원하며, 다른 세션·빈 결과·잘린 저장 결과는 오류로 차단합니다. `05A`는 active Table Catalog의 `source_config.upstream_bindings`만 사용해 `required_params`를 채웁니다. binding을 추측하거나 자연어 ID 목록으로 우회하지 않습니다.
+
+`13`과 `14`는 alias 기준으로 source를 병합하므로 `upstream_result`와 새로 조회한 `hold_history_data` 같은 source가 동시에 pandas 단계에 전달됩니다.
 
 ### Dummy branch
 

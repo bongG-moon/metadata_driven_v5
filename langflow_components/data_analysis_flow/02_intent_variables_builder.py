@@ -41,13 +41,33 @@ def _compact_json(value: Any) -> str:
 def _state_summary(payload: dict[str, Any]) -> dict[str, Any]:
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     followup_hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
-    return {
+    summary = {
         "request_context": {
             "reference_date": request.get("reference_date", ""),
         },
         "followup_hint": followup_hint,
         "state": _compact_state(payload.get("state", {}) if isinstance(payload.get("state"), dict) else {}),
     }
+    orchestration = _compact_orchestration(payload.get("orchestration"))
+    if orchestration:
+        summary["orchestration"] = orchestration
+    return summary
+
+
+# 함수 설명: `_compact_orchestration()`은 상위 Tool 결과가 있다는 사실과 고정 alias만 의도 LLM에 짧게 알립니다.
+# 전체 이전 결과 행이나 MongoDB 설정은 노출하지 않아 입력 토큰과 민감한 실행 정보를 함께 줄입니다.
+def _compact_orchestration(value: Any) -> dict[str, Any]:
+    orchestration = value if isinstance(value, dict) else {}
+    ref = str(orchestration.get("upstream_result_ref") or "").strip()
+    if not ref:
+        return {}
+    return _omit_empty(
+        {
+            "has_upstream_result": True,
+            "source_alias": str(orchestration.get("source_alias") or "upstream_result").strip(),
+            "status": orchestration.get("status"),
+        }
+    )
 
 
 # 함수 설명: `_schema()`는 의도 분석 LLM이 반환해야 할 JSON 스키마를 작은 dict로 구성합니다.

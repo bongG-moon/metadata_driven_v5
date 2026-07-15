@@ -2,7 +2,7 @@
   "bundle": "metadata_driven_v5_complete_20260710",
   "langflow_version": "1.8.2",
   "lfx_version": "0.3.4",
-  "flow_count": 7,
+  "flow_count": 10,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "mongodb_contract": {
     "strategy": "reuse_v4_collections_without_copy",
@@ -13,7 +13,8 @@
     "table_catalog": "agent_v4_table_catalog_items",
     "main_flow_filter": "agent_v4_main_flow_filters",
     "result": "agent_v4_result_store",
-    "session_state": "agent_v4_session_states"
+    "session_state": "agent_v4_session_states",
+    "workflow_skill": "agent_v4_workflow_skills"
   },
   "retrieval_mode_contract": {
     "single_control": "04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode",
@@ -25,16 +26,16 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "a4686ddf2871110ea00f85a7ee8a69e2d4f187351f5f998c80c53a5f36e4fe9c",
+  "single_file_ui_import_sha256": "8a3be83f74f3e42dad4a693a793074d6f642738a1830b8add88370453a940b25",
   "flows": [
     {
       "order": 1,
       "file": "01_data_analysis_flow_v5_standalone.json",
       "name": "metadata_driven_v5_complete_20260710_data_analysis",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
-      "nodes": 42,
-      "edges": 66,
-      "sha256": "aaa21b006d6fa249410127c9b68a80c93403ece3d375f460e18c81a45a792fd6"
+      "nodes": 43,
+      "edges": 67,
+      "sha256": "a1cae576d808982176f4d540299ea22ec69bd1e73a598f5f30314025800f04c4"
     },
     {
       "order": 2,
@@ -52,7 +53,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-table-catalog-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "67bfc3b5d42147c3e0c4e1cdf9261dd3cdb0e3ffdffe10f0773b65c7c3376c3e"
+      "sha256": "3077f6fe2819e1bca0e6ab1fe4b484dab9e61cafd87a3c73788718f0cbdb47fd"
     },
     {
       "order": 4,
@@ -89,6 +90,33 @@
       "nodes": 8,
       "edges": 7,
       "sha256": "abf636305316738e1aad3b62df161ffa94fdaa5ff3c9a390a214c861c4b82520"
+    },
+    {
+      "order": 8,
+      "file": "08_agent_orchestrator_router_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_agent_orchestrator_router",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-agent-orchestrator-router",
+      "nodes": 8,
+      "edges": 7,
+      "sha256": "6807b1f156e87e2c36132e85c955d44faad72ac0f2de311e93594033a280c799"
+    },
+    {
+      "order": 9,
+      "file": "09_workflow_orchestrator_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_workflow_orchestrator",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-workflow-orchestrator",
+      "nodes": 17,
+      "edges": 25,
+      "sha256": "7b60778c469b73363868af40042c72f578d7a090ac689555b82fe1d4b9de4ce0"
+    },
+    {
+      "order": 10,
+      "file": "10_workflow_skill_saving_flow_v5_standalone.json",
+      "name": "metadata_driven_v5_complete_20260710_workflow_skill_saving",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-workflow-skill-saving",
+      "nodes": 13,
+      "edges": 14,
+      "sha256": "c3ed781c73d38046f2ec6eee606870e7bb592c1ceb135207af76fcaeecdd69f2"
     }
   ],
   "router_configuration": {
@@ -101,35 +129,43 @@
     "manual_edge_rewiring_required": false,
     "manual_flow_id_replacement_required": false,
     "api_router": "Smart Router plus five Run API callers",
-    "agent_tool_router": "Agent plus five name-resolved cached Flow tools"
+    "agent_tool_router": "Agent plus five name-resolved cached Flow tools",
+    "agent_orchestrator_router": "Agent plus five name-resolved cached Flow tools with explicit result_ref handoff",
+    "workflow_orchestrator": "Language Model planner plus native Loop and deterministic sequential Tool executor"
   },
   "validation": {
-    "pytest": "260 passed",
-    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 74/74 custom nodes to 66 real Python sources; 0 missing",
-    "korean_component_documentation": "67/67 Python sources and 1093/1093 function definitions documented; 26 component text sources and 9 embedded prompts are BOM-free; 222 embedded custom-code instances preserve 3615/3615 documented function instances; strict UTF-8/JSON checks passed",
+    "pytest": "290 passed",
+    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 99/99 custom nodes to 82 real Python sources; 0 missing",
+    "korean_component_documentation": "83/83 Python sources and 1361/1361 function definitions documented; 38 component text sources and 12 embedded prompts are BOM-free; 297 embedded custom-code instances preserve 5364/5364 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
-    "langflow_frontend_edge_handles": "290/290 parsed and matched edge.data",
+    "langflow_frontend_edge_handles": "384/384 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-    "langflow_lfx_node_templates": "114/114 passed",
-    "native_language_model_policy": "7/7 tool-free LLM stages use the native Language Model component; only Route V2 keeps one native Agent with five real tools",
+    "langflow_lfx_node_templates": "153/153 passed",
+    "native_language_model_policy": "tool-free LLM stages and Route V4 planning/final synthesis use native Language Model components; Route V2 and Route V3 use native Agents with five real tools",
     "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter directly to their ChatOutput; 0 gate nodes",
     "router_single_entry_topology": "Chat Input has exactly one outgoing edge to Smart Router; 0 API-caller session fan-out edges",
     "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra Chat Input edges",
-    "langflow_http_import": "7/7 returned HTTP 201",
-    "single_chat_output": "5/5 child flows and 1/1 Agent Tool Router have exactly one ChatOutput",
+    "langflow_http_import": "the previous 8 flows passed isolated Langflow 1.8.2 HTTP import; Route V4 is covered by bundle and node/edge contract validation until the next live-server import run",
+    "single_chat_output": "6/6 child flows, Route V2, Route V3, and Route V4 each have exactly one ChatOutput",
     "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
     "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
     "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
     "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
     "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Agent Tool Router has 5/5 runtime-user-scoped name-resolved tools with cache_flow=true, runtime ID reuse, and blank exported IDs",
+    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2, Route V3, and Route V4 each have 5/5 runtime-user-scoped name-resolved tools with cache_flow=true, runtime ID reuse, and blank exported IDs",
     "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current ChatInput ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
     "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
     "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
     "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
-    "metadata_existing_loader": "3/3 saving flows connect ExistingLoader directly to Matcher",
+    "agent_orchestrator_contract": "5/5 tools use return_direct=false, expose question plus optional upstream_result_ref, and return compact route_v3.tool_result.v1 observations",
+    "agent_orchestrator_call_policy": "native Agent max_iterations=5; system prompt permits at most four sequential Tool calls and one final ChatOutput",
+    "agent_orchestrator_result_handoff": "Data Analysis restores an explicit result_ref as upstream_result and preserves it beside newly retrieved aliases",
+    "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
+    "workflow_orchestrator_registry": "visible MongoDB registry loader reads active workflow.registry.v1 items from agent_v4_workflow_skills; inline_seed is an explicit standalone test source, never an implicit fallback",
+    "workflow_orchestrator_terminal_contract": "one final Language Model synthesis, one ChatOutput, and one terminal api_response; invalid or empty plans still reach the final error response",
+    "metadata_existing_loader": "4/4 saving flows connect ExistingLoader directly to Matcher",
     "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-    "metadata_mongo_defaults": "17 MongoDB nodes bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+    "metadata_mongo_defaults": "18 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
     "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
     "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
     "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes"

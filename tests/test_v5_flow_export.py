@@ -27,6 +27,7 @@ SHARED_V4_COLLECTIONS = {
     "result": "agent_v4_result_store",
     "session_state": "agent_v4_session_states",
 }
+WORKFLOW_SKILL_COLLECTION = "agent_v4_workflow_skills"
 
 
 def _edge_keys(flow: dict) -> set[tuple[str, str, str, str]]:
@@ -35,7 +36,8 @@ def _edge_keys(flow: dict) -> set[tuple[str, str, str, str]]:
             edge["source"],
             edge["data"]["sourceHandle"]["name"],
             edge["target"],
-            edge["data"]["targetHandle"]["fieldName"],
+            edge["data"]["targetHandle"].get("fieldName")
+            or edge["data"]["targetHandle"].get("name", ""),
         )
         for edge in flow["data"]["edges"]
     }
@@ -46,8 +48,8 @@ def test_v5_flow_export_is_reproducible_and_acyclic():
     checked_in = json.loads(EXPORT_PATH.read_text(encoding="utf-8"))
 
     assert built == checked_in
-    assert len(built["data"]["nodes"]) == 42
-    assert len(built["data"]["edges"]) == 66
+    assert len(built["data"]["nodes"]) == 43
+    assert len(built["data"]["edges"]) == 67
     assert _is_acyclic(built)
 
 
@@ -82,8 +84,8 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     edges = _edge_keys(flow)
     nodes = {node["id"]: node for node in flow["data"]["nodes"]}
 
-    assert len(nodes) == 42
-    assert len(flow["data"]["edges"]) == 66
+    assert len(nodes) == 43
+    assert len(flow["data"]["edges"]) == 67
     assert _is_acyclic(flow)
     assert ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload") in edges
     assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-v5ExecutionGate", "payload") in edges
@@ -164,9 +166,15 @@ def test_v5_flow_export_routes_catalog_and_helpers_through_compaction_nodes():
     assert ("CustomComponent-HFsYn", "payload_out", "CustomComponent-DXrpf", "payload") in edges
     assert ("CustomComponent-5o0CN", "payload_out", "CustomComponent-v5Hydrate", "payload") in edges
     assert ("MongoDBDomainMetadataLoader-OM3Hg", "table_catalog_items", "CustomComponent-v5Hydrate", "table_catalog_items") in edges
+    assert ("CustomComponent-v5Hydrate", "payload_out", "CustomComponent-O8vfz", "payload") in edges
+    assert ("CustomComponent-O8vfz", "payload_out", "CustomComponent-v5UpstreamBinder", "payload") in edges
+    assert ("CustomComponent-v5UpstreamBinder", "payload_out", "CustomComponent-vVkhs", "payload") in edges
+    assert ("CustomComponent-O8vfz", "payload_out", "CustomComponent-vVkhs", "payload") not in edges
     assert ("CustomComponent-v5Helper", "selected_helper_code", "Prompt Template-xtzD5", "function_case_helper_code") in edges
     assert ("TextInput-AXG9a", "text", "Prompt Template-xtzD5", "function_case_helper_code") not in edges
     hydrate_template = nodes["CustomComponent-v5Hydrate"]["data"]["node"]["template"]
+    request_loader_template = nodes["CustomComponent-xpbhS"]["data"]["node"]["template"]
+    upstream_binder = nodes["CustomComponent-v5UpstreamBinder"]["data"]["node"]
     router_template = nodes["CustomComponent-x6NXu"]["data"]["node"]["template"]
     candidate_node = nodes["CustomComponent-DXrpf"]["data"]["node"]
     candidate_template = candidate_node["template"]
@@ -180,6 +188,9 @@ def test_v5_flow_export_routes_catalog_and_helpers_through_compaction_nodes():
         "retrieval_mode",
     ]
     assert nodes["CustomComponent-x6NXu"]["data"]["node"]["field_order"] == ["payload"]
+    assert request_loader_template["upstream_result_ref"]["value"] == ""
+    assert request_loader_template["upstream_result_ref"]["advanced"] is False
+    assert upstream_binder["field_order"] == ["payload"]
     assert candidate_node["field_order"] == [
         "payload",
         "domain_items",
@@ -244,9 +255,9 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     assert not raw.startswith(b"\xef\xbb\xbf")
     assert b"\r" not in raw
     payload = json.loads(raw.decode("utf-8"))
-    assert len(payload["flows"]) == 7
+    assert len(payload["flows"]) == 10
     assert all(isinstance(flow.get("data"), dict) and flow.get("name") for flow in payload["flows"])
-    assert len({flow["endpoint_name"] for flow in payload["flows"]}) == 7
+    assert len({flow["endpoint_name"] for flow in payload["flows"]}) == 10
     assert all("-dummy-" not in flow["endpoint_name"] for flow in payload["flows"])
     assert not list(UI_BUNDLE_PATH.parent.glob("*_dummy_*_flow_v5_standalone.json"))
     router = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-api-router"))
@@ -304,6 +315,174 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
         for node in tools
     )
 
+    orchestrator = next(
+        flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-agent-orchestrator-router")
+    )
+    orchestrator_tools = [
+        node
+        for node in orchestrator["data"]["nodes"]
+        if str(node.get("id") or "").startswith("OrchestratedFlowTool-")
+    ]
+    orchestrator_agent = next(
+        node for node in orchestrator["data"]["nodes"] if node["data"].get("type") == "Agent"
+    )
+    assert len(orchestrator_tools) == 5
+    assert len([node for node in orchestrator["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]) == 1
+    assert orchestrator_agent["data"]["node"]["template"]["max_iterations"]["value"] == 5
+    assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in orchestrator_tools)
+    assert all(node["data"]["node"]["template"]["return_direct"]["value"] is False for node in orchestrator_tools)
+    assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in orchestrator_tools)
+    data_orchestration_tool = next(
+        node for node in orchestrator_tools if node["id"] == "OrchestratedFlowTool-data_analysis"
+    )
+    assert data_orchestration_tool["data"]["node"]["template"]["accepts_upstream_result_ref"]["value"] is True
+    assert data_orchestration_tool["data"]["node"]["template"]["can_produce_result_ref"]["value"] is True
+    assert data_orchestration_tool["data"]["node"]["template"]["entity_id_columns"]["value"] == "LOT_ID"
+    assert all(
+        '"name": "question"' in node["data"]["node"]["template"]["code"]["value"]
+        and '"name": "upstream_result_ref"' in node["data"]["node"]["template"]["code"]["value"]
+        and "route_v3.tool_result.v1" in node["data"]["node"]["template"]["code"]["value"]
+        for node in orchestrator_tools
+    )
+    individual_flows = sorted(UI_BUNDLE_PATH.parent.glob("[0-9][0-9]_*_v5_standalone.json"))
+    assert [path.name[:2] for path in individual_flows] == [f"{index:02d}" for index in range(1, 11)]
+    assert individual_flows[-1].name == "10_workflow_skill_saving_flow_v5_standalone.json"
+    manifest = json.loads((UI_BUNDLE_PATH.parent / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["flow_count"] == 10
+    assert [item["order"] for item in manifest["flows"]] == list(range(1, 11))
+    assert manifest["flows"][-1]["file"] == "10_workflow_skill_saving_flow_v5_standalone.json"
+
+
+def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer():
+    payload = json.loads(UI_BUNDLE_PATH.read_text(encoding="utf-8"))
+    flow = next(
+        item for item in payload["flows"] if item["endpoint_name"].endswith("-workflow-orchestrator")
+    )
+    nodes = {node["id"]: node for node in flow["data"]["nodes"]}
+    edges = _edge_keys(flow)
+
+    assert flow["name"] == "metadata_driven_v5_complete_20260710_workflow_orchestrator"
+    assert flow["endpoint_name"] == "metadata-driven-v5-complete-20260710-workflow-orchestrator"
+    assert len(nodes) == 17
+    assert len(flow["data"]["edges"]) == 25
+    assert not any(node["data"].get("type") == "Agent" for node in nodes.values())
+    assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
+    assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
+    assert len([node for node in nodes.values() if node["data"].get("type") == "ChatOutput"]) == 1
+
+    component_sources = {
+        "WorkflowRegistryLoader-workflow-orchestrator": "route_flow_v4/00a_mongodb_workflow_registry_loader.py",
+        "WorkflowPlanParser-workflow-orchestrator": "route_flow_v4/00_workflow_plan_parser.py",
+        "SequentialStepExecutor-workflow-orchestrator": "route_flow_v4/01_sequential_step_executor.py",
+        "FinalContext-workflow-orchestrator": "route_flow_v4/02_final_context_builder.py",
+        "FinalResponse-workflow-orchestrator": "route_flow_v4/03_workflow_final_response_builder.py",
+    }
+    for node_id, relative_path in component_sources.items():
+        expected = (ROOT / "langflow_components" / relative_path).read_text(encoding="utf-8")
+        assert nodes[node_id]["data"]["node"]["template"]["code"]["value"] == expected
+
+    tool_source = (
+        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+    ).read_text(encoding="utf-8")
+    tools = [node for node_id, node in nodes.items() if node_id.startswith("WorkflowFlowTool-")]
+    assert len(tools) == 5
+    assert all(node["data"]["node"]["template"]["code"]["value"] == tool_source for node in tools)
+    assert all(node["data"]["node"]["template"]["return_direct"]["value"] is False for node in tools)
+    assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
+    assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in tools)
+    assert all(
+        node["data"]["node"]["template"]["flow_name_selected"]["value"]
+        == f"metadata_driven_v5_complete_20260710_{node['id'].removeprefix('WorkflowFlowTool-')}"
+        for node in tools
+    )
+    assert all(
+        (node["id"], "component_as_tool", "SequentialStepExecutor-workflow-orchestrator", "tools")
+        in edges
+        for node in tools
+    )
+
+    registry_template = nodes["WorkflowRegistryLoader-workflow-orchestrator"]["data"]["node"]["template"]
+    assert registry_template["registry_source"]["value"] == "mongodb"
+    assert registry_template["mongo_uri"]["value"] == "MONGO_URL"
+    assert registry_template["mongo_database"]["value"] == "datagov"
+    assert registry_template["collection_name"]["value"] == WORKFLOW_SKILL_COLLECTION
+    assert registry_template["candidate_limit"]["value"] == "8"
+    assert registry_template["max_registry_bytes"]["value"] == "65536"
+    assert nodes["PromptPlanner-workflow-orchestrator"]["data"]["node"]["template"]["workflow_registry_json"]["value"] == "{}"
+    assert nodes["WorkflowPlanParser-workflow-orchestrator"]["data"]["node"]["template"]["workflow_registry_json"]["value"] == "{}"
+    assert (
+        "ChatInput-workflow-orchestrator",
+        "message",
+        "WorkflowRegistryLoader-workflow-orchestrator",
+        "user_question",
+    ) in edges
+    assert (
+        "WorkflowRegistryLoader-workflow-orchestrator",
+        "workflow_registry_json",
+        "PromptPlanner-workflow-orchestrator",
+        "workflow_registry_json",
+    ) in edges
+    assert (
+        "WorkflowRegistryLoader-workflow-orchestrator",
+        "workflow_registry_json",
+        "WorkflowPlanParser-workflow-orchestrator",
+        "workflow_registry_json",
+    ) in edges
+
+    assert (
+        "WorkflowPlanParser-workflow-orchestrator",
+        "loop_dataframe",
+        "Loop-workflow-orchestrator",
+        "data",
+    ) in edges
+    assert (
+        "Loop-workflow-orchestrator",
+        "item",
+        "SequentialStepExecutor-workflow-orchestrator",
+        "loop_item",
+    ) in edges
+    assert (
+        "SequentialStepExecutor-workflow-orchestrator",
+        "step_result",
+        "Loop-workflow-orchestrator",
+        "item",
+    ) in edges
+    assert (
+        "WorkflowPlanParser-workflow-orchestrator",
+        "workflow_plan",
+        "FinalContext-workflow-orchestrator",
+        "execution_context",
+    ) in edges
+    assert (
+        "Loop-workflow-orchestrator",
+        "done",
+        "FinalContext-workflow-orchestrator",
+        "loop_results",
+    ) in edges
+    assert (
+        "FinalResponse-workflow-orchestrator",
+        "message",
+        "ChatOutput-workflow-orchestrator",
+        "input_value",
+    ) in edges
+    assert not any(
+        source == "FinalResponse-workflow-orchestrator" and output_name == "api_response"
+        for source, output_name, _target, _field in edges
+    )
+
+    final_response_outputs = {
+        output["name"] for output in nodes["FinalResponse-workflow-orchestrator"]["data"]["node"]["outputs"]
+    }
+    assert final_response_outputs == {"message", "api_response"}
+    assert nodes["FinalContext-workflow-orchestrator"]["data"]["node"]["template"]["execution_context"]["advanced"] is False
+    assert nodes["LanguageModelPlanner-workflow-orchestrator"]["data"]["node"]["template"]["max_tokens"]["value"] == 8192
+    assert nodes["LanguageModelFinal-workflow-orchestrator"]["data"]["node"]["template"]["max_tokens"]["value"] == 4096
+    assert all(
+        "tools" not in node["data"]["node"]["template"]
+        for node in nodes.values()
+        if node["data"].get("type") == "LanguageModelComponent"
+    )
+
 
 def test_v5_single_file_ui_bundle_uses_exact_shared_v4_collection_mappings():
     raw = UI_BUNDLE_PATH.read_text(encoding="utf-8")
@@ -319,8 +498,9 @@ def test_v5_single_file_ui_bundle_uses_exact_shared_v4_collection_mappings():
         and field["value"]
     }
 
-    assert collection_values == set(SHARED_V4_COLLECTIONS.values())
-    for collection_name in SHARED_V4_COLLECTIONS.values():
+    all_collections = {*SHARED_V4_COLLECTIONS.values(), WORKFLOW_SKILL_COLLECTION}
+    assert collection_values == all_collections
+    for collection_name in all_collections:
         assert collection_name in raw
         assert collection_name.replace("agent_v4_", "agent_v5_") not in raw
 
@@ -330,9 +510,11 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
     child_flows = [
         flow
         for flow in payload["flows"]
-        if not flow["endpoint_name"].endswith(("-api-router", "-agent-tool-router"))
+        if not flow["endpoint_name"].endswith(
+            ("-api-router", "-agent-tool-router", "-agent-orchestrator-router", "-workflow-orchestrator")
+        )
     ]
-    assert len(child_flows) == 5
+    assert len(child_flows) == 6
 
     child_models = []
     for flow in child_flows:
@@ -351,7 +533,7 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
             if node["data"].get("type") == "LanguageModelComponent"
         )
 
-    assert len(child_models) == 7
+    assert len(child_models) == 8
     for node in child_models:
         template = node["data"]["node"]["template"]
         assert template["max_tokens"]["value"] == 8192
@@ -365,9 +547,11 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
     router_flows = [
         flow
         for flow in payload["flows"]
-        if flow["endpoint_name"].endswith(("-api-router", "-agent-tool-router"))
+        if flow["endpoint_name"].endswith(
+            ("-api-router", "-agent-tool-router", "-agent-orchestrator-router", "-workflow-orchestrator")
+        )
     ]
-    assert len(router_flows) == 2
+    assert len(router_flows) == 4
     for flow in router_flows:
         router_chat_nodes = [
             node

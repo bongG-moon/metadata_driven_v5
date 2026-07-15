@@ -5,6 +5,8 @@
 - `source_type`, `source_config`, `required_params`, `required_param_mappings`, `filter_mappings`, `standard_column_aliases`, `columns`를 원문 근거에 따라 작성한다.
 - `filter_mappings`의 왼쪽은 표준 filter key이고 오른쪽은 실제 source column이다.
 - SQL query_template은 원문 그대로 보존하고 축약하지 않는다.
+- Flow 간 연계 조회 규칙은 사용자가 source/target 식별자를 명시한 경우에만 `source_config.upstream_bindings`에 기록한다. 추측해서 만들지 않는다.
+- `upstream_bindings` 각 항목은 `entity_type`, `source_column`, `target_param`, `operator`(`in` 또는 `eq`), `max_values`만 사용한다. `source_alias`는 생략하거나 `upstream_result`로 둔다.
 - 실제 credential은 저장하지 않는다. `db_key`, `doc_id`, endpoint id 같은 참조만 저장한다.
 - 원문에 오타나 불일치가 의심되면 조용히 고치지 말고 assumption 또는 warning 근거로 남긴다.
 
@@ -24,7 +26,16 @@
         "source_config": {{
           "source_type": "oracle",
           "db_key": "DB_KEY",
-          "query_template": "SELECT ... 원문 전체 ..."
+          "query_template": "SELECT ... 원문 전체 ...",
+          "upstream_bindings": [
+            {{
+              "entity_type": "lot",
+              "source_column": "LOT_ID",
+              "target_param": "LOT_ID",
+              "operator": "in",
+              "max_values": 200
+            }}
+          ]
         }},
         "required_params": ["STANDARD_PARAM"],
         "required_param_mappings": {{"STANDARD_PARAM": ["SOURCE_COLUMN"]}},

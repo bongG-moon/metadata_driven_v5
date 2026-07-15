@@ -79,6 +79,12 @@ NEW_COMPONENTS = {
         ],
         "outputs": [("Data", "payload_out", "신뢰 조회 작업 페이로드", "build_payload")],
     },
+    "CustomComponent-v5UpstreamBinder": {
+        "file": "data_analysis_flow/05a_upstream_entity_parameter_binder.py",
+        "position": {"x": 2290.0, "y": 720.0},
+        "inputs": [("data", "payload", "상위 결과 복원 페이로드", True, None)],
+        "outputs": [("Data", "payload_out", "상위 엔터티 바인딩 페이로드", "build_payload")],
+    },
     "CustomComponent-v5Helper": {
         "file": "data_analysis_flow/15a_selected_helper_code_builder.py",
         "position": {"x": -1420.0, "y": 2290.0},
@@ -160,6 +166,17 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
 
     node_index["TextInput-AXG9a"]["data"]["node"]["template"]["input_value"]["value"] = (
         HELPER_LIBRARY_SOURCE.read_text(encoding="utf-8")
+    )
+
+    _apply_component_spec(
+        node_index["CustomComponent-xpbhS"],
+        [
+            ("message", "question", "사용자 질문", True, ""),
+            ("message", "upstream_result_ref", "상위 결과 참조", False, ""),
+            ("data", "previous_state", "이전 분석 상태", False, None),
+        ],
+        [("Data", "payload_out", "분석 요청 페이로드", "build_payload")],
+        node_index,
     )
 
     _apply_component_spec(
@@ -281,6 +298,8 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
 
     removals = {
         ("CustomComponent-5o0CN", "payload_out", "CustomComponent-O8vfz", "payload"),
+        ("CustomComponent-v5Hydrate", "payload_out", "CustomComponent-O8vfz", "payload"),
+        ("CustomComponent-O8vfz", "payload_out", "CustomComponent-vVkhs", "payload"),
         ("TextInput-AXG9a", "text", "Prompt Template-xtzD5", "function_case_helper_code"),
         ("CustomComponent-BVItv", "payload_out", "CustomComponent-A5y0b", "payload"),
         ("CustomComponent-BVItv", "payload_out", "CustomComponent-3eVde", "payload"),
@@ -294,6 +313,8 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         ("CustomComponent-5o0CN", "payload_out", "CustomComponent-v5Hydrate", "payload"),
         ("MongoDBDomainMetadataLoader-OM3Hg", "table_catalog_items", "CustomComponent-v5Hydrate", "table_catalog_items"),
         ("CustomComponent-v5Hydrate", "payload_out", "CustomComponent-O8vfz", "payload"),
+        ("CustomComponent-O8vfz", "payload_out", "CustomComponent-v5UpstreamBinder", "payload"),
+        ("CustomComponent-v5UpstreamBinder", "payload_out", "CustomComponent-vVkhs", "payload"),
         ("CustomComponent-fc0Vb", "function_case_selection_json", "CustomComponent-v5Helper", "function_case_selection_json"),
         ("TextInput-AXG9a", "text", "CustomComponent-v5Helper", "helper_library"),
         ("CustomComponent-v5Helper", "selected_helper_code", "Prompt Template-xtzD5", "function_case_helper_code"),
@@ -321,7 +342,8 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     flow["name"] = "metadata_driven_v5_data_analysis_standalone"
     flow["description"] = (
         "v5 standalone flow (dummy default, live retrievers included): bounded metadata candidates, "
-        "trusted catalog hydration, thin retrieval branches, selected helper code, visible raw Repair Prompt, failure-only one-attempt pandas repair, "
+        "trusted catalog hydration, explicit same-session upstream result restoration, metadata-declared entity binding, "
+        "thin retrieval branches, selected helper code, visible raw Repair Prompt, failure-only one-attempt pandas repair, "
         "native tool-free Language Model stages, deterministic required-source execution gating, one finalization path, and compact API payload with explicit repair audit details."
     )
     flow["endpoint_name"] = "metadata-driven-v5-data-analysis"
@@ -336,7 +358,12 @@ def _component_path(relative_path: str) -> Path:
 def _load_native_component(display_name: str) -> dict[str, Any]:
     """현재 Langflow/LFX 설치본에서 기본 컴포넌트 템플릿을 읽습니다."""
 
-    spec = find_spec("lfx")
+    try:
+        spec = find_spec("lfx")
+    except (ImportError, ModuleNotFoundError, ValueError):
+        # 단위 테스트의 경량 Langflow stub처럼 __spec__이 없는 module이 이미
+        # 등록돼 있어도 아래 standalone Desktop component index 경로를 사용합니다.
+        spec = None
     candidates = []
     if spec is not None and spec.origin:
         candidates.append(Path(spec.origin).resolve().parent / "_assets" / "component_index.json")

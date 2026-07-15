@@ -21,18 +21,29 @@ from lfx.schema.data import Data
 DEFAULT_DATABASE = "datagov"
 DEFAULT_COLLECTION = "agent_v4_result_store"
 RESULT_PREVIEW_LIMIT = 50
+UPSTREAM_SOURCE_ALIAS = "upstream_result"
 
 
 # 주요 함수: 저장된 이전 분석 결과를 찾아 후속 분석에서 재사용 가능한 source로 복원합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> dict[str, Any]:
     payload = _payload(payload_value)
-    ref = _find_data_ref(payload)
+    explicit_ref = _explicit_data_ref(payload)
+    ref = explicit_ref or _find_data_ref(payload)
+    explicit_orchestration = bool(explicit_ref)
     mongo_uri, mongo_database, collection_name = _resolve_config(mongo_uri, mongo_database, collection_name)
     next_payload = payload
     if not ref:
         return _mark_skipped(next_payload, mongo_database, collection_name, "missing_data_ref", "data_ref가 없어 이전 결과를 불러오지 않았습니다.", add_warning=False)
     if not mongo_uri:
+        if explicit_orchestration:
+            return _mark_error(
+                next_payload,
+                mongo_database,
+                collection_name,
+                ref,
+                [{"type": "missing_mongo_uri", "message": "명시적 상위 결과를 불러올 MongoDB 연결 URI가 비어 있습니다."}],
+            )
         return _mark_skipped(next_payload, mongo_database, collection_name, "missing_mongo_uri", "MongoDB 연결 URI 노드 입력이 비어 있어 이전 결과를 불러오지 않았습니다.", ref)
 
     client = None
@@ -41,8 +52,27 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
         client = mongo_client_cls(mongo_uri, serverSelectionTimeoutMS=5000)
         doc = client[mongo_database][collection_name].find_one({"_id": ref}, {"_id": 0}) or {}
         if not doc:
+            if explicit_orchestration:
+                return _mark_error(
+                    next_payload,
+                    mongo_database,
+                    collection_name,
+                    ref,
+                    [{"type": "upstream_result_not_found", "message": "상위 Flow result_ref에 해당하는 결과가 없습니다."}],
+                )
             return _mark_skipped(next_payload, mongo_database, collection_name, "result_not_found", "data_ref에 해당하는 이전 결과가 없습니다.", ref)
         stored_payload = doc.get("payload", {}) if isinstance(doc.get("payload"), dict) else {}
+        if explicit_orchestration:
+            session_error = _explicit_session_error(next_payload, doc)
+            if session_error:
+                return _mark_error(next_payload, mongo_database, collection_name, ref, [session_error])
+            return _restore_explicit_upstream_result(
+                next_payload,
+                stored_payload,
+                ref,
+                mongo_database,
+                collection_name,
+            )
         for key in ("source_results", "runtime_sources", "analysis"):
             if key in stored_payload:
                 next_payload[key] = deepcopy(stored_payload[key])
@@ -78,6 +108,9 @@ def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_na
 
 # 함수 설명: `_find_data_ref()`는 입력 조건과 일치하는 데이터·참조을 찾아 비교·필터 결과로 반환합니다.
 def _find_data_ref(payload: dict[str, Any]) -> str:
+    explicit_ref = _explicit_data_ref(payload)
+    if explicit_ref:
+        return explicit_ref
     data = payload.get("data", {}) if isinstance(payload.get("data"), dict) else {}
     state = payload.get("state", {}) if isinstance(payload.get("state"), dict) else {}
     current_data = state.get("current_data", {}) if isinstance(state.get("current_data"), dict) else {}
@@ -86,6 +119,159 @@ def _find_data_ref(payload: dict[str, Any]) -> str:
         if ref:
             return ref
     return ""
+
+
+# 함수 설명: `_explicit_data_ref()`는 Route V3가 별도 orchestration 영역에 명시한 상위 결과 참조만 추출합니다.
+def _explicit_data_ref(payload: dict[str, Any]) -> str:
+    orchestration = payload.get("orchestration") if isinstance(payload.get("orchestration"), dict) else {}
+    return _ref_id(orchestration.get("upstream_result_ref"))
+
+
+# 함수 설명: `_explicit_session_error()`는 다른 실행 세션의 result_ref가 현재 Flow로 전달되는 것을 차단합니다.
+def _explicit_session_error(payload: dict[str, Any], document: dict[str, Any]) -> dict[str, Any] | None:
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    current_session = str(request.get("session_id") or "").strip()
+    stored_session = str(document.get("session_id") or "").strip()
+    if not current_session or not stored_session:
+        return {
+            "type": "upstream_session_missing",
+            "message": "상위 결과와 현재 요청의 session_id를 모두 확인할 수 없어 연계 실행을 차단했습니다.",
+        }
+    if current_session != stored_session:
+        return {
+            "type": "upstream_session_mismatch",
+            "message": "현재 요청과 다른 세션에서 생성된 상위 결과이므로 연계 실행을 차단했습니다.",
+        }
+    return None
+
+
+# 주요 함수: 명시적 상위 결과는 현재 분석의 결과로 덮어쓰지 않고 예약 runtime source로 완전하게 복원합니다.
+def _restore_explicit_upstream_result(
+    payload: dict[str, Any],
+    stored_payload: dict[str, Any],
+    ref_id: str,
+    database: str,
+    collection_name: str,
+) -> dict[str, Any]:
+    manifest = stored_payload.get("storage_manifest") if isinstance(stored_payload.get("storage_manifest"), dict) else {}
+    result_manifest = manifest.get("result_rows") if isinstance(manifest.get("result_rows"), dict) else {}
+    if result_manifest.get("complete") is False:
+        return _mark_error(
+            payload,
+            database,
+            collection_name,
+            ref_id,
+            [{"type": "upstream_result_incomplete", "message": "상위 결과가 저장 상한으로 잘려 있어 연계 실행에 사용할 수 없습니다."}],
+        )
+
+    result_rows = stored_payload.get("result_rows") if isinstance(stored_payload.get("result_rows"), list) else []
+    if not result_rows:
+        return _mark_error(
+            payload,
+            database,
+            collection_name,
+            ref_id,
+            [{"type": "upstream_result_empty", "message": "상위 Flow 결과에 다음 조회로 전달할 행이 없습니다."}],
+        )
+
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    if UPSTREAM_SOURCE_ALIAS in runtime_sources:
+        return _mark_error(
+            payload,
+            database,
+            collection_name,
+            ref_id,
+            [{"type": "upstream_alias_collision", "message": f"예약 source alias가 이미 사용 중입니다: {UPSTREAM_SOURCE_ALIAS}"}],
+        )
+
+    columns = _columns_from_rows(result_rows)
+    result_ref = _data_ref_object(
+        ref_id,
+        database,
+        collection_name,
+        "payload.result_rows",
+        "upstream_result",
+        "상위 Flow 분석 결과",
+        row_count=len(result_rows),
+        columns=columns,
+        source_alias=UPSTREAM_SOURCE_ALIAS,
+    )
+    runtime_sources[UPSTREAM_SOURCE_ALIAS] = deepcopy(result_rows)
+    payload["runtime_sources"] = runtime_sources
+    payload["source_results"] = _merge_source_result_by_alias(
+        payload.get("source_results"),
+        {
+            "dataset_key": UPSTREAM_SOURCE_ALIAS,
+            "source_alias": UPSTREAM_SOURCE_ALIAS,
+            "source_type": "mongodb_result_store",
+            "status": "ok",
+            "success": True,
+            "row_count": len(result_rows),
+            "columns": columns,
+            "data_ref": result_ref,
+            "source_execution": {
+                "adapter": "mongodb_result_store",
+                "used_dummy_data": False,
+                "source_configured": True,
+            },
+            "errors": [],
+        },
+    )
+    payload["data_refs"] = _merge_data_refs(payload.get("data_refs"), [result_ref])
+    orchestration = payload.get("orchestration") if isinstance(payload.get("orchestration"), dict) else {}
+    orchestration.update(
+        {
+            "explicit": True,
+            "status": "ok",
+            "upstream_result_ref": ref_id,
+            "source_alias": UPSTREAM_SOURCE_ALIAS,
+            "row_count": len(result_rows),
+            "columns": columns,
+        }
+    )
+    payload["orchestration"] = orchestration
+    payload.setdefault("trace", {}).setdefault("inspection", {})["result_loader"] = {
+        "stage": "05_mongodb_result_loader",
+        "status": "ok",
+        "mode": "explicit_orchestration",
+        "database": database,
+        "collection_name": collection_name,
+        "data_ref": ref_id,
+        "source_alias": UPSTREAM_SOURCE_ALIAS,
+        "row_count": len(result_rows),
+        "columns": columns,
+        "errors": [],
+    }
+    return payload
+
+
+# 함수 설명: `_merge_source_result_by_alias()`는 기존 결과를 보존하면서 예약 upstream alias 항목만 안전하게 추가·교체합니다.
+def _merge_source_result_by_alias(existing: Any, addition: dict[str, Any]) -> list[dict[str, Any]]:
+    result = [deepcopy(item) for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+    addition_alias = str(addition.get("source_alias") or addition.get("dataset_key") or "").strip()
+    for index, item in enumerate(result):
+        alias = str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        if alias == addition_alias:
+            result[index] = deepcopy(addition)
+            return result
+    result.append(deepcopy(addition))
+    return result
+
+
+# 함수 설명: `_merge_data_refs()`는 같은 ref/path 조합을 중복하지 않고 상위 결과 참조를 기존 참조 목록에 합칩니다.
+def _merge_data_refs(existing: Any, additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    values = [*(existing if isinstance(existing, list) else []), *additions]
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        marker = (str(item.get("ref_id") or ""), str(item.get("path") or ""))
+        if not marker[0] or marker in seen:
+            continue
+        seen.add(marker)
+        result.append(deepcopy(item))
+    return result
 
 
 # 함수 설명: `_ref_id()`는 여러 data_ref 표현에서 실제 MongoDB 결과 참조 ID를 추출합니다.
@@ -218,6 +404,11 @@ def _mark_skipped(
 # 함수 설명: `_mark_error()`는 현재 작업 payload에 오류 상태와 정규화된 오류 정보를 기록합니다.
 def _mark_error(payload: dict[str, Any], database: str, collection_name: str, data_ref: str, errors: list[dict[str, Any]]) -> dict[str, Any]:
     payload.setdefault("trace", {}).setdefault("errors", []).extend(errors)
+    orchestration = payload.get("orchestration") if isinstance(payload.get("orchestration"), dict) else {}
+    if _ref_id(orchestration.get("upstream_result_ref")):
+        orchestration["status"] = "error"
+        orchestration["errors"] = deepcopy(errors)
+        payload["orchestration"] = orchestration
     payload.setdefault("trace", {}).setdefault("inspection", {})["result_loader"] = {
         "stage": "05_mongodb_result_loader",
         "status": "error",

@@ -38,6 +38,10 @@ def install_lfx_test_stubs() -> None:
         def __init__(self, data=None):
             self.data = data or {}
 
+    class DataFrame(list):
+        def __init__(self, data=None):
+            super().__init__(data or [])
+
     class Message:
         def __init__(self, text=""):
             self.text = text
@@ -73,6 +77,7 @@ def install_lfx_test_stubs() -> None:
         "lfx.io": types.ModuleType("lfx.io"),
         "lfx.schema": types.ModuleType("lfx.schema"),
         "lfx.schema.data": types.ModuleType("lfx.schema.data"),
+        "lfx.schema.dataframe": types.ModuleType("lfx.schema.dataframe"),
         "lfx.schema.message": types.ModuleType("lfx.schema.message"),
     }
     for name, module in modules.items():
@@ -87,6 +92,7 @@ def install_lfx_test_stubs() -> None:
     io_module.BoolInput = getattr(io_module, "BoolInput", BoolInput)
     io_module.DataInput = getattr(io_module, "DataInput", InputBase)
     io_module.DropdownInput = getattr(io_module, "DropdownInput", InputBase)
+    io_module.HandleInput = getattr(io_module, "HandleInput", InputBase)
     io_module.MessageInput = getattr(io_module, "MessageInput", InputBase)
     io_module.MessageTextInput = getattr(io_module, "MessageTextInput", InputBase)
     io_module.ModelInput = getattr(io_module, "ModelInput", InputBase)
@@ -95,6 +101,9 @@ def install_lfx_test_stubs() -> None:
     io_module.StrInput = getattr(io_module, "StrInput", InputBase)
     io_module.Output = getattr(io_module, "Output", InputBase)
     sys.modules["lfx.schema.data"].Data = getattr(sys.modules["lfx.schema.data"], "Data", Data)
+    sys.modules["lfx.schema.dataframe"].DataFrame = getattr(
+        sys.modules["lfx.schema.dataframe"], "DataFrame", DataFrame
+    )
     sys.modules["lfx.schema.message"].Message = getattr(sys.modules["lfx.schema.message"], "Message", Message)
 
 
@@ -4001,6 +4010,163 @@ def test_mongodb_result_loader_accepts_legacy_data_rows(monkeypatch):
     assert restored["data"]["data_ref"]["path"] == "payload.result_rows"
 
 
+def test_route_v3_explicit_result_ref_restores_full_upstream_source_and_validates_session(monkeypatch):
+    mongo_store = install_fake_pymongo(monkeypatch)
+    request_loader = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "00_analysis_request_loader.py"
+    )
+    result_store = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py"
+    )
+    result_loader = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "05_mongodb_result_loader.py"
+    )
+    intent_variables = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "02_intent_variables_builder.py"
+    )
+    rows = [
+        {"LOT_ID": "LOT-001", "ANOMALY_SCORE": 9.8},
+        {"LOT_ID": "LOT-002", "ANOMALY_SCORE": 9.1},
+    ]
+    stored = result_store.store_result(
+        {
+            "request": {"session_id": "route-v3-session", "question": "이상 LOT을 분석해줘"},
+            "source_results": [],
+            "runtime_sources": {},
+            "analysis": {"status": "ok", "row_count": len(rows), "columns": list(rows[0])},
+            "data": {"columns": list(rows[0]), "rows": rows, "row_count": len(rows)},
+            "_full_result_rows": rows,
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+    )
+    result_ref = stored["data"]["data_ref"]["ref_id"]
+    request = request_loader.build_request(
+        "해당 LOT의 HOLD 이력을 알려줘",
+        {"session_id": "route-v3-session"},
+        upstream_result_ref=result_ref,
+    )
+
+    restored = result_loader.load_previous_result(
+        request,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+    )
+
+    assert request["orchestration"] == {
+        "explicit": True,
+        "status": "pending",
+        "upstream_result_ref": result_ref,
+        "source_alias": "upstream_result",
+    }
+    state_summary = json.loads(intent_variables.build_variables(request)["state_summary"])
+    assert state_summary["orchestration"] == {
+        "has_upstream_result": True,
+        "source_alias": "upstream_result",
+        "status": "pending",
+    }
+    assert result_ref not in json.dumps(state_summary, ensure_ascii=False)
+    assert restored["runtime_sources"]["upstream_result"] == rows
+    assert restored["data"] == {}
+    assert restored["orchestration"]["status"] == "ok"
+    assert restored["trace"]["inspection"]["result_loader"]["mode"] == "explicit_orchestration"
+    assert restored["source_results"] == [
+        {
+            "dataset_key": "upstream_result",
+            "source_alias": "upstream_result",
+            "source_type": "mongodb_result_store",
+            "status": "ok",
+            "success": True,
+            "row_count": 2,
+            "columns": ["LOT_ID", "ANOMALY_SCORE"],
+            "data_ref": restored["data_refs"][0],
+            "source_execution": {
+                "adapter": "mongodb_result_store",
+                "used_dummy_data": False,
+                "source_configured": True,
+            },
+            "errors": [],
+        }
+    ]
+
+    mismatched = request_loader.build_request(
+        "해당 LOT의 HOLD 이력을 알려줘",
+        {"session_id": "different-session"},
+        upstream_result_ref=result_ref,
+    )
+    blocked = result_loader.load_previous_result(
+        mismatched,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+    )
+    assert "upstream_result" not in blocked["runtime_sources"]
+    assert blocked["trace"]["inspection"]["result_loader"]["status"] == "error"
+    assert blocked["trace"]["inspection"]["result_loader"]["errors"][0]["type"] == "upstream_session_mismatch"
+    assert result_ref in mongo_store["datagov"]["agent_v4_result_store"]
+
+
+def test_upstream_entity_binder_uses_only_trusted_catalog_rules_and_fails_closed_on_limit():
+    binder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "05a_upstream_entity_parameter_binder.py"
+    )
+
+    def payload(max_values: int) -> dict:
+        return {
+            "orchestration": {
+                "upstream_result_ref": "result:route-v3-session:abc",
+                "status": "ok",
+            },
+            "runtime_sources": {
+                "upstream_result": [
+                    {"LOT_ID": "LOT-001"},
+                    {"LOT_ID": "LOT-002"},
+                    {"LOT_ID": "LOT-001"},
+                ]
+            },
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "hold_history",
+                        "source_alias": "hold_history_data",
+                        "source_type": "oracle",
+                        "trusted_catalog": True,
+                        "required_params": {},
+                        "source_config": {
+                            "upstream_bindings": [
+                                {
+                                    "entity_type": "lot",
+                                    "source_column": "LOT_ID",
+                                    "target_param": "LOT_ID",
+                                    "operator": "in",
+                                    "max_values": max_values,
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        }
+
+    bound = binder.bind_upstream_entity_parameters(payload(max_values=10))
+    job = bound["intent_plan"]["retrieval_jobs"][0]
+    assert job["required_params"]["LOT_ID"] == ["LOT-001", "LOT-002"]
+    assert job["upstream_binding_applied"] is True
+    assert bound["orchestration"]["binding_status"] == "ok"
+    assert bound["trace"]["inspection"]["upstream_parameter_binding"]["bindings"][0]["value_count"] == 2
+
+    limited = binder.bind_upstream_entity_parameters(payload(max_values=1))
+    blocked_job = limited["intent_plan"]["retrieval_jobs"][0]
+    assert blocked_job["source_type"] == "upstream_binding_blocked"
+    assert blocked_job["upstream_binding_original_source_type"] == "oracle"
+    assert limited["orchestration"]["binding_status"] == "error"
+    assert limited["trace"]["errors"][0]["type"] == "upstream_entity_limit_exceeded"
+
+
 def test_data_analysis_mongodb_result_store_has_ttl_input():
     result_store = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py")
 
@@ -4175,6 +4341,61 @@ def test_restored_runtime_sources_survive_empty_retrieval_merge():
 
     assert adapted["runtime_sources"]["wip_data"][0]["WIP"] == 120
     assert adapted["trace"]["inspection"]["data_retrieval"]["preserved_existing_runtime_sources"] is True
+
+
+def test_explicit_upstream_source_survives_new_retrieval_and_aliases_merge_once():
+    merger = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "13_source_retrieval_merger.py")
+    adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py")
+    upstream_rows = [{"LOT_ID": "LOT-001"}, {"LOT_ID": "LOT-002"}]
+    hold_rows = [
+        {"LOT_ID": "LOT-001", "HOLD_CD": "H01"},
+        {"LOT_ID": "LOT-002", "HOLD_CD": "H02"},
+    ]
+    payload = {
+        "source_results": [
+            {
+                "dataset_key": "upstream_result",
+                "source_alias": "upstream_result",
+                "source_type": "mongodb_result_store",
+                "status": "ok",
+                "row_count": 2,
+            }
+        ],
+        "runtime_sources": {"upstream_result": upstream_rows},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    retrieval = {
+        "source_type": "oracle",
+        "source_results": [
+            {
+                "dataset_key": "hold_history",
+                "source_alias": "hold_history_data",
+                "source_type": "oracle",
+                "status": "ok",
+                "row_count": 2,
+                "rows": hold_rows,
+            }
+        ],
+        "errors": [],
+        "warnings": [],
+    }
+
+    merged = merger.merge_source_retrieval_payloads(payload, retrieval)
+    adapted = adapter.build_retrieval_payload(merged)
+
+    assert adapted["runtime_sources"] == {
+        "upstream_result": upstream_rows,
+        "hold_history_data": hold_rows,
+    }
+    assert [item["source_alias"] for item in adapted["source_results"]] == [
+        "upstream_result",
+        "hold_history_data",
+    ]
+    assert "_runtime_rows_by_alias" not in adapted
+    assert adapted["trace"]["inspection"]["data_retrieval"]["merged_source_aliases"] == [
+        "upstream_result",
+        "hold_history_data",
+    ]
 
 
 def test_oracle_retriever_executes_sql_with_configured_tns():
@@ -6218,12 +6439,24 @@ def test_metadata_qa_dataset_sql_context_includes_only_selected_sql():
     assert "SELECT WIP_SQL" not in context_text
 
 
-def test_route_flow_source_layout_matches_current_06_and_07_routers():
+def test_route_flow_source_layout_matches_current_06_through_09_routers():
     route_dir = ROOT / "langflow_components" / "route_flow"
     route_v2_dir = ROOT / "langflow_components" / "route_flow_v2"
+    route_v3_dir = ROOT / "langflow_components" / "route_flow_v3"
+    route_v4_dir = ROOT / "langflow_components" / "route_flow_v4"
 
     assert sorted(path.name for path in route_dir.glob("*.py")) == ["01_flow_api_message_caller.py"]
     assert sorted(path.name for path in route_v2_dir.glob("*.py")) == ["01_cached_named_run_flow_tool.py"]
+    assert sorted(path.name for path in route_v3_dir.glob("*.py")) == [
+        "01_orchestrated_named_run_flow_tool.py"
+    ]
+    assert sorted(path.name for path in route_v4_dir.glob("*.py")) == [
+        "00_workflow_plan_parser.py",
+        "00a_mongodb_workflow_registry_loader.py",
+        "01_sequential_step_executor.py",
+        "02_final_context_builder.py",
+        "03_workflow_final_response_builder.py",
+    ]
     for obsolete in ("router_flow", "router_flow_v2", "router_flow_v3", "router_tool_flow"):
         assert not (ROOT / "langflow_components" / obsolete).exists()
 
@@ -6234,8 +6467,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 66
-    assert result["all_component_python_files"] == 67
+    assert result["active_unique_source_files"] == 82
+    assert result["all_component_python_files"] == 83
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -6244,9 +6477,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 7, 74, 66),
-        ("import_ready_individual", 7, 74, 66),
-        ("import_ready_bundle", 7, 74, 66),
+        ("flow_exports", 10, 99, 82),
+        ("import_ready_individual", 10, 99, 82),
+        ("import_ready_bundle", 10, 99, 82),
     }
 
 
@@ -6293,6 +6526,24 @@ def test_route_flow_v2_docs_cover_exactly_five_current_tools():
     assert "dummy_" not in system_prompt
     assert "dummy_" not in tool_descriptions
     assert "dummy_" not in examples
+
+
+def test_route_flow_v3_docs_define_bounded_multi_tool_orchestration_contract():
+    route_dir = ROOT / "langflow_components" / "route_flow_v3"
+    guide = (route_dir / "CONNECTION_GUIDE.md").read_text(encoding="utf-8")
+    system_prompt = (route_dir / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
+    tool_descriptions = (route_dir / "TOOL_DESCRIPTIONS.md").read_text(encoding="utf-8")
+    examples = (route_dir / "EXAMPLE_QUESTIONS.md").read_text(encoding="utf-8")
+
+    assert "최대 4회" in system_prompt
+    assert "result_ref" in system_prompt and "upstream_result_ref" in system_prompt
+    assert "route_v3.tool_result.v1" in system_prompt
+    assert "최종 답변을 정확히 한 번" in system_prompt
+    assert "return_direct=false" in guide
+    assert "Data Analysis" in tool_descriptions
+    assert "Metadata QA" in tool_descriptions
+    assert "Metadata 저장" in tool_descriptions
+    assert "이상 LOT" in examples
 
 
 def test_route_flow_calls_langflow_api_with_branch_message_as_input():
@@ -6752,6 +7003,857 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     ]
 
 
+def test_orchestrated_named_run_flow_tool_has_optional_ref_and_compact_result_contract():
+    path = ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+    component = load_module(path)
+    inputs = {item.kwargs.get("name"): item.kwargs for item in _component_inputs(component)}
+    outputs = {item.kwargs.get("name"): item.kwargs for item in _component_outputs(component)}
+
+    assert list(inputs) == [
+        "flow_name_selected",
+        "flow_id_selected",
+        "session_id",
+        "cache_flow",
+        "tool_name",
+        "tool_description",
+        "return_direct",
+        "accepts_upstream_result_ref",
+        "can_produce_result_ref",
+        "entity_id_columns",
+    ]
+    assert inputs["cache_flow"]["value"] is True
+    assert inputs["return_direct"]["value"] is False
+    assert inputs["accepts_upstream_result_ref"]["value"] is False
+    assert inputs["can_produce_result_ref"]["value"] is False
+    assert list(outputs) == ["component_as_tool"]
+    assert outputs["component_as_tool"]["types"] == ["Tool"]
+
+    fields = component._orchestration_tool_fields()
+    assert [field["name"] for field in fields] == ["question", "upstream_result_ref"]
+    assert fields[0]["required"] is True
+    assert fields[1]["required"] is False
+    assert all(field["tool_mode"] is True for field in fields)
+    assert component._orchestration_tweaks(
+        "ChatInput-runtime",
+        {"question": "이 LOT의 HOLD 이력을 알려줘", "upstream_result_ref": "result:lot-001"},
+        "ChatOutput-runtime",
+        "RequestLoader-runtime",
+        True,
+    ) == {
+        "ChatInput-runtime": {
+            "input_value": "이 LOT의 HOLD 이력을 알려줘",
+            "should_store_message": False,
+        },
+        "ChatOutput-runtime": {"should_store_message": False},
+        "RequestLoader-runtime": {"upstream_result_ref": "result:lot-001"},
+    }
+
+    contract = component.normalize_tool_result(
+        {
+            "status": "ok",
+            "summary": "이상 LOT 2건을 찾았습니다.",
+            "data_refs": [
+                {
+                    "role": "analysis_result",
+                    "ref_id": "result:lot-001",
+                    "row_count": 2,
+                    "columns": ["LOT_ID", "OPER_NAME"],
+                }
+            ],
+            "data": {
+                "rows": [
+                    {"LOT_ID": "LOT-001", "OPER_NAME": "WB"},
+                    {"LOT_ID": "LOT-002", "OPER_NAME": "WB"},
+                ],
+                "row_count": 2,
+                "columns": ["LOT_ID", "OPER_NAME"],
+            },
+            "trace": {"raw_rows": "X" * 20000, "pandas_code": "Y" * 20000},
+        },
+        tool_name="run_data_analysis",
+        entity_id_columns="LOT_ID",
+        can_produce_result_ref=True,
+    )
+    assert contract == {
+        "contract_version": "route_v3.tool_result.v1",
+        "status": "ok",
+        "tool_name": "run_data_analysis",
+        "summary": "이상 LOT 2건을 찾았습니다.",
+        "result_ref": "result:lot-001",
+        "result_ref_meta": {
+            "role": "analysis_result",
+            "columns": ["LOT_ID", "OPER_NAME"],
+            "row_count": 2,
+        },
+        "entity_ids": [
+            {
+                "entity_type": "lot",
+                "column": "LOT_ID",
+                "values": ["LOT-001", "LOT-002"],
+                "observed_count": 2,
+                "source_row_count": 2,
+                "complete": True,
+            }
+        ],
+        "handoff_usable": True,
+        "warnings": [],
+        "errors": [],
+    }
+    assert len(json.dumps(contract, ensure_ascii=False).encode("utf-8")) <= component.OBSERVATION_BYTE_LIMIT
+    assert "trace" not in contract
+    assert "rows" not in contract
+
+
+def test_route_v3_unwraps_real_lfx_artifact_raw_and_message_shapes():
+    component = load_module(
+        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+    )
+    api_payload = {
+        "response_type": "data_analysis",
+        "status": "ok",
+        "message": "이상 LOT 2건을 찾았습니다.",
+        "data_refs": [
+            {
+                "role": "analysis_result",
+                "ref_id": "result:session-1:lot-result",
+                "row_count": 2,
+                "columns": ["LOT_ID"],
+            }
+        ],
+        "data": {
+            "rows": [{"LOT_ID": "LOT-001"}, {"LOT_ID": "LOT-002"}],
+            "row_count": 2,
+            "columns": ["LOT_ID"],
+        },
+    }
+    # LFX 0.3.4 custom terminal outputs are resolved from ResultData.artifacts,
+    # not directly from ResultData.results. The actual API payload lives in raw.
+    artifact_contract = component.normalize_tool_result(
+        {"repr": "Data result", "raw": api_payload, "type": "Data"},
+        tool_name="run_data_analysis",
+        entity_id_columns="LOT_ID",
+        can_produce_result_ref=True,
+    )
+    assert artifact_contract["status"] == "ok"
+    assert artifact_contract["summary"] == "이상 LOT 2건을 찾았습니다."
+    assert artifact_contract["result_ref"] == "result:session-1:lot-result"
+    assert artifact_contract["handoff_usable"] is True
+    assert artifact_contract["entity_ids"][0]["values"] == ["LOT-001", "LOT-002"]
+
+    # Some child terminals or Langflow versions expose a serialized Data model
+    # or a Message whose text contains the same api_response envelope.
+    serialized_data_contract = component.normalize_tool_result(
+        {"text_key": "text", "data": api_payload, "default_value": ""},
+        tool_name="run_data_analysis",
+        can_produce_result_ref=True,
+    )
+    message_value = sys.modules["lfx.schema.message"].Message(text="등록된 메타데이터는 9건입니다.")
+    message_contract = component.normalize_tool_result(
+        message_value,
+        tool_name="run_metadata_qa",
+    )
+    assert serialized_data_contract["status"] == "ok"
+    assert serialized_data_contract["summary"] == "이상 LOT 2건을 찾았습니다."
+    assert serialized_data_contract["result_ref"] == "result:session-1:lot-result"
+    assert serialized_data_contract["handoff_usable"] is True
+    assert message_contract["status"] == "ok"
+    assert message_contract["summary"] == "등록된 메타데이터는 9건입니다."
+    assert message_contract["result_ref"] == ""
+    assert message_contract["handoff_usable"] is False
+
+    error_contract = component.normalize_tool_result(
+        {
+            "repr": "failed Data result",
+            "raw": {
+                "response_type": "metadata_qa",
+                "status": "error",
+                "message": "메타데이터 조회에 실패했습니다.",
+                "trace": {
+                    "errors": [
+                        {"type": "metadata_query_failed", "message": "catalog snapshot unavailable"}
+                    ]
+                },
+            },
+            "type": "Data",
+        },
+        tool_name="run_metadata_qa",
+    )
+    assert error_contract["status"] == "error"
+    assert error_contract["summary"] == "메타데이터 조회에 실패했습니다."
+    assert error_contract["handoff_usable"] is False
+    assert error_contract["errors"] == [
+        "metadata_query_failed: catalog snapshot unavailable"
+    ]
+
+
+def test_route_v3_prefers_structured_api_terminal_for_current_child_graphs():
+    component = load_module(
+        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+    )
+    expected_targets = {
+        "data_analysis_flow_v5_standalone.json": ("CustomComponent-3eVde", "api_response"),
+        "metadata_qa_flow_v5_standalone.json": ("Api-metadata-qa", "api_response"),
+        "domain_saving_flow_v5_standalone.json": ("Api-domain", "api_response"),
+        "table_catalog_saving_flow_v5_standalone.json": ("Api-table_catalog", "api_response"),
+        "main_flow_filter_saving_flow_v5_standalone.json": ("Api-main_flow_filter", "api_response"),
+    }
+
+    for filename, expected in expected_targets.items():
+        flow = json.loads((ROOT / "flow_exports" / filename).read_text(encoding="utf-8"))
+        successor_map = {node["id"]: [] for node in flow["data"]["nodes"]}
+        for edge in flow["data"]["edges"]:
+            successor_map.setdefault(edge["source"], []).append(edge["target"])
+        vertices = [
+            types.SimpleNamespace(
+                id=node["id"],
+                is_output=not successor_map.get(node["id"]),
+                outputs=node["data"]["node"].get("outputs", []),
+            )
+            for node in flow["data"]["nodes"]
+        ]
+        graph = types.SimpleNamespace(vertices=vertices, successor_map=successor_map)
+        assert component._preferred_graph_output_target(graph) == expected, filename
+
+
+def test_route_v4_parser_accepts_plain_and_markdown_json_with_explicit_handoff_semantics():
+    parser = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "00_workflow_plan_parser.py"
+    )
+    allowed_tools = ["find_anomaly_lots", "run_data_analysis", "run_metadata_qa"]
+    plan = {
+        "contract_version": "workflow.plan.v1",
+        "steps": [
+            {
+                "step_id": "find_lots",
+                "tool_name": "find_anomaly_lots",
+                "question": "오늘 이상 LOT을 조회해줘",
+                "depends_on": [],
+                "handoff": "none",
+                "on_error": "stop",
+            },
+            {
+                "step_id": "metadata_check",
+                "tool_name": "run_metadata_qa",
+                "question": "HOLD 이력 데이터셋의 필수 파라미터를 확인해줘",
+                "depends_on": ["find_lots"],
+                "handoff": "none",
+                "on_error": "continue",
+            },
+            {
+                "step_id": "hold_history",
+                "tool_name": "run_data_analysis",
+                "question": "앞 단계 LOT의 HOLD 이력을 조회해줘",
+                "depends_on": ["find_lots"],
+                "handoff": "result_ref",
+                "on_error": "stop",
+            },
+        ],
+    }
+
+    plain = parser.parse_workflow_plan(
+        json.dumps(plan, ensure_ascii=False),
+        user_question="이상 LOT과 HOLD 이력을 분석해줘",
+        allowed_tools_value=allowed_tools,
+        workflow_run_id="workflow-run-1",
+    )
+    fenced = parser.parse_workflow_plan(
+        "계획은 다음과 같습니다.\n```json\n"
+        + json.dumps(plan, ensure_ascii=False, indent=2)
+        + "\n```",
+        user_question="이상 LOT과 HOLD 이력을 분석해줘",
+        allowed_tools_value=allowed_tools,
+        workflow_run_id="workflow-run-1",
+    )
+    authored_markdown = parser.parse_workflow_plan(
+        """
+# 이상 LOT Workflow
+## find_lots
+- tool_name: find_anomaly_lots
+- question: 오늘 이상 LOT을 조회해줘
+- depends_on: none
+- handoff: none
+- on_error: stop
+
+## hold_history
+- tool_name: run_data_analysis
+- question: 앞 단계 LOT의 HOLD 이력을 조회해줘
+- depends_on: find_lots
+- handoff: result_ref
+- on_error: stop
+""",
+        allowed_tools_value=allowed_tools,
+        workflow_run_id="workflow-run-markdown",
+    )
+
+    for parsed in (plain, fenced):
+        assert parsed["status"] == "ok"
+        assert parsed["errors"] == []
+        normalized = parsed["workflow_plan"]
+        assert normalized["contract_version"] == "workflow.plan.v1"
+        assert [step["step_id"] for step in normalized["steps"]] == [
+            "find_lots",
+            "metadata_check",
+            "hold_history",
+        ]
+        # depends_on controls ordering; only handoff=result_ref transfers data.
+        assert normalized["steps"][1]["depends_on"] == ["find_lots"]
+        assert normalized["steps"][1]["handoff"] == "none"
+        assert normalized["steps"][2]["depends_on"] == ["find_lots"]
+        assert normalized["steps"][2]["handoff"] == "result_ref"
+
+    assert authored_markdown["status"] == "ok"
+    assert [step["step_id"] for step in authored_markdown["workflow_plan"]["steps"]] == [
+        "find_lots",
+        "hold_history",
+    ]
+    assert authored_markdown["workflow_plan"]["steps"][1]["handoff"] == "result_ref"
+
+
+def test_route_v4_exact_registered_key_overrides_planner_output_but_unknown_key_does_not():
+    parser = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "00_workflow_plan_parser.py"
+    )
+    registry_text = (ROOT / "docs" / "workflows" / "workflow_registry.example.json").read_text(
+        encoding="utf-8"
+    )
+    allowed_tools = [
+        "run_data_analysis",
+        "run_metadata_qa",
+        "save_domain_metadata",
+        "save_table_catalog_metadata",
+        "save_main_flow_filter_metadata",
+    ]
+    different_inline_plan = {
+        "contract_version": "workflow.plan.v1",
+        "workflow_key": "inline",
+        "steps": [
+            {
+                "step_id": "other",
+                "tool_name": "run_metadata_qa",
+                "question": "다른 메타데이터를 조회해줘.",
+                "depends_on": [],
+                "handoff": "none",
+                "on_error": "stop",
+            }
+        ],
+    }
+
+    registered = parser.parse_workflow_plan(
+        json.dumps(different_inline_plan, ensure_ascii=False),
+        workflow_registry_json=registry_text,
+        user_question="wb_daily_production_metadata",
+        allowed_tools_value=allowed_tools,
+        workflow_run_id="registered-key-run",
+    )
+    assert registered["status"] == "ok"
+    assert registered["source_kind"] == "registry"
+    assert registered["workflow_plan"]["workflow_key"] == "wb_daily_production_metadata"
+    assert [step["step_id"] for step in registered["workflow_plan"]["steps"]] == [
+        "production",
+        "metadata",
+    ]
+
+    unknown_key_question = parser.parse_workflow_plan(
+        json.dumps(different_inline_plan, ensure_ascii=False),
+        workflow_registry_json=registry_text,
+        user_question="ordinary_request",
+        allowed_tools_value=allowed_tools,
+        workflow_run_id="unknown-key-run",
+    )
+    assert unknown_key_question["status"] == "ok"
+    assert unknown_key_question["source_kind"] == "inline"
+    assert unknown_key_question["workflow_plan"]["steps"][0]["step_id"] == "other"
+
+
+def test_route_v4_parser_blocks_oversize_unknown_duplicate_cycle_and_ambiguous_ref_plans():
+    parser = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "00_workflow_plan_parser.py"
+    )
+    allowed_tools = ["tool_a", "tool_b"]
+
+    def step(
+        step_id: str,
+        tool_name: str = "tool_a",
+        *,
+        depends_on: list[str] | None = None,
+        handoff: str = "none",
+    ) -> dict:
+        return {
+            "step_id": step_id,
+            "tool_name": tool_name,
+            "question": f"execute {step_id}",
+            "depends_on": depends_on or [],
+            "handoff": handoff,
+            "on_error": "stop",
+        }
+
+    invalid_plans = {
+        "maximum_four_steps": {"steps": [step(f"s{index}") for index in range(1, 6)]},
+        "unknown_tool": {"steps": [step("s1", "tool_not_registered")]},
+        "duplicate_step_id": {"steps": [step("s1"), step("s1", "tool_b")]},
+        "dependency_cycle": {
+            "steps": [step("s1", depends_on=["s2"]), step("s2", depends_on=["s1"])]
+        },
+        "ambiguous_result_ref": {
+            "steps": [
+                step("s1"),
+                step("s2", "tool_b"),
+                step("s3", depends_on=["s1", "s2"], handoff="result_ref"),
+            ]
+        },
+    }
+    expected_error_types = {
+        "maximum_four_steps": "workflow_step_limit_exceeded",
+        "unknown_tool": "unregistered_tool_name",
+        "duplicate_step_id": "duplicate_step_id",
+        "dependency_cycle": "future_or_unknown_dependency",
+        "ambiguous_result_ref": "ambiguous_result_ref_handoff",
+    }
+
+    for case_name, raw_plan in invalid_plans.items():
+        raw_plan["contract_version"] = "workflow.plan.v1"
+        parsed = parser.parse_workflow_plan(
+            json.dumps(raw_plan),
+            allowed_tools_value=allowed_tools,
+            workflow_run_id=f"invalid-{case_name}",
+        )
+        assert parsed["status"] == "error", case_name
+        assert parsed["errors"], case_name
+        assert expected_error_types[case_name] in {
+            error.get("type") for error in parsed["errors"]
+        }, case_name
+        assert not parsed.get("workflow_plan", {}).get("executable", False), case_name
+
+    exactly_four = parser.parse_workflow_plan(
+        json.dumps(
+            {
+                "contract_version": "workflow.plan.v1",
+                "steps": [step(f"s{index}") for index in range(1, 5)],
+            }
+        ),
+        allowed_tools_value=allowed_tools,
+        workflow_run_id="valid-four-steps",
+    )
+    assert exactly_four["status"] == "ok"
+    assert len(exactly_four["workflow_plan"]["steps"]) == 4
+
+
+def test_route_v4_sequential_executor_calls_only_selected_tool_and_transfers_ref_only_for_handoff():
+    executor = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "01_sequential_step_executor.py"
+    )
+
+    class FakeTool:
+        def __init__(self, name: str, result_ref: str = ""):
+            self.name = name
+            self.calls = []
+            self.result_ref = result_ref
+
+        async def ainvoke(self, arguments):
+            self.calls.append(deepcopy(arguments))
+            return {
+                "contract_version": "route_v3.tool_result.v1",
+                "status": "ok",
+                "tool_name": self.name,
+                "summary": f"{self.name} completed",
+                "result_ref": self.result_ref,
+                "result_ref_meta": {},
+                "entity_ids": [],
+                "handoff_usable": bool(self.result_ref),
+                "warnings": [],
+                "errors": [],
+            }
+
+    source_tool = FakeTool("find_anomaly_lots", "result:session-1:lots")
+    target_tool = FakeTool("run_data_analysis")
+    tools = [source_tool, target_tool]
+
+    first = asyncio.run(
+        executor.execute_workflow_step(
+            {
+                "contract_version": "workflow.plan.v1",
+                "workflow_run_id": "workflow-run-1",
+                "step_index": 1,
+                "total_steps": 3,
+                "step_id": "find_lots",
+                "tool_name": "find_anomaly_lots",
+                "question": "이상 LOT을 찾아줘",
+                "depends_on": [],
+                "handoff": "none",
+                "on_error": "stop",
+            },
+            tools,
+            session_id="workflow-session-1",
+        )
+    )
+    assert source_tool.calls == [{"question": "이상 LOT을 찾아줘"}]
+    assert target_tool.calls == []
+    context = first["execution_context"]
+    assert context["contract_version"] == "workflow.execution.v1"
+    assert context["execution_order"] == ["find_lots"]
+    assert context["results_by_step"]["find_lots"]["result_ref"] == "result:session-1:lots"
+
+    order_only = asyncio.run(
+        executor.execute_workflow_step(
+            {
+                "contract_version": "workflow.plan.v1",
+                "workflow_run_id": "workflow-run-1",
+                "step_index": 2,
+                "total_steps": 3,
+                "step_id": "order_only",
+                "tool_name": "run_data_analysis",
+                "question": "독립 조회를 순서상 다음에 실행해줘",
+                "depends_on": ["find_lots"],
+                "handoff": "none",
+                "on_error": "stop",
+            },
+            tools,
+            execution_context=context,
+            session_id="workflow-session-1",
+        )
+    )
+    assert target_tool.calls == [{"question": "독립 조회를 순서상 다음에 실행해줘"}]
+
+    target_tool.calls.clear()
+    with_handoff = asyncio.run(
+        executor.execute_workflow_step(
+            {
+                "contract_version": "workflow.plan.v1",
+                "workflow_run_id": "workflow-run-1",
+                "step_index": 3,
+                "total_steps": 3,
+                "step_id": "hold_history",
+                "tool_name": "run_data_analysis",
+                "question": "앞 단계 LOT의 HOLD 이력을 조회해줘",
+                "depends_on": ["find_lots"],
+                "handoff": "result_ref",
+                "on_error": "stop",
+            },
+            tools,
+            execution_context=order_only["execution_context"],
+            session_id="workflow-session-1",
+        )
+    )
+    assert target_tool.calls == [
+        {
+            "question": "앞 단계 LOT의 HOLD 이력을 조회해줘",
+            "upstream_result_ref": "result:session-1:lots",
+        }
+    ]
+    assert with_handoff["execution_context"]["execution_order"] == [
+        "find_lots",
+        "order_only",
+        "hold_history",
+    ]
+
+
+def test_route_v4_executor_stops_on_fatal_error_but_continues_only_independent_steps():
+    executor = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "01_sequential_step_executor.py"
+    )
+
+    class FakeTool:
+        def __init__(self, name: str, status: str):
+            self.name = name
+            self.status = status
+            self.calls = []
+
+        async def ainvoke(self, arguments):
+            self.calls.append(deepcopy(arguments))
+            return {
+                "contract_version": "route_v3.tool_result.v1",
+                "status": self.status,
+                "tool_name": self.name,
+                "summary": f"{self.name} {self.status}",
+                "result_ref": "",
+                "result_ref_meta": {},
+                "entity_ids": [],
+                "handoff_usable": False,
+                "warnings": [],
+                "errors": ["tool failed"] if self.status == "error" else [],
+            }
+
+    failed = FakeTool("failing_tool", "error")
+    healthy = FakeTool("healthy_tool", "ok")
+    tools = [failed, healthy]
+    base_step = {
+        "contract_version": "workflow.plan.v1",
+        "workflow_run_id": "workflow-run-errors",
+        "step_index": 1,
+        "total_steps": 3,
+        "step_id": "failed_step",
+        "tool_name": "failing_tool",
+        "question": "실패 단계",
+        "depends_on": [],
+        "handoff": "none",
+    }
+
+    stopped = asyncio.run(
+        executor.execute_workflow_step({**base_step, "on_error": "stop"}, tools)
+    )
+    assert stopped["execution_context"]["stop_requested"] is True
+    assert stopped["execution_context"]["results_by_step"]["failed_step"]["status"] == "error"
+
+    failed.calls.clear()
+    continued = asyncio.run(
+        executor.execute_workflow_step({**base_step, "on_error": "continue"}, tools)
+    )
+    assert continued["execution_context"]["stop_requested"] is False
+    assert failed.calls == [{"question": "실패 단계"}]
+
+    dependent = asyncio.run(
+        executor.execute_workflow_step(
+            {
+                "contract_version": "workflow.plan.v1",
+                "workflow_run_id": "workflow-run-errors",
+                "step_index": 2,
+                "total_steps": 3,
+                "step_id": "dependent_step",
+                "tool_name": "healthy_tool",
+                "question": "실패 단계에 의존",
+                "depends_on": ["failed_step"],
+                "handoff": "none",
+                "on_error": "continue",
+            },
+            tools,
+            execution_context=continued["execution_context"],
+        )
+    )
+    assert healthy.calls == []
+    assert dependent["execution_context"]["results_by_step"]["dependent_step"]["status"] in {
+        "blocked",
+        "skipped",
+    }
+
+    independent = asyncio.run(
+        executor.execute_workflow_step(
+            {
+                "contract_version": "workflow.plan.v1",
+                "workflow_run_id": "workflow-run-errors",
+                "step_index": 3,
+                "total_steps": 3,
+                "step_id": "independent_step",
+                "tool_name": "healthy_tool",
+                "question": "독립 단계",
+                "depends_on": [],
+                "handoff": "none",
+                "on_error": "stop",
+            },
+            tools,
+            execution_context=dependent["execution_context"],
+        )
+    )
+    assert healthy.calls == [{"question": "독립 단계"}]
+    assert independent["execution_context"]["results_by_step"]["independent_step"]["status"] == "ok"
+
+
+def test_route_v4_final_context_is_bounded_and_excludes_internal_payloads():
+    final_builder = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "02_final_context_builder.py"
+    )
+    execution_context = {
+        "contract_version": "workflow.execution.v1",
+        "status": "partial",
+        "execution_order": ["find_lots", "hold_history"],
+        "stop_requested": False,
+        "results_by_step": {
+            "find_lots": {
+                "step_id": "find_lots",
+                "tool_name": "find_anomaly_lots",
+                "status": "ok",
+                "summary": "이상 LOT 2건을 찾았습니다.",
+                "result_ref": "result:session-1:lots",
+                "entity_ids": [{"column": "LOT_ID", "values": ["LOT-001", "LOT-002"]}],
+                "trace": {"raw_rows": "X" * 50000},
+                "pandas_code": "Y" * 50000,
+            },
+            "hold_history": {
+                "step_id": "hold_history",
+                "tool_name": "run_data_analysis",
+                "status": "error",
+                "summary": "HOLD 이력 조회에 실패했습니다.",
+                "warnings": [],
+                "errors": ["hold query failed"],
+                "raw_payload": {"rows": [{"secret": "Z" * 50000}]},
+            },
+        },
+    }
+
+    built = final_builder.build_final_context(
+        [],
+        execution_context,
+        user_question="이상 LOT과 해당 LOT의 HOLD 이력을 알려줘",
+        max_context_bytes=4096,
+    )
+
+    assert built["status"] in {"ok", "partial", "error"}
+    assert built["question"] == "이상 LOT과 해당 LOT의 HOLD 이력을 알려줘"
+    assert built["synthesis_instruction"]
+    assert isinstance(built["prompt_variables"], dict)
+    compact_text = json.dumps(
+        {
+            "workflow_context": built["workflow_context"],
+            "prompt_variables": built["prompt_variables"],
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    assert "이상 LOT 2건을 찾았습니다." in compact_text
+    assert "HOLD 이력 조회에 실패했습니다." in compact_text
+    assert "raw_rows" not in compact_text
+    assert "pandas_code" not in compact_text
+    assert "raw_payload" not in compact_text
+    assert "X" * 100 not in compact_text
+    assert len(compact_text.encode("utf-8")) <= 4096 + 1024
+
+
+def test_route_v4_final_context_preserves_parser_errors_without_loop_results():
+    parser = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "00_workflow_plan_parser.py"
+    )
+    final_builder = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "02_final_context_builder.py"
+    )
+    parse_error = parser.parse_workflow_plan(
+        '{"contract_version":"workflow.plan.v1","steps":[]}',
+        user_question="잘못된 Workflow를 실행해줘",
+        allowed_tools_value=["run_data_analysis"],
+        workflow_run_id="workflow-parse-error",
+    )
+    assert parse_error["status"] == "error"
+    assert parse_error["errors"][0]["type"] == "workflow_steps_missing"
+
+    built = final_builder.build_final_context(
+        [],
+        sys.modules["lfx.schema.data"].Data(data=parse_error),
+        user_question="잘못된 Workflow를 실행해줘",
+    )
+    assert built["status"] == "error"
+    context_text = json.dumps(built["workflow_context"], ensure_ascii=False, default=str)
+    assert "workflow_steps_missing" in context_text
+    assert "Workflow에는 실행 단계가 1개 이상 필요합니다." in context_text
+    assert built["prompt_variables"]
+
+    final_inputs = {
+        item.kwargs.get("name"): item.kwargs for item in _component_inputs(final_builder)
+    }
+    assert final_inputs["execution_context"]["advanced"] is False
+
+
+def test_route_v4_final_response_success_partial_and_empty_model_contracts():
+    response_builder = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "03_workflow_final_response_builder.py"
+    )
+    Data = sys.modules["lfx.schema.data"].Data
+    Message = sys.modules["lfx.schema.message"].Message
+
+    def final_context(execution_status: str, steps: list[dict], **extra: Any):
+        workflow_context = {
+            "contract_version": "workflow.final_context.v1",
+            "workflow_run_id": "workflow-response-test",
+            "workflow_key": "anomaly_lot_hold_history",
+            "execution_status": execution_status,
+            "steps": steps,
+            **extra,
+        }
+        return Data(
+            data={
+                "status": execution_status,
+                "workflow_context": json.dumps(workflow_context, ensure_ascii=False),
+                # 최종 응답에는 이 내부 합성 입력이 다시 노출되면 안 됩니다.
+                "prompt_variables": {"internal": "SECRET_PROMPT_VARIABLE"},
+            }
+        )
+
+    successful = response_builder.build_workflow_final_response(
+        final_context(
+            "complete",
+            [
+                {
+                    "step_index": 1,
+                    "step_id": "find_lots",
+                    "tool_name": "run_data_analysis",
+                    "status": "ok",
+                    "summary": "이상 LOT 2건을 찾았습니다.",
+                    "result_ref": "result:session-1:lots",
+                    "result_ref_meta": {"row_count": 2},
+                    "errors": [],
+                    "warnings": [],
+                }
+            ],
+        ),
+        Message(text="이상 LOT 2건과 주요 원인을 확인했습니다."),
+    )
+    assert successful["message"] == "이상 LOT 2건과 주요 원인을 확인했습니다."
+    assert successful["api_response"]["response_type"] == "workflow_orchestration"
+    assert successful["api_response"]["status"] == "ok"
+    assert successful["api_response"]["message"] == successful["message"]
+    assert successful["api_response"]["workflow"]["steps"][0]["row_count"] == 2
+
+    partial = response_builder.build_workflow_final_response(
+        final_context(
+            "partial",
+            [
+                {
+                    "step_index": 1,
+                    "step_id": "find_lots",
+                    "tool_name": "run_data_analysis",
+                    "status": "ok",
+                    "summary": "이상 LOT 2건을 찾았습니다.",
+                },
+                {
+                    "step_index": 2,
+                    "step_id": "hold_history",
+                    "tool_name": "run_data_analysis",
+                    "status": "error",
+                    "summary": "HOLD 이력 조회에 실패했습니다.",
+                    "errors": [{"type": "query_failed", "message": "HOLD 조회 API 오류"}],
+                },
+            ],
+        ),
+        Message(text="이상 LOT 조회 결과를 먼저 안내합니다."),
+    )
+    assert partial["api_response"]["status"] == "partial"
+    assert "### Workflow 실행 상태" in partial["message"]
+    assert "hold_history" in partial["message"]
+    assert "HOLD 조회 API 오류" in partial["message"]
+
+    empty_model = response_builder.build_workflow_final_response(
+        final_context(
+            "complete",
+            [
+                {
+                    "step_index": 1,
+                    "step_id": "find_lots",
+                    "tool_name": "run_data_analysis",
+                    "status": "ok",
+                    "summary": "이상 LOT 2건을 찾았습니다.",
+                    "result_ref": "result:session-1:must-not-leak",
+                    "result_ref_meta": {"row_count": 2},
+                }
+            ],
+        ),
+        Message(text=""),
+    )
+    assert empty_model["api_response"]["status"] == "error"
+    assert "최종 답변 생성 모델의 응답을 사용할 수 없어" in empty_model["message"]
+    empty_serialized = json.dumps(empty_model["api_response"], ensure_ascii=False)
+    assert "final_model_response_empty" in empty_serialized
+    assert "SECRET_PROMPT_VARIABLE" not in empty_serialized
+    assert "result:session-1:must-not-leak" not in empty_serialized
+    assert "prompt_variables" not in empty_serialized
+    assert "result_ref" not in empty_serialized
+
+    component = response_builder.WorkflowFinalResponseBuilder()
+    component.final_context = final_context(
+        "complete",
+        [{"step_index": 1, "step_id": "find_lots", "tool_name": "run_data_analysis", "status": "ok"}],
+    )
+    component.final_model_response = Message(text="최종 답변")
+    assert component.build_message().text == "최종 답변"
+    assert component.build_api_response().data["response_type"] == "workflow_orchestration"
+
+
 def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     assert not list((ROOT / "flow_exports").glob("dummy_*_flow_v5_standalone.json"))
     exports = {
@@ -6761,6 +7863,8 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         "metadata_qa": ROOT / "flow_exports" / "metadata_qa_flow_v5_standalone.json",
         "router": ROOT / "flow_exports" / "api_router_flow_v5_standalone.json",
         "tool_router": ROOT / "flow_exports" / "agent_tool_router_flow_v5_standalone.json",
+        "orchestrator_router": ROOT / "flow_exports" / "agent_orchestrator_router_flow_v5_standalone.json",
+        "workflow_orchestrator": ROOT / "flow_exports" / "workflow_orchestrator_flow_v5_standalone.json",
     }
     for path in exports.values():
         assert path.exists(), path
@@ -6772,7 +7876,13 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         assert len(node_ids) == len(set(node_ids))
         nodes_by_id = {node["id"]: node for node in flow["data"]["nodes"]}
         for edge in flow["data"]["edges"]:
-            target_field = edge["data"]["targetHandle"]["fieldName"]
+            target_handle = edge["data"]["targetHandle"]
+            target_field = target_handle.get("fieldName")
+            if not target_field:
+                # Native Loop feedback는 일반 template input이 아니라 allows_loop
+                # target name(`item`)으로 연결되므로 advanced-input 검증 대상이 아닙니다.
+                assert target_handle.get("name") == "item"
+                continue
             target_input = nodes_by_id[edge["target"]]["data"]["node"]["template"][target_field]
             assert target_input.get("advanced") is not True, (
                 f"{path.name}: Langflow 1.8.2 removes edge {edge['id']} because "
@@ -6979,6 +8089,191 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     assert not any(edge[3] == "session_source" for edge in edge_keys)
     assert ("Agent-agent-tool-router", "response", "ChatOutput-agent-tool-router", "input_value") in edge_keys
 
+    orchestrator = json.loads(exports["orchestrator_router"].read_text(encoding="utf-8"))
+    assert len(orchestrator["data"]["nodes"]) == 8
+    assert len(orchestrator["data"]["edges"]) == 7
+    orchestrator_tools = [
+        node for node in orchestrator["data"]["nodes"] if node["id"].startswith("OrchestratedFlowTool-")
+    ]
+    orchestrator_agents = [
+        node for node in orchestrator["data"]["nodes"] if node["data"].get("type") == "Agent"
+    ]
+    orchestrator_outputs = [
+        node for node in orchestrator["data"]["nodes"] if node["data"].get("type") == "ChatOutput"
+    ]
+    assert len(orchestrator_tools) == 5
+    assert len(orchestrator_agents) == 1
+    assert len(orchestrator_outputs) == 1
+    orchestrator_agent_template = orchestrator_agents[0]["data"]["node"]["template"]
+    assert orchestrator_agent_template["system_prompt"]["value"] == (
+        ROOT / "langflow_components" / "route_flow_v3" / "SYSTEM_PROMPT_KO.md"
+    ).read_text(encoding="utf-8")
+    assert orchestrator_agent_template["max_iterations"]["value"] == 5
+    assert orchestrator_agent_template["n_messages"]["value"] == 8
+    assert orchestrator_agent_template["add_current_date_tool"]["value"] is False
+    assert orchestrator_agent_template["verbose"]["value"] is False
+    assert all(node["data"]["node"]["tool_mode"] is True for node in orchestrator_tools)
+    assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in orchestrator_tools)
+    assert all(node["data"]["node"]["template"]["return_direct"]["value"] is False for node in orchestrator_tools)
+    assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in orchestrator_tools)
+    orchestrator_tool_source = (
+        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+    ).read_text(encoding="utf-8")
+    assert all(
+        node["data"]["node"]["template"]["code"]["value"] == orchestrator_tool_source
+        for node in orchestrator_tools
+    )
+    data_tool = next(node for node in orchestrator_tools if node["id"] == "OrchestratedFlowTool-data_analysis")
+    data_tool_template = data_tool["data"]["node"]["template"]
+    assert data_tool_template["accepts_upstream_result_ref"]["value"] is True
+    assert data_tool_template["can_produce_result_ref"]["value"] is True
+    assert data_tool_template["entity_id_columns"]["value"] == "LOT_ID"
+    assert all(
+        node["data"]["node"]["template"]["accepts_upstream_result_ref"]["value"] is False
+        and node["data"]["node"]["template"]["can_produce_result_ref"]["value"] is False
+        for node in orchestrator_tools
+        if node is not data_tool
+    )
+    orchestrator_edge_keys = {
+        (
+            edge["source"],
+            edge["data"]["sourceHandle"]["name"],
+            edge["target"],
+            edge["data"]["targetHandle"]["fieldName"],
+        )
+        for edge in orchestrator["data"]["edges"]
+    }
+    for tool in orchestrator_tools:
+        assert (
+            tool["id"],
+            "component_as_tool",
+            "Agent-agent-orchestrator-router",
+            "tools",
+        ) in orchestrator_edge_keys
+    assert {
+        edge for edge in orchestrator_edge_keys if edge[0] == "ChatInput-agent-orchestrator-router"
+    } == {
+        (
+            "ChatInput-agent-orchestrator-router",
+            "message",
+            "Agent-agent-orchestrator-router",
+            "input_value",
+        )
+    }
+    assert (
+        "Agent-agent-orchestrator-router",
+        "response",
+        "ChatOutput-agent-orchestrator-router",
+        "input_value",
+    ) in orchestrator_edge_keys
+
+
+def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contract():
+    path = ROOT / "flow_exports" / "workflow_orchestrator_flow_v5_standalone.json"
+    flow = json.loads(path.read_text(encoding="utf-8"))
+    nodes = {node["id"]: node for node in flow["data"]["nodes"]}
+    edges = {
+        (
+            edge["source"],
+            edge["data"]["sourceHandle"]["name"],
+            edge["target"],
+            edge["data"]["targetHandle"].get("fieldName", ""),
+            edge["data"]["targetHandle"].get("name", ""),
+        )
+        for edge in flow["data"]["edges"]
+    }
+
+    assert flow["endpoint_name"] == "metadata-driven-v5-workflow-orchestrator"
+    assert len(nodes) == 17
+    assert len(edges) == 25
+    assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
+    assert not [node for node in nodes.values() if node["data"].get("type") == "Agent"]
+    assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
+    assert [
+        node["id"] for node in nodes.values() if node["data"].get("type") == "ChatOutput"
+    ] == ["ChatOutput-workflow-orchestrator"]
+
+    source_contracts = {
+        "WorkflowRegistryLoader-workflow-orchestrator": "route_flow_v4/00a_mongodb_workflow_registry_loader.py",
+        "WorkflowPlanParser-workflow-orchestrator": "route_flow_v4/00_workflow_plan_parser.py",
+        "SequentialStepExecutor-workflow-orchestrator": "route_flow_v4/01_sequential_step_executor.py",
+        "FinalContext-workflow-orchestrator": "route_flow_v4/02_final_context_builder.py",
+        "FinalResponse-workflow-orchestrator": "route_flow_v4/03_workflow_final_response_builder.py",
+    }
+    for node_id, relative_path in source_contracts.items():
+        embedded = nodes[node_id]["data"]["node"]["template"]["code"]["value"]
+        expected = (ROOT / "langflow_components" / relative_path).read_text(encoding="utf-8")
+        assert embedded == expected, node_id
+
+    tools = [node for node_id, node in nodes.items() if node_id.startswith("WorkflowFlowTool-")]
+    assert len(tools) == 5
+    route_v3_tool_source = (
+        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+    ).read_text(encoding="utf-8")
+    assert all(node["data"]["node"]["template"]["code"]["value"] == route_v3_tool_source for node in tools)
+    assert all(node["data"]["node"]["tool_mode"] is True for node in tools)
+    assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
+    assert all(node["data"]["node"]["template"]["return_direct"]["value"] is False for node in tools)
+    assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in tools)
+    assert {
+        node["data"]["node"]["template"]["tool_name"]["value"] for node in tools
+    } == {
+        "run_data_analysis",
+        "run_metadata_qa",
+        "save_domain_metadata",
+        "save_table_catalog_metadata",
+        "save_main_flow_filter_metadata",
+    }
+
+    expected_core_edges = {
+        ("ChatInput-workflow-orchestrator", "message", "PromptPlanner-workflow-orchestrator", "user_question", ""),
+        ("ChatInput-workflow-orchestrator", "message", "WorkflowRegistryLoader-workflow-orchestrator", "user_question", ""),
+        ("WorkflowRegistryLoader-workflow-orchestrator", "workflow_registry_json", "PromptPlanner-workflow-orchestrator", "workflow_registry_json", ""),
+        ("WorkflowRegistryLoader-workflow-orchestrator", "workflow_registry_json", "WorkflowPlanParser-workflow-orchestrator", "workflow_registry_json", ""),
+        ("PromptPlanner-workflow-orchestrator", "prompt", "LanguageModelPlanner-workflow-orchestrator", "input_value", ""),
+        ("LanguageModelPlanner-workflow-orchestrator", "text_output", "WorkflowPlanParser-workflow-orchestrator", "workflow_input", ""),
+        ("ChatInput-workflow-orchestrator", "message", "WorkflowPlanParser-workflow-orchestrator", "user_question", ""),
+        ("WorkflowPlanParser-workflow-orchestrator", "loop_dataframe", "Loop-workflow-orchestrator", "data", ""),
+        ("Loop-workflow-orchestrator", "item", "SequentialStepExecutor-workflow-orchestrator", "loop_item", ""),
+        ("SequentialStepExecutor-workflow-orchestrator", "step_result", "Loop-workflow-orchestrator", "", "item"),
+        ("WorkflowPlanParser-workflow-orchestrator", "workflow_plan", "FinalContext-workflow-orchestrator", "execution_context", ""),
+        ("Loop-workflow-orchestrator", "done", "FinalContext-workflow-orchestrator", "loop_results", ""),
+        ("ChatInput-workflow-orchestrator", "message", "FinalContext-workflow-orchestrator", "user_question", ""),
+        ("FinalContext-workflow-orchestrator", "question", "PromptFinal-workflow-orchestrator", "question", ""),
+        ("FinalContext-workflow-orchestrator", "workflow_context", "PromptFinal-workflow-orchestrator", "workflow_context", ""),
+        ("FinalContext-workflow-orchestrator", "synthesis_instruction", "PromptFinal-workflow-orchestrator", "synthesis_instruction", ""),
+        ("PromptFinal-workflow-orchestrator", "prompt", "LanguageModelFinal-workflow-orchestrator", "input_value", ""),
+        ("FinalContext-workflow-orchestrator", "final_context", "FinalResponse-workflow-orchestrator", "final_context", ""),
+        ("LanguageModelFinal-workflow-orchestrator", "text_output", "FinalResponse-workflow-orchestrator", "final_model_response", ""),
+        ("FinalResponse-workflow-orchestrator", "message", "ChatOutput-workflow-orchestrator", "input_value", ""),
+    }
+    expected_tool_edges = {
+        (node["id"], "component_as_tool", "SequentialStepExecutor-workflow-orchestrator", "tools", "")
+        for node in tools
+    }
+    assert edges == expected_core_edges | expected_tool_edges
+
+    parser_template = nodes["WorkflowPlanParser-workflow-orchestrator"]["data"]["node"]["template"]
+    registry_template = nodes["WorkflowRegistryLoader-workflow-orchestrator"]["data"]["node"]["template"]
+    final_context_template = nodes["FinalContext-workflow-orchestrator"]["data"]["node"]["template"]
+    assert registry_template["registry_source"]["value"] == "mongodb"
+    assert registry_template["mongo_uri"]["value"] == "MONGO_URL"
+    assert registry_template["mongo_database"]["value"] == "datagov"
+    assert registry_template["collection_name"]["value"] == "agent_v4_workflow_skills"
+    assert registry_template["candidate_limit"]["value"] == "8"
+    assert registry_template["max_registry_bytes"]["value"] == "65536"
+    assert parser_template["workflow_registry_json"]["value"] == "{}"
+    assert parser_template["workflow_registry_json"]["advanced"] is False
+    assert parser_template["allowed_tool_names"]["advanced"] is False
+    assert final_context_template["execution_context"]["advanced"] is False
+    assert final_context_template["max_context_bytes"]["value"] == "32768"
+
+    final_response_outputs = {
+        output["name"] for output in nodes["FinalResponse-workflow-orchestrator"]["data"]["node"]["outputs"]
+    }
+    assert final_response_outputs == {"message", "api_response"}
+    assert not any(edge[0] == "FinalResponse-workflow-orchestrator" and edge[1] == "api_response" for edge in edges)
+
 
 def test_flow_tool_entry_inputs_are_agent_controlled():
     specs = [
@@ -6987,6 +8282,7 @@ def test_flow_tool_entry_inputs_are_agent_controlled():
         ("domain_saving_flow/00_domain_saving_request_loader.py", "raw_text"),
         ("table_catalog_saving_flow/00_table_catalog_saving_request_loader.py", "raw_text"),
         ("main_flow_filters_saving_flow/00_main_flow_filter_saving_request_loader.py", "raw_text"),
+        ("workflow_skill_saving_flow/00_workflow_skill_saving_request_loader.py", "raw_text"),
     ]
 
     for relative_path, input_name in specs:
@@ -7002,6 +8298,7 @@ def test_metadata_saving_duplicate_mode_has_no_non_resumable_ask_option():
         "domain_saving_flow/00_domain_saving_request_loader.py",
         "table_catalog_saving_flow/00_table_catalog_saving_request_loader.py",
         "main_flow_filters_saving_flow/00_main_flow_filter_saving_request_loader.py",
+        "workflow_skill_saving_flow/00_workflow_skill_saving_request_loader.py",
     ]
     for relative_path in request_paths:
         module = load_module(ROOT / "langflow_components" / relative_path)

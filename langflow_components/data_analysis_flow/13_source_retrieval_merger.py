@@ -35,16 +35,26 @@ def merge_source_retrieval_payloads(main_payload_value: Any, *retrieval_values: 
         errors.extend(retrieval.get("errors", []))
         warnings.extend(retrieval.get("warnings", []))
     next_payload = payload
-    compact_results = [{key: deepcopy(value) for key, value in item.items() if key not in {"rows", "data"}} for item in source_results]
+    compact_results = [_compact_source_result(item) for item in source_results]
+    existing_results = [
+        _compact_source_result(item)
+        for item in payload.get("source_results", [])
+        if isinstance(item, dict)
+    ] if isinstance(payload.get("source_results"), list) else []
+    merged_results = _merge_items_by_alias(existing_results, compact_results)
+    if merged_results:
+        next_payload["source_results"] = merged_results
     if compact_results:
-        next_payload["source_results"] = compact_results
-        next_payload["_runtime_rows_by_alias"] = {
-            item.get("source_alias"): item.get("rows", [])
-            for item in source_results
-            if item.get("source_alias")
-        }
-    else:
-        next_payload["source_results"] = deepcopy(payload.get("source_results", []))
+        staged_rows = (
+            deepcopy(payload.get("_runtime_rows_by_alias"))
+            if isinstance(payload.get("_runtime_rows_by_alias"), dict)
+            else {}
+        )
+        for item in source_results:
+            alias = _alias(item)
+            if alias:
+                staged_rows[alias] = item.get("rows", []) if isinstance(item.get("rows"), list) else []
+        next_payload["_runtime_rows_by_alias"] = staged_rows
     trace = next_payload.setdefault("trace", {})
     trace.setdefault("errors", []).extend(errors)
     trace.setdefault("warnings", []).extend(warnings)
@@ -57,13 +67,39 @@ def merge_source_retrieval_payloads(main_payload_value: Any, *retrieval_values: 
             "stage": "13_source_retrieval_merger",
             "status": "error" if errors or validation_failed else "ok",
             "executed_source_count": len(compact_results),
-            "sources": _trace_source_summaries(compact_results or payload.get("source_results", [])),
+            "sources": _trace_source_summaries(merged_results),
             "skipped_sources": skipped_sources,
-            "preserved_existing_runtime_sources": not compact_results and bool(payload.get("runtime_sources")),
+            "preserved_existing_runtime_sources": bool(payload.get("runtime_sources")),
+            "merged_source_aliases": [_alias(item) for item in merged_results if _alias(item)],
         }
     )
     inspection["data_retrieval"] = retrieval_inspection
     return next_payload
+
+
+# 함수 설명: `_compact_source_result()`는 pandas용 전체 행을 source 결과 요약에서 제외해 동일 데이터의 중복 전달을 막습니다.
+def _compact_source_result(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: deepcopy(value) for key, value in item.items() if key not in {"rows", "data"}}
+
+
+# 함수 설명: `_merge_items_by_alias()`는 기존 alias 순서를 유지하고 같은 alias의 신규 조회 결과만 해당 위치에 교체합니다.
+def _merge_items_by_alias(existing: list[dict[str, Any]], additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = [deepcopy(item) for item in existing]
+    positions = {_alias(item): index for index, item in enumerate(result) if _alias(item)}
+    for item in additions:
+        alias = _alias(item)
+        if alias and alias in positions:
+            result[positions[alias]] = deepcopy(item)
+        else:
+            if alias:
+                positions[alias] = len(result)
+            result.append(deepcopy(item))
+    return result
+
+
+# 함수 설명: `_alias()`는 source_alias를 우선하고 없을 때 dataset_key를 사용해 결과 병합 identity를 만듭니다.
+def _alias(value: dict[str, Any]) -> str:
+    return str(value.get("source_alias") or value.get("dataset_key") or "").strip()
 
 
 # 함수 설명: `_trace_source_summaries()`는 trace에 전체 preview/config를 복제하지 않고 상태 확인용 필드만 남깁니다.
