@@ -103,6 +103,38 @@ FORBIDDEN_IO_ATTRIBUTES = {
     "tofile",
     "urlopen",
 }
+SUPPORTED_FILTER_OPERATORS = {
+    "eq",
+    "in",
+    "ne",
+    "not_in",
+    "contains",
+    "like",
+    "starts_with",
+    "ends_with",
+    "is_null",
+    "is_empty",
+    "null_or_empty",
+    "not_null",
+    "not_empty",
+    "or",
+    "any",
+}
+SUPPORTED_COMPOUND_FILTER_OPERATORS = {
+    "eq",
+    "in",
+    "contains",
+    "like",
+    "starts_with",
+    "is_null",
+    "is_empty",
+    "null_or_empty",
+}
+
+
+# 내부 연동 도우미 클래스: 상세/목록 결과가 카탈로그의 필수 표시 컬럼을 누락했을 때 1회 repair 대상으로 전달합니다.
+class OutputContractError(ValueError):
+    pass
 
 
 # 주요 함수: 안전성 검사를 통과한 pandas 코드를 제한된 namespace에서 한 번 실행합니다.
@@ -130,6 +162,19 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
         )
     filter_plan = _pandas_filter_plan(next_payload)
     filter_preamble = _pandas_filter_preamble(filter_plan)
+    unsupported_filters = _unsupported_filter_operators(filter_plan)
+    if unsupported_filters:
+        return _analysis_error(
+            next_payload,
+            "unsupported_filter_operator",
+            "지원하지 않는 pandas 필터 연산자가 있습니다: " + ", ".join(unsupported_filters),
+            normalized_llm_code,
+            "",
+            llm_code,
+            filter_preamble,
+            filter_plan,
+            safe_imports,
+        )
     code = _with_pandas_filter_preamble(code, filter_plan)
     helper_trace = _runtime_helper_trace(code)
     guard_error = _guard_code(code)
@@ -210,6 +255,13 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
         if result is None:
             result = exec_ns.get("result_df")
         rows, columns = _result_to_rows(result, next_payload)
+        rows = _normalize_blank_dimension_values(rows, next_payload)
+        rows = _normalize_missing_metric_values(rows, next_payload)
+        missing_columns = _missing_required_output_columns(next_payload, columns)
+        if missing_columns:
+            raise OutputContractError(
+                "상세/목록 결과에 필요한 컬럼이 누락되었습니다: " + ", ".join(missing_columns)
+            )
         next_payload["_full_result_rows"] = rows
         next_payload["analysis"] = {
             "status": "ok",
@@ -232,6 +284,18 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             "error": None,
         }
         return next_payload
+    except OutputContractError as exc:
+        return _analysis_error(
+            next_payload,
+            "output_contract_violation",
+            str(exc),
+            code,
+            traceback.format_exc(limit=3),
+            llm_code,
+            filter_preamble,
+            filter_plan,
+            safe_imports,
+        )
     except Exception as exc:
         return _analysis_error(
             next_payload,
@@ -561,6 +625,260 @@ def _result_to_rows(result: Any, payload: dict[str, Any] | None = None) -> tuple
     return rows, columns
 
 
+# 함수 설명: `_normalize_blank_dimension_values()`는 집계 차원 컬럼의 null·공백을 빈 문자열로 맞춥니다.
+def _normalize_blank_dimension_values(rows: list[dict[str, Any]], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    dimensions = set(_dimension_output_columns(payload))
+    if not dimensions:
+        return rows
+    for row in rows:
+        for column in dimensions.intersection(row):
+            value = row.get(column)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                row[column] = ""
+    return rows
+
+
+# 함수 설명: `_normalize_missing_metric_values()`는 최종 표시용 metric 결측치만 0으로 맞춥니다.
+def _normalize_missing_metric_values(rows: list[dict[str, Any]], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+
+    columns = _ordered_columns(rows)
+    dimensions = {column.casefold() for column in _dimension_output_columns(payload)}
+    metrics = _metric_output_columns(rows, payload, columns)
+    for row in rows:
+        for column in metrics:
+            if column.casefold() in dimensions or column not in row:
+                continue
+            if _is_missing_display_value(row.get(column)):
+                row[column] = 0
+    return rows
+
+
+# 함수 설명: `_metric_output_columns()`는 계약 우선, 이름·실제 숫자 값 차선으로 metric 컬럼을 보수적으로 선택합니다.
+def _metric_output_columns(
+    rows: list[dict[str, Any]],
+    payload: dict[str, Any],
+    available_columns: list[str],
+) -> list[str]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    declared_metrics = _string_list(contract.get("metric_columns"))
+    dimensions = {column.casefold() for column in _dimension_output_columns(payload)}
+
+    if declared_metrics:
+        declared = {column.casefold() for column in declared_metrics}
+        return [
+            column
+            for column in available_columns
+            if column.casefold() in declared and column.casefold() not in dimensions
+        ]
+
+    metrics: list[str] = []
+    for column in available_columns:
+        if column.casefold() in dimensions or _looks_like_identifier_or_dimension(column):
+            continue
+        if _looks_like_metric_name(column) or _has_numeric_result_value(rows, column):
+            metrics.append(column)
+    return metrics
+
+
+# 함수 설명: `_is_missing_display_value()`는 표시 단계에서 0 또는 빈 문자열로 바꿀 null·blank 값을 판별합니다.
+def _is_missing_display_value(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+# 함수 설명: `_has_numeric_result_value()`는 bool을 제외한 실제 숫자 값이 결과 컬럼에 하나라도 있는지 확인합니다.
+def _has_numeric_result_value(rows: list[dict[str, Any]], column: str) -> bool:
+    for row in rows:
+        value = row.get(column)
+        if _is_missing_display_value(value) or isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return True
+    return False
+
+
+# 함수 설명: `_looks_like_metric_name()`은 생산·재공·수량·비율 등 지표 의미가 분명한 컬럼명을 판별합니다.
+def _looks_like_metric_name(column: str) -> bool:
+    normalized = re.sub(r"[^A-Z0-9가-힣]+", "_", column.upper()).strip("_")
+    tokens = {token for token in normalized.split("_") if token}
+    metric_tokens = {
+        "PRODUCTION",
+        "WIP",
+        "UPH",
+        "QTY",
+        "QUANTITY",
+        "COUNT",
+        "CNT",
+        "RATE",
+        "RATIO",
+        "AMOUNT",
+        "PLAN",
+        "ACTUAL",
+        "TARGET",
+        "CAPACITY",
+        "TAT",
+        "SHORTFALL",
+        "ACHIEVEMENT",
+        "SUM",
+        "AVG",
+        "AVERAGE",
+        "TOTAL",
+        "SCORE",
+        "VALUE",
+    }
+    korean_metric_terms = (
+        "수량",
+        "생산",
+        "재공",
+        "실적",
+        "계획",
+        "목표",
+        "달성",
+        "비율",
+        "건수",
+        "대수",
+        "평균",
+        "합계",
+    )
+    return bool(tokens & metric_tokens) or any(term in column for term in korean_metric_terms)
+
+
+# 함수 설명: `_looks_like_identifier_or_dimension()`은 숫자여도 metric으로 취급하면 안 되는 ID·날짜·차원명을 판별합니다.
+def _looks_like_identifier_or_dimension(column: str) -> bool:
+    normalized = re.sub(r"[^A-Z0-9가-힣]+", "_", column.upper()).strip("_")
+    tokens = {token for token in normalized.split("_") if token}
+    identifier_suffixes = (
+        "_ID",
+        "_NO",
+        "_CODE",
+        "_CD",
+        "_KEY",
+        "_SEQ",
+        "_DATE",
+        "_DT",
+        "_TIME",
+        "_TM",
+    )
+    calendar_tokens = {"DATE", "DATETIME", "TIMESTAMP", "YEAR", "MONTH", "DAY", "WEEK", "QUARTER"}
+    if normalized.endswith(identifier_suffixes) or tokens & calendar_tokens:
+        return True
+    return normalized in {
+        "DEVICE",
+        "TECH",
+        "DEN",
+        "DENSITY",
+        "MODE",
+        "ORG",
+        "LEAD",
+        "OPER",
+        "OPER_NUM",
+        "OPER_NAME",
+        "SHIFT",
+        "FAB",
+        "FACTORY",
+        "FAMILY",
+        "STATUS",
+        "PKG1",
+        "PKG2",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "EQP_MODEL",
+        "EQUIP_MODEL",
+    }
+
+
+# 함수 설명: `_dimension_output_columns()`는 output contract와 group_by 단계에서 결과 차원 컬럼을 중복 없이 추출합니다.
+def _dimension_output_columns(payload: dict[str, Any]) -> list[str]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    columns = _string_list(contract.get("grain_columns"))
+    steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        for key in ("group_by", "group_by_columns", "groupby_columns", "group_columns"):
+            for column in _string_list(step.get(key)):
+                if column not in columns:
+                    columns.append(column)
+    return columns
+
+
+# 함수 설명: `_missing_required_output_columns()`는 상세/엔터티 목록에서 source에 실제 존재하는 필수 컬럼의 누락만 반환합니다.
+def _missing_required_output_columns(payload: dict[str, Any], result_columns: list[str]) -> list[str]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    result_mode = str(contract.get("result_mode") or "").strip().lower()
+    if result_mode not in {"detail", "entity_list"}:
+        return []
+    required = _string_list(contract.get("required_columns"))
+    if not required:
+        return []
+    source_columns = _available_source_columns(payload)
+    missing: list[str] = []
+    for required_column in required:
+        equivalents = _equivalent_column_names(required_column, payload)
+        # 잘못 등록된 catalog 컬럼 때문에 정상 결과 전체가 막히지 않도록,
+        # source schema에서 확인되는 필수 컬럼만 실행 결과 계약으로 강제합니다.
+        if source_columns and not _has_equivalent_column(source_columns, equivalents):
+            continue
+        if not _has_equivalent_column(result_columns, equivalents):
+            missing.append(required_column)
+    return missing
+
+
+# 함수 설명: `_available_source_columns()`는 전체 행 복사 없이 source schema와 일부 runtime row key에서 실제 컬럼을 수집합니다.
+def _available_source_columns(payload: dict[str, Any]) -> list[str]:
+    columns: list[str] = []
+    for values in _source_columns_by_alias(payload).values():
+        for column in values:
+            if column not in columns:
+                columns.append(column)
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    for rows in runtime_sources.values():
+        if not isinstance(rows, list):
+            continue
+        for row in rows[:20]:
+            if not isinstance(row, dict):
+                continue
+            for column in row:
+                text = str(column)
+                if text and text not in columns:
+                    columns.append(text)
+    return columns
+
+
+# 함수 설명: `_equivalent_column_names()`는 표준 컬럼과 카탈로그 alias를 같은 출력 컬럼으로 비교할 후보 집합으로 만듭니다.
+def _equivalent_column_names(column: str, payload: dict[str, Any]) -> list[str]:
+    candidates = _field_candidates(column)
+    if column not in candidates:
+        candidates.insert(0, column)
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    candidate_keys = {item.casefold() for item in candidates}
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        for mapping_key in ("standard_column_aliases", "filter_mappings"):
+            mapping = job.get(mapping_key) if isinstance(job.get(mapping_key), dict) else {}
+            for standard, aliases in mapping.items():
+                group = [str(standard), *_string_list(aliases)]
+                group_keys = {item.casefold() for item in group}
+                if candidate_keys.intersection(group_keys):
+                    for item in group:
+                        if item and item.casefold() not in {value.casefold() for value in candidates}:
+                            candidates.append(item)
+                    candidate_keys.update(group_keys)
+    return candidates
+
+
+# 함수 설명: `_has_equivalent_column()`는 대소문자를 무시해 실제 컬럼 목록에 alias 후보가 하나라도 있는지 확인합니다.
+def _has_equivalent_column(columns: list[str], equivalents: list[str]) -> bool:
+    available = {str(column).strip().casefold() for column in columns if str(column).strip()}
+    return bool(available.intersection(str(item).strip().casefold() for item in equivalents if str(item).strip()))
+
+
 # 함수 설명: `_ordered_columns()`는 원본 컬럼 순서를 우선 유지하고 새 결과 컬럼을 뒤에 추가합니다.
 def _ordered_columns(rows: list[dict[str, Any]], preferred: list[str] | None = None) -> list[str]:
     columns: list[str] = []
@@ -858,8 +1176,40 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         conditions = _filter_conditions(job.get("filters"))
         if conditions:
-            filter_plan.append({"source_alias": alias, "dataset_key": job.get("dataset_key", ""), "conditions": conditions})
+            item = {
+                "source_alias": alias,
+                "dataset_key": job.get("dataset_key", ""),
+                "conditions": conditions,
+            }
+            for mapping_key in ("filter_mappings", "standard_column_aliases"):
+                mapping = job.get(mapping_key)
+                if isinstance(mapping, dict) and mapping:
+                    item[mapping_key] = deepcopy(mapping)
+            filter_plan.append(item)
     return filter_plan
+
+
+# 함수 설명: `_unsupported_filter_operators()`는 executor가 구현하지 않은 필터를 실행 전 찾아 무필터 통과를 차단합니다.
+def _unsupported_filter_operators(filter_plan: list[dict[str, Any]]) -> list[str]:
+    unsupported: list[str] = []
+    for item in filter_plan:
+        conditions = item.get("conditions") if isinstance(item.get("conditions"), list) else []
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                continue
+            operator = _normalize_filter_operator(condition.get("operator") or "eq")
+            if operator not in SUPPORTED_FILTER_OPERATORS and operator not in unsupported:
+                unsupported.append(operator)
+            if operator not in {"or", "any"}:
+                continue
+            values = condition.get("values") if isinstance(condition.get("values"), list) else []
+            for nested in values:
+                if not isinstance(nested, dict):
+                    continue
+                nested_operator = _normalize_filter_operator(nested.get("operator") or nested.get("op") or "eq")
+                if nested_operator not in SUPPORTED_COMPOUND_FILTER_OPERATORS and nested_operator not in unsupported:
+                    unsupported.append(nested_operator)
+    return unsupported
 
 
 # 함수 설명: `_with_pandas_filter_preamble()`는 생성 코드 앞에 결정론적 필터 preamble을 한 번만 결합합니다.
@@ -877,6 +1227,10 @@ def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
     for job_index, item in enumerate(filter_plan, start=1):
         alias = str(item.get("source_alias") or "").strip()
         conditions = item.get("conditions") if isinstance(item.get("conditions"), list) else []
+        column_mappings = {
+            **(item.get("standard_column_aliases") if isinstance(item.get("standard_column_aliases"), dict) else {}),
+            **(item.get("filter_mappings") if isinstance(item.get("filter_mappings"), dict) else {}),
+        }
         if not alias or not conditions:
             continue
         df_var = f"_filtered_source_{job_index}_{_safe_name(alias)}"
@@ -885,13 +1239,19 @@ def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
         lines.append("    sources = dict(sources)")
         lines.append(f"    {df_var} = {df_var}.copy()")
         for condition_index, condition in enumerate(conditions, start=1):
-            lines.extend(_condition_code(df_var, job_index, condition_index, condition))
+            lines.extend(_condition_code(df_var, job_index, condition_index, condition, column_mappings))
         lines.append(f"    sources[{alias!r}] = {df_var}")
     return "\n".join(lines)
 
 
 # 함수 설명: `_condition_code()`는 단일 필터 조건을 pandas boolean mask 표현식으로 변환합니다.
-def _condition_code(df_var: str, job_index: int, condition_index: int, condition: dict[str, Any]) -> list[str]:
+def _condition_code(
+    df_var: str,
+    job_index: int,
+    condition_index: int,
+    condition: dict[str, Any],
+    column_mappings: dict[str, Any] | None = None,
+) -> list[str]:
     field = str(condition.get("field") or "").strip()
     operator = _normalize_filter_operator(condition.get("operator") or "eq")
     values = condition.get("values") if isinstance(condition.get("values"), list) else []
@@ -900,7 +1260,7 @@ def _condition_code(df_var: str, job_index: int, condition_index: int, condition
     col_var = f"_filter_col_{job_index}_{condition_index}"
     values_var = f"_filter_values_{job_index}_{condition_index}"
     mask_var = f"_filter_mask_{job_index}_{condition_index}"
-    candidates = _field_candidates(field)
+    candidates = _mapped_field_candidates(field, column_mappings)
     lines = [f"    {col_var} = {_column_choice_expression(df_var, candidates)}", f"    {values_var} = {values!r}", f"    if {col_var}:"]
     if operator in {"eq", "in"}:
         lines.append(f"        {df_var} = {df_var}[{df_var}[{col_var}].isin({values_var})]")
@@ -1083,6 +1443,21 @@ def _field_candidates(field: str) -> list[str]:
     return aliases.get(field, [field])
 
 
+# 함수 설명: `_mapped_field_candidates()`는 카탈로그의 표준→실제 컬럼 매핑을 hardcoded 호환 alias보다 우선 후보에 합칩니다.
+def _mapped_field_candidates(field: str, mappings: dict[str, Any] | None = None) -> list[str]:
+    candidates: list[str] = []
+    mapping = mappings if isinstance(mappings, dict) else {}
+    for standard, aliases in mapping.items():
+        if str(standard).strip().casefold() != str(field).strip().casefold():
+            continue
+        candidates.extend(_string_list(aliases))
+        break
+    for candidate in _field_candidates(field):
+        if candidate.casefold() not in {item.casefold() for item in candidates}:
+            candidates.append(candidate)
+    return candidates
+
+
 # 함수 설명: `_safe_name()`는 생성 코드에서 사용할 문자열을 안전한 Python 식별자 조각으로 정리합니다.
 def _safe_name(value: str) -> str:
     cleaned = re.sub(r"\W+", "_", value)
@@ -1110,7 +1485,13 @@ def _source_columns_by_alias(payload: dict[str, Any]) -> dict[str, list[str]]:
 
 # 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.
 def _string_list(value: Any) -> list[str]:
-    return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 # 함수 설명: `_json()`는 Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.

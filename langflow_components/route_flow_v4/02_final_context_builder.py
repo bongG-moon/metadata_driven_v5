@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from typing import Any
+from urllib.parse import urlsplit
 
 from lfx.custom.custom_component.component import Component
 from lfx.io import HandleInput, MessageTextInput, Output
@@ -25,6 +26,8 @@ DEFAULT_MAX_CONTEXT_BYTES = 24 * 1024
 MIN_CONTEXT_BYTES = 4 * 1024
 MAX_CONTEXT_BYTES = 64 * 1024
 MAX_STEPS = 4
+MAX_ARTIFACTS = 4
+MAX_PUBLIC_URL_CHARS = 2_048
 
 
 # 주요 함수: Loop/선택 context의 compact step 결과를 검증하고 마지막 모델에 연결할 prompt 변수 묶음을 만듭니다.
@@ -63,6 +66,7 @@ def build_final_context(
         errors.append(_issue("duplicate_step_results", f"중복 step 결과가 있습니다: {', '.join(duplicates)}"))
 
     compact_steps = [_project_step_result(item) for item in step_results]
+    artifacts = _collect_artifacts(step_results)
     statuses = [str(item.get("status") or "") for item in compact_steps]
     execution_status = _execution_status(statuses, errors)
     question = str(user_question or context.get("original_question") or "").strip()
@@ -91,6 +95,7 @@ def build_final_context(
         "synthesis_instruction": instruction,
         "prompt_variables": prompt_variables,
         "context_bytes": len(context_json.encode("utf-8")),
+        "artifacts": artifacts,
         "errors": errors,
     }
 
@@ -170,6 +175,7 @@ def _project_step_result(value: dict[str, Any]) -> dict[str, Any]:
         "result_ref": _clip(value.get("result_ref"), 512),
         "result_ref_meta": _project_ref_meta(value.get("result_ref_meta")),
         "entity_ids": _project_entity_ids(value.get("entity_ids")),
+        "artifacts": _project_artifacts(value.get("artifacts"), include_path=False),
         "warnings": _project_issues(value.get("warnings")),
         "errors": _project_issues(value.get("errors")),
     }
@@ -189,6 +195,119 @@ def _project_ref_meta(value: Any, column_limit: int = 20) -> dict[str, Any]:
         }.items()
         if item not in (None, "", [], {})
     }
+
+
+# 함수 설명: `_safe_artifact_path()`는 각 단계가 전달한 경로를 다시 검증해 `flow_id/file.html` 논리 경로 외 값을 제거합니다.
+def _safe_artifact_path(value: Any) -> str:
+    path = _clip(value, 1024).replace("\\", "/")
+    parts = path.split("/")
+    if (
+        not path
+        or path.startswith("/")
+        or "://" in path
+        or (len(path) >= 2 and path[1] == ":")
+        or len(parts) != 2
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(marker in path for marker in ("?", "#", "\x00"))
+        or not parts[-1].lower().endswith(".html")
+    ):
+        return ""
+    return path
+
+
+# 함수 설명: 최종 사용자에게 전달할 Report API 링크만 절대 http(s) URL로 검증합니다.
+def _safe_public_url(value: Any) -> str:
+    candidate = _clip(value, MAX_PUBLIC_URL_CHARS)
+    if not candidate or any(ord(character) < 32 for character in candidate):
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return ""
+    if parsed.username is not None or parsed.password is not None or parsed.fragment:
+        return ""
+    return candidate
+
+
+# 함수 설명: `_project_artifacts()`는 HTML 본문 없이 시각화 파일 descriptor의 허용 필드만 최종 단계에 투영합니다.
+def _project_artifacts(value: Any, *, include_path: bool, count: int = 2) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for item in _list(value)[:count]:
+        if not isinstance(item, dict):
+            continue
+        artifact_type = _clip(item.get("artifact_type"), 40).lower()
+        mime_type = _clip(item.get("mime_type"), 80).lower().split(";", 1)[0].strip()
+        path = _safe_artifact_path(item.get("path"))
+        download_name = _clip(item.get("download_name"), 180)
+        if artifact_type != "html_chart" or mime_type != "text/html" or not path:
+            continue
+        if "/" in download_name or "\\" in download_name or not download_name.lower().endswith(".html"):
+            continue
+        if include_path and (not path or path in seen_paths):
+            continue
+        descriptor: dict[str, Any] = {
+            "artifact_type": artifact_type,
+            "mime_type": mime_type,
+            "title": _clip(item.get("title") or download_name.rsplit(".", 1)[0], 180),
+            "download_name": download_name,
+        }
+        if include_path:
+            descriptor["path"] = path
+            report_id = _clip(item.get("report_id"), 160)
+            view_url = _safe_public_url(item.get("view_url"))
+            download_url = _safe_public_url(item.get("download_url"))
+            expires_at = _clip(item.get("expires_at"), 80)
+            if report_id:
+                descriptor["report_id"] = report_id
+            if view_url:
+                descriptor["view_url"] = view_url
+            if download_url:
+                descriptor["download_url"] = download_url
+            if expires_at:
+                descriptor["expires_at"] = expires_at
+            if view_url or download_url:
+                try:
+                    ttl_hours = max(1, min(int(item.get("ttl_hours") or 24), 168))
+                except (TypeError, ValueError):
+                    ttl_hours = 24
+                descriptor["ttl_hours"] = ttl_hours
+        for text_name, limit in (("chart_type", 40), ("x_column", 120)):
+            text_value = _clip(item.get(text_name), limit)
+            if text_value:
+                descriptor[text_name] = text_value
+        y_columns = [_clip(column, 120) for column in _list(item.get("y_columns"))[:8] if _clip(column, 120)]
+        if y_columns:
+            descriptor["y_columns"] = y_columns
+        for count_name in ("row_count", "plotted_row_count", "size_bytes"):
+            try:
+                count_value = int(item.get(count_name)) if item.get(count_name) is not None else None
+            except (TypeError, ValueError):
+                count_value = None
+            if count_value is not None and count_value >= 0:
+                descriptor[count_name] = count_value
+        result.append(descriptor)
+        if path:
+            seen_paths.add(path)
+    return result
+
+
+# 함수 설명: `_collect_artifacts()`는 모든 단계의 descriptor를 경로 기준으로 중복 제거해 최종 Message/API용 별도 목록으로 만듭니다.
+def _collect_artifacts(step_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for step in step_results:
+        for descriptor in _project_artifacts(step.get("artifacts"), include_path=True):
+            path = str(descriptor.get("path") or "")
+            if not path or path in seen_paths:
+                continue
+            result.append(descriptor)
+            seen_paths.add(path)
+            if len(result) >= MAX_ARTIFACTS:
+                return result
+    return result
 
 
 # 함수 설명: `_project_entity_ids()`는 최종 답변 근거로 필요한 식별자 preview만 최대 5종·종류별 10개로 제한합니다.
@@ -232,6 +351,7 @@ def _fit_context_bytes(value: dict[str, Any], byte_limit: int) -> dict[str, Any]
             step["summary"] = _clip(step.get("summary"), 800)
             step["question"] = _clip(step.get("question"), 500)
             step["entity_ids"] = _project_entity_ids(step.get("entity_ids"), entity_limit=3, value_limit=5)
+            step["artifacts"] = _project_artifacts(step.get("artifacts"), include_path=False, count=1)
             step["warnings"] = _project_issues(step.get("warnings"), count=2, text_limit=160)
             step["errors"] = _project_issues(step.get("errors"), count=2, text_limit=160)
     if _json_bytes(result) <= byte_limit:
@@ -253,6 +373,7 @@ def _fit_context_bytes(value: dict[str, Any], byte_limit: int) -> dict[str, Any]
             "status": step.get("status"),
             "summary": _clip(step.get("summary"), 180),
             "result_ref": _clip(step.get("result_ref"), 160),
+            "artifacts": _project_artifacts(step.get("artifacts"), include_path=False, count=1),
             "errors": _project_issues(step.get("errors"), count=1, text_limit=100),
         }
         for step in _list(result.get("steps"))

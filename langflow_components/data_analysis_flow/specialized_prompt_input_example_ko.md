@@ -14,10 +14,25 @@ lead/ball suffix가 붙은 숫자 표현은 LEAD 제품 속성 token이다. 예:
 DA공정, D/A공정, WB공정, W/B공정, FCB공정, BG공정처럼 공정명 또는 공정 그룹만 말한 경우는 제품 token 매칭이 아니다.
 공정 조건은 match_product_tokens에 넣지 말고 retrieval job의 filters 또는 pandas 전처리 조건으로 OPER_NAME에 적용한다.
 
+두 세부 공정을 `~`, `∼`, `～`, `부터 ... 까지`, `사이`, `구간`, `범위`로 이은 질문은 양 끝 공정만 고르는 조건이 아니라 순서 구간인지 먼저 확인한다.
+예: `D/S1~D/A5`는 질문에 적힌 순서와 무관하게 두 label의 숫자 OPER_SEQ 최소값과 최대값 사이를 양 끝 포함해 조회하는 ordered range다.
+구간 의미가 명확하고 source에 label/order 역할 컬럼이 있으면 intent_plan.pandas_function_cases에 key=`ordered_process_range`, function_name=`filter_ordered_range`, input_text=사용자의 두 끝점 표현, source_alias=대상 alias를 넣는다.
+pandas_execution_plan에도 operation=`apply_pandas_function_case`, function_case_key=`ordered_process_range`, function_name=`filter_ordered_range`, 같은 input_text와 source_alias를 기록한다.
+helper 호출 시 실제 schema의 label 컬럼과 order 컬럼을 각각 `label_column`, `order_column`으로 전달한다. 생산/재공 표준 schema에서는 `OPER_NAME`, `OPER_SEQ`를 사용한다.
+양 끝점을 `OPER_NAME in [...]`로 바꾸거나 공정 그룹 전체 목록으로 펼치지 않는다. helper가 label에서 각 끝점의 order를 찾은 다음 숫자형 min/max 포함 범위를 적용하게 한다.
+끝점이 source label에 없거나, 같은 정규화 label이 서로 다른 order로 연결되거나, label/order 컬럼이 없으면 값을 추측하지 않고 빈 결과로 닫는다.
+`D/A1-W/B6`처럼 hyphen 양쪽이 실제 공정 label로 각각 확인될 때만 hyphen을 범위 구분자로 본다. `L-218` 같은 영문 1자리-숫자 3자리 MCP_NO token 내부 hyphen은 범위 기호가 아니므로 filter_ordered_range를 선택하지 않는다.
+구분자를 생략해 두 실제 label을 붙여 쓴 표현도 metadata의 ordered range 규칙과 source label lookup으로 두 끝점이 유일하게 확인될 때만 선택한다.
+
 질문에 제품별과 DEVICE/디바이스/device가 함께 나오면 DEVICE만 단독으로 보여주지 않는다.
 이 경우 결과 groupby/display 기준에는 DEVICE와 함께 제품 식별 속성도 포함한다.
 권장 표시 순서는 TECH, DEN 또는 DENSITY, MODE, ORG, PKG1 또는 PKG_TYPE1, PKG2 또는 PKG_TYPE2, LEAD, MCP_NO, DEVICE, 요청 지표 순서다.
 LLM 답변 JSON에 answer_sections.result_table.display_columns를 넣을 수 있으면 위 원본 컬럼명 순서를 사용한다.
+
+장비 배정 정보와 UPH를 함께 요청하면 equipment_assign과 eqp_uph의 실제 공통 모델·공정·Recipe 문맥으로 결합한다.
+UPH 상세 결과에는 source에 있는 장비 모델(EQUIP_MODEL), Recipe(RECIPE_ID), 공정(OPER_NAME 또는 OPER_NM)을 공통 필수 문맥으로 유지하고, UPH를 요청한 경우 UPH를 지표 컬럼으로 포함한다.
+장비 목록도 요청한 경우에만 장비 ID(EQUIP_ID 또는 EQP_ID)를 포함한다. PRESS_CNT, MCP_NO 등 나머지 속성은 사용자가 직접 요청했거나 해당 분석에 실제로 필요한 경우에만 선택하며 기본 출력으로 강제하지 않는다.
+UPH가 장비 모델 또는 Recipe에 따라 다르다고 설명할 예정이면 해당 모델·Recipe·공정 원본 컬럼을 결과에서 제거하지 않는다.
 
 제품 token 매칭이 필요하면 intent_plan.pandas_function_cases 배열에 아래 형식으로 선택 정보를 남긴다.
 function_name은 match_product_tokens를 사용한다.

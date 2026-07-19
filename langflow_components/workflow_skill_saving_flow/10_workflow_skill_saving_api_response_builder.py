@@ -61,6 +61,12 @@ def _dict(value: Any) -> dict[str, Any]:
 class WorkflowSkillSavingApiResponseBuilder(Component):
     display_name = "10 Workflow Skill 등록 API 응답 생성기"
     description = "Workflow Skill 등록 결과를 Web·Run API용 compact 응답으로 변환합니다."
+
+    # 함수 설명: Python 코드에서 구조화 최종 출력을 선언해 수동 Flow JSON 편집을 없앱니다.
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.is_output = True
+
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         MessageTextInput(name="display_message", display_name="채팅 표시 메시지", required=False),

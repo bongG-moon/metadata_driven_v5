@@ -177,6 +177,13 @@ def _text(value: Any) -> str:
 class ApiResponseBuilder(Component):
     display_name = "22 API 응답 생성기"
     description = "최종 API 응답을 만들고 전체 런타임 소스 데이터를 제거합니다."
+
+    # 함수 설명: 이 컴포넌트 자체가 Flow의 구조화 최종 출력임을 Langflow에 알립니다.
+    # 코드를 저장하면 Langflow가 graph output 메타데이터를 자동 생성하므로 Flow JSON을 직접 수정할 필요가 없습니다.
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.is_output = True
+
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         MessageTextInput(name="display_message", display_name="채팅 표시 메시지", required=False),

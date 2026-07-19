@@ -78,7 +78,6 @@ def _compact_source_result(value: Any) -> dict[str, Any]:
             "source_type": source.get("source_type"),
             "status": source.get("status"),
             "row_count": source.get("row_count"),
-            "columns": source.get("columns"),
             "applied_params": source.get("applied_params"),
             "pandas_filters": source.get("pandas_filters"),
             "used_dummy_data": source_execution.get("used_dummy_data"),

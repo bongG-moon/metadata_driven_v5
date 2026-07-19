@@ -43,14 +43,14 @@ Standalone 환경에서는 OS 환경변수에만 의존하지 않습니다. Impo
 2. `dry_run=true`, 원하는 `duplicate_action`으로 입력 예시를 실행합니다.
 3. 등록 대상 표와 실행 순서에서 Tool·질문·dependency·handoff를 확인합니다.
 4. 실제 저장이 필요하면 `dry_run=false`로 바꾸고 같은 입력을 다시 실행합니다.
-5. Route V4를 새로 실행해 intent example 또는 정확한 workflow key로 호출합니다.
+5. 08 Workflow Orchestrator를 새로 실행해 intent example 또는 정확한 workflow key로 호출합니다.
 
 ## 오류 해석
 
 - `identity_lookup_unavailable`: URI 또는 기존 문서 조회에 실패해 중복 여부를 판단하지 못했습니다.
 - `ambiguous_replace_target`: 유사한 기존 Skill이 여러 건입니다. key·alias를 정리한 뒤 다시 실행합니다.
 - `dependency_not_prior`: 뒤 단계나 존재하지 않는 step을 참조했습니다.
-- `invalid_result_ref_contract`: 데이터 분석이 아닌 Tool에 실제 결과 ref를 전달하려 했습니다.
+- `invalid_result_ref_contract`: `run_data_analysis` 결과가 아니거나, 결과를 받을 Tool이 `run_data_analysis`/`run_visualization`이 아닌데 실제 결과 ref를 전달하려 했습니다.
 - `too_many_steps`: 한 Workflow에 5개 이상 단계가 있습니다. 업무를 나누거나 4개 이하로 줄입니다.
 
 Human-in-the-loop `ask` 분기는 없습니다. 필요한 정보가 부족하면 저장하지 않고 보완 항목을 최종 응답에 표시합니다.

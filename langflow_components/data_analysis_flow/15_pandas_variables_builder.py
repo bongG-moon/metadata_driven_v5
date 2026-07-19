@@ -20,6 +20,19 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
 from lfx.schema.message import Message
 
+PROMPT_INTERNAL_JOB_KEYS = {
+    "source_config",
+    "filter_mappings",
+    "standard_column_aliases",
+    "row_identity_columns",
+    "default_detail_columns",
+    "context_columns",
+    "required_param_names",
+    "trusted_catalog",
+    "catalog_ref",
+}
+RETIRED_OUTPUT_CONTRACT_KEYS = {"row_identity_columns", "context_columns", "default_detail_columns"}
+
 # 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_variables(payload_value: Any) -> dict[str, Any]:
@@ -27,11 +40,44 @@ def build_variables(payload_value: Any) -> dict[str, Any]:
     schemas = _source_schemas(payload)
     previews = {alias: rows[:5] for alias, rows in payload.get("runtime_sources", {}).items() if isinstance(rows, list)}
     return {
-        "intent_plan_json": json.dumps(payload.get("intent_plan", {}), ensure_ascii=False, indent=2),
+        "intent_plan_json": json.dumps(_prompt_intent_plan(payload), ensure_ascii=False, indent=2),
         "source_schema_json": json.dumps(schemas, ensure_ascii=False, indent=2),
         "source_preview_json": json.dumps(previews, ensure_ascii=False, indent=2),
         "function_case_selection_json": json.dumps(_function_case_selection(payload), ensure_ascii=False, indent=2),
-        "output_contract_json": json.dumps(payload.get("intent_plan", {}).get("output_contract", {}), ensure_ascii=False, indent=2),
+        "output_contract_json": json.dumps(_prompt_output_contract(payload), ensure_ascii=False, indent=2),
+    }
+
+
+# 함수 설명: `_prompt_intent_plan()`은 executor 전용 카탈로그 설정과 별도 출력 계약을 제거해 pandas LLM 입력 token 중복을 줄입니다.
+def _prompt_intent_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    plan = deepcopy(payload.get("intent_plan")) if isinstance(payload.get("intent_plan"), dict) else {}
+    plan.pop("output_contract", None)
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    compact_jobs: list[Any] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            compact_jobs.append(job)
+            continue
+        compact_jobs.append(
+            {
+                str(key): value
+                for key, value in job.items()
+                if str(key) not in PROMPT_INTERNAL_JOB_KEYS
+            }
+        )
+    if jobs:
+        plan["retrieval_jobs"] = compact_jobs
+    return plan
+
+
+# 함수 설명: `_prompt_output_contract()`는 폐기된 상세 계약 key를 제거한 canonical 출력 계약만 pandas prompt에 전달합니다.
+def _prompt_output_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    return {
+        str(key): deepcopy(value)
+        for key, value in contract.items()
+        if str(key) not in RETIRED_OUTPUT_CONTRACT_KEYS
     }
 
 

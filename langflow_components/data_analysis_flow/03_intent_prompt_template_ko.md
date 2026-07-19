@@ -53,6 +53,9 @@
 - DATE뿐 아니라 PLANT, FAB, SHIFT 등 모든 필수 파라미터에 동일한 scope 원칙을 적용한다. `A FAB 장비와 B FAB UPH`처럼 대상별 값이 다르면 각 job에 별도로 넣는다.
 - 상대 날짜의 확정값은 날짜가 하나일 때 `state_summary.followup_hint.changed_conditions_hint.date.resolved_value`를 사용할 수 있다. `date.mentions`가 있으면 전역 날짜로 복사하지 말고 각 표현이 수식하는 metric/dataset job에 바인딩한다.
 - pandas 분석 계획에는 `filters`를 먼저 적용한 뒤 집계, 정렬, top/bottom, join 등을 수행한다는 순서를 드러낸다.
+- 질문 표현이 선택된 `process_groups` metadata의 key/display_name/aliases와 일치하면 그룹 이름 자체를 `OPER_NAME` 값으로 사용하지 않는다. 해당 item의 `payload.processes`를 실제 `OPER_NAME in [...]` 조건으로 펼친다.
+- 사용자가 특정 숫자가 붙은 단일 세부 공정을 말하면 공정 그룹 전체가 아니라 그 세부 공정만 사용한다. 반대로 세부 차수 없이 공정 그룹 별칭만 말하면 등록된 전체 `payload.processes`를 사용한다.
+- 시작 공정과 끝 공정 사이의 순서 구간을 요청하고 metadata/특화 지시에 ordered-range helper가 정의되어 있으면, 양 끝 공정을 단순 `OPER_NAME in` filter로 만들지 않는다. 해당 helper 선택과 실행 단계를 `pandas_function_cases` 및 `pandas_execution_plan`에 기록한다.
 - metadata와 공정/현장 특화 추가 지시에 function case 선택 규칙이 있을 때만 `intent_plan.pandas_function_cases` 배열을 사용한다.
 - `metadata_candidates.runtime_function_helpers`에 있고 `selectable_for_intent=true`인 helper만 `intent_plan.pandas_function_cases`에 선택할 수 있다.
 - `domain_items`의 `pandas_function_cases` 항목이라도 `runtime_helper.selectable_for_intent=false`이거나 `runtime_helper.available=false`이면 실행 helper가 아니므로 `intent_plan.pandas_function_cases`로 선택하지 않는다. 이런 항목은 일반 pandas filter/groupby/sum/join 계획을 세울 때 참고만 한다.
@@ -63,6 +66,11 @@
 - function case의 `input_text`에는 helper가 직접 처리해야 하는 사용자 표현만 넣고, 날짜/수량/metric처럼 helper 대상이 아닌 표현은 제외한다.
 - function case를 선택한 경우 `intent_plan.pandas_function_cases`에 `key`, `function_name`, `input_text`, `source_alias`를 넣고, `pandas_execution_plan`에도 `operation=apply_pandas_function_case`, `function_case_key`, `function_name`, `input_text`, `source_alias`를 포함한다.
 - pandas 분석이 필요한 경우 `intent_plan.pandas_execution_plan`에 분석 의도와 필요한 결과 형태를 적는다.
+- `intent_plan.output_contract.result_mode`는 결과 형태에 맞게 작성한다. 원본/상세 행 또는 장비·LOT·Recipe 같은 entity 목록이면 `detail` 또는 `entity_list`, groupby 집계이면 `aggregate`, 단일 지표이면 `scalar`, 설명만 요청하면 `explanation`을 사용한다.
+- `detail`/`entity_list`에서는 선택된 table catalog의 `default_detail_columns` 중 실제 source에 있는 컬럼을 `output_contract.required_columns`에 합친다. 사용자가 요청한 속성은 기본 컬럼보다 우선하며, 모델·Recipe를 설명할 결과라면 해당 원본 컬럼을 결과에도 포함한다.
+- `aggregate`/`scalar`에서는 `default_detail_columns`를 무조건 붙이지 않는다. 질문의 grouping·metric에 필요한 컬럼만 `grain_columns`, `metric_columns`, `required_columns`에 넣어 결과 자유도를 유지한다.
+- dataset 간 join key와 실행 순서는 table catalog의 기본 표시 컬럼에서 추측하지 않는다. 선택된 Domain `analysis_recipes`와 `pandas_execution_plan`의 join 단계를 따른다.
+- 제품 등 dimension별 groupby에서는 null/빈 문자열/공백 값을 가진 행도 집계에서 제외하지 않는다는 의미로 `null_group_policy=preserve_as_blank`를 사용한다. 최종 표시용 수량·지표 컬럼의 null/빈 문자열/공백은 0으로 표시한다는 의미로 `metric_null_policy=display_zero`를 사용한다.
 - `metadata_refs`에는 참조한 metadata의 `section`, `key`만 짧게 남긴다. `payload`, `source_config`, `query_template`, 원문 SQL, 긴 설명은 절대 복사하지 않는다.
 - 후보에 없는 dataset key를 만들지 않는다. 적절한 dataset이 없으면 clarification으로 보낸다.
 - `trace.decision_reason`은 반드시 한국어 문장 배열로 작성한다. 후속 질문 판단, 상속한 조건, 변경/추가한 조건, 새 조회 여부를 한국어로 짧게 설명한다.

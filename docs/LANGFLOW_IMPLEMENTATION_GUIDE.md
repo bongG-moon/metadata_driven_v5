@@ -43,6 +43,8 @@ Chat Input
 
 이 Router는 import 후 바뀐 Flow ID를 export에 고정하지 않습니다. Langflow가 component에 주입한 현재 실행 `user_id` 범위에서 최초 이름으로 실제 ID를 해석하고, 이후에는 해석된 ID를 우선 재사용합니다. `cache_flow=true`는 하위 Flow 그래프만 캐시하며 데이터 조회와 답변 결과는 캐시하지 않습니다. 각 Tool은 node ID가 없는 필수 `question`만 Agent 인자로 노출하고, 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환합니다. `return_direct=true`로 Tool 뒤 추가 답변 재작성을 생략합니다.
 
+08 Workflow Orchestrator는 07의 5종에 `run_visualization`을 추가한 이름 기반 Tool 6종을 사용합니다. 08은 hidden ID보다 현재 Flow 이름을 우선해 매 선택 실행마다 실제 ID를 다시 해석하고, 해석된 실제 ID 기준 graph만 캐시합니다. 구조화 terminal은 Tool별 `우선 최종 출력 이름`으로 선택하며 설정이 비면 유일한 Data terminal을 자동 선택합니다. 각 terminal component는 Python의 `self.is_output = True` 선언으로 graph output을 스스로 등록하므로 export JSON을 수동 편집하지 않습니다. 등록 Skill과 일치하지 않는 요청도 Tool capability catalog 안에서 `workflow_key=inline` 계획을 만들 수 있고, 시각화 요청은 `run_data_analysis -> run_visualization` 순서와 `handoff=result_ref`로 실행합니다.
+
 ## Main Router Flow
 
 | Node | Role |
@@ -98,6 +100,8 @@ API/session state 저장 경로:
 01 MongoDB Session State Writer.Payload
   -> 21 Message Adapter / 22 API Response Builder
 ```
+
+`22 API 응답 생성기`는 Python 클래스에서 구조화 graph output을 직접 선언합니다. Langflow 코드 편집창 또는 이 저장소의 Python 원본만 수정하면 되며, export JSON의 `is_output` 필드를 사람이 편집하지 않습니다.
 
 ## Source Retrieval
 

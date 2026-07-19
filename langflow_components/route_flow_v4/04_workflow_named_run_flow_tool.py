@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
-# 컴포넌트 개요: 01 연계 실행용 이름 기반 Cached Run Flow 도구
+# 컴포넌트 개요: 04 Workflow 이름 기반 Cached Run Flow 도구
 # 역할: 같은 사용자의 Flow를 이름으로 찾아 실행하고, 다음 Tool이 재사용할 수 있는 축약 결과 계약을 Agent에 반환합니다.
 # 주요 입력: 대상 Flow 이름, 세션 ID, Tool 이름/설명, upstream result ref 지원 여부, result ref 생성 여부, 식별자 컬럼
-# 주요 출력: Route V3 Agent에 연결할 Flow 도구 (component_as_tool)
+# 주요 출력: Workflow Orchestrator 실행기에 연결할 Flow 도구 (component_as_tool)
 # 처리 흐름: 고정 Tool schema 공개 -> 선택 시 Flow 이름/ID 해석 -> 질문/ref tweak -> 하위 Flow 실행 -> 안전한 축약 결과 반환
 # 유지보수 포인트: 하위 Flow 전체 rows·trace·intent·pandas 코드는 Agent에 전달하지 않으며 부모 Router만 채팅을 저장합니다.
 # =============================================================================
@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from uuid import UUID
+from urllib.parse import urlsplit
 
 from lfx.base.tools.run_flow import RunFlowBaseComponent
 from lfx.custom.custom_component.component import Component
@@ -30,6 +30,15 @@ COLUMN_LIMIT = 50
 REF_TEXT_LIMIT = 1024
 OBSERVATION_BYTE_LIMIT = 8192
 MAX_UNWRAP_DEPTH = 8
+ARTIFACT_LIMIT = 2
+ARTIFACT_TITLE_LIMIT = 180
+ARTIFACT_DOWNLOAD_NAME_LIMIT = 180
+ARTIFACT_PATH_LIMIT = 1024
+MAX_HTML_ARTIFACT_BYTES = 2_000_000
+MAX_PUBLIC_URL_CHARS = 2_048
+ALLOWED_ARTIFACT_TYPES = {"html_chart"}
+ALLOWED_ARTIFACT_MIME_TYPES = {"text/html"}
+STRUCTURED_OUTPUT_TYPES = {"data", "dataframe", "table"}
 
 
 # 함수 설명: datetime 등 시간 값을 Flow 그래프 캐시 갱신 비교에 사용할 ISO 문자열로 변환합니다.
@@ -107,33 +116,137 @@ def _single_named_input_vertex_id(vertices: Any, input_name: str, *, required: b
     return candidates[0]
 
 
-# 함수 설명: successors가 없는 api_response를 런타임 output으로 승격해 Run Flow가 구조화 결과를 실제로 수집하게 합니다.
-# 영구 JSON의 is_output은 변경하지 않으므로 같은 child Flow를 사용하는 Route V2의 단일 terminal 계약에는 영향이 없습니다.
-def _preferred_graph_output_target(graph: Any) -> tuple[str, str]:
+# 함수 설명: 출력 이름 설정을 쉼표·세미콜론·줄바꿈 기준의 우선순위 목록으로 정규화합니다.
+def _preferred_output_names(value: Any) -> list[str]:
+    raw_values = value if isinstance(value, (list, tuple, set)) else re.split(r"[,;\n\r]+", str(value or ""))
+    names: list[str] = []
+    for raw in raw_values:
+        name = str(raw or "").strip()
+        if name and name.casefold() not in {item.casefold() for item in names}:
+            names.append(name)
+    return names
+
+
+# 함수 설명: Langflow Output dict/객체에서 이름과 타입을 공통 방식으로 읽습니다.
+def _output_descriptor(output: Any) -> tuple[str, set[str], bool]:
+    if isinstance(output, dict):
+        name = str(output.get("name") or "").strip()
+        raw_types = output.get("types") or []
+        selected = output.get("selected")
+        hidden = bool(output.get("hidden", False))
+    else:
+        name = str(getattr(output, "name", "") or "").strip()
+        raw_types = getattr(output, "types", None) or []
+        selected = getattr(output, "selected", None)
+        hidden = bool(getattr(output, "hidden", False))
+    if isinstance(raw_types, str):
+        raw_types = [raw_types]
+    types = {str(item or "").strip().casefold() for item in raw_types if str(item or "").strip()}
+    if selected not in (None, ""):
+        types.add(str(selected).strip().casefold())
+    return name, types, hidden
+
+
+# 함수 설명: graph topology 기준 terminal 출력 후보를 수집합니다.
+# Langflow의 vertex.is_output은 기본 출력 component 여부를 뜻하므로 terminal 판정에 사용하지 않습니다.
+def _terminal_output_candidates(graph: Any) -> list[dict[str, Any]]:
     successor_map = getattr(graph, "successor_map", {}) or {}
-    api_targets: list[tuple[Any, str]] = []
-    fallback_targets: list[tuple[str, str]] = []
+    candidates: list[dict[str, Any]] = []
     for vertex in list(getattr(graph, "vertices", []) or []):
-        if successor_map.get(vertex.id, []):
+        vertex_id = str(getattr(vertex, "id", "") or "").strip()
+        if not vertex_id:
+            continue
+        successors = successor_map.get(getattr(vertex, "id", None), successor_map.get(vertex_id, []))
+        if successors:
             continue
         for output in list(getattr(vertex, "outputs", []) or []):
-            output_name = output.get("name") if isinstance(output, dict) else getattr(output, "name", None)
-            if output_name == "api_response":
-                api_targets.append((vertex, str(output_name)))
-            if output_name and getattr(vertex, "is_output", False):
-                fallback_targets.append((str(vertex.id), str(output_name)))
+            output_name, output_types, hidden = _output_descriptor(output)
+            if not output_name or hidden:
+                continue
+            candidates.append(
+                {
+                    "vertex": vertex,
+                    "vertex_id": vertex_id,
+                    "output_name": output_name,
+                    "output_types": output_types,
+                }
+            )
+    return candidates
 
-    if len(api_targets) == 1:
-        api_vertex, output_name = api_targets[0]
-        # RunFlowBaseComponent는 output_type="any"여도 vertex.is_output인 결과만 RunOutputs에 담습니다.
-        # base cache에는 mutation 이전 graph dump가 저장되므로 이 승격은 현재 Route V3 실행 객체에만 적용됩니다.
-        api_vertex.is_output = True
-        return str(api_vertex.id), output_name
-    if len(api_targets) > 1:
-        raise ValueError("대상 Flow에는 terminal api_response 출력이 하나만 있어야 합니다.")
-    if len(fallback_targets) != 1:
-        raise ValueError("대상 Flow에는 api_response 또는 단일 최종 출력이 있어야 합니다.")
-    return fallback_targets[0]
+
+# 함수 설명: 설정한 출력 이름을 우선하고, 설정이 없으면 유일한 구조화 Data 출력을 자동 선택합니다.
+# 여러 후보가 남으면 임의 선택하지 않고 UI의 '우선 최종 출력 이름' 설정을 요청합니다.
+def _preferred_graph_output_target(graph: Any, preferred_output_names: Any = "") -> tuple[str, str]:
+    candidates = _terminal_output_candidates(graph)
+    if not candidates:
+        raise ValueError("대상 Flow에 후속 연결이 없는 최종 출력이 없습니다.")
+
+    configured_names = _preferred_output_names(preferred_output_names)
+    for configured_name in configured_names:
+        matches = [
+            item for item in candidates if item["output_name"].casefold() == configured_name.casefold()
+        ]
+        if len(matches) == 1:
+            selected = matches[0]
+            return selected["vertex_id"], selected["output_name"]
+        if len(matches) > 1:
+            raise ValueError(f"최종 출력 이름 '{configured_name}'이 terminal 여러 곳에 있어 하나로 확정할 수 없습니다.")
+    if configured_names:
+        available = ", ".join(
+            f"{item['vertex_id']}.{item['output_name']}" for item in candidates
+        )
+        raise ValueError(
+            "설정한 우선 최종 출력을 대상 Flow에서 찾지 못했습니다. "
+            f"설정={configured_names}, 사용 가능={available}"
+        )
+
+    structured = [
+        item for item in candidates if item["output_types"].intersection(STRUCTURED_OUTPUT_TYPES)
+    ]
+    if len(structured) == 1:
+        selected = structured[0]
+        return selected["vertex_id"], selected["output_name"]
+    if len(candidates) == 1:
+        selected = candidates[0]
+        return selected["vertex_id"], selected["output_name"]
+
+    available = ", ".join(
+        f"{item['vertex_id']}.{item['output_name']}"
+        for item in (structured or candidates)
+    )
+    raise ValueError(
+        "대상 Flow의 최종 출력이 여러 개라 자동 선택할 수 없습니다. "
+        f"'우선 최종 출력 이름'을 지정하세요. 후보={available}"
+    )
+
+
+# 함수 설명: 선택한 custom terminal만 현재 runtime graph의 공식 실행 출력으로 활성화합니다.
+# 다른 Chat/Text 출력은 이 child 실행에서만 비활성화해 선택하지 않은 화면 분기의 중복 실행을 막습니다.
+# JSON의 특정 node ID나 component 종류에 의존하지 않아 모든 standalone 하위 Flow에 재사용할 수 있습니다.
+def _promote_graph_output(graph: Any, target: tuple[str, str]) -> set[str]:
+    vertex_id, output_name = target
+    matches = [
+        item
+        for item in _terminal_output_candidates(graph)
+        if item["vertex_id"] == str(vertex_id) and item["output_name"] == str(output_name)
+    ]
+    if len(matches) != 1:
+        raise ValueError("선택한 최종 출력이 현재 child graph의 terminal과 일치하지 않습니다.")
+    selected_vertex = matches[0]["vertex"]
+    try:
+        for vertex in list(getattr(graph, "vertices", []) or []):
+            vertex.is_output = vertex is selected_vertex
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("선택한 custom terminal을 Langflow 단일 실행 출력으로 등록하지 못했습니다.") from exc
+    if not bool(getattr(selected_vertex, "is_output", False)):
+        raise ValueError("선택한 custom terminal의 is_output 활성화가 반영되지 않았습니다.")
+    if any(
+        bool(getattr(vertex, "is_output", False))
+        for vertex in list(getattr(graph, "vertices", []) or [])
+        if vertex is not selected_vertex
+    ):
+        raise ValueError("선택하지 않은 child Flow 출력의 비활성화가 반영되지 않았습니다.")
+    return set(matches[0]["output_types"])
 
 
 # 함수 설명: Route Agent에 공개할 question과 선택적 upstream_result_ref 고정 schema를 만듭니다.
@@ -331,7 +444,7 @@ def _child_payload(value: Any) -> dict[str, Any]:
     return _unwrap_child_payload(value)
 
 
-# 함수 설명: 다양한 하위 Flow 상태 문자열을 Route V3의 ok·partial·error 세 값으로 정규화합니다.
+# 함수 설명: 다양한 하위 Flow 상태 문자열을 Workflow의 ok·partial·error 세 값으로 정규화합니다.
 def _normalized_status(payload: dict[str, Any], errors: list[str]) -> str:
     raw = str(payload.get("status") or "").strip().lower()
     if payload.get("success") is False or errors or raw in {"error", "failed", "failure", "invalid", "blocked"}:
@@ -517,6 +630,127 @@ def _entity_ids(payload: dict[str, Any], configured_columns: Any) -> list[dict[s
     return result
 
 
+# 함수 설명: `_safe_artifact_path()`는 Langflow Storage의 `flow_id/file.html` 논리 경로만 허용해 외부 URL과 경로 순회를 차단합니다.
+def _safe_artifact_path(value: Any) -> str:
+    path = _limited_text(value, ARTIFACT_PATH_LIMIT).replace("\\", "/")
+    if (
+        not path
+        or path.startswith("/")
+        or "://" in path
+        or re.match(r"^[a-zA-Z]:", path)
+        or any(marker in path for marker in ("?", "#", "\x00"))
+    ):
+        return ""
+    parts = path.split("/")
+    if len(parts) != 2 or any(part in {"", ".", ".."} for part in parts):
+        return ""
+    if not parts[-1].lower().endswith(".html"):
+        return ""
+    return path
+
+
+# 함수 설명: 하위 Flow가 반환한 공개 링크 중 절대 http(s) URL만 허용해 script/file/상대 URL 전달을 차단합니다.
+def _safe_public_url(value: Any) -> str:
+    candidate = _limited_text(value, MAX_PUBLIC_URL_CHARS)
+    if not candidate or any(ord(character) < 32 for character in candidate):
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return ""
+    if parsed.username is not None or parsed.password is not None or parsed.fragment:
+        return ""
+    return candidate
+
+
+# 함수 설명: `_artifact_descriptors()`는 child 응답에서 HTML 본문을 버리고 최종 첨부에 필요한 제한된 파일 descriptor만 복사합니다.
+def _artifact_descriptors(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_artifacts = payload.get("artifacts")
+    if isinstance(raw_artifacts, dict):
+        raw_artifacts = [raw_artifacts]
+    if not isinstance(raw_artifacts, list):
+        return []
+
+    descriptors: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for raw in raw_artifacts:
+        if not isinstance(raw, dict):
+            continue
+        artifact_type = _limited_text(raw.get("artifact_type"), 40).lower()
+        mime_type = _limited_text(raw.get("mime_type"), 80).lower().split(";", 1)[0].strip()
+        path = _safe_artifact_path(raw.get("path"))
+        if artifact_type not in ALLOWED_ARTIFACT_TYPES or mime_type not in ALLOWED_ARTIFACT_MIME_TYPES or not path:
+            continue
+        download_name = _limited_text(
+            raw.get("download_name") or path.rsplit("/", 1)[-1],
+            ARTIFACT_DOWNLOAD_NAME_LIMIT,
+        )
+        if "/" in download_name or "\\" in download_name or not download_name.lower().endswith(".html"):
+            continue
+        if path in seen_paths:
+            continue
+        try:
+            size_bytes = int(raw.get("size_bytes")) if raw.get("size_bytes") is not None else None
+        except (TypeError, ValueError):
+            size_bytes = None
+        if size_bytes is not None and (size_bytes < 0 or size_bytes > MAX_HTML_ARTIFACT_BYTES):
+            continue
+        descriptor: dict[str, Any] = {
+            "artifact_type": artifact_type,
+            "title": _limited_text(raw.get("title") or download_name.rsplit(".", 1)[0], ARTIFACT_TITLE_LIMIT),
+            "mime_type": mime_type,
+            "download_name": download_name,
+            "path": path,
+        }
+        report_id = _limited_text(raw.get("report_id"), 160)
+        view_url = _safe_public_url(raw.get("view_url"))
+        download_url = _safe_public_url(raw.get("download_url"))
+        expires_at = _limited_text(raw.get("expires_at"), 80)
+        if report_id:
+            descriptor["report_id"] = report_id
+        if view_url:
+            descriptor["view_url"] = view_url
+        if download_url:
+            descriptor["download_url"] = download_url
+        if expires_at:
+            descriptor["expires_at"] = expires_at
+        if view_url or download_url:
+            try:
+                ttl_hours = max(1, min(int(raw.get("ttl_hours") or 24), 168))
+            except (TypeError, ValueError):
+                ttl_hours = 24
+            descriptor["ttl_hours"] = ttl_hours
+        if size_bytes is not None:
+            descriptor["size_bytes"] = size_bytes
+        chart_type = _limited_text(raw.get("chart_type"), 40).lower()
+        if chart_type:
+            descriptor["chart_type"] = chart_type
+        x_column = _limited_text(raw.get("x_column"), 120)
+        if x_column:
+            descriptor["x_column"] = x_column
+        y_columns = [
+            _limited_text(item, 120)
+            for item in raw.get("y_columns", [])[:8]
+            if _limited_text(item, 120)
+        ] if isinstance(raw.get("y_columns"), list) else []
+        if y_columns:
+            descriptor["y_columns"] = y_columns
+        for count_name in ("row_count", "plotted_row_count"):
+            try:
+                count_value = int(raw.get(count_name)) if raw.get(count_name) is not None else None
+            except (TypeError, ValueError):
+                count_value = None
+            if count_value is not None and count_value >= 0:
+                descriptor[count_name] = count_value
+        descriptors.append(descriptor)
+        seen_paths.add(path)
+        if len(descriptors) >= ARTIFACT_LIMIT:
+            break
+    return descriptors
+
+
 # 함수 설명: compact contract가 8KB를 넘으면 ID·이슈·요약 순서로 더 줄여 LLM 입력 폭증을 방지합니다.
 def _fit_observation_limit(contract: dict[str, Any]) -> dict[str, Any]:
     # 함수 설명: 현재 compact contract를 JSON으로 직렬화했을 때의 UTF-8 바이트 크기를 계산합니다.
@@ -557,6 +791,7 @@ def _fit_observation_limit(contract: dict[str, Any]) -> dict[str, Any]:
     contract["errors"] = [_limited_text(item, 160) for item in contract.get("errors", [])[:1]]
     contract["summary"] = _limited_text(contract.get("summary"), 300)
     meta["columns"] = list(meta.get("columns") or [])[:5]
+    contract["artifacts"] = list(contract.get("artifacts") or [])[:1]
     return contract
 
 
@@ -596,6 +831,7 @@ def normalize_tool_result(
         "result_ref": result_ref,
         "result_ref_meta": result_ref_meta,
         "entity_ids": _entity_ids(payload, entity_id_columns),
+        "artifacts": _artifact_descriptors(payload),
         "handoff_usable": bool(result_ref and status in {"ok", "partial"}),
         "warnings": warnings[:ISSUE_LIMIT],
         "errors": errors[:ISSUE_LIMIT],
@@ -603,9 +839,29 @@ def normalize_tool_result(
     return _fit_observation_limit(contract)
 
 
+# 함수 설명: child graph 실행·출력 해석 예외도 Sequential Executor가 읽을 수 있는 고정 Tool 오류 계약으로 바꿉니다.
+def _tool_execution_error_contract(tool_name: Any, error: Exception) -> dict[str, Any]:
+    error_name = type(error).__name__ or "Exception"
+    error_text = _limited_text(str(error) or error_name, ISSUE_TEXT_LIMIT)
+    contract = {
+        "contract_version": CONTRACT_VERSION,
+        "status": "error",
+        "tool_name": _limited_text(tool_name, 100),
+        "summary": "하위 Flow 실행 중 오류가 발생했습니다.",
+        "result_ref": "",
+        "result_ref_meta": {},
+        "entity_ids": [],
+        "artifacts": [],
+        "handoff_usable": False,
+        "warnings": [],
+        "errors": [f"flow_tool_execution_error: {error_name}: {error_text}"],
+    }
+    return _fit_observation_limit(contract)
+
+
 # Langflow 컴포넌트 클래스: 캔버스 입력과 Tool 출력 계약을 정의하며 독립형 JSON 안에 그대로 포함됩니다.
 class OrchestratedNamedRunFlowTool(RunFlowBaseComponent):
-    display_name = "01 연계 실행용 이름 기반 Cached Run Flow 도구"
+    display_name = "04 Workflow 이름 기반 Cached Run Flow 도구"
     description = "선택된 하위 Flow를 lazy 실행하고 다음 Tool이 사용할 수 있는 compact result contract를 반환합니다."
     name = "OrchestratedNamedRunFlowTool"
     icon = "Workflow"
@@ -628,7 +884,7 @@ class OrchestratedNamedRunFlowTool(RunFlowBaseComponent):
         MessageTextInput(
             name="session_id",
             display_name="세션 ID",
-            info="비우면 부모 Route V3 실행 세션을 자동 상속합니다.",
+            info="비우면 부모 Workflow Orchestrator 실행 세션을 자동 상속합니다.",
             value="",
             advanced=True,
         ),
@@ -651,10 +907,21 @@ class OrchestratedNamedRunFlowTool(RunFlowBaseComponent):
             info="Agent가 단일 또는 연계 호출 순서를 판단할 수 있도록 입력과 결과 범위를 설명합니다.",
             required=True,
         ),
+        MultilineInput(
+            name="preferred_output_names",
+            display_name="우선 최종 출력 이름",
+            info=(
+                "하위 Flow에서 우선 사용할 terminal 출력 이름을 순서대로 입력합니다. "
+                "쉼표 또는 줄바꿈으로 구분하며, 비우면 유일한 Data 출력을 자동 선택합니다."
+            ),
+            value="",
+            required=False,
+            advanced=True,
+        ),
         BoolInput(
             name="return_direct",
             display_name="결과 직접 반환",
-            info="Route V3 연계 실행에서는 false를 사용해 Tool 결과를 Agent가 다음 단계에서 판단하게 합니다.",
+            info="Workflow 연계 실행에서는 false를 사용해 단계 실행기가 다음 단계에 결과를 전달하게 합니다.",
             value=False,
             advanced=True,
         ),
@@ -699,6 +966,7 @@ class OrchestratedNamedRunFlowTool(RunFlowBaseComponent):
         flow_id_selected: str | None = None,
         updated_at: str | None = None,
     ):
+        del flow_id_selected
         flow_name = str(flow_name_selected or getattr(self, "flow_name_selected", "") or "").strip()
         if not flow_name:
             raise ValueError("대상 Flow 이름이 필요합니다.")
@@ -707,24 +975,12 @@ class OrchestratedNamedRunFlowTool(RunFlowBaseComponent):
         if not runtime_user_id:
             raise ValueError(
                 "Router 실행 사용자 ID가 없어 하위 Flow를 조회할 수 없습니다. "
-                "Route V3와 하위 Flow를 같은 사용자로 import하고 같은 사용자/API key로 실행하세요."
+                "Workflow Orchestrator와 하위 Flow를 같은 사용자로 import하고 같은 사용자/API key로 실행하세요."
             )
 
-        resolved_flow = None
-        requested_flow_id = str(flow_id_selected or getattr(self, "flow_id_selected", "") or "").strip()
-        if requested_flow_id:
-            try:
-                UUID(requested_flow_id)
-            except (TypeError, ValueError, AttributeError):
-                requested_flow_id = ""
-        if requested_flow_id:
-            id_flow = await super().get_flow(flow_name_selected=None, flow_id_selected=requested_flow_id)
-            id_flow_data = getattr(id_flow, "data", None) or {}
-            id_flow_name = str(id_flow_data.get("name") or "").strip()
-            if id_flow_data.get("id") and (not id_flow_name or id_flow_name == flow_name):
-                resolved_flow = id_flow
-
-        flow = resolved_flow or await super().get_flow(flow_name_selected=flow_name, flow_id_selected=None)
+        # Import/복제 후 hidden ID가 구형 Flow를 가리킬 수 있으므로 매 실행마다 현재 이름을 실제 ID로 다시 해석합니다.
+        # 해석된 ID는 아래 graph cache key로만 사용하며 export에 고정하지 않습니다.
+        flow = await super().get_flow(flow_name_selected=flow_name, flow_id_selected=None)
         flow_data = getattr(flow, "data", None) or {}
         actual_id = str(flow_data.get("id") or "").strip()
         actual_updated_at = _as_iso_text(flow_data.get("updated_at")) or _as_iso_text(updated_at)
@@ -754,7 +1010,20 @@ class OrchestratedNamedRunFlowTool(RunFlowBaseComponent):
             "upstream_result_ref",
             required=bool(getattr(self, "accepts_upstream_result_ref", False)),
         )
-        self._resolved_flow_output_target = _preferred_graph_output_target(graph)
+        target = _preferred_graph_output_target(
+            graph,
+            getattr(self, "preferred_output_names", ""),
+        )
+        output_types = _promote_graph_output(graph, target)
+        if bool(getattr(self, "can_produce_result_ref", False)) and not output_types.intersection(
+            STRUCTURED_OUTPUT_TYPES
+        ):
+            raise ValueError(
+                "결과 참조를 생성하는 Tool은 Data 계열의 구조화 terminal 출력을 선택해야 합니다. "
+                "'우선 최종 출력 이름' 설정과 하위 Flow 출력 타입을 확인하세요."
+            )
+        self._resolved_flow_output_target = target
+        self._resolved_flow_output_types = output_types
         return graph
 
     # 주요 메서드: Agent Tool 목록을 만들 때 child graph를 열지 않고 고정된 두 필드만 노출합니다.
@@ -777,19 +1046,23 @@ class OrchestratedNamedRunFlowTool(RunFlowBaseComponent):
 
     # 주요 메서드: 선택된 child Flow를 한 번만 실행하고 raw 결과를 compact Data 계약으로 변환합니다.
     async def _run_selected_flow(self) -> Data:
-        self._last_run_outputs = None
-        await self._get_cached_run_outputs(user_id=self.user_id, output_type="any")
-        target = getattr(self, "_resolved_flow_output_target", None)
-        if not target:
-            raise ValueError("대상 Flow의 최종 출력을 확인할 수 없습니다.")
-        vertex_id, output_name = target
-        child_result = await self._resolve_flow_output(vertex_id=vertex_id, output_name=output_name)
-        contract = normalize_tool_result(
-            child_result,
-            tool_name=str(getattr(self, "tool_name", "") or ""),
-            entity_id_columns=getattr(self, "entity_id_columns", ""),
-            can_produce_result_ref=bool(getattr(self, "can_produce_result_ref", False)),
-        )
+        tool_name = str(getattr(self, "tool_name", "") or "")
+        try:
+            self._last_run_outputs = None
+            await self._get_cached_run_outputs(user_id=self.user_id, output_type="any")
+            target = getattr(self, "_resolved_flow_output_target", None)
+            if not target:
+                raise ValueError("대상 Flow의 최종 출력을 확인할 수 없습니다.")
+            vertex_id, output_name = target
+            child_result = await self._resolve_flow_output(vertex_id=vertex_id, output_name=output_name)
+            contract = normalize_tool_result(
+                child_result,
+                tool_name=tool_name,
+                entity_id_columns=getattr(self, "entity_id_columns", ""),
+                can_produce_result_ref=bool(getattr(self, "can_produce_result_ref", False)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            contract = _tool_execution_error_contract(tool_name, exc)
         self.status = contract.get("summary", "")
         return Data(data=contract)
 

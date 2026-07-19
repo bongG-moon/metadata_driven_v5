@@ -4633,7 +4633,7 @@
   "is_component": false,
   "last_tested_version": "1.8.2",
   "locked": false,
-  "name": "metadata_driven_v5_complete_20260710_api_router",
+  "name": "06. v5_api_router",
   "tags": [
     "20260710",
     "api-router",

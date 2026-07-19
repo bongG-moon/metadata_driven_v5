@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import json
 from collections import defaultdict, deque
 from pathlib import Path
 
+from tools.build_import_ready_bundle import FLOW_DISPLAY_NAMES, FLOW_SPECS
 from tools.build_v5_data_analysis_flow import (
     COMPONENT_FILES,
     DEFAULT_SOURCE,
@@ -28,6 +30,18 @@ SHARED_V4_COLLECTIONS = {
     "session_state": "agent_v4_session_states",
 }
 WORKFLOW_SKILL_COLLECTION = "agent_v4_workflow_skills"
+EXPECTED_FLOW_DISPLAY_NAMES = [
+    "01. v5_data_analysis",
+    "02. v5_domain_saving",
+    "03. v5_table_catalog_saving",
+    "04. v5_main_flow_filter_saving",
+    "05. v5_metadata_qa",
+    "06. v5_api_router",
+    "07. v5_agent_tool_router",
+    "08. v5_workflow_orchestrator",
+    "09. v5_workflow_skill_saving",
+    "10. v5_html_visualization",
+]
 
 
 def _edge_keys(flow: dict) -> set[tuple[str, str, str, str]]:
@@ -43,6 +57,83 @@ def _edge_keys(flow: dict) -> set[tuple[str, str, str, str]]:
     }
 
 
+def test_v5_auxiliary_builder_uses_numbered_display_names_and_child_targets():
+    source = (ROOT / "tools" / "build_v5_auxiliary_flows.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assignments = {
+        node.targets[0].id: node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    }
+    display_names = ast.literal_eval(assignments["FLOW_DISPLAY_NAMES"])
+    assert display_names == {
+        "data_analysis": "01. v5_data_analysis",
+        "domain_saving": "02. v5_domain_saving",
+        "table_catalog_saving": "03. v5_table_catalog_saving",
+        "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
+        "metadata_qa": "05. v5_metadata_qa",
+        "api_router": "06. v5_api_router",
+        "agent_tool_router": "07. v5_agent_tool_router",
+        "workflow_orchestrator": "08. v5_workflow_orchestrator",
+        "workflow_skill_saving": "09. v5_workflow_skill_saving",
+        "html_visualization": "10. v5_html_visualization",
+    }
+    functions = {
+        node.name: ast.get_source_segment(source, node) or ""
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert 'FLOW_DISPLAY_NAMES[f"{spec.slug}_saving"]' in functions["build_saving_flow"]
+    assert 'FLOW_DISPLAY_NAMES["metadata_qa"]' in functions["build_metadata_qa_flow"]
+    assert 'FLOW_DISPLAY_NAMES["api_router"]' in functions["build_router_flow"]
+    assert 'FLOW_DISPLAY_NAMES["agent_tool_router"]' in functions["build_agent_tool_router_flow"]
+    assert 'FLOW_DISPLAY_NAMES["workflow_orchestrator"]' in functions["build_workflow_orchestrator_flow"]
+    assert 'FLOW_DISPLAY_NAMES["html_visualization"]' in functions["build_html_visualization_flow"]
+    assert "metadata-driven-v5-{spec.slug.replace('_', '-')}-saving" in functions["build_saving_flow"]
+    for function_name, endpoint_name in {
+        "build_metadata_qa_flow": "metadata-driven-v5-metadata-qa",
+        "build_router_flow": "metadata-driven-v5-api-router",
+        "build_agent_tool_router_flow": "metadata-driven-v5-agent-tool-router",
+        "build_workflow_orchestrator_flow": "metadata-driven-v5-workflow-orchestrator",
+        "build_html_visualization_flow": "metadata-driven-v5-html-visualization",
+    }.items():
+        assert endpoint_name in functions[function_name]
+
+    expected_children = {
+        "data_analysis": "01. v5_data_analysis",
+        "metadata_qa": "05. v5_metadata_qa",
+        "domain_saving": "02. v5_domain_saving",
+        "table_catalog_saving": "03. v5_table_catalog_saving",
+        "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
+    }
+
+    def child_targets(assignment_name: str) -> dict[str, str]:
+        targets = {}
+        for call in assignments[assignment_name].elts:
+            route_name = ast.literal_eval(call.args[0])
+            flow_name = call.args[1]
+            assert isinstance(flow_name, ast.Subscript)
+            assert isinstance(flow_name.value, ast.Name) and flow_name.value.id == "FLOW_DISPLAY_NAMES"
+            display_key = ast.literal_eval(flow_name.slice)
+            targets[route_name] = display_names[display_key]
+        return targets
+
+    assert child_targets("TOOL_ROUTE_SPECS") == expected_children
+    assert child_targets("WORKFLOW_TOOL_ROUTE_SPECS") == {
+        **expected_children,
+        "html_visualization": "10. v5_html_visualization",
+    }
+    assert ast.literal_eval(assignments["ROUTE_ENDPOINTS"]) == {
+        "data_analysis": "metadata-driven-v5-data-analysis",
+        "metadata_qa": "metadata-driven-v5-metadata-qa",
+        "domain_saving": "metadata-driven-v5-domain-saving",
+        "table_catalog_saving": "metadata-driven-v5-table-catalog-saving",
+        "main_flow_filter_saving": "metadata-driven-v5-main-flow-filter-saving",
+    }
+
+
 def test_v5_flow_export_is_reproducible_and_acyclic():
     built = build_flow(DEFAULT_SOURCE)
     checked_in = json.loads(EXPORT_PATH.read_text(encoding="utf-8"))
@@ -51,6 +142,50 @@ def test_v5_flow_export_is_reproducible_and_acyclic():
     assert len(built["data"]["nodes"]) == 43
     assert len(built["data"]["edges"]) == 67
     assert _is_acyclic(built)
+
+
+def test_custom_structured_terminals_are_explicit_graph_outputs_for_standard_run_flow():
+    expected_terminals = {
+        "data_analysis_flow_v5_standalone.json": "CustomComponent-3eVde",
+        "domain_saving_flow_v5_standalone.json": "Api-domain",
+        "table_catalog_saving_flow_v5_standalone.json": "Api-table_catalog",
+        "main_flow_filter_saving_flow_v5_standalone.json": "Api-main_flow_filter",
+        "metadata_qa_flow_v5_standalone.json": "Api-metadata-qa",
+        "workflow_skill_saving_flow_v5_standalone.json": "Api-workflow_skill",
+        "html_visualization_flow_v5_standalone.json": "HtmlVisualizationApiTerminal-html-visualization",
+    }
+    for filename, node_id in expected_terminals.items():
+        flow = json.loads((ROOT / "flow_exports" / filename).read_text(encoding="utf-8"))
+        nodes = {node["id"]: node for node in flow["data"]["nodes"]}
+        terminal = nodes[node_id]["data"]["node"]
+        assert terminal["is_output"] is True, filename
+        assert "self.is_output = True" in terminal["template"]["code"]["value"], filename
+        assert not any(edge["source"] == node_id for edge in flow["data"]["edges"]), filename
+
+
+def test_structured_graph_output_ownership_stays_in_component_python():
+    data_builder = (ROOT / "tools" / "build_v5_data_analysis_flow.py").read_text(encoding="utf-8")
+    auxiliary_builder = (ROOT / "tools" / "build_v5_auxiliary_flows.py").read_text(encoding="utf-8")
+
+    assert 'node_index["CustomComponent-3eVde"]["data"]["node"]["is_output"] = True' not in data_builder
+    assert "def mark_graph_output(" not in auxiliary_builder
+    assert "_declared_component_bool(code, \"is_output\")" in data_builder
+
+
+def test_v5_bundle_flow_display_names_follow_import_order_without_changing_slugs():
+    assert [FLOW_DISPLAY_NAMES[route_name] for _, _, route_name in FLOW_SPECS] == EXPECTED_FLOW_DISPLAY_NAMES
+    assert [route_name for _, _, route_name in FLOW_SPECS] == [
+        "data_analysis",
+        "domain_saving",
+        "table_catalog_saving",
+        "main_flow_filter_saving",
+        "metadata_qa",
+        "api_router",
+        "agent_tool_router",
+        "workflow_orchestrator",
+        "workflow_skill_saving",
+        "html_visualization",
+    ]
 
 
 def test_v5_flow_export_embeds_current_component_and_prompt_sources():
@@ -77,6 +212,7 @@ def test_v5_flow_export_embeds_current_component_and_prompt_sources():
         assert embedded == source, node_id
     assert nodes[REPAIR_PROMPT_NODE_ID]["data"]["node"]["template"]["input_value"]["value"] == REPAIR_PROMPT_SOURCE.read_text(encoding="utf-8")
     assert nodes["CustomComponent-s3mf1"]["data"]["node"]["template"]["repair_prompt_template"]["value"] == ""
+    assert nodes["CustomComponent-3eVde"]["data"]["node"]["is_output"] is True
 
 
 def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
@@ -156,6 +292,8 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-3eVde", "payload") in edges
     assert ("CustomComponent-BVItv", "payload_out", "CustomComponent-A5y0b", "payload") not in edges
     assert ("CustomComponent-BVItv", "payload_out", "CustomComponent-3eVde", "payload") not in edges
+    answer_adapter_template = nodes["CustomComponent-A5y0b"]["data"]["node"]["template"]
+    assert answer_adapter_template["show_pandas_code"]["value"] is True
 
 
 def test_v5_flow_export_routes_catalog_and_helpers_through_compaction_nodes():
@@ -257,6 +395,7 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     payload = json.loads(raw.decode("utf-8"))
     assert len(payload["flows"]) == 10
     assert all(isinstance(flow.get("data"), dict) and flow.get("name") for flow in payload["flows"])
+    assert [flow["name"] for flow in payload["flows"]] == EXPECTED_FLOW_DISPLAY_NAMES
     assert len({flow["endpoint_name"] for flow in payload["flows"]}) == 10
     assert all("-dummy-" not in flow["endpoint_name"] for flow in payload["flows"])
     assert not list(UI_BUNDLE_PATH.parent.glob("*_dummy_*_flow_v5_standalone.json"))
@@ -309,48 +448,19 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
         for edge in tool_router["data"]["edges"]
     )
     assert all(
-        node["data"]["node"]["template"]["flow_name_selected"]["value"].startswith(
-            "metadata_driven_v5_complete_20260710_"
-        )
+        node["data"]["node"]["template"]["flow_name_selected"]["value"]
+        == FLOW_DISPLAY_NAMES[node["id"].removeprefix("CachedFlowTool-")]
         for node in tools
     )
 
-    orchestrator = next(
-        flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-agent-orchestrator-router")
-    )
-    orchestrator_tools = [
-        node
-        for node in orchestrator["data"]["nodes"]
-        if str(node.get("id") or "").startswith("OrchestratedFlowTool-")
-    ]
-    orchestrator_agent = next(
-        node for node in orchestrator["data"]["nodes"] if node["data"].get("type") == "Agent"
-    )
-    assert len(orchestrator_tools) == 5
-    assert len([node for node in orchestrator["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]) == 1
-    assert orchestrator_agent["data"]["node"]["template"]["max_iterations"]["value"] == 5
-    assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in orchestrator_tools)
-    assert all(node["data"]["node"]["template"]["return_direct"]["value"] is False for node in orchestrator_tools)
-    assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in orchestrator_tools)
-    data_orchestration_tool = next(
-        node for node in orchestrator_tools if node["id"] == "OrchestratedFlowTool-data_analysis"
-    )
-    assert data_orchestration_tool["data"]["node"]["template"]["accepts_upstream_result_ref"]["value"] is True
-    assert data_orchestration_tool["data"]["node"]["template"]["can_produce_result_ref"]["value"] is True
-    assert data_orchestration_tool["data"]["node"]["template"]["entity_id_columns"]["value"] == "LOT_ID"
-    assert all(
-        '"name": "question"' in node["data"]["node"]["template"]["code"]["value"]
-        and '"name": "upstream_result_ref"' in node["data"]["node"]["template"]["code"]["value"]
-        and "route_v3.tool_result.v1" in node["data"]["node"]["template"]["code"]["value"]
-        for node in orchestrator_tools
-    )
     individual_flows = sorted(UI_BUNDLE_PATH.parent.glob("[0-9][0-9]_*_v5_standalone.json"))
     assert [path.name[:2] for path in individual_flows] == [f"{index:02d}" for index in range(1, 11)]
-    assert individual_flows[-1].name == "10_workflow_skill_saving_flow_v5_standalone.json"
+    assert individual_flows[-1].name == "10_html_visualization_flow_v5_standalone.json"
     manifest = json.loads((UI_BUNDLE_PATH.parent / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["flow_count"] == 10
     assert [item["order"] for item in manifest["flows"]] == list(range(1, 11))
-    assert manifest["flows"][-1]["file"] == "10_workflow_skill_saving_flow_v5_standalone.json"
+    assert [item["name"] for item in manifest["flows"]] == EXPECTED_FLOW_DISPLAY_NAMES
+    assert manifest["flows"][-1]["file"] == "10_html_visualization_flow_v5_standalone.json"
 
 
 def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer():
@@ -361,10 +471,10 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
     nodes = {node["id"]: node for node in flow["data"]["nodes"]}
     edges = _edge_keys(flow)
 
-    assert flow["name"] == "metadata_driven_v5_complete_20260710_workflow_orchestrator"
+    assert flow["name"] == "08. v5_workflow_orchestrator"
     assert flow["endpoint_name"] == "metadata-driven-v5-complete-20260710-workflow-orchestrator"
-    assert len(nodes) == 17
-    assert len(flow["data"]["edges"]) == 25
+    assert len(nodes) == 18
+    assert len(flow["data"]["edges"]) == 26
     assert not any(node["data"].get("type") == "Agent" for node in nodes.values())
     assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
     assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
@@ -382,17 +492,21 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
         assert nodes[node_id]["data"]["node"]["template"]["code"]["value"] == expected
 
     tool_source = (
-        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+        ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     ).read_text(encoding="utf-8")
     tools = [node for node_id, node in nodes.items() if node_id.startswith("WorkflowFlowTool-")]
-    assert len(tools) == 5
+    assert len(tools) == 6
     assert all(node["data"]["node"]["template"]["code"]["value"] == tool_source for node in tools)
     assert all(node["data"]["node"]["template"]["return_direct"]["value"] is False for node in tools)
     assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in tools)
     assert all(
+        node["data"]["node"]["template"]["preferred_output_names"]["value"] == "api_response"
+        for node in tools
+    )
+    assert all(
         node["data"]["node"]["template"]["flow_name_selected"]["value"]
-        == f"metadata_driven_v5_complete_20260710_{node['id'].removeprefix('WorkflowFlowTool-')}"
+        == FLOW_DISPLAY_NAMES[node["id"].removeprefix("WorkflowFlowTool-")]
         for node in tools
     )
     assert all(
@@ -400,6 +514,11 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
         in edges
         for node in tools
     )
+    visualization_tool = nodes["WorkflowFlowTool-html_visualization"]
+    visualization_template = visualization_tool["data"]["node"]["template"]
+    assert visualization_template["tool_name"]["value"] == "run_visualization"
+    assert visualization_template["accepts_upstream_result_ref"]["value"] is True
+    assert visualization_template["can_produce_result_ref"]["value"] is False
 
     registry_template = nodes["WorkflowRegistryLoader-workflow-orchestrator"]["data"]["node"]["template"]
     assert registry_template["registry_source"]["value"] == "mongodb"
@@ -408,8 +527,28 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
     assert registry_template["collection_name"]["value"] == WORKFLOW_SKILL_COLLECTION
     assert registry_template["candidate_limit"]["value"] == "8"
     assert registry_template["max_registry_bytes"]["value"] == "65536"
-    assert nodes["PromptPlanner-workflow-orchestrator"]["data"]["node"]["template"]["workflow_registry_json"]["value"] == "{}"
-    assert nodes["WorkflowPlanParser-workflow-orchestrator"]["data"]["node"]["template"]["workflow_registry_json"]["value"] == "{}"
+    planner_template = nodes["PromptPlanner-workflow-orchestrator"]["data"]["node"]["template"]
+    assert planner_template["workflow_registry_json"]["value"] == "{}"
+    tool_catalog = json.loads(planner_template["allowed_tool_catalog"]["value"])
+    catalog_by_name = {item["tool_name"]: item for item in tool_catalog}
+    assert set(catalog_by_name) == {
+        "run_data_analysis",
+        "run_metadata_qa",
+        "save_domain_metadata",
+        "save_table_catalog_metadata",
+        "save_main_flow_filter_metadata",
+        "run_visualization",
+    }
+    assert catalog_by_name["run_data_analysis"]["can_produce_result_ref"] is True
+    assert catalog_by_name["run_data_analysis"]["requires_upstream_result_ref"] is False
+    assert catalog_by_name["run_visualization"]["accepts_upstream_result_ref"] is True
+    assert catalog_by_name["run_visualization"]["can_produce_result_ref"] is False
+    assert catalog_by_name["run_visualization"]["requires_upstream_result_ref"] is True
+    assert "{allowed_tool_catalog}" in planner_template["template"]["value"]
+    parser_template = nodes["WorkflowPlanParser-workflow-orchestrator"]["data"]["node"]["template"]
+    assert parser_template["workflow_registry_json"]["value"] == "{}"
+    assert json.loads(parser_template["tool_capabilities_json"]["value"]) == tool_catalog
+    assert "handoff는 현재 단계가 앞 단계의 결과를 입력으로 받는지" in planner_template["template"]["value"]
     assert (
         "ChatInput-workflow-orchestrator",
         "message",
@@ -484,6 +623,66 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
     )
 
 
+def test_v5_bundle_html_visualization_has_result_ref_input_and_terminal_api_response():
+    payload = json.loads(UI_BUNDLE_PATH.read_text(encoding="utf-8"))
+    flow = next(item for item in payload["flows"] if item["endpoint_name"].endswith("-html-visualization"))
+    nodes = {node["id"]: node for node in flow["data"]["nodes"]}
+    edges = _edge_keys(flow)
+
+    assert flow["name"] == "10. v5_html_visualization"
+    assert flow["endpoint_name"] == "metadata-driven-v5-complete-20260710-html-visualization"
+    assert set(nodes) == {
+        "ChatInput-html-visualization",
+        "HtmlVisualizationBuilder-html-visualization",
+        "ChatOutput-html-visualization",
+        "HtmlVisualizationApiTerminal-html-visualization",
+    }
+    assert edges == {
+        (
+            "ChatInput-html-visualization",
+            "message",
+            "HtmlVisualizationBuilder-html-visualization",
+            "question",
+        ),
+        (
+            "HtmlVisualizationBuilder-html-visualization",
+            "message",
+            "ChatOutput-html-visualization",
+            "input_value",
+        ),
+        (
+            "HtmlVisualizationBuilder-html-visualization",
+            "api_response",
+            "HtmlVisualizationApiTerminal-html-visualization",
+            "visualization_result",
+        ),
+    }
+    builder = nodes["HtmlVisualizationBuilder-html-visualization"]
+    template = builder["data"]["node"]["template"]
+    assert template["code"]["value"] == (
+        ROOT / "langflow_components" / "visualization_flow" / "00_html_visualization_builder.py"
+    ).read_text(encoding="utf-8")
+    assert template["upstream_result_ref"]["advanced"] is False
+    assert template["mongo_uri"]["value"] == "MONGO_URL"
+    assert template["mongo_uri"]["load_from_db"] is True
+    assert template["mongo_database"]["value"] == "datagov"
+    assert template["collection_name"]["value"] == "agent_v4_result_store"
+    assert template["report_api_url"]["value"] == "http://127.0.0.1:8010"
+    assert template["report_api_url"]["advanced"] is False
+    assert template["report_ttl_hours"]["value"] == "24"
+    assert template["report_ttl_hours"]["advanced"] is False
+    assert {output["name"] for output in builder["data"]["node"]["outputs"]} == {"message", "api_response"}
+    terminal = nodes["HtmlVisualizationApiTerminal-html-visualization"]
+    terminal_template = terminal["data"]["node"]["template"]
+    assert terminal_template["code"]["value"] == (
+        ROOT / "langflow_components" / "visualization_flow" / "01_html_visualization_api_terminal.py"
+    ).read_text(encoding="utf-8")
+    assert {output["name"] for output in terminal["data"]["node"]["outputs"]} == {"api_response"}
+    assert not any(source == terminal["id"] for source, _handle, _target, _field in edges)
+    assert nodes["ChatInput-html-visualization"]["data"]["node"]["template"]["should_store_message"]["value"] is True
+    assert nodes["ChatOutput-html-visualization"]["data"]["node"]["template"]["should_store_message"]["value"] is True
+
+
 def test_v5_single_file_ui_bundle_uses_exact_shared_v4_collection_mappings():
     raw = UI_BUNDLE_PATH.read_text(encoding="utf-8")
     payload = json.loads(raw)
@@ -511,10 +710,10 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
         flow
         for flow in payload["flows"]
         if not flow["endpoint_name"].endswith(
-            ("-api-router", "-agent-tool-router", "-agent-orchestrator-router", "-workflow-orchestrator")
+            ("-api-router", "-agent-tool-router", "-workflow-orchestrator")
         )
     ]
-    assert len(child_flows) == 6
+    assert len(child_flows) == 7
 
     child_models = []
     for flow in child_flows:
@@ -548,10 +747,10 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
         flow
         for flow in payload["flows"]
         if flow["endpoint_name"].endswith(
-            ("-api-router", "-agent-tool-router", "-agent-orchestrator-router", "-workflow-orchestrator")
+            ("-api-router", "-agent-tool-router", "-workflow-orchestrator")
         )
     ]
-    assert len(router_flows) == 4
+    assert len(router_flows) == 3
     for flow in router_flows:
         router_chat_nodes = [
             node

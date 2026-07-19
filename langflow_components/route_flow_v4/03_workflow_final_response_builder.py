@@ -5,7 +5,7 @@
 # 주요 입력: 02 최종 Context Data, 최종 모델 응답 Message/Text
 # 주요 출력: 단일 답변 Message, terminal API 응답 Data
 # 처리 흐름: final context 검증 -> 모델 응답 확인 -> partial/error 상태 보강 -> compact workflow API envelope 생성
-# 유지보수 포인트: 모델 응답이 비거나 오류여도 실행 단계 실패를 숨기지 않으며 prompt_variables와 result_ref는 API에서 제외합니다.
+# 유지보수 포인트: prompt_variables와 result_ref는 API에서 제외하고 검증된 HTML 파일 descriptor만 Message/API에 보존합니다.
 # =============================================================================
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from typing import Any
+from urllib.parse import urlsplit
 
 from lfx.custom.custom_component.component import Component
 from lfx.io import HandleInput, Output
@@ -23,6 +24,8 @@ FINAL_CONTEXT_CONTRACT_VERSION = "workflow.final_context.v1"
 RESPONSE_TYPE = "workflow_orchestration"
 MAX_MESSAGE_CHARS = 16_000
 MAX_STEP_SUMMARY_CHARS = 800
+MAX_ARTIFACTS = 4
+MAX_PUBLIC_URL_CHARS = 2_048
 
 
 # 주요 함수: 모델 답변과 실행 결과를 한 개의 사용자 Message 및 API payload 계약으로 구성합니다.
@@ -32,6 +35,7 @@ def build_workflow_final_response(final_context_value: Any, final_model_response
     model_text, model_errors = _model_response(final_model_response_value)
     execution_status = str(workflow.get("execution_status") or context_input.get("status") or "error").strip().lower()
     steps = [_compact_api_step(item) for item in _list(workflow.get("steps")) if isinstance(item, dict)]
+    artifacts = _final_artifacts(context_input.get("artifacts"))
     errors = _merge_issues(
         context_errors,
         context_input.get("errors"),
@@ -46,6 +50,7 @@ def build_workflow_final_response(final_context_value: Any, final_model_response
             message = _append_execution_notice(message, execution_status, steps)
     else:
         message = _deterministic_failure_message(execution_status, steps, errors)
+    message = _append_artifact_links(message, artifacts)
 
     api_status = _api_status(execution_status, bool(model_text and not model_errors), steps, errors)
     workflow_summary = {
@@ -61,9 +66,14 @@ def build_workflow_final_response(final_context_value: Any, final_model_response
         "status": api_status,
         "message": message,
         "workflow": workflow_summary,
+        "artifacts": artifacts,
         "errors": errors,
     }
-    return {"message": message, "api_response": api_response}
+    return {
+        "message": message,
+        "files": [str(item.get("path")) for item in artifacts if str(item.get("path") or "")],
+        "api_response": api_response,
+    }
 
 
 # 함수 설명: `_workflow_context()`는 02 Data 안의 JSON 문자열을 workflow.final_context.v1 dict로 검증합니다.
@@ -111,6 +121,126 @@ def _compact_api_step(value: dict[str, Any]) -> dict[str, Any]:
         "warnings": _issues(value.get("warnings"), count=3, text_limit=240),
         "errors": _issues(value.get("errors"), count=3, text_limit=240),
     }
+
+
+# 함수 설명: `_safe_artifact_path()`는 최종 Message.files 직전에도 `flow_id/file.html` 논리 경로만 허용합니다.
+def _safe_artifact_path(value: Any) -> str:
+    path = _clip(value, 1024).replace("\\", "/")
+    parts = path.split("/")
+    if (
+        not path
+        or path.startswith("/")
+        or "://" in path
+        or (len(path) >= 2 and path[1] == ":")
+        or len(parts) != 2
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(marker in path for marker in ("?", "#", "\x00"))
+        or not parts[-1].lower().endswith(".html")
+    ):
+        return ""
+    return path
+
+
+# 함수 설명: 최종 답변에 노출할 링크를 절대 http(s) URL로 제한해 Tauri 상대경로와 위험한 scheme을 차단합니다.
+def _safe_public_url(value: Any) -> str:
+    candidate = _clip(value, MAX_PUBLIC_URL_CHARS)
+    if not candidate or any(ord(character) < 32 for character in candidate):
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return ""
+    if parsed.username is not None or parsed.password is not None or parsed.fragment:
+        return ""
+    return candidate
+
+
+# 함수 설명: Langflow 1.8 채팅 UI가 AI Message.files를 표시하지 않아도 Report API의 절대 URL이 보이도록 링크를 보강합니다.
+def _append_artifact_links(message: str, artifacts: list[dict[str, Any]]) -> str:
+    links: list[str] = []
+    for index, artifact in enumerate(artifacts, start=1):
+        path = _safe_artifact_path(artifact.get("path"))
+        if not path:
+            continue
+        label = _clip(artifact.get("title") or artifact.get("download_name") or f"HTML 차트 {index}", 180)
+        label = label.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        view_url = _safe_public_url(artifact.get("view_url"))
+        download_url = _safe_public_url(artifact.get("download_url"))
+        artifact_links: list[str] = []
+        if view_url and view_url not in message:
+            artifact_links.append(f"[{label} 보기]({view_url})")
+        if download_url and download_url not in message:
+            artifact_links.append(f"[다운로드]({download_url})")
+        if artifact_links:
+            links.append("- " + " · ".join(artifact_links))
+    if not links:
+        return _clip(message, MAX_MESSAGE_CHARS)
+
+    section = "### 생성 파일\n" + "\n".join(links)
+    available = max(0, MAX_MESSAGE_CHARS - len(section) - 2)
+    body = _clip(message, available)
+    return (body + "\n\n" + section).strip()
+
+
+# 함수 설명: `_final_artifacts()`는 최종 Message/API에 허용할 HTML 파일 descriptor만 경로 기준으로 중복 없이 보존합니다.
+def _final_artifacts(value: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for item in _list(value)[:MAX_ARTIFACTS]:
+        if not isinstance(item, dict):
+            continue
+        artifact_type = _clip(item.get("artifact_type"), 40).lower()
+        mime_type = _clip(item.get("mime_type"), 80).lower().split(";", 1)[0].strip()
+        path = _safe_artifact_path(item.get("path"))
+        download_name = _clip(item.get("download_name"), 180)
+        if artifact_type != "html_chart" or mime_type != "text/html" or not path or path in seen_paths:
+            continue
+        if "/" in download_name or "\\" in download_name or not download_name.lower().endswith(".html"):
+            continue
+        descriptor: dict[str, Any] = {
+            "artifact_type": artifact_type,
+            "path": path,
+            "mime_type": mime_type,
+            "title": _clip(item.get("title") or download_name.rsplit(".", 1)[0], 180),
+            "download_name": download_name,
+        }
+        report_id = _clip(item.get("report_id"), 160)
+        view_url = _safe_public_url(item.get("view_url"))
+        download_url = _safe_public_url(item.get("download_url"))
+        expires_at = _clip(item.get("expires_at"), 80)
+        if report_id:
+            descriptor["report_id"] = report_id
+        if view_url:
+            descriptor["view_url"] = view_url
+        if download_url:
+            descriptor["download_url"] = download_url
+        if expires_at:
+            descriptor["expires_at"] = expires_at
+        if view_url or download_url:
+            try:
+                ttl_hours = max(1, min(int(item.get("ttl_hours") or 24), 168))
+            except (TypeError, ValueError):
+                ttl_hours = 24
+            descriptor["ttl_hours"] = ttl_hours
+        for text_name, limit in (("chart_type", 40), ("x_column", 120)):
+            text_value = _clip(item.get(text_name), limit)
+            if text_value:
+                descriptor[text_name] = text_value
+        y_columns = [_clip(column, 120) for column in _list(item.get("y_columns"))[:8] if _clip(column, 120)]
+        if y_columns:
+            descriptor["y_columns"] = y_columns
+        for count_name in ("row_count", "plotted_row_count", "size_bytes"):
+            try:
+                count_value = int(item.get(count_name)) if item.get(count_name) is not None else None
+            except (TypeError, ValueError):
+                count_value = None
+            if count_value is not None and count_value >= 0:
+                descriptor[count_name] = count_value
+        result.append(descriptor)
+        seen_paths.add(path)
+    return result
 
 
 # 함수 설명: `_append_execution_notice()`는 모델이 생성한 본문 뒤에 실패/누락 단계를 결정론적으로 한 번 표시합니다.
@@ -232,6 +362,11 @@ class WorkflowFinalResponseBuilder(Component):
     name = "WorkflowFinalResponseBuilder"
     icon = "MessageSquareText"
 
+    # 함수 설명: api_response 포트를 구조화 최종 출력으로 자동 등록해 Flow JSON 직접 편집을 없앱니다.
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.is_output = True
+
     inputs = [
         HandleInput(
             name="final_context",
@@ -267,7 +402,9 @@ class WorkflowFinalResponseBuilder(Component):
     def build_message(self) -> Message:
         result = self._result_once()
         self.status = {"status": result["api_response"].get("status"), "response_type": RESPONSE_TYPE}
-        return Message(text=result["message"])
+        message = Message(text=result["message"])
+        message.files = deepcopy(result.get("files", []))
+        return message
 
     # Langflow 출력 함수: Run/API 호출자가 단계 상태를 확인할 terminal Data를 반환합니다.
     def build_api_response(self) -> Data:

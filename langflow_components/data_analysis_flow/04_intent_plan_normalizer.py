@@ -19,6 +19,8 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
+RETIRED_JOB_DETAIL_KEYS = {"row_identity_columns", "context_columns"}
+
 
 # 주요 함수: LLM 의도 결과를 신뢰 가능한 실행 계획 계약으로 정규화합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
@@ -26,7 +28,7 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
     payload = _payload(payload_value)
     parsed = _json(llm_response)
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
-    retrieval_jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    retrieval_jobs = _retrieval_jobs(plan)
     pandas_plan = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
     function_cases = _function_case_items(plan, retrieval_jobs)
     pandas_plan = _ensure_function_case_steps(function_cases, pandas_plan, retrieval_jobs)
@@ -39,6 +41,7 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
     normalized_plan["condition_resolution"] = _condition_resolution(plan)
     normalized_plan["retrieval_jobs"] = retrieval_jobs
     normalized_plan["pandas_execution_plan"] = pandas_plan
+    normalized_plan["output_contract"] = _output_contract(plan, payload, retrieval_jobs)
     if function_cases:
         normalized_plan["pandas_function_cases"] = function_cases
     else:
@@ -101,6 +104,114 @@ def _condition_resolution(plan: dict[str, Any]) -> dict[str, Any]:
         for key in ("inherited", "changed", "dropped", "new")
         if value.get(key) not in (None, "", [], {})
     }
+
+
+# 함수 설명: `_retrieval_jobs()`는 조회 job을 복사하면서 폐기된 상세 컬럼 계약을 runtime payload에서 제거합니다.
+def _retrieval_jobs(plan: dict[str, Any]) -> list[Any]:
+    items = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    result: list[Any] = []
+    for item in items:
+        if not isinstance(item, dict):
+            result.append(deepcopy(item))
+            continue
+        result.append(
+            {
+                str(key): deepcopy(value)
+                for key, value in item.items()
+                if str(key) not in RETIRED_JOB_DETAIL_KEYS
+            }
+        )
+    return result
+
+
+# 함수 설명: `_output_contract()`는 LLM의 출력 의도를 작은 표준 계약으로 정리하고 상세 조회에만 카탈로그 기본 컬럼을 보완합니다.
+def _output_contract(
+    plan: dict[str, Any],
+    payload: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    raw = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    result_mode = str(raw.get("result_mode") or raw.get("mode") or "").strip().lower()
+    allowed_modes = {"aggregate", "detail", "entity_list", "scalar", "explanation"}
+    if result_mode not in allowed_modes:
+        result_mode = ""
+
+    contract = {
+        "result_mode": result_mode,
+        "required_columns": _string_list(raw.get("required_columns") or raw.get("columns")),
+        "grain_columns": _string_list(raw.get("grain_columns") or raw.get("group_by")),
+        "metric_columns": _string_list(raw.get("metric_columns") or raw.get("metrics")),
+        "null_group_policy": str(raw.get("null_group_policy") or "preserve_as_blank").strip(),
+        "metric_null_policy": str(raw.get("metric_null_policy") or "display_zero").strip(),
+    }
+
+    # 상세/entity 목록에만 table catalog의 기본 상세 컬럼을 사용합니다.
+    # 집계 결과에 LOT_ID 같은 row key가 강제로 추가되지 않도록 result_mode로 범위를 제한합니다.
+    if result_mode in {"detail", "entity_list"}:
+        contract["required_columns"] = _merge_strings(
+            contract["required_columns"],
+            _catalog_default_detail_columns(payload, retrieval_jobs),
+        )
+
+    return {
+        key: value
+        for key, value in contract.items()
+        if value not in (None, "", [], {})
+    }
+
+
+# 함수 설명: `_catalog_default_detail_columns()`는 선택된 데이터셋의 기본 상세 표시 컬럼 metadata만 모읍니다.
+def _catalog_default_detail_columns(payload: dict[str, Any], retrieval_jobs: list[dict[str, Any]]) -> list[str]:
+    candidates = payload.get("metadata_candidates") if isinstance(payload.get("metadata_candidates"), dict) else {}
+    items = candidates.get("table_catalog_items") if isinstance(candidates.get("table_catalog_items"), list) else []
+    selected_keys = {
+        str(job.get("dataset_key") or "").strip()
+        for job in retrieval_jobs
+        if isinstance(job, dict) and str(job.get("dataset_key") or "").strip()
+    }
+    if not selected_keys:
+        return []
+    result: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("payload") if isinstance(item.get("payload"), dict) else item
+        dataset_key = str(
+            item.get("dataset_key")
+            or item.get("key")
+            or metadata.get("dataset_key")
+            or metadata.get("key")
+            or ""
+        ).strip()
+        if dataset_key not in selected_keys:
+            continue
+        result = _merge_strings(result, _string_list(metadata.get("default_detail_columns")))
+    return result
+
+
+# 함수 설명: `_string_list()`는 문자열 또는 목록 입력을 순서가 유지되는 중복 없는 컬럼 목록으로 정규화합니다.
+def _string_list(value: Any) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= 40:
+            break
+    return result
+
+
+# 함수 설명: `_merge_strings()`는 여러 컬럼 목록을 첫 등장 순서로 합쳐 작은 출력 계약을 유지합니다.
+def _merge_strings(*values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        for item in value:
+            if item not in result:
+                result.append(item)
+            if len(result) >= 40:
+                return result
+    return result
 
 
 # 함수 설명: `_uses_previous_data_without_new_retrieval()`는 04 의도 계획 정규화기 처리 중 이전 값·데이터·without·NEW·데이터 조회 관련 값을 계산·변환하는

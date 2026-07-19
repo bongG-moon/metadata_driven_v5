@@ -84,6 +84,16 @@ def _resolve_session_id(previous_state_value: Any = None, session_id: Any = "") 
     return "demo-session"
 
 
+# 함수 설명: Langflow 직접 실행과 Run Flow 실행에서 현재 graph가 가진 실제 session_id를 읽습니다.
+# 별도 UI 입력을 추가하지 않고 부모 Router가 하위 graph에 전달한 세션을 그대로 사용합니다.
+def _runtime_session_id(component: Any) -> str:
+    graph = getattr(component, "graph", None)
+    graph_session = str(getattr(graph, "session_id", "") or "").strip()
+    if graph_session:
+        return graph_session
+    return str(getattr(component, "_session_id", "") or "").strip()
+
+
 # 함수 설명: `_korea_today()`는 현재 시각을 한국 시간 기준 YYYYMMDD 날짜 문자열로 반환합니다.
 def _korea_today() -> str:
     return datetime.now(_korea_timezone()).strftime("%Y%m%d")
@@ -114,7 +124,7 @@ class AnalysisRequestLoader(Component):
         MessageTextInput(
             name="upstream_result_ref",
             display_name="상위 Flow 결과 참조",
-            info="Route V3 연계 실행에서 직전 Tool의 result_ref를 전달합니다. 일반 질문은 비워 둡니다.",
+            info="Workflow 연계 실행에서 직전 Tool의 result_ref를 전달합니다. 일반 질문은 비워 둡니다.",
             required=False,
             tool_mode=True,
         ),
@@ -129,6 +139,7 @@ class AnalysisRequestLoader(Component):
             data=build_request(
                 getattr(self, "question", ""),
                 getattr(self, "previous_state", None),
+                session_id=_runtime_session_id(self),
                 upstream_result_ref=getattr(self, "upstream_result_ref", ""),
             )
         )

@@ -4,8 +4,8 @@
 # 역할: 선택된 pandas 분석에서만 주입하는 재사용 helper 함수 모음입니다.
 # 주요 입력: 사용자 표현 (input_text) · 필수, 원본 DataFrame (frame) · 필수
 # 주요 출력: 필터링된 DataFrame (result)
-# 처리 흐름: pandas executor가 선택적으로 주입하는 제품 토큰 helper 예시이며, 원본 DataFrame을 바꾸지 않고 필터 결과를 반환합니다.
-# 유지보수 포인트: helper는 원본 DataFrame을 변경하지 않아야 하며, executor가 주입한 record_function_case_result가 있으면 실행 근거를 기록합니다.
+# 처리 흐름: pandas executor가 선택적으로 주입하는 제품 토큰·순서 구간 helper이며, 원본 DataFrame을 바꾸지 않고 필터 결과를 반환합니다.
+# 유지보수 포인트: helper는 원본 DataFrame을 변경하지 않고, 누락·모호한 범위 입력은 추측하지 않으며, 실행 근거를 기록해야 합니다.
 # =============================================================================
 
 try:
@@ -260,6 +260,92 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
     except Exception:
         pass
     return filtered
+
+# 주요 함수: 질문에서 찾은 두 label의 숫자 order 최소·최대 사이를 포함 범위로 필터링합니다.
+# label 값이나 order 값은 특정 공정명에 종속하지 않으며, 끝점 누락·중복 해석 시 빈 DataFrame으로 닫습니다.
+def filter_ordered_range(input_text, frame, label_column='OPER_NAME', order_column='OPER_SEQ'):
+    # 원본 DataFrame을 변경하지 않고 실패 시에도 같은 column을 가진 빈 결과를 반환한다.
+    result = frame.copy()
+    empty_result = result.iloc[0:0].copy()
+
+    # 함수 설명: `_finish()`는 성공·실패 결과를 동일한 helper 실행 근거 형식으로 기록합니다.
+    def _finish(value, description):
+        try:
+            record_function_case_result('filter_ordered_range', input_text, value, description)
+        except Exception:
+            pass
+        return value
+
+    if result.empty:
+        return _finish(result, '순서 구간 원본이 비어 있음')
+    if label_column not in result.columns or order_column not in result.columns:
+        return _finish(empty_result, '순서 구간 필수 label/order column 누락')
+
+    # slash, hyphen, 공백 등 표기 구분자는 제거하되 문자·숫자 자체는 보존해 알려진 label과 비교한다.
+    # 함수 설명: `_norm_label()`은 질문과 DataFrame label을 구분자 차이에 영향받지 않는 값으로 정규화합니다.
+    def _norm_label(value):
+        text = str('' if value is None else value).strip().upper()
+        return ''.join(ch for ch in text if ch.isalnum())
+
+    normalized_labels = result[label_column].map(_norm_label)
+    numeric_orders = pd.to_numeric(result[order_column], errors='coerce')
+    valid_lookup_rows = normalized_labels.ne('') & numeric_orders.notna()
+    if not bool(valid_lookup_rows.any()):
+        return _finish(empty_result, '순서 구간 label/order lookup 값 없음')
+
+    # 같은 label이 여러 row에 반복되는 것은 허용하지만 서로 다른 order로 연결되면 모호하므로 실패한다.
+    orders_by_label = {}
+    for label_key in normalized_labels[valid_lookup_rows].drop_duplicates().tolist():
+        label_orders = (
+            numeric_orders[valid_lookup_rows & normalized_labels.eq(label_key)]
+            .dropna()
+            .drop_duplicates()
+            .tolist()
+        )
+        orders_by_label[label_key] = label_orders
+
+    normalized_input = _norm_label(input_text)
+    if not normalized_input:
+        return _finish(empty_result, '순서 구간 끝점 입력 없음')
+
+    # 알려진 label을 긴 값부터 찾아 짧은 label이 긴 label 내부에 중복 매칭되는 것을 막는다.
+    candidate_matches = []
+    for label_key in sorted(orders_by_label, key=lambda value: (-len(value), value)):
+        search_from = 0
+        while search_from < len(normalized_input):
+            position = normalized_input.find(label_key, search_from)
+            if position < 0:
+                break
+            candidate_matches.append((position, position + len(label_key), label_key))
+            search_from = position + 1
+    candidate_matches.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2]))
+
+    selected_matches = []
+    selected_spans = []
+    for start, end, label_key in candidate_matches:
+        overlaps = any(start < used_end and end > used_start for used_start, used_end in selected_spans)
+        if overlaps:
+            continue
+        selected_matches.append((start, end, label_key))
+        selected_spans.append((start, end))
+    selected_matches.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    # 두 끝점 외 label이 더 있거나, 어느 한쪽을 찾지 못하면 임의로 첫 두 개를 고르지 않는다.
+    if len(selected_matches) != 2:
+        return _finish(empty_result, '순서 구간 끝점 누락 또는 모호함')
+
+    endpoint_orders = []
+    for _, _, label_key in selected_matches:
+        resolved_orders = orders_by_label.get(label_key, [])
+        if len(resolved_orders) != 1:
+            return _finish(empty_result, '순서 구간 끝점 order가 모호함')
+        endpoint_orders.append(resolved_orders[0])
+
+    lower_order = min(endpoint_orders)
+    upper_order = max(endpoint_orders)
+    range_mask = numeric_orders.between(lower_order, upper_order, inclusive='both').fillna(False)
+    filtered = result[range_mask].copy()
+    return _finish(filtered, '두 label 끝점의 숫자 order 포함 범위 결과')
 
 # 주요 함수: 여러 helper 선택 형식을 검증하기 위해 DataFrame 복사본을 그대로 반환합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.

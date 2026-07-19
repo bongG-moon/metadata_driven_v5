@@ -6,23 +6,23 @@
 
 ```json
 {
-  "workflow_key": "anomaly_lot_hold_history",
-  "title": "이상 LOT 및 HOLD 이력 분석",
-  "description": "이상 LOT을 찾은 뒤 해당 LOT의 HOLD 이력을 분석합니다.",
+  "workflow_key": "hold_lot_history_metadata_audit",
+  "title": "현재 HOLD LOT 이력과 데이터 정의 감사",
+  "description": "현재 HOLD LOT을 찾은 뒤 해당 LOT의 HOLD 이력과 관련 데이터셋 정의를 확인합니다.",
   "steps": [
     {
-      "step_id": "find_abnormal_lots",
+      "step_id": "current_hold_lots",
       "tool_name": "run_data_analysis",
-      "question": "{{user_question}}에서 요청한 기준으로 이상 LOT을 분석해줘.",
+      "question": "현재 HOLD 중인 LOT을 조회하고 LOT_ID를 결과에 포함해줘.",
       "depends_on": [],
       "handoff": "none",
       "on_error": "stop"
     },
     {
-      "step_id": "analyze_hold_history",
+      "step_id": "hold_history",
       "tool_name": "run_data_analysis",
       "question": "이전 결과의 LOT을 대상으로 HOLD 이력과 주요 사유를 분석해줘.",
-      "depends_on": ["find_abnormal_lots"],
+      "depends_on": ["current_hold_lots"],
       "handoff": "result_ref",
       "on_error": "stop"
     }
@@ -40,10 +40,28 @@
 | `tool_name` | 필수 | 실제 연결 Tool의 `name`과 완전히 같아야 합니다. |
 | `question` | 필수 | 해당 Tool 하나가 수행할 구체적인 요청입니다. 최대 4,000자입니다. |
 | `depends_on` | 필수 | 앞에서 정의된 `step_id`만 참조합니다. 첫 단계는 빈 배열입니다. |
-| `handoff` | 필수 | `none` 또는 `result_ref`입니다. |
+| `handoff` | 필수 | 현재 단계가 앞 단계 결과를 입력으로 받지 않으면 `none`, 받으면 `result_ref`입니다. |
 | `on_error` | 필수 | `stop` 또는 `continue`입니다. |
 
-`handoff=result_ref`이면 `depends_on`은 정확히 1개여야 합니다. 두 결과를 하나의 ref 입력에 합치는 암묵적 fallback은 지원하지 않습니다.
+`handoff`는 결과를 생성하는 단계를 표시하는 값이 아니라, 현재 단계가 이전 결과를 입력으로 소비하는지 표시하는 값입니다. `handoff=result_ref`이면 `depends_on`은 정확히 1개여야 합니다. 두 결과를 하나의 ref 입력에 합치는 암묵적 fallback은 지원하지 않습니다.
+
+현재 `result_ref`를 생성하는 Tool은 `run_data_analysis`입니다. 이를 입력으로 받을 수 있는 Tool은 후속 데이터 분석용 `run_data_analysis`와 HTML 차트 생성용 `run_visualization`입니다. `run_visualization`은 첫 단계로 두지 않습니다.
+
+```text
+run_data_analysis: depends_on=[], handoff=none
+run_visualization: depends_on=[run_data_analysis의 step_id], handoff=result_ref
+```
+
+```json
+{
+  "step_id": "chart",
+  "tool_name": "run_visualization",
+  "question": "일자를 X축, 생산량을 Y축으로 사용한 선 그래프 HTML을 만들어줘.",
+  "depends_on": ["production"],
+  "handoff": "result_ref",
+  "on_error": "stop"
+}
+```
 
 ## 오류 정책
 
@@ -70,8 +88,8 @@ ${user_question}
 ```json
 {
   "workflows": {
-    "anomaly_lot_hold_history": {
-      "title": "이상 LOT 및 HOLD 이력 분석",
+    "hold_lot_history_metadata_audit": {
+      "title": "현재 HOLD LOT 이력과 데이터 정의 감사",
       "steps": []
     },
     "production_wip_summary": {
@@ -92,20 +110,20 @@ ${user_question}
 
 ## MongoDB 저장 문서 형식
 
-운영 Route V4는 `datagov.agent_v4_workflow_skills`에서 다음 형태의 활성 문서를 조회합니다.
+운영 08 Workflow Orchestrator는 `datagov.agent_v4_workflow_skills`에서 다음 형태의 활성 문서를 조회합니다.
 
 ```json
 {
-  "_id": "workflow:anomaly_lot_hold_history",
+  "_id": "workflow:hold_lot_history_metadata_audit",
   "section": "workflow_skills",
-  "key": "anomaly_lot_hold_history",
+  "key": "hold_lot_history_metadata_audit",
   "status": "active",
   "payload": {
-    "display_name": "이상 LOT 및 HOLD 이력 분석",
-    "description": "이상 LOT을 찾은 뒤 해당 LOT의 HOLD 이력을 분석합니다.",
-    "aliases": ["이상 LOT HOLD 분석"],
-    "intent_examples": ["오늘 이상 LOT을 분석하고 해당 LOT HOLD 이력을 알려줘"],
-    "keywords": ["이상 LOT", "HOLD 이력"],
+    "display_name": "현재 HOLD LOT 이력과 데이터 정의 감사",
+    "description": "현재 HOLD LOT과 해당 LOT의 HOLD 이력 및 데이터셋 정의를 확인합니다.",
+    "aliases": ["HOLD LOT 이력 감사"],
+    "intent_examples": ["현재 HOLD LOT과 해당 LOT HOLD 이력을 알려줘"],
+    "keywords": ["현재 HOLD LOT", "HOLD 이력"],
     "excluded_keywords": [],
     "priority": 100,
     "steps": []
@@ -120,20 +138,20 @@ ${user_question}
 운영자가 짧게 확인할 때만 사용합니다. 복잡한 질문은 JSON을 권장합니다.
 
 ```markdown
-workflow_key: anomaly_lot_hold_history
-title: 이상 LOT 및 HOLD 이력 분석
+workflow_key: hold_lot_history_metadata_audit
+title: 현재 HOLD LOT 이력과 데이터 정의 감사
 
-### find_abnormal_lots
+### current_hold_lots
 tool_name: run_data_analysis
-question: {{user_question}} 기준으로 이상 LOT을 분석해줘.
+question: 현재 HOLD 중인 LOT을 조회하고 LOT_ID를 포함해줘.
 depends_on: []
 handoff: none
 on_error: stop
 
-### analyze_hold_history
+### hold_history
 tool_name: run_data_analysis
 question: 이전 결과의 LOT HOLD 이력을 분석해줘.
-depends_on: [find_abnormal_lots]
+depends_on: [current_hold_lots]
 handoff: result_ref
 on_error: stop
 ```

@@ -12,9 +12,16 @@
 - BOH_WIP: 아침재공
 - WIP_PER_INPUT: 투입 대비 WIP
 - ASSIGN_QTY, ASSIGN_COUNT: ASSIGN 대수
+- EQP_ID, EQUIP_ID: 장비 ID
+- EQP_MODEL, EQUIP_MODEL: 장비 모델
+- RECIPE_ID: Recipe
+- PRESS_CNT: Press 수
+- UPH: UPH
 - wip_sum: WIP 합계
 - MCP_NO: MCP NO
 - WORK_DATE, WORK_DT: 기준일
 
 결과 테이블 표시 순서가 필요한 경우에만 answer_sections.result_table.display_columns에 원본 컬럼명 기준으로 순서를 넣는다.
-권장 순서: WORK_DATE, WORK_DT, OPER_NAME, OPER_NM, TECH, DEN, DENSITY, MODE, ORG, PKG1, PKG_TYPE1, PKG2, PKG_TYPE2, LEAD, MCP_NO, DEVICE, TOTAL_PRODUCTION, PRODUCTION, production_sum, PKG_OUT_QTY, INPUT_QTY, input_sum, BOH_WIP, TOTAL_WIP, WIP, WIP_PER_INPUT, ASSIGN_QTY, ASSIGN_COUNT, wip_sum
+권장 순서: WORK_DATE, WORK_DT, OPER_NAME, OPER_NM, EQP_ID, EQUIP_ID, EQP_MODEL, EQUIP_MODEL, RECIPE_ID, PRESS_CNT, TECH, DEN, DENSITY, MODE, ORG, PKG1, PKG_TYPE1, PKG2, PKG_TYPE2, LEAD, MCP_NO, DEVICE, UPH, TOTAL_PRODUCTION, PRODUCTION, production_sum, PKG_OUT_QTY, INPUT_QTY, input_sum, BOH_WIP, TOTAL_WIP, WIP, WIP_PER_INPUT, ASSIGN_QTY, ASSIGN_COUNT, wip_sum
+
+UPH가 장비 모델 또는 Recipe에 따라 달라진다고 설명할 때는 결과 테이블에도 실제 결과에 포함된 장비 모델과 RECIPE_ID 컬럼을 함께 표시한다. 결과에 없는 모델·Recipe 차이를 추측해서 설명하지 않는다.

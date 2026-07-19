@@ -4629,11 +4629,11 @@
   },
   "description": "Smart Router classification with per-branch Langflow Run API calls, shared session propagation, pooled HTTP connections, secret API keys, and structured status outputs.",
   "endpoint_name": "metadata-driven-v5-api-router",
-  "id": "2d447350-d02f-5fee-b8b5-bb7f696bd4e2",
+  "id": "47d93712-63ae-5442-8978-f16f90a20050",
   "is_component": false,
   "last_tested_version": "1.8.2",
   "locked": false,
-  "name": "metadata_driven_v5_api_router_standalone",
+  "name": "06. v5_api_router",
   "tags": [
     "v5",
     "standalone",

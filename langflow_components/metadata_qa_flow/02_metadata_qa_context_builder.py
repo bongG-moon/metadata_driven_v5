@@ -330,7 +330,7 @@ def _looks_like_data_value_question(lowered: str) -> bool:
     if any(token in lowered for token in ("메타데이터", "metadata", "등록", "정의", "무슨 컬럼", "어떤 컬럼", "쿼리", "sql", "query", "데이터셋", "필수 조건")):
         return False
     has_time_or_target = any(token in lowered for token in ("오늘", "어제", "전일", "금일", "현시간", "현재", "/", "월", "일"))
-    has_metric = any(token in lowered for token in ("생산량", "생산 실적", "실적", "재공", "수량", "투입", "input", "output", "out", "assign", "장비"))
+    has_metric = any(token in lowered for token in ("생산량", "생산 실적", "생산 데이터", "실적", "재공", "수량", "투입", "input", "output", "out", "assign", "장비"))
     asks_value = any(token in lowered for token in ("알려줘", "확인", "보여줘", "몇", "상위", "많은"))
     return has_metric and asks_value and has_time_or_target
 
@@ -417,7 +417,7 @@ def _looks_like_table_data_question(lowered: str) -> bool:
         "제품",
     )
     time_tokens = ("오늘", "어제", "전일", "금일", "현재", "현시간", "월", "일", "202")
-    has_row_value = any(token in lowered for token in row_value_tokens)
+    has_row_value = any(token in lowered for token in row_value_tokens) or bool(re.search(r"\d+\s*건", lowered))
     has_business = any(token in lowered for token in business_tokens)
     has_time = any(token in lowered for token in time_tokens)
     has_list_word = any(token in lowered for token in ("테이블 목록", "데이터 목록", "table list"))
@@ -459,13 +459,32 @@ def _looks_like_available_sources_question(lowered: str) -> bool:
         "뭐가 있",
         "무엇이 있",
         "list",
+        "리스트",
         "총",
         "몇 개",
         "몇개",
         "개수",
         "건수",
     )
-    has_subject = any(token in lowered for token in catalog_subject_tokens)
+    # "조회 가능한 데이터 list"처럼 데이터셋이라는 명사를 생략하고 한글·영문을
+    # 섞어 쓴 목록 질문도 전체 Table Catalog 조회로 해석한다. 단순 "데이터"만으로
+    # 판정하지 않고, 조회 가능성 표현과 목록 표현이 함께 있을 때만 일반 데이터 명사를
+    # 카탈로그 subject로 인정해 실제 데이터 값 질문을 가로채지 않는다.
+    availability_tokens = (
+        "등록된",
+        "등록되어",
+        "조회 가능",
+        "조회가능",
+        "조회할 수 있",
+        "사용 가능",
+        "사용가능",
+        "볼 수 있",
+    )
+    generic_data_list_pattern = r"(?<!메타)데이터\s*(?:목록|리스트|list|전체|전부)"
+    has_generic_data_inventory_subject = bool(re.search(generic_data_list_pattern, lowered)) and any(
+        token in lowered for token in availability_tokens
+    )
+    has_subject = any(token in lowered for token in catalog_subject_tokens) or has_generic_data_inventory_subject
     has_inventory_intent = any(token in lowered for token in inventory_tokens)
     if not has_subject or not has_inventory_intent:
         return False

@@ -44,6 +44,7 @@ STRUCTURED_SEARCH_KEYS = {
     "required_params",
     "semantic_role",
 }
+DEPRECATED_TABLE_CATALOG_KEYS = {"row_identity_columns", "context_columns"}
 KOREAN_SUFFIXES = (
     "으로부터",
     "에게서",
@@ -124,6 +125,12 @@ RUNTIME_FUNCTION_HELPERS = [
         "selection_policy": "product_token_only",
         "selectable_for_intent": True,
         "description": "제품 속성 token 묶음을 실제 조회 DataFrame row와 매칭할 때만 사용한다.",
+    },
+    {
+        "function_name": "filter_ordered_range",
+        "selection_policy": "ordered_range_only",
+        "selectable_for_intent": True,
+        "description": "두 label 끝점의 숫자 order 최소·최대 사이를 포함 범위로 필터링할 때만 사용한다.",
     },
     {
         "function_name": "sample_passthrough_helper",
@@ -564,6 +571,8 @@ def _sanitize_value(value: Any, compact_source_config: bool = False) -> Any:
             key_text = str(key)
             if key_text in PRUNED_METADATA_KEYS:
                 continue
+            if compact_source_config and key_text in DEPRECATED_TABLE_CATALOG_KEYS:
+                continue
             if compact_source_config and key_text in UNTRUSTED_PROMPT_CONFIG_KEYS:
                 continue
             result[key_text] = _sanitize_value(item, compact_source_config)
@@ -641,12 +650,94 @@ def _tokens(value: str) -> list[str]:
         "함께",
     }
     result: list[str] = []
+    if _looks_like_ordered_range(value):
+        # 구간 표현은 원문 끝점이 metadata에 직접 없더라도 runtime helper/OPER_SEQ recipe가 후보가 되게 한다.
+        result.extend(("filter_ordered_range", "ordered_range", "oper_seq", "공정구간", "범위"))
+    for token in _separator_normalized_tokens(value):
+        if len(token) >= 2 and token not in result:
+            result.append(token)
     for raw_token in re.findall(r"[0-9A-Za-z가-힣_]+", str(value or "").lower()):
         for token in _token_variants(raw_token):
             if len(token) < 2 or token in stop or token in result:
                 continue
             result.append(token)
     return result[:60]
+
+
+# 함수 설명: `_separator_normalized_tokens()`는 slash 등 label 내부 구분자를 제거한 값과 숫자 차수 전 stem을 후보 token으로 만듭니다.
+def _separator_normalized_tokens(value: str) -> list[str]:
+    result: list[str] = []
+    for raw_token in re.findall(r"[0-9A-Za-z가-힣]+(?:[/\\][0-9A-Za-z가-힣]+)+", str(value or "").lower()):
+        normalized = re.sub(r"[/\\]+", "", raw_token)
+        stem = re.sub(r"\d+$", "", normalized)
+        for token in (normalized, stem):
+            if len(token) >= 2 and token not in result:
+                result.append(token)
+    return result
+
+
+# 함수 설명: `_looks_like_ordered_range()`는 두 label 사이의 구간 기호·의미 표현을 찾되 MCP_NO 내부 hyphen은 제외합니다.
+def _looks_like_ordered_range(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+
+    # 물결표 계열은 양쪽 label을 명시하는 강한 범위 신호다. 두 MCP token 사이 표기는 공정 순서로 오인하지 않는다.
+    for match in re.finditer(
+        r"([0-9A-Za-z가-힣][0-9A-Za-z가-힣/_-]*)\s*[~∼～]\s*([0-9A-Za-z가-힣][0-9A-Za-z가-힣/_-]*)",
+        text,
+    ):
+        endpoints = (match.group(1), match.group(2))
+        if not all(_looks_like_mcp_token(endpoint) for endpoint in endpoints):
+            return True
+
+    # 일반 hyphen은 양쪽이 각각 문자와 숫자를 가진 label일 때만 구간 구분자로 인정한다.
+    # 따라서 영문 1자리-숫자 3자리인 단일 MCP_NO 표기는 이 경로에 들어오지 않는다.
+    for match in re.finditer(
+        r"([0-9A-Za-z가-힣][0-9A-Za-z가-힣/_]*)\s*-\s*([0-9A-Za-z가-힣][0-9A-Za-z가-힣/_]*)",
+        text,
+    ):
+        if all(_looks_like_ordered_endpoint(match.group(index)) for index in (1, 2)):
+            return True
+
+    # `시작부터 끝까지`는 label 자체 표기와 무관한 일반 범위 의미다.
+    for match in re.finditer(
+        r"([0-9A-Za-z가-힣][0-9A-Za-z가-힣/_-]*)\s*부터\s*([0-9A-Za-z가-힣][0-9A-Za-z가-힣/_-]*)\s*까지",
+        text,
+    ):
+        endpoints = (match.group(1), match.group(2))
+        if not all(_looks_like_mcp_token(endpoint) for endpoint in endpoints):
+            return True
+
+    # 내부 slash가 있는 두 차수 label을 붙여 쓴 표현도 두 끝점을 잇는 구간 후보로 본다.
+    compact = re.sub(r"\s+", "", text)
+    if re.search(r"(?:[A-Za-z가-힣]+/[A-Za-z가-힣]*\d+){2}", compact):
+        return True
+
+    lowered = text.lower()
+    semantic_cue = any(
+        cue in lowered
+        for cue in ("공정 구간", "공정구간", "공정 범위", "공정범위", "공정 순서", "ordered range", "oper_seq 범위")
+    )
+    if not semantic_cue:
+        return False
+    endpoints = [
+        token
+        for token in re.findall(r"[0-9A-Za-z가-힣][0-9A-Za-z가-힣/_-]*", text)
+        if _looks_like_ordered_endpoint(token) and not _looks_like_mcp_token(token)
+    ]
+    return len(endpoints) >= 2 or "oper_seq" in lowered
+
+
+# 함수 설명: `_looks_like_ordered_endpoint()`는 범위 hyphen 양쪽 값이 문자와 숫자를 모두 가진 순서 label 형태인지 판정합니다.
+def _looks_like_ordered_endpoint(value: str) -> bool:
+    text = str(value or "")
+    return bool(re.search(r"[A-Za-z가-힣]", text) and re.search(r"\d", text))
+
+
+# 함수 설명: `_looks_like_mcp_token()`는 label 범위 구분자와 혼동하기 쉬운 영문 1자리-숫자 3자리 제품 token을 판정합니다.
+def _looks_like_mcp_token(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z]-\d{3}[A-Za-z0-9]*", str(value or "").strip()))
 
 
 # 함수 설명: `_token_variants()`는 질문 token의 구분자 제거·영숫자 결합 등 비교용 표기 변형을 만듭니다.

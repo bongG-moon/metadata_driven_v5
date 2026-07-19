@@ -26,97 +26,97 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "8a3be83f74f3e42dad4a693a793074d6f642738a1830b8add88370453a940b25",
+  "single_file_ui_import_sha256": "8e35029d00017e050d5bcf6ea4645f9743589ce1f05f9afe9b258c566cfcf9b5",
   "flows": [
     {
       "order": 1,
       "file": "01_data_analysis_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_data_analysis",
+      "name": "01. v5_data_analysis",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 43,
       "edges": 67,
-      "sha256": "a1cae576d808982176f4d540299ea22ec69bd1e73a598f5f30314025800f04c4"
+      "sha256": "04243015c8a364f71f262986f5acb6acb7ef02361992e037b7ebef008fb3707c"
     },
     {
       "order": 2,
       "file": "02_domain_saving_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_domain_saving",
+      "name": "02. v5_domain_saving",
       "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "b0d36b0120414bc527109d6532d0081f6dca3d0fb07c7d0c57a0c3547cb46ceb"
+      "sha256": "761248f3ac986c2ba92fa4af008935f8ef72e9340853cf74ce5f3ad216c63361"
     },
     {
       "order": 3,
       "file": "03_table_catalog_saving_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_table_catalog_saving",
+      "name": "03. v5_table_catalog_saving",
       "endpoint_name": "metadata-driven-v5-complete-20260710-table-catalog-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "3077f6fe2819e1bca0e6ab1fe4b484dab9e61cafd87a3c73788718f0cbdb47fd"
+      "sha256": "8624333c66d9fc227d85c7b5350dcc88acd8ad0c5e0f441ba43ba2bc1a67a116"
     },
     {
       "order": 4,
       "file": "04_main_flow_filter_saving_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_main_flow_filter_saving",
+      "name": "04. v5_main_flow_filter_saving",
       "endpoint_name": "metadata-driven-v5-complete-20260710-main-flow-filter-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "cd27ab8464f267beefaf036fe89226edd0165c99e3c5f707bba61d08cda5075d"
+      "sha256": "ddcaa6bd647665ef4f94298cc11944bb6256fa830991134adb8a6eef6ecb1919"
     },
     {
       "order": 5,
       "file": "05_metadata_qa_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_metadata_qa",
+      "name": "05. v5_metadata_qa",
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
       "nodes": 11,
       "edges": 17,
-      "sha256": "1e2e59320c3612a1268f01dc3eada56d0e1d51370b0dee76966d00bb0050dabc"
+      "sha256": "e47e71cbe8cf5bcbecf804ff6d75c8609b6b6f079a0eac3a2f70d2d70ea0c4f3"
     },
     {
       "order": 6,
       "file": "06_api_router_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_api_router",
+      "name": "06. v5_api_router",
       "endpoint_name": "metadata-driven-v5-complete-20260710-api-router",
       "nodes": 14,
       "edges": 13,
-      "sha256": "0745afcd8f582ad0c618eaf88c9bf3c55f026a881ebecc93bbd09ff15eced87b"
+      "sha256": "fb5f04bbfb57e44e1ae9b9e0b46f5e5e8abd556855bd23dfc7393af1bca42bb3"
     },
     {
       "order": 7,
       "file": "07_agent_tool_router_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_agent_tool_router",
+      "name": "07. v5_agent_tool_router",
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
       "nodes": 8,
       "edges": 7,
-      "sha256": "abf636305316738e1aad3b62df161ffa94fdaa5ff3c9a390a214c861c4b82520"
+      "sha256": "83875fa2faee0358713ad1a71620bfeb9678430a7338170504c2e04f22ffaa19"
     },
     {
       "order": 8,
-      "file": "08_agent_orchestrator_router_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_agent_orchestrator_router",
-      "endpoint_name": "metadata-driven-v5-complete-20260710-agent-orchestrator-router",
-      "nodes": 8,
-      "edges": 7,
-      "sha256": "6807b1f156e87e2c36132e85c955d44faad72ac0f2de311e93594033a280c799"
+      "file": "08_workflow_orchestrator_flow_v5_standalone.json",
+      "name": "08. v5_workflow_orchestrator",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-workflow-orchestrator",
+      "nodes": 18,
+      "edges": 26,
+      "sha256": "7eca6ed90f965cce274d6bd468faddc3d4d6307e9c6f4513fd1400fda5110942"
     },
     {
       "order": 9,
-      "file": "09_workflow_orchestrator_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_workflow_orchestrator",
-      "endpoint_name": "metadata-driven-v5-complete-20260710-workflow-orchestrator",
-      "nodes": 17,
-      "edges": 25,
-      "sha256": "7b60778c469b73363868af40042c72f578d7a090ac689555b82fe1d4b9de4ce0"
-    },
-    {
-      "order": 10,
-      "file": "10_workflow_skill_saving_flow_v5_standalone.json",
-      "name": "metadata_driven_v5_complete_20260710_workflow_skill_saving",
+      "file": "09_workflow_skill_saving_flow_v5_standalone.json",
+      "name": "09. v5_workflow_skill_saving",
       "endpoint_name": "metadata-driven-v5-complete-20260710-workflow-skill-saving",
       "nodes": 13,
       "edges": 14,
-      "sha256": "c3ed781c73d38046f2ec6eee606870e7bb592c1ceb135207af76fcaeecdd69f2"
+      "sha256": "9f4071a1c36ebb8393423137439706275b2d481f52f60e5c619890ca062c6831"
+    },
+    {
+      "order": 10,
+      "file": "10_html_visualization_flow_v5_standalone.json",
+      "name": "10. v5_html_visualization",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-html-visualization",
+      "nodes": 4,
+      "edges": 3,
+      "sha256": "ce8c4e405822771120b7c17fc8aa93a61164165b03bc26c8937ae15db474c78a"
     }
   ],
   "router_configuration": {
@@ -130,42 +130,40 @@
     "manual_flow_id_replacement_required": false,
     "api_router": "Smart Router plus five Run API callers",
     "agent_tool_router": "Agent plus five name-resolved cached Flow tools",
-    "agent_orchestrator_router": "Agent plus five name-resolved cached Flow tools with explicit result_ref handoff",
-    "workflow_orchestrator": "Language Model planner plus native Loop and deterministic sequential Tool executor"
+    "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools"
   },
   "validation": {
-    "pytest": "290 passed",
-    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 99/99 custom nodes to 82 real Python sources; 0 missing",
-    "korean_component_documentation": "83/83 Python sources and 1361/1361 function definitions documented; 38 component text sources and 12 embedded prompts are BOM-free; 297 embedded custom-code instances preserve 5364/5364 documented function instances; strict UTF-8/JSON checks passed",
-    "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
-    "langflow_frontend_edge_handles": "384/384 parsed and matched edge.data",
+    "pytest": "335 passed",
+    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 97/97 custom nodes to 84 real Python sources; 0 missing",
+    "korean_component_documentation": "85/85 Python sources and 1470/1470 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 291 embedded custom-code instances preserve 5382/5382 documented function instances; strict UTF-8/JSON checks passed",
+    "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
+    "langflow_frontend_edge_handles": "378/378 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-    "langflow_lfx_node_templates": "153/153 passed",
-    "native_language_model_policy": "tool-free LLM stages and Route V4 planning/final synthesis use native Language Model components; Route V2 and Route V3 use native Agents with five real tools",
+    "langflow_lfx_node_templates": "150/150 passed",
+    "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with five real tools",
     "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter directly to their ChatOutput; 0 gate nodes",
     "router_single_entry_topology": "Chat Input has exactly one outgoing edge to Smart Router; 0 API-caller session fan-out edges",
     "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra Chat Input edges",
-    "langflow_http_import": "the previous 8 flows passed isolated Langflow 1.8.2 HTTP import; Route V4 is covered by bundle and node/edge contract validation until the next live-server import run",
-    "single_chat_output": "6/6 child flows, Route V2, Route V3, and Route V4 each have exactly one ChatOutput",
+    "langflow_http_import": "the previous 8 flows passed isolated Langflow 1.8.2 HTTP import; Workflow Orchestrator is covered by bundle and node/edge contract validation until the next live-server import run",
+    "single_chat_output": "7/7 child flows, Route V2, and Workflow Orchestrator each have exactly one ChatOutput",
     "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
     "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
     "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
     "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
     "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2, Route V3, and Route V4 each have 5/5 runtime-user-scoped name-resolved tools with cache_flow=true, runtime ID reuse, and blank exported IDs",
+    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 has 5/5 cached tools; Workflow Orchestrator has 6/6 tools that re-resolve the exact current Flow name and cache only the graph by its actual ID; all exported IDs are blank",
     "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current ChatInput ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
     "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
     "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
     "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
-    "agent_orchestrator_contract": "5/5 tools use return_direct=false, expose question plus optional upstream_result_ref, and return compact route_v3.tool_result.v1 observations",
-    "agent_orchestrator_call_policy": "native Agent max_iterations=5; system prompt permits at most four sequential Tool calls and one final ChatOutput",
-    "agent_orchestrator_result_handoff": "Data Analysis restores an explicit result_ref as upstream_result and preserves it beside newly retrieved aliases",
-    "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
+    "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the six-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
+    "workflow_orchestrator_result_handoff": "Data Analysis produces an explicit result_ref consumed by a follow-up Data Analysis or HTML Visualization step",
+    "html_visualization_contract": "one result_ref-backed custom builder produces offline HTML/SVG, publishes absolute browser view/download URLs through the visible Report API input, and keeps raw HTML out of Workflow payloads; one ChatOutput and one separate API adapter expose a real terminal api_response",
     "workflow_orchestrator_registry": "visible MongoDB registry loader reads active workflow.registry.v1 items from agent_v4_workflow_skills; inline_seed is an explicit standalone test source, never an implicit fallback",
     "workflow_orchestrator_terminal_contract": "one final Language Model synthesis, one ChatOutput, and one terminal api_response; invalid or empty plans still reach the final error response",
     "metadata_existing_loader": "4/4 saving flows connect ExistingLoader directly to Matcher",
     "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-    "metadata_mongo_defaults": "18 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+    "metadata_mongo_defaults": "19 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
     "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
     "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
     "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes"

@@ -11,6 +11,8 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_FILES = sorted(
@@ -43,8 +45,9 @@ def install_lfx_test_stubs() -> None:
             super().__init__(data or [])
 
     class Message:
-        def __init__(self, text=""):
+        def __init__(self, text="", files=None):
             self.text = text
+            self.files = list(files or [])
 
     class InputBase:
         def __init__(self, **kwargs):
@@ -712,11 +715,18 @@ def test_analysis_request_loader_defaults_reference_date_to_korea_today():
 
     payload = request_loader.build_request("오늘 재공 알려줘")
     inherited = request_loader.build_request("오늘 재공 알려줘", {"session_id": "s-from-state"})
+    component = request_loader.AnalysisRequestLoader()
+    component.question = "오늘 재공 알려줘"
+    component.previous_state = None
+    component.upstream_result_ref = ""
+    component.graph = types.SimpleNamespace(session_id="runtime-session-1")
+    runtime_payload = component.build_payload().data
     input_names = {item.kwargs.get("name") for item in request_loader.AnalysisRequestLoader.inputs}
 
     assert payload["request"]["reference_date"] == expected_today
     assert payload["request"]["session_id"] == "demo-session"
     assert inherited["request"]["session_id"] == "s-from-state"
+    assert runtime_payload["request"]["session_id"] == "runtime-session-1"
     assert "timezone" not in payload["request"]
     assert "reference_date_source" not in payload["request"]
     assert "reference_date" not in input_names
@@ -811,22 +821,78 @@ def test_intent_variables_builder_hides_date_context_and_direct_specialized_prom
 def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
     intent_variables = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "02_intent_variables_builder.py")
     variables = intent_variables.build_variables(
-        {"request": {"question": "오늘 재공 알려줘", "reference_date": "20260701"}},
+        {
+            "request": {"question": "오늘 재공 알려줘", "reference_date": "20260701"},
+            "state": {
+                "last_intent_plan": {
+                    "output_contract": {
+                        "required_columns": ["WIP"],
+                        "row_identity_columns": ["DEVICE"],
+                        "context_columns": ["OPER_NAME"],
+                    },
+                    "retrieval_jobs": [
+                        {
+                            "dataset_key": "wip_today",
+                            "join_keys": ["DEVICE"],
+                            "row_identity_columns": ["DEVICE"],
+                            "context_columns": ["OPER_NAME"],
+                        }
+                    ],
+                }
+            },
+        },
         {
             "domain_items": [{"key": "duplicated_outer"}],
             "metadata_candidates": {
-                "domain_items": [{"section": "process_groups", "key": "DA"}],
-                "table_catalog_items": [{"dataset_key": "wip_today"}],
+                "domain_items": [
+                    {
+                        "section": "analysis_recipes",
+                        "key": "join_recipe",
+                        "payload": {
+                            "join_keys": ["DEVICE"],
+                            "left_keys": ["DEVICE"],
+                            "right_keys": ["DEVICE"],
+                            "context_columns": ["OPER_NAME"],
+                        },
+                    }
+                ],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "wip_today",
+                        "payload": {
+                            "default_detail_columns": ["DEVICE", "OPER_NAME", "WIP"],
+                            "row_identity_columns": ["DEVICE"],
+                            "context_columns": ["OPER_NAME"],
+                        },
+                    }
+                ],
             },
             "metadata_load": {"loads": {"domain_items": {"collection_name": "agent_v4_domain_items"}}},
         },
     )
     candidates = json.loads(variables["metadata_candidates"])
     schema = json.loads(variables["output_schema"])
+    state = json.loads(variables["state_summary"])
 
     assert candidates == {
-        "domain_items": [{"section": "process_groups", "key": "DA"}],
-        "table_catalog_items": [{"dataset_key": "wip_today"}],
+        "domain_items": [
+            {
+                "section": "analysis_recipes",
+                "key": "join_recipe",
+                "payload": {
+                    "join_keys": ["DEVICE"],
+                    "left_keys": ["DEVICE"],
+                    "right_keys": ["DEVICE"],
+                    "context_columns": ["OPER_NAME"],
+                },
+            }
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "wip_today",
+                "payload": {"default_detail_columns": ["DEVICE", "OPER_NAME", "WIP"]},
+            }
+        ],
     }
     assert "metadata_candidates" not in candidates
     assert "metadata_load" not in candidates
@@ -834,6 +900,11 @@ def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
     assert schema["intent_plan"]["pandas_function_cases"] == []
     assert "request_scope" in schema["intent_plan"]
     assert "condition_resolution" in schema["intent_plan"]
+    assert "context_columns" not in schema["intent_plan"]["output_contract"]
+    assert state["state"]["last_intent_plan"]["output_contract"] == {"required_columns": ["WIP"]}
+    assert state["state"]["last_intent_plan"]["retrieval_jobs"] == [
+        {"dataset_key": "wip_today", "join_keys": ["DEVICE"]}
+    ]
     assert "\n" not in variables["state_summary"]
     assert "\n" not in variables["metadata_candidates"]
     assert "\n" not in variables["output_schema"]
@@ -1116,6 +1187,16 @@ def test_langflow_dummy_data_covers_auto_korea_today_reference_date():
     assert len(retrieved["source_results"][0]["preview_rows"]) <= 5
     assert len(retrieved["source_results"][0]["rows"]) > len(retrieved["source_results"][0]["preview_rows"])
     assert {row["WORK_DATE"] for row in retrieved["source_results"][0]["rows"]} == {reference_date}
+    assert {
+        row["DEVICE"]
+        for row in retrieved["source_results"][0]["rows"]
+        if row["OPER_NAME"] == "W/BM"
+    } == {
+        "DEV-WBM-BLANK",
+        "DEV-WBM-NULL-QTY",
+        "DEV-WBM-A-SHIFT",
+        "DEV-WBM-B-SHIFT-DECOY",
+    }
 
 
 def test_representative_questions_have_answerable_dummy_data_coverage():
@@ -1147,6 +1228,35 @@ def test_representative_questions_have_answerable_dummy_data_coverage():
     assert results[9]["preview_rows"][0]["DEVICE"] == "DEV-SP-DDR5"
     assert results[12]["preview_rows"][0]["MCP_NO"] == "L-218K8H"
     assert results[13]["preview_rows"][0]["DEVICE"] == "DEV-DA-GDDR6"
+    assert results[26]["row_count"] == 4
+    assert any(
+        row["DEVICE"] == "DEV-WBM-BLANK"
+        and row["TECH"] == ""
+        and row["TOTAL_PRODUCTION"] == 37
+        for row in results[26]["preview_rows"]
+    )
+    assert any(
+        row["DEVICE"] == "DEV-WBM-NULL-QTY" and row["TOTAL_PRODUCTION"] == 0
+        for row in results[26]["preview_rows"]
+    )
+    assert results[27]["columns"] == ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]
+    assert results[28]["row_count"] == 13
+    assert results[28]["used_helpers"] == ["filter_ordered_range"]
+    assert {row["OPER_NAME"] for row in results[28]["preview_rows"]}.issubset(
+        {"D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6", "D/S1", "W/B1", "W/B2", "W/B3"}
+    )
+    assert results[29]["row_count"] == 6
+    assert results[30]["preview_rows"][0]["DEVICE"] == "DEV-SP-DDR5"
+    assert results[30]["preview_rows"][0]["ORG"] == "4"
+    assert results[30]["preview_rows"][0]["PKG_TYPE1"] == "FCBGA"
+    assert results[30]["preview_rows"][0]["LEAD"] == "78"
+    assert "DEV-WBM-B-SHIFT-DECOY" not in {
+        row["DEVICE"] for row in results[31]["preview_rows"]
+    }
+    assert results[32]["preview_rows"] == [
+        {"OPER_SEQ": "260", "OPER_NAME": "W/BM", "TOTAL_PRODUCTION": 1000.0}
+    ]
+    assert results[33]["preview_rows"][0]["EQP_ID"] == "EQP002"
 
 
 def test_data_analysis_langflow_dummy_path_reaches_api_response():
@@ -1914,8 +2024,10 @@ def test_pandas_executor_supports_prefix_filter_and_product_token_helper():
     assert "def match_product_tokens" not in helper_message
     helper_diagnostic_message = message_adapter.build_message(helper_result, "", True)
     assert "사용 helper" in helper_diagnostic_message
-    assert "생성된 pandas 코드" in helper_diagnostic_message
-    assert "def match_product_tokens" in helper_diagnostic_message
+    assert "생성된 pandas 코드 (함수 숨김처리)" in helper_diagnostic_message
+    assert "# region Function Case Helper: match_product_tokens (함수 숨김처리)" in helper_diagnostic_message
+    assert "def match_product_tokens" not in helper_diagnostic_message
+    assert "df = match_product_tokens('DA 16G GDDR6 180', sources['wip_data'])" in helper_diagnostic_message
 
 
 def test_match_product_tokens_handles_org_x_lead_mcp_and_multiple_products():
@@ -2036,6 +2148,7 @@ def test_match_product_tokens_generalizes_special_pattern_rules():
         "Q-555": ["Q555-MCP"],
         "x99": ["LEAD24-NOT-X24"],
         "SP 16G DDR5 2ND X4 78 FCBGA SDP": ["DEV-SP-DDR5-FCBGA78"],
+        "SP 16G 2ND X4 FC78": ["DEV-SP-DDR5-FCBGA78"],
     }
 
     for query, expected_devices in cases.items():
@@ -2794,6 +2907,28 @@ def test_pandas_executor_uses_shared_namespace_for_comprehensions():
 def test_pandas_variables_use_source_result_columns_when_runtime_rows_are_empty():
     pandas_variables = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "15_pandas_variables_builder.py")
     payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production",
+                    "source_alias": "production_data",
+                    "required_params": {"DATE": "20260717"},
+                    "source_config": {"query_template": "SELECT " + "X" * 5000},
+                    "filter_mappings": {"DATE": ["WORK_DATE"]},
+                    "row_identity_columns": ["DEVICE"],
+                    "default_detail_columns": ["WORK_DATE", "DEVICE", "PRODUCTION"],
+                    "context_columns": ["OPER_NAME"],
+                    "trusted_catalog": True,
+                }
+            ],
+            "output_contract": {
+                "result_mode": "detail",
+                "required_columns": ["WORK_DATE", "DEVICE"],
+                "row_identity_columns": ["DEVICE"],
+                "default_detail_columns": ["WORK_DATE", "DEVICE", "PRODUCTION"],
+                "context_columns": ["OPER_NAME"],
+            },
+        },
         "source_results": [
             {
                 "source_alias": "production_data",
@@ -2807,8 +2942,19 @@ def test_pandas_variables_use_source_result_columns_when_runtime_rows_are_empty(
 
     variables = pandas_variables.build_variables(payload)
     schema = json.loads(variables["source_schema_json"])
+    prompt_plan = json.loads(variables["intent_plan_json"])
+    output_contract = json.loads(variables["output_contract_json"])
 
     assert schema["production_data"] == ["WORK_DATE", "OPER_NAME", "TECH", "DENSITY", "MODE", "PRODUCTION"]
+    assert prompt_plan["retrieval_jobs"] == [
+        {
+            "dataset_key": "production",
+            "source_alias": "production_data",
+            "required_params": {"DATE": "20260717"},
+        }
+    ]
+    assert "SELECT" not in variables["intent_plan_json"]
+    assert output_contract == {"result_mode": "detail", "required_columns": ["WORK_DATE", "DEVICE"]}
 
 
 def test_pandas_executor_keeps_empty_source_columns_from_source_results():
@@ -2940,6 +3086,13 @@ def test_multiple_function_cases_expose_multiple_helpers_and_dummy_runtime():
     assert result["data"]["rows"] == [{"DEVICE": "DEV-RG", "PRODUCTION": 10}]
     assert trace["used_helpers"] == ["match_product_tokens", "sample_passthrough_helper"]
     assert "def sample_passthrough_helper" in trace["generated_code"]
+    message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
+    diagnostic_message = message_adapter.build_message(result, "", True)
+    assert "# region Function Case Helper: match_product_tokens (함수 숨김처리)" in diagnostic_message
+    assert "# region Function Case Helper: sample_passthrough_helper (함수 숨김처리)" in diagnostic_message
+    assert "def match_product_tokens" not in diagnostic_message
+    assert "def sample_passthrough_helper" not in diagnostic_message
+    assert "df = sample_passthrough_helper('format demo', df)" in diagnostic_message
 
 
 def test_intent_normalizer_dedupes_single_and_multiple_function_cases():
@@ -3466,6 +3619,15 @@ def test_langflow_dummy_data_covers_representative_manufacturing_cases():
     assert any(row["OPER_NAME"].startswith("W/B") and row["FAMILY"] == "HBM" for row in results["wip"])
     assert any(row["OPER_NAME"] == "D/A1" and row["DEVICE"] == "DEV-DA-GDDR6" for row in results["wip"])
     assert any(row["OPER_NAME"].startswith("W/B") for row in results["wip_boh_0627"])
+    wbm_rows = [row for row in results["production_today"] if row["OPER_NAME"] == "W/BM"]
+    assert {row["DEVICE"] for row in wbm_rows} == {
+        "DEV-WBM-BLANK",
+        "DEV-WBM-NULL-QTY",
+        "DEV-WBM-A-SHIFT",
+        "DEV-WBM-B-SHIFT-DECOY",
+    }
+    assert next(row for row in wbm_rows if row["DEVICE"] == "DEV-WBM-NULL-QTY")["PRODUCTION"] is None
+    assert next(row for row in wbm_rows if row["DEVICE"] == "DEV-WBM-B-SHIFT-DECOY")["SHIFT"] == "2"
 
 
 def test_langflow_dummy_production_fixture_has_discriminating_pkg_out_and_fcbh_rows():
@@ -3786,6 +3948,9 @@ def test_metadata_candidates_remove_authoring_trace_but_keep_runtime_catalog_fie
                             "query_template": "SELECT * FROM PROD WHERE WORK_DATE = {DATE}",
                         },
                         "required_params": ["DATE"],
+                        "default_detail_columns": ["WORK_DATE", "OPER_NAME", "PRODUCTION"],
+                        "row_identity_columns": ["WORK_DATE", "OPER_NAME"],
+                        "context_columns": ["DEVICE"],
                     },
                 }
             ],
@@ -3807,6 +3972,9 @@ def test_metadata_candidates_remove_authoring_trace_but_keep_runtime_catalog_fie
     assert domain_item["payload"]["description"] == "공정 그룹 설명"
     assert "registration_trace" not in catalog_item
     assert "query_template" not in catalog_item["payload"].get("source_config", {})
+    assert catalog_item["payload"]["default_detail_columns"] == ["WORK_DATE", "OPER_NAME", "PRODUCTION"]
+    assert "row_identity_columns" not in catalog_item["payload"]
+    assert "context_columns" not in catalog_item["payload"]
     assert "domain_items" not in result
 
 
@@ -6281,6 +6449,10 @@ def test_metadata_qa_catalog_inventory_phrases_use_only_table_catalog_and_ignore
         "어떤 테이블들이 등록되어 있어?",
         "사용 가능한 소스 목록을 보여줘",
         "등록된 테이블 건수 알려줘",
+        "현재 조회 가능한 데이터 list알려줄래?",
+        "조회할 수 있는 데이터 리스트 보여줘",
+        "사용 가능한 데이터 전체를 알려줘",
+        "등록되어 있는 데이터 list를 보여줘",
     )
 
     for question in questions:
@@ -6328,6 +6500,9 @@ def test_metadata_qa_catalog_inventory_does_not_capture_task_specific_dataset_se
         "오늘 생산량 테이블 목록 보여줘": "data_analysis_redirect",
         "production_today 테이블에 등록된 필수 조건 알려줘": "required_params",
         "production_today 테이블 전체 컬럼 목록 보여줘": "dataset_detail",
+        "오늘 생산 데이터를 보여줘": "data_analysis_redirect",
+        "production_today 데이터 10건 보여줘": "data_analysis_redirect",
+        "현재 생산 데이터를 list로 보여줘": "data_analysis_redirect",
     }
 
     for question, expected_mode in cases.items():
@@ -6439,23 +6614,20 @@ def test_metadata_qa_dataset_sql_context_includes_only_selected_sql():
     assert "SELECT WIP_SQL" not in context_text
 
 
-def test_route_flow_source_layout_matches_current_06_through_09_routers():
+def test_route_flow_source_layout_matches_current_06_through_08_routers():
     route_dir = ROOT / "langflow_components" / "route_flow"
     route_v2_dir = ROOT / "langflow_components" / "route_flow_v2"
-    route_v3_dir = ROOT / "langflow_components" / "route_flow_v3"
     route_v4_dir = ROOT / "langflow_components" / "route_flow_v4"
 
     assert sorted(path.name for path in route_dir.glob("*.py")) == ["01_flow_api_message_caller.py"]
     assert sorted(path.name for path in route_v2_dir.glob("*.py")) == ["01_cached_named_run_flow_tool.py"]
-    assert sorted(path.name for path in route_v3_dir.glob("*.py")) == [
-        "01_orchestrated_named_run_flow_tool.py"
-    ]
     assert sorted(path.name for path in route_v4_dir.glob("*.py")) == [
         "00_workflow_plan_parser.py",
         "00a_mongodb_workflow_registry_loader.py",
         "01_sequential_step_executor.py",
         "02_final_context_builder.py",
         "03_workflow_final_response_builder.py",
+        "04_workflow_named_run_flow_tool.py",
     ]
     for obsolete in ("router_flow", "router_flow_v2", "router_flow_v3", "router_tool_flow"):
         assert not (ROOT / "langflow_components" / obsolete).exists()
@@ -6467,8 +6639,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 82
-    assert result["all_component_python_files"] == 83
+    assert result["active_unique_source_files"] == 84
+    assert result["all_component_python_files"] == 85
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -6477,9 +6649,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 10, 99, 82),
-        ("import_ready_individual", 10, 99, 82),
-        ("import_ready_bundle", 10, 99, 82),
+        ("flow_exports", 10, 97, 84),
+        ("import_ready_individual", 10, 97, 84),
+        ("import_ready_bundle", 10, 97, 84),
     }
 
 
@@ -6526,24 +6698,6 @@ def test_route_flow_v2_docs_cover_exactly_five_current_tools():
     assert "dummy_" not in system_prompt
     assert "dummy_" not in tool_descriptions
     assert "dummy_" not in examples
-
-
-def test_route_flow_v3_docs_define_bounded_multi_tool_orchestration_contract():
-    route_dir = ROOT / "langflow_components" / "route_flow_v3"
-    guide = (route_dir / "CONNECTION_GUIDE.md").read_text(encoding="utf-8")
-    system_prompt = (route_dir / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
-    tool_descriptions = (route_dir / "TOOL_DESCRIPTIONS.md").read_text(encoding="utf-8")
-    examples = (route_dir / "EXAMPLE_QUESTIONS.md").read_text(encoding="utf-8")
-
-    assert "최대 4회" in system_prompt
-    assert "result_ref" in system_prompt and "upstream_result_ref" in system_prompt
-    assert "route_v3.tool_result.v1" in system_prompt
-    assert "최종 답변을 정확히 한 번" in system_prompt
-    assert "return_direct=false" in guide
-    assert "Data Analysis" in tool_descriptions
-    assert "Metadata QA" in tool_descriptions
-    assert "Metadata 저장" in tool_descriptions
-    assert "이상 LOT" in examples
 
 
 def test_route_flow_calls_langflow_api_with_branch_message_as_input():
@@ -7004,7 +7158,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
 
 
 def test_orchestrated_named_run_flow_tool_has_optional_ref_and_compact_result_contract():
-    path = ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+    path = ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     component = load_module(path)
     inputs = {item.kwargs.get("name"): item.kwargs for item in _component_inputs(component)}
     outputs = {item.kwargs.get("name"): item.kwargs for item in _component_outputs(component)}
@@ -7016,6 +7170,7 @@ def test_orchestrated_named_run_flow_tool_has_optional_ref_and_compact_result_co
         "cache_flow",
         "tool_name",
         "tool_description",
+        "preferred_output_names",
         "return_direct",
         "accepts_upstream_result_ref",
         "can_produce_result_ref",
@@ -7023,6 +7178,8 @@ def test_orchestrated_named_run_flow_tool_has_optional_ref_and_compact_result_co
     ]
     assert inputs["cache_flow"]["value"] is True
     assert inputs["return_direct"]["value"] is False
+    assert inputs["preferred_output_names"]["value"] == ""
+    assert inputs["preferred_output_names"]["advanced"] is True
     assert inputs["accepts_upstream_result_ref"]["value"] is False
     assert inputs["can_produce_result_ref"]["value"] is False
     assert list(outputs) == ["component_as_tool"]
@@ -7095,6 +7252,7 @@ def test_orchestrated_named_run_flow_tool_has_optional_ref_and_compact_result_co
                 "complete": True,
             }
         ],
+        "artifacts": [],
         "handoff_usable": True,
         "warnings": [],
         "errors": [],
@@ -7104,9 +7262,89 @@ def test_orchestrated_named_run_flow_tool_has_optional_ref_and_compact_result_co
     assert "rows" not in contract
 
 
+def test_route_v4_resolves_current_flow_by_name_and_promotes_selected_terminal(monkeypatch):
+    component = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
+    )
+    current_flow_id = "22222222-2222-4222-8222-222222222222"
+    calls = []
+    api_terminal = types.SimpleNamespace(
+        id="Api-current",
+        data={"type": "CustomComponent"},
+        display_name="API Terminal",
+        is_output=False,
+        outputs=[{"name": "structured_result", "types": ["Data"]}],
+    )
+    graph = types.SimpleNamespace(
+        vertices=[
+            types.SimpleNamespace(
+                id="ChatInput-current",
+                data={"type": "ChatInput"},
+                display_name="Chat Input",
+                is_output=False,
+                outputs=[{"name": "message", "types": ["Message"]}],
+            ),
+            types.SimpleNamespace(
+                id="ChatOutput-current",
+                data={"type": "ChatOutput"},
+                display_name="Chat Output",
+                is_output=True,
+                outputs=[{"name": "message", "types": ["Message"]}],
+            ),
+            api_terminal,
+        ],
+        successor_map={
+            "ChatInput-current": ["ChatOutput-current"],
+            "ChatOutput-current": [],
+            "Api-current": [],
+        },
+    )
+
+    async def fake_get_flow(self, flow_name_selected=None, flow_id_selected=None):
+        calls.append(("resolve", flow_name_selected, flow_id_selected))
+        return types.SimpleNamespace(
+            data={
+                "id": current_flow_id,
+                "name": "Current Child Flow",
+                "updated_at": "2026-07-18T10:00:00Z",
+            }
+        )
+
+    async def fake_get_graph(self, flow_name_selected=None, flow_id_selected=None, updated_at=None):
+        calls.append(("build", flow_name_selected, flow_id_selected, updated_at))
+        return graph
+
+    monkeypatch.setattr(component.RunFlowBaseComponent, "get_flow", fake_get_flow, raising=False)
+    monkeypatch.setattr(component.RunFlowBaseComponent, "get_graph", fake_get_graph, raising=False)
+    instance = component.OrchestratedNamedRunFlowTool()
+    instance._attributes = {}
+    instance._user_id = "runtime-user"
+    instance.preferred_output_names = "structured_result"
+    instance.accepts_upstream_result_ref = False
+    instance.can_produce_result_ref = True
+
+    resolved = asyncio.run(
+        instance.get_graph(
+            "Current Child Flow",
+            "11111111-1111-4111-8111-111111111111",
+            None,
+        )
+    )
+
+    assert resolved is graph
+    assert calls == [
+        ("resolve", "Current Child Flow", None),
+        ("build", "Current Child Flow", current_flow_id, "2026-07-18T10:00:00Z"),
+    ]
+    assert instance.flow_id_selected == current_flow_id
+    assert instance._resolved_flow_output_target == ("Api-current", "structured_result")
+    assert instance._resolved_flow_output_types == {"data"}
+    assert api_terminal.is_output is True
+
+
 def test_route_v3_unwraps_real_lfx_artifact_raw_and_message_shapes():
     component = load_module(
-        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+        ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     )
     api_payload = {
         "response_type": "data_analysis",
@@ -7186,9 +7424,153 @@ def test_route_v3_unwraps_real_lfx_artifact_raw_and_message_shapes():
     ]
 
 
-def test_route_v3_prefers_structured_api_terminal_for_current_child_graphs():
+def test_route_v4_html_artifact_descriptor_survives_all_boundaries_without_raw_content():
+    tool_adapter = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "01_sequential_step_executor.py"
+    )
+    final_builder = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "02_final_context_builder.py"
+    )
+    response_builder = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "03_workflow_final_response_builder.py"
+    )
+    Data = sys.modules["lfx.schema.data"].Data
+    Message = sys.modules["lfx.schema.message"].Message
+
+    valid_descriptor = {
+        "artifact_type": "html_chart",
+        "path": "visualization-flow/production_3days.html",
+        "report_id": "20260719010101_0123456789abcdef0123456789abcdef",
+        "view_url": "https://reports.example.com/reports/view/20260719010101_0123456789abcdef0123456789abcdef?token=view",
+        "download_url": "https://reports.example.com/reports/download/20260719010101_0123456789abcdef0123456789abcdef?token=down",
+        "expires_at": "2026-07-20T01:01:01+00:00",
+        "ttl_hours": 24,
+        "mime_type": "text/html",
+        "title": "최근 3일 D/A 생산량",
+        "download_name": "production_3days.html",
+        "chart_type": "line",
+        "x_column": "WORK_DT",
+        "y_columns": ["PRODUCTION"],
+        "row_count": 3,
+        "plotted_row_count": 3,
+        "size_bytes": 4096,
+        "html_content": "<script>SHOULD_NOT_SURVIVE</script>",
+        "raw": "RAW_SHOULD_NOT_SURVIVE",
+        "storage_path": "C:/private/production_3days.html",
+    }
+    invalid_descriptors = [
+        {**valid_descriptor, "path": "https://example.com/chart.html"},
+        {**valid_descriptor, "path": "C:/private/chart.html"},
+        {**valid_descriptor, "path": "../chart.html"},
+        {**valid_descriptor, "path": "/tmp/chart.html"},
+    ]
+
+    tool_contract = tool_adapter.normalize_tool_result(
+        {
+            "status": "ok",
+            "message": "최근 3일 생산량 HTML 차트를 생성했습니다.",
+            "artifacts": [valid_descriptor, *invalid_descriptors],
+        },
+        tool_name="run_visualization",
+    )
+    expected_descriptor = {
+        key: value
+        for key, value in valid_descriptor.items()
+        if key
+        in {
+            "artifact_type",
+            "path",
+            "report_id",
+            "view_url",
+            "download_url",
+            "expires_at",
+            "ttl_hours",
+            "mime_type",
+            "title",
+            "download_name",
+            "chart_type",
+            "x_column",
+            "y_columns",
+            "row_count",
+            "plotted_row_count",
+            "size_bytes",
+        }
+    }
+    assert tool_contract["artifacts"] == [expected_descriptor]
+    assert expected_descriptor["view_url"] not in tool_contract["summary"]
+    assert expected_descriptor["download_url"] not in tool_contract["summary"]
+    assert "SHOULD_NOT_SURVIVE" not in json.dumps(tool_contract, ensure_ascii=False)
+    unsafe_url_descriptor = tool_adapter._artifact_descriptors(
+        {
+            "artifacts": [
+                {
+                    **valid_descriptor,
+                    "path": "visualization-flow/unsafe.html",
+                    "view_url": "javascript:alert(1)",
+                    "download_url": "https://user:secret@reports.example.com/file.html",
+                }
+            ]
+        }
+    )[0]
+    assert "view_url" not in unsafe_url_descriptor
+    assert "download_url" not in unsafe_url_descriptor
+
+    step = {
+        "contract_version": "workflow.plan.v1",
+        "workflow_run_id": "artifact-workflow-run",
+        "workflow_key": "inline",
+        "step_index": 1,
+        "total_steps": 1,
+        "step_id": "chart",
+        "tool_name": "run_visualization",
+        "question": "결과를 선 그래프로 그려줘",
+        "depends_on": [],
+        "handoff": "none",
+        "on_error": "stop",
+    }
+    injected_contract = deepcopy(tool_contract)
+    injected_contract["artifacts"].append({**expected_descriptor, "path": "evil/../chart.html"})
+    step_result = executor._compact_success_result(step, injected_contract)
+    assert step_result["artifacts"] == [expected_descriptor]
+
+    injected_step = deepcopy(step_result)
+    injected_step["artifacts"].append({**expected_descriptor, "path": "C:/private/chart.html"})
+    final_context = final_builder.build_final_context(
+        [injected_step],
+        user_question="최근 3일 D/A 생산량을 시각화해줘",
+    )
+    assert final_context["artifacts"] == [expected_descriptor]
+    prompt_context = final_context["workflow_context"]
+    assert expected_descriptor["path"] not in prompt_context
+    assert expected_descriptor["view_url"] not in prompt_context
+    assert expected_descriptor["download_url"] not in prompt_context
+    assert "SHOULD_NOT_SURVIVE" not in json.dumps(final_context, ensure_ascii=False)
+
+    final_context["artifacts"].append({**expected_descriptor, "path": "https://evil.example/chart.html"})
+    response = response_builder.build_workflow_final_response(
+        Data(data=final_context),
+        Message(text="최근 3일 D/A 생산량 HTML 차트를 생성했습니다."),
+    )
+    assert response["api_response"]["artifacts"] == [expected_descriptor]
+    assert response["files"] == [expected_descriptor["path"]]
+    assert f"]({expected_descriptor['view_url']})" in response["message"]
+    assert f"]({expected_descriptor['download_url']})" in response["message"]
+    assert "SHOULD_NOT_SURVIVE" not in json.dumps(response, ensure_ascii=False)
+
+    component = response_builder.WorkflowFinalResponseBuilder()
+    component.final_context = Data(data=final_context)
+    component.final_model_response = Message(text="HTML 차트를 생성했습니다.")
+    assert component.build_message().files == [expected_descriptor["path"]]
+    assert expected_descriptor["view_url"] in component.build_message().text
+    assert expected_descriptor["download_url"] in component.build_message().text
+
+
+def test_route_v4_promotes_configured_structured_terminal_for_current_child_graphs():
     component = load_module(
-        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+        ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     )
     expected_targets = {
         "data_analysis_flow_v5_standalone.json": ("CustomComponent-3eVde", "api_response"),
@@ -7196,6 +7578,7 @@ def test_route_v3_prefers_structured_api_terminal_for_current_child_graphs():
         "domain_saving_flow_v5_standalone.json": ("Api-domain", "api_response"),
         "table_catalog_saving_flow_v5_standalone.json": ("Api-table_catalog", "api_response"),
         "main_flow_filter_saving_flow_v5_standalone.json": ("Api-main_flow_filter", "api_response"),
+        "html_visualization_flow_v5_standalone.json": ("HtmlVisualizationApiTerminal-html-visualization", "api_response"),
     }
 
     for filename, expected in expected_targets.items():
@@ -7203,16 +7586,137 @@ def test_route_v3_prefers_structured_api_terminal_for_current_child_graphs():
         successor_map = {node["id"]: [] for node in flow["data"]["nodes"]}
         for edge in flow["data"]["edges"]:
             successor_map.setdefault(edge["source"], []).append(edge["target"])
-        vertices = [
-            types.SimpleNamespace(
-                id=node["id"],
-                is_output=not successor_map.get(node["id"]),
-                outputs=node["data"]["node"].get("outputs", []),
+        vertices = []
+        for node in flow["data"]["nodes"]:
+            node_type = str(node.get("data", {}).get("type") or "")
+            explicit_output = bool(node.get("data", {}).get("node", {}).get("is_output", False))
+            vertices.append(
+                types.SimpleNamespace(
+                    id=node["id"],
+                    # 실제 LFX는 terminal topology가 아니라 component type/명시 flag로 초기 is_output을 정합니다.
+                    is_output=node_type in {"ChatOutput", "DataOutput", "TextOutput"} or explicit_output,
+                    outputs=node["data"]["node"].get("outputs", []),
+                )
             )
-            for node in flow["data"]["nodes"]
-        ]
         graph = types.SimpleNamespace(vertices=vertices, successor_map=successor_map)
-        assert component._preferred_graph_output_target(graph) == expected, filename
+        target = component._preferred_graph_output_target(graph, "api_response")
+        assert target == expected, filename
+        selected_vertex = next(vertex for vertex in vertices if vertex.id == target[0])
+        assert selected_vertex.is_output is True, filename
+        output_types = component._promote_graph_output(graph, target)
+        assert selected_vertex.is_output is True, filename
+        assert all(
+            vertex is selected_vertex or vertex.is_output is False for vertex in vertices
+        ), filename
+        assert "data" in output_types, filename
+
+
+def test_route_v4_tool_returns_structured_error_contract_when_child_execution_fails():
+    component = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "01_sequential_step_executor.py"
+    )
+    instance = component.OrchestratedNamedRunFlowTool()
+    instance._user_id = "user-1"
+    instance.tool_name = "run_visualization"
+    instance._last_run_outputs = ["stale"]
+
+    async def fail_child_run(*, user_id, output_type):
+        assert user_id == "user-1"
+        assert output_type == "any"
+        raise RuntimeError("terminal api_response output was not emitted")
+
+    instance._get_cached_run_outputs = fail_child_run
+    result = asyncio.run(instance._run_selected_flow())
+    assert result.data == {
+        "contract_version": "route_v3.tool_result.v1",
+        "status": "error",
+        "tool_name": "run_visualization",
+        "summary": "하위 Flow 실행 중 오류가 발생했습니다.",
+        "result_ref": "",
+        "result_ref_meta": {},
+        "entity_ids": [],
+        "artifacts": [],
+        "handoff_usable": False,
+        "warnings": [],
+        "errors": [
+            "flow_tool_execution_error: RuntimeError: terminal api_response output was not emitted"
+        ],
+    }
+
+    contract, error = executor._tool_result_contract(result)
+    assert error is None
+    assert contract == result.data
+
+
+def test_route_v4_prefers_real_terminal_api_and_does_not_promote_mixed_output_vertex():
+    component = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
+    )
+    builder = types.SimpleNamespace(
+        id="builder",
+        is_output=False,
+        outputs=[{"name": "message"}, {"name": "api_response"}],
+    )
+    chat_output = types.SimpleNamespace(id="chat-output", is_output=True, outputs=[{"name": "message"}])
+    api_terminal = types.SimpleNamespace(
+        id="api-terminal",
+        is_output=False,
+        outputs=[{"name": "api_response", "types": ["Data"]}],
+    )
+    graph = types.SimpleNamespace(
+        vertices=[builder, chat_output, api_terminal],
+        successor_map={"builder": ["chat-output", "api-terminal"], "chat-output": [], "api-terminal": []},
+    )
+
+    target = component._preferred_graph_output_target(graph, "api_response")
+    assert target == ("api-terminal", "api_response")
+    assert component._promote_graph_output(graph, target) == {"data"}
+    assert api_terminal.is_output is True
+    assert builder.is_output is False
+    assert chat_output.is_output is False
+
+
+def test_route_v4_auto_selects_any_unique_structured_terminal_and_requires_configuration_when_ambiguous():
+    component = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
+    )
+    chat_output = types.SimpleNamespace(
+        id="chat-output",
+        is_output=True,
+        outputs=[{"name": "message", "types": ["Message"]}],
+    )
+    custom_result = types.SimpleNamespace(
+        id="custom-result",
+        is_output=False,
+        outputs=[{"name": "dataset_payload", "types": ["Data"]}],
+    )
+    graph = types.SimpleNamespace(
+        vertices=[chat_output, custom_result],
+        successor_map={"chat-output": [], "custom-result": []},
+    )
+
+    target = component._preferred_graph_output_target(graph)
+    assert target == ("custom-result", "dataset_payload")
+    assert component._promote_graph_output(graph, target) == {"data"}
+    assert custom_result.is_output is True
+    assert chat_output.is_output is False
+
+    second_result = types.SimpleNamespace(
+        id="second-result",
+        is_output=False,
+        outputs=[{"name": "audit_payload", "types": ["Data"]}],
+    )
+    graph.vertices.append(second_result)
+    graph.successor_map["second-result"] = []
+    with pytest.raises(ValueError, match="우선 최종 출력 이름"):
+        component._preferred_graph_output_target(graph)
+    assert component._preferred_graph_output_target(graph, "audit_payload") == (
+        "second-result",
+        "audit_payload",
+    )
 
 
 def test_route_v4_parser_accepts_plain_and_markdown_json_with_explicit_handoff_semantics():
@@ -7309,6 +7813,134 @@ def test_route_v4_parser_accepts_plain_and_markdown_json_with_explicit_handoff_s
     assert authored_markdown["workflow_plan"]["steps"][1]["handoff"] == "result_ref"
 
 
+def test_route_v4_parser_normalizes_unambiguous_producer_side_handoff_for_visualization():
+    parser = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "00_workflow_plan_parser.py"
+    )
+    capabilities = [
+        {
+            "tool_name": "run_data_analysis",
+            "accepts_upstream_result_ref": True,
+            "can_produce_result_ref": True,
+            "requires_upstream_result_ref": False,
+        },
+        {
+            "tool_name": "run_visualization",
+            "accepts_upstream_result_ref": True,
+            "can_produce_result_ref": False,
+            "requires_upstream_result_ref": True,
+        },
+    ]
+    reversed_plan = {
+        "contract_version": "workflow.plan.v1",
+        "workflow_key": "inline",
+        "steps": [
+            {
+                "step_id": "get_performance_data",
+                "tool_name": "run_data_analysis",
+                "question": "오늘 DA공정의 차수별 실적을 조회해줘",
+                "depends_on": [],
+                "handoff": "result_ref",
+                "on_error": "stop",
+            },
+            {
+                "step_id": "visualize_performance",
+                "tool_name": "run_visualization",
+                "question": "막대그래프로 차수별 실적을 그려줘",
+                "depends_on": ["get_performance_data"],
+                "handoff": "none",
+                "on_error": "stop",
+            },
+        ],
+    }
+
+    parsed = parser.parse_workflow_plan(
+        json.dumps(reversed_plan, ensure_ascii=False),
+        user_question="오늘 DA공정에서 차수별 실적을 알려주고 막대그래프로 그려줘",
+        allowed_tools_value=["run_data_analysis", "run_visualization"],
+        workflow_run_id="workflow-handoff-normalization",
+        tool_capabilities_value=capabilities,
+    )
+
+    assert parsed["status"] == "ok"
+    assert parsed["errors"] == []
+    assert parsed["normalizations"] == [
+        {
+            "type": "inverted_result_ref_handoff_normalized",
+            "message": "result_ref handoff를 결과 생성 단계가 아니라 해당 결과를 입력으로 받는 단계에 적용했습니다.",
+            "producer_step_id": "get_performance_data",
+            "consumer_step_id": "visualize_performance",
+        }
+    ]
+    steps = parsed["workflow_plan"]["steps"]
+    assert steps[0]["handoff"] == "none"
+    assert steps[1]["handoff"] == "result_ref"
+    loop_rows = parser._loop_rows(parsed)
+    assert len(loop_rows) == 2
+    assert loop_rows[0]["step_id"] == "get_performance_data"
+    assert loop_rows[1]["step_id"] == "visualize_performance"
+    assert loop_rows[1]["handoff"] == "result_ref"
+
+
+def test_route_v4_parser_does_not_guess_ambiguous_handoff_normalization():
+    parser = load_module(
+        ROOT / "langflow_components" / "route_flow_v4" / "00_workflow_plan_parser.py"
+    )
+    capabilities = [
+        {
+            "tool_name": "producer",
+            "can_produce_result_ref": True,
+        },
+        {
+            "tool_name": "consumer",
+            "accepts_upstream_result_ref": True,
+            "requires_upstream_result_ref": True,
+        },
+    ]
+    ambiguous_plan = {
+        "steps": [
+            {
+                "step_id": "source",
+                "tool_name": "producer",
+                "question": "조회해줘",
+                "depends_on": [],
+                "handoff": "result_ref",
+                "on_error": "stop",
+            },
+            {
+                "step_id": "consumer_a",
+                "tool_name": "consumer",
+                "question": "첫 번째로 사용해줘",
+                "depends_on": ["source"],
+                "handoff": "none",
+                "on_error": "stop",
+            },
+            {
+                "step_id": "consumer_b",
+                "tool_name": "consumer",
+                "question": "두 번째로 사용해줘",
+                "depends_on": ["source"],
+                "handoff": "none",
+                "on_error": "stop",
+            },
+        ]
+    }
+
+    parsed = parser.parse_workflow_plan(
+        json.dumps(ambiguous_plan, ensure_ascii=False),
+        allowed_tools_value=["producer", "consumer"],
+        tool_capabilities_value=capabilities,
+    )
+
+    assert parsed["status"] == "error"
+    assert parsed["normalizations"] == []
+    assert {error["type"] for error in parsed["errors"]} >= {
+        "first_step_handoff_not_allowed",
+        "required_result_ref_handoff_missing",
+    }
+    assert parsed["workflow_plan"]["steps"] == []
+
+
 def test_route_v4_exact_registered_key_overrides_planner_output_but_unknown_key_does_not():
     parser = load_module(
         ROOT / "langflow_components" / "route_flow_v4" / "00_workflow_plan_parser.py"
@@ -7341,15 +7973,16 @@ def test_route_v4_exact_registered_key_overrides_planner_output_but_unknown_key_
     registered = parser.parse_workflow_plan(
         json.dumps(different_inline_plan, ensure_ascii=False),
         workflow_registry_json=registry_text,
-        user_question="wb_daily_production_metadata",
+        user_question="daily_manufacturing_briefing",
         allowed_tools_value=allowed_tools,
         workflow_run_id="registered-key-run",
     )
     assert registered["status"] == "ok"
     assert registered["source_kind"] == "registry"
-    assert registered["workflow_plan"]["workflow_key"] == "wb_daily_production_metadata"
+    assert registered["workflow_plan"]["workflow_key"] == "daily_manufacturing_briefing"
     assert [step["step_id"] for step in registered["workflow_plan"]["steps"]] == [
         "production",
+        "wip",
         "metadata",
     ]
 
@@ -7450,6 +8083,8 @@ def test_route_v4_sequential_executor_calls_only_selected_tool_and_transfers_ref
             self.result_ref = result_ref
 
         async def ainvoke(self, arguments):
+            if "flow_tweak_data" not in arguments:
+                raise ValueError("flow_tweak_data Field required")
             self.calls.append(deepcopy(arguments))
             return {
                 "contract_version": "route_v3.tool_result.v1",
@@ -7486,7 +8121,9 @@ def test_route_v4_sequential_executor_calls_only_selected_tool_and_transfers_ref
             session_id="workflow-session-1",
         )
     )
-    assert source_tool.calls == [{"question": "이상 LOT을 찾아줘"}]
+    assert source_tool.calls == [
+        {"flow_tweak_data": {"question": "이상 LOT을 찾아줘"}}
+    ]
     assert target_tool.calls == []
     context = first["execution_context"]
     assert context["contract_version"] == "workflow.execution.v1"
@@ -7512,7 +8149,9 @@ def test_route_v4_sequential_executor_calls_only_selected_tool_and_transfers_ref
             session_id="workflow-session-1",
         )
     )
-    assert target_tool.calls == [{"question": "독립 조회를 순서상 다음에 실행해줘"}]
+    assert target_tool.calls == [
+        {"flow_tweak_data": {"question": "독립 조회를 순서상 다음에 실행해줘"}}
+    ]
 
     target_tool.calls.clear()
     with_handoff = asyncio.run(
@@ -7536,8 +8175,10 @@ def test_route_v4_sequential_executor_calls_only_selected_tool_and_transfers_ref
     )
     assert target_tool.calls == [
         {
-            "question": "앞 단계 LOT의 HOLD 이력을 조회해줘",
-            "upstream_result_ref": "result:session-1:lots",
+            "flow_tweak_data": {
+                "question": "앞 단계 LOT의 HOLD 이력을 조회해줘",
+                "upstream_result_ref": "result:session-1:lots",
+            }
         }
     ]
     assert with_handoff["execution_context"]["execution_order"] == [
@@ -7559,6 +8200,8 @@ def test_route_v4_executor_stops_on_fatal_error_but_continues_only_independent_s
             self.calls = []
 
         async def ainvoke(self, arguments):
+            if "flow_tweak_data" not in arguments:
+                raise ValueError("flow_tweak_data Field required")
             self.calls.append(deepcopy(arguments))
             return {
                 "contract_version": "route_v3.tool_result.v1",
@@ -7599,7 +8242,7 @@ def test_route_v4_executor_stops_on_fatal_error_but_continues_only_independent_s
         executor.execute_workflow_step({**base_step, "on_error": "continue"}, tools)
     )
     assert continued["execution_context"]["stop_requested"] is False
-    assert failed.calls == [{"question": "실패 단계"}]
+    assert failed.calls == [{"flow_tweak_data": {"question": "실패 단계"}}]
 
     dependent = asyncio.run(
         executor.execute_workflow_step(
@@ -7643,7 +8286,7 @@ def test_route_v4_executor_stops_on_fatal_error_but_continues_only_independent_s
             execution_context=dependent["execution_context"],
         )
     )
-    assert healthy.calls == [{"question": "독립 단계"}]
+    assert healthy.calls == [{"flow_tweak_data": {"question": "독립 단계"}}]
     assert independent["execution_context"]["results_by_step"]["independent_step"]["status"] == "ok"
 
 
@@ -7751,7 +8394,7 @@ def test_route_v4_final_response_success_partial_and_empty_model_contracts():
         workflow_context = {
             "contract_version": "workflow.final_context.v1",
             "workflow_run_id": "workflow-response-test",
-            "workflow_key": "anomaly_lot_hold_history",
+            "workflow_key": "hold_lot_history_metadata_audit",
             "execution_status": execution_status,
             "steps": steps,
             **extra,
@@ -7774,7 +8417,7 @@ def test_route_v4_final_response_success_partial_and_empty_model_contracts():
                     "step_id": "find_lots",
                     "tool_name": "run_data_analysis",
                     "status": "ok",
-                    "summary": "이상 LOT 2건을 찾았습니다.",
+                    "summary": "현재 HOLD LOT 2건을 찾았습니다.",
                     "result_ref": "result:session-1:lots",
                     "result_ref_meta": {"row_count": 2},
                     "errors": [],
@@ -7863,7 +8506,6 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         "metadata_qa": ROOT / "flow_exports" / "metadata_qa_flow_v5_standalone.json",
         "router": ROOT / "flow_exports" / "api_router_flow_v5_standalone.json",
         "tool_router": ROOT / "flow_exports" / "agent_tool_router_flow_v5_standalone.json",
-        "orchestrator_router": ROOT / "flow_exports" / "agent_orchestrator_router_flow_v5_standalone.json",
         "workflow_orchestrator": ROOT / "flow_exports" / "workflow_orchestrator_flow_v5_standalone.json",
     }
     for path in exports.values():
@@ -8089,85 +8731,6 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     assert not any(edge[3] == "session_source" for edge in edge_keys)
     assert ("Agent-agent-tool-router", "response", "ChatOutput-agent-tool-router", "input_value") in edge_keys
 
-    orchestrator = json.loads(exports["orchestrator_router"].read_text(encoding="utf-8"))
-    assert len(orchestrator["data"]["nodes"]) == 8
-    assert len(orchestrator["data"]["edges"]) == 7
-    orchestrator_tools = [
-        node for node in orchestrator["data"]["nodes"] if node["id"].startswith("OrchestratedFlowTool-")
-    ]
-    orchestrator_agents = [
-        node for node in orchestrator["data"]["nodes"] if node["data"].get("type") == "Agent"
-    ]
-    orchestrator_outputs = [
-        node for node in orchestrator["data"]["nodes"] if node["data"].get("type") == "ChatOutput"
-    ]
-    assert len(orchestrator_tools) == 5
-    assert len(orchestrator_agents) == 1
-    assert len(orchestrator_outputs) == 1
-    orchestrator_agent_template = orchestrator_agents[0]["data"]["node"]["template"]
-    assert orchestrator_agent_template["system_prompt"]["value"] == (
-        ROOT / "langflow_components" / "route_flow_v3" / "SYSTEM_PROMPT_KO.md"
-    ).read_text(encoding="utf-8")
-    assert orchestrator_agent_template["max_iterations"]["value"] == 5
-    assert orchestrator_agent_template["n_messages"]["value"] == 8
-    assert orchestrator_agent_template["add_current_date_tool"]["value"] is False
-    assert orchestrator_agent_template["verbose"]["value"] is False
-    assert all(node["data"]["node"]["tool_mode"] is True for node in orchestrator_tools)
-    assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in orchestrator_tools)
-    assert all(node["data"]["node"]["template"]["return_direct"]["value"] is False for node in orchestrator_tools)
-    assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in orchestrator_tools)
-    orchestrator_tool_source = (
-        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
-    ).read_text(encoding="utf-8")
-    assert all(
-        node["data"]["node"]["template"]["code"]["value"] == orchestrator_tool_source
-        for node in orchestrator_tools
-    )
-    data_tool = next(node for node in orchestrator_tools if node["id"] == "OrchestratedFlowTool-data_analysis")
-    data_tool_template = data_tool["data"]["node"]["template"]
-    assert data_tool_template["accepts_upstream_result_ref"]["value"] is True
-    assert data_tool_template["can_produce_result_ref"]["value"] is True
-    assert data_tool_template["entity_id_columns"]["value"] == "LOT_ID"
-    assert all(
-        node["data"]["node"]["template"]["accepts_upstream_result_ref"]["value"] is False
-        and node["data"]["node"]["template"]["can_produce_result_ref"]["value"] is False
-        for node in orchestrator_tools
-        if node is not data_tool
-    )
-    orchestrator_edge_keys = {
-        (
-            edge["source"],
-            edge["data"]["sourceHandle"]["name"],
-            edge["target"],
-            edge["data"]["targetHandle"]["fieldName"],
-        )
-        for edge in orchestrator["data"]["edges"]
-    }
-    for tool in orchestrator_tools:
-        assert (
-            tool["id"],
-            "component_as_tool",
-            "Agent-agent-orchestrator-router",
-            "tools",
-        ) in orchestrator_edge_keys
-    assert {
-        edge for edge in orchestrator_edge_keys if edge[0] == "ChatInput-agent-orchestrator-router"
-    } == {
-        (
-            "ChatInput-agent-orchestrator-router",
-            "message",
-            "Agent-agent-orchestrator-router",
-            "input_value",
-        )
-    }
-    assert (
-        "Agent-agent-orchestrator-router",
-        "response",
-        "ChatOutput-agent-orchestrator-router",
-        "input_value",
-    ) in orchestrator_edge_keys
-
-
 def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contract():
     path = ROOT / "flow_exports" / "workflow_orchestrator_flow_v5_standalone.json"
     flow = json.loads(path.read_text(encoding="utf-8"))
@@ -8184,8 +8747,8 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
     }
 
     assert flow["endpoint_name"] == "metadata-driven-v5-workflow-orchestrator"
-    assert len(nodes) == 17
-    assert len(edges) == 25
+    assert len(nodes) == 18
+    assert len(edges) == 26
     assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
     assert not [node for node in nodes.values() if node["data"].get("type") == "Agent"]
     assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
@@ -8206,11 +8769,11 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
         assert embedded == expected, node_id
 
     tools = [node for node_id, node in nodes.items() if node_id.startswith("WorkflowFlowTool-")]
-    assert len(tools) == 5
-    route_v3_tool_source = (
-        ROOT / "langflow_components" / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+    assert len(tools) == 6
+    workflow_tool_source = (
+        ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     ).read_text(encoding="utf-8")
-    assert all(node["data"]["node"]["template"]["code"]["value"] == route_v3_tool_source for node in tools)
+    assert all(node["data"]["node"]["template"]["code"]["value"] == workflow_tool_source for node in tools)
     assert all(node["data"]["node"]["tool_mode"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["return_direct"]["value"] is False for node in tools)
@@ -8223,6 +8786,7 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
         "save_domain_metadata",
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
+        "run_visualization",
     }
 
     expected_core_edges = {
@@ -8252,10 +8816,33 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
         for node in tools
     }
     assert edges == expected_core_edges | expected_tool_edges
-
+    feedback_edge = next(
+        edge
+        for edge in flow["data"]["edges"]
+        if edge["source"] == "SequentialStepExecutor-workflow-orchestrator"
+        and edge["target"] == "Loop-workflow-orchestrator"
+    )
+    assert feedback_edge["data"]["targetHandle"]["name"] == "item"
+    assert feedback_edge["data"]["targetHandle"]["output_types"] == ["Data", "Message"]
     parser_template = nodes["WorkflowPlanParser-workflow-orchestrator"]["data"]["node"]["template"]
     registry_template = nodes["WorkflowRegistryLoader-workflow-orchestrator"]["data"]["node"]["template"]
     final_context_template = nodes["FinalContext-workflow-orchestrator"]["data"]["node"]["template"]
+    planner_prompt_template = nodes["PromptPlanner-workflow-orchestrator"]["data"]["node"]["template"]["template"]["value"]
+    final_prompt_template = nodes["PromptFinal-workflow-orchestrator"]["data"]["node"]["template"]["template"]["value"]
+    rendered_planner_prompt = planner_prompt_template.format(
+        user_question="오늘 WB 공정 생산량을 알려줘",
+        allowed_tool_names='["run_data_analysis"]',
+        allowed_tool_catalog='[{"tool_name":"run_data_analysis"}]',
+        workflow_registry_json="{}",
+    )
+    rendered_final_prompt = final_prompt_template.format(
+        question="오늘 WB 공정 생산량을 알려줘",
+        workflow_context="{}",
+        synthesis_instruction="검증된 결과만 합성해줘",
+    )
+    assert '"contract_version": "workflow.plan.v1"' in rendered_planner_prompt
+    assert "오늘 WB 공정 생산량을 알려줘" in rendered_planner_prompt
+    assert "검증된 결과만 합성해줘" in rendered_final_prompt
     assert registry_template["registry_source"]["value"] == "mongodb"
     assert registry_template["mongo_uri"]["value"] == "MONGO_URL"
     assert registry_template["mongo_database"]["value"] == "datagov"
@@ -8265,6 +8852,11 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
     assert parser_template["workflow_registry_json"]["value"] == "{}"
     assert parser_template["workflow_registry_json"]["advanced"] is False
     assert parser_template["allowed_tool_names"]["advanced"] is False
+    assert parser_template["tool_capabilities_json"]["advanced"] is True
+    assert json.loads(parser_template["tool_capabilities_json"]["value"])
+    assert "handoff는 현재 단계가 앞 단계의 결과를 입력으로 받는지" in rendered_planner_prompt
+    assert '"tool_name": "run_visualization"' in rendered_planner_prompt
+    assert '"handoff": "result_ref"' in rendered_planner_prompt
     assert final_context_template["execution_context"]["advanced"] is False
     assert final_context_template["max_context_bytes"]["value"] == "32768"
 
@@ -8273,6 +8865,31 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
     }
     assert final_response_outputs == {"message", "api_response"}
     assert not any(edge[0] == "FinalResponse-workflow-orchestrator" and edge[1] == "api_response" for edge in edges)
+
+
+def test_standalone_runtime_components_have_no_top_level_async_helpers_for_langflow_1_8_loader():
+    """Langflow 1.8.x prepare_global_scope가 누락하는 최상위 async def 회귀를 차단합니다."""
+
+    import ast
+
+    component_specs = {
+        ROOT / "langflow_components" / "route_flow_v4" / "01_sequential_step_executor.py": {
+            "execute_workflow_step",
+            "_invoke_tool_once",
+        },
+        ROOT / "langflow_components" / "visualization_flow" / "00_html_visualization_builder.py": {
+            "build_html_visualization",
+        },
+    }
+    for path, required_sync_helpers in component_specs.items():
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        top_level_async = [node.name for node in module.body if isinstance(node, ast.AsyncFunctionDef)]
+        top_level_sync = {
+            node.name for node in module.body if isinstance(node, ast.FunctionDef)
+        }
+
+        assert top_level_async == [], path
+        assert required_sync_helpers <= top_level_sync, path
 
 
 def test_flow_tool_entry_inputs_are_agent_controlled():
@@ -8684,11 +9301,19 @@ def test_v5_data_analysis_builder_has_one_terminal_path_with_integrated_one_time
         for edge in flow["data"]["edges"]
     }
 
+    assert flow["name"] == "01. v5_data_analysis"
+    assert flow["endpoint_name"] == "metadata-driven-v5-data-analysis"
     assert not REMOVED_REPAIR_NODES.intersection(nodes)
     assert "CustomComponent-v5RepairGate" not in nodes
     assert nodes["TextInput-AXG9a"]["data"]["node"]["template"]["input_value"]["value"] == (
         HELPER_LIBRARY_SOURCE.read_text(encoding="utf-8")
     )
+    assert nodes["TextInput-GRnAm"]["data"]["node"]["template"]["input_value"]["value"] == (
+        ROOT / "langflow_components" / "data_analysis_flow" / "specialized_prompt_input_example_ko.md"
+    ).read_text(encoding="utf-8")
+    assert nodes["TextInput-VFbHh"]["data"]["node"]["template"]["input_value"]["value"] == (
+        ROOT / "langflow_components" / "data_analysis_flow" / "answer_domain_guidance_input_example_ko.md"
+    ).read_text(encoding="utf-8")
     assert ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload") in edge_keys
     assert ("CustomComponent-v5Helper", "selected_helper_code", "CustomComponent-s3mf1", "function_case_helper_code") in edge_keys
     assert (REPAIR_PROMPT_NODE_ID, "text", "CustomComponent-s3mf1", "repair_prompt_template") in edge_keys
@@ -8785,3 +9410,618 @@ def test_v5_api_contract_has_single_row_code_and_message_owners():
     assert "answer_message" not in response
     assert "display_message" not in response
     assert response["data_mode"] == "dummy"
+
+
+def test_v5_intent_output_contract_adds_catalog_columns_only_for_detail_results():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    payload = {
+        "metadata_candidates": {
+            "table_catalog_items": [
+                {
+                    "dataset_key": "eqp_uph",
+                    "payload": {
+                        "row_identity_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                        "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                        "context_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    },
+                }
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    base_plan = {
+        "analysis_kind": "equipment_uph",
+        "retrieval_jobs": [
+            {
+                "dataset_key": "eqp_uph",
+                "source_alias": "uph",
+                "row_identity_columns": ["EQUIP_MODEL"],
+                "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                "context_columns": ["RECIPE_ID", "OPER_NAME"],
+            }
+        ],
+        "pandas_execution_plan": [{"operation": "select"}],
+    }
+
+    detail_plan = deepcopy(base_plan)
+    detail_plan["output_contract"] = {"result_mode": "entity_list", "required_columns": ["UPH"]}
+    detailed = normalizer.normalize_intent_plan(payload, detail_plan)
+    detail_contract = detailed["intent_plan"]["output_contract"]
+    assert detail_contract["required_columns"] == [
+        "UPH",
+        "EQUIP_MODEL",
+        "RECIPE_ID",
+        "OPER_NAME",
+    ]
+    assert "row_identity_columns" not in detail_contract
+    assert "context_columns" not in detail_contract
+    assert detailed["intent_plan"]["retrieval_jobs"] == [
+        {
+            "dataset_key": "eqp_uph",
+            "source_alias": "uph",
+            "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+        }
+    ]
+    assert detail_contract["null_group_policy"] == "preserve_as_blank"
+    assert detail_contract["metric_null_policy"] == "display_zero"
+
+    aggregate_plan = deepcopy(base_plan)
+    aggregate_plan["output_contract"] = {
+        "result_mode": "aggregate",
+        "required_columns": ["OPER_NAME", "UPH"],
+    }
+    aggregated = normalizer.normalize_intent_plan(payload, aggregate_plan)
+    assert aggregated["intent_plan"]["output_contract"]["required_columns"] == ["OPER_NAME", "UPH"]
+
+    no_retrieval_plan = deepcopy(base_plan)
+    no_retrieval_plan["retrieval_jobs"] = []
+    no_retrieval_plan["output_contract"] = {"result_mode": "detail", "required_columns": ["UPH"]}
+    no_retrieval = normalizer.normalize_intent_plan(payload, no_retrieval_plan)
+    assert no_retrieval["intent_plan"]["output_contract"]["required_columns"] == ["UPH"]
+
+    prompt_text = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "03_intent_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    assert "row_identity_columns" not in prompt_text
+    assert "context_columns" not in prompt_text
+
+
+def test_v5_catalog_hydrator_propagates_only_safe_column_contract():
+    hydrator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "eqp_uph",
+                    "source_alias": "uph",
+                    "row_identity_columns": ["SPOOFED_ID"],
+                    "default_detail_columns": ["SPOOFED_DETAIL"],
+                    "context_columns": ["SPOOFED_CONTEXT"],
+                }
+            ],
+            "output_contract": {
+                "result_mode": "entity_list",
+                "required_columns": ["UPH"],
+                "context_columns": ["SPOOFED_CONTEXT"],
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {
+                    "source_type": "oracle",
+                    "source_config": {"db_key": "GMS_DB", "password": "secret"},
+                    "filter_mappings": {"EQP_MODEL": ["EQUIP_MODEL"]},
+                    "standard_column_aliases": {"EQP_MODEL": ["EQUIP_MODEL"]},
+                    "row_identity_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "context_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                },
+            }
+        ]
+    }
+
+    job = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")["intent_plan"][
+        "retrieval_jobs"
+    ][0]
+
+    assert job["filter_mappings"] == {"EQP_MODEL": ["EQUIP_MODEL"]}
+    assert job["default_detail_columns"] == ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"]
+    assert "row_identity_columns" not in job
+    assert "context_columns" not in job
+    assert payload["intent_plan"]["output_contract"]["required_columns"] == ["UPH"]
+    hydrated = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
+    assert hydrated["intent_plan"]["output_contract"]["required_columns"] == [
+        "UPH",
+        "EQUIP_MODEL",
+        "RECIPE_ID",
+        "OPER_NAME",
+    ]
+    assert "context_columns" not in hydrated["intent_plan"]["output_contract"]
+    assert "password" not in json.dumps(job, ensure_ascii=False)
+
+
+def test_v5_pandas_executor_rejects_unsupported_filter_instead_of_running_unfiltered():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production",
+                    "source_alias": "production",
+                    "filters": {"OPER_SEQ": {"operator": "between", "values": [10, 20]}},
+                }
+            ]
+        },
+        "runtime_sources": {"production": [{"OPER_SEQ": 5}, {"OPER_SEQ": 15}]},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = executor.execute_pandas_code(payload, {"code": "result = sources['production']"})
+
+    assert result["analysis"]["status"] == "error"
+    assert result["analysis"]["error"]["type"] == "unsupported_filter_operator"
+    assert "between" in result["analysis"]["error"]["message"]
+
+
+def test_v5_pandas_executor_applies_catalog_filter_mapping_to_physical_column():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "equipment",
+                    "filters": {"EQP_MODEL": {"operator": "eq", "value": "MODEL-A"}},
+                    "filter_mappings": {"EQP_MODEL": ["EQUIP_MODEL"]},
+                }
+            ]
+        },
+        "runtime_sources": {
+            "equipment": [
+                {"EQUIP_ID": "EQ-1", "EQUIP_MODEL": "MODEL-A"},
+                {"EQUIP_ID": "EQ-2", "EQUIP_MODEL": "MODEL-B"},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = executor.execute_pandas_code(payload, {"code": "result = sources['equipment']"})
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["rows"] == [{"EQUIP_ID": "EQ-1", "EQUIP_MODEL": "MODEL-A"}]
+
+
+def test_v5_pandas_executor_rejects_missing_required_detail_columns_but_not_aggregate_results():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    rows = [
+        {
+            "EQUIP_MODEL": "EQM-A",
+            "RECIPE_ID": "RCP-1",
+            "OPER_NAME": "D/A1",
+            "MCP_NO": "L-218",
+            "UPH": 100,
+        }
+    ]
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{"dataset_key": "eqp_uph", "source_alias": "uph"}],
+            "output_contract": {
+                "result_mode": "entity_list",
+                "required_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            },
+        },
+        "source_results": [{"source_alias": "uph", "columns": list(rows[0])}],
+        "runtime_sources": {"uph": rows},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    too_narrow = executor.execute_pandas_code(
+        payload,
+        {"code": "result = sources['uph'][['OPER_NAME', 'UPH']]"},
+    )
+    assert too_narrow["analysis"]["error"]["type"] == "output_contract_violation"
+    assert "EQUIP_MODEL" in too_narrow["analysis"]["error"]["message"]
+    assert "RECIPE_ID" in too_narrow["analysis"]["error"]["message"]
+
+    complete = executor.execute_pandas_code(payload, {"code": "result = sources['uph']"})
+    assert complete["analysis"]["status"] == "ok"
+
+    aggregate_payload = deepcopy(payload)
+    aggregate_payload["intent_plan"]["output_contract"]["result_mode"] = "aggregate"
+    aggregate = executor.execute_pandas_code(
+        aggregate_payload,
+        {"code": "result = sources['uph'].groupby('OPER_NAME', dropna=False)['UPH'].mean().reset_index()"},
+    )
+    assert aggregate["analysis"]["status"] == "ok"
+    assert aggregate["data"]["columns"] == ["OPER_NAME", "UPH"]
+
+
+def test_v5_pandas_executor_preserves_null_group_and_displays_blank_dimension():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{"dataset_key": "production", "source_alias": "production"}],
+            "pandas_execution_plan": [
+                {"operation": "group_by", "group_by_columns": ["MCP_NO"]},
+                {"operation": "aggregate"},
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["MCP_NO"],
+                "metric_columns": ["PRODUCTION"],
+                "null_group_policy": "preserve_as_blank",
+            },
+        },
+        "runtime_sources": {
+            "production": [
+                {"MCP_NO": None, "PRODUCTION": 7},
+                {"MCP_NO": "L-218", "PRODUCTION": 5},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    code = (
+        "result = sources['production'].groupby(['MCP_NO'], dropna=False)['PRODUCTION']"
+        ".sum().reset_index()"
+    )
+
+    result = executor.execute_pandas_code(payload, {"code": code})
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["row_count"] == 2
+    assert {row["MCP_NO"] for row in result["data"]["rows"]} == {"", "L-218"}
+
+
+def test_v5_pandas_executor_normalizes_declared_metric_nulls_without_repair_llm():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{"dataset_key": "metrics", "source_alias": "metrics"}],
+            "pandas_execution_plan": [{"operation": "aggregate"}],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["OPER_NAME", "MCP_NO"],
+                "metric_columns": ["PRODUCTION", "WIP", "UPH"],
+            },
+        },
+        "runtime_sources": {
+            "metrics": [
+                {
+                    "OPER_NAME": None,
+                    "MCP_NO": "  ",
+                    "PRODUCTION": None,
+                    "WIP": None,
+                    "UPH": "  ",
+                    "EQP_ID": None,
+                    "RECIPE_ID": "",
+                },
+                {
+                    "OPER_NAME": "D/A1",
+                    "MCP_NO": "L-218",
+                    "PRODUCTION": 7,
+                    "WIP": 3,
+                    "UPH": 1.5,
+                    "EQP_ID": "EQ-1",
+                    "RECIPE_ID": "R-1",
+                },
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    repair_prompts = []
+
+    result = executor.execute_pandas_with_repair(
+        payload,
+        {"code": "result = sources['metrics']"},
+        repair_invoker=repair_prompts.append,
+    )
+
+    first = result["data"]["rows"][0]
+    assert result["analysis"]["status"] == "ok"
+    assert first == {
+        "OPER_NAME": "",
+        "MCP_NO": "",
+        "PRODUCTION": 0,
+        "WIP": 0,
+        "UPH": 0,
+        "EQP_ID": None,
+        "RECIPE_ID": "",
+    }
+    assert repair_prompts == []
+    assert result["trace"]["inspection"]["pandas_repair"]["llm_called"] is False
+
+
+def test_v5_pandas_executor_metric_fallback_preserves_numeric_dimensions_and_ids():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{"dataset_key": "metrics", "source_alias": "metrics"}],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["DEVICE"],
+            },
+        },
+        "runtime_sources": {
+            "metrics": [
+                {
+                    "DEVICE": None,
+                    "LOT_ID": None,
+                    "OPER_SEQ": None,
+                    "YEAR": None,
+                    "MONTH": " ",
+                    "DAY": None,
+                    "PRODUCTION": "",
+                    "AVG_UPH": " ",
+                    "CUSTOM_MEASURE": None,
+                    "EMPTY": None,
+                },
+                {
+                    "DEVICE": "DEV-A",
+                    "LOT_ID": 1001,
+                    "OPER_SEQ": 120,
+                    "YEAR": 2026,
+                    "MONTH": 7,
+                    "DAY": 17,
+                    "PRODUCTION": 8,
+                    "AVG_UPH": 12.5,
+                    "CUSTOM_MEASURE": 3.0,
+                    "EMPTY": None,
+                },
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = executor.execute_pandas_code(payload, {"code": "result = sources['metrics']"})
+
+    first = result["data"]["rows"][0]
+    assert result["analysis"]["status"] == "ok"
+    assert first["DEVICE"] == ""
+    assert first["PRODUCTION"] == 0
+    assert first["AVG_UPH"] == 0
+    assert first["CUSTOM_MEASURE"] == 0
+    assert first["EMPTY"] is None
+    assert first["LOT_ID"] is None
+    assert first["OPER_SEQ"] is None
+    assert first["YEAR"] is None
+    assert first["MONTH"] == " "
+    assert first["DAY"] is None
+
+
+def test_v5_pandas_prompts_require_contract_first_metric_null_normalization():
+    prompt_dir = ROOT / "langflow_components" / "data_analysis_flow"
+    for filename in (
+        "16_pandas_prompt_template_ko.md",
+        "17b_pandas_repair_prompt_template_ko.md",
+    ):
+        text = (prompt_dir / filename).read_text(encoding="utf-8")
+
+        assert "output_contract.metric_columns" in text, filename
+        assert "None" in text and "NaN" in text, filename
+        assert "빈 문자열" in text and "공백 문자열" in text, filename
+        assert "ID·코드·날짜·dimension" in text, filename
+        assert '빈 문자열 `""`로 유지' in text, filename
+
+
+def test_v5_answer_variables_do_not_expose_source_only_columns_to_answer_model():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "18_answer_variables_builder.py"
+    )
+    payload = {
+        "request": {"question": "UPH 보여줘"},
+        "source_results": [
+            {
+                "source_alias": "uph",
+                "dataset_key": "eqp_uph",
+                "status": "ok",
+                "row_count": 1,
+                "columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH", "SOURCE_ONLY"],
+            }
+        ],
+        "analysis": {"status": "ok", "row_count": 1, "columns": ["OPER_NAME", "UPH"]},
+        "data": {
+            "columns": ["OPER_NAME", "UPH"],
+            "rows": [{"OPER_NAME": "D/A1", "UPH": 100}],
+            "row_count": 1,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    variables = builder.build_variables(payload)
+    applied_scope = json.loads(variables["applied_scope_json"])
+    answer_context = json.loads(variables["answer_context_json"])
+
+    assert "columns" not in applied_scope["retrieval"][0]
+    assert "SOURCE_ONLY" not in variables["applied_scope_json"]
+    assert answer_context["result_shape"]["columns"] == ["OPER_NAME", "UPH"]
+
+
+def test_v5_ordered_range_helper_uses_numeric_inclusive_bounds_in_either_question_order():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "runtime_sources": {
+            "process_data": [
+                {"OPER_NAME": "D/A4", "OPER_SEQ": "104", "WIP": 1},
+                {"OPER_NAME": "D/A5", "OPER_SEQ": "105", "WIP": 2},
+                {"OPER_NAME": "D/A6", "OPER_SEQ": "106", "WIP": 3},
+                {"OPER_NAME": "D/S1", "OPER_SEQ": "107", "WIP": 4},
+                {"OPER_NAME": "D/S2", "OPER_SEQ": "108", "WIP": 5},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    code = (
+        function_case_source("filter_ordered_range")
+        + "\n\ndf = filter_ordered_range('D/S1~D/A5', sources['process_data'])\n"
+        + "result = df[['OPER_NAME', 'OPER_SEQ', 'WIP']]"
+    )
+
+    result = executor.execute_pandas_code(payload, {"code": code})
+
+    assert result["analysis"]["status"] == "ok"
+    assert [row["OPER_NAME"] for row in result["data"]["rows"]] == ["D/A5", "D/A6", "D/S1"]
+    assert result["analysis"]["function_case_results"][0]["function_name"] == "filter_ordered_range"
+
+
+def test_v5_range_candidate_is_selected_for_process_range_but_not_mcp_hyphen():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    domains = {
+        "domain_items": [
+            {
+                "section": "pandas_function_cases",
+                "key": "ordered_process_range",
+                "payload": {
+                    "function_name": "filter_ordered_range",
+                    "aliases": ["공정 구간", "OPER_SEQ 범위", "ordered range"],
+                },
+            },
+            {
+                "section": "pandas_function_cases",
+                "key": "product_token_match",
+                "payload": {"function_name": "match_product_tokens", "aliases": ["제품 token"]},
+            },
+        ]
+    }
+    tables = {"table_catalog_items": [{"dataset_key": "wip", "payload": {"description": "공정 재공"}}]}
+
+    range_result = builder.build_metadata_candidates(
+        {"request": {"question": "D/S1~D/A5 공정 구간 재공을 알려줘"}},
+        domains,
+        tables,
+        {"main_flow_filters": []},
+        min_table_items=1,
+        max_table_items=1,
+    )
+    mcp_result = builder.build_metadata_candidates(
+        {"request": {"question": "L-218 제품 재공을 알려줘"}},
+        domains,
+        tables,
+        {"main_flow_filters": []},
+        min_table_items=1,
+        max_table_items=1,
+    )
+
+    range_keys = {item["key"] for item in range_result["metadata_candidates"]["domain_items"]}
+    mcp_keys = {item["key"] for item in mcp_result["metadata_candidates"]["domain_items"]}
+    assert "ordered_process_range" in range_keys
+    assert "ordered_process_range" not in mcp_keys
+    assert any(
+        item["function_name"] == "filter_ordered_range"
+        for item in range_result["metadata_candidates"]["runtime_function_helpers"]
+    )
+
+
+def test_v5_equipment_uph_join_recipe_is_selected_as_domain_metadata():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    domains = {
+        "domain_items": [
+            {
+                "section": "analysis_recipes",
+                "key": "equipment_assignment_uph_join",
+                "payload": {
+                    "display_name": "장비 배정-Recipe UPH 결합 규칙",
+                    "aliases": ["장비별 UPH", "배정 장비 UPH", "장비와 Recipe UPH"],
+                    "source_datasets": ["equipment_assign", "eqp_uph"],
+                    "join_type": "left",
+                    "join_keys": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                },
+            }
+        ]
+    }
+    tables = {
+        "table_catalog_items": [
+            {"dataset_key": "equipment_assign", "payload": {"description": "배정 장비 정보"}},
+            {"dataset_key": "eqp_uph", "payload": {"description": "장비 Recipe UPH"}},
+        ]
+    }
+
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "현재 D/A1에 배정된 장비별 UPH를 보여줘"}},
+        domains,
+        tables,
+        {"main_flow_filters": []},
+        min_table_items=2,
+        max_table_items=2,
+    )
+
+    keys = {item["key"] for item in result["metadata_candidates"]["domain_items"]}
+    assert "equipment_assignment_uph_join" in keys
+
+
+def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_contracts():
+    domain_text = (ROOT / "domain_knowledge.txt").read_text(encoding="utf-8")
+    catalog_text = (ROOT / "data_catalog.txt").read_text(encoding="utf-8")
+    saving_prompt = (
+        ROOT
+        / "langflow_components"
+        / "table_catalog_saving_flow"
+        / "03_saving_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    domain_saving_prompt = (
+        ROOT
+        / "langflow_components"
+        / "domain_saving_flow"
+        / "03_saving_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+
+    assert "key는 DA이며 status는 active" in domain_text
+    assert "aliases는 DA, D/A, DA공정" in domain_text
+    assert "key는 WBM이며 status는 active" in domain_text
+    assert "processes는 OPER_NAME 값 W/BM 하나" in domain_text
+    assert "key는 SHIFT_A이며 status는 active" in domain_text
+    assert 'condition은 {"SHIFT": "1"}' in domain_text
+    assert "process_range_oper_seq_filter" not in domain_text
+    assert "key는 ordered_process_range" in domain_text
+    assert "function_name은 filter_ordered_range" in domain_text
+    assert "D/A1~W/B6, D/A1-W/B6, D/A1W/B6" in domain_text
+    assert "L-218처럼 제품 MCP_NO 내부에 포함된 하이픈" in domain_text
+    assert "key는 equipment_assignment_uph_join" in domain_text
+    assert "표준 join_keys는 EQP_MODEL, RECIPE_ID, OPER_NAME" in domain_text
+    assert "preserve_left_rows는 true" in domain_text
+    assert "EQP_MODEL -> EQPIP_MODEL" not in catalog_text
+    assert "EQP_MODEL -> EQUIP_MODEL" in catalog_text
+    assert "기본 상세 표시 metadata 입력 기준" in catalog_text
+    assert "default_detail_columns는 사용자가 출력 컬럼을 따로 말하지 않은 detail 또는 entity_list 질문" in catalog_text
+    assert '"default_detail_columns는 A, B로 바꿔줘"' in catalog_text
+    assert "join 기준과 실행 순서는 Table Catalog에 넣지 말고 Domain의 analysis_recipes에 등록" in catalog_text
+    assert "default_detail_columns는 EQUIP_ID로 저장" in catalog_text
+    assert "다른조건이 없을 때 기본적으로 보여줄 컬럼은 EQUIP_MODEL, RECIPE_ID, OPER_NAME이야" in catalog_text
+    assert "UPH는 사용자가 UPH를 물었을 때 metric 컬럼으로 추가" in catalog_text
+    assert "PRESS_CNT와 MCP_NO는 사용자가 질문에서 요구할 때만" in catalog_text
+    assert "default_detail_columns는 LOT_ID, OPER_NAME, PROD_QTY, WF_QTY, IN_TAT, CUM_TAT, HOLD_STAT, HOLD_REASON, LOT_STAT" in catalog_text
+    assert "`default_detail_columns`는 사용자가 출력 컬럼을 따로 지정하지 않은 detail/entity_list 질문" in saving_prompt
+    assert "`default_detail_columns는 A, B로 바꿔줘`" in saving_prompt
+    assert "Domain의 `analysis_recipes`에 등록" in saving_prompt
+    assert "`source_datasets`, `join_type`, `join_keys`" in domain_saving_prompt
+    assert "`left_key_mappings`, `right_key_mappings`, `preserve_left_rows`" in domain_saving_prompt
+    assert "row_identity_columns" not in catalog_text
+    assert "context_columns" not in catalog_text
+    assert "row_identity_columns" not in saving_prompt
+    assert "context_columns" not in saving_prompt

@@ -36,7 +36,7 @@ Request + Agent -> 04 Normalizer -> 05 동일 Key 조회기
 - `revision`, `request_id`, idempotency 필드는 추가하지 않는다.
 - standalone Langflow에는 실행을 저장한 채 사용자 결정을 기다렸다 재개하는 HITL 상태가 없으므로 `ask` 모드는 제공하지 않는다.
 
-## Route V3 연계 조회 예시
+## Workflow 연계 조회 예시
 
 ```json
 {

@@ -69,6 +69,12 @@ def _text(value: Any) -> str:
 class MetadataQaApiResponseBuilder(Component):
     display_name = "06 메타데이터 QA API 응답 생성기"
     description = "메타데이터 QA 결과를 Web/Run API에서 읽을 수 있는 구조화 응답으로 변환합니다."
+
+    # 함수 설명: Python 코드에서 구조화 최종 출력을 선언해 수동 Flow JSON 편집을 없앱니다.
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.is_output = True
+
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         MessageTextInput(name="display_message", display_name="채팅 표시 메시지", required=False),

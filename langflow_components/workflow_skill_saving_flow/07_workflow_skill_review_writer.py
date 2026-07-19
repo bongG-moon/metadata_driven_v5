@@ -28,6 +28,7 @@ ALLOWED_ACTIONS = {"skip", "merge", "replace", "create_new"}
 ALLOWED_TOOLS = {
     "run_data_analysis",
     "run_metadata_qa",
+    "run_visualization",
     "save_domain_metadata",
     "save_table_catalog_metadata",
     "save_main_flow_filter_metadata",
@@ -155,8 +156,12 @@ def _validate_item(item: dict[str, Any]) -> list[dict[str, Any]]:
             errors.append({"type": "invalid_handoff", "message": "handoff는 none 또는 result_ref여야 합니다.", "key": key, "step_id": step_id})
         if handoff == "result_ref":
             source_tool = str(_dict(by_id.get(dependencies[0] if len(dependencies) == 1 else "")).get("tool_name") or "")
-            if len(dependencies) != 1 or source_tool != "run_data_analysis" or tool_name != "run_data_analysis":
-                errors.append({"type": "invalid_result_ref_contract", "message": "result_ref는 단일 run_data_analysis 결과를 다음 run_data_analysis에 전달할 때만 사용할 수 있습니다.", "key": key, "step_id": step_id})
+            if (
+                len(dependencies) != 1
+                or source_tool != "run_data_analysis"
+                or tool_name not in {"run_data_analysis", "run_visualization"}
+            ):
+                errors.append({"type": "invalid_result_ref_contract", "message": "result_ref는 단일 run_data_analysis 결과를 다음 run_data_analysis 또는 run_visualization에 전달할 때만 사용할 수 있습니다.", "key": key, "step_id": step_id})
         if str(step.get("on_error") or "") not in {"stop", "continue"}:
             errors.append({"type": "invalid_on_error", "message": "on_error는 stop 또는 continue여야 합니다.", "key": key, "step_id": step_id})
         if index == 0 and (dependencies or handoff != "none"):

@@ -2,7 +2,7 @@
 # =============================================================================
 # 컴포넌트 개요: 00 Workflow 계획 파서
 # 역할: inline JSON/Markdown 또는 Workflow Registry 로더 후보를 최대 4단계 workflow.plan.v1 계약으로 정규화합니다.
-# 주요 입력: Workflow 정의, Workflow 키, Workflow JSON Registry, 사용자 원문 질문, 허용 Tool 이름
+# 주요 입력: Workflow 정의, Workflow 키, Workflow JSON Registry, 사용자 원문 질문, 허용 Tool 이름·capability
 # 주요 출력: 검증 결과 Data, 기본 Langflow Loop용 DataFrame, Loop용 Data 목록
 # 처리 흐름: 후보 registry 우선 해석 -> JSON/Markdown 파싱 -> 등록 key 재확정 -> 필드 정규화 -> dependency/handoff/on_error 검증 -> Loop 행 생성
 # 유지보수 포인트: DB 조회는 00A가 담당하며 이 Parser는 모호한 registry·미래 dependency·4단계 초과를 실행 전에 차단합니다.
@@ -38,6 +38,7 @@ def parse_workflow_plan(
     user_question: Any = "",
     allowed_tools_value: Any = None,
     workflow_run_id: Any = "",
+    tool_capabilities_value: Any = None,
 ) -> dict[str, Any]:
     errors: list[dict[str, Any]] = []
     requested_key = str(workflow_key or "").strip()
@@ -93,7 +94,8 @@ def parse_workflow_plan(
         selected_workflow_key=selected_key,
         workflow_run_id=workflow_run_id,
     )
-    errors.extend(validate_workflow_plan(normalized, allowed_tools_value))
+    normalized, normalizations = normalize_handoff_semantics(normalized, tool_capabilities_value)
+    errors.extend(validate_workflow_plan(normalized, allowed_tools_value, tool_capabilities_value))
     status = "error" if errors else "ok"
     if status == "error":
         # invalid step을 Loop로 보내지 않도록 실제 실행용 steps는 빈 목록으로 닫습니다.
@@ -107,6 +109,7 @@ def parse_workflow_plan(
         "workflow_plan": executable_plan,
         "normalized_plan": normalized,
         "source_kind": source_kind,
+        "normalizations": normalizations,
         "errors": errors,
     }
 
@@ -154,12 +157,71 @@ def normalize_workflow_plan(
     }
 
 
+# 주요 함수: capability가 명확한 단일 producer→consumer 관계에서 모델이 handoff를 producer에 둔 경우만 안전하게 바로잡습니다.
+# 여러 consumer가 있거나 capability가 없으면 추측하지 않고 기존 strict validation에 맡깁니다.
+def normalize_handoff_semantics(
+    plan: Any,
+    tool_capabilities_value: Any = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    normalized = deepcopy(plan) if isinstance(plan, dict) else {}
+    steps = normalized.get("steps") if isinstance(normalized.get("steps"), list) else []
+    capabilities = _tool_capabilities(tool_capabilities_value)
+    normalizations: list[dict[str, Any]] = []
+
+    for producer in steps:
+        if not isinstance(producer, dict):
+            continue
+        if str(producer.get("handoff") or "none").strip().lower() != "result_ref":
+            continue
+        if _string_list(producer.get("depends_on")):
+            continue
+        producer_id = str(producer.get("step_id") or "").strip()
+        producer_tool = str(producer.get("tool_name") or "").strip()
+        producer_capability = capabilities.get(producer_tool, {})
+        if not producer_id or producer_capability.get("can_produce_result_ref") is not True:
+            continue
+
+        consumers: list[dict[str, Any]] = []
+        for candidate in steps:
+            if not isinstance(candidate, dict) or candidate is producer:
+                continue
+            candidate_tool = str(candidate.get("tool_name") or "").strip()
+            candidate_capability = capabilities.get(candidate_tool, {})
+            if candidate_capability.get("requires_upstream_result_ref") is not True:
+                continue
+            if _string_list(candidate.get("depends_on")) != [producer_id]:
+                continue
+            if str(candidate.get("handoff") or "none").strip().lower() != "none":
+                continue
+            consumers.append(candidate)
+
+        if len(consumers) != 1:
+            continue
+        consumer = consumers[0]
+        producer["handoff"] = "none"
+        consumer["handoff"] = "result_ref"
+        normalizations.append(
+            {
+                "type": "inverted_result_ref_handoff_normalized",
+                "message": "result_ref handoff를 결과 생성 단계가 아니라 해당 결과를 입력으로 받는 단계에 적용했습니다.",
+                "producer_step_id": producer_id,
+                "consumer_step_id": str(consumer.get("step_id") or "").strip(),
+            }
+        )
+    return normalized, normalizations
+
+
 # 주요 함수: 단계 수·이름·질문·dependency 순서·handoff·오류 정책을 검사하고 모든 위반을 표준 오류 목록으로 반환합니다.
-def validate_workflow_plan(plan: Any, allowed_tools_value: Any = None) -> list[dict[str, Any]]:
+def validate_workflow_plan(
+    plan: Any,
+    allowed_tools_value: Any = None,
+    tool_capabilities_value: Any = None,
+) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     value = plan if isinstance(plan, dict) else {}
     steps = value.get("steps") if isinstance(value.get("steps"), list) else []
     allowed_tools = set(_allowed_tools(allowed_tools_value))
+    capabilities = _tool_capabilities(tool_capabilities_value)
     if not steps:
         errors.append(_issue("workflow_steps_missing", "Workflow에는 실행 단계가 1개 이상 필요합니다."))
         return errors
@@ -174,6 +236,7 @@ def validate_workflow_plan(plan: Any, allowed_tools_value: Any = None) -> list[d
         )
 
     seen_ids: set[str] = set()
+    seen_step_tools: dict[str, str] = {}
     for index, step_value in enumerate(steps):
         step = step_value if isinstance(step_value, dict) else {}
         step_id = str(step.get("step_id") or "").strip()
@@ -220,7 +283,43 @@ def validate_workflow_plan(plan: Any, allowed_tools_value: Any = None) -> list[d
             errors.append(_issue("first_step_handoff_not_allowed", "첫 단계의 handoff는 none이어야 합니다.", **location))
         if handoff == "result_ref" and len(depends_on) != 1:
             errors.append(_issue("ambiguous_result_ref_handoff", "result_ref handoff에는 depends_on이 정확히 1개여야 합니다.", **location))
+        capability = capabilities.get(tool_name, {})
+        requires_ref = capability.get("requires_upstream_result_ref") is True
+        accepts_ref = capability.get("accepts_upstream_result_ref") is True
+        if requires_ref and handoff != "result_ref":
+            errors.append(
+                _issue(
+                    "required_result_ref_handoff_missing",
+                    f"{tool_name} 단계는 이전 분석 결과를 입력으로 받아야 하므로 handoff=result_ref가 필요합니다.",
+                    tool_name=tool_name,
+                    **location,
+                )
+            )
+        if handoff == "result_ref" and capability and not accepts_ref:
+            errors.append(
+                _issue(
+                    "tool_cannot_accept_result_ref",
+                    f"{tool_name} Tool은 upstream_result_ref 입력을 지원하지 않습니다.",
+                    tool_name=tool_name,
+                    **location,
+                )
+            )
+        if handoff == "result_ref" and len(depends_on) == 1:
+            dependency = depends_on[0]
+            dependency_tool = seen_step_tools.get(dependency, "")
+            dependency_capability = capabilities.get(dependency_tool, {})
+            if dependency_capability and dependency_capability.get("can_produce_result_ref") is not True:
+                errors.append(
+                    _issue(
+                        "dependency_cannot_produce_result_ref",
+                        f"{dependency_tool} Tool은 다음 단계에 전달할 result_ref를 생성하지 않습니다.",
+                        dependency=dependency,
+                        dependency_tool_name=dependency_tool,
+                        **location,
+                    )
+                )
         seen_ids.add(step_id)
+        seen_step_tools[step_id] = tool_name
     return errors
 
 
@@ -406,6 +505,36 @@ def _allowed_tools(value: Any) -> list[str]:
     return _string_list(data)
 
 
+# 함수 설명: `_tool_capabilities()`는 Tool catalog를 이름별 result_ref 생성·소비 계약으로 정규화합니다.
+def _tool_capabilities(value: Any) -> dict[str, dict[str, bool]]:
+    data = getattr(value, "data", value)
+    if isinstance(data, str):
+        try:
+            data = json.loads(data.strip() or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+    if isinstance(data, dict):
+        data = data.get("tools") or data.get("tool_capabilities") or data.get("catalog") or []
+    if not isinstance(data, list):
+        return {}
+
+    result: dict[str, dict[str, bool]] = {}
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool_name") or item.get("name") or "").strip()
+        if not tool_name:
+            continue
+        accepts = item.get("accepts_upstream_result_ref") is True
+        requires = item.get("requires_upstream_result_ref") is True
+        result[tool_name] = {
+            "accepts_upstream_result_ref": accepts or requires,
+            "requires_upstream_result_ref": requires,
+            "can_produce_result_ref": item.get("can_produce_result_ref") is True,
+        }
+    return result
+
+
 # 함수 설명: `_string_list()`는 문자열·목록 입력을 비어 있지 않은 중복 없는 문자열 목록으로 정규화합니다.
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, str):
@@ -505,6 +634,14 @@ class WorkflowPlanParser(Component):
             value="",
             required=False,
         ),
+        MultilineInput(
+            name="tool_capabilities_json",
+            display_name="Tool 결과 참조 capability",
+            info="각 Tool의 result_ref 생성·선택 소비·필수 소비 계약 JSON입니다. Builder가 자동 입력합니다.",
+            value="[]",
+            required=False,
+            advanced=True,
+        ),
     ]
     outputs = [
         Output(name="workflow_plan", display_name="Workflow 계획", method="build_plan", types=["Data"], group_outputs=True),
@@ -520,6 +657,7 @@ class WorkflowPlanParser(Component):
             getattr(self, "workflow_registry_json", ""),
             getattr(self, "user_question", ""),
             getattr(self, "allowed_tool_names", ""),
+            getattr(self, "tool_capabilities_json", ""),
         )
         cache_key = tuple(_text(value) for value in values)
         if getattr(self, "_workflow_cache_key", None) != cache_key:
@@ -530,6 +668,7 @@ class WorkflowPlanParser(Component):
                 values[2],
                 values[3],
                 values[4],
+                tool_capabilities_value=values[5],
             )
         return self._workflow_parse_result
 

@@ -1,0 +1,1126 @@
+{
+  "data": {
+    "nodes": [
+      {
+        "data": {
+          "id": "ChatInput-html-visualization",
+          "node": {
+            "base_classes": [
+              "Message"
+            ],
+            "beta": false,
+            "conditional_paths": [],
+            "custom_fields": {},
+            "description": "Get chat inputs from the Playground.",
+            "display_name": "Chat Input",
+            "documentation": "https://docs.langflow.org/chat-input-and-output",
+            "edited": false,
+            "field_order": [
+              "input_value",
+              "should_store_message",
+              "sender",
+              "sender_name",
+              "session_id",
+              "context_id",
+              "files"
+            ],
+            "frozen": false,
+            "icon": "MessagesSquare",
+            "legacy": false,
+            "lf_version": "1.8.2",
+            "metadata": {
+              "code_hash": "7a26c54d89ed",
+              "dependencies": {
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ],
+                "total_dependencies": 1
+              },
+              "module": "lfx.components.input_output.chat.ChatInput"
+            },
+            "minimized": true,
+            "output_types": [],
+            "outputs": [
+              {
+                "allows_loop": false,
+                "cache": true,
+                "display_name": "Chat Message",
+                "group_outputs": false,
+                "method": "message_response",
+                "name": "message",
+                "selected": "Message",
+                "tool_mode": true,
+                "types": [
+                  "Message"
+                ],
+                "value": "__UNDEFINED__"
+              }
+            ],
+            "pinned": false,
+            "template": {
+              "_type": "Component",
+              "code": {
+                "advanced": true,
+                "dynamic": true,
+                "fileTypes": [],
+                "file_path": "",
+                "info": "",
+                "list": false,
+                "load_from_db": false,
+                "multiline": true,
+                "name": "code",
+                "password": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "type": "code",
+                "value": "from lfx.base.data.utils import IMG_FILE_TYPES, TEXT_FILE_TYPES\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.inputs.inputs import BoolInput\nfrom lfx.io import (\n    DropdownInput,\n    FileInput,\n    MessageTextInput,\n    MultilineInput,\n    Output,\n)\nfrom lfx.schema.message import Message\nfrom lfx.utils.constants import (\n    MESSAGE_SENDER_AI,\n    MESSAGE_SENDER_NAME_USER,\n    MESSAGE_SENDER_USER,\n)\n\n\nclass ChatInput(ChatComponent):\n    display_name = \"Chat Input\"\n    description = \"Get chat inputs from the Playground.\"\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"ChatInput\"\n    minimized = True\n\n    inputs = [\n        MultilineInput(\n            name=\"input_value\",\n            display_name=\"Input Text\",\n            value=\"\",\n            info=\"Message to be passed as input.\",\n            input_types=[],\n        ),\n        BoolInput(\n            name=\"should_store_message\",\n            display_name=\"Store Messages\",\n            info=\"Store the message in the history.\",\n            value=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"sender\",\n            display_name=\"Sender Type\",\n            options=[MESSAGE_SENDER_AI, MESSAGE_SENDER_USER],\n            value=MESSAGE_SENDER_USER,\n            info=\"Type of sender.\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"sender_name\",\n            display_name=\"Sender Name\",\n            info=\"Name of the sender.\",\n            value=MESSAGE_SENDER_NAME_USER,\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"session_id\",\n            display_name=\"Session ID\",\n            info=\"The session ID of the chat. If empty, the current session ID parameter will be used.\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"context_id\",\n            display_name=\"Context ID\",\n            info=\"The context ID of the chat. Adds an extra layer to the local memory.\",\n            value=\"\",\n            advanced=True,\n        ),\n        FileInput(\n            name=\"files\",\n            display_name=\"Files\",\n            file_types=TEXT_FILE_TYPES + IMG_FILE_TYPES,\n            info=\"Files to be sent with the message.\",\n            advanced=True,\n            is_list=True,\n            temp_file=True,\n        ),\n    ]\n    outputs = [\n        Output(display_name=\"Chat Message\", name=\"message\", method=\"message_response\"),\n    ]\n\n    async def message_response(self) -> Message:\n        # Ensure files is a list and filter out empty/None values\n        files = self.files if self.files else []\n        if files and not isinstance(files, list):\n            files = [files]\n        # Filter out None/empty values\n        files = [f for f in files if f is not None and f != \"\"]\n\n        session_id = self.session_id or self.graph.session_id or \"\"\n        message = await Message.create(\n            text=self.input_value,\n            sender=self.sender,\n            sender_name=self.sender_name,\n            session_id=session_id,\n            context_id=self.context_id,\n            files=files,\n        )\n        if session_id and isinstance(message, Message) and self.should_store_message:\n            stored_message = await self.send_message(\n                message,\n            )\n            self.message.value = stored_message\n            message = stored_message\n\n        self.status = message\n        return message\n"
+              },
+              "context_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Context ID",
+                "dynamic": false,
+                "info": "The context ID of the chat. Adds an extra layer to the local memory.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "context_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "files": {
+                "_input_type": "FileInput",
+                "advanced": true,
+                "display_name": "Files",
+                "dynamic": false,
+                "fileTypes": [
+                  "csv",
+                  "json",
+                  "pdf",
+                  "txt",
+                  "md",
+                  "mdx",
+                  "yaml",
+                  "yml",
+                  "xml",
+                  "html",
+                  "htm",
+                  "docx",
+                  "py",
+                  "sh",
+                  "sql",
+                  "js",
+                  "ts",
+                  "tsx",
+                  "jpg",
+                  "jpeg",
+                  "png",
+                  "bmp",
+                  "image"
+                ],
+                "file_path": "",
+                "info": "Files to be sent with the message.",
+                "list": true,
+                "list_add_label": "Add More",
+                "name": "files",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "temp_file": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "file",
+                "value": ""
+              },
+              "input_value": {
+                "_input_type": "MultilineInput",
+                "advanced": false,
+                "ai_enabled": false,
+                "copy_field": false,
+                "display_name": "Input Text",
+                "dynamic": false,
+                "info": "Message to be passed as input.",
+                "input_types": [],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "multiline": true,
+                "name": "input_value",
+                "override_skip": false,
+                "password": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "sender": {
+                "_input_type": "DropdownInput",
+                "advanced": true,
+                "combobox": false,
+                "dialog_inputs": {},
+                "display_name": "Sender Type",
+                "dynamic": false,
+                "external_options": {},
+                "info": "Type of sender.",
+                "name": "sender",
+                "options": [
+                  "Machine",
+                  "User"
+                ],
+                "options_metadata": [],
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "toggle": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "str",
+                "value": "User"
+              },
+              "sender_name": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Sender Name",
+                "dynamic": false,
+                "info": "Name of the sender.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "sender_name",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": "User"
+              },
+              "session_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Session ID",
+                "dynamic": false,
+                "info": "The session ID of the chat. If empty, the current session ID parameter will be used.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "session_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "should_store_message": {
+                "_input_type": "BoolInput",
+                "advanced": true,
+                "display_name": "Store Messages",
+                "dynamic": false,
+                "info": "Store the message in the history.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "should_store_message",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "value": true
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": false,
+          "type": "ChatInput"
+        },
+        "dragging": false,
+        "id": "ChatInput-html-visualization",
+        "measured": {
+          "height": 52,
+          "width": 192
+        },
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "selected": false,
+        "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "HtmlVisualizationBuilder-html-visualization",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "question": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "question",
+                "value": "",
+                "display_name": "시각화 질문",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "Chat Input에서 전달된 현재 사용자 질문입니다.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 00 HTML 시각화 생성기\n# 역할: 앞선 Data Analysis 결과를 MongoDB result_ref로 복원하고 HTML/SVG 차트를 만든 뒤 Report API 링크를 발급합니다.\n# 주요 입력: 사용자 질문, upstream_result_ref, MongoDB 연결 정보, Report API 주소·TTL, 최대 차트 행 수\n# 주요 출력: 차트 파일이 첨부된 Message, visualization.result.v1 API 응답\n# 처리 흐름: 요청·세션 검증 -> 결과 행 복원 -> HTML/SVG 생성 -> Langflow 저장 -> Report API 게시 -> 절대 URL 반환\n# 유지보수 포인트: 원본 행과 HTML 본문은 API/Workflow payload에 넣지 않고 검증된 링크 descriptor만 전달합니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport asyncio\nimport html\nimport json\nimport re\nimport urllib.error\nimport urllib.request\nimport uuid\nfrom datetime import datetime\nfrom importlib import import_module\nfrom math import isfinite\nfrom typing import Any\nfrom urllib.parse import urlsplit\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import HandleInput, MessageTextInput, Output, StrInput\nfrom lfx.schema.data import Data\nfrom lfx.schema.message import Message\n\n\nCONTRACT_VERSION = \"visualization.result.v1\"\nDEFAULT_REPORT_API_URL = \"http://127.0.0.1:8010\"\nDEFAULT_REPORT_TTL_HOURS = 24\nMAX_REPORT_TTL_HOURS = 24 * 7\nREPORT_API_TIMEOUT_SECONDS = 30\nMAX_REPORT_RESPONSE_BYTES = 64 * 1024\nDEFAULT_DATABASE = \"datagov\"\nDEFAULT_COLLECTION = \"agent_v4_result_store\"\nDEFAULT_MAX_CHART_ROWS = 500\nMAX_CHART_ROWS = 5_000\nMAX_HTML_BYTES = 2_000_000\nMAX_RESULT_REF_CHARS = 512\nMAX_QUESTION_CHARS = 4_000\nMAX_ERROR_CHARS = 500\nMAX_PUBLIC_URL_CHARS = 2_048\nMAX_REPORT_ID_CHARS = 160\nSERIES_LIMIT = 3\nSVG_WIDTH = 1_000\nSVG_HEIGHT = 560\nPLOT_LEFT = 86\nPLOT_RIGHT = 950\nPLOT_TOP = 54\nPLOT_BOTTOM = 470\nCOLORS = (\"#2563eb\", \"#dc2626\", \"#059669\")\nDATE_FORMATS = (\"%Y%m%d\", \"%Y-%m-%d\", \"%Y/%m/%d\", \"%Y-%m-%d %H:%M:%S\", \"%Y-%m-%dT%H:%M:%S\")\nDATE_COLUMN_TOKENS = (\"DATE\", \"_DT\", \"DT_\", \"WORK_DT\", \"BASE_DT\", \"일자\", \"날짜\", \"시간\")\nMETRIC_COLUMN_TOKENS = (\n    \"PRODUCTION\",\n    \"WIP\",\n    \"QTY\",\n    \"COUNT\",\n    \"CNT\",\n    \"UPH\",\n    \"RATE\",\n    \"RATIO\",\n    \"AMOUNT\",\n    \"생산\",\n    \"재공\",\n    \"수량\",\n    \"실적\",\n    \"계획\",\n    \"달성률\",\n    \"비율\",\n    \"건수\",\n)\n\n\n# 함수 설명: 임의 값을 앞뒤 공백이 제거된 문자열로 안전하게 바꿉니다.\ndef _text(value: Any) -> str:\n    return \"\" if value is None else str(value).strip()\n\n\n# 함수 설명: 사용자·오류 문자열이 계약 상한을 넘지 않도록 말줄임 처리합니다.\ndef _clip(value: Any, limit: int) -> str:\n    text = _text(value)\n    return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + \"…\"\n\n\n# 함수 설명: 시각화 오류와 경고를 공통 type/message 구조로 만듭니다.\ndef _issue(issue_type: str, message: Any) -> dict[str, str]:\n    return {\"type\": _clip(issue_type, 100), \"message\": _clip(message, MAX_ERROR_CHARS)}\n\n\n# 함수 설명: Langflow Message 또는 일반 값에서 질문과 세션 ID를 추출합니다.\ndef _message_parts(value: Any) -> tuple[str, str]:\n    data = getattr(value, \"data\", None)\n    data = data if isinstance(data, dict) else {}\n    question = _text(getattr(value, \"text\", None) or data.get(\"text\") or value)\n    session_id = _text(getattr(value, \"session_id\", None) or data.get(\"session_id\"))\n    return _clip(question, MAX_QUESTION_CHARS), session_id\n\n\n# 함수 설명: 문자열 또는 data_ref 객체에서 MongoDB 문서 식별자를 꺼냅니다.\ndef _ref_id(value: Any) -> str:\n    if hasattr(value, \"model_dump\"):\n        value = value.model_dump()\n    if isinstance(value, dict):\n        value = value.get(\"ref_id\") or value.get(\"result_ref\") or value.get(\"data_ref\") or value.get(\"_id\")\n    return _text(value)\n\n\n# 함수 설명: 화면 문자열 입력을 지정된 최소·최대 범위의 정수로 제한합니다.\ndef _bounded_int(value: Any, default: int, lower: int, upper: int) -> int:\n    try:\n        parsed = int(float(_text(value))) if _text(value) else default\n    except (TypeError, ValueError, OverflowError):\n        parsed = default\n    return max(lower, min(parsed, upper))\n\n\n# 함수 설명: 결과 행의 key 등장 순서를 유지하면서 전체 컬럼 목록을 만듭니다.\ndef _columns_from_rows(rows: list[dict[str, Any]]) -> list[str]:\n    columns: list[str] = []\n    for row in rows:\n        for key in row:\n            column = _text(key)\n            if column and column not in columns:\n                columns.append(column)\n    return columns\n\n\n# 함수 설명: 컬럼명이 일자·시간 축을 나타내는지 이름 규칙으로 판정합니다.\ndef _is_date_column(column: str) -> bool:\n    normalized = column.upper().replace(\" \", \"_\")\n    return any(token in normalized for token in DATE_COLUMN_TOKENS)\n\n\n# 함수 설명: bool·빈 값을 제외하고 차트에 사용할 수 있는 유한 실수로 변환합니다.\ndef _to_number(value: Any) -> float | None:\n    if value is None or isinstance(value, bool):\n        return None\n    if isinstance(value, (int, float)):\n        number = float(value)\n        return number if isfinite(number) else None\n    text = _text(value).replace(\",\", \"\")\n    if text.endswith(\"%\"):\n        text = text[:-1].strip()\n    if not re.fullmatch(r\"[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)\", text):\n        return None\n    try:\n        number = float(text)\n    except (TypeError, ValueError, OverflowError):\n        return None\n    return number if isfinite(number) else None\n\n\n# 함수 설명: 선택된 수량 지표의 NULL·빈 문자열은 데이터 분석 출력 계약과 맞춰 0으로 표시합니다.\ndef _chart_number(value: Any) -> float | None:\n    if value is None or (isinstance(value, str) and not value.strip()):\n        return 0.0\n    return _to_number(value)\n\n\n# 함수 설명: 각 컬럼의 비어 있지 않은 값 중 대부분이 숫자로 변환되는 컬럼만 수치 축 후보로 선택합니다.\ndef _numeric_columns(rows: list[dict[str, Any]], columns: list[str]) -> list[str]:\n    numeric: list[str] = []\n    for column in columns:\n        if _is_date_column(column):\n            continue\n        nonempty = [row.get(column) for row in rows if row.get(column) not in (None, \"\")]\n        if not nonempty:\n            normalized = column.upper().replace(\" \", \"_\")\n            if any(token in normalized for token in METRIC_COLUMN_TOKENS):\n                numeric.append(column)\n            continue\n        converted = sum(_to_number(value) is not None for value in nonempty)\n        if converted > 0 and converted / len(nonempty) >= 0.8:\n            numeric.append(column)\n    return numeric\n\n\n# 함수 설명: 질문 본문에 실제 컬럼명이 명시된 경우 원본 컬럼 순서대로 찾아냅니다.\ndef _explicit_columns(question: str, columns: list[str]) -> list[str]:\n    folded = question.casefold()\n    return [column for column in columns if column.casefold() in folded]\n\n\n# 함수 설명: 질문과 제조 지표 명칭을 기준으로 수치 컬럼의 기본 우선순위를 계산합니다.\ndef _metric_score(column: str, question: str, index: int) -> tuple[int, int]:\n    normalized = column.upper().replace(\" \", \"_\")\n    score = 100 if column.casefold() in question.casefold() else 0\n    for rank, token in enumerate(METRIC_COLUMN_TOKENS):\n        if token in normalized:\n            score += len(METRIC_COLUMN_TOKENS) - rank\n    if any(token in normalized for token in (\"SEQ\", \"ID\", \"LEAD\", \"YEAR\", \"MONTH\")):\n        score -= 20\n    return score, -index\n\n\n# 주요 함수: 질문과 결과 스키마만으로 x축, 최대 세 개의 y축 지표, line/bar 유형을 결정합니다.\ndef select_chart_plan(rows: list[dict[str, Any]], question: str) -> tuple[dict[str, Any], dict[str, str] | None]:\n    columns = _columns_from_rows(rows)\n    if not columns:\n        return {}, _issue(\"missing_columns\", \"시각화할 결과 컬럼이 없습니다.\")\n    numeric = _numeric_columns(rows, columns)\n    explicit = _explicit_columns(question, columns)\n    date_columns = [column for column in columns if _is_date_column(column)]\n    categorical = [column for column in columns if column not in numeric]\n    x_candidates = [column for column in explicit if column in date_columns or column in categorical]\n    x_candidates.extend(column for column in date_columns if column not in x_candidates)\n    x_candidates.extend(column for column in categorical if column not in x_candidates)\n    if not x_candidates:\n        x_candidates.extend(column for column in columns if column not in numeric)\n    x_column = x_candidates[0] if x_candidates else columns[0]\n    y_candidates = [column for column in explicit if column in numeric and column != x_column]\n    remaining = [column for column in numeric if column != x_column and column not in y_candidates]\n    remaining.sort(key=lambda column: _metric_score(column, question, columns.index(column)), reverse=True)\n    if not y_candidates and remaining:\n        y_candidates.append(remaining.pop(0))\n    if any(token in question.casefold() for token in (\"비교\", \"함께\", \"각각\", \"모두\")):\n        y_candidates.extend(remaining[: SERIES_LIMIT - len(y_candidates)])\n    y_columns = y_candidates[:SERIES_LIMIT]\n    if not y_columns:\n        return {}, _issue(\"missing_numeric_metric\", \"시각화할 수치 컬럼을 결과에서 찾지 못했습니다.\")\n    lowered = question.casefold()\n    if any(token in lowered for token in (\"막대\", \"bar\")):\n        chart_type = \"bar\"\n    elif any(token in lowered for token in (\"선 그래프\", \"라인\", \"line\")) or _is_date_column(x_column):\n        chart_type = \"line\"\n    else:\n        chart_type = \"bar\"\n    title = _clip(question.rstrip(\" .?!\"), 160) or \"데이터 시각화\"\n    return {\"title\": title, \"chart_type\": chart_type, \"x_column\": x_column, \"y_columns\": y_columns, \"columns\": columns}, None\n\n\n# 함수 설명: 일자 형태의 값을 정렬 가능한 datetime으로 변환하되 원본 표시값은 변경하지 않습니다.\ndef _temporal_key(value: Any) -> datetime | None:\n    text = _text(value)\n    if not text:\n        return None\n    for date_format in DATE_FORMATS:\n        try:\n            return datetime.strptime(text, date_format)\n        except ValueError:\n            continue\n    try:\n        return datetime.fromisoformat(text.replace(\"Z\", \"+00:00\"))\n    except (TypeError, ValueError):\n        return None\n\n\n# 함수 설명: 일자 x축인 경우 해석 가능한 값만 시간순으로 안정 정렬하고 그 외에는 조회 순서를 유지합니다.\ndef _ordered_rows(rows: list[dict[str, Any]], x_column: str) -> list[dict[str, Any]]:\n    if not _is_date_column(x_column):\n        return list(rows)\n    parsed = [_temporal_key(row.get(x_column)) for row in rows]\n    if sum(value is not None for value in parsed) < max(1, int(len(rows) * 0.8)):\n        return list(rows)\n    indexed = list(enumerate(rows))\n    maximum = datetime.max\n    indexed.sort(key=lambda item: (parsed[item[0]] or maximum, item[0]))\n    return [row for _, row in indexed]\n\n\n# 함수 설명: 행이 화면 상한을 넘으면 첫·끝을 포함한 균등 간격으로 점을 줄여 SVG 크기를 제한합니다.\ndef _sample_rows(rows: list[dict[str, Any]], limit: int) -> tuple[list[dict[str, Any]], bool]:\n    if len(rows) <= limit:\n        return list(rows), False\n    if limit <= 1:\n        return [rows[0]], True\n    indexes = [round(index * (len(rows) - 1) / (limit - 1)) for index in range(limit)]\n    return [rows[index] for index in indexes], True\n\n\n# 함수 설명: 숫자를 불필요한 소수점 없이 축과 표에 표시합니다.\ndef _format_number(value: float) -> str:\n    if abs(value - round(value)) < 1e-9:\n        return f\"{round(value):,}\"\n    return f\"{value:,.4f}\".rstrip(\"0\").rstrip(\".\")\n\n\n# 함수 설명: SVG 좌표 계산용 전체 수치 범위를 0 포함 형태로 만들고 동일값 범위를 보정합니다.\ndef _value_range(rows: list[dict[str, Any]], y_columns: list[str]) -> tuple[float, float]:\n    values = [number for row in rows for column in y_columns if (number := _chart_number(row.get(column))) is not None]\n    minimum = min([0.0, *values]) if values else 0.0\n    maximum = max([0.0, *values]) if values else 1.0\n    if abs(maximum - minimum) < 1e-12:\n        maximum = minimum + 1.0\n    return minimum, maximum\n\n\n# 함수 설명: 실제 수치를 SVG plot 영역의 y 좌표로 변환합니다.\ndef _y_position(value: float, minimum: float, maximum: float) -> float:\n    plot_height = PLOT_BOTTOM - PLOT_TOP\n    return PLOT_BOTTOM - ((value - minimum) / (maximum - minimum)) * plot_height\n\n\n# 함수 설명: 각 행의 x축 중심 좌표를 line 또는 grouped bar 배치에 맞게 계산합니다.\ndef _x_position(index: int, count: int) -> float:\n    plot_width = PLOT_RIGHT - PLOT_LEFT\n    return PLOT_LEFT + plot_width / 2 if count <= 1 else PLOT_LEFT + index * plot_width / (count - 1)\n\n\n# 주요 함수: 외부 JavaScript 없이 선/막대 차트, 축, 범례, 접근성 title을 포함한 inline SVG를 생성합니다.\ndef render_svg_chart(rows: list[dict[str, Any]], plan: dict[str, Any]) -> str:\n    x_column = str(plan[\"x_column\"])\n    y_columns = [str(column) for column in plan[\"y_columns\"]]\n    minimum, maximum = _value_range(rows, y_columns)\n    parts = [\n        f'<svg viewBox=\"0 0 {SVG_WIDTH} {SVG_HEIGHT}\" role=\"img\" aria-labelledby=\"chart-title chart-desc\">',\n        f'<title id=\"chart-title\">{html.escape(str(plan[\"title\"]))}</title>',\n        f'<desc id=\"chart-desc\">{html.escape(x_column)} 기준 {html.escape(\", \".join(y_columns))} {plan[\"chart_type\"]} 차트</desc>',\n        '<rect width=\"100%\" height=\"100%\" rx=\"18\" fill=\"#ffffff\"/>',\n    ]\n    for tick in range(6):\n        ratio = tick / 5\n        value = maximum - (maximum - minimum) * ratio\n        y = PLOT_TOP + (PLOT_BOTTOM - PLOT_TOP) * ratio\n        parts.append(f'<line x1=\"{PLOT_LEFT}\" y1=\"{y:.2f}\" x2=\"{PLOT_RIGHT}\" y2=\"{y:.2f}\" stroke=\"#e5e7eb\"/>')\n        parts.append(f'<text x=\"{PLOT_LEFT - 12}\" y=\"{y + 4:.2f}\" text-anchor=\"end\" class=\"axis-label\">{html.escape(_format_number(value))}</text>')\n    parts.append(f'<line x1=\"{PLOT_LEFT}\" y1=\"{PLOT_TOP}\" x2=\"{PLOT_LEFT}\" y2=\"{PLOT_BOTTOM}\" stroke=\"#64748b\"/>')\n    parts.append(f'<line x1=\"{PLOT_LEFT}\" y1=\"{PLOT_BOTTOM}\" x2=\"{PLOT_RIGHT}\" y2=\"{PLOT_BOTTOM}\" stroke=\"#64748b\"/>')\n    label_step = max(1, (len(rows) + 9) // 10)\n    for index, row in enumerate(rows):\n        if index % label_step != 0 and index != len(rows) - 1:\n            continue\n        x = _x_position(index, len(rows))\n        label = _clip(row.get(x_column), 18)\n        parts.append(f'<text x=\"{x:.2f}\" y=\"{PLOT_BOTTOM + 28}\" text-anchor=\"middle\" class=\"axis-label\">{html.escape(label)}</text>')\n    if plan[\"chart_type\"] == \"line\":\n        for series_index, column in enumerate(y_columns):\n            color = COLORS[series_index]\n            points: list[str] = []\n            valid_points: list[tuple[float, float, str, str]] = []\n            for index, row in enumerate(rows):\n                number = _chart_number(row.get(column))\n                if number is None:\n                    continue\n                x = _x_position(index, len(rows))\n                y = _y_position(number, minimum, maximum)\n                points.append(f\"{x:.2f},{y:.2f}\")\n                valid_points.append((x, y, _text(row.get(x_column)), _format_number(number)))\n            if points:\n                parts.append(f'<polyline points=\"{\" \".join(points)}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"3\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>')\n            for x, y, x_label, formatted in valid_points:\n                tooltip = html.escape(f\"{x_label} · {column}: {formatted}\")\n                parts.append(f'<circle cx=\"{x:.2f}\" cy=\"{y:.2f}\" r=\"4.5\" fill=\"{color}\"><title>{tooltip}</title></circle>')\n    else:\n        group_width = max(5.0, (PLOT_RIGHT - PLOT_LEFT) / max(1, len(rows)) * 0.72)\n        bar_width = max(2.0, group_width / max(1, len(y_columns)))\n        zero_y = _y_position(0.0, minimum, maximum)\n        for row_index, row in enumerate(rows):\n            center = _x_position(row_index, len(rows))\n            group_start = center - group_width / 2\n            for series_index, column in enumerate(y_columns):\n                number = _chart_number(row.get(column))\n                if number is None:\n                    continue\n                value_y = _y_position(number, minimum, maximum)\n                y = min(zero_y, value_y)\n                height = max(1.0, abs(zero_y - value_y))\n                x = group_start + series_index * bar_width\n                tooltip = html.escape(f\"{_text(row.get(x_column))} · {column}: {_format_number(number)}\")\n                parts.append(f'<rect x=\"{x:.2f}\" y=\"{y:.2f}\" width=\"{max(1.0, bar_width - 2):.2f}\" height=\"{height:.2f}\" rx=\"2\" fill=\"{COLORS[series_index]}\"><title>{tooltip}</title></rect>')\n    legend_x = PLOT_LEFT\n    for index, column in enumerate(y_columns):\n        x = legend_x + index * 240\n        parts.append(f'<rect x=\"{x}\" y=\"18\" width=\"14\" height=\"14\" rx=\"3\" fill=\"{COLORS[index]}\"/>')\n        parts.append(f'<text x=\"{x + 21}\" y=\"30\" class=\"legend-label\">{html.escape(column)}</text>')\n    parts.append(f'<text x=\"{(PLOT_LEFT + PLOT_RIGHT) / 2:.2f}\" y=\"{SVG_HEIGHT - 18}\" text-anchor=\"middle\" class=\"axis-title\">{html.escape(x_column)}</text>')\n    parts.append(\"</svg>\")\n    return \"\".join(parts)\n\n\n# 함수 설명: 차트 아래 접근성 표에 표시할 x/y 셀만 안전하게 HTML로 변환합니다.\ndef _result_table(rows: list[dict[str, Any]], plan: dict[str, Any]) -> str:\n    columns = [str(plan[\"x_column\"]), *[str(column) for column in plan[\"y_columns\"]]]\n    header = \"\".join(f\"<th>{html.escape(column)}</th>\" for column in columns)\n    body_rows: list[str] = []\n    for row in rows:\n        cells: list[str] = []\n        for column in columns:\n            number = _chart_number(row.get(column)) if column in plan[\"y_columns\"] else None\n            value = _format_number(number) if number is not None else _text(row.get(column))\n            cells.append(f\"<td>{html.escape(value)}</td>\")\n        body_rows.append(\"<tr>\" + \"\".join(cells) + \"</tr>\")\n    return f\"<div class=\\\"table-wrap\\\"><table><thead><tr>{header}</tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>\"\n\n\n# 주요 함수: inline CSS·SVG·데이터 표만 포함하고 외부 CDN이나 script가 없는 완전한 HTML 문서를 만듭니다.\ndef render_html_document(rows: list[dict[str, Any]], plan: dict[str, Any]) -> str:\n    svg = render_svg_chart(rows, plan)\n    table = _result_table(rows, plan)\n    title = html.escape(str(plan[\"title\"]))\n    subtitle = html.escape(f\"{plan['x_column']} 기준 · {', '.join(plan['y_columns'])} · {len(rows):,}개 점\")\n    return f\"\"\"<!doctype html>\n<html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title>\n<style>\n:root{{color-scheme:light;font-family:Pretendard,\"Noto Sans KR\",Arial,sans-serif;color:#0f172a;background:#f8fafc}}*{{box-sizing:border-box}}body{{margin:0;padding:24px}}main{{max-width:1120px;margin:auto;background:white;border:1px solid #e2e8f0;border-radius:20px;padding:28px;box-shadow:0 14px 35px rgba(15,23,42,.08)}}h1{{font-size:24px;margin:0 0 8px}}p{{color:#475569;margin:0 0 22px}}svg{{width:100%;height:auto;border:1px solid #eef2f7;border-radius:16px}}.axis-label{{font-size:12px;fill:#64748b}}.axis-title{{font-size:13px;font-weight:700;fill:#334155}}.legend-label{{font-size:13px;font-weight:700;fill:#334155}}.table-wrap{{margin-top:24px;max-height:420px;overflow:auto;border:1px solid #e2e8f0;border-radius:12px}}table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{padding:9px 12px;border-bottom:1px solid #e2e8f0;text-align:left;white-space:nowrap}}th{{position:sticky;top:0;background:#f1f5f9}}\n</style></head><body><main><h1>{title}</h1><p>{subtitle}</p>{svg}{table}</main></body></html>\"\"\"\n\n\n# 주요 함수: result_ref 문서에서 같은 세션의 완전한 분석 결과 행만 읽고 연결을 항상 닫습니다.\ndef load_result_rows(question_value: Any, upstream_result_ref: Any, mongo_uri: Any, mongo_database: Any = DEFAULT_DATABASE, collection_name: Any = DEFAULT_COLLECTION, mongo_client_cls: Any = None, runtime_session_id: Any = \"\") -> tuple[dict[str, Any], dict[str, str] | None]:\n    question, message_session_id = _message_parts(question_value)\n    session_id = _text(runtime_session_id) or message_session_id\n    ref_id = _ref_id(upstream_result_ref)\n    if not question:\n        return {}, _issue(\"empty_question\", \"시각화 요청 질문이 비어 있습니다.\")\n    if not ref_id:\n        return {}, _issue(\"missing_upstream_result_ref\", \"시각화할 Data Analysis result_ref가 없습니다.\")\n    if len(ref_id) > MAX_RESULT_REF_CHARS:\n        return {}, _issue(\"invalid_upstream_result_ref\", \"result_ref가 허용 길이를 초과했습니다.\")\n    if not session_id:\n        return {}, _issue(\"missing_session_id\", \"현재 요청의 session_id를 확인할 수 없습니다.\")\n    uri = _text(mongo_uri)\n    if not uri:\n        return {}, _issue(\"missing_mongo_uri\", \"MongoDB 연결 URI가 비어 있습니다.\")\n    database = _text(mongo_database) or DEFAULT_DATABASE\n    collection = _text(collection_name) or DEFAULT_COLLECTION\n    client = None\n    try:\n        client_cls = mongo_client_cls or getattr(import_module(\"pymongo\"), \"MongoClient\")\n        client = client_cls(uri, serverSelectionTimeoutMS=5_000, connectTimeoutMS=5_000, socketTimeoutMS=5_000)\n        projection = {\"_id\": 0, \"session_id\": 1, \"payload.result_rows\": 1, \"payload.storage_manifest.result_rows\": 1}\n        document = client[database][collection].find_one({\"_id\": ref_id}, projection) or {}\n        if not document:\n            return {}, _issue(\"upstream_result_not_found\", \"result_ref에 해당하는 Data Analysis 결과가 없습니다.\")\n        stored_session = _text(document.get(\"session_id\"))\n        if not stored_session:\n            return {}, _issue(\"upstream_session_missing\", \"저장된 분석 결과의 session_id가 비어 있습니다.\")\n        if stored_session != session_id:\n            return {}, _issue(\"upstream_session_mismatch\", \"현재 요청과 다른 세션의 분석 결과는 시각화할 수 없습니다.\")\n        payload = document.get(\"payload\") if isinstance(document.get(\"payload\"), dict) else {}\n        manifest = payload.get(\"storage_manifest\") if isinstance(payload.get(\"storage_manifest\"), dict) else {}\n        result_manifest = manifest.get(\"result_rows\") if isinstance(manifest.get(\"result_rows\"), dict) else {}\n        if result_manifest.get(\"complete\") is False:\n            return {}, _issue(\"upstream_result_incomplete\", \"저장 상한으로 잘린 분석 결과는 시각화할 수 없습니다.\")\n        raw_rows = payload.get(\"result_rows\") if isinstance(payload.get(\"result_rows\"), list) else []\n        rows = [row for row in raw_rows if isinstance(row, dict)]\n        if not rows:\n            return {}, _issue(\"upstream_result_empty\", \"시각화할 분석 결과 행이 없습니다.\")\n        warnings: list[dict[str, str]] = []\n        if len(rows) != len(raw_rows):\n            warnings.append(_issue(\"invalid_rows_ignored\", \"dict 형식이 아닌 결과 행은 시각화에서 제외했습니다.\"))\n        return {\"question\": question, \"session_id\": session_id, \"result_ref\": ref_id, \"rows\": rows, \"row_count\": len(rows), \"warnings\": warnings}, None\n    except Exception as exc:  # noqa: BLE001\n        return {}, _issue(\"mongo_load_error\", f\"분석 결과를 불러오지 못했습니다: {exc}\")\n    finally:\n        if client is not None:\n            client.close()\n\n\n# 함수 설명: 실패 원인을 숨기지 않으면서 artifact가 없는 표준 오류 응답을 만듭니다.\ndef _error_result(error: dict[str, str]) -> dict[str, Any]:\n    message = str(error.get(\"message\") or \"HTML 시각화를 생성하지 못했습니다.\")\n    return {\"contract_version\": CONTRACT_VERSION, \"response_type\": \"html_visualization\", \"status\": \"error\", \"success\": False, \"message\": f\"### 시각화 오류\\n{message}\", \"artifacts\": [], \"warnings\": [], \"errors\": [error]}\n\n\n# 함수 설명: 사용자 화면에 노출할 URL이 절대 http(s) 주소인지 검증해 Tauri 상대경로와 위험한 scheme을 차단합니다.\ndef _safe_public_url(value: Any) -> str:\n    candidate = _clip(value, MAX_PUBLIC_URL_CHARS)\n    if not candidate or any(ord(character) < 32 for character in candidate):\n        return \"\"\n    try:\n        parsed = urlsplit(candidate)\n    except ValueError:\n        return \"\"\n    if parsed.scheme.lower() not in {\"http\", \"https\"} or not parsed.hostname:\n        return \"\"\n    if parsed.username is not None or parsed.password is not None or parsed.fragment:\n        return \"\"\n    return candidate\n\n\n# 함수 설명: Standalone 화면에서 입력한 서버 base URL을 Report API의 POST /reports 주소로 정규화합니다.\ndef _reports_post_url(value: Any) -> str:\n    base_url = _safe_public_url(value)\n    if not base_url:\n        return \"\"\n    normalized = base_url.rstrip(\"/\")\n    return normalized if normalized.endswith(\"/reports\") else f\"{normalized}/reports\"\n\n\n# 함수 설명: 링크 유효시간을 Report API가 허용하는 1시간~7일 범위의 정수로 제한합니다.\ndef _report_ttl_hours(value: Any) -> int:\n    return _bounded_int(value, DEFAULT_REPORT_TTL_HOURS, 1, MAX_REPORT_TTL_HOURS)\n\n\n# 함수 설명: 외부 패키지 없이 Report API에 JSON을 POST하고 응답 크기·형식을 제한합니다.\ndef _post_report_json(url: str, body: dict[str, Any], timeout_seconds: int = REPORT_API_TIMEOUT_SECONDS) -> dict[str, Any]:\n    encoded = json.dumps(body, ensure_ascii=False, default=str).encode(\"utf-8\")\n    request = urllib.request.Request(\n        url,\n        data=encoded,\n        method=\"POST\",\n        headers={\"Content-Type\": \"application/json; charset=utf-8\", \"Accept\": \"application/json\"},\n    )\n    try:\n        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:\n            raw = response.read(MAX_REPORT_RESPONSE_BYTES + 1)\n    except urllib.error.HTTPError as exc:\n        detail = exc.read(2_000).decode(\"utf-8\", errors=\"replace\")\n        raise RuntimeError(f\"Report API HTTP {exc.code}: {_clip(detail, MAX_ERROR_CHARS)}\") from exc\n    except urllib.error.URLError as exc:\n        raise RuntimeError(f\"Report API 연결 실패: {_clip(getattr(exc, 'reason', exc), MAX_ERROR_CHARS)}\") from exc\n    if len(raw) > MAX_REPORT_RESPONSE_BYTES:\n        raise RuntimeError(\"Report API 응답이 허용 크기를 초과했습니다.\")\n    try:\n        parsed = json.loads(raw.decode(\"utf-8\") or \"{}\")\n    except (UnicodeDecodeError, json.JSONDecodeError) as exc:\n        raise RuntimeError(\"Report API 응답이 올바른 UTF-8 JSON이 아닙니다.\") from exc\n    if not isinstance(parsed, dict):\n        raise RuntimeError(\"Report API 응답이 JSON object 형식이 아닙니다.\")\n    return parsed\n\n\n# 주요 함수: 생성된 HTML 원문을 Report API에 직접 보내고 공개 가능한 작은 링크 계약만 반환합니다.\ndef publish_html_report(\n    *,\n    html_document: str,\n    title: str,\n    question: str,\n    download_name: str,\n    chart_plan: dict[str, Any],\n    report_api_url: Any,\n    report_ttl_hours: Any,\n) -> dict[str, Any]:\n    post_url = _reports_post_url(report_api_url)\n    if not post_url:\n        raise ValueError(\"Report API 주소에는 절대 http(s) URL을 입력해야 합니다.\")\n    response = _post_report_json(\n        post_url,\n        {\n            \"html\": html_document,\n            \"title\": _clip(title, 160) or \"HTML 차트\",\n            \"question\": _clip(question, MAX_QUESTION_CHARS),\n            \"view_request\": \"metadata_driven_v5 HTML/SVG chart\",\n            \"available_datasets\": [],\n            \"report_plan\": {\n                \"source_flow\": \"10. v5_html_visualization\",\n                \"chart_type\": _clip(chart_plan.get(\"chart_type\"), 40),\n                \"x_column\": _clip(chart_plan.get(\"x_column\"), 120),\n                \"y_columns\": [_clip(item, 120) for item in chart_plan.get(\"y_columns\", [])[:SERIES_LIMIT]],\n            },\n            \"ttl_hours\": _report_ttl_hours(report_ttl_hours),\n            \"filename_hint\": download_name,\n        },\n    )\n    view_url = _safe_public_url(response.get(\"view_url\"))\n    download_url = _safe_public_url(response.get(\"download_url\"))\n    if not view_url or not download_url:\n        raise RuntimeError(\"Report API 응답에 유효한 view_url과 download_url이 모두 필요합니다.\")\n    return {\n        \"report_id\": _clip(response.get(\"report_id\"), MAX_REPORT_ID_CHARS),\n        \"view_url\": view_url,\n        \"download_url\": download_url,\n        \"expires_at\": _clip(response.get(\"expires_at\"), 80),\n        \"ttl_hours\": _report_ttl_hours(response.get(\"ttl_hours\") or report_ttl_hours),\n    }\n\n\n# 함수 설명: 모델 재작성 없이 보기·다운로드 Markdown 링크를 최종 사용자 메시지에 결정론적으로 붙입니다.\ndef _artifact_link_markdown(descriptor: dict[str, Any]) -> str:\n    view_url = _safe_public_url(descriptor.get(\"view_url\"))\n    download_url = _safe_public_url(descriptor.get(\"download_url\"))\n    links: list[str] = []\n    if view_url:\n        links.append(f\"[HTML 차트 보기]({view_url})\")\n    if download_url:\n        links.append(f\"[HTML 다운로드]({download_url})\")\n    return \" · \".join(links)\n\n\n# 함수 설명: 부모 Workflow에 전달할 제한된 HTML chart artifact descriptor를 구성합니다.\ndef _artifact_descriptor(*, path: str, title: str, download_name: str, chart_type: str, x_column: str, y_columns: list[str], row_count: int, plotted_row_count: int, size_bytes: int, report_links: dict[str, Any] | None = None) -> dict[str, Any]:\n    descriptor = {\"artifact_type\": \"html_chart\", \"path\": path, \"mime_type\": \"text/html\", \"title\": _clip(title, 160), \"download_name\": download_name, \"chart_type\": chart_type, \"x_column\": _clip(x_column, 120), \"y_columns\": [_clip(column, 120) for column in y_columns[:SERIES_LIMIT]], \"row_count\": int(row_count), \"plotted_row_count\": int(plotted_row_count), \"size_bytes\": int(size_bytes)}\n    links = report_links if isinstance(report_links, dict) else {}\n    report_id = _clip(links.get(\"report_id\"), MAX_REPORT_ID_CHARS)\n    view_url = _safe_public_url(links.get(\"view_url\"))\n    download_url = _safe_public_url(links.get(\"download_url\"))\n    expires_at = _clip(links.get(\"expires_at\"), 80)\n    if report_id:\n        descriptor[\"report_id\"] = report_id\n    if view_url:\n        descriptor[\"view_url\"] = view_url\n    if download_url:\n        descriptor[\"download_url\"] = download_url\n    if expires_at:\n        descriptor[\"expires_at\"] = expires_at\n    if view_url or download_url:\n        descriptor[\"ttl_hours\"] = _report_ttl_hours(links.get(\"ttl_hours\"))\n    return descriptor\n\n\n# 주요 함수: MongoDB 결과 복원부터 HTML 저장까지 한 번 수행하고 작은 visualization.result.v1 계약만 반환합니다.\n# Langflow 1.8.x는 standalone Custom Component를 평가할 때 모듈 최상위 AsyncFunctionDef를\n# 실행 전역에 포함하지 않으므로, 동기 함수가 내부 coroutine을 만들어 반환하는 형태를 사용합니다.\ndef build_html_visualization(*, question_value: Any, upstream_result_ref: Any, mongo_uri: Any, mongo_database: Any = DEFAULT_DATABASE, collection_name: Any = DEFAULT_COLLECTION, max_chart_rows: Any = DEFAULT_MAX_CHART_ROWS, report_api_url: Any = DEFAULT_REPORT_API_URL, report_ttl_hours: Any = DEFAULT_REPORT_TTL_HOURS, flow_id: Any, storage_service: Any, mongo_client_cls: Any = None, report_publisher_fn: Any = None, file_token: str = \"\", runtime_session_id: Any = \"\"):\n    # 함수 설명: `_run()`은 MongoDB 복원, 차트 생성, 파일 저장을 하나의 await 가능한 실행 단위로 묶습니다.\n    async def _run() -> dict[str, Any]:\n        source, source_error = load_result_rows(question_value, upstream_result_ref, mongo_uri, mongo_database, collection_name, mongo_client_cls, runtime_session_id)\n        if source_error:\n            return _error_result(source_error)\n        plan, plan_error = select_chart_plan(source[\"rows\"], source[\"question\"])\n        if plan_error:\n            return _error_result(plan_error)\n        ordered = _ordered_rows(source[\"rows\"], str(plan[\"x_column\"]))\n        row_limit = _bounded_int(max_chart_rows, DEFAULT_MAX_CHART_ROWS, 10, MAX_CHART_ROWS)\n        plotted_rows, sampled = _sample_rows(ordered, row_limit)\n        warnings = list(source.get(\"warnings\") or [])\n        if sampled:\n            warnings.append(_issue(\"chart_rows_sampled\", f\"{len(ordered):,}개 행을 {len(plotted_rows):,}개 점으로 균등 축소했습니다.\"))\n        html_document = render_html_document(plotted_rows, plan)\n        encoded = html_document.encode(\"utf-8\")\n        if len(encoded) > MAX_HTML_BYTES:\n            return _error_result(_issue(\"html_size_limit_exceeded\", \"생성된 HTML이 허용 크기를 초과했습니다.\"))\n        runtime_flow_id = _text(flow_id)\n        if not runtime_flow_id:\n            return _error_result(_issue(\"missing_flow_id\", \"HTML을 저장할 현재 Flow ID를 확인할 수 없습니다.\"))\n        if storage_service is None or not callable(getattr(storage_service, \"save_file\", None)):\n            return _error_result(_issue(\"storage_service_unavailable\", \"Langflow 파일 저장소를 사용할 수 없습니다.\"))\n        safe_token = re.sub(r\"[^a-zA-Z0-9]\", \"\", file_token)[:32] or uuid.uuid4().hex\n        download_name = f\"html-chart-{safe_token}.html\"\n        path = f\"{runtime_flow_id}/{download_name}\"\n        try:\n            await storage_service.save_file(flow_id=runtime_flow_id, file_name=download_name, data=encoded, append=False)\n        except Exception as exc:  # noqa: BLE001\n            return _error_result(_issue(\"html_storage_error\", f\"HTML 파일을 저장하지 못했습니다: {exc}\"))\n        report_links: dict[str, Any] = {}\n        configured_report_api = _text(report_api_url)\n        if configured_report_api:\n            publisher = report_publisher_fn if callable(report_publisher_fn) else publish_html_report\n            try:\n                report_links = await asyncio.to_thread(\n                    publisher,\n                    html_document=html_document,\n                    title=str(plan[\"title\"]),\n                    question=str(source[\"question\"]),\n                    download_name=download_name,\n                    chart_plan=plan,\n                    report_api_url=configured_report_api,\n                    report_ttl_hours=report_ttl_hours,\n                )\n            except Exception as exc:  # noqa: BLE001\n                warnings.append(_issue(\"report_api_publish_error\", f\"HTML은 생성했지만 보기/다운로드 링크를 만들지 못했습니다: {exc}\"))\n        else:\n            warnings.append(_issue(\"report_api_disabled\", \"Report API 주소가 비어 있어 보기/다운로드 링크를 만들지 않았습니다.\"))\n\n        descriptor = _artifact_descriptor(path=path, title=str(plan[\"title\"]), download_name=download_name, chart_type=str(plan[\"chart_type\"]), x_column=str(plan[\"x_column\"]), y_columns=list(plan[\"y_columns\"]), row_count=int(source[\"row_count\"]), plotted_row_count=len(plotted_rows), size_bytes=len(encoded), report_links=report_links)\n        link_markdown = _artifact_link_markdown(descriptor)\n        message = \"### HTML 시각화\\n\" + f\"{descriptor['title']} 차트를 생성했습니다.\\n\\n\" + f\"- 차트 유형: `{descriptor['chart_type']}`\\n\" + f\"- X축: `{descriptor['x_column']}`\\n\" + f\"- Y축: `{', '.join(descriptor['y_columns'])}`\\n\" + f\"- 데이터: 전체 {descriptor['row_count']:,}건, 표시 {descriptor['plotted_row_count']:,}건\"\n        if link_markdown:\n            message += f\"\\n\\n{link_markdown}\"\n            if descriptor.get(\"expires_at\"):\n                message += f\"\\n\\n- 링크 만료: `{descriptor['expires_at']}`\"\n        else:\n            message += \"\\n\\nHTML 파일은 생성했지만 공개 링크를 만들지 못했습니다. Report API 서버 주소와 실행 상태를 확인해 주세요.\"\n        status = \"ok\" if link_markdown else \"partial\"\n        summary = f\"{descriptor['x_column']} 기준 {', '.join(descriptor['y_columns'])} {descriptor['chart_type']} HTML 차트를 생성했습니다.\"\n        return {\"contract_version\": CONTRACT_VERSION, \"response_type\": \"html_visualization\", \"status\": status, \"success\": True, \"summary\": _clip(summary, 500), \"message\": message, \"artifacts\": [descriptor], \"warnings\": warnings, \"errors\": []}\n\n    return _run()\n\n\n# 함수 설명: 실제 Langflow 서비스 관리자에서 현재 파일 저장소를 가져옵니다.\ndef _runtime_storage_service() -> Any:\n    try:\n        deps = import_module(\"lfx.services.deps\")\n        return getattr(deps, \"get_storage_service\")()\n    except Exception:  # noqa: BLE001\n        return None\n\n\n# Langflow 컴포넌트 클래스: 하나의 custom node에서 결과 복원·차트 생성·Message/API 출력을 모두 제공해 Flow 구조를 단순하게 유지합니다.\nclass HTMLVisualizationBuilder(Component):\n    display_name = \"00 HTML 시각화 생성기\"\n    description = \"Data Analysis result_ref를 복원해 외부 CDN 없는 HTML/SVG 차트를 생성합니다.\"\n    name = \"HTMLVisualizationBuilder\"\n    icon = \"ChartNoAxesCombined\"\n    inputs = [\n        HandleInput(name=\"question\", display_name=\"시각화 질문\", info=\"Chat Input에서 전달된 현재 사용자 질문입니다.\", input_types=[\"Message\"], required=True),\n        MessageTextInput(name=\"upstream_result_ref\", display_name=\"상위 분석 결과 참조\", info=\"바로 앞 Data Analysis Tool이 반환한 result_ref입니다.\", value=\"\", required=False, advanced=False),\n        MessageTextInput(name=\"mongo_uri\", display_name=\"MongoDB 연결 URI\", info=\"Standalone Langflow Global Variable MONGO_URL을 선택합니다.\", value=\"MONGO_URL\", load_from_db=True, required=False, advanced=False),\n        MessageTextInput(name=\"mongo_database\", display_name=\"MongoDB 데이터베이스\", value=DEFAULT_DATABASE, required=False, advanced=False),\n        MessageTextInput(name=\"collection_name\", display_name=\"결과 컬렉션\", value=DEFAULT_COLLECTION, required=False, advanced=False),\n        MessageTextInput(name=\"report_api_url\", display_name=\"HTML Report API 주소\", info=\"보기·다운로드 절대 URL을 발급하는 서버 주소입니다. 예: http://127.0.0.1:8010\", value=DEFAULT_REPORT_API_URL, required=False, advanced=False),\n        StrInput(name=\"report_ttl_hours\", display_name=\"HTML 링크 유효시간\", info=\"링크 유지 시간입니다. 1~168시간 범위로 제한합니다.\", value=str(DEFAULT_REPORT_TTL_HOURS), required=False, advanced=False),\n        StrInput(name=\"max_chart_rows\", display_name=\"최대 차트 행 수\", info=\"행이 더 많으면 첫·끝을 포함해 균등 축소합니다.\", value=str(DEFAULT_MAX_CHART_ROWS), advanced=True),\n    ]\n    outputs = [\n        Output(\n            name=\"message\",\n            display_name=\"시각화 메시지\",\n            method=\"build_message\",\n            types=[\"Message\"],\n            group_outputs=True,\n        ),\n        Output(\n            name=\"api_response\",\n            display_name=\"API 응답\",\n            method=\"build_api_response\",\n            types=[\"Data\"],\n            group_outputs=True,\n        ),\n    ]\n\n    # 주요 메서드: 두 출력이 동시에 요청되어도 하나의 task를 공유해 Mongo 조회와 파일 저장을 정확히 한 번만 수행합니다.\n    async def _result_once(self) -> dict[str, Any]:\n        task = getattr(self, \"_visualization_result_task\", None)\n        if task is None:\n            task = asyncio.create_task(self._execute_visualization())\n            self._visualization_result_task = task\n        return await task\n\n    # 주요 메서드: standalone 화면 입력과 현재 Flow 저장소를 순수 실행 함수에 연결합니다.\n    async def _execute_visualization(self) -> dict[str, Any]:\n        graph = getattr(self, \"graph\", None)\n        runtime_session_id = str(\n            getattr(graph, \"session_id\", \"\") or getattr(self, \"_session_id\", \"\") or \"\"\n        ).strip()\n        return await build_html_visualization(question_value=getattr(self, \"question\", None), upstream_result_ref=getattr(self, \"upstream_result_ref\", \"\"), mongo_uri=getattr(self, \"mongo_uri\", \"\"), mongo_database=getattr(self, \"mongo_database\", DEFAULT_DATABASE), collection_name=getattr(self, \"collection_name\", DEFAULT_COLLECTION), max_chart_rows=getattr(self, \"max_chart_rows\", DEFAULT_MAX_CHART_ROWS), report_api_url=getattr(self, \"report_api_url\", DEFAULT_REPORT_API_URL), report_ttl_hours=getattr(self, \"report_ttl_hours\", DEFAULT_REPORT_TTL_HOURS), flow_id=getattr(self, \"flow_id\", \"\"), storage_service=_runtime_storage_service(), runtime_session_id=runtime_session_id)\n\n    # Langflow 출력 함수: HTML 경로가 첨부된 단일 AI Message를 Chat Output에 전달합니다.\n    async def build_message(self) -> Message:\n        result = await self._result_once()\n        message = Message(text=str(result.get(\"message\") or \"\"))\n        message.files = [item[\"path\"] for item in result.get(\"artifacts\", []) if isinstance(item, dict) and item.get(\"path\")]\n        message.error = str(result.get(\"status\") or \"\") == \"error\"\n        message.category = \"error\" if message.error else \"message\"\n        self.status = message\n        return message\n\n    # Langflow 출력 함수: raw rows/HTML 없이 artifact descriptor만 포함한 terminal API Data를 반환합니다.\n    async def build_api_response(self) -> Data:\n        result = await self._result_once()\n        self.status = str(result.get(\"message\") or \"\")\n        return Data(data=result)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "collection_name": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "collection_name",
+                "value": "agent_v4_result_store",
+                "display_name": "결과 컬렉션",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "max_chart_rows": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "max_chart_rows",
+                "value": "500",
+                "display_name": "최대 차트 행 수",
+                "advanced": true,
+                "dynamic": false,
+                "info": "행이 더 많으면 첫·끝을 포함해 균등 축소합니다.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "mongo_database": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "mongo_database",
+                "value": "datagov",
+                "display_name": "MongoDB 데이터베이스",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "mongo_uri": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "mongo_uri",
+                "value": "MONGO_URL",
+                "display_name": "MongoDB 연결 URI",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "Standalone Langflow Global Variable MONGO_URL을 선택합니다.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "report_api_url": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "report_api_url",
+                "value": "http://127.0.0.1:8010",
+                "display_name": "HTML Report API 주소",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "보기·다운로드 절대 URL을 발급하는 서버 주소입니다. 예: http://127.0.0.1:8010",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "report_ttl_hours": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "report_ttl_hours",
+                "value": "24",
+                "display_name": "HTML 링크 유효시간",
+                "advanced": false,
+                "dynamic": false,
+                "info": "링크 유지 시간입니다. 1~168시간 범위로 제한합니다.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "upstream_result_ref": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "upstream_result_ref",
+                "value": "",
+                "display_name": "상위 분석 결과 참조",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "바로 앞 Data Analysis Tool이 반환한 result_ref입니다.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              }
+            },
+            "description": "Data Analysis result_ref를 복원해 외부 CDN 없는 HTML/SVG 차트를 생성합니다.",
+            "icon": "ChartNoAxesCombined",
+            "base_classes": [
+              "Data",
+              "Message"
+            ],
+            "display_name": "00 HTML 시각화 생성기",
+            "documentation": "",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "message",
+                "display_name": "시각화 메시지",
+                "method": "build_message",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": true,
+                "tool_mode": true
+              },
+              {
+                "types": [
+                  "Data"
+                ],
+                "selected": "Data",
+                "name": "api_response",
+                "display_name": "API 응답",
+                "method": "build_api_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": true,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [
+              "question",
+              "upstream_result_ref",
+              "mongo_uri",
+              "mongo_database",
+              "collection_name",
+              "report_api_url",
+              "report_ttl_hours",
+              "max_chart_rows"
+            ],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "module": "v5_auxiliary.00_html_visualization_builder",
+              "code_hash": "da90549b75e2",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": "0.3.4"
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.8.2"
+          },
+          "showNode": true,
+          "type": "HTMLVisualizationBuilder"
+        },
+        "dragging": false,
+        "id": "HtmlVisualizationBuilder-html-visualization",
+        "measured": {
+          "height": 267,
+          "width": 320
+        },
+        "position": {
+          "x": 430,
+          "y": 0
+        },
+        "selected": false,
+        "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "ChatOutput-html-visualization",
+          "node": {
+            "base_classes": [
+              "Message"
+            ],
+            "beta": false,
+            "conditional_paths": [],
+            "custom_fields": {},
+            "description": "Display a chat message in the Playground.",
+            "display_name": "Chat Output",
+            "documentation": "https://docs.langflow.org/chat-input-and-output",
+            "edited": false,
+            "field_order": [
+              "input_value",
+              "should_store_message",
+              "sender",
+              "sender_name",
+              "session_id",
+              "context_id",
+              "data_template",
+              "clean_data"
+            ],
+            "frozen": false,
+            "icon": "MessagesSquare",
+            "legacy": false,
+            "lf_version": "1.8.2",
+            "metadata": {
+              "code_hash": "8c87e536cca4",
+              "dependencies": {
+                "dependencies": [
+                  {
+                    "name": "orjson",
+                    "version": "3.10.15"
+                  },
+                  {
+                    "name": "fastapi",
+                    "version": "0.135.1"
+                  },
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ],
+                "total_dependencies": 3
+              },
+              "module": "lfx.components.input_output.chat_output.ChatOutput"
+            },
+            "minimized": true,
+            "output_types": [],
+            "outputs": [
+              {
+                "allows_loop": false,
+                "cache": true,
+                "display_name": "Output Message",
+                "group_outputs": false,
+                "method": "message_response",
+                "name": "message",
+                "selected": "Message",
+                "tool_mode": true,
+                "types": [
+                  "Message"
+                ],
+                "value": "__UNDEFINED__"
+              }
+            ],
+            "pinned": false,
+            "template": {
+              "_type": "Component",
+              "clean_data": {
+                "_input_type": "BoolInput",
+                "advanced": true,
+                "display_name": "Basic Clean Data",
+                "dynamic": false,
+                "info": "Whether to clean data before converting to string.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "clean_data",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "value": true
+              },
+              "code": {
+                "advanced": true,
+                "dynamic": true,
+                "fileTypes": [],
+                "file_path": "",
+                "info": "",
+                "list": false,
+                "load_from_db": false,
+                "multiline": true,
+                "name": "code",
+                "password": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "type": "code",
+                "value": "from collections.abc import Generator\nfrom typing import Any\n\nimport orjson\nfrom fastapi.encoders import jsonable_encoder\n\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.helpers.data import safe_convert\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, HandleInput, MessageTextInput\nfrom lfx.schema.data import Data\nfrom lfx.schema.dataframe import DataFrame\nfrom lfx.schema.message import Message\nfrom lfx.schema.properties import Source\nfrom lfx.template.field.base import Output\nfrom lfx.utils.constants import (\n    MESSAGE_SENDER_AI,\n    MESSAGE_SENDER_NAME_AI,\n    MESSAGE_SENDER_USER,\n)\n\n\nclass ChatOutput(ChatComponent):\n    display_name = \"Chat Output\"\n    description = \"Display a chat message in the Playground.\"\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"ChatOutput\"\n    minimized = True\n\n    inputs = [\n        HandleInput(\n            name=\"input_value\",\n            display_name=\"Inputs\",\n            info=\"Message to be passed as output.\",\n            input_types=[\"Data\", \"DataFrame\", \"Message\"],\n            required=True,\n        ),\n        BoolInput(\n            name=\"should_store_message\",\n            display_name=\"Store Messages\",\n            info=\"Store the message in the history.\",\n            value=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"sender\",\n            display_name=\"Sender Type\",\n            options=[MESSAGE_SENDER_AI, MESSAGE_SENDER_USER],\n            value=MESSAGE_SENDER_AI,\n            advanced=True,\n            info=\"Type of sender.\",\n        ),\n        MessageTextInput(\n            name=\"sender_name\",\n            display_name=\"Sender Name\",\n            info=\"Name of the sender.\",\n            value=MESSAGE_SENDER_NAME_AI,\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"session_id\",\n            display_name=\"Session ID\",\n            info=\"The session ID of the chat. If empty, the current session ID parameter will be used.\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"context_id\",\n            display_name=\"Context ID\",\n            info=\"The context ID of the chat. Adds an extra layer to the local memory.\",\n            value=\"\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"data_template\",\n            display_name=\"Data Template\",\n            value=\"{text}\",\n            advanced=True,\n            info=\"Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.\",\n        ),\n        BoolInput(\n            name=\"clean_data\",\n            display_name=\"Basic Clean Data\",\n            value=True,\n            advanced=True,\n            info=\"Whether to clean data before converting to string.\",\n        ),\n    ]\n    outputs = [\n        Output(\n            display_name=\"Output Message\",\n            name=\"message\",\n            method=\"message_response\",\n        ),\n    ]\n\n    def _build_source(self, id_: str | None, display_name: str | None, source: str | None) -> Source:\n        source_dict = {}\n        if id_:\n            source_dict[\"id\"] = id_\n        if display_name:\n            source_dict[\"display_name\"] = display_name\n        if source:\n            # Handle case where source is a ChatOpenAI object\n            if hasattr(source, \"model_name\"):\n                source_dict[\"source\"] = source.model_name\n            elif hasattr(source, \"model\"):\n                source_dict[\"source\"] = str(source.model)\n            else:\n                source_dict[\"source\"] = str(source)\n        return Source(**source_dict)\n\n    async def message_response(self) -> Message:\n        # First convert the input to string if needed\n        text = self.convert_to_string()\n\n        # Get source properties\n        source, _, display_name, source_id = self.get_properties_from_source_component()\n\n        # Create or use existing Message object\n        if isinstance(self.input_value, Message) and not self.is_connected_to_chat_input():\n            message = self.input_value\n            # Update message properties\n            message.text = text\n            # Preserve existing session_id from the incoming message if it exists\n            existing_session_id = message.session_id\n        else:\n            message = Message(text=text)\n            existing_session_id = None\n\n        # Set message properties\n        message.sender = self.sender\n        message.sender_name = self.sender_name\n        # Preserve session_id from incoming message, or use component/graph session_id\n        message.session_id = (\n            self.session_id or existing_session_id or (self.graph.session_id if hasattr(self, \"graph\") else None) or \"\"\n        )\n        message.context_id = self.context_id\n        message.flow_id = self.graph.flow_id if hasattr(self, \"graph\") else None\n        message.properties.source = self._build_source(source_id, display_name, source)\n\n        # Store message if needed\n        if message.session_id and self.should_store_message:\n            stored_message = await self.send_message(message)\n            self.message.value = stored_message\n            message = stored_message\n\n        self.status = message\n        return message\n\n    def _serialize_data(self, data: Data) -> str:\n        \"\"\"Serialize Data object to JSON string.\"\"\"\n        # Convert data.data to JSON-serializable format\n        serializable_data = jsonable_encoder(data.data)\n        # Serialize with orjson, enabling pretty printing with indentation\n        json_bytes = orjson.dumps(serializable_data, option=orjson.OPT_INDENT_2)\n        # Convert bytes to string and wrap in Markdown code blocks\n        return \"```json\\n\" + json_bytes.decode(\"utf-8\") + \"\\n```\"\n\n    def _validate_input(self) -> None:\n        \"\"\"Validate the input data and raise ValueError if invalid.\"\"\"\n        if self.input_value is None:\n            msg = \"Input data cannot be None\"\n            raise ValueError(msg)\n        if isinstance(self.input_value, list) and not all(\n            isinstance(item, Message | Data | DataFrame | str) for item in self.input_value\n        ):\n            invalid_types = [\n                type(item).__name__\n                for item in self.input_value\n                if not isinstance(item, Message | Data | DataFrame | str)\n            ]\n            msg = f\"Expected Data or DataFrame or Message or str, got {invalid_types}\"\n            raise TypeError(msg)\n        if not isinstance(\n            self.input_value,\n            Message | Data | DataFrame | str | list | Generator | type(None),\n        ):\n            type_name = type(self.input_value).__name__\n            msg = f\"Expected Data or DataFrame or Message or str, Generator or None, got {type_name}\"\n            raise TypeError(msg)\n\n    def convert_to_string(self) -> str | Generator[Any, None, None]:\n        \"\"\"Convert input data to string with proper error handling.\"\"\"\n        self._validate_input()\n        if isinstance(self.input_value, list):\n            clean_data: bool = getattr(self, \"clean_data\", False)\n            return \"\\n\".join([safe_convert(item, clean_data=clean_data) for item in self.input_value])\n        if isinstance(self.input_value, Generator):\n            return self.input_value\n        return safe_convert(self.input_value)\n"
+              },
+              "context_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Context ID",
+                "dynamic": false,
+                "info": "The context ID of the chat. Adds an extra layer to the local memory.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "context_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "data_template": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Data Template",
+                "dynamic": false,
+                "info": "Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "data_template",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": "{text}"
+              },
+              "input_value": {
+                "_input_type": "HandleInput",
+                "advanced": false,
+                "display_name": "Inputs",
+                "dynamic": false,
+                "info": "Message to be passed as output.",
+                "input_types": [
+                  "Data",
+                  "DataFrame",
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "input_value",
+                "override_skip": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "other",
+                "value": ""
+              },
+              "sender": {
+                "_input_type": "DropdownInput",
+                "advanced": true,
+                "combobox": false,
+                "dialog_inputs": {},
+                "display_name": "Sender Type",
+                "dynamic": false,
+                "external_options": {},
+                "info": "Type of sender.",
+                "name": "sender",
+                "options": [
+                  "Machine",
+                  "User"
+                ],
+                "options_metadata": [],
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "toggle": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "str",
+                "value": "Machine"
+              },
+              "sender_name": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Sender Name",
+                "dynamic": false,
+                "info": "Name of the sender.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "sender_name",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": "AI"
+              },
+              "session_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Session ID",
+                "dynamic": false,
+                "info": "The session ID of the chat. If empty, the current session ID parameter will be used.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "session_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "should_store_message": {
+                "_input_type": "BoolInput",
+                "advanced": true,
+                "display_name": "Store Messages",
+                "dynamic": false,
+                "info": "Store the message in the history.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "should_store_message",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "value": true
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": false,
+          "type": "ChatOutput"
+        },
+        "dragging": false,
+        "id": "ChatOutput-html-visualization",
+        "measured": {
+          "height": 52,
+          "width": 192
+        },
+        "position": {
+          "x": 900,
+          "y": -130
+        },
+        "selected": false,
+        "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "HtmlVisualizationApiTerminal-html-visualization",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "visualization_result": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "trace_as_input": true,
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "visualization_result",
+                "value": "",
+                "display_name": "시각화 결과",
+                "advanced": false,
+                "input_types": [
+                  "Data"
+                ],
+                "dynamic": false,
+                "info": "00 HTML 시각화 생성기의 visualization.result.v1 API 응답입니다.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "DataInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 01 HTML 시각화 API 종료 어댑터\n# 역할: 시각화 생성기의 구조화 결과를 별도 terminal Data 출력으로 전달합니다.\n# 주요 입력: 시각화 결과 (visualization_result) · 필수\n# 주요 출력: API 응답 (api_response)\n# 처리 흐름: visualization.result.v1 계약 검증 -> 정상 결과 그대로 전달 또는 결정론적 오류 계약 반환\n# 유지보수 포인트: 화면용 Message 경로와 API terminal 경로를 분리해 Run Flow가 구조화 결과를 안정적으로 수집하게 합니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, Output\nfrom lfx.schema.data import Data\n\n\nCONTRACT_VERSION = \"visualization.result.v1\"\n\n\n# 함수 설명: Langflow Data 또는 일반 dict에서 시각화 계약을 꺼내며 자연어 문자열 추측은 허용하지 않습니다.\ndef normalize_visualization_api_result(value: Any) -> dict[str, Any]:\n    payload = getattr(value, \"data\", value)\n    if isinstance(payload, dict) and payload.get(\"contract_version\") == CONTRACT_VERSION:\n        return payload\n    return {\n        \"contract_version\": CONTRACT_VERSION,\n        \"response_type\": \"html_visualization\",\n        \"status\": \"error\",\n        \"success\": False,\n        \"message\": \"### 시각화 오류\\n시각화 생성 결과 계약을 확인할 수 없습니다.\",\n        \"artifacts\": [],\n        \"warnings\": [],\n        \"errors\": [\n            {\n                \"type\": \"invalid_visualization_result_contract\",\n                \"message\": \"시각화 생성기는 visualization.result.v1 Data 계약을 반환해야 합니다.\",\n            }\n        ],\n    }\n\n\n# Langflow 컴포넌트 클래스: 화면 출력과 분리된 단일 terminal API 포트를 캔버스에 제공합니다.\n# 별도 종료 노드이므로 Run Flow가 비종료 생성기 포트를 임의 승격하지 않고 구조화 결과를 수집할 수 있습니다.\nclass HTMLVisualizationApiTerminal(Component):\n    display_name = \"01 HTML 시각화 API 종료 어댑터\"\n    description = \"시각화 결과를 검증하고 Run Flow용 terminal API Data로 전달합니다.\"\n    name = \"HTMLVisualizationApiTerminal\"\n    icon = \"FileJson\"\n\n    # 함수 설명: Python 코드에서 구조화 최종 출력을 선언해 수동 Flow JSON 편집을 없앱니다.\n    def __init__(self, **kwargs):\n        super().__init__(**kwargs)\n        self.is_output = True\n\n    inputs = [\n        DataInput(\n            name=\"visualization_result\",\n            display_name=\"시각화 결과\",\n            info=\"00 HTML 시각화 생성기의 visualization.result.v1 API 응답입니다.\",\n            required=True,\n        )\n    ]\n    outputs = [\n        Output(\n            name=\"api_response\",\n            display_name=\"API 응답\",\n            method=\"build_api_response\",\n            types=[\"Data\"],\n        )\n    ]\n\n    # Langflow 출력 함수: 검증된 시각화 결과를 별도 terminal Data로 반환합니다.\n    def build_api_response(self) -> Data:\n        payload = normalize_visualization_api_result(getattr(self, \"visualization_result\", None))\n        self.status = str(payload.get(\"message\") or \"\")\n        return Data(data=payload)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              }
+            },
+            "description": "시각화 결과를 검증하고 Run Flow용 terminal API Data로 전달합니다.",
+            "icon": "FileJson",
+            "is_output": true,
+            "base_classes": [
+              "Data"
+            ],
+            "display_name": "01 HTML 시각화 API 종료 어댑터",
+            "documentation": "",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Data"
+                ],
+                "selected": "Data",
+                "name": "api_response",
+                "display_name": "API 응답",
+                "method": "build_api_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [
+              "visualization_result"
+            ],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "module": "v5_auxiliary.01_html_visualization_api_terminal",
+              "code_hash": "ac764d931970",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": "0.3.4"
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.8.2"
+          },
+          "showNode": true,
+          "type": "HTMLVisualizationApiTerminal"
+        },
+        "dragging": false,
+        "id": "HtmlVisualizationApiTerminal-html-visualization",
+        "measured": {
+          "height": 267,
+          "width": 320
+        },
+        "position": {
+          "x": 900,
+          "y": 210
+        },
+        "selected": false,
+        "type": "genericNode"
+      }
+    ],
+    "edges": [
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "ChatInput",
+            "id": "ChatInput-html-visualization",
+            "name": "message",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "question",
+            "id": "HtmlVisualizationBuilder-html-visualization",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "xy-edge__ChatInput-html-visualization{œdataTypeœ:œChatInputœ,œidœ:œChatInput-html-visualizationœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-HtmlVisualizationBuilder-html-visualization{œfieldNameœ:œquestionœ,œidœ:œHtmlVisualizationBuilder-html-visualizationœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "ChatInput-html-visualization",
+        "sourceHandle": "{œdataTypeœ:œChatInputœ,œidœ:œChatInput-html-visualizationœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "HtmlVisualizationBuilder-html-visualization",
+        "targetHandle": "{œfieldNameœ:œquestionœ,œidœ:œHtmlVisualizationBuilder-html-visualizationœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "HTMLVisualizationBuilder",
+            "id": "HtmlVisualizationBuilder-html-visualization",
+            "name": "message",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "ChatOutput-html-visualization",
+            "inputTypes": [
+              "Data",
+              "DataFrame",
+              "Message"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "xy-edge__HtmlVisualizationBuilder-html-visualization{œdataTypeœ:œHTMLVisualizationBuilderœ,œidœ:œHtmlVisualizationBuilder-html-visualizationœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-html-visualization{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-html-visualizationœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "HtmlVisualizationBuilder-html-visualization",
+        "sourceHandle": "{œdataTypeœ:œHTMLVisualizationBuilderœ,œidœ:œHtmlVisualizationBuilder-html-visualizationœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "ChatOutput-html-visualization",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-html-visualizationœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "HTMLVisualizationBuilder",
+            "id": "HtmlVisualizationBuilder-html-visualization",
+            "name": "api_response",
+            "output_types": [
+              "Data"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "visualization_result",
+            "id": "HtmlVisualizationApiTerminal-html-visualization",
+            "inputTypes": [
+              "Data"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "xy-edge__HtmlVisualizationBuilder-html-visualization{œdataTypeœ:œHTMLVisualizationBuilderœ,œidœ:œHtmlVisualizationBuilder-html-visualizationœ,œnameœ:œapi_responseœ,œoutput_typesœ:[œDataœ]}-HtmlVisualizationApiTerminal-html-visualization{œfieldNameœ:œvisualization_resultœ,œidœ:œHtmlVisualizationApiTerminal-html-visualizationœ,œinputTypesœ:[œDataœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "HtmlVisualizationBuilder-html-visualization",
+        "sourceHandle": "{œdataTypeœ:œHTMLVisualizationBuilderœ,œidœ:œHtmlVisualizationBuilder-html-visualizationœ,œnameœ:œapi_responseœ,œoutput_typesœ:[œDataœ]}",
+        "target": "HtmlVisualizationApiTerminal-html-visualization",
+        "targetHandle": "{œfieldNameœ:œvisualization_resultœ,œidœ:œHtmlVisualizationApiTerminal-html-visualizationœ,œinputTypesœ:[œDataœ],œtypeœ:œotherœ}"
+      }
+    ],
+    "viewport": {
+      "x": 0,
+      "y": 0,
+      "zoom": 0.55
+    }
+  },
+  "description": "Standalone HTML visualization flow that restores one Data Analysis result_ref, renders an offline HTML/SVG chart, and publishes browser-view/download links through a configurable Report API.",
+  "endpoint_name": "metadata-driven-v5-html-visualization",
+  "id": "ec7ccf72-21d2-5314-aa26-81c938b416be",
+  "is_component": false,
+  "last_tested_version": "1.8.2",
+  "locked": false,
+  "name": "10. v5_html_visualization",
+  "tags": [
+    "v5",
+    "standalone",
+    "html-visualization",
+    "result-ref",
+    "offline-chart",
+    "report-api"
+  ]
+}

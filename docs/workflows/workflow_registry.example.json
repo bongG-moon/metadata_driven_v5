@@ -2,24 +2,58 @@
   "contract_version": "workflow.registry.v1",
   "workflows": [
     {
-      "workflow_key": "wb_daily_production_metadata",
-      "title": "WB 당일 생산량과 공정 그룹 정의 조회",
-      "description": "오늘 WB 생산량을 먼저 조회한 뒤 등록된 WB 공정 그룹 정의를 조회합니다.",
+      "workflow_key": "daily_manufacturing_briefing",
+      "title": "DA 일일 생산·재공 브리핑",
+      "description": "오늘 DA 공정의 생산량과 현재 재공을 순차 조회하고 사용 데이터셋의 등록 정보를 확인한 뒤 기본 LLM이 하나의 브리핑으로 종합합니다.",
+      "aliases": [
+        "DA 일일 제조 브리핑",
+        "오늘 DA 운영 현황",
+        "DA 생산 재공 데이터 소스"
+      ],
+      "intent_examples": [
+        "오늘 DA 공정의 생산량과 현재 재공, 사용 데이터 소스를 함께 알려줘",
+        "DA 공정 일일 생산·재공 브리핑을 만들어줘"
+      ],
+      "keywords": [
+        "DA 운영 브리핑",
+        "DA 생산량과 재공",
+        "생산 재공 데이터 소스",
+        "일일 제조 브리핑"
+      ],
+      "excluded_keywords": [
+        "등록해줘",
+        "저장해줘",
+        "변경해줘",
+        "삭제해줘",
+        "HOLD 이력",
+        "장비 UPH"
+      ],
+      "priority": 100,
       "steps": [
         {
           "step_id": "production",
           "tool_name": "run_data_analysis",
-          "question": "오늘 WB 공정 생산량을 조회해.",
+          "question": "오늘 D/A 공정 그룹(D/A1~D/A6)의 세부 공정별 생산량을 조회해.",
           "depends_on": [],
+          "handoff": "none",
+          "on_error": "stop"
+        },
+        {
+          "step_id": "wip",
+          "tool_name": "run_data_analysis",
+          "question": "현재 D/A 공정 그룹(D/A1~D/A6)의 세부 공정별 재공 수량을 조회해. LOT 또는 랏 요청이 아니므로 lot_status가 아닌 wip_today 데이터를 사용해.",
+          "depends_on": [
+            "production"
+          ],
           "handoff": "none",
           "on_error": "stop"
         },
         {
           "step_id": "metadata",
           "tool_name": "run_metadata_qa",
-          "question": "메타데이터에 등록된 WB 공정 그룹 정의와 포함 공정을 알려줘.",
+          "question": "메타데이터에 등록된 production_today와 wip_today의 데이터셋 이름, 데이터 소스 유형, 필수 파라미터, 수량 컬럼을 비교해서 알려줘.",
           "depends_on": [
-            "production"
+            "wip"
           ],
           "handoff": "none",
           "on_error": "continue"
@@ -27,14 +61,37 @@
       ]
     },
     {
-      "workflow_key": "anomaly_lot_hold_history",
-      "title": "이상 LOT과 HOLD 이력 연계 조회",
-      "description": "이상 LOT을 조회한 뒤 실제 결과 참조를 사용해 해당 LOT의 HOLD 이력을 조회합니다.",
+      "workflow_key": "hold_lot_history_metadata_audit",
+      "title": "현재 HOLD LOT 이력과 데이터 정의 감사",
+      "description": "현재 HOLD 중인 LOT을 조회하고 실제 LOT 결과를 HOLD 이력 분석에 전달한 뒤 관련 데이터셋의 등록 정의를 확인해 기본 LLM이 종합합니다.",
+      "aliases": [
+        "HOLD LOT 이력 감사",
+        "현재 HOLD와 이력",
+        "HOLD LOT 원인 조회"
+      ],
+      "intent_examples": [
+        "현재 HOLD 중인 LOT과 해당 LOT의 HOLD 이력, 사용 데이터 소스를 함께 알려줘",
+        "HOLD LOT의 최근 이력과 관련 메타데이터를 감사해줘"
+      ],
+      "keywords": [
+        "현재 HOLD LOT",
+        "HOLD 이력과 원인",
+        "LOT HOLD 감사",
+        "HOLD 데이터 소스"
+      ],
+      "excluded_keywords": [
+        "등록해줘",
+        "저장해줘",
+        "변경해줘",
+        "삭제해줘",
+        "장비 UPH"
+      ],
+      "priority": 105,
       "steps": [
         {
-          "step_id": "anomaly_lots",
+          "step_id": "current_hold_lots",
           "tool_name": "run_data_analysis",
-          "question": "오늘 이상 LOT을 조회하고 LOT_ID를 결과에 포함해줘.",
+          "question": "현재 HOLD 중인 LOT의 LOT_ID, 공정, UNIT 수량, Wafer 수량, 현재 TAT와 누적 TAT를 조회해.",
           "depends_on": [],
           "handoff": "none",
           "on_error": "stop"
@@ -42,12 +99,70 @@
         {
           "step_id": "hold_history",
           "tool_name": "run_data_analysis",
-          "question": "앞 단계에서 조회된 LOT만 대상으로 HOLD 이력을 조회해.",
+          "question": "이전 결과에 포함된 실제 LOT만 대상으로 HOLD 이력을 최신순으로 조회하고 HOLD 코드, 상세 사유, 발생 시간을 보여줘.",
           "depends_on": [
-            "anomaly_lots"
+            "current_hold_lots"
           ],
           "handoff": "result_ref",
           "on_error": "stop"
+        },
+        {
+          "step_id": "metadata",
+          "tool_name": "run_metadata_qa",
+          "question": "메타데이터에 등록된 lot_status와 hold_history 데이터셋의 용도, 데이터 소스 유형, 주요 식별 컬럼과 HOLD 관련 컬럼을 비교해서 알려줘.",
+          "depends_on": [
+            "hold_history"
+          ],
+          "handoff": "none",
+          "on_error": "continue"
+        }
+      ]
+    },
+    {
+      "workflow_key": "equipment_uph_source_audit",
+      "title": "D/A1 장비 UPH와 데이터 소스 감사",
+      "description": "현재 D/A1 장비와 Recipe별 UPH를 조회하고 장비 배정 및 UPH 데이터셋의 등록 정의를 확인한 뒤 기본 LLM이 함께 정리합니다.",
+      "aliases": [
+        "D/A1 장비 UPH 감사",
+        "DA1 UPH 데이터 소스",
+        "장비 UPH 메타데이터 확인"
+      ],
+      "intent_examples": [
+        "현재 D/A1 장비와 UPH, 사용 데이터 소스를 함께 알려줘",
+        "D/A1 장비 모델과 Recipe별 UPH를 조회하고 관련 메타데이터도 확인해줘"
+      ],
+      "keywords": [
+        "D/A1 장비 UPH",
+        "장비 UPH 데이터 소스",
+        "Recipe UPH 메타데이터",
+        "장비와 UPH"
+      ],
+      "excluded_keywords": [
+        "등록해줘",
+        "저장해줘",
+        "변경해줘",
+        "삭제해줘",
+        "HOLD 이력"
+      ],
+      "priority": 105,
+      "steps": [
+        {
+          "step_id": "equipment_uph",
+          "tool_name": "run_data_analysis",
+          "question": "현재 D/A1 공정에 배정된 장비의 장비 ID, 장비 모델, Recipe, 공정과 UPH를 조회해.",
+          "depends_on": [],
+          "handoff": "none",
+          "on_error": "stop"
+        },
+        {
+          "step_id": "source_metadata",
+          "tool_name": "run_metadata_qa",
+          "question": "메타데이터에 등록된 equipment_assign과 eqp_uph 데이터셋의 용도, 데이터 소스 유형, 필수 파라미터, 연결 기준 컬럼과 주요 출력 컬럼을 비교해서 알려줘.",
+          "depends_on": [
+            "equipment_uph"
+          ],
+          "handoff": "none",
+          "on_error": "continue"
         }
       ]
     }

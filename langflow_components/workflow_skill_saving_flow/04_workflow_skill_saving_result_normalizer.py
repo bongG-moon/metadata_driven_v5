@@ -28,6 +28,7 @@ STEP_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 ALLOWED_TOOL_NAMES = {
     "run_data_analysis",
     "run_metadata_qa",
+    "run_visualization",
     "save_domain_metadata",
     "save_table_catalog_metadata",
     "save_main_flow_filter_metadata",
@@ -35,7 +36,7 @@ ALLOWED_TOOL_NAMES = {
 ALLOWED_HANDOFFS = {"none", "result_ref"}
 ALLOWED_ON_ERROR = {"stop", "continue"}
 RESULT_REF_PRODUCERS = {"run_data_analysis"}
-RESULT_REF_CONSUMERS = {"run_data_analysis"}
+RESULT_REF_CONSUMERS = {"run_data_analysis", "run_visualization"}
 
 
 # 주요 함수: LLM 응답에서 Workflow Skill 후보 하나를 추출하고 모든 실행 규칙 위반을 오류로 기록합니다.
@@ -193,7 +194,7 @@ def _normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# 함수 설명: `_normalize_step()`은 단계 필드를 Route V4가 소비하는 고정 step 계약으로 변환합니다.
+# 함수 설명: `_normalize_step()`은 단계 필드를 08 Workflow Orchestrator가 소비하는 고정 step 계약으로 변환합니다.
 def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
     del index
     dependencies = raw.get("depends_on")
@@ -312,7 +313,7 @@ def _list(value: Any) -> list[Any]:
 # Langflow 컴포넌트 클래스: LLM 초안을 결정론적으로 검증한 Workflow Skill 페이로드로 변환합니다.
 class WorkflowSkillSavingResultNormalizer(Component):
     display_name = "04 Workflow Skill 등록 결과 정규화기"
-    description = "LLM 후보를 Route V4 실행 계약에 맞춰 정규화하고 잘못된 단계·Tool·handoff를 차단합니다."
+    description = "LLM 후보를 08 Workflow Orchestrator 실행 계약에 맞춰 정규화하고 잘못된 단계·Tool·handoff를 차단합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         MessageTextInput(name="llm_response", display_name="LLM 응답", required=True),

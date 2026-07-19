@@ -34,10 +34,32 @@ FLOW_SPECS = [
     ("metadata_qa_flow_v5_standalone.json", "metadata-qa", "metadata_qa"),
     ("api_router_flow_v5_standalone.json", "api-router", "api_router"),
     ("agent_tool_router_flow_v5_standalone.json", "agent-tool-router", "agent_tool_router"),
-    ("agent_orchestrator_router_flow_v5_standalone.json", "agent-orchestrator-router", "agent_orchestrator_router"),
     ("workflow_orchestrator_flow_v5_standalone.json", "workflow-orchestrator", "workflow_orchestrator"),
     ("workflow_skill_saving_flow_v5_standalone.json", "workflow-skill-saving", "workflow_skill_saving"),
+    ("html_visualization_flow_v5_standalone.json", "html-visualization", "html_visualization"),
 ]
+
+FLOW_DISPLAY_NAMES = {
+    "data_analysis": "01. v5_data_analysis",
+    "domain_saving": "02. v5_domain_saving",
+    "table_catalog_saving": "03. v5_table_catalog_saving",
+    "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
+    "metadata_qa": "05. v5_metadata_qa",
+    "api_router": "06. v5_api_router",
+    "agent_tool_router": "07. v5_agent_tool_router",
+    "workflow_orchestrator": "08. v5_workflow_orchestrator",
+    "workflow_skill_saving": "09. v5_workflow_skill_saving",
+    "html_visualization": "10. v5_html_visualization",
+}
+EXPLICIT_STRUCTURED_TERMINALS = {
+    "data_analysis": "CustomComponent-3eVde",
+    "domain_saving": "Api-domain",
+    "table_catalog_saving": "Api-table_catalog",
+    "main_flow_filter_saving": "Api-main_flow_filter",
+    "metadata_qa": "Api-metadata-qa",
+    "workflow_skill_saving": "Api-workflow_skill",
+    "html_visualization": "HtmlVisualizationApiTerminal-html-visualization",
+}
 
 CHILD_ROUTE_NAMES = {
     "data_analysis",
@@ -46,6 +68,72 @@ CHILD_ROUTE_NAMES = {
     "main_flow_filter_saving",
     "metadata_qa",
 }
+WORKFLOW_CHILD_ROUTE_NAMES = {*CHILD_ROUTE_NAMES, "html_visualization"}
+
+
+def sync_workflow_sources() -> None:
+    """Registry, Loop feedback, Workflow Skill Prompt 기준본을 source export에 동기화합니다."""
+
+    source = SOURCE_DIR / "workflow_orchestrator_flow_v5_standalone.json"
+    flow = json.loads(source.read_text(encoding="utf-8"))
+    registry_seed = json.dumps(
+        json.loads((ROOT / "docs" / "workflows" / "workflow_registry.example.json").read_text(encoding="utf-8")),
+        ensure_ascii=False,
+        indent=2,
+    )
+    matched = False
+    for node in flow.get("data", {}).get("nodes", []):
+        if str(node.get("id") or "") != "WorkflowRegistryLoader-workflow-orchestrator":
+            continue
+        template = node.get("data", {}).get("node", {}).get("template", {})
+        template["inline_seed_json"]["value"] = registry_seed
+        matched = True
+        break
+    if not matched:
+        raise ValueError("Workflow Orchestrator Registry loader was not found in the source export.")
+
+    feedback_matched = False
+    for edge in flow.get("data", {}).get("edges", []):
+        if (
+            str(edge.get("source") or "") != "SequentialStepExecutor-workflow-orchestrator"
+            or str(edge.get("target") or "") != "Loop-workflow-orchestrator"
+            or str(edge.get("data", {}).get("sourceHandle", {}).get("name") or "") != "step_result"
+        ):
+            continue
+        target_handle = edge.get("data", {}).get("targetHandle", {})
+        if str(target_handle.get("name") or "") != "item":
+            continue
+        # Langflow 1.8.x의 Looping 포트는 item.types(Data)와
+        # item.loop_types(Message)를 합친 전체 타입 계약을 export합니다.
+        target_handle["output_types"] = ["Data", "Message"]
+        target_text = json.dumps(target_handle, ensure_ascii=False, separators=(",", ":")).replace('"', "œ")
+        edge["targetHandle"] = target_text
+        edge["id"] = (
+            f"xy-edge__{edge['source']}{edge['sourceHandle']}-"
+            f"{edge['target']}{target_text}"
+        )
+        feedback_matched = True
+        break
+    if not feedback_matched:
+        raise ValueError("Workflow Orchestrator Loop feedback edge was not found in the source export.")
+    source.write_bytes((json.dumps(flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+
+    skill_source = SOURCE_DIR / "workflow_skill_saving_flow_v5_standalone.json"
+    skill_flow = json.loads(skill_source.read_text(encoding="utf-8"))
+    prompt_text = (
+        ROOT / "langflow_components" / "workflow_skill_saving_flow" / "03_saving_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    prompt_matched = False
+    for node in skill_flow.get("data", {}).get("nodes", []):
+        if str(node.get("id") or "") != "PromptExtract-workflow_skill":
+            continue
+        template = node.get("data", {}).get("node", {}).get("template", {})
+        template["template"]["value"] = prompt_text
+        prompt_matched = True
+        break
+    if not prompt_matched:
+        raise ValueError("Workflow Skill Prompt Template was not found in the source export.")
+    skill_source.write_bytes((json.dumps(skill_flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
 
 
 def build_bundle(output_dir: Path) -> dict[str, Any]:
@@ -64,7 +152,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
         flow_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{ENDPOINT_PREFIX}/{endpoint_suffix}"))
         endpoint_name = f"{ENDPOINT_PREFIX}-{endpoint_suffix}"
         flow["id"] = flow_id
-        flow["name"] = f"metadata_driven_v5_complete_{BUNDLE_VERSION}_{route_name}"
+        flow["name"] = FLOW_DISPLAY_NAMES[route_name]
         flow["endpoint_name"] = endpoint_name
         flow["tags"] = sorted(set([*flow.get("tags", []), "complete-bundle", BUNDLE_VERSION, "import-ready"]))
         _set_frontend_flow_ids(flow, flow_id)
@@ -72,8 +160,6 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             _configure_router(flow, endpoint_by_route)
         elif route_name == "agent_tool_router":
             _configure_tool_router(flow)
-        elif route_name == "agent_orchestrator_router":
-            _configure_orchestrator_router(flow)
         elif route_name == "workflow_orchestrator":
             _configure_workflow_orchestrator(flow)
         destination = output_dir / f"{index:02d}_{filename}"
@@ -130,44 +216,42 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "manual_flow_id_replacement_required": False,
             "api_router": "Smart Router plus five Run API callers",
             "agent_tool_router": "Agent plus five name-resolved cached Flow tools",
-            "agent_orchestrator_router": "Agent plus five name-resolved cached Flow tools with explicit result_ref handoff",
-            "workflow_orchestrator": "Language Model planner plus native Loop and deterministic sequential Tool executor",
+            "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "290 passed",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 99/99 custom nodes to 82 real Python sources; 0 missing",
-            "korean_component_documentation": "83/83 Python sources and 1361/1361 function definitions documented; 38 component text sources and 12 embedded prompts are BOM-free; 297 embedded custom-code instances preserve 5364/5364 documented function instances; strict UTF-8/JSON checks passed",
-            "representative_data_analysis_questions_dummy_retrieval": "23/23 passed",
+            "pytest": "335 passed",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 97/97 custom nodes to 84 real Python sources; 0 missing",
+            "korean_component_documentation": "85/85 Python sources and 1470/1470 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 291 embedded custom-code instances preserve 5382/5382 documented function instances; strict UTF-8/JSON checks passed",
+            "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "153/153 passed",
-            "native_language_model_policy": "tool-free LLM stages and Route V4 planning/final synthesis use native Language Model components; Route V2 and Route V3 use native Agents with five real tools",
+            "langflow_lfx_node_templates": "150/150 passed",
+            "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with five real tools",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter directly to their ChatOutput; 0 gate nodes",
             "router_single_entry_topology": "Chat Input has exactly one outgoing edge to Smart Router; 0 API-caller session fan-out edges",
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra Chat Input edges",
-            "langflow_http_import": "the previous 8 flows passed isolated Langflow 1.8.2 HTTP import; Route V4 is covered by bundle and node/edge contract validation until the next live-server import run",
-            "single_chat_output": "6/6 child flows, Route V2, Route V3, and Route V4 each have exactly one ChatOutput",
+            "langflow_http_import": "the previous 8 flows passed isolated Langflow 1.8.2 HTTP import; Workflow Orchestrator is covered by bundle and node/edge contract validation until the next live-server import run",
+            "single_chat_output": "7/7 child flows, Route V2, and Workflow Orchestrator each have exactly one ChatOutput",
             "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
             "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
             "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
             "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
             "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2, Route V3, and Route V4 each have 5/5 runtime-user-scoped name-resolved tools with cache_flow=true, runtime ID reuse, and blank exported IDs",
+            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 has 5/5 cached tools; Workflow Orchestrator has 6/6 tools that re-resolve the exact current Flow name and cache only the graph by its actual ID; all exported IDs are blank",
             "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current ChatInput ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
             "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
             "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
             "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
-            "agent_orchestrator_contract": "5/5 tools use return_direct=false, expose question plus optional upstream_result_ref, and return compact route_v3.tool_result.v1 observations",
-            "agent_orchestrator_call_policy": "native Agent max_iterations=5; system prompt permits at most four sequential Tool calls and one final ChatOutput",
-            "agent_orchestrator_result_handoff": "Data Analysis restores an explicit result_ref as upstream_result and preserves it beside newly retrieved aliases",
-            "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
+            "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the six-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
+            "workflow_orchestrator_result_handoff": "Data Analysis produces an explicit result_ref consumed by a follow-up Data Analysis or HTML Visualization step",
+            "html_visualization_contract": "one result_ref-backed custom builder produces offline HTML/SVG, publishes absolute browser view/download URLs through the visible Report API input, and keeps raw HTML out of Workflow payloads; one ChatOutput and one separate API adapter expose a real terminal api_response",
             "workflow_orchestrator_registry": "visible MongoDB registry loader reads active workflow.registry.v1 items from agent_v4_workflow_skills; inline_seed is an explicit standalone test source, never an implicit fallback",
             "workflow_orchestrator_terminal_contract": "one final Language Model synthesis, one ChatOutput, and one terminal api_response; invalid or empty plans still reach the final error response",
             "metadata_existing_loader": "4/4 saving flows connect ExistingLoader directly to Matcher",
             "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-            "metadata_mongo_defaults": "18 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+            "metadata_mongo_defaults": "19 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
             "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
             "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
             "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes",
@@ -223,9 +307,7 @@ def _configure_tool_router(flow: dict[str, Any]) -> None:
         if route_name not in CHILD_ROUTE_NAMES:
             raise ValueError(f"Agent Tool Router has an unknown route: {route_name}")
         template = node.get("data", {}).get("node", {}).get("template", {})
-        template["flow_name_selected"]["value"] = (
-            f"metadata_driven_v5_complete_{BUNDLE_VERSION}_{route_name}"
-        )
+        template["flow_name_selected"]["value"] = FLOW_DISPLAY_NAMES[route_name]
         template["flow_id_selected"]["value"] = ""
         template["cache_flow"]["value"] = True
         template["return_direct"]["value"] = True
@@ -237,54 +319,42 @@ def _configure_tool_router(flow: dict[str, Any]) -> None:
         )
 
 
-def _configure_orchestrator_router(flow: dict[str, Any]) -> None:
-    """Route V3의 이름 기반 Tool을 bundle 내 하위 Flow 이름과 연결합니다."""
-
-    configured: set[str] = set()
-    for node in flow.get("data", {}).get("nodes", []):
-        node_id = str(node.get("id") or "")
-        if not node_id.startswith("OrchestratedFlowTool-"):
-            continue
-        route_name = node_id.removeprefix("OrchestratedFlowTool-")
-        if route_name not in CHILD_ROUTE_NAMES:
-            raise ValueError(f"Agent Orchestrator Router has an unknown route: {route_name}")
-        template = node.get("data", {}).get("node", {}).get("template", {})
-        template["flow_name_selected"]["value"] = f"metadata_driven_v5_complete_{BUNDLE_VERSION}_{route_name}"
-        template["flow_id_selected"]["value"] = ""
-        template["cache_flow"]["value"] = True
-        template["return_direct"]["value"] = False
-        node["data"]["node"]["tool_mode"] = True
-        configured.add(route_name)
-    if configured != CHILD_ROUTE_NAMES:
-        raise ValueError(
-            "Agent Orchestrator routes mismatch: "
-            f"configured={sorted(configured)}, expected={sorted(CHILD_ROUTE_NAMES)}"
-        )
-
-
 def _configure_workflow_orchestrator(flow: dict[str, Any]) -> None:
-    """Route V4 Loop 실행기의 이름 기반 Tool을 bundle 하위 Flow 이름에 연결합니다."""
+    """Workflow Tool 이름과 검토된 inline Registry seed를 import 산출물에 동기화합니다."""
 
     configured: set[str] = set()
+    registry_seed = json.dumps(
+        json.loads((ROOT / "docs" / "workflows" / "workflow_registry.example.json").read_text(encoding="utf-8")),
+        ensure_ascii=False,
+        indent=2,
+    )
+    registry_loader_found = False
     for node in flow.get("data", {}).get("nodes", []):
         node_id = str(node.get("id") or "")
+        if node_id == "WorkflowRegistryLoader-workflow-orchestrator":
+            template = node.get("data", {}).get("node", {}).get("template", {})
+            template["inline_seed_json"]["value"] = registry_seed
+            registry_loader_found = True
+            continue
         if not node_id.startswith("WorkflowFlowTool-"):
             continue
         route_name = node_id.removeprefix("WorkflowFlowTool-")
-        if route_name not in CHILD_ROUTE_NAMES:
+        if route_name not in WORKFLOW_CHILD_ROUTE_NAMES:
             raise ValueError(f"Workflow Orchestrator has an unknown route: {route_name}")
         template = node.get("data", {}).get("node", {}).get("template", {})
-        template["flow_name_selected"]["value"] = f"metadata_driven_v5_complete_{BUNDLE_VERSION}_{route_name}"
+        template["flow_name_selected"]["value"] = FLOW_DISPLAY_NAMES[route_name]
         template["flow_id_selected"]["value"] = ""
         template["cache_flow"]["value"] = True
         template["return_direct"]["value"] = False
         node["data"]["node"]["tool_mode"] = True
         configured.add(route_name)
-    if configured != CHILD_ROUTE_NAMES:
+    if configured != WORKFLOW_CHILD_ROUTE_NAMES:
         raise ValueError(
             "Workflow Orchestrator routes mismatch: "
-            f"configured={sorted(configured)}, expected={sorted(CHILD_ROUTE_NAMES)}"
+            f"configured={sorted(configured)}, expected={sorted(WORKFLOW_CHILD_ROUTE_NAMES)}"
         )
+    if not registry_loader_found:
+        raise ValueError("Workflow Orchestrator Registry loader was not found while synchronizing the inline seed.")
 
 
 def _validate_bundle(
@@ -292,6 +362,12 @@ def _validate_bundle(
     manifest_flows: list[dict[str, Any]],
     endpoint_by_route: dict[str, str],
 ) -> int:
+    expected_flow_names = [FLOW_DISPLAY_NAMES[route_name] for _, _, route_name in FLOW_SPECS]
+    manifest_flow_names = [str(item.get("name") or "") for item in manifest_flows]
+    if manifest_flow_names != expected_flow_names:
+        raise ValueError(
+            f"Bundle Flow display names mismatch: actual={manifest_flow_names}, expected={expected_flow_names}"
+        )
     endpoint_names = [item["endpoint_name"] for item in manifest_flows]
     if len(endpoint_names) != len(set(endpoint_names)):
         raise ValueError("Bundle endpoint_name values must be unique.")
@@ -367,13 +443,6 @@ def _validate_bundle(
     )
     tool_router = json.loads(tool_router_file.read_text(encoding="utf-8"))
     _validate_tool_router(tool_router)
-    orchestrator_router_file = output_dir / next(
-        item["file"]
-        for item in manifest_flows
-        if item["endpoint_name"].endswith("-agent-orchestrator-router")
-    )
-    orchestrator_router = json.loads(orchestrator_router_file.read_text(encoding="utf-8"))
-    _validate_orchestrator_router(orchestrator_router)
     workflow_orchestrator_file = output_dir / next(
         item["file"]
         for item in manifest_flows
@@ -388,6 +457,13 @@ def _validate_bundle(
     )
     workflow_skill = json.loads(workflow_skill_file.read_text(encoding="utf-8"))
     _validate_workflow_skill_saving(workflow_skill)
+    html_visualization_file = output_dir / next(
+        item["file"]
+        for item in manifest_flows
+        if item["endpoint_name"].endswith("-html-visualization")
+    )
+    html_visualization = json.loads(html_visualization_file.read_text(encoding="utf-8"))
+    _validate_html_visualization(html_visualization)
     all_flows_path = output_dir / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
     all_raw = all_flows_path.read_bytes()
     if all_raw.startswith(b"\xef\xbb\xbf") or not all_raw.startswith(b'{"flows":['):
@@ -395,6 +471,11 @@ def _validate_bundle(
     all_payload = json.loads(all_raw.decode("utf-8"))
     if len(all_payload.get("flows", [])) != len(manifest_flows):
         raise ValueError("Single-file UI bundle flow count mismatch.")
+    combined_flow_names = [str(flow.get("name") or "") for flow in all_payload["flows"]]
+    if combined_flow_names != expected_flow_names:
+        raise ValueError(
+            f"Single-file UI bundle Flow display names mismatch: actual={combined_flow_names}, expected={expected_flow_names}"
+        )
     all_text = all_raw.decode("utf-8")
     forbidden_v5_collections = (
         "agent_v5_domain_items",
@@ -420,6 +501,24 @@ def _validate_bundle(
     validated_edge_handle_count = 0
     for flow in all_payload["flows"]:
         node_by_id = {node.get("id"): node for node in flow.get("data", {}).get("nodes", [])}
+        route_name = next(
+            (key for key, display_name in FLOW_DISPLAY_NAMES.items() if display_name == str(flow.get("name") or "")),
+            "",
+        )
+        structured_terminal_id = EXPLICIT_STRUCTURED_TERMINALS.get(route_name)
+        if structured_terminal_id:
+            terminal = node_by_id.get(structured_terminal_id, {})
+            terminal_config = terminal.get("data", {}).get("node", {})
+            outgoing = [edge for edge in flow.get("data", {}).get("edges", []) if edge.get("source") == structured_terminal_id]
+            output_names = {
+                str(output.get("name") or "")
+                for output in terminal_config.get("outputs", [])
+                if isinstance(output, dict)
+            }
+            if terminal_config.get("is_output") is not True or outgoing or "api_response" not in output_names:
+                raise ValueError(
+                    f"{flow.get('name')} structured terminal {structured_terminal_id} must be an explicit, edge-free api_response graph output."
+                )
         is_child_flow = not str(flow.get("endpoint_name") or "").endswith(("-api-router", "-agent-tool-router"))
         if is_child_flow:
             child_chat_nodes = [
@@ -530,9 +629,9 @@ def _validate_bundle(
                     f"Edge {edge.get('id')} targets advanced input {edge.get('target')}.{target_field}; "
                     "Langflow 1.8.2 removes connections to advanced component fields during template refresh."
                 )
-    if mongo_default_nodes != 18 or snapshot_default_nodes != 1:
+    if mongo_default_nodes != 19 or snapshot_default_nodes != 1:
         raise ValueError(
-            "Expected 18 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
+            "Expected 19 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
             f"found standard={mongo_default_nodes}, snapshot={snapshot_default_nodes}."
         )
     return validated_edge_handle_count
@@ -569,7 +668,7 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
         route_name = node_id.removeprefix("CachedFlowTool-")
         template = tool["data"]["node"]["template"]
         actual_tool_names.add(str(template["tool_name"]["value"]))
-        expected_flow_name = f"metadata_driven_v5_complete_{BUNDLE_VERSION}_{route_name}"
+        expected_flow_name = FLOW_DISPLAY_NAMES[route_name]
         if template["flow_name_selected"]["value"] != expected_flow_name:
             raise ValueError(f"{node_id} target name mismatch.")
         if template["flow_id_selected"]["value"] not in ("", None):
@@ -608,98 +707,8 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
         raise ValueError("Agent Tool Router must not contain session-source fan-out edges.")
 
 
-def _validate_orchestrator_router(flow: dict[str, Any]) -> None:
-    """Route V3의 다중 Tool·단일 최종 출력·compact handoff 계약을 검증합니다."""
-
-    nodes = flow.get("data", {}).get("nodes", [])
-    edges = flow.get("data", {}).get("edges", [])
-    tools = [node for node in nodes if str(node.get("id") or "").startswith("OrchestratedFlowTool-")]
-    agents = [node for node in nodes if node.get("data", {}).get("type") == "Agent"]
-    chat_outputs = [node for node in nodes if node.get("data", {}).get("type") == "ChatOutput"]
-    if len(tools) != 5 or len(agents) != 1 or len(chat_outputs) != 1:
-        raise ValueError("Agent Orchestrator Router must contain five tools, one Agent, and one ChatOutput.")
-
-    agent_template = agents[0].get("data", {}).get("node", {}).get("template", {})
-    if agent_template.get("max_iterations", {}).get("value") != 5:
-        raise ValueError("Agent Orchestrator Router max_iterations must be 5.")
-    system_prompt = str(agent_template.get("system_prompt", {}).get("value") or "")
-    if "최대 4" not in system_prompt and "최대 네" not in system_prompt:
-        raise ValueError("Agent Orchestrator Router prompt must limit sequential Tool calls to four.")
-
-    expected_tool_names = {
-        "run_data_analysis",
-        "run_metadata_qa",
-        "save_domain_metadata",
-        "save_table_catalog_metadata",
-        "save_main_flow_filter_metadata",
-    }
-    actual_edges = {
-        (
-            str(edge.get("source") or ""),
-            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
-            str(edge.get("target") or ""),
-            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
-        )
-        for edge in edges
-    }
-    actual_tool_names: set[str] = set()
-    for tool in tools:
-        node_id = str(tool["id"])
-        route_name = node_id.removeprefix("OrchestratedFlowTool-")
-        template = tool["data"]["node"]["template"]
-        actual_tool_names.add(str(template["tool_name"]["value"]))
-        expected_flow_name = f"metadata_driven_v5_complete_{BUNDLE_VERSION}_{route_name}"
-        if template["flow_name_selected"]["value"] != expected_flow_name:
-            raise ValueError(f"{node_id} target name mismatch.")
-        if template["flow_id_selected"]["value"] not in ("", None):
-            raise ValueError(f"{node_id} must not export a static Flow ID.")
-        if template["cache_flow"]["value"] is not True or template["return_direct"]["value"] is not False:
-            raise ValueError(f"{node_id} must enable graph cache and disable direct return.")
-        if "session_source" in template:
-            raise ValueError(f"{node_id} must inherit graph.session_id without a session-source port.")
-        code = str(template.get("code", {}).get("value") or "")
-        if (
-            '"name": "question"' not in code
-            or '"name": "upstream_result_ref"' not in code
-            or "route_v3.tool_result.v1" not in code
-            or '"should_store_message": False' not in code
-            or 'runtime_user_id = str(getattr(self, "user_id"' not in code
-            or "self.user_id =" in code
-            or "UUID(requested_flow_id)" not in code
-        ):
-            raise ValueError(f"{node_id} does not embed the Route V3 stable handoff contract.")
-        if tool["data"]["node"].get("tool_mode") is not True:
-            raise ValueError(f"{node_id} must be exported in Tool Mode.")
-        expected_edge = (node_id, "component_as_tool", "Agent-agent-orchestrator-router", "tools")
-        if expected_edge not in actual_edges:
-            raise ValueError(f"{node_id} is missing its Agent tool edge.")
-
-    if actual_tool_names != expected_tool_names:
-        raise ValueError(f"Agent Orchestrator Tool names mismatch: {sorted(actual_tool_names)}")
-    final_edge = (
-        "Agent-agent-orchestrator-router",
-        "response",
-        "ChatOutput-agent-orchestrator-router",
-        "input_value",
-    )
-    if final_edge not in actual_edges:
-        raise ValueError("Agent Orchestrator Router must have one Agent response to ChatOutput edge.")
-    chat_input_edges = [edge for edge in actual_edges if edge[0] == "ChatInput-agent-orchestrator-router"]
-    if chat_input_edges != [
-        (
-            "ChatInput-agent-orchestrator-router",
-            "message",
-            "Agent-agent-orchestrator-router",
-            "input_value",
-        )
-    ]:
-        raise ValueError("Agent Orchestrator Router Chat Input must connect only to Agent.input_value.")
-    if any(edge[3] == "session_source" for edge in actual_edges):
-        raise ValueError("Agent Orchestrator Router must not contain session-source fan-out edges.")
-
-
 def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
-    """Route V4의 planner·native Loop·정확한 Tool 실행·단일 최종 합성 계약을 검증합니다."""
+    """Workflow의 planner·native Loop·정확한 Tool 실행·단일 최종 합성 계약을 검증합니다."""
 
     nodes = flow.get("data", {}).get("nodes", [])
     edges = flow.get("data", {}).get("edges", [])
@@ -709,9 +718,9 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
     agents = [node for node in nodes if node.get("data", {}).get("type") == "Agent"]
     loops = [node for node in nodes if node.get("data", {}).get("type") == "LoopComponent"]
     chat_outputs = [node for node in nodes if node.get("data", {}).get("type") == "ChatOutput"]
-    if len(tools) != 5 or len(models) != 2 or agents or len(loops) != 1 or len(chat_outputs) != 1:
+    if len(tools) != 6 or len(models) != 2 or agents or len(loops) != 1 or len(chat_outputs) != 1:
         raise ValueError(
-            "Workflow Orchestrator must contain five tools, two Language Models, one native Loop, no Agent, and one ChatOutput."
+            "Workflow Orchestrator must contain six tools, two Language Models, one native Loop, no Agent, and one ChatOutput."
         )
 
     expected_tool_names = {
@@ -720,6 +729,7 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
         "save_domain_metadata",
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
+        "run_visualization",
     }
     actual_tool_names: set[str] = set()
     for tool in tools:
@@ -727,7 +737,7 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
         route_name = node_id.removeprefix("WorkflowFlowTool-")
         template = tool.get("data", {}).get("node", {}).get("template", {})
         actual_tool_names.add(str(template.get("tool_name", {}).get("value") or ""))
-        expected_flow_name = f"metadata_driven_v5_complete_{BUNDLE_VERSION}_{route_name}"
+        expected_flow_name = FLOW_DISPLAY_NAMES[route_name]
         if template.get("flow_name_selected", {}).get("value") != expected_flow_name:
             raise ValueError(f"{node_id} target name mismatch.")
         if template.get("flow_id_selected", {}).get("value") not in ("", None):
@@ -736,6 +746,8 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
             raise ValueError(f"{node_id} must enable graph cache.")
         if template.get("return_direct", {}).get("value") is not False:
             raise ValueError(f"{node_id} must disable direct return for Loop orchestration.")
+        if str(template.get("preferred_output_names", {}).get("value") or "") != "api_response":
+            raise ValueError(f"{node_id} must explicitly select the current child Flow api_response terminal.")
         if tool.get("data", {}).get("node", {}).get("tool_mode") is not True:
             raise ValueError(f"{node_id} must be exported in Tool Mode.")
     if actual_tool_names != expected_tool_names:
@@ -769,11 +781,33 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
     )
     planner_prompt = str(planner_template.get("template", {}).get("value", ""))
     planner_registry = str(planner_template.get("workflow_registry_json", {}).get("value") or "")
-    if planner_registry != "{}" or "최대 4" not in planner_prompt:
+    if planner_registry != "{}" or "최대 4" not in planner_prompt or "{allowed_tool_catalog}" not in planner_prompt:
         raise ValueError("Workflow Orchestrator planner must rely on the Registry edge and preserve the four-step limit.")
     allowed_tools_value = str(parser_template.get("allowed_tool_names", {}).get("value") or "")
     if set(json.loads(allowed_tools_value)) != expected_tool_names:
         raise ValueError("Workflow Orchestrator parser allowed Tool names mismatch.")
+    planner_allowed_tools = str(planner_template.get("allowed_tool_names", {}).get("value") or "")
+    if set(json.loads(planner_allowed_tools)) != expected_tool_names:
+        raise ValueError("Workflow Orchestrator planner allowed Tool names mismatch.")
+    tool_catalog_value = str(planner_template.get("allowed_tool_catalog", {}).get("value") or "")
+    tool_catalog = json.loads(tool_catalog_value)
+    catalog_by_name = {
+        str(item.get("tool_name") or ""): item
+        for item in tool_catalog
+        if isinstance(item, dict)
+    }
+    if set(catalog_by_name) != expected_tool_names or any(
+        not str(item.get("description") or "").strip()
+        for item in catalog_by_name.values()
+    ):
+        raise ValueError("Workflow Orchestrator planner Tool capability catalog mismatch.")
+    if (
+        catalog_by_name["run_data_analysis"].get("accepts_upstream_result_ref") is not True
+        or catalog_by_name["run_data_analysis"].get("can_produce_result_ref") is not True
+        or catalog_by_name["run_visualization"].get("accepts_upstream_result_ref") is not True
+        or catalog_by_name["run_visualization"].get("can_produce_result_ref") is not False
+    ):
+        raise ValueError("Workflow Orchestrator result_ref capabilities are invalid.")
 
     actual_edges = {
         (
@@ -853,6 +887,19 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
     missing_edges = expected_edges - actual_edges
     if missing_edges:
         raise ValueError(f"Workflow Orchestrator is missing required edges: {sorted(missing_edges)}")
+    feedback_edges = [
+        edge
+        for edge in edges
+        if str(edge.get("source") or "") == "SequentialStepExecutor-workflow-orchestrator"
+        and str(edge.get("target") or "") == "Loop-workflow-orchestrator"
+        and str(edge.get("data", {}).get("sourceHandle", {}).get("name") or "") == "step_result"
+        and str(edge.get("data", {}).get("targetHandle", {}).get("name") or "") == "item"
+    ]
+    if len(feedback_edges) != 1 or feedback_edges[0]["data"]["targetHandle"].get("output_types") != [
+        "Data",
+        "Message",
+    ]:
+        raise ValueError("Workflow Orchestrator Looping feedback must expose Data and Message target types.")
     for tool in tools:
         expected_edge = (
             str(tool.get("id") or ""),
@@ -870,6 +917,91 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
         raise ValueError("Workflow Orchestrator must expose terminal api_response.")
     if any(edge[0] == "FinalResponse-workflow-orchestrator" and edge[1] == "api_response" for edge in actual_edges):
         raise ValueError("Workflow Orchestrator api_response must remain a terminal output.")
+
+
+def _validate_html_visualization(flow: dict[str, Any]) -> None:
+    """HTML 시각화 Flow의 단일 입력·단일 출력·result_ref·terminal API 계약을 검증합니다."""
+
+    nodes = {str(node.get("id") or ""): node for node in flow.get("data", {}).get("nodes", [])}
+    edges = {
+        (
+            str(edge.get("source") or ""),
+            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
+            str(edge.get("target") or ""),
+            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
+        )
+        for edge in flow.get("data", {}).get("edges", [])
+    }
+    expected_node_ids = {
+        "ChatInput-html-visualization",
+        "HtmlVisualizationBuilder-html-visualization",
+        "ChatOutput-html-visualization",
+        "HtmlVisualizationApiTerminal-html-visualization",
+    }
+    if set(nodes) != expected_node_ids or len(edges) != 3:
+        raise ValueError("HTML Visualization must contain exactly four nodes and three edges.")
+    expected_edges = {
+        (
+            "ChatInput-html-visualization",
+            "message",
+            "HtmlVisualizationBuilder-html-visualization",
+            "question",
+        ),
+        (
+            "HtmlVisualizationBuilder-html-visualization",
+            "message",
+            "ChatOutput-html-visualization",
+            "input_value",
+        ),
+        (
+            "HtmlVisualizationBuilder-html-visualization",
+            "api_response",
+            "HtmlVisualizationApiTerminal-html-visualization",
+            "visualization_result",
+        ),
+    }
+    if edges != expected_edges:
+        raise ValueError(f"HTML Visualization edges mismatch: {sorted(edges)}")
+
+    builder = nodes["HtmlVisualizationBuilder-html-visualization"]
+    template = builder.get("data", {}).get("node", {}).get("template", {})
+    if (
+        str(template.get("mongo_uri", {}).get("value") or "") != MONGO_GLOBAL_VARIABLE
+        or template.get("mongo_uri", {}).get("load_from_db") is not True
+        or str(template.get("mongo_database", {}).get("value") or "") != MONGODB_CONTRACT["database"]
+        or str(template.get("collection_name", {}).get("value") or "") != MONGODB_CONTRACT["result"]
+        or template.get("upstream_result_ref", {}).get("advanced") is not False
+        or str(template.get("report_api_url", {}).get("value") or "") != "http://127.0.0.1:8010"
+        or template.get("report_api_url", {}).get("advanced") is not False
+        or str(template.get("report_ttl_hours", {}).get("value") or "") != "24"
+        or template.get("report_ttl_hours", {}).get("advanced") is not False
+    ):
+        raise ValueError("HTML Visualization must expose standalone MongoDB, result_ref, and Report API inputs.")
+    output_names = {
+        str(output.get("name") or "")
+        for output in builder.get("data", {}).get("node", {}).get("outputs", [])
+    }
+    if output_names != {"message", "api_response"}:
+        raise ValueError("HTML Visualization builder must expose message and api_response outputs.")
+    source_path = ROOT / "langflow_components" / "visualization_flow" / "00_html_visualization_builder.py"
+    embedded = str(template.get("code", {}).get("value") or "")
+    if embedded != source_path.read_text(encoding="utf-8"):
+        raise ValueError("HTML Visualization embedded component source is out of sync.")
+
+    terminal = nodes["HtmlVisualizationApiTerminal-html-visualization"]
+    terminal_outputs = {
+        str(output.get("name") or "")
+        for output in terminal.get("data", {}).get("node", {}).get("outputs", [])
+    }
+    if terminal_outputs != {"api_response"}:
+        raise ValueError("HTML Visualization API terminal must expose one api_response output.")
+    if any(source == "HtmlVisualizationApiTerminal-html-visualization" for source, _handle, _target, _field in edges):
+        raise ValueError("HTML Visualization API adapter must remain terminal.")
+    terminal_source_path = ROOT / "langflow_components" / "visualization_flow" / "01_html_visualization_api_terminal.py"
+    terminal_template = terminal.get("data", {}).get("node", {}).get("template", {})
+    terminal_embedded = str(terminal_template.get("code", {}).get("value") or "")
+    if terminal_embedded != terminal_source_path.read_text(encoding="utf-8"):
+        raise ValueError("HTML Visualization API terminal embedded component source is out of sync.")
 
 
 def _validate_workflow_skill_saving(flow: dict[str, Any]) -> None:
@@ -931,7 +1063,7 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 10개 Flow를 한 번에 impor
 
 ## 개별 Import 방법
 
-파일명 앞 번호 순서대로 `01`부터 `10`까지 import합니다. `06`은 운영 기본 API Router, `07`은 단일 호출용 Agent + Tool Mode Router, `08`은 최대 네 개 연계 호출용 Agent Orchestrator Router, `09`는 등록 또는 자연어 Workflow를 기본 Loop로 실행하는 Workflow Orchestrator, `10`은 Workflow Skill 등록·검토·저장 Flow입니다.
+파일명 앞 번호 순서대로 `01`부터 `10`까지 import합니다. `06`은 운영 기본 API Router, `07`은 단일 호출용 Agent + Tool Mode Router, `08`은 등록 또는 자연어 Workflow를 기본 Loop로 실행하는 Workflow Orchestrator, `09`는 Workflow Skill 등록·검토·저장 Flow, `10`은 Data Analysis 결과 참조를 HTML 차트로 만드는 Flow입니다.
 
 | 순서 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
@@ -943,7 +1075,6 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 10개 Flow를 한 번에 impor
 - Router Flow ID 치환: 필요 없음
 - Router URL 5개 개별 입력: 필요 없음
 - Agent Tool Router Flow ID 재연결: 필요 없음
-- Agent Orchestrator Router Flow ID 재연결: 필요 없음
 - Workflow Orchestrator Flow ID 재연결: 필요 없음
 
 Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다시 import하면 Langflow가 endpoint에 `-1`을 붙일 수 있으므로, 재import 시에는 기존 `metadata-driven-v5-complete-{BUNDLE_VERSION}-*` Flow를 먼저 정리합니다.
@@ -954,7 +1085,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - 다른 주소/포트: `LANGFLOW_BASE_URL` 설정
 - 인증 사용: `LANGFLOW_API_KEY` 설정
 - Router 하위 Flow read timeout: 240초
-- 외부 Web/API client timeout 권장값: 단일 호출 300초, Route V3/V4 연계 호출 600초
+- 외부 Web/API client timeout 권장값: 단일 호출 300초, Workflow 연계 호출 600초
 - Gemini/provider credential: Langflow Model Providers 또는 Global Variable 설정
 - MongoDB: Langflow Credential Global Variable `MONGO_URL` 생성 후 import된 Mongo 노드의 바인딩 확인
 - MongoDB database: `datagov`
@@ -967,20 +1098,20 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 290 passed
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 99/99 노드가 실제 Python 원본 82개에 매핑, 누락 0
-- 한글 설명/인코딩: Python 83/83와 함수 1361/1361, JSON 내장 함수 5364/5364 및 ZIP 13개 entry에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
-- 대표 Dummy 질문: 23/23 통과
+- 전체 pytest: 335 passed
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 97/97 노드가 실제 Python 원본 84개에 매핑, 누락 0
+- 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
+- 대표 Dummy 질문: 31/31 통과
 - Langflow 1.8.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.8.2 / LFX 0.3.4 node template: 153/153 passed
-- Tool 없는 모델 단계와 Route V4의 계획/최종 합성은 기본 Language Model을 사용하고, Route V2와 Route V3만 실제 Tool이 연결된 기본 Agent를 유지
+- Langflow 1.8.2 / LFX 0.3.4 node template: 150/150 passed
+- Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: 예전 정상 Flow와 같은 Smart Router -> Chat Output 직접 edge 2/2, FinalGate 0개
 - API Router 단일 진입 구조: Chat Input -> Smart Router edge 1개, API caller용 session fan-out edge 0개
 - Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
-- 기존 8개 Flow의 격리 Langflow 서버 import는 검증 완료했으며, Route V4는 이번 bundle/node/edge 계약 검증 후 다음 live-server import 대상입니다.
+- 기존 8개 Flow의 격리 Langflow 서버 import는 검증 완료했으며, Workflow Orchestrator는 이번 bundle/node/edge 계약 검증 후 다음 live-server import 대상입니다.
 - 통합 `00` 단일 JSON은 10개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
-- 하위 Flow 6개, Route V2, Route V3, Route V4: Chat Output 1개씩 확인
+- 하위 Flow 7개, Route V2, Workflow Orchestrator: Chat Output 1개씩 확인
 - Data Analysis: executor node 1개, 초기 성공 시 Repair LLM 0회, 실행 오류 시 이전 코드·오류 문맥을 전달해 최대 1회 복구, 단일 최종화 체인 확인
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
@@ -989,11 +1120,11 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환하며, Data Analysis 기준 표준 26,338 bytes에서 339 bytes로 줄었습니다. 내부 Prompt/Helper/Repair Text Input은 제외됩니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. Chat Input은 Agent에만 한 번 연결됩니다.
 - 격리 import에서 현재 Langflow 실행 사용자로 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
-- Agent Orchestrator Router는 `question`과 선택 `upstream_result_ref`만 Tool schema에 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
-- Agent Orchestrator Router는 `return_direct=false`, `max_iterations=5`이며 system prompt에서 순차 Tool 호출을 최대 네 번으로 제한하고 마지막 Agent 답변만 단일 Chat Output으로 저장합니다.
-- Workflow Orchestrator는 기본 Language Model 계획기 -> `workflow.plan.v1` 파서 -> 기본 Loop -> 정확한 Tool 단일 실행기 순서로 최대 네 단계를 실행합니다. Agent의 자율 반복 대신 검증된 계획 순서만 따릅니다.
+- Workflow Orchestrator의 이름 기반 Tool 6개는 `question`과 선택 `upstream_result_ref`만 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
+- Workflow Orchestrator는 기본 Language Model 계획기 -> `workflow.plan.v1` 파서 -> 기본 Loop -> 정확한 Tool 단일 실행기 순서로 최대 네 단계를 실행합니다. Registry와 일치하지 않아도 capability catalog의 Tool만으로 해결 가능하면 inline 계획을 만들며 Agent의 자율 반복은 사용하지 않습니다.
 - Workflow Orchestrator는 기본적으로 `datagov.agent_v4_workflow_skills`의 active Skill을 질문 기준 후보로 조회합니다. `inline_seed`는 사용자가 명시적으로 선택한 standalone 테스트 모드에서만 사용하며 MongoDB 오류 시 자동 fallback하지 않습니다.
 - Workflow Orchestrator는 Loop 결과를 compact context로 만든 뒤 기본 Language Model을 한 번만 호출하며, 최종 `ChatOutput` 하나와 terminal `api_response` 하나를 제공합니다.
+- HTML Visualization Flow는 `run_data_analysis`의 `result_ref`를 복원하고 외부 CDN 없는 standalone HTML/SVG 차트를 생성합니다. `HTML Report API 주소`로 게시해 Tauri 상대경로가 아닌 절대 보기·다운로드 링크를 반환하며, 화면 Message와 별도의 API 종료 어댑터가 실제 terminal `api_response`를 제공합니다. 그래프 요청은 `run_data_analysis -> run_visualization` 순서와 `handoff=result_ref`로 실행합니다.
 - Metadata 및 Workflow Skill 저장 Flow 4종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/Chat Output 사용
 - Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
 - Metadata 후보: 도메인 관련 항목 최대 10건, 테이블 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증
@@ -1006,6 +1137,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build the fully wired metadata-driven v5 Langflow JSON bundle.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
+    sync_workflow_sources()
     print(json.dumps(build_bundle(args.output_dir.resolve()), ensure_ascii=False, indent=2))
 
 

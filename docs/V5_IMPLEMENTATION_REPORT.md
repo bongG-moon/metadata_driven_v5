@@ -94,7 +94,7 @@ Domain/Table Catalog/Main Flow Filter 저장 Flow는 Existing Loader의 full doc
 
 - 전체 Python compile 성공
 - 전체 pytest 222개 성공
-- 대표 질문 23개 deterministic dummy 실행 23/23 성공
+- 대표 질문 31개 deterministic dummy 실행 31/31 성공
 - 각 대표 질문에서 trusted catalog hydration, retrieval job/filter, pandas row/필수 컬럼, dummy 고지 message/API 계약 확인
 - Flow export 재생성 결과와 저장된 JSON byte-level 구조 일치
 - 41-node/65-edge DAG 확인
@@ -104,7 +104,7 @@ Domain/Table Catalog/Main Flow Filter 저장 Flow는 Existing Loader의 full doc
 - 격리 Langflow 서버 `/api/v1/flows/upload/`에서 현재 7개 JSON 모두 HTTP 201 확인
 - 격리 import에서 새 ID를 발급받은 Data Analysis Flow를 Agent Tool Router가 이름으로 해석하고, 별도 `session_source` 연결 없이 부모 실행 세션으로 `CachedFlowTool-data_analysis` partial build 성공
 - 실제 v4 metadata export(도메인 63건, 테이블 9건, 메인 필터 17건)에서 `현재 D/A1 공정에 배정된 장비와 해당 모델의 UPH를 함께 보여줘` 질문이 `equipment_assign`과 `eqp_uph`를 모두 선택하고, 메인 필터 17건 전체 및 32KB 상한을 유지하는지 확인
-- Data Analysis 내부 `retrieval_mode=dummy`로 대표 질문 23/23 확인
+- Data Analysis 내부 `retrieval_mode=dummy`로 대표 질문 31/31 확인
 - 하위 Flow 5개와 Agent Tool Router에 Chat Output이 정확히 하나씩인지 확인
 - 문제 실행 DB에서 User 1건, SmartRouter source 질문 Machine 2건, API caller source 최종 답변 1건과 하위 API 호출 1회를 확인하고, 반복 원인이 API 중복이 아닌 Router session fan-out 재빌드임을 확인
 - Data Analysis에 pandas executor node와 최종화 경로가 하나씩이며, 성공 시 Repair LLM 0회·실패 시 최대 1회인지 확인

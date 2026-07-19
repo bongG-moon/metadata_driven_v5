@@ -55,7 +55,7 @@ PROCESS_NOTES: dict[str, str] = {
     "metadata_qa_flow/06_metadata_qa_api_response_builder.py": "최종 QA API 응답에서 큰 내부 context를 제거하고 구조화 data와 Message envelope을 제공합니다.",
     "route_flow/01_flow_api_message_caller.py": "Smart Router가 선택한 하위 Flow Run API에 원문 질문과 부모 세션을 한 번만 전달하고 최종 Message를 추출합니다.",
     "route_flow_v2/01_cached_named_run_flow_tool.py": "Flow 이름을 현재 ID로 해석하고 고정 question 인자를 현재 그래프의 단일 Chat Input으로 변환하는 Agent 도구입니다.",
-    "route_flow_v3/01_orchestrated_named_run_flow_tool.py": "선택된 하위 Flow를 lazy 실행하고 result_ref 기반 연계 호출에 필요한 축약 결과 계약을 Agent에 반환합니다.",
+    "route_flow_v4/04_workflow_named_run_flow_tool.py": "선택된 하위 Flow를 lazy 실행하고 result_ref 기반 연계 호출에 필요한 축약 결과 계약을 Workflow 실행기에 반환합니다.",
     "route_flow_v4/00_workflow_plan_parser.py": "자연어 계획 모델 또는 화면 Registry의 정의를 최대 4단계 workflow.plan.v1 계약으로 검증하고 Loop 입력으로 변환합니다.",
     "route_flow_v4/01_sequential_step_executor.py": "기본 Loop의 현재 단계에 지정된 Tool 하나만 호출하고 축약 결과와 result_ref 의존 상태를 다음 반복에 전달합니다.",
     "route_flow_v4/02_final_context_builder.py": "Loop가 수집한 단계별 축약 결과를 마지막 기본 Language Model이 한 번 합성할 제한된 Context로 구성합니다.",

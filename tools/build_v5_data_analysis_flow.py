@@ -59,6 +59,10 @@ PROMPT_FILES = {
     "Prompt Template-xtzD5": "16_pandas_prompt_template_ko.md",
     "Prompt Template-ELVKc": "19_answer_prompt_template_ko.md",
 }
+TEXT_INPUT_FILES = {
+    "TextInput-GRnAm": "specialized_prompt_input_example_ko.md",
+    "TextInput-VFbHh": "answer_domain_guidance_input_example_ko.md",
+}
 
 REMOVED_REPAIR_NODES = {
     "CustomComponent-ZUhxo",
@@ -163,6 +167,10 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     for node_id, relative_path in PROMPT_FILES.items():
         prompt = (ROOT / "langflow_components" / "data_analysis_flow" / relative_path).read_text(encoding="utf-8")
         node_index[node_id]["data"]["node"]["template"]["template"]["value"] = prompt
+
+    for node_id, relative_path in TEXT_INPUT_FILES.items():
+        text_value = (ROOT / "langflow_components" / "data_analysis_flow" / relative_path).read_text(encoding="utf-8")
+        node_index[node_id]["data"]["node"]["template"]["input_value"]["value"] = text_value
 
     node_index["TextInput-AXG9a"]["data"]["node"]["template"]["input_value"]["value"] = (
         HELPER_LIBRARY_SOURCE.read_text(encoding="utf-8")
@@ -295,6 +303,9 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         _replace_edge_source_output(edges, new_node_id, "response", "text_output")
 
     _apply_standalone_defaults(nodes)
+    # 사용자에게 일반 pandas 코드는 계속 보여주되 Function Case Helper 정의는
+    # 21번 어댑터가 숨김 주석으로 줄여 표시하도록 donor JSON과 무관하게 고정합니다.
+    node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]["show_pandas_code"]["value"] = True
 
     removals = {
         ("CustomComponent-5o0CN", "payload_out", "CustomComponent-O8vfz", "payload"),
@@ -339,7 +350,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         edges.append(_make_edge(node_index, source_id, source_name, target_id, target_name))
     _refresh_edge_source_types(edges, node_index)
 
-    flow["name"] = "metadata_driven_v5_data_analysis_standalone"
+    flow["name"] = "01. v5_data_analysis"
     flow["description"] = (
         "v5 standalone flow (dummy default, live retrievers included): bounded metadata candidates, "
         "trusted catalog hydration, explicit same-session upstream result restoration, metadata-declared entity binding, "
@@ -521,6 +532,26 @@ def _refresh_component_node(node: dict[str, Any], path: Path) -> None:
     component.setdefault("metadata", {})["code_hash"] = hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
     component["metadata"]["module"] = f"custom_components.{path.stem}"
     node["data"]["type"] = class_match.group(1)
+    # Data Analysis builder는 전체 custom component를 다시 import하지 않고 원본 코드를 빠르게 동기화합니다.
+    # 따라서 Langflow가 Component.__init__에서 읽는 graph output 선언도 같은 Python 원본에서 일반 규칙으로 반영합니다.
+    declared_output = _declared_component_bool(code, "is_output")
+    if declared_output is None:
+        component.pop("is_output", None)
+    else:
+        component["is_output"] = declared_output
+
+
+def _declared_component_bool(code: str, attribute: str) -> bool | None:
+    """Component.__init__의 self.<attribute> 불리언 선언을 찾아 frontend node 설정으로 동기화합니다."""
+
+    match = re.search(
+        rf"^\s+self\.{re.escape(attribute)}\s*=\s*(True|False)\s*(?:#.*)?$",
+        str(code or ""),
+        flags=re.MULTILINE,
+    )
+    if match is None:
+        return None
+    return match.group(1) == "True"
 
 
 def _refresh_edge_source_types(edges: list[dict[str, Any]], node_index: dict[str, dict[str, Any]]) -> None:

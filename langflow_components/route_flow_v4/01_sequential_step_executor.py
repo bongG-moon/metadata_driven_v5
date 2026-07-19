@@ -17,6 +17,7 @@ import json
 import time
 from copy import deepcopy
 from typing import Any
+from urllib.parse import urlsplit
 
 from lfx.custom.custom_component.component import Component
 from lfx.io import HandleInput, MessageTextInput, Output
@@ -34,58 +35,73 @@ RESULT_REF_LIMIT = 1024
 REGISTRY_TTL_SECONDS = 60 * 60
 REGISTRY_MAX_CONTEXTS = 256
 REGISTRY_ATTRIBUTE = "__metadata_route_v4_execution_registry__"
+MAX_PUBLIC_URL_CHARS = 2_048
 
 
 # 주요 함수: 단일 step의 dependency와 Tool 결과 계약을 검증하고 업데이트된 실행 context와 compact 결과를 반환합니다.
-async def execute_workflow_step(
+# Langflow 1.8.x의 Custom Component loader는 최상위 AsyncFunctionDef를 전역 scope에
+# 등록하지 않으므로, 일반 함수가 내부 coroutine을 만들어 반환하는 형태를 사용합니다.
+def execute_workflow_step(
     step_value: Any,
     tools_value: Any,
     execution_context: Any = None,
     session_id: Any = "",
     observation_byte_limit: Any = DEFAULT_OBSERVATION_BYTES,
-) -> dict[str, Any]:
-    step = _step_payload(step_value)
-    context = _execution_context(execution_context, step, session_id)
-    limit = _bounded_int(observation_byte_limit, DEFAULT_OBSERVATION_BYTES, MIN_OBSERVATION_BYTES, MAX_OBSERVATION_BYTES)
-    validation_error = _step_execution_error(step, context)
-    if validation_error:
-        result = _fit_observation(_error_step_result(step, validation_error, "blocked"), limit)
-        _record_result(context, result, stop=True)
-        return {"step_result": result, "execution_context": context}
-
-    dependency_error, upstream_ref = _dependency_handoff(step, context)
-    if dependency_error:
-        result = _fit_observation(_error_step_result(step, dependency_error, "blocked"), limit)
-        _record_result(context, result, stop=str(step.get("on_error") or "stop") == "stop")
-        return {"step_result": result, "execution_context": context}
-
-    tool, tool_error = _select_exact_tool(tools_value, str(step.get("tool_name") or ""))
-    if tool_error:
-        result = _fit_observation(_error_step_result(step, tool_error, "error"), limit)
-        _record_result(context, result, stop=str(step.get("on_error") or "stop") == "stop")
-        return {"step_result": result, "execution_context": context}
-
-    arguments = {"question": str(step.get("question") or "").strip()}
-    if str(step.get("handoff")) == "result_ref":
-        arguments["upstream_result_ref"] = upstream_ref
-    try:
-        raw_result = await _invoke_tool_once(tool, arguments)
-        contract, contract_error = _tool_result_contract(raw_result)
-        if contract_error:
-            result = _error_step_result(step, contract_error, "error")
-        else:
-            result = _compact_success_result(step, contract)
-    except Exception as exc:
-        result = _error_step_result(
-            step,
-            _issue("tool_execution_error", f"Tool 실행 중 오류가 발생했습니다: {exc}"),
-            "error",
+) -> Any:
+    # 함수 설명: `_run_step()`은 검증, Tool 단일 호출, 결과 기록을 하나의 await 가능한 실행 단위로 묶습니다.
+    async def _run_step() -> dict[str, Any]:
+        step = _step_payload(step_value)
+        context = _execution_context(execution_context, step, session_id)
+        limit = _bounded_int(
+            observation_byte_limit,
+            DEFAULT_OBSERVATION_BYTES,
+            MIN_OBSERVATION_BYTES,
+            MAX_OBSERVATION_BYTES,
         )
+        validation_error = _step_execution_error(step, context)
+        if validation_error:
+            result = _fit_observation(_error_step_result(step, validation_error, "blocked"), limit)
+            _record_result(context, result, stop=True)
+            return {"step_result": result, "execution_context": context}
 
-    stop = str(result.get("status")) in {"error", "blocked"} and str(step.get("on_error")) == "stop"
-    result = _fit_observation(result, limit)
-    _record_result(context, result, stop=stop)
-    return {"step_result": result, "execution_context": context}
+        dependency_error, upstream_ref = _dependency_handoff(step, context)
+        if dependency_error:
+            result = _fit_observation(_error_step_result(step, dependency_error, "blocked"), limit)
+            _record_result(context, result, stop=str(step.get("on_error") or "stop") == "stop")
+            return {"step_result": result, "execution_context": context}
+
+        tool, tool_error = _select_exact_tool(tools_value, str(step.get("tool_name") or ""))
+        if tool_error:
+            result = _fit_observation(_error_step_result(step, tool_error, "error"), limit)
+            _record_result(context, result, stop=str(step.get("on_error") or "stop") == "stop")
+            return {"step_result": result, "execution_context": context}
+
+        flow_tweak_data = {"question": str(step.get("question") or "").strip()}
+        if str(step.get("handoff")) == "result_ref":
+            flow_tweak_data["upstream_result_ref"] = upstream_ref
+        # Langflow Run Flow Tool은 공개 question/ref를 최상위 인자로 받지 않고
+        # 필수 `flow_tweak_data` 내부의 동적 InputSchema 값으로 받습니다.
+        arguments = {"flow_tweak_data": flow_tweak_data}
+        try:
+            raw_result = await _invoke_tool_once(tool, arguments)
+            contract, contract_error = _tool_result_contract(raw_result)
+            if contract_error:
+                result = _error_step_result(step, contract_error, "error")
+            else:
+                result = _compact_success_result(step, contract)
+        except Exception as exc:
+            result = _error_step_result(
+                step,
+                _issue("tool_execution_error", f"Tool 실행 중 오류가 발생했습니다: {exc}"),
+                "error",
+            )
+
+        stop = str(result.get("status")) in {"error", "blocked"} and str(step.get("on_error")) == "stop"
+        result = _fit_observation(result, limit)
+        _record_result(context, result, stop=stop)
+        return {"step_result": result, "execution_context": context}
+
+    return _run_step()
 
 
 # 함수 설명: `_step_payload()`는 Loop Data의 text JSON 또는 일반 dict에서 현재 단계 필드를 복원합니다.
@@ -204,20 +220,25 @@ def _tools(value: Any) -> list[Any]:
 
 
 # 함수 설명: `_invoke_tool_once()`는 사용 가능한 첫 실행 인터페이스를 선택하고 실패 시 다른 방식으로 재호출하지 않습니다.
-async def _invoke_tool_once(tool: Any, arguments: dict[str, Any]) -> Any:
-    ainvoke = getattr(tool, "ainvoke", None)
-    if callable(ainvoke):
-        return await ainvoke(deepcopy(arguments))
-    arun = getattr(tool, "arun", None)
-    if callable(arun):
-        return await arun(**deepcopy(arguments))
-    invoke = getattr(tool, "invoke", None)
-    if callable(invoke):
-        return await asyncio.to_thread(invoke, deepcopy(arguments))
-    if callable(tool):
-        result = tool(**deepcopy(arguments))
-        return await result if inspect.isawaitable(result) else result
-    raise TypeError("선택된 Tool에 ainvoke/arun/invoke/callable 실행 인터페이스가 없습니다.")
+# 이 함수도 Langflow loader가 전역 helper로 보존하도록 일반 함수가 내부 coroutine을 반환합니다.
+def _invoke_tool_once(tool: Any, arguments: dict[str, Any]) -> Any:
+    # 함수 설명: `_run_tool()`은 선택된 Tool의 첫 번째 지원 인터페이스만 정확히 한 번 호출합니다.
+    async def _run_tool() -> Any:
+        ainvoke = getattr(tool, "ainvoke", None)
+        if callable(ainvoke):
+            return await ainvoke(deepcopy(arguments))
+        arun = getattr(tool, "arun", None)
+        if callable(arun):
+            return await arun(**deepcopy(arguments))
+        invoke = getattr(tool, "invoke", None)
+        if callable(invoke):
+            return await asyncio.to_thread(invoke, deepcopy(arguments))
+        if callable(tool):
+            result = tool(**deepcopy(arguments))
+            return await result if inspect.isawaitable(result) else result
+        raise TypeError("선택된 Tool에 ainvoke/arun/invoke/callable 실행 인터페이스가 없습니다.")
+
+    return _run_tool()
 
 
 # 함수 설명: `_tool_result_contract()`은 Tool 반환값에서 route_v3.tool_result.v1 계약만 꺼내고 자연어 추측 fallback을 금지합니다.
@@ -258,6 +279,7 @@ def _compact_success_result(step: dict[str, Any], contract: dict[str, Any]) -> d
         "result_ref": _clip(contract.get("result_ref"), RESULT_REF_LIMIT),
         "result_ref_meta": _compact_ref_meta(contract.get("result_ref_meta")),
         "entity_ids": _compact_entity_ids(contract.get("entity_ids")),
+        "artifacts": _compact_artifacts(contract.get("artifacts")),
         "handoff_usable": contract.get("handoff_usable") is True,
         "warnings": _compact_issues(contract.get("warnings")),
         "errors": _compact_issues(contract.get("errors")),
@@ -283,6 +305,7 @@ def _error_step_result(step: dict[str, Any], error: dict[str, Any], status: str)
         "result_ref": "",
         "result_ref_meta": {},
         "entity_ids": [],
+        "artifacts": [],
         "handoff_usable": False,
         "warnings": [],
         "errors": [deepcopy(error)],
@@ -317,6 +340,7 @@ def _fit_observation(value: dict[str, Any], byte_limit: int) -> dict[str, Any]:
     result["warnings"] = _compact_issues(result.get("warnings"), count=2, text_limit=200)
     result["errors"] = _compact_issues(result.get("errors"), count=2, text_limit=200)
     result["entity_ids"] = _compact_entity_ids(result.get("entity_ids"), entity_limit=3, value_limit=5)
+    result["artifacts"] = _compact_artifacts(result.get("artifacts"), count=2)
     if _json_bytes(result) > byte_limit:
         result["summary"] = _clip(result.get("summary"), 300)
         result["result_ref_meta"] = _compact_ref_meta(result.get("result_ref_meta"), column_limit=5)
@@ -336,6 +360,7 @@ def _fit_observation(value: dict[str, Any], byte_limit: int) -> dict[str, Any]:
                 "status",
                 "summary",
                 "result_ref",
+                "artifacts",
                 "handoff_usable",
                 "errors",
             )
@@ -355,6 +380,7 @@ def _stamp_observation_bytes(value: dict[str, Any], byte_limit: int) -> dict[str
     result["summary"] = _clip(result.get("summary"), 100)
     result["errors"] = _compact_issues(result.get("errors"), count=1, text_limit=80)
     result["warnings"] = []
+    result["artifacts"] = _compact_artifacts(result.get("artifacts"), count=1, path_limit=512, title_limit=100)
     result["observation_bytes"] = _json_bytes(result)
     if _json_bytes(result) <= byte_limit:
         return result
@@ -378,6 +404,112 @@ def _compact_ref_meta(value: Any, column_limit: int = 20) -> dict[str, Any]:
         }.items()
         if item not in (None, "", [], {})
     }
+
+
+# 함수 설명: `_safe_artifact_path()`는 외부 URL·절대 경로·drive path·경로 순회를 거부하고 `flow_id/file.html`만 반환합니다.
+def _safe_artifact_path(value: Any, path_limit: int = 1024) -> str:
+    path = _clip(value, path_limit).replace("\\", "/")
+    parts = path.split("/")
+    if (
+        not path
+        or path.startswith("/")
+        or "://" in path
+        or (len(path) >= 2 and path[1] == ":")
+        or len(parts) != 2
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(marker in path for marker in ("?", "#", "\x00"))
+        or not parts[-1].lower().endswith(".html")
+    ):
+        return ""
+    return path
+
+
+# 함수 설명: 단계 상태에 보존할 Report API 링크를 절대 http(s) URL로 제한합니다.
+def _safe_public_url(value: Any) -> str:
+    candidate = _clip(value, MAX_PUBLIC_URL_CHARS)
+    if not candidate or any(ord(character) < 32 for character in candidate):
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return ""
+    if parsed.username is not None or parsed.password is not None or parsed.fragment:
+        return ""
+    return candidate
+
+
+# 함수 설명: `_compact_artifacts()`는 검증된 HTML 파일 descriptor의 허용 필드만 남기고 raw HTML/content를 단계 상태에서 제거합니다.
+def _compact_artifacts(
+    value: Any,
+    count: int = 2,
+    path_limit: int = 1024,
+    title_limit: int = 180,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for item in _list(value)[:count]:
+        if not isinstance(item, dict):
+            continue
+        artifact_type = _clip(item.get("artifact_type"), 40).lower()
+        mime_type = _clip(item.get("mime_type"), 80).lower().split(";", 1)[0].strip()
+        path = _safe_artifact_path(item.get("path"), path_limit)
+        download_name = _clip(item.get("download_name"), 180)
+        if artifact_type != "html_chart" or mime_type != "text/html" or not path or path in seen_paths:
+            continue
+        if "/" in download_name or "\\" in download_name or not download_name.lower().endswith(".html"):
+            continue
+        descriptor: dict[str, Any] = {
+            "artifact_type": artifact_type,
+            "title": _clip(item.get("title") or download_name.rsplit(".", 1)[0], title_limit),
+            "mime_type": mime_type,
+            "download_name": download_name,
+            "path": path,
+        }
+        report_id = _clip(item.get("report_id"), 160)
+        view_url = _safe_public_url(item.get("view_url"))
+        download_url = _safe_public_url(item.get("download_url"))
+        expires_at = _clip(item.get("expires_at"), 80)
+        if report_id:
+            descriptor["report_id"] = report_id
+        if view_url:
+            descriptor["view_url"] = view_url
+        if download_url:
+            descriptor["download_url"] = download_url
+        if expires_at:
+            descriptor["expires_at"] = expires_at
+        if view_url or download_url:
+            try:
+                ttl_hours = max(1, min(int(item.get("ttl_hours") or 24), 168))
+            except (TypeError, ValueError):
+                ttl_hours = 24
+            descriptor["ttl_hours"] = ttl_hours
+        try:
+            size_bytes = int(item.get("size_bytes")) if item.get("size_bytes") is not None else None
+        except (TypeError, ValueError):
+            size_bytes = None
+        if size_bytes is not None and size_bytes >= 0:
+            descriptor["size_bytes"] = size_bytes
+        chart_type = _clip(item.get("chart_type"), 40).lower()
+        if chart_type:
+            descriptor["chart_type"] = chart_type
+        x_column = _clip(item.get("x_column"), 120)
+        if x_column:
+            descriptor["x_column"] = x_column
+        y_columns = [_clip(column, 120) for column in _list(item.get("y_columns"))[:8] if _clip(column, 120)]
+        if y_columns:
+            descriptor["y_columns"] = y_columns
+        for count_name in ("row_count", "plotted_row_count"):
+            try:
+                count_value = int(item.get(count_name)) if item.get(count_name) is not None else None
+            except (TypeError, ValueError):
+                count_value = None
+            if count_value is not None and count_value >= 0:
+                descriptor[count_name] = count_value
+        result.append(descriptor)
+        seen_paths.add(path)
+    return result
 
 
 # 함수 설명: `_compact_entity_ids()`는 식별자 종류와 작은 preview만 남기고 전체 ID 목록을 result_ref 뒤에 숨깁니다.
@@ -511,7 +643,7 @@ class SequentialWorkflowStepExecutor(Component):
         HandleInput(
             name="tools",
             display_name="Workflow Tool 목록",
-            info="Route V3 compact result 계약을 반환하는 Tool들을 연결합니다.",
+            info="Workflow compact result 계약을 반환하는 Tool들을 연결합니다.",
             input_types=["Tool"],
             is_list=True,
             required=True,

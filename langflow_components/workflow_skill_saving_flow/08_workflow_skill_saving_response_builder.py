@@ -155,9 +155,9 @@ def _notices(review: dict[str, Any], write_result: dict[str, Any], payload: dict
 # 함수 설명: `_next_steps()`는 dry-run·저장·오류 상태에 맞는 다음 작업을 안내합니다.
 def _next_steps(status: str) -> list[str]:
     if status == "dry_run":
-        return ["저장 계획과 단계 순서가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.", "저장 후 Route V4에서 intent example 또는 workflow key로 호출해 보세요."]
+        return ["저장 계획과 단계 순서가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.", "저장 후 08 Workflow Orchestrator에서 intent example 또는 workflow key로 호출해 보세요."]
     if status == "saved":
-        return ["Route V4의 다음 실행에서 등록한 Workflow Skill을 호출해 보세요.", "잘못 선택되면 keywords와 excluded_keywords를 조정하세요."]
+        return ["08 Workflow Orchestrator의 다음 실행에서 등록한 Workflow Skill을 호출해 보세요.", "잘못 선택되면 keywords와 excluded_keywords를 조정하세요."]
     if status == "needs_input":
         return ["확인할 점의 누락 정보를 원문에 추가해 다시 실행하세요."]
     return ["오류 메시지와 MongoDB standalone 입력값을 확인한 뒤 다시 실행하세요."]

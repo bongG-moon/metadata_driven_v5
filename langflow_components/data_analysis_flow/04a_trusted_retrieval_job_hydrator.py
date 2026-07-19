@@ -30,6 +30,9 @@ UNTRUSTED_JOB_KEYS = {
     "url",
     "api_url",
     "headers",
+    "row_identity_columns",
+    "default_detail_columns",
+    "context_columns",
 }
 SECRET_KEYS = {
     "password",
@@ -44,6 +47,12 @@ SECRET_KEYS = {
     "mongo_uri",
     "mongodb_uri",
 }
+SAFE_CATALOG_JOB_KEYS = (
+    "filter_mappings",
+    "standard_column_aliases",
+    "default_detail_columns",
+)
+RETIRED_OUTPUT_CONTRACT_KEYS = {"row_identity_columns", "context_columns", "default_detail_columns"}
 
 
 # 주요 함수: 활성 카탈로그를 기준으로 조회 작업의 source 설정을 다시 구성합니다.
@@ -125,6 +134,9 @@ def hydrate_retrieval_jobs(
         clean_job["required_param_names"] = required_names
         clean_job["trusted_catalog"] = True
         clean_job["catalog_ref"] = f"table_catalog:{dataset_key}"
+        # SQL·접속정보와 달리 컬럼 매핑/기본 상세 표시 계약은 pandas가 실제 source 컬럼을
+        # 선택하고 결과 컬럼을 검증하는 데 필요한 작은 신뢰 메타데이터입니다.
+        clean_job.update(_safe_catalog_job_contract(catalog_payload, catalog_item))
         if deferred:
             deferred_upstream_params.append({"dataset_key": dataset_key, "params": deferred})
         if missing_params:
@@ -140,6 +152,7 @@ def hydrate_retrieval_jobs(
         used_refs.append({"type": "table_catalog", "key": dataset_key})
 
     plan["retrieval_jobs"] = hydrated
+    plan["output_contract"] = _output_contract_with_default_detail(plan.get("output_contract"), hydrated)
     next_payload["intent_plan"] = plan
     next_payload["metadata_refs"] = _merge_refs(_list(next_payload.get("metadata_refs")), used_refs)
     trace = next_payload.setdefault("trace", {})
@@ -193,6 +206,62 @@ def _required_param_names(*values: dict[str, Any]) -> list[str]:
             text = str(item or "").strip()
             if text and text not in result:
                 result.append(text)
+    return result
+
+
+# 함수 설명: `_safe_catalog_job_contract()`는 실행 job에 전달할 컬럼 매핑과 기본 상세 표시 계약만 카탈로그에서 복원합니다.
+def _safe_catalog_job_contract(*values: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key in SAFE_CATALOG_JOB_KEYS:
+        for value in values:
+            raw = value.get(key)
+            if raw not in (None, "", [], {}):
+                result[key] = _sanitize_trusted_config(raw)
+                break
+    return result
+
+
+# 함수 설명: `_output_contract_with_default_detail()`은 상세 결과에만 trusted catalog 기본 컬럼을 required_columns로 합칩니다.
+def _output_contract_with_default_detail(value: Any, jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    contract = {
+        str(key): deepcopy(item)
+        for key, item in source.items()
+        if str(key) not in RETIRED_OUTPUT_CONTRACT_KEYS
+    }
+    result_mode = str(contract.get("result_mode") or contract.get("mode") or "").strip().lower()
+    if result_mode not in {"detail", "entity_list"}:
+        return contract
+
+    required_columns = _string_list(contract.get("required_columns") or contract.get("columns"))
+    for job in jobs:
+        required_columns = _merge_strings(
+            required_columns,
+            _string_list(job.get("default_detail_columns")),
+        )
+    if required_columns:
+        contract["required_columns"] = required_columns
+    return contract
+
+
+# 함수 설명: `_string_list()`는 컬럼 입력을 순서가 유지되는 중복 없는 문자열 목록으로 정규화합니다.
+def _string_list(value: Any) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+# 함수 설명: `_merge_strings()`는 여러 컬럼 목록을 첫 등장 순서로 합칩니다.
+def _merge_strings(*values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        for item in value:
+            if item not in result:
+                result.append(item)
     return result
 
 

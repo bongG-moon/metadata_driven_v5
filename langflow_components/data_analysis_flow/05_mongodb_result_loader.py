@@ -121,7 +121,7 @@ def _find_data_ref(payload: dict[str, Any]) -> str:
     return ""
 
 
-# 함수 설명: `_explicit_data_ref()`는 Route V3가 별도 orchestration 영역에 명시한 상위 결과 참조만 추출합니다.
+# 함수 설명: `_explicit_data_ref()`는 Workflow Orchestrator가 별도 orchestration 영역에 명시한 상위 결과 참조만 추출합니다.
 def _explicit_data_ref(payload: dict[str, Any]) -> str:
     orchestration = payload.get("orchestration") if isinstance(payload.get("orchestration"), dict) else {}
     return _ref_id(orchestration.get("upstream_result_ref"))

@@ -19,14 +19,18 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
 from lfx.schema.message import Message
 
+RETIRED_DETAIL_CONTRACT_KEYS = {"row_identity_columns", "context_columns"}
+
 # 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_variables(payload_value: Any, metadata_candidates_value: Any = None) -> dict[str, Any]:
     payload = _payload(payload_value)
-    metadata_candidates = _compact_metadata_candidates(_payload(metadata_candidates_value) or {})
+    metadata_candidates = _without_retired_table_catalog_contract(
+        _compact_metadata_candidates(_payload(metadata_candidates_value) or {})
+    )
     return {
         "question": payload.get("request", {}).get("question", ""),
-        "state_summary": _compact_json(_state_summary(payload)),
+        "state_summary": _compact_json(_without_retired_intent_contract(_state_summary(payload))),
         "metadata_candidates": _compact_json(metadata_candidates),
         "output_schema": _compact_json(_schema()),
     }
@@ -93,7 +97,14 @@ def _schema() -> dict[str, Any]:
                 }
             ],
             "pandas_execution_plan": [],
-            "output_contract": {},
+            "output_contract": {
+                "result_mode": "aggregate|detail|entity_list|scalar|explanation",
+                "required_columns": [],
+                "grain_columns": [],
+                "metric_columns": [],
+                "null_group_policy": "preserve_as_blank",
+                "metric_null_policy": "display_zero",
+            },
         },
         "metadata_refs": [{"section": "string", "key": "string"}],
         "trace": {"decision_reason": []},
@@ -115,6 +126,47 @@ def _compact_metadata_candidates(value: dict[str, Any]) -> dict[str, Any]:
         for key, item in candidates.items()
         if key not in {"metadata_candidates", "metadata_load"} and item not in (None, "", [], {})
     } if isinstance(candidates, dict) else {}
+
+
+# 함수 설명: `_without_retired_table_catalog_contract()`는 table catalog의 이전 상세 표시 필드만 제거하고 Domain metadata는 보존합니다.
+def _without_retired_table_catalog_contract(value: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(value)
+    items = result.get("table_catalog_items")
+    if not isinstance(items, list):
+        return result
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in RETIRED_DETAIL_CONTRACT_KEYS:
+            item.pop(key, None)
+        payload = item.get("payload")
+        if isinstance(payload, dict):
+            for key in RETIRED_DETAIL_CONTRACT_KEYS:
+                payload.pop(key, None)
+    return result
+
+
+# 함수 설명: `_without_retired_intent_contract()`는 state의 output_contract와 retrieval_jobs에서만 이전 상세 필드를 제거합니다.
+def _without_retired_intent_contract(value: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(value)
+    state = result.get("state")
+    if not isinstance(state, dict):
+        return result
+    plan = state.get("last_intent_plan")
+    if not isinstance(plan, dict):
+        return result
+    output_contract = plan.get("output_contract")
+    if isinstance(output_contract, dict):
+        for key in RETIRED_DETAIL_CONTRACT_KEYS:
+            output_contract.pop(key, None)
+    retrieval_jobs = plan.get("retrieval_jobs")
+    if isinstance(retrieval_jobs, list):
+        for job in retrieval_jobs:
+            if not isinstance(job, dict):
+                continue
+            for key in RETIRED_DETAIL_CONTRACT_KEYS:
+                job.pop(key, None)
+    return result
 
 
 # 함수 설명: `_compact_state()`는 상태에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.

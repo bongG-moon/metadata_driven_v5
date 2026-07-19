@@ -1,3 +1,10 @@
+## 기본 상세 표시 metadata 입력 기준
+
+각 dataset 블록에는 필요할 때 아래 필드를 직접 지정하거나 수정할 수 있어.
+default_detail_columns는 사용자가 출력 컬럼을 따로 말하지 않은 detail 또는 entity_list 질문에서 기본으로 유지할 컬럼이야.
+값을 바꿀 때는 해당 dataset 블록에 "default_detail_columns는 A, B로 바꿔줘"처럼 원하는 전체 목록을 적어. 원문에 없는 컬럼은 추측해서 추가하지 마.
+dataset 간 join 기준과 실행 순서는 Table Catalog에 넣지 말고 Domain의 analysis_recipes에 등록해.
+
 text
 당일용 생산 실적 데이터는 production_today로 등록해줘.
 화면에 보일 이름은 Production Today이면 돼.
@@ -145,7 +152,8 @@ SELECT
 FROM  EQP_TABLE
 WHERE 1=1 
 
-filter_mappings는 EQP_ID -> EQUIP_ID, EQP_MODEL -> EQPIP_MODEL, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, ORG -> ORG, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC, OPER_NUM -> OPER, OPER_NAME -> OPER_NM, LOT_ID -> LOT_ID, RECIPE_ID -> RECIPE_ID 로 연결해줘.
+filter_mappings는 EQP_ID -> EQUIP_ID, EQP_MODEL -> EQUIP_MODEL, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, ORG -> ORG, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC, OPER_NUM -> OPER, OPER_NAME -> OPER_NM, LOT_ID -> LOT_ID, RECIPE_ID -> RECIPE_ID 로 연결해줘.
+default_detail_columns는 EQUIP_ID로 저장해줘.
 
 
 Equipment Recipe UPH
@@ -182,6 +190,8 @@ FROM UPH
 WHERE 1=1
 
 filter_mappings는 EQP_MODEL -> EQUIP_MODEL, OPER_NAME -> OPER_NAME, OPER_NUM -> OPER, MODE -> MODE, TECH -> TECH, ORG -> ORG, DEN -> DENSITY, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, RECIPE_ID -> RECIPE_ID로 연결해줘.
+다른조건이 없을 때 기본적으로 보여줄 컬럼은 EQUIP_MODEL, RECIPE_ID, OPER_NAME이야.
+UPH는 사용자가 UPH를 물었을 때 metric 컬럼으로 추가하고, PRESS_CNT와 MCP_NO는 사용자가 질문에서 요구할 때만 출력 컬럼으로 선택해.
 
 
 LOT Status
@@ -210,6 +220,7 @@ FROM WIP_STATE
 WHERE 1=1
 
 filter_mappings는 OPER_NAME -> OPER_NAME, OPER_NUM -> OPER, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, TSV_DIE_TYP -> TSV_DIE_TYPE, EQP_ID -> EQP_ID, LOT_ID -> LOT_ID로 연결해줘.
+default_detail_columns는 LOT_ID, OPER_NAME, PROD_QTY, WF_QTY, IN_TAT, CUM_TAT, HOLD_STAT, HOLD_REASON, LOT_STAT로 저장해줘.
 
 
 <!-- single_hold_history:start -->

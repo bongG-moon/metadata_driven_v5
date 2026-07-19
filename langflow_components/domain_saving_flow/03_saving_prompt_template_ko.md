@@ -7,6 +7,8 @@
 - 제품/공정/상태 조건은 원문에 명시된 조건만 payload에 넣는다.
 - `process_groups`의 key는 원문에 명시된 대표 식별자를 그대로 사용한다. 예를 들어 `BG 또는 B/G 공정 그룹`이면 key는 `BG`, aliases는 `["BG", "B/G"]`로 만든다.
 - 원문에 없는 `_PROCESS_GROUP`, `_TERM`, `_DOMAIN` 같은 설명형 suffix를 key에 임의로 붙이지 않는다.
+- `analysis_recipes`에 dataset 결합 규칙이 명시되면 `source_datasets`, `join_type`, `join_keys`, `left_key_mappings`, `right_key_mappings`, `preserve_left_rows`를 원문에 있는 범위에서 구조화해 보존한다. `context_columns`는 만들지 않는다.
+- 물리 컬럼명이 서로 다른 join은 표준 `join_keys`와 좌우 mapping을 분리해 기록한다. 원문에 없는 join key나 실행 순서를 추측하지 않는다.
 - pandas function case는 실행 helper import가 아니라 적용 조건, 필요한 입력/출력, pseudocode, I/O contract만 담는다.
 - SQL, source_config, credential은 절대 domain item에 넣지 않는다.
 

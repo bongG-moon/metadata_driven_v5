@@ -160,6 +160,9 @@ PROCESSES = [
     {"OPER": "BG2", "OPER_NAME": "B/G2", "OPER_SEQ": "410"},
     {"OPER": "SBM", "OPER_NAME": "SBM", "OPER_SEQ": "500"},
     {"OPER": "PKGOUT", "OPER_NAME": "PKG OUT", "OPER_SEQ": "900"},
+    # W/BM은 W/B1~W/B6 그룹과 다른 단일 공정이다. 기존 process index 기반 fixture 값을
+    # 바꾸지 않도록 목록 끝에 두되, 실제 공정 순서는 OPER_SEQ=260으로 검증한다.
+    {"OPER": "WBM", "OPER_NAME": "W/BM", "OPER_SEQ": "260"},
 ]
 
 
@@ -403,6 +406,64 @@ def _validation_production_rows(work_date: str) -> list[dict[str, Any]]:
                 ),
             ]
         )
+    # 오늘 구현한 WBM·A조·NULL 표시 계약을 실제 "오늘" 질문과 고정 회귀 날짜 양쪽에서 검증한다.
+    if work_date in {"20260701", _korea_today()}:
+        rows.extend(
+            [
+                _scenario_row(
+                    work_date,
+                    0,
+                    "W/BM",
+                    "PRODUCTION",
+                    37,
+                    SHIFT="1",
+                    FAMILY=None,
+                    TECH=None,
+                    DENSITY="",
+                    DEN="",
+                    MODE=" ",
+                    ORG=None,
+                    PKG1="",
+                    PKG_TYPE1="",
+                    PKG2=" ",
+                    PKG_TYPE2=" ",
+                    LEAD=None,
+                    MCP_NO="",
+                    DEVICE="DEV-WBM-BLANK",
+                    DEVICE_DESC="WBM blank product dimensions validation row",
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "W/BM",
+                    "PRODUCTION",
+                    None,
+                    SHIFT="1",
+                    DEVICE="DEV-WBM-NULL-QTY",
+                    DEVICE_DESC="WBM null production validation row",
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "W/BM",
+                    "PRODUCTION",
+                    63,
+                    SHIFT="1",
+                    DEVICE="DEV-WBM-A-SHIFT",
+                    DEVICE_DESC="WBM A shift validation row",
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "W/BM",
+                    "PRODUCTION",
+                    900,
+                    SHIFT="2",
+                    DEVICE="DEV-WBM-B-SHIFT-DECOY",
+                    DEVICE_DESC="WBM non-A shift negative control",
+                ),
+            ]
+        )
     if work_date == "20260624":
         for index in range(6):
             rows.append(
@@ -486,7 +547,7 @@ def _scenario_row(
     product_index: int,
     process_name: str,
     quantity_field: str,
-    quantity: int | float,
+    quantity: Any,
     **overrides: Any,
 ) -> dict[str, Any]:
     row = _product_process_row(work_date, product_index, _process_index(process_name))

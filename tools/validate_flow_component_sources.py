@@ -141,17 +141,17 @@ def audit_repository() -> dict[str, Any]:
     expected_route_sources = {
         "langflow_components/route_flow/01_flow_api_message_caller.py",
         "langflow_components/route_flow_v2/01_cached_named_run_flow_tool.py",
-        "langflow_components/route_flow_v3/01_orchestrated_named_run_flow_tool.py",
         "langflow_components/route_flow_v4/00_workflow_plan_parser.py",
         "langflow_components/route_flow_v4/00a_mongodb_workflow_registry_loader.py",
         "langflow_components/route_flow_v4/01_sequential_step_executor.py",
         "langflow_components/route_flow_v4/02_final_context_builder.py",
         "langflow_components/route_flow_v4/03_workflow_final_response_builder.py",
+        "langflow_components/route_flow_v4/04_workflow_named_run_flow_tool.py",
     }
     for path in sorted(expected_route_sources):
         if path not in used:
             route_errors.append({"type": "route_source_not_used", "path": path})
-    for folder in ("router_flow", "router_flow_v2", "router_flow_v3", "router_tool_flow"):
+    for folder in ("router_flow", "router_flow_v2", "router_flow_v3", "router_tool_flow", "route_flow_v3"):
         if (COMPONENT_ROOT / folder).exists():
             route_errors.append({"type": "obsolete_route_folder_present", "path": f"langflow_components/{folder}"})
 

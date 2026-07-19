@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import json
 import re
@@ -792,10 +793,59 @@ def _pandas_section(payload: dict[str, Any]) -> str:
         code = str(pandas_code_json.get("code") or "").strip()
     if code:
         label = "실제 실행 pandas 코드" if effective_code else "생성된 pandas 코드"
+        code, collapsed_helpers = _collapse_function_case_helper_definitions(code, _string_list(used_helpers))
+        if collapsed_helpers:
+            label += " (함수 숨김처리)"
         lines.append(f"- {label}:")
         lines.append("```python\n" + code + "\n```")
 
     return "\n".join(lines)
+
+
+# 함수 설명: `_collapse_function_case_helper_definitions()`는 실제 실행 코드는 바꾸지 않고 사용자 표시에서 호출된 helper 정의만 숨김 주석으로 대체합니다.
+def _collapse_function_case_helper_definitions(code: str, used_helpers: list[str]) -> tuple[str, list[str]]:
+    source = str(code or "").strip()
+    helper_names = [name for name in dict.fromkeys(used_helpers) if name.isidentifier()]
+    if not source or not helper_names:
+        return source, []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source, []
+
+    helper_set = set(helper_names)
+    blocks: dict[int, tuple[int, str]] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name not in helper_set:
+            continue
+        decorator_lines = [int(item.lineno) for item in getattr(node, "decorator_list", [])]
+        start = min([int(node.lineno), *decorator_lines])
+        end = int(getattr(node, "end_lineno", node.lineno))
+        blocks[start] = (end, node.name)
+    if not blocks:
+        return source, []
+
+    lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    collapsed: list[str] = []
+    rendered: list[str] = []
+    line_number = 1
+    while line_number <= len(lines):
+        block = blocks.get(line_number)
+        if block is None:
+            rendered.append(lines[line_number - 1])
+            line_number += 1
+            continue
+        end, helper_name = block
+        collapsed.append(helper_name)
+        rendered.extend(
+            [
+                f"# region Function Case Helper: {helper_name} (함수 숨김처리)",
+                f"# {helper_name} 함수 정의는 실제 실행 코드에 포함되며 화면에서는 생략했습니다.",
+                "# endregion",
+            ]
+        )
+        line_number = end + 1
+    return "\n".join(rendered).strip(), collapsed
 
 
 # 함수 설명: `_notice_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.

@@ -41,6 +41,10 @@
 - retry code에서는 이미 필터된 `sources["alias"]`를 기준으로 오류 원인, 집계, 정렬, join, 추가 분석 조건만 수정한다.
 - `KeyError: '컬럼명'` 또는 source schema에 없는 컬럼 오류가 있으면, 해당 컬럼을 무조건 참조하지 말고 `df.columns`에 존재하는 컬럼만 groupby/선택/정렬에 사용한다.
 - `df.groupby(["A", "B"])`처럼 실패한 고정 컬럼 리스트는 `desired_cols`와 `group_cols = [c for c in desired_cols if c in df.columns]` 구조로 바꾼다.
+- 실패 코드의 dimension groupby가 null, 빈 문자열, 공백 group 행을 누락했다면 `dropna=False`를 명시하고 집계 전 group column의 null/blank 제외 filter를 제거한다.
+- 집계 후 표시용 dimension column에만 `fillna("")`와 `replace(r"^\s*$", "", regex=True)`를 적용한다. dimension null/blank를 `미등록`으로 바꾼 코드는 빈 문자열 표시로 수정한다.
+- 최종 표시용 metric column은 `intent_plan.output_contract.metric_columns`를 최우선으로 사용한다. 이 계약이 없을 때만 실제 숫자 값이 있는 컬럼 또는 생산량·재공·UPH·QTY·COUNT·RATE처럼 지표 의미가 분명한 컬럼을 보수적으로 선택하며, ID·코드·날짜·dimension 컬럼을 metric으로 추정하지 않는다.
+- 선택된 metric column의 `None`/`NaN`/빈 문자열/공백 문자열은 표시용 숫자 `0`으로 복구한다. result 전체를 `fillna(0)`로 채우지 말고, dimension null/blank는 계속 빈 문자열 `""`로 유지한다.
 - 결과 컬럼 재정렬도 존재하는 컬럼만 선택하도록 수정한다.
 - 필수 집계 컬럼이 없거나 group column이 모두 없으면 오류를 반복하지 말고 빈 DataFrame을 `result`에 넣는다.
 - `function_case_selection_json`에는 의도 분석 LLM이 선택한 function case, `selected_steps`, `input_text`, `source_alias`가 들어 있다.

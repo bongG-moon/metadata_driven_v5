@@ -123,7 +123,11 @@ def run_case(case: dict[str, Any], modules: dict[str, Any], reference_date: str)
     payload = modules["adapter"].build_retrieval_payload(payload)
     pandas_vars = modules["pandas_vars"].build_variables(payload)
     pandas_vars = with_selected_helper_code(modules, pandas_vars)
-    pandas_code = inline_helper_source(case["pandas_code"]) if case.get("requires_helper") else case["pandas_code"]
+    pandas_code = (
+        inline_helper_source(case["pandas_code"], str(case.get("helper_function") or ""))
+        if case.get("requires_helper")
+        else case["pandas_code"]
+    )
     payload = modules["executor"].execute_pandas_code(payload, {"code": pandas_code})
     row_count = int(payload.get("data", {}).get("row_count") or 0)
     payload = modules["answer_builder"].build_answer_response(
@@ -156,8 +160,8 @@ def with_specialized_prompt(intent_vars: dict[str, Any]) -> dict[str, Any]:
     return next_vars
 
 
-def inline_helper_source(pandas_code: str) -> str:
-    source = function_case_source("match_product_tokens")
+def inline_helper_source(pandas_code: str, function_name: str = "match_product_tokens") -> str:
+    source = function_case_source(function_name or "match_product_tokens")
     return source + "\n\n" + pandas_code if source else pandas_code
 
 
@@ -239,8 +243,9 @@ def summarize_validation_result(
         },
         ensure_ascii=False,
     )
-    if case.get("requires_helper") and "match_product_tokens" not in function_case_text:
-        errors.append("missing match_product_tokens function case context")
+    helper_function = str(case.get("helper_function") or "match_product_tokens")
+    if case.get("requires_helper") and helper_function not in function_case_text:
+        errors.append(f"missing {helper_function} function case context")
     actual_kind = payload.get("intent_plan", {}).get("analysis_kind", "")
     expected_kind = case.get("intent_response", {}).get("intent_plan", {}).get("analysis_kind", "")
     if actual_kind != expected_kind:
@@ -642,6 +647,142 @@ def representative_cases() -> list[dict[str, Any]]:
             min_rows=0,
             expected_row_count=0,
         ),
+        case(
+            26,
+            "오늘 WBM 공정의 제품별 생산량을 알려줘. 제품 정보가 비어 있는 행도 제외하지 말고, 비어 있는 제품 정보는 빈칸으로, 생산량이 비어 있으면 0으로 보여줘.",
+            "wbm_product_production_with_blank_dimensions",
+            [job("production_today", "production_data", "20260701", {"OPER_NAME": eq("W/BM")})],
+            (
+                f"dims = {PRODUCT_KEYS!r}\n"
+                "df = sources['production_data'].copy()\n"
+                "df['PRODUCTION'] = pd.to_numeric(df['PRODUCTION'], errors='coerce').fillna(0)\n"
+                "result = df.groupby(dims, dropna=False, as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})\n"
+                "for column in dims:\n"
+                "    result[column] = result[column].fillna('').replace(r'^\\s*$', '', regex=True)\n"
+                "result = result.sort_values(['TOTAL_PRODUCTION', 'DEVICE'], ascending=[False, True])"
+            ),
+            [*PRODUCT_KEYS, "TOTAL_PRODUCTION"],
+            expected_row_count=4,
+            expected_first_row={"DEVICE": "DEV-WBM-B-SHIFT-DECOY", "TOTAL_PRODUCTION": 900},
+            expected_rows=[
+                {"DEVICE": "DEV-WBM-BLANK", "TECH": "", "DEN": "", "MODE": "", "TOTAL_PRODUCTION": 37},
+                {"DEVICE": "DEV-WBM-NULL-QTY", "TOTAL_PRODUCTION": 0},
+            ],
+        ),
+        case(
+            27,
+            "현재 D/A1 공정의 장비 모델, Recipe, 공정, UPH를 보여줘",
+            "da1_uph_default_detail_columns",
+            [job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("D/A1")})],
+            (
+                "df = sources['uph_data'].copy()\n"
+                "result = df[['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']].sort_values(['EQP_MODEL', 'RECIPE_ID'])"
+            ),
+            ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            expected_row_count=1,
+            expected_first_row={"EQP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1", "UPH": 88.2},
+        ),
+        ordered_range_case(
+            28,
+            "7월 1일 D/A1~W/B6 공정 구간의 공정별 생산량을 OPER_SEQ 순서로 알려줘",
+            "ordered_process_range_production",
+            "D/A1~W/B6",
+            "production_data",
+            [job("production_today", "production_data", "20260701")],
+            (
+                "df = filter_ordered_range('D/A1~W/B6', sources['production_data'])\n"
+                "df['OPER_SEQ_NUM'] = pd.to_numeric(df['OPER_SEQ'], errors='coerce')\n"
+                "result = df.groupby(['OPER_SEQ_NUM', 'OPER_NAME'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})\n"
+                "result = result.sort_values(['OPER_SEQ_NUM', 'OPER_NAME']).rename(columns={'OPER_SEQ_NUM': 'OPER_SEQ'})"
+            ),
+            ["OPER_SEQ", "OPER_NAME", "TOTAL_PRODUCTION"],
+            expected_row_count=13,
+            expected_first_row={"OPER_SEQ": 100, "OPER_NAME": "D/A1", "TOTAL_PRODUCTION": 1212},
+            expected_rows=[{"OPER_SEQ": 250, "OPER_NAME": "W/B6"}],
+            forbidden_values={"OPER_NAME": ["W/BM", "FCB1"]},
+        ),
+        case(
+            29,
+            "오늘 DA 공정 생산량을 세부 공정별로 알려줘",
+            "da_group_expansion_by_step",
+            [job("production_today", "production_data", "20260701", {"OPER_NAME": in_values(DA_PROCESSES)})],
+            (
+                "df = sources['production_data'].copy()\n"
+                "result = df.groupby(['OPER_SEQ', 'OPER_NAME'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})\n"
+                "result = result.sort_values(['OPER_SEQ', 'OPER_NAME'])"
+            ),
+            ["OPER_SEQ", "OPER_NAME", "TOTAL_PRODUCTION"],
+            expected_row_count=6,
+            expected_first_row={"OPER_SEQ": "100", "OPER_NAME": "D/A1", "TOTAL_PRODUCTION": 1212},
+            expected_rows=[{"OPER_NAME": "D/A6"}],
+        ),
+        product_case(
+            30,
+            "6월 30일 FCB 공정에서 SP 16G DDR5 2ND X4 FC78 제품 생산량을 알려줘",
+            "sp_ddr5_fc78_shorthand_production",
+            "SP 16G DDR5 2ND X4 FC78",
+            [job("production", "production_data", "20260630", {"OPER_NAME": in_values(FCB_PROCESSES)})],
+            (
+                "df = match_product_tokens('SP 16G DDR5 2ND X4 FC78', sources['production_data'])\n"
+                "result = df.groupby(['TECH', 'DEN', 'MODE', 'ORG', 'PKG_TYPE1', 'LEAD', 'DEVICE'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})"
+            ),
+            ["TECH", "DEN", "MODE", "ORG", "PKG_TYPE1", "LEAD", "DEVICE", "TOTAL_PRODUCTION"],
+            expected_row_count=1,
+            expected_first_row={"DEVICE": "DEV-SP-DDR5", "ORG": "4", "PKG_TYPE1": "FCBGA", "LEAD": "78", "TOTAL_PRODUCTION": 1791},
+            forbidden_values={"DEVICE": ["DEV-SP-DECOY-X8", "DEV-SP-DECOY-LEAD96", "DEV-SP-DECOY-VFBGA"]},
+        ),
+        case(
+            31,
+            "오늘 A조 WBM 공정의 생산량을 제품별로 알려줘",
+            "a_shift_wbm_production",
+            [job("production_today", "production_data", "20260701", {"OPER_NAME": eq("W/BM"), "SHIFT": eq("1")})],
+            (
+                "df = sources['production_data'].copy()\n"
+                "df['PRODUCTION'] = pd.to_numeric(df['PRODUCTION'], errors='coerce').fillna(0)\n"
+                "result = df.groupby('DEVICE', as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'}).sort_values(['TOTAL_PRODUCTION', 'DEVICE'], ascending=[False, True])"
+            ),
+            ["DEVICE", "TOTAL_PRODUCTION"],
+            expected_row_count=3,
+            expected_first_row={"DEVICE": "DEV-WBM-A-SHIFT", "TOTAL_PRODUCTION": 63},
+            expected_rows=[
+                {"DEVICE": "DEV-WBM-BLANK", "TOTAL_PRODUCTION": 37},
+                {"DEVICE": "DEV-WBM-NULL-QTY", "TOTAL_PRODUCTION": 0},
+            ],
+            forbidden_values={"DEVICE": ["DEV-WBM-B-SHIFT-DECOY"]},
+        ),
+        case(
+            32,
+            "오늘 WBM 공정 생산량을 알려줘",
+            "wbm_single_process_production",
+            [job("production_today", "production_data", "20260701", {"OPER_NAME": eq("W/BM")})],
+            (
+                "df = sources['production_data'].copy()\n"
+                "df['PRODUCTION'] = pd.to_numeric(df['PRODUCTION'], errors='coerce').fillna(0)\n"
+                "result = df.groupby(['OPER_SEQ', 'OPER_NAME'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})"
+            ),
+            ["OPER_SEQ", "OPER_NAME", "TOTAL_PRODUCTION"],
+            expected_row_count=1,
+            expected_first_row={"OPER_SEQ": "260", "OPER_NAME": "W/BM", "TOTAL_PRODUCTION": 1000},
+            forbidden_values={"OPER_NAME": WB_PROCESSES},
+        ),
+        case(
+            33,
+            "현재 D/A1 공정에 배정된 장비와 장비 모델, Recipe, UPH를 보여줘",
+            "da1_equipment_default_identity_and_uph",
+            [
+                job("equipment_assign", "equipment_data", filters={"OPER_NAME": eq("D/A1")}),
+                job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("D/A1")}),
+            ],
+            (
+                "assign = sources['equipment_data'].copy()\n"
+                "uph = sources['uph_data'][['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']]\n"
+                "result = assign.merge(uph, on=['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME'], how='left')\n"
+                "result = result[['EQP_ID', 'EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']].sort_values('EQP_ID')"
+            ),
+            ["EQP_ID", "EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            expected_row_count=1,
+            expected_first_row={"EQP_ID": "EQP002", "EQP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1", "UPH": 88.2},
+        ),
     ]
 
 
@@ -723,6 +864,56 @@ def product_case(
         }
     ]
     item["requires_helper"] = True
+    item["helper_function"] = "match_product_tokens"
+    return item
+
+
+def ordered_range_case(
+    case_id: int,
+    question: str,
+    analysis_kind: str,
+    range_text: str,
+    source_alias: str,
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_code: str,
+    required_columns: list[str],
+    *,
+    expected_row_count: int | None = None,
+    expected_first_row: dict[str, Any] | None = None,
+    expected_rows: list[dict[str, Any]] | None = None,
+    forbidden_values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """공정 순서 구간 helper의 선택·전달·실행을 한 번에 검증하는 대표 case를 만듭니다."""
+    item = case(
+        case_id,
+        question,
+        analysis_kind,
+        retrieval_jobs,
+        pandas_code,
+        required_columns,
+        expected_row_count=expected_row_count,
+        expected_first_row=expected_first_row,
+        expected_rows=expected_rows,
+        forbidden_values=forbidden_values,
+    )
+    function_case = {
+        "key": "ordered_process_range",
+        "function_name": "filter_ordered_range",
+        "input_text": range_text,
+        "source_alias": source_alias,
+    }
+    item["intent_response"]["intent_plan"]["pandas_function_cases"] = [function_case]
+    item["intent_response"]["intent_plan"]["pandas_execution_plan"] = [
+        {
+            "operation": "apply_pandas_function_case",
+            "function_case_key": "ordered_process_range",
+            "function_name": "filter_ordered_range",
+            "input_text": range_text,
+            "source_alias": source_alias,
+        }
+    ]
+    item["requires_helper"] = True
+    item["helper_function"] = "filter_ordered_range"
     return item
 
 

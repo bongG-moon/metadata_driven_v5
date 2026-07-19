@@ -65,19 +65,14 @@ EMBEDDED_TEXT_TARGETS = {
         "import_ready_flows/07_agent_tool_router_flow_v5_standalone.json",
         "import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
     ),
-    "route_flow_v3/SYSTEM_PROMPT_KO.md": (
-        "flow_exports/agent_orchestrator_router_flow_v5_standalone.json",
-        "import_ready_flows/08_agent_orchestrator_router_flow_v5_standalone.json",
-        "import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-    ),
     "route_flow_v4/SYSTEM_PROMPT_KO.md": (
         "flow_exports/workflow_orchestrator_flow_v5_standalone.json",
-        "import_ready_flows/09_workflow_orchestrator_flow_v5_standalone.json",
+        "import_ready_flows/08_workflow_orchestrator_flow_v5_standalone.json",
         "import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
     ),
     "workflow_skill_saving_flow/03_saving_prompt_template_ko.md": (
         "flow_exports/workflow_skill_saving_flow_v5_standalone.json",
-        "import_ready_flows/10_workflow_skill_saving_flow_v5_standalone.json",
+        "import_ready_flows/09_workflow_skill_saving_flow_v5_standalone.json",
         "import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
     ),
 }

@@ -19,6 +19,18 @@ DONOR_PATH = EXPORT_ROOT / "data_analysis_flow_v5_standalone.json"
 COMPONENT_INDEX = Path.home() / "AppData" / "Local" / "com.LangflowDesktop" / ".langflow-venv" / "Lib" / "site-packages" / "lfx" / "_assets" / "component_index.json"
 ROUTER_READ_TIMEOUT_SECONDS = "240"
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
+FLOW_DISPLAY_NAMES = {
+    "data_analysis": "01. v5_data_analysis",
+    "domain_saving": "02. v5_domain_saving",
+    "table_catalog_saving": "03. v5_table_catalog_saving",
+    "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
+    "metadata_qa": "05. v5_metadata_qa",
+    "api_router": "06. v5_api_router",
+    "agent_tool_router": "07. v5_agent_tool_router",
+    "workflow_orchestrator": "08. v5_workflow_orchestrator",
+    "workflow_skill_saving": "09. v5_workflow_skill_saving",
+    "html_visualization": "10. v5_html_visualization",
+}
 
 
 @dataclass(frozen=True)
@@ -47,13 +59,14 @@ class ToolRouteSpec:
 
 
 @dataclass(frozen=True)
-class OrchestratorToolRouteSpec:
+class WorkflowToolRouteSpec:
     route_name: str
     flow_name: str
     tool_name: str
     tool_description: str
     accepts_upstream_result_ref: bool = False
     can_produce_result_ref: bool = False
+    requires_upstream_result_ref: bool = False
     entity_id_columns: str = ""
 
 
@@ -294,8 +307,8 @@ def add_loop_feedback_edge(
     """기본 Loop의 allows_loop 출력으로 돌아가는 전용 feedback edge를 추가합니다.
 
     Loop feedback의 target handle은 일반 template input이 아니라 Loop의 `item`
-    output 계약을 사용합니다. 일반 ``add_edge``로 만들면 Langflow import 시 연결이
-    제거되므로 frontend와 같은 output-handle 형식으로 직렬화합니다.
+    output 계약을 사용합니다. 이때 ``types``뿐 아니라 ``loop_types``도 함께 넣어야
+    Langflow frontend가 `Looping` 포트의 전체 허용 타입을 복원할 수 있습니다.
     """
 
     source_output = next(item for item in source["data"]["node"]["outputs"] if item["name"] == source_name)
@@ -305,7 +318,8 @@ def add_loop_feedback_edge(
     if loop_output.get("allows_loop") is not True:
         raise ValueError(f"Loop feedback target must allow loops: {loop['id']}.{loop_output_name}")
     source_types = source_output.get("types") or [source_output.get("selected") or "Data"]
-    target_types = loop_output.get("types") or [loop_output.get("selected") or "Data"]
+    declared_target_types = loop_output.get("types") or [loop_output.get("selected") or "Data"]
+    target_types = list(dict.fromkeys([*declared_target_types, *(loop_output.get("loop_types") or [])]))
     source_handle = {
         "dataType": source["data"]["type"],
         "id": source["id"],
@@ -350,7 +364,7 @@ def _handle_text(value: dict[str, Any]) -> str:
 
 def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]:
     proto = prototypes(donor)
-    flow = empty_flow(donor, f"metadata_driven_v5_{spec.slug}_saving_standalone", f"Optimized {spec.label} metadata saving flow: one extraction LLM, existing-item MongoDB loading plus candidate matching, one deterministic writer for dry-run/live execution, and one compact response terminal.", f"metadata-driven-v5-{spec.slug.replace('_', '-')}-saving", ["v5", "standalone", "metadata-authoring", "optimized"])
+    flow = empty_flow(donor, FLOW_DISPLAY_NAMES[f"{spec.slug}_saving"], f"Optimized {spec.label} metadata saving flow: one extraction LLM, existing-item MongoDB loading plus candidate matching, one deterministic writer for dry-run/live execution, and one compact response terminal.", f"metadata-driven-v5-{spec.slug.replace('_', '-')}-saving", ["v5", "standalone", "metadata-authoring", "optimized"])
     folder = COMPONENT_ROOT / spec.folder
     nodes: dict[str, dict[str, Any]] = {}
 
@@ -416,7 +430,7 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
 
 def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
     proto = prototypes(donor)
-    flow = empty_flow(donor, "metadata_driven_v5_metadata_qa_standalone", "Metadata QA flow with MongoDB projection, mode-specific compact LLM context, SQL-on-demand, byte limit, deterministic fallback, and canonical API response.", "metadata-driven-v5-metadata-qa", ["v5", "standalone", "metadata-qa", "optimized"])
+    flow = empty_flow(donor, FLOW_DISPLAY_NAMES["metadata_qa"], "Metadata QA flow with MongoDB projection, mode-specific compact LLM context, SQL-on-demand, byte limit, deterministic fallback, and canonical API response.", "metadata-driven-v5-metadata-qa", ["v5", "standalone", "metadata-qa", "optimized"])
     folder = COMPONENT_ROOT / "metadata_qa_flow"
     nodes: dict[str, dict[str, Any]] = {}
 
@@ -447,7 +461,16 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
     )
     normalizer = add("normalizer", custom_node(proto["custom"], "Normalizer-metadata-qa", folder / "04_metadata_qa_response_normalizer.py", 2180, 0))
     message = add("message", custom_node(proto["custom"], "Message-metadata-qa", folder / "05_metadata_qa_message_adapter.py", 2480, -100))
-    api = add("api", custom_node(proto["custom"], "Api-metadata-qa", folder / "06_metadata_qa_api_response_builder.py", 2780, 100))
+    api = add(
+        "api",
+        custom_node(
+            proto["custom"],
+            "Api-metadata-qa",
+            folder / "06_metadata_qa_api_response_builder.py",
+            2780,
+            100,
+        ),
+    )
     output = add("output", native_node(proto["chat_output"], "ChatOutput-metadata-qa", 2780, -160))
     _set_message_storage(output, True)
 
@@ -492,78 +515,86 @@ ROUTE_ENDPOINTS = {
 TOOL_ROUTE_SPECS = [
     ToolRouteSpec(
         "data_analysis",
-        "metadata_driven_v5_data_analysis_standalone",
+        FLOW_DISPLAY_NAMES["data_analysis"],
         "run_data_analysis",
         "실제 제조 데이터 값의 조회와 계산에 사용합니다. 생산량, 재공, 투입/산출, HOLD, 장비 배정, UPH, 제품별 집계와 비교 질문이 대상입니다. 메타데이터 정의 설명이나 등록 요청에는 사용하지 않습니다.",
     ),
     ToolRouteSpec(
         "metadata_qa",
-        "metadata_driven_v5_metadata_qa_standalone",
+        FLOW_DISPLAY_NAMES["metadata_qa"],
         "run_metadata_qa",
         "등록된 도메인, 테이블 카탈로그, 필수 파라미터, SQL 템플릿, 컬럼과 계산 규칙을 설명하거나 확인할 때 사용합니다. 실제 생산 수치 조회나 메타데이터 저장에는 사용하지 않습니다.",
     ),
     ToolRouteSpec(
         "domain_saving",
-        "metadata_driven_v5_domain_saving_standalone",
+        FLOW_DISPLAY_NAMES["domain_saving"],
         "save_domain_metadata",
         "도메인 용어, 별칭, 공정 그룹, 제품 그룹, 분석 규칙을 신규 저장하거나 유사 기존 항목에 merge/replace하라는 명시적 등록 요청에 사용합니다.",
     ),
     ToolRouteSpec(
         "table_catalog_saving",
-        "metadata_driven_v5_table_catalog_saving_standalone",
+        FLOW_DISPLAY_NAMES["table_catalog_saving"],
         "save_table_catalog_metadata",
         "데이터셋 또는 테이블의 source type, query template, 필수 파라미터, 컬럼 스키마를 등록하거나 변경하라는 명시적 요청에 사용합니다.",
     ),
     ToolRouteSpec(
         "main_flow_filter_saving",
-        "metadata_driven_v5_main_flow_filter_saving_standalone",
+        FLOW_DISPLAY_NAMES["main_flow_filter_saving"],
         "save_main_flow_filter_metadata",
         "DATE, OPER_NAME, ORG 등 분석 전반에 공통으로 적용할 메인 필터 정의를 등록하거나 변경하라는 명시적 요청에 사용합니다.",
     ),
 ]
 
 
-# Route V3는 V2와 동일한 하위 Flow를 사용하되, Tool 간 결과 참조를 전달할 수 있는
-# capability를 명시합니다. 현재는 Data Analysis만 MongoDB result_ref를 생성·소비하며,
-# 향후 이상 LOT Flow를 추가할 때 같은 spec에 LOT_ID capability를 선언하면 됩니다.
-ORCHESTRATOR_TOOL_ROUTE_SPECS = [
-    OrchestratorToolRouteSpec(
+# Workflow Orchestrator는 하위 Flow별 result_ref 생성·소비 capability를 명시합니다.
+# 현재는 Data Analysis만 MongoDB result_ref를 생성·소비하며, 향후 전용 분석 Flow를
+# 추가할 때 같은 spec에 전달할 식별자 capability를 선언하면 됩니다.
+WORKFLOW_TOOL_ROUTE_SPECS = [
+    WorkflowToolRouteSpec(
         "data_analysis",
-        "metadata_driven_v5_data_analysis_standalone",
+        FLOW_DISPLAY_NAMES["data_analysis"],
         "run_data_analysis",
         "실제 제조 데이터 값의 조회와 계산에 사용합니다. 첫 분석으로 실행할 수도 있고, upstream_result_ref가 있으면 직전 분석 결과를 명시적으로 복원해 연계 분석할 수 있습니다.",
         accepts_upstream_result_ref=True,
         can_produce_result_ref=True,
         entity_id_columns="LOT_ID",
     ),
-    OrchestratorToolRouteSpec(
+    WorkflowToolRouteSpec(
         "metadata_qa",
-        "metadata_driven_v5_metadata_qa_standalone",
+        FLOW_DISPLAY_NAMES["metadata_qa"],
         "run_metadata_qa",
         "등록된 도메인, 테이블 카탈로그, 필수 파라미터, SQL 템플릿, 컬럼과 계산 규칙을 설명하거나 확인할 때 사용합니다. 다른 Tool 결과 참조를 소비하지 않습니다.",
     ),
-    OrchestratorToolRouteSpec(
+    WorkflowToolRouteSpec(
         "domain_saving",
-        "metadata_driven_v5_domain_saving_standalone",
+        FLOW_DISPLAY_NAMES["domain_saving"],
         "save_domain_metadata",
         "사용자가 명시적으로 요청한 도메인 용어, 공정 그룹, 제품 그룹 또는 분석 규칙 저장에만 사용합니다. 한 요청에서 저장 Tool은 최대 한 번만 호출합니다.",
     ),
-    OrchestratorToolRouteSpec(
+    WorkflowToolRouteSpec(
         "table_catalog_saving",
-        "metadata_driven_v5_table_catalog_saving_standalone",
+        FLOW_DISPLAY_NAMES["table_catalog_saving"],
         "save_table_catalog_metadata",
         "사용자가 명시적으로 요청한 데이터셋 source type, query template, 필수 파라미터 또는 컬럼 스키마 저장에만 사용합니다.",
     ),
-    OrchestratorToolRouteSpec(
+    WorkflowToolRouteSpec(
         "main_flow_filter_saving",
-        "metadata_driven_v5_main_flow_filter_saving_standalone",
+        FLOW_DISPLAY_NAMES["main_flow_filter_saving"],
         "save_main_flow_filter_metadata",
         "사용자가 명시적으로 요청한 DATE, OPER_NAME, ORG 등 공통 필터 정의 저장에만 사용합니다.",
+    ),
+    WorkflowToolRouteSpec(
+        "html_visualization",
+        FLOW_DISPLAY_NAMES["html_visualization"],
+        "run_visualization",
+        "바로 앞 데이터 분석 결과를 받아 외부 CDN 없는 standalone HTML 차트로 만듭니다. 반드시 run_data_analysis 결과의 upstream_result_ref와 함께 순차 실행합니다.",
+        accepts_upstream_result_ref=True,
+        requires_upstream_result_ref=True,
     ),
 ]
 
 
-WORKFLOW_ALLOWED_TOOL_NAMES = [spec.tool_name for spec in ORCHESTRATOR_TOOL_ROUTE_SPECS]
+WORKFLOW_ALLOWED_TOOL_NAMES = [spec.tool_name for spec in WORKFLOW_TOOL_ROUTE_SPECS]
 WORKFLOW_REGISTRY_PATH = ROOT / "docs" / "workflows" / "workflow_registry.example.json"
 
 
@@ -580,6 +611,25 @@ def _workflow_allowed_tools_json() -> str:
     """Parser와 planner에 동일하게 전달할 허용 Tool 이름 JSON을 반환합니다."""
 
     return json.dumps(WORKFLOW_ALLOWED_TOOL_NAMES, ensure_ascii=False, indent=2)
+
+
+def _workflow_tool_catalog_json() -> str:
+    """미등록 inline 계획에서도 Tool capability를 판단하도록 이름·설명·ref 지원 계약을 반환합니다."""
+
+    return json.dumps(
+        [
+            {
+                "tool_name": spec.tool_name,
+                "description": spec.tool_description,
+                "accepts_upstream_result_ref": spec.accepts_upstream_result_ref,
+                "can_produce_result_ref": spec.can_produce_result_ref,
+                "requires_upstream_result_ref": spec.requires_upstream_result_ref,
+            }
+            for spec in WORKFLOW_TOOL_ROUTE_SPECS
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def _workflow_planner_prompt() -> str:
@@ -600,32 +650,62 @@ Markdown code fence, 설명 문장, 주석은 출력하지 않는다.
 5. tool_name은 아래 허용 이름 중 하나만 사용한다.
 6. depends_on은 반드시 앞 단계 step_id만 참조한다.
 7. 첫 단계는 depends_on=[] 및 handoff=none이다.
-8. 이전 결과의 실제 대상 집합을 다음 조회에 넘겨야 할 때만 handoff=result_ref를 사용하고 depends_on을 정확히 하나 둔다.
+8. handoff는 현재 단계가 앞 단계의 결과를 입력으로 받는지를 뜻한다. 결과를 생성하는 단계에 표시하는 필드가 아니다. 이전 결과를 현재 단계 입력으로 받을 때만 handoff=result_ref를 사용하고 depends_on을 정확히 하나 둔다.
 9. 단순 선행 순서만 필요하면 depends_on은 지정하되 handoff=none으로 둔다.
 10. 각 단계는 on_error=stop 또는 continue를 명시한다. 기본은 stop이다.
 11. 저장 Tool은 사용자가 저장·등록·변경을 명시한 경우에만 선택한다.
-12. 없는 Tool이나 Registry 항목을 만들지 않는다.
+12. Registry와 일치하지 않는 요청도 허용 Tool만으로 해결할 수 있으면 workflow_key=inline 계획을 만든다.
+13. 그래프·차트·시각화 요청은 먼저 run_data_analysis로 차트에 필요한 집계 결과를 조회하고, 바로 다음 run_visualization 단계가 해당 step 하나를 depends_on으로 참조하며 handoff=result_ref를 사용한다.
+14. run_visualization은 첫 단계로 선택하지 않고, question에는 원하는 차트 종류·축·제목만 독립적인 한국어로 적는다. 원본 행을 question에 복사하지 않는다.
+15. 없는 Tool이나 Registry 항목을 만들지 않는다.
+16. 금지: run_data_analysis가 결과를 생성한다는 이유로 그 단계에 handoff=result_ref를 쓰지 않는다. producer 단계는 handoff=none이고 consumer인 run_visualization 단계가 handoff=result_ref다.
+17. 출력 직전 모든 depends_on=[] 단계의 handoff가 none인지, run_visualization 단계의 depends_on이 정확히 1개이고 handoff가 result_ref인지 다시 검사한다.
 
 [출력 형태]
-{
+{{
   "contract_version": "workflow.plan.v1",
   "workflow_key": "등록 key 또는 inline",
   "title": "짧은 제목",
   "description": "짧은 목적",
   "steps": [
-    {
+    {{
       "step_id": "step_name",
       "tool_name": "run_data_analysis",
       "question": "하위 Flow에 전달할 독립적인 한국어 질문",
       "depends_on": [],
       "handoff": "none",
       "on_error": "stop"
-    }
+    }}
   ]
-}
+}}
 
 [허용 Tool 이름]
 {allowed_tool_names}
+
+[Tool capability catalog]
+{allowed_tool_catalog}
+
+[시각화 요청의 올바른 단계 예시]
+{{
+  "steps": [
+    {{
+      "step_id": "analysis",
+      "tool_name": "run_data_analysis",
+      "question": "차트에 사용할 데이터를 조회해줘",
+      "depends_on": [],
+      "handoff": "none",
+      "on_error": "stop"
+    }},
+    {{
+      "step_id": "visualization",
+      "tool_name": "run_visualization",
+      "question": "조회 결과를 막대그래프로 그려줘",
+      "depends_on": ["analysis"],
+      "handoff": "result_ref",
+      "on_error": "stop"
+    }}
+  ]
+}}
 
 [Workflow Registry]
 {workflow_registry_json}
@@ -681,7 +761,7 @@ def smart_router_node(proto: dict[str, Any], agent_proto: dict[str, Any], node_i
 
 def build_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     proto = prototypes(donor)
-    flow = empty_flow(donor, "metadata_driven_v5_api_router_standalone", "Smart Router classification with per-branch Langflow Run API calls, shared session propagation, pooled HTTP connections, secret API keys, and structured status outputs.", "metadata-driven-v5-api-router", ["v5", "standalone", "api-router", "optimized"])
+    flow = empty_flow(donor, FLOW_DISPLAY_NAMES["api_router"], "Smart Router classification with per-branch Langflow Run API calls, shared session propagation, pooled HTTP connections, secret API keys, and structured status outputs.", "metadata-driven-v5-api-router", ["v5", "standalone", "api-router", "optimized"])
     routes = [{"route_category": name, "route_description": description, "output_value": ""} for name, description in ROUTES]
     routes.extend(
         [
@@ -723,7 +803,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     proto = prototypes(donor)
     flow = empty_flow(
         donor,
-        "metadata_driven_v5_agent_tool_router_standalone",
+        FLOW_DISPLAY_NAMES["agent_tool_router"],
         "LLM Agent router with five compact name-resolved cached Flow tools, shared session propagation, direct child responses, and one final Chat Output.",
         "metadata-driven-v5-agent-tool-router",
         ["v5", "standalone", "agent-router", "tool-mode", "cached-flow", "optimized"],
@@ -764,65 +844,55 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     return flow
 
 
-def build_agent_orchestrator_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    """최대 네 개 하위 Flow를 순차 호출하고 마지막에 한 번만 답변하는 Route V3를 만듭니다."""
+def build_html_visualization_flow(donor: dict[str, Any]) -> dict[str, Any]:
+    """MongoDB result_ref의 분석 결과를 standalone HTML 차트로 만드는 10 Flow를 만듭니다."""
 
     proto = prototypes(donor)
     flow = empty_flow(
         donor,
-        "metadata_driven_v5_agent_orchestrator_router_standalone",
-        "LLM Agent orchestrator with compact name-resolved cached Flow tools, explicit result_ref handoff, up to four sequential tool calls, and one final Chat Output.",
-        "metadata-driven-v5-agent-orchestrator-router",
-        ["v5", "standalone", "agent-orchestrator", "tool-mode", "cached-flow", "multi-tool", "optimized"],
+        FLOW_DISPLAY_NAMES["html_visualization"],
+        "Standalone HTML visualization flow that restores one Data Analysis result_ref, renders an offline HTML/SVG chart, and publishes browser-view/download links through a configurable Report API.",
+        "metadata-driven-v5-html-visualization",
+        ["v5", "standalone", "html-visualization", "result-ref", "offline-chart", "report-api"],
     )
-    system_prompt = (COMPONENT_ROOT / "route_flow_v3" / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
-    tool_path = COMPONENT_ROOT / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
-
-    chat = native_node(proto["chat_input"], "ChatInput-agent-orchestrator-router", 0, 0)
+    folder = COMPONENT_ROOT / "visualization_flow"
+    chat = native_node(proto["chat_input"], "ChatInput-html-visualization", 0, 0)
     _set_message_storage(chat, True)
-    agent = agent_node(proto["agent"], "Agent-agent-orchestrator-router", 850, 0, system_prompt)
-    agent_template = agent["data"]["node"]["template"]
-    # Tool action 네 번과 마지막 최종 응답 생성을 위한 여유를 둡니다. 실제 Tool 호출 수는
-    # V3 system prompt에서 최대 네 번으로 제한하고 반복 호출 회귀 테스트로 확인합니다.
-    _set_value(agent_template, "max_iterations", 5)
-    _set_value(agent_template, "n_messages", 8)
-    _set_value(agent_template, "add_current_date_tool", False)
-    _set_value(agent_template, "handle_parsing_errors", True)
-    _set_value(agent_template, "verbose", False)
-    output = native_node(proto["chat_output"], "ChatOutput-agent-orchestrator-router", 1250, 0)
+    chart = custom_node(
+        proto["custom"],
+        "HtmlVisualizationBuilder-html-visualization",
+        folder / "00_html_visualization_builder.py",
+        430,
+        0,
+    )
+    chart_template = chart["data"]["node"]["template"]
+    _set_value(chart_template, "mongo_database", "datagov")
+    _set_value(chart_template, "collection_name", "agent_v4_result_store")
+    _set_value(chart_template, "report_api_url", "http://127.0.0.1:8010")
+    _set_value(chart_template, "report_ttl_hours", "24")
+    output = native_node(proto["chat_output"], "ChatOutput-html-visualization", 900, -130)
     _set_message_storage(output, True)
-    flow["data"]["nodes"].extend([chat, agent, output])
-    add_edge(flow, chat, "message", agent, "input_value")
-
-    y_positions = (-520, -260, 0, 260, 520)
-    for spec, y in zip(ORCHESTRATOR_TOOL_ROUTE_SPECS, y_positions, strict=True):
-        tool = custom_node(proto["custom"], f"OrchestratedFlowTool-{spec.route_name}", tool_path, 350, y)
-        tool_config = tool["data"]["node"]
-        tool_config["tool_mode"] = True
-        template = tool_config["template"]
-        _set_value(template, "flow_name_selected", spec.flow_name)
-        _set_value(template, "flow_id_selected", "")
-        _set_value(template, "cache_flow", True)
-        _set_value(template, "tool_name", spec.tool_name)
-        _set_value(template, "tool_description", spec.tool_description)
-        _set_value(template, "accepts_upstream_result_ref", spec.accepts_upstream_result_ref)
-        _set_value(template, "can_produce_result_ref", spec.can_produce_result_ref)
-        _set_value(template, "entity_id_columns", spec.entity_id_columns)
-        _set_value(template, "return_direct", False)
-        flow["data"]["nodes"].append(tool)
-        add_edge(flow, tool, "component_as_tool", agent, "tools")
-
-    add_edge(flow, agent, "response", output, "input_value")
+    api_terminal = custom_node(
+        proto["custom"],
+        "HtmlVisualizationApiTerminal-html-visualization",
+        folder / "01_html_visualization_api_terminal.py",
+        900,
+        210,
+    )
+    flow["data"]["nodes"].extend([chat, chart, output, api_terminal])
+    add_edge(flow, chat, "message", chart, "question")
+    add_edge(flow, chart, "message", output, "input_value")
+    add_edge(flow, chart, "api_response", api_terminal, "visualization_result")
     return flow
 
 
 def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    """계획 LLM과 기본 Loop로 최대 네 단계 Workflow를 결정론적으로 실행하는 Route V4를 만듭니다."""
+    """계획 LLM과 기본 Loop로 최대 네 단계 Workflow를 결정론적으로 실행하는 08 Flow를 만듭니다."""
 
     proto = prototypes(donor)
     flow = empty_flow(
         donor,
-        "metadata_driven_v5_workflow_orchestrator_standalone",
+        FLOW_DISPLAY_NAMES["workflow_orchestrator"],
         "Workflow-plan orchestrator with a native planning Language Model, visible standalone registry, native Loop, deterministic exact-tool step executor, compact final synthesis, one Chat Output, and terminal api_response.",
         "metadata-driven-v5-workflow-orchestrator",
         [
@@ -836,9 +906,10 @@ def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
         ],
     )
     folder = COMPONENT_ROOT / "route_flow_v4"
-    tool_path = COMPONENT_ROOT / "route_flow_v3" / "01_orchestrated_named_run_flow_tool.py"
+    tool_path = COMPONENT_ROOT / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     registry_json = _workflow_registry_json()
     allowed_tools_json = _workflow_allowed_tools_json()
+    allowed_tool_catalog_json = _workflow_tool_catalog_json()
 
     chat = native_node(proto["chat_input"], "ChatInput-workflow-orchestrator", 0, 0)
     _set_message_storage(chat, True)
@@ -868,12 +939,13 @@ def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
     planner_prompt_template = planner_prompt["data"]["node"]["template"]
     _set_value(planner_prompt_template, "workflow_registry_json", "{}")
     _set_value(planner_prompt_template, "allowed_tool_names", allowed_tools_json)
+    _set_value(planner_prompt_template, "allowed_tool_catalog", allowed_tool_catalog_json)
     planner_model = language_model_node(
         proto["language_model"],
         "LanguageModelPlanner-workflow-orchestrator",
         680,
         -260,
-        "Return exactly one workflow.plan.v1 JSON object. Do not emit markdown, code fences, or prose.",
+        "Return exactly one workflow.plan.v1 JSON object. Handoff belongs to the step consuming an upstream result, never the producer. The first step must use handoff=none. Do not emit markdown, code fences, or prose.",
     )
     parser = custom_node(
         proto["custom"],
@@ -886,6 +958,7 @@ def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
     _set_value(parser_template, "workflow_key", "")
     _set_value(parser_template, "workflow_registry_json", "{}")
     _set_value(parser_template, "allowed_tool_names", allowed_tools_json)
+    _set_value(parser_template, "tool_capabilities_json", allowed_tool_catalog_json)
     loop = native_node(proto["loop"], "Loop-workflow-orchestrator", 1370, -260)
     executor = custom_node(
         proto["custom"],
@@ -944,8 +1017,8 @@ def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
         ]
     )
 
-    tool_y_positions = (-920, -660, -400, -140, 120)
-    for spec, y in zip(ORCHESTRATOR_TOOL_ROUTE_SPECS, tool_y_positions, strict=True):
+    tool_y_positions = (-920, -660, -400, -140, 120, 380)
+    for spec, y in zip(WORKFLOW_TOOL_ROUTE_SPECS, tool_y_positions, strict=True):
         tool = custom_node(proto["custom"], f"WorkflowFlowTool-{spec.route_name}", tool_path, 1710, y)
         tool_config = tool["data"]["node"]
         tool_config["tool_mode"] = True
@@ -955,6 +1028,9 @@ def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
         _set_value(template, "cache_flow", True)
         _set_value(template, "tool_name", spec.tool_name)
         _set_value(template, "tool_description", spec.tool_description)
+        # 현재 v5 하위 Flow는 구조화 API 계약을 api_response 포트로 제공합니다.
+        # 다른 Flow를 연결할 때는 이 값만 해당 terminal 출력 이름으로 바꾸면 wrapper 코드는 그대로 재사용됩니다.
+        _set_value(template, "preferred_output_names", "api_response")
         _set_value(template, "accepts_upstream_result_ref", spec.accepts_upstream_result_ref)
         _set_value(template, "can_produce_result_ref", spec.can_produce_result_ref)
         _set_value(template, "entity_id_columns", spec.entity_id_columns)
@@ -1011,16 +1087,6 @@ def write_flows() -> list[dict[str, Any]]:
             "edges": len(tool_router["data"]["edges"]),
         }
     )
-    orchestrator_router = build_agent_orchestrator_router_flow(donor)
-    orchestrator_router_path = EXPORT_ROOT / "agent_orchestrator_router_flow_v5_standalone.json"
-    orchestrator_router_path.write_bytes((json.dumps(orchestrator_router, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-    outputs.append(
-        {
-            "path": str(orchestrator_router_path),
-            "nodes": len(orchestrator_router["data"]["nodes"]),
-            "edges": len(orchestrator_router["data"]["edges"]),
-        }
-    )
     workflow_orchestrator = build_workflow_orchestrator_flow(donor)
     workflow_orchestrator_path = EXPORT_ROOT / "workflow_orchestrator_flow_v5_standalone.json"
     workflow_orchestrator_path.write_bytes(
@@ -1033,11 +1099,23 @@ def write_flows() -> list[dict[str, Any]]:
             "edges": len(workflow_orchestrator["data"]["edges"]),
         }
     )
+    html_visualization = build_html_visualization_flow(donor)
+    html_visualization_path = EXPORT_ROOT / "html_visualization_flow_v5_standalone.json"
+    html_visualization_path.write_bytes(
+        (json.dumps(html_visualization, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    )
+    outputs.append(
+        {
+            "path": str(html_visualization_path),
+            "nodes": len(html_visualization["data"]["nodes"]),
+            "edges": len(html_visualization["data"]["edges"]),
+        }
+    )
     return outputs
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build optimized v5 standalone metadata, Workflow Skill authoring, API router, Agent Tool router, Agent Orchestrator router, and Workflow Orchestrator flows.")
+    parser = argparse.ArgumentParser(description="Build optimized v5 standalone metadata, Workflow Skill authoring, routers, Workflow Orchestrator, and HTML visualization flows.")
     parser.parse_args()
     print(json.dumps(write_flows(), ensure_ascii=False, indent=2))
 
