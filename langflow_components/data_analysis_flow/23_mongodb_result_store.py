@@ -3,7 +3,7 @@
 # 컴포넌트 개요: 23 MongoDB 결과 저장소
 # 역할: pandas 분석 결과와 런타임 조회 결과를 MongoDB result store에 저장하고 data_ref를 페이로드에 남깁니다.
 # 주요 입력: 페이로드 (payload) · 필수, MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 결과 컬렉션 (collection_name),
-#        데이터 보관 시간(시간) (ttl_hours), 저장 결과/소스 행 상한, 결과 문서 바이트 상한
+#        다운로드 링크 Base URL (download_base_url), 데이터 보관 시간(시간) (ttl_hours), 저장 결과/소스 행 상한, 결과 문서 바이트 상한
 # 주요 출력: 페이로드 출력 (payload_out)
 # 처리 흐름: 후속 질문에 필요한 분석 결과를 상한 안에서 저장하고, 불완전 저장이 필요하면 정상 data_ref를 만들지 않는 fail-closed 정책을 적용합니다.
 # 유지보수 포인트: standalone Flow의 노드 입력으로 연결 설정을 받고, 오류는 숨기지 않고 trace/status에 남기며 연결은 반드시 닫습니다.
@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from copy import deepcopy
@@ -18,6 +19,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from importlib import import_module
 from typing import Any
+from urllib.parse import urlencode, urlsplit
 
 from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, MessageTextInput, Output
@@ -25,7 +27,8 @@ from lfx.schema.data import Data
 
 DEFAULT_DATABASE = "datagov"
 DEFAULT_COLLECTION = "agent_v4_result_store"
-DEFAULT_TTL_HOURS = 24
+DEFAULT_DOWNLOAD_BASE_URL = "http://127.0.0.1:8765"
+DEFAULT_TTL_HOURS = 1
 MAX_TTL_HOURS = 24 * 7
 TTL_INDEX_NAME = "agent_v4_result_store_expires_at_ttl"
 DEFAULT_MAX_RESULT_ROWS = 20000
@@ -41,6 +44,7 @@ def store_result(
     mongo_uri: str = "",
     mongo_database: str = "",
     collection_name: str = "",
+    download_base_url: str = "",
     ttl_hours: Any = "",
     max_result_rows: Any = "",
     max_source_rows_per_alias: Any = "",
@@ -117,6 +121,12 @@ def store_result(
             )
         collection.replace_one({"_id": data_ref}, doc, upsert=True)
         data_refs = _build_data_refs(next_payload, data_ref, mongo_database, collection_name, storage_manifest)
+        data_refs, download_link_warning = _attach_download_links(
+            data_refs,
+            download_base_url,
+            expires_at,
+            ttl_hours_value,
+        )
         result_ref = data_refs[0] if data_refs else _data_ref_object(data_ref, mongo_database, collection_name, "payload.result_rows", "analysis_result", "분석 결과")
         next_payload.setdefault("data", {})["data_ref"] = result_ref
         next_payload["data_refs"] = data_refs
@@ -129,9 +139,14 @@ def store_result(
             "data_refs": data_refs,
             "ttl_hours": ttl_hours_value,
             "expires_at": _to_iso(expires_at),
+            "download_link_count": sum(1 for item in data_refs if item.get("download_url")),
             "storage_manifest": deepcopy(storage_manifest),
             "errors": [],
         }
+        if download_link_warning:
+            warning = {"type": "download_link_config_invalid", "message": download_link_warning}
+            next_payload.setdefault("trace", {}).setdefault("warnings", []).append(warning)
+            next_payload["trace"]["inspection"]["result_store"]["download_link_warning"] = warning
         if ttl_index_error:
             next_payload["trace"]["inspection"]["result_store"]["ttl_index_warning"] = ttl_index_error
         return next_payload
@@ -159,6 +174,65 @@ def _effective_ttl_hours(value: Any) -> int:
     except Exception:
         parsed = DEFAULT_TTL_HOURS
     return max(1, min(parsed, MAX_TTL_HOURS))
+
+
+# 함수 설명: 다운로드 서버 주소를 절대 HTTP(S) Base URL로 검증하고 경로 끝의 슬래시를 제거합니다.
+def _normalized_download_base_url(value: Any) -> tuple[str, str]:
+    candidate = str(value or DEFAULT_DOWNLOAD_BASE_URL).strip().rstrip("/")
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return "", "다운로드 링크 Base URL 형식이 올바르지 않아 파일 링크를 만들지 않았습니다."
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return "", "다운로드 링크 Base URL은 인증정보·query·fragment가 없는 절대 HTTP(S) URL이어야 합니다."
+    return candidate, ""
+
+
+# 함수 설명: 외부 링크에 필요한 data_ref 필드만 URL-safe JSON token으로 직렬화합니다.
+def _download_ref_token(ref: dict[str, Any]) -> str:
+    allowed_keys = (
+        "store",
+        "ref_id",
+        "database",
+        "collection_name",
+        "path",
+        "role",
+        "label",
+        "source_alias",
+        "dataset_key",
+        "source_type",
+    )
+    token_payload = {key: ref[key] for key in allowed_keys if _has_value(ref.get(key))}
+    raw = json.dumps(token_payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+# 함수 설명: 저장된 결과·원본 data_ref 각각에 클릭 즉시 CSV를 내려받는 URL과 만료 정보를 추가합니다.
+def _attach_download_links(
+    refs: list[dict[str, Any]],
+    download_base_url: Any,
+    expires_at: datetime,
+    ttl_hours: int,
+) -> tuple[list[dict[str, Any]], str]:
+    base_url, warning = _normalized_download_base_url(download_base_url)
+    enriched: list[dict[str, Any]] = []
+    for ref in refs:
+        item = deepcopy(ref)
+        item["expires_at"] = _to_iso(expires_at)
+        item["ttl_hours"] = int(ttl_hours)
+        if base_url:
+            query = urlencode({"download_ref": _download_ref_token(item)})
+            item["download_url"] = f"{base_url}/download.csv?{query}"
+            item["download_format"] = "csv"
+        enriched.append(item)
+    return enriched, warning
 
 
 # 함수 설명: `_ensure_ttl_index()`는 TTL·index이 실행·저장 계약을 만족하는지 검사하고 위반 내용을 명시적으로 반환합니다.
@@ -577,7 +651,15 @@ class MongoDBResultStore(Component):
         MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=False),
         MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, value=DEFAULT_DATABASE, advanced=False),
         MessageTextInput(name="collection_name", display_name="결과 컬렉션", required=False, value=DEFAULT_COLLECTION, advanced=False),
-        MessageTextInput(name="ttl_hours", display_name="데이터 보관 시간(시간)", value=str(DEFAULT_TTL_HOURS), required=False, advanced=True),
+        MessageTextInput(
+            name="download_base_url",
+            display_name="다운로드 링크 Base URL",
+            info="data_ref CSV 다운로드 서버의 외부 접속 주소입니다. 21번은 이 값을 보유하지 않습니다.",
+            value=DEFAULT_DOWNLOAD_BASE_URL,
+            required=False,
+            advanced=False,
+        ),
+        MessageTextInput(name="ttl_hours", display_name="데이터 보관 시간(시간)", value=str(DEFAULT_TTL_HOURS), required=False, advanced=False),
         MessageTextInput(name="max_result_rows", display_name="저장 결과 최대 행 수", value=str(DEFAULT_MAX_RESULT_ROWS), required=False, advanced=True),
         MessageTextInput(
             name="max_source_rows_per_alias",
@@ -599,6 +681,7 @@ class MongoDBResultStore(Component):
                 getattr(self, "mongo_uri", ""),
                 getattr(self, "mongo_database", ""),
                 getattr(self, "collection_name", ""),
+                getattr(self, "download_base_url", ""),
                 getattr(self, "ttl_hours", ""),
                 getattr(self, "max_result_rows", ""),
                 getattr(self, "max_source_rows_per_alias", ""),

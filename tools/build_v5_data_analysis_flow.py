@@ -9,12 +9,13 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT / "flow_exports" / "data_analysis_flow_v4_reference.json"
 DEFAULT_TARGET = ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json"
 REPAIR_PROMPT_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "17b_pandas_repair_prompt_template_ko.md"
 HELPER_LIBRARY_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "function_case_helper_code_input_example.py"
+GAIA_INPUT_ADAPTER_SOURCE = ROOT / "langflow_components" / "gaia_io" / "00_gaia_input.py"
+GAIA_OUTPUT_ADAPTER_SOURCE = ROOT / "langflow_components" / "gaia_io" / "01_gaia_output.py"
 REPAIR_PROMPT_NODE_ID = "TextInput-v5RepairPrompt"
 LANGUAGE_MODEL_NODE_IDS = {
     "Agent-mevnw": "LanguageModel-intent",
@@ -161,6 +162,11 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     edges = flow["data"]["edges"]
     node_index = {node["id"]: node for node in nodes}
 
+    # 표준 Chat Input/Output은 Playground interface로 유지하고,
+    # GaiA data/metadata 변환은 사이에 추가한 custom adapter가 담당합니다.
+    _insert_gaia_boundary_adapters(flow)
+    node_index = {node["id"]: node for node in nodes}
+
     for node_id, relative_path in COMPONENT_FILES.items():
         _refresh_component_node(node_index[node_id], _component_path(relative_path))
 
@@ -255,7 +261,8 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
             ("message", "mongo_uri", "MongoDB 연결 URI", False, ""),
             ("message", "mongo_database", "MongoDB 데이터베이스", False, "datagov"),
             ("message", "collection_name", "결과 컬렉션", False, "agent_v4_result_store"),
-            ("message", "ttl_hours", "데이터 보관 시간(시간)", False, "24"),
+            ("message", "download_base_url", "다운로드 링크 Base URL", False, "http://127.0.0.1:8765"),
+            ("message", "ttl_hours", "데이터 보관 시간(시간)", False, "1"),
             ("message", "max_result_rows", "저장 결과 최대 행 수", False, "20000"),
             ("message", "max_source_rows_per_alias", "소스별 저장 최대 행 수", False, "10000"),
             ("message", "max_document_bytes", "결과 문서 최대 바이트", False, "8388608"),
@@ -263,6 +270,18 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         [("Data", "payload_out", "페이로드 출력", "build_payload")],
         node_index,
     )
+
+    # 다운로드 URL은 저장된 data_ref와 같은 수명을 가져야 하므로 23번이 생성합니다.
+    # 21번은 이미 발급된 링크를 Markdown/GaiA metadata로 표현만 하며 Base URL을 보유하지 않습니다.
+    answer_template = node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]
+    answer_template.pop("download_base_url", None)
+    answer_component = node_index["CustomComponent-A5y0b"]["data"]["node"]
+    answer_component["field_order"] = [
+        field_name for field_name in answer_component.get("field_order", []) if field_name != "download_base_url"
+    ]
+    if isinstance(answer_template.get("show_next_questions"), dict):
+        answer_template["show_next_questions"]["value"] = False
+        answer_template["show_next_questions"]["display_name"] = "다음 질문을 답변 본문에도 표시"
 
     _apply_component_spec(
         node_index["CustomComponent-x6NXu"],
@@ -364,6 +383,235 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
 
 def _component_path(relative_path: str) -> Path:
     return ROOT / "langflow_components" / relative_path
+
+
+def _custom_gaia_adapter_node(
+    shell: dict[str, Any],
+    node_id: str,
+    source_path: Path,
+    x: float,
+    y: float,
+    input_handle_prototype: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """GaiA adapter Python 원본을 LFX 설치 없이 standalone node template으로 변환합니다."""
+
+    code = source_path.read_text(encoding="utf-8")
+    node = deepcopy(shell)
+    node["id"] = node_id
+    node["data"]["id"] = node_id
+    node["position"] = {"x": x, "y": y}
+    node["selected"] = False
+    node["dragging"] = False
+    component = node["data"]["node"]
+    previous_template = component["template"]
+    code_field = deepcopy(previous_template["code"])
+    code_field["value"] = code
+
+    if source_path == GAIA_INPUT_ADAPTER_SOURCE:
+        if not isinstance(input_handle_prototype, dict):
+            raise ValueError("GaiA Input Adapter requires a native HandleInput prototype.")
+        input_message = deepcopy(input_handle_prototype)
+        input_message.update(
+            {
+                "name": "input_message",
+                "display_name": "Chat Input Message",
+                "info": "표준 Chat Input에서 받은 사용자 Message입니다.",
+                "input_types": ["Message"],
+                "required": True,
+                "advanced": False,
+                "value": "",
+            }
+        )
+        json_field = deepcopy(previous_template["input_value"])
+        json_field.update({"value": "{}", "required": False, "advanced": False, "input_types": []})
+        data_field = deepcopy(json_field)
+        data_field.update(
+            {
+                "name": "data",
+                "display_name": "data",
+                "info": 'GAIA A2A data JSON from tweaks["GaiA Input Adapter"]["data"].',
+            }
+        )
+        metadata_field = deepcopy(json_field)
+        metadata_field.update(
+            {
+                "name": "metadata",
+                "display_name": "metadata",
+                "info": 'GAIA A2A metadata JSON from tweaks["GaiA Input Adapter"]["metadata"].',
+            }
+        )
+        component["template"] = {
+            "_type": deepcopy(previous_template["_type"]),
+            "code": code_field,
+            "input_message": input_message,
+            "data": data_field,
+            "metadata": metadata_field,
+        }
+        message_output = deepcopy(component["outputs"][0])
+        message_output.update(
+            {
+                "name": "message",
+                "display_name": "message",
+                "method": "message_response",
+                "selected": "Message",
+                "types": ["Message"],
+                "group_outputs": False,
+            }
+        )
+        component["outputs"] = [message_output]
+        component["base_classes"] = ["Message"]
+        component["field_order"] = ["input_message", "data", "metadata"]
+        component["display_name"] = "GaiA Input Adapter"
+        component["description"] = (
+            "표준 Chat Input Message에 GaiA A2A data와 metadata를 병합합니다."
+        )
+        node["data"]["type"] = "GaiAInputAdapter"
+    else:
+        input_value = deepcopy(previous_template["input_value"])
+        input_value.update(
+            {
+                "name": "input_value",
+                "display_name": "answer",
+                "info": "최종 답변 Message, Data 또는 DataFrame입니다.",
+                "input_types": ["Data", "DataFrame", "Message"],
+                "required": True,
+                "advanced": False,
+            }
+        )
+
+        def optional_reference_input(name: str) -> dict[str, Any]:
+            field = deepcopy(input_value)
+            field.update(
+                {
+                    "name": name,
+                    "display_name": name,
+                    "info": f"GaiA {name} reference collection.",
+                    "input_types": ["Data", "DataFrame"],
+                    "required": False,
+                    "value": "",
+                }
+            )
+            return field
+
+        component["template"] = {
+            "_type": deepcopy(previous_template["_type"]),
+            "code": code_field,
+            "input_value": input_value,
+            "docs": optional_reference_input("docs"),
+            "urls": optional_reference_input("urls"),
+            "images": optional_reference_input("images"),
+            "knowhows": optional_reference_input("knowhows"),
+            "followup_questions": optional_reference_input("followup_questions"),
+        }
+        message_output = deepcopy(component["outputs"][0])
+        message_output.update(
+            {
+                "name": "message",
+                "display_name": "message",
+                "method": "message_response",
+                "selected": "Message",
+                "types": ["Message"],
+                "group_outputs": True,
+            }
+        )
+        gaia_output = deepcopy(message_output)
+        gaia_output.update(
+            {
+                "name": "gaia_response",
+                "display_name": "GaiA Response",
+                "method": "gaia_response_output",
+                "selected": "Data",
+                "types": ["Data"],
+                "group_outputs": True,
+            }
+        )
+        component["outputs"] = [message_output, gaia_output]
+        component["base_classes"] = ["Message", "Data"]
+        component["field_order"] = [
+            "input_value",
+            "docs",
+            "urls",
+            "images",
+            "knowhows",
+            "followup_questions",
+        ]
+        component["display_name"] = "GaiA Output Adapter"
+        component["description"] = (
+            "최종 답변과 참고자료를 GaiA answer/metadata로 정리해 표준 Chat Output으로 전달합니다."
+        )
+        node["data"]["type"] = "GaiAOutputAdapter"
+
+    component["documentation"] = "https://docs.langflow.org/chat-input-and-output"
+    component["icon"] = "MessagesSquare"
+    component["minimized"] = True
+    component.setdefault("metadata", {})["code_hash"] = hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
+    component["metadata"]["module"] = f"custom_components.{source_path.stem}"
+    return node
+
+
+def _edge_port(edge: dict[str, Any], side: str) -> str:
+    """Langflow edge handle에서 연결된 source 또는 target 포트 이름을 읽습니다."""
+
+    handle = edge.get("data", {}).get(f"{side}Handle", {})
+    key = "name" if side == "source" else "fieldName"
+    return str(handle.get(key) or "") if isinstance(handle, dict) else ""
+
+
+def _insert_gaia_boundary_adapters(flow: dict[str, Any]) -> None:
+    """표준 Chat Input/Output 사이에 GaiA 변환 어댑터를 삽입합니다."""
+
+    nodes = flow["data"]["nodes"]
+    edges = flow["data"]["edges"]
+    node_index = {node["id"]: node for node in nodes}
+    chat_input = node_index["ChatInput-Xs7uo"]
+    chat_output = node_index["ChatOutput-rwbTs"]
+
+    input_position = deepcopy(chat_input.get("position", {}))
+    chat_input["position"] = {
+        "x": float(input_position.get("x", 0.0)) - 360.0,
+        "y": float(input_position.get("y", 0.0)),
+    }
+    input_adapter = _custom_gaia_adapter_node(
+        chat_input,
+        "GaiAInputAdapter-data-analysis",
+        GAIA_INPUT_ADAPTER_SOURCE,
+        float(input_position.get("x", 0.0)),
+        float(input_position.get("y", 0.0)),
+        deepcopy(chat_output["data"]["node"]["template"]["input_value"]),
+    )
+    nodes.append(input_adapter)
+    node_index[input_adapter["id"]] = input_adapter
+    outgoing = [edge for edge in list(edges) if edge.get("source") == chat_input["id"]]
+    for edge in outgoing:
+        edges.remove(edge)
+    edges.append(_make_edge(node_index, chat_input["id"], "message", input_adapter["id"], "input_message"))
+    for edge in outgoing:
+        target_id = str(edge.get("target") or "")
+        target_name = _edge_port(edge, "target")
+        edges.append(_make_edge(node_index, input_adapter["id"], "message", target_id, target_name))
+
+    output_position = deepcopy(chat_output.get("position", {}))
+    output_adapter = _custom_gaia_adapter_node(
+        chat_output,
+        "GaiAOutputAdapter-data-analysis",
+        GAIA_OUTPUT_ADAPTER_SOURCE,
+        float(output_position.get("x", 0.0)),
+        float(output_position.get("y", 0.0)),
+    )
+    chat_output["position"] = {
+        "x": float(output_position.get("x", 0.0)) + 360.0,
+        "y": float(output_position.get("y", 0.0)),
+    }
+    nodes.append(output_adapter)
+    node_index[output_adapter["id"]] = output_adapter
+    incoming = [edge for edge in list(edges) if edge.get("target") == chat_output["id"]]
+    for edge in incoming:
+        edges.remove(edge)
+    for edge in incoming:
+        source_id = str(edge.get("source") or "")
+        source_name = _edge_port(edge, "source")
+        edges.append(_make_edge(node_index, source_id, source_name, output_adapter["id"], "input_value"))
+    edges.append(_make_edge(node_index, output_adapter["id"], "message", chat_output["id"], "input_value"))
 
 
 def _load_native_component(display_name: str) -> dict[str, Any]:
@@ -631,7 +879,6 @@ def _input_template(
         "max_bytes",
         "max_attempts",
         "max_repair_attempts",
-        "ttl_hours",
         "max_result_rows",
         "max_source_rows_per_alias",
         "max_document_bytes",

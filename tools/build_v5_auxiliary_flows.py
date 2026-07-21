@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_ROOT = ROOT / "langflow_components"
 EXPORT_ROOT = ROOT / "flow_exports"
 DONOR_PATH = EXPORT_ROOT / "data_analysis_flow_v5_standalone.json"
+GAIA_INPUT_ADAPTER_SOURCE = COMPONENT_ROOT / "gaia_io" / "00_gaia_input.py"
+GAIA_OUTPUT_ADAPTER_SOURCE = COMPONENT_ROOT / "gaia_io" / "01_gaia_output.py"
 COMPONENT_INDEX = Path.home() / "AppData" / "Local" / "com.LangflowDesktop" / ".langflow-venv" / "Lib" / "site-packages" / "lfx" / "_assets" / "component_index.json"
 ROUTER_READ_TIMEOUT_SECONDS = "240"
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
@@ -297,6 +299,97 @@ def add_edge(flow: dict[str, Any], source: dict[str, Any], source_name: str, tar
     )
 
 
+def _edge_port(edge: dict[str, Any], side: str) -> str:
+    """Langflow edge의 source/target handle에서 연결된 포트 이름을 읽습니다."""
+
+    handle = edge.get("data", {}).get(f"{side}Handle", {})
+    key = "name" if side == "source" else "fieldName"
+    value = handle.get(key) if isinstance(handle, dict) else ""
+    return str(value or "")
+
+
+def _boundary_suffix(node_id: str, prefix: str) -> str:
+    """기존 Chat I/O ID의 suffix를 재사용해 어댑터 ID를 예측 가능하게 만듭니다."""
+
+    return node_id.removeprefix(prefix).strip("-") or "flow"
+
+
+def wrap_gaia_boundaries(flow: dict[str, Any], proto: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """표준 Chat I/O 사이에 GaiA 문맥/응답 어댑터를 삽입합니다.
+
+    표준 Chat Input/Output은 Playground interface component로 유지하고, custom GaiA
+    노드는 Message 변환만 담당합니다. 따라서 직접 실행과 Router 하위 실행에서 같은
+    JSON을 사용하면서도 메시지 저장은 표준 Chat Output에서 한 번만 수행됩니다.
+    """
+
+    nodes = flow["data"]["nodes"]
+    edges = flow["data"]["edges"]
+    node_index = {str(node["id"]): node for node in nodes}
+    chat_inputs = [node for node in list(nodes) if node.get("data", {}).get("type") == "ChatInput"]
+    chat_outputs = [node for node in list(nodes) if node.get("data", {}).get("type") == "ChatOutput"]
+    if len(chat_inputs) != 1:
+        raise ValueError(f"Flow must contain exactly one native Chat Input before GaiA wrapping: {flow.get('name')}")
+
+    for chat in chat_inputs:
+        chat_id = str(chat["id"])
+        outgoing = [edge for edge in list(edges) if str(edge.get("source") or "") == chat_id]
+        if not outgoing:
+            raise ValueError(f"Native Chat Input has no outgoing edge: {chat_id}")
+        original_position = deepcopy(chat.get("position", {}))
+        chat["position"] = {
+            "x": float(original_position.get("x", 0.0)) - 360.0,
+            "y": float(original_position.get("y", 0.0)),
+        }
+        adapter = custom_node(
+            proto["custom"],
+            f"GaiAInputAdapter-{_boundary_suffix(chat_id, 'ChatInput')}",
+            GAIA_INPUT_ADAPTER_SOURCE,
+            float(original_position.get("x", 0.0)),
+            float(original_position.get("y", 0.0)),
+        )
+        nodes.append(adapter)
+        node_index[str(adapter["id"])] = adapter
+        for edge in outgoing:
+            edges.remove(edge)
+        add_edge(flow, chat, "message", adapter, "input_message")
+        for edge in outgoing:
+            target_id = str(edge.get("target") or "")
+            target_name = _edge_port(edge, "target")
+            if target_id not in node_index or not target_name:
+                raise ValueError(f"Cannot restore Chat Input downstream edge: {chat_id} -> {target_id}")
+            add_edge(flow, adapter, "message", node_index[target_id], target_name)
+
+    for chat in chat_outputs:
+        chat_id = str(chat["id"])
+        incoming = [edge for edge in list(edges) if str(edge.get("target") or "") == chat_id]
+        if not incoming:
+            raise ValueError(f"Native Chat Output has no incoming edge: {chat_id}")
+        original_position = deepcopy(chat.get("position", {}))
+        adapter = custom_node(
+            proto["custom"],
+            f"GaiAOutputAdapter-{_boundary_suffix(chat_id, 'ChatOutput')}",
+            GAIA_OUTPUT_ADAPTER_SOURCE,
+            float(original_position.get("x", 0.0)),
+            float(original_position.get("y", 0.0)),
+        )
+        chat["position"] = {
+            "x": float(original_position.get("x", 0.0)) + 360.0,
+            "y": float(original_position.get("y", 0.0)),
+        }
+        nodes.append(adapter)
+        node_index[str(adapter["id"])] = adapter
+        for edge in incoming:
+            edges.remove(edge)
+        for edge in incoming:
+            source_id = str(edge.get("source") or "")
+            source_name = _edge_port(edge, "source")
+            if source_id not in node_index or not source_name:
+                raise ValueError(f"Cannot restore Chat Output upstream edge: {source_id} -> {chat_id}")
+            add_edge(flow, node_index[source_id], source_name, adapter, "input_value")
+        add_edge(flow, adapter, "message", chat, "input_value")
+    return flow
+
+
 def add_loop_feedback_edge(
     flow: dict[str, Any],
     source: dict[str, Any],
@@ -425,7 +518,7 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
     add_edge(flow, response, "payload_out", api, "payload")
     add_edge(flow, message, "message", api, "display_message")
     add_edge(flow, message, "message", output, "input_value")
-    return flow
+    return wrap_gaia_boundaries(flow, proto)
 
 
 def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -491,7 +584,7 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, normalizer, "payload_out", api, "payload")
     add_edge(flow, message, "message", api, "display_message")
     add_edge(flow, message, "message", output, "input_value")
-    return flow
+    return wrap_gaia_boundaries(flow, proto)
 
 
 ROUTES = [
@@ -796,7 +889,7 @@ def build_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         _set_message_storage(output, True)
         flow["data"]["nodes"].append(output)
         add_edge(flow, router, f"category_{route_index}_result", output, "input_value")
-    return flow
+    return wrap_gaia_boundaries(flow, proto)
 
 
 def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -841,7 +934,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         add_edge(flow, tool, "component_as_tool", agent, "tools")
 
     add_edge(flow, agent, "response", output, "input_value")
-    return flow
+    return wrap_gaia_boundaries(flow, proto)
 
 
 def build_html_visualization_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -883,7 +976,7 @@ def build_html_visualization_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, chat, "message", chart, "question")
     add_edge(flow, chart, "message", output, "input_value")
     add_edge(flow, chart, "api_response", api_terminal, "visualization_result")
-    return flow
+    return wrap_gaia_boundaries(flow, proto)
 
 
 def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -1058,7 +1151,7 @@ def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, final_context, "final_context", final_response, "final_context")
     add_edge(flow, final_model, "text_output", final_response, "final_model_response")
     add_edge(flow, final_response, "message", output, "input_value")
-    return flow
+    return wrap_gaia_boundaries(flow, proto)
 
 
 def write_flows() -> list[dict[str, Any]]:

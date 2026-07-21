@@ -289,8 +289,8 @@
           "width": 192
         },
         "position": {
-          "x": 0,
-          "y": 0
+          "x": -360.0,
+          "y": 0.0
         },
         "selected": false,
         "type": "genericNode"
@@ -2601,42 +2601,447 @@
           "width": 192
         },
         "position": {
-          "x": 3050,
-          "y": -180
+          "x": 3410.0,
+          "y": -180.0
+        },
+        "selected": false,
+        "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "GaiAInputAdapter-workflow_skill",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "input_message": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "input_message",
+                "value": "",
+                "display_name": "Chat Input Message",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "표준 Chat Input에서 받은 사용자 Message입니다.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: GaiA Input Adapter\n# 역할: 표준 Chat Input Message에 GaiA AgentBuilder의 A2A data와 metadata를 병합합니다.\n# 주요 입력: 표준 Chat Input Message, data JSON, metadata JSON\n# 주요 출력: GaiA 속성이 포함된 Message\n# 유지보수 포인트: 잘못된 JSON은 실행을 중단하지 않고 빈 객체로 정규화합니다.\n# =============================================================================\n\nimport json\nimport logging\nfrom typing import Any\n\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.inputs.inputs import HandleInput\nfrom lfx.io import MultilineInput, Output\nfrom lfx.schema.data import Data\nfrom lfx.schema.message import Message\n\nlogger = logging.getLogger(__name__)\n\n\n# Langflow 컴포넌트 클래스: 표준 Chat Input 뒤에서 GaiA 실행 문맥을 Message에 병합하는 어댑터입니다.\nclass GaiAInputAdapter(ChatComponent):\n    display_name = \"GaiA Input Adapter\"\n    description = (\n        \"표준 Chat Input이 생성한 Message에 GaiA A2A data와 metadata를 병합합니다. \"\n        \"Playground에서는 빈 JSON을 사용하고, 운영 호출에서는 tweak으로 부가 문맥을 전달합니다.\"\n    )\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"GaiAInputAdapter\"\n    minimized = True\n\n    inputs = [\n        HandleInput(\n            name=\"input_message\",\n            display_name=\"Chat Input Message\",\n            info=\"표준 Chat Input에서 받은 사용자 Message입니다.\",\n            input_types=[\"Message\"],\n            required=True,\n        ),\n        MultilineInput(\n            name=\"data\",\n            display_name=\"data\",\n            value=\"{}\",\n            info='GAIA A2A data JSON from tweaks[\"GaiA Input Adapter\"][\"data\"].',\n            advanced=False,\n        ),\n        MultilineInput(\n            name=\"metadata\",\n            display_name=\"metadata\",\n            value=\"{}\",\n            info='GAIA A2A metadata JSON from tweaks[\"GaiA Input Adapter\"][\"metadata\"].',\n            advanced=False,\n        ),\n    ]\n    outputs = [Output(display_name=\"message\", name=\"message\", method=\"message_response\", types=[\"Message\"])]\n\n    # 함수 설명: 문자열 JSON은 객체로 읽고, 비어 있거나 해석할 수 없는 값은 빈 객체로 처리합니다.\n    def _json_or_raw(self, value: Any) -> Any:\n        if not isinstance(value, str):\n            return value\n        text = value.strip()\n        if not text:\n            return {}\n        try:\n            return json.loads(text)\n        except Exception:\n            logger.warning(\"GAIA_DEBUG GaiA Input non-json value ignored type=%s\", type(value).__name__)\n            return {}\n\n    # 함수 설명: data 또는 metadata가 한 번 더 감싸진 형식도 단일 dict로 정규화합니다.\n    def _as_dict(self, value: Any, field_name: str) -> dict:\n        parsed = self._json_or_raw(value)\n        if isinstance(parsed, dict):\n            nested = parsed.get(field_name)\n            if isinstance(nested, dict) and len(parsed) == 1:\n                return nested\n            return parsed\n        logger.warning(\"GAIA_DEBUG GaiA Input %s is not object: %s\", field_name, type(parsed).__name__)\n        return {}\n\n    # 함수 설명: 디버그 상태를 한글이 보존되는 JSON 문자열로 안전하게 변환합니다.\n    def _json_for_log(self, value: Any) -> str:\n        try:\n            return json.dumps(value, ensure_ascii=False, default=str)\n        except Exception:\n            return str(value)\n\n    # 주요 메서드: 표준 Chat Input Message의 본문과 세션을 유지하면서 A2A 부가 정보를 병합합니다.\n    def message_response(self) -> Message:\n        source_message = getattr(self, \"input_message\", None)\n        message = source_message if isinstance(source_message, Message) else Message(text=str(source_message or \"\"))\n        explicit_data = self._as_dict(getattr(self, \"data\", \"{}\"), \"data\")\n        explicit_metadata = self._as_dict(getattr(self, \"metadata\", \"{}\"), \"metadata\")\n        current_data = getattr(message, \"data\", None)\n        current_metadata = getattr(message, \"metadata\", None)\n        data = {**(current_data if isinstance(current_data, dict) else {}), **explicit_data}\n        metadata = {**(current_metadata if isinstance(current_metadata, dict) else {}), **explicit_metadata}\n\n        message.data = data\n        message.a2a_data = data\n        message.metadata = metadata\n        message.framework2_metadata = metadata\n        message.a2a_metadata = metadata\n        if metadata.get(\"session_id\"):\n            message.session_id = str(metadata.get(\"session_id\"))\n\n        status_payload = {\n            \"component\": \"GaiA Input Adapter\",\n            \"text_length\": len(str(getattr(message, \"text\", \"\") or \"\")),\n            \"data_keys\": sorted(str(key) for key in data.keys()),\n            \"metadata_keys\": sorted(str(key) for key in metadata.keys()),\n        }\n        debug_text = self._json_for_log(status_payload)\n        logger.warning(\"GAIA_DEBUG GaiA Input Adapter payload=%s\", debug_text)\n        print(f\"GAIA_DEBUG GaiA Input Adapter payload={debug_text}\", flush=True)\n        self.status = Data(data=status_payload)\n        return message\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "data": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "multiline": true,
+                "ai_enabled": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "data",
+                "value": "{}",
+                "display_name": "data",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "GAIA A2A data JSON from tweaks[\"GaiA Input Adapter\"][\"data\"].",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "copy_field": false,
+                "password": false,
+                "type": "str",
+                "_input_type": "MultilineInput"
+              },
+              "metadata": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "multiline": true,
+                "ai_enabled": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "metadata",
+                "value": "{}",
+                "display_name": "metadata",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "GAIA A2A metadata JSON from tweaks[\"GaiA Input Adapter\"][\"metadata\"].",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "copy_field": false,
+                "password": false,
+                "type": "str",
+                "_input_type": "MultilineInput"
+              }
+            },
+            "description": "표준 Chat Input이 생성한 Message에 GaiA A2A data와 metadata를 병합합니다. Playground에서는 빈 JSON을 사용하고, 운영 호출에서는 tweak으로 부가 문맥을 전달합니다.",
+            "icon": "MessagesSquare",
+            "base_classes": [
+              "Message"
+            ],
+            "display_name": "GaiA Input Adapter",
+            "documentation": "https://docs.langflow.org/chat-input-and-output",
+            "minimized": true,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "message",
+                "display_name": "message",
+                "method": "message_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [
+              "input_message",
+              "data",
+              "metadata"
+            ],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "module": "v5_auxiliary.00_gaia_input",
+              "code_hash": "1863aadecf5d",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": "0.3.4"
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.8.2"
+          },
+          "showNode": true,
+          "type": "GaiAInputAdapter"
+        },
+        "dragging": false,
+        "id": "GaiAInputAdapter-workflow_skill",
+        "measured": {
+          "height": 267,
+          "width": 320
+        },
+        "position": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "selected": false,
+        "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "GaiAOutputAdapter-workflow_skill",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "docs": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "docs",
+                "value": "",
+                "display_name": "docs",
+                "advanced": false,
+                "input_types": [
+                  "Data",
+                  "DataFrame"
+                ],
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "followup_questions": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "followup_questions",
+                "value": "",
+                "display_name": "followup_questions",
+                "advanced": false,
+                "input_types": [
+                  "Data",
+                  "DataFrame"
+                ],
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "images": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "images",
+                "value": "",
+                "display_name": "images",
+                "advanced": false,
+                "input_types": [
+                  "Data",
+                  "DataFrame"
+                ],
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "input_value": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "input_value",
+                "value": "",
+                "display_name": "answer",
+                "advanced": false,
+                "input_types": [
+                  "Data",
+                  "DataFrame",
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "knowhows": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "knowhows",
+                "value": "",
+                "display_name": "knowhows",
+                "advanced": false,
+                "input_types": [
+                  "Data",
+                  "DataFrame"
+                ],
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "urls": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "urls",
+                "value": "",
+                "display_name": "urls",
+                "advanced": false,
+                "input_types": [
+                  "Data",
+                  "DataFrame"
+                ],
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: GaiA Output Adapter\n# 역할: 최종 답변과 참고자료를 GaiA 응답 계약으로 정규화해 표준 Chat Output으로 전달합니다.\n# 주요 입력: 답변 Message/Data/DataFrame, 문서·URL·이미지·노하우·후속 질문 참조\n# 주요 출력: Langflow Message, 구조화된 GaiA Response Data\n# 유지보수 포인트: 어댑터는 메시지를 저장하지 않고 표준 Chat Output이 한 번만 저장합니다.\n# =============================================================================\n\nimport json\nimport logging\nfrom typing import Any\n\nimport orjson\nfrom fastapi.encoders import jsonable_encoder\n\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.helpers.data import safe_convert\nfrom lfx.inputs.inputs import HandleInput\nfrom lfx.schema.data import Data\nfrom lfx.schema.dataframe import DataFrame\nfrom lfx.schema.message import Message\nfrom lfx.template.field.base import Output\nfrom lfx.utils.constants import MESSAGE_SENDER_AI\n\nlogger = logging.getLogger(__name__)\n\nREFERENCE_TYPES = {\n    \"docs\": \"doc\",\n    \"images\": \"image\",\n    \"knowhows\": \"knowhow\",\n    \"followup_questions\": \"followup_question\",\n    \"urls\": \"url\",\n}\nREFERENCE_KEYS = tuple(REFERENCE_TYPES.keys())\nOUTPUT_METADATA_KEYS = (*REFERENCE_KEYS, \"trace_id\", \"usage\")\n\nREFERENCE_ALLOWED_FIELDS = {\n    \"docs\": {\n        \"type\",\n        \"srcType\",\n        \"name\",\n        \"docId\",\n        \"extension\",\n        \"path\",\n        \"url\",\n        \"page\",\n        \"totalPage\",\n        \"startPage\",\n        \"chunkId\",\n        \"score\",\n        \"quote\",\n        \"sectionTitle\",\n    },\n    \"urls\": {\"type\", \"id\", \"name\", \"title\", \"url\", \"snippet\", \"publishedAt\", \"source\", \"rank\"},\n    \"images\": {\"type\", \"id\", \"value\"},\n    \"knowhows\": {\n        \"type\",\n        \"id\",\n        \"knowhow_id\",\n        \"knowhow_no\",\n        \"knowhow\",\n        \"tab_name\",\n        \"tab_id\",\n        \"user_id\",\n        \"user_name\",\n        \"user_department\",\n    },\n    \"followup_questions\": {\"type\", \"id\", \"value\"},\n}\nREFERENCE_REQUIRED_FIELDS = {\n    \"docs\": (\"srcType\", \"name\", \"docId\", \"startPage\"),\n    \"urls\": (),\n    \"images\": (\"id\", \"value\"),\n    \"knowhows\": (\"id\", \"knowhow_id\", \"knowhow\"),\n    \"followup_questions\": (\"value\",),\n}\nREFERENCE_NUMBER_FIELDS = {\n    \"docs\": {\"page\", \"totalPage\", \"startPage\"},\n    \"urls\": {\"rank\"},\n    \"images\": set(),\n    \"knowhows\": {\"knowhow_no\"},\n    \"followup_questions\": set(),\n}\n\n\n# Langflow 컴포넌트 클래스: 최종 답변과 참고자료를 GaiA answer/metadata에 담아 표준 Chat Output으로 전달하는 어댑터입니다.\nclass GaiAOutputAdapter(ChatComponent):\n    display_name = \"GaiA Output Adapter\"\n    description = (\n        \"최종 답변과 참고자료를 GaiA AgentBuilder가 이해하는 answer/metadata 형식으로 정리합니다. \"\n        \"변환된 Message는 뒤의 표준 Chat Output이 Playground와 실행 API에 출력합니다.\"\n    )\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"GaiAOutputAdapter\"\n    minimized = True\n\n    inputs = [\n        HandleInput(\n            name=\"input_value\",\n            display_name=\"answer\",\n            input_types=[\"Data\", \"DataFrame\", \"Message\"],\n            required=True,\n        ),\n        HandleInput(name=\"docs\", display_name=\"docs\", input_types=[\"Data\", \"DataFrame\"], required=False),\n        HandleInput(name=\"urls\", display_name=\"urls\", input_types=[\"Data\", \"DataFrame\"], required=False),\n        HandleInput(name=\"images\", display_name=\"images\", input_types=[\"Data\", \"DataFrame\"], required=False),\n        HandleInput(\n            name=\"knowhows\",\n            display_name=\"knowhows\",\n            input_types=[\"Data\", \"DataFrame\"],\n            required=False,\n        ),\n        HandleInput(\n            name=\"followup_questions\",\n            display_name=\"followup_questions\",\n            input_types=[\"Data\", \"DataFrame\"],\n            required=False,\n        ),\n    ]\n\n    outputs = [\n        Output(\n            display_name=\"message\",\n            name=\"message\",\n            method=\"message_response\",\n            types=[\"Message\"],\n            group_outputs=True,\n        ),\n        Output(\n            display_name=\"GaiA Response\",\n            name=\"gaia_response\",\n            method=\"gaia_response_output\",\n            types=[\"Data\"],\n            group_outputs=True,\n        ),\n    ]\n\n    # 함수 설명: None, NaN, 빈 문자열과 빈 컬렉션을 공통 빈 값으로 판정합니다.\n    def _is_empty(self, value: Any) -> bool:\n        if value is None:\n            return True\n        try:\n            if value != value:\n                return True\n        except Exception:\n            pass\n        if isinstance(value, str):\n            return not value.strip()\n        if isinstance(value, (list, tuple, set, dict)):\n            return len(value) == 0\n        return False\n\n    # 함수 설명: Langflow Data·DataFrame·Message와 JSON 문자열을 일반 Python 값으로 변환합니다.\n    def _plain_value(self, value: Any) -> Any:\n        if self._is_empty(value):\n            return {}\n        if isinstance(value, Data):\n            return jsonable_encoder(value.data)\n        if isinstance(value, DataFrame):\n            try:\n                return [jsonable_encoder(row.to_dict()) for _, row in value.iterrows()]\n            except Exception:\n                return jsonable_encoder(value)\n        if isinstance(value, Message):\n            data = getattr(value, \"data\", None) or getattr(value, \"a2a_data\", None)\n            if not self._is_empty(data):\n                return jsonable_encoder(data)\n            text = getattr(value, \"text\", \"\")\n            return {\"text\": text} if text else {}\n        if isinstance(value, str):\n            stripped = value.strip()\n            if not stripped:\n                return {}\n            try:\n                return jsonable_encoder(orjson.loads(stripped))\n            except Exception:\n                return stripped\n        return jsonable_encoder(value)\n\n    # 함수 설명: 입력 값을 구조화된 dict로 변환하며 그 외 형식은 빈 dict로 처리합니다.\n    def _as_dict(self, value: Any) -> dict:\n        plain_value = self._plain_value(value)\n        return plain_value if isinstance(plain_value, dict) else {}\n\n    # 함수 설명: 최종 답변 본문을 Message/Data/일반 값에서 일관된 문자열로 꺼냅니다.\n    def _text_value(self, value: Any) -> str:\n        if isinstance(value, Message):\n            return str(getattr(value, \"text\", \"\") or \"\")\n        if isinstance(value, Data):\n            data = getattr(value, \"data\", None)\n            if isinstance(data, dict) and data.get(\"text\") not in (None, \"\"):\n                return str(data.get(\"text\"))\n        return safe_convert(value)\n\n    # 함수 설명: DataFrame의 열 중심 dict를 행 목록으로 바꿀 때 숫자 인덱스를 우선 정렬합니다.\n    def _index_sort_key(self, key: Any):\n        text = str(key)\n        return (0, int(text)) if text.isdigit() else (1, text)\n\n    # 함수 설명: 동일 길이의 열 중심 dict를 GaiA 참조자료 행 목록으로 변환합니다.\n    def _records_from_column_dict(self, value: Any):\n        if not isinstance(value, dict) or not value:\n            return None\n        columns = {}\n        lengths = set()\n        for key, column in value.items():\n            if isinstance(column, dict):\n                ordered = [column[item] for item in sorted(column.keys(), key=self._index_sort_key)]\n            elif isinstance(column, list):\n                ordered = column\n            else:\n                return None\n            columns[str(key)] = ordered\n            lengths.add(len(ordered))\n        if len(lengths) != 1:\n            return None\n        count = lengths.pop()\n        return [{key: columns[key][index] for key in columns} for index in range(count)]\n\n    # 함수 설명: docs={docs:[...]}처럼 한 번 더 감싼 참조자료 값을 풀어냅니다.\n    def _unwrap_reference_collection(self, field_name: str, value: Any) -> Any:\n        if isinstance(value, dict) and field_name in value:\n            return value.get(field_name)\n        return value\n\n    # 함수 설명: 필수 문자열 필드를 공백 제거한 값으로 정규화합니다.\n    def _string_value(self, value: Any) -> str:\n        if self._is_empty(value):\n            return \"\"\n        return str(value).strip()\n\n    # 함수 설명: 페이지와 순번 필드를 정수로 변환하며 변환 불가 값은 None으로 반환합니다.\n    def _integer_value(self, value: Any) -> int | None:\n        if self._is_empty(value):\n            return None\n        try:\n            return int(float(str(value).strip()))\n        except Exception:\n            return None\n\n    # 함수 설명: 검색 실패를 나타내는 placeholder 참조자료는 최종 응답에서 제외합니다.\n    def _is_placeholder_reference(self, item: Any) -> bool:\n        return isinstance(item, dict) and str(item.get(\"status\") or \"\").strip().lower() in {\n            \"not_found\",\n            \"no_result\",\n            \"empty\",\n        }\n\n    # 함수 설명: 참조자료의 숫자와 문자열 필드를 GaiA 계약 타입으로 맞춥니다.\n    def _coerce_reference_value(self, field_name: str, key: str, value: Any) -> Any:\n        if key in REFERENCE_NUMBER_FIELDS[field_name]:\n            number = self._integer_value(value)\n            return number if number is not None else value\n        if isinstance(value, str):\n            return value.strip()\n        return value\n\n    # 함수 설명: 참조자료 한 건의 허용 필드, type, 필수 값을 검증하고 정규화합니다.\n    def _validate_reference_item(self, field_name: str, item: dict) -> dict:\n        allowed = REFERENCE_ALLOWED_FIELDS[field_name]\n        canonical_type = REFERENCE_TYPES[field_name]\n        unknown_keys = sorted(\n            str(key) for key in item if str(key) not in allowed and not self._is_empty(item.get(key))\n        )\n        if unknown_keys:\n            raise ValueError(f\"{field_name} reference item has unsupported field(s): {', '.join(unknown_keys)}\")\n        item_type = item.get(\"type\")\n        if not self._is_empty(item_type) and self._string_value(item_type) != canonical_type:\n            raise ValueError(f\"{field_name} reference item requires type={canonical_type!r}\")\n        normalized = {}\n        for key in allowed:\n            if key in item and not self._is_empty(item.get(key)):\n                normalized[key] = self._coerce_reference_value(field_name, key, item.get(key))\n        for required_key in REFERENCE_REQUIRED_FIELDS[field_name]:\n            if self._is_empty(normalized.get(required_key)):\n                raise ValueError(f\"{field_name} reference item requires a non-empty {required_key}\")\n        if field_name == \"docs\" and self._string_value(normalized.get(\"srcType\")) != \"upload\":\n            raise ValueError('docs reference item requires srcType=\"upload\"')\n        if field_name == \"knowhows\" and self._string_value(normalized.get(\"id\")) != self._string_value(\n            normalized.get(\"knowhow_id\")\n        ):\n            raise ValueError(\"knowhows reference item requires id and knowhow_id to match\")\n        return normalized\n\n    # 함수 설명: 참조자료 한 건을 일반 dict로 변환한 뒤 필드 계약을 검증합니다.\n    def _normalize_reference_item(self, field_name: str, item: Any) -> dict:\n        plain_item = self._plain_value(item)\n        if not isinstance(plain_item, dict):\n            raise ValueError(f\"{field_name} reference item must be an object\")\n        return self._validate_reference_item(field_name, plain_item)\n\n    # 함수 설명: 여러 입력 표현을 GaiA 참조자료 객체 목록으로 통일합니다.\n    def _normalize_reference_collection(self, field_name: str, value: Any) -> list[dict]:\n        plain_value = self._unwrap_reference_collection(field_name, self._plain_value(value))\n        if self._is_empty(plain_value):\n            return []\n        records = self._records_from_column_dict(plain_value)\n        if records is not None:\n            items = records\n        elif isinstance(plain_value, (list, tuple)):\n            items = plain_value\n        else:\n            items = [plain_value]\n        normalized = []\n        for item in items:\n            if self._is_empty(item) or self._is_placeholder_reference(item):\n                continue\n            normalized.append(self._normalize_reference_item(field_name, item))\n        return normalized\n\n    # 함수 설명: 개별 입력 포트의 참조자료 중 실제 값이 있는 항목만 응답 payload에 구성합니다.\n    def _reference_payload_from_ports(self) -> dict:\n        payload: dict = {}\n        for field_name in REFERENCE_KEYS:\n            references = self._normalize_reference_collection(field_name, getattr(self, field_name, None))\n            if references:\n                payload[field_name] = references\n        return payload\n\n    # 함수 설명: 앞 단계 Message.data의 nested metadata 또는 top-level canonical key에서 참조자료를 읽습니다.\n    def _reference_payload_from_answer_data(self, answer_data: dict[str, Any]) -> dict:\n        metadata = answer_data.get(\"metadata\") if isinstance(answer_data.get(\"metadata\"), dict) else {}\n        payload: dict[str, list[dict[str, Any]]] = {}\n        for field_name in REFERENCE_KEYS:\n            value = metadata.get(field_name) if field_name in metadata else answer_data.get(field_name)\n            references = self._normalize_reference_collection(field_name, value)\n            if references:\n                payload[field_name] = references\n        return payload\n\n    # 함수 설명: Message와 개별 포트에서 들어온 참조자료를 순서대로 합치고 동일 항목을 한 번만 유지합니다.\n    def _merge_reference_payloads(self, *payloads: dict[str, Any]) -> dict:\n        merged: dict[str, list[dict[str, Any]]] = {}\n        for field_name in REFERENCE_KEYS:\n            items: list[dict[str, Any]] = []\n            seen: set[str] = set()\n            for payload in payloads:\n                for item in payload.get(field_name, []) if isinstance(payload, dict) else []:\n                    marker = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)\n                    if marker in seen:\n                        continue\n                    seen.add(marker)\n                    items.append(item)\n            if items:\n                merged[field_name] = items\n        return merged\n\n    # 함수 설명: 토큰 사용량 값을 오류 없이 정수로 변환합니다.\n    def _int_token(self, value: Any) -> int:\n        try:\n            return int(value or 0)\n        except Exception:\n            return 0\n\n    # 함수 설명: 모델 사용량 한 건을 prompt/completion/total 토큰 계약으로 정규화합니다.\n    def _normalize_usage_item(self, value: Any) -> dict:\n        safe_value = self._plain_value(value)\n        if not isinstance(safe_value, dict):\n            return {}\n        prompt_tokens = self._int_token(safe_value.get(\"prompt_tokens\"))\n        completion_tokens = self._int_token(safe_value.get(\"completion_tokens\"))\n        total_tokens = self._int_token(safe_value.get(\"total_tokens\")) or prompt_tokens + completion_tokens\n        if not (prompt_tokens or completion_tokens or total_tokens):\n            return {}\n        normalized = {\n            \"prompt_tokens\": prompt_tokens,\n            \"completion_tokens\": completion_tokens,\n            \"total_tokens\": total_tokens,\n        }\n        if safe_value.get(\"model\"):\n            normalized[\"model\"] = str(safe_value.get(\"model\"))\n        return normalized\n\n    # 함수 설명: 중첩된 usage 입력을 펼치고 중복 항목을 제거합니다.\n    def _normalize_usage_list(self, *values: Any) -> list[dict]:\n        usage_items = []\n        seen = set()\n        stack = list(values)\n        while stack:\n            value = self._plain_value(stack.pop(0))\n            if self._is_empty(value):\n                continue\n            if isinstance(value, list):\n                stack[0:0] = value\n                continue\n            item = self._normalize_usage_item(value)\n            if item:\n                marker = str(sorted(item.items()))\n                if marker not in seen:\n                    seen.add(marker)\n                    usage_items.append(item)\n        return usage_items\n\n    # 함수 설명: 누락된 참조자료도 빈 배열로 포함하는 고정 GaiA metadata envelope를 만듭니다.\n    def _response_metadata(self, port_references: dict, usage_items: list[dict], trace_id: Any = \"\") -> dict:\n        return {\n            \"docs\": port_references.get(\"docs\", []),\n            \"images\": port_references.get(\"images\", []),\n            \"knowhows\": port_references.get(\"knowhows\", []),\n            \"followup_questions\": port_references.get(\"followup_questions\", []),\n            \"urls\": port_references.get(\"urls\", []),\n            \"trace_id\": str(trace_id or \"\"),\n            \"usage\": usage_items,\n        }\n\n    # 함수 설명: 상태 payload를 한글이 보존되는 JSON 로그 문자열로 안전하게 변환합니다.\n    def _json_for_log(self, value: Any) -> str:\n        try:\n            return json.dumps(value, ensure_ascii=False, default=str)\n        except Exception:\n            return str(value)\n\n    # 함수 설명: 답변 본문과 참조자료 및 사용량을 최종 GaiA 응답 계약으로 조립합니다.\n    def _build_response_payload(self) -> dict:\n        input_value = getattr(self, \"input_value\", \"\")\n        text = self._text_value(input_value)\n        answer_data = self._as_dict(input_value)\n        answer_metadata = answer_data.get(\"metadata\") if isinstance(answer_data.get(\"metadata\"), dict) else {}\n        port_references = self._merge_reference_payloads(\n            self._reference_payload_from_answer_data(answer_data),\n            self._reference_payload_from_ports(),\n        )\n        output_metadata = self._response_metadata(\n            port_references,\n            self._normalize_usage_list(answer_metadata.get(\"usage\"), answer_data.get(\"usage\")),\n            answer_metadata.get(\"trace_id\") or answer_data.get(\"trace_id\"),\n        )\n        return {\"answer\": text, \"metadata\": output_metadata}\n\n    # 함수 설명: 운영 로그에는 원문 대신 답변 길이와 참조자료 개수 등 안전한 요약만 남깁니다.\n    def _status_from_payload(self, payload: dict) -> dict:\n        metadata_payload = payload.get(\"metadata\") or {}\n        return {\n            \"component\": \"GaiA Output Adapter\",\n            \"answer_length\": len(str(payload.get(\"answer\") or \"\")),\n            \"metadata_keys\": sorted(str(key) for key in metadata_payload.keys()),\n            \"reference_counts\": {\n                str(key): len(value)\n                for key, value in metadata_payload.items()\n                if key in REFERENCE_KEYS and isinstance(value, list)\n            },\n            \"usage_count\": len(metadata_payload.get(\"usage\") or []),\n        }\n\n    # 함수 설명: 최종 응답의 안전한 상태 요약을 서버 로그와 컴포넌트 상태에 기록합니다.\n    def _log_payload(self, payload: dict) -> None:\n        debug_text = self._json_for_log(self._status_from_payload(payload))\n        logger.warning(\"GAIA_DEBUG GaiA Output payload=%s\", debug_text)\n        print(f\"GAIA_DEBUG GaiA Output payload={debug_text}\", flush=True)\n\n    # 주요 메서드: GaiA payload를 Message에 담되 저장은 뒤의 표준 Chat Output에 위임합니다.\n    async def message_response(self) -> Message:\n        payload = self._build_response_payload()\n        input_value = getattr(self, \"input_value\", None)\n        message = input_value if isinstance(input_value, Message) else Message(text=payload[\"answer\"])\n        message.text = payload[\"answer\"]\n        message.sender = MESSAGE_SENDER_AI\n        message.sender_name = \"AI\"\n        if not getattr(message, \"session_id\", \"\"):\n            message.session_id = getattr(getattr(self, \"graph\", None), \"session_id\", \"\") or \"\"\n        if not isinstance(getattr(message, \"data\", None), dict):\n            message.data = {}\n        message.data[\"gaia_response\"] = payload\n        message.metadata = payload[\"metadata\"]\n        self.status = message\n        return message\n\n    # 주요 메서드: HTTP/Tool 호출이 중간 Message 저장 없이 사용할 구조화된 GaiA Response Data를 반환합니다.\n    async def gaia_response_output(self) -> Data:\n        payload = self._build_response_payload()\n        self._log_payload(payload)\n        result = Data(data=payload)\n        self.status = result\n        return result\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              }
+            },
+            "description": "최종 답변과 참고자료를 GaiA AgentBuilder가 이해하는 answer/metadata 형식으로 정리합니다. 변환된 Message는 뒤의 표준 Chat Output이 Playground와 실행 API에 출력합니다.",
+            "icon": "MessagesSquare",
+            "base_classes": [
+              "Data",
+              "Message"
+            ],
+            "display_name": "GaiA Output Adapter",
+            "documentation": "https://docs.langflow.org/chat-input-and-output",
+            "minimized": true,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "message",
+                "display_name": "message",
+                "method": "message_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": true,
+                "tool_mode": true
+              },
+              {
+                "types": [
+                  "Data"
+                ],
+                "selected": "Data",
+                "name": "gaia_response",
+                "display_name": "GaiA Response",
+                "method": "gaia_response_output",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": true,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [
+              "input_value",
+              "docs",
+              "urls",
+              "images",
+              "knowhows",
+              "followup_questions"
+            ],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "module": "v5_auxiliary.01_gaia_output",
+              "code_hash": "05e5918fde18",
+              "dependencies": {
+                "total_dependencies": 3,
+                "dependencies": [
+                  {
+                    "name": "orjson",
+                    "version": "3.10.15"
+                  },
+                  {
+                    "name": "fastapi",
+                    "version": "0.136.1"
+                  },
+                  {
+                    "name": "lfx",
+                    "version": "0.3.4"
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.8.2"
+          },
+          "showNode": true,
+          "type": "GaiAOutputAdapter"
+        },
+        "dragging": false,
+        "id": "GaiAOutputAdapter-workflow_skill",
+        "measured": {
+          "height": 267,
+          "width": 320
+        },
+        "position": {
+          "x": 3050.0,
+          "y": -180.0
         },
         "selected": false,
         "type": "genericNode"
       }
     ],
     "edges": [
-      {
-        "animated": false,
-        "className": "",
-        "data": {
-          "sourceHandle": {
-            "dataType": "ChatInput",
-            "id": "ChatInput-workflow_skill",
-            "name": "message",
-            "output_types": [
-              "Message"
-            ]
-          },
-          "targetHandle": {
-            "fieldName": "raw_text",
-            "id": "Request-workflow_skill",
-            "inputTypes": [
-              "Message"
-            ],
-            "type": "str"
-          }
-        },
-        "id": "xy-edge__ChatInput-workflow_skill{œdataTypeœ:œChatInputœ,œidœ:œChatInput-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-Request-workflow_skill{œfieldNameœ:œraw_textœ,œidœ:œRequest-workflow_skillœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
-        "selected": false,
-        "source": "ChatInput-workflow_skill",
-        "sourceHandle": "{œdataTypeœ:œChatInputœ,œidœ:œChatInput-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
-        "target": "Request-workflow_skill",
-        "targetHandle": "{œfieldNameœ:œraw_textœ,œidœ:œRequest-workflow_skillœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
-      },
       {
         "animated": false,
         "className": "",
@@ -2978,8 +3383,94 @@
         "className": "",
         "data": {
           "sourceHandle": {
+            "dataType": "ChatInput",
+            "id": "ChatInput-workflow_skill",
+            "name": "message",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_message",
+            "id": "GaiAInputAdapter-workflow_skill",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "xy-edge__ChatInput-workflow_skill{œdataTypeœ:œChatInputœ,œidœ:œChatInput-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-GaiAInputAdapter-workflow_skill{œfieldNameœ:œinput_messageœ,œidœ:œGaiAInputAdapter-workflow_skillœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "ChatInput-workflow_skill",
+        "sourceHandle": "{œdataTypeœ:œChatInputœ,œidœ:œChatInput-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "GaiAInputAdapter-workflow_skill",
+        "targetHandle": "{œfieldNameœ:œinput_messageœ,œidœ:œGaiAInputAdapter-workflow_skillœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "GaiAInputAdapter",
+            "id": "GaiAInputAdapter-workflow_skill",
+            "name": "message",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "raw_text",
+            "id": "Request-workflow_skill",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "xy-edge__GaiAInputAdapter-workflow_skill{œdataTypeœ:œGaiAInputAdapterœ,œidœ:œGaiAInputAdapter-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-Request-workflow_skill{œfieldNameœ:œraw_textœ,œidœ:œRequest-workflow_skillœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "GaiAInputAdapter-workflow_skill",
+        "sourceHandle": "{œdataTypeœ:œGaiAInputAdapterœ,œidœ:œGaiAInputAdapter-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "Request-workflow_skill",
+        "targetHandle": "{œfieldNameœ:œraw_textœ,œidœ:œRequest-workflow_skillœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
             "dataType": "WorkflowSkillSavingMessageAdapter",
             "id": "Message-workflow_skill",
+            "name": "message",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "GaiAOutputAdapter-workflow_skill",
+            "inputTypes": [
+              "Data",
+              "DataFrame",
+              "Message"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "xy-edge__Message-workflow_skill{œdataTypeœ:œWorkflowSkillSavingMessageAdapterœ,œidœ:œMessage-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-GaiAOutputAdapter-workflow_skill{œfieldNameœ:œinput_valueœ,œidœ:œGaiAOutputAdapter-workflow_skillœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "Message-workflow_skill",
+        "sourceHandle": "{œdataTypeœ:œWorkflowSkillSavingMessageAdapterœ,œidœ:œMessage-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "GaiAOutputAdapter-workflow_skill",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œGaiAOutputAdapter-workflow_skillœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "GaiAOutputAdapter",
+            "id": "GaiAOutputAdapter-workflow_skill",
             "name": "message",
             "output_types": [
               "Message"
@@ -2996,10 +3487,10 @@
             "type": "other"
           }
         },
-        "id": "xy-edge__Message-workflow_skill{œdataTypeœ:œWorkflowSkillSavingMessageAdapterœ,œidœ:œMessage-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-workflow_skill{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-workflow_skillœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}",
+        "id": "xy-edge__GaiAOutputAdapter-workflow_skill{œdataTypeœ:œGaiAOutputAdapterœ,œidœ:œGaiAOutputAdapter-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-workflow_skill{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-workflow_skillœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}",
         "selected": false,
-        "source": "Message-workflow_skill",
-        "sourceHandle": "{œdataTypeœ:œWorkflowSkillSavingMessageAdapterœ,œidœ:œMessage-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
+        "source": "GaiAOutputAdapter-workflow_skill",
+        "sourceHandle": "{œdataTypeœ:œGaiAOutputAdapterœ,œidœ:œGaiAOutputAdapter-workflow_skillœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
         "target": "ChatOutput-workflow_skill",
         "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-workflow_skillœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}"
       }

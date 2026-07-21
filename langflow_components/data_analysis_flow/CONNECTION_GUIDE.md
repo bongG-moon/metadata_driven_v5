@@ -162,6 +162,22 @@ Dummy source를 사용한 경우 `19`는 답변 본문에서 dummy 결과임을 
 | --- | --- |
 | `20.payload_out` | `01 MongoDB 세션 상태 저장기.response_payload` |
 | `01 세션 상태 저장기.payload_out` | `21 답변 메시지 어댑터.payload` |
+
+## 결과 데이터 보관 및 직접 다운로드
+
+`23 MongoDB 결과 저장소`가 저장 수명과 다운로드 URL 생성 설정을 함께 소유합니다.
+
+| 23번 입력 | 기본값 | 의미 |
+| --- | --- | --- |
+| `MongoDB 연결 URI` | 빈 값 | Langflow standalone 화면에서 직접 입력합니다. |
+| `MongoDB 데이터베이스` | `datagov` | 다운로드 서버 설정과 같아야 합니다. |
+| `결과 컬렉션` | `agent_v4_result_store` | 다운로드 서버 설정과 같아야 합니다. |
+| `다운로드 링크 Base URL` | `http://127.0.0.1:8765` | 사용자의 브라우저에서 접근할 수 있는 다운로드 서버 주소입니다. |
+| `데이터 보관 시간(시간)` | `1` | 결과·사용 원본 데이터가 유지되는 시간입니다. 1~168시간 범위에서 조절합니다. |
+
+23번은 분석 결과와 조회에 사용한 원본 데이터 각각에 `/download.csv?download_ref=...` URL을 넣습니다. 21번은 Base URL을 다시 조합하지 않고 이 URL을 Markdown 링크와 GaiA `metadata.urls`로 표시합니다. 링크를 선택하면 별도 미리보기 페이지 없이 CSV 파일이 바로 다운로드됩니다.
+
+서버 실행과 운영 설정은 [Data Result 다운로드 서버 가이드](../../docs/DATA_RESULT_DOWNLOAD_SERVER_GUIDE.md)를 참고합니다.
 | `01 세션 상태 저장기.payload_out` | `22 API 응답 생성기.payload` |
 | `21.message` | `Chat Output.message` |
 | `21.message` | `22 API 응답 생성기.display_message` |

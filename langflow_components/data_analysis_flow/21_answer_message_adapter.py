@@ -2,39 +2,37 @@
 # =============================================================================
 # 컴포넌트 개요: 21 답변 메시지 어댑터
 # 역할: 최종 답변과 결과 테이블을 서비스 채팅 출력용 메시지로 변환합니다.
-# 주요 입력: 페이로드 (payload) · 필수, 다운로드 링크 Base URL (download_base_url), 개발자 진단 포함 (include_diagnostics), 결과 테이블 표시
+# 주요 입력: 페이로드 (payload) · 필수, 개발자 진단 포함 (include_diagnostics), 결과 테이블 표시
 #        (show_result_table), 중간 산출물/helper 결과 표시 (show_analysis_evidence), 다운로드 링크 표시 (show_download_links), 경고/참고
 #        표시 (show_notices), 적용 기준 표시 (show_applied_criteria), 다음 질문 표시 (show_next_questions), 의도 분석 표시
 #        (show_intent_analysis), 데이터 조회 진단 표시 (show_data_retrieval), pandas 코드 표시 (show_pandas_code)
 # 주요 출력: 메시지 (message)
-# 처리 흐름: 구조화 답변을 표·진단·조회 계획이 포함된 Markdown Message 하나로 렌더링합니다.
+# 처리 흐름: 구조화 답변을 표·다운로드·진단이 구분된 Markdown으로 만들고 GaiA metadata의 URL·후속 질문도 함께 구성합니다.
 # 유지보수 포인트: 이 노드만 최종 Chat Output에 연결해 중간 질문이나 JSON이 대화 기록에 중복 출력되지 않게 합니다.
 # =============================================================================
 
 from __future__ import annotations
 
 import ast
-import base64
 import json
 import re
 from copy import deepcopy
 from typing import Any
+from urllib.parse import urlsplit
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import BoolInput, DataInput, MessageTextInput, Output
+from lfx.io import BoolInput, DataInput, Output
 from lfx.schema.message import Message
 
 TABLE_PREVIEW_LIMIT = 10
 CELL_TEXT_LIMIT = 120
 VALUE_TEXT_LIMIT = 900
-DEFAULT_DOWNLOAD_BASE_URL = "http://localhost:8765"
 
 
 # 주요 함수: 구조화 결과를 사용자가 읽을 수 있는 단일 Markdown Message로 변환합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_message(
     payload_value: Any,
-    download_base_url: Any = "",
     include_diagnostics: Any = False,
     show_result_table: Any = True,
     show_analysis_evidence: Any = False,
@@ -64,7 +62,7 @@ def build_message(
     answer_sections = payload.get("answer_sections") if isinstance(payload.get("answer_sections"), dict) else {}
 
     if answer_sections:
-        sections = _message_sections_from_answer_sections(payload, answer_sections, download_base_url, options)
+        sections = _message_sections_from_answer_sections(payload, answer_sections, options)
         for section in _diagnostic_sections(payload, options):
             if section:
                 sections.append(section)
@@ -83,7 +81,7 @@ def build_message(
         optional_sections.extend([_step_outputs_section(payload), _function_case_results_section(payload)])
     optional_sections.append(result_table_section)
     if options["download_links"]:
-        optional_sections.append(_download_links_section(payload, download_base_url))
+        optional_sections.append(_download_links_section(payload))
     if options["notices"]:
         optional_sections.append(_notice_section(payload))
     for section in optional_sections:
@@ -103,7 +101,6 @@ def build_message(
 def _message_sections_from_answer_sections(
     payload: dict[str, Any],
     answer_sections: dict[str, Any],
-    download_base_url: Any = "",
     options: dict[str, bool] | None = None,
 ) -> list[str]:
     options = options or _message_options(False, True, True, True, True, "", "", "", True, True)
@@ -128,7 +125,7 @@ def _message_sections_from_answer_sections(
     if options["analysis_evidence"]:
         optional_sections.extend([_step_outputs_section(payload), _function_case_results_section(payload)])
     if options["download_links"]:
-        optional_sections.append(_download_links_section(payload, download_base_url))
+        optional_sections.append(_download_links_section(payload))
     if options["notices"]:
         optional_sections.append(_notice_section_from_answer_sections(answer_sections))
     if options["next_questions"]:
@@ -266,6 +263,50 @@ def _next_questions_section_from_answer_sections(answer_sections: dict[str, Any]
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
+
+
+# 함수 설명: 21번 결과를 GaiA 채팅의 reference·연관 질문 UI가 해석할 canonical metadata로 변환합니다.
+def build_response_metadata(payload_value: Any) -> dict[str, Any]:
+    payload = _payload(payload_value)
+    answer_sections = payload.get("answer_sections") if isinstance(payload.get("answer_sections"), dict) else {}
+    urls: list[dict[str, Any]] = []
+    for index, ref in enumerate(_downloadable_data_refs(payload), start=1):
+        url = _download_url(ref)
+        if not url:
+            continue
+        label = _download_label(ref)
+        item: dict[str, Any] = {
+            "type": "url",
+            "id": f"data-download-{index}",
+            "name": label,
+            "title": label,
+            "url": url,
+            "source": "Data Analysis result store",
+        }
+        expires_at = str(ref.get("expires_at") or "").strip()
+        if expires_at:
+            item["snippet"] = f"이 CSV 다운로드 링크는 {expires_at}까지 유효합니다."
+        urls.append(item)
+
+    questions = answer_sections.get("next_questions")
+    questions = [str(item).strip() for item in questions if str(item or "").strip()] if isinstance(questions, list) else []
+    followup_questions = [
+        {"type": "followup_question", "id": f"followup-{index}", "value": question}
+        for index, question in enumerate(questions[:3], start=1)
+    ]
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    trace_id = str(trace.get("trace_id") or request.get("request_id") or "").strip()
+    usage = payload.get("usage") if isinstance(payload.get("usage"), list) else []
+    return {
+        "docs": [],
+        "images": [],
+        "knowhows": [],
+        "followup_questions": followup_questions,
+        "urls": urls,
+        "trace_id": trace_id,
+        "usage": deepcopy(usage),
+    }
 
 
 # 함수 설명: `_contains_markdown_table()`는 입력값이 markdown·표 조건에 해당하는지 부작용 없이 bool로 판정합니다.
@@ -869,16 +910,24 @@ def _notice_section(payload: dict[str, Any]) -> str:
 
 
 # 함수 설명: `_download_links_section()`는 links·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
-def _download_links_section(payload: dict[str, Any], download_base_url: Any = "") -> str:
+def _download_links_section(payload: dict[str, Any]) -> str:
     refs = _downloadable_data_refs(payload)
     if not refs:
         return ""
     lines = ["### 데이터 다운로드"]
     for ref in refs[:12]:
         label = _download_label(ref)
-        url = _download_url(ref, download_base_url)
+        url = _download_url(ref)
+        if not url:
+            continue
         lines.append(f"- [{_escape_markdown_tilde(label)}]({url})")
-    lines.append("- 링크는 MongoDB result store의 `data_ref`를 웹 다운로드 화면으로 여는 용도입니다.")
+    if len(lines) == 1:
+        return ""
+    ttl_hours = next((_safe_int(ref.get("ttl_hours"), 0) for ref in refs if _safe_int(ref.get("ttl_hours"), 0) > 0), 0)
+    if ttl_hours:
+        lines.append(f"> 링크를 선택하면 CSV 파일이 바로 다운로드됩니다. 저장 데이터와 링크는 생성 후 {ttl_hours}시간 동안 유효합니다.")
+    else:
+        lines.append("> 링크를 선택하면 CSV 파일이 바로 다운로드됩니다.")
     return "\n".join(lines)
 
 
@@ -886,11 +935,11 @@ def _download_links_section(payload: dict[str, Any], download_base_url: Any = ""
 def _downloadable_data_refs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     for ref in _list_value(payload.get("data_refs")):
-        if isinstance(ref, dict):
+        if isinstance(ref, dict) and _download_url(ref):
             _append_ref(refs, ref)
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     data_ref = data.get("data_ref")
-    if isinstance(data_ref, dict):
+    if isinstance(data_ref, dict) and _download_url(data_ref):
         _append_ref(refs, data_ref)
     return refs
 
@@ -921,10 +970,17 @@ def _download_label(ref: dict[str, Any]) -> str:
 
 
 # 함수 설명: `_download_url()`는 URL에 접근할 URL을 설정과 식별자로부터 안전하게 구성합니다.
-def _download_url(ref: dict[str, Any], download_base_url: Any = "") -> str:
-    base_url = str(download_base_url or "").strip() or DEFAULT_DOWNLOAD_BASE_URL
-    token = base64.urlsafe_b64encode(json.dumps(ref, ensure_ascii=False, default=str).encode("utf-8")).decode("ascii").rstrip("=")
-    return f"{base_url.rstrip('/')}/?download_ref={token}"
+def _download_url(ref: dict[str, Any]) -> str:
+    url = str(ref.get("download_url") or "").strip()
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return ""
+    return url
 
 
 # 함수 설명: `_diagnostic_sections()`는 표시 옵션이 켜진 경우에만 의도·조회·pandas 진단 section을 최종 Message에 추가합니다.
@@ -1172,13 +1228,6 @@ class AnswerMessageAdapter(Component):
     description = "최종 답변과 결과 테이블을 서비스 채팅 출력용 메시지로 변환합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
-        MessageTextInput(
-            name="download_base_url",
-            display_name="다운로드 링크 Base URL",
-            value=DEFAULT_DOWNLOAD_BASE_URL,
-            required=False,
-            advanced=True,
-        ),
         BoolInput(
             name="include_diagnostics",
             display_name="개발자 진단 포함",
@@ -1223,8 +1272,9 @@ class AnswerMessageAdapter(Component):
         ),
         BoolInput(
             name="show_next_questions",
-            display_name="다음 질문 표시",
-            value=True,
+            display_name="다음 질문을 답변 본문에도 표시",
+            info="GaiA 환경에서는 연관 질문 metadata로 항상 전달됩니다. 본문 중복 표시가 필요할 때만 켭니다.",
+            value=False,
             required=False,
             advanced=True,
         ),
@@ -1255,19 +1305,25 @@ class AnswerMessageAdapter(Component):
     # Langflow 출력 함수: '메시지 (message)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_message(self) -> Message:
-        return Message(
+        payload = getattr(self, "payload", None)
+        message = Message(
             text=build_message(
-                getattr(self, "payload", None),
-                getattr(self, "download_base_url", ""),
-                getattr(self, "include_diagnostics", False),
-                getattr(self, "show_result_table", True),
-                getattr(self, "show_analysis_evidence", False),
-                getattr(self, "show_download_links", True),
-                getattr(self, "show_notices", True),
-                getattr(self, "show_intent_analysis", False),
-                getattr(self, "show_data_retrieval", False),
-                getattr(self, "show_pandas_code", False),
-                getattr(self, "show_applied_criteria", True),
-                getattr(self, "show_next_questions", True),
+                payload,
+                include_diagnostics=getattr(self, "include_diagnostics", False),
+                show_result_table=getattr(self, "show_result_table", True),
+                show_analysis_evidence=getattr(self, "show_analysis_evidence", False),
+                show_download_links=getattr(self, "show_download_links", True),
+                show_notices=getattr(self, "show_notices", True),
+                show_intent_analysis=getattr(self, "show_intent_analysis", False),
+                show_data_retrieval=getattr(self, "show_data_retrieval", False),
+                show_pandas_code=getattr(self, "show_pandas_code", False),
+                show_applied_criteria=getattr(self, "show_applied_criteria", True),
+                show_next_questions=getattr(self, "show_next_questions", False),
             )
         )
+        metadata = build_response_metadata(payload)
+        if not isinstance(getattr(message, "data", None), dict):
+            message.data = {}
+        message.data["metadata"] = deepcopy(metadata)
+        message.metadata = deepcopy(metadata)
+        return message

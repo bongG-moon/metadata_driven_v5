@@ -18,6 +18,8 @@ from typing import Any
 from lfx.base.tools.run_flow import RunFlowBaseComponent
 from lfx.custom.custom_component.component import Component
 from lfx.io import BoolInput, MessageTextInput, MultilineInput, Output, StrInput
+from lfx.schema.data import Data
+from lfx.schema.message import Message
 
 
 # 함수 설명: `_as_iso_text()`는 datetime 등 시간 값을 캐시 갱신 비교에 사용할 ISO 문자열로 변환합니다.
@@ -27,28 +29,47 @@ def _as_iso_text(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-# 함수 설명: 현재 하위 Flow에서 사용자 입력을 받을 Chat Input ID를 정확히 하나만 확정합니다.
+# 함수 설명: vertex가 legacy Chat 또는 회사 표준 GaiA 입·출력 역할인지 type/display/node ID로 판정합니다.
+def _is_io_vertex(vertex: Any, role: str) -> bool:
+    data = getattr(vertex, "data", {}) or {}
+    node_type = str(data.get("type") or "") if isinstance(data, dict) else ""
+    display_name = str(getattr(vertex, "display_name", "") or "")
+    vertex_id = str(getattr(vertex, "id", "") or "")
+    if role == "input":
+        return (
+            node_type in {"ChatInput", "GaiAInput"}
+            or display_name in {"Chat Input", "GaiA Input"}
+            or vertex_id.startswith("ChatInput-")
+        )
+    if role == "output":
+        return (
+            node_type in {"ChatOutput", "GaiAOutput"}
+            or display_name in {"Chat Output", "GaiA Output"}
+            or vertex_id.startswith("ChatOutput-")
+        )
+    return False
+
+
+# 함수 설명: 현재 하위 Flow에서 사용자 입력을 받을 Chat/GaiA Input ID를 정확히 하나만 확정합니다.
 # Flow import로 node ID가 바뀌어도 실행 시점 그래프를 기준으로 다시 찾습니다.
 def _single_chat_input_id(vertices: Any) -> str:
     chat_input_ids = [
         str(vertex.id)
         for vertex in list(vertices or [])
-        if (getattr(vertex, "data", {}) or {}).get("type") == "ChatInput"
-        or getattr(vertex, "display_name", "") == "Chat Input"
+        if _is_io_vertex(vertex, "input")
     ]
     if len(chat_input_ids) != 1:
         raise ValueError("대상 Flow에는 사용자 입력용 Chat Input이 정확히 하나 있어야 합니다.")
     return chat_input_ids[0]
 
 
-# 함수 설명: 현재 하위 Flow에서 답변을 저장하는 Chat Output ID를 정확히 하나만 확정합니다.
+# 함수 설명: 현재 하위 Flow에서 답변을 반환하는 Chat/GaiA Output ID를 정확히 하나만 확정합니다.
 # import 과정에서 node ID가 바뀌므로 고정 문자열 대신 선택된 runtime graph에서 찾습니다.
 def _single_chat_output_id(vertices: Any) -> str:
     chat_output_ids = [
         str(vertex.id)
         for vertex in list(vertices or [])
-        if (getattr(vertex, "data", {}) or {}).get("type") == "ChatOutput"
-        or getattr(vertex, "display_name", "") == "Chat Output"
+        if _is_io_vertex(vertex, "output")
     ]
     if len(chat_output_ids) != 1:
         raise ValueError("대상 Flow에는 답변용 Chat Output이 정확히 하나 있어야 합니다.")
@@ -61,6 +82,9 @@ def _question_tweaks(
     chat_input_id: Any,
     flow_tweak_data: Any,
     chat_output_id: Any = "",
+    *,
+    input_supports_storage_toggle: bool = False,
+    output_supports_storage_toggle: bool = False,
 ) -> dict[str, dict[str, Any]]:
     node_id = str(chat_input_id or "").strip()
     if not node_id:
@@ -72,16 +96,39 @@ def _question_tweaks(
     question = str(tool_values.get("question") or "").strip()
     if not question:
         raise ValueError("하위 Flow에 전달할 사용자 질문이 비어 있습니다.")
-    tweaks: dict[str, dict[str, Any]] = {
-        node_id: {
-            "input_value": question,
-            "should_store_message": False,
-        }
-    }
+    input_tweak: dict[str, Any] = {"input_value": question}
+    if input_supports_storage_toggle:
+        input_tweak["should_store_message"] = False
+    tweaks: dict[str, dict[str, Any]] = {node_id: input_tweak}
     output_id = str(chat_output_id or "").strip()
-    if output_id:
+    if output_id and output_supports_storage_toggle:
         tweaks[output_id] = {"should_store_message": False}
     return tweaks
+
+
+# 함수 설명: standalone vertex template에 선택 입력 포트가 실제로 존재하는지 확인합니다.
+def _vertex_has_input(vertex: Any, input_name: str) -> bool:
+    data = getattr(vertex, "data", {}) or {}
+    node = data.get("node") if isinstance(data, dict) else {}
+    template = node.get("template") if isinstance(node, dict) else {}
+    field_order = node.get("field_order") if isinstance(node, dict) else []
+    if isinstance(template, dict) and input_name in template:
+        return True
+    if isinstance(field_order, list) and input_name in field_order:
+        return True
+    raw_params = getattr(vertex, "raw_params", {}) or {}
+    return isinstance(raw_params, dict) and input_name in raw_params
+
+
+# 함수 설명: 선택한 vertex ID에 해당하는 단일 runtime vertex를 반환합니다.
+def _single_vertex(vertices: Any, vertex_id: Any) -> Any:
+    target_id = str(vertex_id or "").strip()
+    selected = [
+        vertex for vertex in list(vertices or []) if str(getattr(vertex, "id", "") or "") == target_id
+    ]
+    if len(selected) != 1:
+        raise ValueError("현재 하위 Flow에서 단일 I/O vertex를 확인할 수 없습니다.")
+    return selected[0]
 
 
 # 함수 설명: `_question_tool_field()`는 graph를 열지 않고 Router Agent에 노출할 고정 question schema를 반환합니다.
@@ -100,44 +147,39 @@ def _question_tool_field() -> dict[str, Any]:
     }
 
 
-# 함수 설명: 현재 하위 Flow의 단일 Chat Output.message를 Agent가 반환할 실행 대상으로 확정합니다.
-# API용 구조화 terminal이 함께 있어도 화면 답변 계약은 Chat Output 하나만 사용합니다.
+# 함수 설명: GaiA Output이면 구조화 gaia_response를, legacy Chat Output이면 message를 실행 대상으로 확정합니다.
+# GaiA 구조화 출력을 사용하면 child의 message 저장 메서드를 실행하지 않고 부모 Router만 최종 답변을 저장합니다.
 def _chat_output_target(graph: Any, chat_output_id: Any) -> tuple[str, str]:
-    """Return the terminal message output of the resolved Chat Output vertex."""
+    """Return the preferred terminal output of the resolved Chat/GaiA Output vertex."""
     target_id = str(chat_output_id or "").strip()
     if not target_id:
         raise ValueError("현재 하위 Flow의 Chat Output ID를 확인할 수 없습니다.")
 
     successor_map = getattr(graph, "successor_map", {}) or {}
-    vertices = [
-        vertex
-        for vertex in list(getattr(graph, "vertices", []) or [])
-        if str(getattr(vertex, "id", "") or "") == target_id
-    ]
-    if len(vertices) != 1:
-        raise ValueError("현재 하위 Flow에서 단일 Chat Output vertex를 확인할 수 없습니다.")
-
-    vertex = vertices[0]
+    vertex = _single_vertex(getattr(graph, "vertices", []), target_id)
     successors = successor_map.get(getattr(vertex, "id", None), successor_map.get(target_id, []))
     if successors:
         raise ValueError("하위 Flow의 Chat Output은 후속 연결이 없는 최종 노드여야 합니다.")
 
-    message_outputs: list[str] = []
+    output_names: list[str] = []
     for output in list(getattr(vertex, "outputs", []) or []):
         output_name = output.get("name") if isinstance(output, dict) else getattr(output, "name", None)
-        if str(output_name or "").strip() == "message":
-            message_outputs.append("message")
-    if len(message_outputs) != 1:
-        raise ValueError("하위 Flow의 Chat Output에는 message 출력이 정확히 하나 있어야 합니다.")
-    return target_id, "message"
+        name = str(output_name or "").strip()
+        if name:
+            output_names.append(name)
+    if output_names.count("gaia_response") == 1:
+        return target_id, "gaia_response"
+    if output_names.count("message") == 1:
+        return target_id, "message"
+    raise ValueError("하위 Flow의 GaiA/Chat Output에는 gaia_response 또는 message 출력이 정확히 하나 있어야 합니다.")
 
 
 # 함수 설명: 선택한 Chat Output만 현재 child 실행의 공식 출력으로 활성화합니다.
 # 별도의 API terminal이 있는 Flow도 Route V2에서는 화면 Message 하나만 실행·반환합니다.
 def _promote_graph_output(graph: Any, target: tuple[str, str]) -> None:
     vertex_id, output_name = target
-    if output_name != "message":
-        raise ValueError("Route V2의 최종 출력은 Chat Output.message여야 합니다.")
+    if output_name not in {"message", "gaia_response"}:
+        raise ValueError("Route V2의 최종 출력은 GaiA Output.gaia_response 또는 Chat Output.message여야 합니다.")
 
     vertices = list(getattr(graph, "vertices", []) or [])
     selected = [vertex for vertex in vertices if str(getattr(vertex, "id", "") or "") == str(vertex_id)]
@@ -153,6 +195,24 @@ def _promote_graph_output(graph: Any, target: tuple[str, str]) -> None:
     active_outputs = [vertex for vertex in vertices if bool(getattr(vertex, "is_output", False))]
     if active_outputs != selected:
         raise ValueError("선택하지 않은 child Flow 출력의 비활성화가 반영되지 않았습니다.")
+
+
+# 함수 설명: GaiA Response Data를 return_direct Agent가 그대로 표시할 수 있는 Message로 변환합니다.
+def _gaia_response_message(value: Any) -> Message:
+    payload = getattr(value, "data", value)
+    if isinstance(payload, dict) and isinstance(payload.get("gaia_response"), dict):
+        payload = payload["gaia_response"]
+    if not isinstance(payload, dict):
+        raise ValueError("GaiA Output.gaia_response가 객체 형식이 아닙니다.")
+    answer = str(payload.get("answer") or "").strip()
+    if not answer:
+        raise ValueError("GaiA Output.gaia_response.answer가 비어 있습니다.")
+    message = Message(text=answer)
+    message.data = {"gaia_response": payload}
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        message.metadata = metadata
+    return message
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
@@ -268,8 +328,13 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
             flow_id_selected=actual_id,
             updated_at=actual_updated_at,
         )
-        self._resolved_chat_input_id = _single_chat_input_id(getattr(graph, "vertices", []))
-        self._resolved_chat_output_id = _single_chat_output_id(getattr(graph, "vertices", []))
+        vertices = getattr(graph, "vertices", [])
+        self._resolved_chat_input_id = _single_chat_input_id(vertices)
+        self._resolved_chat_output_id = _single_chat_output_id(vertices)
+        input_vertex = _single_vertex(vertices, self._resolved_chat_input_id)
+        output_vertex = _single_vertex(vertices, self._resolved_chat_output_id)
+        self._input_supports_storage_toggle = _vertex_has_input(input_vertex, "should_store_message")
+        self._output_supports_storage_toggle = _vertex_has_input(output_vertex, "should_store_message")
         target = _chat_output_target(graph, self._resolved_chat_output_id)
         _promote_graph_output(graph, target)
         self._resolved_flow_output_target = target
@@ -301,7 +366,10 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         if not target:
             raise ValueError("대상 Flow의 최종 출력을 확인할 수 없습니다.")
         vertex_id, output_name = target
-        return await self._resolve_flow_output(vertex_id=vertex_id, output_name=output_name)
+        result = await self._resolve_flow_output(vertex_id=vertex_id, output_name=output_name)
+        if output_name == "gaia_response":
+            return _gaia_response_message(result)
+        return result
 
     # 주요 메서드: 고정 question Tool 인자를 현재 그래프의 Chat Input node tweak로 변환합니다.
     # 기본 Run Flow의 node-ID 기반 외부 인자명을 사용하지 않아 모델/provider별 특수문자 변형을 차단합니다.
@@ -310,6 +378,12 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
             getattr(self, "_resolved_chat_input_id", ""),
             self._attributes.get("flow_tweak_data"),
             getattr(self, "_resolved_chat_output_id", ""),
+            input_supports_storage_toggle=bool(
+                getattr(self, "_input_supports_storage_toggle", False)
+            ),
+            output_supports_storage_toggle=bool(
+                getattr(self, "_output_supports_storage_toggle", False)
+            ),
         )
 
     # 함수 설명: `_get_tools()`는 입력 또는 외부 저장소에서 tools을 읽고 호출자가 사용할 형태로 반환합니다.

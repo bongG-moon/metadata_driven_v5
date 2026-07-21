@@ -7,7 +7,7 @@
 #        (read_timeout_seconds)
 # 주요 출력: 메시지 (message), 호출 상태 (status_data)
 # 처리 흐름: Smart Router가 선택한 하위 Flow Run API에 원문 질문과 부모 세션을 한 번만 전달하고 최종 Message를 추출합니다.
-# 유지보수 포인트: nested child의 Chat 저장만 request tweak로 끄고 부모 Router가 세션 메시지를 한 번만 소유합니다.
+# 유지보수 포인트: GaiA data/metadata는 input adapter에 전달하고 nested child의 표준 Chat I/O 저장은 끄며 부모 Router가 최종 메시지를 소유합니다.
 # =============================================================================
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ _HTTP_SESSION = requests.Session()
 DEFAULT_LANGFLOW_BASE_URL = "http://127.0.0.1:7860"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 5
 DEFAULT_READ_TIMEOUT_SECONDS = 240
-NESTED_CHAT_STORAGE_TWEAKS = {
+NESTED_CHAT_IO_TWEAK = {
     "Chat Input": {"should_store_message": False},
     "Chat Output": {"should_store_message": False},
 }
@@ -90,9 +90,8 @@ def run_flow_api_message(
         "input_value": flow_input,
         "input_type": "chat",
         "output_type": "chat",
-        # Child Flow는 direct Playground 표시를 위해 저장을 기본 활성화합니다.
-        # Router nested 호출에서만 display_name 기반 tweak로 child 질문/답변 저장을 끕니다.
-        "tweaks": deepcopy(NESTED_CHAT_STORAGE_TWEAKS),
+        # 표준 Chat Input이 질문을 받고 GaiA Input Adapter가 A2A 부가정보를 병합합니다.
+        "tweaks": _gaia_nested_tweaks(session_source, session_id_value),
     }
     if session_id_value:
         request_body["session_id"] = session_id_value
@@ -178,6 +177,47 @@ def _message_result(
     }
 
 
+# 함수 설명: Message/Data/일반 dict에서 GaiA data로 전달할 객체만 안전하게 추출합니다.
+def _gaia_data(value: Any) -> dict[str, Any]:
+    for attribute in ("a2a_data", "data"):
+        candidate = getattr(value, attribute, None)
+        if isinstance(candidate, dict):
+            return deepcopy(candidate)
+    if isinstance(value, dict):
+        nested = value.get("data")
+        if isinstance(nested, dict):
+            return deepcopy(nested)
+    return {}
+
+
+# 함수 설명: Message와 dict의 여러 GaiA metadata 별칭에서 실행 메타데이터를 추출합니다.
+def _gaia_metadata(value: Any) -> dict[str, Any]:
+    for attribute in ("a2a_metadata", "framework2_metadata", "metadata"):
+        candidate = getattr(value, attribute, None)
+        if isinstance(candidate, dict):
+            return deepcopy(candidate)
+    if isinstance(value, dict):
+        for key in ("metadata", "a2a_metadata", "framework2_metadata"):
+            candidate = value.get(key)
+            if isinstance(candidate, dict):
+                return deepcopy(candidate)
+    return {}
+
+
+# 함수 설명: GaiA child 실행의 adapter data/metadata와 표준 Chat I/O 중복 저장 차단 tweak를 구성합니다.
+def _gaia_nested_tweaks(source_value: Any, session_id: str) -> dict[str, dict[str, Any]]:
+    data = _gaia_data(source_value)
+    metadata = _gaia_metadata(source_value)
+    if session_id:
+        metadata.setdefault("session_id", session_id)
+    tweaks = deepcopy(NESTED_CHAT_IO_TWEAK)
+    tweaks["GaiA Input Adapter"] = {
+        "data": json.dumps(data, ensure_ascii=False, default=str),
+        "metadata": json.dumps(metadata, ensure_ascii=False, default=str),
+    }
+    return tweaks
+
+
 # 함수 설명: `_looks_like_route_message()`는 입력값이 LIKE·라우팅·Message 조건에 해당하는지 부작용 없이 bool로 판정합니다.
 def _looks_like_route_message(value: Any) -> bool:
     parsed = _parse_json_dict(str(value or ""))
@@ -204,9 +244,12 @@ def _extract_child_status(value: Any) -> str:
     api_response = value.get("api_response")
     if isinstance(api_response, dict) and str(api_response.get("status") or "").strip():
         return str(api_response.get("status")).strip().lower()
+    gaia_response = value.get("gaia_response")
+    if isinstance(gaia_response, dict) and str(gaia_response.get("status") or "").strip():
+        return str(gaia_response.get("status")).strip().lower()
     if str(value.get("status") or "").strip():
         return str(value.get("status")).strip().lower()
-    for key in ("outputs", "results", "data", "artifacts"):
+    for key in ("gaia_response", "outputs", "results", "data", "artifacts"):
         nested = value.get(key)
         values = nested if isinstance(nested, list) else [nested]
         for item in values:
@@ -234,7 +277,18 @@ def _extract_message_text_inner(value: Any, seen: set[int]) -> str:
             return _extract_message_text_inner(parsed, seen)
         return value.strip()
     if isinstance(value, dict):
-        for key in ("api_response", "display_message", "answer_message", "answer", "text", "content", "output", "response", "message"):
+        for key in (
+            "gaia_response",
+            "api_response",
+            "display_message",
+            "answer_message",
+            "answer",
+            "text",
+            "content",
+            "output",
+            "response",
+            "message",
+        ):
             text = _extract_message_text_inner(value.get(key), seen)
             if text:
                 return text

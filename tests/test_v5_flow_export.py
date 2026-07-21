@@ -139,8 +139,8 @@ def test_v5_flow_export_is_reproducible_and_acyclic():
     checked_in = json.loads(EXPORT_PATH.read_text(encoding="utf-8"))
 
     assert built == checked_in
-    assert len(built["data"]["nodes"]) == 43
-    assert len(built["data"]["edges"]) == 67
+    assert len(built["data"]["nodes"]) == 45
+    assert len(built["data"]["edges"]) == 69
     assert _is_acyclic(built)
 
 
@@ -220,8 +220,8 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     edges = _edge_keys(flow)
     nodes = {node["id"]: node for node in flow["data"]["nodes"]}
 
-    assert len(nodes) == 43
-    assert len(flow["data"]["edges"]) == 67
+    assert len(nodes) == 45
+    assert len(flow["data"]["edges"]) == 69
     assert _is_acyclic(flow)
     assert ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload") in edges
     assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-v5ExecutionGate", "payload") in edges
@@ -262,6 +262,9 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     )
     assert repair_edge["data"]["sourceHandle"]["output_types"] == ["Message"]
     assert repair_edge["data"]["targetHandle"]["inputTypes"] == ["Message"]
+    assert [node_id for node_id, node in nodes.items() if node["data"].get("type") == "ChatInput"] == [
+        "ChatInput-Xs7uo"
+    ]
     assert [node_id for node_id, node in nodes.items() if node["data"].get("type") == "ChatOutput"] == [
         "ChatOutput-rwbTs"
     ]
@@ -269,14 +272,21 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
         node["data"].get("type") in {"LoopComponent", "ParserComponent", "ConditionalPromptRequestBuilder"}
         for node in nodes.values()
     )
-    direct_chat_nodes = [
-        node for node in nodes.values() if node["data"].get("type") in {"ChatInput", "ChatOutput"}
+    gaia_adapters = [
+        node
+        for node in nodes.values()
+        if node["data"].get("type") in {"GaiAInputAdapter", "GaiAOutputAdapter"}
     ]
-    assert len(direct_chat_nodes) == 2
-    assert all(
-        node["data"]["node"]["template"]["should_store_message"]["value"] is True
-        for node in direct_chat_nodes
-    )
+    assert len(gaia_adapters) == 2
+    gaia_input = next(node for node in gaia_adapters if node["data"].get("type") == "GaiAInputAdapter")
+    gaia_output = next(node for node in gaia_adapters if node["data"].get("type") == "GaiAOutputAdapter")
+    assert {"input_message", "data", "metadata"}.issubset(gaia_input["data"]["node"]["template"])
+    assert "should_store_message" not in gaia_output["data"]["node"]["template"]
+    assert nodes["ChatOutput-rwbTs"]["data"]["node"]["template"]["should_store_message"]["value"] is True
+    assert {output["name"] for output in gaia_output["data"]["node"]["outputs"]} == {
+        "message",
+        "gaia_response",
+    }
     language_models = [node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]
     assert len(language_models) == 3
     for model in language_models:
@@ -287,13 +297,23 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
         assert "tools" not in template
         assert "add_current_date_tool" not in template
         assert "control_payload" not in template
-    assert ("CustomComponent-A5y0b", "message", "ChatOutput-rwbTs", "input_value") in edges
+    assert ("ChatInput-Xs7uo", "message", "GaiAInputAdapter-data-analysis", "input_message") in edges
+    assert ("GaiAInputAdapter-data-analysis", "message", "CustomComponent-xpbhS", "question") in edges
+    assert ("CustomComponent-A5y0b", "message", "GaiAOutputAdapter-data-analysis", "input_value") in edges
+    assert ("GaiAOutputAdapter-data-analysis", "message", "ChatOutput-rwbTs", "input_value") in edges
     assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-A5y0b", "payload") in edges
     assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-3eVde", "payload") in edges
     assert ("CustomComponent-BVItv", "payload_out", "CustomComponent-A5y0b", "payload") not in edges
     assert ("CustomComponent-BVItv", "payload_out", "CustomComponent-3eVde", "payload") not in edges
     answer_adapter_template = nodes["CustomComponent-A5y0b"]["data"]["node"]["template"]
     assert answer_adapter_template["show_pandas_code"]["value"] is True
+    assert answer_adapter_template["show_next_questions"]["value"] is False
+    assert "download_base_url" not in answer_adapter_template
+    result_store_template = nodes["CustomComponent-AUrFb"]["data"]["node"]["template"]
+    assert result_store_template["download_base_url"]["value"] == "http://127.0.0.1:8765"
+    assert result_store_template["download_base_url"]["advanced"] is False
+    assert result_store_template["ttl_hours"]["value"] == "1"
+    assert result_store_template["ttl_hours"]["advanced"] is False
 
 
 def test_v5_flow_export_routes_catalog_and_helpers_through_compaction_nodes():
@@ -407,7 +427,13 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     assert smart_router["data"]["node"]["base_classes"] == []
     chat_input_edges = [edge for edge in router["data"]["edges"] if edge["source"] == "ChatInput-api-router"]
     assert len(chat_input_edges) == 1
-    assert chat_input_edges[0]["target"] == "SmartRouter-api-router"
+    assert chat_input_edges[0]["target"] == "GaiAInputAdapter-api-router"
+    assert (
+        "GaiAInputAdapter-api-router",
+        "message",
+        "SmartRouter-api-router",
+        "input_text",
+    ) in _edge_keys(router)
     assert not any(
         edge["data"]["targetHandle"]["fieldName"] == "session_source"
         for edge in router["data"]["edges"]
@@ -417,17 +443,18 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     direct_edges = {
         (edge["data"]["sourceHandle"]["name"], edge["target"])
         for edge in router["data"]["edges"]
-        if edge["source"] == "SmartRouter-api-router" and edge["target"].startswith("ChatOutput-")
+        if edge["source"] == "SmartRouter-api-router" and edge["target"].startswith("GaiAOutputAdapter-")
     }
     assert direct_edges == {
-        ("category_6_result", "ChatOutput-direct_answer"),
-        ("category_7_result", "ChatOutput-clarification"),
+        ("category_6_result", "GaiAOutputAdapter-direct_answer"),
+        ("category_7_result", "GaiAOutputAdapter-clarification"),
     }
 
     tool_router = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-agent-tool-router"))
     tools = [node for node in tool_router["data"]["nodes"] if str(node.get("id") or "").startswith("CachedFlowTool-")]
     assert len(tools) == 5
     assert len([node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]) == 1
+    assert len([node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "GaiAOutputAdapter"]) == 1
     assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["return_direct"]["value"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in tools)
@@ -444,7 +471,13 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
         edge for edge in tool_router["data"]["edges"] if edge["source"] == "ChatInput-agent-tool-router"
     ]
     assert len(tool_chat_edges) == 1
-    assert tool_chat_edges[0]["target"] == "Agent-agent-tool-router"
+    assert tool_chat_edges[0]["target"] == "GaiAInputAdapter-agent-tool-router"
+    assert (
+        "GaiAInputAdapter-agent-tool-router",
+        "message",
+        "Agent-agent-tool-router",
+        "input_value",
+    ) in _edge_keys(tool_router)
     assert not any(
         edge["data"]["targetHandle"]["fieldName"] == "session_source"
         for edge in tool_router["data"]["edges"]
@@ -475,12 +508,14 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
 
     assert flow["name"] == "08. v5_workflow_orchestrator"
     assert flow["endpoint_name"] == "metadata-driven-v5-complete-20260710-workflow-orchestrator"
-    assert len(nodes) == 18
-    assert len(flow["data"]["edges"]) == 26
+    assert len(nodes) == 20
+    assert len(flow["data"]["edges"]) == 28
     assert not any(node["data"].get("type") == "Agent" for node in nodes.values())
     assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
     assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
     assert len([node for node in nodes.values() if node["data"].get("type") == "ChatOutput"]) == 1
+    assert len([node for node in nodes.values() if node["data"].get("type") == "GaiAInputAdapter"]) == 1
+    assert len([node for node in nodes.values() if node["data"].get("type") == "GaiAOutputAdapter"]) == 1
 
     component_sources = {
         "WorkflowRegistryLoader-workflow-orchestrator": "route_flow_v4/00a_mongodb_workflow_registry_loader.py",
@@ -552,7 +587,7 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
     assert json.loads(parser_template["tool_capabilities_json"]["value"]) == tool_catalog
     assert "handoff는 현재 단계가 앞 단계의 결과를 입력으로 받는지" in planner_template["template"]["value"]
     assert (
-        "ChatInput-workflow-orchestrator",
+        "GaiAInputAdapter-workflow-orchestrator",
         "message",
         "WorkflowRegistryLoader-workflow-orchestrator",
         "user_question",
@@ -603,6 +638,18 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
     assert (
         "FinalResponse-workflow-orchestrator",
         "message",
+        "GaiAOutputAdapter-workflow-orchestrator",
+        "input_value",
+    ) in edges
+    assert (
+        "ChatInput-workflow-orchestrator",
+        "message",
+        "GaiAInputAdapter-workflow-orchestrator",
+        "input_message",
+    ) in edges
+    assert (
+        "GaiAOutputAdapter-workflow-orchestrator",
+        "message",
         "ChatOutput-workflow-orchestrator",
         "input_value",
     ) in edges
@@ -635,7 +682,9 @@ def test_v5_bundle_html_visualization_has_result_ref_input_and_terminal_api_resp
     assert flow["endpoint_name"] == "metadata-driven-v5-complete-20260710-html-visualization"
     assert set(nodes) == {
         "ChatInput-html-visualization",
+        "GaiAInputAdapter-html-visualization",
         "HtmlVisualizationBuilder-html-visualization",
+        "GaiAOutputAdapter-html-visualization",
         "ChatOutput-html-visualization",
         "HtmlVisualizationApiTerminal-html-visualization",
     }
@@ -643,11 +692,23 @@ def test_v5_bundle_html_visualization_has_result_ref_input_and_terminal_api_resp
         (
             "ChatInput-html-visualization",
             "message",
+            "GaiAInputAdapter-html-visualization",
+            "input_message",
+        ),
+        (
+            "GaiAInputAdapter-html-visualization",
+            "message",
             "HtmlVisualizationBuilder-html-visualization",
             "question",
         ),
         (
             "HtmlVisualizationBuilder-html-visualization",
+            "message",
+            "GaiAOutputAdapter-html-visualization",
+            "input_value",
+        ),
+        (
+            "GaiAOutputAdapter-html-visualization",
             "message",
             "ChatOutput-html-visualization",
             "input_value",
@@ -681,7 +742,10 @@ def test_v5_bundle_html_visualization_has_result_ref_input_and_terminal_api_resp
     ).read_text(encoding="utf-8")
     assert {output["name"] for output in terminal["data"]["node"]["outputs"]} == {"api_response"}
     assert not any(source == terminal["id"] for source, _handle, _target, _field in edges)
-    assert nodes["ChatInput-html-visualization"]["data"]["node"]["template"]["should_store_message"]["value"] is True
+    assert {"input_message", "data", "metadata"}.issubset(
+        nodes["GaiAInputAdapter-html-visualization"]["data"]["node"]["template"]
+    )
+    assert "should_store_message" not in nodes["GaiAOutputAdapter-html-visualization"]["data"]["node"]["template"]
     assert nodes["ChatOutput-html-visualization"]["data"]["node"]["template"]["should_store_message"]["value"] is True
 
 
@@ -722,12 +786,19 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
         chat_nodes = [
             node
             for node in flow["data"]["nodes"]
-            if node["data"].get("type") in {"ChatInput", "ChatOutput"}
+            if node["data"].get("type")
+            in {"ChatInput", "GaiAInputAdapter", "GaiAOutputAdapter", "ChatOutput"}
         ]
-        assert chat_nodes
-        # Child 기본값은 direct Playground 질문/답변 표시를 위해 저장을 켭니다.
-        # Router nested 호출은 caller/tool tweak에서만 child 저장을 끕니다.
-        assert all(node["data"]["node"]["template"]["should_store_message"]["value"] is True for node in chat_nodes)
+        assert len(chat_nodes) == 4
+        assert all(
+            len([node for node in chat_nodes if node["data"].get("type") == node_type]) == 1
+            for node_type in ("ChatInput", "GaiAInputAdapter", "GaiAOutputAdapter", "ChatOutput")
+        )
+        output = next(node for node in chat_nodes if node["data"].get("type") == "ChatOutput")
+        output_adapter = next(node for node in chat_nodes if node["data"].get("type") == "GaiAOutputAdapter")
+        # 표준 Chat Output만 direct Playground 메시지를 저장하고 GaiA adapter는 변환만 합니다.
+        assert output["data"]["node"]["template"]["should_store_message"]["value"] is True
+        assert "should_store_message" not in output_adapter["data"]["node"]["template"]
         child_models.extend(
             node
             for node in flow["data"]["nodes"]
@@ -757,12 +828,14 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
         router_chat_nodes = [
             node
             for node in flow["data"]["nodes"]
-            if node["data"].get("type") in {"ChatInput", "ChatOutput"}
+            if node["data"].get("type")
+            in {"ChatInput", "GaiAInputAdapter", "GaiAOutputAdapter", "ChatOutput"}
         ]
         assert router_chat_nodes
         assert all(
             node["data"]["node"]["template"]["should_store_message"]["value"] is True
             for node in router_chat_nodes
+            if node["data"].get("type") == "ChatOutput"
         )
 
 
@@ -793,6 +866,7 @@ def test_v5_result_store_limits_qa_request_guards_and_targeted_existing_loaders_
     assert qa_nodes["SnapshotLoader-metadata-qa"]["data"]["node"]["template"]["cache_ttl_seconds"]["value"] == "15"
     assert qa_nodes["LanguageModel-metadata-qa"]["data"]["type"] == "LanguageModelComponent"
     assert len([node for node in qa_nodes.values() if node["data"].get("type") == "ChatOutput"]) == 1
+    assert len([node for node in qa_nodes.values() if node["data"].get("type") == "GaiAOutputAdapter"]) == 1
 
     domain = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-domain-saving"))
     table = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-table-catalog-saving"))

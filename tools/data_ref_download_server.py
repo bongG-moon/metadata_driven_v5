@@ -13,7 +13,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +26,7 @@ from web_app.data_ref_store import DEFAULT_DATABASE, DEFAULT_RESULT_COLLECTION, 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_PREVIEW_LIMIT = 100
+DEFAULT_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 
 
 def main() -> int:
@@ -34,6 +35,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=int(os.getenv("DATA_REF_DOWNLOAD_PORT", str(DEFAULT_PORT))))
     parser.add_argument("--env-file", default=os.getenv("DATA_REF_DOWNLOAD_ENV_FILE", str(ROOT / ".env")))
     parser.add_argument("--preview-limit", type=int, default=int(os.getenv("DATA_REF_DOWNLOAD_PREVIEW_LIMIT", str(DEFAULT_PREVIEW_LIMIT))))
+    parser.add_argument("--max-download-bytes", type=int, default=int(os.getenv("DATA_REF_DOWNLOAD_MAX_BYTES", str(DEFAULT_MAX_DOWNLOAD_BYTES))))
     args = parser.parse_args()
 
     load_dotenv(args.env_file)
@@ -42,11 +44,12 @@ def main() -> int:
         mongo_database=os.getenv("MONGODB_DATABASE") or os.getenv("MONGO_DB_NAME") or DEFAULT_DATABASE,
         result_collection=os.getenv("MONGODB_RESULT_COLLECTION") or DEFAULT_RESULT_COLLECTION,
         preview_limit=max(0, args.preview_limit),
+        max_download_bytes=max(1024, args.max_download_bytes),
     )
     server = ThreadingHTTPServer((args.host, args.port), make_handler(config))
     print(f"data_ref download server: http://{args.host}:{args.port}")
     print("Langflow component setting:")
-    print(f"  21 답변 메시지 어댑터.download_base_url = http://{args.host}:{args.port}")
+    print(f"  23 MongoDB 결과 저장소.download_base_url = http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -57,27 +60,37 @@ def main() -> int:
 
 
 class ServerConfig:
-    def __init__(self, mongo_uri: str, mongo_database: str, result_collection: str, preview_limit: int) -> None:
+    def __init__(
+        self,
+        mongo_uri: str,
+        mongo_database: str,
+        result_collection: str,
+        preview_limit: int,
+        max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
+    ) -> None:
         self.mongo_uri = mongo_uri
         self.mongo_database = mongo_database
         self.result_collection = result_collection
         self.preview_limit = preview_limit
+        self.max_download_bytes = max(1024, int(max_download_bytes))
 
 
 def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
     class DataRefDownloadHandler(BaseHTTPRequestHandler):
-        server_version = "DataRefDownloadServer/1.0"
+        server_version = "DataRefDownloadServer/2.0"
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path in {"/health", "/healthz"}:
                 self.send_json({"ok": True})
                 return
-            if parsed.path in {"/", "/view"}:
-                self.render_view(parsed.query)
-                return
-            if parsed.path in {"/download.csv", "/download"}:
+            # 답변의 링크와 예전 `/?download_ref=...` 링크는 중간 화면 없이 바로 CSV를 내려줍니다.
+            if parsed.path in {"/", "/download.csv", "/download"}:
                 self.render_csv(parsed.query)
+                return
+            # 운영 진단이 필요할 때만 /view를 직접 입력해 제한된 미리보기를 확인합니다.
+            if parsed.path == "/view":
+                self.render_view(parsed.query)
                 return
             if parsed.path == "/download.json":
                 self.render_json(parsed.query)
@@ -108,6 +121,12 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
             rows = loaded.get("rows") if isinstance(loaded.get("rows"), list) else []
             columns = loaded.get("columns") if isinstance(loaded.get("columns"), list) else rows_columns(rows)
             payload = rows_to_csv_bytes(rows, columns)
+            if len(payload) > config.max_download_bytes:
+                self.send_plain(
+                    f"CSV 파일이 다운로드 상한을 초과했습니다. max_bytes={config.max_download_bytes}",
+                    status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
+                return
             filename = download_filename(ref, "csv")
             self.send_bytes(payload, "text/csv; charset=utf-8", filename=filename)
 
@@ -122,7 +141,7 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
         def send_html(self, body: str, status: HTTPStatus = HTTPStatus.OK) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
+            self.send_common_headers()
             data = body.encode("utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -132,7 +151,7 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
             data = str(text).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
+            self.send_common_headers()
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -141,9 +160,9 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
             data = json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
+            self.send_common_headers()
             if filename:
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Disposition", content_disposition(filename))
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -151,15 +170,21 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
         def send_bytes(self, payload: bytes, content_type: str, filename: str = "") -> None:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-store")
+            self.send_common_headers()
             if filename:
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Disposition", content_disposition(filename))
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
 
         def send_error_page(self, status: HTTPStatus, message: str) -> None:
             self.send_html(error_page(status.phrase, message), status=status)
+
+        def send_common_headers(self) -> None:
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
 
         def log_message(self, fmt: str, *args: Any) -> None:
             print(f"{self.address_string()} - {fmt % args}")
@@ -174,6 +199,9 @@ def resolve_request(query: str, config: ServerConfig, limit: int | None) -> dict
         return {"ok": False, "message": f"download_ref 토큰 해석 실패: {exc}", "ref": {}, "loaded": {}}
     if not isinstance(ref, dict):
         return {"ok": False, "message": "download_ref 또는 ref_id가 필요합니다.", "ref": {}, "loaded": {}}
+    ref, validation_error = normalize_download_ref(ref, config)
+    if validation_error:
+        return {"ok": False, "message": validation_error, "ref": ref, "loaded": {}}
     ref_id = str(ref.get("ref_id") or "").strip()
     if not ref_id:
         return {"ok": False, "message": "data_ref.ref_id가 비어 있습니다.", "ref": ref, "loaded": {}}
@@ -193,6 +221,30 @@ def resolve_request(query: str, config: ServerConfig, limit: int | None) -> dict
         status = HTTPStatus.GONE if loaded.get("expired") else HTTPStatus.BAD_REQUEST
         return {"ok": False, "message": str(loaded.get("message") or "data_ref rows를 찾지 못했습니다."), "ref": ref, "loaded": loaded, "status": status}
     return {"ok": True, "message": "", "ref": ref, "loaded": loaded}
+
+
+def normalize_download_ref(ref: dict[str, Any], config: ServerConfig) -> tuple[dict[str, Any], str]:
+    """23번이 발급한 result-store 경로만 허용하고 서버 설정과 다른 DB/컬렉션 접근을 차단합니다."""
+
+    normalized = dict(ref)
+    ref_id = str(normalized.get("ref_id") or "").strip()
+    if not re.fullmatch(r"result:.+:[0-9a-fA-F]{32}", ref_id):
+        return normalized, "허용되지 않은 data_ref.ref_id 형식입니다."
+
+    database = str(normalized.get("database") or config.mongo_database).strip()
+    collection_name = str(normalized.get("collection_name") or config.result_collection).strip()
+    if database != config.mongo_database or collection_name != config.result_collection:
+        return normalized, "다운로드 서버 설정과 다른 MongoDB 데이터베이스 또는 컬렉션은 조회할 수 없습니다."
+
+    path = str(normalized.get("path") or "").strip()
+    if not re.fullmatch(r"payload\.(?:result_rows|runtime_sources\.[A-Za-z0-9_-]+)", path):
+        return normalized, "허용되지 않은 data_ref.path입니다."
+
+    normalized["store"] = "mongodb"
+    normalized["database"] = config.mongo_database
+    normalized["collection_name"] = config.result_collection
+    normalized["path"] = path
+    return normalized, ""
 
 
 def resolved_status(resolved: dict[str, Any]) -> HTTPStatus:
@@ -363,8 +415,18 @@ def ref_label(ref: dict[str, Any]) -> str:
 
 def download_filename(ref: dict[str, Any], suffix: str) -> str:
     seed = str(ref.get("label") or ref.get("source_alias") or ref.get("role") or ref.get("ref_id") or "data_ref")
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", seed).strip("._") or "data_ref"
+    cleaned = re.sub(r"[\\/:*?\"<>|\x00-\x1f]+", "_", seed)
+    cleaned = re.sub(r"\s+", "_", cleaned)
+    cleaned = "".join(character if character.isalnum() or character in "._-" else "_" for character in cleaned)
+    cleaned = cleaned.strip(" ._-") or "data_ref"
     return f"{cleaned}.{suffix}"
+
+
+def content_disposition(filename: str) -> str:
+    safe_filename = download_filename({"label": re.sub(r"\.[A-Za-z0-9]+$", "", str(filename or "data_ref"))}, str(filename).rsplit(".", 1)[-1] or "csv")
+    fallback = safe_filename.encode("ascii", errors="ignore").decode("ascii")
+    fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", fallback).strip("._") or "data_ref.csv"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(safe_filename, safe='')}"
 
 
 def int_or_zero(value: Any) -> int:

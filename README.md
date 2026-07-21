@@ -95,6 +95,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 26. 08 Workflow Orchestrator는 운영 기본값으로 `datagov.agent_v4_workflow_skills`의 active 문서를 조회하고, 현재 질문과 관련된 후보만 최대 8개·64KB로 제한해 계획 모델과 파서에 함께 전달합니다. `inline_seed`는 명시적 테스트 모드이며 MongoDB 오류 시 자동 fallback하지 않습니다.
 27. 09 Workflow Skill 저장 Flow는 자연어 등록 요청에서 LLM 후보를 한 번 생성한 뒤 Python이 최대 4단계, Tool 이름, dependency 순서, `result_ref` producer/consumer, 32KB payload를 결정론적으로 검증합니다. 기본은 `dry_run=true`이며 `replace`는 유사 1건 교체, 0건 신규 저장, 복수 건 차단으로 동작합니다.
 28. 10 HTML Visualization Flow는 `run_data_analysis`가 저장한 `result_ref`를 복원해 외부 CDN 없는 standalone HTML 차트를 생성하고, 화면에 보이는 `HTML Report API 주소`로 게시해 절대 보기·다운로드 링크를 반환합니다. 08은 그래프·차트 요청을 `run_data_analysis → run_visualization` 두 단계와 `handoff=result_ref`로 순차 실행하므로 작은 시각화 조합마다 Skill을 미리 등록할 필요가 없습니다. 서버 실행과 링크 설정은 [HTML Report 링크 가이드](docs/HTML_REPORT_LINK_GUIDE.md)를 참고합니다.
+29. Data Analysis의 분석 결과와 사용 원본 데이터는 23번 MongoDB Result Store에 기본 1시간 보관됩니다. 23번이 직접 CSV 다운로드 URL을 발급하고 21번은 이를 Markdown과 GaiA `metadata.urls`로 표시합니다. 링크는 미리보기 화면 없이 파일을 반환하며, 실행·배포 방법은 [Data Result 다운로드 서버 가이드](docs/DATA_RESULT_DOWNLOAD_SERVER_GUIDE.md)를 참고합니다.
 
 ## 검증 상태와 현재 제약
 

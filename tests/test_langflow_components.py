@@ -27,6 +27,14 @@ def install_lfx_test_stubs() -> None:
         return
 
     class Component:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+        async def send_message(self, message):
+            return message
+
+    class ChatComponent(Component):
         pass
 
     class RunFlowBaseComponent(Component):
@@ -48,6 +56,15 @@ def install_lfx_test_stubs() -> None:
         def __init__(self, text="", files=None):
             self.text = text
             self.files = list(files or [])
+            self.data = {}
+            self.metadata = {}
+
+        @classmethod
+        async def create(cls, text="", **kwargs):
+            message = cls(text=text)
+            for key, value in kwargs.items():
+                setattr(message, key, value)
+            return message
 
     class InputBase:
         def __init__(self, **kwargs):
@@ -72,16 +89,27 @@ def install_lfx_test_stubs() -> None:
         "lfx.custom.custom_component": types.ModuleType("lfx.custom.custom_component"),
         "lfx.custom.custom_component.component": types.ModuleType("lfx.custom.custom_component.component"),
         "lfx.base": types.ModuleType("lfx.base"),
+        "lfx.base.io": types.ModuleType("lfx.base.io"),
+        "lfx.base.io.chat": types.ModuleType("lfx.base.io.chat"),
         "lfx.base.tools": types.ModuleType("lfx.base.tools"),
         "lfx.base.tools.run_flow": types.ModuleType("lfx.base.tools.run_flow"),
         "lfx.components": types.ModuleType("lfx.components"),
         "lfx.components.models_and_agents": types.ModuleType("lfx.components.models_and_agents"),
         "lfx.components.models_and_agents.agent": types.ModuleType("lfx.components.models_and_agents.agent"),
         "lfx.io": types.ModuleType("lfx.io"),
+        "lfx.inputs": types.ModuleType("lfx.inputs"),
+        "lfx.inputs.inputs": types.ModuleType("lfx.inputs.inputs"),
+        "lfx.helpers": types.ModuleType("lfx.helpers"),
+        "lfx.helpers.data": types.ModuleType("lfx.helpers.data"),
         "lfx.schema": types.ModuleType("lfx.schema"),
         "lfx.schema.data": types.ModuleType("lfx.schema.data"),
         "lfx.schema.dataframe": types.ModuleType("lfx.schema.dataframe"),
         "lfx.schema.message": types.ModuleType("lfx.schema.message"),
+        "lfx.template": types.ModuleType("lfx.template"),
+        "lfx.template.field": types.ModuleType("lfx.template.field"),
+        "lfx.template.field.base": types.ModuleType("lfx.template.field.base"),
+        "lfx.utils": types.ModuleType("lfx.utils"),
+        "lfx.utils.constants": types.ModuleType("lfx.utils.constants"),
     }
     for name, module in modules.items():
         sys.modules.setdefault(name, module)
@@ -90,6 +118,7 @@ def install_lfx_test_stubs() -> None:
     )
     sys.modules["lfx.custom.custom_component.component"].get_component_toolkit = lambda: None
     sys.modules["lfx.base.tools.run_flow"].RunFlowBaseComponent = RunFlowBaseComponent
+    sys.modules["lfx.base.io.chat"].ChatComponent = ChatComponent
     sys.modules["lfx.components.models_and_agents.agent"].AgentComponent = AgentComponent
     io_module = sys.modules["lfx.io"]
     io_module.BoolInput = getattr(io_module, "BoolInput", BoolInput)
@@ -103,6 +132,12 @@ def install_lfx_test_stubs() -> None:
     io_module.SecretStrInput = getattr(io_module, "SecretStrInput", SecretStrInput)
     io_module.StrInput = getattr(io_module, "StrInput", InputBase)
     io_module.Output = getattr(io_module, "Output", InputBase)
+    sys.modules["lfx.inputs.inputs"].HandleInput = InputBase
+    sys.modules["lfx.helpers.data"].safe_convert = lambda value, **_kwargs: str(
+        getattr(value, "text", value)
+    )
+    sys.modules["lfx.template.field.base"].Output = InputBase
+    sys.modules["lfx.utils.constants"].MESSAGE_SENDER_AI = "Machine"
     sys.modules["lfx.schema.data"].Data = getattr(sys.modules["lfx.schema.data"], "Data", Data)
     sys.modules["lfx.schema.dataframe"].DataFrame = getattr(
         sys.modules["lfx.schema.dataframe"], "DataFrame", DataFrame
@@ -267,7 +302,10 @@ def test_langflow_components_use_direct_lfx_imports_without_fallback_stubs():
     for path in COMPONENT_FILES:
         text = path.read_text(encoding="utf-8")
         tree = ast.parse(text, filename=str(path))
-        assert "from lfx.custom.custom_component.component import Component" in text
+        assert (
+            "from lfx.custom.custom_component.component import Component" in text
+            or "from lfx.base.io.chat import ChatComponent" in text
+        )
         assert "try:\n    from lfx" not in text, f"{path.name} has an lfx import fallback"
         local_classes = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
         assert "Component" not in local_classes, f"{path.name} defines a local Component fallback"
@@ -299,6 +337,9 @@ def test_langflow_component_visible_labels_are_korean_first():
         return any("\uac00" <= char <= "\ud7a3" for char in text)
 
     for path in COMPONENT_FILES:
+        if path.parent.name == "gaia_io":
+            # GaiA AgentBuilder가 component/port 이름을 문자열 계약으로 사용하므로 영문 표준명을 그대로 유지합니다.
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
@@ -1335,7 +1376,7 @@ def test_data_analysis_langflow_dummy_path_reaches_api_response():
     answer_prompt_vars = answer_variables.build_variables(payload)
     assert "wip_sum" in answer_prompt_vars["result_summary_json"]
     payload = answer_builder.build_answer_response(payload, "D/A1 공정의 WIP 합계는 120입니다.")
-    playground_message = message_adapter.build_message(payload, "", True)
+    playground_message = message_adapter.build_message(payload, include_diagnostics=True)
     response = api_builder.build_api_response(payload)
 
     assert response["status"] == "ok"
@@ -1372,7 +1413,12 @@ def test_answer_message_adapter_result_table_uses_ten_row_preview():
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
-    message = message_adapter.build_message(payload, "", False, True, True)
+    message = message_adapter.build_message(
+        payload,
+        include_diagnostics=False,
+        show_result_table=True,
+        show_analysis_evidence=True,
+    )
 
     assert "| 9 |" in message
     assert "| 10 |" not in message
@@ -1451,7 +1497,12 @@ def test_answer_message_adapter_formats_numbers_and_shows_recorded_outputs():
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
-    message = message_adapter.build_message(payload, "", False, True, True)
+    message = message_adapter.build_message(
+        payload,
+        include_diagnostics=False,
+        show_result_table=True,
+        show_analysis_evidence=True,
+    )
 
     assert "### 중간 분석 산출물" in message
     assert "### helper 실행 결과" in message
@@ -1513,7 +1564,12 @@ def test_answer_message_adapter_compacts_product_token_match_preview():
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
-    message = message_adapter.build_message(payload, "", False, True, True)
+    message = message_adapter.build_message(
+        payload,
+        include_diagnostics=False,
+        show_result_table=True,
+        show_analysis_evidence=True,
+    )
 
     assert "**제품 속성 token 매칭 결과**" in message
     assert "- 입력: `RG 8G DDR4 x16 96 FCBGA SDP`" in message
@@ -1626,7 +1682,7 @@ def test_data_analysis_answer_response_builds_sections_for_api_and_message():
 
     payload = answer_builder.build_answer_response(payload, "현재 재공이 가장 많은 제품은 DEV-A이고, 재공수량은 12.5K입니다.")
     message = message_adapter.build_message(payload)
-    diagnostic_message = message_adapter.build_message(payload, "", True)
+    diagnostic_message = message_adapter.build_message(payload, include_diagnostics=True)
     api_response = api_builder.build_api_response(payload, message)
 
     assert payload["answer_sections"]["result_table"]["row_source"] == "data.rows"
@@ -2017,12 +2073,17 @@ def test_pandas_executor_supports_prefix_filter_and_product_token_helper():
     assert "df = match_product_tokens('DA 16G GDDR6 180', sources['wip_data'])" in effective_code
 
     message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
-    helper_message = message_adapter.build_message(helper_result, "", False, True, True)
+    helper_message = message_adapter.build_message(
+        helper_result,
+        include_diagnostics=False,
+        show_result_table=True,
+        show_analysis_evidence=True,
+    )
     assert "### helper 실행 결과" in helper_message
     assert "제품 속성 token 매칭 결과" in helper_message
     assert "DA 16G GDDR6 180" in helper_message
     assert "def match_product_tokens" not in helper_message
-    helper_diagnostic_message = message_adapter.build_message(helper_result, "", True)
+    helper_diagnostic_message = message_adapter.build_message(helper_result, include_diagnostics=True)
     assert "사용 helper" in helper_diagnostic_message
     assert "생성된 pandas 코드 (함수 숨김처리)" in helper_diagnostic_message
     assert "# region Function Case Helper: match_product_tokens (함수 숨김처리)" in helper_diagnostic_message
@@ -2334,7 +2395,7 @@ def test_answer_message_adapter_skips_duplicate_result_table_when_answer_has_tab
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
-    message = message_adapter.build_message(payload, "", True)
+    message = message_adapter.build_message(payload, include_diagnostics=True)
 
     assert message.count("| OPER_NAME | wip_sum |") == 1
     assert "wip_sum_by_oper" in message
@@ -2358,6 +2419,9 @@ def test_answer_message_adapter_adds_data_ref_download_links():
                 "path": "payload.result_rows",
                 "role": "analysis_result",
                 "label": "분석 결과 데이터",
+                "download_url": "http://localhost:8501/download.csv?download_ref=result-token",
+                "ttl_hours": 1,
+                "expires_at": "2026-07-21T10:00:00+00:00",
             },
             {
                 "store": "mongodb",
@@ -2368,11 +2432,14 @@ def test_answer_message_adapter_adds_data_ref_download_links():
                 "role": "source_rows",
                 "source_alias": "production_data",
                 "label": "사용 원본 데이터: production_data",
+                "download_url": "http://localhost:8501/download.csv?download_ref=source-token",
+                "ttl_hours": 1,
+                "expires_at": "2026-07-21T10:00:00+00:00",
             },
         ],
     }
 
-    message = message_adapter.build_message(payload, "http://localhost:8501")
+    message = message_adapter.build_message(payload)
     input_names = {item.kwargs.get("name") for item in message_adapter.AnswerMessageAdapter.inputs}
     input_types = {item.kwargs.get("name"): item.__class__.__name__ for item in message_adapter.AnswerMessageAdapter.inputs}
     input_display_names = {item.kwargs.get("name"): item.kwargs.get("display_name") for item in message_adapter.AnswerMessageAdapter.inputs}
@@ -2380,8 +2447,9 @@ def test_answer_message_adapter_adds_data_ref_download_links():
     assert "### 데이터 다운로드" in message
     assert "분석 결과 데이터 CSV 다운로드" in message
     assert "사용 원본 데이터: production_data CSV 다운로드" in message
-    assert "http://localhost:8501/?download_ref=" in message
-    assert "download_base_url" in input_names
+    assert "http://localhost:8501/download.csv?download_ref=" in message
+    assert "CSV 파일이 바로 다운로드" in message
+    assert "download_base_url" not in input_names
     assert "show_download_links" in input_names
     assert "show_pandas_code" in input_names
     assert input_display_names["show_analysis_evidence"] == "중간 산출물/helper 결과 표시"
@@ -2400,7 +2468,7 @@ def test_answer_message_adapter_adds_data_ref_download_links():
         assert input_types[name] == "BoolInput"
 
 
-def test_answer_message_adapter_default_download_link_uses_standalone_server():
+def test_answer_message_adapter_uses_download_link_issued_by_result_store():
     message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
     payload = {
         "answer_message": "완료했습니다.",
@@ -2411,13 +2479,53 @@ def test_answer_message_adapter_default_download_link_uses_standalone_server():
                 "collection_name": "agent_v4_result_store",
                 "path": "payload.result_rows",
                 "role": "analysis_result",
+                "download_url": "http://127.0.0.1:8765/download.csv?download_ref=issued-token",
             }
         ],
     }
 
     message = message_adapter.build_message(payload)
 
-    assert "http://localhost:8765/?download_ref=" in message
+    assert "http://127.0.0.1:8765/download.csv?download_ref=issued-token" in message
+
+
+def test_answer_message_adapter_passes_downloads_and_followups_to_gaia_metadata():
+    message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
+    gaia_output = load_module(ROOT / "langflow_components" / "gaia_io" / "01_gaia_output.py")
+    payload = {
+        "request": {"request_id": "trace-123"},
+        "answer_message": "분석이 완료되었습니다.",
+        "answer_sections": {
+            "summary": {"headline": "분석이 완료되었습니다."},
+            "next_questions": ["제품별로 더 나눠볼까요?"],
+        },
+        "data_refs": [
+            {
+                "ref_id": "result:s1:0123456789abcdef0123456789abcdef",
+                "role": "analysis_result",
+                "label": "분석 결과 데이터",
+                "download_url": "http://127.0.0.1:8765/download.csv?download_ref=issued-token",
+                "expires_at": "2026-07-21T10:00:00+00:00",
+                "ttl_hours": 1,
+            }
+        ],
+    }
+
+    answer_component = message_adapter.AnswerMessageAdapter()
+    answer_component.payload = payload
+    answer_component.show_next_questions = False
+    message = answer_component.build_output_message()
+    output_component = gaia_output.GaiAOutputAdapter()
+    output_component.input_value = message
+    response = output_component._build_response_payload()
+
+    assert response["answer"].startswith("### 답변")
+    assert "### 다음에 볼 만한 질문" not in response["answer"]
+    assert response["metadata"]["trace_id"] == "trace-123"
+    assert response["metadata"]["urls"][0]["url"].endswith("download_ref=issued-token")
+    assert response["metadata"]["followup_questions"] == [
+        {"type": "followup_question", "id": "followup-1", "value": "제품별로 더 나눠볼까요?"}
+    ]
 
 
 def test_answer_message_adapter_section_toggles_control_verbose_blocks():
@@ -2456,8 +2564,7 @@ def test_answer_message_adapter_section_toggles_control_verbose_blocks():
 
     message = message_adapter.build_message(
         payload,
-        "",
-        "false",
+        include_diagnostics="false",
         show_result_table="false",
         show_analysis_evidence="false",
         show_download_links="false",
@@ -2528,7 +2635,7 @@ def test_answer_message_adapter_rewrites_english_intent_reasons_to_korean_summar
         },
     }
 
-    message = message_adapter.build_message(payload, "", show_intent_analysis=True)
+    message = message_adapter.build_message(payload, show_intent_analysis=True)
 
     assert "The user is asking" not in message
     assert "follow-up query" not in message
@@ -3087,7 +3194,7 @@ def test_multiple_function_cases_expose_multiple_helpers_and_dummy_runtime():
     assert trace["used_helpers"] == ["match_product_tokens", "sample_passthrough_helper"]
     assert "def sample_passthrough_helper" in trace["generated_code"]
     message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
-    diagnostic_message = message_adapter.build_message(result, "", True)
+    diagnostic_message = message_adapter.build_message(result, include_diagnostics=True)
     assert "# region Function Case Helper: match_product_tokens (함수 숨김처리)" in diagnostic_message
     assert "# region Function Case Helper: sample_passthrough_helper (함수 숨김처리)" in diagnostic_message
     assert "def match_product_tokens" not in diagnostic_message
@@ -4140,7 +4247,10 @@ def test_data_analysis_mongodb_result_store_and_loader_round_trip(monkeypatch):
     assert restored["trace"]["inspection"]["result_loader"]["status"] == "ok"
     assert restored["runtime_sources"]["wip_data"][0]["WIP"] == 120
     assert restored["data"]["rows"] == [{"OPER_NAME": "D/A1", "wip_sum": 120}]
-    assert restored["data"]["data_ref"] == data_ref
+    for key in ("ref_id", "database", "collection_name", "path", "role"):
+        assert restored["data"]["data_ref"][key] == data_ref[key]
+    assert data_ref["download_url"].startswith("http://127.0.0.1:8765/download.csv?download_ref=")
+    assert data_ref["ttl_hours"] == 3
 
     data_ref_store = load_module(ROOT / "web_app" / "data_ref_store.py")
     result_rows = data_ref_store.load_data_ref_rows(data_ref, "mongodb://fake")
@@ -4338,9 +4448,14 @@ def test_upstream_entity_binder_uses_only_trusted_catalog_rules_and_fails_closed
 def test_data_analysis_mongodb_result_store_has_ttl_input():
     result_store = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py")
 
-    input_names = {item.kwargs.get("name") for item in result_store.MongoDBResultStore.inputs}
+    inputs = {item.kwargs.get("name"): item.kwargs for item in result_store.MongoDBResultStore.inputs}
+    input_names = set(inputs)
 
     assert "ttl_hours" in input_names
+    assert inputs["ttl_hours"]["value"] == "1"
+    assert inputs["ttl_hours"]["advanced"] is False
+    assert inputs["download_base_url"]["value"] == "http://127.0.0.1:8765"
+    assert inputs["download_base_url"]["advanced"] is False
     assert {"max_result_rows", "max_source_rows_per_alias", "max_document_bytes"} <= input_names
 
 
@@ -6903,8 +7018,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 81
-    assert result["all_component_python_files"] == 82
+    assert result["active_unique_source_files"] == 83
+    assert result["all_component_python_files"] == 84
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -6913,9 +7028,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 10, 94, 81),
-        ("import_ready_individual", 10, 94, 81),
-        ("import_ready_bundle", 10, 94, 81),
+        ("flow_exports", 10, 120, 83),
+        ("import_ready_individual", 10, 120, 83),
+        ("import_ready_bundle", 10, 120, 83),
     }
 
 
@@ -6981,8 +7096,11 @@ def test_route_flow_calls_langflow_api_with_branch_message_as_input():
                         "outputs": [
                             {
                                 "results": {
-                                    "message": {
-                                        "text": "오늘 DA공정 생산량은 1,234입니다.",
+                                    "gaia_response": {
+                                        "data": {
+                                            "answer": "오늘 DA공정 생산량은 1,234입니다.",
+                                            "metadata": {"docs": []},
+                                        }
                                     }
                                 }
                             }
@@ -7010,9 +7128,13 @@ def test_route_flow_calls_langflow_api_with_branch_message_as_input():
         "input_value": "오늘 DA공정 생산량 알려줘",
         "input_type": "chat",
         "output_type": "chat",
-        "tweaks": {
-            "Chat Input": {"should_store_message": False},
-            "Chat Output": {"should_store_message": False},
+            "tweaks": {
+                "Chat Input": {"should_store_message": False},
+                "Chat Output": {"should_store_message": False},
+                "GaiA Input Adapter": {
+                "data": "{}",
+                "metadata": '{"session_id": "router-session-1"}',
+            },
         },
         "session_id": "router-session-1",
     }
@@ -7022,10 +7144,14 @@ def test_route_flow_calls_langflow_api_with_branch_message_as_input():
             "json": {
                 "input_value": "오늘 DA공정 생산량 알려줘",
                 "input_type": "chat",
-                "output_type": "chat",
-                "tweaks": {
-                    "Chat Input": {"should_store_message": False},
-                    "Chat Output": {"should_store_message": False},
+                    "output_type": "chat",
+                    "tweaks": {
+                        "Chat Input": {"should_store_message": False},
+                        "Chat Output": {"should_store_message": False},
+                        "GaiA Input Adapter": {
+                        "data": "{}",
+                        "metadata": '{"session_id": "router-session-1"}',
+                    },
                 },
                 "session_id": "router-session-1",
             },
@@ -7090,6 +7216,8 @@ def test_route_flow_api_helper_accepts_session_source_for_backward_compatibility
 
     class SessionSource:
         session_id = "shared-router-session"
+        a2a_data = {"attachments": [{"id": "file-1"}]}
+        a2a_metadata = {"user_id": "gaia-user"}
 
     class FakeResponse:
         status_code = 200
@@ -7117,6 +7245,13 @@ def test_route_flow_api_helper_accepts_session_source_for_backward_compatibility
     assert result["status"] == "ok"
     assert result["route_name"] == "metadata_qa"
     assert calls[0]["json"]["session_id"] == "shared-router-session"
+    assert json.loads(calls[0]["json"]["tweaks"]["GaiA Input Adapter"]["data"]) == {
+        "attachments": [{"id": "file-1"}]
+    }
+    assert json.loads(calls[0]["json"]["tweaks"]["GaiA Input Adapter"]["metadata"]) == {
+        "user_id": "gaia-user",
+        "session_id": "shared-router-session",
+    }
     assert calls[0]["timeout"] == (3, 45)
 
 
@@ -7236,8 +7371,8 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert list(outputs) == ["component_as_tool"]
     assert outputs["component_as_tool"]["types"] == ["Tool"]
     source = path.read_text(encoding="utf-8")
-    assert '.get("type") == "ChatInput"' in source
-    assert '.get("type") == "ChatOutput"' in source
+    assert '"GaiAInput"' in source
+    assert '"GaiAOutput"' in source
     assert '"should_store_message": False' in source
     assert '"name": "question"' in source
     assert 'name="lazy_flow_result"' in source
@@ -7255,8 +7390,8 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert "session_source" not in source
 
     vertices = [
-        types.SimpleNamespace(id="ChatInput-runtime", data={"type": "ChatInput"}, display_name="Chat Input"),
-        types.SimpleNamespace(id="ChatOutput-runtime", data={"type": "ChatOutput"}, display_name="Chat Output"),
+        types.SimpleNamespace(id="ChatInput-runtime", data={"type": "GaiAInput"}, display_name="GaiA Input"),
+        types.SimpleNamespace(id="ChatOutput-runtime", data={"type": "GaiAOutput"}, display_name="GaiA Output"),
     ]
     assert component._single_chat_input_id(vertices) == "ChatInput-runtime"
     assert component._single_chat_output_id(vertices) == "ChatOutput-runtime"
@@ -7264,6 +7399,8 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         "ChatInput-runtime",
         {"question": "현재 등록된 데이터셋 알려줘"},
         "ChatOutput-runtime",
+        input_supports_storage_toggle=True,
+        output_supports_storage_toggle=True,
     ) == {
         "ChatInput-runtime": {
             "input_value": "현재 등록된 데이터셋 알려줘",
@@ -7279,6 +7416,8 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     instance = component.CachedNamedRunFlowTool()
     instance._resolved_chat_input_id = "ChatInput-imported"
     instance._resolved_chat_output_id = "ChatOutput-imported"
+    instance._input_supports_storage_toggle = True
+    instance._output_supports_storage_toggle = True
     instance._attributes = {"flow_tweak_data": ToolQuestion()}
     assert instance._build_flow_tweak_data() == {
         "ChatInput-imported": {
@@ -7287,6 +7426,11 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         },
         "ChatOutput-imported": {"should_store_message": False},
     }
+    assert component._question_tweaks(
+        "ChatInput-runtime",
+        {"question": "외부 표준 GaiA 컴포넌트 호환"},
+        "ChatOutput-runtime",
+    ) == {"ChatInput-runtime": {"input_value": "외부 표준 GaiA 컴포넌트 호환"}}
 
     try:
         component._question_tweaks("ChatInput-runtime", {"ChatInput_runtime_input_value": "잘못된 키"})
@@ -7331,17 +7475,17 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         vertices=[
             types.SimpleNamespace(
                 id="ChatInput-current",
-                data={"type": "ChatInput"},
-                display_name="Chat Input",
+                data={"type": "GaiAInput", "node": {"template": {"input_value": {}}}},
+                display_name="GaiA Input",
                 is_output=False,
                 outputs=[],
             ),
             types.SimpleNamespace(
                 id="ChatOutput-current",
-                data={"type": "ChatOutput"},
-                display_name="Chat Output",
+                data={"type": "GaiAOutput", "node": {"template": {"should_store_message": {}}}},
+                display_name="GaiA Output",
                 is_output=True,
-                outputs=[{"name": "message"}],
+                outputs=[{"name": "message"}, {"name": "gaia_response"}],
             ),
             types.SimpleNamespace(
                 id="Api-current",
@@ -7389,7 +7533,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert runtime_instance.user_id == "parent-user"
     assert runtime_instance.flow_id_selected == current_flow_id
     assert runtime_instance._resolved_chat_input_id == "ChatInput-current"
-    assert runtime_instance._resolved_flow_output_target == ("ChatOutput-current", "message")
+    assert runtime_instance._resolved_flow_output_target == ("ChatOutput-current", "gaia_response")
     assert graph.vertices[1].is_output is True
     assert graph.vertices[2].is_output is False
 
@@ -7404,9 +7548,9 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     ]
     assert component._chat_output_target(graph, "ChatOutput-current") == (
         "ChatOutput-current",
-        "message",
+        "gaia_response",
     )
-    component._promote_graph_output(graph, ("ChatOutput-current", "message"))
+    component._promote_graph_output(graph, ("ChatOutput-current", "gaia_response"))
     assert [vertex.id for vertex in graph.vertices if vertex.is_output] == ["ChatOutput-current"]
 
     run_calls = []
@@ -7414,22 +7558,24 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     async def fake_run_outputs(*, user_id, output_type):
         assert runtime_instance._last_run_outputs is None
         run_calls.append(("run", user_id, output_type))
-        runtime_instance._resolved_flow_output_target = ("ChatOutput-current", "message")
+        runtime_instance._resolved_flow_output_target = ("ChatOutput-current", "gaia_response")
         runtime_instance._last_run_outputs = ["fresh"]
         return runtime_instance._last_run_outputs
 
     async def fake_resolve(*, vertex_id, output_name):
         run_calls.append(("resolve_output", vertex_id, output_name))
-        return "child answer"
+        return component.Data(data={"answer": "child answer", "metadata": {"docs": []}})
 
     runtime_instance._user_id = "user-1"
     runtime_instance._last_run_outputs = ["stale"]
     runtime_instance._get_cached_run_outputs = fake_run_outputs
     runtime_instance._resolve_flow_output = fake_resolve
-    assert asyncio.run(runtime_instance._run_selected_flow()) == "child answer"
+    child_message = asyncio.run(runtime_instance._run_selected_flow())
+    assert child_message.text == "child answer"
+    assert child_message.data["gaia_response"]["metadata"] == {"docs": []}
     assert run_calls == [
         ("run", "user-1", "any"),
-        ("resolve_output", "ChatOutput-current", "message"),
+        ("resolve_output", "ChatOutput-current", "gaia_response"),
     ]
 
 
@@ -7471,6 +7617,8 @@ def test_orchestrated_named_run_flow_tool_has_optional_ref_and_compact_result_co
         {"question": "이 LOT의 HOLD 이력을 알려줘", "upstream_result_ref": "result:lot-001"},
         "ChatOutput-runtime",
         "RequestLoader-runtime",
+        True,
+        True,
         True,
     ) == {
         "ChatInput-runtime": {
@@ -7555,17 +7703,20 @@ def test_route_v4_resolves_current_flow_by_name_and_promotes_selected_terminal(m
         vertices=[
             types.SimpleNamespace(
                 id="ChatInput-current",
-                data={"type": "ChatInput"},
-                display_name="Chat Input",
+                data={"type": "GaiAInput", "node": {"template": {"input_value": {}}}},
+                display_name="GaiA Input",
                 is_output=False,
                 outputs=[{"name": "message", "types": ["Message"]}],
             ),
             types.SimpleNamespace(
                 id="ChatOutput-current",
-                data={"type": "ChatOutput"},
-                display_name="Chat Output",
+                data={"type": "GaiAOutput", "node": {"template": {"should_store_message": {}}}},
+                display_name="GaiA Output",
                 is_output=True,
-                outputs=[{"name": "message", "types": ["Message"]}],
+                outputs=[
+                    {"name": "message", "types": ["Message"]},
+                    {"name": "gaia_response", "types": ["Data"]},
+                ],
             ),
             api_terminal,
         ],
@@ -7674,6 +7825,12 @@ def test_route_v3_unwraps_real_lfx_artifact_raw_and_message_shapes():
     assert message_contract["summary"] == "등록된 메타데이터는 9건입니다."
     assert message_contract["result_ref"] == ""
     assert message_contract["handoff_usable"] is False
+    gaia_contract = component.normalize_tool_result(
+        {"gaia_response": {"answer": "GaiA 메타데이터 답변", "metadata": {"docs": []}}},
+        tool_name="run_metadata_qa",
+    )
+    assert gaia_contract["status"] == "ok"
+    assert gaia_contract["summary"] == "GaiA 메타데이터 답변"
 
     error_contract = component.normalize_tool_result(
         {
@@ -7870,7 +8027,7 @@ def test_route_v4_promotes_configured_structured_terminal_for_current_child_grap
                 types.SimpleNamespace(
                     id=node["id"],
                     # 실제 LFX는 terminal topology가 아니라 component type/명시 flag로 초기 is_output을 정합니다.
-                    is_output=node_type in {"ChatOutput", "DataOutput", "TextOutput"} or explicit_output,
+                    is_output=node_type in {"ChatOutput", "GaiAOutput", "DataOutput", "TextOutput"} or explicit_output,
                     outputs=node["data"]["node"].get("outputs", []),
                 )
             )
@@ -8812,7 +8969,11 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
             continue
         flow = json.loads(path.read_text(encoding="utf-8"))
         chat_outputs = [node for node in flow["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]
+        input_adapters = [node for node in flow["data"]["nodes"] if node["data"].get("type") == "GaiAInputAdapter"]
+        output_adapters = [node for node in flow["data"]["nodes"] if node["data"].get("type") == "GaiAOutputAdapter"]
         assert len(chat_outputs) == 1, key
+        assert len(input_adapters) == 1, key
+        assert len(output_adapters) == 1, key
 
     for key in ("domain", "table_catalog", "main_flow_filter"):
         flow = json.loads(exports[key].read_text(encoding="utf-8"))
@@ -8830,6 +8991,8 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         assert not any(node_id.startswith("WriterDry-") or node_id.startswith("WriterLive-") for node_id in ids)
         assert len([node_id for node_id in ids if node_id.startswith("Writer-")]) == 1
         assert len(nodes_by_type.get("ChatOutput", [])) == 1
+        assert len(nodes_by_type.get("GaiAInputAdapter", [])) == 1
+        assert len(nodes_by_type.get("GaiAOutputAdapter", [])) == 1
         language_models = [
             node for node in flow["data"]["nodes"] if node["data"].get("type") == "LanguageModelComponent"
         ]
@@ -8878,8 +9041,8 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         (edge["source"], edge["data"]["sourceHandle"]["name"], edge["target"], edge["data"]["targetHandle"]["fieldName"])
         for edge in metadata_qa["data"]["edges"]
     }
-    assert len(qa_nodes) == 11
-    assert len(metadata_qa["data"]["edges"]) == 17
+    assert len(qa_nodes) == 13
+    assert len(metadata_qa["data"]["edges"]) == 19
     assert not {"Loader-domain-metadata-qa", "Loader-table-metadata-qa", "Loader-filter-metadata-qa"}.intersection(qa_nodes)
     snapshot_template = qa_nodes["SnapshotLoader-metadata-qa"]["data"]["node"]["template"]
     assert snapshot_template["mongo_database"]["value"] == "datagov"
@@ -8904,10 +9067,11 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         for node in qa_nodes.values()
     )
     assert len([node for node in qa_nodes.values() if node["data"].get("type") == "ChatOutput"]) == 1
+    assert len([node for node in qa_nodes.values() if node["data"].get("type") == "GaiAOutputAdapter"]) == 1
 
     router = json.loads(exports["router"].read_text(encoding="utf-8"))
-    assert len(router["data"]["nodes"]) == 14
-    assert len(router["data"]["edges"]) == 13
+    assert len(router["data"]["nodes"]) == 22
+    assert len(router["data"]["edges"]) == 21
     smart_router = next(node for node in router["data"]["nodes"] if node["id"] == "SmartRouter-api-router")
     assert len(smart_router["data"]["node"]["outputs"]) == 7
     assert smart_router["data"]["node"]["base_classes"] == []
@@ -8934,14 +9098,20 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     assert not any(node["data"]["node"].get("display_name") == "Run Flow" for node in router["data"]["nodes"])
     chat_input_edges = [edge for edge in router["data"]["edges"] if edge["source"] == "ChatInput-api-router"]
     assert len(chat_input_edges) == 1
-    assert chat_input_edges[0]["target"] == "SmartRouter-api-router"
-    assert chat_input_edges[0]["data"]["targetHandle"]["fieldName"] == "input_text"
+    assert chat_input_edges[0]["target"] == "GaiAInputAdapter-api-router"
+    assert chat_input_edges[0]["data"]["targetHandle"]["fieldName"] == "input_message"
+    assert any(
+        edge["source"] == "GaiAInputAdapter-api-router"
+        and edge["target"] == "SmartRouter-api-router"
+        and edge["data"]["targetHandle"]["fieldName"] == "input_text"
+        for edge in router["data"]["edges"]
+    )
     assert not any(
         edge["data"]["targetHandle"]["fieldName"] == "session_source"
         for edge in router["data"]["edges"]
     )
     for route_name, output_name in (("direct_answer", "category_6_result"), ("clarification", "category_7_result")):
-        output_id = f"ChatOutput-{route_name}"
+        output_id = f"GaiAOutputAdapter-{route_name}"
         assert any(
             edge["source"] == "SmartRouter-api-router"
             and edge["data"]["sourceHandle"]["name"] == output_name
@@ -8951,14 +9121,18 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         )
 
     tool_router = json.loads(exports["tool_router"].read_text(encoding="utf-8"))
-    assert len(tool_router["data"]["nodes"]) == 8
-    assert len(tool_router["data"]["edges"]) == 7
+    assert len(tool_router["data"]["nodes"]) == 10
+    assert len(tool_router["data"]["edges"]) == 9
     tools = [node for node in tool_router["data"]["nodes"] if node["id"].startswith("CachedFlowTool-")]
     agents = [node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "Agent"]
     outputs = [node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]
+    output_adapters = [
+        node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "GaiAOutputAdapter"
+    ]
     assert len(tools) == 5
     assert len(agents) == 1
     assert len(outputs) == 1
+    assert len(output_adapters) == 1
     agent_template = agents[0]["data"]["node"]["template"]
     assert agent_template["system_prompt"]["value"] == (
         ROOT / "langflow_components" / "route_flow_v2" / "SYSTEM_PROMPT_KO.md"
@@ -9003,9 +9177,28 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         assert (tool["id"], "component_as_tool", "Agent-agent-tool-router", "tools") in edge_keys
     assert {
         edge for edge in edge_keys if edge[0] == "ChatInput-agent-tool-router"
-    } == {("ChatInput-agent-tool-router", "message", "Agent-agent-tool-router", "input_value")}
+    } == {
+        ("ChatInput-agent-tool-router", "message", "GaiAInputAdapter-agent-tool-router", "input_message")
+    }
+    assert (
+        "GaiAInputAdapter-agent-tool-router",
+        "message",
+        "Agent-agent-tool-router",
+        "input_value",
+    ) in edge_keys
     assert not any(edge[3] == "session_source" for edge in edge_keys)
-    assert ("Agent-agent-tool-router", "response", "ChatOutput-agent-tool-router", "input_value") in edge_keys
+    assert (
+        "Agent-agent-tool-router",
+        "response",
+        "GaiAOutputAdapter-agent-tool-router",
+        "input_value",
+    ) in edge_keys
+    assert (
+        "GaiAOutputAdapter-agent-tool-router",
+        "message",
+        "ChatOutput-agent-tool-router",
+        "input_value",
+    ) in edge_keys
 
 def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contract():
     path = ROOT / "flow_exports" / "workflow_orchestrator_flow_v5_standalone.json"
@@ -9023,14 +9216,20 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
     }
 
     assert flow["endpoint_name"] == "metadata-driven-v5-workflow-orchestrator"
-    assert len(nodes) == 18
-    assert len(edges) == 26
+    assert len(nodes) == 20
+    assert len(edges) == 28
     assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
     assert not [node for node in nodes.values() if node["data"].get("type") == "Agent"]
     assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
     assert [
         node["id"] for node in nodes.values() if node["data"].get("type") == "ChatOutput"
     ] == ["ChatOutput-workflow-orchestrator"]
+    assert [
+        node["id"] for node in nodes.values() if node["data"].get("type") == "GaiAInputAdapter"
+    ] == ["GaiAInputAdapter-workflow-orchestrator"]
+    assert [
+        node["id"] for node in nodes.values() if node["data"].get("type") == "GaiAOutputAdapter"
+    ] == ["GaiAOutputAdapter-workflow-orchestrator"]
 
     source_contracts = {
         "WorkflowRegistryLoader-workflow-orchestrator": "route_flow_v4/00a_mongodb_workflow_registry_loader.py",
@@ -9066,26 +9265,28 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
     }
 
     expected_core_edges = {
-        ("ChatInput-workflow-orchestrator", "message", "PromptPlanner-workflow-orchestrator", "user_question", ""),
-        ("ChatInput-workflow-orchestrator", "message", "WorkflowRegistryLoader-workflow-orchestrator", "user_question", ""),
+        ("ChatInput-workflow-orchestrator", "message", "GaiAInputAdapter-workflow-orchestrator", "input_message", ""),
+        ("GaiAInputAdapter-workflow-orchestrator", "message", "PromptPlanner-workflow-orchestrator", "user_question", ""),
+        ("GaiAInputAdapter-workflow-orchestrator", "message", "WorkflowRegistryLoader-workflow-orchestrator", "user_question", ""),
         ("WorkflowRegistryLoader-workflow-orchestrator", "workflow_registry_json", "PromptPlanner-workflow-orchestrator", "workflow_registry_json", ""),
         ("WorkflowRegistryLoader-workflow-orchestrator", "workflow_registry_json", "WorkflowPlanParser-workflow-orchestrator", "workflow_registry_json", ""),
         ("PromptPlanner-workflow-orchestrator", "prompt", "LanguageModelPlanner-workflow-orchestrator", "input_value", ""),
         ("LanguageModelPlanner-workflow-orchestrator", "text_output", "WorkflowPlanParser-workflow-orchestrator", "workflow_input", ""),
-        ("ChatInput-workflow-orchestrator", "message", "WorkflowPlanParser-workflow-orchestrator", "user_question", ""),
+        ("GaiAInputAdapter-workflow-orchestrator", "message", "WorkflowPlanParser-workflow-orchestrator", "user_question", ""),
         ("WorkflowPlanParser-workflow-orchestrator", "loop_dataframe", "Loop-workflow-orchestrator", "data", ""),
         ("Loop-workflow-orchestrator", "item", "SequentialStepExecutor-workflow-orchestrator", "loop_item", ""),
         ("SequentialStepExecutor-workflow-orchestrator", "step_result", "Loop-workflow-orchestrator", "", "item"),
         ("WorkflowPlanParser-workflow-orchestrator", "workflow_plan", "FinalContext-workflow-orchestrator", "execution_context", ""),
         ("Loop-workflow-orchestrator", "done", "FinalContext-workflow-orchestrator", "loop_results", ""),
-        ("ChatInput-workflow-orchestrator", "message", "FinalContext-workflow-orchestrator", "user_question", ""),
+        ("GaiAInputAdapter-workflow-orchestrator", "message", "FinalContext-workflow-orchestrator", "user_question", ""),
         ("FinalContext-workflow-orchestrator", "question", "PromptFinal-workflow-orchestrator", "question", ""),
         ("FinalContext-workflow-orchestrator", "workflow_context", "PromptFinal-workflow-orchestrator", "workflow_context", ""),
         ("FinalContext-workflow-orchestrator", "synthesis_instruction", "PromptFinal-workflow-orchestrator", "synthesis_instruction", ""),
         ("PromptFinal-workflow-orchestrator", "prompt", "LanguageModelFinal-workflow-orchestrator", "input_value", ""),
         ("FinalContext-workflow-orchestrator", "final_context", "FinalResponse-workflow-orchestrator", "final_context", ""),
         ("LanguageModelFinal-workflow-orchestrator", "text_output", "FinalResponse-workflow-orchestrator", "final_model_response", ""),
-        ("FinalResponse-workflow-orchestrator", "message", "ChatOutput-workflow-orchestrator", "input_value", ""),
+        ("FinalResponse-workflow-orchestrator", "message", "GaiAOutputAdapter-workflow-orchestrator", "input_value", ""),
+        ("GaiAOutputAdapter-workflow-orchestrator", "message", "ChatOutput-workflow-orchestrator", "input_value", ""),
     }
     expected_tool_edges = {
         (node["id"], "component_as_tool", "SequentialStepExecutor-workflow-orchestrator", "tools", "")
@@ -9619,6 +9820,12 @@ def test_v5_data_analysis_builder_has_one_terminal_path_with_integrated_one_time
     assert [node_id for node_id, node in nodes.items() if node["data"].get("type") == "ChatOutput"] == [
         "ChatOutput-rwbTs"
     ]
+    assert [
+        node_id for node_id, node in nodes.items() if node["data"].get("type") == "GaiAInputAdapter"
+    ] == ["GaiAInputAdapter-data-analysis"]
+    assert [
+        node_id for node_id, node in nodes.items() if node["data"].get("type") == "GaiAOutputAdapter"
+    ] == ["GaiAOutputAdapter-data-analysis"]
 
 
 def test_v5_single_data_analysis_path_keeps_clear_failure_response_fallback():

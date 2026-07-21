@@ -63,26 +63,45 @@ def _limited_text(value: Any, limit: int) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-# 함수 설명: 현재 하위 Flow의 사용자 입력용 Chat Input ID를 실행 시점 그래프에서 정확히 하나 찾습니다.
+# 함수 설명: vertex가 legacy Chat 또는 회사 표준 GaiA 입·출력 역할인지 type/display/node ID로 판정합니다.
+def _is_io_vertex(vertex: Any, role: str) -> bool:
+    data = getattr(vertex, "data", {}) or {}
+    node_type = str(data.get("type") or "") if isinstance(data, dict) else ""
+    display_name = str(getattr(vertex, "display_name", "") or "")
+    vertex_id = str(getattr(vertex, "id", "") or "")
+    if role == "input":
+        return (
+            node_type in {"ChatInput", "GaiAInput"}
+            or display_name in {"Chat Input", "GaiA Input"}
+            or vertex_id.startswith("ChatInput-")
+        )
+    if role == "output":
+        return (
+            node_type in {"ChatOutput", "GaiAOutput"}
+            or display_name in {"Chat Output", "GaiA Output"}
+            or vertex_id.startswith("ChatOutput-")
+        )
+    return False
+
+
+# 함수 설명: 현재 하위 Flow의 사용자 입력용 Chat/GaiA Input ID를 실행 시점 그래프에서 정확히 하나 찾습니다.
 def _single_chat_input_id(vertices: Any) -> str:
     candidates = [
         str(vertex.id)
         for vertex in list(vertices or [])
-        if (getattr(vertex, "data", {}) or {}).get("type") == "ChatInput"
-        or getattr(vertex, "display_name", "") == "Chat Input"
+        if _is_io_vertex(vertex, "input")
     ]
     if len(candidates) != 1:
         raise ValueError("대상 Flow에는 사용자 입력용 Chat Input이 정확히 하나 있어야 합니다.")
     return candidates[0]
 
 
-# 함수 설명: 현재 하위 Flow의 답변 저장용 Chat Output ID를 실행 시점 그래프에서 정확히 하나 찾습니다.
+# 함수 설명: 현재 하위 Flow의 답변 반환용 Chat/GaiA Output ID를 실행 시점 그래프에서 정확히 하나 찾습니다.
 def _single_chat_output_id(vertices: Any) -> str:
     candidates = [
         str(vertex.id)
         for vertex in list(vertices or [])
-        if (getattr(vertex, "data", {}) or {}).get("type") == "ChatOutput"
-        or getattr(vertex, "display_name", "") == "Chat Output"
+        if _is_io_vertex(vertex, "output")
     ]
     if len(candidates) != 1:
         raise ValueError("대상 Flow에는 답변용 Chat Output이 정확히 하나 있어야 합니다.")
@@ -101,6 +120,17 @@ def _vertex_has_input(vertex: Any, input_name: str) -> bool:
         return True
     raw_params = getattr(vertex, "raw_params", {}) or {}
     return isinstance(raw_params, dict) and input_name in raw_params
+
+
+# 함수 설명: 선택한 node ID와 일치하는 runtime vertex를 정확히 하나 반환합니다.
+def _single_vertex(vertices: Any, vertex_id: Any) -> Any:
+    target_id = str(vertex_id or "").strip()
+    selected = [
+        vertex for vertex in list(vertices or []) if str(getattr(vertex, "id", "") or "") == target_id
+    ]
+    if len(selected) != 1:
+        raise ValueError("현재 하위 Flow에서 단일 I/O vertex를 확인할 수 없습니다.")
+    return selected[0]
 
 
 # 함수 설명: upstream_result_ref를 받을 component 입력 위치를 찾아 모호한 fan-out 연결을 차단합니다.
@@ -284,6 +314,8 @@ def _orchestration_tweaks(
     chat_output_id: Any = "",
     upstream_input_vertex_id: Any = "",
     accepts_upstream_result_ref: bool = False,
+    input_supports_storage_toggle: bool = False,
+    output_supports_storage_toggle: bool = False,
 ) -> dict[str, dict[str, Any]]:
     node_id = str(chat_input_id or "").strip()
     if not node_id:
@@ -300,14 +332,12 @@ def _orchestration_tweaks(
     if upstream_ref and not accepts_upstream_result_ref:
         raise ValueError("이 Tool의 대상 Flow는 upstream_result_ref 입력을 지원하지 않습니다.")
 
-    tweaks: dict[str, dict[str, Any]] = {
-        node_id: {
-            "input_value": question,
-            "should_store_message": False,
-        }
-    }
+    input_tweak: dict[str, Any] = {"input_value": question}
+    if input_supports_storage_toggle:
+        input_tweak["should_store_message"] = False
+    tweaks: dict[str, dict[str, Any]] = {node_id: input_tweak}
     output_id = str(chat_output_id or "").strip()
-    if output_id:
+    if output_id and output_supports_storage_toggle:
         tweaks[output_id] = {"should_store_message": False}
     if upstream_ref:
         upstream_node_id = str(upstream_input_vertex_id or "").strip()
@@ -403,6 +433,11 @@ def _unwrap_child_payload(value: Any, *, depth: int = 0) -> dict[str, Any]:
             if api_response is None:
                 return _adapter_error("empty_api_response", "api_response wrapper의 값이 비어 있습니다.")
             return _unwrap_child_payload(api_response, depth=depth + 1)
+        if "gaia_response" in value:
+            gaia_response = value.get("gaia_response")
+            if gaia_response is None:
+                return _adapter_error("empty_gaia_response", "gaia_response wrapper의 값이 비어 있습니다.")
+            return _unwrap_child_payload(gaia_response, depth=depth + 1)
         if _is_serialized_data_wrapper(value):
             serialized_data = value.get("data")
             serialized_message = _message_payload(value, serialized_data)
@@ -1005,6 +1040,10 @@ class OrchestratedNamedRunFlowTool(RunFlowBaseComponent):
         vertices = getattr(graph, "vertices", [])
         self._resolved_chat_input_id = _single_chat_input_id(vertices)
         self._resolved_chat_output_id = _single_chat_output_id(vertices)
+        input_vertex = _single_vertex(vertices, self._resolved_chat_input_id)
+        output_vertex = _single_vertex(vertices, self._resolved_chat_output_id)
+        self._input_supports_storage_toggle = _vertex_has_input(input_vertex, "should_store_message")
+        self._output_supports_storage_toggle = _vertex_has_input(output_vertex, "should_store_message")
         self._resolved_upstream_input_vertex_id = _single_named_input_vertex_id(
             vertices,
             "upstream_result_ref",
@@ -1074,6 +1113,8 @@ class OrchestratedNamedRunFlowTool(RunFlowBaseComponent):
             getattr(self, "_resolved_chat_output_id", ""),
             getattr(self, "_resolved_upstream_input_vertex_id", ""),
             bool(getattr(self, "accepts_upstream_result_ref", False)),
+            bool(getattr(self, "_input_supports_storage_toggle", False)),
+            bool(getattr(self, "_output_supports_storage_toggle", False)),
         )
 
     # 주요 메서드: Langflow toolkit이 만든 단일 Tool에 안정적인 이름·설명·return_direct 설정을 적용합니다.
