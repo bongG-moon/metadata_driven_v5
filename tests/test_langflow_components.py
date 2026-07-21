@@ -4805,6 +4805,8 @@ def test_langflow_prompt_templates_keep_domain_specific_examples_out_of_generic_
         / "data_analysis_flow"
         / "specialized_prompt_input_example_ko.md"
     ).read_text(encoding="utf-8")
+    assert "lot단위 조건 없이 장비 목록이나 작업 장비에 대한 질문은 equipment_assign을 사용한다." in specialized_prompt
+    assert "lot_status에 eqp_id가 있다는 이유만으로 장비 목록 질문을 lot_status로 처리하지 않는다." in specialized_prompt
     moved_to_specialized_prompt_terms = [
         "match_product_tokens",
         "sample_passthrough_helper",
