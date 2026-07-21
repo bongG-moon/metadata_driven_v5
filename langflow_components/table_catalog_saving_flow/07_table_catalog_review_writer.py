@@ -43,7 +43,9 @@ def review_and_write(payload_value: Any, review_response: Any = "", mongo_uri: s
     payload = _payload(payload_value)
     dry_run = bool(_dict(payload.get("request")).get("dry_run", True))
     action = _duplicate_action(payload)
-    deterministic_errors = _deterministic_errors(payload)
+    deterministic_errors = _unique_errors(
+        _deterministic_errors(payload) + _duplicate_lookup_errors(payload, action)
+    )
     llm_review = _json(review_response)
     review = _merge_review(llm_review, payload, deterministic_errors)
     ready = bool(review.get("ready_to_save"))
@@ -112,6 +114,28 @@ def _deterministic_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for path in _secret_paths(item):
             errors.append({"type": "credential_field_forbidden", "message": f"credential/secret 필드는 저장할 수 없습니다: {path}", "key": item_key, "field": path})
     return _unique_errors(errors)
+
+
+# 함수 설명: `_duplicate_lookup_errors()`는 05 조회기가 명시적으로 실패·건너뜀 경우 중복 정책 저장을 차단합니다.
+def _duplicate_lookup_errors(payload: dict[str, Any], action: str) -> list[dict[str, Any]]:
+    if action == "create_new":
+        return []
+    trace = _dict(payload.get("trace"))
+    if "duplicate_lookup" not in trace:
+        # 05 조회기를 거치지 않던 구버전 payload는 기존 호환성을 유지합니다.
+        return []
+    lookup = _dict(trace.get("duplicate_lookup"))
+    lookup_status = str(lookup.get("status") or "").strip().lower()
+    if lookup_status not in {"error", "skipped"}:
+        return []
+    return [
+        {
+            "type": "duplicate_lookup_unavailable",
+            "message": "기존 테이블 카탈로그 동일 key 조회를 완료하지 못해 중복 여부를 확정할 수 없으므로 저장하지 않았습니다.",
+            "lookup_status": lookup_status,
+            "lookup_errors": deepcopy(_list(lookup.get("errors"))),
+        }
+    ]
 
 
 # 함수 설명: `_upstream_binding_errors()`는 Flow 간 결과 전달에 쓰는 metadata binding을 추측 없이 실행 가능한 최소 스키마로 검증합니다.

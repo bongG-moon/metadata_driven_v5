@@ -8,13 +8,12 @@
 ```text
 Chat Input -> 00 Request Loader -> 03 Variables -> Saving Prompt -> Extraction Agent
 Request + Agent -> 04 Normalizer -> 05 동일 Key 조회기
-00 Existing Loader ---------------------> 05 동일 Key 조회기
 05 -> 07 단일 Writer -> 08 단일 Response -> 09 Message -> Chat Output 1개
                                       \-> 10 API
 ```
 
-- Existing Loader는 기존 전체 문서에서 `registration_trace`만 제외해 Matcher에 직접 전달한다. Request/LLM payload에는 싣지 않는다.
-- 로더 제한 밖 후보는 `05`가 해당 `dataset_key`를 MongoDB에서 정확 조회하므로 중복을 놓치지 않는다.
+- `05`는 후보가 확정된 뒤 해당 `dataset_key`만 MongoDB에서 정확 조회한다. 선행 전체 문서 loader는 사용하지 않는다.
+- `05`는 중복 판정용 읽기, `07`은 live 저장과 쓰기 직전 재확인 역할이므로 두 노드의 MongoDB 입력은 유지한다.
 - Dry Run과 Live 모두 metadata 추출 LLM 1회만 호출하며, Writer가 source config·SQL·credential을 결정론적으로 검증한다.
 - 그래프 분기가 없으므로 Playground용 Chat Output은 하나다.
 

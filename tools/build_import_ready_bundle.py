@@ -219,15 +219,15 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "335 passed",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 97/97 custom nodes to 84 real Python sources; 0 missing",
-            "korean_component_documentation": "85/85 Python sources and 1470/1470 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 291 embedded custom-code instances preserve 5382/5382 documented function instances; strict UTF-8/JSON checks passed",
+            "pytest": "374 passed",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 94/94 custom nodes to 81 real Python sources; 0 missing",
+            "korean_component_documentation": "82/82 Python sources and 1467/1467 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 282 embedded custom-code instances preserve 5385/5385 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "150/150 passed",
+            "langflow_lfx_node_templates": "147/147 passed",
             "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with five real tools",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter directly to their ChatOutput; 0 gate nodes",
             "router_single_entry_topology": "Chat Input has exactly one outgoing edge to Smart Router; 0 API-caller session fan-out edges",
@@ -239,7 +239,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
             "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
             "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 has 5/5 cached tools; Workflow Orchestrator has 6/6 tools that re-resolve the exact current Flow name and cache only the graph by its actual ID; all exported IDs are blank",
+            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 5/5 and Workflow Orchestrator 6/6 tools re-resolve the exact current Flow name and cache only the graph by its actual ID; all exported IDs are blank",
             "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current ChatInput ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
             "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent has one final ChatOutput",
             "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
@@ -249,9 +249,9 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "html_visualization_contract": "one result_ref-backed custom builder produces offline HTML/SVG, publishes absolute browser view/download URLs through the visible Report API input, and keeps raw HTML out of Workflow payloads; one ChatOutput and one separate API adapter expose a real terminal api_response",
             "workflow_orchestrator_registry": "visible MongoDB registry loader reads active workflow.registry.v1 items from agent_v4_workflow_skills; inline_seed is an explicit standalone test source, never an implicit fallback",
             "workflow_orchestrator_terminal_contract": "one final Language Model synthesis, one ChatOutput, and one terminal api_response; invalid or empty plans still reach the final error response",
-            "metadata_existing_loader": "4/4 saving flows connect ExistingLoader directly to Matcher",
+            "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
             "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-            "metadata_mongo_defaults": "19 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+            "metadata_mongo_defaults": "16 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
             "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
             "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
             "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes",
@@ -629,9 +629,9 @@ def _validate_bundle(
                     f"Edge {edge.get('id')} targets advanced input {edge.get('target')}.{target_field}; "
                     "Langflow 1.8.2 removes connections to advanced component fields during template refresh."
                 )
-    if mongo_default_nodes != 19 or snapshot_default_nodes != 1:
+    if mongo_default_nodes != 16 or snapshot_default_nodes != 1:
         raise ValueError(
-            "Expected 19 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
+            "Expected 16 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
             f"found standard={mongo_default_nodes}, snapshot={snapshot_default_nodes}."
         )
     return validated_edge_handle_count
@@ -685,7 +685,9 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
             or '"should_store_message": False' not in code
             or 'runtime_user_id = str(getattr(self, "user_id"' not in code
             or "self.user_id =" in code
-            or "UUID(requested_flow_id)" not in code
+            or "UUID(requested_flow_id)" in code
+            or "def _chat_output_target" not in code
+            or "def _promote_graph_output" not in code
         ):
             raise ValueError(f"{node_id} does not embed the stable question schema policy.")
         if "allowed_names" in code:
@@ -1098,13 +1100,13 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 335 passed
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 97/97 노드가 실제 Python 원본 84개에 매핑, 누락 0
+- 전체 pytest: 374 passed
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 94/94 노드가 실제 Python 원본 81개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과
 - Langflow 1.8.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.8.2 / LFX 0.3.4 node template: 150/150 passed
+- Langflow 1.8.2 / LFX 0.3.4 node template: 147/147 passed
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: 예전 정상 Flow와 같은 Smart Router -> Chat Output 직접 edge 2/2, FinalGate 0개
 - API Router 단일 진입 구조: Chat Input -> Smart Router edge 1개, API caller용 session fan-out edge 0개
@@ -1116,7 +1118,8 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
 - pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
-- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router는 이름 기반 Cached Run Flow Tool 5개 모두 Langflow의 현재 실행 `user_id` 범위에서 조회하며, `cache_flow=true`, `return_direct=true`, 고정 Flow ID 없음으로 구성됩니다. 최초 이름 조회 뒤에는 해석된 실제 ID를 우선 재사용합니다.
+- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router는 이름 기반 Cached Run Flow Tool 5개 모두 Langflow의 현재 실행 `user_id` 범위에서 매 실행 정확한 Flow 이름을 현재 ID로 다시 해석하며, `cache_flow=true`, `return_direct=true`, 고정 Flow ID 없음으로 구성됩니다. 해석된 실제 ID는 graph cache key로만 사용합니다.
+- Agent Tool Router는 하위 Flow에 화면 Message와 API 구조화 terminal이 함께 있어도 현재 `Chat Output.message`만 실행 출력으로 활성화합니다. 따라서 `return_direct=true`에서 질문/응답 분기가 중복 실행되지 않습니다.
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환하며, Data Analysis 기준 표준 26,338 bytes에서 339 bytes로 줄었습니다. 내부 Prompt/Helper/Repair Text Input은 제외됩니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. Chat Input은 Agent에만 한 번 연결됩니다.
 - 격리 import에서 현재 Langflow 실행 사용자로 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.

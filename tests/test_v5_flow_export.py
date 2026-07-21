@@ -435,7 +435,9 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     assert all(
         'runtime_user_id = str(getattr(self, "user_id"' in node["data"]["node"]["template"]["code"]["value"]
         and "self.user_id =" not in node["data"]["node"]["template"]["code"]["value"]
-        and "UUID(requested_flow_id)" in node["data"]["node"]["template"]["code"]["value"]
+        and "UUID(requested_flow_id)" not in node["data"]["node"]["template"]["code"]["value"]
+        and "def _chat_output_target" in node["data"]["node"]["template"]["code"]["value"]
+        and "def _promote_graph_output" in node["data"]["node"]["template"]["code"]["value"]
         for node in tools
     )
     tool_chat_edges = [
@@ -795,9 +797,14 @@ def test_v5_result_store_limits_qa_request_guards_and_targeted_existing_loaders_
     domain = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-domain-saving"))
     table = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-table-catalog-saving"))
     main_filter = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-main-flow-filter-saving"))
-    assert next(node for node in domain["data"]["nodes"] if node["id"] == "ExistingLoader-domain")["data"]["node"]["template"]["limit"]["value"] == "0"
-    assert next(node for node in table["data"]["nodes"] if node["id"] == "ExistingLoader-table_catalog")["data"]["node"]["template"]["limit"]["value"] == "0"
-    assert next(node for node in main_filter["data"]["nodes"] if node["id"] == "ExistingLoader-main_flow_filter")["data"]["node"]["template"]["limit"]["value"] == "0"
+    for flow, loader_id, matcher_id in (
+        (domain, "ExistingLoader-domain", "Matcher-domain"),
+        (table, "ExistingLoader-table_catalog", "Matcher-table_catalog"),
+        (main_filter, "ExistingLoader-main_flow_filter", "Matcher-main_flow_filter"),
+    ):
+        assert loader_id not in {node["id"] for node in flow["data"]["nodes"]}
+        assert "existing_items" not in flow["data"]["nodes"][[node["id"] for node in flow["data"]["nodes"]].index(matcher_id)]["data"]["node"]["template"]
+        assert all(edge["target"] != matcher_id or edge["data"]["targetHandle"].get("fieldName") != "existing_items" for edge in flow["data"]["edges"])
 
 
 def test_v5_single_file_ui_bundle_handles_parse_with_langflow_frontend_codec():

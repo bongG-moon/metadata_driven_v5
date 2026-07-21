@@ -38,7 +38,7 @@ class SavingSpec:
     slug: str
     label: str
     folder: str
-    existing_loader: str
+    existing_loader: str | None
     request: str
     variables: str
     prompt: str
@@ -71,9 +71,9 @@ class WorkflowToolRouteSpec:
 
 
 SAVING_SPECS = [
-    SavingSpec("domain", "도메인", "domain_saving_flow", "00_domain_existing_items_loader.py", "00_domain_saving_request_loader.py", "03_domain_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_domain_saving_result_normalizer.py", "05_domain_similarity_checker.py", "07_domain_review_writer.py", "08_domain_saving_response_builder.py", "09_domain_saving_message_adapter.py", "10_domain_saving_api_response_builder.py"),
-    SavingSpec("table_catalog", "테이블 카탈로그", "table_catalog_saving_flow", "00_table_catalog_existing_items_loader.py", "00_table_catalog_saving_request_loader.py", "03_table_catalog_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_table_catalog_saving_result_normalizer.py", "05_table_catalog_similarity_checker.py", "07_table_catalog_review_writer.py", "08_table_catalog_saving_response_builder.py", "09_table_catalog_saving_message_adapter.py", "10_table_catalog_saving_api_response_builder.py"),
-    SavingSpec("main_flow_filter", "메인 플로우 필터", "main_flow_filters_saving_flow", "00_main_flow_filter_existing_items_loader.py", "00_main_flow_filter_saving_request_loader.py", "03_main_flow_filter_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_main_flow_filter_saving_result_normalizer.py", "05_main_flow_filter_similarity_checker.py", "07_main_flow_filter_review_writer.py", "08_main_flow_filter_saving_response_builder.py", "09_main_flow_filter_saving_message_adapter.py", "10_main_flow_filter_saving_api_response_builder.py"),
+    SavingSpec("domain", "도메인", "domain_saving_flow", None, "00_domain_saving_request_loader.py", "03_domain_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_domain_saving_result_normalizer.py", "05_domain_similarity_checker.py", "07_domain_review_writer.py", "08_domain_saving_response_builder.py", "09_domain_saving_message_adapter.py", "10_domain_saving_api_response_builder.py"),
+    SavingSpec("table_catalog", "테이블 카탈로그", "table_catalog_saving_flow", None, "00_table_catalog_saving_request_loader.py", "03_table_catalog_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_table_catalog_saving_result_normalizer.py", "05_table_catalog_similarity_checker.py", "07_table_catalog_review_writer.py", "08_table_catalog_saving_response_builder.py", "09_table_catalog_saving_message_adapter.py", "10_table_catalog_saving_api_response_builder.py"),
+    SavingSpec("main_flow_filter", "메인 플로우 필터", "main_flow_filters_saving_flow", None, "00_main_flow_filter_saving_request_loader.py", "03_main_flow_filter_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_main_flow_filter_saving_result_normalizer.py", "05_main_flow_filter_similarity_checker.py", "07_main_flow_filter_review_writer.py", "08_main_flow_filter_saving_response_builder.py", "09_main_flow_filter_saving_message_adapter.py", "10_main_flow_filter_saving_api_response_builder.py"),
     SavingSpec("workflow_skill", "Workflow Skill", "workflow_skill_saving_flow", "00_workflow_skill_existing_items_loader.py", "00_workflow_skill_saving_request_loader.py", "03_workflow_skill_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_workflow_skill_saving_result_normalizer.py", "05_workflow_skill_similarity_checker.py", "07_workflow_skill_review_writer.py", "08_workflow_skill_saving_response_builder.py", "09_workflow_skill_saving_message_adapter.py", "10_workflow_skill_saving_api_response_builder.py"),
 ]
 
@@ -364,7 +364,8 @@ def _handle_text(value: dict[str, Any]) -> str:
 
 def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]:
     proto = prototypes(donor)
-    flow = empty_flow(donor, FLOW_DISPLAY_NAMES[f"{spec.slug}_saving"], f"Optimized {spec.label} metadata saving flow: one extraction LLM, existing-item MongoDB loading plus candidate matching, one deterministic writer for dry-run/live execution, and one compact response terminal.", f"metadata-driven-v5-{spec.slug.replace('_', '-')}-saving", ["v5", "standalone", "metadata-authoring", "optimized"])
+    lookup_description = "existing-item MongoDB loading plus candidate matching" if spec.existing_loader else "candidate-targeted MongoDB duplicate lookup"
+    flow = empty_flow(donor, FLOW_DISPLAY_NAMES[f"{spec.slug}_saving"], f"Optimized {spec.label} metadata saving flow: one extraction LLM, {lookup_description}, one deterministic writer for dry-run/live execution, and one compact response terminal.", f"metadata-driven-v5-{spec.slug.replace('_', '-')}-saving", ["v5", "standalone", "metadata-authoring", "optimized"])
     folder = COMPONENT_ROOT / spec.folder
     nodes: dict[str, dict[str, Any]] = {}
 
@@ -395,14 +396,12 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
         ),
     )
     normalizer = add("normalizer", custom_node(proto["custom"], f"Normalizer-{spec.slug}", folder / spec.normalizer, 1550, 0))
-    existing_loader = add("existing_loader", custom_node(proto["custom"], f"ExistingLoader-{spec.slug}", folder / spec.existing_loader, 1550, 340))
-    # 기존 Metadata 3종은 matcher가 후보 확정 뒤 exact identity만 조회하므로 선행 전체 scan을 생략합니다.
-    # Workflow Skill은 사용자가 기존 목록을 확인하고 replace/merge할 수 있도록 제한된 active 목록을 실제 연결합니다.
-    _set_value(
-        existing_loader["data"]["node"]["template"],
-        "limit",
-        "500" if spec.slug == "workflow_skill" else "0",
-    )
+    existing_loader = None
+    # Workflow Skill은 등록 목록을 계획에 함께 제공해야 하므로 제한된 active 목록을 실제 연결합니다.
+    # Domain/Table/Main Filter는 후보가 확정된 뒤 05가 exact key/identity만 조회하므로 선행 loader를 만들지 않습니다.
+    if spec.existing_loader:
+        existing_loader = add("existing_loader", custom_node(proto["custom"], f"ExistingLoader-{spec.slug}", folder / spec.existing_loader, 1550, 340))
+        _set_value(existing_loader["data"]["node"]["template"], "limit", "500")
     matcher = add("matcher", custom_node(proto["custom"], f"Matcher-{spec.slug}", folder / spec.matcher, 1850, 0))
     writer = add("writer", custom_node(proto["custom"], f"Writer-{spec.slug}", folder / spec.writer, 2150, 0))
     response = add("response", custom_node(proto["custom"], f"Response-{spec.slug}", folder / spec.response, 2450, 0))
@@ -418,7 +417,8 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
     add_edge(flow, request, "payload_out", normalizer, "payload")
     add_edge(flow, extraction_model, "text_output", normalizer, "llm_response")
     add_edge(flow, normalizer, "payload_out", matcher, "payload")
-    add_edge(flow, existing_loader, "existing_items", matcher, "existing_items")
+    if existing_loader is not None:
+        add_edge(flow, existing_loader, "existing_items", matcher, "existing_items")
     add_edge(flow, matcher, "payload_out", writer, "payload")
     add_edge(flow, writer, "payload_out", response, "payload")
     add_edge(flow, response, "payload_out", message, "payload")

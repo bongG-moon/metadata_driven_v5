@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from uuid import UUID
 
 from lfx.base.tools.run_flow import RunFlowBaseComponent
 from lfx.custom.custom_component.component import Component
@@ -101,22 +100,59 @@ def _question_tool_field() -> dict[str, Any]:
     }
 
 
-# 함수 설명: `_single_graph_output_target()`은 선택된 하위 Flow의 단일 terminal output 위치를 실행 시점에 검증합니다.
-def _single_graph_output_target(graph: Any) -> tuple[str, str]:
-    """Return the sole terminal child output without registering dynamic methods."""
-    successor_map = getattr(graph, "successor_map", {}) or {}
-    targets: list[tuple[str, str]] = []
-    for vertex in list(getattr(graph, "vertices", []) or []):
-        if not getattr(vertex, "is_output", False) or successor_map.get(vertex.id, []):
-            continue
-        for output in list(getattr(vertex, "outputs", []) or []):
-            output_name = output.get("name") if isinstance(output, dict) else getattr(output, "name", None)
-            if output_name:
-                targets.append((str(vertex.id), str(output_name)))
+# 함수 설명: 현재 하위 Flow의 단일 Chat Output.message를 Agent가 반환할 실행 대상으로 확정합니다.
+# API용 구조화 terminal이 함께 있어도 화면 답변 계약은 Chat Output 하나만 사용합니다.
+def _chat_output_target(graph: Any, chat_output_id: Any) -> tuple[str, str]:
+    """Return the terminal message output of the resolved Chat Output vertex."""
+    target_id = str(chat_output_id or "").strip()
+    if not target_id:
+        raise ValueError("현재 하위 Flow의 Chat Output ID를 확인할 수 없습니다.")
 
-    if len(targets) != 1:
-        raise ValueError("대상 Flow에는 Agent 도구로 사용할 최종 출력이 정확히 하나 있어야 합니다.")
-    return targets[0]
+    successor_map = getattr(graph, "successor_map", {}) or {}
+    vertices = [
+        vertex
+        for vertex in list(getattr(graph, "vertices", []) or [])
+        if str(getattr(vertex, "id", "") or "") == target_id
+    ]
+    if len(vertices) != 1:
+        raise ValueError("현재 하위 Flow에서 단일 Chat Output vertex를 확인할 수 없습니다.")
+
+    vertex = vertices[0]
+    successors = successor_map.get(getattr(vertex, "id", None), successor_map.get(target_id, []))
+    if successors:
+        raise ValueError("하위 Flow의 Chat Output은 후속 연결이 없는 최종 노드여야 합니다.")
+
+    message_outputs: list[str] = []
+    for output in list(getattr(vertex, "outputs", []) or []):
+        output_name = output.get("name") if isinstance(output, dict) else getattr(output, "name", None)
+        if str(output_name or "").strip() == "message":
+            message_outputs.append("message")
+    if len(message_outputs) != 1:
+        raise ValueError("하위 Flow의 Chat Output에는 message 출력이 정확히 하나 있어야 합니다.")
+    return target_id, "message"
+
+
+# 함수 설명: 선택한 Chat Output만 현재 child 실행의 공식 출력으로 활성화합니다.
+# 별도의 API terminal이 있는 Flow도 Route V2에서는 화면 Message 하나만 실행·반환합니다.
+def _promote_graph_output(graph: Any, target: tuple[str, str]) -> None:
+    vertex_id, output_name = target
+    if output_name != "message":
+        raise ValueError("Route V2의 최종 출력은 Chat Output.message여야 합니다.")
+
+    vertices = list(getattr(graph, "vertices", []) or [])
+    selected = [vertex for vertex in vertices if str(getattr(vertex, "id", "") or "") == str(vertex_id)]
+    if len(selected) != 1:
+        raise ValueError("선택한 Chat Output이 현재 child graph와 일치하지 않습니다.")
+
+    try:
+        for vertex in vertices:
+            vertex.is_output = vertex is selected[0]
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("선택한 Chat Output을 Langflow 단일 실행 출력으로 등록하지 못했습니다.") from exc
+
+    active_outputs = [vertex for vertex in vertices if bool(getattr(vertex, "is_output", False))]
+    if active_outputs != selected:
+        raise ValueError("선택하지 않은 child Flow 출력의 비활성화가 반영되지 않았습니다.")
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
@@ -187,7 +223,7 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         )
     ]
 
-    # 주요 메서드: Langflow 실행 사용자로 대상 Flow 이름 또는 이미 해석된 ID를 조회해 재사용 가능한 그래프를 가져옵니다.
+    # 주요 메서드: Langflow 실행 사용자로 대상 Flow 이름을 현재 ID에 다시 해석해 재사용 가능한 그래프를 가져옵니다.
     # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
     async def get_graph(
         self,
@@ -195,6 +231,7 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         flow_id_selected: str | None = None,
         updated_at: str | None = None,
     ):
+        del flow_id_selected
         flow_name = str(flow_name_selected or getattr(self, "flow_name_selected", "") or "").strip()
         if not flow_name:
             raise ValueError("대상 Flow 이름이 필요합니다.")
@@ -207,24 +244,9 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
                 "Router 실행 사용자 ID가 없어 하위 Flow를 조회할 수 없습니다. "
                 "Router와 하위 Flow를 같은 사용자로 import하고 같은 사용자/API key로 실행하세요."
             )
-        # 최초 import에서는 ID가 비어 있으므로 이름으로 해석하되, 한 번 얻은 실제 ID는 이후 실행과 캐시에 우선 사용합니다.
-        # UUID가 아니거나 현재 이름과 다른 ID는 export/import 과정의 오래된 값으로 보고 정확한 이름으로 다시 해석합니다.
-        resolved_flow = None
-        requested_flow_id = str(flow_id_selected or getattr(self, "flow_id_selected", "") or "").strip()
-        if requested_flow_id:
-            try:
-                UUID(requested_flow_id)
-            except (TypeError, ValueError, AttributeError):
-                requested_flow_id = ""
-
-        if requested_flow_id:
-            id_flow = await super().get_flow(flow_name_selected=None, flow_id_selected=requested_flow_id)
-            id_flow_data = getattr(id_flow, "data", None) or {}
-            id_flow_name = str(id_flow_data.get("name") or "").strip()
-            if id_flow_data.get("id") and (not id_flow_name or id_flow_name == flow_name):
-                resolved_flow = id_flow
-
-        flow = resolved_flow or await super().get_flow(flow_name_selected=flow_name, flow_id_selected=None)
+        # Import·복제·재배포 뒤 hidden ID가 이전 Flow를 가리킬 수 있으므로 매 실행마다 정확한 이름을 현재 ID로 해석합니다.
+        # 해석된 실제 ID는 아래 graph cache key로만 사용하며 export에는 고정하지 않습니다.
+        flow = await super().get_flow(flow_name_selected=flow_name, flow_id_selected=None)
         flow_data = getattr(flow, "data", None) or {}
         actual_id = str(flow_data.get("id") or "").strip()
         actual_updated_at = _as_iso_text(flow_data.get("updated_at")) or _as_iso_text(updated_at)
@@ -248,7 +270,9 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         )
         self._resolved_chat_input_id = _single_chat_input_id(getattr(graph, "vertices", []))
         self._resolved_chat_output_id = _single_chat_output_id(getattr(graph, "vertices", []))
-        self._resolved_flow_output_target = _single_graph_output_target(graph)
+        target = _chat_output_target(graph, self._resolved_chat_output_id)
+        _promote_graph_output(graph, target)
+        self._resolved_flow_output_target = target
         return graph
 
     # 주요 메서드: `get_required_data()`는 graph 조회 없이 고정 question schema와 lazy output만 구성합니다.

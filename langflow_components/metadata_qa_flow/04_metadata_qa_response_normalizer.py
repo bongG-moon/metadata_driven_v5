@@ -21,13 +21,14 @@ from lfx.schema.data import Data
 
 AUTHORITATIVE_CONTEXT_TABLE_TYPES = {
     "available_sources",
+    "available_domains",
     "required_params",
     "calculation_logic_list",
     "product_domain_info",
     "product_condition",
     "question_to_dataset",
 }
-ALWAYS_USE_CONTEXT_TABLE_TYPES = {"available_sources", "calculation_logic_list", "product_domain_info", "product_condition"}
+ALWAYS_USE_CONTEXT_TABLE_TYPES = {"available_sources", "available_domains", "calculation_logic_list", "product_domain_info", "product_condition"}
 
 
 # 주요 함수: LLM QA 결과를 근거 문맥과 결합해 안정적인 답변 계약으로 정규화합니다.
@@ -63,6 +64,7 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
     columns = _string_list(table.get("columns")) or _columns_from_rows(_row_list(table.get("rows")))
     rows = _row_list(table.get("rows"))
     catalog_summary = _catalog_summary_for_response(context, len(rows))
+    domain_summary = _domain_summary_for_response(context, len(rows))
     source_refs = _source_refs_for_answer(answer_type, context, parsed, use_context_table)
     warnings = _list(parsed.get("warnings"))
     sql_blocks = _list(parsed_sections.get("sql_blocks")) or _list(parsed.get("sql_blocks")) or fallback.get("sql_blocks", [])
@@ -71,6 +73,7 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
         answer_sections = _sync_answer_sections_from_context(answer_sections, answer_type, answer_message, summary, table, source_refs, context)
     answer_sections = _compact_answer_sections(answer_sections, columns, len(rows))
     answer_sections = _attach_catalog_summary(answer_sections, catalog_summary)
+    answer_sections = _attach_domain_summary(answer_sections, domain_summary)
 
     next_payload = payload
     next_payload["response_type"] = "metadata_qa"
@@ -89,6 +92,8 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
     }
     if catalog_summary:
         next_payload["metadata_qa"]["catalog_summary"] = catalog_summary
+    if domain_summary:
+        next_payload["metadata_qa"]["domain_summary"] = domain_summary
     next_payload["data"] = {"columns": columns, "rows": rows, "row_count": len(rows)}
     next_payload["state"] = {
         **_dict(next_payload.get("state")),
@@ -111,6 +116,7 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
         "answer_policy_reason": str(answer_policy.get("reason") or ""),
         "used_context_table": use_context_table,
         "catalog_summary": deepcopy(catalog_summary),
+        "domain_summary": deepcopy(domain_summary),
     }
     next_payload["trace"] = trace
     return next_payload
@@ -198,6 +204,28 @@ def _catalog_summary_for_response(context: dict[str, Any], returned_count: int) 
     return summary
 
 
+# 함수 설명: `_domain_summary_for_response()`는 도메인 목록 Context의 전체·표시·잘림 건수를 최종 응답 행 수와 맞춥니다.
+def _domain_summary_for_response(context: dict[str, Any], returned_count: int) -> dict[str, Any]:
+    if str(context.get("answer_mode") or "") != "available_domains":
+        return {}
+    summary = deepcopy(_dict(context.get("domain_summary")))
+    try:
+        total_count = max(0, int(summary.get("total_count", returned_count)))
+    except Exception:
+        total_count = returned_count
+    total_count_exact = bool(summary.get("total_count_exact", True))
+    summary.update(
+        {
+            "request_kind": str(summary.get("request_kind") or "list"),
+            "total_count": total_count,
+            "returned_count": max(0, int(returned_count)),
+            "truncated": (not total_count_exact) or returned_count < total_count,
+            "total_count_exact": total_count_exact,
+        }
+    )
+    return summary
+
+
 # 함수 설명: `_attach_catalog_summary()`는 rows를 복제하지 않고 detail table에 전체·반환·잘림 건수만 덧붙입니다.
 def _attach_catalog_summary(answer_sections: dict[str, Any], catalog_summary: dict[str, Any]) -> dict[str, Any]:
     sections = deepcopy(answer_sections) if isinstance(answer_sections, dict) else {}
@@ -208,6 +236,20 @@ def _attach_catalog_summary(answer_sections: dict[str, Any], catalog_summary: di
     detail["returned_count"] = catalog_summary.get("returned_count", 0)
     detail["truncated"] = bool(catalog_summary.get("truncated"))
     detail["total_count_exact"] = bool(catalog_summary.get("total_count_exact", True))
+    sections["detail_table"] = detail
+    return sections
+
+
+# 함수 설명: `_attach_domain_summary()`는 도메인 목록의 전체·반환·잘림 건수를 rows 복제 없이 detail table에 기록합니다.
+def _attach_domain_summary(answer_sections: dict[str, Any], domain_summary: dict[str, Any]) -> dict[str, Any]:
+    sections = deepcopy(answer_sections) if isinstance(answer_sections, dict) else {}
+    if not domain_summary:
+        return sections
+    detail = _dict(sections.get("detail_table"))
+    detail["total_count"] = domain_summary.get("total_count", 0)
+    detail["returned_count"] = domain_summary.get("returned_count", 0)
+    detail["truncated"] = bool(domain_summary.get("truncated"))
+    detail["total_count_exact"] = bool(domain_summary.get("total_count_exact", True))
     sections["detail_table"] = detail
     return sections
 
@@ -256,7 +298,7 @@ def _sync_answer_sections_from_context(
     current = _dict(sections.get("detail_table"))
     sections["summary"] = {"headline": answer_message, "description": summary}
     sections["key_points"] = _key_points(answer_type, rows, context)
-    title = _table_title(answer_type) if answer_type in {"available_sources"} else str(current.get("title") or _table_title(answer_type))
+    title = _table_title(answer_type) if answer_type in {"available_sources", "available_domains"} else str(current.get("title") or _table_title(answer_type))
     sections["detail_table"] = {
         "title": title,
         "columns": columns,
@@ -265,14 +307,14 @@ def _sync_answer_sections_from_context(
         "display_limit": _display_limit(answer_type),
     }
     sections["usage_examples"] = _usage_examples(answer_type, {})
-    sections["related_items"] = [] if answer_type in {"available_sources"} else [ref for ref in source_refs if isinstance(ref, dict)]
-    sections["show_related_items"] = answer_type not in {"available_sources"}
+    sections["related_items"] = [] if answer_type in {"available_sources", "available_domains"} else [ref for ref in source_refs if isinstance(ref, dict)]
+    sections["show_related_items"] = answer_type not in {"available_sources", "available_domains"}
     return sections
 
 
 # 함수 설명: `_display_limit()`는 제한값을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_limit(answer_type: str) -> int:
-    return 50 if answer_type in {"available_sources"} else 12
+    return 50 if answer_type in {"available_sources", "available_domains"} else 12
 
 
 # 함수 설명: `_fallback_answer()`는 LLM 출력이 비어도 답변 모드와 실제 context에 근거한 결정론적 기본 답변을 만듭니다.
@@ -297,6 +339,9 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, sql_blocks, source_refs, context)
     if answer_mode == "available_sources":
         message = _available_sources_message(rows, context)
+        return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
+    if answer_mode == "available_domains":
+        message = _available_domains_message(rows, context)
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "dataset_detail":
         target = str(rows[0].get("display_name") or rows[0].get("key") or "요청한 데이터셋") if rows else "요청한 데이터셋"
@@ -378,8 +423,8 @@ def _build_answer_sections(
         },
         "sql_blocks": [block for block in sql_blocks if isinstance(block, dict)],
         "usage_examples": _usage_examples(answer_type, context),
-        "related_items": [] if answer_type in {"available_sources"} else [ref for ref in source_refs if isinstance(ref, dict)][:10],
-        "show_related_items": answer_type not in {"available_sources"},
+        "related_items": [] if answer_type in {"available_sources", "available_domains"} else [ref for ref in source_refs if isinstance(ref, dict)][:10],
+        "show_related_items": answer_type not in {"available_sources", "available_domains"},
         "route_hint": _route_hint(answer_type),
         "warnings": [warning for warning in warnings if isinstance(warning, dict)],
     }
@@ -392,6 +437,11 @@ def _service_table(answer_type: str, table: dict[str, Any]) -> dict[str, Any]:
         return {
             "columns": ["데이터셋", "데이터셋 키", "분류", "연결 방식", "DB/소스", "필수 조건"],
             "rows": [_available_source_row(row) for row in rows],
+        }
+    if answer_type == "available_domains":
+        return {
+            "columns": ["구분", "도메인", "도메인 키", "별칭", "설명"],
+            "rows": [_available_domain_row(row) for row in rows],
         }
     if answer_type in {"product_domain_info", "product_condition"}:
         return {
@@ -443,9 +493,11 @@ def _calculation_rule_row(row: dict[str, Any]) -> dict[str, Any]:
 def _domain_section_label(value: Any) -> str:
     text = str(value or "").strip()
     labels = {
+        "process_groups": "공정 그룹",
+        "product_terms": "제품 조건",
+        "quantity_terms": "수량 용어",
         "product_key_columns": "제품 키",
         "analysis_recipes": "분석 규칙",
-        "quantity_terms": "수량 기준",
         "metric_terms": "계산 지표",
         "calculation_rules": "계산 규칙",
         "pandas_function_cases": "분석 함수",
@@ -467,6 +519,18 @@ def _available_source_row(row: dict[str, Any]) -> dict[str, Any]:
         "연결 방식": _source_type_label(source_type),
         "DB/소스": db_source,
         "필수 조건": required_params or "없음",
+    }
+    return {key: item for key, item in result.items() if item not in (None, "", [], {})}
+
+
+# 함수 설명: `_available_domain_row()`는 내부 도메인 문서를 JSON 없이 사람이 읽기 좋은 목록 행으로 변환합니다.
+def _available_domain_row(row: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        "구분": _domain_section_label(row.get("section")),
+        "도메인": row.get("display_name") or row.get("key"),
+        "도메인 키": row.get("key"),
+        "별칭": row.get("aliases"),
+        "설명": row.get("description"),
     }
     return {key: item for key, item in result.items() if item not in (None, "", [], {})}
 
@@ -517,8 +581,39 @@ def _available_sources_message(rows: list[dict[str, Any]], context: dict[str, An
     )
 
 
+# 함수 설명: `_available_domains_message()`는 등록된 도메인 전체·표시 건수와 section 구성을 짧게 요약합니다.
+def _available_domains_message(rows: list[dict[str, Any]], context: dict[str, Any] | None = None) -> str:
+    rows = [_available_domain_row(row) for row in rows] if rows and "구분" not in rows[0] else rows
+    summary = _dict(_dict(context).get("domain_summary"))
+    total = int(summary.get("total_count", len(rows)))
+    returned_count = int(summary.get("returned_count", len(rows)))
+    total_count_exact = bool(summary.get("total_count_exact", True))
+    truncated = bool(summary.get("truncated"))
+    total_text = f"총 {total}개" if total_count_exact else f"최소 {total}개"
+    display_text = f" 이 중 {returned_count}개를 표시합니다." if truncated else ""
+    section_counts = _count_by(rows, "구분")
+    section_text = ", ".join(f"{key} {value}개" for key, value in section_counts.items() if key)
+    suffix = f" 구분별로는 {section_text}입니다." if section_text else ""
+    return f"현재 조회된 도메인 메타데이터는 {total_text}입니다.{display_text}{suffix}"
+
+
 # 함수 설명: `_key_points()`는 구조화 응답에서 사용자가 먼저 확인할 핵심 요약 문장을 추출합니다.
 def _key_points(answer_type: str, rows: list[dict[str, Any]], context: dict[str, Any] | None = None) -> list[str]:
+    if answer_type == "available_domains" and rows:
+        domain_rows = [_available_domain_row(row) for row in rows] if "구분" not in rows[0] else rows
+        summary = _dict(_dict(context).get("domain_summary"))
+        total_count = int(summary.get("total_count", len(domain_rows)))
+        returned_count = int(summary.get("returned_count", len(domain_rows)))
+        total_count_exact = bool(summary.get("total_count_exact", True))
+        truncated = bool(summary.get("truncated"))
+        count_point = f"총 {total_count}개 도메인이 등록되어 있습니다." if total_count_exact else f"등록된 도메인은 최소 {total_count}개입니다."
+        if truncated:
+            count_point += f" 현재 {returned_count}개를 표시합니다."
+        points = [count_point]
+        section_counts = _count_by(domain_rows, "구분")
+        if section_counts:
+            points.append("구분별 개수: " + ", ".join(f"{key} {value}개" for key, value in section_counts.items() if key))
+        return points
     if answer_type != "available_sources" or not rows:
         return []
     catalog_summary = _catalog_summary_for_response(_dict(context), len(rows))
@@ -559,6 +654,7 @@ def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
 def _table_title(answer_type: str) -> str:
     return {
         "available_sources": "조회 가능한 데이터",
+        "available_domains": "조회 가능한 도메인",
         "dataset_detail": "데이터셋 등록 정보",
         "required_params": "필수 조회 조건",
         "dataset_sql": "데이터셋 등록 정보",
@@ -581,6 +677,11 @@ def _usage_examples(answer_type: str, context: dict[str, Any]) -> list[str]:
             "production_today 데이터셋의 쿼리문을 보여줘",
             "wip_today 데이터셋의 필수 조건과 용도를 알려줘",
             "생산량 분석에는 어떤 데이터셋을 써야 해?",
+        ],
+        "available_domains": [
+            "공정 그룹 도메인 목록을 보여줘",
+            "제품 그룹 관련 등록된 도메인 정보를 알려줘",
+            "생산량은 어떤 도메인 규칙으로 계산돼?",
         ],
         "dataset_detail": ["이 데이터로 답할 수 있는 대표 질문을 알려줘"],
         "required_params": ["어제 기준으로 다시 조회해줘"],

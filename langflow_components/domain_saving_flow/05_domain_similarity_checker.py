@@ -2,8 +2,7 @@
 # =============================================================================
 # 컴포넌트 개요: 05 도메인 동일 Key 조회기
 # 역할: 후보 생성 후 같은 section의 exact key와 유일한 key/alias/display_name identity를 조회해 canonical 대상을 결정합니다.
-# 주요 입력: 페이로드 (payload) · 필수, 기존 항목(호환용) (existing_items), MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스
-#        (mongo_database), 컬렉션 이름 (collection_name)
+# 주요 입력: 페이로드 (payload) · 필수, MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 컬렉션 이름 (collection_name)
 # 주요 출력: 페이로드 출력 (payload_out)
 # 처리 흐름: 도메인 후보와 기존 문서의 canonical key 또는 허용된 identity 충돌을 찾아 저장 정책 결정에 필요한 match 정보를 만듭니다.
 # 유지보수 포인트: LLM은 후보 작성에만 사용하고 key 충돌·필수 필드·비밀값·실제 저장 여부는 Python에서 결정론적으로 판정합니다.
@@ -38,6 +37,14 @@ GENERIC_IDENTITY_TOKENS = {
     "그룹",
     "도메인",
     "메타데이터",
+}
+IDENTITY_SECTION_CANDIDATE_LIMIT = 500
+IDENTITY_PROJECTION = {
+    "_id": 1,
+    "section": 1,
+    "key": 1,
+    "payload.aliases": 1,
+    "payload.display_name": 1,
 }
 
 
@@ -239,7 +246,7 @@ def _missing_candidates(items: list[dict[str, Any]], existing_by_id: dict[str, d
     return missing
 
 
-# 함수 설명: `_load_candidates()`는 후보 key에 해당하는 기존 MongoDB 문서만 추가 조회해 비교 범위를 최소화합니다.
+# 함수 설명: `_load_candidates()`는 exact key와 같은 section의 최소 identity projection만 조회해 비교 범위를 제한합니다.
 def _load_candidates(items: list[dict[str, Any]], mongo_uri: str, mongo_database: str, collection_name: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     uri, database, collection = _resolve_mongo_config(mongo_uri, mongo_database, collection_name)
     if not uri:
@@ -251,6 +258,9 @@ def _load_candidates(items: list[dict[str, Any]], mongo_uri: str, mongo_database
         docs = []
         seen_ids = set()
         identity_query_count = 0
+        identity_candidate_count = 0
+        section_candidates: dict[str, list[dict[str, Any]]] = {}
+        truncated_sections: list[str] = []
         for doc_id in dict.fromkeys(_doc_id(item) for item in items if _doc_id(item)):
             doc = target.find_one({"_id": doc_id})
             if isinstance(doc, dict):
@@ -260,14 +270,40 @@ def _load_candidates(items: list[dict[str, Any]], mongo_uri: str, mongo_database
             query = _identity_query(item)
             if not query:
                 continue
-            identity_query_count += 1
-            for doc in target.find(query).limit(50):
+            section_key = _section_token(item.get("section"))
+            if section_key not in section_candidates:
+                identity_query_count += 1
+                section_docs = list(
+                    target.find(query, IDENTITY_PROJECTION).limit(IDENTITY_SECTION_CANDIDATE_LIMIT + 1)
+                )
+                if len(section_docs) > IDENTITY_SECTION_CANDIDATE_LIMIT:
+                    truncated_sections.append(str(item.get("section") or ""))
+                    section_docs = section_docs[:IDENTITY_SECTION_CANDIDATE_LIMIT]
+                section_candidates[section_key] = [doc for doc in section_docs if isinstance(doc, dict)]
+                identity_candidate_count += len(section_candidates[section_key])
+            for doc in section_candidates[section_key]:
                 doc_id = _doc_id(doc)
                 is_identity_match = isinstance(doc, dict) and bool(_identity_matches(item, [doc]))
                 if is_identity_match and doc_id and doc_id not in seen_ids:
                     docs.append(deepcopy(doc))
                     seen_ids.add(doc_id)
-        return docs, {"status": "ok", "database": database, "collection_name": collection, "count": len(docs), "identity_query_count": identity_query_count, "errors": []}
+        errors = [
+            {
+                "type": "identity_section_candidate_limit_exceeded",
+                "message": "같은 section의 identity 후보가 안전 조회 한도를 초과해 중복 여부를 확정하지 못했습니다.",
+                "sections": sorted(set(truncated_sections)),
+                "limit": IDENTITY_SECTION_CANDIDATE_LIMIT,
+            }
+        ] if truncated_sections else []
+        return docs, {
+            "status": "error" if errors else "ok",
+            "database": database,
+            "collection_name": collection,
+            "count": len(docs),
+            "identity_query_count": identity_query_count,
+            "identity_candidate_count": identity_candidate_count,
+            "errors": errors,
+        }
     except Exception as exc:
         return [], {"status": "error", "database": database, "collection_name": collection, "count": 0, "errors": [{"type": "mongo_duplicate_lookup_error", "message": str(exc)}]}
     finally:
@@ -284,28 +320,18 @@ def _resolve_mongo_config(mongo_uri: str, mongo_database: str, collection_name: 
     )
 
 
-# 함수 설명: `_identity_query()`는 후보 identity와 겹칠 수 있는 기존 도메인 문서만 조회하는 MongoDB 조건을 만듭니다.
+# 함수 설명: `_identity_query()`는 전체 컬렉션 대신 후보와 같은 section의 identity 문서만 읽는 MongoDB 조건을 만듭니다.
+# key·alias·display name은 MongoDB의 raw 문자열 비교로 미리 거르지 않고 Python 정규화로 최종 판정합니다.
 def _identity_query(item: dict[str, Any]) -> dict[str, Any]:
     section = str(item.get("section") or "").strip()
-    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
-    aliases = payload.get("aliases") if isinstance(payload.get("aliases"), list) else []
-    values = list(
-        dict.fromkeys(
-            str(value or "").strip()
-            for value in [item.get("key"), payload.get("display_name"), *aliases]
-            if str(value or "").strip()
-        )
-    )
-    if not section or not values:
+    if not section or not _identity_parts(item)["all"]:
         return {}
-    return {
-        "section": section,
-        "$or": [
-            {"key": {"$in": values}},
-            {"payload.aliases": {"$in": values}},
-            {"payload.display_name": {"$in": values}},
-        ],
-    }
+    return {"section": section}
+
+
+# 함수 설명: `_section_token()`은 동일 section 조회 결과를 한 실행 안에서 재사용할 cache key를 만듭니다.
+def _section_token(value: Any) -> str:
+    return unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
 
 
 # 함수 설명: `_doc_id()`는 메타데이터 항목의 section/key 계약으로 canonical MongoDB 문서 ID를 계산합니다.
@@ -347,7 +373,6 @@ class DomainSimilarityChecker(Component):
     description = "후보 생성 후 같은 section의 exact key와 유일한 key/alias/display_name identity를 조회해 canonical 대상을 결정합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
-        DataInput(name="existing_items", display_name="기존 항목(호환용)", required=False),
         MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=True),
         MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, value=DEFAULT_DATABASE, advanced=True),
         MessageTextInput(name="collection_name", display_name="컬렉션 이름", required=False, value=DEFAULT_COLLECTION, advanced=True),
@@ -357,4 +382,4 @@ class DomainSimilarityChecker(Component):
     # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
-        return Data(data=check_similarity(getattr(self, "payload", None), getattr(self, "existing_items", None), getattr(self, "mongo_uri", ""), getattr(self, "mongo_database", ""), getattr(self, "collection_name", "")))
+        return Data(data=check_similarity(getattr(self, "payload", None), None, getattr(self, "mongo_uri", ""), getattr(self, "mongo_database", ""), getattr(self, "collection_name", "")))

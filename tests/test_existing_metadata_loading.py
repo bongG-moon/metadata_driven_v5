@@ -79,7 +79,13 @@ def _load_module(path: Path):
 
 def _install_fake_pymongo(monkeypatch):
     store: dict[str, dict[str, dict[str, dict]]] = {}
-    find_one_queries = []
+
+    class QueryLog(list):
+        def __init__(self):
+            super().__init__()
+            self.find_queries = []
+
+    find_one_queries = QueryLog()
 
     class FakeCursor:
         def __init__(self, docs):
@@ -99,8 +105,12 @@ def _install_fake_pymongo(monkeypatch):
             self.docs = docs
 
         def find(self, query=None, projection=None):
+            query = query or {}
+            find_one_queries.find_queries.append(deepcopy(query))
             docs = []
             for doc in self.docs.values():
+                if "section" in query and doc.get("section") != query["section"]:
+                    continue
                 projected = deepcopy(doc)
                 for key, included in (projection or {}).items():
                     if included == 0:
@@ -139,7 +149,6 @@ def _install_fake_pymongo(monkeypatch):
 
 SPECS = [
     (
-        "domain_saving_flow/00_domain_existing_items_loader.py",
         "domain_saving_flow/05_domain_similarity_checker.py",
         "agent_v4_domain_items",
         "domain:process_groups:DA",
@@ -148,7 +157,6 @@ SPECS = [
         {"section": "process_groups", "key": "WB"},
     ),
     (
-        "table_catalog_saving_flow/00_table_catalog_existing_items_loader.py",
         "table_catalog_saving_flow/05_table_catalog_similarity_checker.py",
         "agent_v4_table_catalog_items",
         "table_catalog:wip_today",
@@ -157,7 +165,6 @@ SPECS = [
         {"dataset_key": "target"},
     ),
     (
-        "main_flow_filters_saving_flow/00_main_flow_filter_existing_items_loader.py",
         "main_flow_filters_saving_flow/05_main_flow_filter_similarity_checker.py",
         "agent_v4_main_flow_filters",
         "main_flow_filter:DATE",
@@ -168,52 +175,9 @@ SPECS = [
 ]
 
 
-@pytest.mark.parametrize("loader_path,_matcher_path,collection,doc_id,_missing_id,key_fields,_missing_fields", SPECS)
-def test_existing_loader_keeps_full_document_without_registration_trace(
-    monkeypatch, loader_path, _matcher_path, collection, doc_id, _missing_id, key_fields, _missing_fields
-):
-    store, _queries = _install_fake_pymongo(monkeypatch)
-    store["datagov"] = {
-        collection: {
-            doc_id: {
-                "_id": doc_id,
-                **key_fields,
-                "status": "active",
-                "payload": {"display_name": "retained", "nested": {"value": 1}},
-                "registration_trace": {"raw_text": "must-not-propagate"},
-            }
-        }
-    }
-    loader = _load_module(ROOT / "langflow_components" / loader_path)
-
-    result = loader.load_existing_items("mongodb://fake", "datagov", collection)
-
-    assert result["existing_items"][0]["payload"]["nested"]["value"] == 1
-    assert "registration_trace" not in result["existing_items"][0]
-
-
-@pytest.mark.parametrize("loader_path,_matcher_path,collection,_doc_id,_missing_id,_key_fields,_missing_fields", SPECS)
-def test_existing_loader_zero_limit_delegates_to_targeted_matcher(
-    loader_path, _matcher_path, collection, _doc_id, _missing_id, _key_fields, _missing_fields
-):
-    loader = _load_module(ROOT / "langflow_components" / loader_path)
-
-    result = loader.load_existing_items(
-        mongo_uri="mongodb://must-not-connect",
-        mongo_database="datagov",
-        collection_name=collection,
-        limit="0",
-    )
-
-    assert result["metadata_load"]["status"] == "skipped"
-    assert result["metadata_load"]["count"] == 0
-    assert result["metadata_load"]["errors"] == []
-    assert result["existing_items"] == []
-
-
-@pytest.mark.parametrize("_loader_path,matcher_path,collection,doc_id,missing_id,key_fields,missing_fields", SPECS)
-def test_matcher_exact_queries_candidates_missing_from_provided_loader_window(
-    monkeypatch, _loader_path, matcher_path, collection, doc_id, missing_id, key_fields, missing_fields
+@pytest.mark.parametrize("matcher_path,collection,doc_id,missing_id,key_fields,missing_fields", SPECS)
+def test_matcher_directly_queries_only_normalized_candidate_keys(
+    monkeypatch, matcher_path, collection, doc_id, missing_id, key_fields, missing_fields
 ):
     store, queries = _install_fake_pymongo(monkeypatch)
     provided = {"_id": doc_id, **key_fields, "status": "active", "payload": {"source": "loader", "keep": True}}
@@ -229,7 +193,7 @@ def test_matcher_exact_queries_candidates_missing_from_provided_loader_window(
 
     result = matcher.check_similarity(
         payload,
-        {"existing_items": [provided]},
+        None,
         mongo_uri="mongodb://fake",
         mongo_database="datagov",
         collection_name=collection,
@@ -239,10 +203,10 @@ def test_matcher_exact_queries_candidates_missing_from_provided_loader_window(
         "loader",
         "exact_lookup",
     }
-    assert queries == [{"_id": missing_id}]
-    assert result["trace"]["duplicate_lookup"]["provided_count"] == 1
-    assert result["trace"]["duplicate_lookup"]["queried_candidate_count"] == 1
-    assert result["trace"]["duplicate_lookup"]["loaded_count"] == 1
+    assert queries == [{"_id": doc_id}, {"_id": missing_id}]
+    assert result["trace"]["duplicate_lookup"]["provided_count"] == 0
+    assert result["trace"]["duplicate_lookup"]["queried_candidate_count"] == 2
+    assert result["trace"]["duplicate_lookup"]["loaded_count"] == 2
     assert result["trace"]["duplicate_lookup"]["count"] == 2
 
 
@@ -256,7 +220,6 @@ def test_domain_matcher_targeted_identity_query_finds_alias_outside_loader_windo
         "payload": {"display_name": "BG", "aliases": ["BG", "B/G"], "processes": ["B/G1", "B/G2"]},
     }
     store["datagov"] = {"agent_v4_domain_items": {existing["_id"]: existing}}
-    loader = _load_module(ROOT / "langflow_components" / "domain_saving_flow" / "00_domain_existing_items_loader.py")
     matcher = _load_module(ROOT / "langflow_components" / "domain_saving_flow" / "05_domain_similarity_checker.py")
     payload = {
         "items": [
@@ -268,24 +231,68 @@ def test_domain_matcher_targeted_identity_query_finds_alias_outside_loader_windo
         ]
     }
 
-    existing_window = loader.load_existing_items(
-        mongo_uri="mongodb://fake",
-        mongo_database="datagov",
-        collection_name="agent_v4_domain_items",
-        limit="0",
-    )
     result = matcher.check_similarity(
         payload,
-        existing_window,
+        None,
         mongo_uri="mongodb://fake",
         mongo_database="datagov",
         collection_name="agent_v4_domain_items",
     )
 
-    assert existing_window["metadata_load"]["status"] == "skipped"
-    assert existing_window["existing_items"] == []
     assert queries == [{"_id": "domain:process_groups:BG_PROCESS_GROUP"}]
     assert result["existing_matches"][0]["existing_key"] == "process_groups:BG"
     assert result["existing_matches"][0]["match_type"] == "identity_overlap"
     assert result["trace"]["duplicate_lookup"]["identity_query_count"] == 1
     assert result["trace"]["duplicate_lookup"]["loaded_count"] == 1
+
+
+def test_domain_matcher_section_query_preserves_nfkc_casefold_and_separator_identity(monkeypatch):
+    store, queries = _install_fake_pymongo(monkeypatch)
+    existing = {
+        "_id": "domain:process_groups:BG",
+        "section": "process_groups",
+        "key": "BG",
+        "status": "active",
+        "payload": {"display_name": "bg", "aliases": ["b/g"], "processes": ["B/G1", "B/G2"]},
+    }
+    cross_section = {
+        "_id": "domain:metric_terms:BG",
+        "section": "metric_terms",
+        "key": "BG",
+        "status": "active",
+        "payload": {"display_name": "BG", "aliases": ["B/G"]},
+    }
+    store["datagov"] = {
+        "agent_v4_domain_items": {
+            cross_section["_id"]: cross_section,
+            existing["_id"]: existing,
+        }
+    }
+    matcher = _load_module(
+        ROOT / "langflow_components" / "domain_saving_flow" / "05_domain_similarity_checker.py"
+    )
+    payload = {
+        "items": [
+            {
+                "section": "process_groups",
+                "key": "BG_PROCESS_GROUP",
+                "payload": {"display_name": "BG 공정 그룹", "aliases": ["Ｂ－Ｇ"]},
+            }
+        ]
+    }
+
+    result = matcher.check_similarity(
+        payload,
+        None,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_domain_items",
+    )
+
+    assert queries == [{"_id": "domain:process_groups:BG_PROCESS_GROUP"}]
+    assert queries.find_queries == [{"section": "process_groups"}]
+    assert len(result["existing_matches"]) == 1
+    assert result["existing_matches"][0]["existing_key"] == "process_groups:BG"
+    assert result["existing_matches"][0]["match_type"] == "identity_overlap"
+    assert result["trace"]["duplicate_lookup"]["identity_query_count"] == 1
+    assert result["trace"]["duplicate_lookup"]["identity_candidate_count"] == 1

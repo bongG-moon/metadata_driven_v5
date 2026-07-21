@@ -17,9 +17,9 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 10개 Flow를 한 번에 impor
 | 순서 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
 | 1 | `01_data_analysis_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 43 | 67 |
-| 2 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 13 | 14 |
-| 3 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 13 | 14 |
-| 4 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 13 | 14 |
+| 2 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 12 | 13 |
+| 3 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 12 | 13 |
+| 4 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 12 | 13 |
 | 5 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 11 | 17 |
 | 6 | `06_api_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-api-router` | 14 | 13 |
 | 7 | `07_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 8 | 7 |
@@ -56,13 +56,13 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 335 passed
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 97/97 노드가 실제 Python 원본 84개에 매핑, 누락 0
+- 전체 pytest: 374 passed
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 94/94 노드가 실제 Python 원본 81개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과
-- Langflow 1.8.2 frontend edge handle codec: 378/378 parse 및 `edge.data` 일치
+- Langflow 1.8.2 frontend edge handle codec: 372/372 parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.8.2 / LFX 0.3.4 node template: 150/150 passed
+- Langflow 1.8.2 / LFX 0.3.4 node template: 147/147 passed
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: 예전 정상 Flow와 같은 Smart Router -> Chat Output 직접 edge 2/2, FinalGate 0개
 - API Router 단일 진입 구조: Chat Input -> Smart Router edge 1개, API caller용 session fan-out edge 0개
@@ -74,7 +74,8 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
 - pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
-- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router는 이름 기반 Cached Run Flow Tool 5개 모두 Langflow의 현재 실행 `user_id` 범위에서 조회하며, `cache_flow=true`, `return_direct=true`, 고정 Flow ID 없음으로 구성됩니다. 최초 이름 조회 뒤에는 해석된 실제 ID를 우선 재사용합니다.
+- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router는 이름 기반 Cached Run Flow Tool 5개 모두 Langflow의 현재 실행 `user_id` 범위에서 매 실행 정확한 Flow 이름을 현재 ID로 다시 해석하며, `cache_flow=true`, `return_direct=true`, 고정 Flow ID 없음으로 구성됩니다. 해석된 실제 ID는 graph cache key로만 사용합니다.
+- Agent Tool Router는 하위 Flow에 화면 Message와 API 구조화 terminal이 함께 있어도 현재 `Chat Output.message`만 실행 출력으로 활성화합니다. 따라서 `return_direct=true`에서 질문/응답 분기가 중복 실행되지 않습니다.
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환하며, Data Analysis 기준 표준 26,338 bytes에서 339 bytes로 줄었습니다. 내부 Prompt/Helper/Repair Text Input은 제외됩니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. Chat Input은 Agent에만 한 번 연결됩니다.
 - 격리 import에서 현재 Langflow 실행 사용자로 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.

@@ -101,7 +101,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 - 이 작업 환경에서는 실제 Oracle/H-API/Datalake/Goodocs 자격증명과 원천 데이터가 없어 dummy 경로로 검증했습니다.
 - 자동 검증 대상 대표 질문 31개는 trusted catalog hydration, 선택 helper, pandas 실행, 답변/API adapter를 포함한 deterministic dummy 경로에서 31/31 통과했습니다. 기존 질문뿐 아니라 NULL 표시, W/BM·A조, OPER_SEQ 구간, DA 그룹, FC78 제품 token, UPH 기본 상세 컬럼도 포함합니다.
 - 대표 dummy 질문 31/31이 통과했습니다.
-- Langflow Desktop 설치본(`langflow 1.8.2`, `lfx 0.3.4`)에서 현재 10개 Flow의 node template 150/150을 파싱합니다. 이전 8개 Flow는 별도 임시 config/SQLite 격리 서버에서 개별 JSON 8/8과 당시 통합 `00` JSON을 HTTP 201로 확인했으며, Workflow Orchestrator·Workflow Skill 저장·HTML Visualization Flow는 최신 export/import JSON의 node·edge·source 동기화 계약으로 함께 검증합니다.
+- Langflow Desktop 설치본(`langflow 1.8.2`, `lfx 0.3.4`)에서 현재 10개 Flow의 node template 147/147을 파싱합니다. 이전 8개 Flow는 별도 임시 config/SQLite 격리 서버에서 개별 JSON 8/8과 당시 통합 `00` JSON을 HTTP 201로 확인했으며, Workflow Orchestrator·Workflow Skill 저장·HTML Visualization Flow는 최신 export/import JSON의 node·edge·source 동기화 계약으로 함께 검증합니다.
 - Workflow Orchestrator의 `result_ref` 연계 호출은 `agent_v4_result_store`를 사용하므로 `MONGO_URL`과 같은 부모/자식 `session_id`가 필수입니다. 저장된 결과가 없거나 다른 세션의 ref이면 후속 조회를 fail-closed로 중단합니다.
 - 실제 문제 실행 기록에서는 기존 06 Router의 session fan-out 때문에 ChatInput/SmartRouter가 각각 2회 빌드되고 비선택 direct/clarification Chat Output이 질문을 두 번 저장한 사실을 확인했습니다. 수정 JSON은 Chat Input outgoing edge를 Smart Router 한 개로 제한하며, 운영 provider를 사용한 최종 화면 재검증은 새 06을 import한 뒤 수행합니다.
 - 격리 Langflow 서버에는 `GOOGLE_API_KEY` Global Variable이 없어 Agent/LLM을 포함한 전체 Flow 실행은 수행하지 않았습니다. 운영 인스턴스에서는 같은 이름의 Global Variable 또는 회사 표준 provider 설정이 필요합니다.

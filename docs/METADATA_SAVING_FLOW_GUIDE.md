@@ -701,7 +701,6 @@ langflow_components/domain_saving_flow/
 
 | # | Component | Output |
 | --- | --- | --- |
-| 00 | Existing Domain Items Loader | `existing_items` |
 | 00 | Domain Saving Request Loader | `payload_out` |
 | 03 | Domain Saving Variables Builder | `saving_context` |
 | 04 | Normalize Domain Saving Result | `domain_saving_json`, `payload_out` |
@@ -780,7 +779,7 @@ Chat Input.message
 -> 00 Saving Request Loader.raw_text
 ```
 
-추출과 기존 항목 조회:
+추출과 후보 기반 중복 조회:
 
 ```text
 00 Request Loader.payload_out
@@ -793,11 +792,11 @@ Langflow Agent/LLM.output
 -> 04 Saving Result Normalizer.llm_response
 04 Saving Result Normalizer.payload_out
 -> 05 Similarity Checker.payload
-00 Existing Items Loader.existing_items
--> 05 Similarity Checker.existing_items
 05 Similarity Checker.payload_out
 -> 07 Review Writer.payload
 ```
+
+Domain, Table Catalog, Main Flow Filter 저장 Flow는 선행 전체 목록 loader를 사용하지 않는다. `05`가 정규화된 후보 key/identity만 MongoDB에서 조회하므로 설정과 payload를 줄이면서 로더 제한 밖 중복도 놓치지 않는다. Workflow Skill 저장 Flow만 계획 목록 제공을 위해 제한된 Existing Items Loader를 유지한다.
 
 저장:
 
@@ -853,5 +852,4 @@ LLM mock validation에서는 세 LLM 단계의 결과를 모두 모의한다.
 - main flow filter에는 dataset별 filter mapping을 넣지 않는다. dataset별 실제 컬럼 연결은 table catalog의 `filter_mappings`가 담당한다.
 - custom component input/output 이름은 겹치지 않게 한다. 예를 들어 input이 `payload`면 output은 `payload_out`으로 둔다.
 - 각 component 파일은 Langflow Desktop에서 단독으로 붙여 넣어도 동작해야 한다.
-
 

@@ -4728,8 +4728,9 @@ def test_metadata_saving_guide_uses_current_writer_ports():
     assert "MongoDB Writer.authoring_payload" not in guide
     assert "MongoDB Writer.review_payload" not in guide
     assert "Review Writer.review_response" not in guide
-    assert "Existing Items Loader.existing_items" in guide
-    assert "Similarity Checker.existing_items" in guide
+    assert "Existing Items Loader.existing_items" not in guide
+    assert "05 Similarity Checker.payload" in guide
+    assert "후보 key/identity만 MongoDB에서 조회" in guide
     assert "Response Normalizer.payload" in guide
     assert "Message Adapter.message" in guide
     assert "API Response Builder.display_message" in guide
@@ -5315,7 +5316,7 @@ def test_authoring_writers_use_shared_v4_mongo_env_defaults(monkeypatch):
     assert registry["entries"] == {}
 
 
-def test_authoring_existing_item_loaders_use_shared_v4_mongo_env_defaults(monkeypatch):
+def test_authoring_matchers_use_shared_v4_mongo_env_defaults(monkeypatch):
     store = install_fake_pymongo(monkeypatch)
     set_shared_v4_mongo_env(monkeypatch)
     store["datagov"] = {
@@ -5323,20 +5324,20 @@ def test_authoring_existing_item_loaders_use_shared_v4_mongo_env_defaults(monkey
         "agent_v4_table_catalog_items": {"table_catalog:wip_today": {"_id": "table_catalog:wip_today", "dataset_key": "wip_today", "payload": {}}},
         "agent_v4_main_flow_filters": {"main_flow_filter:DATE": {"_id": "main_flow_filter:DATE", "filter_key": "DATE", "payload": {}}},
     }
-    domain_loader = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "00_domain_existing_items_loader.py")
-    table_loader = load_module(ROOT / "langflow_components" / "table_catalog_saving_flow" / "00_table_catalog_existing_items_loader.py")
-    filter_loader = load_module(ROOT / "langflow_components" / "main_flow_filters_saving_flow" / "00_main_flow_filter_existing_items_loader.py")
+    domain_matcher = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "05_domain_similarity_checker.py")
+    table_matcher = load_module(ROOT / "langflow_components" / "table_catalog_saving_flow" / "05_table_catalog_similarity_checker.py")
+    filter_matcher = load_module(ROOT / "langflow_components" / "main_flow_filters_saving_flow" / "05_main_flow_filter_similarity_checker.py")
 
-    domain_result = domain_loader.load_existing_items()
-    table_result = table_loader.load_existing_items()
-    filter_result = filter_loader.load_existing_items()
+    domain_result = domain_matcher.check_similarity({"items": [{"section": "process_groups", "key": "DA", "payload": {}}]})
+    table_result = table_matcher.check_similarity({"items": [{"dataset_key": "wip_today", "payload": {}}]})
+    filter_result = filter_matcher.check_similarity({"items": [{"filter_key": "DATE", "payload": {}}]})
 
-    assert domain_result["metadata_load"]["collection_name"] == "agent_v4_domain_items"
-    assert table_result["metadata_load"]["collection_name"] == "agent_v4_table_catalog_items"
-    assert filter_result["metadata_load"]["collection_name"] == "agent_v4_main_flow_filters"
-    assert domain_result["existing_items"][0]["key"] == "DA"
-    assert table_result["existing_items"][0]["dataset_key"] == "wip_today"
-    assert filter_result["existing_items"][0]["filter_key"] == "DATE"
+    assert domain_result["trace"]["duplicate_lookup"]["collection_name"] == "agent_v4_domain_items"
+    assert table_result["trace"]["duplicate_lookup"]["collection_name"] == "agent_v4_table_catalog_items"
+    assert filter_result["trace"]["duplicate_lookup"]["collection_name"] == "agent_v4_main_flow_filters"
+    assert domain_result["existing_matches"][0]["existing_key"] == "process_groups:DA"
+    assert table_result["existing_matches"][0]["existing_key"] == "wip_today"
+    assert filter_result["existing_matches"][0]["existing_key"] == "DATE"
 
 
 def test_mongodb_metadata_export_upload_round_trip(monkeypatch, tmp_path):
@@ -5666,6 +5667,149 @@ def test_domain_replace_blocks_when_identity_lookup_failed():
     assert result["write_result"]["success"] is False
     assert result["write_result"]["saved_count"] == 0
     assert result["write_result"]["errors"][0]["type"] == "identity_lookup_unavailable"
+
+
+@pytest.mark.parametrize("lookup_status", ["error", "skipped"])
+@pytest.mark.parametrize("duplicate_action", ["skip", "merge", "replace"])
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize(
+    "writer_path,item,error_type",
+    [
+        (
+            "domain_saving_flow/07_domain_review_writer.py",
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "payload": {"display_name": "DA", "aliases": ["DA", "D/A"], "processes": ["D/A1"]},
+            },
+            "identity_lookup_unavailable",
+        ),
+        (
+            "table_catalog_saving_flow/07_table_catalog_review_writer.py",
+            {"dataset_key": "production_today", "payload": {"display_name": "당일 생산", "source_type": "dummy"}},
+            "duplicate_lookup_unavailable",
+        ),
+        (
+            "main_flow_filters_saving_flow/07_main_flow_filter_review_writer.py",
+            {
+                "filter_key": "DATE",
+                "payload": {
+                    "display_name": "기준일",
+                    "operator": "eq",
+                    "value_type": "string",
+                    "value_shape": "scalar",
+                },
+            },
+            "duplicate_lookup_unavailable",
+        ),
+    ],
+)
+def test_metadata_writers_fail_closed_when_explicit_duplicate_lookup_is_unavailable(
+    writer_path, item, error_type, dry_run, duplicate_action, lookup_status
+):
+    writer = load_module(ROOT / "langflow_components" / writer_path)
+    payload = {
+        "request": {"raw_text": "메타데이터 저장", "duplicate_action": duplicate_action, "dry_run": dry_run},
+        "items": [deepcopy(item)],
+        "trace": {
+            "duplicate_lookup": {
+                "status": lookup_status,
+                "errors": [{"type": "mongo_duplicate_lookup_error", "message": "lookup unavailable"}],
+            }
+        },
+    }
+
+    result = writer.review_and_write(payload)
+
+    assert result["write_result"]["success"] is False
+    assert result["write_result"]["saved_count"] == 0
+    lookup_error = next(error for error in result["write_result"]["errors"] if error["type"] == error_type)
+    assert lookup_error["lookup_status"] == lookup_status
+
+
+@pytest.mark.parametrize(
+    "writer_path,item",
+    [
+        (
+            "domain_saving_flow/07_domain_review_writer.py",
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "payload": {"display_name": "DA", "aliases": ["DA", "D/A"], "processes": ["D/A1"]},
+            },
+        ),
+        (
+            "table_catalog_saving_flow/07_table_catalog_review_writer.py",
+            {"dataset_key": "production_today", "payload": {"display_name": "당일 생산", "source_type": "dummy"}},
+        ),
+        (
+            "main_flow_filters_saving_flow/07_main_flow_filter_review_writer.py",
+            {
+                "filter_key": "DATE",
+                "payload": {
+                    "display_name": "기준일",
+                    "operator": "eq",
+                    "value_type": "string",
+                    "value_shape": "scalar",
+                },
+            },
+        ),
+    ],
+)
+def test_metadata_writers_keep_legacy_payload_compatibility_without_duplicate_lookup_trace(writer_path, item):
+    writer = load_module(ROOT / "langflow_components" / writer_path)
+    payload = {
+        "request": {"raw_text": "메타데이터 교체", "duplicate_action": "replace", "dry_run": True},
+        "items": [deepcopy(item)],
+    }
+
+    result = writer.review_and_write(payload)
+
+    assert result["write_result"]["success"] is True
+    assert result["write_result"]["dry_run"] is True
+
+
+@pytest.mark.parametrize(
+    "writer_path,item",
+    [
+        (
+            "domain_saving_flow/07_domain_review_writer.py",
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "payload": {"display_name": "DA", "aliases": ["DA", "D/A"], "processes": ["D/A1"]},
+            },
+        ),
+        (
+            "table_catalog_saving_flow/07_table_catalog_review_writer.py",
+            {"dataset_key": "production_today", "payload": {"display_name": "당일 생산", "source_type": "dummy"}},
+        ),
+        (
+            "main_flow_filters_saving_flow/07_main_flow_filter_review_writer.py",
+            {
+                "filter_key": "DATE",
+                "payload": {
+                    "display_name": "기준일",
+                    "operator": "eq",
+                    "value_type": "string",
+                    "value_shape": "scalar",
+                },
+            },
+        ),
+    ],
+)
+def test_metadata_writers_allow_explicit_create_new_when_duplicate_lookup_is_skipped(writer_path, item):
+    writer = load_module(ROOT / "langflow_components" / writer_path)
+    payload = {
+        "request": {"raw_text": "메타데이터 신규 저장", "duplicate_action": "create_new", "dry_run": True},
+        "items": [deepcopy(item)],
+        "trace": {"duplicate_lookup": {"status": "skipped", "errors": []}},
+    }
+
+    result = writer.review_and_write(payload)
+
+    assert result["write_result"]["success"] is True
+    assert result["write_result"]["dry_run"] is True
 
 
 def test_domain_identity_matching_is_same_section_exact_and_not_substring():
@@ -6450,6 +6594,8 @@ def test_metadata_qa_catalog_inventory_phrases_use_only_table_catalog_and_ignore
         "사용 가능한 소스 목록을 보여줘",
         "등록된 테이블 건수 알려줘",
         "현재 조회 가능한 데이터 list알려줄래?",
+        "조회 가능한 데이터 셋 LIST를 알려줘",
+        "현재 조회 가능한 data set 목록 보여줘",
         "조회할 수 있는 데이터 리스트 보여줘",
         "사용 가능한 데이터 전체를 알려줘",
         "등록되어 있는 데이터 list를 보여줘",
@@ -6483,6 +6629,122 @@ def test_metadata_qa_catalog_inventory_phrases_use_only_table_catalog_and_ignore
         assert "총 9개" in answer["answer_message"], question
         assert answer["trace"]["inspection"]["metadata_qa_response"]["used_llm_response"] is False, question
         assert answer["trace"]["inspection"]["metadata_qa_response"]["llm_response_ignored"] is True, question
+
+
+def test_metadata_qa_domain_inventory_uses_only_domain_context_and_ignores_model_response():
+    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    normalizer = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py")
+    domain_items = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "status": "active",
+                "payload": {
+                    "display_name": "DA 공정 그룹",
+                    "aliases": ["DA", "D/A"],
+                    "description": "DA 세부 공정 묶음",
+                    "conditions": {"OPER_NAME": ["D/A1", "D/A2"]},
+                },
+            },
+            {
+                "section": "quantity_terms",
+                "key": "production",
+                "status": "active",
+                "payload": {"display_name": "생산량", "description": "생산 실적 수량"},
+            },
+            {
+                "section": "product_terms",
+                "key": "HBM",
+                "status": "active",
+                "payload": {"display_name": "HBM 제품", "aliases": ["HBM"], "usage_rule": "HBM 제품 조건"},
+            },
+        ],
+        "metadata_load": {"status": "ok", "count": 3, "limit": 1000, "truncated": False},
+    }
+    table_items = {
+        "table_catalog_items": [
+            {"dataset_key": "production_today", "status": "active", "payload": {"display_name": "당일 생산"}}
+        ]
+    }
+    filter_items = {
+        "main_flow_filters": [
+            {"filter_key": "DATE", "status": "active", "payload": {"display_name": "기준일"}}
+        ]
+    }
+
+    for question in (
+        "조회 가능한 도메인 LIST를 알려줘",
+        "조회 가능한 도메인 전체 목록",
+        "조회 가능한 도메인 전부 알려줘",
+        "등록된 도메인 목록 보여줘",
+        "등록된 도메인 전체 보여줘",
+        "등록된 도메인은 총 몇 개야",
+        "도메인은 총 몇 개야?",
+    ):
+        payload = {"request": {"question": question}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
+        context_payload = context_builder.build_metadata_qa_context(payload, domain_items, table_items, filter_items)
+        context = context_payload["metadata_qa_context"]
+
+        assert context_payload["metadata_route"]["answer_mode"] == "available_domains", question
+        assert context["matched_domain_items"] == [], question
+        assert context["matched_datasets"] == [], question
+        assert context["matched_filters"] == [], question
+        assert len(context["candidate_rows"]) == 3, question
+        assert all(row["metadata_type"] == "domain" for row in context["candidate_rows"]), question
+        assert all("conditions" not in row for row in context["candidate_rows"]), question
+        assert next(row for row in context["candidate_rows"] if row["key"] == "HBM")["description"] == "HBM 제품 조건", question
+        assert context["domain_summary"]["total_count"] == 3, question
+        assert context["domain_summary"]["truncated"] is False, question
+        assert context["answer_policy"]["use_model_response"] is False, question
+
+        answer = normalizer.normalize_metadata_qa_response(
+            context_payload,
+            '{"answer_type":"available_sources","answer_message":"무관한 답변","table":{"rows":[{"데이터셋":"오답"}]}}',
+        )
+        assert answer["status"] == "ok", question
+        assert answer["answer_type"] == "available_domains", question
+        assert answer["data"]["row_count"] == 3, question
+        assert answer["data"]["columns"] == ["구분", "도메인", "도메인 키", "별칭", "설명"], question
+        assert all("데이터셋" not in row for row in answer["data"]["rows"]), question
+        assert "총 3개" in answer["answer_message"], question
+        assert answer["trace"]["inspection"]["metadata_qa_response"]["llm_response_ignored"] is True, question
+
+    limited_payload = context_builder.build_metadata_qa_context(
+        {"request": {"question": "등록된 도메인 목록 보여줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}},
+        domain_items,
+        table_items,
+        filter_items,
+        max_items="2",
+    )
+    assert limited_payload["metadata_qa_context"]["domain_summary"]["total_count"] == 3
+    assert limited_payload["metadata_qa_context"]["domain_summary"]["returned_count"] == 2
+    assert limited_payload["metadata_qa_context"]["domain_summary"]["truncated"] is True
+
+
+def test_metadata_qa_specific_domain_questions_keep_existing_modes():
+    context_builder = load_module(ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py")
+    domain_items = {
+        "domain_items": [
+            {"section": "process_groups", "key": "BG", "payload": {"display_name": "BG", "aliases": ["B/G"]}},
+            {"section": "product_terms", "key": "HBM", "payload": {"display_name": "HBM"}},
+        ]
+    }
+    cases = {
+        "BG 도메인 정보를 알려줘": "domain_info",
+        "BG 도메인 전체 정보를 알려줘": "domain_info",
+        "생산량 도메인 전체 정보를 알려줘": "domain_info",
+        "생산량 관련 등록된 도메인 정보를 알려줘": "domain_info",
+        "제품 그룹 관련 등록된 도메인 정보를 알려줘": "product_domain_info",
+    }
+    for question, expected in cases.items():
+        result = context_builder.build_metadata_qa_context(
+            {"request": {"question": question}, "trace": {"warnings": [], "errors": [], "inspection": {}}},
+            domain_items,
+            {},
+            {},
+        )
+        assert result["metadata_route"]["answer_mode"] == expected, question
 
 
 def test_metadata_qa_catalog_inventory_does_not_capture_task_specific_dataset_selection():
@@ -6639,8 +6901,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 84
-    assert result["all_component_python_files"] == 85
+    assert result["active_unique_source_files"] == 81
+    assert result["all_component_python_files"] == 82
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -6649,9 +6911,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 10, 97, 84),
-        ("import_ready_individual", 10, 97, 84),
-        ("import_ready_bundle", 10, 97, 84),
+        ("flow_exports", 10, 94, 81),
+        ("import_ready_individual", 10, 94, 81),
+        ("import_ready_bundle", 10, 94, 81),
     }
 
 
@@ -6981,7 +7243,9 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert "get_new_fields_from_graph" not in source
     assert "def _build_flow_tweak_data" in source
     assert "flow_id_selected=None" in source
-    assert "UUID(requested_flow_id)" in source
+    assert "UUID(requested_flow_id)" not in source
+    assert "def _chat_output_target" in source
+    assert "def _promote_graph_output" in source
     assert 'runtime_user_id = str(getattr(self, "user_id"' in source
     assert "self.user_id =" not in source
     assert "tool.return_direct" in source
@@ -7077,8 +7341,19 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
                 is_output=True,
                 outputs=[{"name": "message"}],
             ),
+            types.SimpleNamespace(
+                id="Api-current",
+                data={"type": "CustomComponent"},
+                display_name="API 응답 생성기",
+                is_output=True,
+                outputs=[{"name": "api_response"}],
+            ),
         ],
-        successor_map={"ChatInput-current": ["ChatOutput-current"], "ChatOutput-current": []},
+        successor_map={
+            "ChatInput-current": ["ChatOutput-current", "Api-current"],
+            "ChatOutput-current": [],
+            "Api-current": [],
+        },
     )
 
     current_flow_id = "11111111-1111-4111-8111-111111111111"
@@ -7113,6 +7388,8 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert runtime_instance.flow_id_selected == current_flow_id
     assert runtime_instance._resolved_chat_input_id == "ChatInput-current"
     assert runtime_instance._resolved_flow_output_target == ("ChatOutput-current", "message")
+    assert graph.vertices[1].is_output is True
+    assert graph.vertices[2].is_output is False
 
     graph_calls.clear()
     cached_instance = component.CachedNamedRunFlowTool()
@@ -7120,18 +7397,15 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     cached_instance._user_id = "parent-user"
     assert asyncio.run(cached_instance.get_graph("Metadata QA", current_flow_id, None)) is graph
     assert graph_calls == [
-        ("resolve", None, current_flow_id),
+        ("resolve", "Metadata QA", None),
         ("build", "Metadata QA", current_flow_id, "2026-07-12T10:00:00Z"),
     ]
-
-    graph.vertices[-1].outputs.append({"name": "data"})
-    try:
-        component._single_graph_output_target(graph)
-    except ValueError as exc:
-        assert "최종 출력이 정확히 하나" in str(exc)
-    else:
-        raise AssertionError("두 개 이상의 하위 Flow 출력을 Agent 도구 계약으로 허용하면 안 됩니다.")
-    graph.vertices[-1].outputs.pop()
+    assert component._chat_output_target(graph, "ChatOutput-current") == (
+        "ChatOutput-current",
+        "message",
+    )
+    component._promote_graph_output(graph, ("ChatOutput-current", "message"))
+    assert [vertex.id for vertex in graph.vertices if vertex.is_output] == ["ChatOutput-current"]
 
     run_calls = []
 
@@ -8549,7 +8823,7 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         nodes_by_type = {}
         for node in flow["data"]["nodes"]:
             nodes_by_type.setdefault(node["data"].get("type"), []).append(node["id"])
-        assert any(node_id.startswith("ExistingLoader-") for node_id in ids)
+        assert not any(node_id.startswith("ExistingLoader-") for node_id in ids)
         assert not any("Refinement" in node_id or node_id.startswith("ReviewGate-") for node_id in ids)
         assert not any(node_id.startswith("WriterDry-") or node_id.startswith("WriterLive-") for node_id in ids)
         assert len([node_id for node_id in ids if node_id.startswith("Writer-")]) == 1
@@ -8571,13 +8845,11 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         )
         assert len([node_id for node_id in ids if node_id.startswith("Response-")]) == 1
         assert len([node_id for node_id in ids if node_id.startswith("Message-")]) == 1
-        loader_id = next(node_id for node_id in ids if node_id.startswith("ExistingLoader-"))
         matcher_id = next(node_id for node_id in ids if node_id.startswith("Matcher-"))
-        assert any(
-            edge["source"] == loader_id
-            and edge["data"]["sourceHandle"]["name"] == "existing_items"
-            and edge["target"] == matcher_id
-            and edge["data"]["targetHandle"]["fieldName"] == "existing_items"
+        matcher_node = next(node for node in flow["data"]["nodes"] if node["id"] == matcher_id)
+        assert "existing_items" not in matcher_node["data"]["node"]["template"]
+        assert not any(
+            edge["target"] == matcher_id and edge["data"]["targetHandle"]["fieldName"] == "existing_items"
             for edge in flow["data"]["edges"]
         )
         mongo_nodes = [
@@ -8586,7 +8858,7 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
             if "mongo_database" in node["data"]["node"]["template"]
             and "collection_name" in node["data"]["node"]["template"]
         ]
-        assert len(mongo_nodes) == 3
+        assert len(mongo_nodes) == 2
         assert all(node["data"]["node"]["template"]["mongo_database"]["value"] == "datagov" for node in mongo_nodes)
         assert all(
             node["data"]["node"]["template"]["collection_name"]["value"] == expected_collection
@@ -8703,7 +8975,9 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     ).read_text(encoding="utf-8")
     assert 'runtime_user_id = str(getattr(self, "user_id"' in cached_tool_source
     assert "self.user_id =" not in cached_tool_source
-    assert "UUID(requested_flow_id)" in cached_tool_source
+    assert "UUID(requested_flow_id)" not in cached_tool_source
+    assert "def _chat_output_target" in cached_tool_source
+    assert "def _promote_graph_output" in cached_tool_source
     assert all(node["data"]["node"]["template"]["code"]["value"] == cached_tool_source for node in tools)
     assert {
         node["data"]["node"]["template"]["tool_name"]["value"] for node in tools

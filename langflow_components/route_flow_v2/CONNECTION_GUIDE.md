@@ -13,10 +13,11 @@ Agent.response -> Chat Output.input_value
 - Chat Output은 정확히 하나입니다.
 - Chat Input은 Agent에만 한 번 연결합니다. Tool 5개는 부모 `graph.session_id`를 자동 상속하므로 별도 세션 Message edge가 없습니다.
 - 각 Tool의 `cache_flow`와 `return_direct`는 `true`입니다.
-- `flow_id_selected`는 export에서 비워 둡니다. 최초 실행은 `flow_name_selected`로 실제 ID와 `updated_at`을 조회하고, 같은 component instance의 이후 실행은 해석된 실제 ID를 우선 재사용합니다.
+- `flow_id_selected`는 export에서 비워 둡니다. 매 실행마다 `flow_name_selected`의 정확한 이름으로 현재 실제 ID와 `updated_at`을 다시 조회합니다. Import·복제 뒤 남은 이전 ID를 재사용하지 않으며, 해석된 실제 ID는 graph cache key로만 사용합니다.
 - 이름/ID 조회와 그래프 캐시는 Langflow가 component에 주입한 현재 실행 `user_id`를 사용합니다. `_user_id`가 없을 때는 Langflow 기본 속성이 부모 `graph.user_id`를 사용하며, custom component가 이 읽기 전용 값을 덮어쓰지 않습니다. Router와 하위 Flow 5종은 반드시 같은 사용자로 import하고 같은 사용자 또는 API key로 실행해야 합니다.
-- 그래프 캐시는 실제 `user_id + flow_id` 키를 사용하며, 대상 Flow가 갱신되면 `updated_at` 비교로 무효화됩니다. 저장된 ID가 유효하지 않거나 다른 이름을 가리키면 정확한 Flow 이름으로 다시 해석합니다.
+- 그래프 캐시는 실제 `user_id + flow_id` 키를 사용하며, 대상 Flow가 갱신되면 `updated_at` 비교로 무효화됩니다.
 - 캐시는 Flow 그래프 구성 비용만 줄입니다. 데이터 조회, pandas 실행, LLM 답변 결과는 매 요청 다시 실행합니다.
+- 하위 Flow에 화면용 `Chat Output.message`와 API용 구조화 terminal이 함께 있어도 Route V2는 현재 Chat Output만 실행 출력으로 활성화합니다. 다른 terminal은 해당 child 실행에서만 비활성화하므로 `return_direct=true` 결과가 하나의 Message로 끝납니다.
 
 ## Tool 매핑
 

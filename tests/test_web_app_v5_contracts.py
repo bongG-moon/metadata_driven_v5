@@ -96,7 +96,6 @@ def test_authoring_api_tweaks_use_v5_korean_node_names(monkeypatch) -> None:
     tweaks = build_authoring_node_input_settings("domain")
 
     assert tweaks == {
-        "00 도메인 기존 항목 로더": {"collection_name": "agent_v4_domain_items"},
         "05 도메인 동일 Key 조회기": {"collection_name": "agent_v4_domain_items"},
         "07 도메인 검수/저장 처리기": {"collection_name": "agent_v4_domain_items"},
     }

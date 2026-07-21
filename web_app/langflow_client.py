@@ -330,13 +330,13 @@ def build_authoring_node_input_settings(metadata_type: str) -> dict[str, Any]:
     collection_name = _collection_name(kind)
     labels = {
         "domain": {
-            "collection": ["00 도메인 기존 항목 로더", "05 도메인 동일 Key 조회기", "07 도메인 검수/저장 처리기"],
+            "collection": ["05 도메인 동일 Key 조회기", "07 도메인 검수/저장 처리기"],
         },
         "table_catalog": {
-            "collection": ["00 테이블 카탈로그 기존 항목 로더", "05 테이블 카탈로그 동일 Key 조회기", "07 테이블 카탈로그 검수/저장 처리기"],
+            "collection": ["05 테이블 카탈로그 동일 Key 조회기", "07 테이블 카탈로그 검수/저장 처리기"],
         },
         "main_flow_filter": {
-            "collection": ["00 메인 플로우 필터 기존 항목 로더", "05 메인 플로우 필터 동일 Key 조회기", "07 메인 플로우 필터 검수/저장 처리기"],
+            "collection": ["05 메인 플로우 필터 동일 Key 조회기", "07 메인 플로우 필터 검수/저장 처리기"],
         },
     }[kind]
     settings: dict[str, Any] = {}

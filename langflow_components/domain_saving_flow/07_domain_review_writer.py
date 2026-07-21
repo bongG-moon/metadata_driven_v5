@@ -128,18 +128,23 @@ def _upstream_review(payload: dict[str, Any]) -> dict[str, Any]:
     return {"errors": errors, "supplement_requests": supplements, "assumptions": assumptions, "refinement": refinement}
 
 
-# 함수 설명: `_identity_lookup_errors()`는 lookup·오류을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
+# 함수 설명: `_identity_lookup_errors()`는 명시적으로 실패·건너뜀 identity 조회를 저장 차단 오류로 변환합니다.
 def _identity_lookup_errors(payload: dict[str, Any], action: str) -> list[dict[str, Any]]:
     if action == "create_new":
         return []
     trace = _dict(payload.get("trace"))
+    if "duplicate_lookup" not in trace:
+        # 05 조회기를 거치지 않던 구버전 payload는 기존 호환성을 유지합니다.
+        return []
     lookup = _dict(trace.get("duplicate_lookup"))
-    if lookup.get("status") != "error":
+    lookup_status = str(lookup.get("status") or "").strip().lower()
+    if lookup_status not in {"error", "skipped"}:
         return []
     return [
         {
             "type": "identity_lookup_unavailable",
-            "message": "기존 도메인 identity 조회에 실패해 중복 여부를 확정할 수 없으므로 저장하지 않았습니다.",
+            "message": "기존 도메인 identity 조회를 완료하지 못해 중복 여부를 확정할 수 없으므로 저장하지 않았습니다.",
+            "lookup_status": lookup_status,
             "lookup_errors": deepcopy(_list(lookup.get("errors"))),
         }
     ]

@@ -43,6 +43,7 @@ CALCULATION_SECTIONS = {"analysis_recipes", "metric_terms", "pandas_function_cas
 PRODUCT_DOMAIN_SECTIONS = {"product_terms"}
 PRODUCT_AGGREGATION_SECTIONS = {"product_key_columns", "analysis_recipes"}
 LIST_ALL_TABLE_MODES = {"available_sources"}
+LIST_ALL_DOMAIN_MODES = {"available_domains"}
 NO_DOMAIN_CANDIDATE_MODES = {
     "available_sources",
     "dataset_sql",
@@ -54,6 +55,7 @@ DEFAULT_MAX_ITEMS = 50
 DEFAULT_MAX_BYTES = 65536
 DETERMINISTIC_ANSWER_MODES = {
     "available_sources",
+    "available_domains",
     "dataset_detail",
     "dataset_sql",
     "required_params",
@@ -111,6 +113,14 @@ def build_metadata_qa_context(
         limit,
         table_load,
     )
+    domain_summary = _domain_summary(
+        answer_mode,
+        inventory_request_kind,
+        len(domain_items),
+        len(candidate_rows),
+        limit,
+        domain_load,
+    )
     warnings = []
     if not source_refs:
         warnings.append({"type": "metadata_qa_no_matches", "message": "질문과 직접 매칭되는 메타데이터 후보가 없습니다."})
@@ -140,14 +150,18 @@ def build_metadata_qa_context(
     }
     if catalog_summary:
         context["catalog_summary"] = catalog_summary
+    if domain_summary:
+        context["domain_summary"] = domain_summary
     if answer_mode == "available_sources":
         context["matched_datasets"] = []
+    if answer_mode == "available_domains":
+        context["matched_domain_items"] = []
     context, context_trimmed = _fit_context_bytes(context, byte_limit)
-    _refresh_catalog_summary(context)
+    _refresh_inventory_summaries(context)
     if _json_bytes(context) > byte_limit:
         context, additionally_trimmed = _fit_context_bytes(context, byte_limit)
         context_trimmed = context_trimmed or additionally_trimmed
-        _refresh_catalog_summary(context)
+        _refresh_inventory_summaries(context)
     final_source_refs = context.get("source_refs") if isinstance(context.get("source_refs"), list) else []
     if source_refs and not final_source_refs:
         warnings.append({"type": "metadata_qa_all_candidates_trimmed", "message": "Context 바이트 제한으로 메타데이터 후보가 모두 제외되었습니다."})
@@ -164,12 +178,13 @@ def build_metadata_qa_context(
         "stage": "02_metadata_qa_context_builder",
         "status": "ok" if final_source_refs else "warning",
         "answer_mode": answer_mode,
-        "domain_match_count": len(context.get("matched_domain_items")) if isinstance(context.get("matched_domain_items"), list) else 0,
+        "domain_match_count": int(_dict(context.get("domain_summary")).get("returned_count", 0)) if answer_mode == "available_domains" else len(context.get("matched_domain_items")) if isinstance(context.get("matched_domain_items"), list) else 0,
         "dataset_match_count": int(_dict(context.get("catalog_summary")).get("returned_count", 0)) if answer_mode == "available_sources" else len(context.get("matched_datasets")) if isinstance(context.get("matched_datasets"), list) else 0,
         "filter_match_count": len(context.get("matched_filters")) if isinstance(context.get("matched_filters"), list) else 0,
         "context_bytes": _json_bytes(context),
         "context_trimmed": context_trimmed,
         "catalog_summary": deepcopy(_dict(context.get("catalog_summary"))),
+        "domain_summary": deepcopy(_dict(context.get("domain_summary"))),
     }
     next_payload["trace"] = trace
     return next_payload
@@ -251,6 +266,8 @@ def _infer_answer_mode(question: str) -> str:
         return "dataset_detail"
     if any(token in lowered for token in ("계산 로직", "계산", "로직", "recipe", "function", "함수")):
         return "calculation_logic_list"
+    if _looks_like_available_domains_question(lowered):
+        return "available_domains"
     if "도메인" in lowered or "domain" in lowered:
         return "domain_info"
     return "general_metadata_search"
@@ -430,6 +447,7 @@ def _looks_like_available_sources_question(lowered: str) -> bool:
     catalog_subject_tokens = (
         "데이터셋",
         "데이터 세트",
+        "데이터 셋",
         "데이터 목록",
         "데이터들",
         "테이블 카탈로그",
@@ -438,6 +456,7 @@ def _looks_like_available_sources_question(lowered: str) -> bool:
         "data catalog",
         "table catalog",
         "dataset",
+        "data set",
         "data source",
         "source",
         "소스",
@@ -500,6 +519,49 @@ def _looks_like_available_sources_question(lowered: str) -> bool:
     return True
 
 
+# 함수 설명: `_looks_like_available_domains_question()`은 특정 용어 설명이 아니라 등록된 도메인 전체 목록·건수를 묻는 표현을 판정합니다.
+def _looks_like_available_domains_question(lowered: str) -> bool:
+    if not any(token in lowered for token in ("도메인", "domain")):
+        return False
+    # `BG 도메인 전체 정보`처럼 특정 도메인의 설명 범위를 강조하는 `전체`는
+    # inventory 요청이 아닙니다. 목록·건수 의도가 명시된 경우에만 전체 도메인
+    # inventory로 전환해 구체 용어 질문의 기존 domain_info 검색을 보존합니다.
+    list_tokens = (
+        "목록",
+        "list",
+        "리스트",
+        "나열",
+        "뭐가 있",
+        "무엇이 있",
+    )
+    count_tokens = (
+        "총",
+        "몇 개",
+        "몇개",
+        "개수",
+        "건수",
+    )
+    inventory_qualifiers = (
+        "등록된",
+        "등록되어",
+        "등록한",
+        "조회 가능",
+        "조회가능",
+        "조회할 수 있",
+        "사용 가능",
+        "사용가능",
+        "볼 수 있",
+    )
+    whole_scope_tokens = ("전체", "전부", "모두")
+    has_explicit_list_or_count = any(token in lowered for token in list_tokens) or any(
+        token in lowered for token in count_tokens
+    )
+    has_qualified_whole_scope = any(token in lowered for token in inventory_qualifiers) and any(
+        token in lowered for token in whole_scope_tokens
+    )
+    return has_explicit_list_or_count or has_qualified_whole_scope
+
+
 # 함수 설명: `_looks_like_task_dataset_selection()`은 전체 목록이 아니라 구체 업무 질문에 사용할 데이터셋을 고르는 표현인지 판정합니다.
 def _looks_like_task_dataset_selection(lowered: str) -> bool:
     selection_tokens = (
@@ -544,7 +606,7 @@ def _looks_like_task_dataset_selection(lowered: str) -> bool:
 
 # 함수 설명: `_inventory_request_kind()`는 카탈로그 질문이 목록 조회인지 건수 확인인지 응답 요약에 기록합니다.
 def _inventory_request_kind(question: str, answer_mode: str) -> str:
-    if answer_mode != "available_sources":
+    if answer_mode not in {"available_sources", "available_domains"}:
         return ""
     lowered = str(question or "").lower()
     count_tokens = ("총", "몇 개", "몇개", "개수", "건수", "how many", "count")
@@ -555,6 +617,8 @@ def _inventory_request_kind(question: str, answer_mode: str) -> str:
 def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     if answer_mode in NO_DOMAIN_CANDIDATE_MODES:
         return []
+    if answer_mode in LIST_ALL_DOMAIN_MODES:
+        return items[: _list_limit(limit, items)]
     if answer_mode == "calculation_logic_list":
         if _looks_like_product_aggregation_rule_question(question.lower()):
             return _select_product_aggregation_items(question, items, limit)
@@ -656,6 +720,8 @@ def _has_named_metric(lowered: str) -> bool:
 
 # 함수 설명: `_select_table_items()`는 질문과 답변 모드에 맞는 테이블 카탈로그 후보를 점수순으로 선택합니다.
 def _select_table_items(question: str, answer_mode: str, items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if answer_mode in LIST_ALL_DOMAIN_MODES:
+        return []
     if answer_mode in LIST_ALL_TABLE_MODES:
         return items[: _list_limit(limit, items)]
     if answer_mode in {"dataset_sql", "dataset_detail", "required_params", "question_to_dataset"}:
@@ -669,7 +735,7 @@ def _select_table_items(question: str, answer_mode: str, items: list[dict[str, A
 
 # 함수 설명: `_select_filter_items()`는 메인 필터 후보를 질문 token과 별칭 일치 기준으로 선택합니다.
 def _select_filter_items(question: str, answer_mode: str, items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-    if answer_mode == "available_sources":
+    if answer_mode in {"available_sources", "available_domains"}:
         return []
     if answer_mode in {"required_params", "term_definition", "question_to_dataset"}:
         return _ranked(question, items, min(limit, 6))
@@ -723,20 +789,70 @@ def _catalog_summary(
     }
 
 
-# 함수 설명: `_refresh_catalog_summary()`는 바이트 제한으로 행이 줄어든 뒤 summary와 실제 rows 건수를 다시 맞춥니다.
-def _refresh_catalog_summary(context: dict[str, Any]) -> None:
-    summary = _dict(context.get("catalog_summary"))
-    if not summary:
-        return
-    returned_count = len(context.get("candidate_rows")) if isinstance(context.get("candidate_rows"), list) else 0
+# 함수 설명: `_domain_summary()`는 도메인 목록 질문의 전체 조회 건수와 실제 반환 건수를 분리해 기록합니다.
+def _domain_summary(
+    answer_mode: str,
+    request_kind: str,
+    loaded_item_count: int,
+    returned_count: int,
+    limit: int,
+    domain_load: dict[str, Any],
+) -> dict[str, Any]:
+    if answer_mode != "available_domains":
+        return {}
+    return _inventory_summary(request_kind, loaded_item_count, returned_count, limit, domain_load)
+
+
+# 함수 설명: `_inventory_summary()`는 목록 대상과 무관하게 전체·표시·잘림 건수를 동일 계약으로 계산합니다.
+def _inventory_summary(
+    request_kind: str,
+    loaded_item_count: int,
+    returned_count: int,
+    limit: int,
+    load: dict[str, Any],
+) -> dict[str, Any]:
     try:
-        total_count = max(0, int(summary.get("total_count", returned_count)))
+        load_count = max(0, int(load.get("count", loaded_item_count)))
     except Exception:
-        total_count = returned_count
-    total_count_exact = bool(summary.get("total_count_exact", True))
-    summary["returned_count"] = returned_count
-    summary["truncated"] = (not total_count_exact) or returned_count < total_count
-    context["catalog_summary"] = summary
+        load_count = loaded_item_count
+    try:
+        lower_bound_count = max(0, int(load.get("total_count_lower_bound", load_count)))
+    except Exception:
+        lower_bound_count = load_count
+    try:
+        load_limit = max(1, int(load.get("limit", limit)))
+    except Exception:
+        load_limit = max(1, int(limit))
+    response_limit = max(1, int(limit))
+    total_count = max(loaded_item_count, load_count, lower_bound_count)
+    total_count_exact = not bool(load.get("truncated"))
+    return {
+        "request_kind": request_kind or "list",
+        "total_count": total_count,
+        "returned_count": max(0, int(returned_count)),
+        "truncated": (not total_count_exact) or returned_count < total_count,
+        "total_count_exact": total_count_exact,
+        "limit": min(response_limit, load_limit),
+        "response_limit": response_limit,
+        "load_limit": load_limit,
+    }
+
+
+# 함수 설명: `_refresh_inventory_summaries()`는 바이트 제한으로 행이 줄어든 뒤 목록 summary와 실제 rows 건수를 다시 맞춥니다.
+def _refresh_inventory_summaries(context: dict[str, Any]) -> None:
+    returned_count = len(context.get("candidate_rows")) if isinstance(context.get("candidate_rows"), list) else 0
+    for summary_key in ("catalog_summary", "domain_summary"):
+        summary = _dict(context.get(summary_key))
+        if not summary:
+            continue
+        try:
+            total_count = max(0, int(summary.get("total_count", returned_count)))
+        except Exception:
+            total_count = returned_count
+        total_count_exact = bool(summary.get("total_count_exact", True))
+        summary["returned_count"] = returned_count
+        summary["truncated"] = (not total_count_exact) or returned_count < total_count
+        context[summary_key] = summary
 
 
 # 함수 설명: `_ranked()`는 메타데이터 항목을 질문 일치 점수와 원래 순서로 안정 정렬합니다.
@@ -783,7 +899,14 @@ def _tokens(text: str) -> set[str]:
 # 함수 설명: `_project_domain_item()`는 도메인 문서에서 QA 답변에 필요한 설명·별칭·공정 정보만 projection합니다.
 def _project_domain_item(item: dict[str, Any], answer_mode: str) -> dict[str, Any]:
     payload = _dict(item.get("payload"))
-    keys = {"display_name", "aliases", "description", "usage_rule", "column", "aggregation_method"}
+    keys = {"display_name", "aliases", "description", "usage_rule"} if answer_mode == "available_domains" else {
+        "display_name",
+        "aliases",
+        "description",
+        "usage_rule",
+        "column",
+        "aggregation_method",
+    }
     if answer_mode == "process_group":
         keys.update({"processes", "process_groups", "members"})
     if answer_mode in {"product_domain_info", "product_condition", "product_token_rule"}:
@@ -955,6 +1078,8 @@ def _json_bytes(value: Any) -> int:
 def _candidate_rows(answer_mode: str, domain_items: list[dict[str, Any]], table_items: list[dict[str, Any]], filter_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if answer_mode in {"dataset_sql", "available_sources"}:
         return [_dataset_row(item) for item in table_items]
+    if answer_mode == "available_domains":
+        return [_domain_inventory_row(item) for item in domain_items]
     if answer_mode == "dataset_detail":
         return [_dataset_detail_row(item) for item in table_items]
     if answer_mode == "required_params":
@@ -1075,6 +1200,21 @@ def _domain_row(item: dict[str, Any], include_section: bool = False) -> dict[str
             "output_columns": payload.get("output_columns"),
             "step_plan_template": payload.get("step_plan_template"),
             "question_cues": payload.get("question_cues") or payload.get("required_question_cues"),
+            "description": payload.get("description") or payload.get("usage_rule"),
+        }
+    )
+
+
+# 함수 설명: `_domain_inventory_row()`는 전체 도메인 목록에서 복잡한 조건 JSON을 제외하고 사람이 식별할 핵심 필드만 남깁니다.
+def _domain_inventory_row(item: dict[str, Any]) -> dict[str, Any]:
+    payload = _dict(item.get("payload"))
+    return _omit_empty(
+        {
+            "metadata_type": "domain",
+            "section": item.get("section"),
+            "key": item.get("key"),
+            "display_name": payload.get("display_name") or item.get("display_name") or item.get("key"),
+            "aliases": _compact_list(payload.get("aliases")),
             "description": payload.get("description") or payload.get("usage_rule"),
         }
     )
