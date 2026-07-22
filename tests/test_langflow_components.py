@@ -864,6 +864,27 @@ def test_session_state_loader_returns_session_id_even_when_state_is_missing(monk
     assert loaded["session_state_load"]["source"] == "mongodb_not_found"
 
 
+def test_session_state_loader_uses_gaia_metadata_session_id(monkeypatch):
+    loader = load_module(ROOT / "langflow_components" / "session_state_flow" / "00_mongodb_session_state_loader.py")
+    install_fake_pymongo(monkeypatch)
+
+    question = types.SimpleNamespace(
+        text="WB공정에서는 어땠어?",
+        metadata={"session_id": "gaia-session-followup"},
+    )
+    loaded = loader.load_session_state(
+        question,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        session_collection_name="agent_v4_session_states",
+        enabled="true",
+    )
+
+    assert loaded["state"] == {"session_id": "gaia-session-followup"}
+    assert loaded["session_state_load"]["session_id"] == "gaia-session-followup"
+    assert loaded["session_state_load"]["source"] == "mongodb_not_found"
+
+
 def test_session_state_loader_does_not_query_shared_demo_session_when_runtime_session_is_missing(monkeypatch):
     loader = load_module(ROOT / "langflow_components" / "session_state_flow" / "00_mongodb_session_state_loader.py")
     install_fake_pymongo(monkeypatch)
@@ -1235,6 +1256,47 @@ def test_followup_hint_builder_inherits_context_date_instead_of_today(question):
         "inherit": True,
     }
     assert hint["changed_conditions_hint"]["date"]["resolved_value"] != payload["request"]["reference_date"]
+
+
+def test_followup_hint_builder_detects_entity_switch_question_without_explicit_reference():
+    hint_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
+    payload = {
+        "request": {"question": "WB공정에서는 어땠어?", "reference_date": "20260722"},
+        "state": {
+            "last_question": "오늘 DA에서 생산량 상위 3개 제품 알려줘",
+            "current_data": {
+                "columns": ["TECH", "DEN", "OPER_NAME", "PRODUCTION"],
+                "source_aliases": ["production_data"],
+                "data_ref": {"ref_id": "result:s1:abc"},
+            },
+            "last_intent_plan": {
+                "analysis_kind": "production_top_products",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "production_data",
+                        "required_params": {"DATE": "20260722"},
+                        "filters": {"OPER_NAME": {"operator": "contains", "value": "D/A"}},
+                    }
+                ],
+            },
+            "last_applied_criteria": {
+                "required_params": {"production_data": {"DATE": "20260722"}},
+                "analysis_filters": {"OPER_NAME": "D/A"},
+                "group_by": ["TECH", "DEN"],
+                "metrics": ["PRODUCTION"],
+            },
+        },
+    }
+
+    hint = hint_builder.build_followup_hint(payload)["followup_hint"]
+
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "followup_requery"
+    assert hint["reuse_strategy_hint"] == "previous_intent_with_new_retrieval"
+    assert hint["matched_cues"]["entity_switch"] == ["에서는", "는 어땠"]
+    assert "metric" in hint["inheritance_candidates"]
+    assert "analysis_filters" in hint["inheritance_candidates"]
 
 
 def test_followup_hint_builder_does_not_guess_context_date_when_previous_dates_differ():

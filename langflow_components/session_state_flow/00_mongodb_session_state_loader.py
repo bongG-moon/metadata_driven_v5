@@ -298,7 +298,37 @@ def _session_id_from_value(value: Any) -> str:
         text = str(getattr(value, attr, "") or "").strip()
         if text:
             return text
+    metadata_session = _metadata_session_id(value)
+    if metadata_session:
+        return metadata_session
     return _session_id_from_state(_payload(value))
+
+
+# 함수 설명: GaiA Input이 Message metadata에 담아준 세션 ID를 MongoDB 세션 조회 후보로 사용합니다.
+def _metadata_session_id(value: Any) -> str:
+    for attribute in ("a2a_metadata", "framework2_metadata", "metadata"):
+        candidate = getattr(value, attribute, None)
+        session_id = _session_id_from_mapping(candidate)
+        if session_id:
+            return session_id
+    data = getattr(value, "data", value)
+    if isinstance(data, dict):
+        for key in ("metadata", "a2a_metadata", "framework2_metadata"):
+            session_id = _session_id_from_mapping(data.get(key))
+            if session_id:
+                return session_id
+    return ""
+
+
+# 함수 설명: metadata dict 안에서 회사 채팅/AgentBuilder가 쓰는 여러 세션 키 표현을 하나로 해석합니다.
+def _session_id_from_mapping(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for key in ("session_id", "sessionId", "conversation_id", "chat_id", "thread_id"):
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            return candidate
+    return ""
 
 
 # 함수 설명: Langflow 직접 실행과 Run Flow 실행에서 현재 graph가 가진 실제 session_id를 읽습니다.
