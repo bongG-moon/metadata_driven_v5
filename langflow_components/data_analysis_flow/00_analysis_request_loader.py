@@ -73,6 +73,9 @@ def _resolve_session_id(previous_state_value: Any = None, session_id: Any = "") 
     text = str(session_id or "").strip()
     if text:
         return text
+    metadata_session = _metadata_session_id(previous_state_value)
+    if metadata_session:
+        return metadata_session
     state = _payload(previous_state_value)
     for key in ("session_id", "conversation_id", "thread_id"):
         value = state.get(key)
@@ -83,6 +86,33 @@ def _resolve_session_id(previous_state_value: Any = None, session_id: Any = "") 
         return str(request["session_id"])
     # 실제 graph session이 없는 실행을 공용 demo-session으로 합치지 않습니다.
     # Langflow 컴포넌트 경로에서는 `_runtime_session_id()`가 현재 세션을 전달합니다.
+    return ""
+
+
+# 함수 설명: GaiA Input이 Message metadata에 담아준 세션 ID를 요청 세션 후보로 사용합니다.
+def _metadata_session_id(value: Any) -> str:
+    for attribute in ("a2a_metadata", "framework2_metadata", "metadata"):
+        candidate = getattr(value, attribute, None)
+        session_id = _session_id_from_mapping(candidate)
+        if session_id:
+            return session_id
+    data = getattr(value, "data", value)
+    if isinstance(data, dict):
+        for key in ("metadata", "a2a_metadata", "framework2_metadata"):
+            session_id = _session_id_from_mapping(data.get(key))
+            if session_id:
+                return session_id
+    return ""
+
+
+# 함수 설명: metadata dict 안에서 회사 채팅/AgentBuilder가 쓰는 여러 세션 키 표현을 하나로 해석합니다.
+def _session_id_from_mapping(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for key in ("session_id", "sessionId", "conversation_id", "thread_id"):
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            return candidate
     return ""
 
 

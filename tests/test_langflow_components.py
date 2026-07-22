@@ -7730,6 +7730,55 @@ def test_route_flow_api_helper_accepts_session_source_for_backward_compatibility
     assert calls[0]["timeout"] == (3, 45)
 
 
+def test_route_flow_uses_gaia_metadata_session_when_message_session_is_missing():
+    caller = load_module(ROOT / "langflow_components" / "route_flow" / "01_flow_api_message_caller.py")
+    calls = []
+
+    class SessionSource:
+        text = "GaiA 화면에서 전달한 질문"
+        a2a_data = {"attachments": [{"id": "file-1"}]}
+        a2a_metadata = {"user_id": "gaia-user", "session_id": "gaia-session-001"}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"api_response": {"status": "ok", "message": "완료"}}
+
+    def fake_post(url, json, headers, timeout):
+        calls.append({"json": json, "timeout": timeout})
+        return FakeResponse()
+
+    result = caller.run_flow_api_message(
+        SessionSource(),
+        api_url="http://localhost:7860/api/v1/run/flow",
+        post_func=fake_post,
+    )
+
+    assert result["status"] == "ok"
+    assert result["session_id"] == "gaia-session-001"
+    assert calls[0]["json"]["session_id"] == "gaia-session-001"
+    assert json.loads(calls[0]["json"]["tweaks"]["GaiA Input Adapter"]["metadata"]) == {
+        "user_id": "gaia-user",
+        "session_id": "gaia-session-001",
+    }
+
+
+def test_data_analysis_request_loader_uses_gaia_metadata_session():
+    loader = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "00_analysis_request_loader.py")
+
+    class GaiaMessage:
+        data = {"text": "오늘 재공 알려줘"}
+        metadata = {"session_id": "gaia-session-002"}
+
+    payload = loader.build_request("오늘 재공 알려줘", previous_state_value=GaiaMessage())
+
+    assert payload["request"]["session_id"] == "gaia-session-002"
+
+
 def test_route_flow_uses_240_second_default_child_read_timeout():
     caller = load_module(ROOT / "langflow_components" / "route_flow" / "01_flow_api_message_caller.py")
     calls = []

@@ -348,6 +348,9 @@ def _session_id(source_value: Any, explicit_session_id: Any) -> str:
         candidate = getattr(source_value, attr, None)
         if _clean(candidate):
             return _clean(candidate)
+    metadata_session = _session_id_from_metadata(source_value)
+    if metadata_session:
+        return metadata_session
     data = getattr(source_value, "data", source_value)
     if isinstance(data, dict):
         for key in ("session_id", "sessionId"):
@@ -361,6 +364,16 @@ def _session_id(source_value: Any, explicit_session_id: Any) -> str:
                 return _clean(candidate)
     if _input_text(source_value, preserve=False):
         return f"route_flow_{uuid.uuid4().hex}"
+    return ""
+
+
+# 함수 설명: GaiA Input/Adapter가 Message metadata에 넣어준 세션 ID를 Router 실행 세션으로 해석합니다.
+def _session_id_from_metadata(value: Any) -> str:
+    metadata = _gaia_metadata(value)
+    for key in ("session_id", "sessionId", "conversation_id", "thread_id"):
+        candidate = _clean(metadata.get(key)) if isinstance(metadata, dict) else ""
+        if candidate:
+            return candidate
     return ""
 
 
