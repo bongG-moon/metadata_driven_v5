@@ -20,6 +20,7 @@ from lfx.io import DataInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
 RETIRED_JOB_DETAIL_KEYS = {"row_identity_columns", "context_columns"}
+PREVIOUS_RESULT_ALIAS = "previous_result"
 
 
 # 주요 함수: LLM 의도 결과를 신뢰 가능한 실행 계획 계약으로 정규화합니다.
@@ -29,15 +30,21 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
     parsed = _json(llm_response)
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
     retrieval_jobs = _retrieval_jobs(plan)
+    retrieval_jobs, context_date_guard = _apply_context_date_guard(payload, retrieval_jobs)
     pandas_plan = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
     function_cases = _function_case_items(plan, retrieval_jobs)
     pandas_plan = _ensure_function_case_steps(function_cases, pandas_plan, retrieval_jobs)
+    request_scope = _request_scope(plan, payload)
+    reuse_strategy = _reuse_strategy(plan, payload, request_scope)
+    if reuse_strategy == "previous_result":
+        pandas_plan = _bind_previous_result_alias(pandas_plan)
+        function_cases = _bind_previous_result_alias(function_cases)
 
     normalized_plan = deepcopy(plan)
     normalized_plan.pop("pandas_function_case", None)
     normalized_plan.pop("selected_function_cases", None)
-    normalized_plan["request_scope"] = _request_scope(plan)
-    normalized_plan["reuse_strategy"] = _reuse_strategy(plan)
+    normalized_plan["request_scope"] = request_scope
+    normalized_plan["reuse_strategy"] = reuse_strategy
     normalized_plan["condition_resolution"] = _condition_resolution(plan)
     normalized_plan["retrieval_jobs"] = retrieval_jobs
     normalized_plan["pandas_execution_plan"] = pandas_plan
@@ -61,6 +68,7 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
         "pandas_step_count": len(pandas_plan),
         "previous_data_reuse": previous_data_reuse,
         "decision_reason": parsed.get("trace", {}).get("decision_reason", []) if isinstance(parsed.get("trace"), dict) else [],
+        "context_date_guard": context_date_guard,
     }
     if not retrieval_jobs and not previous_data_reuse:
         next_payload.setdefault("trace", {}).setdefault("warnings", []).append({"type": "missing_retrieval_jobs", "message": "intent_plan.retrieval_jobs가 비어 있습니다."})
@@ -68,7 +76,7 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
 
 
 # 함수 설명: `_request_scope()`는 분석 범위에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
-def _request_scope(plan: dict[str, Any]) -> str:
+def _request_scope(plan: dict[str, Any], payload: dict[str, Any] | None = None) -> str:
     value = str(plan.get("request_scope") or "").strip()
     allowed = {
         "new_analysis",
@@ -78,11 +86,21 @@ def _request_scope(plan: dict[str, Any]) -> str:
         "followup_explain",
         "clarification",
     }
-    return value if value in allowed else "new_analysis"
+    normalized = value if value in allowed else "new_analysis"
+    date_hint = _context_date_hint(payload)
+    if date_hint.get("requires_clarification") is True:
+        return "clarification"
+    if normalized == "new_analysis" and date_hint.get("source") == "previous_context":
+        return "followup_requery"
+    return normalized
 
 
 # 함수 설명: `_reuse_strategy()`는 의도 계획의 이전 결과 재사용 전략을 허용된 값으로 정규화합니다.
-def _reuse_strategy(plan: dict[str, Any]) -> str:
+def _reuse_strategy(
+    plan: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+    request_scope: str = "",
+) -> str:
     value = str(plan.get("reuse_strategy") or "").strip()
     allowed = {
         "none",
@@ -91,7 +109,77 @@ def _reuse_strategy(plan: dict[str, Any]) -> str:
         "previous_intent_with_new_retrieval",
         "trace_only",
     }
-    return value if value in allowed else "none"
+    normalized = value if value in allowed else "none"
+    if request_scope == "clarification":
+        return "none"
+    date_hint = _context_date_hint(payload)
+    if (
+        normalized == "none"
+        and request_scope == "followup_requery"
+        and date_hint.get("source") == "previous_context"
+    ):
+        return "previous_intent_with_new_retrieval"
+    return normalized
+
+
+# 함수 설명: `_context_date_hint()`는 01E가 만든 직전 날짜 상속 힌트만 안전하게 꺼냅니다.
+def _context_date_hint(payload: dict[str, Any] | None) -> dict[str, Any]:
+    value = payload if isinstance(payload, dict) else {}
+    followup_hint = value.get("followup_hint") if isinstance(value.get("followup_hint"), dict) else {}
+    changed = followup_hint.get("changed_conditions_hint") if isinstance(followup_hint.get("changed_conditions_hint"), dict) else {}
+    date_hint = changed.get("date") if isinstance(changed.get("date"), dict) else {}
+    if followup_hint.get("followup_candidate") is not True:
+        return {}
+    return date_hint
+
+
+# 함수 설명: `_apply_context_date_guard()`는 `이날/이 일자`를 오늘로 바꾼 LLM DATE 값을 직전 분석의 단일 DATE로 교정합니다.
+def _apply_context_date_guard(
+    payload: dict[str, Any],
+    retrieval_jobs: list[Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    date_hint = _context_date_hint(payload)
+    inherited_date = str(date_hint.get("resolved_value") or "").strip()
+    if date_hint.get("source") != "previous_context" or not re.fullmatch(r"20\d{6}", inherited_date):
+        return retrieval_jobs, {}
+
+    result: list[Any] = []
+    corrected_aliases: list[str] = []
+    for item in retrieval_jobs:
+        if not isinstance(item, dict):
+            result.append(deepcopy(item))
+            continue
+        job = deepcopy(item)
+        required_params = job.get("required_params") if isinstance(job.get("required_params"), dict) else {}
+        if "DATE" in required_params and str(required_params.get("DATE") or "").strip() != inherited_date:
+            required_params["DATE"] = inherited_date
+            job["required_params"] = required_params
+            alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+            if alias and alias not in corrected_aliases:
+                corrected_aliases.append(alias)
+        result.append(job)
+    return result, {
+        "status": "applied" if corrected_aliases else "not_needed",
+        "expression": date_hint.get("expression"),
+        "resolved_value": inherited_date,
+        "corrected_source_aliases": corrected_aliases,
+    }
+
+
+# 함수 설명: `_bind_previous_result_alias()`는 이전 최종 결과 재분석 계획이 MongoDB 로더의 단일 예약 alias를 사용하도록 정규화합니다.
+def _bind_previous_result_alias(items: list[Any]) -> list[Any]:
+    result: list[Any] = []
+    for item in items:
+        if not isinstance(item, dict):
+            result.append(deepcopy(item))
+            continue
+        normalized = deepcopy(item)
+        normalized["source_alias"] = PREVIOUS_RESULT_ALIAS
+        for key in ("left_source_alias", "right_source_alias"):
+            if key in normalized:
+                normalized[key] = PREVIOUS_RESULT_ALIAS
+        result.append(normalized)
+    return result
 
 
 # 함수 설명: `_condition_resolution()`는 이전 조건의 inherited·changed·dropped·new 내역을 표준 구조로 정리합니다.

@@ -36,9 +36,14 @@ def load_session_state(
     session_collection_name: Any = "",
     enabled: Any = "true",
     preview_row_limit: Any = "5",
+    runtime_session_id: Any = "",
 ) -> dict[str, Any]:
     fallback_state = _state_from_value(fallback_state_value)
-    session = _session_id_from_value(question) or _session_id_from_state(fallback_state) or "demo-session"
+    session = (
+        _clean(runtime_session_id)
+        or _session_id_from_value(question)
+        or _session_id_from_state(fallback_state)
+    )
     preview_limit = _positive_int(preview_row_limit, DEFAULT_PREVIEW_ROW_LIMIT)
     collection_name = _collection_name(session_collection_name)
     status: dict[str, Any] = {
@@ -59,7 +64,14 @@ def load_session_state(
 
     if not _truthy(enabled):
         status["source"] = "disabled"
-        return {"state": {"session_id": session}, "session_state_load": status}
+        return {"state": {"session_id": session} if session else {}, "session_state_load": status}
+
+    # 실제 session_id가 없을 때 공용 demo-session을 조회하면 서로 다른 사용자와 초기화된 대화가 섞입니다.
+    # standalone graph가 제공하는 runtime session까지 확인한 뒤에도 비어 있으면 MongoDB 조회를 생략합니다.
+    if not session:
+        status["source"] = "missing_session_id"
+        status["errors"] = ["현재 실행의 session_id를 확인할 수 없어 이전 세션 상태를 불러오지 않았습니다."]
+        return {"state": {}, "session_state_load": status}
 
     uri = _clean(mongo_uri)
     database = _clean(mongo_database) or DEFAULT_DATABASE
@@ -106,19 +118,60 @@ def load_session_state(
 def _compact_state(state: Any, preview_limit: int) -> dict[str, Any]:
     if not isinstance(state, dict):
         return {}
-    result = deepcopy(state)
-    result.pop("runtime_sources", None)
-    result["chat_history"] = deepcopy(result.get("chat_history", [])[-10:]) if isinstance(result.get("chat_history"), list) else []
-    result["context"] = dict(result.get("context", {})) if isinstance(result.get("context"), dict) else {}
-    result["current_data"] = _compact_current_data(result.get("current_data"), preview_limit)
+    result: dict[str, Any] = {}
+    request = state.get("request") if isinstance(state.get("request"), dict) else {}
+    session_id = _session_id_from_state(state)
+    if session_id:
+        result["session_id"] = session_id
+    last_question = state.get("last_question") or request.get("question")
+    if last_question not in (None, ""):
+        result["last_question"] = str(last_question)
+    if state.get("last_answer_message") not in (None, ""):
+        result["last_answer_message"] = str(state.get("last_answer_message"))
+    result["current_data"] = _compact_current_data(state.get("current_data"), preview_limit)
     result["followup_source_results"] = [
         _compact_source_result(item, preview_limit)
-        for item in result.get("followup_source_results", [])
+        for item in state.get("followup_source_results", [])
         if isinstance(item, dict)
     ]
-    if not isinstance(result.get("runtime_source_refs"), dict):
-        result.pop("runtime_source_refs", None)
+    for key in ("last_intent_plan", "last_applied_criteria"):
+        value = state.get(key)
+        if isinstance(value, dict) and value:
+            result[key] = deepcopy(value)
+    runtime_source_refs = _compact_runtime_source_refs(
+        state.get("runtime_source_refs"),
+        result.get("current_data"),
+        result.get("followup_source_results"),
+    )
+    if runtime_source_refs:
+        result["runtime_source_refs"] = runtime_source_refs
     return _json_ready(result)
+
+
+# 함수 설명: 현재 turn의 source alias에 해당하는 MongoDB 참조만 남겨 과거 source 참조가 다음 질문에 누적되지 않도록 합니다.
+def _compact_runtime_source_refs(
+    value: Any,
+    current_data: Any,
+    followup_sources: Any,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_aliases = {
+        str(alias).strip()
+        for alias in (current_data.get("source_aliases", []) if isinstance(current_data, dict) else [])
+        if str(alias or "").strip()
+    }
+    for source in followup_sources if isinstance(followup_sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        alias = str(source.get("source_alias") or "").strip()
+        if alias:
+            allowed_aliases.add(alias)
+    return {
+        str(alias): deepcopy(ref)
+        for alias, ref in value.items()
+        if str(alias) in allowed_aliases and isinstance(ref, dict)
+    }
 
 
 # 함수 설명: `_compact_current_data()`는 현재·데이터에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
@@ -248,6 +301,15 @@ def _session_id_from_value(value: Any) -> str:
     return _session_id_from_state(_payload(value))
 
 
+# 함수 설명: Langflow 직접 실행과 Run Flow 실행에서 현재 graph가 가진 실제 session_id를 읽습니다.
+def _runtime_session_id(component: Any) -> str:
+    graph = getattr(component, "graph", None)
+    graph_session = str(getattr(graph, "session_id", "") or "").strip()
+    if graph_session:
+        return graph_session
+    return str(getattr(component, "_session_id", "") or "").strip()
+
+
 # 함수 설명: `_rows_from()`는 복합 데이터에서 저장/표시에 사용할 dict 행 목록을 추출합니다.
 def _rows_from(value: dict[str, Any]) -> list[dict[str, Any]]:
     rows = value.get("rows")
@@ -331,6 +393,7 @@ class MongoDBSessionStateLoader(Component):
             getattr(self, "session_collection_name", ""),
             getattr(self, "enabled", "true"),
             getattr(self, "preview_row_limit", str(DEFAULT_PREVIEW_ROW_LIMIT)),
+            runtime_session_id=_runtime_session_id(self),
         )
         self._cached_session_state_payload = result
         self.status = result.get("session_state_load", {})

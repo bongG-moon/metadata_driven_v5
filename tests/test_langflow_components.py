@@ -169,7 +169,7 @@ def function_case_source(*function_names: str) -> str:
 
 def install_fake_pymongo(monkeypatch):
     store = {}
-    metrics = {"client_count": 0}
+    metrics = {"client_count": 0, "find_one_projections": []}
 
     class FakeCursor:
         def __init__(self, docs):
@@ -195,6 +195,7 @@ def install_fake_pymongo(monkeypatch):
 
         def find_one(self, query=None, projection=None):
             query = query or {}
+            metrics["find_one_projections"].append(deepcopy(projection))
             for doc in self.docs.values():
                 if self._matches(doc, query):
                     return self._project(doc, projection)
@@ -211,7 +212,24 @@ def install_fake_pymongo(monkeypatch):
         @staticmethod
         def _project(doc, projection):
             if projection and any(value == 1 for value in projection.values()):
-                projected = {key: deepcopy(doc[key]) for key, value in projection.items() if value == 1 and key in doc}
+                projected = {}
+                for key, value in projection.items():
+                    if value != 1:
+                        continue
+                    source = doc
+                    target = projected
+                    parts = str(key).split(".")
+                    found = True
+                    for part in parts:
+                        if not isinstance(source, dict) or part not in source:
+                            found = False
+                            break
+                        source = source[part]
+                    if not found:
+                        continue
+                    for part in parts[:-1]:
+                        target = target.setdefault(part, {})
+                    target[parts[-1]] = deepcopy(source)
                 if projection.get("_id") != 0 and "_id" in doc:
                     projected.setdefault("_id", deepcopy(doc["_id"]))
             else:
@@ -765,7 +783,7 @@ def test_analysis_request_loader_defaults_reference_date_to_korea_today():
     input_names = {item.kwargs.get("name") for item in request_loader.AnalysisRequestLoader.inputs}
 
     assert payload["request"]["reference_date"] == expected_today
-    assert payload["request"]["session_id"] == "demo-session"
+    assert payload["request"]["session_id"] == ""
     assert inherited["request"]["session_id"] == "s-from-state"
     assert runtime_payload["request"]["session_id"] == "runtime-session-1"
     assert "timezone" not in payload["request"]
@@ -846,6 +864,72 @@ def test_session_state_loader_returns_session_id_even_when_state_is_missing(monk
     assert loaded["session_state_load"]["source"] == "mongodb_not_found"
 
 
+def test_session_state_loader_does_not_query_shared_demo_session_when_runtime_session_is_missing(monkeypatch):
+    loader = load_module(ROOT / "langflow_components" / "session_state_flow" / "00_mongodb_session_state_loader.py")
+    install_fake_pymongo(monkeypatch)
+
+    loaded = loader.load_session_state(
+        "오늘 재공 알려줘",
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        session_collection_name="agent_v4_session_states",
+        enabled="true",
+    )
+
+    assert loaded["state"] == {}
+    assert loaded["session_state_load"]["source"] == "missing_session_id"
+    assert loaded["session_state_load"]["session_id"] == ""
+    assert sys.modules["pymongo"].metrics["client_count"] == 0
+
+
+def test_session_state_loader_uses_graph_runtime_session_and_whitelists_state(monkeypatch):
+    loader = load_module(ROOT / "langflow_components" / "session_state_flow" / "00_mongodb_session_state_loader.py")
+    store = install_fake_pymongo(monkeypatch)
+    store.setdefault("datagov", {}).setdefault("agent_v4_session_states", {})["session_state:runtime-1"] = {
+        "_id": "session_state:runtime-1",
+        "session_id": "runtime-1",
+        "state": {
+            "session_id": "runtime-1",
+            "last_question": "UPH와 장비 배정 알려줘",
+            "last_answer_message": "이전 답변",
+            "current_data": {
+                "source_aliases": ["wip_data"],
+                "source_dataset_keys": ["wip"],
+                "data_ref": {"ref_id": "result:runtime-1:abc"},
+            },
+            "followup_source_results": [{"source_alias": "wip_data", "dataset_key": "wip"}],
+            "runtime_source_refs": {
+                "wip_data": {"ref_id": "result:runtime-1:abc"},
+                "uph_data": {"ref_id": "result:runtime-1:old"},
+            },
+            "last_intent_plan": {"analysis_kind": "wip_total"},
+            "last_applied_criteria": {"metrics": ["WIP"]},
+            "runtime_sources": {"uph_data": [{"UPH": 10}]},
+            "data_refs": [{"ref_id": "result:runtime-1:old"}],
+            "unexpected_state_key": "must be removed",
+        },
+    }
+
+    component = loader.MongoDBSessionStateLoader()
+    component.question = "오늘 재공 알려줘"
+    component.fallback_state = None
+    component.mongo_uri = "mongodb://fake"
+    component.mongo_database = "datagov"
+    component.session_collection_name = "agent_v4_session_states"
+    component.enabled = "true"
+    component.preview_row_limit = "5"
+    component.graph = types.SimpleNamespace(session_id="runtime-1")
+    state = component.build_state().data
+
+    assert state["session_id"] == "runtime-1"
+    assert state["runtime_source_refs"] == {
+        "wip_data": {"ref_id": "result:runtime-1:abc"}
+    }
+    assert "runtime_sources" not in state
+    assert "data_refs" not in state
+    assert "unexpected_state_key" not in state
+
+
 def test_intent_variables_builder_hides_date_context_and_direct_specialized_prompt_ports():
     intent_variables = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "02_intent_variables_builder.py")
 
@@ -881,6 +965,7 @@ def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
                     ],
                 }
             },
+            "followup_hint": {"followup_candidate": True, "request_scope_hint": "followup_requery"},
         },
         {
             "domain_items": [{"key": "duplicated_outer"}],
@@ -1020,6 +1105,77 @@ def test_followup_hint_builder_keeps_complete_question_as_new_analysis():
     assert hint["request_scope_hint"] == "new_analysis"
 
 
+@pytest.mark.parametrize("question", ["오늘 재공 알려줘", "현재 재공 조회해줘"])
+def test_followup_hint_builder_keeps_complete_wip_request_independent_from_old_multi_source_state(question):
+    hint_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
+    payload = {
+        "request": {"question": question, "reference_date": "20260722"},
+        "state": {
+            "last_question": "UPH와 작업 장비, 생산 실적을 알려줘",
+            "current_data": {
+                "source_aliases": ["uph_data", "equipment_assign_data", "production_data"],
+                "source_dataset_keys": ["eqp_uph", "equipment_assign", "production_today"],
+                "columns": ["UPH", "EQP_ID", "PRODUCTION"],
+            },
+            "last_intent_plan": {
+                "analysis_kind": "equipment_uph_assignment_production",
+                "retrieval_jobs": [
+                    {"dataset_key": "eqp_uph", "source_alias": "uph_data"},
+                    {"dataset_key": "equipment_assign", "source_alias": "equipment_assign_data"},
+                    {"dataset_key": "production_today", "source_alias": "production_data"},
+                ],
+            },
+        },
+    }
+
+    hint = hint_builder.build_followup_hint(payload)["followup_hint"]
+
+    assert hint["complete_independent_request"] is True
+    assert hint["followup_candidate"] is False
+    assert hint["request_scope_hint"] == "new_analysis"
+    assert hint["reuse_strategy_hint"] == "none"
+
+
+def test_intent_variables_builder_hides_previous_sources_for_new_analysis_but_keeps_followup_context():
+    intent_variables = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "02_intent_variables_builder.py")
+    previous_state = {
+        "last_question": "UPH와 작업 장비, 생산 실적을 알려줘",
+        "current_data": {
+            "source_aliases": ["uph_data", "equipment_assign_data", "production_data"],
+            "source_dataset_keys": ["eqp_uph", "equipment_assign", "production_today"],
+        },
+        "last_intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "eqp_uph", "source_alias": "uph_data"},
+                {"dataset_key": "equipment_assign", "source_alias": "equipment_assign_data"},
+                {"dataset_key": "production_today", "source_alias": "production_data"},
+            ]
+        },
+    }
+    new_analysis = intent_variables.build_variables(
+        {
+            "request": {"question": "오늘 재공 알려줘", "reference_date": "20260722"},
+            "state": previous_state,
+            "followup_hint": {"followup_candidate": False, "request_scope_hint": "new_analysis"},
+        },
+        {},
+    )
+    followup = intent_variables.build_variables(
+        {
+            "request": {"question": "이날 다른 장비는?", "reference_date": "20260722"},
+            "state": previous_state,
+            "followup_hint": {"followup_candidate": True, "request_scope_hint": "followup_requery"},
+        },
+        {},
+    )
+
+    new_state_summary = json.loads(new_analysis["state_summary"])
+    followup_state_summary = json.loads(followup["state_summary"])
+    assert new_state_summary["state"] == {}
+    assert "eqp_uph" not in new_analysis["state_summary"]
+    assert followup_state_summary["state"]["last_intent_plan"]["retrieval_jobs"][0]["dataset_key"] == "eqp_uph"
+
+
 def test_followup_hint_builder_keeps_multiple_dates_scoped_to_each_metric():
     hint_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
     payload = {
@@ -1041,6 +1197,73 @@ def test_followup_hint_builder_keeps_multiple_dates_scoped_to_each_metric():
     ]
 
 
+@pytest.mark.parametrize("question", ["이날 다른 공정은 어때?", "이 일자에 다른 장비는?"])
+def test_followup_hint_builder_inherits_context_date_instead_of_today(question):
+    hint_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
+    payload = {
+        "request": {"question": question, "reference_date": "20260722"},
+        "state": {
+            "last_question": "7월 18일 DA공정 생산량 알려줘",
+            "current_data": {
+                "source_aliases": ["production_data"],
+                "data_ref": {"ref_id": "result:s1:abc"},
+            },
+            "last_intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production",
+                        "source_alias": "production_data",
+                        "required_params": {"DATE": "20260718"},
+                    }
+                ]
+            },
+            "last_applied_criteria": {
+                "required_params": {"production_data": {"DATE": "20260718"}}
+            },
+        },
+    }
+
+    hint = hint_builder.build_followup_hint(payload)["followup_hint"]
+
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "followup_requery"
+    assert hint["reuse_strategy_hint"] == "previous_intent_with_new_retrieval"
+    assert hint["changed_conditions_hint"]["date"] == {
+        "expression": "이날" if question.startswith("이날") else "이 일자",
+        "resolved_value": "20260718",
+        "source": "previous_context",
+        "inherit": True,
+    }
+    assert hint["changed_conditions_hint"]["date"]["resolved_value"] != payload["request"]["reference_date"]
+
+
+def test_followup_hint_builder_does_not_guess_context_date_when_previous_dates_differ():
+    hint_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
+    payload = {
+        "request": {"question": "이날 다른 장비는?", "reference_date": "20260722"},
+        "state": {
+            "last_question": "어제 재공과 오늘 생산량 알려줘",
+            "current_data": {
+                "source_aliases": ["wip_data", "production_data"],
+                "data_ref": {"ref_id": "result:s1:abc"},
+            },
+            "last_applied_criteria": {
+                "required_params": {
+                    "wip_data": {"DATE": "20260720"},
+                    "production_data": {"DATE": "20260721"},
+                }
+            },
+        },
+    }
+
+    date_hint = hint_builder.build_followup_hint(payload)["followup_hint"]["changed_conditions_hint"]["date"]
+
+    assert date_hint["scope"] == "previous_context_multiple"
+    assert date_hint["requires_clarification"] is True
+    assert "resolved_value" not in date_hint
+    assert {item["resolved_value"] for item in date_hint["candidates"]} == {"20260720", "20260721"}
+
+
 def test_intent_prompt_requires_complete_params_per_retrieval_job_without_shared_contract():
     prompt_text = (
         ROOT / "langflow_components" / "data_analysis_flow" / "03_intent_prompt_template_ko.md"
@@ -1049,6 +1272,8 @@ def test_intent_prompt_requires_complete_params_per_retrieval_job_without_shared
     assert "각 retrieval job의 `required_params`" in prompt_text
     assert "같은 확정값을 해당하는 모든 job의 `required_params`에 각각 반복" in prompt_text
     assert "`어제 재공과 오늘 생산량`" in prompt_text
+    assert "`이날`, `이 일자`, `그날`" in prompt_text
+    assert "예약 alias `previous_result`" in prompt_text
     assert "shared_required_params" not in prompt_text
 
 
@@ -1709,6 +1934,14 @@ def test_answer_response_builder_persists_compact_state_for_followup_turns():
     answer_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py")
     payload = {
         "request": {"question": "오늘 WB공정의 생산량 알려줘", "session_id": "s1", "reference_date": "20260707"},
+        "state": {
+            "session_id": "s1",
+            "runtime_sources": {"uph_data": [{"UPH": 999}]},
+            "runtime_source_refs": {"uph_data": {"ref_id": "result:s1:old"}},
+            "followup_source_results": [{"source_alias": "uph_data", "dataset_key": "eqp_uph"}],
+            "data_refs": [{"ref_id": "result:s1:old"}],
+            "unexpected_state_key": "must not survive",
+        },
         "intent_plan": {
             "analysis_kind": "production_sum",
             "request_scope": "new_analysis",
@@ -1769,6 +2002,10 @@ def test_answer_response_builder_persists_compact_state_for_followup_turns():
     assert state["followup_source_results"][0]["columns"] == ["OPER_NAME", "DEVICE", "PRODUCTION"]
     assert state["runtime_source_refs"]["production_data"]["role"] == "source_rows"
     assert state["last_intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"]["value"] == ["W/B1", "W/B2"]
+    assert "uph_data" not in state["runtime_source_refs"]
+    assert [item["source_alias"] for item in state["followup_source_results"]] == ["production_data"]
+    assert "data_refs" not in state
+    assert "unexpected_state_key" not in state
     assert state["last_applied_criteria"]["required_params"]["production_data"] == {"DATE": "20260707"}
     assert "runtime_sources" not in state
 
@@ -2448,6 +2685,8 @@ def test_answer_message_adapter_adds_data_ref_download_links():
     assert "분석 결과 데이터 CSV 다운로드" in message
     assert "사용 원본 데이터: production_data CSV 다운로드" in message
     assert "http://localhost:8501/download.csv?download_ref=" in message
+    assert message.count('target="_blank"') == 2
+    assert message.count('rel="noopener noreferrer"') == 2
     assert "CSV 파일이 바로 다운로드" in message
     assert "download_base_url" not in input_names
     assert "show_download_links" in input_names
@@ -3260,7 +3499,9 @@ def test_intent_normalizer_preserves_followup_scope_and_allows_previous_result_r
                     "changed": {"limit": 3},
                 },
                 "retrieval_jobs": [],
-                "pandas_execution_plan": [{"step": "이전 결과에서 상위 3개 선택"}],
+                "pandas_execution_plan": [
+                    {"step": "이전 결과에서 상위 3개 선택", "source_alias": "production_data"}
+                ],
             }
         },
     )
@@ -3268,6 +3509,7 @@ def test_intent_normalizer_preserves_followup_scope_and_allows_previous_result_r
     assert normalized["intent_plan"]["request_scope"] == "followup_transform"
     assert normalized["intent_plan"]["reuse_strategy"] == "previous_result"
     assert normalized["intent_plan"]["condition_resolution"]["changed"] == {"limit": 3}
+    assert normalized["intent_plan"]["pandas_execution_plan"][0]["source_alias"] == "previous_result"
     assert normalized["trace"]["inspection"]["intent"]["status"] == "ok"
     assert normalized["trace"]["inspection"]["intent"]["previous_data_reuse"] is True
     assert not [item for item in normalized["trace"]["warnings"] if item.get("type") == "missing_retrieval_jobs"]
@@ -3292,6 +3534,92 @@ def test_intent_normalizer_warns_when_followup_requery_has_no_retrieval_jobs():
 
     assert normalized["trace"]["inspection"]["intent"]["status"] == "warning"
     assert [item for item in normalized["trace"]["warnings"] if item.get("type") == "missing_retrieval_jobs"]
+
+
+def test_intent_normalizer_guards_context_date_and_followup_scope_when_model_uses_today():
+    intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {"question": "이날 다른 공정은 어때?", "reference_date": "20260722"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_requery",
+            "reuse_strategy_hint": "previous_intent_with_new_retrieval",
+            "changed_conditions_hint": {
+                "date": {
+                    "expression": "이날",
+                    "resolved_value": "20260718",
+                    "source": "previous_context",
+                    "inherit": True,
+                }
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "production_by_process",
+                "request_scope": "new_analysis",
+                "reuse_strategy": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production",
+                        "source_alias": "production_data",
+                        "required_params": {"DATE": "20260722"},
+                    }
+                ],
+                "pandas_execution_plan": [{"operation": "group_by", "source_alias": "production_data"}],
+            }
+        },
+    )
+
+    assert normalized["intent_plan"]["request_scope"] == "followup_requery"
+    assert normalized["intent_plan"]["reuse_strategy"] == "previous_intent_with_new_retrieval"
+    assert normalized["intent_plan"]["retrieval_jobs"][0]["required_params"]["DATE"] == "20260718"
+    assert normalized["trace"]["inspection"]["intent"]["context_date_guard"] == {
+        "status": "applied",
+        "expression": "이날",
+        "resolved_value": "20260718",
+        "corrected_source_aliases": ["production_data"],
+    }
+
+
+def test_intent_normalizer_keeps_ambiguous_context_date_as_clarification():
+    intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {"question": "이날 다른 장비는?", "reference_date": "20260722"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "changed_conditions_hint": {
+                "date": {
+                    "expression": "이날",
+                    "scope": "previous_context_multiple",
+                    "source": "previous_context",
+                    "requires_clarification": True,
+                }
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_list",
+                "request_scope": "new_analysis",
+                "reuse_strategy": "none",
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [],
+            }
+        },
+    )
+
+    assert normalized["intent_plan"]["request_scope"] == "clarification"
+    assert normalized["intent_plan"]["reuse_strategy"] == "none"
+    assert normalized["trace"]["inspection"]["intent"]["status"] == "ok"
 
 
 def test_specialized_function_examples_match_runtime_and_domain_saving_contracts():
@@ -4220,6 +4548,7 @@ def test_data_analysis_mongodb_result_store_and_loader_round_trip(monkeypatch):
     restored = result_loader.load_previous_result(
         {
             "request": {"session_id": "s1", "question": "이전 결과 다시 보여줘"},
+            "intent_plan": {"reuse_strategy": "previous_result"},
             "state": {"current_data": {"data_ref": data_ref}},
             "trace": {"warnings": [], "errors": [], "inspection": {}},
         },
@@ -4245,7 +4574,10 @@ def test_data_analysis_mongodb_result_store_and_loader_round_trip(monkeypatch):
     assert "rows" not in result_doc["payload"]["data"]
     assert "rows" not in result_doc["payload"]["analysis"]
     assert restored["trace"]["inspection"]["result_loader"]["status"] == "ok"
-    assert restored["runtime_sources"]["wip_data"][0]["WIP"] == 120
+    assert restored["trace"]["inspection"]["result_loader"]["mode"] == "previous_result"
+    assert restored["runtime_sources"] == {
+        "previous_result": [{"OPER_NAME": "D/A1", "wip_sum": 120}]
+    }
     assert restored["data"]["rows"] == [{"OPER_NAME": "D/A1", "wip_sum": 120}]
     for key in ("ref_id", "database", "collection_name", "path", "role"):
         assert restored["data"]["data_ref"][key] == data_ref[key]
@@ -4259,12 +4591,66 @@ def test_data_analysis_mongodb_result_store_and_loader_round_trip(monkeypatch):
     assert source_rows["rows"] == [{"OPER_NAME": "D/A1", "WIP": 120}]
 
 
+def test_result_store_keeps_only_sources_referenced_by_current_pandas_plan(monkeypatch):
+    mongo_store = install_fake_pymongo(monkeypatch)
+    result_store = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py")
+    payload = {
+        "request": {"session_id": "s1", "question": "오늘 재공 알려줘"},
+        "intent_plan": {
+            "analysis_kind": "wip_total",
+            "request_scope": "new_analysis",
+            "reuse_strategy": "none",
+            "retrieval_jobs": [
+                {"dataset_key": "wip", "source_alias": "wip_data"},
+                {"dataset_key": "eqp_uph", "source_alias": "uph_data"},
+                {"dataset_key": "equipment_assign", "source_alias": "equipment_assign_data"},
+            ],
+            "pandas_execution_plan": [
+                {"operation": "aggregate", "source_alias": "wip_data", "column": "WIP"}
+            ],
+        },
+        "source_results": [
+            {"dataset_key": "wip", "source_alias": "wip_data", "row_count": 1},
+            {"dataset_key": "eqp_uph", "source_alias": "uph_data", "row_count": 1},
+            {"dataset_key": "equipment_assign", "source_alias": "equipment_assign_data", "row_count": 1},
+        ],
+        "runtime_sources": {
+            "wip_data": [{"OPER_NAME": "D/A1", "WIP": 120}],
+            "uph_data": [{"OPER_NAME": "D/A1", "UPH": 300}],
+            "equipment_assign_data": [{"OPER_NAME": "D/A1", "EQP_ID": "EQ-1"}],
+        },
+        "analysis": {"status": "ok", "row_count": 1, "columns": ["WIP"]},
+        "data": {"columns": ["WIP"], "rows": [{"WIP": 120}], "row_count": 1},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    stored = result_store.store_result(
+        payload,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+    )
+
+    ref_id = stored["data"]["data_ref"]["ref_id"]
+    document = mongo_store["datagov"]["agent_v4_result_store"][ref_id]
+    assert list(document["payload"]["runtime_sources"]) == ["wip_data"]
+    assert document["payload"]["storage_manifest"]["included_source_aliases"] == ["wip_data"]
+    assert document["payload"]["storage_manifest"]["excluded_source_aliases"] == [
+        "equipment_assign_data",
+        "uph_data",
+    ]
+    assert [item.get("source_alias") for item in stored["data_refs"] if item.get("role") == "source_rows"] == [
+        "wip_data"
+    ]
+
+
 def test_mongodb_result_loader_accepts_legacy_data_rows(monkeypatch):
     mongo_store = install_fake_pymongo(monkeypatch)
     set_shared_v4_mongo_env(monkeypatch)
     result_loader = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "05_mongodb_result_loader.py")
     mongo_store.setdefault("datagov", {}).setdefault("agent_v4_result_store", {})["legacy-ref"] = {
         "_id": "legacy-ref",
+        "session_id": "legacy-session",
         "payload": {
             "source_results": [],
             "runtime_sources": {},
@@ -4275,6 +4661,8 @@ def test_mongodb_result_loader_accepts_legacy_data_rows(monkeypatch):
 
     restored = result_loader.load_previous_result(
         {
+            "request": {"session_id": "legacy-session"},
+            "intent_plan": {"reuse_strategy": "previous_result"},
             "data": {"data_ref": "legacy-ref"},
             "trace": {"warnings": [], "errors": [], "inspection": {}},
         },
@@ -4285,6 +4673,7 @@ def test_mongodb_result_loader_accepts_legacy_data_rows(monkeypatch):
 
     assert restored["trace"]["inspection"]["result_loader"]["status"] == "ok"
     assert restored["data"]["rows"] == [{"DEVICE": "LEGACY"}]
+    assert restored["runtime_sources"] == {"previous_result": [{"DEVICE": "LEGACY"}]}
     assert restored["data"]["data_ref"]["path"] == "payload.result_rows"
 
 
@@ -4596,18 +4985,104 @@ def test_data_ref_store_rejects_expired_document():
     assert loaded["rows"] == []
 
 
-def test_mongodb_previous_result_loader_uses_payload_data_ref_only():
+def test_mongodb_previous_result_loader_skips_when_strategy_does_not_need_rows(monkeypatch):
+    install_fake_pymongo(monkeypatch)
     result_loader = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "05_mongodb_result_loader.py")
 
     input_names = {item.kwargs.get("name") for item in result_loader.MongoDBResultLoader.inputs}
-    payload = {"trace": {"warnings": [], "errors": [], "inspection": {}}}
-    skipped = result_loader.load_previous_result(payload)
+    payload = {
+        "intent_plan": {"reuse_strategy": "previous_intent_with_new_retrieval"},
+        "state": {"current_data": {"data_ref": {"ref_id": "result:s1:abc"}}},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    skipped = result_loader.load_previous_result(payload, mongo_uri="mongodb://fake")
 
     assert "payload" in input_names
     assert "data_ref" not in input_names
     assert skipped["trace"]["warnings"] == []
     assert skipped["trace"]["inspection"]["result_loader"]["status"] == "skipped"
-    assert skipped["trace"]["inspection"]["result_loader"]["errors"][0]["type"] == "missing_data_ref"
+    assert skipped["trace"]["inspection"]["result_loader"]["errors"][0]["type"] == "reuse_strategy_without_row_restore"
+    assert sys.modules["pymongo"].metrics["client_count"] == 0
+
+
+def test_mongodb_previous_source_loader_projects_only_requested_alias(monkeypatch):
+    mongo_store = install_fake_pymongo(monkeypatch)
+    result_loader = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "05_mongodb_result_loader.py")
+    mongo_store.setdefault("datagov", {}).setdefault("agent_v4_result_store", {})["result:s1:abc"] = {
+        "_id": "result:s1:abc",
+        "session_id": "s1",
+        "payload": {
+            "source_results": [
+                {"dataset_key": "wip", "source_alias": "wip_data", "columns": ["OPER_NAME", "WIP"], "row_count": 1},
+                {"dataset_key": "production", "source_alias": "production_data", "columns": ["OPER_NAME", "PRODUCTION"], "row_count": 1},
+            ],
+            "runtime_sources": {
+                "wip_data": [{"OPER_NAME": "D/A1", "WIP": 120}],
+                "production_data": [{"OPER_NAME": "D/A1", "PRODUCTION": 80}],
+            },
+            "storage_manifest": {
+                "runtime_sources": {
+                    "wip_data": {"complete": True},
+                    "production_data": {"complete": True},
+                }
+            },
+        },
+    }
+    payload = {
+        "request": {"session_id": "s1", "question": "같은 원본에서 공정별 재공을 보여줘"},
+        "intent_plan": {
+            "reuse_strategy": "previous_source",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [{"operation": "group_by", "source_alias": "wip_data"}],
+        },
+        "state": {"current_data": {"data_ref": {"ref_id": "result:s1:abc"}}},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    restored = result_loader.load_previous_result(
+        payload,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+    )
+
+    assert restored["runtime_sources"] == {"wip_data": [{"OPER_NAME": "D/A1", "WIP": 120}]}
+    assert [item["source_alias"] for item in restored["source_results"]] == ["wip_data"]
+    assert restored["trace"]["inspection"]["result_loader"]["loaded_source_aliases"] == ["wip_data"]
+    projection = sys.modules["pymongo"].metrics["find_one_projections"][-1]
+    assert projection["payload.runtime_sources.wip_data"] == 1
+    assert "payload.runtime_sources.production_data" not in projection
+    assert "payload.result_rows" not in projection
+
+
+def test_mongodb_previous_result_loader_rejects_other_session(monkeypatch):
+    mongo_store = install_fake_pymongo(monkeypatch)
+    result_loader = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "05_mongodb_result_loader.py")
+    mongo_store.setdefault("datagov", {}).setdefault("agent_v4_result_store", {})["result:s1:abc"] = {
+        "_id": "result:s1:abc",
+        "session_id": "s1",
+        "payload": {
+            "result_rows": [{"PRODUCTION": 80}],
+            "data": {"columns": ["PRODUCTION"], "row_count": 1},
+            "storage_manifest": {"result_rows": {"complete": True}},
+        },
+    }
+
+    blocked = result_loader.load_previous_result(
+        {
+            "request": {"session_id": "s2"},
+            "intent_plan": {"reuse_strategy": "previous_result"},
+            "state": {"current_data": {"data_ref": {"ref_id": "result:s1:abc"}}},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="agent_v4_result_store",
+    )
+
+    assert blocked["trace"]["inspection"]["result_loader"]["status"] == "error"
+    assert blocked["trace"]["inspection"]["result_loader"]["errors"][0]["type"] == "previous_result_session_mismatch"
+    assert "runtime_sources" not in blocked
 
 
 def test_restored_runtime_sources_survive_empty_retrieval_merge():

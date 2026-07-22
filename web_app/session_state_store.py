@@ -30,7 +30,7 @@ class MongoDBSessionStateStore:
         self.last_write_status: dict[str, Any] = {}
 
     def load_state(self, session_id: str) -> dict[str, Any]:
-        session = str(session_id or "demo-session")
+        session = str(session_id or "").strip()
         status = {
             "enabled": self.settings.enabled,
             "loaded": False,
@@ -40,6 +40,11 @@ class MongoDBSessionStateStore:
             "errors": [],
         }
         if not self.settings.enabled:
+            self.last_load_status = status
+            return {}
+        if not session:
+            status["source"] = "missing_session_id"
+            status["errors"] = ["현재 웹 대화의 session_id가 없어 이전 상태를 불러오지 않았습니다."]
             self.last_load_status = status
             return {}
         if not self.settings.mongo_uri:
@@ -82,7 +87,7 @@ class MongoDBSessionStateStore:
         question: str = "",
         response_type: str = "",
     ) -> dict[str, Any]:
-        session = str(session_id or "demo-session")
+        session = str(session_id or "").strip()
         status = {
             "enabled": self.settings.enabled,
             "saved": False,
@@ -92,6 +97,11 @@ class MongoDBSessionStateStore:
         }
         if not self.settings.enabled:
             status["reason"] = "disabled"
+            self.last_write_status = status
+            return status
+        if not session:
+            status["reason"] = "missing_session_id"
+            status["errors"] = ["현재 웹 대화의 session_id가 없어 세션 상태를 저장하지 않았습니다."]
             self.last_write_status = status
             return status
         if not isinstance(state, dict) or not state:
@@ -138,22 +148,65 @@ class MongoDBSessionStateStore:
 
 
 def _compact_state(state: dict[str, Any], preview_limit: int, history_limit: int) -> dict[str, Any]:
-    result = deepcopy(state)
-    result.pop("runtime_sources", None)
-    if isinstance(result.get("chat_history"), list):
-        result["chat_history"] = deepcopy(result["chat_history"][-history_limit:]) if history_limit else []
-    else:
-        result["chat_history"] = []
-    result["context"] = dict(result.get("context", {})) if isinstance(result.get("context"), dict) else {}
-    result["current_data"] = _compact_current_data(result.get("current_data"), preview_limit)
+    del history_limit
+    result: dict[str, Any] = {}
+    request = state.get("request") if isinstance(state.get("request"), dict) else {}
+    session_id = _session_id_from_state(state)
+    if session_id:
+        result["session_id"] = session_id
+    last_question = state.get("last_question") or request.get("question")
+    if last_question not in (None, ""):
+        result["last_question"] = str(last_question)
+    if state.get("last_answer_message") not in (None, ""):
+        result["last_answer_message"] = str(state.get("last_answer_message"))
+    result["current_data"] = _compact_current_data(state.get("current_data"), preview_limit)
     result["followup_source_results"] = [
         _compact_source_result(item, preview_limit)
-        for item in result.get("followup_source_results", [])
+        for item in state.get("followup_source_results", [])
         if isinstance(item, dict)
     ]
-    if not isinstance(result.get("runtime_source_refs"), dict):
-        result.pop("runtime_source_refs", None)
+    for key in ("last_intent_plan", "last_applied_criteria"):
+        value = state.get(key)
+        if isinstance(value, dict) and value:
+            result[key] = deepcopy(value)
+    runtime_source_refs = _compact_runtime_source_refs(
+        state.get("runtime_source_refs"),
+        result.get("current_data"),
+        result.get("followup_source_results"),
+    )
+    if runtime_source_refs:
+        result["runtime_source_refs"] = runtime_source_refs
     return _json_ready(result)
+
+
+def _session_id_from_state(state: dict[str, Any]) -> str:
+    for key in ("session_id", "conversation_id", "chat_id", "thread_id"):
+        value = state.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    request = state.get("request") if isinstance(state.get("request"), dict) else {}
+    return str(request.get("session_id") or "").strip()
+
+
+def _compact_runtime_source_refs(value: Any, current_data: Any, followup_sources: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_aliases = {
+        str(alias).strip()
+        for alias in (current_data.get("source_aliases", []) if isinstance(current_data, dict) else [])
+        if str(alias or "").strip()
+    }
+    for source in followup_sources if isinstance(followup_sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        alias = str(source.get("source_alias") or "").strip()
+        if alias:
+            allowed_aliases.add(alias)
+    return {
+        str(alias): deepcopy(ref)
+        for alias, ref in value.items()
+        if str(alias) in allowed_aliases and isinstance(ref, dict)
+    }
 
 
 def _compact_current_data(current_data: Any, preview_limit: int) -> dict[str, Any]:

@@ -59,7 +59,11 @@ Intent LLM은 `dataset_key`, `source_alias`, `required_params`, `filters`만 선
 | `06.payload_out` | `07 데이터 조회 작업 라우터.payload` |
 | `06.payload_out` | `13 소스 조회 결과 병합기.main_payload` |
 
-`05`는 `data_ref`가 없으면 skip합니다. 이전 결과 재사용이 필요 없는 첫 질문도 같은 연결을 유지할 수 있습니다.
+`05`는 정규화된 `reuse_strategy`를 먼저 확인합니다. `none`, `previous_intent_with_new_retrieval`, `trace_only`는 MongoDB를 조회하지 않고 skip하며 compact session state만 사용합니다. `previous_result`는 `payload.result_rows`만 `runtime_sources.previous_result`로 복원하고, `previous_source`는 현재 pandas 계획에 명시된 source alias 경로만 projection으로 읽습니다. 일반 후속 질문도 저장 문서와 현재 요청의 `session_id`가 같아야 복원됩니다.
+
+`01E`가 `followup_candidate=false`로 판정한 완결 질문에는 `02`가 이전 `last_intent_plan`, source alias, data ref를 의도 모델에 전달하지 않습니다. `오늘 재공 알려줘`, `현재 재공 조회해줘`처럼 날짜·지표·요청 동사가 모두 있는 질문은 새 분석으로 처리하고, `어제 생산량은?`, `이날 다른 공정은?`처럼 생략 또는 문맥 참조가 있는 질문만 이전 상태를 사용합니다.
+
+`이날`, `이 일자`, `그날`, `해당 일자`, `같은 날`은 오늘이 아니라 직전 분석의 DATE를 가리킵니다. 이전 DATE가 하나면 해당 값을 상속하고 새 조회를 만들며, 서로 다른 DATE가 여러 개면 임의로 오늘을 넣지 않고 clarification으로 보냅니다.
 
 08 Workflow Orchestrator가 `00 분석 요청 로더.upstream_result_ref`를 명시하면 `05`는 이 참조를 기존 후속 질문 state보다 우선합니다. 같은 `session_id`의 완전한 `payload.result_rows`만 `runtime_sources.upstream_result`로 복원하며, 다른 세션·빈 결과·잘린 저장 결과는 오류로 차단합니다. `05A`는 active Table Catalog의 `source_config.upstream_bindings`만 사용해 `required_params`를 채웁니다. binding을 추측하거나 자연어 ID 목록으로 우회하지 않습니다.
 
@@ -175,14 +179,14 @@ Dummy source를 사용한 경우 `19`는 답변 본문에서 dummy 결과임을 
 | `다운로드 링크 Base URL` | `http://127.0.0.1:8765` | 사용자의 브라우저에서 접근할 수 있는 다운로드 서버 주소입니다. |
 | `데이터 보관 시간(시간)` | `1` | 결과·사용 원본 데이터가 유지되는 시간입니다. 1~168시간 범위에서 조절합니다. |
 
-23번은 분석 결과와 조회에 사용한 원본 데이터 각각에 `/download.csv?download_ref=...` URL을 넣습니다. 21번은 Base URL을 다시 조합하지 않고 이 URL을 Markdown 링크와 GaiA `metadata.urls`로 표시합니다. 링크를 선택하면 별도 미리보기 페이지 없이 CSV 파일이 바로 다운로드됩니다.
+23번은 분석 결과와 조회에 사용한 원본 데이터 각각에 `/download.csv?download_ref=...` URL을 넣습니다. 21번은 Base URL을 다시 조합하지 않고 이 URL을 새 탭용 HTML anchor와 GaiA `metadata.urls`로 표시합니다. 답변 본문의 링크는 현재 Playground 탭을 이동시키지 않으므로 편집 내용 보호 팝업 없이 CSV 다운로드를 시작합니다.
 
 서버 실행과 운영 설정은 [Data Result 다운로드 서버 가이드](../../docs/DATA_RESULT_DOWNLOAD_SERVER_GUIDE.md)를 참고합니다.
 | `01 세션 상태 저장기.payload_out` | `22 API 응답 생성기.payload` |
 | `21.message` | `Chat Output.message` |
 | `21.message` | `22 API 응답 생성기.display_message` |
 
-세션 writer는 최종 출력과 병렬로 연결하지 않습니다. Message/API의 공통 선행 노드로 두어 저장 결과가 trace에 반영된 다음 응답을 만듭니다. 저장기는 전체 rows가 아니라 compact state와 `data_ref`를 저장합니다.
+세션 writer는 최종 출력과 병렬로 연결하지 않습니다. Message/API의 공통 선행 노드로 두어 저장 결과가 trace에 반영된 다음 응답을 만듭니다. 저장기는 전체 rows가 아니라 현재 turn에서 새로 구성한 compact state와 `data_ref`를 저장하며, 이전 state 전체를 다시 병합하지 않습니다. `23`은 현재 pandas 계획에서 참조한 runtime source만 원본 다운로드 대상으로 저장합니다.
 
 `22 API 응답 생성기`는 Python 코드의 `self.is_output = True` 선언으로 구조화 최종 출력을 스스로 등록합니다. 다른 환경에 옮길 때도 Python 원본을 유지하고 위 표처럼 연결하면 되며, Flow JSON의 `is_output`을 직접 편집하지 않습니다. `21.message`만 Chat Output에 연결하므로 Playground의 답변은 계속 하나만 표시됩니다.
 

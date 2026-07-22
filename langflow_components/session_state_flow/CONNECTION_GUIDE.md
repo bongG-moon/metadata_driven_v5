@@ -20,7 +20,7 @@ Chat Input.message
   -> 22 API 응답 생성기.payload
 ```
 
-`Chat Input.message`는 로더와 실제 request loader에 동시에 연결한다. 로더는 message 객체의 `session_id`, `conversation_id`, `chat_id`, `thread_id`를 우선 사용하고, 없으면 저장된 state나 `demo-session`을 사용한다.
+`Chat Input.message`는 로더와 실제 request loader에 동시에 연결한다. 로더는 현재 graph의 runtime `session_id`를 우선 사용하고, 다음으로 message 객체의 `session_id`, `conversation_id`, `chat_id`, `thread_id`와 직접 전달 state를 확인한다. 모두 비어 있으면 공용 `demo-session`을 조회하지 않고 세션 상태 로드를 생략한다.
 
 ## MongoDB 기본값
 
@@ -36,7 +36,7 @@ URI는 OS 환경변수에서 읽지 않는다. import JSON은 실제 URI 대신 
 
 ## 저장되는 내용
 
-저장기는 full rows를 session state에 반복 저장하지 않는다. 다음 턴 판단에 필요한 아래 compact 정보만 저장한다.
+저장기는 full rows나 알 수 없는 이전 state 필드를 session state에 반복 저장하지 않는다. 다음 턴 판단에 필요한 아래 화이트리스트 정보만 저장한다.
 
 | 필드 | 용도 |
 | --- | --- |
@@ -46,9 +46,11 @@ URI는 OS 환경변수에서 읽지 않는다. import JSON은 실제 URI 대신 
 | `last_applied_criteria` | 이전 필수 파라미터, 분석 필터, group/metric 확인 |
 | `current_data` | 결과 컬럼, preview rows, row_count, data_ref |
 | `followup_source_results` | 이전 source별 컬럼, data_ref, 적용 조건 |
-| `runtime_source_refs` | source alias별 원본 data_ref |
+| `runtime_source_refs` | 현재 turn의 source alias와 일치하는 원본 data_ref |
 
 원본 전체 rows는 `23 MongoDB 결과 저장기`의 result store에 `data_ref`로 저장하고, session state에는 참조만 남기는 것을 원칙으로 한다.
+
+실제 session ID가 없는 실행은 읽기와 쓰기를 모두 생략한다. Playground에서 메시지만 지우는 동작은 기존 MongoDB 문서를 삭제하는 기능이 아니므로, 새 대화를 시작할 때는 새로운 Langflow session ID가 전달되는지 확인한다.
 
 ## Data Analysis Flow 연결 위치
 

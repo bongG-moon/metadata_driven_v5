@@ -22,12 +22,22 @@ from lfx.schema.data import Data
 FOLLOWUP_REFERENCE_CUES = (
     "그", "이전", "방금", "위", "아까", "저 결과", "결과에서", "표에서", "여기서", "거기서",
     "같은 조건", "동일 조건", "그 제품", "그 공정", "해당 제품", "해당 공정",
+    "이날", "이 날", "이 일자", "이 날짜", "그날", "그 날", "그 일자", "그 날짜", "해당 일자", "같은 날", "동일 일자",
 )
 EXPLAIN_CUES = ("왜", "이유", "근거", "설명", "어떤 조건", "어떤 데이터", "조회 조건", "pandas", "코드")
 TRANSFORM_CUES = ("상위", "하위", "정렬", "나눠", "분리", "제품별", "공정별", "차수별", "세부", "비율", "rank", "top", "bottom")
 EXPAND_CUES = ("추가", "넣어", "붙여", "포함", "같이", "함께", "컬럼", "열", "항목", "code", "코드", "번호")
 CHANGE_CUES = ("말고", "대신", "아니", "바꿔", "변경", "다른", "새로", "다시 조회", "재조회")
+STANDALONE_REQUEST_CUES = (
+    "알려줘", "알려 줘", "조회해", "조회 해", "보여줘", "보여 줘", "찾아줘", "찾아 줘",
+    "확인해", "확인 해", "계산해", "계산 해", "분석해", "분석 해", "구해줘", "구해 줘",
+)
+ANALYSIS_SUBJECT_CUES = (
+    "재공", "wip", "생산량", "생산 실적", "실적", "production", "uph", "장비", "설비",
+    "equipment", "eqp", "계획", "target", "hold", "홀드", "lot", "랏", "로트",
+)
 DATE_CUE_PATTERN = re.compile(r"(\b20\d{6}\b|\b\d{1,2}/\d{1,2}\b|\b\d{1,2}월\s*\d{1,2}일\b|오늘|금일|어제|전일|내일|현시간|현재)")
+CONTEXT_DATE_CUE_PATTERN = re.compile(r"(이\s*일자|이\s*날짜|이\s*날|그\s*일자|그\s*날짜|그\s*날|해당\s*일자|같은\s*날|동일\s*일자)")
 
 
 # 주요 함수: 현재 질문과 이전 상태를 비교해 상속·변경·제거 가능 조건을 힌트로 만듭니다.
@@ -39,7 +49,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     previous_context = _previous_context(state)
     has_previous = bool(previous_context.get("has_previous_context"))
 
-    date_hint = _date_change_hint(question, _dict(payload.get("request")).get("reference_date"))
+    date_hint = _date_change_hint(question, _dict(payload.get("request")).get("reference_date"), state)
     matched_references = _matched_cues(question, FOLLOWUP_REFERENCE_CUES)
     matched_explain = _matched_cues(question, EXPLAIN_CUES)
     matched_transform = _matched_cues(question, TRANSFORM_CUES)
@@ -47,6 +57,12 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     matched_change = _matched_cues(question, CHANGE_CUES)
     requested_columns = _matched_previous_columns(question, _available_previous_columns(state), matched_expand)
     context_dependent = _looks_context_dependent(question)
+    complete_independent_request = _looks_complete_independent_request(
+        question,
+        matched_references=matched_references,
+        matched_change=matched_change,
+        date_hint=date_hint,
+    )
 
     scope_hint = "new_analysis"
     reuse_strategy_hint = "none"
@@ -66,7 +82,11 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             confidence = "high" if requested_columns or matched_references else "medium"
             required_artifacts = ["previous_source", "previous_result", "previous_intent_plan"]
             inheritance_candidates = ["metric", "required_params", "analysis_filters", "group_by", "pandas_function_cases"]
-        elif matched_change or (date_hint and (matched_references or context_dependent)):
+        elif matched_change or (
+            date_hint
+            and (matched_references or context_dependent)
+            and not complete_independent_request
+        ):
             scope_hint = "followup_requery"
             reuse_strategy_hint = "previous_intent_with_new_retrieval"
             confidence = "high" if matched_references or _looks_context_dependent(question) else "medium"
@@ -105,6 +125,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             "required_previous_artifacts": required_artifacts,
             "inheritance_candidates": inheritance_candidates,
             "previous_context": previous_context,
+            "complete_independent_request": complete_independent_request,
             "notes": _notes(scope_hint, reuse_strategy_hint, requested_columns, date_hint),
         }
     )
@@ -193,10 +214,14 @@ def _compact_applied_criteria(criteria: dict[str, Any]) -> dict[str, Any]:
 
 
 # 함수 설명: `_date_change_hint()`는 change·힌트 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
-def _date_change_hint(question: str, reference_date: Any) -> dict[str, Any]:
+def _date_change_hint(question: str, reference_date: Any, state: dict[str, Any] | None = None) -> dict[str, Any]:
     text = str(question or "")
-    if not DATE_CUE_PATTERN.search(text):
+    explicit_match = DATE_CUE_PATTERN.search(text)
+    context_match = CONTEXT_DATE_CUE_PATTERN.search(text)
+    if not explicit_match and not context_match:
         return {}
+    if context_match and not explicit_match:
+        return _previous_context_date_hint(context_match.group(0), _dict(state))
     ref_date = _parse_reference_date(reference_date)
     mentions = _date_mentions(text, ref_date)
     resolved_values = []
@@ -212,6 +237,74 @@ def _date_change_hint(question: str, reference_date: Any) -> dict[str, Any]:
             }
         )
     return {"scope": "multiple", "mentions": mentions}
+
+
+# 함수 설명: `_previous_context_date_hint()`는 `이날`, `이 일자`처럼 직전 분석을 가리키는 표현을 오늘 날짜가 아니라 이전 DATE 조건으로 해석합니다.
+def _previous_context_date_hint(expression: str, state: dict[str, Any]) -> dict[str, Any]:
+    candidates = _previous_date_candidates(state)
+    unique_values: list[str] = []
+    for item in candidates:
+        value = str(item.get("resolved_value") or "").strip()
+        if value and value not in unique_values:
+            unique_values.append(value)
+    if len(unique_values) == 1:
+        return {
+            "expression": expression,
+            "resolved_value": unique_values[0],
+            "source": "previous_context",
+            "inherit": True,
+        }
+    if len(unique_values) > 1:
+        return {
+            "expression": expression,
+            "scope": "previous_context_multiple",
+            "source": "previous_context",
+            "candidates": candidates,
+            "requires_clarification": True,
+        }
+    return {
+        "expression": expression,
+        "source": "previous_context",
+        "requires_clarification": True,
+    }
+
+
+# 함수 설명: `_previous_date_candidates()`는 직전 조회 job과 실제 적용 조건에서 source alias별 DATE 값을 중복 없이 수집합니다.
+def _previous_date_candidates(state: dict[str, Any]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    # 함수 설명: `append()`는 source alias와 YYYYMMDD 조합을 중복 없이 이전 날짜 후보에 추가합니다.
+    def append(alias: Any, value: Any) -> None:
+        text = str(value or "").strip()
+        if not re.fullmatch(r"20\d{6}", text):
+            return
+        source_alias = str(alias or "").strip()
+        marker = (source_alias, text)
+        if marker in seen:
+            return
+        seen.add(marker)
+        item = {"resolved_value": text}
+        if source_alias:
+            item["source_alias"] = source_alias
+        result.append(item)
+
+    applied = _dict(state.get("last_applied_criteria"))
+    required_params = _dict(applied.get("required_params"))
+    direct_date = required_params.get("DATE")
+    if direct_date not in (None, ""):
+        append("", direct_date)
+    for alias, params in required_params.items():
+        if isinstance(params, dict):
+            append(alias, params.get("DATE"))
+
+    last_plan = _dict(state.get("last_intent_plan"))
+    for job in _list(last_plan.get("retrieval_jobs")):
+        if not isinstance(job, dict):
+            continue
+        alias = job.get("source_alias") or job.get("dataset_key")
+        append(alias, _dict(job.get("required_params")).get("DATE"))
+    return result
 
 
 # 함수 설명: `_date_mentions()`는 질문에 등장한 날짜 표현을 순서대로 모두 해석해 metric/dataset별 바인딩 근거를 제공합니다.
@@ -329,6 +422,26 @@ def _looks_context_dependent(question: str) -> bool:
     return len(compact) <= 18
 
 
+# 함수 설명: 날짜가 있어도 지표와 요청 동사가 모두 명시된 완결 질문은 이전 세션에 의존하지 않는 새 분석으로 판정합니다.
+def _looks_complete_independent_request(
+    question: str,
+    *,
+    matched_references: list[str],
+    matched_change: list[str],
+    date_hint: dict[str, Any],
+) -> bool:
+    text = _normalize(question)
+    if not text:
+        return False
+    if matched_references or matched_change:
+        return False
+    if date_hint.get("source") == "previous_context":
+        return False
+    has_request = any(_normalize(cue) in text for cue in STANDALONE_REQUEST_CUES)
+    has_subject = any(_normalize(cue) in text for cue in ANALYSIS_SUBJECT_CUES)
+    return has_request and has_subject
+
+
 # 함수 설명: `_matched_cues()`는 입력 조건과 일치하는 CUES을 찾아 비교·필터 결과로 반환합니다.
 def _matched_cues(question: str, cues: tuple[str, ...]) -> list[str]:
     normalized_question = _normalize(question)
@@ -349,7 +462,10 @@ def _notes(scope_hint: str, reuse_strategy: str, requested_columns: list[str], d
     if requested_columns:
         notes.append("이전 데이터 컬럼에서 사용자가 다시 보고 싶어 하는 컬럼 후보를 찾았습니다: " + ", ".join(requested_columns))
     if date_hint:
-        notes.append("날짜/기준시점 변경 표현을 감지했습니다.")
+        if date_hint.get("source") == "previous_context":
+            notes.append("'이날/이 일자' 표현은 오늘이 아니라 직전 분석의 DATE 조건을 상속합니다.")
+        else:
+            notes.append("날짜/기준시점 변경 표현을 감지했습니다.")
     return notes
 
 

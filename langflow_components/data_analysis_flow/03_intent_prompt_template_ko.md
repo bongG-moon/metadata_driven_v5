@@ -18,6 +18,11 @@
 - `오늘`, `금일`, `현재`, `어제` 같은 상대 날짜 표현은 한국 기준 현재일로 자동 계산된 `state_summary.request_context.reference_date`를 기준으로 해석한다.
 - `state_summary.request_context.reference_date`가 유일한 기준일이다. 모델 실행 시점의 실제 날짜나 외부 현재일을 새로 추정하지 않는다.
 - `state_summary.followup_hint.followup_candidate=true`이면 현재 질문이 이전 답변/이전 의도에 의존하는지 먼저 판단한다.
+- `followup_candidate=false`인 완결 질문은 독립적인 `new_analysis`다. 현재 질문에 없는 이전 데이터셋·지표·source alias를 retrieval job에 추가하지 않는다.
+- `오늘 재공 알려줘`, `현재 재공 조회해줘`처럼 날짜·분석 대상·요청 동사가 모두 있는 질문은 이전 state가 존재해도 독립 질문으로 처리한다.
+- `이날`, `이 일자`, `그날`, `그 일자`, `해당 일자`, `같은 날`은 현재 실행일이나 오늘을 뜻하지 않고 직전 분석의 날짜 조건을 가리키는 후속 표현이다. `state_summary.followup_hint.changed_conditions_hint.date.source=previous_context`이면 그 `resolved_value`를 상속하고 `request_context.reference_date`로 바꾸지 않는다.
+- `이날 다른 공정은?`, `이 일자에 다른 장비는?`처럼 직전 날짜를 유지하면서 대상만 바꾸는 질문은 `followup_requery`로 판단한다. 날짜는 inherited로, 공정·장비 등 바뀐 조건은 changed/new/dropped 중 의미에 맞는 영역으로 구분하고 새 retrieval job을 작성한다.
+- 직전 분석에 서로 다른 날짜가 여러 개라 `changed_conditions_hint.date.requires_clarification=true`이면 임의로 오늘 날짜를 넣지 말고 어떤 날짜를 뜻하는지 clarification으로 보낸다.
 - `INPUT 계획`, `OUT 계획`, `투입계획`, `생산계획`은 table catalog에 `target`이 등록되어 있으면 target 계획 지표로 해석한다. 사용자가 실제/실적과의 비교를 함께 요청하지 않았다면 production dataset이나 `OPER_NAME=INPUT` 실적 조건을 추가하지 않는다.
 - `intent_plan.analysis_kind`는 현재 질문의 metric, 분석 operation, grouping/scope를 반영한 구체적이고 안정적인 snake_case로 작성한다.
 - `production_analysis`, `target_analysis`, `data_analysis`, `pandas_analysis`처럼 데이터 종류나 도구 이름만 나타내는 포괄적인 `analysis_kind`는 사용하지 않는다.
@@ -35,6 +40,9 @@
 - `followup_transform`은 이전 결과 또는 이전 원본으로 정렬, top/bottom, 재그룹화, 비율 계산처럼 재분석하는 경우다. 새 조회가 필요 없으면 `retrieval_jobs`는 비워도 되며 `reuse_strategy=previous_result` 또는 `previous_source`를 사용한다.
 - `followup_expand_source`는 이전 결과에 없는 컬럼/세부 원본 속성을 추가해야 하는 경우다. 이전 source data_ref 또는 원본 rows가 필요하면 `reuse_strategy=previous_source`를 사용한다.
 - `followup_explain`은 이전 조회 조건, 의도, pandas 코드, 근거를 설명하는 경우다. 새 조회 없이 `reuse_strategy=trace_only`를 사용한다.
+- `reuse_strategy=previous_result`이면 pandas 계획의 `source_alias`는 MongoDB 로더가 제공하는 예약 alias `previous_result`를 사용한다.
+- `reuse_strategy=previous_source`이면 재사용할 이전 원본의 `source_alias`를 `pandas_execution_plan`과 `pandas_function_cases`에 명시한다. 현재 계획에 필요한 alias만 복원되므로 단순히 이전 모든 source가 존재한다고 가정하지 않는다.
+- `reuse_strategy=previous_intent_with_new_retrieval`, `trace_only`, `none`은 이전 원본 행을 복원하지 않는다. 필요한 조건·의도·설명 문맥은 compact session state를 사용한다.
 - 후속 질문에서 이전 원본/결과를 재사용할 경우에도 `pandas_execution_plan`에는 어떤 이전 데이터 기준으로 어떤 재분석을 할지 적는다.
 - 데이터 조회가 필요한 경우 `intent_plan.retrieval_jobs`를 반드시 작성한다.
 - 각 retrieval job은 `dataset_key`, `source_alias`, `required_params`, `filters`만 포함한다.

@@ -42,7 +42,7 @@ def write_session_state(
     payload = _payload(response_payload_value)
     response = _response_view(payload)
     state = _state_from_response(payload, response)
-    session = _session_id_from_payload(payload) or _session_id_from_payload(response) or _session_id_from_state(state) or "demo-session"
+    session = _session_id_from_payload(payload) or _session_id_from_payload(response) or _session_id_from_state(state)
     preview_limit = _positive_int(preview_row_limit, DEFAULT_PREVIEW_ROW_LIMIT)
     max_history = _positive_int(history_limit, DEFAULT_HISTORY_LIMIT)
     collection_name = _collection_name(session_collection_name)
@@ -62,6 +62,10 @@ def write_session_state(
         return {**payload, "session_state_write": status}
     if not _truthy(enabled):
         status["reason"] = "disabled"
+        return {**payload, "session_state_write": status}
+    if not session:
+        status["reason"] = "missing_session_id"
+        status["errors"] = ["현재 실행의 session_id를 확인할 수 없어 세션 상태를 저장하지 않았습니다."]
         return {**payload, "session_state_write": status}
 
     uri = _clean(mongo_uri)
@@ -118,19 +122,61 @@ def write_session_state(
 def _compact_state(state: Any, preview_limit: int, history_limit: int) -> dict[str, Any]:
     if not isinstance(state, dict):
         return {}
-    result = deepcopy(state)
-    result.pop("runtime_sources", None)
-    result["chat_history"] = deepcopy(result.get("chat_history", [])[-history_limit:]) if isinstance(result.get("chat_history"), list) and history_limit else []
-    result["context"] = dict(result.get("context", {})) if isinstance(result.get("context"), dict) else {}
-    result["current_data"] = _compact_current_data(result.get("current_data"), preview_limit)
+    del history_limit
+    result: dict[str, Any] = {}
+    request = state.get("request") if isinstance(state.get("request"), dict) else {}
+    session_id = _session_id_from_state(state)
+    if session_id:
+        result["session_id"] = session_id
+    last_question = state.get("last_question") or request.get("question")
+    if last_question not in (None, ""):
+        result["last_question"] = str(last_question)
+    if state.get("last_answer_message") not in (None, ""):
+        result["last_answer_message"] = str(state.get("last_answer_message"))
+    result["current_data"] = _compact_current_data(state.get("current_data"), preview_limit)
     result["followup_source_results"] = [
         _compact_source_result(item, preview_limit)
-        for item in result.get("followup_source_results", [])
+        for item in state.get("followup_source_results", [])
         if isinstance(item, dict)
     ]
-    if not isinstance(result.get("runtime_source_refs"), dict):
-        result.pop("runtime_source_refs", None)
+    for key in ("last_intent_plan", "last_applied_criteria"):
+        value = state.get(key)
+        if isinstance(value, dict) and value:
+            result[key] = deepcopy(value)
+    runtime_source_refs = _compact_runtime_source_refs(
+        state.get("runtime_source_refs"),
+        result.get("current_data"),
+        result.get("followup_source_results"),
+    )
+    if runtime_source_refs:
+        result["runtime_source_refs"] = runtime_source_refs
     return _json_ready(result)
+
+
+# 함수 설명: 현재 turn의 source alias에 해당하는 MongoDB 참조만 저장해 이전 데이터셋 참조가 세션 문서에 누적되지 않도록 합니다.
+def _compact_runtime_source_refs(
+    value: Any,
+    current_data: Any,
+    followup_sources: Any,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_aliases = {
+        str(alias).strip()
+        for alias in (current_data.get("source_aliases", []) if isinstance(current_data, dict) else [])
+        if str(alias or "").strip()
+    }
+    for source in followup_sources if isinstance(followup_sources, list) else []:
+        if not isinstance(source, dict):
+            continue
+        alias = str(source.get("source_alias") or "").strip()
+        if alias:
+            allowed_aliases.add(alias)
+    return {
+        str(alias): deepcopy(ref)
+        for alias, ref in value.items()
+        if str(alias) in allowed_aliases and isinstance(ref, dict)
+    }
 
 
 # 함수 설명: `_compact_current_data()`는 현재·데이터에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.

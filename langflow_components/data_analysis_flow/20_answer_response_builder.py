@@ -459,8 +459,14 @@ def _compact_source_results(source_results: list[Any]) -> list[dict[str, Any]]:
 
 # 함수 설명: `_build_next_turn_state()`는 다음 단계·TURN·상태 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def _build_next_turn_state(payload: dict[str, Any]) -> dict[str, Any]:
-    state = deepcopy(_dict(payload.get("state")))
-    state.pop("runtime_sources", None)
+    # 이전 state 전체를 다시 복사하지 않고 현재 turn에서 확정된 정보만 새 상태로 만듭니다.
+    # 이 방식으로 이전 retrieval job·source ref·download ref가 새 질문 뒤에도 남는 것을 차단합니다.
+    previous_state = _dict(payload.get("state"))
+    request = _dict(payload.get("request"))
+    state: dict[str, Any] = {}
+    session_id = str(request.get("session_id") or previous_state.get("session_id") or "").strip()
+    if session_id:
+        state["session_id"] = session_id
     state["last_question"] = _dict(payload.get("request")).get("question", "")
     state["last_answer_message"] = _clip_text(payload.get("answer_message"), 1000)
     state["current_data"] = _current_data_state(payload)
@@ -470,9 +476,9 @@ def _build_next_turn_state(payload: dict[str, Any]) -> dict[str, Any]:
     runtime_source_refs = _runtime_source_refs(payload)
     if runtime_source_refs:
         state["runtime_source_refs"] = runtime_source_refs
-    request = _dict(payload.get("request"))
     if request:
-        state["request"] = deepcopy(request)
+        # 하위 호환을 위한 전체 request 복사 대신 후속 판정에 필요한 현재 질문만 last_question에 유지합니다.
+        state["last_question"] = request.get("question", state.get("last_question", ""))
     intent_plan = _compact_intent_plan(_dict(payload.get("intent_plan")))
     if intent_plan:
         state["last_intent_plan"] = intent_plan

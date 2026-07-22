@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import uuid
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
@@ -298,16 +299,17 @@ def _compact_store_payload(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     original_result_rows = _result_rows_for_store(payload)
     runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    included_source_aliases = _runtime_source_aliases_for_store(payload, runtime_sources)
     stored_result_rows = _json_ready(original_result_rows[:max_result_rows])
     stored_runtime_sources = {
         str(alias): _json_ready(rows[:max_source_rows_per_alias])
         for alias, rows in runtime_sources.items()
-        if isinstance(rows, list)
+        if isinstance(rows, list) and str(alias) in included_source_aliases
     }
     original_source_counts = {
         str(alias): len(rows)
         for alias, rows in runtime_sources.items()
-        if isinstance(rows, list)
+        if isinstance(rows, list) and str(alias) in included_source_aliases
     }
     stored_payload = {
         "request": _json_ready(payload.get("request", {})),
@@ -327,6 +329,12 @@ def _compact_store_payload(
         "max_source_rows_per_alias": max_source_rows_per_alias,
         "result_rows": {},
         "runtime_sources": {},
+        "included_source_aliases": sorted(included_source_aliases),
+        "excluded_source_aliases": sorted(
+            str(alias)
+            for alias, rows in runtime_sources.items()
+            if isinstance(rows, list) and str(alias) not in included_source_aliases
+        ),
         "compacted": False,
     }
     stored_payload["storage_manifest"] = manifest
@@ -468,9 +476,10 @@ def _build_data_refs(
     refs = [result_ref]
 
     runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    included_source_aliases = _runtime_source_aliases_for_store(payload, runtime_sources)
     source_result_by_alias = _source_result_by_alias(payload.get("source_results"))
     for alias, rows in runtime_sources.items():
-        if not isinstance(rows, list):
+        if not isinstance(rows, list) or str(alias) not in included_source_aliases:
             continue
         source_result = source_result_by_alias.get(str(alias), {})
         refs.append(
@@ -489,6 +498,64 @@ def _build_data_refs(
             )
         )
     return refs
+
+
+# 함수 설명: pandas 계획에서 실제 참조한 source alias를 우선 식별하고 현재 source result 범위 안에서만 저장 대상으로 확정합니다.
+def _runtime_source_aliases_for_store(
+    payload: dict[str, Any],
+    runtime_sources: dict[str, Any] | None = None,
+) -> set[str]:
+    sources = runtime_sources if isinstance(runtime_sources, dict) else {}
+    available = {str(alias) for alias, rows in sources.items() if isinstance(rows, list)}
+    if not available:
+        return set()
+
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    planned_aliases: set[str] = set()
+    _collect_plan_source_aliases(plan.get("pandas_execution_plan"), planned_aliases)
+    _collect_plan_source_aliases(plan.get("pandas_function_cases"), planned_aliases)
+    selected = planned_aliases & available
+    if selected:
+        return selected
+
+    inspection = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    inspection = inspection.get("inspection") if isinstance(inspection.get("inspection"), dict) else {}
+    pandas_execution = inspection.get("pandas_execution") if isinstance(inspection.get("pandas_execution"), dict) else {}
+    generated_code = str(pandas_execution.get("generated_code") or "")
+    code_aliases = {
+        match.group(1)
+        for match in re.finditer(r"sources\s*(?:\[|\.get\()\s*['\"]([^'\"]+)['\"]", generated_code)
+    }
+    selected = code_aliases & available
+    if selected:
+        return selected
+
+    source_results = _source_result_by_alias(payload.get("source_results"))
+    selected = set(source_results) & available
+    return selected or available
+
+
+# 함수 설명: pandas plan의 source_alias·left/right source alias 필드를 재귀적으로 찾아 저장 대상 후보에 추가합니다.
+def _collect_plan_source_aliases(value: Any, target: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized_key = str(key).strip().lower()
+            if normalized_key in {
+                "source_alias",
+                "source_aliases",
+                "left_source_alias",
+                "right_source_alias",
+            }:
+                values = item if isinstance(item, (list, tuple, set)) else [item]
+                for alias in values:
+                    text = str(alias or "").strip()
+                    if text:
+                        target.add(text)
+            else:
+                _collect_plan_source_aliases(item, target)
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            _collect_plan_source_aliases(item, target)
 
 
 # 함수 설명: `_data_ref_object()`는 문자열 또는 dict 참조를 ref_id 중심의 표준 data_ref 객체로 바꿉니다.

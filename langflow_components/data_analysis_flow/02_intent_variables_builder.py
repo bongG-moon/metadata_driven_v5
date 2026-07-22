@@ -45,12 +45,16 @@ def _compact_json(value: Any) -> str:
 def _state_summary(payload: dict[str, Any]) -> dict[str, Any]:
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     followup_hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    previous_state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    # 독립 질문에는 직전 retrieval job·source alias·data_ref를 모델에 노출하지 않습니다.
+    # 세션 상태는 실제 후속 후보일 때만 전달해 이전 데이터셋의 무의미한 재조회를 차단합니다.
+    state_for_model = _compact_state(previous_state) if followup_hint.get("followup_candidate") is True else {}
     summary = {
         "request_context": {
             "reference_date": request.get("reference_date", ""),
         },
         "followup_hint": followup_hint,
-        "state": _compact_state(payload.get("state", {}) if isinstance(payload.get("state"), dict) else {}),
+        "state": state_for_model,
     }
     orchestration = _compact_orchestration(payload.get("orchestration"))
     if orchestration:

@@ -81,7 +81,9 @@ def _resolve_session_id(previous_state_value: Any = None, session_id: Any = "") 
     request = state.get("request") if isinstance(state.get("request"), dict) else {}
     if request.get("session_id"):
         return str(request["session_id"])
-    return "demo-session"
+    # 실제 graph session이 없는 실행을 공용 demo-session으로 합치지 않습니다.
+    # Langflow 컴포넌트 경로에서는 `_runtime_session_id()`가 현재 세션을 전달합니다.
+    return ""
 
 
 # 함수 설명: Langflow 직접 실행과 Run Flow 실행에서 현재 graph가 가진 실제 session_id를 읽습니다.

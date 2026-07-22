@@ -17,6 +17,7 @@ import ast
 import json
 import re
 from copy import deepcopy
+from html import escape as escape_html
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -909,7 +910,8 @@ def _notice_section(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# 함수 설명: `_download_links_section()`는 links·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
+# 함수 설명: `_download_links_section()`는 다운로드 링크를 새 탭에서 여는 HTML anchor로 렌더링합니다.
+# 현재 Playground 탭을 이동시키지 않아 Langflow의 편집 내용 보호(beforeunload) 경고가 발생하지 않게 합니다.
 def _download_links_section(payload: dict[str, Any]) -> str:
     refs = _downloadable_data_refs(payload)
     if not refs:
@@ -920,7 +922,7 @@ def _download_links_section(payload: dict[str, Any]) -> str:
         url = _download_url(ref)
         if not url:
             continue
-        lines.append(f"- [{_escape_markdown_tilde(label)}]({url})")
+        lines.append(f"- {_download_anchor(label, url)}")
     if len(lines) == 1:
         return ""
     ttl_hours = next((_safe_int(ref.get("ttl_hours"), 0) for ref in refs if _safe_int(ref.get("ttl_hours"), 0) > 0), 0)
@@ -929,6 +931,14 @@ def _download_links_section(payload: dict[str, Any]) -> str:
     else:
         lines.append("> 링크를 선택하면 CSV 파일이 바로 다운로드됩니다.")
     return "\n".join(lines)
+
+
+# 함수 설명: 검증된 외부 다운로드 URL을 현재 채팅 화면과 분리된 새 탭에서 여는 안전한 HTML 링크로 만듭니다.
+# 파일 다운로드 여부는 23번이 발급한 URL과 다운로드 서버의 Content-Disposition 응답 헤더가 결정합니다.
+def _download_anchor(label: Any, url: Any) -> str:
+    safe_label = escape_html(str(label or "CSV 다운로드"), quote=False)
+    safe_url = escape_html(str(url or ""), quote=True)
+    return f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_label}</a>'
 
 
 # 함수 설명: `_downloadable_data_refs()`는 사용자가 내려받을 수 있는 저장 결과 data_ref만 중복 없이 선별합니다.
