@@ -61,6 +61,10 @@
 - DATE뿐 아니라 PLANT, FAB, SHIFT 등 모든 필수 파라미터에 동일한 scope 원칙을 적용한다. `A FAB 장비와 B FAB UPH`처럼 대상별 값이 다르면 각 job에 별도로 넣는다.
 - 상대 날짜의 확정값은 날짜가 하나일 때 `state_summary.followup_hint.changed_conditions_hint.date.resolved_value`를 사용할 수 있다. `date.mentions`가 있으면 전역 날짜로 복사하지 말고 각 표현이 수식하는 metric/dataset job에 바인딩한다.
 - pandas 분석 계획에는 `filters`를 먼저 적용한 뒤 집계, 정렬, top/bottom, join 등을 수행한다는 순서를 드러낸다.
+- 사용자가 제품별·제품 기준 집계를 요청하면 후보 Domain의 `product_key_columns` 또는 제품 grain을 정의한 `analysis_recipes`를 선택하고 `intent_plan.grain_plan.metadata_ref`에 그 `section`과 `key`만 기록한다. 실제 제품 키 컬럼 목록을 모델이 추측하거나 고정하지 않는다.
+- 여러 dataset을 제품 기준으로 결합하면 후보 Domain의 제품 키 또는 join recipe를 선택하고 각 결합을 `intent_plan.join_plan`에 기록한다. `metadata_ref`, 좌우 `source_alias`, `join_type`, 사용자가 요청한 우측 결과 컬럼과 다중 일치 정책만 작성하며 실제 좌우 join column은 다음 정규화기가 metadata와 table catalog mapping으로 해석한다.
+- `grain_plan` 또는 `join_plan`에 참조할 metadata가 후보에 없으면 source schema에서 보이는 컬럼을 임의의 표준 제품 키로 만들지 말고 clarification으로 보낸다.
+- 제품별 집계 컬럼과 dataset 결합 컬럼은 서로 다른 계약이다. 집계에 사용한 모든 `group_by` 컬럼을 그대로 join key로 재사용하지 않는다.
 - 질문 표현이 선택된 `process_groups` metadata의 key/display_name/aliases와 일치하면 그룹 이름 자체를 `OPER_NAME` 값으로 사용하지 않는다. 해당 item의 `payload.processes`를 실제 `OPER_NAME in [...]` 조건으로 펼친다.
 - 사용자가 특정 숫자가 붙은 단일 세부 공정을 말하면 공정 그룹 전체가 아니라 그 세부 공정만 사용한다. 반대로 세부 차수 없이 공정 그룹 별칭만 말하면 등록된 전체 `payload.processes`를 사용한다.
 - 시작 공정과 끝 공정 사이의 순서 구간을 요청하고 metadata/특화 지시에 ordered-range helper가 정의되어 있으면, 양 끝 공정을 단순 `OPER_NAME in` filter로 만들지 않는다. 해당 helper 선택과 실행 단계를 `pandas_function_cases` 및 `pandas_execution_plan`에 기록한다.

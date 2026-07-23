@@ -14,10 +14,12 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import re
+import subprocess
+import sys
 from copy import deepcopy
-from html import escape as escape_html
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -28,6 +30,24 @@ from lfx.schema.message import Message
 TABLE_PREVIEW_LIMIT = 10
 CELL_TEXT_LIMIT = 120
 VALUE_TEXT_LIMIT = 900
+
+
+# 함수 설명: 실행에 필요한 Python 모듈이 없을 때 사내 Nexus를 통해 패키지를 설치합니다.
+# 표준 라이브러리도 같은 경로로 확인하되 이미 존재하면 pip를 호출하지 않습니다.
+def ensure_package(package_name: str, import_name: str | None = None) -> None:
+    module_name = import_name or package_name
+    if importlib.util.find_spec(module_name) is None:
+        subprocess.check_call(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--trusted-host",
+                "nexus.skhynix.com",
+                package_name,
+            ]
+        )
 
 
 # 주요 함수: 구조화 결과를 사용자가 읽을 수 있는 단일 Markdown Message로 변환합니다.
@@ -936,8 +956,11 @@ def _download_links_section(payload: dict[str, Any]) -> str:
 # 함수 설명: 검증된 외부 다운로드 URL을 현재 채팅 화면과 분리된 새 탭에서 여는 안전한 HTML 링크로 만듭니다.
 # 파일 다운로드 여부는 23번이 발급한 URL과 다운로드 서버의 Content-Disposition 응답 헤더가 결정합니다.
 def _download_anchor(label: Any, url: Any) -> str:
-    safe_label = escape_html(str(label or "CSV 다운로드"), quote=False)
-    safe_url = escape_html(str(url or ""), quote=True)
+    ensure_package("html")
+    from html import escape
+
+    safe_label = escape(str(label or "CSV 다운로드"), quote=False)
+    safe_url = escape(str(url or ""), quote=True)
     return f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_label}</a>'
 
 

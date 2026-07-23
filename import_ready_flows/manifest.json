@@ -26,7 +26,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "0c326be0fbffc7c0354c842bcbb8f5803f476831e48464cf66e2dc1ece1e634c",
+  "single_file_ui_import_sha256": "ea7494f467a14022f1c3693762d30fd2d7e432666d983387735a4b8c47e31c51",
   "flows": [
     {
       "order": 1,
@@ -34,8 +34,8 @@
       "name": "01. v5_data_analysis",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 45,
-      "edges": 69,
-      "sha256": "84381b9237064351a71fc5800033a13968e4a568ed631024107ecaac885734a3"
+      "edges": 70,
+      "sha256": "0c245b5d7b5beaa8dd8dd45036249b1167fe8a621bacf610936494ebca9f9401"
     },
     {
       "order": 2,
@@ -137,7 +137,7 @@
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 120/120 custom nodes to 83 real Python sources; 0 missing",
     "korean_component_documentation": "84/84 Python sources and 1533/1533 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7020/7020 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
-    "langflow_frontend_edge_handles": "424/424 parsed and matched edge.data",
+    "langflow_frontend_edge_handles": "426/426 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
     "langflow_lfx_node_templates": "173/173 passed",
     "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with five real tools",

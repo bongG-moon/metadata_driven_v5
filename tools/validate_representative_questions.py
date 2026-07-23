@@ -81,7 +81,11 @@ def run_llm_case(case: dict[str, Any], modules: dict[str, Any], metadata_context
     intent_vars = with_specialized_prompt(modules["intent_vars"].build_variables(payload, metadata_candidates))
     intent_prompt = render_prompt(FLOW / "03_intent_prompt_template_ko.md", intent_vars)
     intent_response = call_llm(intent_prompt, llm_config)
-    payload = modules["intent"].normalize_intent_plan(payload, intent_response)
+    payload = modules["intent"].normalize_intent_plan(
+        payload,
+        intent_response,
+        candidates_payload,
+    )
     payload = modules["hydrator"].hydrate_retrieval_jobs(payload, metadata_context["table"], retrieval_mode="dummy")
     payload = modules["validator"].validate_retrieval_payload(payload)
     dummy_bundle = modules["router"].route_retrieval_jobs(payload, "dummy")

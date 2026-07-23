@@ -2,7 +2,7 @@
 # =============================================================================
 # 컴포넌트 개요: 04 의도 계획 정규화기
 # 역할: Langflow 에이전트/LLM의 의도 JSON을 표준 의도 계획으로 정규화합니다.
-# 주요 입력: 페이로드 (payload) · 필수, 의도 LLM 응답 (llm_response) · 필수
+# 주요 입력: 페이로드 (payload) · 필수, 의도 LLM 응답 (llm_response) · 필수, 메타데이터 후보 (metadata_candidates)
 # 주요 출력: 페이로드 출력 (payload_out)
 # 처리 흐름: LLM JSON을 추출해 분석 범위, 조건 변경 내역, 조회 작업, pandas 단계와 후속 질문 전략을 표준 형태로 정규화합니다.
 # 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
@@ -25,7 +25,11 @@ PREVIOUS_RESULT_ALIAS = "previous_result"
 
 # 주요 함수: LLM 의도 결과를 신뢰 가능한 실행 계획 계약으로 정규화합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
-def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, Any]:
+def normalize_intent_plan(
+    payload_value: Any,
+    llm_response: Any,
+    metadata_candidates_value: Any = None,
+) -> dict[str, Any]:
     payload = _payload(payload_value)
     parsed = _json(llm_response)
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
@@ -40,6 +44,22 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
         pandas_plan = _bind_previous_result_alias(pandas_plan)
         function_cases = _bind_previous_result_alias(function_cases)
 
+    metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
+    metadata_refs = _metadata_refs(parsed, plan)
+    resolved_grain_plan = _resolve_grain_plan(
+        plan,
+        metadata_refs,
+        metadata_candidates,
+        retrieval_jobs,
+    )
+    resolved_join_plan = _resolve_join_plan(
+        plan,
+        metadata_refs,
+        metadata_candidates,
+        retrieval_jobs,
+        pandas_plan,
+    )
+
     normalized_plan = deepcopy(plan)
     normalized_plan.pop("pandas_function_case", None)
     normalized_plan.pop("selected_function_cases", None)
@@ -48,7 +68,22 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
     normalized_plan["condition_resolution"] = _condition_resolution(plan)
     normalized_plan["retrieval_jobs"] = retrieval_jobs
     normalized_plan["pandas_execution_plan"] = pandas_plan
-    normalized_plan["output_contract"] = _output_contract(plan, payload, retrieval_jobs)
+    normalized_plan["output_contract"] = _output_contract(
+        plan,
+        payload,
+        retrieval_jobs,
+        metadata_candidates,
+        resolved_grain_plan,
+        resolved_join_plan,
+    )
+    if resolved_grain_plan:
+        normalized_plan["resolved_grain_plan"] = resolved_grain_plan
+    else:
+        normalized_plan.pop("resolved_grain_plan", None)
+    if resolved_join_plan:
+        normalized_plan["resolved_join_plan"] = resolved_join_plan
+    else:
+        normalized_plan.pop("resolved_join_plan", None)
     if function_cases:
         normalized_plan["pandas_function_cases"] = function_cases
     else:
@@ -56,7 +91,11 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
 
     next_payload = payload
     next_payload["intent_plan"] = normalized_plan
-    next_payload["metadata_refs"] = parsed.get("metadata_refs", plan.get("metadata_refs", [])) if isinstance(parsed.get("metadata_refs", plan.get("metadata_refs", [])), list) else []
+    next_payload["metadata_refs"] = _merge_output_metadata_refs(
+        parsed,
+        plan,
+        _plan_metadata_refs(normalized_plan),
+    )
     previous_data_reuse = _uses_previous_data_without_new_retrieval(normalized_plan)
     next_payload.setdefault("trace", {}).setdefault("inspection", {})["intent"] = {
         "stage": "04_intent_plan_normalizer",
@@ -69,6 +108,8 @@ def normalize_intent_plan(payload_value: Any, llm_response: Any) -> dict[str, An
         "previous_data_reuse": previous_data_reuse,
         "decision_reason": parsed.get("trace", {}).get("decision_reason", []) if isinstance(parsed.get("trace"), dict) else [],
         "context_date_guard": context_date_guard,
+        "resolved_grain_columns": resolved_grain_plan.get("grain_columns", []) if resolved_grain_plan else [],
+        "resolved_join_count": len(resolved_join_plan),
     }
     if not retrieval_jobs and not previous_data_reuse:
         next_payload.setdefault("trace", {}).setdefault("warnings", []).append({"type": "missing_retrieval_jobs", "message": "intent_plan.retrieval_jobs가 비어 있습니다."})
@@ -217,6 +258,9 @@ def _output_contract(
     plan: dict[str, Any],
     payload: dict[str, Any],
     retrieval_jobs: list[dict[str, Any]],
+    metadata_candidates: dict[str, Any] | None = None,
+    resolved_grain_plan: dict[str, Any] | None = None,
+    resolved_join_plan: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     raw = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
     result_mode = str(raw.get("result_mode") or raw.get("mode") or "").strip().lower()
@@ -238,7 +282,27 @@ def _output_contract(
     if result_mode in {"detail", "entity_list"}:
         contract["required_columns"] = _merge_strings(
             contract["required_columns"],
-            _catalog_default_detail_columns(payload, retrieval_jobs),
+            _catalog_default_detail_columns(
+                payload,
+                retrieval_jobs,
+                metadata_candidates,
+            ),
+        )
+    elif result_mode == "aggregate" and resolved_grain_plan:
+        # 제품별 집계처럼 metadata grain이 선택된 경우 LLM이 DEVICE 같은 추가 차원을
+        # source schema에서 임의로 끼워 넣지 못하도록 정확한 물리 컬럼 목록을 계약에 고정합니다.
+        contract["grain_columns"] = _string_list(resolved_grain_plan.get("grain_columns"))
+        join_value_columns = _merge_strings(
+            *[
+                _string_list(item.get("right_value_columns"))
+                for item in (resolved_join_plan or [])
+                if isinstance(item, dict)
+            ]
+        )
+        contract["required_columns"] = _merge_strings(
+            contract["grain_columns"],
+            contract["metric_columns"],
+            join_value_columns,
         )
 
     return {
@@ -249,8 +313,14 @@ def _output_contract(
 
 
 # 함수 설명: `_catalog_default_detail_columns()`는 선택된 데이터셋의 기본 상세 표시 컬럼 metadata만 모읍니다.
-def _catalog_default_detail_columns(payload: dict[str, Any], retrieval_jobs: list[dict[str, Any]]) -> list[str]:
-    candidates = payload.get("metadata_candidates") if isinstance(payload.get("metadata_candidates"), dict) else {}
+def _catalog_default_detail_columns(
+    payload: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    metadata_candidates: dict[str, Any] | None = None,
+) -> list[str]:
+    candidates = metadata_candidates if isinstance(metadata_candidates, dict) else {}
+    if not candidates:
+        candidates = payload.get("metadata_candidates") if isinstance(payload.get("metadata_candidates"), dict) else {}
     items = candidates.get("table_catalog_items") if isinstance(candidates.get("table_catalog_items"), list) else []
     selected_keys = {
         str(job.get("dataset_key") or "").strip()
@@ -275,6 +345,386 @@ def _catalog_default_detail_columns(payload: dict[str, Any], retrieval_jobs: lis
             continue
         result = _merge_strings(result, _string_list(metadata.get("default_detail_columns")))
     return result
+
+
+# 함수 설명: 01D 출력 또는 기존 payload에서 실제 후보 묶음을 꺼내 정규화 단계에서만 사용합니다.
+def _metadata_candidates(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    candidate_payload = _payload(value)
+    nested = candidate_payload.get("metadata_candidates")
+    if isinstance(nested, dict):
+        return nested
+    if any(
+        isinstance(candidate_payload.get(key), list)
+        for key in ("domain_items", "table_catalog_items", "main_flow_filters")
+    ):
+        return candidate_payload
+    existing = payload.get("metadata_candidates")
+    return deepcopy(existing) if isinstance(existing, dict) else {}
+
+
+# 함수 설명: LLM이 선택한 메타데이터 참조 목록을 section/key 계약으로만 정리합니다.
+def _metadata_refs(parsed: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, str]]:
+    raw = parsed.get("metadata_refs", plan.get("metadata_refs", []))
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, str]] = []
+    for item in raw:
+        ref = _metadata_ref(item)
+        if ref and ref not in result:
+            result.append(ref)
+    return result
+
+
+# 함수 설명: 다양한 참조 표기를 section/key 두 필드로 통일합니다.
+def _metadata_ref(value: Any) -> dict[str, str]:
+    if isinstance(value, str) and ":" in value:
+        section, key = value.split(":", 1)
+        value = {"section": section, "key": key}
+    if not isinstance(value, dict):
+        return {}
+    section = str(value.get("section") or value.get("type") or "").strip()
+    key = str(value.get("key") or value.get("dataset_key") or "").strip()
+    if not section or not key:
+        return {}
+    if section in {"table_catalog_items", "dataset", "data_catalog"}:
+        section = "table_catalog"
+    return {"section": section, "key": key}
+
+
+# 함수 설명: grain/join 계획에 포함된 참조도 trace용 metadata_refs에 빠짐없이 합칩니다.
+def _plan_metadata_refs(plan: dict[str, Any]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    grain = plan.get("grain_plan") if isinstance(plan.get("grain_plan"), dict) else {}
+    grain_ref = _metadata_ref(grain.get("metadata_ref"))
+    if grain_ref:
+        result.append(grain_ref)
+    joins = plan.get("join_plan")
+    join_items = joins if isinstance(joins, list) else [joins] if isinstance(joins, dict) else []
+    for item in join_items:
+        ref = _metadata_ref(item.get("metadata_ref")) if isinstance(item, dict) else {}
+        if ref and ref not in result:
+            result.append(ref)
+    return result
+
+
+# 함수 설명: 기존 trace 소비자가 사용하는 type/section 표기는 보존하면서 새 grain/join 참조만 보충합니다.
+def _merge_output_metadata_refs(
+    parsed: dict[str, Any],
+    plan: dict[str, Any],
+    additional_refs: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    raw = parsed.get("metadata_refs", plan.get("metadata_refs", []))
+    result = deepcopy(raw) if isinstance(raw, list) else []
+    existing = {
+        (ref.get("section", ""), ref.get("key", ""))
+        for ref in (_metadata_ref(item) for item in result)
+        if ref
+    }
+    for item in additional_refs:
+        ref = _metadata_ref(item)
+        marker = (ref.get("section", ""), ref.get("key", ""))
+        if ref and marker not in existing:
+            result.append(ref)
+            existing.add(marker)
+    return result
+
+
+# 함수 설명: 선택된 metadata grain을 source별 실제 컬럼으로 결정합니다.
+def _resolve_grain_plan(
+    plan: dict[str, Any],
+    metadata_refs: list[dict[str, str]],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    raw = plan.get("grain_plan") if isinstance(plan.get("grain_plan"), dict) else {}
+    metadata_ref = _metadata_ref(raw.get("metadata_ref"))
+    if not metadata_ref:
+        product_refs = [
+            ref
+            for ref in metadata_refs
+            if ref.get("section") in {"product_key_columns", "analysis_recipes"}
+        ]
+        if len(product_refs) == 1:
+            metadata_ref = product_refs[0]
+    if not metadata_ref:
+        return {}
+
+    metadata_item = _find_metadata_item(candidates, metadata_ref)
+    canonical_columns = _metadata_key_columns(metadata_item, candidates)
+    if not canonical_columns:
+        return {}
+
+    source_alias = str(raw.get("source_alias") or "").strip()
+    if not source_alias and retrieval_jobs:
+        source_alias = str(
+            retrieval_jobs[0].get("source_alias")
+            or retrieval_jobs[0].get("dataset_key")
+            or ""
+        ).strip()
+    dataset_key = _dataset_key_for_alias(source_alias, retrieval_jobs)
+    table_item = _table_catalog_item(candidates, dataset_key)
+    mappings = [
+        {
+            "canonical_key": column,
+            "source_candidates": _mapped_column_candidates(table_item, column),
+        }
+        for column in canonical_columns
+    ]
+    grain_columns = [
+        mapping["source_candidates"][0]
+        for mapping in mappings
+        if mapping.get("source_candidates")
+    ]
+    if not source_alias or not grain_columns:
+        return {}
+    return {
+        "metadata_ref": metadata_ref,
+        "source_alias": source_alias,
+        "dataset_key": dataset_key,
+        "canonical_columns": canonical_columns,
+        "column_mappings": mappings,
+        "grain_columns": grain_columns,
+        "strict": True,
+    }
+
+
+# 함수 설명: 선택된 metadata join 계약을 좌우 source의 실제 key 쌍으로 변환합니다.
+def _resolve_join_plan(
+    plan: dict[str, Any],
+    metadata_refs: list[dict[str, str]],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+) -> list[dict[str, Any]]:
+    raw_joins = plan.get("join_plan")
+    join_items = raw_joins if isinstance(raw_joins, list) else [raw_joins] if isinstance(raw_joins, dict) else []
+    if not join_items:
+        join_steps = [
+            item
+            for item in pandas_plan
+            if isinstance(item, dict)
+            and "join" in str(item.get("operation") or item.get("step") or "").lower()
+        ]
+        product_refs = [
+            ref
+            for ref in metadata_refs
+            if ref.get("section") in {"product_key_columns", "analysis_recipes"}
+        ]
+        if len(join_steps) == 1 and len(product_refs) == 1:
+            step = join_steps[0]
+            join_items = [
+                {
+                    "metadata_ref": product_refs[0],
+                    "left_source_alias": step.get("left_source_alias"),
+                    "right_source_alias": step.get("right_source_alias"),
+                    "join_type": step.get("join_type"),
+                    "right_value_columns": step.get("right_value_columns"),
+                    "multi_match_policy": step.get("multi_match_policy"),
+                }
+            ]
+
+    result: list[dict[str, Any]] = []
+    for raw in join_items:
+        if not isinstance(raw, dict):
+            continue
+        metadata_ref = _metadata_ref(raw.get("metadata_ref"))
+        metadata_item = _find_metadata_item(candidates, metadata_ref)
+        metadata_payload = _metadata_payload(metadata_item)
+        canonical_keys = _metadata_key_columns(metadata_item, candidates)
+        left_alias = str(raw.get("left_source_alias") or "").strip()
+        right_alias = str(raw.get("right_source_alias") or "").strip()
+        if not left_alias or not right_alias or not canonical_keys:
+            continue
+        left_dataset = _dataset_key_for_alias(left_alias, retrieval_jobs)
+        right_dataset = _dataset_key_for_alias(right_alias, retrieval_jobs)
+        left_table = _table_catalog_item(candidates, left_dataset)
+        right_table = _table_catalog_item(candidates, right_dataset)
+        key_mappings: list[dict[str, Any]] = []
+        for key in canonical_keys:
+            left_candidates = _mapped_column_candidates(left_table, key)
+            right_candidates = _mapped_column_candidates(right_table, key)
+            if left_candidates and right_candidates:
+                key_mappings.append(
+                    {
+                        "canonical_key": key,
+                        "left_candidates": left_candidates,
+                        "right_candidates": right_candidates,
+                    }
+                )
+        if not key_mappings:
+            continue
+        join_type = str(metadata_payload.get("join_type") or raw.get("join_type") or "left").strip().lower()
+        if join_type not in {"left", "inner"}:
+            join_type = "left"
+        multi_match_policy = str(
+            metadata_payload.get("multi_match_policy")
+            or raw.get("multi_match_policy")
+            or "preserve_rows"
+        ).strip()
+        if multi_match_policy not in {"collect_unique", "preserve_rows", "first"}:
+            multi_match_policy = "preserve_rows"
+        canonical_right_value_columns = _string_list(
+            raw.get("right_value_columns")
+            or metadata_payload.get("right_value_columns")
+        )
+        right_value_mappings = [
+            {
+                "canonical_key": column,
+                "source_candidates": _mapped_column_candidates(right_table, column),
+            }
+            for column in canonical_right_value_columns
+        ]
+        right_value_columns = [
+            mapping["source_candidates"][0]
+            for mapping in right_value_mappings
+            if mapping.get("source_candidates")
+        ]
+        result.append(
+            {
+                "metadata_ref": metadata_ref,
+                "left_source_alias": left_alias,
+                "right_source_alias": right_alias,
+                "left_dataset_key": left_dataset,
+                "right_dataset_key": right_dataset,
+                "join_type": join_type,
+                "canonical_keys": [item["canonical_key"] for item in key_mappings],
+                "key_mappings": key_mappings,
+                "left_keys": [item["left_candidates"][0] for item in key_mappings],
+                "right_keys": [item["right_candidates"][0] for item in key_mappings],
+                "canonical_right_value_columns": canonical_right_value_columns,
+                "right_value_mappings": right_value_mappings,
+                "right_value_columns": right_value_columns,
+                "null_key_policy": str(
+                    metadata_payload.get("null_key_policy")
+                    or raw.get("null_key_policy")
+                    or "normalize_blank"
+                ).strip(),
+                "multi_match_policy": multi_match_policy,
+                "strict": True,
+            }
+        )
+    return result
+
+
+# 함수 설명: 참조 section/key와 정확히 일치하는 후보 metadata 문서를 찾습니다.
+def _find_metadata_item(
+    candidates: dict[str, Any],
+    metadata_ref: dict[str, str],
+) -> dict[str, Any]:
+    if not metadata_ref:
+        return {}
+    target_section = str(metadata_ref.get("section") or "").strip()
+    target_key = str(metadata_ref.get("key") or "").strip()
+    collections = (
+        ("domain_items", ""),
+        ("table_catalog_items", "table_catalog"),
+        ("main_flow_filters", "main_flow_filter"),
+    )
+    for collection_key, default_section in collections:
+        items = candidates.get(collection_key)
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            payload = _metadata_payload(item)
+            section = str(item.get("section") or item.get("type") or default_section).strip()
+            key = str(
+                item.get("key")
+                or item.get("dataset_key")
+                or payload.get("key")
+                or payload.get("dataset_key")
+                or ""
+            ).strip()
+            if section == target_section and key == target_key:
+                return item
+    return {}
+
+
+# 함수 설명: metadata 문서의 업무 payload를 안전하게 꺼냅니다.
+def _metadata_payload(item: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    payload = item.get("payload")
+    return payload if isinstance(payload, dict) else item
+
+
+# 함수 설명: product key 또는 recipe metadata에서 canonical grain/join key 목록을 읽습니다.
+def _metadata_key_columns(
+    item: dict[str, Any],
+    candidates: dict[str, Any],
+    visited: set[tuple[str, str]] | None = None,
+) -> list[str]:
+    payload = _metadata_payload(item)
+    for key in ("columns", "group_by", "join_keys", "product_key_columns", "grain_columns"):
+        values = _string_list(payload.get(key))
+        if values:
+            return values
+    grain_policy = payload.get("grain_policy")
+    if isinstance(grain_policy, dict):
+        for key in ("columns", "group_by", "join_keys"):
+            values = _string_list(grain_policy.get(key))
+            if values:
+                return values
+    reference = _metadata_ref(
+        payload.get("join_key_ref")
+        or payload.get("product_key_ref")
+        or payload.get("grain_ref")
+    )
+    marker = (reference.get("section", ""), reference.get("key", ""))
+    seen = visited or set()
+    if reference and marker not in seen:
+        return _metadata_key_columns(
+            _find_metadata_item(candidates, reference),
+            candidates,
+            {*seen, marker},
+        )
+    return []
+
+
+# 함수 설명: retrieval source alias에 대응하는 catalog dataset_key를 찾습니다.
+def _dataset_key_for_alias(
+    source_alias: str,
+    retrieval_jobs: list[dict[str, Any]],
+) -> str:
+    for job in retrieval_jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if alias == source_alias:
+            return str(job.get("dataset_key") or "").strip()
+    return ""
+
+
+# 함수 설명: 선택된 dataset의 table catalog 후보 문서를 찾습니다.
+def _table_catalog_item(candidates: dict[str, Any], dataset_key: str) -> dict[str, Any]:
+    if not dataset_key:
+        return {}
+    return _find_metadata_item(
+        candidates,
+        {"section": "table_catalog", "key": dataset_key},
+    )
+
+
+# 함수 설명: canonical key를 table catalog의 실제 source column 후보로 변환합니다.
+def _mapped_column_candidates(item: dict[str, Any], canonical_key: str) -> list[str]:
+    payload = _metadata_payload(item)
+    normalized_key = _normalized_column_key(canonical_key)
+    result: list[str] = []
+    for mapping_name in ("filter_mappings", "standard_column_aliases"):
+        mapping = payload.get(mapping_name)
+        if not isinstance(mapping, dict):
+            continue
+        for key, value in mapping.items():
+            if _normalized_column_key(key) != normalized_key:
+                continue
+            result = _merge_strings(result, _string_list(value))
+    if not result:
+        result.append(str(canonical_key).strip())
+    return result
+
+
+# 함수 설명: MODE/Mode, MCP_NO/MCP NO 같은 canonical 표기 차이를 metadata 매핑 비교용으로 통일합니다.
+def _normalized_column_key(value: Any) -> str:
+    return re.sub(r"[\s_\-]+", "", str(value or "")).upper()
 
 
 # 함수 설명: `_string_list()`는 문자열 또는 목록 입력을 순서가 유지되는 중복 없는 컬럼 목록으로 정규화합니다.
@@ -511,10 +961,24 @@ def _text_value(value: Any) -> str:
 class IntentPlanNormalizer(Component):
     display_name = "04 의도 계획 정규화기"
     description = "Langflow 에이전트/LLM의 의도 JSON을 표준 의도 계획으로 정규화합니다."
-    inputs = [DataInput(name="payload", display_name="페이로드", required=True), MessageTextInput(name="llm_response", display_name="의도 LLM 응답", required=True)]
+    inputs = [
+        DataInput(name="payload", display_name="페이로드", required=True),
+        MessageTextInput(name="llm_response", display_name="의도 LLM 응답", required=True),
+        DataInput(
+            name="metadata_candidates",
+            display_name="메타데이터 후보",
+            required=False,
+        ),
+    ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
     # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
-        return Data(data=normalize_intent_plan(getattr(self, "payload", None), getattr(self, "llm_response", "")))
+        return Data(
+            data=normalize_intent_plan(
+                getattr(self, "payload", None),
+                getattr(self, "llm_response", ""),
+                getattr(self, "metadata_candidates", None),
+            )
+        )

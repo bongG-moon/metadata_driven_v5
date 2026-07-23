@@ -2700,6 +2700,29 @@ def test_answer_message_adapter_skips_duplicate_result_table_when_answer_has_tab
     assert "wip_sum_by_oper" in message
 
 
+def test_answer_message_adapter_checks_html_module_before_building_download_anchor(monkeypatch):
+    message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
+    commands = []
+    monkeypatch.setattr(message_adapter.importlib.util, "find_spec", lambda _module_name: None)
+    monkeypatch.setattr(message_adapter.subprocess, "check_call", lambda command: commands.append(command))
+
+    anchor = message_adapter._download_anchor("결과 <CSV>", "https://example.com/file?a=1&b=2")
+
+    assert commands == [
+        [
+            message_adapter.sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--trusted-host",
+            "nexus.skhynix.com",
+            "html",
+        ]
+    ]
+    assert "결과 &lt;CSV&gt;" in anchor
+    assert "a=1&amp;b=2" in anchor
+
+
 def test_answer_message_adapter_adds_data_ref_download_links():
     message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
     payload = {
@@ -10555,6 +10578,230 @@ def test_v5_intent_output_contract_adds_catalog_columns_only_for_detail_results(
     ).read_text(encoding="utf-8")
     assert "row_identity_columns" not in prompt_text
     assert "context_columns" not in prompt_text
+
+
+def test_v5_metadata_candidates_select_product_key_metadata_for_korean_product_question():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    payload = {
+        "request": {
+            "question": "현재 DA공정에서 재공이 가장 많은 제품 10개와 할당 장비를 보여줘"
+        }
+    }
+    domain_items = {
+        "domain_items": [
+            {
+                "section": "product_key_columns",
+                "key": "standard_product_keys",
+                "payload": {
+                    "display_name": "표준 제품 키",
+                    "columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"],
+                },
+            },
+            {
+                "section": "quantity_terms",
+                "key": "unrelated_quantity",
+                "payload": {"display_name": "무관한 수량"},
+            },
+        ]
+    }
+    table_items = {
+        "table_catalog_items": [
+            {"dataset_key": "wip_today", "payload": {"display_name": "현재 재공"}},
+            {"dataset_key": "equipment_assign", "payload": {"display_name": "장비 배정"}},
+        ]
+    }
+
+    result = builder.build_metadata_candidates(
+        payload,
+        domain_items,
+        table_items,
+        {"main_flow_filters": []},
+        min_table_items=1,
+    )
+
+    selected = result["metadata_candidates"]["domain_items"]
+    assert any(
+        item.get("section") == "product_key_columns"
+        and item.get("key") == "standard_product_keys"
+        for item in selected
+    )
+
+
+def test_v5_intent_normalizer_resolves_metadata_driven_grain_and_join_without_device():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    payload = {"trace": {"warnings": [], "errors": [], "inspection": {}}}
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "product_key_columns",
+                    "key": "standard_product_keys",
+                    "payload": {
+                        "display_name": "표준 제품 키",
+                        "columns": [
+                            "TECH",
+                            "DEN",
+                            "MODE",
+                            "PKG_TYPE1",
+                            "PKG_TYPE2",
+                            "LEAD",
+                            "MCP_NO",
+                        ],
+                    },
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "wip_today",
+                    "payload": {
+                        "filter_mappings": {
+                            "TECH": ["TECH"],
+                            "DEN": ["DENSITY"],
+                            "MODE": ["MODE"],
+                            "PKG_TYPE1": ["PKG1"],
+                            "PKG_TYPE2": ["PKG2"],
+                            "LEAD": ["LEAD"],
+                            "MCP_NO": ["MCP_NO"],
+                            "DEVICE": ["DEVICE"],
+                        }
+                    },
+                },
+                {
+                    "dataset_key": "equipment_assign",
+                    "payload": {
+                        "filter_mappings": {
+                            "TECH": ["TECH"],
+                            "DEN": ["DENSITY"],
+                            "MODE": ["MODE"],
+                            "PKG_TYPE1": ["PKG1"],
+                            "PKG_TYPE2": ["PKG2"],
+                            "LEAD": ["LEAD"],
+                            "MCP_NO": ["MCP_NO"],
+                            "DEVICE": ["DEVICE"],
+                            "EQP_ID": ["EQUIP_ID"],
+                        }
+                    },
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "top_wip_products_with_equipment",
+            "request_scope": "new_analysis",
+            "reuse_strategy": "none",
+            "grain_plan": {
+                "metadata_ref": {
+                    "section": "product_key_columns",
+                    "key": "standard_product_keys",
+                },
+                "source_alias": "wip",
+            },
+            "join_plan": [
+                {
+                    "metadata_ref": {
+                        "section": "product_key_columns",
+                        "key": "standard_product_keys",
+                    },
+                    "left_source_alias": "wip",
+                    "right_source_alias": "equipment",
+                    "join_type": "left",
+                    "right_value_columns": ["EQP_ID"],
+                    "multi_match_policy": "collect_unique",
+                }
+            ],
+            "retrieval_jobs": [
+                {"dataset_key": "wip_today", "source_alias": "wip"},
+                {"dataset_key": "equipment_assign", "source_alias": "equipment"},
+            ],
+            "pandas_execution_plan": [
+                {"operation": "aggregate", "source_alias": "wip"},
+                {
+                    "operation": "left_join",
+                    "left_source_alias": "wip",
+                    "right_source_alias": "equipment",
+                },
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["TECH", "DENSITY", "MODE", "DEVICE"],
+                "metric_columns": ["WIP"],
+                "required_columns": ["TECH", "DENSITY", "MODE", "DEVICE", "WIP", "EQUIP_ID"],
+            },
+        },
+        "metadata_refs": [
+            {"section": "product_key_columns", "key": "standard_product_keys"}
+        ],
+    }
+
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        llm_response,
+        metadata_candidates,
+    )
+    plan = normalized["intent_plan"]
+
+    assert plan["resolved_grain_plan"]["grain_columns"] == [
+        "TECH",
+        "DENSITY",
+        "MODE",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    assert "DEVICE" not in plan["resolved_grain_plan"]["grain_columns"]
+    assert plan["output_contract"]["grain_columns"] == plan["resolved_grain_plan"]["grain_columns"]
+    join_plan = plan["resolved_join_plan"][0]
+    assert join_plan["left_keys"] == [
+        "TECH",
+        "DENSITY",
+        "MODE",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    assert join_plan["right_keys"] == join_plan["left_keys"]
+    assert join_plan["canonical_right_value_columns"] == ["EQP_ID"]
+    assert join_plan["right_value_columns"] == ["EQUIP_ID"]
+    assert join_plan["multi_match_policy"] == "collect_unique"
+    assert join_plan["null_key_policy"] == "normalize_blank"
+    assert "DEVICE" not in join_plan["canonical_keys"]
+    assert plan["output_contract"]["required_columns"] == [
+        "TECH",
+        "DENSITY",
+        "MODE",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "MCP_NO",
+        "WIP",
+        "EQUIP_ID",
+    ]
+
+
+def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
+    pandas_prompt = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "16_pandas_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    repair_prompt = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "17b_pandas_repair_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+
+    assert "resolved_grain_plan.strict=true" in pandas_prompt
+    assert "집계용 `group_cols` 전체를 join key로 재사용하지 않는다" in pandas_prompt
+    assert "multi_match_policy=collect_unique" in pandas_prompt
+    assert "resolved_grain_plan.strict=true" in repair_prompt
+    assert "`drop_duplicates(subset=join_keys)`" in repair_prompt
 
 
 def test_v5_catalog_hydrator_propagates_only_safe_column_contract():

@@ -140,7 +140,7 @@ def test_v5_flow_export_is_reproducible_and_acyclic():
 
     assert built == checked_in
     assert len(built["data"]["nodes"]) == 45
-    assert len(built["data"]["edges"]) == 69
+    assert len(built["data"]["edges"]) == 70
     assert _is_acyclic(built)
 
 
@@ -221,7 +221,7 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     nodes = {node["id"]: node for node in flow["data"]["nodes"]}
 
     assert len(nodes) == 45
-    assert len(flow["data"]["edges"]) == 69
+    assert len(flow["data"]["edges"]) == 70
     assert _is_acyclic(flow)
     assert ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload") in edges
     assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-v5ExecutionGate", "payload") in edges
@@ -229,6 +229,12 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     assert ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-s3mf1", "payload") in edges
     assert ("Prompt Template-AUpQz", "prompt", "LanguageModel-intent", "input_value") in edges
     assert ("LanguageModel-intent", "text_output", "CustomComponent-5o0CN", "llm_response") in edges
+    assert (
+        "CustomComponent-DXrpf",
+        "metadata_candidates",
+        "CustomComponent-5o0CN",
+        "metadata_candidates",
+    ) in edges
     assert ("Prompt Template-xtzD5", "prompt", "LanguageModel-pandas", "input_value") in edges
     assert ("LanguageModel-pandas", "text_output", "CustomComponent-s3mf1", "llm_response") in edges
     assert ("Prompt Template-ELVKc", "prompt", "LanguageModel-answer", "input_value") in edges

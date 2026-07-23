@@ -16,7 +16,7 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 10개 Flow를 한 번에 impor
 
 | 순서 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
-| 1 | `01_data_analysis_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 45 | 69 |
+| 1 | `01_data_analysis_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 45 | 70 |
 | 2 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 14 | 15 |
 | 3 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 14 | 15 |
 | 4 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 14 | 15 |
@@ -60,7 +60,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 120/120 노드가 실제 Python 원본 83개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과
-- Langflow 1.8.2 frontend edge handle codec: 424/424 parse 및 `edge.data` 일치
+- Langflow 1.8.2 frontend edge handle codec: 426/426 parse 및 `edge.data` 일치
 - Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
 - Langflow 1.8.2 / LFX 0.3.4 node template: 147/147 passed
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지

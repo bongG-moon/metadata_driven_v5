@@ -426,7 +426,7 @@ def _looks_context_dependent(question: str) -> bool:
     return len(compact) <= 18
 
 
-# 함수 설명: `WB공정에서는 어땠어?`처럼 새 엔티티만 말하고 이전 지표·날짜를 묻는 후속 질문을 감지합니다.
+# 함수 설명: 새 공정 엔티티만 바꾸어 이전 지표·날짜를 묻는 후속 질문을 감지합니다.
 def _looks_entity_switch_followup(question: str, matched_entity_switch: list[str]) -> bool:
     text = str(question or "")
     normalized = _normalize(text)

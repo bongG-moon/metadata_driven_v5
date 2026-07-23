@@ -96,6 +96,7 @@ TOKEN_EXPANSIONS = {
     "재공수량": ("wip",),
     "계획": ("target", "plan"),
     "목표": ("target",),
+    "제품": ("product",),
     "레시피": ("recipe",),
     "로트": ("lot",),
     "랏": ("lot",),

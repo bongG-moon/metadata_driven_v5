@@ -209,6 +209,17 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         node_index,
     )
 
+    _apply_component_spec(
+        node_index["CustomComponent-5o0CN"],
+        [
+            ("data", "payload", "페이로드", True, None),
+            ("message", "llm_response", "의도 LLM 응답", True, ""),
+            ("data", "metadata_candidates", "메타데이터 후보", False, None),
+        ],
+        [("Data", "payload_out", "페이로드 출력", "build_payload")],
+        node_index,
+    )
+
     prototype = node_index["CustomComponent-5o0CN"]
     for node_id, spec in NEW_COMPONENTS.items():
         node = deepcopy(prototype)
@@ -340,6 +351,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
 
     additions = [
         ("CustomComponent-HFsYn", "payload_out", "CustomComponent-DXrpf", "payload"),
+        ("CustomComponent-DXrpf", "metadata_candidates", "CustomComponent-5o0CN", "metadata_candidates"),
         ("CustomComponent-5o0CN", "payload_out", "CustomComponent-v5Hydrate", "payload"),
         ("MongoDBDomainMetadataLoader-OM3Hg", "table_catalog_items", "CustomComponent-v5Hydrate", "table_catalog_items"),
         ("CustomComponent-v5Hydrate", "payload_out", "CustomComponent-O8vfz", "payload"),

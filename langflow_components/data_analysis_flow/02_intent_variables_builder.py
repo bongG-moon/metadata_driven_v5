@@ -92,6 +92,20 @@ def _schema() -> dict[str, Any]:
                 "new": {},
             },
             "pandas_function_cases": [],
+            "grain_plan": {
+                "metadata_ref": {"section": "string", "key": "string"},
+                "source_alias": "string",
+            },
+            "join_plan": [
+                {
+                    "metadata_ref": {"section": "string", "key": "string"},
+                    "left_source_alias": "string",
+                    "right_source_alias": "string",
+                    "join_type": "left|inner",
+                    "right_value_columns": [],
+                    "multi_match_policy": "collect_unique|preserve_rows|first",
+                }
+            ],
             "retrieval_jobs": [
                 {
                     "dataset_key": "string",

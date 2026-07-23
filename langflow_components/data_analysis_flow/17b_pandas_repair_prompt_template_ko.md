@@ -40,6 +40,11 @@
 - retry code에는 `intent_plan.retrieval_jobs[].filters`와 같은 필터를 다시 작성하지 않는다.
 - retry code에서는 이미 필터된 `sources["alias"]`를 기준으로 오류 원인, 집계, 정렬, join, 추가 분석 조건만 수정한다.
 - `KeyError: '컬럼명'` 또는 source schema에 없는 컬럼 오류가 있으면, 해당 컬럼을 무조건 참조하지 말고 `df.columns`에 존재하는 컬럼만 groupby/선택/정렬에 사용한다.
+- `intent_plan.resolved_grain_plan.strict=true`이면 실패 코드의 groupby 목록을 `grain_columns` 계약과 일치시키고, metadata에 없는 `DEVICE`, `DEVICE_DESC` 또는 다른 dimension을 임의로 유지하거나 추가하지 않는다.
+- `intent_plan.resolved_join_plan`이 있으면 실패 코드에서 `group_cols` 전체를 join key로 재사용한 부분을 제거하고, 계약의 `left_keys`·`right_keys` 또는 `key_mappings`에 있는 좌우 key pair만 사용한다.
+- `null_key_policy=normalize_blank`이면 join용 copy에서 좌우 key의 null·빈 문자열·공백·문자열 자료형 차이를 같은 형식으로 맞춘다. 날짜 컬럼은 날짜 보존 규칙을 우선한다.
+- `multi_match_policy=collect_unique`인데 실패 코드가 `drop_duplicates(subset=join_keys)`로 장비 등 여러 우측 값을 하나만 남겼다면, `right_value_columns`별 중복 없는 값을 집계해 보존하도록 수정한다.
+- metadata join key가 source schema에 하나도 없으면 다른 key를 추측하지 말고 빈 결과 또는 명시적 오류로 끝낸다.
 - `df.groupby(["A", "B"])`처럼 실패한 고정 컬럼 리스트는 `desired_cols`와 `group_cols = [c for c in desired_cols if c in df.columns]` 구조로 바꾼다.
 - 실패 코드의 dimension groupby가 null, 빈 문자열, 공백 group 행을 누락했다면 `dropna=False`를 명시하고 집계 전 group column의 null/blank 제외 filter를 제거한다.
 - 집계 후 표시용 dimension column에만 `fillna("")`와 `replace(r"^\s*$", "", regex=True)`를 적용한다. dimension null/blank를 `미등록`으로 바꾼 코드는 빈 문자열 표시로 수정한다.
