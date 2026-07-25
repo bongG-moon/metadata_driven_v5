@@ -1,0 +1,757 @@
+{
+  "status": "ok",
+  "mode": "full_pipeline",
+  "environment": {
+    "repository": "C:\\Users\\qkekt\\Desktop\\metadata_driven_v5",
+    "reference_date": "20260701",
+    "retrieval_mode": "dummy",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-2.5-flash",
+    "llm_temperature": 0.0,
+    "llm_timeout_seconds": 60,
+    "secrets": {
+      "mongodb_uri_configured": true,
+      "google_api_key_configured": true
+    },
+    "mongodb": {
+      "database": "datagov",
+      "collections": {
+        "domain": "agent_v4_domain_items",
+        "table_catalog": "agent_v4_table_catalog_items",
+        "main_flow_filter": "agent_v4_main_flow_filters"
+      },
+      "loaded_counts": {
+        "domain": 71,
+        "table_catalog": 9,
+        "main_flow_filter": 17
+      }
+    },
+    "prompt_sources": {
+      "intent": {
+        "path": "langflow_components\\data_analysis_flow\\03_intent_prompt_template_ko.md",
+        "chars": 10220,
+        "sha256": "ab11fe6fbff8ea348c30017a16db1b6f1827b2ed356e69663a16f31483ae5a41"
+      },
+      "specialized_intent": {
+        "path": "langflow_components\\data_analysis_flow\\specialized_prompt_input_example_ko.md",
+        "chars": 5073,
+        "sha256": "0d135a2d136213f146aed9c3e6a681e2b898af357bb4599794c138b2b3ddbafb"
+      },
+      "pandas": {
+        "path": "langflow_components\\data_analysis_flow\\16_pandas_prompt_template_ko.md",
+        "chars": 6837,
+        "sha256": "f4aaaf58ec80086cdaf3cb30b7c92ff40136c6c1a5b178a70958055be7700928"
+      },
+      "pandas_repair": {
+        "path": "langflow_components\\data_analysis_flow\\17b_pandas_repair_prompt_template_ko.md",
+        "chars": 5424,
+        "sha256": "9253c77c154d7a5fb4348acc8370b1a11a86da668ab488b31eee2a794aa4c140"
+      },
+      "answer": {
+        "path": "langflow_components\\data_analysis_flow\\19_answer_prompt_template_ko.md",
+        "chars": 2065,
+        "sha256": "60f183e4f4ba315ecb5e6410d5a4e3325e3ca8d64ab9943d3ee52742fb8b5da3"
+      }
+    }
+  },
+  "results": [
+    {
+      "question": "현재 HOLD 상태인 LOT을 보여주고 각 LOT의 최근 HOLD 이력도 같이 알려줘.",
+      "status": "ok",
+      "elapsed_seconds": 90.438,
+      "metadata_candidates": {
+        "domain_count": 1,
+        "table_catalog_count": 5,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "quantity_terms:wip_today_quantity"
+        ],
+        "table_catalog_keys": [
+          "hold_history",
+          "lot_status",
+          "production_today",
+          "wip_today",
+          "equipment_assign"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 30519,
+        "analysis_kind": "hold_lot_status_with_latest_history",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "hold_lot_status_with_latest_history",
+          "request_scope": "new_analysis",
+          "reuse_strategy": "none",
+          "condition_resolution": {},
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "table_catalog_items",
+              "key": "lot_status"
+            },
+            "source_alias": "final_result_df"
+          },
+          "join_plan": [
+            {
+              "left_source_alias": "lot_status_df",
+              "right_source_alias": "hold_history_df",
+              "join_type": "left",
+              "right_value_columns": [
+                "HOLD_TM",
+                "HOLD_CD",
+                "HOLD_DESC",
+                "HOLD_USER",
+                "OPER",
+                "OPER_NAME"
+              ],
+              "multi_match_policy": "preserve_rows"
+            }
+          ],
+          "retrieval_jobs": [
+            {
+              "dataset_key": "lot_status",
+              "source_alias": "lot_status_df",
+              "required_params": {},
+              "filters": {
+                "HOLD_STAT": {
+                  "operator": "eq",
+                  "value": "OnHold"
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "/*Current Wip Status*/\nSELECT\nERM_ID,OPER,OPER_NAME,FAB,OWNER,GRADE,DEVICE,LOT_ID,SUB_LOT_ID,PROD_QTY,WF_QTY,IN_TAT,CUM_TAT,EQP_ID,FLOW_ID,OPER_IN_TM,FAC_IN_TIME,HOLD_STAT,HOLD_REASON,FAMILY,MODE,DENSITY,TECH,ORG,PKG1,PKG2,PKG3,LEAD,MCP_NO,THK_CD,LOT_STAT,LOT_GRP,PKG_SIZE,HOT_LOT,HOT_LEVEL,PKG_COMPOSIT,DURABLE_ID,DURABLE_TYP,SUB_QTY,TSV_DIE_TYPE,EVENT_DESC,MOVE_IN_TM,PAD_ABNORMAL,SWR_REQ_NO,INSP_TARGET\nFROM WIP_STATE\nWHERE 1=1"
+              },
+              "required_param_names": [],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:lot_status",
+              "filter_mappings": {
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYPE"
+                ],
+                "EQP_ID": [
+                  "EQP_ID"
+                ],
+                "LOT_ID": [
+                  "LOT_ID"
+                ]
+              },
+              "standard_column_aliases": {
+                "PROD_QTY": [
+                  "DIE수량",
+                  "UNIT수량"
+                ],
+                "WF_QTY": [
+                  "Wafer수량",
+                  "웨이퍼수량"
+                ],
+                "IN_TAT": [
+                  "현재 공정 유입 이후 TAT"
+                ],
+                "CUM_TAT": [
+                  "누적 TAT"
+                ],
+                "LOT_ID": [
+                  "Lot 건수"
+                ],
+                "HOLD_STAT": [
+                  "HOLD여부"
+                ]
+              },
+              "job_id": "job_1"
+            },
+            {
+              "dataset_key": "hold_history",
+              "source_alias": "hold_history_df",
+              "required_params": {},
+              "filters": {},
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "/*HOLD_LOT_HISTORY*/\n\n        SELECT\n\n            LOT_ID,\n            PROD_QTY,\n            OPER,\n            OPER_NAME,\n            HOLD_TM,\n            HOLD_CD,\n            HOLD_USER,\n            HOLD_DESC,\n            FAB,\n            FAMILY,\n            MODE,\n            DENSITY,\n            TECH,\n            ORG,\n            PKG1,\n            PKG2,\n            LEAD,\n            MCP_NO,\n            GRADE,\n            OWNER,\n            \n            DEVICE,\n            DEVICE_DESC,\n            PKG_SIZE,\n            THK_CD,\n            flow_id   \n        FROM HOLD_HIS\n        WHERE LOT_ID = {LOT_ID}"
+              },
+              "required_param_names": [
+                "LOT_ID"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:hold_history",
+              "filter_mappings": {
+                "LOT_ID": [
+                  "LOT_ID"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYPE"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ]
+              },
+              "standard_column_aliases": {
+                "QUANTITY": [
+                  "PROD_QTY"
+                ],
+                "COUNT": [
+                  "LOT_ID"
+                ],
+                "HOLD_TIME": [
+                  "HOLD_TM"
+                ],
+                "HOLD_CODE": [
+                  "HOLD_CD"
+                ],
+                "HOLD_DESCRIPTION": [
+                  "HOLD_DESC"
+                ]
+              },
+              "job_id": "job_2"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "operation": "sort",
+              "source_alias": "joined_df",
+              "sort_by": [
+                {
+                  "column": "LOT_ID",
+                  "ascending": true
+                },
+                {
+                  "column": "HOLD_TM",
+                  "ascending": false
+                }
+              ],
+              "target_alias": "sorted_df"
+            },
+            {
+              "operation": "drop_duplicates",
+              "source_alias": "sorted_df",
+              "subset": [
+                "LOT_ID"
+              ],
+              "keep": "first",
+              "target_alias": "final_result_df"
+            }
+          ],
+          "output_contract": {
+            "result_mode": "entity_list",
+            "required_columns": [
+              "LOT_ID",
+              "OPER_NAME",
+              "PROD_QTY",
+              "HOLD_STAT",
+              "HOLD_TM",
+              "HOLD_CD",
+              "HOLD_DESC",
+              "HOLD_USER",
+              "OPER_NAME_y"
+            ],
+            "grain_columns": [
+              "LOT_ID"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero"
+          },
+          "resolved_grain_plan": {
+            "metadata_ref": {
+              "section": "table_catalog",
+              "key": "lot_status"
+            },
+            "source_alias": "final_result_df",
+            "dataset_key": "",
+            "canonical_columns": [
+              "{'column_name': 'ERM_ID', 'column_type': 'string'}",
+              "{'column_name': 'OPER', 'column_type': 'string', 'description': '공정 번호'}",
+              "{'column_name': 'OPER_NAME', 'column_type': 'string', 'description': '공정 이름'}",
+              "{'column_name': 'FAB', 'column_type': 'string'}",
+              "{'column_name': 'OWNER', 'column_type': 'string'}",
+              "{'column_name': 'GRADE', 'column_type': 'string'}",
+              "{'column_name': 'DEVICE', 'column_type': 'string'}",
+              "{'column_name': 'LOT_ID', 'column_type': 'string', 'is_primary_key': True, 'description': 'Lot ID. Lot 건수 계산에 사용됩니다.'}",
+              "{'column_name': 'SUB_LOT_ID', 'column_type': 'string'}",
+              "{'column_name': 'PROD_QTY', 'column_type': 'number', 'description': '생산 수량 (DIE/UNIT 수량)'}",
+              "{'column_name': 'WF_QTY', 'column_type': 'number', 'description': 'Wafer 수량'}",
+              "{'column_name': 'IN_TAT', 'column_type': 'number', 'description': '현재 공정 유입 이후 TAT'}",
+              "{'column_name': 'CUM_TAT', 'column_type': 'number', 'description': '누적 TAT'}",
+              "{'column_name': 'EQP_ID', 'column_type': 'string'}",
+              "{'column_name': 'FLOW_ID', 'column_type': 'string'}",
+              "{'column_name': 'OPER_IN_TM', 'column_type': 'string'}",
+              "{'column_name': 'FAC_IN_TIME', 'column_type': 'string'}",
+              "{'column_name': 'HOLD_STAT', 'column_type': 'string', 'description': 'Lot의 Hold 상태 (OnHold, NotOnHold)'}",
+              "{'column_name': 'HOLD_REASON', 'column_type': 'string'}",
+              "{'column_name': 'FAMILY', 'column_type': 'string'}",
+              "{'column_name': 'MODE', 'column_type': 'string'}",
+              "{'column_name': 'DENSITY', 'column_type': 'string'}",
+              "{'column_name': 'TECH', 'column_type': 'string'}",
+              "{'column_name': 'ORG', 'column_type': 'string'}",
+              "{'column_name': 'PKG1', 'column_type': 'string'}",
+              "{'column_name': 'PKG2', 'column_type': 'string'}",
+              "{'column_name': 'PKG3', 'column_type': 'string'}",
+              "{'column_name': 'LEAD', 'column_type': 'string'}",
+              "{'column_name': 'MCP_NO', 'column_type': 'string'}",
+              "{'column_name': 'THK_CD', 'column_type': 'string'}",
+              "{'column_name': 'LOT_STAT', 'column_type': 'string'}",
+              "{'column_name': 'LOT_GRP', 'column_type': 'string'}",
+              "{'column_name': 'PKG_SIZE', 'column_type': 'string'}",
+              "{'column_name': 'HOT_LOT', 'column_type': 'string'}",
+              "{'column_name': 'HOT_LEVEL', 'column_type': 'string'}",
+              "{'column_name': 'PKG_COMPOSIT', 'column_type': 'string'}",
+              "{'column_name': 'DURABLE_ID', 'column_type': 'string'}",
+              "{'column_name': 'DURABLE_TYP', 'column_type': 'string'}",
+              "{'column_name': 'SUB_QTY', 'column_type': 'string'}",
+              "{'column_name': 'TSV_DIE_TYPE', 'column_type': 'string'}"
+            ],
+            "column_mappings": [
+              {
+                "canonical_key": "{'column_name': 'ERM_ID', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'ERM_ID', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'OPER', 'column_type': 'string', 'description': '공정 번호'}",
+                "source_candidates": [
+                  "{'column_name': 'OPER', 'column_type': 'string', 'description': '공정 번호'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'OPER_NAME', 'column_type': 'string', 'description': '공정 이름'}",
+                "source_candidates": [
+                  "{'column_name': 'OPER_NAME', 'column_type': 'string', 'description': '공정 이름'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'FAB', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'FAB', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'OWNER', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'OWNER', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'GRADE', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'GRADE', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'DEVICE', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'DEVICE', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'LOT_ID', 'column_type': 'string', 'is_primary_key': True, 'description': 'Lot ID. Lot 건수 계산에 사용됩니다.'}",
+                "source_candidates": [
+                  "{'column_name': 'LOT_ID', 'column_type': 'string', 'is_primary_key': True, 'description': 'Lot ID. Lot 건수 계산에 사용됩니다.'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'SUB_LOT_ID', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'SUB_LOT_ID', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'PROD_QTY', 'column_type': 'number', 'description': '생산 수량 (DIE/UNIT 수량)'}",
+                "source_candidates": [
+                  "{'column_name': 'PROD_QTY', 'column_type': 'number', 'description': '생산 수량 (DIE/UNIT 수량)'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'WF_QTY', 'column_type': 'number', 'description': 'Wafer 수량'}",
+                "source_candidates": [
+                  "{'column_name': 'WF_QTY', 'column_type': 'number', 'description': 'Wafer 수량'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'IN_TAT', 'column_type': 'number', 'description': '현재 공정 유입 이후 TAT'}",
+                "source_candidates": [
+                  "{'column_name': 'IN_TAT', 'column_type': 'number', 'description': '현재 공정 유입 이후 TAT'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'CUM_TAT', 'column_type': 'number', 'description': '누적 TAT'}",
+                "source_candidates": [
+                  "{'column_name': 'CUM_TAT', 'column_type': 'number', 'description': '누적 TAT'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'EQP_ID', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'EQP_ID', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'FLOW_ID', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'FLOW_ID', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'OPER_IN_TM', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'OPER_IN_TM', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'FAC_IN_TIME', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'FAC_IN_TIME', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'HOLD_STAT', 'column_type': 'string', 'description': 'Lot의 Hold 상태 (OnHold, NotOnHold)'}",
+                "source_candidates": [
+                  "{'column_name': 'HOLD_STAT', 'column_type': 'string', 'description': 'Lot의 Hold 상태 (OnHold, NotOnHold)'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'HOLD_REASON', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'HOLD_REASON', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'FAMILY', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'FAMILY', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'MODE', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'MODE', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'DENSITY', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'DENSITY', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'TECH', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'TECH', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'ORG', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'ORG', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'PKG1', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'PKG1', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'PKG2', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'PKG2', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'PKG3', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'PKG3', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'LEAD', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'LEAD', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'MCP_NO', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'MCP_NO', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'THK_CD', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'THK_CD', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'LOT_STAT', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'LOT_STAT', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'LOT_GRP', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'LOT_GRP', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'PKG_SIZE', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'PKG_SIZE', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'HOT_LOT', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'HOT_LOT', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'HOT_LEVEL', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'HOT_LEVEL', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'PKG_COMPOSIT', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'PKG_COMPOSIT', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'DURABLE_ID', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'DURABLE_ID', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'DURABLE_TYP', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'DURABLE_TYP', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'SUB_QTY', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'SUB_QTY', 'column_type': 'string'}"
+                ]
+              },
+              {
+                "canonical_key": "{'column_name': 'TSV_DIE_TYPE', 'column_type': 'string'}",
+                "source_candidates": [
+                  "{'column_name': 'TSV_DIE_TYPE', 'column_type': 'string'}"
+                ]
+              }
+            ],
+            "grain_columns": [
+              "{'column_name': 'ERM_ID', 'column_type': 'string'}",
+              "{'column_name': 'OPER', 'column_type': 'string', 'description': '공정 번호'}",
+              "{'column_name': 'OPER_NAME', 'column_type': 'string', 'description': '공정 이름'}",
+              "{'column_name': 'FAB', 'column_type': 'string'}",
+              "{'column_name': 'OWNER', 'column_type': 'string'}",
+              "{'column_name': 'GRADE', 'column_type': 'string'}",
+              "{'column_name': 'DEVICE', 'column_type': 'string'}",
+              "{'column_name': 'LOT_ID', 'column_type': 'string', 'is_primary_key': True, 'description': 'Lot ID. Lot 건수 계산에 사용됩니다.'}",
+              "{'column_name': 'SUB_LOT_ID', 'column_type': 'string'}",
+              "{'column_name': 'PROD_QTY', 'column_type': 'number', 'description': '생산 수량 (DIE/UNIT 수량)'}",
+              "{'column_name': 'WF_QTY', 'column_type': 'number', 'description': 'Wafer 수량'}",
+              "{'column_name': 'IN_TAT', 'column_type': 'number', 'description': '현재 공정 유입 이후 TAT'}",
+              "{'column_name': 'CUM_TAT', 'column_type': 'number', 'description': '누적 TAT'}",
+              "{'column_name': 'EQP_ID', 'column_type': 'string'}",
+              "{'column_name': 'FLOW_ID', 'column_type': 'string'}",
+              "{'column_name': 'OPER_IN_TM', 'column_type': 'string'}",
+              "{'column_name': 'FAC_IN_TIME', 'column_type': 'string'}",
+              "{'column_name': 'HOLD_STAT', 'column_type': 'string', 'description': 'Lot의 Hold 상태 (OnHold, NotOnHold)'}",
+              "{'column_name': 'HOLD_REASON', 'column_type': 'string'}",
+              "{'column_name': 'FAMILY', 'column_type': 'string'}",
+              "{'column_name': 'MODE', 'column_type': 'string'}",
+              "{'column_name': 'DENSITY', 'column_type': 'string'}",
+              "{'column_name': 'TECH', 'column_type': 'string'}",
+              "{'column_name': 'ORG', 'column_type': 'string'}",
+              "{'column_name': 'PKG1', 'column_type': 'string'}",
+              "{'column_name': 'PKG2', 'column_type': 'string'}",
+              "{'column_name': 'PKG3', 'column_type': 'string'}",
+              "{'column_name': 'LEAD', 'column_type': 'string'}",
+              "{'column_name': 'MCP_NO', 'column_type': 'string'}",
+              "{'column_name': 'THK_CD', 'column_type': 'string'}",
+              "{'column_name': 'LOT_STAT', 'column_type': 'string'}",
+              "{'column_name': 'LOT_GRP', 'column_type': 'string'}",
+              "{'column_name': 'PKG_SIZE', 'column_type': 'string'}",
+              "{'column_name': 'HOT_LOT', 'column_type': 'string'}",
+              "{'column_name': 'HOT_LEVEL', 'column_type': 'string'}",
+              "{'column_name': 'PKG_COMPOSIT', 'column_type': 'string'}",
+              "{'column_name': 'DURABLE_ID', 'column_type': 'string'}",
+              "{'column_name': 'DURABLE_TYP', 'column_type': 'string'}",
+              "{'column_name': 'SUB_QTY', 'column_type': 'string'}",
+              "{'column_name': 'TSV_DIE_TYPE', 'column_type': 'string'}"
+            ],
+            "strict": true
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "table_catalog_items",
+            "key": "lot_status"
+          },
+          {
+            "section": "table_catalog_items",
+            "key": "hold_history"
+          },
+          {
+            "type": "table_catalog",
+            "key": "lot_status"
+          },
+          {
+            "type": "table_catalog",
+            "key": "hold_history"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "lot_status",
+            "source_alias": "lot_status_df",
+            "status": "ok",
+            "row_count": 4,
+            "applied_params": {},
+            "pandas_filters": {
+              "HOLD_STAT": {
+                "operator": "eq",
+                "value": "OnHold"
+              }
+            }
+          },
+          {
+            "dataset_key": "hold_history",
+            "source_alias": "hold_history_df",
+            "status": "ok",
+            "row_count": 3,
+            "applied_params": {},
+            "pandas_filters": {}
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 32338,
+        "status": "ok",
+        "repair_attempted": false,
+        "generated_code": "_filtered_source_1_lot_status_df = sources.get('lot_status_df')\nif _filtered_source_1_lot_status_df is not None:\n    sources = dict(sources)\n    _filtered_source_1_lot_status_df = _filtered_source_1_lot_status_df.copy()\n    _filter_col_1_1 = 'HOLD여부' if 'HOLD여부' in _filtered_source_1_lot_status_df.columns else ('HOLD_STAT' if 'HOLD_STAT' in _filtered_source_1_lot_status_df.columns else (''))\n    _filter_values_1_1 = ['OnHold']\n    if _filter_col_1_1:\n        _filtered_source_1_lot_status_df = _filtered_source_1_lot_status_df[_filtered_source_1_lot_status_df[_filter_col_1_1].isin(_filter_values_1_1)]\n    sources['lot_status_df'] = _filtered_source_1_lot_status_df\n\n# Load dataframes (executor provides these)\nlot_status_df = sources[\"lot_status_df\"]\nhold_history_df = sources[\"hold_history_df\"]\n\n# Perform left join to combine lot status with hold history\n# Join on LOT_ID. Conflicting columns (like OPER, OPER_NAME) will be suffixed.\n# _x for lot_status_df, _y for hold_history_df.\njoined_df = pd.merge(\n    lot_status_df,\n    hold_history_df[[\n        \"LOT_ID\", \"HOLD_TM\", \"HOLD_CD\", \"HOLD_DESC\", \"HOLD_USER\", \"OPER\", \"OPER_NAME\"\n    ]],\n    on=\"LOT_ID\",\n    how=\"left\",\n    suffixes=('_x', '_y')\n)\n\n# Convert HOLD_TM to datetime for proper chronological sorting.\n# Use errors='coerce' to handle any unparseable date strings by turning them into NaT (Not a Time).\njoined_df[\"HOLD_TM\"] = pd.to_datetime(joined_df[\"HOLD_TM\"], errors='coerce')\n\n# Sort the joined DataFrame by LOT_ID (ascending) and HOLD_TM (descending).\n# This ensures that for each LOT_ID, the latest hold history record comes first.\nsorted_df = joined_df.sort_values(by=[\"LOT_ID\", \"HOLD_TM\"], ascending=[True, False])\n\n# Drop duplicate LOT_ID entries, keeping only the first one (which is the latest hold history).\nfinal_result_df = sorted_df.drop_duplicates(subset=[\"LOT_ID\"], keep=\"first\")\n\n# Define the columns required in the final output based on the output contract.\n# OPER_NAME from lot_status_df is OPER_NAME_x after the merge.\n# OPER_NAME from hold_history_df is OPER_NAME_y after the merge.\nrequired_columns_contract = [\n    \"LOT_ID\",\n    \"OPER_NAME_x\", # Corresponds to OPER_NAME from lot_status_df\n    \"PROD_QTY\",\n    \"HOLD_STAT\",\n    \"HOLD_TM\",\n    \"HOLD_CD\",\n    \"HOLD_DESC\",\n    \"HOLD_USER\",\n    \"OPER_NAME_y\"\n]\n\n# Select only the columns that exist in the final_result_df to avoid errors.\nexisting_columns = [col for col in required_columns_contract if col in final_result_df.columns]\nresult = final_result_df[existing_columns].copy()\n\n# Rename 'OPER_NAME_x' back to 'OPER_NAME' to match the output contract's expectation for lot_status OPER_NAME.\nif \"OPER_NAME_x\" in result.columns:\n    result.rename(columns={\"OPER_NAME_x\": \"OPER_NAME\"}, inplace=True)\n\n# Apply null_group_policy (preserve_as_blank) for string columns and datetime columns.\n# Apply metric_null_policy (display_zero) for numeric columns.\n\n# Identify column types for policy application.\nstring_cols = result.select_dtypes(include=['object', 'string']).columns\nnumeric_cols = result.select_dtypes(include=['number']).columns\ndatetime_cols = result.select_dtypes(include=['datetime64']).columns\n\n# Fill nulls in string columns with empty strings and replace blank strings with empty strings.\nfor col in string_cols:\n    result[col] = result[col].fillna(\"\").replace(r\"^\\s*$\", \"\", regex=True)\n\n# Fill nulls in numeric columns (like PROD_QTY) with 0.\nfor col in numeric_cols:\n    result[col] = result[col].fillna(0)\n\n# Convert datetime columns to string format and fill NaT with empty strings.\nfor col in datetime_cols:\n    result[col] = result[col].dt.strftime('%Y-%m-%d %H:%M:%S').fillna('')\n\n# Reorder columns according to the output contract, ensuring only existing columns are included.\nfinal_output_columns_order = [\n    \"LOT_ID\",\n    \"OPER_NAME\",\n    \"PROD_QTY\",\n    \"HOLD_STAT\",\n    \"HOLD_TM\",\n    \"HOLD_CD\",\n    \"HOLD_DESC\",\n    \"HOLD_USER\",\n    \"OPER_NAME_y\"\n]\nexisting_final_output_columns = [col for col in final_output_columns_order if col in result.columns]\nresult = result[existing_final_output_columns]",
+        "used_helpers": [],
+        "row_count": 1,
+        "columns": [
+          "LOT_ID",
+          "OPER_NAME",
+          "PROD_QTY",
+          "HOLD_STAT",
+          "HOLD_TM",
+          "HOLD_CD",
+          "HOLD_DESC",
+          "HOLD_USER",
+          "OPER_NAME_y"
+        ],
+        "preview_rows": [
+          {
+            "LOT_ID": "T1234567GEN1",
+            "OPER_NAME": "INPUT",
+            "PROD_QTY": 100,
+            "HOLD_STAT": "OnHold",
+            "HOLD_TM": "2026-07-01 08:00:00",
+            "HOLD_CD": "H001",
+            "HOLD_DESC": "검증용 HOLD 이력",
+            "HOLD_USER": "USER01",
+            "OPER_NAME_y": "INPUT"
+          }
+        ]
+      },
+      "answer": {
+        "prompt_chars": 8137,
+        "message": "### 답변\n현재 HOLD 상태인 LOT은 총 1건이며, LOT ID `T1234567GEN1`이 해당됩니다.\n\n이 LOT은 현재 `INPUT` 공정에 있으며, 생산 수량은 100개입니다. 가장 최근 HOLD 이력은 `2026년 07월 01일 08시 00분`에 `INPUT` 공정에서 `H001` 코드와 함께 `검증용 HOLD 이력`으로 `USER01`에 의해 등록되었습니다.\n\n이 결과는 현재 HOLD 상태(`OnHold`)인 LOT을 기준으로 조회되었습니다.\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| LOT_ID | 공정 | PROD_QTY | HOLD_STAT | HOLD_TM | HOLD_CD | HOLD_DESC | HOLD_USER | OPER_NAME_y |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| T1234567GEN1 | INPUT | 100 | OnHold | 2026-07-01 08:00:00 | H001 | 검증용 HOLD 이력 | USER01 | INPUT |\n\n총 1건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=lot_status, source_alias=lot_status_df, source_type=oracle\n- dataset_key=hold_history, source_alias=hold_history_df, source_type=oracle\n- dataset_key=lot_status, source_alias=lot_status_df, source_type=oracle, row_count=4\n- dataset_key=hold_history, source_alias=hold_history_df, source_type=oracle, row_count=3\n**분석 조건**\n- lot_status_df: HOLD_STAT={\"operator\": \"eq\", \"value\": \"OnHold\"}\n**계산 지표**\n- PROD_QTY\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n- catalog 필수 파라미터 값이 없습니다: LOT_ID\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [
+        {
+          "type": "missing_catalog_required_params",
+          "message": "catalog 필수 파라미터 값이 없습니다: LOT_ID",
+          "dataset_key": "hold_history",
+          "missing_params": [
+            "LOT_ID"
+          ]
+        }
+      ],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    }
+  ],
+  "errors": []
+}

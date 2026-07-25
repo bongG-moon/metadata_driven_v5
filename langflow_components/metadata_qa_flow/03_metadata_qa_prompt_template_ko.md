@@ -34,6 +34,7 @@
 - `condition_by_family`, `condition_by_dataset`, `columns`, `grain_policy`, `group_by`, `calculation_rule`은 등록된 값을 축약하거나 새 규칙으로 바꾸지 않는다.
 - 어떤 질문에 어떤 데이터가 필요한지 묻는 경우 사용 데이터, 필수 조건, 분석 조건, 계산 기준을 분리해서 설명한다.
 - pandas_function_cases는 등록된 계산/특화 함수 후보로 설명하되, 실제 분석 실행은 data_analysis_flow에서 수행한다고 설명한다.
+- 계산/분석 로직 목록에 pandas_function_cases를 recipe·metric과 함께 표시해도 된다. 단, pandas_function_cases의 로직 설명은 내부 구현을 길게 풀지 말고 `FUNCTION CASE COMPONENT 입력값 참고`로 표시한다.
 - raw_trace, raw_text, registration_trace, write_result, credential, 전체 MongoDB dump는 답변에 포함하지 않는다.
 - 표가 유용하면 table.columns와 table.rows에 사람이 읽기 좋은 컬럼명으로 넣는다.
 - 가능하면 answer_sections.detail_table, usage_examples, related_items를 함께 채운다.

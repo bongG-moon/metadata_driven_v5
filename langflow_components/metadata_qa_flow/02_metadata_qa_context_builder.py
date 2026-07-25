@@ -236,6 +236,8 @@ def _infer_answer_mode(question: str) -> str:
         return "dataset_sql"
     if _looks_like_specific_dataset_required_params(lowered):
         return "required_params"
+    if _looks_like_dataset_comparison_question(lowered):
+        return "dataset_detail"
     if _looks_like_specific_dataset_detail(lowered):
         return "dataset_detail"
     if _looks_like_task_dataset_selection(lowered):
@@ -368,6 +370,19 @@ def _has_specific_dataset_reference(lowered: str) -> bool:
     if any(re.search(rf"(?<![0-9a-z_]){re.escape(key)}(?![0-9a-z_])", lowered) for key in known_dataset_keys):
         return True
     return bool(re.search(r"(?<![0-9a-z])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![0-9a-z])", lowered))
+
+
+# 함수 설명: 두 개 이상의 dataset key를 직접 언급한 비교·구분 질문을 상세 비교 경로로 분류합니다.
+def _looks_like_dataset_comparison_question(lowered: str) -> bool:
+    dataset_keys = {
+        match.group(0)
+        for match in re.finditer(
+            r"(?<![0-9a-z_])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![0-9a-z_])",
+            lowered,
+        )
+    }
+    comparison_cues = ("비교", "차이", "구분", "각각", "어떻게 다", "언제 사용", "어떤 경우")
+    return len(dataset_keys) >= 2 and any(cue in lowered for cue in comparison_cues)
 
 
 # 함수 설명: `_looks_like_specific_dataset_required_params()`는 특정 dataset의 필수 파라미터 질문을 전체 카탈로그 질문보다 먼저 식별합니다.
@@ -640,7 +655,17 @@ def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, 
         ranked = _ranked(question + " product token match_product_tokens 제품 토큰", function_items, limit)
         return ranked if ranked else function_items[:limit]
     if answer_mode == "process_group":
-        return _ranked(question + " process_groups 공정", items, limit)
+        process_group_items = [
+            item
+            for item in items
+            if str(item.get("section") or "") == "process_groups"
+        ]
+        if _looks_like_process_group_inventory(question.lower()):
+            return process_group_items[:limit]
+        exact_items = _explicit_named_items(question, process_group_items)
+        if exact_items:
+            return exact_items[:limit]
+        return _ranked(question + " process_groups 공정", process_group_items, limit)
     if answer_mode == "term_definition":
         return _ranked(question + " quantity_terms metric_terms analysis_recipes", items, limit)
     if answer_mode in {"domain_info", "question_to_dataset"}:
@@ -655,6 +680,24 @@ def _looks_like_product_domain_inventory(lowered: str) -> bool:
     group_tokens = ("제품 그룹", "제품그룹", "제품군", "product group")
     inventory_tokens = ("등록", "목록", "뭐가 있", "무엇이 있", "전부", "전체", "관련")
     return any(token in lowered for token in group_tokens) and any(token in lowered for token in inventory_tokens)
+
+
+# 함수 설명: 등록된 공정 그룹 전체 목록·건수를 묻는 질문인지 판정합니다.
+def _looks_like_process_group_inventory(lowered: str) -> bool:
+    inventory_tokens = (
+        "목록",
+        "리스트",
+        "list",
+        "전부",
+        "전체",
+        "뭐가 있",
+        "무엇이 있",
+        "몇 개",
+        "몇개",
+        "개수",
+        "건수",
+    )
+    return "공정 그룹" in lowered and any(token in lowered for token in inventory_tokens)
 
 
 # 함수 설명: `_select_product_aggregation_items()`는 제품 grain 설명에 필요한 제품 키와 관련 recipe만 우선 선택하고 지표가 명시된 경우만 계산 항목을 보강합니다.
@@ -724,13 +767,83 @@ def _select_table_items(question: str, answer_mode: str, items: list[dict[str, A
         return []
     if answer_mode in LIST_ALL_TABLE_MODES:
         return items[: _list_limit(limit, items)]
+    explicit_items = _explicit_dataset_items(question, items)
+    if explicit_items and (
+        answer_mode in {"dataset_sql", "dataset_detail", "required_params"}
+        or len(explicit_items) > 1
+    ):
+        return explicit_items[:limit]
     if answer_mode in {"dataset_sql", "dataset_detail", "required_params", "question_to_dataset"}:
         selected = _ranked(question, items, limit)
-        return selected if selected else items[: min(limit, 5)]
+        return _merge_unique_items(explicit_items, selected if selected else items[: min(limit, 5)])[:limit]
     if answer_mode == "data_analysis_redirect":
         return []
     selected = _ranked(question, items, limit)
-    return selected[: min(limit, 5)]
+    return _merge_unique_items(explicit_items, selected)[: min(limit, 5)]
+
+
+# 함수 설명: 질문에 dataset key나 표시명이 직접 등장한 카탈로그 항목을 빠짐없이 고정합니다.
+def _explicit_dataset_items(question: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _explicit_named_items(question, items, include_dataset_key=True)
+
+
+# 함수 설명: key·display_name·aliases가 질문에 직접 등장한 메타데이터 항목을 원래 순서대로 찾습니다.
+def _explicit_named_items(
+    question: str,
+    items: list[dict[str, Any]],
+    *,
+    include_dataset_key: bool = False,
+) -> list[dict[str, Any]]:
+    matched: list[dict[str, Any]] = []
+    for item in items:
+        payload = _dict(item.get("payload"))
+        alias_value = payload.get("aliases")
+        aliases = alias_value if isinstance(alias_value, list) else []
+        names = [
+            item.get("key"),
+            payload.get("display_name"),
+            item.get("display_name"),
+            *aliases,
+        ]
+        if include_dataset_key:
+            names.insert(0, item.get("dataset_key"))
+        if any(_name_in_question(name, question) for name in names):
+            matched.append(item)
+    return matched
+
+
+# 함수 설명: 짧은 영문 key가 DDP·WBM 같은 더 긴 token 내부에서 잘못 매칭되지 않도록 경계를 확인합니다.
+def _name_in_question(name: Any, question: str) -> bool:
+    text = str(name or "").strip().lower()
+    lowered = str(question or "").lower()
+    if not text or not lowered:
+        return False
+    if text.isascii() and re.fullmatch(r"[a-z0-9_]+", text):
+        return bool(
+            re.search(
+                rf"(?<![0-9a-z_]){re.escape(text)}(?![0-9a-z_])",
+                lowered,
+            )
+        )
+    return text in lowered
+
+
+# 함수 설명: 명시 후보와 점수 후보를 metadata 식별자 기준으로 중복 없이 합칩니다.
+def _merge_unique_items(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for group in groups:
+        for item in group:
+            marker = (
+                str(item.get("section") or ""),
+                str(item.get("dataset_key") or ""),
+                str(item.get("key") or ""),
+            )
+            if marker in seen:
+                continue
+            seen.add(marker)
+            merged.append(item)
+    return merged
 
 
 # 함수 설명: `_select_filter_items()`는 메인 필터 후보를 질문 token과 별칭 일치 기준으로 선택합니다.
@@ -977,6 +1090,7 @@ def _project_table_item(item: dict[str, Any], answer_mode: str) -> dict[str, Any
         "display_name", "dataset_family", "source_type", "required_params", "required_param_mappings",
         "filter_mappings", "standard_column_aliases", "description", "columns", "quantity_column",
         "quantity_columns", "metric_columns", "measure_columns", "value_columns", "column", "aggregation_column",
+        "default_detail_columns",
     }
     projected_payload = _project_dict(payload, payload_keys)
     source_config = _dict(payload.get("source_config"))
@@ -1133,6 +1247,7 @@ def _dataset_detail_row(item: dict[str, Any]) -> dict[str, Any]:
             "db_key": source_config.get("db_key"),
             "required_params": _compact_list(payload.get("required_params")),
             "columns": _compact_list(payload.get("columns")),
+            "default_detail_columns": _compact_list(payload.get("default_detail_columns")),
             "quantity_columns": _quantity_columns(payload),
             "filter_mappings": _compact_list(payload.get("filter_mappings")),
             "description": payload.get("description"),
@@ -1181,6 +1296,11 @@ def _domain_row(item: dict[str, Any], include_section: bool = False) -> dict[str
             "key": item.get("key"),
             "display_name": payload.get("display_name") or item.get("display_name"),
             "aliases": _compact_list(payload.get("aliases")),
+            "processes": _compact_list(
+                payload.get("processes")
+                or payload.get("process_groups")
+                or payload.get("members")
+            ),
             "column": payload.get("column"),
             "aggregation_method": payload.get("aggregation_method"),
             "aggregation": payload.get("aggregation"),

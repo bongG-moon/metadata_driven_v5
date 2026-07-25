@@ -1336,6 +1336,8 @@ def test_intent_prompt_requires_complete_params_per_retrieval_job_without_shared
     assert "`어제 재공과 오늘 생산량`" in prompt_text
     assert "`이날`, `이 일자`, `그날`" in prompt_text
     assert "예약 alias `previous_result`" in prompt_text
+    assert "등록된 canonical 필드·operator·값을 그대로" in prompt_text
+    assert "alias 문자열을 filter 값으로 새로 만들지 않는다" in prompt_text
     assert "shared_required_params" not in prompt_text
 
 
@@ -1667,7 +1669,7 @@ def test_data_analysis_langflow_dummy_path_reaches_api_response():
     response = api_builder.build_api_response(payload)
 
     assert response["status"] == "ok"
-    assert response["message"] == "분석 결과 OPER_NAME=D/A1, wip_sum=363입니다."
+    assert response["message"] == "D/A1 공정의 재공 수량은 363입니다."
     assert response["answer_sections"]["summary"]["headline"] == response["message"]
     assert response["trace"]["inspection"]["answer_grounding"]["unsupported_numeric_claims"] == ["120"]
     assert response["data"]["row_count"] == 1
@@ -2115,6 +2117,102 @@ def test_answer_grounding_accepts_percentage_display_of_authoritative_value():
 
     assert result["answer_message"] == "INPUT 계획 대비 달성률은 75%입니다."
     assert "answer_grounding" not in result["trace"]["inspection"]
+
+
+def test_answer_grounding_interprets_ranked_result_without_raw_key_value_listing():
+    answer_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py"
+    )
+    payload = {
+        "request": {
+            "question": "7월 1일 DA공정에서 재공이 가장 많은 제품 10개와 해당 제품에 할당된 장비를 같이 보여줘."
+        },
+        "intent_plan": {
+            "output_contract": {
+                "top_n": 10,
+                "metric_columns": ["WIP"],
+            },
+            "resolved_grain_plan": {
+                "grain_columns": ["TECH", "DENSITY", "MODE", "PKG1", "PKG2", "LEAD", "MCP_NO"],
+                "strict": True,
+            },
+        },
+        "analysis": {"status": "ok"},
+        "data": {
+            "columns": [
+                "TECH",
+                "DENSITY",
+                "MODE",
+                "PKG1",
+                "PKG2",
+                "LEAD",
+                "MCP_NO",
+                "WIP",
+                "EQUIP_ID",
+            ],
+            "rows": [
+                {
+                    "TECH": "1B",
+                    "DENSITY": "32G",
+                    "MODE": "LPDDR5X",
+                    "PKG1": "UFBGA",
+                    "PKG2": "MOBILE",
+                    "LEAD": "180",
+                    "MCP_NO": "",
+                    "WIP": 1200,
+                    "EQUIP_ID": ["DA-EQP-01", "DA-EQP-02"],
+                },
+                {
+                    "TECH": "DA",
+                    "DENSITY": "16G",
+                    "MODE": "GDDR6",
+                    "PKG1": "FBGA",
+                    "PKG2": "GRAPHICS",
+                    "LEAD": "180",
+                    "MCP_NO": "",
+                    "WIP": 800,
+                    "EQUIP_ID": ["DA-EQP-03"],
+                },
+                {
+                    "TECH": "1Z",
+                    "DENSITY": "16G",
+                    "MODE": "LPDDR5",
+                    "PKG1": "LFBGA",
+                    "PKG2": "POP",
+                    "LEAD": "200",
+                    "MCP_NO": "M-001",
+                    "WIP": 600,
+                    "EQUIP_ID": [],
+                },
+                {
+                    "TECH": "SP",
+                    "DENSITY": "16G",
+                    "MODE": "DDR5",
+                    "PKG1": "FCBGA",
+                    "PKG2": "SDP",
+                    "LEAD": "78",
+                    "MCP_NO": "",
+                    "WIP": 400,
+                    "EQUIP_ID": ["DA-EQP-04"],
+                },
+            ],
+            "row_count": 4,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = answer_builder.build_answer_response(
+        payload,
+        "재공이 가장 많은 제품의 재공 수량은 9,999이며 장비는 3대입니다.",
+    )
+
+    message = result["answer_message"]
+    assert "상위 10개를 요청했으며, 조건에 맞는 결과는 4건" in message
+    assert "1B 32G LPDDR5X UFBGA MOBILE 180" in message
+    assert "재공 수량은 1,200" in message
+    assert "할당된 장비" not in message
+    assert "TECH=" not in message
+    assert result["trace"]["inspection"]["answer_grounding"]["unsupported_numeric_claims"] == ["9,999", "3"]
 
 
 def test_intent_normalizer_parses_langflow_message_text_with_nested_json():
@@ -4605,6 +4703,115 @@ def test_metadata_candidates_mark_non_runtime_pandas_function_cases():
     assert result["metadata_load"]["counts"] == {"domain_items": 3, "table_catalog_items": 0, "main_flow_filters": 0}
 
 
+def test_metadata_candidates_normalize_slash_process_alias_with_korean_suffix():
+    builder = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "01d_metadata_candidates_builder.py"
+    )
+    question = "오늘 W/B공정에서 생산량이 가장 많은 3개 제품 알려줘"
+    tokens = builder._tokens(question)
+
+    assert "wb" in tokens
+    assert "wb공정" in tokens
+
+    result = builder.build_metadata_candidates(
+        {"request": {"question": question}},
+        {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "WB",
+                    "status": "active",
+                    "payload": {
+                        "display_name": "W/B",
+                        "aliases": [
+                            "WB",
+                            "W/B",
+                            "WB공정",
+                            "W/B공정",
+                            "WB 공정",
+                            "W/B 공정",
+                        ],
+                        "processes": ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"],
+                    },
+                }
+            ]
+        },
+        {"table_catalog_items": []},
+        {"main_flow_filters": []},
+    )
+
+    selected_keys = {
+        item["key"]
+        for item in result["metadata_candidates"]["domain_items"]
+    }
+    assert "WB" in selected_keys
+
+
+def test_metadata_candidates_prioritize_exact_alias_with_canonical_condition():
+    builder = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "01d_metadata_candidates_builder.py"
+    )
+    question = "오늘 A조에서 DA공정 생산량이 가장 많은 제품 3개를 알려줘"
+    domain_items = [
+        {
+            "section": "status_terms",
+            "key": "SHIFT_A",
+            "payload": {
+                "display_name": "Shift A조",
+                "aliases": ["A조", "1조", "07:00~15:00"],
+                "condition": {"SHIFT": "1"},
+            },
+        },
+        {
+            "section": "process_groups",
+            "key": "DA",
+            "payload": {
+                "display_name": "DA",
+                "aliases": ["DA", "D/A", "DA공정"],
+                "processes": ["D/A1", "D/A2"],
+            },
+        },
+        {
+            "section": "quantity_terms",
+            "key": "production_quantity",
+            "payload": {"display_name": "생산량", "aliases": ["생산량", "실적"]},
+        },
+        {
+            "section": "analysis_recipes",
+            "key": "product_ranking",
+            "payload": {"display_name": "제품 생산량 순위", "aliases": ["제품", "상위"]},
+        },
+        {
+            "section": "product_terms",
+            "key": "UNRELATED_PRODUCT_GROUP",
+            "payload": {
+                "display_name": "일반 제품 그룹",
+                "aliases": ["제품", "product"],
+                "condition": {"MODE": "UNRELATED"},
+            },
+        },
+    ]
+
+    result = builder.build_metadata_candidates(
+        {"request": {"question": question}},
+        {"domain_items": domain_items},
+        {"table_catalog_items": []},
+        {"main_flow_filters": []},
+        max_domain_items=2,
+    )
+
+    selected = result["metadata_candidates"]["domain_items"]
+    assert {item["key"] for item in selected} == {"SHIFT_A", "DA"}
+    shift_item = next(item for item in selected if item["key"] == "SHIFT_A")
+    assert shift_item["payload"]["condition"] == {"SHIFT": "1"}
+
+
 def test_data_analysis_mongodb_result_store_and_loader_round_trip(monkeypatch):
     mongo_store = install_fake_pymongo(monkeypatch)
     set_shared_v4_mongo_env(monkeypatch)
@@ -6937,6 +7144,51 @@ def test_metadata_qa_product_aggregation_explains_keys_and_grain_without_llm():
     assert any(row.get("집계 grain") == "question_or_product_grain" for row in answer["data"]["rows"])
 
 
+def test_metadata_qa_function_case_uses_component_input_reference_in_logic_list():
+    context_builder = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py"
+    )
+    domain_items = {
+        "domain_items": [
+            {
+                "section": "pandas_function_cases",
+                "key": "product_token_match",
+                "payload": {
+                    "display_name": "제품 속성 token 매칭",
+                    "function_name": "match_product_tokens",
+                    "description": "길고 복잡한 내부 helper 처리 로직",
+                },
+            },
+            {
+                "section": "analysis_recipes",
+                "key": "production_achievement_rate_analysis",
+                "payload": {
+                    "display_name": "생산 달성률 분석",
+                    "description": "실적과 계획을 집계한 뒤 달성률을 계산합니다.",
+                },
+            },
+        ]
+    }
+    payload = {
+        "request": {"question": "등록된 pandas function case와 계산 로직 목록을 보여줘"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    context_payload = context_builder.build_metadata_qa_context(payload, domain_items, {}, {})
+    answer = normalizer.normalize_metadata_qa_response(context_payload, "")
+    rows_by_key = {row["메타데이터 키"]: row for row in answer["data"]["rows"]}
+
+    assert context_payload["metadata_route"]["answer_mode"] == "calculation_logic_list"
+    assert rows_by_key["product_token_match"]["설명"] == "FUNCTION CASE COMPONENT 입력값 참고"
+    assert (
+        rows_by_key["production_achievement_rate_analysis"]["설명"]
+        == "실적과 계획을 집계한 뒤 달성률을 계산합니다."
+    )
+
+
 def test_metadata_qa_product_value_question_still_redirects_to_data_analysis():
     context_builder = load_module(
         ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
@@ -7127,6 +7379,128 @@ def test_metadata_qa_sections_support_process_group_and_data_redirect():
     assert redirect_answer["answer_type"] == "data_analysis_redirect"
     assert redirect_answer["answer_sections"]["route_hint"]["target_route"] == "data_analysis"
     assert "### 권장 실행 경로" in redirect_message
+
+
+def test_metadata_qa_process_group_inventory_and_detail_are_section_scoped():
+    context_builder = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py"
+    )
+    domain_items = {
+        "domain_items": [
+            {
+                "section": "analysis_recipes",
+                "key": "group_by_oper_name",
+                "payload": {"display_name": "세부 공정별 집계", "aliases": ["세부 공정"]},
+            },
+            {
+                "section": "process_groups",
+                "key": "BG",
+                "payload": {
+                    "display_name": "BG",
+                    "aliases": ["BG", "B/G"],
+                    "processes": ["B/G1", "B/G2"],
+                },
+            },
+            {
+                "section": "process_groups",
+                "key": "DP",
+                "payload": {
+                    "display_name": "DP",
+                    "aliases": ["DP", "D/P"],
+                    "processes": ["D/P1", "D/P2"],
+                },
+            },
+        ]
+    }
+
+    inventory = context_builder.build_metadata_qa_context(
+        {"request": {"question": "현재 등록된 공정 그룹 도메인 목록을 알려줘"}},
+        domain_items,
+        {},
+        {},
+    )
+    inventory_rows = inventory["metadata_qa_context"]["candidate_rows"]
+    assert {row["key"] for row in inventory_rows} == {"BG", "DP"}
+    assert {row["section"] for row in inventory_rows} == {"process_groups"}
+    assert {row["processes"] for row in inventory_rows} == {"B/G1, B/G2", "D/P1, D/P2"}
+
+    detail = context_builder.build_metadata_qa_context(
+        {"request": {"question": "BG 공정 그룹에는 어떤 세부 공정이 포함돼?"}},
+        domain_items,
+        {},
+        {},
+    )
+    detail_rows = detail["metadata_qa_context"]["candidate_rows"]
+    assert [row["key"] for row in detail_rows] == ["BG"]
+    assert detail_rows[0]["processes"] == "B/G1, B/G2"
+
+    answer = normalizer.normalize_metadata_qa_response(detail, "")
+    assert answer["answer_message"] == "BG 공정 그룹에 포함된 세부 공정은 B/G1, B/G2입니다."
+
+
+def test_metadata_qa_dataset_comparison_pins_all_named_datasets_and_default_columns():
+    context_builder = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py"
+    )
+    tables = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {
+                    "display_name": "Equipment Assign현황",
+                    "description": "설비별 배정 및 작업 장비 목록",
+                    "default_detail_columns": ["EQUIP_ID"],
+                },
+            },
+            {
+                "dataset_key": "lot_status",
+                "payload": {
+                    "display_name": "LOT Status",
+                    "description": "LOT 단위 상태·수량·TAT",
+                    "default_detail_columns": ["LOT_ID", "OPER_NAME", "PROD_QTY"],
+                },
+            },
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {
+                    "display_name": "Equipment UPH",
+                    "description": "장비 모델·Recipe·공정별 UPH",
+                    "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                },
+            },
+        ]
+    }
+
+    comparison = context_builder.build_metadata_qa_context(
+        {"request": {"question": "장비 목록 질문에서 equipment_assign과 lot_status는 어떻게 구분해?"}},
+        {},
+        tables,
+        {},
+    )
+    rows = comparison["metadata_qa_context"]["candidate_rows"]
+    assert comparison["metadata_route"]["answer_mode"] == "dataset_detail"
+    assert [row["key"] for row in rows] == ["equipment_assign", "lot_status"]
+    assert rows[0]["default_detail_columns"] == "EQUIP_ID"
+    assert rows[1]["default_detail_columns"] == "LOT_ID, OPER_NAME, PROD_QTY"
+
+    comparison_answer = normalizer.normalize_metadata_qa_response(comparison, "")
+    assert "비교해 정리했습니다" in comparison_answer["answer_message"]
+
+    uph_detail = context_builder.build_metadata_qa_context(
+        {"request": {"question": "eqp_uph 데이터셋에서 기본으로 보여주는 컬럼을 알려줘"}},
+        {},
+        tables,
+        {},
+    )
+    uph_rows = uph_detail["metadata_qa_context"]["candidate_rows"]
+    assert [row["key"] for row in uph_rows] == ["eqp_uph"]
+    assert uph_rows[0]["default_detail_columns"] == "EQUIP_MODEL, RECIPE_ID, OPER_NAME"
 
 
 def test_metadata_qa_available_sources_keeps_complete_context_table():
@@ -10627,6 +11001,19 @@ def test_v5_metadata_candidates_select_product_key_metadata_for_korean_product_q
         and item.get("key") == "standard_product_keys"
         for item in selected
     )
+
+
+def test_v5_specialized_prompt_requires_standard_product_keys_for_product_grain():
+    specialized_prompt = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "specialized_prompt_input_example_ko.md"
+    ).read_text(encoding="utf-8")
+
+    assert "key=standard_product_keys" in specialized_prompt
+    assert "`metadata_refs`와 `intent_plan.grain_plan.metadata_ref`에 기록" in specialized_prompt
+    assert "제품 키 컬럼을 추측하거나 DEVICE를 대신 사용하지 말고 clarification" in specialized_prompt
 
 
 def test_v5_intent_normalizer_resolves_metadata_driven_grain_and_join_without_device():

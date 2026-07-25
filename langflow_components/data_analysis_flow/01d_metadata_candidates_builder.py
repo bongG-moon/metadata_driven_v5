@@ -44,6 +44,16 @@ STRUCTURED_SEARCH_KEYS = {
     "required_params",
     "semantic_role",
 }
+CANONICAL_MAPPING_KEYS = {
+    "condition",
+    "conditions",
+    "condition_by_family",
+    "condition_by_dataset",
+    "filters",
+    "processes",
+    "process_groups",
+    "members",
+}
 DEPRECATED_TABLE_CATALOG_KEYS = {"row_identity_columns", "context_columns"}
 KOREAN_SUFFIXES = (
     "으로부터",
@@ -119,6 +129,19 @@ GENERIC_SEMANTIC_TOKENS = {
     "재공",
     "계획",
     "목표",
+}
+GENERIC_CANONICAL_ALIAS_TOKENS = GENERIC_SEMANTIC_TOKENS | {
+    "product",
+    "production",
+    "output",
+    "wip",
+    "equipment",
+    "equip",
+    "eqp",
+    "model",
+    "target",
+    "plan",
+    "input",
 }
 RUNTIME_FUNCTION_HELPERS = [
     {
@@ -336,8 +359,27 @@ def _select_candidates(
     }
 
     selected_domain: list[dict[str, Any]] = []
+    selected_domain_ids: set[str] = set()
     non_runtime_function_cases = 0
+    # canonical condition/process mapping과 직접 alias가 함께 일치한 후보를 먼저 보존합니다.
+    # 이후 일반 점수 후보로 남은 자리를 채우므로 max_domain_items를 늘리지 않아도 실행 조건이 유실되지 않습니다.
+    for _, _, _, _, item in ranked["domain_items"]:
+        if _canonical_alias_match_count(item, tokens) < 1:
+            continue
+        identity = _stable_identity(item)
+        if identity in selected_domain_ids:
+            continue
+        selected_domain.append(item)
+        selected_domain_ids.add(identity)
+        if len(selected_domain) >= max_domain_items:
+            break
+
     for score, strong_hits, _, _, item in ranked["domain_items"]:
+        if len(selected_domain) >= max_domain_items:
+            break
+        identity = _stable_identity(item)
+        if identity in selected_domain_ids:
+            continue
         if strong_hits < 1 or score < DOMAIN_MIN_SCORE:
             continue
         if _is_non_runtime_function_case(item):
@@ -345,6 +387,7 @@ def _select_candidates(
                 continue
             non_runtime_function_cases += 1
         selected_domain.append(item)
+        selected_domain_ids.add(identity)
         if len(selected_domain) >= max_domain_items:
             break
 
@@ -414,8 +457,12 @@ def _score_details(item: dict[str, Any], tokens: list[str]) -> tuple[int, int]:
     ).lower()
     structured = " ".join(_structured_search_values(item)).lower()
     body = json.dumps(item, ensure_ascii=False, default=str).lower()
-    score = 0
-    strong_hits = 0
+    # condition/processes처럼 실행 가능한 canonical mapping이 등록된 항목은 alias가 질문에
+    # 직접 등장했을 때 일반 본문 keyword보다 우선합니다. A조·B조뿐 아니라 상태/제품/공정
+    # 도메인 모두 같은 정책을 사용하며 특정 현업 표현을 코드에 하드코딩하지 않습니다.
+    canonical_alias_hits = _canonical_alias_match_count(item, tokens)
+    score = canonical_alias_hits * 24
+    strong_hits = canonical_alias_hits
     for token in tokens:
         if _contains_token(technical_identity, token):
             score += 12
@@ -435,6 +482,34 @@ def _score_details(item: dict[str, Any], tokens: list[str]) -> tuple[int, int]:
         elif _contains_token(body, token):
             score += 1
     return score, strong_hits
+
+
+# 함수 설명: 등록 alias와 질문 token이 일치하고 canonical 실행 mapping이 있는 도메인인지 판정합니다.
+def _canonical_alias_match_count(item: dict[str, Any], tokens: list[str]) -> int:
+    payload = _dict(item.get("payload"))
+    if not any(payload.get(key) not in (None, "", [], {}) for key in CANONICAL_MAPPING_KEYS):
+        return 0
+
+    aliases = _list(payload.get("aliases"))
+    aliases.extend(
+        value
+        for value in (
+            payload.get("display_name"),
+            item.get("display_name"),
+            item.get("key"),
+        )
+        if value not in (None, "")
+    )
+    alias_tokens: set[str] = set()
+    for alias in aliases:
+        alias_tokens.update(_tokens(str(alias)))
+    question_tokens = {
+        token
+        for token in tokens
+        if token and token not in GENERIC_CANONICAL_ALIAS_TOKENS
+    }
+    canonical_alias_tokens = alias_tokens.difference(GENERIC_CANONICAL_ALIAS_TOKENS)
+    return len(canonical_alias_tokens.intersection(question_tokens))
 
 
 # 함수 설명: `_fit_bytes()`는 bytes이 허용된 개수·길이·바이트 제한을 넘지 않도록 안전하게 줄입니다.
@@ -665,15 +740,18 @@ def _tokens(value: str) -> list[str]:
     return result[:60]
 
 
-# 함수 설명: `_separator_normalized_tokens()`는 slash 등 label 내부 구분자를 제거한 값과 숫자 차수 전 stem을 후보 token으로 만듭니다.
+# 함수 설명: `_separator_normalized_tokens()`는 slash 등 label 내부 구분자를 제거한 값과 한국어 조사·공정 표현을 제거한 stem을 후보 token으로 만듭니다.
 def _separator_normalized_tokens(value: str) -> list[str]:
     result: list[str] = []
     for raw_token in re.findall(r"[0-9A-Za-z가-힣]+(?:[/\\][0-9A-Za-z가-힣]+)+", str(value or "").lower()):
         normalized = re.sub(r"[/\\]+", "", raw_token)
         stem = re.sub(r"\d+$", "", normalized)
-        for token in (normalized, stem):
-            if len(token) >= 2 and token not in result:
-                result.append(token)
+        # W/B공정에서처럼 구분자 뒤에 한국어가 이어지는 표현도 WB, WB공정 token으로 확장한다.
+        # 공정 그룹별 예외를 만들지 않고 slash/backslash가 포함된 모든 영숫자 label에 같은 규칙을 적용한다.
+        for candidate in (normalized, stem):
+            for token in _token_variants(candidate):
+                if len(token) >= 2 and token not in result:
+                    result.append(token)
     return result
 
 
@@ -741,20 +819,25 @@ def _looks_like_mcp_token(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z]-\d{3}[A-Za-z0-9]*", str(value or "").strip()))
 
 
-# 함수 설명: `_token_variants()`는 질문 token의 구분자 제거·영숫자 결합 등 비교용 표기 변형을 만듭니다.
+# 함수 설명: `_token_variants()`는 질문 token의 한국어 조사·접미 표현을 단계적으로 제거해 등록 alias와 비교할 변형을 만듭니다.
 def _token_variants(token: str) -> list[str]:
     variants = [token]
     ascii_with_korean_suffix = re.fullmatch(r"([a-z0-9_]+)[가-힣]+", token)
     if ascii_with_korean_suffix:
         variants.append(ascii_with_korean_suffix.group(1))
-    for suffix in KOREAN_SUFFIXES:
-        if token.endswith(suffix):
-            stem = token[: -len(suffix)]
-            if len(stem) >= 2:
-                if re.fullmatch(r"[가-힣]+", token):
-                    variants = [stem]
-                else:
-                    variants.append(stem)
+    current = token
+    while True:
+        matched = False
+        for suffix in KOREAN_SUFFIXES:
+            if not current.endswith(suffix):
+                continue
+            stem = current[: -len(suffix)]
+            if len(stem) >= 2 and stem not in variants:
+                variants.append(stem)
+                current = stem
+                matched = True
+            break
+        if not matched:
             break
     expanded = list(variants)
     for value in variants:

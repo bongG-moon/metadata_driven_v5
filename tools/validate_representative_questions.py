@@ -993,9 +993,36 @@ def load_module(path: Path) -> Any:
 
 
 def load_metadata_context(modules: dict[str, Any]) -> dict[str, Any]:
-    domain = modules["domain_loader"].load_domain_metadata(limit=os.getenv("VALIDATION_METADATA_LIMIT", "1000"))
-    table = modules["table_loader"].load_table_catalog_metadata(limit=os.getenv("VALIDATION_METADATA_LIMIT", "1000"))
-    main = modules["main_loader"].load_main_variable_metadata(limit=os.getenv("VALIDATION_METADATA_LIMIT", "1000"))
+    mongo_uri = os.getenv("MONGODB_URI", "").strip()
+    mongo_database = os.getenv("MONGODB_DATABASE", "datagov").strip() or "datagov"
+    metadata_limit = os.getenv("VALIDATION_METADATA_LIMIT", "1000").strip() or "1000"
+    domain = modules["domain_loader"].load_domain_metadata(
+        mongo_uri=mongo_uri,
+        mongo_database=mongo_database,
+        collection_name=os.getenv("MONGODB_DOMAIN_COLLECTION", "agent_v4_domain_items").strip()
+        or "agent_v4_domain_items",
+        limit=metadata_limit,
+    )
+    table = modules["table_loader"].load_table_catalog_metadata(
+        mongo_uri=mongo_uri,
+        mongo_database=mongo_database,
+        collection_name=os.getenv(
+            "MONGODB_TABLE_CATALOG_COLLECTION",
+            "agent_v4_table_catalog_items",
+        ).strip()
+        or "agent_v4_table_catalog_items",
+        limit=metadata_limit,
+    )
+    main = modules["main_loader"].load_main_variable_metadata(
+        mongo_uri=mongo_uri,
+        mongo_database=mongo_database,
+        collection_name=os.getenv(
+            "MONGODB_MAIN_FLOW_FILTER_COLLECTION",
+            "agent_v4_main_flow_filters",
+        ).strip()
+        or "agent_v4_main_flow_filters",
+        limit=metadata_limit,
+    )
     loads = [item.get("metadata_load", {}) for item in (domain, table, main) if isinstance(item, dict)]
     errors = [error for load in loads for error in load.get("errors", []) if isinstance(error, dict)]
     if errors:
@@ -1083,7 +1110,18 @@ def call_llm(prompt: str, config: dict[str, Any]) -> str:
         with urllib.request.urlopen(request, timeout=config["timeout"]) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"LLM request failed with HTTP {exc.code}") from exc
+        detail = ""
+        try:
+            error_payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+            detail = str(
+                error_payload.get("error", {}).get("message")
+                if isinstance(error_payload, dict)
+                else ""
+            ).strip()
+        except Exception:
+            detail = ""
+        suffix = f": {detail[:500]}" if detail else ""
+        raise RuntimeError(f"LLM request failed with HTTP {exc.code}{suffix}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"LLM request failed: {exc.reason}") from exc
     parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])

@@ -83,7 +83,7 @@ def _ground_answer_message(payload: dict[str, Any], message: str) -> tuple[str, 
     if not unsupported:
         return message, {}
 
-    grounded_message = _authoritative_result_message(data)
+    grounded_message = _authoritative_result_message(payload)
     if not grounded_message:
         return message, {}
     return grounded_message, {
@@ -169,24 +169,181 @@ def _numeric_claims(text: str) -> list[tuple[str, float]]:
     return claims
 
 
-# 함수 설명: `_authoritative_result_message()`는 실제 data.rows만 이용해 수치 모순이 없는 짧은 대체 문장을 만듭니다.
-def _authoritative_result_message(data: dict[str, Any]) -> str:
+# 함수 설명: `_authoritative_result_message()`는 실제 data.rows와 사용자 질문만 이용해 수치 모순이 없는 질문 맞춤형 교정 문장을 만듭니다.
+def _authoritative_result_message(payload: dict[str, Any]) -> str:
+    data = _dict(payload.get("data"))
     rows = [row for row in _list(data.get("rows")) if isinstance(row, dict)]
     if not rows:
         return ""
     columns = _string_list(data.get("columns")) or _columns_from_rows(rows)
     first_row = rows[0]
+    row_count = _int(data.get("row_count"), len(rows))
+    question = str(_dict(payload.get("request")).get("question") or "").strip()
+    metric_column = _primary_metric_column(payload, columns, rows, question)
+    subject = _result_subject(payload, first_row, columns, metric_column)
+
+    if metric_column and metric_column in first_row:
+        metric_label = _metric_label(metric_column)
+        metric_value = _display_value(first_row.get(metric_column))
+        metric_sentence = (
+            f"{subject}의 {metric_label}은 {metric_value}입니다."
+            if subject
+            else f"{metric_label}은 {metric_value}입니다."
+        )
+        if _is_ranking_question(question):
+            requested_count = _requested_result_count(payload)
+            rank_label = "하위" if _is_lowest_ranking(question) else "상위"
+            if requested_count and row_count < requested_count:
+                intro = f"{rank_label} {requested_count}개를 요청했으며, 조건에 맞는 결과는 {row_count:,}건입니다."
+            else:
+                intro = f"조건에 맞는 순위 결과는 총 {row_count:,}건입니다."
+            direction = "가장 적은" if _is_lowest_ranking(question) else "가장 많은"
+            metric_sentence = (
+                f"이 중 {metric_label}이 {direction} 대상은 {subject}이며, "
+                f"{metric_label}은 {metric_value}입니다."
+                if subject
+                else f"이 중 {metric_label}이 {direction} 첫 결과는 {metric_value}입니다."
+            )
+            details = [intro, metric_sentence]
+            details.append("나머지 대상별 상세 결과는 아래 결과 표에서 확인할 수 있습니다.")
+            return "\n\n".join(details)
+
+        details = [metric_sentence]
+        if row_count > 1:
+            details.append(f"전체 결과는 총 {row_count:,}건이며, 상세 값은 아래 결과 표에서 확인할 수 있습니다.")
+        return "\n\n".join(details)
+
     facts = []
     for column in columns[:6]:
         if column not in first_row:
             continue
         value = _display_value(first_row.get(column))
         facts.append(f"{column}={value}")
-    row_count = _int(data.get("row_count"), len(rows))
     if row_count <= 1:
         return f"분석 결과 {', '.join(facts)}입니다." if facts else "분석 결과 1건입니다."
     prefix = f"분석 결과 총 {row_count:,}건입니다."
     return f"{prefix} 첫 번째 결과는 {', '.join(facts)}입니다." if facts else prefix
+
+
+# 함수 설명: 결과 계약과 질문 표현을 함께 사용해 답변의 대표 지표 컬럼을 선택합니다.
+def _primary_metric_column(
+    payload: dict[str, Any],
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    question: str,
+) -> str:
+    output_contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
+    explicit = _string_list(output_contract.get("metric_columns"))
+    for column in explicit:
+        if column in columns:
+            return column
+
+    lowered = question.lower()
+    preferred_tokens = []
+    if "재공" in lowered or "wip" in lowered:
+        preferred_tokens.extend(("WIP", "BOH", "EOH"))
+    if "생산" in lowered or "실적" in lowered or "production" in lowered:
+        preferred_tokens.extend(("PRODUCTION", "OUTPUT"))
+    if "uph" in lowered:
+        preferred_tokens.append("UPH")
+    if "달성" in lowered or "비율" in lowered or "rate" in lowered:
+        preferred_tokens.extend(("RATE", "RATIO", "달성률"))
+    preferred_tokens.extend(("WIP", "PRODUCTION", "QTY", "COUNT", "UPH", "RATE", "RATIO", "PLAN", "실적", "수량"))
+
+    for token in preferred_tokens:
+        token_upper = token.upper()
+        for column in columns:
+            if token_upper in column.upper() and _column_has_numeric_value(rows, column):
+                return column
+    return ""
+
+
+# 함수 설명: metadata grain 또는 첫 dimension 값을 key=value 나열 대신 사람이 읽을 대표 대상 표현으로 묶습니다.
+def _result_subject(
+    payload: dict[str, Any],
+    row: dict[str, Any],
+    columns: list[str],
+    metric_column: str,
+) -> str:
+    intent_plan = _dict(payload.get("intent_plan"))
+    resolved_grain = _dict(intent_plan.get("resolved_grain_plan"))
+    output_contract = _dict(intent_plan.get("output_contract"))
+    grain_columns = (
+        _string_list(resolved_grain.get("grain_columns"))
+        or _string_list(output_contract.get("grain_columns"))
+    )
+    values: list[str] = []
+    for column in grain_columns:
+        if column not in columns:
+            continue
+        value = str(row.get(column) or "").strip()
+        if value and value not in values:
+            values.append(value)
+    if values:
+        return " ".join(values)
+
+    dimension_columns = [
+        column
+        for column in columns
+        if column != metric_column and not _column_has_numeric_value([row], column)
+    ]
+    if not dimension_columns:
+        return ""
+    column = dimension_columns[0]
+    value = str(row.get(column) or "").strip()
+    if not value:
+        return ""
+    suffix = {
+        "OPER_NAME": "공정",
+        "OPER_NM": "공정",
+        "DEVICE": "제품",
+        "LOT_ID": "LOT",
+        "EQUIP_ID": "장비",
+        "EQP_ID": "장비",
+    }.get(column, "")
+    return f"{value} {suffix}".strip()
+
+
+# 함수 설명: 질문이 상위·하위 또는 최댓값·최솟값 순위 요청인지 판정합니다.
+def _is_ranking_question(question: str) -> bool:
+    lowered = str(question or "").lower()
+    return any(token in lowered for token in ("상위", "하위", "가장 많", "가장 적", "top", "bottom"))
+
+
+# 함수 설명: 순위 질문이 오름차순 최솟값 방향인지 판정합니다.
+def _is_lowest_ranking(question: str) -> bool:
+    lowered = str(question or "").lower()
+    return any(token in lowered for token in ("하위", "가장 적", "bottom"))
+
+
+# 함수 설명: intent output contract 또는 질문에서 요청한 순위 건수를 추출합니다.
+def _requested_result_count(payload: dict[str, Any]) -> int:
+    output_contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
+    for key in ("top_n", "bottom_n", "limit"):
+        count = _int(output_contract.get(key), 0)
+        if count > 0:
+            return count
+    question = str(_dict(payload.get("request")).get("question") or "")
+    match = re.search(r"(\d+)\s*개", question)
+    return _int(match.group(1), 0) if match else 0
+
+
+# 함수 설명: 내부 지표 컬럼명을 답변에 사용할 자연어 지표명으로 변환합니다.
+def _metric_label(column: str) -> str:
+    upper = str(column or "").upper()
+    if "WIP" in upper:
+        return "재공 수량"
+    if "PRODUCTION" in upper or "OUTPUT" in upper:
+        return "생산량"
+    if "UPH" in upper:
+        return "UPH"
+    if "RATE" in upper or "RATIO" in upper or "달성률" in column:
+        return "달성률"
+    if "COUNT" in upper:
+        return "건수"
+    if "QTY" in upper or "수량" in column:
+        return "수량"
+    return str(column)
 
 
 # 함수 설명: `_dedupe_numbers()`는 부동소수 비교 오차를 고려해 숫자 목록의 중복을 제거합니다.

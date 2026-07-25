@@ -26,7 +26,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "ea7494f467a14022f1c3693762d30fd2d7e432666d983387735a4b8c47e31c51",
+  "single_file_ui_import_sha256": "fcc9e08825179f05174037c326c1ca02b77c0acb77042d1fa9a397a6060279f7",
   "flows": [
     {
       "order": 1,
@@ -35,7 +35,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 45,
       "edges": 70,
-      "sha256": "0c245b5d7b5beaa8dd8dd45036249b1167fe8a621bacf610936494ebca9f9401"
+      "sha256": "8b21de68ff8459dd96b25fde3071e437bc9a42839c8bfed10f77e03f4a7e5751"
     },
     {
       "order": 2,
@@ -71,7 +71,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
       "nodes": 13,
       "edges": 19,
-      "sha256": "dd70dbcb52f05dc202ef54d9e4e41ba182706fac59f33df3566153b31e3bc4dc"
+      "sha256": "7ea63e3f64a4586a219f68bfb712e3512926239f1ee97d34da710c9f064dfaa6"
     },
     {
       "order": 6,
@@ -80,7 +80,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-api-router",
       "nodes": 22,
       "edges": 21,
-      "sha256": "646a3664aea01843039d5b3e8149e86d1334cf0ee010cc37dd6471442b3f92d4"
+      "sha256": "d299aa06f92c0886e61d7891d851683d2cba0b35af439391b36d13151d34eed0"
     },
     {
       "order": 7,
@@ -133,7 +133,7 @@
     "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools"
   },
   "validation": {
-    "pytest": "390 passed",
+    "pytest": "413 passed",
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 120/120 custom nodes to 83 real Python sources; 0 missing",
     "korean_component_documentation": "84/84 Python sources and 1533/1533 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7020/7020 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",

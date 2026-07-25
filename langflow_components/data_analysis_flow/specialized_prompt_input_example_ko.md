@@ -1,4 +1,8 @@
 제품 속성 token 질문은 일반 제품군 조건이나 단순 pandas filter로 과도하게 분해하지 말고 pandas_function_cases의 product_token_match 케이스를 우선 검토한다.
+사용자가 `제품별`, `제품 기준`, `상위 N개 제품`, `하위 N개 제품`, `가장 많은 제품`, `가장 적은 제품`처럼 제품 단위 집계나 순위를 요청하면 후보 Domain에서 `section=product_key_columns`, `key=standard_product_keys` 항목을 필수로 선택한다.
+선택한 `standard_product_keys`는 `metadata_refs`와 `intent_plan.grain_plan.metadata_ref`에 기록하고, 실제 제품 집계 컬럼은 해당 metadata의 columns와 table catalog mapping으로 해석한다.
+`analysis_recipes:product_grain_and_join_policy`는 제품 집계·결합 정책을 보완할 수 있지만 제품 단위 집계의 `standard_product_keys` 참조를 대신하지 않는다.
+후보 Domain에 `standard_product_keys`가 없으면 제품 키 컬럼을 추측하거나 DEVICE를 대신 사용하지 말고 clarification으로 보낸다.
 제품 속성 token은 여러 단어 묶음뿐 아니라 단일 token도 포함한다.
 예: "RG 32G DDR4 FBGA 96 DDP", "SP 16G DDR5 2ND X4 78 FCBGA SDP", "DA 16G GDDR6 180".
 영문 1자리-숫자 3자리(+선택 영숫자) 패턴의 token은 값이 무엇이든 제품 식별 token이다.

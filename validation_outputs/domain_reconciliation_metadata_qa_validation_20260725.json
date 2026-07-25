@@ -1,0 +1,1615 @@
+{
+  "status": "ok",
+  "validation_kind": "metadata_qa_live_flow_equivalent",
+  "flow_sequence": [
+    "00_metadata_qa_request_loader.build_request",
+    "01_mongodb_metadata_snapshot_loader.load_metadata_snapshot",
+    "02_metadata_qa_context_builder.build_metadata_qa_context",
+    "03_metadata_qa_variables_builder.build_variables",
+    "03_metadata_qa_prompt_template_ko.md",
+    "Google API model",
+    "04_metadata_qa_response_normalizer.normalize_metadata_qa_response",
+    "05_metadata_qa_message_adapter.build_message",
+    "06_metadata_qa_api_response_builder.build_api_response"
+  ],
+  "model": "gemini-2.5-flash",
+  "results": [
+    {
+      "question": "현재 등록된 공정 그룹 도메인 목록을 알려줘.",
+      "status": "ok",
+      "answer_mode": "process_group",
+      "answer_policy": {
+        "mode": "deterministic_context",
+        "use_model_response": false,
+        "reason": "authoritative_context_answer"
+      },
+      "candidate_keys": [
+        "domain:process_groups:BG",
+        "domain:process_groups:BM",
+        "domain:process_groups:DA",
+        "domain:process_groups:DC",
+        "domain:process_groups:DI",
+        "domain:process_groups:DP",
+        "domain:process_groups:DS",
+        "domain:process_groups:FCB",
+        "domain:process_groups:FCBH",
+        "domain:process_groups:HS",
+        "domain:process_groups:LT",
+        "domain:process_groups:PC",
+        "domain:process_groups:PCO",
+        "domain:process_groups:PLH",
+        "domain:process_groups:QCSPC",
+        "domain:process_groups:SAT",
+        "domain:process_groups:SBM",
+        "domain:process_groups:SG",
+        "domain:process_groups:WB",
+        "domain:process_groups:WBM",
+        "domain:process_groups:WEC",
+        "domain:process_groups:WET",
+        "domain:process_groups:WLS",
+        "domain:process_groups:WS",
+        "domain:process_groups:WSD",
+        "table_catalog:lot_status",
+        "table_catalog:equipment_assign",
+        "main_filter:OPER_NAME",
+        "main_filter:OPER_NUM",
+        "row:process_groups:BG",
+        "row:process_groups:BM",
+        "row:process_groups:DA",
+        "row:process_groups:DC",
+        "row:process_groups:DI",
+        "row:process_groups:DP",
+        "row:process_groups:DS",
+        "row:process_groups:FCB",
+        "row:process_groups:FCBH",
+        "row:process_groups:HS",
+        "row:process_groups:LT",
+        "row:process_groups:PC",
+        "row:process_groups:PCO",
+        "row:process_groups:PLH",
+        "row:process_groups:QCSPC",
+        "row:process_groups:SAT",
+        "row:process_groups:SBM",
+        "row:process_groups:SG",
+        "row:process_groups:WB",
+        "row:process_groups:WBM",
+        "row:process_groups:WEC",
+        "row:process_groups:WET",
+        "row:process_groups:WLS",
+        "row:process_groups:WS",
+        "row:process_groups:WSD"
+      ],
+      "source_refs": [
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "BG"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "BM"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DA"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DC"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DI"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DP"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DS"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "FCB"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "FCBH"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "HS"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "LT"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "PC"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "PCO"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "PLH"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "QCSPC"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "SAT"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "SBM"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "SG"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WB"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WBM"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WEC"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WET"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WLS"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WS"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WSD"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "lot_status"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "equipment_assign"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "OPER_NAME"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "OPER_NUM"
+        }
+      ],
+      "candidate_rows": [
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "BG",
+          "display_name": "BG",
+          "aliases": "BG, B/G, BG공정, B/G공정, BG 공정, B/G 공정",
+          "processes": "B/G1, B/G2"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "BM",
+          "display_name": "B/M",
+          "aliases": "BM, B/M, 비엠, BM공정, B/M공정, 비엠공정, BM 공정, B/M 공정, 비엠 공정",
+          "processes": "B/M"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DA",
+          "display_name": "D/A",
+          "aliases": "DA, D/A, DA공정, D/A공정, DA 공정, D/A 공정",
+          "processes": "D/A1, D/A2, D/A3, D/A4, D/A5, D/A6"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DC",
+          "display_name": "D/C",
+          "aliases": "DC, D/C, DC공정, D/C공정, DC 공정, D/C 공정",
+          "processes": "D/C1, D/C2, D/C3, D/C4"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DI",
+          "display_name": "D/I",
+          "aliases": "DI, D/I, DVI, DI공정, D/I공정, DVI공정, DI 공정, D/I 공정, DVI 공정",
+          "processes": "D/I"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DP",
+          "display_name": "DP",
+          "aliases": "DP, D/P, DP공정, D/P공정, DP 공정, D/P 공정",
+          "processes": "WET1, WET2, L/T1, L/T2, B/G1, B/G2, H/S1, H/S2, W/S1, W/S2, WSD1, WSD2"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "DS",
+          "display_name": "D/S",
+          "aliases": "DS, D/S, DS공정, D/S공정, DS 공정, D/S 공정",
+          "processes": "D/S1"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "FCB",
+          "display_name": "FCB",
+          "aliases": "FCB, FCB공정, FCB 공정",
+          "processes": "FCB1, FCB2, FCB/H"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "FCBH",
+          "display_name": "FCB/H",
+          "aliases": "FCBH, FCB/H, FCBH공정, FCB/H공정, FCBH 공정, FCB/H 공정",
+          "processes": "FCB/H"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "HS",
+          "display_name": "HS",
+          "aliases": "HS, H/S, HS공정, H/S공정, HS 공정, H/S 공정",
+          "processes": "H/S1, H/S2"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "LT",
+          "display_name": "LT",
+          "aliases": "LT, L/T, LT공정, L/T공정, LT 공정, L/T 공정",
+          "processes": "L/T1, L/T2"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "PC",
+          "display_name": "P/C",
+          "aliases": "PC, P/C, PC공정, P/C공정, PC 공정, P/C 공정",
+          "processes": "P/C1, P/C2, P/C3, P/C4, P/C5"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "PCO",
+          "display_name": "PCO",
+          "aliases": "PCO, PCO공정, PCO 공정",
+          "processes": "PCO1, PCO2, PCO3, PCO4, PCO5, PCO6"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "PLH",
+          "display_name": "P/L",
+          "aliases": "PLH, P/L, PLH공정, P/L공정, PLH 공정, P/L 공정",
+          "processes": "PLH"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "QCSPC",
+          "display_name": "QCSPC",
+          "aliases": "QCSPC, QCSPC공정, QCSPC 공정",
+          "processes": "QCSPC1, QCSPC2, QCSPC3, QCSPC4"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "SAT",
+          "display_name": "SAT",
+          "aliases": "SAT, SAT공정, SAT 공정",
+          "processes": "SAT1, SAT2"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "SBM",
+          "display_name": "SBM",
+          "aliases": "SBM, SBM공정, SBM 공정",
+          "processes": "SBM"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "SG",
+          "display_name": "S/G",
+          "aliases": "SG, S/G, SG공정, S/G공정, SG 공정, S/G 공정",
+          "processes": "S/G"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WB",
+          "display_name": "W/B",
+          "aliases": "WB, W/B, WB공정, W/B공정, WB 공정, W/B 공정",
+          "processes": "W/B1, W/B2, W/B3, W/B4, W/B5, W/B6"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WBM",
+          "display_name": "W/BM",
+          "aliases": "WBM, W/BM, WBM공정, W/BM공정, WBM 공정, W/BM 공정",
+          "processes": "W/BM"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WEC",
+          "display_name": "WEC",
+          "aliases": "WEC, WEC공정, WEC 공정",
+          "processes": "WEC1, WEC2"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WET",
+          "display_name": "WET",
+          "aliases": "WET, WET공정, WET 공정",
+          "processes": "WET1, WET2"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WLS",
+          "display_name": "WLS",
+          "aliases": "WLS, WLS공정, WLS 공정",
+          "processes": "WLS1, WLS2"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WS",
+          "display_name": "WS",
+          "aliases": "WS, W/S, WS공정, W/S공정, WS 공정, W/S 공정",
+          "processes": "W/S1, W/S2"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "WSD",
+          "display_name": "WSD",
+          "aliases": "WSD, WSD공정, WSD 공정",
+          "processes": "WSD1, WSD2"
+        }
+      ],
+      "answer_message": "현재 등록된 공정 그룹 25건과 각 그룹의 별칭·포함 공정을 정리했습니다.",
+      "display_message": "### 답변\n현재 등록된 공정 그룹 25건과 각 그룹의 별칭·포함 공정을 정리했습니다.\n\n### 공정 그룹\n| metadata_type | section | key | display_name | aliases | processes |\n| --- | --- | --- | --- | --- | --- |\n| domain | process_groups | BG | BG | BG, B/G, BG공정, B/G공정, BG 공정, B/G 공정 | B/G1, B/G2 |\n| domain | process_groups | BM | B/M | BM, B/M, 비엠, BM공정, B/M공정, 비엠공정, BM 공정, B/M 공정, 비엠 공정 | B/M |\n| domain | process_groups | DA | D/A | DA, D/A, DA공정, D/A공정, DA 공정, D/A 공정 | D/A1, D/A2, D/A3, D/A4, D/A5, D/A6 |\n| domain | process_groups | DC | D/C | DC, D/C, DC공정, D/C공정, DC 공정, D/C 공정 | D/C1, D/C2, D/C3, D/C4 |\n| domain | process_groups | DI | D/I | DI, D/I, DVI, DI공정, D/I공정, DVI공정, DI 공정, D/I 공정, DVI 공정 | D/I |\n| domain | process_groups | DP | DP | DP, D/P, DP공정, D/P공정, DP 공정, D/P 공정 | WET1, WET2, L/T1, L/T2, B/G1, B/G2, H/S1, H/S2, W/S1, W/S2, WSD1, WSD2 |\n| domain | process_groups | DS | D/S | DS, D/S, DS공정, D/S공정, DS 공정, D/S 공정 | D/S1 |\n| domain | process_groups | FCB | FCB | FCB, FCB공정, FCB 공정 | FCB1, FCB2, FCB/H |\n| domain | process_groups | FCBH | FCB/H | FCBH, FCB/H, FCBH공정, FCB/H공정, FCBH 공정, FCB/H 공정 | FCB/H |\n| domain | process_groups | HS | HS | HS, H/S, HS공정, H/S공정, HS 공정, H/S 공정 | H/S1, H/S2 |\n| domain | process_groups | LT | LT | LT, L/T, LT공정, L/T공정, LT 공정, L/T 공정 | L/T1, L/T2 |\n| domain | process_groups | PC | P/C | PC, P/C, PC공정, P/C공정, PC 공정, P/C 공정 | P/C1, P/C2, P/C3, P/C4, P/C5 |\n\n총 25건 중 12건을 표시했습니다.\n\n### 다음에 물어볼 수 있는 질문\n- DA공정 차수별 생산량 알려줘\n\n### 사용한 메타데이터\n- `domain:process_groups:BG`\n- `domain:process_groups:BM`\n- `domain:process_groups:DA`\n- `domain:process_groups:DC`\n- `domain:process_groups:DI`\n- `domain:process_groups:DP`\n- `domain:process_groups:DS`\n- `domain:process_groups:FCB`\n- `domain:process_groups:FCBH`\n- `domain:process_groups:HS`",
+      "table": {
+        "columns": [
+          "metadata_type",
+          "section",
+          "key",
+          "display_name",
+          "aliases",
+          "processes"
+        ],
+        "rows": [
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "BG",
+            "display_name": "BG",
+            "aliases": "BG, B/G, BG공정, B/G공정, BG 공정, B/G 공정",
+            "processes": "B/G1, B/G2"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "BM",
+            "display_name": "B/M",
+            "aliases": "BM, B/M, 비엠, BM공정, B/M공정, 비엠공정, BM 공정, B/M 공정, 비엠 공정",
+            "processes": "B/M"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "DA",
+            "display_name": "D/A",
+            "aliases": "DA, D/A, DA공정, D/A공정, DA 공정, D/A 공정",
+            "processes": "D/A1, D/A2, D/A3, D/A4, D/A5, D/A6"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "DC",
+            "display_name": "D/C",
+            "aliases": "DC, D/C, DC공정, D/C공정, DC 공정, D/C 공정",
+            "processes": "D/C1, D/C2, D/C3, D/C4"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "DI",
+            "display_name": "D/I",
+            "aliases": "DI, D/I, DVI, DI공정, D/I공정, DVI공정, DI 공정, D/I 공정, DVI 공정",
+            "processes": "D/I"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "DP",
+            "display_name": "DP",
+            "aliases": "DP, D/P, DP공정, D/P공정, DP 공정, D/P 공정",
+            "processes": "WET1, WET2, L/T1, L/T2, B/G1, B/G2, H/S1, H/S2, W/S1, W/S2, WSD1, WSD2"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "DS",
+            "display_name": "D/S",
+            "aliases": "DS, D/S, DS공정, D/S공정, DS 공정, D/S 공정",
+            "processes": "D/S1"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "FCB",
+            "display_name": "FCB",
+            "aliases": "FCB, FCB공정, FCB 공정",
+            "processes": "FCB1, FCB2, FCB/H"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "FCBH",
+            "display_name": "FCB/H",
+            "aliases": "FCBH, FCB/H, FCBH공정, FCB/H공정, FCBH 공정, FCB/H 공정",
+            "processes": "FCB/H"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "HS",
+            "display_name": "HS",
+            "aliases": "HS, H/S, HS공정, H/S공정, HS 공정, H/S 공정",
+            "processes": "H/S1, H/S2"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "LT",
+            "display_name": "LT",
+            "aliases": "LT, L/T, LT공정, L/T공정, LT 공정, L/T 공정",
+            "processes": "L/T1, L/T2"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "PC",
+            "display_name": "P/C",
+            "aliases": "PC, P/C, PC공정, P/C공정, PC 공정, P/C 공정",
+            "processes": "P/C1, P/C2, P/C3, P/C4, P/C5"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "PCO",
+            "display_name": "PCO",
+            "aliases": "PCO, PCO공정, PCO 공정",
+            "processes": "PCO1, PCO2, PCO3, PCO4, PCO5, PCO6"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "PLH",
+            "display_name": "P/L",
+            "aliases": "PLH, P/L, PLH공정, P/L공정, PLH 공정, P/L 공정",
+            "processes": "PLH"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "QCSPC",
+            "display_name": "QCSPC",
+            "aliases": "QCSPC, QCSPC공정, QCSPC 공정",
+            "processes": "QCSPC1, QCSPC2, QCSPC3, QCSPC4"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "SAT",
+            "display_name": "SAT",
+            "aliases": "SAT, SAT공정, SAT 공정",
+            "processes": "SAT1, SAT2"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "SBM",
+            "display_name": "SBM",
+            "aliases": "SBM, SBM공정, SBM 공정",
+            "processes": "SBM"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "SG",
+            "display_name": "S/G",
+            "aliases": "SG, S/G, SG공정, S/G공정, SG 공정, S/G 공정",
+            "processes": "S/G"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "WB",
+            "display_name": "W/B",
+            "aliases": "WB, W/B, WB공정, W/B공정, WB 공정, W/B 공정",
+            "processes": "W/B1, W/B2, W/B3, W/B4, W/B5, W/B6"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "WBM",
+            "display_name": "W/BM",
+            "aliases": "WBM, W/BM, WBM공정, W/BM공정, WBM 공정, W/BM 공정",
+            "processes": "W/BM"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "WEC",
+            "display_name": "WEC",
+            "aliases": "WEC, WEC공정, WEC 공정",
+            "processes": "WEC1, WEC2"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "WET",
+            "display_name": "WET",
+            "aliases": "WET, WET공정, WET 공정",
+            "processes": "WET1, WET2"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "WLS",
+            "display_name": "WLS",
+            "aliases": "WLS, WLS공정, WLS 공정",
+            "processes": "WLS1, WLS2"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "WS",
+            "display_name": "WS",
+            "aliases": "WS, W/S, WS공정, W/S공정, WS 공정, W/S 공정",
+            "processes": "W/S1, W/S2"
+          },
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "WSD",
+            "display_name": "WSD",
+            "aliases": "WSD, WSD공정, WSD 공정",
+            "processes": "WSD1, WSD2"
+          }
+        ],
+        "row_count": 25
+      },
+      "errors": [],
+      "api_status": "ok",
+      "prompt_sha256": "0205945aaa75dcd772b92655943afae38d2217f66501f36dfaa4a23585513e38",
+      "llm_response_sha256": "880a9c4e008c0c1937bacfbad7ad801ff6337c082c06702f5717a70a783503bd"
+    },
+    {
+      "question": "BG 공정 그룹에는 어떤 세부 공정이 포함돼?",
+      "status": "ok",
+      "answer_mode": "process_group",
+      "answer_policy": {
+        "mode": "deterministic_context",
+        "use_model_response": false,
+        "reason": "authoritative_context_answer"
+      },
+      "candidate_keys": [
+        "domain:process_groups:BG",
+        "table_catalog:equipment_assign",
+        "table_catalog:lot_status",
+        "main_filter:OPER_NAME",
+        "main_filter:OPER_NUM",
+        "row:process_groups:BG"
+      ],
+      "source_refs": [
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "BG"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "equipment_assign"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "lot_status"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "OPER_NAME"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "OPER_NUM"
+        }
+      ],
+      "candidate_rows": [
+        {
+          "metadata_type": "domain",
+          "section": "process_groups",
+          "key": "BG",
+          "display_name": "BG",
+          "aliases": "BG, B/G, BG공정, B/G공정, BG 공정, B/G 공정",
+          "processes": "B/G1, B/G2"
+        }
+      ],
+      "answer_message": "BG 공정 그룹에 포함된 세부 공정은 B/G1, B/G2입니다.",
+      "display_message": "### 답변\nBG 공정 그룹에 포함된 세부 공정은 B/G1, B/G2입니다.\n\n### 공정 그룹\n| metadata_type | section | key | display_name | aliases | processes |\n| --- | --- | --- | --- | --- | --- |\n| domain | process_groups | BG | BG | BG, B/G, BG공정, B/G공정, BG 공정, B/G 공정 | B/G1, B/G2 |\n\n총 1건입니다.\n\n### 다음에 물어볼 수 있는 질문\n- DA공정 차수별 생산량 알려줘\n\n### 사용한 메타데이터\n- `domain:process_groups:BG`\n- `table_catalog:equipment_assign`\n- `table_catalog:lot_status`\n- `main_flow_filter:OPER_NAME`\n- `main_flow_filter:OPER_NUM`",
+      "table": {
+        "columns": [
+          "metadata_type",
+          "section",
+          "key",
+          "display_name",
+          "aliases",
+          "processes"
+        ],
+        "rows": [
+          {
+            "metadata_type": "domain",
+            "section": "process_groups",
+            "key": "BG",
+            "display_name": "BG",
+            "aliases": "BG, B/G, BG공정, B/G공정, BG 공정, B/G 공정",
+            "processes": "B/G1, B/G2"
+          }
+        ],
+        "row_count": 1
+      },
+      "errors": [],
+      "api_status": "ok",
+      "prompt_sha256": "ef84eb2dc733bd6af154ddfabfb81df4da3420a51650279199c5eea81de1f6df",
+      "llm_response_sha256": "c3cc32ee3c3609dde299366c89dc2508b6ebc15e171822fa289a598332a0cc23"
+    },
+    {
+      "question": "제품 집계는 어떤 컬럼을 기준으로 해?",
+      "status": "ok",
+      "answer_mode": "calculation_logic_list",
+      "answer_policy": {
+        "mode": "deterministic_context",
+        "use_model_response": false,
+        "reason": "authoritative_context_answer"
+      },
+      "candidate_keys": [
+        "domain:product_key_columns:standard_product_keys",
+        "table_catalog:production_today",
+        "table_catalog:production",
+        "main_filter:TECH",
+        "main_filter:DEN",
+        "main_filter:MODE",
+        "main_filter:ORG",
+        "main_filter:MCP_NO",
+        "main_filter:DEVICE_DESC",
+        "row:product_key_columns:standard_product_keys"
+      ],
+      "source_refs": [
+        {
+          "metadata_type": "domain",
+          "section": "product_key_columns",
+          "key": "standard_product_keys"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "production_today"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "production"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "TECH"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "DEN"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "MODE"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "ORG"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "MCP_NO"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "DEVICE_DESC"
+        }
+      ],
+      "candidate_rows": [
+        {
+          "metadata_type": "domain",
+          "section": "product_key_columns",
+          "key": "standard_product_keys",
+          "display_name": "표준 제품 키",
+          "aliases": "제품별, 제품 기준, 기본 제품 키",
+          "columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO"
+          ]
+        }
+      ],
+      "answer_message": "제품 집계에 사용하는 제품 키와 grain/group by 규칙 1건을 등록 메타데이터 기준으로 정리했습니다.",
+      "display_message": "### 답변\n제품 집계에 사용하는 제품 키와 grain/group by 규칙 1건을 등록 메타데이터 기준으로 정리했습니다.\n\n### 계산/분석 로직\n| 구분 | 메타데이터 키 | 표시명 | 제품 기준 컬럼 | 집계 grain | 고정 group by | 수량 컬럼 | 집계 방식 | 계산식 | 설명 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| 제품 키 | standard_product_keys | 표준 제품 키 | [\"TECH\", \"DEN\", \"MODE\", \"PKG_TYPE1\", \"PKG_TYPE2\", \"LEAD\", \"MCP_NO\"] |  |  |  |  |  |  |\n\n총 1건입니다.\n\n### 다음에 물어볼 수 있는 질문\n- 등록된 계산 로직 중 생산 달성률 기준 알려줘\n\n### 사용한 메타데이터\n- `domain:product_key_columns:standard_product_keys`\n- `table_catalog:production_today`\n- `table_catalog:production`\n- `main_flow_filter:TECH`\n- `main_flow_filter:DEN`\n- `main_flow_filter:MODE`\n- `main_flow_filter:ORG`\n- `main_flow_filter:MCP_NO`\n- `main_flow_filter:DEVICE_DESC`",
+      "table": {
+        "columns": [
+          "구분",
+          "메타데이터 키",
+          "표시명",
+          "제품 기준 컬럼",
+          "집계 grain",
+          "고정 group by",
+          "수량 컬럼",
+          "집계 방식",
+          "계산식",
+          "설명"
+        ],
+        "rows": [
+          {
+            "구분": "제품 키",
+            "메타데이터 키": "standard_product_keys",
+            "표시명": "표준 제품 키",
+            "제품 기준 컬럼": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ]
+          }
+        ],
+        "row_count": 1
+      },
+      "errors": [],
+      "api_status": "ok",
+      "prompt_sha256": "71c668ce19bfb3be7ad4d034bdceb322613a6b6911c8556f69e4dd560b5bc7f4",
+      "llm_response_sha256": "c32468eae57e8fb9237caf525bc4a3dd42d180ac20e8e228ce779b6a205dc0e1"
+    },
+    {
+      "question": "제품 집계와 결합 정책을 알려줘.",
+      "status": "ok",
+      "answer_mode": "general_metadata_search",
+      "answer_policy": {
+        "mode": "model_assisted",
+        "use_model_response": true,
+        "reason": "model_synthesis_required"
+      },
+      "candidate_keys": [
+        "domain:analysis_recipes:product_grain_and_join_policy",
+        "domain:pandas_function_cases:product_token_match",
+        "domain:product_key_columns:standard_product_keys",
+        "domain:product_terms:2HI_PRODUCT",
+        "domain:product_terms:4HI_PRODUCT",
+        "domain:product_terms:8HI_PRODUCT",
+        "domain:product_terms:AUTO_PRODUCT",
+        "domain:product_terms:HBM_3DS_TSV_PRODUCT",
+        "domain:product_terms:MOBILE_PRODUCT",
+        "domain:product_terms:POP",
+        "domain:analysis_recipes:equipment_assignment_uph_join",
+        "domain:analysis_recipes:production_achievement_rate_analysis",
+        "domain:metric_terms:production_achievement_rate",
+        "domain:metric_terms:wafer_out_quantity",
+        "domain:quantity_terms:input_quantity",
+        "domain:quantity_terms:production_quantity",
+        "domain:analysis_recipes:group_by_oper_name_for_detailed_process",
+        "domain:analysis_recipes:group_by_oper_name_for_process_sequence",
+        "domain:analysis_recipes:select_device_column_for_device_code_query",
+        "domain:pandas_function_cases:ordered_process_range",
+        "domain:quantity_terms:equipment_count",
+        "domain:quantity_terms:wip_boh_quantity",
+        "domain:quantity_terms:wip_eoh_quantity",
+        "domain:quantity_terms:wip_quantity",
+        "table_catalog:production_today",
+        "table_catalog:production",
+        "main_filter:TECH",
+        "main_filter:DEN",
+        "main_filter:MODE",
+        "main_filter:ORG",
+        "main_filter:MCP_NO",
+        "main_filter:DEVICE_DESC",
+        "row:analysis_recipes:product_grain_and_join_policy",
+        "row:pandas_function_cases:product_token_match",
+        "row:product_key_columns:standard_product_keys",
+        "row:product_terms:2HI_PRODUCT",
+        "row:product_terms:4HI_PRODUCT",
+        "row:product_terms:8HI_PRODUCT",
+        "row:product_terms:AUTO_PRODUCT",
+        "row:product_terms:HBM_3DS_TSV_PRODUCT",
+        "row:product_terms:MOBILE_PRODUCT",
+        "row:product_terms:POP",
+        "row:analysis_recipes:equipment_assignment_uph_join",
+        "row:analysis_recipes:production_achievement_rate_analysis",
+        "row:metric_terms:production_achievement_rate",
+        "row:metric_terms:wafer_out_quantity",
+        "row:quantity_terms:input_quantity",
+        "row:quantity_terms:production_quantity",
+        "row:analysis_recipes:group_by_oper_name_for_detailed_process",
+        "row:analysis_recipes:group_by_oper_name_for_process_sequence",
+        "row:analysis_recipes:select_device_column_for_device_code_query",
+        "row:pandas_function_cases:ordered_process_range",
+        "row:quantity_terms:equipment_count",
+        "row:quantity_terms:wip_boh_quantity",
+        "row:quantity_terms:wip_eoh_quantity",
+        "row:quantity_terms:wip_quantity",
+        "row:TECH",
+        "row:DEN",
+        "row:MODE",
+        "row:ORG",
+        "row:MCP_NO",
+        "row:DEVICE_DESC",
+        "row:production_today",
+        "row:production"
+      ],
+      "source_refs": [
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "product_grain_and_join_policy"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "product_token_match"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_key_columns",
+          "key": "standard_product_keys"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "2HI_PRODUCT"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "4HI_PRODUCT"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "8HI_PRODUCT"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "AUTO_PRODUCT"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "HBM_3DS_TSV_PRODUCT"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "MOBILE_PRODUCT"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "POP"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "equipment_assignment_uph_join"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "production_achievement_rate_analysis"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "metric_terms",
+          "key": "production_achievement_rate"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "metric_terms",
+          "key": "wafer_out_quantity"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "input_quantity"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "production_quantity"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "group_by_oper_name_for_detailed_process"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "group_by_oper_name_for_process_sequence"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "select_device_column_for_device_code_query"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "ordered_process_range"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "equipment_count"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "wip_boh_quantity"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "wip_eoh_quantity"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "wip_quantity"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "production_today"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "production"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "TECH"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "DEN"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "MODE"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "ORG"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "MCP_NO"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "DEVICE_DESC"
+        }
+      ],
+      "candidate_rows": [
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "product_grain_and_join_policy",
+          "display_name": "제품 집계 및 결합 정책",
+          "aliases": "제품별, 제품 집계, 제품 결합, 제품 순위, 상위 제품, 하위 제품, 가장 많은 제품, 가장 적은 제품"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "product_token_match",
+          "display_name": "제품 속성 token 매칭",
+          "description": "사용자가 '2048G H-HBM16E 제품 찾아줘', 'RG 32G DDR4 FBGA 96 DDP 제품', 'SP 16G DDR5 2ND X4 78 FCBGA SDP 제품', 'DA 16G GDDR6 180 제품'처럼 제품 속성 token을 자연어로 이어서 말했을 때 선택. 제품 속성 token이 여러 컬럼에 흩어져 있어 일반 column filter만으로 안정적으로 표현하기 어려운 경우에만 선택하며, 일반 column filter로 명확히 표현 가능한 단순 조건에는 과도하게 선택하지 않음."
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_key_columns",
+          "key": "standard_product_keys",
+          "display_name": "표준 제품 키",
+          "aliases": "제품별, 제품 기준, 기본 제품 키"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "2HI_PRODUCT",
+          "display_name": "2Hi 제품",
+          "aliases": "2Hi"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "4HI_PRODUCT",
+          "display_name": "4Hi 제품",
+          "aliases": "4Hi"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "8HI_PRODUCT",
+          "display_name": "8Hi 제품",
+          "aliases": "8Hi"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "AUTO_PRODUCT",
+          "display_name": "AUTO향 제품",
+          "aliases": "AUTO향, 오토모티브향, 오토향"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "HBM_3DS_TSV_PRODUCT",
+          "display_name": "HBM, 3DS, TSV 제품",
+          "aliases": "HBM, 3DS, TSV"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "MOBILE_PRODUCT",
+          "display_name": "MOBILE 제품",
+          "aliases": "MOBILE 제품, MOBILE"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "product_terms",
+          "key": "POP",
+          "display_name": "POP 제품",
+          "description": "POP 제품은 MODE가 LP로 시작하고, PKG_TYPE1이 LFBGA, TFBGA, UFBGA, VFBGA, WFBGA 중 하나이며, MCP_NO 값이 존재하고 NULL 또는 빈칸이 아닌 제품입니다."
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "equipment_assignment_uph_join",
+          "display_name": "장비 배정-Recipe UPH 결합 규칙",
+          "aliases": "장비별 UPH, 배정 장비 UPH, 장비와 Recipe UPH, 배정된 장비와 UPH"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "production_achievement_rate_analysis",
+          "display_name": "생산 달성율 분석 recipe",
+          "description": "생산 달성율을 계산하기 위한 레시피. 실적 수량과 계획 수량을 먼저 집계한 뒤 비율을 계산합니다."
+        },
+        {
+          "metadata_type": "domain",
+          "section": "metric_terms",
+          "key": "production_achievement_rate",
+          "display_name": "생산달성률",
+          "aliases": "생산달성율, 달성률, 달성율",
+          "description": "생산 달성율 분석 recipe를 사용하여 계산되며, 실적 수량과 계획 수량을 먼저 집계한 뒤 비율을 계산합니다. 달성률은 평균내지 않습니다."
+        },
+        {
+          "metadata_type": "domain",
+          "section": "metric_terms",
+          "key": "wafer_out_quantity",
+          "display_name": "Wafer기준 실적",
+          "aliases": "Wafer기반 실적, Wafer Out 수량",
+          "aggregation_method": "sum",
+          "description": "production 계열 데이터에서 NETDIE_300_CNT 값이 0보다 큰 경우 PRODUCTION을 NETDIE_300_CNT로 나누어 WAFER_OUT_QTY를 계산하고, 그렇지 않은 경우 PRODUCTION 값을 FAIL_UNIT_QTY로 표시합니다. 최종적으로 요청된 기준으로 합산됩니다."
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "input_quantity",
+          "display_name": "투입량",
+          "aliases": "투입량, INPUT, input, INPUT실적, INPUT생산량, 투입 실적",
+          "column": "PRODUCTION",
+          "aggregation_method": "sum"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "production_quantity",
+          "display_name": "생산량",
+          "aliases": "생산량, 생산실적, 실적, OUTPUT, OUT, Out Put, output 실적, out 실적",
+          "column": "PRODUCTION",
+          "aggregation_method": "sum"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "group_by_oper_name_for_detailed_process",
+          "display_name": "세부 공정별 결과 표시",
+          "description": "사용자가 '세부 공정' 또는 '상세 공정'이라고 언급하면, OPER_NAME 컬럼을 기준으로 결과를 나누어 표시하는 규칙"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "group_by_oper_name_for_process_sequence",
+          "display_name": "공정 차수별 결과 표시 규칙",
+          "description": "사용자가 '차수별', '공정 차수별'과 같이 특정 차수를 지정하지 않고 공정 차수별 결과 표시를 요청할 때, 공정 그룹 내의 세부 공정명(OPER_NAME)을 기준으로 결과를 나누어 보여줍니다. 공정명과 함께 1차, 2차처럼 특정 차수를 말하는 경우는 단일 OPER_NAME으로 필터링하는 조건으로 해석됩니다."
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "select_device_column_for_device_code_query",
+          "display_name": "DEVICE 첨자 출력 컬럼 선택",
+          "description": "사용자가 'DEVICE 첨자', 'Device 첨자', '첨자', 'DEVICE CODE', 'Device Code'를 문의할 때 'DEVICE' 컬럼을 결과에 포함하고, 'DEVICE_DESC' 또는 '제품 설명'은 제외하는 규칙"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "ordered_process_range",
+          "display_name": "OPER_SEQ 공정 구간 필터",
+          "aliases": "공정 구간, 공정 범위, OPER_SEQ 범위, ordered range"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "equipment_count",
+          "display_name": "장비 대수",
+          "aliases": "장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대",
+          "aggregation_method": "nunique"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "wip_boh_quantity",
+          "display_name": "BOH 재공",
+          "aliases": "아침 재공, BOH 재공, BOH, 07시 기준 재공, 7시 기준 재공",
+          "column": "WIP",
+          "aggregation_method": "sum"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "wip_eoh_quantity",
+          "display_name": "EOH 재공",
+          "aliases": "EOH 재공, 마감 재공, 종료 재공",
+          "column": "WIP",
+          "aggregation_method": "sum"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "wip_quantity",
+          "display_name": "재공수량",
+          "aliases": "재공, 재공수량, WIP, 공정 물량",
+          "column": "WIP",
+          "aggregation_method": "sum"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "TECH",
+          "display_name": "제품 기술",
+          "semantic_role": "category",
+          "operator": "eq",
+          "column_candidates": "TECH"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "DEN",
+          "display_name": "제품 용량",
+          "semantic_role": "category",
+          "operator": "eq",
+          "column_candidates": "DEN"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "MODE",
+          "display_name": "제품 모드",
+          "semantic_role": "category",
+          "operator": "eq",
+          "column_candidates": "MODE"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "ORG",
+          "display_name": "제품 ORG/조직 코드",
+          "semantic_role": "id",
+          "operator": "eq",
+          "column_candidates": "ORG"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "MCP_NO",
+          "display_name": "제품 코드",
+          "aliases": "MCP_NO, MCP NO, MCP_SALES_NO, MCP_SALE_CD, MCPSALENO",
+          "semantic_role": "id",
+          "operator": "eq",
+          "column_candidates": "MCP_NO, MCP_SALES_NO, MCP_SALE_CD"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "DEVICE_DESC",
+          "display_name": "설명",
+          "aliases": "DEVICE_DESC, 제품 설명",
+          "semantic_role": "description",
+          "operator": "contains",
+          "column_candidates": "DEVICE_DESC"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "production_today",
+          "display_name": "Production Today",
+          "dataset_family": "production",
+          "source_type": "oracle",
+          "db_key": "PNT_RPT",
+          "required_params": "DATE"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "production",
+          "display_name": "Production History",
+          "dataset_family": "production",
+          "source_type": "oracle",
+          "db_key": "PNT_RPT",
+          "required_params": "DATE"
+        }
+      ],
+      "answer_message": "제품 집계 및 결합 정책과 표준 제품 키에 대한 정보를 알려드립니다.",
+      "display_message": "### 답변\n제품 데이터 집계 및 결합 정책\n\n### 제품 집계 및 결합 관련 메타데이터\n| 구분 | 표시명 | 설명/별칭 |\n| --- | --- | --- |\n| 분석 레시피 | 제품 집계 및 결합 정책 | 제품 데이터를 집계하고 결합하는 방법에 대한 레시피입니다. (별칭: 제품별, 제품 집계, 제품 결합, 제품 순위, 상위 제품, 하위 제품, 가장 많은 제품, 가장 적은 제품) |\n| 제품 키 컬럼 | 표준 제품 키 | 제품을 식별하고 집계하는 데 사용되는 기본 키입니다. (별칭: 제품별, 제품 기준, 기본 제품 키) |\n\n총 2건입니다.\n\n### 다음에 물어볼 수 있는 질문\n- 어떤 기준으로 제품을 집계하나요?\n- 제품 결합 정책에 대해 더 자세히 알려주세요.\n- 표준 제품 키는 무엇인가요?",
+      "table": {
+        "columns": [
+          "구분",
+          "표시명",
+          "설명/별칭"
+        ],
+        "rows": [
+          {
+            "구분": "분석 레시피",
+            "표시명": "제품 집계 및 결합 정책",
+            "설명/별칭": "제품 데이터를 집계하고 결합하는 방법에 대한 레시피입니다. (별칭: 제품별, 제품 집계, 제품 결합, 제품 순위, 상위 제품, 하위 제품, 가장 많은 제품, 가장 적은 제품)"
+          },
+          {
+            "구분": "제품 키 컬럼",
+            "표시명": "표준 제품 키",
+            "설명/별칭": "제품을 식별하고 집계하는 데 사용되는 기본 키입니다. (별칭: 제품별, 제품 기준, 기본 제품 키)"
+          }
+        ],
+        "row_count": 2
+      },
+      "errors": [],
+      "api_status": "ok",
+      "prompt_sha256": "e2676a659d24ab4b560080edd35a5d7c25f20357d7ce7f25e15561893bd76b3e",
+      "llm_response_sha256": "ec8e1765b5a59ff6e3802a0f39cce779b8f08a7fa73360fd7611d9798bd3248f"
+    },
+    {
+      "question": "장비 배정과 UPH는 어떻게 결합해?",
+      "status": "ok",
+      "answer_mode": "general_metadata_search",
+      "answer_policy": {
+        "mode": "model_assisted",
+        "use_model_response": true,
+        "reason": "model_synthesis_required"
+      },
+      "candidate_keys": [
+        "domain:quantity_terms:equipment_count",
+        "domain:analysis_recipes:equipment_assignment_uph_join",
+        "domain:pandas_function_cases:sample_passthrough_demo",
+        "table_catalog:equipment_assign",
+        "main_filter:EQP_ID",
+        "main_filter:EQP_MODEL",
+        "row:quantity_terms:equipment_count",
+        "row:analysis_recipes:equipment_assignment_uph_join",
+        "row:pandas_function_cases:sample_passthrough_demo",
+        "row:EQP_ID",
+        "row:EQP_MODEL",
+        "row:equipment_assign"
+      ],
+      "source_refs": [
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "equipment_count"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "equipment_assignment_uph_join"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "sample_passthrough_demo"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "equipment_assign"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "EQP_ID"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "EQP_MODEL"
+        }
+      ],
+      "candidate_rows": [
+        {
+          "metadata_type": "domain",
+          "section": "quantity_terms",
+          "key": "equipment_count",
+          "display_name": "장비 대수",
+          "aliases": "장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대",
+          "aggregation_method": "nunique"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "equipment_assignment_uph_join",
+          "display_name": "장비 배정-Recipe UPH 결합 규칙",
+          "aliases": "장비별 UPH, 배정 장비 UPH, 장비와 Recipe UPH, 배정된 장비와 UPH"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "sample_passthrough_demo",
+          "display_name": "다중 helper 형식 확인 더미"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "EQP_ID",
+          "display_name": "장비 ID",
+          "aliases": "EQP_ID, EQPID",
+          "semantic_role": "id",
+          "operator": "eq",
+          "column_candidates": "EQP_ID"
+        },
+        {
+          "metadata_type": "main_flow_filter",
+          "key": "EQP_MODEL",
+          "display_name": "장비 모델",
+          "semantic_role": "category",
+          "operator": "eq",
+          "column_candidates": "EQP_MODEL"
+        },
+        {
+          "metadata_type": "table_catalog",
+          "key": "equipment_assign",
+          "display_name": "Equipment Assign현황",
+          "dataset_family": "equipment",
+          "source_type": "oracle",
+          "db_key": "PNT_RPT"
+        }
+      ],
+      "answer_message": "장비 배정과 UPH는 '장비 배정-Recipe UPH 결합 규칙'을 통해 결합됩니다. 이 규칙은 장비별 UPH를 계산하거나 배정된 장비와 Recipe UPH를 연결하는 데 사용됩니다.",
+      "display_message": "### 답변\n장비 배정-Recipe UPH 결합 규칙\n\n### 관련 메타데이터 상세\n| 구분 | 항목명 | 설명/별칭 |\n| --- | --- | --- |\n| 분석 레시피 | 장비 배정-Recipe UPH 결합 규칙 | 장비별 UPH, 배정 장비 UPH, 장비와 Recipe UPH, 배정된 장비와 UPH |\n| 데이터셋 | Equipment Assign현황 | 장비 배정 정보를 담고 있는 데이터셋 |\n\n총 2건입니다.\n\n### 다음에 물어볼 수 있는 질문\n- 장비 배정-Recipe UPH 결합 규칙의 상세 로직은 무엇인가요?\n- Equipment Assign현황 데이터셋에는 어떤 컬럼들이 있나요?\n- 특정 장비의 UPH를 어떻게 조회할 수 있나요?",
+      "table": {
+        "columns": [
+          "구분",
+          "항목명",
+          "설명/별칭"
+        ],
+        "rows": [
+          {
+            "구분": "분석 레시피",
+            "항목명": "장비 배정-Recipe UPH 결합 규칙",
+            "설명/별칭": "장비별 UPH, 배정 장비 UPH, 장비와 Recipe UPH, 배정된 장비와 UPH"
+          },
+          {
+            "구분": "데이터셋",
+            "항목명": "Equipment Assign현황",
+            "설명/별칭": "장비 배정 정보를 담고 있는 데이터셋"
+          }
+        ],
+        "row_count": 2
+      },
+      "errors": [],
+      "api_status": "ok",
+      "prompt_sha256": "75188dc04efe144544054cd16a77e1d681484a553e104205c40a8eeeb5fc093e",
+      "llm_response_sha256": "c93b9488b46ea44a5a241721ded02f52e41d1b5f6544b2b696d278680d0b5876"
+    },
+    {
+      "question": "등록된 pandas function case 목록을 알려줘.",
+      "status": "ok",
+      "answer_mode": "calculation_logic_list",
+      "answer_policy": {
+        "mode": "deterministic_context",
+        "use_model_response": false,
+        "reason": "authoritative_context_answer"
+      },
+      "candidate_keys": [
+        "domain:pandas_function_cases:ordered_process_range",
+        "domain:pandas_function_cases:product_token_match",
+        "domain:pandas_function_cases:sample_passthrough_demo",
+        "domain:analysis_recipes:product_grain_and_join_policy",
+        "domain:metric_terms:wafer_out_quantity",
+        "row:pandas_function_cases:ordered_process_range",
+        "row:pandas_function_cases:product_token_match",
+        "row:pandas_function_cases:sample_passthrough_demo",
+        "row:analysis_recipes:product_grain_and_join_policy",
+        "row:metric_terms:wafer_out_quantity"
+      ],
+      "source_refs": [
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "ordered_process_range"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "product_token_match"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "sample_passthrough_demo"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "product_grain_and_join_policy"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "metric_terms",
+          "key": "wafer_out_quantity"
+        }
+      ],
+      "candidate_rows": [
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "ordered_process_range",
+          "display_name": "OPER_SEQ 공정 구간 필터",
+          "aliases": "공정 구간, 공정 범위, OPER_SEQ 범위, ordered range"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "product_token_match",
+          "display_name": "제품 속성 token 매칭",
+          "description": "사용자가 '2048G H-HBM16E 제품 찾아줘', 'RG 32G DDR4 FBGA 96 DDP 제품', 'SP 16G DDR5 2ND X4 78 FCBGA SDP 제품', 'DA 16G GDDR6 180 제품'처럼 제품 속성 token을 자연어로 이어서 말했을 때 선택. 제품 속성 token이 여러 컬럼에 흩어져 있어 일반 column filter만으로 안정적으로 표현하기 어려운 경우에만 선택하며, 일반 column filter로 명확히 표현 가능한 단순 조건에는 과도하게 선택하지 않음."
+        },
+        {
+          "metadata_type": "domain",
+          "section": "pandas_function_cases",
+          "key": "sample_passthrough_demo",
+          "display_name": "다중 helper 형식 확인 더미"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "analysis_recipes",
+          "key": "product_grain_and_join_policy",
+          "display_name": "제품 집계 및 결합 정책",
+          "aliases": "제품별, 제품 집계, 제품 결합, 제품 순위, 상위 제품, 하위 제품, 가장 많은 제품, 가장 적은 제품"
+        },
+        {
+          "metadata_type": "domain",
+          "section": "metric_terms",
+          "key": "wafer_out_quantity",
+          "display_name": "Wafer기준 실적",
+          "aliases": "Wafer기반 실적, Wafer Out 수량",
+          "aggregation_method": "sum",
+          "description": "production 계열 데이터에서 NETDIE_300_CNT 값이 0보다 큰 경우 PRODUCTION을 NETDIE_300_CNT로 나누어 WAFER_OUT_QTY를 계산하고, 그렇지 않은 경우 PRODUCTION 값을 FAIL_UNIT_QTY로 표시합니다. 최종적으로 요청된 기준으로 합산됩니다."
+        }
+      ],
+      "answer_message": "등록된 계산/분석 관련 메타데이터 후보 5개를 정리했습니다. 실제 계산 실행은 data_analysis_flow의 pandas 단계에서 수행됩니다.",
+      "display_message": "### 답변\n등록된 계산/분석 관련 메타데이터 후보 5개를 정리했습니다. 실제 계산 실행은 data_analysis_flow의 pandas 단계에서 수행됩니다.\n\n### 계산/분석 로직\n| 구분 | 메타데이터 키 | 표시명 | 제품 기준 컬럼 | 집계 grain | 고정 group by | 수량 컬럼 | 집계 방식 | 계산식 | 설명 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| 분석 함수 | ordered_process_range | OPER_SEQ 공정 구간 필터 |  |  |  |  |  |  |  |\n| 분석 함수 | product_token_match | 제품 속성 token 매칭 |  |  |  |  |  |  | 사용자가 '2048G H-HBM16E 제품 찾아줘', 'RG 32G DDR4 FBGA 96 DDP 제품', 'SP 16G DDR5 2ND X4 78 FCBGA SDP 제품', 'DA 16G GDDR6 180 제품'처럼 제품 속성 token을 자연어로 이어서 말했을 때 선택. 제품 ... |\n| 분석 함수 | sample_passthrough_demo | 다중 helper 형식 확인 더미 |  |  |  |  |  |  |  |\n| 분석 규칙 | product_grain_and_join_policy | 제품 집계 및 결합 정책 |  |  |  |  |  |  |  |\n| 계산 지표 | wafer_out_quantity | Wafer기준 실적 |  |  |  |  | sum |  | production 계열 데이터에서 NETDIE_300_CNT 값이 0보다 큰 경우 PRODUCTION을 NETDIE_300_CNT로 나누어 WAFER_OUT_QTY를 계산하고, 그렇지 않은 경우 PRODUCTION 값을 FAIL_UNIT_QTY로 표시합니다. 최종적으로 요청된 기... |\n\n총 5건입니다.\n\n### 다음에 물어볼 수 있는 질문\n- 등록된 계산 로직 중 생산 달성률 기준 알려줘\n\n### 사용한 메타데이터\n- `domain:pandas_function_cases:ordered_process_range`\n- `domain:pandas_function_cases:product_token_match`\n- `domain:pandas_function_cases:sample_passthrough_demo`\n- `domain:analysis_recipes:product_grain_and_join_policy`\n- `domain:metric_terms:wafer_out_quantity`",
+      "table": {
+        "columns": [
+          "구분",
+          "메타데이터 키",
+          "표시명",
+          "제품 기준 컬럼",
+          "집계 grain",
+          "고정 group by",
+          "수량 컬럼",
+          "집계 방식",
+          "계산식",
+          "설명"
+        ],
+        "rows": [
+          {
+            "구분": "분석 함수",
+            "메타데이터 키": "ordered_process_range",
+            "표시명": "OPER_SEQ 공정 구간 필터"
+          },
+          {
+            "구분": "분석 함수",
+            "메타데이터 키": "product_token_match",
+            "표시명": "제품 속성 token 매칭",
+            "설명": "사용자가 '2048G H-HBM16E 제품 찾아줘', 'RG 32G DDR4 FBGA 96 DDP 제품', 'SP 16G DDR5 2ND X4 78 FCBGA SDP 제품', 'DA 16G GDDR6 180 제품'처럼 제품 속성 token을 자연어로 이어서 말했을 때 선택. 제품 속성 token이 여러 컬럼에 흩어져 있어 일반 column filter만으로 안정적으로 표현하기 어려운 경우에만 선택하며, 일반 column filter로 명확히 표현 가능한 단순 조건에는 과도하게 선택하지 않음."
+          },
+          {
+            "구분": "분석 함수",
+            "메타데이터 키": "sample_passthrough_demo",
+            "표시명": "다중 helper 형식 확인 더미"
+          },
+          {
+            "구분": "분석 규칙",
+            "메타데이터 키": "product_grain_and_join_policy",
+            "표시명": "제품 집계 및 결합 정책"
+          },
+          {
+            "구분": "계산 지표",
+            "메타데이터 키": "wafer_out_quantity",
+            "표시명": "Wafer기준 실적",
+            "집계 방식": "sum",
+            "설명": "production 계열 데이터에서 NETDIE_300_CNT 값이 0보다 큰 경우 PRODUCTION을 NETDIE_300_CNT로 나누어 WAFER_OUT_QTY를 계산하고, 그렇지 않은 경우 PRODUCTION 값을 FAIL_UNIT_QTY로 표시합니다. 최종적으로 요청된 기준으로 합산됩니다."
+          }
+        ],
+        "row_count": 5
+      },
+      "errors": [],
+      "api_status": "ok",
+      "prompt_sha256": "5714ba464ff5c83341bcb52267a685ee1e799e9dd7cd643720b562e616ea80e0",
+      "llm_response_sha256": "9ef04b28a383c21b2c76472678e190dc75d2cf6daca0e50e88f589b3b5b954d5"
+    }
+  ]
+}

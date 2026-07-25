@@ -1,0 +1,1724 @@
+{
+  "_export_format": "metadata_driven_v5.mongodb_metadata_bundle.v1",
+  "exported_at": "2026-07-25T13:13:28.042442+00:00",
+  "source_database": "datagov",
+  "collections": {
+    "domain": {
+      "metadata_kind": "domain",
+      "display_name": "domain metadata",
+      "collection_name": "agent_v4_domain_items",
+      "document_count": 57,
+      "documents": [
+        {
+          "_id": "domain:analysis_recipes:equipment_assignment_uph_join",
+          "section": "analysis_recipes",
+          "key": "equipment_assignment_uph_join",
+          "status": "active",
+          "payload": {
+            "display_name": "장비 배정-Recipe UPH 결합 규칙",
+            "aliases": [
+              "장비별 UPH",
+              "배정 장비 UPH",
+              "장비와 Recipe UPH",
+              "배정된 장비와 UPH"
+            ],
+            "source_datasets": [
+              "equipment_assign",
+              "eqp_uph"
+            ],
+            "join_type": "left",
+            "join_keys": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME"
+            ],
+            "left_key_mappings": {
+              "EQP_MODEL": "EQUIP_MODEL",
+              "RECIPE_ID": "RECIPE_ID",
+              "OPER_NAME": "OPER_NM"
+            },
+            "right_key_mappings": {
+              "EQP_MODEL": "EQUIP_MODEL",
+              "RECIPE_ID": "RECIPE_ID",
+              "OPER_NAME": "OPER_NAME"
+            },
+            "preserve_left_rows": true
+          },
+          "updated_at": "2026-07-25T13:13:11.460182+00:00",
+          "registration_trace": {
+            "raw_text": "장비 배정과 Recipe UPH 결합 규칙을 등록해줘.\nsection은 analysis_recipes이고 key는 equipment_assignment_uph_join이며 status는 active야.\ndisplay_name은 장비 배정-Recipe UPH 결합 규칙이야.\naliases와 선택 단서는 장비별 UPH, 배정 장비 UPH, 장비와 Recipe UPH, 배정된 장비와 UPH야.\nsource_datasets는 equipment_assign, eqp_uph이고 join_type은 left야.\n표준 join_keys는 EQP_MODEL, RECIPE_ID, OPER_NAME이야.\nequipment_assign의 left_key_mappings는 EQP_MODEL -> EQUIP_MODEL, RECIPE_ID -> RECIPE_ID, OPER_NAME -> OPER_NM이야.\neqp_uph의 right_key_mappings는 EQP_MODEL -> EQUIP_MODEL, RECIPE_ID -> RECIPE_ID, OPER_NAME -> OPER_NAME이야.\n장비 배정 결과를 보존하도록 preserve_left_rows는 true야.\n사용자가 공정에 배정된 장비와 해당 장비 모델 또는 Recipe의 UPH를 함께 요청할 때 이 recipe를 사용해."
+          }
+        },
+        {
+          "_id": "domain:analysis_recipes:group_by_oper_name_for_detailed_process",
+          "section": "analysis_recipes",
+          "key": "group_by_oper_name_for_detailed_process",
+          "status": "active",
+          "payload": {
+            "display_name": "세부 공정별 결과 표시",
+            "description": "사용자가 '세부 공정' 또는 '상세 공정'이라고 언급하면, OPER_NAME 컬럼을 기준으로 결과를 나누어 표시하는 규칙",
+            "apply_conditions": [
+              {
+                "condition_type": "contains_keyword",
+                "keywords": [
+                  "세부 공정",
+                  "상세 공정"
+                ]
+              }
+            ],
+            "io_contract": {
+              "input_parameters": [],
+              "output_parameters": [
+                {
+                  "name": "grouping_column",
+                  "type": "column_name",
+                  "value": "OPER_NAME",
+                  "description": "결과를 나눌 기준 컬럼"
+                }
+              ]
+            },
+            "pseudocode": "그룹화 기준 컬럼을 OPER_NAME으로 설정하여 결과를 나눕니다."
+          },
+          "updated_at": "2026-07-01T12:27:01.143343+00:00",
+          "registration_trace": {
+            "raw_text": "세부 공정별 결과 표시 규칙을 등록해줘.\n세부 공정, 상세 공정은 OPER_NAME 기준으로 결과를 나누어 보여달라는 뜻이야.\n이 항목은 analysis_recipes로 저장해줘."
+          }
+        },
+        {
+          "_id": "domain:analysis_recipes:group_by_oper_name_for_process_sequence",
+          "section": "analysis_recipes",
+          "key": "group_by_oper_name_for_process_sequence",
+          "status": "active",
+          "payload": {
+            "display_name": "공정 차수별 결과 표시 규칙",
+            "description": "사용자가 '차수별', '공정 차수별'과 같이 특정 차수를 지정하지 않고 공정 차수별 결과 표시를 요청할 때, 공정 그룹 내의 세부 공정명(OPER_NAME)을 기준으로 결과를 나누어 보여줍니다. 공정명과 함께 1차, 2차처럼 특정 차수를 말하는 경우는 단일 OPER_NAME으로 필터링하는 조건으로 해석됩니다.",
+            "apply_conditions": {
+              "user_query_contains_any": [
+                "차수별",
+                "공정 차수별"
+              ]
+            },
+            "io_contract": {
+              "input_columns": [],
+              "output_columns": [
+                {
+                  "column": "OPER_NAME",
+                  "description": "공정 그룹 내 세부 공정명으로 그룹핑"
+                }
+              ]
+            },
+            "pseudocode": "GROUP BY OPER_NAME"
+          },
+          "updated_at": "2026-07-01T12:27:41.784365+00:00",
+          "registration_trace": {
+            "raw_text": "공정 차수별 결과 표시 규칙을 등록해줘.\n공정명과 함께 1차, 2차처럼 특정 차수를 말하면 해당 숫자가 붙은 단일 OPER_NAME으로 필터링해.\n특정 차수를 지정하지 않고 차수별, 공정 차수별로 보여달라고 하면 공정 그룹에 포함된 세부 OPER_NAME 기준으로 결과를 나누어 보여줘.\n"
+          }
+        },
+        {
+          "_id": "domain:analysis_recipes:product_grain_and_join_policy",
+          "section": "analysis_recipes",
+          "key": "product_grain_and_join_policy",
+          "status": "active",
+          "payload": {
+            "display_name": "제품 집계 및 결합 정책",
+            "default_product_keys": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "default_join_policy": {
+              "source_datasets": [
+                "production",
+                "wip",
+                "target",
+                "equipment"
+              ],
+              "join_keys": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "column_name_standardization_description": "dataset마다 PKG1, PKG2, PKG_TYP1, PKG_TYP2, DENSITY처럼 물리 컬럼명이 달라도 table catalog의 mapping을 통해 PKG_TYPE1, PKG_TYPE2, DEN 같은 표준 컬럼으로 맞춘 뒤 pandas에서 조인"
+            },
+            "group_by_policies": [
+              {
+                "trigger_phrase": "제품별",
+                "group_by_columns": [
+                  "TECH",
+                  "DEN",
+                  "MODE",
+                  "PKG_TYPE1",
+                  "PKG_TYPE2",
+                  "LEAD",
+                  "MCP_NO"
+                ]
+              },
+              {
+                "trigger_phrase": "DEVICE별",
+                "group_by_columns": [
+                  "DEVICE"
+                ]
+              }
+            ],
+            "ranking_policy": {
+              "trigger_phrases": [
+                "상위 N개 제품",
+                "하위 N개 제품",
+                "가장 많은 제품",
+                "가장 적은 제품"
+              ],
+              "ranking_grain_columns": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO"
+              ]
+            },
+            "total_aggregation_policy_description": "사용자가 전체, 총, 합계를 물으면 별도 group by 없이 합계를 보여줘.",
+            "natural_language_policies": [
+              "사용자가 DEVICE, 디바이스, DEVICE CODE를 명시하지 않았다면 DEVICE 또는 DEVICE_DESC를 제품 집계 group by에 사용하지 마.",
+              "일반 명사인 '제품'만으로 product_token_match를 선택하지 마.",
+              "product_token_match는 구체적인 제품 속성 token이 있을 때만 사용해."
+            ]
+          },
+          "updated_at": "2026-07-25T13:13:10.126307+00:00",
+          "registration_trace": {
+            "raw_text": "제품 집계·결합 정책을 등록해줘.\nsection은 analysis_recipes이고 key는 product_grain_and_join_policy이며 status는 active야.\ndisplay_name은 제품 집계 및 결합 정책이야.\nproduction, wip, target, equipment 데이터를 제품 기준으로 결합할 때는 TECH, DEN, MODE, PKG_TYPE1, PKG_TYPE2, LEAD, MCP_NO를 기본 제품 키로 사용해.\ndataset마다 PKG1, PKG2, PKG_TYP1, PKG_TYP2, DENSITY처럼 물리 컬럼명이 달라도 table catalog의 mapping을 통해 PKG_TYPE1, PKG_TYPE2, DEN 같은 표준 컬럼으로 맞춘 뒤 pandas에서 조인해.\n이 규칙은 특정 질문의 조인 방식을 고정하는 recipe가 아니므로 join_type은 추측하거나 payload에 만들지 마.\n사용자가 제품별이라고 하면 제품 키 기준으로 group by 해.\n사용자가 DEVICE별이라고 하면 DEVICE 기준으로 group by 해.\n사용자가 '상위 N개 제품', '하위 N개 제품', '가장 많은 제품', '가장 적은 제품'을 요청하면 '제품별'이라는 단어가 없어도 등록된 기본 제품 키 기준으로 먼저 집계한 뒤 순위를 계산해.\n사용자가 DEVICE, 디바이스, DEVICE CODE를 명시하지 않았다면 DEVICE 또는 DEVICE_DESC를 제품 집계 group by에 사용하지 마.\n일반 명사인 '제품'만으로 product_token_match를 선택하지 마.\nproduct_token_match는 구체적인 제품 속성 token이 있을 때만 사용해.\n사용자가 전체, 총, 합계를 물으면 별도 group by 없이 합계를 보여줘.\npayload에는 위 DEVICE/DEVICE_DESC 제외 규칙과 product_token_match 선택 제한을 자연어 정책 필드로 반드시 보존해."
+          }
+        },
+        {
+          "_id": "domain:analysis_recipes:production_achievement_rate_analysis",
+          "section": "analysis_recipes",
+          "key": "production_achievement_rate_analysis",
+          "status": "active",
+          "payload": {
+            "display_name": "생산 달성율 분석 recipe",
+            "description": "생산 달성율을 계산하기 위한 레시피. 실적 수량과 계획 수량을 먼저 집계한 뒤 비율을 계산합니다.",
+            "steps": [
+              {
+                "step_name": "실적 및 계획 수량 집계",
+                "description": "사용자가 요청한 기준으로 실적 수량(production.PRODUCTION)과 계획 수량(target 데이터)을 집계합니다.",
+                "action": "aggregate_data",
+                "inputs": [
+                  "Actual Quantity",
+                  "Planned Quantity"
+                ]
+              },
+              {
+                "step_name": "달성률 계산",
+                "description": "집계된 실적 수량을 집계된 계획 수량으로 나누어 달성률을 계산합니다.",
+                "action": "calculate_ratio",
+                "formula": "Aggregated Actual Quantity / Aggregated Planned Quantity"
+              }
+            ],
+            "required_metrics": [
+              "production_quantity",
+              "target_data"
+            ]
+          },
+          "updated_at": "2026-07-01T12:30:24.906007+00:00",
+          "registration_trace": {
+            "raw_text": "계산 로직을 등록해줘.\nWafer기준 실적, Wafer기반 실적, Wafer Out 수량은 production 계열 데이터에서 PRODUCTION / NETDIE_300_CNT로 계산해.\nNETDIE_300_CNT 값이 0보다 큰 경우에만 WAFER_OUT_QTY를 계산하고, NETDIE_300_CNT가 0 또는 NULL이라 나눌 수 없는 경우에는 해당 PRODUCTION 값을 FAIL_UNIT_QTY 컬럼으로 옆에 보여줘.\nWafer기준 실적은 먼저 row 단위로 WAFER_OUT_QTY와 FAIL_UNIT_QTY를 만든 뒤, 사용자가 요청한 grain 또는 전체 기준으로 합산해.\n생산달성률, 생산달성율, 달성률, 달성율은 단순 metric formula가 아니라 생산 달성율 분석 recipe를 우선 사용해.\n달성률을 평균내지 말고, recipe에서 정한 기준으로 실적수량과 계획수량을 먼저 집계한 뒤 비율을 계산해.\n"
+          }
+        },
+        {
+          "_id": "domain:analysis_recipes:raw_data_display_policy",
+          "section": "analysis_recipes",
+          "key": "raw_data_display_policy",
+          "status": "active",
+          "payload": {
+            "display_name": "원본 상세 데이터 표시 정책",
+            "aliases": [
+              "원본",
+              "RAW DATA",
+              "세부 데이터",
+              "전체 데이터"
+            ],
+            "description": "사용자가 이 표현들로 원본 행을 요청하면 그룹화하지 않고 detail rows를 보여준다."
+          },
+          "updated_at": "2026-07-25T13:13:12.810924+00:00",
+          "registration_trace": {
+            "raw_text": "원본 상세 데이터 표시 규칙을 등록해줘.\nsection은 analysis_recipes이고 key는 raw_data_display_policy이며 status는 active야.\ndisplay_name은 원본 상세 데이터 표시 정책이야.\naliases와 선택 단서는 원본, RAW DATA, 세부 데이터, 전체 데이터야.\n사용자가 이 표현들로 원본 행을 요청하면 그룹화하지 않고 detail rows를 보여줘."
+          }
+        },
+        {
+          "_id": "domain:analysis_recipes:select_device_column_for_device_code_query",
+          "section": "analysis_recipes",
+          "key": "select_device_column_for_device_code_query",
+          "payload": {
+            "display_name": "DEVICE 첨자 출력 컬럼 선택",
+            "description": "사용자가 'DEVICE 첨자', 'Device 첨자', '첨자', 'DEVICE CODE', 'Device Code'를 문의할 때 'DEVICE' 컬럼을 결과에 포함하고, 'DEVICE_DESC' 또는 '제품 설명'은 제외하는 규칙",
+            "apply_conditions": {
+              "query_contains_any_of": [
+                "DEVICE 첨자",
+                "Device 첨자",
+                "첨자",
+                "DEVICE CODE",
+                "Device Code"
+              ],
+              "query_does_not_contain_any_of": [
+                "DEVICE_DESC",
+                "제품 설명"
+              ]
+            },
+            "io_contract": {
+              "output_columns": [
+                "DEVICE"
+              ]
+            },
+            "pseudocode": "IF user query contains 'DEVICE 첨자' or its synonyms AND does not contain 'DEVICE_DESC' or '제품 설명', THEN include 'DEVICE' column in the output."
+          },
+          "status": "active",
+          "updated_at": "2026-07-01T12:26:48.878090+00:00",
+          "registration_trace": {
+            "raw_text": "DEVICE 첨자 용어를 등록해줘.\nDEVICE 첨자, Device 첨자, 첨자, DEVICE CODE, Device Code는 DEVICE 컬럼을 말해.\nDEVICE_DESC는 제품 설명 컬럼이고 DEVICE CODE와는 구분해.\n사용자가 DEVICE 첨자를 알려달라고 하면 결과 컬럼에 DEVICE를 포함해.\n이건 제품 키 정의가 아니라 질문에 따라 출력 컬럼을 선택하는 analysis_recipes 규칙으로 저장해줘."
+          }
+        },
+        {
+          "_id": "domain:metric_terms:WIP_QUANTITY_SUM",
+          "section": "metric_terms",
+          "key": "WIP_QUANTITY_SUM",
+          "status": "active",
+          "payload": {
+            "display_name": "재공 수량",
+            "aliases": [
+              "재공",
+              "재공수량",
+              "WIP",
+              "공정 물량"
+            ],
+            "aggregation_type": "sum",
+            "source_column": "WIP",
+            "data_context": "wip 계열 데이터"
+          },
+          "updated_at": "2026-07-05T06:07:15.353216+00:00",
+          "registration_trace": {
+            "raw_text": "재공, 재공수량, WIP, 공정 물량은 wip 계열 데이터의 WIP 컬럼 합계를 의미해."
+          }
+        },
+        {
+          "_id": "domain:metric_terms:production_achievement_rate",
+          "section": "metric_terms",
+          "key": "production_achievement_rate",
+          "status": "active",
+          "payload": {
+            "display_name": "생산달성률",
+            "aliases": [
+              "생산달성율",
+              "달성률",
+              "달성율"
+            ],
+            "calculation_method": "analysis_recipe",
+            "analysis_recipe_key": "analysis_recipes:production_achievement_rate_analysis",
+            "description": "생산 달성율 분석 recipe를 사용하여 계산되며, 실적 수량과 계획 수량을 먼저 집계한 뒤 비율을 계산합니다. 달성률은 평균내지 않습니다."
+          },
+          "updated_at": "2026-07-01T12:30:24.906007+00:00",
+          "registration_trace": {
+            "raw_text": "계산 로직을 등록해줘.\nWafer기준 실적, Wafer기반 실적, Wafer Out 수량은 production 계열 데이터에서 PRODUCTION / NETDIE_300_CNT로 계산해.\nNETDIE_300_CNT 값이 0보다 큰 경우에만 WAFER_OUT_QTY를 계산하고, NETDIE_300_CNT가 0 또는 NULL이라 나눌 수 없는 경우에는 해당 PRODUCTION 값을 FAIL_UNIT_QTY 컬럼으로 옆에 보여줘.\nWafer기준 실적은 먼저 row 단위로 WAFER_OUT_QTY와 FAIL_UNIT_QTY를 만든 뒤, 사용자가 요청한 grain 또는 전체 기준으로 합산해.\n생산달성률, 생산달성율, 달성률, 달성율은 단순 metric formula가 아니라 생산 달성율 분석 recipe를 우선 사용해.\n달성률을 평균내지 말고, recipe에서 정한 기준으로 실적수량과 계획수량을 먼저 집계한 뒤 비율을 계산해.\n"
+          }
+        },
+        {
+          "_id": "domain:metric_terms:wafer_out_quantity",
+          "section": "metric_terms",
+          "key": "wafer_out_quantity",
+          "status": "active",
+          "payload": {
+            "display_name": "Wafer기준 실적",
+            "aliases": [
+              "Wafer기반 실적",
+              "Wafer Out 수량"
+            ],
+            "data_source": "production",
+            "calculation_method": "custom_function",
+            "custom_function_name": "calculate_wafer_out_quantity",
+            "aggregation_method": "sum",
+            "description": "production 계열 데이터에서 NETDIE_300_CNT 값이 0보다 큰 경우 PRODUCTION을 NETDIE_300_CNT로 나누어 WAFER_OUT_QTY를 계산하고, 그렇지 않은 경우 PRODUCTION 값을 FAIL_UNIT_QTY로 표시합니다. 최종적으로 요청된 기준으로 합산됩니다."
+          },
+          "updated_at": "2026-07-01T12:30:24.906007+00:00",
+          "registration_trace": {
+            "raw_text": "계산 로직을 등록해줘.\nWafer기준 실적, Wafer기반 실적, Wafer Out 수량은 production 계열 데이터에서 PRODUCTION / NETDIE_300_CNT로 계산해.\nNETDIE_300_CNT 값이 0보다 큰 경우에만 WAFER_OUT_QTY를 계산하고, NETDIE_300_CNT가 0 또는 NULL이라 나눌 수 없는 경우에는 해당 PRODUCTION 값을 FAIL_UNIT_QTY 컬럼으로 옆에 보여줘.\nWafer기준 실적은 먼저 row 단위로 WAFER_OUT_QTY와 FAIL_UNIT_QTY를 만든 뒤, 사용자가 요청한 grain 또는 전체 기준으로 합산해.\n생산달성률, 생산달성율, 달성률, 달성율은 단순 metric formula가 아니라 생산 달성율 분석 recipe를 우선 사용해.\n달성률을 평균내지 말고, recipe에서 정한 기준으로 실적수량과 계획수량을 먼저 집계한 뒤 비율을 계산해.\n"
+          }
+        },
+        {
+          "_id": "domain:pandas_function_cases:ordered_process_range",
+          "section": "pandas_function_cases",
+          "key": "ordered_process_range",
+          "status": "active",
+          "payload": {
+            "display_name": "OPER_SEQ 공정 구간 필터",
+            "function_name": "filter_ordered_range",
+            "aliases": [
+              "공정 구간",
+              "공정 범위",
+              "OPER_SEQ 범위",
+              "ordered range"
+            ],
+            "selection_criteria": [
+              "사용자가 '시작 공정~끝 공정', '시작 공정-끝 공정', '시작 공정끝 공정'과 같이 시작 공정과 끝 공정을 이어서 그 사이 전체 구간을 요청할 때",
+              "대상 source에 OPER_NAME과 OPER_SEQ 컬럼이 모두 존재할 때",
+              "요청이 단일 공정이 아닌 공정 구간일 때",
+              "공정 그룹을 펼치는 의미가 아닐 때",
+              "양 끝 공정만 조회하는 의미가 아닐 때",
+              "제품 MCP_NO 내부에 포함된 하이픈(예: L-218)이 공정 범위 구분자로 해석되지 않을 때",
+              "생산량, 재공 등 OPER_NAME과 OPER_SEQ가 있는 데이터에서 공정 구간을 요청할 때"
+            ],
+            "required_columns": [
+              "OPER_NAME",
+              "OPER_SEQ"
+            ],
+            "pseudocode": [
+              "1. 사용자 입력(input_text)에서 시작 공정명(start_oper_name)과 끝 공정명(end_oper_name)을 추출한다.",
+              "2. source_alias에 해당하는 DataFrame에서 start_oper_name에 해당하는 OPER_SEQ(start_seq)를 찾는다.",
+              "3. source_alias에 해당하는 DataFrame에서 end_oper_name에 해당하는 OPER_SEQ(end_seq)를 찾는다.",
+              "4. DataFrame의 OPER_SEQ 컬럼을 숫자로 변환한다.",
+              "5. start_seq와 end_seq를 포함하는 범위 내의 모든 OPER_SEQ를 가진 행을 필터링하여 반환한다."
+            ],
+            "input_contract": {
+              "input_text": "시작 공정과 끝 공정 표현 (예: 'D/A1~W/B6', 'D/A1-W/B6', 'D/A1W/B6')",
+              "source_alias": "필터를 적용할 DataFrame의 alias"
+            },
+            "output_contract": {
+              "type": "DataFrame",
+              "description": "시작 공정부터 끝 공정까지의 OPER_SEQ 범위에 해당하는 모든 행이 필터링된 DataFrame"
+            }
+          },
+          "updated_at": "2026-07-25T13:13:14.214835+00:00",
+          "registration_trace": {
+            "raw_text": "공정 순서 구간 필터 function case를 등록해줘.\nsection은 pandas_function_cases이고 key는 ordered_process_range이며 status는 active야.\ndisplay_name은 OPER_SEQ 공정 구간 필터야.\nfunction_name은 filter_ordered_range야.\naliases와 선택 단서는 공정 구간, 공정 범위, OPER_SEQ 범위, ordered range야.\nrequired_columns는 OPER_NAME, OPER_SEQ야.\n사용자가 D/A1~W/B6, D/A1-W/B6, D/A1W/B6처럼 시작 공정과 끝 공정을 이어서 그 사이 전체 구간을 요청하고, 대상 source에 OPER_NAME과 OPER_SEQ가 모두 있을 때만 이 case를 선택해.\n이 표현은 공정 그룹을 펼치는 의미가 아니며 양 끝 공정만 조회하는 의미도 아니야.\nhelper는 시작 공정과 끝 공정의 OPER_SEQ를 찾고, OPER_SEQ를 문자로 비교하지 않고 숫자로 변환한 뒤 양 끝을 포함한 범위의 모든 행을 반환해야 해.\ninput_text에는 시작 공정과 끝 공정 표현만 남기고 source_alias에는 helper를 적용할 DataFrame alias를 남겨.\n양 끝 OPER_NAME만 `in` 조건으로 거는 계획을 만들면 안 되고, 단일 공정 질문에는 이 case를 선택하지 마.\nL-218처럼 제품 MCP_NO 내부에 포함된 하이픈은 공정 범위 구분자로 해석하지 마.\n이 규칙은 생산량이나 재공처럼 OPER_NAME과 OPER_SEQ가 있는 데이터에서 공정 구간을 요청할 때 사용해."
+          }
+        },
+        {
+          "_id": "domain:pandas_function_cases:product_token_match",
+          "section": "pandas_function_cases",
+          "key": "product_token_match",
+          "status": "active",
+          "payload": {
+            "display_name": "제품 속성 token 매칭",
+            "function_name": "match_product_tokens",
+            "description": "사용자가 '2048G H-HBM16E 제품 찾아줘', 'RG 32G DDR4 FBGA 96 DDP 제품', 'SP 16G DDR5 2ND X4 78 FCBGA SDP 제품', 'DA 16G GDDR6 180 제품'처럼 제품 속성 token을 자연어로 이어서 말했을 때 선택. 제품 속성 token이 여러 컬럼에 흩어져 있어 일반 column filter만으로 안정적으로 표현하기 어려운 경우에만 선택하며, 일반 column filter로 명확히 표현 가능한 단순 조건에는 과도하게 선택하지 않음.",
+            "input_contract": {
+              "input_text": "날짜, 공정, 수량 표현을 제외하고 제품 속성 token 묶음만 남김",
+              "source_alias": "helper를 적용할 DataFrame alias"
+            },
+            "output_contract": {
+              "output_dataframe_schema": "제품 속성 token 매칭이 적용된 DataFrame (필터링 또는 매칭 결과 컬럼 추가), 후속 데이터 분석 작업에 적합"
+            },
+            "pseudocode_or_logic": [
+              "사용자가 'x' 또는 'X'와 숫자를 붙여 ORG를 말하면, helper가 먼저 원문 token을 매칭하고, 매칭되지 않을 때 'x' 또는 'X'를 제거해 ORG 컬럼 값 (예: 16, 8)과 매칭함.",
+              "사용자가 'FC'와 숫자를 붙여 말하면 (예: FC78, FC96), PKG_TYPE1 또는 PKG1은 'FCBGA', LEAD는 붙어 있는 숫자 값으로 해석함.",
+              "사용자가 'F'와 숫자를 붙여 말하면 (예: F78, F96), PKG_TYPE1 조건은 만들지 않고 LEAD는 붙어 있는 숫자 값으로 helper에 맡김 (package type이 다양할 수 있으므로).",
+              "사용자가 'A-' 또는 'L-'로 시작하는 MCP_NO 앞부분만 말하면 (예: L-218, A-663), 정확히 같은 값이 아니라 MCP_NO에 해당 token이 포함된 제품을 찾도록 helper에 맡김.",
+              "한 질문에 여러 제품이 콤마로 구분되어 들어오면, 콤마 기준으로 제품 token 묶음을 나누고, 제품 묶음 내부는 모두 만족해야 하며 여러 제품 묶음은 OR 조건으로 매칭함.",
+              "짧은 영문 token (예: RG, CP)은 TECH 또는 FAMILY를 우선 보고, 용량 token (예: 16G)은 DEN 또는 DENSITY, mode token (예: DDR4)은 MODE, package token (예: FCBGA)은 PKG_TYPE1 또는 PKG1, package token (예: SDP/DDP)은 PKG_TYPE2 또는 PKG2, 숫자 token (예: 96)은 LEAD를 우선 매칭함."
+            ],
+            "execution_context": "data analysis flow의 pandas 생성 단계에서 match_product_tokens helper를 먼저 적용하고, 그 결과에 대해 groupby, 집계, join, 정렬을 수행함."
+          },
+          "updated_at": "2026-07-25T13:13:15.766855+00:00",
+          "registration_trace": {
+            "raw_text": "제품 속성 token 매칭 function case를 등록해줘.\nsection은 pandas_function_cases이고 key는 product_token_match이며 status는 active야.\ndisplay_name은 제품 속성 token 매칭이야.\nfunction_name은 match_product_tokens야.\n이 case는 사용자가 \"2048G H-HBM16E 제품 찾아줘\", \"RG 32G DDR4 FBGA 96 DDP 제품\", \"SP 16G DDR5 2ND X4 78 FCBGA SDP 제품\", \"DA 16G GDDR6 180 제품\"처럼 제품 속성 token을 자연어로 이어서 말했을 때 선택해.\ncomponent_token_product_lookup는 과거 호환 이름일 뿐 새 item key로 저장하지 마. 기존에 그 key가 있으면 product_token_match canonical 항목으로 병합하거나 교체하고, 활성 function case는 product_token_match 하나만 유지해.\ninput_text에는 날짜, 공정, 수량 표현을 제외하고 제품 속성 token 묶음만 남겨.\nsource_alias에는 helper를 적용할 DataFrame alias를 남겨.\n제품 속성 token이 여러 컬럼에 흩어져 있어 일반 column filter만으로 안정적으로 표현하기 어려운 경우에만 선택해.\n일반 column filter로 명확히 표현 가능한 단순 조건에는 이 case를 과도하게 선택하지 마.\n이 case가 선택되면 data analysis flow의 pandas 생성 단계에서 match_product_tokens helper를 먼저 적용하고, 그 결과에 대해 groupby, 집계, join, 정렬을 수행하게 해.\n사용자가 x16, X8처럼 x 또는 X와 숫자를 붙여 ORG를 말하면 helper가 먼저 원문 token을 매칭하고, 매칭되지 않을 때 x 또는 X를 제거해 ORG 컬럼 값 16, 8 같은 값과 매칭해.\n사용자가 FC78, FC96처럼 FC와 숫자를 붙여 말하면 PKG_TYPE1 또는 PKG1은 FCBGA, LEAD는 붙어 있는 숫자 값으로 해석해.\n사용자가 F78, F96처럼 F와 숫자를 붙여 말하면 FCBGA, VFBGA, UFBGA 등 package type이 다양할 수 있으므로 PKG_TYPE1 조건은 만들지 말고 LEAD는 붙어 있는 숫자 값으로 helper에 맡겨.\n사용자가 L-218, A-663처럼 A- 또는 L-로 시작하는 MCP_NO 앞부분만 말하면 정확히 같은 값이 아니라 MCP_NO에 해당 token이 포함된 제품을 찾도록 helper에 맡겨.\n한 질문에 여러 제품이 콤마로 구분되어 들어오면 콤마 기준으로 제품 token 묶음을 나누고, 제품 묶음 내부는 모두 만족해야 하며 여러 제품 묶음은 OR 조건으로 매칭해.\nRG, CP 같은 짧은 영문 token은 TECH 또는 FAMILY를 우선 보고, 16G 같은 용량 token은 DEN 또는 DENSITY, DDR4 같은 mode token은 MODE, FCBGA 같은 package token은 PKG_TYPE1 또는 PKG1, SDP/DDP 같은 package token은 PKG_TYPE2 또는 PKG2, 96 같은 숫자 token은 LEAD를 우선 매칭해."
+          }
+        },
+        {
+          "_id": "domain:pandas_function_cases:sample_passthrough_demo",
+          "section": "pandas_function_cases",
+          "key": "sample_passthrough_demo",
+          "status": "active",
+          "payload": {
+            "display_name": "다중 helper 형식 확인 더미",
+            "function_name": "sample_passthrough_helper",
+            "usage_condition": "실제 운영 분석 로직에는 사용하지 않고, 여러 pandas_function_cases가 의도 분석 결과와 pandas prompt에 어떻게 전달되는지 확인할 때만 선택. 운영 질문에서는 사용자가 명시적으로 테스트나 형식 확인을 요청한 경우에만 선택."
+          },
+          "updated_at": "2026-07-25T13:13:17.168206+00:00",
+          "registration_trace": {
+            "raw_text": "다중 helper 형식 확인용 더미 function case를 등록해줘.\nsection은 pandas_function_cases이고 key는 sample_passthrough_demo야.\ndisplay_name은 다중 helper 형식 확인 더미야.\nfunction_name은 sample_passthrough_helper야.\n이 case는 실제 운영 분석 로직에는 사용하지 않고, 여러 pandas_function_cases가 의도 분석 결과와 pandas prompt에 어떻게 전달되는지 확인할 때만 선택해.\n운영 질문에서는 사용자가 명시적으로 테스트나 형식 확인을 요청한 경우에만 선택해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:BG",
+          "section": "process_groups",
+          "key": "BG",
+          "status": "active",
+          "payload": {
+            "display_name": "BG",
+            "aliases": [
+              "BG",
+              "B/G",
+              "BG공정",
+              "B/G공정",
+              "BG 공정",
+              "B/G 공정"
+            ],
+            "processes": [
+              "B/G1",
+              "B/G2"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:36.719506+00:00",
+          "registration_trace": {
+            "raw_text": "BG 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 BG이며 status는 active야.\ndisplay_name은 BG이고 aliases는 BG, B/G, BG공정, B/G공정, BG 공정, B/G 공정이야.\nprocesses는 OPER_NAME 값 B/G1, B/G2야.\n별칭마다 별도 item을 만들지 말고 process_groups:BG 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:BM",
+          "section": "process_groups",
+          "key": "BM",
+          "status": "active",
+          "payload": {
+            "display_name": "B/M",
+            "aliases": [
+              "BM",
+              "B/M",
+              "비엠",
+              "BM공정",
+              "B/M공정",
+              "비엠공정",
+              "BM 공정",
+              "B/M 공정",
+              "비엠 공정"
+            ],
+            "processes": [
+              "B/M"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:56.517952+00:00",
+          "registration_trace": {
+            "raw_text": "BM 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 BM이며 status는 active야.\ndisplay_name은 B/M이고 aliases는 BM, B/M, 비엠, BM공정, B/M공정, 비엠공정, BM 공정, B/M 공정, 비엠 공정이야.\nprocesses는 OPER_NAME 값 B/M 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:BM 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:DA",
+          "section": "process_groups",
+          "key": "DA",
+          "status": "active",
+          "payload": {
+            "display_name": "D/A",
+            "aliases": [
+              "DA",
+              "D/A",
+              "DA공정",
+              "D/A공정",
+              "DA 공정",
+              "D/A 공정"
+            ],
+            "processes": [
+              "D/A1",
+              "D/A2",
+              "D/A3",
+              "D/A4",
+              "D/A5",
+              "D/A6"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:46.904266+00:00",
+          "registration_trace": {
+            "raw_text": "DA 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DA이며 status는 active야.\ndisplay_name은 D/A이고 aliases는 DA, D/A, DA공정, D/A공정, DA 공정, D/A 공정이야.\nprocesses는 OPER_NAME 값 D/A1, D/A2, D/A3, D/A4, D/A5, D/A6야.\n별칭마다 별도 item을 만들지 말고 process_groups:DA 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:DC",
+          "section": "process_groups",
+          "key": "DC",
+          "status": "active",
+          "payload": {
+            "display_name": "D/C",
+            "aliases": [
+              "DC",
+              "D/C",
+              "DC공정",
+              "D/C공정",
+              "DC 공정",
+              "D/C 공정"
+            ],
+            "processes": [
+              "D/C1",
+              "D/C2",
+              "D/C3",
+              "D/C4"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:49.585469+00:00",
+          "registration_trace": {
+            "raw_text": "DC 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DC이며 status는 active야.\ndisplay_name은 D/C이고 aliases는 DC, D/C, DC공정, D/C공정, DC 공정, D/C 공정이야.\nprocesses는 OPER_NAME 값 D/C1, D/C2, D/C3, D/C4야.\n별칭마다 별도 item을 만들지 말고 process_groups:DC 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:DI",
+          "section": "process_groups",
+          "key": "DI",
+          "status": "active",
+          "payload": {
+            "display_name": "D/I",
+            "aliases": [
+              "DI",
+              "D/I",
+              "DVI",
+              "DI공정",
+              "D/I공정",
+              "DVI공정",
+              "DI 공정",
+              "D/I 공정",
+              "DVI 공정"
+            ],
+            "processes": [
+              "D/I"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:50.992502+00:00",
+          "registration_trace": {
+            "raw_text": "DI 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DI이며 status는 active야.\ndisplay_name은 D/I이고 aliases는 DI, D/I, DVI, DI공정, D/I공정, DVI공정, DI 공정, D/I 공정, DVI 공정이야.\nprocesses는 OPER_NAME 값 D/I 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:DI 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:DP",
+          "section": "process_groups",
+          "key": "DP",
+          "status": "active",
+          "payload": {
+            "display_name": "DP",
+            "aliases": [
+              "DP",
+              "D/P",
+              "DP공정",
+              "D/P공정",
+              "DP 공정",
+              "D/P 공정"
+            ],
+            "processes": [
+              "WET1",
+              "WET2",
+              "L/T1",
+              "L/T2",
+              "B/G1",
+              "B/G2",
+              "H/S1",
+              "H/S2",
+              "W/S1",
+              "W/S2",
+              "WSD1",
+              "WSD2",
+              "WEC1",
+              "WEC2",
+              "WLS1",
+              "WLS2",
+              "WVI",
+              "UV",
+              "C/C1"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:32.792512+00:00",
+          "registration_trace": {
+            "raw_text": "DP 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DP이며 status는 active야.\ndisplay_name은 DP이고 aliases는 DP, D/P, DP공정, D/P공정, DP 공정, D/P 공정이야.\nprocesses는 OPER_NAME 값 WET1, WET2, L/T1, L/T2, B/G1, B/G2, H/S1, H/S2, W/S1, W/S2, WSD1, WSD2, WEC1, WEC2, WLS1, WLS2, WVI, UV, C/C1이야.\n별칭마다 별도 item을 만들지 말고 process_groups:DP 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:DS",
+          "section": "process_groups",
+          "key": "DS",
+          "status": "active",
+          "payload": {
+            "display_name": "D/S",
+            "aliases": [
+              "DS",
+              "D/S",
+              "DS공정",
+              "D/S공정",
+              "DS 공정",
+              "D/S 공정"
+            ],
+            "processes": [
+              "D/S1"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:52.300922+00:00",
+          "registration_trace": {
+            "raw_text": "DS 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DS이며 status는 active야.\ndisplay_name은 D/S이고 aliases는 DS, D/S, DS공정, D/S공정, DS 공정, D/S 공정이야.\nprocesses는 OPER_NAME 값 D/S1 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:DS 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:FCB",
+          "section": "process_groups",
+          "key": "FCB",
+          "status": "active",
+          "payload": {
+            "display_name": "FCB",
+            "aliases": [
+              "FCB",
+              "FCB공정",
+              "FCB 공정"
+            ],
+            "processes": [
+              "FCB1",
+              "FCB2",
+              "FCB/H"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:53.635957+00:00",
+          "registration_trace": {
+            "raw_text": "FCB 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 FCB이며 status는 active야.\ndisplay_name은 FCB이고 aliases는 FCB, FCB공정, FCB 공정이야.\nprocesses는 OPER_NAME 값 FCB1, FCB2, FCB/H야.\n별칭마다 별도 item을 만들지 말고 process_groups:FCB 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:FCBH",
+          "section": "process_groups",
+          "key": "FCBH",
+          "status": "active",
+          "payload": {
+            "display_name": "FCB/H",
+            "aliases": [
+              "FCBH",
+              "FCB/H",
+              "FCBH공정",
+              "FCB/H공정",
+              "FCBH 공정",
+              "FCB/H 공정"
+            ],
+            "processes": [
+              "FCB/H"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:55.054304+00:00",
+          "registration_trace": {
+            "raw_text": "FCBH 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 FCBH이며 status는 active야.\ndisplay_name은 FCB/H이고 aliases는 FCBH, FCB/H, FCBH공정, FCB/H공정, FCBH 공정, FCB/H 공정이야.\nprocesses는 OPER_NAME 값 FCB/H 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:FCBH 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:HS",
+          "section": "process_groups",
+          "key": "HS",
+          "status": "active",
+          "payload": {
+            "display_name": "HS",
+            "aliases": [
+              "HS",
+              "H/S",
+              "HS공정",
+              "H/S공정",
+              "HS 공정",
+              "H/S 공정"
+            ],
+            "processes": [
+              "H/S1",
+              "H/S2"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:38.087795+00:00",
+          "registration_trace": {
+            "raw_text": "HS 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 HS이며 status는 active야.\ndisplay_name은 HS이고 aliases는 HS, H/S, HS공정, H/S공정, HS 공정, H/S 공정이야.\nprocesses는 OPER_NAME 값 H/S1, H/S2야.\n별칭마다 별도 item을 만들지 말고 process_groups:HS 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:LT",
+          "section": "process_groups",
+          "key": "LT",
+          "status": "active",
+          "payload": {
+            "display_name": "LT",
+            "aliases": [
+              "LT",
+              "L/T",
+              "LT공정",
+              "L/T공정",
+              "LT 공정",
+              "L/T 공정"
+            ],
+            "processes": [
+              "L/T1",
+              "L/T2"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:35.428209+00:00",
+          "registration_trace": {
+            "raw_text": "LT 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 LT이며 status는 active야.\ndisplay_name은 LT이고 aliases는 LT, L/T, LT공정, L/T공정, LT 공정, L/T 공정이야.\nprocesses는 OPER_NAME 값 L/T1, L/T2야.\n별칭마다 별도 item을 만들지 말고 process_groups:LT 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:PC",
+          "section": "process_groups",
+          "key": "PC",
+          "status": "active",
+          "payload": {
+            "display_name": "P/C",
+            "aliases": [
+              "PC",
+              "P/C",
+              "PC공정",
+              "P/C공정",
+              "PC 공정",
+              "P/C 공정"
+            ],
+            "processes": [
+              "P/C1",
+              "P/C2",
+              "P/C3",
+              "P/C4",
+              "P/C5"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:57.909416+00:00",
+          "registration_trace": {
+            "raw_text": "PC 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 PC이며 status는 active야.\ndisplay_name은 P/C이고 aliases는 PC, P/C, PC공정, P/C공정, PC 공정, P/C 공정이야.\nprocesses는 OPER_NAME 값 P/C1, P/C2, P/C3, P/C4, P/C5야.\n별칭마다 별도 item을 만들지 말고 process_groups:PC 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:PCO",
+          "section": "process_groups",
+          "key": "PCO",
+          "status": "active",
+          "payload": {
+            "display_name": "PCO",
+            "aliases": [
+              "PCO",
+              "PCO공정",
+              "PCO 공정"
+            ],
+            "processes": [
+              "PCO1",
+              "PCO2",
+              "PCO3",
+              "PCO4",
+              "PCO5",
+              "PCO6"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:48.274737+00:00",
+          "registration_trace": {
+            "raw_text": "PCO 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 PCO이며 status는 active야.\ndisplay_name은 PCO이고 aliases는 PCO, PCO공정, PCO 공정이야.\nprocesses는 OPER_NAME 값 PCO1, PCO2, PCO3, PCO4, PCO5, PCO6야.\n별칭마다 별도 item을 만들지 말고 process_groups:PCO 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:PLH",
+          "section": "process_groups",
+          "key": "PLH",
+          "status": "active",
+          "payload": {
+            "display_name": "P/L",
+            "aliases": [
+              "PLH",
+              "P/L",
+              "PLH공정",
+              "P/L공정",
+              "PLH 공정",
+              "P/L 공정"
+            ],
+            "processes": [
+              "PLH"
+            ]
+          },
+          "updated_at": "2026-07-25T13:13:04.702415+00:00",
+          "registration_trace": {
+            "raw_text": "PLH 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 PLH이며 status는 active야.\ndisplay_name은 P/L이고 aliases는 PLH, P/L, PLH공정, P/L공정, PLH 공정, P/L 공정이야.\nprocesses는 OPER_NAME 값 PLH 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:PLH 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:QCSPC",
+          "section": "process_groups",
+          "key": "QCSPC",
+          "status": "active",
+          "payload": {
+            "display_name": "QCSPC",
+            "aliases": [
+              "QCSPC",
+              "QCSPC공정",
+              "QCSPC 공정"
+            ],
+            "processes": [
+              "QCSPC1",
+              "QCSPC2",
+              "QCSPC3",
+              "QCSPC4"
+            ]
+          },
+          "updated_at": "2026-07-25T13:13:01.974436+00:00",
+          "registration_trace": {
+            "raw_text": "QCSPC 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 QCSPC이며 status는 active야.\ndisplay_name은 QCSPC이고 aliases는 QCSPC, QCSPC공정, QCSPC 공정이야.\nprocesses는 OPER_NAME 값 QCSPC1, QCSPC2, QCSPC3, QCSPC4야.\n별칭마다 별도 item을 만들지 말고 process_groups:QCSPC 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:SAT",
+          "section": "process_groups",
+          "key": "SAT",
+          "status": "active",
+          "payload": {
+            "display_name": "SAT",
+            "aliases": [
+              "SAT",
+              "SAT공정",
+              "SAT 공정"
+            ],
+            "processes": [
+              "SAT1",
+              "SAT2"
+            ]
+          },
+          "updated_at": "2026-07-25T13:13:03.393425+00:00",
+          "registration_trace": {
+            "raw_text": "SAT 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 SAT이며 status는 active야.\ndisplay_name은 SAT이고 aliases는 SAT, SAT공정, SAT 공정이야.\nprocesses는 OPER_NAME 값 SAT1, SAT2야.\n별칭마다 별도 item을 만들지 말고 process_groups:SAT 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:SBM",
+          "section": "process_groups",
+          "key": "SBM",
+          "status": "active",
+          "payload": {
+            "display_name": "SBM",
+            "aliases": [
+              "SBM",
+              "SBM공정",
+              "SBM 공정"
+            ],
+            "processes": [
+              "SBM"
+            ]
+          },
+          "updated_at": "2026-07-25T13:13:07.508932+00:00",
+          "registration_trace": {
+            "raw_text": "SBM 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 SBM이며 status는 active야.\ndisplay_name은 SBM이고 aliases는 SBM, SBM공정, SBM 공정이야.\nprocesses는 OPER_NAME 값 SBM 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:SBM 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:SG",
+          "section": "process_groups",
+          "key": "SG",
+          "status": "active",
+          "payload": {
+            "display_name": "S/G",
+            "aliases": [
+              "SG",
+              "S/G",
+              "SG공정",
+              "S/G공정",
+              "SG 공정",
+              "S/G 공정"
+            ],
+            "processes": [
+              "S/G"
+            ]
+          },
+          "updated_at": "2026-07-25T13:13:06.027274+00:00",
+          "registration_trace": {
+            "raw_text": "SG 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 SG이며 status는 active야.\ndisplay_name은 S/G이고 aliases는 SG, S/G, SG공정, S/G공정, SG 공정, S/G 공정이야.\nprocesses는 OPER_NAME 값 S/G 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:SG 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:WB",
+          "section": "process_groups",
+          "key": "WB",
+          "status": "active",
+          "payload": {
+            "display_name": "W/B",
+            "aliases": [
+              "WB",
+              "W/B",
+              "WB공정",
+              "W/B공정",
+              "WB 공정",
+              "W/B 공정"
+            ],
+            "processes": [
+              "W/B1",
+              "W/B2",
+              "W/B3",
+              "W/B4",
+              "W/B5",
+              "W/B6"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:59.260896+00:00",
+          "registration_trace": {
+            "raw_text": "WB 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WB이며 status는 active야.\ndisplay_name은 W/B이고 aliases는 WB, W/B, WB공정, W/B공정, WB 공정, W/B 공정이야.\nprocesses는 OPER_NAME 값 W/B1, W/B2, W/B3, W/B4, W/B5, W/B6야.\n별칭마다 별도 item을 만들지 말고 process_groups:WB 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:WBM",
+          "section": "process_groups",
+          "key": "WBM",
+          "status": "active",
+          "payload": {
+            "display_name": "W/BM",
+            "aliases": [
+              "WBM",
+              "W/BM",
+              "WBM공정",
+              "W/BM공정",
+              "WBM 공정",
+              "W/BM 공정"
+            ],
+            "processes": [
+              "W/BM"
+            ]
+          },
+          "updated_at": "2026-07-25T13:13:00.688546+00:00",
+          "registration_trace": {
+            "raw_text": "WBM 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WBM이며 status는 active야.\ndisplay_name은 W/BM이고 aliases는 WBM, W/BM, WBM공정, W/BM공정, WBM 공정, W/BM 공정이야.\nprocesses는 OPER_NAME 값 W/BM 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:WBM 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:WEC",
+          "section": "process_groups",
+          "key": "WEC",
+          "status": "active",
+          "payload": {
+            "display_name": "WEC",
+            "aliases": [
+              "WEC",
+              "WEC공정",
+              "WEC 공정"
+            ],
+            "processes": [
+              "WEC1",
+              "WEC2"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:44.109112+00:00",
+          "registration_trace": {
+            "raw_text": "WEC 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WEC이며 status는 active야.\ndisplay_name은 WEC이고 aliases는 WEC, WEC공정, WEC 공정이야.\nprocesses는 OPER_NAME 값 WEC1, WEC2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WEC 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:WET",
+          "section": "process_groups",
+          "key": "WET",
+          "status": "active",
+          "payload": {
+            "display_name": "WET",
+            "aliases": [
+              "WET",
+              "WET공정",
+              "WET 공정"
+            ],
+            "processes": [
+              "WET1",
+              "WET2"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:34.045478+00:00",
+          "registration_trace": {
+            "raw_text": "WET 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WET이며 status는 active야.\ndisplay_name은 WET이고 aliases는 WET, WET공정, WET 공정이야.\nprocesses는 OPER_NAME 값 WET1, WET2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WET 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:WLS",
+          "section": "process_groups",
+          "key": "WLS",
+          "status": "active",
+          "payload": {
+            "display_name": "WLS",
+            "aliases": [
+              "WLS",
+              "WLS공정",
+              "WLS 공정"
+            ],
+            "processes": [
+              "WLS1",
+              "WLS2"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:45.499795+00:00",
+          "registration_trace": {
+            "raw_text": "WLS 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WLS이며 status는 active야.\ndisplay_name은 WLS이고 aliases는 WLS, WLS공정, WLS 공정이야.\nprocesses는 OPER_NAME 값 WLS1, WLS2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WLS 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:WS",
+          "section": "process_groups",
+          "key": "WS",
+          "status": "active",
+          "payload": {
+            "display_name": "WS",
+            "aliases": [
+              "WS",
+              "W/S",
+              "WS공정",
+              "W/S공정",
+              "WS 공정",
+              "W/S 공정"
+            ],
+            "processes": [
+              "W/S1",
+              "W/S2"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:40.698728+00:00",
+          "registration_trace": {
+            "raw_text": "WS 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WS이며 status는 active야.\ndisplay_name은 WS이고 aliases는 WS, W/S, WS공정, W/S공정, WS 공정, W/S 공정이야.\nprocesses는 OPER_NAME 값 W/S1, W/S2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WS 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:process_groups:WSD",
+          "section": "process_groups",
+          "key": "WSD",
+          "status": "active",
+          "payload": {
+            "display_name": "WSD",
+            "aliases": [
+              "WSD",
+              "WSD공정",
+              "WSD 공정"
+            ],
+            "processes": [
+              "WSD1",
+              "WSD2"
+            ]
+          },
+          "updated_at": "2026-07-25T13:12:42.625725+00:00",
+          "registration_trace": {
+            "raw_text": "WSD 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WSD이며 status는 active야.\ndisplay_name은 WSD이고 aliases는 WSD, WSD공정, WSD 공정이야.\nprocesses는 OPER_NAME 값 WSD1, WSD2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WSD 하나로 저장해."
+          }
+        },
+        {
+          "_id": "domain:product_key_columns:standard_product_keys",
+          "section": "product_key_columns",
+          "key": "standard_product_keys",
+          "status": "active",
+          "payload": {
+            "display_name": "표준 제품 키",
+            "columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ]
+          },
+          "updated_at": "2026-07-25T13:13:08.793605+00:00",
+          "registration_trace": {
+            "raw_text": "표준 제품 키를 등록해줘.\nsection은 product_key_columns이고 key는 standard_product_keys이며 status는 active야.\ndisplay_name은 표준 제품 키이고 columns는 TECH, DEN, MODE, PKG_TYPE1, PKG_TYPE2, LEAD, MCP_NO야.\ndataset마다 PKG1, PKG2, PKG_TYP1, PKG_TYP2, DENSITY처럼 물리 컬럼명이 달라도 table catalog의 mapping을 통해 PKG_TYPE1, PKG_TYPE2, DEN 같은 표준 컬럼으로 맞춰 사용해."
+          }
+        },
+        {
+          "_id": "domain:product_terms:2HI_PRODUCT",
+          "section": "product_terms",
+          "key": "2HI_PRODUCT",
+          "status": "active",
+          "payload": {
+            "display_name": "2Hi 제품",
+            "aliases": [
+              "2Hi"
+            ],
+            "conditions": {
+              "TSV_DIE_TYP": {
+                "eq": "2Hi"
+              }
+            }
+          },
+          "updated_at": "2026-07-01T12:25:33.760153+00:00",
+          "registration_trace": {
+            "raw_text": "적층 단수 제품 조건을 등록해줘.\n2Hi 제품은 TSV_DIE_TYP 값이 2Hi인 제품이야.\n4Hi 제품은 TSV_DIE_TYP 값이 4Hi인 제품이야.\n8Hi 제품은 TSV_DIE_TYP 값이 8Hi인 제품이야.\n2Hi, 4Hi, 8Hi 같은 적층 단수 구분은 TSV_DIE_TYP 컬럼 값으로 구분해."
+          }
+        },
+        {
+          "_id": "domain:product_terms:4HI_PRODUCT",
+          "section": "product_terms",
+          "key": "4HI_PRODUCT",
+          "status": "active",
+          "payload": {
+            "display_name": "4Hi 제품",
+            "aliases": [
+              "4Hi"
+            ],
+            "conditions": {
+              "TSV_DIE_TYP": {
+                "eq": "4Hi"
+              }
+            }
+          },
+          "updated_at": "2026-07-01T12:25:33.760153+00:00",
+          "registration_trace": {
+            "raw_text": "적층 단수 제품 조건을 등록해줘.\n2Hi 제품은 TSV_DIE_TYP 값이 2Hi인 제품이야.\n4Hi 제품은 TSV_DIE_TYP 값이 4Hi인 제품이야.\n8Hi 제품은 TSV_DIE_TYP 값이 8Hi인 제품이야.\n2Hi, 4Hi, 8Hi 같은 적층 단수 구분은 TSV_DIE_TYP 컬럼 값으로 구분해."
+          }
+        },
+        {
+          "_id": "domain:product_terms:8HI_PRODUCT",
+          "section": "product_terms",
+          "key": "8HI_PRODUCT",
+          "status": "active",
+          "payload": {
+            "display_name": "8Hi 제품",
+            "aliases": [
+              "8Hi"
+            ],
+            "conditions": {
+              "TSV_DIE_TYP": {
+                "eq": "8Hi"
+              }
+            }
+          },
+          "updated_at": "2026-07-01T12:25:33.760153+00:00",
+          "registration_trace": {
+            "raw_text": "적층 단수 제품 조건을 등록해줘.\n2Hi 제품은 TSV_DIE_TYP 값이 2Hi인 제품이야.\n4Hi 제품은 TSV_DIE_TYP 값이 4Hi인 제품이야.\n8Hi 제품은 TSV_DIE_TYP 값이 8Hi인 제품이야.\n2Hi, 4Hi, 8Hi 같은 적층 단수 구분은 TSV_DIE_TYP 컬럼 값으로 구분해."
+          }
+        },
+        {
+          "_id": "domain:product_terms:AUTO_PRODUCT",
+          "section": "product_terms",
+          "key": "AUTO_PRODUCT",
+          "status": "active",
+          "payload": {
+            "display_name": "AUTO향 제품",
+            "aliases": [
+              "AUTO향",
+              "오토모티브향",
+              "오토향"
+            ],
+            "conditions": [
+              {
+                "column": "MCP_NO",
+                "operator": "is_not_empty"
+              },
+              {
+                "column": "MCP_NO",
+                "operator": "ends_with_any",
+                "value": [
+                  "I",
+                  "O",
+                  "N",
+                  "P",
+                  "Q",
+                  "V"
+                ]
+              }
+            ]
+          },
+          "updated_at": "2026-07-01T12:24:52.156499+00:00",
+          "registration_trace": {
+            "raw_text": "AUTO향 제품 조건을 등록해줘.\nAUTO향, 오토모티브향, 오토향은 MCP_NO 값이 존재하고 MCP_NO 맨 뒷자리 문자가 I, O, N, P, Q, V 중 하나인 제품을 말해."
+          }
+        },
+        {
+          "_id": "domain:product_terms:HBM_3DS_TSV_PRODUCT",
+          "section": "product_terms",
+          "key": "HBM_3DS_TSV_PRODUCT",
+          "status": "active",
+          "payload": {
+            "display_name": "HBM, 3DS, TSV 제품",
+            "aliases": [
+              "HBM",
+              "3DS",
+              "TSV"
+            ],
+            "conditions": [
+              {
+                "column": "TSV_DIE_TYP",
+                "operator": "is_not_null_or_empty"
+              }
+            ]
+          },
+          "updated_at": "2026-07-01T12:25:11.706392+00:00",
+          "registration_trace": {
+            "raw_text": "HBM, 3DS, TSV 제품 조건을 등록해줘.\nHBM, 3DS, TSV 제품은 TSV_DIE_TYP 값이 존재하고 NULL 또는 빈칸이 아닌 제품으로 판단해"
+          }
+        },
+        {
+          "_id": "domain:product_terms:MOBILE_PRODUCT",
+          "section": "product_terms",
+          "key": "MOBILE_PRODUCT",
+          "status": "active",
+          "payload": {
+            "display_name": "MOBILE 제품",
+            "aliases": [
+              "MOBILE 제품",
+              "MOBILE"
+            ],
+            "condition_by_family": {
+              "production": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "field": "MODE",
+                    "operator": "startsWith",
+                    "value": "LP"
+                  },
+                  {
+                    "field": "PKG_TYPE1",
+                    "operator": "in",
+                    "value": [
+                      "LFBGA",
+                      "TFBGA",
+                      "UFBGA",
+                      "VFBGA",
+                      "WFBGA"
+                    ]
+                  },
+                  {
+                    "operator": "or",
+                    "operands": [
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isNull"
+                      },
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isEmpty"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "wip": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "field": "MODE",
+                    "operator": "startsWith",
+                    "value": "LP"
+                  },
+                  {
+                    "field": "PKG_TYPE1",
+                    "operator": "in",
+                    "value": [
+                      "LFBGA",
+                      "TFBGA",
+                      "UFBGA",
+                      "VFBGA",
+                      "WFBGA"
+                    ]
+                  },
+                  {
+                    "operator": "or",
+                    "operands": [
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isNull"
+                      },
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isEmpty"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "lot": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "field": "MODE",
+                    "operator": "startsWith",
+                    "value": "LP"
+                  },
+                  {
+                    "field": "PKG_TYPE1",
+                    "operator": "in",
+                    "value": [
+                      "LFBGA",
+                      "TFBGA",
+                      "UFBGA",
+                      "VFBGA",
+                      "WFBGA"
+                    ]
+                  },
+                  {
+                    "operator": "or",
+                    "operands": [
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isNull"
+                      },
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isEmpty"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "equipment": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "field": "MODE",
+                    "operator": "startsWith",
+                    "value": "LP"
+                  },
+                  {
+                    "field": "PKG_TYPE1",
+                    "operator": "in",
+                    "value": [
+                      "LFBGA",
+                      "TFBGA",
+                      "UFBGA",
+                      "VFBGA",
+                      "WFBGA"
+                    ]
+                  },
+                  {
+                    "operator": "or",
+                    "operands": [
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isNull"
+                      },
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isEmpty"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "capacity": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "field": "MODE",
+                    "operator": "startsWith",
+                    "value": "LP"
+                  },
+                  {
+                    "field": "PKG_TYPE1",
+                    "operator": "in",
+                    "value": [
+                      "LFBGA",
+                      "TFBGA",
+                      "UFBGA",
+                      "VFBGA",
+                      "WFBGA"
+                    ]
+                  },
+                  {
+                    "operator": "or",
+                    "operands": [
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isNull"
+                      },
+                      {
+                        "field": "MCP_NO",
+                        "operator": "isEmpty"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "updated_at": "2026-07-01T12:24:28.915510+00:00",
+          "registration_trace": {
+            "raw_text": "MOBILE 제품 조건을 등록해줘.\nsection은 product_terms이고 key는 MOBILE_PRODUCT야.\ndisplay_name은 MOBILE 제품이고 aliases는 MOBILE 제품, MOBILE이야.\nMOBILE 제품은 MODE가 LP로 시작하고, PKG_TYPE1이 LFBGA, TFBGA, UFBGA, VFBGA, WFBGA 중 하나이며, MCP_NO 값이 NULL이거나 빈칸인 제품이야.\nproduction, wip, lot, equipment, capacity 계열 모두 같은 조건을 condition_by_family로 저장해."
+          }
+        },
+        {
+          "_id": "domain:product_terms:POP",
+          "section": "product_terms",
+          "key": "POP",
+          "status": "active",
+          "payload": {
+            "display_name": "POP 제품",
+            "description": "POP 제품은 MODE가 LP로 시작하고, PKG_TYPE1이 LFBGA, TFBGA, UFBGA, VFBGA, WFBGA 중 하나이며, MCP_NO 값이 존재하고 NULL 또는 빈칸이 아닌 제품입니다.",
+            "conditions": [
+              {
+                "column": "MODE",
+                "operator": "starts_with",
+                "value": "LP"
+              },
+              {
+                "column": "PKG_TYPE1",
+                "operator": "in",
+                "value": [
+                  "LFBGA",
+                  "TFBGA",
+                  "UFBGA",
+                  "VFBGA",
+                  "WFBGA"
+                ]
+              },
+              {
+                "column": "MCP_NO",
+                "operator": "is_not_null_or_empty"
+              }
+            ]
+          },
+          "updated_at": "2026-07-01T12:24:07.343925+00:00",
+          "registration_trace": {
+            "raw_text": "POP 제품 조건을 등록해줘.\nPOP 제품은 MODE가 LP로 시작하고, PKG_TYPE1이 LFBGA, TFBGA, UFBGA, VFBGA, WFBGA 중 하나이며, MCP_NO 값이 존재하고 NULL 또는 빈칸이 아닌 제품이야."
+          }
+        },
+        {
+          "_id": "domain:quantity_terms:equipment_count",
+          "section": "quantity_terms",
+          "key": "equipment_count",
+          "status": "active",
+          "payload": {
+            "display_name": "장비 대수",
+            "aliases": [
+              "장비 대수",
+              "설비 대수",
+              "장비 수",
+              "설비 수",
+              "몇 대"
+            ],
+            "data_source": "equipment",
+            "aggregation_method": "nunique",
+            "columns": [
+              "EQP_ID",
+              "EQPID"
+            ]
+          },
+          "updated_at": "2026-07-01T12:28:57.003114+00:00",
+          "registration_trace": {
+            "raw_text": "수량 용어를 등록해줘.\n재공, 재공수량, WIP, 공정 물량은 wip 계열 데이터의 WIP 컬럼 합계를 의미해.\n\n현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.\n\n생산량, 생산실적, 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\nOUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\n\n특정 공정의 OUTPUT, 실적을 물으면 production 계열 데이터에서 해당 OPER_NAME 조건을 적용하고 PRODUCTION을 집계해.\n\n투입량, INPUT, input, INPUT실적, INPUT생산량, 투입 실적은 PKG INPUT 공정의 생산 실적을 의미하고, production 계열 데이터에서 OPER_NAME 값이 'INPUT'인 행의 PRODUCTION 합계로 계산해.\n\n\n계획, 스케쥴, 스케줄, SCHD, 투입계획, 일별 투입계획, 생산계획은 target 계열 데이터를 의미해.\n계획이나 스케쥴 문자가 질문에 포함되지 않으면 target 계열 데이터는 사용하지 않아.\n\n장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.\n"
+          }
+        },
+        {
+          "_id": "domain:quantity_terms:input_quantity",
+          "section": "quantity_terms",
+          "key": "input_quantity",
+          "status": "active",
+          "payload": {
+            "display_name": "투입량",
+            "aliases": [
+              "투입량",
+              "INPUT",
+              "input",
+              "INPUT실적",
+              "INPUT생산량",
+              "투입 실적"
+            ],
+            "data_source": "production",
+            "column": "PRODUCTION",
+            "aggregation_method": "sum",
+            "filters": [
+              {
+                "column": "OPER_NAME",
+                "operator": "eq",
+                "value": "INPUT"
+              }
+            ]
+          },
+          "updated_at": "2026-07-01T12:28:57.003114+00:00",
+          "registration_trace": {
+            "raw_text": "수량 용어를 등록해줘.\n재공, 재공수량, WIP, 공정 물량은 wip 계열 데이터의 WIP 컬럼 합계를 의미해.\n\n현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.\n\n생산량, 생산실적, 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\nOUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\n\n특정 공정의 OUTPUT, 실적을 물으면 production 계열 데이터에서 해당 OPER_NAME 조건을 적용하고 PRODUCTION을 집계해.\n\n투입량, INPUT, input, INPUT실적, INPUT생산량, 투입 실적은 PKG INPUT 공정의 생산 실적을 의미하고, production 계열 데이터에서 OPER_NAME 값이 'INPUT'인 행의 PRODUCTION 합계로 계산해.\n\n\n계획, 스케쥴, 스케줄, SCHD, 투입계획, 일별 투입계획, 생산계획은 target 계열 데이터를 의미해.\n계획이나 스케쥴 문자가 질문에 포함되지 않으면 target 계열 데이터는 사용하지 않아.\n\n장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.\n"
+          }
+        },
+        {
+          "_id": "domain:quantity_terms:production_quantity",
+          "section": "quantity_terms",
+          "key": "production_quantity",
+          "status": "active",
+          "payload": {
+            "display_name": "생산량",
+            "aliases": [
+              "생산량",
+              "생산실적",
+              "실적",
+              "OUTPUT",
+              "OUT",
+              "Out Put",
+              "output 실적",
+              "out 실적"
+            ],
+            "data_source": "production",
+            "column": "PRODUCTION",
+            "aggregation_method": "sum"
+          },
+          "updated_at": "2026-07-01T12:28:57.003114+00:00",
+          "registration_trace": {
+            "raw_text": "수량 용어를 등록해줘.\n재공, 재공수량, WIP, 공정 물량은 wip 계열 데이터의 WIP 컬럼 합계를 의미해.\n\n현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.\n\n생산량, 생산실적, 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\nOUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\n\n특정 공정의 OUTPUT, 실적을 물으면 production 계열 데이터에서 해당 OPER_NAME 조건을 적용하고 PRODUCTION을 집계해.\n\n투입량, INPUT, input, INPUT실적, INPUT생산량, 투입 실적은 PKG INPUT 공정의 생산 실적을 의미하고, production 계열 데이터에서 OPER_NAME 값이 'INPUT'인 행의 PRODUCTION 합계로 계산해.\n\n\n계획, 스케쥴, 스케줄, SCHD, 투입계획, 일별 투입계획, 생산계획은 target 계열 데이터를 의미해.\n계획이나 스케쥴 문자가 질문에 포함되지 않으면 target 계열 데이터는 사용하지 않아.\n\n장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.\n"
+          }
+        },
+        {
+          "_id": "domain:quantity_terms:target_data",
+          "section": "quantity_terms",
+          "key": "target_data",
+          "status": "active",
+          "payload": {
+            "display_name": "계획",
+            "aliases": [
+              "계획",
+              "스케쥴",
+              "스케줄",
+              "SCHD",
+              "투입계획",
+              "일별 투입계획",
+              "생산계획"
+            ],
+            "data_source": "target",
+            "usage_condition": "질문에 '계획' 또는 '스케쥴' 문자가 포함된 경우에만 사용"
+          },
+          "updated_at": "2026-07-01T12:28:57.003114+00:00",
+          "registration_trace": {
+            "raw_text": "수량 용어를 등록해줘.\n재공, 재공수량, WIP, 공정 물량은 wip 계열 데이터의 WIP 컬럼 합계를 의미해.\n\n현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.\n\n생산량, 생산실적, 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\nOUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\n\n특정 공정의 OUTPUT, 실적을 물으면 production 계열 데이터에서 해당 OPER_NAME 조건을 적용하고 PRODUCTION을 집계해.\n\n투입량, INPUT, input, INPUT실적, INPUT생산량, 투입 실적은 PKG INPUT 공정의 생산 실적을 의미하고, production 계열 데이터에서 OPER_NAME 값이 'INPUT'인 행의 PRODUCTION 합계로 계산해.\n\n\n계획, 스케쥴, 스케줄, SCHD, 투입계획, 일별 투입계획, 생산계획은 target 계열 데이터를 의미해.\n계획이나 스케쥴 문자가 질문에 포함되지 않으면 target 계열 데이터는 사용하지 않아.\n\n장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.\n"
+          }
+        },
+        {
+          "_id": "domain:quantity_terms:wip_boh_quantity",
+          "section": "quantity_terms",
+          "key": "wip_boh_quantity",
+          "status": "active",
+          "payload": {
+            "display_name": "BOH 재공",
+            "aliases": [
+              "아침 재공",
+              "BOH 재공",
+              "BOH",
+              "07시 기준 재공",
+              "7시 기준 재공"
+            ],
+            "data_source": "wip",
+            "column": "WIP",
+            "aggregation_method": "sum"
+          },
+          "updated_at": "2026-07-01T14:30:49.138632+00:00",
+          "registration_trace": {
+            "raw_text": "BOH 재공과 아침 재공 기준일 규칙을 등록해줘.\n아침 재공, BOH 재공, BOH, 07시 기준 재공, 7시 기준 재공은 하루 시작 시점의 재공을 뜻해.\n재공 이력 테이블의 DATE는 해당 일자의 EOH, 즉 끝나는 시점 재공이야.\n그래서 특정 일자의 BOH 재공은 그 전일 DATE의 wip 이력 데이터를 조회해야 해.\n예를 들어 6/20 아침 재공, 6/20 BOH 재공, 6/20 07시 기준 재공은 wip 이력 데이터에 DATE=6/19를 넣어 조회한 결과가 6/20 BOH 값이야.\n오늘 또는 금일 아침 재공, 오늘 BOH, 금일 07시 기준 재공은 wip_today를 사용하지 않고 wip 이력 데이터에 어제 DATE를 넣어 조회해.\n반대로 현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.\n특정 일자의 EOH 재공, 마감 재공, 종료 재공을 물으면 wip 이력 데이터에 해당 일자 DATE를 그대로 넣어 조회해.\n분석 계획에서는 사용자가 요청한 기준일과 실제 조회 DATE를 구분해. 결과에는 BOH 기준일을 표시하고, retrieval job의 DATE 파라미터에는 기준일의 전일을 넣어."
+          }
+        },
+        {
+          "_id": "domain:quantity_terms:wip_eoh_quantity",
+          "section": "quantity_terms",
+          "key": "wip_eoh_quantity",
+          "status": "active",
+          "payload": {
+            "display_name": "EOH 재공",
+            "aliases": [
+              "EOH 재공",
+              "마감 재공",
+              "종료 재공"
+            ],
+            "data_source": "wip",
+            "column": "WIP",
+            "aggregation_method": "sum"
+          },
+          "updated_at": "2026-07-01T14:30:49.138632+00:00",
+          "registration_trace": {
+            "raw_text": "BOH 재공과 아침 재공 기준일 규칙을 등록해줘.\n아침 재공, BOH 재공, BOH, 07시 기준 재공, 7시 기준 재공은 하루 시작 시점의 재공을 뜻해.\n재공 이력 테이블의 DATE는 해당 일자의 EOH, 즉 끝나는 시점 재공이야.\n그래서 특정 일자의 BOH 재공은 그 전일 DATE의 wip 이력 데이터를 조회해야 해.\n예를 들어 6/20 아침 재공, 6/20 BOH 재공, 6/20 07시 기준 재공은 wip 이력 데이터에 DATE=6/19를 넣어 조회한 결과가 6/20 BOH 값이야.\n오늘 또는 금일 아침 재공, 오늘 BOH, 금일 07시 기준 재공은 wip_today를 사용하지 않고 wip 이력 데이터에 어제 DATE를 넣어 조회해.\n반대로 현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.\n특정 일자의 EOH 재공, 마감 재공, 종료 재공을 물으면 wip 이력 데이터에 해당 일자 DATE를 그대로 넣어 조회해.\n분석 계획에서는 사용자가 요청한 기준일과 실제 조회 DATE를 구분해. 결과에는 BOH 기준일을 표시하고, retrieval job의 DATE 파라미터에는 기준일의 전일을 넣어."
+          }
+        },
+        {
+          "_id": "domain:quantity_terms:wip_quantity",
+          "section": "quantity_terms",
+          "key": "wip_quantity",
+          "status": "active",
+          "payload": {
+            "display_name": "재공수량",
+            "aliases": [
+              "재공",
+              "재공수량",
+              "WIP",
+              "공정 물량"
+            ],
+            "data_source": "wip",
+            "column": "WIP",
+            "aggregation_method": "sum"
+          },
+          "updated_at": "2026-07-01T12:28:57.003114+00:00",
+          "registration_trace": {
+            "raw_text": "수량 용어를 등록해줘.\n재공, 재공수량, WIP, 공정 물량은 wip 계열 데이터의 WIP 컬럼 합계를 의미해.\n\n현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.\n\n생산량, 생산실적, 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\nOUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\n\n특정 공정의 OUTPUT, 실적을 물으면 production 계열 데이터에서 해당 OPER_NAME 조건을 적용하고 PRODUCTION을 집계해.\n\n투입량, INPUT, input, INPUT실적, INPUT생산량, 투입 실적은 PKG INPUT 공정의 생산 실적을 의미하고, production 계열 데이터에서 OPER_NAME 값이 'INPUT'인 행의 PRODUCTION 합계로 계산해.\n\n\n계획, 스케쥴, 스케줄, SCHD, 투입계획, 일별 투입계획, 생산계획은 target 계열 데이터를 의미해.\n계획이나 스케쥴 문자가 질문에 포함되지 않으면 target 계열 데이터는 사용하지 않아.\n\n장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.\n"
+          }
+        },
+        {
+          "_id": "domain:quantity_terms:wip_today_quantity",
+          "section": "quantity_terms",
+          "key": "wip_today_quantity",
+          "status": "active",
+          "payload": {
+            "display_name": "현재 재공",
+            "aliases": [
+              "현재 재공",
+              "지금 재공",
+              "금일 현재 재공"
+            ],
+            "data_source": "wip_today"
+          },
+          "updated_at": "2026-07-01T12:28:57.003114+00:00",
+          "registration_trace": {
+            "raw_text": "수량 용어를 등록해줘.\n재공, 재공수량, WIP, 공정 물량은 wip 계열 데이터의 WIP 컬럼 합계를 의미해.\n\n현재 재공, 지금 재공, 금일 현재 재공은 wip_today 계열 데이터를 사용해.\n\n생산량, 생산실적, 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\nOUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터의 PRODUCTION 컬럼 합계를 의미해.\n\n특정 공정의 OUTPUT, 실적을 물으면 production 계열 데이터에서 해당 OPER_NAME 조건을 적용하고 PRODUCTION을 집계해.\n\n투입량, INPUT, input, INPUT실적, INPUT생산량, 투입 실적은 PKG INPUT 공정의 생산 실적을 의미하고, production 계열 데이터에서 OPER_NAME 값이 'INPUT'인 행의 PRODUCTION 합계로 계산해.\n\n\n계획, 스케쥴, 스케줄, SCHD, 투입계획, 일별 투입계획, 생산계획은 target 계열 데이터를 의미해.\n계획이나 스케쥴 문자가 질문에 포함되지 않으면 target 계열 데이터는 사용하지 않아.\n\n장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.\n"
+          }
+        },
+        {
+          "_id": "domain:status_terms:SHIFT_A",
+          "section": "status_terms",
+          "key": "SHIFT_A",
+          "status": "active",
+          "payload": {
+            "display_name": "Shift A조",
+            "aliases": [
+              "Shift A조",
+              "SHIFT A조",
+              "Shift A",
+              "SHIFT A",
+              "A조",
+              "1조",
+              "07:00~15:00",
+              "07:00 ~ 15:00",
+              "07:00-15:00",
+              "07시부터 15시까지",
+              "7시부터 15시까지"
+            ],
+            "condition": {
+              "SHIFT": "1"
+            }
+          },
+          "updated_at": "2026-07-17T08:51:58.995297+00:00",
+          "registration_trace": {
+            "raw_text": "Shift와 조 조건을 등록해줘.\nSHIFT_A 상태 조건을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 status_terms이고 key는 SHIFT_A이며 status는 active야.\ndisplay_name은 Shift A조야.\naliases는 Shift A조, SHIFT A조, Shift A, SHIFT A, A조, 1조, 07:00~15:00, 07:00 ~ 15:00, 07:00-15:00, 07시부터 15시까지, 7시부터 15시까지야.\ncondition은 {\"SHIFT\": \"1\"}로 저장해. 즉 모든 aliases는 SHIFT=1을 뜻해.\nA조, 1조, 시간대 표현마다 별도 status item을 만들지 말고 status_terms:SHIFT_A 하나로 저장해.\nShift B조, B조, 2조는 같은 의미이고 SHIFT 값이 2인 데이터를 뜻해.\n15:00~23:00, 15:00 ~ 23:00, 15:00-23:00, 15시부터 23시까지라고 말하면 B조 조건으로 해석해.\nShift C조, C조, 3조는 같은 의미이고 SHIFT 값이 3인 데이터를 뜻해.\n23:00~07:00, 23:00 ~ 07:00, 23:00-07:00, 23시부터 다음날 7시까지라고 말하면 C조 조건으로 해석해.\n조별 실적, Shift별 실적, A조 실적처럼 물으면 해당 SHIFT 조건을 필터로 사용해."
+          }
+        },
+        {
+          "_id": "domain:status_terms:SHIFT_B",
+          "section": "status_terms",
+          "key": "SHIFT_B",
+          "status": "active",
+          "payload": {
+            "display_name": "Shift B조",
+            "aliases": [
+              "Shift B조",
+              "B조",
+              "2조",
+              "15:00~23:00",
+              "15:00 ~ 23:00",
+              "15:00-23:00",
+              "15시부터 23시까지"
+            ],
+            "condition": {
+              "SHIFT": "2"
+            }
+          },
+          "updated_at": "2026-07-17T08:51:58.995297+00:00",
+          "registration_trace": {
+            "raw_text": "Shift와 조 조건을 등록해줘.\nSHIFT_A 상태 조건을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 status_terms이고 key는 SHIFT_A이며 status는 active야.\ndisplay_name은 Shift A조야.\naliases는 Shift A조, SHIFT A조, Shift A, SHIFT A, A조, 1조, 07:00~15:00, 07:00 ~ 15:00, 07:00-15:00, 07시부터 15시까지, 7시부터 15시까지야.\ncondition은 {\"SHIFT\": \"1\"}로 저장해. 즉 모든 aliases는 SHIFT=1을 뜻해.\nA조, 1조, 시간대 표현마다 별도 status item을 만들지 말고 status_terms:SHIFT_A 하나로 저장해.\nShift B조, B조, 2조는 같은 의미이고 SHIFT 값이 2인 데이터를 뜻해.\n15:00~23:00, 15:00 ~ 23:00, 15:00-23:00, 15시부터 23시까지라고 말하면 B조 조건으로 해석해.\nShift C조, C조, 3조는 같은 의미이고 SHIFT 값이 3인 데이터를 뜻해.\n23:00~07:00, 23:00 ~ 07:00, 23:00-07:00, 23시부터 다음날 7시까지라고 말하면 C조 조건으로 해석해.\n조별 실적, Shift별 실적, A조 실적처럼 물으면 해당 SHIFT 조건을 필터로 사용해."
+          }
+        },
+        {
+          "_id": "domain:status_terms:SHIFT_C",
+          "section": "status_terms",
+          "key": "SHIFT_C",
+          "status": "active",
+          "payload": {
+            "display_name": "Shift C조",
+            "aliases": [
+              "Shift C조",
+              "C조",
+              "3조",
+              "23:00~07:00",
+              "23:00 ~ 07:00",
+              "23:00-07:00",
+              "23시부터 다음날 7시까지"
+            ],
+            "condition": {
+              "SHIFT": "3"
+            }
+          },
+          "updated_at": "2026-07-17T08:51:58.995297+00:00",
+          "registration_trace": {
+            "raw_text": "Shift와 조 조건을 등록해줘.\nSHIFT_A 상태 조건을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 status_terms이고 key는 SHIFT_A이며 status는 active야.\ndisplay_name은 Shift A조야.\naliases는 Shift A조, SHIFT A조, Shift A, SHIFT A, A조, 1조, 07:00~15:00, 07:00 ~ 15:00, 07:00-15:00, 07시부터 15시까지, 7시부터 15시까지야.\ncondition은 {\"SHIFT\": \"1\"}로 저장해. 즉 모든 aliases는 SHIFT=1을 뜻해.\nA조, 1조, 시간대 표현마다 별도 status item을 만들지 말고 status_terms:SHIFT_A 하나로 저장해.\nShift B조, B조, 2조는 같은 의미이고 SHIFT 값이 2인 데이터를 뜻해.\n15:00~23:00, 15:00 ~ 23:00, 15:00-23:00, 15시부터 23시까지라고 말하면 B조 조건으로 해석해.\nShift C조, C조, 3조는 같은 의미이고 SHIFT 값이 3인 데이터를 뜻해.\n23:00~07:00, 23:00 ~ 07:00, 23:00-07:00, 23시부터 다음날 7시까지라고 말하면 C조 조건으로 해석해.\n조별 실적, Shift별 실적, A조 실적처럼 물으면 해당 SHIFT 조건을 필터로 사용해."
+          }
+        }
+      ]
+    }
+  }
+}

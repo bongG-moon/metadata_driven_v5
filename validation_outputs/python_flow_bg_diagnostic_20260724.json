@@ -1,0 +1,495 @@
+{
+  "status": "error",
+  "mode": "full_pipeline",
+  "environment": {
+    "repository": "C:\\Users\\qkekt\\Desktop\\metadata_driven_v5",
+    "reference_date": "20260701",
+    "retrieval_mode": "dummy",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-2.5-flash",
+    "llm_temperature": 0.0,
+    "llm_timeout_seconds": 60,
+    "secrets": {
+      "mongodb_uri_configured": true,
+      "google_api_key_configured": true
+    },
+    "mongodb": {
+      "database": "datagov",
+      "collections": {
+        "domain": "agent_v4_domain_items",
+        "table_catalog": "agent_v4_table_catalog_items",
+        "main_flow_filter": "agent_v4_main_flow_filters"
+      },
+      "loaded_counts": {
+        "domain": 72,
+        "table_catalog": 9,
+        "main_flow_filter": 17
+      }
+    },
+    "prompt_sources": {
+      "intent": {
+        "path": "langflow_components\\data_analysis_flow\\03_intent_prompt_template_ko.md",
+        "chars": 10220,
+        "sha256": "ab11fe6fbff8ea348c30017a16db1b6f1827b2ed356e69663a16f31483ae5a41"
+      },
+      "specialized_intent": {
+        "path": "langflow_components\\data_analysis_flow\\specialized_prompt_input_example_ko.md",
+        "chars": 5073,
+        "sha256": "0d135a2d136213f146aed9c3e6a681e2b898af357bb4599794c138b2b3ddbafb"
+      },
+      "pandas": {
+        "path": "langflow_components\\data_analysis_flow\\16_pandas_prompt_template_ko.md",
+        "chars": 6837,
+        "sha256": "f4aaaf58ec80086cdaf3cb30b7c92ff40136c6c1a5b178a70958055be7700928"
+      },
+      "pandas_repair": {
+        "path": "langflow_components\\data_analysis_flow\\17b_pandas_repair_prompt_template_ko.md",
+        "chars": 5424,
+        "sha256": "9253c77c154d7a5fb4348acc8370b1a11a86da668ab488b31eee2a794aa4c140"
+      },
+      "answer": {
+        "path": "langflow_components\\data_analysis_flow\\19_answer_prompt_template_ko.md",
+        "chars": 2065,
+        "sha256": "60f183e4f4ba315ecb5e6410d5a4e3325e3ca8d64ab9943d3ee52742fb8b5da3"
+      }
+    }
+  },
+  "results": [
+    {
+      "question": "RG 32G DDR4 FBGA 96 DDP 제품 BG공정에서 생산량과 재공수량 알려줘",
+      "status": "error",
+      "elapsed_seconds": 62.777,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 5,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "quantity_terms:production_quantity",
+          "pandas_function_cases:calculate_input_production",
+          "pandas_function_cases:calculate_production_total",
+          "analysis_recipes:production_achievement_rate_analysis",
+          "metric_terms:production_achievement_rate",
+          "quantity_terms:wip_quantity",
+          "metric_terms:WIP_QUANTITY_SUM",
+          "product_terms:MOBILE_PRODUCT",
+          "product_key_columns:standard_product_keys",
+          "product_terms:POP"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "production",
+          "wip_today",
+          "wip",
+          "lot_status"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 34366,
+        "analysis_kind": "product_process_quantity_summary",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "product_process_quantity_summary",
+          "request_scope": "new_analysis",
+          "reuse_strategy": "none",
+          "condition_resolution": {
+            "new": {
+              "product_tokens": "RG 32G DDR4 FBGA 96 DDP",
+              "OPER_NAME": "BG",
+              "DATE": "20260701"
+            }
+          },
+          "pandas_function_cases": [
+            {
+              "key": "product_token_match_production",
+              "function_name": "match_product_tokens",
+              "input_text": "RG 32G DDR4 FBGA 96 DDP",
+              "source_alias": "production_data"
+            },
+            {
+              "key": "product_token_match_wip",
+              "function_name": "match_product_tokens",
+              "input_text": "RG 32G DDR4 FBGA 96 DDP",
+              "source_alias": "wip_data"
+            }
+          ],
+          "retrieval_jobs": [
+            {
+              "dataset_key": "production_today",
+              "source_alias": "production_data",
+              "required_params": {
+                "DATE": "20260701"
+              },
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "eq",
+                  "value": "BG"
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "--쿼리 작성\nSELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ, PRODUCTION \nFROM PROD_TABLE\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:production_today",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "standard_column_aliases": {
+                "QUANTITY": "PRODUCTION"
+              },
+              "job_id": "job_1"
+            },
+            {
+              "dataset_key": "wip_today",
+              "source_alias": "wip_data",
+              "required_params": {
+                "DATE": "20260701"
+              },
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "eq",
+                  "value": "BG"
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ\n        , WIP\nFROM WIP_TABLE\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:wip_today",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "standard_column_aliases": {
+                "QUANTITY": [
+                  "WIP"
+                ]
+              },
+              "job_id": "job_2"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "operation": "apply_pandas_function_case",
+              "function_case_key": "product_token_match_production",
+              "function_name": "match_product_tokens",
+              "input_text": "RG 32G DDR4 FBGA 96 DDP",
+              "source_alias": "production_data"
+            },
+            {
+              "operation": "apply_pandas_function_case",
+              "function_case_key": "product_token_match_wip",
+              "function_name": "match_product_tokens",
+              "input_text": "RG 32G DDR4 FBGA 96 DDP",
+              "source_alias": "wip_data"
+            },
+            {
+              "operation": "aggregate",
+              "source_alias": "production_data",
+              "aggregations": [
+                {
+                  "column": "PRODUCTION",
+                  "method": "sum",
+                  "alias": "생산량"
+                }
+              ]
+            },
+            {
+              "operation": "aggregate",
+              "source_alias": "wip_data",
+              "aggregations": [
+                {
+                  "column": "WIP",
+                  "method": "sum",
+                  "alias": "재공수량"
+                }
+              ]
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "metric_columns": [
+              "생산량",
+              "재공수량"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero"
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "quantity_terms",
+            "key": "production_quantity"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "wip_quantity"
+          },
+          {
+            "section": "main_flow_filters",
+            "key": "OPER_NAME"
+          },
+          {
+            "section": "runtime_function_helpers",
+            "key": "match_product_tokens"
+          },
+          {
+            "section": "table_catalog_items",
+            "key": "production_today"
+          },
+          {
+            "section": "table_catalog_items",
+            "key": "wip_today"
+          },
+          {
+            "type": "table_catalog",
+            "key": "production_today"
+          },
+          {
+            "type": "table_catalog",
+            "key": "wip_today"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "production_today",
+            "source_alias": "production_data",
+            "status": "ok",
+            "row_count": 74,
+            "applied_params": {
+              "DATE": "20260701"
+            },
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "eq",
+                "value": "BG"
+              }
+            }
+          },
+          {
+            "dataset_key": "wip_today",
+            "source_alias": "wip_data",
+            "status": "ok",
+            "row_count": 53,
+            "applied_params": {
+              "DATE": "20260701"
+            },
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "eq",
+                "value": "BG"
+              }
+            }
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 28611,
+        "status": "ok",
+        "repair_attempted": false,
+        "generated_code": "_filtered_source_1_production_data = sources.get('production_data')\nif _filtered_source_1_production_data is not None:\n    sources = dict(sources)\n    _filtered_source_1_production_data = _filtered_source_1_production_data.copy()\n    _filter_col_1_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_1_production_data.columns else ('OPER_NM' if 'OPER_NM' in _filtered_source_1_production_data.columns else (''))\n    _filter_values_1_1 = ['BG']\n    if _filter_col_1_1:\n        _filtered_source_1_production_data = _filtered_source_1_production_data[_filtered_source_1_production_data[_filter_col_1_1].isin(_filter_values_1_1)]\n    sources['production_data'] = _filtered_source_1_production_data\n_filtered_source_2_wip_data = sources.get('wip_data')\nif _filtered_source_2_wip_data is not None:\n    sources = dict(sources)\n    _filtered_source_2_wip_data = _filtered_source_2_wip_data.copy()\n    _filter_col_2_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_2_wip_data.columns else ('OPER_NM' if 'OPER_NM' in _filtered_source_2_wip_data.columns else (''))\n    _filter_values_2_1 = ['BG']\n    if _filter_col_2_1:\n        _filtered_source_2_wip_data = _filtered_source_2_wip_data[_filtered_source_2_wip_data[_filter_col_2_1].isin(_filter_values_2_1)]\n    sources['wip_data'] = _filtered_source_2_wip_data\n\ndef match_product_tokens(input_text, frame, token_columns=None, output_order=None):\n    # 원본 DataFrame을 변경하지 않기 위해 copy본에서 필터링을 수행한다.\n    result = frame.copy()\n    if result.empty:\n        return result\n\n    # 비교 안정성을 위해 값에서 영문/숫자만 남기고 대문자로 정규화한다.\n    # 함수 설명: `_norm()`는 제품 token 비교를 위해 값을 영문·숫자 중심의 표준 문자열로 정규화합니다.\n    def _norm(value):\n        text = str('' if value is None else value).strip().upper()\n        if '.' in text:\n            left, right = text.split('.', 1)\n            if left.lstrip('-').isdigit() and right and all(ch == '0' for ch in right):\n                text = left\n        return ''.join(ch for ch in text if ('A' <= ch <= 'Z') or ('0' <= ch <= '9'))\n\n    # LEAD 컬럼은 현업 질문/원천값에서 78Lead, 152ball처럼 단위/설명이 붙는 경우가 있다.\n    # 이 suffix는 LEAD 역할 비교에만 제거하고 다른 제품 속성에는 적용하지 않는다.\n    # 함수 설명: `_lead_norm()`는 LEAD 값에서 Lead/Ball suffix를 제거해 숫자 역할 값으로 비교할 수 있게 합니다.\n    def _lead_norm(value):\n        text = _norm(value)\n        for suffix in ('LEAD', 'BALL'):\n            if text.endswith(suffix):\n                return text[:-len(suffix)]\n        return text\n\n    # 함수 설명: `_lead_suffix_number()`는 Lead/Ball 단위 접미사가 붙은 표현에서 앞쪽 숫자만 추출합니다.\n    def _lead_suffix_number(value):\n        text = _norm(value)\n        for suffix in ('LEAD', 'BALL'):\n            if text.endswith(suffix) and text[:-len(suffix)].isdigit():\n                return text[:-len(suffix)]\n        return ''\n\n    # 컬럼명은 PKG_TYPE1, MCP NO처럼 표기 차이가 있어도 같은 key로 비교한다。\n    # 함수 설명: `_col_key()`는 컬럼명 표기 차이를 대문자 underscore key로 정규화합니다.\n    def _col_key(value):\n        text = str(value).upper()\n        chars = []\n        prev_sep = False\n        for ch in text:\n            if ('A' <= ch <= 'Z') or ('0' <= ch <= '9'):\n                chars.append(ch)\n                prev_sep = False\n            elif not prev_sep:\n                chars.append('_')\n                prev_sep = True\n        return ''.join(chars).strip('_')\n\n    # 사용자 입력 문장에서 제품 식별에 필요한 token만 추출한다.\n    # 공정/수량/일자처럼 제품 속성이 아닌 흔한 단어는 stopwords로 제거한다.\n    # 함수 설명: `_tokens()`는 문자열을 비교 가능한 검색 token 목록으로 분리·정규화합니다.\n    def _tokens(value):\n        stopwords = {'PRODUCT', 'DEVICE', 'PKG', 'WIP', 'INPUT', 'OUTPUT', 'OUT', 'PRODUCTION', 'TODAY', 'YESTERDAY', 'WB', 'FCB', 'BG', 'SBM'}\n        raw_items = []\n        current = ''\n        for ch in str(value or '').upper():\n            if ('A' <= ch <= 'Z') or ('0' <= ch <= '9') or ch in '-_/':\n                current += ch\n            else:\n                if current:\n                    raw_items.append(current)\n                    current = ''\n        if current:\n            raw_items.append(current)\n        result_tokens = []\n        for item in raw_items:\n            cleaned = item.strip('-_/')\n            if cleaned and cleaned not in stopwords and cleaned not in result_tokens:\n                result_tokens.append(cleaned)\n        return result_tokens\n\n    # 표준 제품 속성 역할과 실제 데이터 컬럼 alias를 연결한다.\n    role_aliases = {\n        'TECH': {'TECH'},\n        'DEN': {'DEN', 'DENSITY'},\n        'MODE': {'MODE'},\n        'PKG1': {'PKG_TYPE1', 'PKG1', 'PKG_TYP1'},\n        'PKG2': {'PKG_TYPE2', 'PKG2', 'PKG_TYP2'},\n        'LEAD': {'LEAD'},\n        'MCP_NO': {'MCP_NO', 'MCPNO', 'MCP_SALES_NO', 'MCP_SALE_CD', 'MCPSALENO'},\n        'DEVICE': {'DEVICE'},\n        'DEVICE_DESC': {'DEVICE_DESC'},\n        'TSV_DIE_TYP': {'TSV_DIE_TYP', 'TSV_DIE_TYPE'},\n        'ORG': {'ORG', 'ORGANIZ_CD'},\n        'FAMILY': {'FAMILY'},\n    }\n\n    # token_columns가 주어지면 해당 컬럼만 사용하고, 없으면 알려진 제품 속성 컬럼만 자동 선택한다.\n    requested = token_columns if token_columns not in (None, '', [], {}) else []\n    if requested and not isinstance(requested, (list, tuple, set)):\n        requested = [requested]\n    known_aliases = {alias for aliases in role_aliases.values() for alias in aliases}\n    columns = [str(column) for column in requested if str(column) in result.columns] if requested else [str(column) for column in result.columns if _col_key(column) in known_aliases]\n    groups = [_tokens(part) for part in str(input_text or '').split(',')]\n    groups = [group for group in groups if group]\n    if not columns or not groups:\n        return result\n\n    columns_by_role = {role: [] for role in role_aliases}\n    columns_by_role['ALL'] = list(columns)\n    alias_to_role = {alias: role for role, aliases in role_aliases.items() for alias in aliases}\n    column_to_role = {}\n    for column in columns:\n        role = alias_to_role.get(_col_key(column))\n        if role:\n            column_to_role[column] = role\n            columns_by_role[role].append(column)\n\n    # 컬럼별 값을 미리 정규화해 token 매칭을 반복해도 같은 전처리를 다시 하지 않게 한다.\n    normalized_values = {\n        column: result[column].map(_lead_norm if column_to_role.get(column) == 'LEAD' else _norm)\n        for column in columns\n    }\n\n    # 함수 설명: `_has_rows()`는 pandas boolean mask에 실제로 선택된 행이 하나 이상 있는지 확인합니다.\n    def _has_rows(mask):\n        return mask is not None and bool(mask.any())\n\n    # 지정한 역할군의 컬럼들에서 token을 exact 또는 prefix 방식으로 찾는다.\n    # 함수 설명: `_match()`는 선택한 제품 역할 컬럼들을 exact·contains·prefix 방식으로 OR 매칭합니다.\n    def _match(roles, token, mode):\n        selected_columns = []\n        for role in roles:\n            for column in columns_by_role.get(role, []):\n                if column not in selected_columns:\n                    selected_columns.append(column)\n        combined = None\n        for column in selected_columns:\n            values = normalized_values[column]\n            compare_token = _lead_norm(token) if column_to_role.get(column) == 'LEAD' else token\n            if mode == 'exact':\n                current = values == compare_token\n            elif mode == 'contains':\n                current = values.str.contains(compare_token, na=False, regex=False)\n            elif mode == 'starts_with':\n                current = values.str.startswith(compare_token, na=False)\n            else:\n                current = values == compare_token\n            combined = current if combined is None else (combined | current)\n        return combined\n\n    # token 하나를 DataFrame mask로 변환한다.\n    # 특수 규칙은 여기서 처리한다.\n    # 함수 설명: `_token_mask()`는 제품 token 하나를 역할별 컬럼 조건이 반영된 DataFrame boolean mask로 변환합니다.\n    def _token_mask(raw_token):\n        raw_text = str(raw_token or '').strip().upper()\n        token = _norm(raw_text)\n        if not token:\n            return None\n\n        # 숫자+lead/ball 표현은 LEAD 역할 전용 token으로 처리한다. 예: 78Lead, 152ball.\n        lead_suffix_number = _lead_suffix_number(raw_text)\n        if lead_suffix_number:\n            return _match(['LEAD'], lead_suffix_number, 'exact')\n\n        # FC+숫자: PKG1은 FCBGA이고 LEAD는 숫자 부분이다. 예: FC12, FC78, FC344.\n        if token.startswith('FC') and token[2:].isdigit():\n            pkg_mask = _match(['PKG1'], 'FCBGA', 'exact')\n            lead_mask = _match(['LEAD'], token[2:], 'exact')\n            return None if pkg_mask is None or lead_mask is None else (pkg_mask & lead_mask)\n\n        # F+숫자: FCBGA/VFBGA/UFBGA 등 package 종류를 특정하지 않고 LEAD만 적용한다. 예: F12, F78, F344.\n        if token.startswith('F') and token[1:].isdigit():\n            return _match(['LEAD'], token[1:], 'exact')\n\n        # 영문 1자리-숫자3자리(+선택 영숫자) 패턴: MCP_NO 앞부분 입력으로 보고 prefix 조건으로 매칭한다. 예: L-218, B-123, Z-000.\n        if _looks_mcp_no_prefix(raw_text):\n            return _match(['MCP_NO'], token, 'starts_with')\n\n        # X+숫자: 우선 ORG 컬럼에서 x를 제거한 숫자로 매칭한다. 예: x8, X16, x24.\n        if token.startswith('X') and token[1:].isdigit():\n            return _match(['ORG'], token[1:], 'exact')\n\n        # token 모양으로 컬럼 역할을 먼저 제한하지 않고, 모든 구조화 제품 후보 속성 컬럼에서 exact 매칭한다.\n        # DEVICE_DESC는 자유 텍스트 설명 컬럼이므로 token 포함 여부를 보조적으로 확인한다.\n        matched = _match(['ALL'], token, 'exact')\n        desc_matched = _match(['DEVICE_DESC'], token, 'contains')\n        if matched is None:\n            matched = desc_matched\n        elif desc_matched is not None:\n            matched = matched | desc_matched\n        return matched if _has_rows(matched) else None\n\n    # 함수 설명: `_looks_mcp_no_prefix()`는 입력 token이 영문 1자리-숫자 3자리 형태의 MCP_NO prefix인지 판정합니다.\n    def _looks_mcp_no_prefix(value):\n        text = str(value or '').strip().upper()\n        if '-' not in text:\n            return False\n        prefix, suffix = text.split('-', 1)\n        if len(prefix) != 1 or not ('A' <= prefix <= 'Z'):\n            return False\n        if len(suffix) < 3 or not suffix[:3].isdigit():\n            return False\n        return all(('A' <= ch <= 'Z') or ('0' <= ch <= '9') for ch in suffix[3:])\n\n    # 콤마로 나뉜 제품 묶음은 OR로 결합하고, 한 제품 안의 token들은 AND로 결합한다.\n    final_mask = None\n    for group in groups:\n        group_mask = None\n        group_failed = False\n        for token in group:\n            current = _token_mask(token)\n            if current is None:\n                group_failed = True\n                break\n            group_mask = current if group_mask is None else (group_mask & current)\n        if (group_failed or group_mask is None) and group:\n            group_mask = result.index.to_series().map(lambda _: False)\n        if group_mask is not None:\n            final_mask = group_mask if final_mask is None else (final_mask | group_mask)\n\n    filtered = result if final_mask is None else result[final_mask].copy()\n\n    # 필요하면 결과 컬럼 순서를 호출자가 지정한 순서로 정리한다.\n    ordered_columns = output_order if output_order not in (None, '', [], {}) else []\n    if ordered_columns and not isinstance(ordered_columns, (list, tuple, set)):\n        ordered_columns = [ordered_columns]\n    ordered_columns = [column for column in ordered_columns if column in filtered.columns]\n    if ordered_columns:\n        rest = [column for column in filtered.columns if column not in ordered_columns]\n        filtered = filtered[ordered_columns + rest]\n    try:\n        record_function_case_result('match_product_tokens', input_text, filtered, '제품 속성 token 매칭 결과')\n    except Exception:\n        pass\n    return filtered\n\n# Load dataframes\ndf_production = sources[\"production_data\"]\ndf_wip = sources[\"wip_data\"]\n\n# Apply product token matching\ninput_product_tokens = \"RG 32G DDR4 FBGA 96 DDP\"\n\nfiltered_production_data = match_product_tokens(input_product_tokens, df_production)\nfiltered_wip_data = match_product_tokens(input_product_tokens, df_wip)\n\n# Aggregate production quantity\nproduction_sum = 0\nif \"PRODUCTION\" in filtered_production_data.columns and not filtered_production_data.empty:\n    production_sum = pd.to_numeric(filtered_production_data[\"PRODUCTION\"], errors='coerce').fillna(0).sum()\n\n# Aggregate WIP quantity\nwip_sum = 0\nif \"WIP\" in filtered_wip_data.columns and not filtered_wip_data.empty:\n    wip_sum = pd.to_numeric(filtered_wip_data[\"WIP\"], errors='coerce').fillna(0).sum()\n\n# Create the final result DataFrame as a single row with metric columns\nresult = pd.DataFrame([\n    {\n        \"생산량\": production_sum,\n        \"재공수량\": wip_sum\n    }\n])",
+        "used_helpers": [
+          "match_product_tokens"
+        ],
+        "row_count": 1,
+        "columns": [
+          "생산량",
+          "재공수량"
+        ],
+        "preview_rows": [
+          {
+            "생산량": 0,
+            "재공수량": 0
+          }
+        ]
+      },
+      "answer": {
+        "prompt_chars": 8584,
+        "message": "### 답변\n2026년 7월 1일 기준, RG 32G DDR4 FBGA 96 DDP 제품의 BG 공정 생산량은 0개, 재공수량은 0개입니다.\n\n이 결과는 오늘 날짜의 생산 및 재공 데이터를 기준으로 해당 제품과 BG 공정에 대해 분석한 것입니다.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| 생산량 | 재공수량 |\n| --- | --- |\n| 0 | 0 |\n\n총 1건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=production_today, source_alias=production_data, source_type=oracle\n- dataset_key=wip_today, source_alias=wip_data, source_type=oracle\n- dataset_key=production_today, source_alias=production_data, source_type=oracle, row_count=74\n- dataset_key=wip_today, source_alias=wip_data, source_type=oracle, row_count=53\n**조회 필수 조건**\n- production_data: DATE=20260701\n- wip_data: DATE=20260701\n**분석 조건**\n- production_data: OPER_NAME={\"operator\": \"eq\", \"value\": \"BG\"}\n- wip_data: OPER_NAME={\"operator\": \"eq\", \"value\": \"BG\"}\n**계산 지표**\n- 생산량\n- 재공수량\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [
+        {
+          "type": "missing_process_group_candidate",
+          "message": "질문에 필요한 process_groups:BG가 의도 분석 metadata 후보에 포함되지 않았습니다.",
+          "matched_alias": "BG",
+          "expected_oper_names": [
+            "B/G1",
+            "B/G2"
+          ],
+          "metadata_key": "process_groups:BG"
+        },
+        {
+          "type": "unexpanded_process_group",
+          "message": "BG 공정 그룹이 등록된 세부 공정으로 펼쳐지지 않았습니다.",
+          "dataset_key": "production_today",
+          "source_alias": "production_data",
+          "expected_oper_names": [
+            "B/G1",
+            "B/G2"
+          ],
+          "actual_oper_names": [
+            "BG"
+          ],
+          "metadata_key": "process_groups:BG"
+        },
+        {
+          "type": "unexpanded_process_group",
+          "message": "BG 공정 그룹이 등록된 세부 공정으로 펼쳐지지 않았습니다.",
+          "dataset_key": "wip_today",
+          "source_alias": "wip_data",
+          "expected_oper_names": [
+            "B/G1",
+            "B/G2"
+          ],
+          "actual_oper_names": [
+            "BG"
+          ],
+          "metadata_key": "process_groups:BG"
+        }
+      ],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "error",
+        "errors": [
+          {
+            "type": "missing_process_group_candidate",
+            "message": "질문에 필요한 process_groups:BG가 의도 분석 metadata 후보에 포함되지 않았습니다.",
+            "matched_alias": "BG",
+            "expected_oper_names": [
+              "B/G1",
+              "B/G2"
+            ],
+            "metadata_key": "process_groups:BG"
+          },
+          {
+            "type": "unexpanded_process_group",
+            "message": "BG 공정 그룹이 등록된 세부 공정으로 펼쳐지지 않았습니다.",
+            "dataset_key": "production_today",
+            "source_alias": "production_data",
+            "expected_oper_names": [
+              "B/G1",
+              "B/G2"
+            ],
+            "actual_oper_names": [
+              "BG"
+            ],
+            "metadata_key": "process_groups:BG"
+          },
+          {
+            "type": "unexpanded_process_group",
+            "message": "BG 공정 그룹이 등록된 세부 공정으로 펼쳐지지 않았습니다.",
+            "dataset_key": "wip_today",
+            "source_alias": "wip_data",
+            "expected_oper_names": [
+              "B/G1",
+              "B/G2"
+            ],
+            "actual_oper_names": [
+              "BG"
+            ],
+            "metadata_key": "process_groups:BG"
+          }
+        ]
+      }
+    }
+  ],
+  "errors": []
+}

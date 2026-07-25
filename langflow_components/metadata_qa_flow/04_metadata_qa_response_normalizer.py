@@ -344,8 +344,17 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
         message = _available_domains_message(rows, context)
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "dataset_detail":
-        target = str(rows[0].get("display_name") or rows[0].get("key") or "요청한 데이터셋") if rows else "요청한 데이터셋"
-        message = f"{target}의 등록 정보와 사용 기준을 정리했습니다."
+        targets = [
+            str(row.get("display_name") or row.get("key") or "").strip()
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        targets = [target for target in targets if target]
+        if len(targets) > 1:
+            message = f"{', '.join(targets)}의 등록 정보와 사용 기준을 비교해 정리했습니다."
+        else:
+            target = targets[0] if targets else "요청한 데이터셋"
+            message = f"{target}의 등록 정보와 사용 기준을 정리했습니다."
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "required_params":
         message = f"질문과 관련된 데이터셋의 필수 조회 조건 {len(rows)}건을 정리했습니다."
@@ -364,7 +373,7 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
         message = f"제품 속성 token 해석과 관련된 메타데이터 후보 {len(rows)}개를 정리했습니다. 실제 제품 매칭은 data_analysis_flow의 분석 단계에서 수행됩니다."
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "process_group":
-        message = f"공정 그룹과 세부 공정 해석에 관련된 메타데이터 후보 {len(rows)}개를 정리했습니다."
+        message = _process_group_message(rows, context)
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "term_definition":
         message = f"질문과 관련된 용어 정의 메타데이터 후보 {len(rows)}개를 정리했습니다."
@@ -375,6 +384,21 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
 
     message = f"질문 '{question}'과 관련된 메타데이터 후보 {len(rows)}개를 정리했습니다."
     return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
+
+
+# 함수 설명: 공정 그룹 목록과 특정 그룹 상세 질문을 등록된 processes 기준의 자연어로 요약합니다.
+def _process_group_message(rows: list[dict[str, Any]], context: dict[str, Any]) -> str:
+    request_kind = str(_dict(context.get("query_scope")).get("request_kind") or "")
+    if request_kind in {"list", "count"}:
+        return f"현재 등록된 공정 그룹 {len(rows)}건과 각 그룹의 별칭·포함 공정을 정리했습니다."
+    if len(rows) == 1:
+        row = rows[0]
+        name = str(row.get("display_name") or row.get("key") or "요청한 공정 그룹")
+        processes = str(row.get("processes") or "").strip()
+        if processes:
+            return f"{name} 공정 그룹에 포함된 세부 공정은 {processes}입니다."
+        return f"{name} 공정 그룹의 등록 별칭과 정의를 정리했습니다."
+    return f"질문과 직접 관련된 공정 그룹 {len(rows)}건의 별칭과 포함 공정을 정리했습니다."
 
 
 # 함수 설명: `_fallback_payload()`는 LLM 응답이 비거나 잘못됐을 때 실제 metadata context로 결정론적 QA payload를 만듭니다.
@@ -473,9 +497,15 @@ def _product_domain_row(row: dict[str, Any]) -> dict[str, Any]:
 
 # 함수 설명: `_calculation_rule_row()`는 제품 키·recipe·metric 문서를 역할별 집계 근거가 드러나는 공통 표 행으로 바꿉니다.
 def _calculation_rule_row(row: dict[str, Any]) -> dict[str, Any]:
+    section = str(row.get("section") or "").strip()
+    description = (
+        "FUNCTION CASE COMPONENT 입력값 참고"
+        if section == "pandas_function_cases"
+        else row.get("description")
+    )
     return _omit_empty(
         {
-            "구분": _domain_section_label(row.get("section")),
+            "구분": _domain_section_label(section),
             "메타데이터 키": row.get("key"),
             "표시명": row.get("display_name") or row.get("key"),
             "제품 기준 컬럼": row.get("columns"),
@@ -484,7 +514,7 @@ def _calculation_rule_row(row: dict[str, Any]) -> dict[str, Any]:
             "수량 컬럼": row.get("quantity_column") or row.get("column"),
             "집계 방식": row.get("aggregation") or row.get("aggregation_method") or row.get("calculation_rule"),
             "계산식": row.get("formula"),
-            "설명": row.get("description"),
+            "설명": description,
         }
     )
 
