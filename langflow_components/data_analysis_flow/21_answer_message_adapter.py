@@ -1130,13 +1130,35 @@ def _columns_from_rows(rows: list[Any]) -> list[str]:
 
 # 함수 설명: `_escape_table_cell()`는 표 셀 안의 파이프·줄바꿈을 escape해 Markdown 열 구조가 깨지지 않게 합니다.
 def _escape_table_cell(value: Any) -> str:
-    if isinstance(value, (dict, list)):
+    if isinstance(value, str):
+        parsed_list = _json_array_value(value)
+        if parsed_list is not None:
+            value = parsed_list
+    if isinstance(value, (list, tuple, set)):
+        text = ", ".join(
+            item_text
+            for item_text in (_display_value(item).strip() for item in value)
+            if item_text
+        )
+    elif isinstance(value, dict):
         text = json.dumps(value, ensure_ascii=False, default=str)
     else:
         formatted = _format_display_number(value)
         text = str(formatted) if formatted is not None else ("" if value is None else str(value))
     text = _truncate(text.replace("\n", "<br>"), CELL_TEXT_LIMIT)
     return _escape_markdown_tilde(text.replace("|", "\\|"))
+
+
+# 함수 설명: `_json_array_value()`는 JSON 배열 형태의 문자열만 list로 해석해 표 셀을 자연스러운 나열 형식으로 표시합니다.
+def _json_array_value(value: str) -> list[Any] | None:
+    text = str(value or "").strip()
+    if not (text.startswith("[") and text.endswith("]")):
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
 # 함수 설명: `_escape_markdown_tilde()`는 markdown·tilde을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.

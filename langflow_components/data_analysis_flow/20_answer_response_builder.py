@@ -185,11 +185,6 @@ def _authoritative_result_message(payload: dict[str, Any]) -> str:
     if metric_column and metric_column in first_row:
         metric_label = _metric_label(metric_column)
         metric_value = _display_value(first_row.get(metric_column))
-        metric_sentence = (
-            f"{subject}의 {metric_label}은 {metric_value}입니다."
-            if subject
-            else f"{metric_label}은 {metric_value}입니다."
-        )
         if _is_ranking_question(question):
             requested_count = _requested_result_count(payload)
             rank_label = "하위" if _is_lowest_ranking(question) else "상위"
@@ -208,6 +203,22 @@ def _authoritative_result_message(payload: dict[str, Any]) -> str:
             details.append("나머지 대상별 상세 결과는 아래 결과 표에서 확인할 수 있습니다.")
             return "\n\n".join(details)
 
+        comparison_message = _multi_row_comparison_message(
+            payload,
+            rows,
+            columns,
+            metric_column,
+            row_count,
+            question,
+        )
+        if comparison_message:
+            return comparison_message
+
+        metric_sentence = (
+            f"{subject}의 {metric_label}은 {metric_value}입니다."
+            if subject
+            else f"{metric_label}은 {metric_value}입니다."
+        )
         details = [metric_sentence]
         if row_count > 1:
             details.append(f"전체 결과는 총 {row_count:,}건이며, 상세 값은 아래 결과 표에서 확인할 수 있습니다.")
@@ -223,6 +234,147 @@ def _authoritative_result_message(payload: dict[str, Any]) -> str:
         return f"분석 결과 {', '.join(facts)}입니다." if facts else "분석 결과 1건입니다."
     prefix = f"분석 결과 총 {row_count:,}건입니다."
     return f"{prefix} 첫 번째 결과는 {', '.join(facts)}입니다." if facts else prefix
+
+
+# 함수 설명: `_multi_row_comparison_message()`는 다건 결과 전체에서 대표 지표의 최댓값·최솟값을 찾아 첫 행 편향 없는 교정 문장을 만듭니다.
+def _multi_row_comparison_message(
+    payload: dict[str, Any],
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    metric_column: str,
+    row_count: int,
+    question: str,
+) -> str:
+    numeric_rows: list[tuple[dict[str, Any], float]] = []
+    for row in rows:
+        number = _finite_number(row.get(metric_column))
+        if number is not None:
+            numeric_rows.append((row, number))
+    if len(numeric_rows) < 2:
+        return ""
+
+    highest_row, highest_value = max(numeric_rows, key=lambda item: item[1])
+    lowest_row, lowest_value = min(numeric_rows, key=lambda item: item[1])
+    metric_label = _metric_label(metric_column)
+    dimension_label = _comparison_dimension_label(payload, columns, metric_column, question)
+    highest_subject = _comparison_subject(payload, highest_row, columns, metric_column, dimension_label)
+    lowest_subject = _comparison_subject(payload, lowest_row, columns, metric_column, dimension_label)
+    if not highest_subject or not lowest_subject:
+        return ""
+
+    intro = (
+        f"같은 조건의 {dimension_label}별 {metric_label} 결과는 총 {row_count:,}건입니다."
+        if dimension_label != "대상"
+        else f"같은 조건의 {metric_label} 비교 결과는 총 {row_count:,}건입니다."
+    )
+    highest_word, lowest_word = _metric_extreme_words(metric_column)
+    if isclose(highest_value, lowest_value, rel_tol=1e-12, abs_tol=1e-12):
+        comparison = (
+            f"확인된 {dimension_label}의 {metric_label}은 모두 "
+            f"{_display_value(highest_row.get(metric_column))}로 같습니다."
+        )
+    else:
+        comparison = (
+            f"{metric_label}이 가장 {highest_word} {dimension_label}은 "
+            f"{highest_subject}({_display_value(highest_row.get(metric_column))})이고, "
+            f"가장 {lowest_word} {dimension_label}은 "
+            f"{lowest_subject}({_display_value(lowest_row.get(metric_column))})입니다."
+        )
+    detail_label = f"{dimension_label}별 " if dimension_label != "대상" else ""
+    return "\n\n".join(
+        [
+            intro,
+            comparison,
+            f"나머지 {detail_label}상세 값은 아래 결과 표에서 확인할 수 있습니다.",
+        ]
+    )
+
+
+# 함수 설명: `_comparison_dimension_label()`은 질문 표현과 결과 컬럼을 사용해 공정·제품·장비·LOT·기준일 등 비교 대상 이름을 결정합니다.
+def _comparison_dimension_label(
+    payload: dict[str, Any],
+    columns: list[str],
+    metric_column: str,
+    question: str,
+) -> str:
+    lowered = str(question or "").lower()
+    question_labels = (
+        (("공정", "oper"), "공정"),
+        (("제품", "product", "device"), "제품"),
+        (("장비", "equipment", "eqp"), "장비"),
+        (("lot", "랏"), "LOT"),
+        (("일자", "날짜", "기준일", "date"), "기준일"),
+    )
+    for tokens, label in question_labels:
+        if any(token in lowered for token in tokens):
+            return label
+
+    resolved_grain = _dict(_dict(payload.get("intent_plan")).get("resolved_grain_plan"))
+    grain_columns = _string_list(resolved_grain.get("grain_columns"))
+    candidates = grain_columns or [column for column in columns if column != metric_column]
+    normalized = {str(column or "").upper().replace(" ", "_") for column in candidates}
+    if normalized.intersection({"OPER_NAME", "OPER_NM", "OPER", "PROCESS", "공정"}):
+        return "공정"
+    if normalized.intersection({"EQUIP_ID", "EQP_ID", "EQUIPMENT_ID", "장비"}):
+        return "장비"
+    if normalized.intersection({"LOT_ID", "LOT", "랏"}):
+        return "LOT"
+    if normalized.intersection({"WORK_DATE", "WORK_DT", "DATE", "BASE_DT", "기준일", "일자"}):
+        return "기준일"
+    product_columns = {"TECH", "DENSITY", "DEN", "MODE", "ORG", "PKG1", "PKG2", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"}
+    if len(normalized.intersection(product_columns)) >= 2:
+        return "제품"
+    return "대상"
+
+
+# 함수 설명: `_comparison_subject()`는 비교 대상 유형에 맞는 행 식별값을 골라 자연스러운 대표 대상 문자열로 만듭니다.
+def _comparison_subject(
+    payload: dict[str, Any],
+    row: dict[str, Any],
+    columns: list[str],
+    metric_column: str,
+    dimension_label: str,
+) -> str:
+    preferred_by_label = {
+        "공정": ["OPER_NAME", "OPER_NM", "OPER", "공정"],
+        "장비": ["EQUIP_ID", "EQP_ID", "EQUIPMENT_ID", "장비"],
+        "LOT": ["LOT_ID", "LOT", "랏"],
+        "기준일": ["WORK_DATE", "WORK_DT", "DATE", "BASE_DT", "기준일", "일자"],
+    }
+    for column in preferred_by_label.get(dimension_label, []):
+        if column not in row:
+            continue
+        value = _natural_text(row.get(column))
+        if value:
+            return value
+    return _result_subject(payload, row, columns, metric_column)
+
+
+# 함수 설명: `_metric_extreme_words()`는 수량 계열 지표와 비율·성능 지표에 맞는 최댓값·최솟값 표현을 반환합니다.
+def _metric_extreme_words(metric_column: str) -> tuple[str, str]:
+    upper = str(metric_column or "").upper()
+    quantity_tokens = ("WIP", "PRODUCTION", "OUTPUT", "QTY", "COUNT", "수량", "생산", "재공", "건수")
+    return ("많은", "적은") if any(token in upper for token in quantity_tokens) else ("높은", "낮은")
+
+
+# 함수 설명: `_finite_number()`는 결과 지표 값을 비교 가능한 유한 실수로 변환하고 비수치·결측값은 제외합니다.
+def _finite_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    return None if number != number else number
+
+
+# 함수 설명: `_natural_text()`는 배열형 차원 값을 JSON 표기 대신 쉼표로 연결한 자연스러운 대상 문자열로 변환합니다.
+def _natural_text(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(text for text in (_natural_text(item) for item in value) if text)
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 # 함수 설명: 결과 계약과 질문 표현을 함께 사용해 답변의 대표 지표 컬럼을 선택합니다.

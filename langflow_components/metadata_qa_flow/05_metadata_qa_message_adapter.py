@@ -77,10 +77,6 @@ def _message_from_answer_sections(payload: dict[str, Any], answer_sections: dict
     if sql_section:
         sections.append(sql_section)
 
-    examples_section = _usage_examples_section(answer_sections.get("usage_examples"))
-    if examples_section:
-        sections.append(examples_section)
-
     route_hint_section = _route_hint_section(_dict(answer_sections.get("route_hint")))
     if route_hint_section:
         sections.append(route_hint_section)
@@ -118,16 +114,6 @@ def _detail_table_section(detail_table: dict[str, Any], data: dict[str, Any]) ->
     row_count = int(detail_table.get("row_count") or len(rows))
     note = f"\n\n총 {row_count}건 중 {len(preview_rows)}건을 표시했습니다." if row_count > len(preview_rows) else f"\n\n총 {row_count}건입니다."
     return f"### {title}\n" + _markdown_table(preview_rows, columns) + note
-
-
-# 함수 설명: `_usage_examples_section()`는 examples·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
-def _usage_examples_section(value: Any) -> str:
-    examples = [str(item).strip() for item in value if str(item or "").strip()] if isinstance(value, list) else []
-    if not examples:
-        return ""
-    lines = ["### 다음에 물어볼 수 있는 질문"]
-    lines.extend(f"- {example}" for example in examples[:5])
-    return "\n".join(lines)
 
 
 # 함수 설명: `_route_hint_section()`는 힌트·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.

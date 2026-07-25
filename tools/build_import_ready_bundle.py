@@ -219,9 +219,9 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "413 passed",
+            "pytest": "415 passed",
             "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 120/120 custom nodes to 83 real Python sources; 0 missing",
-            "korean_component_documentation": "84/84 Python sources and 1533/1533 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7020/7020 documented function instances; strict UTF-8/JSON checks passed",
+            "korean_component_documentation": "84/84 Python sources and 1575/1575 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7158/7158 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"

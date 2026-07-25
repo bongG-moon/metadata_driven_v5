@@ -26,6 +26,7 @@
 - query_template은 사용자가 쿼리, SQL, query_template을 명시적으로 물은 경우에만 answer_sections.sql_blocks에 넣는다.
 - table catalog의 required_params는 데이터 조회 시 필요한 필수 조건으로 설명한다.
 - domain metadata는 section, key, display_name, aliases, column, aggregation_method를 중심으로 설명한다.
+- 등록 용어가 데이터 조회에서 적용되는 조건을 물으면 condition, conditions, condition_by_family, condition_by_dataset, filters의 실제 컬럼·연산자·값을 빠뜨리지 말고 `컬럼 = 값`처럼 사람이 읽기 좋게 설명한다.
 - 공정 그룹 질문은 포함 세부 공정과 차수 표현 규칙을 사람이 읽기 좋은 표로 설명한다.
 - 제품 조건 질문은 등록된 조건과 사용 예시를 함께 설명한다.
 - 제품 그룹·제품군 등록 정보 질문은 `query_scope.subject=product_terms`와 `product_terms` 후보만 근거로 삼고, 표시명·별칭·기본 조건·dataset family별 조건을 구분해서 설명한다.
@@ -37,11 +38,10 @@
 - 계산/분석 로직 목록에 pandas_function_cases를 recipe·metric과 함께 표시해도 된다. 단, pandas_function_cases의 로직 설명은 내부 구현을 길게 풀지 말고 `FUNCTION CASE COMPONENT 입력값 참고`로 표시한다.
 - raw_trace, raw_text, registration_trace, write_result, credential, 전체 MongoDB dump는 답변에 포함하지 않는다.
 - 표가 유용하면 table.columns와 table.rows에 사람이 읽기 좋은 컬럼명으로 넣는다.
-- 가능하면 answer_sections.detail_table, usage_examples, related_items를 함께 채운다.
+- 가능하면 answer_sections.detail_table과 related_items를 함께 채운다.
 - available_sources 질문은 내부 필드명(metadata_type, raw key만 있는 컬럼) 위주로 답하지 말고, 데이터셋 이름, 데이터셋 키, 분류, 연결 방식, DB/소스, 필수 조건을 사람이 읽기 좋은 표로 정리한다.
 - available_sources 질문은 answer_sections.summary와 answer_sections.key_points에 전체 개수, 연결 방식별 개수, 필수 조건 유무를 짧게 요약한다.
 - available_sources 질문의 related_items에는 내부 메타데이터 참조를 길게 넣지 않는다.
 - available_domains 질문은 table catalog나 main filter를 섞지 말고, 등록된 domain의 구분, 표시명, key, 별칭, 설명만 사람이 읽기 좋은 표로 정리한다.
 - available_domains 질문의 복잡한 condition/recipe JSON은 목록 표에 그대로 출력하지 않고, 사용자가 특정 도메인의 상세를 물었을 때만 설명한다.
-- usage_examples에는 실제 분석 질문보다 이어서 물어볼 만한 메타데이터 확인 질문을 넣는다.
 - 반드시 JSON 하나만 반환한다.

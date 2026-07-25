@@ -23,12 +23,22 @@ AUTHORITATIVE_CONTEXT_TABLE_TYPES = {
     "available_sources",
     "available_domains",
     "required_params",
+    "term_definition",
+    "process_group",
     "calculation_logic_list",
     "product_domain_info",
     "product_condition",
     "question_to_dataset",
 }
-ALWAYS_USE_CONTEXT_TABLE_TYPES = {"available_sources", "available_domains", "calculation_logic_list", "product_domain_info", "product_condition"}
+ALWAYS_USE_CONTEXT_TABLE_TYPES = {
+    "available_sources",
+    "available_domains",
+    "term_definition",
+    "process_group",
+    "calculation_logic_list",
+    "product_domain_info",
+    "product_condition",
+}
 
 
 # 주요 함수: LLM QA 결과를 근거 문맥과 결합해 안정적인 답변 계약으로 정규화합니다.
@@ -306,7 +316,7 @@ def _sync_answer_sections_from_context(
         "row_count": len(rows),
         "display_limit": _display_limit(answer_type),
     }
-    sections["usage_examples"] = _usage_examples(answer_type, {})
+    sections.pop("usage_examples", None)
     sections["related_items"] = [] if answer_type in {"available_sources", "available_domains"} else [ref for ref in source_refs if isinstance(ref, dict)]
     sections["show_related_items"] = answer_type not in {"available_sources", "available_domains"}
     return sections
@@ -376,7 +386,7 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
         message = _process_group_message(rows, context)
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "term_definition":
-        message = f"질문과 관련된 용어 정의 메타데이터 후보 {len(rows)}개를 정리했습니다."
+        message = _term_definition_message(rows)
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "question_to_dataset":
         message = f"이 질문에 답할 때 참고할 데이터셋과 조건 후보 {len(rows)}개를 정리했습니다."
@@ -391,6 +401,13 @@ def _process_group_message(rows: list[dict[str, Any]], context: dict[str, Any]) 
     request_kind = str(_dict(context.get("query_scope")).get("request_kind") or "")
     if request_kind in {"list", "count"}:
         return f"현재 등록된 공정 그룹 {len(rows)}건과 각 그룹의 별칭·포함 공정을 정리했습니다."
+    if request_kind == "comparison" and len(rows) >= 2:
+        comparisons = []
+        for row in rows:
+            name = str(row.get("display_name") or row.get("key") or "공정 그룹").strip()
+            processes = str(row.get("processes") or "등록된 포함 공정 없음").strip()
+            comparisons.append(f"{name}={processes}")
+        return "두 공정 그룹은 서로 다른 그룹이며 포함 공정이 다릅니다. " + "; ".join(comparisons) + "."
     if len(rows) == 1:
         row = rows[0]
         name = str(row.get("display_name") or row.get("key") or "요청한 공정 그룹")
@@ -446,7 +463,6 @@ def _build_answer_sections(
             "display_limit": _display_limit(answer_type),
         },
         "sql_blocks": [block for block in sql_blocks if isinstance(block, dict)],
-        "usage_examples": _usage_examples(answer_type, context),
         "related_items": [] if answer_type in {"available_sources", "available_domains"} else [ref for ref in source_refs if isinstance(ref, dict)][:10],
         "show_related_items": answer_type not in {"available_sources", "available_domains"},
         "route_hint": _route_hint(answer_type),
@@ -477,7 +493,111 @@ def _service_table(answer_type: str, table: dict[str, Any]) -> dict[str, Any]:
             "columns": ["구분", "메타데이터 키", "표시명", "제품 기준 컬럼", "집계 grain", "고정 group by", "수량 컬럼", "집계 방식", "계산식", "설명"],
             "rows": [_calculation_rule_row(row) for row in rows],
         }
+    if answer_type == "process_group":
+        process_rows = [_process_group_row(row) for row in rows]
+        preferred_columns = ["공정 그룹", "메타데이터 키", "별칭", "포함 공정", "설명"]
+        return {
+            "columns": [
+                column
+                for column in preferred_columns
+                if any(row.get(column) not in (None, "", [], {}) for row in process_rows)
+            ],
+            "rows": process_rows,
+        }
+    if answer_type == "term_definition":
+        term_rows = [_term_definition_row(row) for row in rows]
+        preferred_columns = [
+            "구분",
+            "표시명",
+            "메타데이터 키",
+            "별칭",
+            "적용 조건",
+            "데이터 계열별 조건",
+            "데이터셋별 조건",
+            "설명",
+        ]
+        return {
+            # 모든 행에서 비어 있는 선택 컬럼은 표에서 제외해 넓고 빈 표가 되는 것을 방지합니다.
+            "columns": [
+                column
+                for column in preferred_columns
+                if any(row.get(column) not in (None, "", [], {}) for row in term_rows)
+            ],
+            "rows": term_rows,
+        }
     return table
+
+
+# 함수 설명: 공정 그룹 내부 필드를 비교 답변에 적합한 표시명·별칭·포함 공정 행으로 변환합니다.
+def _process_group_row(row: dict[str, Any]) -> dict[str, Any]:
+    return _omit_empty(
+        {
+            "공정 그룹": row.get("display_name") or row.get("key"),
+            "메타데이터 키": row.get("key"),
+            "별칭": row.get("aliases"),
+            "포함 공정": row.get("processes"),
+            "설명": row.get("description") or row.get("usage_rule"),
+        }
+    )
+
+
+# 함수 설명: 등록된 용어의 실제 조회 조건을 JSON 원문 대신 컬럼·값 중심의 사용자용 표 행으로 변환합니다.
+def _term_definition_row(row: dict[str, Any]) -> dict[str, Any]:
+    return _omit_empty(
+        {
+            "구분": _domain_section_label(row.get("section")),
+            "표시명": row.get("display_name") or row.get("key"),
+            "메타데이터 키": row.get("key"),
+            "별칭": row.get("aliases"),
+            "적용 조건": _condition_text(row.get("condition") or row.get("filters")),
+            "데이터 계열별 조건": _condition_text(row.get("condition_by_family")),
+            "데이터셋별 조건": _condition_text(row.get("condition_by_dataset")),
+            "설명": row.get("description") or row.get("usage_rule"),
+        }
+    )
+
+
+# 함수 설명: 단순·중첩 조건 dict를 `SHIFT = 1`, `production: SHIFT = 1` 형식으로 펼칩니다.
+def _condition_text(value: Any, prefix: str = "") -> str:
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, dict):
+        operator = str(value.get("operator") or "").strip()
+        if operator and any(key in value for key in ("value", "values")):
+            condition_value = value.get("value") if "value" in value else value.get("values")
+            label = prefix.rstrip(".") or "값"
+            return f"{label} {_operator_label(operator)} {_display_condition_value(condition_value)}".strip()
+        parts = []
+        for key, item in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            rendered = _condition_text(item, child_prefix)
+            if rendered:
+                parts.append(rendered)
+        return "; ".join(parts)
+    label = prefix.rstrip(".")
+    rendered_value = _display_condition_value(value)
+    return f"{label} = {rendered_value}" if label else rendered_value
+
+
+# 함수 설명: 조건 연산자 식별자를 답변에서 바로 이해할 수 있는 비교 기호 또는 짧은 표현으로 바꿉니다.
+def _operator_label(value: str) -> str:
+    return {
+        "eq": "=",
+        "equals": "=",
+        "in": "IN",
+        "contains": "포함",
+        "starts_with": "시작값",
+        "between": "범위",
+    }.get(str(value or "").strip().lower(), str(value or "").strip())
+
+
+# 함수 설명: 조건 값의 리스트·스칼라를 JSON 괄호 없이 읽기 좋은 쉼표 구분 문자열로 변환합니다.
+def _display_condition_value(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(_display_condition_value(item) for item in value)
+    if value is None:
+        return ""
+    return str(value)
 
 
 # 함수 설명: `_product_domain_row()`는 제품 조건 문서의 기본 조건과 source별 조건을 사람이 비교할 수 있는 표 행으로 바꿉니다.
@@ -524,6 +644,7 @@ def _domain_section_label(value: Any) -> str:
     text = str(value or "").strip()
     labels = {
         "process_groups": "공정 그룹",
+        "status_terms": "조회 조건",
         "product_terms": "제품 조건",
         "quantity_terms": "수량 용어",
         "product_key_columns": "제품 키",
@@ -533,6 +654,22 @@ def _domain_section_label(value: Any) -> str:
         "pandas_function_cases": "분석 함수",
     }
     return labels.get(text, text)
+
+
+# 함수 설명: 용어 조건이 하나로 확정되면 실제 적용식을 답변 첫 문장에 포함하고, 복수 후보는 조건 비교 안내로 요약합니다.
+def _term_definition_message(rows: list[dict[str, Any]]) -> str:
+    display_rows = [_term_definition_row(row) for row in rows]
+    if len(display_rows) == 1:
+        row = display_rows[0]
+        name = str(row.get("표시명") or row.get("메타데이터 키") or "요청한 조건").strip()
+        condition = str(row.get("적용 조건") or "").strip()
+        if condition:
+            return f"{name}는 데이터 조회에서 `{condition}` 조건으로 적용됩니다."
+        return f"{name}의 등록 정의와 적용 정보를 정리했습니다."
+    conditioned_count = sum(1 for row in display_rows if str(row.get("적용 조건") or "").strip())
+    if conditioned_count:
+        return f"질문과 관련된 용어 {len(display_rows)}건 중 실제 조회 조건이 등록된 {conditioned_count}건을 함께 정리했습니다."
+    return f"질문과 관련된 용어 정의 메타데이터 {len(display_rows)}건을 정리했습니다."
 
 
 # 함수 설명: `_available_source_row()`는 데이터 소스·행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.
@@ -697,32 +834,6 @@ def _table_title(answer_type: str) -> str:
         "question_to_dataset": "질문에 필요한 데이터와 조건",
         "data_analysis_redirect": "권장 실행 경로",
     }.get(answer_type, "관련 메타데이터")
-
-
-# 함수 설명: `_usage_examples()`는 선택된 메타데이터 항목에 등록된 질문·사용 예시를 중복 없이 모읍니다.
-def _usage_examples(answer_type: str, context: dict[str, Any]) -> list[str]:
-    question = str(context.get("question") or "").strip()
-    examples = {
-        "available_sources": [
-            "production_today 데이터셋의 쿼리문을 보여줘",
-            "wip_today 데이터셋의 필수 조건과 용도를 알려줘",
-            "생산량 분석에는 어떤 데이터셋을 써야 해?",
-        ],
-        "available_domains": [
-            "공정 그룹 도메인 목록을 보여줘",
-            "제품 그룹 관련 등록된 도메인 정보를 알려줘",
-            "생산량은 어떤 도메인 규칙으로 계산돼?",
-        ],
-        "dataset_detail": ["이 데이터로 답할 수 있는 대표 질문을 알려줘"],
-        "required_params": ["어제 기준으로 다시 조회해줘"],
-        "term_definition": ["생산량 기준으로 제품별 상위 5개 알려줘"],
-        "process_group": ["DA공정 차수별 생산량 알려줘"],
-        "product_condition": ["HBM제품의 오늘 아침재공 제품별로 알려줘"],
-        "product_token_rule": ["RG 32G DDR4 FBGA 96 DDP 제품 생산량 알려줘"],
-        "calculation_logic_list": ["등록된 계산 로직 중 생산 달성률 기준 알려줘"],
-        "question_to_dataset": [question] if question else [],
-    }
-    return examples.get(answer_type, [])
 
 
 # 함수 설명: `_route_hint()`는 현재 질문이 Metadata QA와 Data Analysis 중 어디로 가야 하는지 짧은 안내를 만듭니다.

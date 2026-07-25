@@ -43,7 +43,6 @@ def _output_schema() -> dict[str, Any]:
             "summary": {"headline": "string", "description": "string"},
             "detail_table": {"title": "string", "columns": ["string"], "row_count": "integer", "row_source": "data.rows"},
             "sql_blocks": [{"label": "string", "sql": "string"}],
-            "usage_examples": ["string"],
             "related_items": [{"metadata_type": "string", "key": "string"}],
             "route_hint": {"target_route": "string", "message": "string"},
             "warnings": [{"type": "string", "message": "string"}],

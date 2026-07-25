@@ -131,7 +131,11 @@ def build_metadata_qa_context(
         "answer_mode": answer_mode,
         "confidence": "high" if source_refs else "low",
     }
-    deterministic_answer = answer_mode in DETERMINISTIC_ANSWER_MODES
+    # 일반 용어 설명은 자연어 품질을 위해 모델 합성을 유지합니다.
+    # 반면 실제 조회 컬럼·값을 묻는 조건 질문은 MongoDB 등록값을 그대로 보여줘야 하므로 결정형으로 처리합니다.
+    deterministic_answer = answer_mode in DETERMINISTIC_ANSWER_MODES or (
+        answer_mode == "term_definition" and _looks_like_domain_condition_question(question.lower())
+    )
     context = {
         "question": question,
         "answer_mode": answer_mode,
@@ -252,7 +256,7 @@ def _infer_answer_mode(question: str) -> str:
         return "required_params"
     if any(token in lowered for token in ("어떤 데이터", "무슨 데이터", "어느 데이터", "어떤 테이블", "무슨 테이블", "어떤 source", "무슨 source", "어떤 소스")):
         return "question_to_dataset"
-    if any(token in lowered for token in ("공정 그룹", "세부 공정", "포함", "차수", "공정에는")) and "공정" in lowered:
+    if _looks_like_process_group_question(lowered):
         return "process_group"
     if _looks_like_product_domain_question(lowered):
         return "product_domain_info"
@@ -262,6 +266,8 @@ def _infer_answer_mode(question: str) -> str:
         return "product_condition"
     if any(token in lowered for token in ("제품 표현", "제품 token", "제품 토큰", "어떻게 찾", "매칭", "token")):
         return "product_token_rule"
+    if _looks_like_domain_condition_question(lowered):
+        return "term_definition"
     if any(token in lowered for token in ("어떤 컬럼", "무슨 컬럼", "컬럼이야", "의미", "정의", "용어")):
         return "term_definition"
     if any(token in lowered for token in ("뭐야", "무엇", "설명", "어떤 데이터야", "어떤 source야", "어떤 소스야")) and any(token in lowered for token in ("today", "history", "production", "wip", "target", "equipment", "lot", "hold", "_")):
@@ -320,6 +326,26 @@ def _looks_like_product_aggregation_rule_question(lowered: str) -> bool:
     )
 
 
+# 함수 설명: 등록된 도메인 용어가 실제 조회 필터에서 어떤 컬럼·값으로 적용되는지 묻는 질문을 식별합니다.
+def _looks_like_domain_condition_question(lowered: str) -> bool:
+    condition_tokens = ("조건", "필터", "filter")
+    application_tokens = ("어떤 값", "무슨 값", "값으로", "적용", "조회에서", "조회 시", "조회시")
+    return any(token in lowered for token in condition_tokens) and any(
+        token in lowered for token in application_tokens
+    )
+
+
+# 함수 설명: 공정 그룹의 목록·포함 공정·두 그룹 차이를 묻는 표현을 띄어쓰기 변형과 함께 식별합니다.
+def _looks_like_process_group_question(lowered: str) -> bool:
+    group_tokens = ("공정 그룹", "공정그룹", "공정 group", "공정group", "process group")
+    detail_tokens = ("세부 공정", "세부공정", "포함 공정", "포함공정", "공정에는")
+    return any(token in lowered for token in group_tokens) or (
+        "공정" in lowered and any(token in lowered for token in detail_tokens)
+    ) or (
+        lowered.count("공정") >= 2 and _looks_like_comparison_question(lowered)
+    )
+
+
 # 함수 설명: `_infer_query_scope()`는 answer_type을 바꾸지 않고 조회 대상과 요청 형태를 구조화해 후보 선택과 LLM 설명에 제공합니다.
 def _infer_query_scope(question: str, answer_mode: str) -> dict[str, str]:
     lowered = str(question or "").lower()
@@ -329,11 +355,16 @@ def _infer_query_scope(question: str, answer_mode: str) -> dict[str, str]:
     elif answer_mode == "calculation_logic_list" and _looks_like_product_aggregation_rule_question(lowered):
         subject = "product_aggregation"
         aspect = "grain_and_grouping"
+    elif answer_mode == "process_group":
+        subject = "process_groups"
+        aspect = "comparison" if _looks_like_comparison_question(lowered) else "members"
     else:
         subject = "general"
         aspect = ""
 
-    if any(token in lowered for token in ("총", "몇 개", "몇개", "개수", "건수", "count")):
+    if _looks_like_comparison_question(lowered):
+        request_kind = "comparison"
+    elif any(token in lowered for token in ("총", "몇 개", "몇개", "개수", "건수", "count")):
         request_kind = "count"
     elif any(token in lowered for token in ("목록", "list", "뭐가 있", "무엇이 있", "전부", "전체")):
         request_kind = "list"
@@ -342,6 +373,11 @@ def _infer_query_scope(question: str, answer_mode: str) -> dict[str, str]:
     else:
         request_kind = "detail"
     return _omit_empty({"subject": subject, "aspect": aspect, "request_kind": request_kind})
+
+
+# 함수 설명: 두 메타데이터 항목의 차이·비교·구분을 요청하는 공통 표현을 식별합니다.
+def _looks_like_comparison_question(lowered: str) -> bool:
+    return any(token in lowered for token in ("비교", "차이", "구분", "각각", "어떻게 다", "다른지", "어떤 차이"))
 
 
 # 함수 설명: `_looks_like_data_value_question()`는 입력값이 LIKE·데이터·값·question 조건에 해당하는지 부작용 없이 bool로 판정합니다.
@@ -667,6 +703,9 @@ def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, 
             return exact_items[:limit]
         return _ranked(question + " process_groups 공정", process_group_items, limit)
     if answer_mode == "term_definition":
+        exact_items = _explicit_named_items(question, items)
+        if exact_items:
+            return exact_items[:limit]
         return _ranked(question + " quantity_terms metric_terms analysis_recipes", items, limit)
     if answer_mode in {"domain_info", "question_to_dataset"}:
         return _ranked(question, items, limit)
@@ -697,7 +736,12 @@ def _looks_like_process_group_inventory(lowered: str) -> bool:
         "개수",
         "건수",
     )
-    return "공정 그룹" in lowered and any(token in lowered for token in inventory_tokens)
+    return any(
+        token in lowered
+        for token in ("공정 그룹", "공정그룹", "공정 group", "공정group", "process group")
+    ) and any(
+        token in lowered for token in inventory_tokens
+    )
 
 
 # 함수 설명: `_select_product_aggregation_items()`는 제품 grain 설명에 필요한 제품 키와 관련 recipe만 우선 선택하고 지표가 명시된 경우만 계산 항목을 보강합니다.
@@ -812,16 +856,20 @@ def _explicit_named_items(
     return matched
 
 
-# 함수 설명: 짧은 영문 key가 DDP·WBM 같은 더 긴 token 내부에서 잘못 매칭되지 않도록 경계를 확인합니다.
+# 함수 설명: 짧은 영문 key나 `BM공정` 별칭이 WBM 같은 더 긴 token 내부에서 잘못 매칭되지 않도록 경계를 확인합니다.
 def _name_in_question(name: Any, question: str) -> bool:
     text = str(name or "").strip().lower()
     lowered = str(question or "").lower()
     if not text or not lowered:
         return False
-    if text.isascii() and re.fullmatch(r"[a-z0-9_]+", text):
+    starts_with_ascii_token = bool(re.match(r"[a-z0-9_]", text))
+    ends_with_ascii_token = bool(re.search(r"[a-z0-9_]$", text))
+    if starts_with_ascii_token or ends_with_ascii_token:
+        prefix = r"(?<![0-9a-z_])" if starts_with_ascii_token else ""
+        suffix = r"(?![0-9a-z_])" if ends_with_ascii_token else ""
         return bool(
             re.search(
-                rf"(?<![0-9a-z_]){re.escape(text)}(?![0-9a-z_])",
+                rf"{prefix}{re.escape(text)}{suffix}",
                 lowered,
             )
         )
@@ -1022,6 +1070,18 @@ def _project_domain_item(item: dict[str, Any], answer_mode: str) -> dict[str, An
     }
     if answer_mode == "process_group":
         keys.update({"processes", "process_groups", "members"})
+    if answer_mode == "term_definition":
+        keys.update(
+            {
+                "condition",
+                "conditions",
+                "condition_by_family",
+                "condition_by_dataset",
+                "filters",
+                "value",
+                "operator",
+            }
+        )
     if answer_mode in {"product_domain_info", "product_condition", "product_token_rule"}:
         keys.update(
             {

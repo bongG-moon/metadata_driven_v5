@@ -1714,6 +1714,31 @@ def test_answer_message_adapter_result_table_uses_ten_row_preview():
     assert "총 12건 중 10건을 표시했습니다." in message
 
 
+def test_answer_message_adapter_renders_array_cells_as_natural_comma_separated_text():
+    message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
+    payload = {
+        "answer_message": "BG 공정 생산량을 확인했습니다.",
+        "data": {
+            "columns": ["기준일", "공정", "생산량"],
+            "rows": [
+                {"기준일": "20260701", "공정": ["B/G1", "B/G2"], "생산량": 19200},
+                {"기준일": "20260701", "공정": '["B/G1", "B/G2"]', "생산량": 19200},
+            ],
+            "row_count": 2,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    message = message_adapter.build_message(
+        payload,
+        include_diagnostics=False,
+        show_result_table=True,
+    )
+
+    assert message.count("| 20260701 | B/G1, B/G2 | 19.2K |") == 2
+    assert '["B/G1", "B/G2"]' not in message
+
+
 def test_answer_message_adapter_exposes_repair_attempt_and_failure_reason():
     message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
     payload = {
@@ -2213,6 +2238,44 @@ def test_answer_grounding_interprets_ranked_result_without_raw_key_value_listing
     assert "할당된 장비" not in message
     assert "TECH=" not in message
     assert result["trace"]["inspection"]["answer_grounding"]["unsupported_numeric_claims"] == ["9,999", "3"]
+
+
+def test_answer_grounding_summarizes_multi_row_comparison_without_first_row_bias():
+    answer_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py"
+    )
+    payload = {
+        "request": {"question": "이날 다른 공정은 어때?"},
+        "intent_plan": {
+            "output_contract": {"metric_columns": ["PRODUCTION"]},
+            "resolved_grain_plan": {"grain_columns": ["OPER_NAME"], "strict": True},
+        },
+        "analysis": {"status": "ok"},
+        "data": {
+            "columns": ["OPER_NAME", "PRODUCTION"],
+            "rows": [
+                {"OPER_NAME": "B/G1", "PRODUCTION": 17700},
+                {"OPER_NAME": "B/G2", "PRODUCTION": 1581},
+                {"OPER_NAME": "D/A1", "PRODUCTION": 1212},
+                {"OPER_NAME": "D/A2", "PRODUCTION": 480},
+            ],
+            "row_count": 4,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = answer_builder.build_answer_response(
+        payload,
+        "B/G1의 생산량은 잘못 계산된 19.2K입니다.",
+    )
+
+    message = result["answer_message"]
+    assert "공정별 생산량 결과는 총 4건" in message
+    assert "가장 많은 공정은 B/G1(17.7K)" in message
+    assert "가장 적은 공정은 D/A2(480)" in message
+    assert "B/G1의 생산량은" not in message
+    assert "나머지 공정별 상세 값은 아래 결과 표" in message
+    assert result["trace"]["inspection"]["answer_grounding"]["unsupported_numeric_claims"] == ["19.2K"]
 
 
 def test_intent_normalizer_parses_langflow_message_text_with_nested_json():
@@ -7381,6 +7444,73 @@ def test_metadata_qa_sections_support_process_group_and_data_redirect():
     assert "### 권장 실행 경로" in redirect_message
 
 
+def test_metadata_qa_shift_condition_uses_authoritative_filter_value():
+    context_builder = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py"
+    )
+    message_adapter = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "05_metadata_qa_message_adapter.py"
+    )
+    domain_items = {
+        "domain_items": [
+            {
+                "section": "status_terms",
+                "key": "SHIFT_A",
+                "status": "active",
+                "payload": {
+                    "display_name": "Shift A조",
+                    "aliases": ["A조", "1조", "07:00~15:00"],
+                    "condition": {"SHIFT": "1"},
+                },
+            },
+            {
+                "section": "analysis_recipes",
+                "key": "unrelated",
+                "status": "active",
+                "payload": {"display_name": "무관한 분석 규칙", "description": "데이터 조회 규칙"},
+            },
+        ]
+    }
+    payload = context_builder.build_metadata_qa_context(
+        {"request": {"question": "A조 조건은 데이터 조회에서 어떤 값으로 적용돼?"}},
+        domain_items,
+        {"table_catalog_items": []},
+        {"main_flow_filters": []},
+    )
+
+    context = payload["metadata_qa_context"]
+    assert context["answer_mode"] == "term_definition"
+    assert context["answer_policy"]["use_model_response"] is False
+    assert [row["key"] for row in context["candidate_rows"]] == ["SHIFT_A"]
+    assert context["candidate_rows"][0]["condition"] == {"SHIFT": "1"}
+
+    answer = normalizer.normalize_metadata_qa_response(
+        payload,
+        json.dumps(
+            {
+                "answer_type": "term_definition",
+                "answer_message": "A조는 07:00~15:00입니다.",
+                "table": {
+                    "columns": ["적용 시간"],
+                    "rows": [{"적용 시간": "07:00~15:00"}],
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+    message = message_adapter.build_message(answer)
+
+    assert answer["answer_message"] == "Shift A조는 데이터 조회에서 `SHIFT = 1` 조건으로 적용됩니다."
+    assert answer["data"]["rows"][0]["적용 조건"] == "SHIFT = 1"
+    assert "SHIFT = 1" in message
+    assert "### 등록된 용어 정의" in message
+    assert "| 조회 조건 | Shift A조 | SHIFT_A |" in message
+    assert "| metadata_type | section | key |" not in message
+
+
 def test_metadata_qa_process_group_inventory_and_detail_are_section_scoped():
     context_builder = load_module(
         ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
@@ -7439,6 +7569,82 @@ def test_metadata_qa_process_group_inventory_and_detail_are_section_scoped():
 
     answer = normalizer.normalize_metadata_qa_response(detail, "")
     assert answer["answer_message"] == "BG 공정 그룹에 포함된 세부 공정은 B/G1, B/G2입니다."
+
+
+def test_metadata_qa_process_group_comparison_supports_compound_spelling_and_pins_both_groups():
+    context_builder = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "02_metadata_qa_context_builder.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py"
+    )
+    message_adapter = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "05_metadata_qa_message_adapter.py"
+    )
+    domain_items = {
+        "domain_items": [
+            {
+                "section": "pandas_function_cases",
+                "key": "sample_passthrough_demo",
+                "payload": {"display_name": "무관한 예시 함수", "aliases": ["공정"]},
+            },
+            {
+                "section": "process_groups",
+                "key": "BM",
+                "payload": {
+                    "display_name": "B/M",
+                    "aliases": ["BM", "B/M", "BM공정", "B/M공정"],
+                    "processes": ["B/M"],
+                },
+            },
+            {
+                "section": "process_groups",
+                "key": "WB",
+                "payload": {
+                    "display_name": "W/B",
+                    "aliases": ["WB", "W/B", "WB공정", "W/B공정"],
+                    "processes": ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"],
+                },
+            },
+            {
+                "section": "process_groups",
+                "key": "WBM",
+                "payload": {
+                    "display_name": "W/BM",
+                    "aliases": ["WBM", "W/BM", "WBM공정", "W/BM공정"],
+                    "processes": ["W/BM"],
+                },
+            },
+        ]
+    }
+
+    for question in (
+        "WBM공정그룹과 WB공정그룹은 어떻게 다른지 알려줘.",
+        "WBM공정 GROUP과 WB공정 GROUP은 어떻게 다른지 알려줘.",
+        "WBM공정GROUP과 WB공정GROUP은 어떻게 다른지 알려줘.",
+        "WBM공정과 WB공정은 어떻게 다른지 알려줘.",
+    ):
+        payload = context_builder.build_metadata_qa_context(
+            {"request": {"question": question}},
+            domain_items,
+            {},
+            {},
+        )
+        context = payload["metadata_qa_context"]
+        assert context["answer_mode"] == "process_group"
+        assert context["query_scope"]["request_kind"] == "comparison"
+        assert {row["key"] for row in context["candidate_rows"]} == {"WB", "WBM"}
+        assert all(row["section"] == "process_groups" for row in context["candidate_rows"])
+
+        answer = normalizer.normalize_metadata_qa_response(payload, "")
+        message = message_adapter.build_message(answer)
+
+        assert "W/BM=W/BM" in answer["answer_message"]
+        assert "W/B=W/B1, W/B2, W/B3, W/B4, W/B5, W/B6" in answer["answer_message"]
+        assert {row["메타데이터 키"] for row in answer["data"]["rows"]} == {"WB", "WBM"}
+        assert "sample_passthrough_demo" not in message
+        assert "| W/B | WB |" in message
+        assert "| W/BM | WBM |" in message
 
 
 def test_metadata_qa_dataset_comparison_pins_all_named_datasets_and_default_columns():
@@ -7559,11 +7765,17 @@ def test_metadata_qa_available_sources_keeps_complete_context_table():
     assert len(answer["metadata_qa"]["source_refs"]) == 7
     assert answer["data"]["row_count"] == 7
     assert answer["trace"]["inspection"]["metadata_qa_response"]["used_context_table"] is True
+    assert "usage_examples" not in answer["answer_sections"]
     message = message_adapter.build_message(answer)
     assert "### 한눈에 보기" in message
-    assert "### 다음에 물어볼 수 있는 질문" in message
+    assert "### 다음에 물어볼 수 있는 질문" not in message
     assert "### 사용한 메타데이터" not in message
     assert "metadata_type" not in message
+    prompt_text = (
+        ROOT / "langflow_components" / "metadata_qa_flow" / "03_metadata_qa_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    assert "usage_examples" not in prompt_text
+    assert "다음에 물어볼 수 있는 질문" not in prompt_text
 
 
 def test_metadata_qa_available_sources_question_honors_small_limit():

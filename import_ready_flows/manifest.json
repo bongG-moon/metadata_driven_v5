@@ -26,7 +26,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "fcc9e08825179f05174037c326c1ca02b77c0acb77042d1fa9a397a6060279f7",
+  "single_file_ui_import_sha256": "226e8c96fd3480eda9fc5c99a85f6275a7631e873763a52d34684555d1e4c75a",
   "flows": [
     {
       "order": 1,
@@ -35,7 +35,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 45,
       "edges": 70,
-      "sha256": "8b21de68ff8459dd96b25fde3071e437bc9a42839c8bfed10f77e03f4a7e5751"
+      "sha256": "e959e97de361358568ffd08a8d5efc93e9bbad27ed383fa923f90701f23c00ef"
     },
     {
       "order": 2,
@@ -71,7 +71,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
       "nodes": 13,
       "edges": 19,
-      "sha256": "7ea63e3f64a4586a219f68bfb712e3512926239f1ee97d34da710c9f064dfaa6"
+      "sha256": "e65311553dcf4d3077806e1568740ced21d664ee04c4a6bd22dfb36f82b8ea7a"
     },
     {
       "order": 6,
@@ -133,9 +133,9 @@
     "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools"
   },
   "validation": {
-    "pytest": "413 passed",
+    "pytest": "415 passed",
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 120/120 custom nodes to 83 real Python sources; 0 missing",
-    "korean_component_documentation": "84/84 Python sources and 1533/1533 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7020/7020 documented function instances; strict UTF-8/JSON checks passed",
+    "korean_component_documentation": "84/84 Python sources and 1575/1575 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7158/7158 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
     "langflow_frontend_edge_handles": "426/426 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
