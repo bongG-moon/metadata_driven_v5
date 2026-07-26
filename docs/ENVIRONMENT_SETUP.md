@@ -2,6 +2,19 @@
 
 이 프로젝트는 실제 MongoDB/Gemini 검증으로 확장할 수 있도록 `.env` 파일을 사용한다.
 
+## 기본 지원 버전
+
+별도 요청이 없으면 개발, 수정, Flow JSON 재생성 및 운영 import 검증은 아래 정확한 조합을 사용한다.
+
+```text
+langflow==1.9.2
+langflow-base==0.9.2
+lfx==0.4.2
+Python >=3.10,<3.14
+```
+
+권장 Python 버전은 3.12다. `langflow==1.9.2`만 단독으로 설치하지 말고 `langflow-base`와 `lfx`도 함께 고정한다. 더 최신 Desktop에서 JSON을 생성해야 하면 `LANGFLOW_COMPONENT_INDEX_PATH`에 1.9.2 환경의 `lfx/_assets/component_index.json`을 지정한다. 상세 기준은 `LANGFLOW_1_9_2_MIGRATION.md`와 저장소 루트 `AGENTS.md`를 따른다.
+
 ## Files
 
 - `.env.example`: 공유 가능한 템플릿
@@ -90,9 +103,9 @@ LANGFLOW_VERTEX_BUILDS_STORAGE_ENABLED=false
 - 두 설정 모두 Flow 실행 결과에는 영향을 주지 않지만 Trace View와 과거 vertex output 확인 범위가 줄어든다.
 - 설정 후 Langflow Desktop을 재시작해야 한다.
 - 전체 tracing provider까지 끄는 `LANGFLOW_DEACTIVATE_TRACING=true`보다 native DB 저장만 끄는 위 설정을 우선한다.
-- Langflow 1.8.2에는 trace 보존 기간 자동 제한이 없으므로 tracing을 유지한다면 별도 retention 정리가 필요하다.
+- tracing을 유지한다면 배포 DB 정책에 맞춘 별도 retention 정리가 필요하다.
 
-운영 기본 API Router에는 Run Flow 노드가 없습니다. 별도로 제공되는 `07_agent_tool_router_flow_v5_standalone.json`에는 이름 기반 Cached Run Flow Tool 5개, `08_workflow_orchestrator_flow_v5_standalone.json`에는 HTML 시각화를 포함한 6개가 있으며 모두 `Cache Flow=true`입니다. 이 설정은 하위 Flow 그래프만 캐시하고 데이터 조회·pandas·LLM 결과는 캐시하지 않습니다.
+운영 기본 API Router에는 Run Flow 노드가 없습니다. 별도로 제공되는 `07_agent_tool_router_flow_v5_standalone.json`에는 선택한 Flow ID를 우선 사용하는 Cached Run Flow Tool 5개, `08_workflow_orchestrator_flow_v5_standalone.json`에는 HTML 시각화를 포함한 이름 기반 Tool 6개가 있으며 모두 `Cache Flow=true`입니다. 07은 import 직후에도 이름 fallback으로 실행할 수 있지만, 불필요한 이름 조회를 없애려면 다섯 Tool의 `대상 Flow`를 새 환경에서 한 번씩 다시 선택해 실제 ID를 저장합니다. 이 설정은 하위 Flow 그래프만 캐시하고 데이터 조회·pandas·LLM 결과는 캐시하지 않습니다.
 
 08 Workflow Orchestrator는 기본 Agent 대신 계획용 Language Model, Langflow 기본 Loop, 최종 합성용 Language Model을 사용합니다. 운영 기본값은 `MONGO_URL`로 `datagov.agent_v4_workflow_skills`의 active Skill을 조회하는 `mongodb` 모드이며, 현재 질문과 관련된 후보만 최대 8개·64KB로 제한합니다. `inline_seed`는 명시적 로컬 테스트 모드이고 MongoDB 오류 시 자동 fallback하지 않습니다. 단계는 최대 4개를 순차 호출하며, `handoff=result_ref`가 있는 업무는 `datagov.agent_v4_result_store`, 부모·자식의 동일 `session_id`가 필요합니다. 하위 Flow 실행 시간을 합산해야 하므로 외부 client timeout은 Workflow의 최장 예상 시간보다 길게 설정합니다.
 

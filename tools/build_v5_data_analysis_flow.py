@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 from copy import deepcopy
 from importlib.util import find_spec
@@ -28,6 +29,8 @@ LANGUAGE_MODEL_SYSTEM_MESSAGES = {
     "LanguageModel-answer": "Follow the supplied prompt exactly and return only the requested answer text.",
 }
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
+TARGET_LANGFLOW_VERSION = "1.9.2"
+TARGET_LANGUAGE_MODEL_SOURCE = ROOT / "tools" / "assets" / "langflow_1_9_2_language_model.py"
 
 COMPONENT_FILES = {
     "CustomComponent-xpbhS": "data_analysis_flow/00_analysis_request_loader.py",
@@ -158,6 +161,7 @@ NEW_COMPONENTS = {
 
 def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     flow = json.loads(source.read_text(encoding="utf-8-sig"))
+    flow["last_tested_version"] = TARGET_LANGFLOW_VERSION
     nodes = flow["data"]["nodes"]
     edges = flow["data"]["edges"]
     node_index = {node["id"]: node for node in nodes}
@@ -290,6 +294,33 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     answer_component["field_order"] = [
         field_name for field_name in answer_component.get("field_order", []) if field_name != "download_base_url"
     ]
+    preview_limit_field = deepcopy(
+        node_index["Agent-mevnw"]["data"]["node"]["template"]["max_iterations"]
+    )
+    preview_limit_field.update(
+        {
+            "name": "table_preview_limit",
+            "display_name": "결과 테이블 미리보기 행 수",
+            "info": (
+                "최종 답변의 Markdown 결과 표에 표시할 최대 행 수입니다. "
+                "다운로드 데이터와 MongoDB 저장 행 수에는 영향을 주지 않습니다."
+            ),
+            "value": 10,
+            "required": False,
+            "advanced": True,
+            "show": True,
+            "type": "int",
+            "_input_type": "IntInput",
+        }
+    )
+    answer_template["table_preview_limit"] = preview_limit_field
+    answer_component["field_order"] = [
+        field_name
+        for field_name in answer_component.get("field_order", [])
+        if field_name != "table_preview_limit"
+    ]
+    insert_at = answer_component["field_order"].index("show_result_table") + 1
+    answer_component["field_order"].insert(insert_at, "table_preview_limit")
     if isinstance(answer_template.get("show_next_questions"), dict):
         answer_template["show_next_questions"]["value"] = False
         answer_template["show_next_questions"]["display_name"] = "다음 질문을 답변 본문에도 표시"
@@ -390,6 +421,10 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     )
     flow["endpoint_name"] = "metadata-driven-v5-data-analysis"
     flow["tags"] = sorted(set([*flow.get("tags", []), "v5", "dummy-default", "live-ready", "standalone"]))
+    for node in flow["data"]["nodes"]:
+        component = node.get("data", {}).get("node")
+        if isinstance(component, dict):
+            component["lf_version"] = TARGET_LANGFLOW_VERSION
     return flow
 
 
@@ -556,6 +591,7 @@ def _custom_gaia_adapter_node(
     component["documentation"] = "https://docs.langflow.org/chat-input-and-output"
     component["icon"] = "MessagesSquare"
     component["minimized"] = True
+    component["lf_version"] = TARGET_LANGFLOW_VERSION
     component.setdefault("metadata", {})["code_hash"] = hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
     component["metadata"]["module"] = f"custom_components.{source_path.stem}"
     return node
@@ -636,6 +672,9 @@ def _load_native_component(display_name: str) -> dict[str, Any]:
         # 등록돼 있어도 아래 standalone Desktop component index 경로를 사용합니다.
         spec = None
     candidates = []
+    explicit_index = str(os.getenv("LANGFLOW_COMPONENT_INDEX_PATH") or "").strip()
+    if explicit_index:
+        candidates.append(Path(explicit_index).expanduser().resolve())
     if spec is not None and spec.origin:
         candidates.append(Path(spec.origin).resolve().parent / "_assets" / "component_index.json")
     candidates.append(
@@ -657,7 +696,7 @@ def _load_native_component(display_name: str) -> dict[str, Any]:
     component = _find_native_component(index, display_name)
     if not component:
         raise RuntimeError(f"Langflow component template not found: {display_name}")
-    component["lf_version"] = "1.8.2"
+    component["lf_version"] = TARGET_LANGFLOW_VERSION
     return component
 
 
@@ -709,6 +748,15 @@ def _apply_native_language_model(
     previous_template = node["data"]["node"]["template"]
     config = deepcopy(component_config)
     template = config["template"]
+    # Langflow 1.10+ index에는 1.9.2에 없던 provider/model_name 입력이 추가됩니다.
+    # 생성기를 더 최신 Desktop에서 실행해도 목표 1.9.2 JSON 계약이 달라지지 않게 제거합니다.
+    for field_name in ("model_name", "provider"):
+        template.pop(field_name, None)
+    config["field_order"] = [
+        field_name
+        for field_name in config.get("field_order", [])
+        if field_name not in {"model_name", "provider"}
+    ]
     for field_name in ("model", "api_key"):
         previous = previous_template.get(field_name)
         current = template.get(field_name)
@@ -721,6 +769,11 @@ def _apply_native_language_model(
     template["stream"]["value"] = False
     template["temperature"]["value"] = 0.1
     template["max_tokens"]["value"] = 8192
+    target_code = TARGET_LANGUAGE_MODEL_SOURCE.read_text(encoding="utf-8")
+    template["code"]["value"] = target_code
+    config.setdefault("metadata", {})["code_hash"] = hashlib.sha256(
+        target_code.encode("utf-8")
+    ).hexdigest()[:12]
     node["data"]["type"] = "LanguageModelComponent"
     node["data"]["node"] = config
 
@@ -789,6 +842,7 @@ def _refresh_component_node(node: dict[str, Any], path: Path) -> None:
     component["template"]["code"]["value"] = code
     component["display_name"] = display_match.group(1)
     component["description"] = description_match.group(1) if description_match else ""
+    component["lf_version"] = TARGET_LANGFLOW_VERSION
     component.setdefault("metadata", {})["code_hash"] = hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
     component["metadata"]["module"] = f"custom_components.{path.stem}"
     node["data"]["type"] = class_match.group(1)

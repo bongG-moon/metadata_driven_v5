@@ -30,7 +30,7 @@ Chat Input
 
 ```text
 Chat Input
--> Agent <- 이름 기반 Cached Run Flow Tool 5개
+-> Agent <- 선택 ID 우선 Cached Run Flow Tool 5개
 -> 단일 Chat Output
 ```
 

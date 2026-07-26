@@ -125,6 +125,7 @@ def install_lfx_test_stubs() -> None:
     io_module.DataInput = getattr(io_module, "DataInput", InputBase)
     io_module.DropdownInput = getattr(io_module, "DropdownInput", InputBase)
     io_module.HandleInput = getattr(io_module, "HandleInput", InputBase)
+    io_module.IntInput = getattr(io_module, "IntInput", InputBase)
     io_module.MessageInput = getattr(io_module, "MessageInput", InputBase)
     io_module.MessageTextInput = getattr(io_module, "MessageTextInput", InputBase)
     io_module.ModelInput = getattr(io_module, "ModelInput", InputBase)
@@ -1048,6 +1049,7 @@ def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
     assert "request_scope" in schema["intent_plan"]
     assert "condition_resolution" in schema["intent_plan"]
     assert "context_columns" not in schema["intent_plan"]["output_contract"]
+    assert schema["intent_plan"]["output_contract"]["result_segments"][0]["operation"] == "top_n|bottom_n|filter|comparison"
     assert state["state"]["last_intent_plan"]["output_contract"] == {"required_columns": ["WIP"]}
     assert state["state"]["last_intent_plan"]["retrieval_jobs"] == [
         {"dataset_key": "wip_today", "join_keys": ["DEVICE"]}
@@ -1714,6 +1716,28 @@ def test_answer_message_adapter_result_table_uses_ten_row_preview():
     assert "총 12건 중 10건을 표시했습니다." in message
 
 
+def test_answer_message_adapter_result_table_preview_limit_is_configurable():
+    message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
+    payload = {
+        "answer_message": "완료했습니다.",
+        "data": {
+            "columns": ["idx"],
+            "rows": [{"idx": index} for index in range(12)],
+            "row_count": 12,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    message = message_adapter.build_message(
+        payload,
+        show_result_table=True,
+        table_preview_limit=12,
+    )
+
+    assert "| 11 |" in message
+    assert "총 12건입니다." in message
+
+
 def test_answer_message_adapter_renders_array_cells_as_natural_comma_separated_text():
     message_adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py")
     payload = {
@@ -2238,6 +2262,113 @@ def test_answer_grounding_interprets_ranked_result_without_raw_key_value_listing
     assert "할당된 장비" not in message
     assert "TECH=" not in message
     assert result["trace"]["inspection"]["answer_grounding"]["unsupported_numeric_claims"] == ["9,999", "3"]
+
+
+def test_multiple_ranking_segments_are_preserved_executed_and_explained_separately():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    pandas_executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    answer_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py"
+    )
+    question = "오늘 DA공정에서 생산량과 재공 합이 가장 큰 상위 3개 제품과 가장 적은 하위 3개 제품 알려줘"
+    payload = {"request": {"question": question}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "production_wip_total_product_ranking",
+                "request_scope": "new_analysis",
+                "reuse_strategy": "none",
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [
+                    {"operation": "top_n", "sort_by": "TOTAL_QUANTITY", "limit": 3},
+                    {"operation": "bottom_n", "sort_by": "TOTAL_QUANTITY", "limit": 3},
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["TECH", "DENSITY"],
+                    "metric_columns": ["TOTAL_QUANTITY"],
+                    "result_segments": [
+                        {
+                            "label": "상위 3개",
+                            "operation": "top_n",
+                            "limit": 3,
+                            "sort_by": "TOTAL_QUANTITY",
+                            "order": "desc",
+                        },
+                        {
+                            "label": "하위 3개",
+                            "operation": "bottom_n",
+                            "limit": 3,
+                            "sort_by": "TOTAL_QUANTITY",
+                            "order": "asc",
+                        },
+                    ],
+                },
+            }
+        },
+    )
+    contract = normalized["intent_plan"]["output_contract"]
+    assert [segment["label"] for segment in contract["result_segments"]] == ["상위 3개", "하위 3개"]
+    assert contract["segment_column"] == "RESULT_GROUP"
+    assert contract["rank_column"] == "RESULT_RANK"
+
+    normalized["runtime_sources"] = {
+        "combined": [
+            {"TECH": "1B", "DENSITY": "32G", "TOTAL_QUANTITY": 17700},
+            {"TECH": "1Z", "DENSITY": "16G", "TOTAL_QUANTITY": 12400},
+        ]
+    }
+    missing_labels = pandas_executor.execute_pandas_code(
+        normalized,
+        {"code": "result = sources['combined'].copy()"},
+    )
+    assert missing_labels["analysis"]["status"] == "error"
+    assert missing_labels["analysis"]["error"]["type"] == "output_contract_violation"
+    assert "RESULT_GROUP" in missing_labels["analysis"]["error"]["message"]
+    assert "RESULT_RANK" in missing_labels["analysis"]["error"]["message"]
+
+    executed = pandas_executor.execute_pandas_code(
+        normalized,
+        {
+            "code": (
+                "base = sources['combined'].copy()\n"
+                "top_rows = base.sort_values('TOTAL_QUANTITY', ascending=False).head(3).copy()\n"
+                "top_rows['RESULT_GROUP'] = '상위 3개'\n"
+                "top_rows['RESULT_RANK'] = range(1, len(top_rows) + 1)\n"
+                "bottom_rows = base.sort_values('TOTAL_QUANTITY', ascending=True).head(3).copy()\n"
+                "bottom_rows['RESULT_GROUP'] = '하위 3개'\n"
+                "bottom_rows['RESULT_RANK'] = range(1, len(bottom_rows) + 1)\n"
+                "result = pd.concat([top_rows, bottom_rows], ignore_index=True)\n"
+                "result = result[['RESULT_GROUP', 'RESULT_RANK', 'TECH', 'DENSITY', 'TOTAL_QUANTITY']]"
+            )
+        },
+    )
+    assert executed["analysis"]["status"] == "ok"
+    assert [row["RESULT_GROUP"] for row in executed["data"]["rows"]] == [
+        "상위 3개",
+        "상위 3개",
+        "하위 3개",
+        "하위 3개",
+    ]
+
+    answered = answer_builder.build_answer_response(
+        executed,
+        "상위와 하위 결과의 합계 수량은 잘못 계산된 99,999입니다.",
+    )
+    message = answered["answer_message"]
+    assert "- 상위 3개: 2건이며 1위는" in message
+    assert "- 하위 3개: 2건이며 1위는" in message
+    assert "일부 대상이 서로 다른 결과 구간에 함께 포함" in message
+    assert "가장 적은 대상은" not in message
+    result_table = answered["answer_sections"]["result_table"]
+    assert result_table["column_labels"]["RESULT_GROUP"] == "구분"
+    assert result_table["column_labels"]["RESULT_RANK"] == "구간 내 순위"
+    assert result_table["display_columns"][:2] == ["RESULT_GROUP", "RESULT_RANK"]
 
 
 def test_answer_grounding_summarizes_multi_row_comparison_without_first_row_bias():
@@ -3011,6 +3142,45 @@ def test_answer_message_adapter_passes_downloads_and_followups_to_gaia_metadata(
     assert response["metadata"]["followup_questions"] == [
         {"type": "followup_question", "id": "followup-1", "value": "제품별로 더 나눠볼까요?"}
     ]
+
+
+def test_gaia_input_preserves_current_message_identity_for_agent_history_deduplication():
+    gaia_input = load_module(ROOT / "langflow_components" / "gaia_io" / "00_gaia_input.py")
+    source_message = gaia_input.Message(text="그럼 어제는?")
+    source_message.id = "current-message-id"
+    component = gaia_input.GaiAInputAdapter()
+    component.input_message = source_message
+    component.data = "{}"
+    component.metadata = "{}"
+
+    result = component.message_response()
+
+    assert result is source_message
+    assert result.id == "current-message-id"
+
+
+def test_gaia_output_promotes_return_direct_tool_content_when_agent_text_is_empty():
+    gaia_output = load_module(ROOT / "langflow_components" / "gaia_io" / "01_gaia_output.py")
+    agent_message = gaia_output.Message(text="")
+    agent_message.content_blocks = [
+        types.SimpleNamespace(
+            contents=[
+                types.SimpleNamespace(
+                    type="tool_use",
+                    output=types.SimpleNamespace(
+                        content="### 답변\nWB 공정의 총 생산량은 6,453입니다.",
+                        artifact=None,
+                    ),
+                )
+            ]
+        )
+    ]
+
+    output_component = gaia_output.GaiAOutputAdapter()
+    output_component.input_value = agent_message
+    response = output_component._build_response_payload()
+
+    assert response["answer"] == "### 답변\nWB 공정의 총 생산량은 6,453입니다."
 
 
 def test_answer_message_adapter_section_toggles_control_verbose_blocks():
@@ -8553,6 +8723,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert list(inputs) == [
         "flow_name_selected",
         "flow_id_selected",
+        "flow_resolution_mode",
         "session_id",
         "cache_flow",
         "tool_name",
@@ -8560,6 +8731,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         "return_direct",
     ]
     assert inputs["flow_id_selected"]["value"] == ""
+    assert inputs["flow_resolution_mode"]["value"] == "Flow ID 우선"
     assert inputs["session_id"]["advanced"] is True
     assert inputs["cache_flow"]["value"] is True
     assert inputs["return_direct"]["value"] is True
@@ -8572,6 +8744,9 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert '"name": "question"' in source
     assert 'name="lazy_flow_result"' in source
     assert "def _run_selected_flow" in source
+    assert "def update_build_config" in source
+    assert "alist_flows_by_flow_folder" in source
+    assert "FLOW_ID_ONLY" in source
     assert "get_new_fields_from_graph" not in source
     assert "def _build_flow_tweak_data" in source
     assert "flow_id_selected=None" in source
@@ -8581,6 +8756,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert 'runtime_user_id = str(getattr(self, "user_id"' in source
     assert "self.user_id =" not in source
     assert "tool.return_direct" in source
+    assert "def _inherit_runtime_session" in source
     assert "parent_session" in source
     assert "session_source" not in source
 
@@ -8718,6 +8894,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     monkeypatch.setattr(base, "get_graph", fake_get_graph, raising=False)
     runtime_instance = component.CachedNamedRunFlowTool()
     runtime_instance._attributes = {}
+    runtime_instance.flow_resolution_mode = component.FLOW_NAME_ONLY
     runtime_instance._user_id = ""
     runtime_instance.graph = types.SimpleNamespace(user_id="parent-user", session_id="parent-session")
     assert asyncio.run(runtime_instance.get_graph("Metadata QA", "stale-export-id", None)) is graph
@@ -8736,6 +8913,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     cached_instance = component.CachedNamedRunFlowTool()
     cached_instance._attributes = {}
     cached_instance._user_id = "parent-user"
+    cached_instance.flow_resolution_mode = component.FLOW_NAME_ONLY
     assert asyncio.run(cached_instance.get_graph("Metadata QA", current_flow_id, None)) is graph
     assert graph_calls == [
         ("resolve", "Metadata QA", None),
@@ -8748,10 +8926,78 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     component._promote_graph_output(graph, ("ChatOutput-current", "gaia_response"))
     assert [vertex.id for vertex in graph.vertices if vertex.is_output] == ["ChatOutput-current"]
 
+    graph_calls.clear()
+    selected_id_instance = component.CachedNamedRunFlowTool()
+    selected_id_instance._attributes = {}
+    selected_id_instance._user_id = "parent-user"
+    selected_id_instance.flow_resolution_mode = component.FLOW_ID_ONLY
+    assert asyncio.run(
+        selected_id_instance.get_graph("stale-or-duplicate-name", current_flow_id, None)
+    ) is graph
+    assert graph_calls == [
+        ("build", "stale-or-duplicate-name", current_flow_id, None),
+    ]
+    assert selected_id_instance.flow_name_selected == "stale-or-duplicate-name"
+
+    missing_id_instance = component.CachedNamedRunFlowTool()
+    missing_id_instance._attributes = {}
+    missing_id_instance._user_id = "parent-user"
+    missing_id_instance.flow_resolution_mode = component.FLOW_ID_ONLY
+    with pytest.raises(ValueError, match="대상 Flow 드롭다운"):
+        asyncio.run(missing_id_instance.get_graph("Metadata QA", "", None))
+
+    flow_picker_instance = component.CachedNamedRunFlowTool()
+    flow_picker_instance._attributes = {}
+
+    async def fake_list_flows():
+        return [
+            types.SimpleNamespace(
+                data={
+                    "id": current_flow_id,
+                    "name": "Metadata QA",
+                    "updated_at": "2026-07-12T10:00:00Z",
+                }
+            )
+        ]
+
+    flow_picker_instance.alist_flows_by_flow_folder = fake_list_flows
+    build_config = {
+        "is_refresh": True,
+        "flow_name_selected": {
+            "options": [],
+            "options_metadata": [],
+            "value": None,
+        },
+        "flow_id_selected": {"value": ""},
+    }
+    refreshed = asyncio.run(
+        flow_picker_instance.update_build_config(build_config, None, "flow_name_selected")
+    )
+    assert refreshed["flow_name_selected"]["options"] == ["Metadata QA"]
+    assert refreshed["flow_name_selected"]["options_metadata"] == [
+        {"id": current_flow_id, "updated_at": "2026-07-12T10:00:00Z"}
+    ]
+    refreshed["is_refresh"] = False
+    refreshed["flow_name_selected"]["selected_metadata"] = {
+        "id": current_flow_id,
+        "updated_at": "2026-07-12T10:00:00Z",
+    }
+    selected = asyncio.run(
+        flow_picker_instance.update_build_config(
+            refreshed,
+            "Metadata QA",
+            "flow_name_selected",
+        )
+    )
+    assert selected["flow_id_selected"]["value"] == current_flow_id
+    assert flow_picker_instance._attributes["flow_name_selected_updated_at"] == "2026-07-12T10:00:00Z"
+
     run_calls = []
 
     async def fake_run_outputs(*, user_id, output_type):
         assert runtime_instance._last_run_outputs is None
+        assert runtime_instance.session_id == "parent-session"
+        assert runtime_instance._attributes["session_id"] == "parent-session"
         run_calls.append(("run", user_id, output_type))
         runtime_instance._resolved_flow_output_target = ("ChatOutput-current", "gaia_response")
         runtime_instance._last_run_outputs = ["fresh"]
@@ -8762,6 +9008,8 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         return component.Data(data={"answer": "child answer", "metadata": {"docs": []}})
 
     runtime_instance._user_id = "user-1"
+    runtime_instance.session_id = ""
+    runtime_instance._session_id = ""
     runtime_instance._last_run_outputs = ["stale"]
     runtime_instance._get_cached_run_outputs = fake_run_outputs
     runtime_instance._resolve_flow_output = fake_resolve
@@ -8986,7 +9234,7 @@ def test_route_v3_unwraps_real_lfx_artifact_raw_and_message_shapes():
             "columns": ["LOT_ID"],
         },
     }
-    # LFX 0.3.4 custom terminal outputs are resolved from ResultData.artifacts,
+    # LFX custom terminal outputs are resolved from ResultData.artifacts,
     # not directly from ResultData.results. The actual API payload lives in raw.
     artifact_contract = component.normalize_tool_result(
         {"repr": "Data result", "raw": api_payload, "type": "Data"},
@@ -10139,7 +10387,7 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     for path in exports.values():
         assert path.exists(), path
         flow = json.loads(path.read_text(encoding="utf-8"))
-        assert flow["last_tested_version"] == "1.8.2"
+        assert flow["last_tested_version"] == "1.9.2"
         assert flow["data"]["nodes"]
         assert flow["data"]["edges"]
         node_ids = [node["id"] for node in flow["data"]["nodes"]]
@@ -10155,7 +10403,7 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
                 continue
             target_input = nodes_by_id[edge["target"]]["data"]["node"]["template"][target_field]
             assert target_input.get("advanced") is not True, (
-                f"{path.name}: Langflow 1.8.2 removes edge {edge['id']} because "
+                f"{path.name}: Langflow removes edge {edge['id']} because "
                 f"{edge['target']}.{target_field} is an advanced input"
             )
 
@@ -10332,14 +10580,18 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     assert agent_template["system_prompt"]["value"] == (
         ROOT / "langflow_components" / "route_flow_v2" / "SYSTEM_PROMPT_KO.md"
     ).read_text(encoding="utf-8")
-    assert agent_template["max_iterations"]["value"] == 3
-    assert agent_template["n_messages"]["value"] == 6
+    assert agent_template["max_iterations"]["value"] == 1
+    assert agent_template["n_messages"]["value"] == 5
     assert agent_template["add_current_date_tool"]["value"] is False
     assert agent_template["verbose"]["value"] is False
     assert all(node["data"]["node"]["tool_mode"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["return_direct"]["value"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in tools)
+    assert all(
+        node["data"]["node"]["template"]["flow_resolution_mode"]["value"] == "Flow ID 우선"
+        for node in tools
+    )
     assert all("session_source" not in node["data"]["node"]["template"] for node in tools)
     cached_tool_source = (
         ROOT / "langflow_components" / "route_flow_v2" / "01_cached_named_run_flow_tool.py"

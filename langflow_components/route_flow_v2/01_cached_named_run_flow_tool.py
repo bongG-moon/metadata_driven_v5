@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
-# 컴포넌트 개요: 01 이름 기반 Cached Run Flow 도구
-# 역할: 같은 프로젝트의 Flow를 이름으로 찾아 고정 question 입력과 실제 ID 기반 그래프 캐시를 사용하는 Agent 도구로 제공합니다.
-# 주요 입력: 런타임 사용자 질문 (question) · 필수, 대상 Flow 이름 (flow_name_selected) · 필수, 해석된 Flow ID (flow_id_selected),
+# 컴포넌트 개요: 01 선택형 Cached Run Flow 도구
+# 역할: 기본 Run Flow처럼 UI에서 선택한 실제 Flow ID를 우선 사용하고, ID가 없으면 이름 조회로 호환 실행하는 Agent 도구를 제공합니다.
+# 주요 입력: 런타임 사용자 질문 (question) · 필수, 대상 Flow (flow_name_selected) · 필수, 선택된 Flow ID (flow_id_selected),
+#        Flow 해석 방식 (flow_resolution_mode),
 #        세션 ID (session_id), Flow 그래프 캐시 (cache_flow), 도구 이름 (tool_name) · 필수, 도구 설명 (tool_description) · 필수,
 #        결과 직접 반환 (return_direct)
 # 주요 출력: Flow 도구 (component_as_tool)
-# 처리 흐름: Langflow 실행 사용자로 이름을 실제 ID에 해석한 뒤, 선택된 Tool만 runtime Chat I/O ID를 찾아 실행합니다.
-# 유지보수 포인트: 실제 ID는 캐시에 재사용하되 export에는 고정하지 않으며, 부모 Router만 질문·답변 메시지를 저장합니다.
+# 처리 흐름: UI 선택 ID→이름 fallback 순으로 Flow를 확정한 뒤 선택된 Tool만 runtime Chat I/O ID를 찾아 실행합니다.
+# 유지보수 포인트: standalone import 직후에는 이름 fallback을 사용할 수 있고, 실제 환경에서는 Flow 드롭다운을 다시 선택해 현재 ID를 저장합니다.
 # =============================================================================
 
 from __future__ import annotations
@@ -17,9 +18,14 @@ from typing import Any
 
 from lfx.base.tools.run_flow import RunFlowBaseComponent
 from lfx.custom.custom_component.component import Component
-from lfx.io import BoolInput, MessageTextInput, MultilineInput, Output, StrInput
+from lfx.io import BoolInput, DropdownInput, MessageTextInput, MultilineInput, Output, StrInput
 from lfx.schema.data import Data
 from lfx.schema.message import Message
+
+FLOW_ID_PREFERRED = "Flow ID 우선"
+FLOW_ID_ONLY = "선택한 Flow ID만"
+FLOW_NAME_ONLY = "Flow 이름으로 조회"
+FLOW_RESOLUTION_OPTIONS = [FLOW_ID_PREFERRED, FLOW_ID_ONLY, FLOW_NAME_ONLY]
 
 
 # 함수 설명: `_as_iso_text()`는 datetime 등 시간 값을 캐시 갱신 비교에 사용할 ISO 문자열로 변환합니다.
@@ -215,28 +221,66 @@ def _gaia_response_message(value: Any) -> Message:
     return message
 
 
+# 함수 설명: Flow 해석 방식 입력을 안정적인 내부 값으로 정규화합니다.
+def _flow_resolution_mode(value: Any) -> str:
+    text = str(value or "").strip()
+    aliases = {
+        "id_preferred": FLOW_ID_PREFERRED,
+        "prefer_id": FLOW_ID_PREFERRED,
+        "id_only": FLOW_ID_ONLY,
+        "name_only": FLOW_NAME_ONLY,
+    }
+    normalized = aliases.get(text.lower(), text)
+    return normalized if normalized in FLOW_RESOLUTION_OPTIONS else FLOW_ID_PREFERRED
+
+
+# 함수 설명: Run Flow 드롭다운의 selected_metadata에서 ID·updated_at 값을 안전하게 읽습니다.
+def _selected_flow_metadata(build_config: Any) -> dict[str, Any]:
+    config = build_config if isinstance(build_config, dict) else {}
+    flow_field = config.get("flow_name_selected")
+    flow_field = flow_field if isinstance(flow_field, dict) else {}
+    metadata = flow_field.get("selected_metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class CachedNamedRunFlowTool(RunFlowBaseComponent):
-    display_name = "01 이름 기반 Cached Run Flow 도구"
-    description = "고정 question 도구를 먼저 제공하고 선택된 Flow만 이름으로 찾아 캐시된 그래프로 실행합니다."
+    display_name = "01 선택형 Cached Run Flow 도구"
+    description = "기본 Run Flow처럼 선택한 실제 ID를 우선 사용하고, 필요할 때 이름 fallback으로 하위 Flow를 실행합니다."
     name = "CachedNamedRunFlowTool"
     icon = "Workflow"
 
     inputs = [
-        StrInput(
+        DropdownInput(
             name="flow_name_selected",
-            display_name="대상 Flow 이름",
-            info="Import된 하위 Flow의 정확한 이름입니다. 실행 시 실제 DB ID를 다시 조회합니다.",
+            display_name="대상 Flow",
+            info="새로고침 후 실제 환경의 하위 Flow를 선택하세요. 선택 시 현재 Flow ID가 함께 저장됩니다.",
+            options=[],
+            options_metadata=[],
+            real_time_refresh=True,
+            refresh_button=True,
+            value=None,
             required=True,
         ),
         StrInput(
             name="flow_id_selected",
-            display_name="해석된 Flow ID",
-            info="실행 시 이름으로 해석되며 export에 고정하지 않습니다.",
+            display_name="선택된 Flow ID",
+            info="대상 Flow 드롭다운에서 선택된 실제 ID입니다. 직접 입력하지 않습니다.",
             value="",
             show=False,
             override_skip=True,
+        ),
+        DropdownInput(
+            name="flow_resolution_mode",
+            display_name="Flow 해석 방식",
+            info=(
+                "Flow ID 우선은 선택 ID를 사용하고 없을 때만 이름으로 찾습니다. "
+                "실제 환경에서 이름 조회를 완전히 피하려면 '선택한 Flow ID만'을 사용하세요."
+            ),
+            options=FLOW_RESOLUTION_OPTIONS,
+            value=FLOW_ID_PREFERRED,
+            advanced=True,
         ),
         MessageTextInput(
             name="session_id",
@@ -283,7 +327,50 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         )
     ]
 
-    # 주요 메서드: Langflow 실행 사용자로 대상 Flow 이름을 현재 ID에 다시 해석해 재사용 가능한 그래프를 가져옵니다.
+    # 주요 메서드: 기본 Run Flow와 같은 Flow 목록·ID metadata를 드롭다운에 채웁니다.
+    # 동적 child 입력은 노출하지 않아 Agent Tool schema는 고정 question 하나로 유지합니다.
+    async def update_build_config(
+        self,
+        build_config: dict[str, Any],
+        field_value: Any,
+        field_name: str | None = None,
+    ) -> dict[str, Any]:
+        attributes = getattr(self, "_attributes", None)
+        if not isinstance(attributes, dict):
+            attributes = {}
+            self._attributes = attributes
+        flow_field = build_config.setdefault(
+            "flow_name_selected",
+            {"options": [], "options_metadata": [], "value": None},
+        )
+        id_field = build_config.setdefault("flow_id_selected", {"value": ""})
+        build_config.setdefault("flow_resolution_mode", {"value": FLOW_ID_PREFERRED})
+
+        if field_name == "flow_name_selected" and (
+            bool(build_config.get("is_refresh")) or field_value in (None, "")
+        ):
+            flows = await self.alist_flows_by_flow_folder()
+            flow_field["options"] = [str(flow.data.get("name") or "") for flow in flows]
+            flow_field["options_metadata"] = [
+                {
+                    "id": str(flow.data.get("id") or ""),
+                    "updated_at": _as_iso_text(flow.data.get("updated_at")),
+                }
+                for flow in flows
+            ]
+        elif field_name == "flow_name_selected" and field_value not in (None, ""):
+            selected_metadata = _selected_flow_metadata(build_config)
+            selected_id = str(selected_metadata.get("id") or "").strip()
+            selected_updated_at = _as_iso_text(selected_metadata.get("updated_at"))
+            if selected_id:
+                id_field["value"] = selected_id
+                self.flow_id_selected = selected_id
+                attributes["flow_id_selected"] = selected_id
+            if selected_updated_at:
+                attributes["flow_name_selected_updated_at"] = selected_updated_at
+        return build_config
+
+    # 주요 메서드: Langflow 실행 사용자로 선택된 Flow ID를 우선 조회하고, 설정에 따라 이름 fallback을 사용합니다.
     # Langflow의 동적 빌드 또는 공개 실행 계약에서 호출될 수 있으므로 이름과 반환형을 유지합니다.
     async def get_graph(
         self,
@@ -291,10 +378,15 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         flow_id_selected: str | None = None,
         updated_at: str | None = None,
     ):
-        del flow_id_selected
         flow_name = str(flow_name_selected or getattr(self, "flow_name_selected", "") or "").strip()
-        if not flow_name:
-            raise ValueError("대상 Flow 이름이 필요합니다.")
+        requested_flow_id = str(
+            flow_id_selected or getattr(self, "flow_id_selected", "") or ""
+        ).strip()
+        resolution_mode = _flow_resolution_mode(
+            getattr(self, "flow_resolution_mode", FLOW_ID_PREFERRED)
+        )
+        if not flow_name and not requested_flow_id:
+            raise ValueError("대상 Flow를 선택하거나 Flow 이름을 입력해야 합니다.")
 
         # Component.user_id는 Langflow가 주입한 _user_id를 우선 사용하고, 없으면 부모 graph.user_id를 반환합니다.
         # 읽기 전용 속성이므로 직접 변경하지 않고 이름/ID 조회와 캐시에서 같은 런타임 값을 사용합니다.
@@ -304,30 +396,61 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
                 "Router 실행 사용자 ID가 없어 하위 Flow를 조회할 수 없습니다. "
                 "Router와 하위 Flow를 같은 사용자로 import하고 같은 사용자/API key로 실행하세요."
             )
-        # Import·복제·재배포 뒤 hidden ID가 이전 Flow를 가리킬 수 있으므로 매 실행마다 정확한 이름을 현재 ID로 해석합니다.
-        # 해석된 실제 ID는 아래 graph cache key로만 사용하며 export에는 고정하지 않습니다.
-        flow = await super().get_flow(flow_name_selected=flow_name, flow_id_selected=None)
-        flow_data = getattr(flow, "data", None) or {}
-        actual_id = str(flow_data.get("id") or "").strip()
-        actual_updated_at = _as_iso_text(flow_data.get("updated_at")) or _as_iso_text(updated_at)
-        if not actual_id:
+        use_selected_id = bool(requested_flow_id) and resolution_mode != FLOW_NAME_ONLY
+        if resolution_mode == FLOW_ID_ONLY and not requested_flow_id:
             raise ValueError(
-                "현재 Router 실행 사용자에게서 대상 Flow를 찾지 못했거나 ID가 없습니다. "
-                f"flow_name={flow_name!r}, user_id={runtime_user_id!r}. "
-                "실제 Flow 이름에 '(1)' 등이 붙지 않았는지와 하위 Flow 소유자가 같은지 확인하세요."
+                "Flow 해석 방식이 '선택한 Flow ID만'이지만 저장된 Flow ID가 없습니다. "
+                "대상 Flow 드롭다운을 새로고침한 뒤 다시 선택하세요."
+            )
+        if use_selected_id:
+            # 선택 ID와 dropdown metadata의 updated_at이 있으면 base graph cache를 먼저 확인합니다.
+            # 이전 구현은 캐시 확인 전에 get_flow()를 별도로 호출해 매 실행마다 불필요한 DB 조회가 발생했습니다.
+            actual_id = requested_flow_id
+            actual_name = flow_name
+            actual_updated_at = _as_iso_text(updated_at) or _as_iso_text(
+                self._attributes.get("flow_name_selected_updated_at")
+            )
+            try:
+                graph = await super().get_graph(
+                    flow_name_selected=actual_name or None,
+                    flow_id_selected=actual_id,
+                    updated_at=actual_updated_at,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(
+                    "선택한 Flow ID를 현재 Router 실행 사용자로 열 수 없습니다. "
+                    f"flow_id={actual_id!r}, user_id={runtime_user_id!r}. "
+                    "대상 Flow를 새로고침해 다시 선택하고 소유권을 확인하세요."
+                ) from exc
+        else:
+            if not flow_name:
+                raise ValueError("이름으로 조회할 대상 Flow 이름이 없습니다.")
+            flow = await super().get_flow(
+                flow_name_selected=flow_name,
+                flow_id_selected=None,
+            )
+            flow_data = getattr(flow, "data", None) or {}
+            actual_id = str(flow_data.get("id") or "").strip()
+            actual_name = str(flow_data.get("name") or flow_name).strip()
+            actual_updated_at = _as_iso_text(flow_data.get("updated_at")) or _as_iso_text(updated_at)
+            if not actual_id:
+                raise ValueError(
+                    "현재 Router 실행 사용자에게서 대상 Flow를 찾지 못했습니다. "
+                    f"Flow 이름={flow_name!r}, user_id={runtime_user_id!r}. "
+                    "대상 Flow 드롭다운을 새로고침하고 Router와 하위 Flow의 소유권을 확인하세요."
+                )
+            graph = await super().get_graph(
+                flow_name_selected=actual_name,
+                flow_id_selected=actual_id,
+                updated_at=actual_updated_at,
             )
 
-        self.flow_name_selected = flow_name
+        self.flow_name_selected = actual_name
         self.flow_id_selected = actual_id
-        self._attributes["flow_name_selected"] = flow_name
+        self._attributes["flow_name_selected"] = actual_name
         self._attributes["flow_id_selected"] = actual_id
         self._attributes["flow_name_selected_updated_at"] = actual_updated_at
         self._cached_flow_updated_at = actual_updated_at
-        graph = await super().get_graph(
-            flow_name_selected=flow_name,
-            flow_id_selected=actual_id,
-            updated_at=actual_updated_at,
-        )
         vertices = getattr(graph, "vertices", [])
         self._resolved_chat_input_id = _single_chat_input_id(vertices)
         self._resolved_chat_output_id = _single_chat_output_id(vertices)
@@ -357,9 +480,22 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         )
         return str(getattr(self, "tool_description", "") or self.description), [_question_tool_field()]
 
+    # 함수 설명: `_inherit_runtime_session()`은 Tool wrapper 경로에서도 부모 실행 세션을 하위 Flow에 상속합니다.
+    def _inherit_runtime_session(self) -> str:
+        """Resolve the child-flow session even when the LFX Tool wrapper skips setup hooks."""
+        explicit = str(getattr(self, "session_id", "") or "").strip()
+        configured = str(getattr(self, "_session_id", "") or "").strip()
+        parent_session = str(getattr(getattr(self, "graph", None), "session_id", "") or "").strip()
+        inherited = explicit or configured or parent_session
+        if inherited:
+            self.session_id = inherited
+            self._attributes["session_id"] = inherited
+        return inherited
+
     # 함수 설명: `_run_selected_flow()`는 Agent가 실제 선택한 Tool에 대해서만 하위 Flow를 해석·빌드·실행합니다.
     async def _run_selected_flow(self):
         """Resolve, validate, build, and run the selected child flow lazily."""
+        self._inherit_runtime_session()
         self._last_run_outputs = None
         await self._get_cached_run_outputs(user_id=self.user_id, output_type="any")
         target = getattr(self, "_resolved_flow_output_target", None)
@@ -406,9 +542,4 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
     # 함수 설명: `_pre_run_setup()`는 명시 session_id가 없으면 부모 graph 세션을 상속하고 Flow tool 실행 전 상태를 준비합니다.
     def _pre_run_setup(self) -> None:
         super()._pre_run_setup()
-        explicit = str(getattr(self, "session_id", "") or "").strip()
-        parent_session = str(getattr(getattr(self, "graph", None), "session_id", "") or "").strip()
-        inherited = explicit or parent_session
-        if inherited:
-            self.session_id = inherited
-            self._attributes["session_id"] = inherited
+        self._inherit_runtime_session()

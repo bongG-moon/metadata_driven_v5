@@ -276,6 +276,12 @@ def _output_contract(
         "null_group_policy": str(raw.get("null_group_policy") or "preserve_as_blank").strip(),
         "metric_null_policy": str(raw.get("metric_null_policy") or "display_zero").strip(),
     }
+    result_segments = _result_segments(raw.get("result_segments"))
+    if len(result_segments) >= 2:
+        contract["result_segments"] = result_segments
+        contract["segment_column"] = "RESULT_GROUP"
+        if any(item.get("operation") in {"top_n", "bottom_n"} for item in result_segments):
+            contract["rank_column"] = "RESULT_RANK"
 
     # 상세/entity 목록에만 table catalog의 기본 상세 컬럼을 사용합니다.
     # 집계 결과에 LOT_ID 같은 row key가 강제로 추가되지 않도록 result_mode로 범위를 제한합니다.
@@ -310,6 +316,46 @@ def _output_contract(
         for key, value in contract.items()
         if value not in (None, "", [], {})
     }
+
+
+# 함수 설명: 서로 다른 조건 결과를 한 표에 합칠 때 사용할 구간 표시 계약을 안전한 작은 구조로 정규화합니다.
+def _result_segments(value: Any) -> list[dict[str, Any]]:
+    items = value if isinstance(value, list) else []
+    result: list[dict[str, Any]] = []
+    allowed_operations = {"top_n", "bottom_n", "filter", "comparison"}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        operation = str(item.get("operation") or "").strip().lower()
+        if not label or operation not in allowed_operations:
+            continue
+        normalized: dict[str, Any] = {
+            "label": label[:80],
+            "operation": operation,
+        }
+        limit = _positive_int(item.get("limit"))
+        if limit:
+            normalized["limit"] = limit
+        sort_by = str(item.get("sort_by") or "").strip()
+        if sort_by:
+            normalized["sort_by"] = sort_by
+        order = str(item.get("order") or "").strip().lower()
+        if order not in {"asc", "desc"}:
+            order = "asc" if operation == "bottom_n" else "desc" if operation == "top_n" else ""
+        if order:
+            normalized["order"] = order
+        result.append(normalized)
+    return result
+
+
+# 함수 설명: LLM이 반환한 구간별 요청 건수를 양의 정수로만 보존합니다.
+def _positive_int(value: Any) -> int:
+    try:
+        number = int(value)
+    except Exception:
+        return 0
+    return number if number > 0 else 0
 
 
 # 함수 설명: `_catalog_default_detail_columns()`는 선택된 데이터셋의 기본 상세 표시 컬럼 metadata만 모읍니다.

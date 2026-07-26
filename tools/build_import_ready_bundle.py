@@ -25,6 +25,9 @@ MONGODB_CONTRACT = {
 }
 ROUTER_READ_TIMEOUT_SECONDS = "240"
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
+TARGET_LANGFLOW_VERSION = "1.9.2"
+TARGET_LANGFLOW_BASE_VERSION = "0.9.2"
+TARGET_LFX_VERSION = "0.4.2"
 
 FLOW_SPECS = [
     ("data_analysis_flow_v5_standalone.json", "data-analysis", "data_analysis"),
@@ -189,8 +192,9 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
     validated_edge_handle_count = _validate_bundle(output_dir, manifest_flows, endpoint_by_route)
     manifest = {
         "bundle": f"metadata_driven_v5_complete_{BUNDLE_VERSION}",
-        "langflow_version": "1.8.2",
-        "lfx_version": "0.3.4",
+        "langflow_version": TARGET_LANGFLOW_VERSION,
+        "langflow_base_version": TARGET_LANGFLOW_BASE_VERSION,
+        "lfx_version": TARGET_LFX_VERSION,
         "flow_count": len(manifest_flows),
         "endpoint_prefix": ENDPOINT_PREFIX,
         "mongodb_contract": {
@@ -215,13 +219,13 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "manual_edge_rewiring_required": False,
             "manual_flow_id_replacement_required": False,
             "api_router": "Smart Router plus five Run API callers",
-            "agent_tool_router": "Agent plus five name-resolved cached Flow tools",
+            "agent_tool_router": "Agent plus five selected-ID-first cached Flow tools with standalone name fallback",
             "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "415 passed",
+            "pytest": "422 passed",
             "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 120/120 custom nodes to 83 real Python sources; 0 missing",
-            "korean_component_documentation": "84/84 Python sources and 1575/1575 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7158/7158 documented function instances; strict UTF-8/JSON checks passed",
+            "korean_component_documentation": "84/84 Python sources and 1596/1596 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7359/7359 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
@@ -232,19 +236,21 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
             "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
-            "langflow_http_import": "the previous 8 flows passed isolated Langflow 1.8.2 HTTP import; Workflow Orchestrator is covered by bundle and node/edge contract validation until the next live-server import run",
+            "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
             "single_chat_output": "7/7 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
             "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
             "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
+            "table_preview_limit_contract": "21 Answer Message Adapter owns one advanced table_preview_limit input; default 10; result storage and downloads are unaffected",
             "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
             "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
             "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
             "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 5/5 and Workflow Orchestrator 6/6 tools re-resolve the exact current Flow name and cache only the graph by its actual ID; all exported IDs are blank",
+            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 5/5 prefer the current UI-selected Flow ID and use name fallback only while exported IDs are blank; Workflow Orchestrator 6/6 remains exact-name resolved; graph cache keys use actual IDs",
             "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current native Chat Input ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
             "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
-            "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
-            "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
+            "agent_tool_history_contract": "Agent retrieves 5 stored messages; native current-message ID filtering leaves the previous 2 user/assistant turns without duplicating current input",
+            "agent_tool_session_contract": "0 session-source ports/edges; all five tools resolve parent runtime/graph session_id inside the actual Tool output method",
+            "agent_tool_partial_build": "isolated import supports name fallback, while runtime Flow dropdown selection persists the current ID for direct cached execution",
             "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the six-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
             "workflow_orchestrator_result_handoff": "Data Analysis produces an explicit result_ref consumed by a follow-up Data Analysis or HTML Visualization step",
             "html_visualization_contract": "one result_ref-backed custom builder produces offline HTML/SVG, publishes absolute browser view/download URLs through the visible Report API input, and keeps raw HTML out of Workflow payloads; one GaiA Output Adapter plus native Chat Output and one separate API adapter expose the two response surfaces",
@@ -694,7 +700,7 @@ def _validate_bundle(
             if isinstance(target_input, dict) and target_input.get("advanced") is True:
                 raise ValueError(
                     f"Edge {edge.get('id')} targets advanced input {edge.get('target')}.{target_field}; "
-                    "Langflow 1.8.2 removes connections to advanced component fields during template refresh."
+                    "Langflow removes connections to advanced component fields during template refresh."
                 )
     if mongo_default_nodes != 16 or snapshot_default_nodes != 1:
         raise ValueError(
@@ -748,6 +754,8 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
             raise ValueError(f"{node_id} target name mismatch.")
         if template["flow_id_selected"]["value"] not in ("", None):
             raise ValueError(f"{node_id} must not export a static Flow ID.")
+        if template.get("flow_resolution_mode", {}).get("value") != "Flow ID 우선":
+            raise ValueError(f"{node_id} must prefer a runtime-selected Flow ID.")
         if template["cache_flow"]["value"] is not True or template["return_direct"]["value"] is not True:
             raise ValueError(f"{node_id} must enable graph cache and direct return.")
         if "session_source" in template:
@@ -764,6 +772,7 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
             or "UUID(requested_flow_id)" in code
             or "def _chat_output_target" not in code
             or "def _promote_graph_output" not in code
+            or "def _inherit_runtime_session" not in code
         ):
             raise ValueError(f"{node_id} does not embed the stable question schema policy.")
         if "allowed_names" in code:
@@ -776,6 +785,14 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
     if actual_tool_names != expected_tool_names:
         raise ValueError(f"Agent Tool names mismatch: {sorted(actual_tool_names)}")
 
+    agent_template = agents[0]["data"]["node"]["template"]
+    if (
+        agent_template.get("n_messages", {}).get("value") != 5
+        or agent_template.get("max_iterations", {}).get("value") != 1
+    ):
+        raise ValueError(
+            "Agent Tool Router must retrieve current plus four prior messages and run one Tool iteration."
+        )
     if (
         "Agent-agent-tool-router",
         "response",
@@ -1196,7 +1213,7 @@ def _readme(flows: list[dict[str, Any]], validated_edge_handle_count: int) -> st
     )
     return f"""# Metadata Driven v5 완전 연결 Langflow JSON
 
-이 폴더의 JSON은 Langflow 1.8.2 standalone 환경에 바로 import할 수 있도록 모든 canvas edge와 Router 하위 endpoint를 미리 연결한 묶음입니다.
+이 폴더의 JSON은 Langflow 1.9.2 standalone 환경에 바로 import할 수 있도록 모든 canvas edge와 Router 하위 endpoint를 미리 연결한 묶음입니다.
 
 ## 가장 간단한 Import 방법
 
@@ -1219,7 +1236,7 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 10개 Flow를 한 번에 impor
 - canvas edge 재연결: 필요 없음
 - Router Flow ID 치환: 필요 없음
 - Router URL 5개 개별 입력: 필요 없음
-- Agent Tool Router Flow ID 재연결: 필요 없음
+- Agent Tool Router Flow ID 직접 입력: 필요 없음. 다만 import 후 각 Tool의 `대상 Flow`를 한 번씩 다시 선택하면 현재 ID가 저장되어 이름 조회 없이 graph cache를 사용할 수 있습니다.
 - Workflow Orchestrator Flow ID 재연결: 필요 없음
 
 Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다시 import하면 Langflow가 endpoint에 `-1`을 붙일 수 있으므로, 재import 시에는 기존 `metadata-driven-v5-complete-{BUNDLE_VERSION}-*` Flow를 먼저 정리합니다.
@@ -1243,13 +1260,13 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 413 passed
+- 전체 pytest: 422 passed
 - 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 120/120 노드가 실제 Python 원본 83개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과
-- Langflow 1.8.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
-- Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.8.2 / LFX 0.3.4 node template: 147/147 passed
+- Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
+- Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
+- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: manifest의 전체 노드 검증 통과
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: Smart Router -> GaiA Output Adapter -> 표준 Chat Output 2/2, FinalGate 0개
 - API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개
@@ -1261,10 +1278,10 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
 - pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
-- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router는 이름 기반 Cached Run Flow Tool 5개 모두 Langflow의 현재 실행 `user_id` 범위에서 매 실행 정확한 Flow 이름을 현재 ID로 다시 해석하며, `cache_flow=true`, `return_direct=true`, 고정 Flow ID 없음으로 구성됩니다. 해석된 실제 ID는 graph cache key로만 사용합니다.
-- Agent Tool Router는 하위 Flow의 표준 Chat Output Message를 `return_direct=true`로 그대로 반환하며, Message.data의 `gaia_response`를 보존합니다.
+- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router의 선택형 Cached Run Flow Tool 5개는 UI에서 저장한 현재 Flow ID를 우선 사용하고 ID가 비어 있을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. `cache_flow=true`, `return_direct=true`이며, 선택 ID 경로에서는 별도 Flow 조회 없이 graph cache를 바로 확인합니다.
+- Agent Tool Router는 `n_messages=5`, `max_iterations=1`로 현재 저장 메시지와 이전 2턴을 조회합니다. GaiA Input Adapter가 원본 Message ID를 보존하고 LFX Agent가 현재 입력과 ID가 같은 메시지를 history에서 제거하므로, 현재 질문 중복 없이 이전 사용자/응답 2턴만 남습니다. 하위 Flow의 표준 Chat Output Message를 `return_direct=true`로 반환하며, LFX 0.4.2가 Tool 결과를 Agent 단계 카드에만 기록한 경우 GaiA Output Adapter가 마지막 완료 Tool 출력에서 본문을 복원합니다. Message.data의 `gaia_response`도 보존합니다.
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 표준 Chat Input ID로 내부 변환합니다.
-- Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.
+- Agent Tool Router는 `session_source` 포트와 edge 없이 실제 Tool 출력 메서드 안에서 부모 runtime/graph `session_id`를 자동 상속합니다. 따라서 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰어도 하위 Flow의 세션 저장/복원이 유지됩니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.
 - 격리 import에서 현재 Langflow 실행 사용자로 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
 - Workflow Orchestrator의 이름 기반 Tool 6개는 `question`과 선택 `upstream_result_ref`만 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
 - Workflow Orchestrator는 기본 Language Model 계획기 -> `workflow.plan.v1` 파서 -> 기본 Loop -> 정확한 Tool 단일 실행기 순서로 최대 네 단계를 실행합니다. Registry와 일치하지 않아도 capability catalog의 Tool만으로 해결 가능하면 inline 계획을 만들며 Agent의 자율 반복은 사용하지 않습니다.

@@ -37,11 +37,11 @@ main router는 어떤 route로 보낼지 판단합니다. 현재 v5 export는 �
 ```text
 Chat Input
 -> Agent
-   <- 이름 기반 Cached Flow Tool 5종
+   <- 선택 ID 우선 Cached Flow Tool 5종
 -> Chat Output 1개
 ```
 
-이 Router는 import 후 바뀐 Flow ID를 export에 고정하지 않습니다. Langflow가 component에 주입한 현재 실행 `user_id` 범위에서 최초 이름으로 실제 ID를 해석하고, 이후에는 해석된 ID를 우선 재사용합니다. `cache_flow=true`는 하위 Flow 그래프만 캐시하며 데이터 조회와 답변 결과는 캐시하지 않습니다. 각 Tool은 node ID가 없는 필수 `question`만 Agent 인자로 노출하고, 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환합니다. `return_direct=true`로 Tool 뒤 추가 답변 재작성을 생략합니다.
+이 Router는 import 후 바뀌는 Flow ID를 export에 고정하지 않습니다. 새 환경에서 각 Tool의 `대상 Flow`를 한 번씩 선택하면 현재 실제 ID와 `updated_at`이 저장되고, 이후에는 이름 DB 조회 없이 Langflow graph cache를 바로 확인합니다. 선택 ID가 비어 있을 때만 현재 실행 `user_id` 범위의 이름 fallback을 사용합니다. `cache_flow=true`는 하위 Flow 그래프만 캐시하며 데이터 조회와 답변 결과는 캐시하지 않습니다. 각 Tool은 node ID가 없는 필수 `question`만 Agent 인자로 노출하고, 실행 직전에 현재 그래프의 단일 Chat Input ID로 내부 변환합니다. Router Agent는 `n_messages=5`, `max_iterations=1`을 사용합니다. 부모 Chat Input이 저장한 현재 메시지를 포함해 5개를 조회한 뒤, GaiA Input Adapter가 보존한 Message ID를 기준으로 LFX Agent가 현재 질문을 제거하므로 이전 사용자/응답 2턴만 history에 남습니다. `return_direct=true`로 Tool 뒤 추가 답변 재작성을 생략하며, LFX 0.4.2가 직접 반환 결과를 Agent 본문에 넣지 않은 경우 GaiA Output Adapter가 마지막 완료 Tool 출력에서 본문을 복원합니다. Tool 실행 메서드는 LFX wrapper가 사전 준비 훅을 건너뛰어도 부모 runtime/graph `session_id`를 하위 Flow에 전달합니다.
 
 08 Workflow Orchestrator는 07의 5종에 `run_visualization`을 추가한 이름 기반 Tool 6종을 사용합니다. 08은 hidden ID보다 현재 Flow 이름을 우선해 매 선택 실행마다 실제 ID를 다시 해석하고, 해석된 실제 ID 기준 graph만 캐시합니다. 구조화 terminal은 Tool별 `우선 최종 출력 이름`으로 선택하며 설정이 비면 유일한 Data terminal을 자동 선택합니다. 각 terminal component는 Python의 `self.is_output = True` 선언으로 graph output을 스스로 등록하므로 export JSON을 수동 편집하지 않습니다. 등록 Skill과 일치하지 않는 요청도 Tool capability catalog 안에서 `workflow_key=inline` 계획을 만들 수 있고, 시각화 요청은 `run_data_analysis -> run_visualization` 순서와 `handoff=result_ref`로 실행합니다.
 

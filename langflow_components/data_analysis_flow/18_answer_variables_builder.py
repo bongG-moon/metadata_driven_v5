@@ -128,6 +128,7 @@ def _compact_result_store(result_store: dict[str, Any]) -> dict[str, Any]:
 # 함수 설명: `_answer_context()`는 문맥에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _answer_context(payload: dict[str, Any]) -> dict[str, Any]:
     analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    output_contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
     pandas_execution = _dict(_dict(payload.get("trace")).get("inspection")).get("pandas_execution")
     pandas_execution = _dict(pandas_execution)
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
@@ -155,6 +156,9 @@ def _answer_context(payload: dict[str, Any]) -> dict[str, Any]:
                 "has_zero_values": _has_zero_values(rows),
                 "primary_metric_columns": metric_columns,
                 "primary_dimension_columns": _dimension_columns(columns, metric_columns),
+                "result_segments": deepcopy(_list(output_contract.get("result_segments"))),
+                "segment_column": output_contract.get("segment_column"),
+                "rank_column": output_contract.get("rank_column"),
             }
         ),
         "step_outputs": deepcopy(step_outputs),

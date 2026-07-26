@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +20,9 @@ EXPORT_ROOT = ROOT / "flow_exports"
 DONOR_PATH = EXPORT_ROOT / "data_analysis_flow_v5_standalone.json"
 GAIA_INPUT_ADAPTER_SOURCE = COMPONENT_ROOT / "gaia_io" / "00_gaia_input.py"
 GAIA_OUTPUT_ADAPTER_SOURCE = COMPONENT_ROOT / "gaia_io" / "01_gaia_output.py"
-COMPONENT_INDEX = Path.home() / "AppData" / "Local" / "com.LangflowDesktop" / ".langflow-venv" / "Lib" / "site-packages" / "lfx" / "_assets" / "component_index.json"
 ROUTER_READ_TIMEOUT_SECONDS = "240"
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
+TARGET_LANGFLOW_VERSION = "1.9.2"
 FLOW_DISPLAY_NAMES = {
     "data_analysis": "01. v5_data_analysis",
     "domain_saving": "02. v5_domain_saving",
@@ -33,6 +35,37 @@ FLOW_DISPLAY_NAMES = {
     "workflow_skill_saving": "09. v5_workflow_skill_saving",
     "html_visualization": "10. v5_html_visualization",
 }
+
+
+def _resolve_component_index() -> Path:
+    """실행 중인 LFX 패키지의 기본 컴포넌트 인덱스를 우선 사용합니다."""
+
+    spec = find_spec("lfx")
+    candidates: list[Path] = []
+    explicit_index = str(os.getenv("LANGFLOW_COMPONENT_INDEX_PATH") or "").strip()
+    if explicit_index:
+        candidates.append(Path(explicit_index).expanduser().resolve())
+    if spec is not None and spec.origin:
+        candidates.append(Path(spec.origin).resolve().parent / "_assets" / "component_index.json")
+    candidates.append(
+        Path.home()
+        / "AppData"
+        / "Local"
+        / "com.LangflowDesktop"
+        / ".langflow-venv"
+        / "Lib"
+        / "site-packages"
+        / "lfx"
+        / "_assets"
+        / "component_index.json"
+    )
+    component_index = next((path for path in candidates if path.exists()), None)
+    if component_index is None:
+        raise RuntimeError("실행 중인 Langflow/LFX의 component_index.json을 찾을 수 없습니다.")
+    return component_index
+
+
+COMPONENT_INDEX = _resolve_component_index()
 
 
 @dataclass(frozen=True)
@@ -128,7 +161,7 @@ def _native_component_prototype(
         raise RuntimeError(f"Native component template not found: {node_type}")
     node = deepcopy(shell)
     config = deepcopy(component_config)
-    config["lf_version"] = "1.8.2"
+    config["lf_version"] = TARGET_LANGFLOW_VERSION
     source_template = provider_source["data"]["node"]["template"]
     for field_name in ("model", "api_key"):
         source_field = source_template.get(field_name)
@@ -150,7 +183,7 @@ def empty_flow(donor: dict[str, Any], name: str, description: str, endpoint: str
     flow["description"] = description
     flow["endpoint_name"] = endpoint
     flow["tags"] = tags
-    flow["last_tested_version"] = "1.8.2"
+    flow["last_tested_version"] = TARGET_LANGFLOW_VERSION
     flow["data"] = {"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 0.55}}
     return flow
 
@@ -158,7 +191,7 @@ def empty_flow(donor: dict[str, Any], name: str, description: str, endpoint: str
 def custom_node(proto: dict[str, Any], node_id: str, path: Path, x: float, y: float) -> dict[str, Any]:
     code = path.read_text(encoding="utf-8")
     config, instance = create_component_template({"code": code, "output_types": []}, module_name=f"v5_auxiliary.{path.stem}")
-    config["lf_version"] = "1.8.2"
+    config["lf_version"] = TARGET_LANGFLOW_VERSION
     node = _clone_node(proto, node_id, x, y)
     node["data"]["type"] = instance.__class__.__name__
     node["data"]["node"] = config
@@ -897,9 +930,9 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["agent_tool_router"],
-        "LLM Agent router with five compact name-resolved cached Flow tools, shared session propagation, direct child responses, and one final Chat Output.",
+        "LLM Agent router with five compact selected-ID-first cached Flow tools, name fallback for standalone imports, shared session propagation, direct child responses, and one final Chat Output.",
         "metadata-driven-v5-agent-tool-router",
-        ["v5", "standalone", "agent-router", "tool-mode", "cached-flow", "optimized"],
+        ["v5", "standalone", "agent-router", "tool-mode", "selected-flow-id", "cached-flow", "optimized"],
     )
     system_prompt = (COMPONENT_ROOT / "route_flow_v2" / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
     tool_path = COMPONENT_ROOT / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
@@ -908,8 +941,12 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     _set_message_storage(chat, True)
     agent = agent_node(proto["agent"], "Agent-agent-tool-router", 850, 0, system_prompt)
     agent_template = agent["data"]["node"]["template"]
-    _set_value(agent_template, "max_iterations", 3)
-    _set_value(agent_template, "n_messages", 6)
+    # Chat Input이 현재 사용자 Message를 먼저 저장하므로 5개 메시지를 조회합니다.
+    # LFX Agent는 input_value와 ID가 같은 현재 Message를 제거하고, 이전 4개 메시지
+    # (사용자/응답 2턴)만 history로 유지합니다. GaiA Input Adapter는 원본 Message
+    # 객체를 그대로 전달해 이 ID 기반 중복 제거가 동작하도록 합니다.
+    _set_value(agent_template, "max_iterations", 1)
+    _set_value(agent_template, "n_messages", 5)
     _set_value(agent_template, "add_current_date_tool", False)
     _set_value(agent_template, "handle_parsing_errors", True)
     _set_value(agent_template, "verbose", False)
@@ -926,6 +963,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         template = tool_config["template"]
         _set_value(template, "flow_name_selected", spec.flow_name)
         _set_value(template, "flow_id_selected", "")
+        _set_value(template, "flow_resolution_mode", "Flow ID 우선")
         _set_value(template, "cache_flow", True)
         _set_value(template, "tool_name", spec.tool_name)
         _set_value(template, "tool_description", spec.tool_description)
@@ -1158,19 +1196,19 @@ def write_flows() -> list[dict[str, Any]]:
     donor = load_donor()
     outputs = []
     for spec in SAVING_SPECS:
-        flow = build_saving_flow(donor, spec)
+        flow = _stamp_flow_version(build_saving_flow(donor, spec))
         path = EXPORT_ROOT / f"{spec.slug}_saving_flow_v5_standalone.json"
         path.write_bytes((json.dumps(flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
         outputs.append({"path": str(path), "nodes": len(flow["data"]["nodes"]), "edges": len(flow["data"]["edges"])})
-    qa = build_metadata_qa_flow(donor)
+    qa = _stamp_flow_version(build_metadata_qa_flow(donor))
     qa_path = EXPORT_ROOT / "metadata_qa_flow_v5_standalone.json"
     qa_path.write_bytes((json.dumps(qa, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     outputs.append({"path": str(qa_path), "nodes": len(qa["data"]["nodes"]), "edges": len(qa["data"]["edges"])})
-    router = build_router_flow(donor)
+    router = _stamp_flow_version(build_router_flow(donor))
     router_path = EXPORT_ROOT / "api_router_flow_v5_standalone.json"
     router_path.write_bytes((json.dumps(router, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     outputs.append({"path": str(router_path), "nodes": len(router["data"]["nodes"]), "edges": len(router["data"]["edges"])})
-    tool_router = build_agent_tool_router_flow(donor)
+    tool_router = _stamp_flow_version(build_agent_tool_router_flow(donor))
     tool_router_path = EXPORT_ROOT / "agent_tool_router_flow_v5_standalone.json"
     tool_router_path.write_bytes((json.dumps(tool_router, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     outputs.append(
@@ -1180,7 +1218,7 @@ def write_flows() -> list[dict[str, Any]]:
             "edges": len(tool_router["data"]["edges"]),
         }
     )
-    workflow_orchestrator = build_workflow_orchestrator_flow(donor)
+    workflow_orchestrator = _stamp_flow_version(build_workflow_orchestrator_flow(donor))
     workflow_orchestrator_path = EXPORT_ROOT / "workflow_orchestrator_flow_v5_standalone.json"
     workflow_orchestrator_path.write_bytes(
         (json.dumps(workflow_orchestrator, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -1192,7 +1230,7 @@ def write_flows() -> list[dict[str, Any]]:
             "edges": len(workflow_orchestrator["data"]["edges"]),
         }
     )
-    html_visualization = build_html_visualization_flow(donor)
+    html_visualization = _stamp_flow_version(build_html_visualization_flow(donor))
     html_visualization_path = EXPORT_ROOT / "html_visualization_flow_v5_standalone.json"
     html_visualization_path.write_bytes(
         (json.dumps(html_visualization, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -1205,6 +1243,17 @@ def write_flows() -> list[dict[str, Any]]:
         }
     )
     return outputs
+
+
+def _stamp_flow_version(flow: dict[str, Any]) -> dict[str, Any]:
+    """Flow와 모든 직렬화된 노드에 목표 Langflow 버전을 일관되게 기록합니다."""
+
+    flow["last_tested_version"] = TARGET_LANGFLOW_VERSION
+    for node in flow.get("data", {}).get("nodes", []):
+        component = node.get("data", {}).get("node")
+        if isinstance(component, dict):
+            component["lf_version"] = TARGET_LANGFLOW_VERSION
+    return flow
 
 
 def main() -> None:

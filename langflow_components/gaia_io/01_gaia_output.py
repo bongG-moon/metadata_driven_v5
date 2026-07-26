@@ -184,10 +184,74 @@ class GaiAOutputAdapter(ChatComponent):
         plain_value = self._plain_value(value)
         return plain_value if isinstance(plain_value, dict) else {}
 
+    # 함수 설명: Agent Message의 content_blocks에서 가장 최근에 완료된 Tool 출력 값을 찾습니다.
+    def _latest_tool_output(self, value: Any) -> Any:
+        content_blocks = getattr(value, "content_blocks", None)
+        if not isinstance(content_blocks, (list, tuple)):
+            return None
+        for block in reversed(content_blocks):
+            contents = block.get("contents") if isinstance(block, dict) else getattr(block, "contents", None)
+            if not isinstance(contents, (list, tuple)):
+                continue
+            for content in reversed(contents):
+                output = content.get("output") if isinstance(content, dict) else getattr(content, "output", None)
+                if not self._is_empty(output):
+                    return output
+        return None
+
+    # 함수 설명: return_direct ToolMessage·Message·Data·dict의 실제 답변 본문을 재귀적으로 추출합니다.
+    def _tool_output_text(self, value: Any, seen: set[int] | None = None) -> str:
+        if self._is_empty(value):
+            return ""
+        if seen is None:
+            seen = set()
+        marker = id(value)
+        if marker in seen:
+            return ""
+        seen.add(marker)
+
+        if isinstance(value, Message):
+            text = str(getattr(value, "text", "") or "").strip()
+            if text:
+                return text
+            return self._tool_output_text(self._latest_tool_output(value), seen)
+        if isinstance(value, Data):
+            return self._tool_output_text(getattr(value, "data", None), seen)
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            gaia_response = value.get("gaia_response")
+            if isinstance(gaia_response, dict):
+                answer = self._tool_output_text(gaia_response.get("answer"), seen)
+                if answer:
+                    return answer
+            for key in ("content", "text", "message", "answer"):
+                answer = self._tool_output_text(value.get(key), seen)
+                if answer:
+                    return answer
+            for key in ("artifact", "data", "output"):
+                answer = self._tool_output_text(value.get(key), seen)
+                if answer:
+                    return answer
+            return ""
+        if isinstance(value, (list, tuple)):
+            parts = [self._tool_output_text(item, seen) for item in value]
+            return "".join(part for part in parts if part).strip()
+        for attribute in ("content", "text", "message", "answer", "artifact", "output"):
+            answer = self._tool_output_text(getattr(value, attribute, None), seen)
+            if answer:
+                return answer
+        return ""
+
     # 함수 설명: 최종 답변 본문을 Message/Data/일반 값에서 일관된 문자열로 꺼냅니다.
     def _text_value(self, value: Any) -> str:
         if isinstance(value, Message):
-            return str(getattr(value, "text", "") or "")
+            text = str(getattr(value, "text", "") or "").strip()
+            if text:
+                return text
+            # LFX 0.4.2 Agent는 return_direct Tool 결과를 content_blocks에는 기록하지만
+            # Agent Message.text로 승격하지 않는 경로가 있어 마지막 Tool 출력을 결정적으로 복원합니다.
+            return self._tool_output_text(self._latest_tool_output(value))
         if isinstance(value, Data):
             data = getattr(value, "data", None)
             if isinstance(data, dict) and data.get("text") not in (None, ""):

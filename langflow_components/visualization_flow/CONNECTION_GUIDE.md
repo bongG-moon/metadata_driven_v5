@@ -37,7 +37,7 @@
 
 ## 저장과 보기·다운로드
 
-컴포넌트는 Langflow 1.8.2 저장 서비스에 아래 방식으로 HTML을 정확히 한 번 저장합니다.
+컴포넌트는 Langflow 1.9.2 저장 서비스에 아래 방식으로 HTML을 정확히 한 번 저장합니다.
 
 ```python
 storage_service = get_storage_service()

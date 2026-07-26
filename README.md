@@ -2,6 +2,12 @@
 
 Langflow standalone 환경에서 실행하는 메타데이터 기반 제조 데이터 분석 에이전트입니다. v4 구현과 제공된 `1.1 data_analysis_flow_후속질문.json`을 기준으로 다시 구성했으며, 현재 기본 실행 모드는 `dummy`입니다. Oracle, H-API, Datalake, Goodocs 컴포넌트도 export에 포함되어 있어 환경 설정 후 `live`로 전환할 수 있습니다.
 
+## 기본 개발 기준
+
+앞으로 별도 요청이 없으면 이 저장소의 신규 구현, 수정, Flow JSON 재생성, import 검증은 모두 `Langflow 1.9.2 / langflow-base 0.9.2 / LFX 0.4.2`를 기준으로 진행합니다. 설치 환경의 `latest` 또는 더 최신 Desktop 템플릿을 자동으로 현재 기준으로 간주하지 않습니다. 다른 버전 호환 작업은 명시적으로 요청된 경우에만 수행하며, 1.9.2 기준 회귀 검증을 함께 진행합니다.
+
+세부 작업 원칙은 루트 [AGENTS.md](AGENTS.md), 설치·검증 방법은 [Langflow 1.9.2 전환 기준](docs/LANGFLOW_1_9_2_MIGRATION.md)을 따릅니다.
+
 ## 바로 확인할 파일
 
 - 가져오기용 Flow: `flow_exports/data_analysis_flow_v5_standalone.json`
@@ -40,6 +46,7 @@ python tools\validate_flow_component_sources.py
 ```
 
 Flow JSON은 제공된 v4 export와 현재 폴더의 custom component/prompt 원본을 결합해 재현 가능하게 생성합니다. 빌더를 다시 실행한 뒤 테스트가 통과하면 checked-in export와 코드가 일치합니다.
+`tools/assets/langflow_1_9_2_language_model.py`는 더 최신 Desktop에서 빌더를 실행해도 1.10+ 전용 필드가 섞이지 않도록 고정한 Langflow 1.9.2 기본 Language Model 원본입니다.
 
 Langflow가 설치된 가상환경에서는 실제 LFX parser와 실행 서버도 검증할 수 있습니다.
 
@@ -52,7 +59,8 @@ python tools\validate_langflow_runtime.py --server-url http://127.0.0.1:7860 --p
 
 ```powershell
 uv venv .langflow-venv --python 3.12
-uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
+uv pip install --python .langflow-venv\Scripts\python.exe `
+  "langflow==1.9.2" "langflow-base==0.9.2" "lfx==0.4.2"
 .langflow-venv\Scripts\langflow.exe run --host 127.0.0.1 --port 7860 --no-open-browser
 ```
 
@@ -85,7 +93,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 16. Router 하위 Flow read timeout은 240초, 외부 Web/API client 기본 timeout은 300초입니다. timeout 상향은 장기 실행을 실패로 오판하지 않기 위한 여유이며 실행시간 자체를 줄이는 최적화는 아닙니다.
 17. pandas 안전 실행 namespace에 `zip`을 명시적으로 제공하고 최초/repair 프롬프트에 같은 builtin 계약을 노출해 `dict(zip(...))`가 불필요한 1회 repair를 유발하지 않도록 했습니다. 기존 오류 시 최대 1회 repair 계약은 그대로 유지합니다.
 18. 운영 기본 Router는 결정된 API 방식이며 Native Run Flow 노드가 없습니다. API caller 5개는 240초 read timeout과 원본 session 전달을 유지합니다.
-19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 이름 기반 Tool 5개는 Langflow가 주입한 현재 실행 `user_id` 범위에서 최초 실제 Flow ID를 해석하고, 이후에는 그 ID와 `cache_flow=true` 그래프 캐시를 재사용합니다. Tool schema에는 node ID가 없는 필수 `question` 하나만 포함하고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 변환합니다. `return_direct=true`로 추가 Agent 재작성을 생략하며, 각 Tool은 부모 `graph.session_id`도 자동 상속합니다.
+19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 선택형 Tool 5개는 import 후 UI에서 저장한 현재 Flow ID를 우선 사용해 별도 이름 조회 없이 `cache_flow=true` 그래프 캐시를 재사용하고, ID가 비어 있을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. Tool schema에는 node ID가 없는 필수 `question` 하나만 포함하고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 변환합니다. Router Agent는 `n_messages=5`, `max_iterations=1`로 현재 저장 메시지를 제외한 이전 2턴을 사용하며, GaiA Input Adapter가 원본 Message ID를 보존해 현재 질문 중복을 제거합니다. `return_direct=true` 결과가 Agent 단계 카드에만 남는 LFX 0.4.2 경로도 GaiA Output Adapter가 최종 본문으로 복원합니다. 각 Tool은 실제 Tool wrapper 실행 경로에서도 부모 runtime/graph `session_id`를 자동 상속합니다.
 20. 하위 Flow를 직접 Playground에서 실행할 때는 Chat Input/Output 저장을 켜 답변을 정상 표시합니다. Router nested 호출에서는 API tweak 또는 runtime node-ID tweak로 하위 저장만 끄고 부모 Router가 질문·답변을 한 번만 저장합니다.
 21. Data Analysis의 각 `retrieval_job.required_params`는 다른 job에 의존하지 않는 완성된 값으로 작성합니다. 하나의 날짜·FAB·조 조건이 여러 데이터셋에 공통이면 각 job에 반복하고, `어제 재공과 오늘 생산량`처럼 범위가 다르면 job별 값을 분리합니다. 일반 재공 요청은 WIP grain을 사용하며 LOT·랏·LOT_ID 등 LOT 단위 근거가 있을 때만 `lot_status`를 선택합니다.
 22. Metadata QA의 제품 그룹 질문은 `product_terms`, 제품 집계 방법 질문은 `product_key_columns`와 관련 `analysis_recipes`만 선택합니다. 조건·제품 키·grain/group by 표는 등록 메타데이터를 authoritative 근거로 결정론적으로 만들며, 기본 Language Model 응답이 있더라도 해당 모드에서는 사용하지 않습니다.
@@ -102,7 +110,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe "langflow==1.8.2"
 - 이 작업 환경에서는 실제 Oracle/H-API/Datalake/Goodocs 자격증명과 원천 데이터가 없어 dummy 경로로 검증했습니다.
 - 자동 검증 대상 대표 질문 31개는 trusted catalog hydration, 선택 helper, pandas 실행, 답변/API adapter를 포함한 deterministic dummy 경로에서 31/31 통과했습니다. 기존 질문뿐 아니라 NULL 표시, W/BM·A조, OPER_SEQ 구간, DA 그룹, FC78 제품 token, UPH 기본 상세 컬럼도 포함합니다.
 - 대표 dummy 질문 31/31이 통과했습니다.
-- Langflow Desktop 설치본(`langflow 1.8.2`, `lfx 0.3.4`)에서 현재 10개 Flow의 node template 147/147을 파싱합니다. 이전 8개 Flow는 별도 임시 config/SQLite 격리 서버에서 개별 JSON 8/8과 당시 통합 `00` JSON을 HTTP 201로 확인했으며, Workflow Orchestrator·Workflow Skill 저장·HTML Visualization Flow는 최신 export/import JSON의 node·edge·source 동기화 계약으로 함께 검증합니다.
+- 기준 런타임은 `langflow 1.9.2`, `langflow-base 0.9.2`, `lfx 0.4.2`입니다. 전체 커스텀 소스와 현재 10개 Flow의 node template을 이 조합에서 파싱하고, export/import JSON의 node·edge·source 동기화 계약을 함께 검증합니다.
 - Workflow Orchestrator의 `result_ref` 연계 호출은 `agent_v4_result_store`를 사용하므로 `MONGO_URL`과 같은 부모/자식 `session_id`가 필수입니다. 저장된 결과가 없거나 다른 세션의 ref이면 후속 조회를 fail-closed로 중단합니다.
 - 실제 문제 실행 기록에서는 기존 06 Router의 session fan-out 때문에 ChatInput/SmartRouter가 각각 2회 빌드되고 비선택 direct/clarification Chat Output이 질문을 두 번 저장한 사실을 확인했습니다. 수정 JSON은 Chat Input outgoing edge를 Smart Router 한 개로 제한하며, 운영 provider를 사용한 최종 화면 재검증은 새 06을 import한 뒤 수행합니다.
 - 격리 Langflow 서버에는 `GOOGLE_API_KEY` Global Variable이 없어 Agent/LLM을 포함한 전체 Flow 실행은 수행하지 않았습니다. 운영 인스턴스에서는 같은 이름의 Global Variable 또는 회사 표준 provider 설정이 필요합니다.

@@ -144,6 +144,23 @@ def test_v5_flow_export_is_reproducible_and_acyclic():
     assert _is_acyclic(built)
 
 
+def test_all_v5_exports_are_stamped_for_langflow_1_9_2():
+    for filename, _, _ in FLOW_SPECS:
+        flow = json.loads((ROOT / "flow_exports" / filename).read_text(encoding="utf-8"))
+        assert flow["last_tested_version"] == "1.9.2", filename
+        for node in flow["data"]["nodes"]:
+            component = node.get("data", {}).get("node")
+            if isinstance(component, dict):
+                assert component.get("lf_version") == "1.9.2", f"{filename}: {node['id']}"
+
+    manifest = json.loads(
+        (ROOT / "import_ready_flows" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["langflow_version"] == "1.9.2"
+    assert manifest["langflow_base_version"] == "0.9.2"
+    assert manifest["lfx_version"] == "0.4.2"
+
+
 def test_custom_structured_terminals_are_explicit_graph_outputs_for_standard_run_flow():
     expected_terminals = {
         "data_analysis_flow_v5_standalone.json": "CustomComponent-3eVde",
@@ -464,6 +481,10 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["return_direct"]["value"] is True for node in tools)
     assert all(node["data"]["node"]["template"]["flow_id_selected"]["value"] == "" for node in tools)
+    assert all(
+        node["data"]["node"]["template"]["flow_resolution_mode"]["value"] == "Flow ID 우선"
+        for node in tools
+    )
     assert all("session_source" not in node["data"]["node"]["template"] for node in tools)
     assert all(
         'runtime_user_id = str(getattr(self, "user_id"' in node["data"]["node"]["template"]["code"]["value"]

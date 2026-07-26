@@ -1,7 +1,8 @@
 {
   "bundle": "metadata_driven_v5_complete_20260710",
-  "langflow_version": "1.8.2",
-  "lfx_version": "0.3.4",
+  "langflow_version": "1.9.2",
+  "langflow_base_version": "0.9.2",
+  "lfx_version": "0.4.2",
   "flow_count": 10,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "mongodb_contract": {
@@ -26,7 +27,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "226e8c96fd3480eda9fc5c99a85f6275a7631e873763a52d34684555d1e4c75a",
+  "single_file_ui_import_sha256": "814802ecff2260f33490c0eb655c51662020773ea929be2b47f7c3f4f070d21c",
   "flows": [
     {
       "order": 1,
@@ -35,7 +36,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 45,
       "edges": 70,
-      "sha256": "e959e97de361358568ffd08a8d5efc93e9bbad27ed383fa923f90701f23c00ef"
+      "sha256": "3d84194037f0accb5d813fee064c7fda8ab916accfb10f3d983e927792ed0110"
     },
     {
       "order": 2,
@@ -44,7 +45,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
       "nodes": 14,
       "edges": 15,
-      "sha256": "723445eb61613725ebdaef5bd4875019f3c795e957248bd0bae5044fdb82e0fe"
+      "sha256": "69f3a81e5bcd309a2d620102cabd5a4272eb1e506e5bdde0510bc42c3920c4a2"
     },
     {
       "order": 3,
@@ -53,7 +54,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-table-catalog-saving",
       "nodes": 14,
       "edges": 15,
-      "sha256": "7fb02a2781965150b7bf54f367a3da6be9c483becbe777986cb1b04aa66d3075"
+      "sha256": "11366c79a9e4e1503a04f84b4c9b2b4b88df733f1dee12573ca38da8bd689ec2"
     },
     {
       "order": 4,
@@ -62,7 +63,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-main-flow-filter-saving",
       "nodes": 14,
       "edges": 15,
-      "sha256": "cc905238ed393e853a2a6ca322643cee85832d67967546f6745e001ac95242cc"
+      "sha256": "136066821894d04c11c9d4871642e576de9908e3e1a6bb64ee469f8495e01d75"
     },
     {
       "order": 5,
@@ -71,7 +72,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
       "nodes": 13,
       "edges": 19,
-      "sha256": "e65311553dcf4d3077806e1568740ced21d664ee04c4a6bd22dfb36f82b8ea7a"
+      "sha256": "1e381d9da06e73ebd8c0b7e684c15ace9c1a037d4d030114e9d5f249b69bd0b8"
     },
     {
       "order": 6,
@@ -80,7 +81,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-api-router",
       "nodes": 22,
       "edges": 21,
-      "sha256": "d299aa06f92c0886e61d7891d851683d2cba0b35af439391b36d13151d34eed0"
+      "sha256": "33b028a01d736a9d84d8639f46a08dc09e17def906b9504eccbaa977481d2b2b"
     },
     {
       "order": 7,
@@ -89,7 +90,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
       "nodes": 10,
       "edges": 9,
-      "sha256": "e94282bae66f173e30d2b0175f96c45bc0b928e0be10d721bc35464f5a04bc21"
+      "sha256": "aa7f155fafeaee609b3fb2bac8f5c425a317fcee0a6d2a138273ddefcd0634e3"
     },
     {
       "order": 8,
@@ -98,7 +99,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-workflow-orchestrator",
       "nodes": 20,
       "edges": 28,
-      "sha256": "6f19dbf68dadf6b568ee016339cd742fc28b1e7f0e085f0bf7e9e763ea3c6c50"
+      "sha256": "24603e2124e5acab98acd2ae1e9c25c340c03fff50bbb0d82d462b8dd05e03e2"
     },
     {
       "order": 9,
@@ -107,7 +108,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-workflow-skill-saving",
       "nodes": 15,
       "edges": 16,
-      "sha256": "e64ac56274bbcf76c009dd6f42f9cbb5f14bef762072874431a898875ca7415a"
+      "sha256": "09b087b74a071256a0ebfd55884257bce72d9fe0d5a8171864f2b76c07e1b7c5"
     },
     {
       "order": 10,
@@ -116,7 +117,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-html-visualization",
       "nodes": 6,
       "edges": 5,
-      "sha256": "c77d5567d5f23dad91420bda95fafafad9ad91ceac95383f32ba8c9b20b9afc5"
+      "sha256": "fa853b281fdfcf28d4751a5d3e95364541045a191e6ed299c9018061c8bada32"
     }
   ],
   "router_configuration": {
@@ -129,13 +130,13 @@
     "manual_edge_rewiring_required": false,
     "manual_flow_id_replacement_required": false,
     "api_router": "Smart Router plus five Run API callers",
-    "agent_tool_router": "Agent plus five name-resolved cached Flow tools",
+    "agent_tool_router": "Agent plus five selected-ID-first cached Flow tools with standalone name fallback",
     "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools"
   },
   "validation": {
-    "pytest": "415 passed",
+    "pytest": "422 passed",
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 120/120 custom nodes to 83 real Python sources; 0 missing",
-    "korean_component_documentation": "84/84 Python sources and 1575/1575 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7158/7158 documented function instances; strict UTF-8/JSON checks passed",
+    "korean_component_documentation": "84/84 Python sources and 1596/1596 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7359/7359 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
     "langflow_frontend_edge_handles": "426/426 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
@@ -144,19 +145,21 @@
     "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
     "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
     "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
-    "langflow_http_import": "the previous 8 flows passed isolated Langflow 1.8.2 HTTP import; Workflow Orchestrator is covered by bundle and node/edge contract validation until the next live-server import run",
+    "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
     "single_chat_output": "7/7 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
     "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
     "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
+    "table_preview_limit_contract": "21 Answer Message Adapter owns one advanced table_preview_limit input; default 10; result storage and downloads are unaffected",
     "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
     "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
     "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
     "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 5/5 and Workflow Orchestrator 6/6 tools re-resolve the exact current Flow name and cache only the graph by its actual ID; all exported IDs are blank",
+    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 5/5 prefer the current UI-selected Flow ID and use name fallback only while exported IDs are blank; Workflow Orchestrator 6/6 remains exact-name resolved; graph cache keys use actual IDs",
     "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current native Chat Input ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
     "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
-    "agent_tool_session_contract": "0 session-source ports/edges; all five tools inherit the parent graph session_id",
-    "agent_tool_partial_build": "isolated import resolved the newly assigned Data Analysis flow ID by name and built the cached tool successfully",
+    "agent_tool_history_contract": "Agent retrieves 5 stored messages; native current-message ID filtering leaves the previous 2 user/assistant turns without duplicating current input",
+    "agent_tool_session_contract": "0 session-source ports/edges; all five tools resolve parent runtime/graph session_id inside the actual Tool output method",
+    "agent_tool_partial_build": "isolated import supports name fallback, while runtime Flow dropdown selection persists the current ID for direct cached execution",
     "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the six-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
     "workflow_orchestrator_result_handoff": "Data Analysis produces an explicit result_ref consumed by a follow-up Data Analysis or HTML Visualization step",
     "html_visualization_contract": "one result_ref-backed custom builder produces offline HTML/SVG, publishes absolute browser view/download URLs through the visible Report API input, and keeps raw HTML out of Workflow payloads; one GaiA Output Adapter plus native Chat Output and one separate API adapter expose the two response surfaces",

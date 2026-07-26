@@ -120,6 +120,15 @@ def _schema() -> dict[str, Any]:
                 "required_columns": [],
                 "grain_columns": [],
                 "metric_columns": [],
+                "result_segments": [
+                    {
+                        "label": "string",
+                        "operation": "top_n|bottom_n|filter|comparison",
+                        "limit": 0,
+                        "sort_by": "string",
+                        "order": "asc|desc",
+                    }
+                ],
                 "null_group_policy": "preserve_as_blank",
                 "metric_null_policy": "display_zero",
             },

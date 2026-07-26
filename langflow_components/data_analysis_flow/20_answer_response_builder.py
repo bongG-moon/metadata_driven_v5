@@ -20,8 +20,6 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
-TABLE_PREVIEW_LIMIT = 10
-
 
 # 주요 함수: LLM 문장과 분석 결과를 합쳐 최종 구조화 답변과 다음 상태를 만듭니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
@@ -185,6 +183,15 @@ def _authoritative_result_message(payload: dict[str, Any]) -> str:
     if metric_column and metric_column in first_row:
         metric_label = _metric_label(metric_column)
         metric_value = _display_value(first_row.get(metric_column))
+        segmented_message = _segmented_result_message(
+            payload,
+            rows,
+            columns,
+            metric_column,
+            metric_label,
+        )
+        if segmented_message:
+            return segmented_message
         if _is_ranking_question(question):
             requested_count = _requested_result_count(payload)
             rank_label = "하위" if _is_lowest_ranking(question) else "상위"
@@ -468,6 +475,94 @@ def _is_lowest_ranking(question: str) -> bool:
     return any(token in lowered for token in ("하위", "가장 적", "bottom"))
 
 
+# 함수 설명: RESULT_GROUP과 RESULT_RANK가 있는 복수 결과를 구간별로 나누어 대표 대상과 실제 건수를 설명합니다.
+def _segmented_result_message(
+    payload: dict[str, Any],
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    metric_column: str,
+    metric_label: str,
+) -> str:
+    contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
+    segment_column = str(contract.get("segment_column") or "RESULT_GROUP").strip()
+    rank_column = str(contract.get("rank_column") or "").strip()
+    if segment_column not in columns:
+        return ""
+
+    segment_order = [
+        str(item.get("label") or "").strip()
+        for item in _list(contract.get("result_segments"))
+        if isinstance(item, dict) and str(item.get("label") or "").strip()
+    ]
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        label = str(row.get(segment_column) or "").strip()
+        if not label:
+            continue
+        grouped.setdefault(label, []).append(row)
+        if label not in segment_order:
+            segment_order.append(label)
+    if len(grouped) < 2:
+        return ""
+
+    details = [f"{metric_label} 기준 결과를 {len(grouped):,}개 구간으로 나누어 조회했습니다."]
+    entity_signatures: dict[str, set[str]] = {}
+    for label in segment_order:
+        segment_rows = grouped.get(label, [])
+        if not segment_rows:
+            continue
+        ordered_rows = (
+            sorted(segment_rows, key=lambda row: _rank_sort_value(row.get(rank_column)))
+            if rank_column and rank_column in columns
+            else segment_rows
+        )
+        first = ordered_rows[0]
+        subject = _result_subject(payload, first, columns, metric_column)
+        value = _display_value(first.get(metric_column))
+        lead = f"{subject}, {metric_label} {value}" if subject else f"{metric_label} {value}"
+        if rank_column and rank_column in columns:
+            details.append(f"- {label}: {len(ordered_rows):,}건이며 1위는 {lead}입니다.")
+        else:
+            details.append(f"- {label}: {len(ordered_rows):,}건입니다.")
+        entity_signatures[label] = {
+            _row_entity_signature(row, columns, metric_column, segment_column, rank_column)
+            for row in ordered_rows
+        }
+
+    non_empty_signatures = [values for values in entity_signatures.values() if values]
+    if len(non_empty_signatures) >= 2 and set.intersection(*non_empty_signatures):
+        details.append("전체 후보 수가 요청 범위보다 적어 일부 대상이 서로 다른 결과 구간에 함께 포함되었습니다.")
+    details.append("구간 구분과 구간 내 순위는 아래 결과 표에서 확인할 수 있습니다.")
+    return "\n".join(details)
+
+
+# 함수 설명: 구간 내 순위 값이 숫자면 숫자 순서로, 아니면 마지막 순서로 안정 정렬합니다.
+def _rank_sort_value(value: Any) -> tuple[int, float | str]:
+    try:
+        return (0, float(value))
+    except Exception:
+        return (1, str(value or ""))
+
+
+# 함수 설명: 결과 구간 간 같은 대상이 겹치는지 비교할 수 있도록 지표·표시 컬럼을 제외한 행 식별 문자열을 만듭니다.
+def _row_entity_signature(
+    row: dict[str, Any],
+    columns: list[str],
+    metric_column: str,
+    segment_column: str,
+    rank_column: str,
+) -> str:
+    excluded = {metric_column, segment_column}
+    if rank_column:
+        excluded.add(rank_column)
+    values = [
+        f"{column}={row.get(column)}"
+        for column in columns
+        if column not in excluded and row.get(column) not in (None, "")
+    ]
+    return "|".join(values)
+
+
 # 함수 설명: intent output contract 또는 질문에서 요청한 순위 건수를 추출합니다.
 def _requested_result_count(payload: dict[str, Any]) -> int:
     output_contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
@@ -483,6 +578,8 @@ def _requested_result_count(payload: dict[str, Any]) -> int:
 # 함수 설명: 내부 지표 컬럼명을 답변에 사용할 자연어 지표명으로 변환합니다.
 def _metric_label(column: str) -> str:
     upper = str(column or "").upper()
+    if "TOTAL" in upper and ("QUANTITY" in upper or "QTY" in upper or "수량" in column):
+        return "합계 수량"
     if "WIP" in upper:
         return "재공 수량"
     if "PRODUCTION" in upper or "OUTPUT" in upper:
@@ -591,7 +688,11 @@ def _build_answer_sections(payload: dict[str, Any], answer_message: str, section
     columns = _string_list(data.get("columns")) or _columns_from_rows(rows)
     display_columns = _string_list(data.get("display_columns")) or _string_list(result_table_overrides.get("display_columns"))
     override_labels = _dict(result_table_overrides.get("column_labels"))
-    column_labels = {**override_labels, **_dict(data.get("column_labels"))}
+    default_labels = _result_contract_column_labels(payload, columns)
+    column_labels = {**default_labels, **override_labels, **_dict(data.get("column_labels"))}
+    if not display_columns and default_labels:
+        priority_columns = [column for column in ("RESULT_GROUP", "RESULT_RANK") if column in columns]
+        display_columns = priority_columns + [column for column in columns if column not in priority_columns]
     row_count = _int(data.get("row_count"), len(rows))
     applied_criteria = _applied_criteria(payload)
     evidence = _evidence(payload)
@@ -609,7 +710,6 @@ def _build_answer_sections(payload: dict[str, Any], answer_message: str, section
                 "column_labels": deepcopy(column_labels),
                 "row_source": "data.rows",
                 "row_count": row_count,
-                "preview_limit": TABLE_PREVIEW_LIMIT,
             }
         ),
         "applied_criteria": applied_criteria,
@@ -618,6 +718,19 @@ def _build_answer_sections(payload: dict[str, Any], answer_message: str, section
         "downloads": downloads,
         "next_questions": _next_questions(payload),
     }
+
+
+# 함수 설명: 공통 결과 구간 컬럼을 사용자가 이해하기 쉬운 표 머리글로 표시합니다.
+def _result_contract_column_labels(payload: dict[str, Any], columns: list[str]) -> dict[str, str]:
+    contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
+    segment_column = str(contract.get("segment_column") or "RESULT_GROUP").strip()
+    rank_column = str(contract.get("rank_column") or "RESULT_RANK").strip()
+    labels: dict[str, str] = {}
+    if segment_column in columns:
+        labels[segment_column] = "구분"
+    if rank_column in columns:
+        labels[rank_column] = "구간 내 순위"
+    return labels
 
 
 # 함수 설명: `_applied_criteria()`는 조회 작업과 pandas 계획에서 실제 적용된 날짜·제품·공정·지표 조건을 구성합니다.

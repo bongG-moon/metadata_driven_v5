@@ -52,6 +52,11 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - 집계가 끝난 뒤 표시용 결과의 dimension column에만 `fillna("")`와 `replace(r"^\s*$", "", regex=True)`를 적용해 null/blank를 빈 문자열로 보여준다. dimension 값을 `미등록` 같은 대체 문구로 바꾸지 않는다.
 - 최종 표시용 metric column은 `intent_plan.output_contract.metric_columns`를 최우선으로 사용한다. 이 계약이 없을 때만 실제 숫자 값이 있는 컬럼 또는 생산량·재공·UPH·QTY·COUNT·RATE처럼 지표 의미가 분명한 컬럼을 보수적으로 선택하며, ID·코드·날짜·dimension 컬럼을 metric으로 추정하지 않는다.
 - 선택된 metric column의 `None`/`NaN`/빈 문자열/공백 문자열은 표시용 숫자 `0`으로 맞춘다. 이 규칙을 result 전체에 적용하지 말고, dimension null/blank는 계속 빈 문자열 `""`로 유지한다.
+- `output_contract.result_segments`가 2개 이상이면 사용자가 서로 다른 조건 결과를 한 표에서 구분해 보려는 요청이다. 먼저 모든 공통 필터·집계·파생 지표 계산을 끝낸 하나의 base DataFrame을 만든 뒤, 각 segment를 이 base에서 독립적으로 선택한다.
+- 상위/하위 segment를 만들 때 하위 결과를 이미 잘린 상위 결과에서 다시 고르지 않는다. 상위와 하위 모두 같은 전체 base를 기준으로 계산한다.
+- 각 segment 결과에 고정 컬럼 `RESULT_GROUP`을 추가하고 계약의 `label`을 그대로 넣는다. 순위형 segment에는 표시 순서 기준 1부터 시작하는 `RESULT_RANK`를 추가한다.
+- 여러 segment는 `output_contract.result_segments` 순서대로 합치고, 최종 컬럼에서 `RESULT_GROUP`, `RESULT_RANK`를 가장 앞에 둔다.
+- 같은 대상이 둘 이상의 segment에 포함되더라도 segment 의미가 다르므로 segment 사이에서 중복 제거하지 않는다. `RESULT_GROUP`과 `RESULT_RANK`로 각각의 포함 이유를 보존한다.
 - 결과 컬럼을 재정렬할 때도 `result = result[[...]]`를 바로 쓰지 말고, 존재하는 컬럼만 선택한다.
 - 필수 집계 컬럼이 없으면 오류를 내지 말고 사용자가 이해할 수 있는 빈 DataFrame을 `result`에 넣는다.
 - 단계형 분석에서 최종 결과를 이해하는 기준이 되는 중간 결과는 `record_step("key", dataframe_or_value, description="설명", role="basis")`로 기록한다.

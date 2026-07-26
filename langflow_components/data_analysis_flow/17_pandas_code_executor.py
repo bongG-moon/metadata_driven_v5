@@ -258,9 +258,10 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
         rows = _normalize_blank_dimension_values(rows, next_payload)
         rows = _normalize_missing_metric_values(rows, next_payload)
         missing_columns = _missing_required_output_columns(next_payload, columns)
+        missing_columns.extend(_missing_result_segment_columns(next_payload, columns))
         if missing_columns:
             raise OutputContractError(
-                "상세/목록 결과에 필요한 컬럼이 누락되었습니다: " + ", ".join(missing_columns)
+                "결과 계약에 필요한 컬럼이 누락되었습니다: " + ", ".join(missing_columns)
             )
         next_payload["_full_result_rows"] = rows
         next_payload["analysis"] = {
@@ -826,6 +827,21 @@ def _missing_required_output_columns(payload: dict[str, Any], result_columns: li
         if not _has_equivalent_column(result_columns, equivalents):
             missing.append(required_column)
     return missing
+
+
+# 함수 설명: 여러 결과 구간을 합친 표가 구분과 구간 내 순위를 잃지 않았는지 검증합니다.
+def _missing_result_segment_columns(payload: dict[str, Any], result_columns: list[str]) -> list[str]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    segments = contract.get("result_segments") if isinstance(contract.get("result_segments"), list) else []
+    if len(segments) < 2:
+        return []
+    required = [str(contract.get("segment_column") or "RESULT_GROUP").strip()]
+    rank_column = str(contract.get("rank_column") or "").strip()
+    if rank_column:
+        required.append(rank_column)
+    available = {str(column).casefold() for column in result_columns}
+    return [column for column in required if column and column.casefold() not in available]
 
 
 # 함수 설명: `_available_source_columns()`는 전체 행 복사 없이 source schema와 일부 runtime row key에서 실제 컬럼을 수집합니다.

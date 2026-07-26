@@ -1,6 +1,6 @@
 # Metadata Driven v5 완전 연결 Langflow JSON
 
-이 폴더의 JSON은 Langflow 1.8.2 standalone 환경에 바로 import할 수 있도록 모든 canvas edge와 Router 하위 endpoint를 미리 연결한 묶음입니다.
+이 폴더의 JSON은 Langflow 1.9.2 standalone 환경에 바로 import할 수 있도록 모든 canvas edge와 Router 하위 endpoint를 미리 연결한 묶음입니다.
 
 ## 가장 간단한 Import 방법
 
@@ -32,7 +32,7 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 10개 Flow를 한 번에 impor
 - canvas edge 재연결: 필요 없음
 - Router Flow ID 치환: 필요 없음
 - Router URL 5개 개별 입력: 필요 없음
-- Agent Tool Router Flow ID 재연결: 필요 없음
+- Agent Tool Router Flow ID 직접 입력: 필요 없음. 다만 import 후 각 Tool의 `대상 Flow`를 한 번씩 다시 선택하면 현재 ID가 저장되어 이름 조회 없이 graph cache를 사용할 수 있습니다.
 - Workflow Orchestrator Flow ID 재연결: 필요 없음
 
 Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다시 import하면 Langflow가 endpoint에 `-1`을 붙일 수 있으므로, 재import 시에는 기존 `metadata-driven-v5-complete-20260710-*` Flow를 먼저 정리합니다.
@@ -56,13 +56,13 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 413 passed
+- 전체 pytest: 422 passed
 - 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 120/120 노드가 실제 Python 원본 83개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과
-- Langflow 1.8.2 frontend edge handle codec: 426/426 parse 및 `edge.data` 일치
-- Langflow 1.8.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.8.2 / LFX 0.3.4 node template: 147/147 passed
+- Langflow 1.9.2 frontend edge handle codec: 426/426 parse 및 `edge.data` 일치
+- Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
+- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: manifest의 전체 노드 검증 통과
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: Smart Router -> GaiA Output Adapter -> 표준 Chat Output 2/2, FinalGate 0개
 - API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개
@@ -74,10 +74,10 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
 - pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
-- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router는 이름 기반 Cached Run Flow Tool 5개 모두 Langflow의 현재 실행 `user_id` 범위에서 매 실행 정확한 Flow 이름을 현재 ID로 다시 해석하며, `cache_flow=true`, `return_direct=true`, 고정 Flow ID 없음으로 구성됩니다. 해석된 실제 ID는 graph cache key로만 사용합니다.
-- Agent Tool Router는 하위 Flow의 표준 Chat Output Message를 `return_direct=true`로 그대로 반환하며, Message.data의 `gaia_response`를 보존합니다.
+- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router의 선택형 Cached Run Flow Tool 5개는 UI에서 저장한 현재 Flow ID를 우선 사용하고 ID가 비어 있을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. `cache_flow=true`, `return_direct=true`이며, 선택 ID 경로에서는 별도 Flow 조회 없이 graph cache를 바로 확인합니다.
+- Agent Tool Router는 `n_messages=5`, `max_iterations=1`로 현재 저장 메시지와 이전 2턴을 조회합니다. GaiA Input Adapter가 원본 Message ID를 보존하고 LFX Agent가 현재 입력과 ID가 같은 메시지를 history에서 제거하므로, 현재 질문 중복 없이 이전 사용자/응답 2턴만 남습니다. 하위 Flow의 표준 Chat Output Message를 `return_direct=true`로 반환하며, LFX 0.4.2가 Tool 결과를 Agent 단계 카드에만 기록한 경우 GaiA Output Adapter가 마지막 완료 Tool 출력에서 본문을 복원합니다. Message.data의 `gaia_response`도 보존합니다.
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 표준 Chat Input ID로 내부 변환합니다.
-- Agent Tool Router는 `session_source` 포트와 edge 없이 부모 `graph.session_id`를 자동 상속합니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.
+- Agent Tool Router는 `session_source` 포트와 edge 없이 실제 Tool 출력 메서드 안에서 부모 runtime/graph `session_id`를 자동 상속합니다. 따라서 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰어도 하위 Flow의 세션 저장/복원이 유지됩니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.
 - 격리 import에서 현재 Langflow 실행 사용자로 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
 - Workflow Orchestrator의 이름 기반 Tool 6개는 `question`과 선택 `upstream_result_ref`만 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
 - Workflow Orchestrator는 기본 Language Model 계획기 -> `workflow.plan.v1` 파서 -> 기본 Loop -> 정확한 Tool 단일 실행기 순서로 최대 네 단계를 실행합니다. Registry와 일치하지 않아도 capability catalog의 Tool만으로 해결 가능하면 inline 계획을 만들며 Agent의 자율 반복은 사용하지 않습니다.

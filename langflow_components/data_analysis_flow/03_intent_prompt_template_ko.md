@@ -82,6 +82,9 @@
 - `intent_plan.output_contract.result_mode`는 결과 형태에 맞게 작성한다. 원본/상세 행 또는 장비·LOT·Recipe 같은 entity 목록이면 `detail` 또는 `entity_list`, groupby 집계이면 `aggregate`, 단일 지표이면 `scalar`, 설명만 요청하면 `explanation`을 사용한다.
 - `detail`/`entity_list`에서는 선택된 table catalog의 `default_detail_columns` 중 실제 source에 있는 컬럼을 `output_contract.required_columns`에 합친다. 사용자가 요청한 속성은 기본 컬럼보다 우선하며, 모델·Recipe를 설명할 결과라면 해당 원본 컬럼을 결과에도 포함한다.
 - `aggregate`/`scalar`에서는 `default_detail_columns`를 무조건 붙이지 않는다. 질문의 grouping·metric에 필요한 컬럼만 `grain_columns`, `metric_columns`, `required_columns`에 넣어 결과 자유도를 유지한다.
+- 사용자가 상위와 하위, 조건 A와 조건 B처럼 서로 다른 결과 구간을 한 번에 요청하고 그 결과를 하나의 표로 합쳐야 하면 `output_contract.result_segments`에 사용자 요청 순서대로 각 구간을 기록한다.
+- 각 `result_segments` 항목은 사람이 이해할 수 있는 `label`, `operation`, `limit`, `sort_by`, `order`를 사용한다. 예를 들어 상위 3개와 하위 3개를 함께 요청하면 `상위 3개(top_n, desc)`와 `하위 3개(bottom_n, asc)`를 별도 항목으로 만든다.
+- 하나의 정렬 결과만 요청한 경우에는 불필요한 `result_segments`를 만들지 않는다. 서로 다른 구간을 합치는 경우에만 사용한다.
 - dataset 간 join key와 실행 순서는 table catalog의 기본 표시 컬럼에서 추측하지 않는다. 선택된 Domain `analysis_recipes`와 `pandas_execution_plan`의 join 단계를 따른다.
 - 제품 등 dimension별 groupby에서는 null/빈 문자열/공백 값을 가진 행도 집계에서 제외하지 않는다는 의미로 `null_group_policy=preserve_as_blank`를 사용한다. 최종 표시용 수량·지표 컬럼의 null/빈 문자열/공백은 0으로 표시한다는 의미로 `metric_null_policy=display_zero`를 사용한다.
 - `metadata_refs`에는 참조한 metadata의 `section`, `key`만 짧게 남긴다. `payload`, `source_config`, `query_template`, 원문 SQL, 긴 설명은 절대 복사하지 않는다.

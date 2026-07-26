@@ -3,7 +3,7 @@
 # 컴포넌트 개요: 21 답변 메시지 어댑터
 # 역할: 최종 답변과 결과 테이블을 서비스 채팅 출력용 메시지로 변환합니다.
 # 주요 입력: 페이로드 (payload) · 필수, 개발자 진단 포함 (include_diagnostics), 결과 테이블 표시
-#        (show_result_table), 중간 산출물/helper 결과 표시 (show_analysis_evidence), 다운로드 링크 표시 (show_download_links), 경고/참고
+#        (show_result_table), 결과 테이블 미리보기 행 수 (table_preview_limit), 중간 산출물/helper 결과 표시 (show_analysis_evidence), 다운로드 링크 표시 (show_download_links), 경고/참고
 #        표시 (show_notices), 적용 기준 표시 (show_applied_criteria), 다음 질문 표시 (show_next_questions), 의도 분석 표시
 #        (show_intent_analysis), 데이터 조회 진단 표시 (show_data_retrieval), pandas 코드 표시 (show_pandas_code)
 # 주요 출력: 메시지 (message)
@@ -24,10 +24,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import BoolInput, DataInput, Output
+from lfx.io import BoolInput, DataInput, IntInput, Output
 from lfx.schema.message import Message
 
-TABLE_PREVIEW_LIMIT = 10
+DEFAULT_TABLE_PREVIEW_LIMIT = 10
 CELL_TEXT_LIMIT = 120
 VALUE_TEXT_LIMIT = 900
 
@@ -64,6 +64,7 @@ def build_message(
     show_pandas_code: Any = "",
     show_applied_criteria: Any = True,
     show_next_questions: Any = True,
+    table_preview_limit: Any = DEFAULT_TABLE_PREVIEW_LIMIT,
 ) -> str:
     payload = _payload(payload_value)
     if not payload:
@@ -81,9 +82,10 @@ def build_message(
         show_next_questions,
     )
     answer_sections = payload.get("answer_sections") if isinstance(payload.get("answer_sections"), dict) else {}
+    preview_limit = _positive_int(table_preview_limit, DEFAULT_TABLE_PREVIEW_LIMIT)
 
     if answer_sections:
-        sections = _message_sections_from_answer_sections(payload, answer_sections, options)
+        sections = _message_sections_from_answer_sections(payload, answer_sections, options, preview_limit)
         for section in _diagnostic_sections(payload, options):
             if section:
                 sections.append(section)
@@ -96,7 +98,11 @@ def build_message(
     if answer:
         sections.append("### 답변\n" + _answer_markdown(answer))
 
-    result_table_section = "" if _contains_markdown_table(answer) or not options["result_table"] else _result_table_section(payload)
+    result_table_section = (
+        ""
+        if _contains_markdown_table(answer) or not options["result_table"]
+        else _result_table_section(payload, preview_limit)
+    )
     optional_sections = []
     if options["analysis_evidence"]:
         optional_sections.extend([_step_outputs_section(payload), _function_case_results_section(payload)])
@@ -123,6 +129,7 @@ def _message_sections_from_answer_sections(
     payload: dict[str, Any],
     answer_sections: dict[str, Any],
     options: dict[str, bool] | None = None,
+    table_preview_limit: Any = DEFAULT_TABLE_PREVIEW_LIMIT,
 ) -> list[str]:
     options = options or _message_options(False, True, True, True, True, "", "", "", True, True)
     sections: list[str] = []
@@ -133,7 +140,11 @@ def _message_sections_from_answer_sections(
         sections.append("### 답변\n" + _answer_markdown(answer))
 
     if options["result_table"] and not _contains_markdown_table(answer):
-        result_table = _result_table_section_from_answer_sections(answer_sections, payload)
+        result_table = _result_table_section_from_answer_sections(
+            answer_sections,
+            payload,
+            _positive_int(table_preview_limit, DEFAULT_TABLE_PREVIEW_LIMIT),
+        )
         if result_table:
             sections.append(result_table)
 
@@ -159,7 +170,11 @@ def _message_sections_from_answer_sections(
 
 # 함수 설명: `_result_table_section_from_answer_sections()`는 표·응답 section·원본·답변을 최종 Message에 넣을 독립 Markdown section으로
 #        렌더링합니다.
-def _result_table_section_from_answer_sections(answer_sections: dict[str, Any], payload: dict[str, Any] | None = None) -> str:
+def _result_table_section_from_answer_sections(
+    answer_sections: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+    table_preview_limit: Any = DEFAULT_TABLE_PREVIEW_LIMIT,
+) -> str:
     result_table = answer_sections.get("result_table") if isinstance(answer_sections.get("result_table"), dict) else {}
     rows = result_table.get("display_rows")
     if not isinstance(rows, list) or not rows:
@@ -174,7 +189,7 @@ def _result_table_section_from_answer_sections(answer_sections: dict[str, Any], 
     display_columns = _string_list(result_table.get("display_columns"))
     column_labels = _dict_value(result_table.get("column_labels"))
     row_count = _safe_int(result_table.get("row_count"), len(rows))
-    preview_limit = _safe_int(result_table.get("preview_limit"), TABLE_PREVIEW_LIMIT)
+    preview_limit = _positive_int(table_preview_limit, DEFAULT_TABLE_PREVIEW_LIMIT)
 
     if not rows and not columns:
         return ""
@@ -434,7 +449,10 @@ def _split_sentences(text: str) -> list[str]:
 
 
 # 함수 설명: `_result_table_section()`는 표·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
-def _result_table_section(payload: dict[str, Any]) -> str:
+def _result_table_section(
+    payload: dict[str, Any],
+    table_preview_limit: Any = DEFAULT_TABLE_PREVIEW_LIMIT,
+) -> str:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     rows = data.get("rows") if isinstance(data.get("rows"), list) else []
     columns = data.get("columns") if isinstance(data.get("columns"), list) else []
@@ -451,7 +469,8 @@ def _result_table_section(payload: dict[str, Any]) -> str:
         column_text = ", ".join(str(column) for column in columns) if columns else "없음"
         return "### 결과 테이블\n표시할 결과 행이 없습니다.\n\n- 컬럼: `" + column_text + "`"
 
-    preview_rows = rows[:TABLE_PREVIEW_LIMIT]
+    preview_limit = _positive_int(table_preview_limit, DEFAULT_TABLE_PREVIEW_LIMIT)
+    preview_rows = rows[:preview_limit]
     note = f"\n\n총 {row_count}건 중 {len(preview_rows)}건을 표시했습니다."
     if row_count <= len(preview_rows):
         note = f"\n\n총 {row_count}건입니다."
@@ -1276,6 +1295,12 @@ def _option_enabled(value: Any, default: bool) -> bool:
     return _truthy(value)
 
 
+# 함수 설명: `_positive_int()`는 UI에서 받은 미리보기 행 수를 1 이상의 정수로 정규화합니다.
+def _positive_int(value: Any, default: int) -> int:
+    resolved = _safe_int(value, default)
+    return resolved if resolved > 0 else default
+
+
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class AnswerMessageAdapter(Component):
@@ -1294,6 +1319,14 @@ class AnswerMessageAdapter(Component):
             name="show_result_table",
             display_name="결과 테이블 표시",
             value=True,
+            required=False,
+            advanced=True,
+        ),
+        IntInput(
+            name="table_preview_limit",
+            display_name="결과 테이블 미리보기 행 수",
+            info="최종 답변의 Markdown 결과 표에 표시할 최대 행 수입니다. 다운로드 데이터와 MongoDB 저장 행 수에는 영향을 주지 않습니다.",
+            value=DEFAULT_TABLE_PREVIEW_LIMIT,
             required=False,
             advanced=True,
         ),
@@ -1374,6 +1407,11 @@ class AnswerMessageAdapter(Component):
                 show_pandas_code=getattr(self, "show_pandas_code", False),
                 show_applied_criteria=getattr(self, "show_applied_criteria", True),
                 show_next_questions=getattr(self, "show_next_questions", False),
+                table_preview_limit=getattr(
+                    self,
+                    "table_preview_limit",
+                    DEFAULT_TABLE_PREVIEW_LIMIT,
+                ),
             )
         )
         metadata = build_response_metadata(payload)

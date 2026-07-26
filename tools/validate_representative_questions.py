@@ -1177,6 +1177,7 @@ def install_lfx_stubs() -> None:
     modules["lfx.io"].DataInput = InputBase
     modules["lfx.io"].DropdownInput = InputBase
     modules["lfx.io"].BoolInput = InputBase
+    modules["lfx.io"].IntInput = InputBase
     modules["lfx.io"].MessageTextInput = InputBase
     modules["lfx.io"].ModelInput = InputBase
     modules["lfx.io"].MultilineInput = InputBase

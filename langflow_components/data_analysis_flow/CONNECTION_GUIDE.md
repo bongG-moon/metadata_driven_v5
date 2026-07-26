@@ -113,7 +113,7 @@ Intent LLM은 `dataset_key`, `source_alias`, `required_params`, `filters`만 선
 
 전체 helper library에는 `function_case_helper_code_input_example.py` 내용을 넣습니다. Prompt에는 `15A`가 실제 선택된 함수만 전달합니다. function case가 선택되지 않으면 빈 문자열입니다.
 
-`17.function_case_helper_code`와 `17.repair_prompt_template`은 연결 가능한 일반 입력(`advanced=false`)으로 유지해야 합니다. Langflow 1.8.2는 advanced component input을 대상으로 하는 edge를 import/refresh 과정에서 제거합니다.
+`17.function_case_helper_code`와 `17.repair_prompt_template`은 연결 가능한 일반 입력(`advanced=false`)으로 유지해야 합니다. Langflow는 advanced component input을 대상으로 하는 edge를 import/refresh 과정에서 제거할 수 있습니다.
 
 `17B`는 표준 Prompt Template이 아니라 raw 템플릿을 보관하는 visible Text Input입니다. `{failed_code}`, `{error_context_json}` 같은 값은 최초 실행이 실패한 뒤에만 만들어지므로, `17`이 오류 발생 시점에 이 raw 템플릿을 렌더링합니다. 따라서 Prompt를 canvas 밖에 숨기지 않으면서도 별도 pass/repair 실행 분기를 다시 만들지 않습니다.
 
