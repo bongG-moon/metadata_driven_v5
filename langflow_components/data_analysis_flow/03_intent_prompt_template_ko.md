@@ -40,10 +40,18 @@
 - `followup_transform`은 이전 결과 또는 이전 원본으로 정렬, top/bottom, 재그룹화, 비율 계산처럼 재분석하는 경우다. 새 조회가 필요 없으면 `retrieval_jobs`는 비워도 되며 `reuse_strategy=previous_result` 또는 `previous_source`를 사용한다.
 - `followup_expand_source`는 이전 결과에 없는 컬럼/세부 원본 속성을 추가해야 하는 경우다. 이전 source data_ref 또는 원본 rows가 필요하면 `reuse_strategy=previous_source`를 사용한다.
 - `followup_explain`은 이전 조회 조건, 의도, pandas 코드, 근거를 설명하는 경우다. 새 조회 없이 `reuse_strategy=trace_only`를 사용한다.
-- `reuse_strategy=previous_result`이면 pandas 계획의 `source_alias`는 MongoDB 로더가 제공하는 예약 alias `previous_result`를 사용한다.
+- `reuse_strategy=previous_result`로 이전 결과 자체만 재분석하면 pandas 계획의 `source_alias`는 MongoDB 로더가 제공하는 예약 alias `previous_result`를 사용한다. 이전 결과를 조건 행으로 삼아 새 source를 조회·분석하는 혼합 계획은 아래 `apply_row_match_groups` 규칙을 따른다.
 - `reuse_strategy=previous_source`이면 재사용할 이전 원본의 `source_alias`를 `pandas_execution_plan`과 `pandas_function_cases`에 명시한다. 현재 계획에 필요한 alias만 복원되므로 단순히 이전 모든 source가 존재한다고 가정하지 않는다.
 - `reuse_strategy=previous_intent_with_new_retrieval`, `trace_only`, `none`은 이전 원본 행을 복원하지 않는다. 필요한 조건·의도·설명 문맥은 compact session state를 사용한다.
 - 후속 질문에서 이전 원본/결과를 재사용할 경우에도 `pandas_execution_plan`에는 어떤 이전 데이터 기준으로 어떤 재분석을 할지 적는다.
+- 이전 결과 또는 다른 reference source의 여러 행에서 2개 이상 컬럼으로 이루어진 조건 집합을 새 source에 적용할 때는 컬럼별 값을 각각 `in` 목록으로 펼치지 않는다. 컬럼별 `in`은 원래 행 조합을 잃어 실제 reference에 없던 조합까지 선택할 수 있다.
+- 이런 다중 컬럼 행 조건은 `pandas_execution_plan`에 `operation=apply_row_match_groups`, 조건을 적용할 `source_alias`, 조건 행을 제공할 `reference_source_alias`를 기록한다. 한 reference 행 내부 조건은 AND, reference 행들 사이는 OR로 적용한다.
+- 제품 행을 제품 기준으로 다시 조회·결합할 때는 후보 Domain에서 선택한 `product_key_columns` 항목의 section/key를 `match_key_ref`에 기록한다. 제품 키 컬럼 일부를 `match_columns`로 추측하거나 축약하지 않는다. normalizer가 `match_key_ref`의 전체 canonical 제품 키를 결정론적으로 해석한다.
+- 제품 외 일반 행 조건에 대응하는 key metadata가 후보 Domain에 있으면 그 section/key를 `match_key_ref`에 기록한다. 적합한 key metadata가 없을 때만 두 source에서 실제 identity 역할을 하는 2개 이상의 컬럼을 `match_columns`에 기록한다.
+- 직전 최종 결과 행을 reference로 쓰면서 새 dataset도 조회하는 경우 `reuse_strategy=previous_result`를 사용하고 `reference_source_alias=previous_result`를 명시한다. 신규 조회 target의 `source_alias`는 `previous_result`로 바꾸지 않는다.
+- `match_key_ref`가 있으면 metadata의 전체 key 집합이 모델이 작성한 `match_columns`보다 우선한다. `match_key_ref`가 없을 때의 `match_columns`에는 두 source에서 조건 identity 역할을 하는 컬럼만 넣고 수량·순위·설명 같은 결과 컬럼은 넣지 않는다. 2개 미만 컬럼이면 `apply_row_match_groups`를 만들지 않는다.
+- row match의 null, None, NaN, NaT, 빈 문자열, 공백 문자열 및 문자열 `null`, `none`, `nan`, `nat`, `<NA>`, `empty`는 모두 동일한 빈 값 `""`으로 정규화한다. 빈 값 조건을 누락하거나 wildcard로 해석하지 않으며 `blank_policy=normalize_blank`를 사용한다.
+- `apply_row_match_groups`가 있는 target source에 reference 행에서 뽑은 값을 다시 컬럼별 `eq`/`in` 필터로 중복 작성하지 않는다. 날짜·공정처럼 reference 행 집합과 별개로 사용자가 직접 요구한 조건만 일반 filter로 유지한다.
 - 데이터 조회가 필요한 경우 `intent_plan.retrieval_jobs`를 반드시 작성한다.
 - 각 retrieval job은 `dataset_key`, `source_alias`, `required_params`, `filters`만 포함한다.
 - 각 retrieval job의 `required_params`는 다른 job을 참조하지 않아도 바로 실행할 수 있는 완성된 값이어야 한다. plan 수준의 공통 파라미터나 다른 job의 값을 조회 단계에서 복사한다고 가정하지 않는다.
@@ -53,6 +61,7 @@
 - 필수 파라미터가 아닌 조건을 `required_params`에 넣지 않는다.
 - table catalog의 필수 조회 파라미터가 아닌 분석 조건은 `required_params`에 넣지 않고 `filters` 또는 특화 지시가 지정한 pandas function case로 남긴다.
 - dataset은 질문이 요구한 분석 grain과 metric을 기준으로 선택한다. 관련 컬럼이나 단어가 포함되어 있다는 이유만으로 더 세밀한 entity grain의 dataset을 대신 선택하지 않는다.
+- 사용자가 요청한 dimension 또는 표시 컬럼이 이미 하나의 dataset에 모두 있으면, 해당 컬럼명이 다른 join recipe에도 등장한다는 이유만으로 보조 dataset을 추가하지 않는다.
 - 예를 들어 집계 재공수량과 LOT별 상태/수량은 서로 다른 grain이다. 사용자가 LOT·랏·로트·LOT_ID·LOT 상태·LOT 건수·HOLD LOT·TAT·wafer/die/unit 같은 LOT 단위 근거를 명시하지 않았다면 일반 `재공`, `재공수량`, `WIP` 요청을 LOT 상세 dataset으로 바꾸지 않는다.
 - 여러 metric이 서로 다른 dataset을 요구하면 metric별 retrieval job을 각각 작성한다. 한 dataset에 다른 metric을 억지로 계산시키거나, 한 job의 조회 실패를 0으로 간주하지 않는다.
 - 질문을 metric/dataset별 절로 먼저 나누고, 각 절에 붙은 날짜·공장·FAB·조·기타 조건을 해당 catalog 계약에 따라 분류한다. catalog가 필수 조회 파라미터로 선언한 조건만 해당 retrieval job의 `required_params`에 넣고, 그 외 조건은 `filters`에 넣는다. 한 job의 값을 다른 job의 값으로 추정하지 않는다.
@@ -65,6 +74,9 @@
 - pandas 분석 계획에는 `filters`를 먼저 적용한 뒤 집계, 정렬, top/bottom, join 등을 수행한다는 순서를 드러낸다.
 - 사용자가 제품별·제품 기준 집계를 요청하면 후보 Domain의 `product_key_columns` 또는 제품 grain을 정의한 `analysis_recipes`를 선택하고 `intent_plan.grain_plan.metadata_ref`에 그 `section`과 `key`만 기록한다. 실제 제품 키 컬럼 목록을 모델이 추측하거나 고정하지 않는다.
 - 여러 dataset을 제품 기준으로 결합하면 후보 Domain의 제품 키 또는 join recipe를 선택하고 각 결합을 `intent_plan.join_plan`에 기록한다. `metadata_ref`, 좌우 `source_alias`, `join_type`, 사용자가 요청한 우측 결과 컬럼과 다중 일치 정책만 작성하며 실제 좌우 join column은 다음 정규화기가 metadata와 table catalog mapping으로 해석한다.
+- 두 dataset을 결합할 때 pandas 단계에 임의의 `filter_and_join`과 `source_alias`/`reference_source_alias` 조합만 남기지 않는다. 반드시 `intent_plan.join_plan`에 `left_source_alias`와 `right_source_alias`를 기록하고 pandas 단계도 같은 좌우 alias를 사용한다.
+- 두 dataset을 결합할 때 pandas 단계에 임의의 `filter_and_join`과 `source_alias`/`reference_source_alias` 조합만 남기지 않는다. 반드시 `intent_plan.join_plan`에 `left_source_alias`와 `right_source_alias`를 기록하고 pandas 단계도 같은 좌우 alias를 사용한다.
+- 두 dataset을 결합할 때 pandas 단계에 임의의 `filter_and_join`과 `source_alias`/`reference_source_alias` 조합만 남기지 않는다. 반드시 `intent_plan.join_plan`에 `left_source_alias`와 `right_source_alias`를 기록하고 pandas 단계도 같은 좌우 alias를 사용한다.
 - `grain_plan` 또는 `join_plan`에 참조할 metadata가 후보에 없으면 source schema에서 보이는 컬럼을 임의의 표준 제품 키로 만들지 말고 clarification으로 보낸다.
 - 제품별 집계 컬럼과 dataset 결합 컬럼은 서로 다른 계약이다. 집계에 사용한 모든 `group_by` 컬럼을 그대로 join key로 재사용하지 않는다.
 - 질문 표현이 후보 Domain의 key/display_name/aliases와 일치하고 해당 `payload.condition` 또는 `payload.conditions`가 있으면, alias 문자열을 filter 값으로 새로 만들지 않는다. 등록된 canonical 필드·operator·값을 그대로 각 관련 retrieval job의 `filters`에 사용한다. 예를 들어 별칭이 문자형이어도 condition 값이 숫자 문자열이면 그 숫자 문자열을 유지한다.

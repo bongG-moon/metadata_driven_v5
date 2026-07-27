@@ -441,6 +441,9 @@ def _semantic_plan_errors(
     ranking_error = _product_ranking_grain_error(question, plan)
     if ranking_error:
         errors.append(ranking_error)
+    uph_selection_error = _unrequested_uph_selection_error(question, plan)
+    if uph_selection_error:
+        errors.append(uph_selection_error)
     return _unique_dicts(errors)
 
 
@@ -496,7 +499,32 @@ def _process_group_expansion_errors(
         )
         if not matched_alias:
             continue
-        if any(process.upper() in question_upper for process in processes):
+        explicit_processes = [
+            process
+            for process in processes
+            if _alias_in_question(process, question_upper)
+        ]
+        if explicit_processes:
+            expected_specific = {
+                _normalized_text(process)
+                for process in explicit_processes
+            }
+            for job in jobs:
+                filters = job.get("filters") if isinstance(job.get("filters"), dict) else {}
+                condition = filters.get("OPER_NAME")
+                actual_values = _condition_values(condition)
+                actual = {_normalized_text(value) for value in actual_values}
+                if actual != expected_specific:
+                    errors.append(
+                        {
+                            "type": "specific_process_overexpanded",
+                            "message": "단일 세부 공정 질문이 공정 그룹 전체 조건으로 확장됐습니다.",
+                            "dataset_key": job.get("dataset_key"),
+                            "source_alias": job.get("source_alias"),
+                            "expected_oper_names": explicit_processes,
+                            "actual_oper_names": actual_values,
+                        }
+                    )
             continue
         metadata_identity = ("process_groups", str(item.get("key") or "").strip())
         metadata_key = f"{metadata_identity[0]}:{metadata_identity[1]}"
@@ -580,6 +608,39 @@ def _product_ranking_grain_error(
         ),
         "forbidden_columns": forbidden,
         "grain_columns": grain_columns,
+    }
+
+
+def _unrequested_uph_selection_error(
+    question: str,
+    plan: dict[str, Any],
+) -> dict[str, Any] | None:
+    """UPH를 묻지 않은 장비/Recipe 질문이 UPH dataset과 join recipe를 과선택했는지 검출합니다."""
+
+    if "UPH" in str(question or "").upper():
+        return None
+    dataset_keys = [
+        str(item.get("dataset_key") or "").strip()
+        for item in plan.get("retrieval_jobs", [])
+        if isinstance(item, dict)
+    ]
+    metadata_refs = [
+        item
+        for item in plan.get("metadata_refs", [])
+        if isinstance(item, dict)
+    ]
+    selected_recipe = any(
+        str(item.get("section") or "").strip() == "analysis_recipes"
+        and str(item.get("key") or "").strip() == "equipment_assignment_uph_join"
+        for item in metadata_refs
+    )
+    if "eqp_uph" not in dataset_keys and not selected_recipe:
+        return None
+    return {
+        "type": "unrequested_uph_join",
+        "message": "UPH를 요청하지 않은 질문에 eqp_uph 또는 장비-UPH join recipe가 선택됐습니다.",
+        "dataset_keys": dataset_keys,
+        "selected_recipe": selected_recipe,
     }
 
 

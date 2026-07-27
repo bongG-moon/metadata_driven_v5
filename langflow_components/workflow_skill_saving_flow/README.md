@@ -45,6 +45,7 @@
 - 각 단계는 하나의 Tool만 호출하고 `depends_on`은 앞 단계만 참조합니다.
 - `handoff=result_ref`는 한 개의 `run_data_analysis` 결과를 다음 `run_data_analysis` 또는 `run_visualization`에 전달할 때만 허용합니다.
 - `run_visualization`은 첫 단계로 사용할 수 없으며, 앞 데이터 분석 결과를 외부 CDN 없는 HTML 차트로 변환합니다.
+- `run_realtime_production_report`는 판정 완료 생산 데이터에 대한 독립형 규칙 분석과 HTML Report 생성에 사용하며 `result_ref` handoff를 사용하지 않습니다.
 - 기본 Language Model은 Skill Tool이 아니며 08 Workflow Orchestrator가 모든 단계 뒤에 한 번 자동 호출합니다.
 - LLM은 후보 초안만 만들며 Tool·dependency·handoff·중복 처리·실제 저장은 Python에서 결정합니다.
 - 모호한 유사 항목을 첫 번째 문서로 임의 선택하지 않습니다.

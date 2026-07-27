@@ -8,7 +8,7 @@
 Data Analysis 결과의 result_ref
   -> 00 HTML 시각화 생성기
      -> Langflow 저장소에 HTML 파일 저장(path)
-     -> Report API의 POST /reports 호출
+     -> 통합 다운로드 서버의 POST /reports 호출
         -> report_api/storage/reports에 HTML + JSON 저장
         -> view_url + download_url + expires_at 반환
   -> artifact descriptor에 path와 검증된 URL을 분리 보존
@@ -29,15 +29,14 @@ URL을 로컬 `path`처럼 `Message.files`에 넣지 않습니다. 반대로 로
 
 ## 2. 서버 준비
 
-먼저 [report_api README](../report_api/README.md)에 따라 설치하고 서버를 실행합니다.
+기본 구성은 CSV data_ref 다운로드와 HTML Report를 함께 제공하는 통합 서버입니다.
 
 ```powershell
-cd C:\Users\<사용자명>\Desktop\metadata_driven_v5\report_api
-.\.venv\Scripts\Activate.ps1
-python server.py
+cd C:\Users\<사용자명>\Desktop\metadata_driven_v5
+python tools\data_ref_download_server.py --host 127.0.0.1 --port 8765
 ```
 
-브라우저에서 `http://127.0.0.1:8010/`을 열어 `alive!`를 확인합니다.
+브라우저에서 `http://127.0.0.1:8765/health`를 열어 `features.html_reports=true`를 확인합니다. 기존 [report_api README](../report_api/README.md)의 8010 FastAPI 서버도 호환용으로 사용할 수 있지만 기본 Flow는 8765 통합 서버를 가리킵니다.
 
 ## 3. Langflow 입력
 
@@ -45,7 +44,7 @@ python server.py
 
 | 화면 입력 | 권장 시작값 | 설명 |
 | --- | --- | --- |
-| `HTML Report API 주소` | `http://127.0.0.1:8010` | `/reports`는 컴포넌트가 자동 보완 |
+| `HTML Report API 주소` | `http://127.0.0.1:8765` | `/reports`는 컴포넌트가 자동 보완 |
 | `HTML 링크 유효시간` | `24` | 서버가 1~168시간 범위로 제한 |
 
 주소는 절대 `http://` 또는 `https://` URL이어야 합니다. 사용자 정보가 포함된 URL, 상대경로, `file://`, `javascript:`는 사용하지 않습니다.
@@ -102,21 +101,20 @@ LLM에 제공할 짧은 summary에는 예를 들어 `HTML 시각화 생성 완�
 
 ### 같은 PC에서 사용
 
-- 서버: `SERVER_HOST = "127.0.0.1"`
-- 링크: `BASE_URL = "http://127.0.0.1:8010"`
-- Langflow: `HTML Report API 주소 = http://127.0.0.1:8010`
+- 서버: `--host 127.0.0.1 --port 8765`
+- 링크: `--public-base-url http://127.0.0.1:8765`
+- Langflow: `HTML Report API 주소 = http://127.0.0.1:8765`
 
 서버가 실행 중인 같은 PC에서만 링크가 열립니다.
 
 ### 내부 사용자와 공유
 
-- 서버는 내부 호스트에서 실행합니다.
-- `SERVER_HOST = "0.0.0.0"`으로 수신하되 방화벽으로 허용 범위를 제한합니다.
-- `BASE_URL`에는 사용자가 실제 접속하는 HTTPS DNS를 넣습니다.
+- 서버는 내부 호스트에서 `--host 0.0.0.0`으로 실행하되 방화벽으로 허용 범위를 제한합니다.
+- `--public-base-url`에는 사용자가 실제 접속하는 HTTPS DNS를 넣습니다.
 - Langflow 입력도 그 HTTPS base URL과 맞춥니다.
-- `USE_ACCESS_TOKEN = True`, 역방향 프록시 인증, HTTPS를 함께 적용합니다.
+- `--report-access-token`, 역방향 프록시 인증, HTTPS를 함께 적용합니다.
 
-`0.0.0.0`은 수신 주소이지 사용자가 클릭할 주소가 아닙니다. `BASE_URL = "http://0.0.0.0:8010"`으로 설정하지 않습니다.
+`0.0.0.0`은 수신 주소이지 사용자가 클릭할 주소가 아닙니다. `--public-base-url http://0.0.0.0:8765`로 설정하지 않습니다.
 
 ## 7. 토큰과 민감정보
 
@@ -129,7 +127,7 @@ LLM에 제공할 짧은 summary에는 예를 들어 `HTML 시각화 생성 완�
 
 따라서 다음을 지킵니다.
 
-- Uvicorn access log는 기본 비활성 상태로 둡니다.
+- 운영 프록시와 서버 access log에서 query token을 기록하지 않도록 설정합니다.
 - proxy 로그에서는 `token` query를 마스킹합니다.
 - token URL을 LLM prompt, 메타데이터 검색 인덱스, 장기 trace에 넣지 않습니다.
 - 링크를 받은 사용자는 비밀번호처럼 취급하고 재공유하지 않습니다.
@@ -156,7 +154,7 @@ LLM에 제공할 짧은 summary에는 예를 들어 `HTML 시각화 생성 완�
 | 증상 | 확인할 내용 |
 | --- | --- |
 | `Report API 연결 실패` | 서버 창, 포트, `HTML Report API 주소` |
-| 링크가 다른 PC에서 안 열림 | `127.0.0.1` 대신 실제 HTTPS DNS를 `BASE_URL`에 사용했는지 |
+| 링크가 다른 PC에서 안 열림 | `127.0.0.1` 대신 실제 HTTPS DNS를 `--public-base-url`에 사용했는지 |
 | `403` | token query가 잘리거나 다른 링크의 token과 섞이지 않았는지 |
 | `404` | 저장소 용량 제한으로 오래된 리포트가 먼저 삭제됐는지 |
 | `410` | TTL이 지나 링크와 파일이 만료됐는지 |

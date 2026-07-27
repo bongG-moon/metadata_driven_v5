@@ -36,7 +36,7 @@ Chat Input
   -> 기본 Loop.data
 
 기본 Loop.item
-  -> 01 순차 단계 실행기 <- 이름 기반 Cached Flow Tool 6개
+  -> 01 순차 단계 실행기 <- 이름 기반 Cached Flow Tool 7개
   -> 기본 Loop.looping
 
 기본 Loop.done
@@ -52,8 +52,9 @@ Chat Input
 - 별도 custom Agent를 만들지 않는다.
 - `01 순차 단계 실행기`는 계획에 지정된 Tool 하나만 직접 호출하며 Tool을 선택하지 않는다.
 - child graph는 선택된 Tool을 실행할 때만 이름으로 해석하고 캐시한다.
-- 등록 Workflow와 일치하지 않는 요청도 여섯 Tool의 capability catalog만으로 해결 가능하면 `workflow_key=inline` 계획을 만든다.
+- 등록 Workflow와 일치하지 않는 요청도 일곱 Tool의 capability catalog만으로 해결 가능하면 `workflow_key=inline` 계획을 만든다.
 - 그래프·차트 요청은 `run_data_analysis` 다음에 `run_visualization`을 두고 `handoff=result_ref`로 실제 결과를 전달한다.
+- 실시간 생산 판정 Report 요청은 `run_realtime_production_report` 한 단계로 실행하며 generic 분석·시각화 단계를 추가하지 않는다.
 - 부모 Chat Input/Output만 메시지를 저장한다.
 - 하위 Flow 출력은 고정 node ID가 아니라 `우선 최종 출력 이름`으로 선택한다. 설정을 비우면 유일한 구조화 terminal을 자동 선택한다. 현재 하위 Flow의 terminal은 Python component가 `self.is_output = True`를 선언하며, wrapper의 실행 시점 승격은 이 선언이 없는 구버전 Flow를 위한 호환 장치다.
 
@@ -155,7 +156,7 @@ Tool은 실행할 때마다 현재 사용자 범위에서 Flow 이름을 실제 
 
 ## 테스트 절차
 
-1. 하위 Flow 1~5, 08 Workflow Orchestrator, 09 Workflow Skill 저장 Flow, 10 HTML Visualization Flow를 같은 Langflow 사용자로 import한다.
+1. 하위 Flow 1~5, 08 Workflow Orchestrator, 09 Workflow Skill 저장 Flow, 10 HTML Visualization Flow, 11 Realtime Production Report Flow를 같은 Langflow 사용자로 import한다.
 2. 두 Flow의 `MONGO_URL`, `datagov`, `agent_v4_workflow_skills` 입력과 모델 입력을 운영 환경에 맞게 설정한다.
 3. 08 Workflow Orchestrator의 Tool 대상 이름이 실제 import 이름과 정확히 같은지 확인한다.
 4. 저장 Flow에서 dry-run 확인 후 실제 저장하고 key-only 등록 Workflow를 실행한다.

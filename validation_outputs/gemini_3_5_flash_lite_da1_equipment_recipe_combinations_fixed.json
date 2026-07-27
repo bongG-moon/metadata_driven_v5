@@ -1,0 +1,293 @@
+{
+  "status": "ok",
+  "mode": "full_pipeline",
+  "environment": {
+    "repository": "C:\\Users\\qkekt\\Desktop\\metadata_driven_v5",
+    "reference_date": "20260727",
+    "retrieval_mode": "dummy",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-3.5-flash-lite",
+    "llm_temperature": 0.0,
+    "llm_timeout_seconds": 60,
+    "secrets": {
+      "mongodb_uri_configured": true,
+      "google_api_key_configured": true
+    },
+    "mongodb": {
+      "database": "datagov",
+      "collections": {
+        "domain": "agent_v4_domain_items",
+        "table_catalog": "agent_v4_table_catalog_items",
+        "main_flow_filter": "agent_v4_main_flow_filters"
+      },
+      "loaded_counts": {
+        "domain": 56,
+        "table_catalog": 9,
+        "main_flow_filter": 17
+      }
+    },
+    "prompt_sources": {
+      "intent": {
+        "path": "langflow_components\\data_analysis_flow\\03_intent_prompt_template_ko.md",
+        "chars": 14820,
+        "sha256": "24638913f454a48eae931781633d633b3205f8d99563df9f14aa17506e6f4c91"
+      },
+      "specialized_intent": {
+        "path": "langflow_components\\data_analysis_flow\\specialized_prompt_input_example_ko.md",
+        "chars": 5619,
+        "sha256": "bd469f04481333909a2fe2b2e9fc205c3f46f5e776ccbbb679224b839a0b6442"
+      },
+      "pandas": {
+        "path": "langflow_components\\data_analysis_flow\\16_pandas_prompt_template_ko.md",
+        "chars": 8508,
+        "sha256": "9213f538032c6285209a4201e6a64db11b83feb9cfdf336cfaa416e9f541984d"
+      },
+      "pandas_repair": {
+        "path": "langflow_components\\data_analysis_flow\\17b_pandas_repair_prompt_template_ko.md",
+        "chars": 6176,
+        "sha256": "d6e5ea05c3158b5773a0ce74823bda6e538f96f162685b74a1ff1bda195c3e52"
+      },
+      "answer": {
+        "path": "langflow_components\\data_analysis_flow\\19_answer_prompt_template_ko.md",
+        "chars": 2773,
+        "sha256": "878af4267d876f442db65b47da32ab5caee06248cada50f128e079849fe45065"
+      }
+    }
+  },
+  "results": [
+    {
+      "question": "현재 D/A1 공정에 배정된 장비를 장비 모델과 Recipe 조합별로 보여줘.",
+      "status": "ok",
+      "elapsed_seconds": 9.09,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 5,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "process_groups:DA",
+          "analysis_recipes:equipment_assignment_uph_join",
+          "quantity_terms:equipment_count",
+          "analysis_recipes:group_by_oper_name_for_detailed_process",
+          "analysis_recipes:group_by_oper_name_for_process_sequence",
+          "analysis_recipes:product_grain_and_join_policy",
+          "analysis_recipes:production_achievement_rate_analysis",
+          "analysis_recipes:raw_data_display_policy",
+          "analysis_recipes:select_device_column_for_device_code_query",
+          "quantity_terms:wip_today_quantity"
+        ],
+        "table_catalog_keys": [
+          "equipment_assign",
+          "eqp_uph",
+          "production_today",
+          "wip_today",
+          "lot_status"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 39760,
+        "analysis_kind": "equipment_assignment_by_model_and_recipe",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "equipment_assignment_by_model_and_recipe",
+          "request_scope": "new_analysis",
+          "reuse_strategy": "none",
+          "condition_resolution": {
+            "new": {
+              "OPER_NAME": [
+                "D/A1",
+                "D/A2",
+                "D/A3",
+                "D/A4",
+                "D/A5",
+                "D/A6"
+              ]
+            }
+          },
+          "grain_plan": {
+            "source_alias": "equipment_assign_source"
+          },
+          "join_plan": [],
+          "retrieval_jobs": [
+            {
+              "dataset_key": "equipment_assign",
+              "source_alias": "equipment_assign_source",
+              "required_params": {},
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "eq",
+                  "value": "D/A1"
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT \n  BAY_ID, \n  EQUIP_ID, \n  EQUIP_MODEL, \n  PRESS_CNT,\n  OPER,\n  OPER_NM,\n  MODE, \n  DENSITY, \n  TECH, \n  PKG1, \n  PKG2, \n  LEAD, \n  ORG,\n  PKGSIZE,  \n  MCP_NO,\n  DEVICE,\n  DEVICE_DESC,\n  LOT_ID,\n  RECIPE_ID\nFROM  EQP_TABLE\nWHERE 1=1 "
+              },
+              "required_param_names": [],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:equipment_assign",
+              "filter_mappings": {
+                "EQP_ID": [
+                  "EQUIP_ID"
+                ],
+                "EQP_MODEL": [
+                  "EQUIP_MODEL"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NM"
+                ],
+                "LOT_ID": [
+                  "LOT_ID"
+                ],
+                "RECIPE_ID": [
+                  "RECIPE_ID"
+                ]
+              },
+              "standard_column_aliases": {
+                "EQP_ID": [
+                  "EQUIP_ID"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NM"
+                ]
+              },
+              "job_id": "job_1"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "operation": "group_by_and_display",
+              "source_alias": "equipment_assign_source",
+              "group_columns": [
+                "EQUIP_MODEL",
+                "RECIPE_ID",
+                "EQUIP_ID"
+              ]
+            }
+          ],
+          "output_contract": {
+            "result_mode": "detail",
+            "required_columns": [
+              "EQUIP_MODEL",
+              "RECIPE_ID",
+              "EQUIP_ID",
+              "OPER_NM"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero"
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "process_groups",
+            "key": "DA"
+          },
+          {
+            "type": "table_catalog",
+            "key": "equipment_assign"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "equipment_assign",
+            "source_alias": "equipment_assign_source",
+            "status": "ok",
+            "row_count": 8,
+            "applied_params": {},
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "eq",
+                "value": "D/A1"
+              }
+            }
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 13667,
+        "status": "ok",
+        "repair_attempted": false,
+        "generated_code": "_filtered_source_1_equipment_assign_source = sources.get('equipment_assign_source')\nif _filtered_source_1_equipment_assign_source is not None:\n    sources = dict(sources)\n    _filtered_source_1_equipment_assign_source = _filtered_source_1_equipment_assign_source.copy()\n    _filter_col_1_1 = 'OPER_NM' if 'OPER_NM' in _filtered_source_1_equipment_assign_source.columns else ('OPER_NAME' if 'OPER_NAME' in _filtered_source_1_equipment_assign_source.columns else (''))\n    _filter_values_1_1 = ['D/A1']\n    if _filter_col_1_1:\n        _filtered_source_1_equipment_assign_source = _filtered_source_1_equipment_assign_source[_filtered_source_1_equipment_assign_source[_filter_col_1_1].isin(_filter_values_1_1)]\n    sources['equipment_assign_source'] = _filtered_source_1_equipment_assign_source\n\ndf = sources[\"equipment_assign_source\"]\n\n# 필요한 그룹 컬럼과 출력 계약 컬럼(OPER_NM 포함) 정의\ngroup_cols = [c for c in [\"EQUIP_MODEL\", \"RECIPE_ID\", \"EQUIP_ID\"] if c in df.columns]\n\nif group_cols:\n    # GROUPBY 수행 및 OPER_NM을 포함하기 위해 first() 또는 적절한 집계 적용 (계약 컬럼 충족)\n    agg_dict = {}\n    if \"OPER_NM\" in df.columns:\n        agg_dict[\"OPER_NM\"] = \"first\"\n    elif \"OPER_NAME\" in df.columns:\n        df[\"OPER_NM\"] = df[\"OPER_NAME\"]\n        agg_dict[\"OPER_NM\"] = \"first\"\n    \n    if agg_dict:\n        result = df.groupby(group_cols, dropna=False).agg(agg_dict).reset_index()\n        # COUNT가 필요할 경우 추가 가능하나 현재 계약상 그룹 컬럼과 OPER_NM이 핵심\n    else:\n        result = df.groupby(group_cols, dropna=False).size().reset_index(name=\"COUNT\")\n        result[\"OPER_NM\"] = \"\"\nelse:\n    result = df.copy()\n    if \"OPER_NM\" not in result.columns and \"OPER_NAME\" in result.columns:\n        result[\"OPER_NM\"] = result[\"OPER_NAME\"]\n    elif \"OPER_NM\" not in result.columns:\n        result[\"OPER_NM\"] = \"\"\n\n# 출력 계약에 정의된 필수 컬럼만 선택 및 정렬\nrequired_cols = [\"EQUIP_MODEL\", \"RECIPE_ID\", \"EQUIP_ID\", \"OPER_NM\"]\nexisting_required_cols = [c for c in required_cols if c in result.columns]\nresult = result[existing_required_cols]\n\n# 문자열 컬럼 결측치 및 공백 정규화\nfor col in result.columns:\n    if result[col].dtype == object:\n        result[col] = result[col].fillna(\"\").astype(str).str.replace(r\"^\\s*$\", \"\", regex=True)",
+        "used_helpers": [],
+        "row_count": 1,
+        "columns": [
+          "EQUIP_MODEL",
+          "RECIPE_ID",
+          "EQUIP_ID",
+          "OPER_NM"
+        ],
+        "preview_rows": [
+          {
+            "EQUIP_MODEL": "EQM-HBM",
+            "RECIPE_ID": "RCP-002",
+            "EQUIP_ID": "EQP002",
+            "OPER_NM": "D/A1"
+          }
+        ]
+      },
+      "answer": {
+        "prompt_chars": 8034,
+        "message": "### 답변\n현재 D/A1 공정에 배정된 장비는 장비 모델과 Recipe 조합별로 총 1건 조회되었습니다.\n\n- 장비 모델: EQM-HBM\n- Recipe: RCP-002\n- 장비 ID: EGP002\n\n본 분석은 D/A1 공정 조건을 기준으로 조회되었습니다.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| 공정 | 장비 모델 | Recipe | 장비 ID |\n| --- | --- | --- | --- |\n| D/A1 | EQM-HBM | RCP-002 | EQP002 |\n\n총 1건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=equipment_assign, source_alias=equipment_assign_source, source_type=oracle\n- dataset_key=equipment_assign, source_alias=equipment_assign_source, source_type=oracle, row_count=8\n**분석 조건**\n- equipment_assign_source: OPER_NAME={\"operator\": \"eq\", \"value\": \"D/A1\"}\n**그룹 기준**\n- EQUIP_MODEL\n- RECIPE_ID\n- EQUIP_ID\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    }
+  ],
+  "errors": []
+}

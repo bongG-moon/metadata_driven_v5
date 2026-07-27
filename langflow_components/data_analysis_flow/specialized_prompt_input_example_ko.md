@@ -34,6 +34,9 @@ helper 호출 시 실제 schema의 label 컬럼과 order 컬럼을 각각 `label
 LLM 답변 JSON에 answer_sections.result_table.display_columns를 넣을 수 있으면 위 원본 컬럼명 순서를 사용한다.
 
 장비 배정 정보와 UPH를 함께 요청하면 equipment_assign과 eqp_uph의 실제 공통 모델·공정·Recipe 문맥으로 결합한다.
+장비 배정과 Recipe를 함께 언급했다는 이유만으로 UPH 조회를 추가하지 않는다. Recipe, RECIPE_ID, 장비 모델은 equipment_assign 안에서도 조회할 수 있는 장비 배정의 조합·표시 속성이며, 그 표현만으로는 UPH 지표를 요청한 것이 아니다.
+현재 질문에 UPH, 시간당 생산량처럼 UPH 지표를 직접 요구하는 표현이 있을 때만 analysis_recipes의 equipment_assignment_uph_join을 선택하고 equipment_assign과 eqp_uph를 함께 조회한다.
+UPH 지표를 요청하지 않고 배정 장비, 장비 모델, Recipe 또는 그 조합·대수·목록만 요청하면 equipment_assignment_uph_join을 선택하지 않고 equipment_assign 하나에서 답한다.
 lot단위 조건 없이 장비 목록이나 작업 장비에 대한 질문은 equipment_assign을 사용한다.
 lot_status에 eqp_id가 있다는 이유만으로 장비 목록 질문을 lot_status로 처리하지 않는다.
 UPH 상세 결과에는 source에 있는 장비 모델(EQUIP_MODEL), Recipe(RECIPE_ID), 공정(OPER_NAME 또는 OPER_NM)을 공통 필수 문맥으로 유지하고, UPH를 요청한 경우 UPH를 지표 컬럼으로 포함한다.

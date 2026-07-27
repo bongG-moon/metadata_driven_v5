@@ -150,11 +150,11 @@ class FakeStorage:
 
 def _published_report(**kwargs):
     assert kwargs["html_document"].startswith("<!doctype html>")
-    assert kwargs["report_api_url"] == "http://127.0.0.1:8010"
+    assert kwargs["report_api_url"] == "http://127.0.0.1:8765"
     return {
         "report_id": "20260719010101_0123456789abcdef0123456789abcdef",
-        "view_url": "http://127.0.0.1:8010/reports/view/20260719010101_0123456789abcdef0123456789abcdef",
-        "download_url": "http://127.0.0.1:8010/reports/download/20260719010101_0123456789abcdef0123456789abcdef",
+        "view_url": "http://127.0.0.1:8765/reports/view/20260719010101_0123456789abcdef0123456789abcdef",
+        "download_url": "http://127.0.0.1:8765/reports/download/20260719010101_0123456789abcdef0123456789abcdef",
         "expires_at": "2026-07-20T01:01:01+00:00",
         "ttl_hours": 24,
     }
@@ -302,8 +302,8 @@ def test_success_saves_one_html_and_returns_descriptor_without_rows_or_html() ->
         "size_bytes",
     }
     assert artifact["path"] == "visualization-flow-id/html-chart-fixedtoken.html"
-    assert artifact["view_url"].startswith("http://127.0.0.1:8010/reports/view/")
-    assert artifact["download_url"].startswith("http://127.0.0.1:8010/reports/download/")
+    assert artifact["view_url"].startswith("http://127.0.0.1:8765/reports/view/")
+    assert artifact["download_url"].startswith("http://127.0.0.1:8765/reports/download/")
     assert f"[HTML 차트 보기]({artifact['view_url']})" in result["message"]
     assert f"[HTML 다운로드]({artifact['download_url']})" in result["message"]
     assert "http" not in result["summary"]
@@ -402,7 +402,7 @@ def test_component_message_and_api_outputs_share_one_execution(monkeypatch) -> N
     instance.mongo_uri = "mongodb://example"
     instance.mongo_database = "datagov"
     instance.collection_name = "agent_v4_result_store"
-    instance.report_api_url = "http://127.0.0.1:8010"
+    instance.report_api_url = "http://127.0.0.1:8765"
     instance.report_ttl_hours = "24"
     instance.max_chart_rows = "500"
     instance.flow_id = "visualization-flow-id"
@@ -445,7 +445,7 @@ def test_component_inputs_keep_standalone_mongodb_defaults_visible() -> None:
     assert inputs["mongo_database"]["value"] == "datagov"
     assert inputs["collection_name"]["value"] == "agent_v4_result_store"
     assert inputs["report_api_url"]["advanced"] is False
-    assert inputs["report_api_url"]["value"] == "http://127.0.0.1:8010"
+    assert inputs["report_api_url"]["value"] == "http://127.0.0.1:8765"
     assert inputs["report_ttl_hours"]["advanced"] is False
     assert inputs["report_ttl_hours"]["value"] == "24"
     outputs = {item.kwargs["name"] for item in component.HTMLVisualizationBuilder.outputs}

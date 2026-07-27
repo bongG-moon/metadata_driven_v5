@@ -40,6 +40,7 @@ FLOW_SPECS = [
     ("workflow_orchestrator_flow_v5_standalone.json", "workflow-orchestrator", "workflow_orchestrator"),
     ("workflow_skill_saving_flow_v5_standalone.json", "workflow-skill-saving", "workflow_skill_saving"),
     ("html_visualization_flow_v5_standalone.json", "html-visualization", "html_visualization"),
+    ("realtime_production_report_flow_v5_standalone.json", "realtime-production-report", "realtime_production_report"),
 ]
 
 FLOW_DISPLAY_NAMES = {
@@ -53,6 +54,7 @@ FLOW_DISPLAY_NAMES = {
     "workflow_orchestrator": "08. v5_workflow_orchestrator",
     "workflow_skill_saving": "09. v5_workflow_skill_saving",
     "html_visualization": "10. v5_html_visualization",
+    "realtime_production_report": "11. v5_realtime_production_report",
 }
 EXPLICIT_STRUCTURED_TERMINALS = {
     "data_analysis": "CustomComponent-3eVde",
@@ -62,6 +64,7 @@ EXPLICIT_STRUCTURED_TERMINALS = {
     "metadata_qa": "Api-metadata-qa",
     "workflow_skill_saving": "Api-workflow_skill",
     "html_visualization": "HtmlVisualizationApiTerminal-html-visualization",
+    "realtime_production_report": "RealtimeProductionReportApiTerminal-realtime-production-report",
 }
 
 CHILD_ROUTE_NAMES = {
@@ -71,7 +74,7 @@ CHILD_ROUTE_NAMES = {
     "main_flow_filter_saving",
     "metadata_qa",
 }
-WORKFLOW_CHILD_ROUTE_NAMES = {*CHILD_ROUTE_NAMES, "html_visualization"}
+WORKFLOW_CHILD_ROUTE_NAMES = {*CHILD_ROUTE_NAMES, "html_visualization", "realtime_production_report"}
 
 
 def sync_workflow_sources() -> None:
@@ -220,40 +223,42 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "manual_flow_id_replacement_required": False,
             "api_router": "Smart Router plus five Run API callers",
             "agent_tool_router": "Agent plus five selected-ID-first cached Flow tools with standalone name fallback",
-            "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools",
+            "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "430 passed",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 120/120 custom nodes to 83 real Python sources; 0 missing",
-            "korean_component_documentation": "84/84 Python sources and 1611/1611 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7404/7404 documented function instances; strict UTF-8/JSON checks passed",
+            "pytest": "434/434 non-web tests passed in the exact Langflow 1.9.2 runtime; 21 optional Streamlit web-app tests require the separate web runtime",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 126/126 custom nodes to 86 real Python sources; 0 missing",
+            "korean_component_documentation": "87/87 Python sources and 1676/1676 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 378 embedded custom-code instances preserve 7833/7833 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "173/173 passed",
+            "langflow_lfx_node_templates": "181/181 passed",
             "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with five real tools",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
             "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
             "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
-            "single_chat_output": "7/7 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
+            "single_chat_output": "8/8 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
             "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
             "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
+            "unified_download_report_server_contract": "tools/data_ref_download_server.py serves data_ref CSV plus POST /reports, HTML view, download, TTL cleanup, CSP, storage limits, optional hashed access tokens, and masked query logs on the shared 8765 endpoint",
             "table_preview_limit_contract": "21 Answer Message Adapter owns one advanced table_preview_limit input; default 10; result storage and downloads are unaffected",
             "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
             "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
-            "safe_pandas_builtins": "zip is provided by the sandbox and succeeds without invoking repair",
+            "safe_pandas_builtins": "object dtype comparison and zip are provided by the sandbox and succeed without invoking repair",
             "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 5/5 prefer the current UI-selected Flow ID and use name fallback only while exported IDs are blank; Workflow Orchestrator 6/6 remains exact-name resolved; graph cache keys use actual IDs",
+            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 5/5 prefer the current UI-selected Flow ID and use name fallback only while exported IDs are blank; Workflow Orchestrator 7/7 remains exact-name resolved; graph cache keys use actual IDs",
             "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current native Chat Input ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
             "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
             "agent_tool_history_contract": "Agent retrieves 5 stored messages; native current-message ID filtering leaves the previous 2 user/assistant turns without duplicating current input",
             "agent_tool_session_contract": "0 session-source ports/edges; all five tools resolve parent runtime/graph session_id inside the actual Tool output method",
             "agent_tool_partial_build": "isolated import supports name fallback, while runtime Flow dropdown selection persists the current ID for direct cached execution",
-            "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the six-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
+            "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the seven-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
             "workflow_orchestrator_result_handoff": "Data Analysis produces an explicit result_ref consumed by a follow-up Data Analysis or HTML Visualization step",
             "html_visualization_contract": "one result_ref-backed custom builder produces offline HTML/SVG, publishes absolute browser view/download URLs through the visible Report API input, and keeps raw HTML out of Workflow payloads; one GaiA Output Adapter plus native Chat Output and one separate API adapter expose the two response surfaces",
+            "realtime_production_report_contract": "one deterministic 500-row dummy judgement dataset feeds four fixed production analyses, interactive offline HTML tables and filtered CSV export; compact API output keeps raw rows and HTML out of Workflow payloads",
             "workflow_orchestrator_registry": "visible MongoDB registry loader reads active workflow.registry.v1 items from agent_v4_workflow_skills; inline_seed is an explicit standalone test source, never an implicit fallback",
             "workflow_orchestrator_terminal_contract": "one final Language Model synthesis passes through GaiA Output Adapter to native Chat Output, alongside one terminal api_response; invalid or empty plans still reach the final error response",
             "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
@@ -480,6 +485,13 @@ def _validate_bundle(
     )
     html_visualization = json.loads(html_visualization_file.read_text(encoding="utf-8"))
     _validate_html_visualization(html_visualization)
+    realtime_report_file = output_dir / next(
+        item["file"]
+        for item in manifest_flows
+        if item["endpoint_name"].endswith("-realtime-production-report")
+    )
+    realtime_report = json.loads(realtime_report_file.read_text(encoding="utf-8"))
+    _validate_realtime_production_report(realtime_report)
     all_flows_path = output_dir / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
     all_raw = all_flows_path.read_bytes()
     if all_raw.startswith(b"\xef\xbb\xbf") or not all_raw.startswith(b'{"flows":['):
@@ -833,7 +845,7 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
     input_adapters = [node for node in nodes if node.get("data", {}).get("type") == "GaiAInputAdapter"]
     output_adapters = [node for node in nodes if node.get("data", {}).get("type") == "GaiAOutputAdapter"]
     if (
-        len(tools) != 6
+        len(tools) != 7
         or len(models) != 2
         or agents
         or len(loops) != 1
@@ -842,7 +854,7 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
         or len(output_adapters) != 1
     ):
         raise ValueError(
-            "Workflow Orchestrator must contain six tools, two Language Models, one native Loop, no Agent, "
+            "Workflow Orchestrator must contain seven tools, two Language Models, one native Loop, no Agent, "
             "native Chat I/O, and one GaiA adapter pair."
         )
 
@@ -853,6 +865,7 @@ def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
         "run_visualization",
+        "run_realtime_production_report",
     }
     actual_tool_names: set[str] = set()
     for tool in tools:
@@ -1122,7 +1135,7 @@ def _validate_html_visualization(flow: dict[str, Any]) -> None:
         or str(template.get("mongo_database", {}).get("value") or "") != MONGODB_CONTRACT["database"]
         or str(template.get("collection_name", {}).get("value") or "") != MONGODB_CONTRACT["result"]
         or template.get("upstream_result_ref", {}).get("advanced") is not False
-        or str(template.get("report_api_url", {}).get("value") or "") != "http://127.0.0.1:8010"
+        or str(template.get("report_api_url", {}).get("value") or "") != "http://127.0.0.1:8765"
         or template.get("report_api_url", {}).get("advanced") is not False
         or str(template.get("report_ttl_hours", {}).get("value") or "") != "24"
         or template.get("report_ttl_hours", {}).get("advanced") is not False
@@ -1153,6 +1166,119 @@ def _validate_html_visualization(flow: dict[str, Any]) -> None:
     terminal_embedded = str(terminal_template.get("code", {}).get("value") or "")
     if terminal_embedded != terminal_source_path.read_text(encoding="utf-8"):
         raise ValueError("HTML Visualization API terminal embedded component source is out of sync.")
+
+
+def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
+    """실시간 생산 Report Flow의 더미 데이터·HTML·compact terminal 계약을 검증합니다."""
+
+    nodes = {str(node.get("id") or ""): node for node in flow.get("data", {}).get("nodes", [])}
+    edges = {
+        (
+            str(edge.get("source") or ""),
+            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
+            str(edge.get("target") or ""),
+            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
+        )
+        for edge in flow.get("data", {}).get("edges", [])
+    }
+    expected_node_ids = {
+        "ChatInput-realtime-production-report",
+        "GaiAInputAdapter-realtime-production-report",
+        "DummyProductionJudgementData-realtime-production-report",
+        "RealtimeProductionReportBuilder-realtime-production-report",
+        "GaiAOutputAdapter-realtime-production-report",
+        "ChatOutput-realtime-production-report",
+        "RealtimeProductionReportApiTerminal-realtime-production-report",
+    }
+    if set(nodes) != expected_node_ids or len(edges) != 6:
+        raise ValueError("Realtime Production Report must contain seven nodes and six edges.")
+    expected_edges = {
+        (
+            "ChatInput-realtime-production-report",
+            "message",
+            "GaiAInputAdapter-realtime-production-report",
+            "input_message",
+        ),
+        (
+            "GaiAInputAdapter-realtime-production-report",
+            "message",
+            "RealtimeProductionReportBuilder-realtime-production-report",
+            "question",
+        ),
+        (
+            "DummyProductionJudgementData-realtime-production-report",
+            "dataset",
+            "RealtimeProductionReportBuilder-realtime-production-report",
+            "dataset",
+        ),
+        (
+            "RealtimeProductionReportBuilder-realtime-production-report",
+            "message",
+            "GaiAOutputAdapter-realtime-production-report",
+            "input_value",
+        ),
+        (
+            "GaiAOutputAdapter-realtime-production-report",
+            "message",
+            "ChatOutput-realtime-production-report",
+            "input_value",
+        ),
+        (
+            "RealtimeProductionReportBuilder-realtime-production-report",
+            "api_response",
+            "RealtimeProductionReportApiTerminal-realtime-production-report",
+            "report_result",
+        ),
+    }
+    if edges != expected_edges:
+        raise ValueError(f"Realtime Production Report edges mismatch: {sorted(edges)}")
+
+    source_root = ROOT / "langflow_components" / "realtime_production_report_flow"
+    source_by_node = {
+        "DummyProductionJudgementData-realtime-production-report": source_root / "00_dummy_production_judgement_data.py",
+        "RealtimeProductionReportBuilder-realtime-production-report": source_root / "01_realtime_production_report_builder.py",
+        "RealtimeProductionReportApiTerminal-realtime-production-report": source_root / "02_realtime_production_report_api_terminal.py",
+    }
+    for node_id, source_path in source_by_node.items():
+        template = nodes[node_id].get("data", {}).get("node", {}).get("template", {})
+        embedded = str(template.get("code", {}).get("value") or "")
+        if embedded != source_path.read_text(encoding="utf-8"):
+            raise ValueError(f"Realtime Production Report embedded source is out of sync: {node_id}")
+
+    dummy_template = (
+        nodes["DummyProductionJudgementData-realtime-production-report"]
+        .get("data", {})
+        .get("node", {})
+        .get("template", {})
+    )
+    if (
+        str(dummy_template.get("row_count", {}).get("value") or "") != "500"
+        or str(dummy_template.get("seed", {}).get("value") or "") != "20260727"
+        or str(dummy_template.get("process_names", {}).get("value") or "") != "W/B1,W/B2,W/B3,W/B4"
+    ):
+        raise ValueError("Realtime Production Report dummy generator defaults are invalid.")
+    builder_template = (
+        nodes["RealtimeProductionReportBuilder-realtime-production-report"]
+        .get("data", {})
+        .get("node", {})
+        .get("template", {})
+    )
+    if (
+        str(builder_template.get("report_api_url", {}).get("value") or "") != "http://127.0.0.1:8765"
+        or builder_template.get("report_api_url", {}).get("advanced") is not False
+        or str(builder_template.get("report_ttl_hours", {}).get("value") or "") != "4"
+        or builder_template.get("report_ttl_hours", {}).get("advanced") is not False
+        or str(builder_template.get("max_html_rows", {}).get("value") or "") != "1000"
+    ):
+        raise ValueError("Realtime Production Report must expose visible Report API settings and the HTML row limit.")
+    if any(
+        str(node.get("data", {}).get("type") or "") in {"LanguageModelComponent", "Agent"}
+        for node in nodes.values()
+    ):
+        raise ValueError("Realtime Production Report aggregation must remain deterministic and LLM-free.")
+    terminal_id = "RealtimeProductionReportApiTerminal-realtime-production-report"
+    if any(source == terminal_id for source, _handle, _target, _field in edges):
+        raise ValueError("Realtime Production Report API adapter must remain terminal.")
 
 
 def _validate_workflow_skill_saving(flow: dict[str, Any]) -> None:
@@ -1221,7 +1347,7 @@ Langflow의 Flow 화면에서 아래 파일 **하나만** 선택합니다.
 
 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
 
-Langflow UI가 최상위 `flows` 배열을 펼쳐 10개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{{\"flows\":[`입니다.
+Langflow UI가 최상위 `flows` 배열을 펼쳐 11개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{{\"flows\":[`입니다.
 
 ## 개별 Import 방법
 
@@ -1260,8 +1386,8 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 430 passed
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 120/120 노드가 실제 Python 원본 83개에 매핑, 누락 0
+- Langflow/Flow 비웹 pytest: 434/434 passed (별도 Streamlit 웹 런타임용 21개 테스트는 제외)
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 126/126 노드가 실제 Python 원본 86개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과
 - Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
@@ -1272,8 +1398,8 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개
 - Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
 - 기존 8개 Flow의 격리 Langflow 서버 import는 검증 완료했으며, Workflow Orchestrator는 이번 bundle/node/edge 계약 검증 후 다음 live-server import 대상입니다.
-- 통합 `00` 단일 JSON은 10개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
-- 하위 Flow 7개, Route V2, Workflow Orchestrator: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
+- 통합 `00` 단일 JSON은 11개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
+- 하위 Flow 8개, Route V2, Workflow Orchestrator: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
 - Data Analysis: executor node 1개, 초기 성공 시 Repair LLM 0회, 실행 오류 시 이전 코드·오류 문맥을 전달해 최대 1회 복구, 단일 최종화 체인 확인
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
@@ -1283,11 +1409,12 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 표준 Chat Input ID로 내부 변환합니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 실제 Tool 출력 메서드 안에서 부모 runtime/graph `session_id`를 자동 상속합니다. 따라서 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰어도 하위 Flow의 세션 저장/복원이 유지됩니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.
 - 격리 import에서 현재 Langflow 실행 사용자로 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
-- Workflow Orchestrator의 이름 기반 Tool 6개는 `question`과 선택 `upstream_result_ref`만 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
+- Workflow Orchestrator의 이름 기반 Tool 7개는 `question`과 선택 `upstream_result_ref`만 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
 - Workflow Orchestrator는 기본 Language Model 계획기 -> `workflow.plan.v1` 파서 -> 기본 Loop -> 정확한 Tool 단일 실행기 순서로 최대 네 단계를 실행합니다. Registry와 일치하지 않아도 capability catalog의 Tool만으로 해결 가능하면 inline 계획을 만들며 Agent의 자율 반복은 사용하지 않습니다.
 - Workflow Orchestrator는 기본적으로 `datagov.agent_v4_workflow_skills`의 active Skill을 질문 기준 후보로 조회합니다. `inline_seed`는 사용자가 명시적으로 선택한 standalone 테스트 모드에서만 사용하며 MongoDB 오류 시 자동 fallback하지 않습니다.
 - Workflow Orchestrator는 Loop 결과를 compact context로 만든 뒤 기본 Language Model을 한 번만 호출하며, GaiA Output Adapter -> 표준 Chat Output과 terminal `api_response`를 제공합니다.
 - HTML Visualization Flow는 `run_data_analysis`의 `result_ref`를 복원하고 외부 CDN 없는 standalone HTML/SVG 차트를 생성합니다. `HTML Report API 주소`로 게시해 Tauri 상대경로가 아닌 절대 보기·다운로드 링크를 반환하며, 화면 Message와 별도의 API 종료 어댑터가 실제 terminal `api_response`를 제공합니다. 그래프 요청은 `run_data_analysis -> run_visualization` 순서와 `handoff=result_ref`로 실행합니다.
+- Realtime Production Report Flow는 판정 더미 Snapshot 500행을 LLM 없이 집계하고 생산실적·생산부족 원인·CAPA실적·장비Assign 조정 탭, Radio 필터, 검색, 전체 컬럼 전환, 현재 보기 CSV 다운로드가 포함된 standalone HTML을 생성합니다.
 - Metadata 및 Workflow Skill 저장 Flow 4종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/GaiA Output Adapter/표준 Chat Output 사용
 - Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
 - Metadata 후보: 도메인 관련 항목 최대 10건, 테이블 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증

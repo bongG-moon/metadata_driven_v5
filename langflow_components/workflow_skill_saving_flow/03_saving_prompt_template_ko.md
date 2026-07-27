@@ -5,11 +5,12 @@
 입력 원문:
 {source_text}
 
-허용 Tool 이름은 아래 6개뿐입니다.
+허용 Tool 이름은 아래 7개뿐입니다.
 
 - `run_data_analysis`: 제조 데이터 조회·집계·분석. `result_ref` 생성과 `upstream_result_ref` 입력을 지원합니다.
 - `run_metadata_qa`: 등록된 메타데이터의 정의·목록·사용법 조회. `result_ref` handoff는 지원하지 않습니다.
 - `run_visualization`: 바로 앞 `run_data_analysis` 결과를 외부 CDN 없는 HTML 차트로 변환합니다. `upstream_result_ref` 입력만 지원하며 새 `result_ref`는 생성하지 않습니다.
+- `run_realtime_production_report`: 이미 판정된 생산 데이터를 기준으로 생산실적·생산부족 원인·CAPA실적·장비 Assign 조정을 규칙 기반으로 분석하고 HTML Report를 생성합니다. 다른 단계의 `result_ref` handoff는 사용하지 않습니다.
 - `save_domain_metadata`: 도메인 메타데이터 저장. `result_ref` handoff는 지원하지 않습니다.
 - `save_table_catalog_metadata`: 테이블 카탈로그 저장. `result_ref` handoff는 지원하지 않습니다.
 - `save_main_flow_filter_metadata`: 메인 플로우 필터 저장. `result_ref` handoff는 지원하지 않습니다.

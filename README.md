@@ -11,17 +11,19 @@ Langflow standalone 환경에서 실행하는 메타데이터 기반 제조 데�
 ## 바로 확인할 파일
 
 - 가져오기용 Flow: `flow_exports/data_analysis_flow_v5_standalone.json`
-- 전체 10개 Flow 단일 Import: `import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
+- 전체 11개 Flow 단일 Import: `import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
 - 운영 기본 Router: `import_ready_flows/06_api_router_flow_v5_standalone.json`
 - 단일 호출 Agent + Tool Mode Router: `import_ready_flows/07_agent_tool_router_flow_v5_standalone.json`
 - 최대 4단계 문서 기반 순차 Workflow Router: `import_ready_flows/08_workflow_orchestrator_flow_v5_standalone.json`
 - Workflow Skill 등록·검수·저장 Flow: `import_ready_flows/09_workflow_skill_saving_flow_v5_standalone.json`
 - Data Analysis `result_ref` 기반 HTML 차트 Flow: `import_ready_flows/10_html_visualization_flow_v5_standalone.json`
+- 실시간 생산 판정 더미 데이터·HTML Report Flow: `import_ready_flows/11_realtime_production_report_flow_v5_standalone.json`
 - 06 커스텀 원본: `langflow_components/route_flow/`
 - 07 커스텀 원본: `langflow_components/route_flow_v2/`
 - 08 커스텀 원본: `langflow_components/route_flow_v4/`
 - 09 커스텀 원본과 입력 예시: `langflow_components/workflow_skill_saving_flow/`
 - 10 커스텀 원본: `langflow_components/visualization_flow/`
+- 11 커스텀 원본과 연결 가이드: `langflow_components/realtime_production_report_flow/`
 - Workflow Skill 복사·붙여넣기 입력 예시: `langflow_components/workflow_skill_saving_flow/INPUT_EXAMPLES.md`
 - Workflow Orchestrator 구현·운영 계약: `docs/ROUTE_V4_WORKFLOW_ORCHESTRATOR_IMPLEMENTATION.md`
 - Workflow 문서·registry 작성 예시: `docs/workflows/`
@@ -99,18 +101,19 @@ uv pip install --python .langflow-venv\Scripts\python.exe `
 22. Metadata QA의 제품 그룹 질문은 `product_terms`, 제품 집계 방법 질문은 `product_key_columns`와 관련 `analysis_recipes`만 선택합니다. 조건·제품 키·grain/group by 표는 등록 메타데이터를 authoritative 근거로 결정론적으로 만들며, 기본 Language Model 응답이 있더라도 해당 모드에서는 사용하지 않습니다.
 23. Tool이 없는 의도 분석·pandas 코드·답변·Metadata QA·저장 후보 추출 7개 단계는 Langflow 기본 `Language Model`로 통일했습니다. 실제 Cached Run Flow Tool이 연결된 07 단일 호출 Router만 기본 `Agent`를 유지하므로, 일반 모델 호출에는 빈 `tools=[]`가 전달되지 않습니다.
 24. Data Analysis는 명시적 `upstream_result_ref`가 있을 때만 같은 세션의 MongoDB 결과 전체를 `upstream_result` alias로 복원합니다. 다음 조회 파라미터는 Table Catalog의 신뢰된 `source_config.upstream_bindings`로만 연결하며, 선언 누락·충돌·상한 초과 시 broad query를 실행하지 않습니다. 일반 단일 실행과 기존 후속 질문 경로는 이 모드를 사용하지 않습니다.
-25. 08 Workflow Orchestrator는 자연어 번호 목록 또는 화면에 등록한 Workflow JSON을 `workflow.plan.v1`로 먼저 확정하고, Langflow 기본 Loop가 최대 4단계를 한 번에 하나씩 실행합니다. 등록 Skill과 일치하지 않아도 여섯 Tool의 이름·설명·`result_ref` capability catalog 안에서 해결할 수 있으면 `workflow_key=inline` 계획을 생성합니다. 계획 생성과 마지막 종합에만 기본 Language Model을 사용하며, 단계 실행 중에는 지정 Tool 하나만 호출합니다. `depends_on`은 순서를, `handoff=result_ref`는 실제 MongoDB 결과 전달을 담당합니다.
+25. 08 Workflow Orchestrator는 자연어 번호 목록 또는 화면에 등록한 Workflow JSON을 `workflow.plan.v1`로 먼저 확정하고, Langflow 기본 Loop가 최대 4단계를 한 번에 하나씩 실행합니다. 등록 Skill과 일치하지 않아도 일곱 Tool의 이름·설명·`result_ref` capability catalog 안에서 해결할 수 있으면 `workflow_key=inline` 계획을 생성합니다. 계획 생성과 마지막 종합에만 기본 Language Model을 사용하며, 단계 실행 중에는 지정 Tool 하나만 호출합니다. `depends_on`은 순서를, `handoff=result_ref`는 실제 MongoDB 결과 전달을 담당합니다.
 26. 08 Workflow Orchestrator는 운영 기본값으로 `datagov.agent_v4_workflow_skills`의 active 문서를 조회하고, 현재 질문과 관련된 후보만 최대 8개·64KB로 제한해 계획 모델과 파서에 함께 전달합니다. `inline_seed`는 명시적 테스트 모드이며 MongoDB 오류 시 자동 fallback하지 않습니다.
 27. 09 Workflow Skill 저장 Flow는 자연어 등록 요청에서 LLM 후보를 한 번 생성한 뒤 Python이 최대 4단계, Tool 이름, dependency 순서, `result_ref` producer/consumer, 32KB payload를 결정론적으로 검증합니다. 기본은 `dry_run=true`이며 `replace`는 유사 1건 교체, 0건 신규 저장, 복수 건 차단으로 동작합니다.
-28. 10 HTML Visualization Flow는 `run_data_analysis`가 저장한 `result_ref`를 복원해 외부 CDN 없는 standalone HTML 차트를 생성하고, 화면에 보이는 `HTML Report API 주소`로 게시해 절대 보기·다운로드 링크를 반환합니다. 08은 그래프·차트 요청을 `run_data_analysis → run_visualization` 두 단계와 `handoff=result_ref`로 순차 실행하므로 작은 시각화 조합마다 Skill을 미리 등록할 필요가 없습니다. 서버 실행과 링크 설정은 [HTML Report 링크 가이드](docs/HTML_REPORT_LINK_GUIDE.md)를 참고합니다.
+28. 10 HTML Visualization Flow는 `run_data_analysis`가 저장한 `result_ref`를 복원해 외부 CDN 없는 standalone HTML 차트를 생성하고, 화면에 보이는 `HTML Report API 주소`로 게시해 절대 보기·다운로드 링크를 반환합니다. 기본 주소 `http://127.0.0.1:8765`의 `tools/data_ref_download_server.py`가 CSV data_ref와 HTML Report를 한 프로세스에서 함께 제공합니다. 08은 그래프·차트 요청을 `run_data_analysis → run_visualization` 두 단계와 `handoff=result_ref`로 순차 실행하므로 작은 시각화 조합마다 Skill을 미리 등록할 필요가 없습니다. 서버 실행과 링크 설정은 [HTML Report 링크 가이드](docs/HTML_REPORT_LINK_GUIDE.md)를 참고합니다.
 29. Data Analysis의 분석 결과와 사용 원본 데이터는 23번 MongoDB Result Store에 기본 1시간 보관됩니다. 23번이 직접 CSV 다운로드 URL을 발급하고 21번은 이를 Markdown과 GaiA `metadata.urls`로 표시합니다. 링크는 미리보기 화면 없이 파일을 반환하며, 실행·배포 방법은 [Data Result 다운로드 서버 가이드](docs/DATA_RESULT_DOWNLOAD_SERVER_GUIDE.md)를 참고합니다.
+30. 11 Realtime Production Report Flow는 약 500행의 판정 더미 Snapshot을 생성하고, LLM 없이 생산실적·생산부족 원인·CAPA실적·장비Assign 조정을 집계합니다. 채팅에는 compact KPI와 링크만 반환하고, HTML에는 SVG Donut Chart, Radio 필터, 검색, 핵심/전체 컬럼 전환, 현재 보기 CSV 다운로드를 제공합니다. 운영 전환 시 더미 노드만 실제 `production.judgement.dataset.v1` Snapshot 로더로 교체합니다.
 
 ## 검증 상태와 현재 제약
 
 - 이 작업 환경에서는 실제 Oracle/H-API/Datalake/Goodocs 자격증명과 원천 데이터가 없어 dummy 경로로 검증했습니다.
 - 자동 검증 대상 대표 질문 31개는 trusted catalog hydration, 선택 helper, pandas 실행, 답변/API adapter를 포함한 deterministic dummy 경로에서 31/31 통과했습니다. 기존 질문뿐 아니라 NULL 표시, W/BM·A조, OPER_SEQ 구간, DA 그룹, FC78 제품 token, UPH 기본 상세 컬럼도 포함합니다.
 - 대표 dummy 질문 31/31이 통과했습니다.
-- 기준 런타임은 `langflow 1.9.2`, `langflow-base 0.9.2`, `lfx 0.4.2`입니다. 전체 커스텀 소스와 현재 10개 Flow의 node template을 이 조합에서 파싱하고, export/import JSON의 node·edge·source 동기화 계약을 함께 검증합니다.
+- 기준 런타임은 `langflow 1.9.2`, `langflow-base 0.9.2`, `lfx 0.4.2`입니다. 전체 커스텀 소스와 현재 11개 Flow의 node template을 이 조합에서 파싱하고, export/import JSON의 node·edge·source 동기화 계약을 함께 검증합니다.
 - Workflow Orchestrator의 `result_ref` 연계 호출은 `agent_v4_result_store`를 사용하므로 `MONGO_URL`과 같은 부모/자식 `session_id`가 필수입니다. 저장된 결과가 없거나 다른 세션의 ref이면 후속 조회를 fail-closed로 중단합니다.
 - 실제 문제 실행 기록에서는 기존 06 Router의 session fan-out 때문에 ChatInput/SmartRouter가 각각 2회 빌드되고 비선택 direct/clarification Chat Output이 질문을 두 번 저장한 사실을 확인했습니다. 수정 JSON은 Chat Input outgoing edge를 Smart Router 한 개로 제한하며, 운영 provider를 사용한 최종 화면 재검증은 새 06을 import한 뒤 수행합니다.
 - 격리 Langflow 서버에는 `GOOGLE_API_KEY` Global Variable이 없어 Agent/LLM을 포함한 전체 Flow 실행은 수행하지 않았습니다. 운영 인스턴스에서는 같은 이름의 Global Variable 또는 회사 표준 provider 설정이 필요합니다.

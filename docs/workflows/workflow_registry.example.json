@@ -165,6 +165,44 @@
           "on_error": "continue"
         }
       ]
+    },
+    {
+      "workflow_key": "realtime_production_report",
+      "title": "실시간 생산 분석 Report",
+      "description": "실시간 생산 판정 Snapshot을 고정 Rule로 분석해 생산실적, 생산부족 원인, CAPA실적, 장비Assign 조정 HTML Report를 생성합니다.",
+      "aliases": [
+        "실시간 생산 리포트",
+        "생산부족 CAPA 장비 분석",
+        "W/B 생산 판정 Report"
+      ],
+      "intent_examples": [
+        "오늘 W/B 공정 실시간 생산 분석 Report를 만들어줘",
+        "생산부족 원인과 CAPA실적, 장비Assign 조정을 한 번에 분석해줘"
+      ],
+      "keywords": [
+        "실시간 생산 분석",
+        "생산 판정 Report",
+        "생산부족 원인",
+        "CAPA실적",
+        "장비Assign 조정"
+      ],
+      "excluded_keywords": [
+        "등록해줘",
+        "저장해줘",
+        "변경해줘",
+        "삭제해줘"
+      ],
+      "priority": 120,
+      "steps": [
+        {
+          "step_id": "realtime_production_report",
+          "tool_name": "run_realtime_production_report",
+          "question": "현재 판정 Snapshot으로 생산실적, 생산부족 원인, CAPA실적, 장비Assign 조정을 분석하고 상세 HTML Report를 생성해.",
+          "depends_on": [],
+          "handoff": "none",
+          "on_error": "stop"
+        }
+      ]
     }
   ]
 }

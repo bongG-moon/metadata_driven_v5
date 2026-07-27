@@ -2576,6 +2576,75 @@ def test_v5_process_group_field_corrects_equipment_oper_filter_before_pandas_exe
     assert "_filter_col_2_1 = 'OPER' if 'OPER'" not in preamble
 
 
+def test_v5_process_group_guard_narrows_single_detailed_process_from_group_expansion():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    da_processes = ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
+    payload = {
+        "request": {
+            "question": "현재 D/A1 공정에 배정된 장비를 장비 모델과 Recipe 조합별로 보여줘."
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "DA",
+                    "payload": {
+                        "display_name": "D/A",
+                        "aliases": ["DA", "D/A"],
+                        "field": "OPER_NAME",
+                        "processes": da_processes,
+                    },
+                }
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "equipment_assignment_by_model_and_recipe",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "equipment_assign_1",
+                    "filters": {
+                        "OPER_NAME": {
+                            "operator": "in",
+                            "value": da_processes,
+                        }
+                    },
+                }
+            ],
+            "pandas_execution_plan": [],
+        }
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        llm_response,
+        candidates,
+    )
+
+    condition = normalized["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"]
+    assert condition == {"operator": "eq", "value": "D/A1"}
+    guard = normalized["trace"]["inspection"]["intent"]["process_group_field_guard"]
+    assert guard["status"] == "applied"
+    assert guard["corrections"] == [
+        {
+            "source_alias": "equipment_assign_1",
+            "field": "OPER_NAME",
+            "correction_type": "specific_process_scope",
+            "from_values": da_processes,
+            "to_values": ["D/A1"],
+        }
+    ]
+
+
 def test_intent_normalizer_accepts_llm_json_with_literal_sql_newlines():
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
     payload = {"request": {"question": "어제 DA공정 차수별 생산량 알려줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
@@ -2674,6 +2743,147 @@ def test_pandas_executor_parses_langflow_message_text_json():
 
     assert result["analysis"]["status"] == "ok"
     assert result["data"]["rows"] == [{"MODE": "LPDDR5", "PRODUCTION": 1000}]
+    assert result["trace"]["inspection"]["pandas_execution"]["llm_response_parse"]["mode"] == "json"
+
+
+def test_pandas_executor_accepts_raw_python_and_traces_invalid_response():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    payload = {
+        "runtime_sources": {"production_data": [{"MODE": "LPDDR5", "PRODUCTION": 1000}]},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    raw_result = pandas_executor.execute_pandas_code(
+        payload,
+        "result = sources['production_data'].rename(columns={'PRODUCTION': 'QTY'})",
+    )
+    invalid_result = pandas_executor.execute_pandas_code(
+        payload,
+        "코드를 생성할 수 없습니다.",
+    )
+
+    assert raw_result["analysis"]["status"] == "ok"
+    assert raw_result["data"]["rows"] == [{"MODE": "LPDDR5", "QTY": 1000}]
+    assert raw_result["trace"]["inspection"]["pandas_execution"]["llm_response_parse"]["mode"] == "raw_python"
+    assert invalid_result["analysis"]["error"]["type"] == "missing_code"
+    invalid_parse = invalid_result["trace"]["inspection"]["pandas_execution"]["llm_response_parse"]
+    assert invalid_parse["mode"] == "invalid"
+    assert invalid_parse["error"]
+    assert invalid_parse["raw_response_preview"] == "코드를 생성할 수 없습니다."
+    message_adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py"
+    )
+    diagnostic_message = message_adapter.build_message(invalid_result, include_diagnostics=True)
+    assert "LLM 응답 해석" in diagnostic_message
+    assert "LLM 응답 해석 오류" in diagnostic_message
+    assert "코드를 생성할 수 없습니다." in diagnostic_message
+
+
+def test_pandas_executor_accepts_structured_repair_content_blocks():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    payload = {
+        "runtime_sources": {"products": [{"TECH": "DA", "MODE": "DDR5"}]},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    response = types.SimpleNamespace(
+        content=[
+            {
+                "type": "text",
+                "text": '{"code": "result = sources[\'products\']"}',
+            }
+        ]
+    )
+
+    result = pandas_executor.execute_pandas_code(payload, response)
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["rows"] == [{"TECH": "DA", "MODE": "DDR5"}]
+    assert result["trace"]["inspection"]["pandas_execution"]["llm_response_parse"]["mode"] == "json"
+
+
+def test_pandas_executor_accepts_langflow_message_content_blocks():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    payload = {
+        "runtime_sources": {"products": [{"TECH": "DA", "MODE": "DDR5"}]},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    response = types.SimpleNamespace(
+        text="",
+        content_blocks=[
+            types.SimpleNamespace(
+                title="Model Response",
+                contents=[
+                    types.SimpleNamespace(
+                        type="text",
+                        text='{"code": "result = sources[\'products\']"}',
+                    )
+                ],
+            )
+        ],
+    )
+
+    result = pandas_executor.execute_pandas_code(payload, response)
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["rows"] == [{"TECH": "DA", "MODE": "DDR5"}]
+    assert result["trace"]["inspection"]["pandas_execution"]["llm_response_parse"]["mode"] == "json"
+
+
+def test_pandas_executor_accepts_langflow_json_content_block():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    payload = {
+        "runtime_sources": {"products": [{"TECH": "DA", "MODE": "DDR5"}]},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    response = types.SimpleNamespace(
+        text="",
+        content_blocks=[
+            {
+                "title": "Model Response",
+                "contents": [{"type": "json", "data": {"code": "result = sources['products']"}}],
+            }
+        ],
+    )
+
+    result = pandas_executor.execute_pandas_code(payload, response)
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["rows"] == [{"TECH": "DA", "MODE": "DDR5"}]
+    assert result["trace"]["inspection"]["pandas_execution"]["llm_response_parse"]["mode"] == "raw_python"
+
+
+def test_pandas_executor_supports_same_base_keys_with_different_attributes_pattern():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    payload = {
+        "runtime_sources": {
+            "products": [
+                {"TECH": "DA", "DEN": "8G", "PKG_TYPE2": "ODP", "MCP_NO": "L-1", "MODE": "M1", "PKG_TYPE1": "P1", "LEAD": "96"},
+                {"TECH": "DA", "DEN": "8G", "PKG_TYPE2": "ODP", "MCP_NO": "L-1", "MODE": "M2", "PKG_TYPE1": "P1", "LEAD": "96"},
+                {"TECH": "WB", "DEN": "16G", "PKG_TYPE2": "DDP", "MCP_NO": "L-2", "MODE": "M1", "PKG_TYPE1": "P2", "LEAD": "78"},
+                {"TECH": "FCB", "DEN": "32G", "PKG_TYPE2": "SDP", "MCP_NO": "", "MODE": "M3", "PKG_TYPE1": "P3", "LEAD": "78"},
+                {"TECH": "FCB", "DEN": "32G", "PKG_TYPE2": "SDP", "MCP_NO": "", "MODE": "M3", "PKG_TYPE1": "P3", "LEAD": "96"},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    code = (
+        "df = sources['products'].copy()\n"
+        "base_cols = ['TECH', 'DEN', 'PKG_TYPE2', 'MCP_NO']\n"
+        "diff_cols = ['MODE', 'PKG_TYPE1', 'LEAD']\n"
+        "counts = df.groupby(base_cols, dropna=False)[diff_cols].nunique(dropna=False)\n"
+        "matching_keys = counts[counts.gt(1).any(axis=1)].reset_index()[base_cols]\n"
+        "result = df.merge(matching_keys, on=base_cols, how='inner')"
+    )
+
+    result = pandas_executor.execute_pandas_code(payload, {"code": code})
+
+    assert result["analysis"]["status"] == "ok"
+    assert {(row["TECH"], row["MODE"], row["LEAD"]) for row in result["data"]["rows"]} == {
+        ("DA", "M1", "96"),
+        ("DA", "M2", "96"),
+        ("FCB", "M3", "78"),
+        ("FCB", "M3", "96"),
+    }
 
 
 def test_pandas_executor_accepts_llm_json_with_literal_code_newlines():
@@ -4062,6 +4272,146 @@ def test_intent_normalizer_preserves_followup_scope_and_allows_previous_result_r
     assert not [item for item in normalized["trace"]["warnings"] if item.get("type") == "missing_retrieval_jobs"]
 
 
+def test_intent_normalizer_preserves_new_source_for_generic_previous_row_match():
+    intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {"question": "앞에서 조회한 항목들에 연결된 장비 목록을 알려줘"},
+        "followup_hint": {"followup_candidate": True},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_by_previous_rows",
+                "request_scope": "followup_requery",
+                "reuse_strategy": "previous_result",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "eqp_assign",
+                        "required_params": {},
+                        "filters": {},
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "apply_row_match_groups",
+                        "source_alias": "eqp_assign",
+                        "match_columns": ["TECH", "DEN", "PKG_TYPE2", "MCP_NO"],
+                    },
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "eqp_assign",
+                    },
+                ],
+            }
+        },
+    )
+
+    steps = normalized["intent_plan"]["pandas_execution_plan"]
+    assert normalized["intent_plan"]["reuse_strategy"] == "previous_result"
+    assert steps[0] == {
+        "operation": "apply_row_match_groups",
+        "source_alias": "eqp_assign",
+        "reference_source_alias": "previous_result",
+        "match_columns": ["TECH", "DEN", "PKG_TYPE2", "MCP_NO"],
+        "blank_policy": "normalize_blank",
+    }
+    assert steps[1]["source_alias"] == "eqp_assign"
+    assert normalized["trace"]["inspection"]["intent"]["row_match_guard"]["status"] == "applied"
+
+
+def test_intent_normalizer_uses_full_domain_product_keys_for_product_row_match():
+    intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
+    product_key_ref = {
+        "section": "product_key_columns",
+        "key": "standard_product_keys",
+    }
+    product_keys = [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    payload = {
+        "request": {"question": "위 제품들에 할당된 장비 목록을 알려줘"},
+        "followup_hint": {"followup_candidate": True},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    **product_key_ref,
+                    "payload": {
+                        "display_name": "표준 제품 키",
+                        "columns": product_keys,
+                    },
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "payload": {
+                        "standard_column_aliases": {
+                            "DEN": ["DENSITY"],
+                            "PKG_TYPE1": ["PKG1"],
+                            "PKG_TYPE2": ["PKG2"],
+                        }
+                    },
+                }
+            ],
+        }
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "metadata_refs": [product_key_ref],
+            "intent_plan": {
+                "analysis_kind": "equipment_by_previous_products",
+                "request_scope": "followup_requery",
+                "reuse_strategy": "previous_result",
+                "grain_plan": {
+                    "metadata_ref": product_key_ref,
+                    "source_alias": "eqp_assign",
+                },
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "eqp_assign",
+                        "required_params": {},
+                        "filters": {},
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "apply_row_match_groups",
+                        "source_alias": "eqp_assign",
+                        "reference_source_alias": "previous_result",
+                        "match_key_ref": product_key_ref,
+                        "match_columns": ["TECH", "DEN", "PKG_TYPE2", "MCP_NO"],
+                    }
+                ],
+            },
+        },
+        metadata_candidates,
+    )
+
+    row_match_step = normalized["intent_plan"]["pandas_execution_plan"][0]
+    assert row_match_step["match_key_ref"] == product_key_ref
+    assert row_match_step["match_columns"] == product_keys
+    guard_step = normalized["trace"]["inspection"]["intent"]["row_match_guard"]["steps"][0]
+    assert guard_step["match_key_ref"] == product_key_ref
+    assert guard_step["match_columns_source"] == "metadata"
+    assert guard_step["match_columns"] == product_keys
+
+
 def test_intent_normalizer_warns_when_followup_requery_has_no_retrieval_jobs():
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
     payload = {"request": {"question": "어제 생산량은?"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
@@ -4257,6 +4607,65 @@ def test_pandas_executor_supports_zip_builtin_without_repair():
     assert calls == []
     assert repair["attempted"] is False
     assert repair["llm_called"] is False
+
+
+def test_pandas_executor_supports_object_dtype_builtin_without_repair():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    calls: list[str] = []
+    payload = {
+        "intent_plan": {"retrieval_jobs": [], "pandas_execution_plan": []},
+        "runtime_sources": {
+            "equipment": [
+                {"EQUIP_MODEL": "EQM-A", "RECIPE_ID": " RCP-001 "},
+                {"EQUIP_MODEL": "EQM-B", "RECIPE_ID": None},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    code = (
+        "df = sources['equipment'].copy()\n"
+        "for col in df.columns:\n"
+        "    if df[col].dtype == object or str(df[col].dtype).startswith('string'):\n"
+        "        df[col] = df[col].fillna('').astype(str).str.strip()\n"
+        "result = df"
+    )
+
+    def unexpected_repair(prompt: str):
+        calls.append(prompt)
+        raise AssertionError("safe object dtype comparison must avoid repair")
+
+    result = pandas_executor.execute_pandas_with_repair(
+        payload,
+        {"code": code},
+        repair_invoker=unexpected_repair,
+        repair_prompt_template="unused {failed_code}",
+    )
+
+    repair = result["trace"]["inspection"]["pandas_repair"]
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["rows"] == [
+        {"EQUIP_MODEL": "EQM-A", "RECIPE_ID": "RCP-001"},
+        {"EQUIP_MODEL": "EQM-B", "RECIPE_ID": ""},
+    ]
+    assert calls == []
+    assert repair["attempted"] is False
+    assert repair["llm_called"] is False
+
+
+def test_pandas_prompts_prevent_duplicate_join_key_labels():
+    prompt_text = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "16_pandas_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    repair_text = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "17b_pandas_repair_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+
+    assert "left_on=left_keys, right_on=right_keys" in prompt_text
+    assert 'result["OPER_NAME"] = result["OPER_NM"]; result = result.drop(columns=["OPER_NM"])' in prompt_text
+    assert "OPER_NM을 OPER_NAME으로 rename하는 코드는 금지한다" in prompt_text
+    assert "최종 `result.columns`에는 중복 label이 없어야 한다" in prompt_text
+    assert "OPER_NM을 OPER_NAME으로 rename하는 코드를 반환하지 말고" in repair_text
+    assert "retry `result.columns`가 고유하도록 수정한다" in repair_text
 
 
 def test_pandas_executor_normalizes_exact_pandas_import_for_hold_history_without_repair():
@@ -4576,6 +4985,392 @@ def test_pandas_filter_preamble_handles_compound_null_empty_filters_and_repair_s
 
     assert retry["analysis"]["status"] == "ok"
     assert retry["data"]["rows"] == [{"DEVICE": "MOBILE-1", "PRODUCTION": 10}]
+
+
+def test_pandas_executor_applies_reference_rows_as_and_groups_or_and_normalizes_all_blank_values():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    product_key_ref = {
+        "section": "product_key_columns",
+        "key": "standard_product_keys",
+    }
+    product_keys = [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    product_c = {
+        "TECH": "C",
+        "DENSITY": "32G",
+        "MODE": "HBM3",
+        "PKG1": "HBM",
+        "PKG2": "DDP",
+        "LEAD": "120",
+    }
+    payload = {
+        "intent_plan": {
+            "reuse_strategy": "previous_result",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "eqp_assign",
+                    "filters": {"STATUS": {"operator": "eq", "values": ["ACTIVE"]}},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "apply_row_match_groups",
+                    "source_alias": "eqp_assign",
+                    "reference_source_alias": "previous_result",
+                    "match_key_ref": product_key_ref,
+                    "match_columns": product_keys,
+                    "blank_policy": "normalize_blank",
+                }
+            ],
+        },
+        "runtime_sources": {
+            "previous_result": [
+                {
+                    "TECH": "A",
+                    "DEN": "8G",
+                    "MODE": "DDR4",
+                    "PKG_TYPE1": "FBGA",
+                    "PKG_TYPE2": "ODP",
+                    "LEAD": "96",
+                    "MCP_NO": "L-240K98",
+                },
+                {
+                    "TECH": "B",
+                    "DEN": "16G",
+                    "MODE": "DDR5",
+                    "PKG_TYPE1": "FCBGA",
+                    "PKG_TYPE2": "ODP",
+                    "LEAD": "78",
+                    "MCP_NO": "L-217K9B",
+                },
+                {
+                    "TECH": "C",
+                    "DEN": "32G",
+                    "MODE": "HBM3",
+                    "PKG_TYPE1": "HBM",
+                    "PKG_TYPE2": "DDP",
+                    "LEAD": "120",
+                    "MCP_NO": "",
+                },
+            ],
+            "eqp_assign": [
+                {
+                    "TECH": "A",
+                    "DENSITY": "8G",
+                    "MODE": "DDR4",
+                    "PKG1": "FBGA",
+                    "PKG2": "ODP",
+                    "LEAD": "96",
+                    "MCP_NO": "L-240K98",
+                    "STATUS": "ACTIVE",
+                    "EQUIP_ID": "E1",
+                },
+                {
+                    "TECH": "B",
+                    "DENSITY": "16G",
+                    "MODE": "DDR5",
+                    "PKG1": "FCBGA",
+                    "PKG2": "ODP",
+                    "LEAD": "78",
+                    "MCP_NO": "L-217K9B",
+                    "STATUS": "ACTIVE",
+                    "EQUIP_ID": "E2",
+                },
+                {**product_c, "MCP_NO": None, "STATUS": "ACTIVE", "EQUIP_ID": "E3"},
+                {**product_c, "MCP_NO": float("nan"), "STATUS": "ACTIVE", "EQUIP_ID": "E4"},
+                {**product_c, "MCP_NO": "   ", "STATUS": "ACTIVE", "EQUIP_ID": "E5"},
+                {**product_c, "MCP_NO": "NULL", "STATUS": "ACTIVE", "EQUIP_ID": "E6"},
+                {**product_c, "MCP_NO": "empty", "STATUS": "ACTIVE", "EQUIP_ID": "E7"},
+                {
+                    "TECH": "A",
+                    "DENSITY": "16G",
+                    "MODE": "DDR5",
+                    "PKG1": "FCBGA",
+                    "PKG2": "DDP",
+                    "LEAD": "78",
+                    "MCP_NO": "L-217K9B",
+                    "STATUS": "ACTIVE",
+                    "EQUIP_ID": "CROSS_PRODUCT",
+                },
+                {**product_c, "MCP_NO": "L-999", "STATUS": "ACTIVE", "EQUIP_ID": "NON_BLANK"},
+                {
+                    "TECH": "A",
+                    "DENSITY": "8G",
+                    "MODE": "DDR5",
+                    "PKG1": "FBGA",
+                    "PKG2": "ODP",
+                    "LEAD": "96",
+                    "MCP_NO": "L-240K98",
+                    "STATUS": "ACTIVE",
+                    "EQUIP_ID": "SAME_OLD_SUBSET_WRONG_MODE",
+                },
+                {
+                    "TECH": "A",
+                    "DENSITY": "8G",
+                    "MODE": "DDR4",
+                    "PKG1": "FBGA",
+                    "PKG2": "ODP",
+                    "LEAD": "96",
+                    "MCP_NO": "L-240K98",
+                    "STATUS": "INACTIVE",
+                    "EQUIP_ID": "INACTIVE",
+                },
+            ],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = pandas_executor.execute_pandas_code(
+        payload,
+        "result = sources['eqp_assign'][['EQUIP_ID', 'MCP_NO']]",
+    )
+
+    assert result["analysis"]["status"] == "ok"
+    assert [row["EQUIP_ID"] for row in result["data"]["rows"]] == [
+        "E1",
+        "E2",
+        "E3",
+        "E4",
+        "E5",
+        "E6",
+        "E7",
+    ]
+    execution = result["trace"]["inspection"]["pandas_execution"]["row_match_execution"][0]
+    assert execution["unique_condition_group_count"] == 3
+    assert execution["source_row_count_before"] == 11
+    assert execution["source_row_count_after"] == 8
+    pandas_trace = result["trace"]["inspection"]["pandas_execution"]
+    assert pandas_trace["llm_response_parse"]["mode"] == "raw_python"
+    assert pandas_trace["row_match_plan"][0]["match_key_ref"] == product_key_ref
+    assert pandas_trace["row_match_plan"][0]["match_columns"] == product_keys
+    generated_code = pandas_trace["generated_code"]
+    row_match_preamble = pandas_trace["row_match_preamble"]
+    assert row_match_preamble
+    assert generated_code.startswith(row_match_preamble)
+    assert "_row_match_execution = []" in generated_code
+    assert "_row_match_groups_1_eqp_assign = {" in generated_code
+    assert "_filter_values_1_1 = ['ACTIVE']" in generated_code
+    assert generated_code.index("_row_match_execution = []") < generated_code.index("_filtered_source_1_eqp_assign")
+    assert generated_code.index("_filtered_source_1_eqp_assign") < generated_code.index(
+        "result = sources['eqp_assign'][['EQUIP_ID', 'MCP_NO']]"
+    )
+    message_adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py"
+    )
+    diagnostic_message = message_adapter.build_message(result, include_diagnostics=True)
+    assert "생성된 pandas 코드 (행 매칭 전처리 숨김처리)" in diagnostic_message
+    assert "# region Previous Result Row Match (전처리 숨김처리)" in diagnostic_message
+    assert "# previous_result -> eqp_assign | match columns: TECH, DEN, MODE, PKG_TYPE1, PKG_TYPE2, LEAD, MCP_NO" in diagnostic_message
+    assert "_row_match_execution = []" not in diagnostic_message
+    assert "_row_match_groups_1_eqp_assign" not in diagnostic_message
+    assert "result = sources['eqp_assign'][['EQUIP_ID', 'MCP_NO']]" in diagnostic_message
+    assert "_row_match_execution = []" in pandas_trace["generated_code"]
+
+
+def test_pandas_row_match_preamble_is_visible_and_rebuilt_for_repair():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    repair_template = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "17b_pandas_repair_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    payload = {
+        "intent_plan": {
+            "reuse_strategy": "previous_result",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "eqp_assign",
+                    "filters": {},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "apply_row_match_groups",
+                    "source_alias": "eqp_assign",
+                    "reference_source_alias": "previous_result",
+                    "match_columns": ["TECH", "MCP_NO"],
+                    "blank_policy": "normalize_blank",
+                }
+            ],
+        },
+        "runtime_sources": {
+            "previous_result": [{"TECH": "C", "MCP_NO": ""}],
+            "eqp_assign": [
+                {"TECH": "C", "MCP_NO": None, "EQUIP_ID": "E1"},
+                {"TECH": "C", "MCP_NO": "L-999", "EQUIP_ID": "EXCLUDED"},
+            ],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    failed = pandas_executor.execute_pandas_code(
+        payload,
+        {"code": "if True:\nresult = sources['eqp_assign']"},
+    )
+    failed_trace = failed["trace"]["inspection"]["pandas_execution"]
+    repair_prompt = pandas_executor.build_pandas_repair_prompt(failed, repair_template)
+
+    assert failed["analysis"]["status"] == "error"
+    assert failed_trace["row_match_preamble"]
+    assert failed_trace["generated_code"].startswith(failed_trace["row_match_preamble"])
+    assert '"row_match_preamble":' in repair_prompt
+    assert "_row_match_execution = []" in repair_prompt
+
+    retry = pandas_executor.execute_pandas_code(
+        failed,
+        {"code": "result = sources['eqp_assign'][['EQUIP_ID', 'MCP_NO']]"},
+    )
+    assert retry["analysis"]["status"] == "ok"
+    assert retry["data"]["rows"] == [{"EQUIP_ID": "E1", "MCP_NO": None}]
+    retry_trace = retry["trace"]["inspection"]["pandas_execution"]
+    assert retry_trace["generated_code"].startswith(retry_trace["row_match_preamble"])
+    assert retry_trace["row_match_execution"][0]["source_row_count_after"] == 1
+
+
+@pytest.mark.parametrize(
+    ("question", "source_alias", "match_columns", "previous_rows", "target_rows", "expected_ids"),
+    [
+        (
+            "위 LOT들의 현재 공정 이력을 알려줘",
+            "hold_history",
+            ["LOT_ID", "OPER_NAME"],
+            [
+                {"LOT_ID": "L1", "OPER_NAME": "D/A1"},
+                {"LOT_ID": "L2", "OPER_NAME": "W/B6"},
+            ],
+            [
+                {"LOT_ID": "L1", "OPER_NAME": "D/A1", "ROW_ID": "H1"},
+                {"LOT_ID": "L2", "OPER_NAME": "W/B6", "ROW_ID": "H2"},
+                {"LOT_ID": "L1", "OPER_NAME": "W/B6", "ROW_ID": "CROSS_PRODUCT"},
+                {"LOT_ID": "L3", "OPER_NAME": "D/A1", "ROW_ID": "UNRELATED"},
+            ],
+            ["H1", "H2"],
+        ),
+        (
+            "해당 장비 모델과 Recipe 조합의 UPH 현황을 알려줘",
+            "recipe_uph",
+            ["EQP_MODEL", "RECIPE_ID"],
+            [
+                {"EQP_MODEL": "M1", "RECIPE_ID": "R1"},
+                {"EQP_MODEL": "M2", "RECIPE_ID": "R2"},
+            ],
+            [
+                {"EQUIP_MODEL": "M1", "RECIPE_ID": "R1", "ROW_ID": "U1"},
+                {"EQUIP_MODEL": "M2", "RECIPE_ID": "R2", "ROW_ID": "U2"},
+                {"EQUIP_MODEL": "M1", "RECIPE_ID": "R2", "ROW_ID": "CROSS_PRODUCT"},
+                {"EQUIP_MODEL": "M3", "RECIPE_ID": "R1", "ROW_ID": "UNRELATED"},
+            ],
+            ["U1", "U2"],
+        ),
+    ],
+)
+def test_pandas_row_match_preamble_is_generic_for_non_product_entity_combinations(
+    question,
+    source_alias,
+    match_columns,
+    previous_rows,
+    target_rows,
+    expected_ids,
+):
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    payload = {
+        "request": {"question": question},
+        "intent_plan": {
+            "reuse_strategy": "previous_result",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": source_alias,
+                    "source_alias": source_alias,
+                    "filters": {},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "apply_row_match_groups",
+                    "source_alias": source_alias,
+                    "reference_source_alias": "previous_result",
+                    "match_columns": match_columns,
+                    "blank_policy": "normalize_blank",
+                }
+            ],
+        },
+        "runtime_sources": {
+            "previous_result": previous_rows,
+            source_alias: target_rows,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = pandas_executor.execute_pandas_code(
+        payload,
+        {"code": f"result = sources[{source_alias!r}][['ROW_ID']]"},
+    )
+
+    assert result["analysis"]["status"] == "ok"
+    assert [row["ROW_ID"] for row in result["data"]["rows"]] == expected_ids
+    pandas_trace = result["trace"]["inspection"]["pandas_execution"]
+    assert pandas_trace["row_match_plan"][0]["match_columns"] == match_columns
+    assert pandas_trace["row_match_execution"][0]["unique_condition_group_count"] == 2
+    assert "TECH" not in pandas_trace["row_match_preamble"]
+    assert "MCP_NO" not in pandas_trace["row_match_preamble"]
+
+
+def test_pandas_row_match_preamble_returns_empty_target_for_empty_reference_with_known_schema():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    payload = {
+        "intent_plan": {
+            "reuse_strategy": "previous_result",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "hold_history",
+                    "source_alias": "hold_history",
+                    "filters": {},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "apply_row_match_groups",
+                    "source_alias": "hold_history",
+                    "reference_source_alias": "previous_result",
+                    "match_columns": ["LOT_ID", "OPER_NAME"],
+                    "blank_policy": "normalize_blank",
+                }
+            ],
+        },
+        "source_results": [
+            {
+                "source_alias": "previous_result",
+                "columns": ["LOT_ID", "OPER_NAME"],
+                "rows": [],
+            }
+        ],
+        "runtime_sources": {
+            "previous_result": [],
+            "hold_history": [
+                {"LOT_ID": "L1", "OPER_NAME": "D/A1", "ROW_ID": "H1"},
+            ],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = pandas_executor.execute_pandas_code(
+        payload,
+        {"code": "result = sources['hold_history'][['ROW_ID']]"},
+    )
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["rows"] == []
+    execution = result["trace"]["inspection"]["pandas_execution"]["row_match_execution"][0]
+    assert execution["reference_row_count"] == 0
+    assert execution["unique_condition_group_count"] == 0
+    assert execution["source_row_count_after"] == 0
 
 
 def test_langflow_dummy_data_covers_representative_manufacturing_cases():
@@ -6059,6 +6854,7 @@ def test_langflow_prompt_templates_keep_domain_specific_examples_out_of_generic_
     moved_to_specialized_prompt_terms = [
         "match_product_tokens",
         "sample_passthrough_helper",
+        "equipment_assignment_uph_join",
         "RG 32G DDR4 FBGA 96 DDP",
         "DA 16G GDDR6 180",
         "PKG OUT",
@@ -8542,8 +9338,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 83
-    assert result["all_component_python_files"] == 84
+    assert result["active_unique_source_files"] == 86
+    assert result["all_component_python_files"] == 87
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -8552,9 +9348,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 10, 120, 83),
-        ("import_ready_individual", 10, 120, 83),
-        ("import_ready_bundle", 10, 120, 83),
+        ("flow_exports", 11, 126, 86),
+        ("import_ready_individual", 11, 126, 86),
+        ("import_ready_bundle", 11, 126, 86),
     }
 
 
@@ -10899,8 +11695,8 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
     }
 
     assert flow["endpoint_name"] == "metadata-driven-v5-workflow-orchestrator"
-    assert len(nodes) == 20
-    assert len(edges) == 28
+    assert len(nodes) == 21
+    assert len(edges) == 29
     assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
     assert not [node for node in nodes.values() if node["data"].get("type") == "Agent"]
     assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
@@ -10927,7 +11723,7 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
         assert embedded == expected, node_id
 
     tools = [node for node_id, node in nodes.items() if node_id.startswith("WorkflowFlowTool-")]
-    assert len(tools) == 6
+    assert len(tools) == 7
     workflow_tool_source = (
         ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     ).read_text(encoding="utf-8")
@@ -10945,6 +11741,7 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
         "run_visualization",
+        "run_realtime_production_report",
     }
 
     expected_core_edges = {
@@ -11931,7 +12728,90 @@ def test_v5_intent_normalizer_resolves_metadata_driven_grain_and_join_without_de
     ]
 
 
+def test_v5_intent_normalizer_resolves_legacy_source_reference_join_aliases():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "analysis_recipes",
+                    "key": "equipment_assignment_uph_join",
+                    "payload": {
+                        "join_keys": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                        "join_type": "left",
+                    },
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "payload": {
+                        "filter_mappings": {
+                            "EQP_MODEL": ["EQUIP_MODEL"],
+                            "RECIPE_ID": ["RECIPE_ID"],
+                            "OPER_NAME": ["OPER_NM"],
+                        }
+                    },
+                },
+                {
+                    "dataset_key": "eqp_uph",
+                    "payload": {
+                        "filter_mappings": {
+                            "EQP_MODEL": ["EQUIP_MODEL"],
+                            "RECIPE_ID": ["RECIPE_ID"],
+                            "OPER_NAME": ["OPER_NAME"],
+                        }
+                    },
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "equipment_assignment_uph",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "equipment_assign_source",
+                },
+                {"dataset_key": "eqp_uph", "source_alias": "eqp_uph_source"},
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "filter_and_join",
+                    "source_alias": "equipment_assign_source",
+                    "reference_source_alias": "eqp_uph_source",
+                }
+            ],
+        },
+        "metadata_refs": [
+            {
+                "section": "analysis_recipes",
+                "key": "equipment_assignment_uph_join",
+            }
+        ],
+    }
+
+    result = normalizer.normalize_intent_plan(
+        {"request": {"question": "D/A1 배정 장비와 UPH를 보여줘"}},
+        response,
+        metadata_candidates,
+    )
+
+    resolved = result["intent_plan"]["resolved_join_plan"][0]
+    assert resolved["left_source_alias"] == "equipment_assign_source"
+    assert resolved["right_source_alias"] == "eqp_uph_source"
+    assert resolved["left_keys"] == ["EQUIP_MODEL", "RECIPE_ID", "OPER_NM"]
+    assert resolved["right_keys"] == ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"]
+
+
 def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
+    intent_prompt = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "03_intent_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
     pandas_prompt = (
         ROOT / "langflow_components" / "data_analysis_flow" / "16_pandas_prompt_template_ko.md"
     ).read_text(encoding="utf-8")
@@ -11941,12 +12821,36 @@ def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
         / "data_analysis_flow"
         / "17b_pandas_repair_prompt_template_ko.md"
     ).read_text(encoding="utf-8")
+    flow = json.loads(
+        (ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json").read_text(encoding="utf-8")
+    )
+    pandas_model = next(node for node in flow["data"]["nodes"] if node["id"] == "LanguageModel-pandas")
+    pandas_system_message = pandas_model["data"]["node"]["template"]["system_message"]["value"]
 
+    specialized_prompt = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "specialized_prompt_input_example_ko.md"
+    ).read_text(encoding="utf-8")
+
+    assert "equipment_assignment_uph_join" not in intent_prompt
+    assert "UPH 지표를 직접 요구하는 표현이 있을 때만" in specialized_prompt
+    assert "Recipe, RECIPE_ID, 장비 모델" in specialized_prompt
+    assert "equipment_assign 하나에서 답한다" in specialized_prompt
+    assert "`left_source_alias`와 `right_source_alias`" in intent_prompt
     assert "resolved_grain_plan.strict=true" in pandas_prompt
     assert "집계용 `group_cols` 전체를 join key로 재사용하지 않는다" in pandas_prompt
     assert "multi_match_policy=collect_unique" in pandas_prompt
+    assert "(counts > 1).any(axis=1)" in pandas_prompt
+    assert "`object`" in pandas_prompt
+    assert "모든 column을 순회하며 일괄 문자열 변환하지 않는다" in pandas_prompt
     assert "resolved_grain_plan.strict=true" in repair_prompt
     assert "`drop_duplicates(subset=join_keys)`" in repair_prompt
+    assert "(counts > 1).any(axis=1)" in repair_prompt
+    assert "NameError: name 'object' is not defined" in repair_prompt
+    assert 'one JSON object with a non-empty "code" field' in pandas_system_message
+    assert "return only executable pandas code" not in pandas_system_message
 
 
 def test_v5_catalog_hydrator_propagates_only_safe_column_contract():

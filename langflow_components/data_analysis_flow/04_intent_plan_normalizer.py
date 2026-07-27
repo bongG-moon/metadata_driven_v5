@@ -35,9 +35,14 @@ def normalize_intent_plan(
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
     metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
     retrieval_jobs = _retrieval_jobs(plan)
+    question = str(
+        (payload.get("request") if isinstance(payload.get("request"), dict) else {}).get("question")
+        or ""
+    ).strip()
     retrieval_jobs, process_group_field_guard = _apply_process_group_filter_fields(
         retrieval_jobs,
         metadata_candidates,
+        question,
     )
     retrieval_jobs, context_date_guard = _apply_context_date_guard(payload, retrieval_jobs)
     pandas_plan = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
@@ -50,15 +55,21 @@ def normalize_intent_plan(
     request_scope = _request_scope(plan, payload)
     reuse_strategy = _reuse_strategy(plan, payload, request_scope)
     if reuse_strategy == "previous_result":
-        pandas_plan = _bind_previous_result_alias(pandas_plan)
-        function_cases = _bind_previous_result_alias(function_cases)
-
+        pandas_plan = _bind_previous_result_alias(pandas_plan, retrieval_jobs)
+        function_cases = _bind_previous_result_alias(function_cases, retrieval_jobs)
     metadata_refs = _metadata_refs(parsed, plan)
     resolved_grain_plan = _resolve_grain_plan(
         plan,
         metadata_refs,
         metadata_candidates,
         retrieval_jobs,
+    )
+    pandas_plan, row_match_guard = _normalize_row_match_steps(
+        pandas_plan,
+        retrieval_jobs,
+        reuse_strategy,
+        resolved_grain_plan,
+        metadata_candidates,
     )
     resolved_join_plan = _resolve_join_plan(
         plan,
@@ -117,6 +128,7 @@ def normalize_intent_plan(
         "decision_reason": parsed.get("trace", {}).get("decision_reason", []) if isinstance(parsed.get("trace"), dict) else [],
         "context_date_guard": context_date_guard,
         "process_group_field_guard": process_group_field_guard,
+        "row_match_guard": row_match_guard,
         "resolved_grain_columns": resolved_grain_plan.get("grain_columns", []) if resolved_grain_plan else [],
         "resolved_join_count": len(resolved_join_plan),
     }
@@ -216,20 +228,159 @@ def _apply_context_date_guard(
     }
 
 
-# 함수 설명: `_bind_previous_result_alias()`는 이전 최종 결과 재분석 계획이 MongoDB 로더의 단일 예약 alias를 사용하도록 정규화합니다.
-def _bind_previous_result_alias(items: list[Any]) -> list[Any]:
+# 함수 설명: `_bind_previous_result_alias()`는 이전 결과만 재분석할 때는 예약 alias로 통일하고 신규 조회가 함께 있으면 명시한 source alias를 보존합니다.
+def _bind_previous_result_alias(
+    items: list[Any],
+    retrieval_jobs: list[Any] | None = None,
+) -> list[Any]:
+    retrieval_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in (retrieval_jobs or [])
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    mixed_sources = bool(retrieval_aliases)
     result: list[Any] = []
     for item in items:
         if not isinstance(item, dict):
             result.append(deepcopy(item))
             continue
         normalized = deepcopy(item)
-        normalized["source_alias"] = PREVIOUS_RESULT_ALIAS
+        if not mixed_sources:
+            normalized["source_alias"] = PREVIOUS_RESULT_ALIAS
+        elif not str(normalized.get("source_alias") or "").strip():
+            normalized["source_alias"] = PREVIOUS_RESULT_ALIAS
         for key in ("left_source_alias", "right_source_alias"):
             if key in normalized:
-                normalized[key] = PREVIOUS_RESULT_ALIAS
+                if not mixed_sources or not str(normalized.get(key) or "").strip():
+                    normalized[key] = PREVIOUS_RESULT_ALIAS
         result.append(normalized)
     return result
+
+
+# 함수 설명: `_normalize_row_match_steps()`는 참조 source의 여러 행을 행 내부 AND·행 사이 OR로 적용할 범용 실행 단계를 표준화합니다.
+def _normalize_row_match_steps(
+    items: list[Any],
+    retrieval_jobs: list[Any],
+    reuse_strategy: str,
+    resolved_grain_plan: dict[str, Any] | None = None,
+    metadata_candidates: dict[str, Any] | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    retrieval_aliases = [
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    ]
+    normalized_items: list[Any] = []
+    normalized_steps: list[dict[str, Any]] = []
+    invalid_steps: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            normalized_items.append(deepcopy(item))
+            continue
+        operation = str(item.get("operation") or "").strip().lower()
+        if operation != "apply_row_match_groups":
+            normalized_items.append(deepcopy(item))
+            continue
+
+        normalized = deepcopy(item)
+        source_alias = str(normalized.get("source_alias") or "").strip()
+        reference_alias = str(normalized.get("reference_source_alias") or "").strip()
+        if not source_alias and len(retrieval_aliases) == 1:
+            source_alias = retrieval_aliases[0]
+        if not reference_alias and reuse_strategy == "previous_result":
+            reference_alias = PREVIOUS_RESULT_ALIAS
+        plan_match_columns = _string_list(
+            normalized.get("match_columns")
+            or normalized.get("condition_columns")
+            or normalized.get("columns")
+        )
+        match_key_ref = _metadata_ref(
+            normalized.get("match_key_ref")
+            or normalized.get("key_metadata_ref")
+            or normalized.get("metadata_ref")
+        )
+        if not match_key_ref:
+            grain_ref = _metadata_ref(
+                (resolved_grain_plan or {}).get("metadata_ref")
+            )
+            if grain_ref.get("section") == "product_key_columns":
+                match_key_ref = grain_ref
+        metadata_match_columns: list[str] = []
+        if match_key_ref:
+            metadata_item = _find_metadata_item(
+                metadata_candidates or {},
+                match_key_ref,
+            )
+            metadata_match_columns = _metadata_key_columns(
+                metadata_item,
+                metadata_candidates or {},
+            )
+        match_columns = metadata_match_columns or (
+            [] if match_key_ref else plan_match_columns
+        )
+        match_columns_source = "metadata" if metadata_match_columns else "plan"
+        normalized.update(
+            {
+                "operation": "apply_row_match_groups",
+                "source_alias": source_alias,
+                "reference_source_alias": reference_alias,
+                "match_columns": match_columns,
+                "blank_policy": "normalize_blank",
+            }
+        )
+        if match_key_ref:
+            normalized["match_key_ref"] = match_key_ref
+        else:
+            normalized.pop("match_key_ref", None)
+        for retired_key in (
+            "condition_columns",
+            "columns",
+            "row_match_groups",
+            "key_metadata_ref",
+            "metadata_ref",
+        ):
+            normalized.pop(retired_key, None)
+
+        issue_types: list[str] = []
+        if not source_alias:
+            issue_types.append("missing_source_alias")
+        if not reference_alias:
+            issue_types.append("missing_reference_source_alias")
+        if source_alias and source_alias == reference_alias:
+            issue_types.append("same_source_and_reference_alias")
+        if match_key_ref and not metadata_match_columns:
+            issue_types.append("unresolved_match_key_ref")
+        if len(match_columns) < 2:
+            issue_types.append("insufficient_match_columns")
+        if issue_types:
+            invalid_steps.append({"index": index, "issues": issue_types})
+        else:
+            normalized_steps.append(
+                {
+                    "index": index,
+                    "source_alias": source_alias,
+                    "reference_source_alias": reference_alias,
+                    "match_columns": match_columns,
+                    "match_key_ref": match_key_ref,
+                    "match_columns_source": match_columns_source,
+                }
+            )
+        normalized_items.append(normalized)
+
+    status = "not_needed"
+    if normalized_steps:
+        status = "applied"
+    if invalid_steps:
+        status = "invalid"
+    return normalized_items, {
+        "status": status,
+        "step_count": len(normalized_steps),
+        "steps": normalized_steps,
+        "invalid_steps": invalid_steps,
+        "blank_policy": "normalize_blank" if normalized_steps or invalid_steps else "",
+    }
 
 
 # 함수 설명: `_condition_resolution()`는 이전 조건의 inherited·changed·dropped·new 내역을 표준 구조로 정리합니다.
@@ -266,10 +417,12 @@ def _retrieval_jobs(plan: dict[str, Any]) -> list[Any]:
 def _apply_process_group_filter_fields(
     retrieval_jobs: list[Any],
     metadata_candidates: dict[str, Any],
+    question: str = "",
 ) -> tuple[list[Any], dict[str, Any]]:
     contracts = _process_group_contracts(metadata_candidates)
     if not contracts:
         return retrieval_jobs, {"status": "not_available", "corrections": []}
+    explicit_processes = _explicit_process_mentions(question, contracts)
 
     normalized_jobs: list[Any] = []
     corrections: list[dict[str, Any]] = []
@@ -283,6 +436,23 @@ def _apply_process_group_filter_fields(
         if isinstance(filters, dict):
             normalized_filters = deepcopy(filters)
             for raw_field, condition in filters.items():
+                narrowed_condition = _narrow_single_process_condition(
+                    condition,
+                    contracts,
+                    explicit_processes,
+                )
+                if narrowed_condition != condition:
+                    normalized_filters[str(raw_field)] = narrowed_condition
+                    corrections.append(
+                        {
+                            "source_alias": alias,
+                            "field": str(raw_field),
+                            "correction_type": "specific_process_scope",
+                            "from_values": _condition_scalar_values(condition),
+                            "to_values": _condition_scalar_values(narrowed_condition),
+                        }
+                    )
+                condition = narrowed_condition
                 canonical_field, group_keys = _process_group_field_for_condition(
                     raw_field,
                     condition,
@@ -316,6 +486,27 @@ def _apply_process_group_filter_fields(
             for condition in filters:
                 normalized = deepcopy(condition)
                 if isinstance(condition, dict):
+                    narrowed_condition = _narrow_single_process_condition(
+                        condition,
+                        contracts,
+                        explicit_processes,
+                    )
+                    if narrowed_condition != condition:
+                        normalized = narrowed_condition
+                        corrections.append(
+                            {
+                                "source_alias": alias,
+                                "field": str(
+                                    condition.get("field")
+                                    or condition.get("column")
+                                    or ""
+                                ),
+                                "correction_type": "specific_process_scope",
+                                "from_values": _condition_scalar_values(condition),
+                                "to_values": _condition_scalar_values(narrowed_condition),
+                            }
+                        )
+                    condition = normalized
                     raw_field = condition.get("field") or condition.get("column")
                     canonical_field, group_keys = _process_group_field_for_condition(
                         raw_field,
@@ -360,10 +551,81 @@ def _process_group_contracts(metadata_candidates: dict[str, Any]) -> list[dict[s
                 # 기존 운영 문서의 process_groups는 모두 OPER_NAME 계약이므로
                 # field 재등록 전 문서도 같은 의미로 안전하게 호환합니다.
                 "field": str(payload.get("field") or "OPER_NAME").strip(),
+                "process_values": processes,
                 "processes": {value.casefold() for value in processes},
             }
         )
     return contracts
+
+
+# 함수 설명: 질문에 독립된 token으로 명시된 세부 공정명을 공정 그룹 metadata에서 찾습니다.
+def _explicit_process_mentions(
+    question: str,
+    contracts: list[dict[str, Any]],
+) -> list[str]:
+    text = str(question or "")
+    result: list[str] = []
+    for contract in contracts:
+        for process in contract.get("process_values", []):
+            value = str(process or "").strip()
+            if not value or value in result:
+                continue
+            pattern = rf"(?<![0-9A-Za-z가-힣]){re.escape(value)}(?![0-9A-Za-z가-힣])"
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                result.append(value)
+    return result
+
+
+# 함수 설명: 질문이 단일 세부 공정을 명시했는데 LLM이 같은 그룹 전체를 펼친 filter를 해당 공정 하나로 좁힙니다.
+def _narrow_single_process_condition(
+    condition: Any,
+    contracts: list[dict[str, Any]],
+    explicit_processes: list[str],
+) -> Any:
+    if len(explicit_processes) != 1 or not isinstance(condition, dict):
+        return deepcopy(condition)
+    operator = str(condition.get("operator") or condition.get("op") or "eq").strip().lower()
+    if operator not in {"eq", "in", "=", "=="}:
+        return deepcopy(condition)
+    values = _condition_scalar_values(condition)
+    if len(values) <= 1:
+        return deepcopy(condition)
+    normalized_values = {value.casefold() for value in values}
+    explicit = explicit_processes[0]
+    explicit_normalized = explicit.casefold()
+    matching_contracts = [
+        contract
+        for contract in contracts
+        if explicit_normalized in contract.get("processes", set())
+        and normalized_values.issubset(contract.get("processes", set()))
+    ]
+    if not matching_contracts:
+        return deepcopy(condition)
+    narrowed = deepcopy(condition)
+    narrowed["operator"] = "eq"
+    narrowed.pop("op", None)
+    if "values" in narrowed:
+        narrowed["values"] = [explicit]
+        narrowed.pop("value", None)
+    else:
+        narrowed["value"] = explicit
+    return narrowed
+
+
+# 함수 설명: dict/list filter 조건에서 비교 가능한 scalar 값 목록을 추출합니다.
+def _condition_scalar_values(condition: Any) -> list[str]:
+    raw_values = (
+        condition.get("values", condition.get("value", []))
+        if isinstance(condition, dict)
+        else condition
+    )
+    values = raw_values if isinstance(raw_values, (list, tuple, set)) else [raw_values]
+    return [
+        str(value).strip()
+        for value in values
+        if not isinstance(value, (dict, list, tuple, set))
+        and str(value or "").strip()
+    ]
 
 
 # 함수 설명: 한 filter 조건의 값이 공정 그룹 processes와 일치할 때 유일한 canonical field를 반환합니다.
@@ -751,8 +1013,14 @@ def _resolve_join_plan(
             join_items = [
                 {
                     "metadata_ref": product_refs[0],
-                    "left_source_alias": step.get("left_source_alias"),
-                    "right_source_alias": step.get("right_source_alias"),
+                    "left_source_alias": (
+                        step.get("left_source_alias")
+                        or step.get("source_alias")
+                    ),
+                    "right_source_alias": (
+                        step.get("right_source_alias")
+                        or step.get("reference_source_alias")
+                    ),
                     "join_type": step.get("join_type"),
                     "right_value_columns": step.get("right_value_columns"),
                     "multi_match_policy": step.get("multi_match_policy"),

@@ -20,10 +20,13 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - 생성하는 `code`에는 `intent_plan.retrieval_jobs[].filters`와 같은 조건을 다시 작성하지 않는다.
 - `sources["alias"]`는 이미 `retrieval_jobs[].filters`가 적용된 DataFrame으로 본다.
 - LLM 코드에서는 `retrieval_jobs[].filters`에 없는 추가 분석 조건만 groupby, 집계, 정렬, head/tail, join보다 먼저 적용한다.
+- executor는 `pandas_execution_plan`의 `apply_row_match_groups`를 결정론적 row-match preamble 코드로 만들고 LLM 코드 앞에 결합해 한 번에 실행한다. 최종 `generated_code`에는 row match, 일반 filter, LLM 분석 코드가 실제 실행 순서대로 모두 포함된다. reference 각 행의 `match_columns`는 AND, 행들 사이는 OR이며 null·None·NaN·NaT·빈 문자열·공백과 문자열 null/none/nan/nat/<NA>/empty는 모두 `""`으로 맞춘다.
+- 제품 row match의 `match_columns`는 `match_key_ref`로 선택된 Domain `product_key_columns` 전체를 normalizer가 해석한 결과다. LLM 코드에서 제품 키를 축약하거나 다른 제품 컬럼으로 교체하지 않는다.
+- `apply_row_match_groups`가 적용된 source를 다시 컬럼별 `isin`으로 조합하지 않는다. reference 행도 최종 결과에 남겨야 하면 reference source를 left로 두고 row-match된 target source를 같은 `match_columns`로 결합한다.
 - 추가 분석 조건의 `operator`가 `eq`이면 `isin([value])`, `in`이면 `isin(values)`, `contains`이면 문자열 contains, `not_in`/`ne`이면 제외 조건으로 구현한다.
 - 질문에 `대비`, `비율`, `효율`, `rate` 같은 표현이 있고 pandas 계획에서 비율/파생 지표를 만들면, 사용자가 절대 수량 기준을 명시하지 않는 한 해당 파생 지표를 우선 정렬 기준으로 사용한다.
 - 일반 import, open, eval, exec, 파일 접근, 네트워크 접근은 사용하지 않는다.
-- executor가 제공하는 안전 builtin은 `Exception`, `all`, `any`, `bool`, `dict`, `enumerate`, `float`, `hasattr`, `int`, `isinstance`, `len`, `list`, `max`, `min`, `range`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`이다. `dict(zip(keys, values))`처럼 `zip`을 사용할 수 있지만 이 목록 밖 builtin은 가정하지 않는다.
+- executor가 제공하는 안전 builtin은 `Exception`, `all`, `any`, `bool`, `dict`, `enumerate`, `float`, `hasattr`, `int`, `isinstance`, `len`, `list`, `max`, `min`, `object`, `range`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`이다. `df[col].dtype == object`와 `dict(zip(keys, values))` 같은 일반 pandas 표현을 사용할 수 있지만 이 목록 밖 builtin은 가정하지 않는다.
 - `pd`는 executor가 이미 제공한다. DataFrame을 새로 만들어야 할 때도 가능하면 `import pandas as pd`를 쓰지 말고 바로 `pd.DataFrame(...)`을 사용한다.
 - 호환성을 위해 정확한 단독 구문 `import pandas as pd`와 `import numpy as np`만 executor가 실행 전에 제거하고 신뢰 namespace를 주입한다. 다른 alias, 혼합 import, `from ... import ...`는 허용하지 않는다.
 - `np`는 정확한 `import numpy as np`가 있을 때만 `where`, `select`, `nan`, `inf`, `isnan`, `isfinite`, `maximum`, `minimum` 등 제한된 계산 호환 기능으로 제공된다. 파일 I/O나 module loading API는 제공하지 않는다.
@@ -43,10 +46,15 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - `intent_plan.resolved_grain_plan.strict=true`이면 `grain_columns`는 선택된 Domain metadata에서 해석된 정확한 집계 차원이다. 제품별 질문이라고 해서 source schema의 `DEVICE`, `DEVICE_DESC` 또는 다른 dimension을 임의로 추가하지 않는다.
 - `resolved_grain_plan.column_mappings[].source_candidates` 중 실제 source에 존재하는 첫 컬럼을 사용하되, metadata에 없는 제품 key를 모델이 추측해 추가하지 않는다.
 - `intent_plan.resolved_join_plan`이 있으면 각 항목의 `left_keys`와 `right_keys` 또는 `key_mappings`에 기록된 좌우 후보만 join key로 사용한다. 집계용 `group_cols` 전체를 join key로 재사용하지 않는다.
+- resolved join의 같은 canonical key가 좌우에서 서로 다른 실제 컬럼명으로 해석되면 컬럼을 같은 이름으로 `rename`하지 않는다. `left_keys`와 `right_keys`를 각각 유지하고 `merge(..., left_on=left_keys, right_on=right_keys)`를 사용한다. 특히 rename 대상 이름이 DataFrame에 이미 있으면 중복 컬럼 label이 생겨 `df[key]`가 Series가 아닌 DataFrame이 될 수 있으므로 금지한다.
+- 좌우 실제 key 목록이 완전히 같을 때만 `merge(..., on=keys)`를 사용할 수 있다. 하나라도 다르면 반드시 같은 순서의 `left_on`/`right_on`을 사용하고, 각 실제 key Series를 자기 DataFrame에서 독립적으로 정규화한다.
+- 조인 뒤 실제 key를 canonical 표시 컬럼으로 정리할 때도 대상 컬럼이 이미 있으면 `rename`하지 않는다. 예를 들어 결과에 `OPER_NM`과 `OPER_NAME`이 모두 있으면 `result["OPER_NAME"] = result["OPER_NM"]; result = result.drop(columns=["OPER_NM"])`로 정리한다. OPER_NM을 OPER_NAME으로 rename하는 코드는 금지한다. 대상 컬럼이 없을 때만 rename할 수 있으며, 최종 `result.columns`에는 중복 label이 없어야 한다.
 - join key 정규화는 원본 DataFrame을 변경하지 않은 copy에서 수행한다. `null_key_policy=normalize_blank`이면 좌우 key를 문자열로 맞추고 null·빈 문자열·공백을 동일한 빈 문자열로 정규화하며, 숫자형 식별값 끝의 `.0` 표기 차이는 제거한다. 날짜 컬럼은 기존 날짜 보존 규칙을 우선한다.
+- join 정규화가 필요해도 두 source의 모든 column을 순회하며 일괄 문자열 변환하지 않는다. `resolved_join_plan`의 실제 좌우 join key copy만 정규화하고, 요청하지 않은 날짜·수량·표시 컬럼 dtype은 보존한다.
 - `multi_match_policy=collect_unique`이면 같은 제품 key에 여러 장비 등 여러 우측 값이 있을 때 첫 행 하나를 `drop_duplicates`로 남기지 않는다. `right_value_columns`별 중복 없는 값을 모아 한 제품 행에 보존한다.
 - `multi_match_policy=preserve_rows`이면 유효한 우측 매칭 행을 모두 유지하고, `first`일 때만 metadata 계약에 따라 첫 행을 사용할 수 있다.
 - `resolved_join_plan`이 있는데 일부 key가 source schema에 없으면 임의의 대체 key를 추측하지 않는다. 사용 가능한 metadata key pair만 사용하고, 하나도 없으면 빈 결과 또는 명시적 오류가 되도록 처리한다.
+- 사용자가 일부 기준 컬럼은 같지만 다른 비교 컬럼 값이 서로 다른 행을 요청하면, 기준 컬럼으로 `groupby(..., dropna=False)`한 뒤 비교 컬럼의 `nunique(dropna=False)`를 계산하고 `(counts > 1).any(axis=1)`인 기준키만 원본과 `merge`한다. 비교 컬럼별 조건을 Python `or`/`and`로 연결하거나 SQL 문법을 pandas 코드에 섞지 않는다.
 - `df.groupby(["A", "B"])`처럼 고정 리스트를 바로 넣지 말고, `group_cols = [c for c in desired_cols if c in df.columns]`처럼 존재하는 컬럼만 사용한다.
 - dimension별 집계에서는 null, 빈 문자열, 공백만 있는 group 값의 원본 행도 제외하지 않는다. groupby에는 `dropna=False`를 명시하고, 집계 전에 group column에 `notna()`나 빈 값 제외 filter를 적용하지 않는다.
 - 집계가 끝난 뒤 표시용 결과의 dimension column에만 `fillna("")`와 `replace(r"^\s*$", "", regex=True)`를 적용해 null/blank를 빈 문자열로 보여준다. dimension 값을 `미등록` 같은 대체 문구로 바꾸지 않는다.

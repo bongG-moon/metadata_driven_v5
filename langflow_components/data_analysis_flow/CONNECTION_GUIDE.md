@@ -129,7 +129,7 @@ Intent LLM은 `dataset_key`, `source_alias`, `required_params`, `filters`만 선
 
 정확한 단독 구문 `import pandas as pd`, `import numpy as np`는 Repair까지 보내기 전에 executor가 제거하고 각각 `pd`, 제한형 `np` 계산 namespace를 주입합니다. 이는 `__import__`를 허용하는 방식이 아닙니다. 다른 import/import-from/혼합 import와 pandas/numpy 파일·네트워크 I/O API는 계속 `unsafe_code`로 차단되고 Repair 대상이 됩니다.
 
-진단 출력을 켜면 `pandas 코드/실행` 섹션에서 허용 import 정규화 내역과 Repair의 시도 여부, LLM 호출 여부, 선택 결과, 최초/재시도/모델 호출 오류를 확인할 수 있습니다. 따라서 최종 오류가 초기 코드인지 재시도 코드인지 구분할 수 있습니다. Function Case Helper를 호출한 경우 실제 실행·Repair용 trace에는 전체 코드를 유지하지만, 사용자 화면의 pandas 코드에서는 해당 함수 정의를 `# region Function Case Helper: 함수명 (함수 숨김처리)` 주석으로 대체하고 실제 호출문만 표시합니다.
+진단 출력을 켜면 `pandas 코드/실행` 섹션에서 허용 import 정규화 내역과 Repair의 시도 여부, LLM 호출 여부, 선택 결과, 최초/재시도/모델 호출 오류를 확인할 수 있습니다. 따라서 최종 오류가 초기 코드인지 재시도 코드인지 구분할 수 있습니다. 코드 추출에 실패하면 응답 해석 방식·해석 오류·짧은 원본 응답 미리보기도 함께 표시합니다. Repair 모델이 provider별 text content block 목록을 반환해도 executor가 문자열로 합쳐 동일한 JSON 코드 계약으로 처리합니다. Function Case Helper를 호출한 경우 실제 실행·Repair용 trace에는 전체 코드를 유지하지만, 사용자 화면의 pandas 코드에서는 해당 함수 정의를 `# region Function Case Helper: 함수명 (함수 숨김처리)` 주석으로 대체하고 실제 호출문만 표시합니다. `apply_row_match_groups`의 결정론적 전처리도 실행 trace에는 전체 코드를 유지하고, 사용자 화면에서는 reference/target alias와 매칭 컬럼을 설명하는 `# region Previous Result Row Match (전처리 숨김처리)` 주석으로 축약합니다.
 
 오류 시 Repair LLM에는 다음 정보가 전달됩니다.
 

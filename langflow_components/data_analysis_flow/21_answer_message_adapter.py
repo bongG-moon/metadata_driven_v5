@@ -844,6 +844,14 @@ def _pandas_section(payload: dict[str, Any]) -> str:
     error = pandas_trace.get("error") or analysis.get("error")
     if error not in (None, "", [], {}):
         lines.append(f"- 실행 오류: `{_display_value(error)}`")
+        response_parse = pandas_trace.get("llm_response_parse")
+        if isinstance(response_parse, dict):
+            if response_parse.get("mode"):
+                lines.append(f"- LLM 응답 해석: `{_display_value(response_parse.get('mode'))}`")
+            if response_parse.get("error"):
+                lines.append(f"- LLM 응답 해석 오류: `{_display_value(response_parse.get('error'))}`")
+            if response_parse.get("raw_response_preview"):
+                lines.append(f"- LLM 응답 미리보기: `{_display_value(response_parse.get('raw_response_preview'))}`")
 
     safe_imports = pandas_trace.get("safe_import_normalization")
     if isinstance(safe_imports, dict) and safe_imports.get("removed_imports"):
@@ -874,13 +882,53 @@ def _pandas_section(payload: dict[str, Any]) -> str:
         code = str(pandas_code_json.get("code") or "").strip()
     if code:
         label = "실제 실행 pandas 코드" if effective_code else "생성된 pandas 코드"
+        code, collapsed_row_match = _collapse_row_match_preamble(code, pandas_trace)
         code, collapsed_helpers = _collapse_function_case_helper_definitions(code, _string_list(used_helpers))
+        collapsed_parts = []
+        if collapsed_row_match:
+            collapsed_parts.append("행 매칭 전처리")
         if collapsed_helpers:
-            label += " (함수 숨김처리)"
+            collapsed_parts.append("함수")
+        if collapsed_parts:
+            label += f" ({'/'.join(collapsed_parts)} 숨김처리)"
         lines.append(f"- {label}:")
         lines.append("```python\n" + code + "\n```")
 
     return "\n".join(lines)
+
+
+# 함수 설명: `_collapse_row_match_preamble()`은 실행 trace의 전체 row-match 코드를 사용자 표시에서 요약 주석으로 대체합니다.
+def _collapse_row_match_preamble(code: str, pandas_trace: dict[str, Any]) -> tuple[str, bool]:
+    source = str(code or "").strip()
+    preamble = str(pandas_trace.get("row_match_preamble") or "").strip()
+    if not source or not preamble or not source.startswith(preamble):
+        return source, False
+
+    plan = pandas_trace.get("row_match_plan")
+    plan = plan if isinstance(plan, list) else []
+    comments = [
+        "# region Previous Result Row Match (전처리 숨김처리)",
+        "# 이전 결과의 각 행은 AND, 여러 행 사이는 OR 조건으로 대상 데이터에 매칭했습니다.",
+    ]
+    for item in plan:
+        if not isinstance(item, dict):
+            continue
+        source_alias = str(item.get("source_alias") or "").strip()
+        reference_alias = str(item.get("reference_source_alias") or "").strip()
+        match_columns = ", ".join(_string_list(item.get("match_columns")))
+        if source_alias and reference_alias:
+            comments.append(f"# {reference_alias} -> {source_alias} | match columns: {match_columns or 'metadata key'}")
+    comments.extend(
+        [
+            '# null/empty 계열 값은 ""로 정규화하며, 실제 실행 코드는 화면에서 생략했습니다.',
+            "# endregion",
+        ]
+    )
+    remainder = source[len(preamble) :].lstrip()
+    rendered = "\n".join(comments)
+    if remainder:
+        rendered += "\n\n" + remainder
+    return rendered, True
 
 
 # 함수 설명: `_collapse_function_case_helper_definitions()`는 실제 실행 코드는 바꾸지 않고 사용자 표시에서 호출된 helper 정의만 숨김 주석으로 대체합니다.

@@ -10,7 +10,8 @@ docs/workflows/
 ├─ workflow_registry.example.json
 ├─ daily_manufacturing_briefing.md
 ├─ hold_lot_history_metadata_audit.md
-└─ equipment_uph_source_audit.md
+├─ equipment_uph_source_audit.md
+└─ realtime_production_report.md
 ```
 
 - `README.md`: 공통 작성 규칙과 등록 절차
@@ -32,7 +33,7 @@ docs/workflows/
 | `handoff` | 예 | 순서만 보장하면 `none`, 실제 앞 단계 데이터가 필요하면 `result_ref` |
 | `on_error` | 예 | 실패 후 전체를 중단하면 `stop`, 독립 단계만 계속하려면 `continue` |
 
-08 자체에는 다음 여섯 Tool이 연결되어 있다.
+08 자체에는 다음 일곱 Tool이 연결되어 있다.
 
 - `run_data_analysis`
 - `run_metadata_qa`
@@ -40,12 +41,15 @@ docs/workflows/
 - `save_table_catalog_metadata`
 - `save_main_flow_filter_metadata`
 - `run_visualization`
+- `run_realtime_production_report`
 
 현재 권장 Registry 3종은 실제 조회 조합을 우선 검증하기 위해 `run_data_analysis`와 `run_metadata_qa`만 사용한다. 기본 Language Model은 Skill Tool이 아니라 모든 단계가 끝난 뒤 자동으로 실행되는 최종 합성 노드이므로 `steps`에 넣지 않는다. 저장 Tool을 사용하는 별도 Workflow를 만들 수는 있지만, 이번 seed와 사용자용 등록 예시에는 포함하지 않는다.
 
 `depends_on`과 `handoff`는 서로 다른 개념이다. 예를 들어 “생산량을 조회한 뒤 데이터셋 정의를 조회”는 실행 순서만 필요하므로 `depends_on=["production"]`, `handoff="none"`이다. 반대로 “현재 HOLD LOT을 조회한 뒤 그 LOT의 HOLD 이력 조회”는 앞 단계의 실제 LOT 목록이 필요하므로 `handoff="result_ref"`를 사용한다.
 
 “최근 3일 생산량을 조회한 뒤 그래프로 표시”는 `run_data_analysis`가 만든 실제 결과가 필요하므로 `run_visualization` 단계가 분석 단계 하나를 `depends_on`으로 지정하고 `handoff="result_ref"`를 사용한다. 자주 반복하지 않는 작은 조합은 Registry에 미리 저장하지 않아도 08의 inline 계획으로 실행할 수 있다.
+
+“실시간 생산 판정 Report”는 전용 `run_realtime_production_report` 한 단계만 사용한다. 이 Flow가 판정 Snapshot, 고정 Rule 집계, HTML Report 게시를 소유하므로 선행 `run_data_analysis`나 후행 `run_visualization`을 추가하지 않는다.
 
 ## 자연어 업무 입력 예시
 

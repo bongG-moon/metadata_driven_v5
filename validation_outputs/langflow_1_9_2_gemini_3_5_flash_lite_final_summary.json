@@ -1,0 +1,57 @@
+{
+  "status": "ok",
+  "execution_surface": "isolated_langflow_api_endpoint",
+  "flow": "01. v5_data_analysis",
+  "langflow_version": "1.9.2",
+  "langflow_base_version": "0.9.2",
+  "lfx_version": "0.4.2",
+  "python_version": "3.12",
+  "model": "gemini-3.5-flash-lite",
+  "retrieval_mode": "dummy",
+  "case_count": 5,
+  "passed": 5,
+  "failed": 0,
+  "cases": [
+    {
+      "question": "현재 D/A1 공정에 배정된 장비를 장비 모델과 Recipe 조합별로 보여줘.",
+      "status": "ok",
+      "elapsed_seconds": 41.971,
+      "coverage": ["single_source", "exact_process_filter", "groupby", "nunique"]
+    },
+    {
+      "question": "현재 DA 공정에 배정된 장비를 장비 모델과 Recipe 조합별로 보여줘.",
+      "status": "ok",
+      "elapsed_seconds": 44.023,
+      "coverage": ["single_source", "process_group_filter", "groupby", "nunique"]
+    },
+    {
+      "question": "현재 D/A1 공정에 배정된 장비와 해당 Recipe의 UPH를 함께 보여줘.",
+      "status": "ok",
+      "elapsed_seconds": 109.09,
+      "coverage": ["two_sources", "resolved_join_plan", "left_on_right_on", "one_shot_repair"],
+      "final_recheck": true
+    },
+    {
+      "question": "현재 D/A1 공정의 장비 모델별 평균 UPH를 보여줘.",
+      "status": "ok",
+      "elapsed_seconds": 62.205,
+      "coverage": ["two_sources", "resolved_join_plan", "groupby", "mean"]
+    },
+    {
+      "question": "현재 제품 중 TECH, DEN, PKG_TYPE2, MCP_NO는 같지만 MODE, PKG_TYPE1 또는 LEAD가 다른 제품들을 찾아서 보여줘.",
+      "status": "ok",
+      "elapsed_seconds": 77.635,
+      "coverage": ["same_base_keys", "different_attributes", "groupby", "nunique", "merge"]
+    }
+  ],
+  "evidence": {
+    "five_case_run": "validation_outputs/langflow_1_9_2_gemini_3_5_flash_lite_endpoint_smoke.json",
+    "final_join_recheck": "validation_outputs/langflow_1_9_2_gemini_3_5_flash_lite_join_recheck.json",
+    "direct_pipeline_regression": "validation_outputs/gemini_3_5_flash_lite_data_analysis_regression_set.json"
+  },
+  "notes": [
+    "HTTP 200 alone was not treated as success; answer diagnostics were checked for pandas error markers.",
+    "The UPH join was rerun after the final prompt-template-safe fix and passed without the forbidden duplicate-column rename marker.",
+    "API keys and MongoDB credentials are not stored in this report."
+  ]
+}
