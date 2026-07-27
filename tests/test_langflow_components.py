@@ -6032,6 +6032,9 @@ def test_langflow_prompt_templates_only_expose_valid_variables():
     prompt_files = sorted((ROOT / "langflow_components").glob("*/*prompt_template_ko.md"))
     for path in prompt_files:
         text = path.read_text(encoding="utf-8")
+        assert not re.search(r"\{\{\s*\}\}", text), (
+            f"{path.name} contains an empty Mustache tag"
+        )
         variables = {
             match.group(1)
             for match in re.finditer(r"(?<!\{)\{([^{}\r\n]+)\}(?!\})", text)
