@@ -33,26 +33,26 @@ def load_dotenv(path: Path) -> None:
 
 
 def parse_process_group_blocks(text: str) -> list[dict[str, Any]]:
-    """Parse the explicit process-group authoring blocks in domain_knowledge.txt."""
+    """Parse the readable process-group authoring blocks in domain_knowledge.txt."""
 
     lines = text.splitlines()
     items: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
-    section_pattern = re.compile(
-        r"^section은 process_groups이고 key는 (.+?)이며 status는 (.+?)야\.$"
-    )
+    group_pattern = re.compile(r"^(.+?) 공정 그룹을 등록해줘\.$")
     for index, raw_line in enumerate(lines):
-        match = section_pattern.match(raw_line.strip())
+        match = group_pattern.match(raw_line.strip())
         if not match:
             continue
         key = match.group(1).strip()
-        status = match.group(2).strip()
         display_line = _next_nonempty_line(lines, index + 1)
         field_line = _next_nonempty_line(lines, display_line[0] + 1)
         processes_line = _next_nonempty_line(lines, field_line[0] + 1)
+        storage_line = _next_nonempty_line(lines, processes_line[0] + 1)
         display_name, aliases = _parse_display_aliases(display_line[1])
         field = _parse_field(field_line[1])
         processes = _parse_processes(processes_line[1])
+        if storage_line[1] != "별칭마다 별도 item을 만들지 말고 공정그룹 하나로 저장해.":
+            raise ValueError(f"공정그룹 단일 저장 지시를 해석할 수 없습니다: {storage_line[1]}")
         if key in seen_keys:
             raise ValueError(f"process_groups key가 domain_knowledge.txt에 중복되었습니다: {key}")
         if not display_name or not aliases or not field or not processes:
@@ -62,19 +62,18 @@ def parse_process_group_blocks(text: str) -> list[dict[str, Any]]:
         seen_keys.add(key)
         raw_block = "\n".join(
             [
-                _previous_nonempty_line(lines, index - 1),
                 raw_line.strip(),
                 display_line[1],
                 field_line[1],
                 processes_line[1],
-                f"별칭마다 별도 item을 만들지 말고 process_groups:{key} 하나로 저장해.",
+                storage_line[1],
             ]
         )
         items.append(
             {
                 "section": "process_groups",
                 "key": key,
-                "status": status,
+                "status": "active",
                 "payload": {
                     "display_name": display_name,
                     "aliases": aliases,
@@ -95,17 +94,9 @@ def _next_nonempty_line(lines: list[str], start: int) -> tuple[int, str]:
     raise ValueError("process_groups 블록이 파일 끝에서 불완전합니다.")
 
 
-def _previous_nonempty_line(lines: list[str], start: int) -> str:
-    for index in range(start, -1, -1):
-        value = lines[index].strip()
-        if value:
-            return value
-    return "공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘."
-
-
 def _parse_display_aliases(line: str) -> tuple[str, list[str]]:
     prefix = "display_name은 "
-    delimiter = "이고 aliases는 "
+    delimiter = "이고 유의어는 "
     if not line.startswith(prefix) or delimiter not in line:
         raise ValueError(f"display_name/aliases 형식을 해석할 수 없습니다: {line}")
     display_name, aliases_text = line[len(prefix) :].split(delimiter, 1)
@@ -122,7 +113,7 @@ def _parse_field(line: str) -> str:
 
 
 def _parse_processes(line: str) -> list[str]:
-    prefix = "processes는 OPER_NAME 값 "
+    prefix = "포함 공정은 OPER_NAME 값 "
     if not line.startswith(prefix):
         raise ValueError(f"processes 형식을 해석할 수 없습니다: {line}")
     values_text = _strip_korean_sentence_ending(line[len(prefix) :])

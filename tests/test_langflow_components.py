@@ -12430,13 +12430,17 @@ def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_c
 
     process_groups = parse_process_group_blocks(domain_text)
 
-    assert "key는 DA이며 status는 active" in domain_text
-    assert "aliases는 DA, D/A, DA공정" in domain_text
-    assert len(process_groups) == domain_text.count("section은 process_groups이고 key는 ")
+    assert "DA 공정 그룹을 등록해줘." in domain_text
+    assert "유의어는 DA, D/A, DA공정" in domain_text
+    assert len(process_groups) == domain_text.count(" 공정 그룹을 등록해줘.")
+    assert len(process_groups) == 25
+    assert all(item["section"] == "process_groups" for item in process_groups)
+    assert all(item["status"] == "active" for item in process_groups)
     assert all(item["payload"]["field"] == "OPER_NAME" for item in process_groups)
     assert all("field는 OPER_NAME이야." in item["_raw_text"] for item in process_groups)
-    assert "key는 WBM이며 status는 active" in domain_text
-    assert "processes는 OPER_NAME 값 W/BM 하나" in domain_text
+    assert all("별칭마다 별도 item을 만들지 말고 공정그룹 하나로 저장해." in item["_raw_text"] for item in process_groups)
+    assert "WBM 공정 그룹을 등록해줘." in domain_text
+    assert "포함 공정은 OPER_NAME 값 W/BM 하나" in domain_text
     assert "key는 SHIFT_A이며 status는 active" in domain_text
     assert 'condition은 {"SHIFT": "1"}' in domain_text
     assert "process_range_oper_seq_filter" not in domain_text

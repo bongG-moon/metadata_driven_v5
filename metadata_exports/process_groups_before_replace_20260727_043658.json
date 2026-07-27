@@ -1,0 +1,642 @@
+{
+  "exported_at": "2026-07-27T04:39:16.064584+00:00",
+  "query": {
+    "section": "process_groups"
+  },
+  "count": 25,
+  "documents": [
+    {
+      "_id": "domain:process_groups:BG",
+      "section": "process_groups",
+      "key": "BG",
+      "status": "active",
+      "payload": {
+        "display_name": "BG",
+        "aliases": [
+          "BG",
+          "B/G",
+          "BG공정",
+          "B/G공정",
+          "BG 공정",
+          "B/G 공정"
+        ],
+        "processes": [
+          "B/G1",
+          "B/G2"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:37.308977+00:00",
+      "registration_trace": {
+        "raw_text": "BG 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 BG이며 status는 active야.\ndisplay_name은 BG이고 aliases는 BG, B/G, BG공정, B/G공정, BG 공정, B/G 공정이야.\nprocesses는 OPER_NAME 값 B/G1, B/G2야.\n별칭마다 별도 item을 만들지 말고 process_groups:BG 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:BM",
+      "section": "process_groups",
+      "key": "BM",
+      "status": "active",
+      "payload": {
+        "display_name": "B/M",
+        "aliases": [
+          "BM",
+          "B/M",
+          "비엠",
+          "BM공정",
+          "B/M공정",
+          "비엠공정",
+          "BM 공정",
+          "B/M 공정",
+          "비엠 공정"
+        ],
+        "processes": [
+          "B/M"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:54.632410+00:00",
+      "registration_trace": {
+        "raw_text": "BM 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 BM이며 status는 active야.\ndisplay_name은 B/M이고 aliases는 BM, B/M, 비엠, BM공정, B/M공정, 비엠공정, BM 공정, B/M 공정, 비엠 공정이야.\nprocesses는 OPER_NAME 값 B/M 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:BM 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:DP",
+      "section": "process_groups",
+      "key": "DP",
+      "status": "active",
+      "payload": {
+        "display_name": "DP",
+        "aliases": [
+          "DP",
+          "D/P",
+          "DP공정",
+          "D/P공정",
+          "DP 공정",
+          "D/P 공정"
+        ],
+        "processes": [
+          "WET1",
+          "WET2",
+          "L/T1",
+          "L/T2",
+          "B/G1",
+          "B/G2",
+          "H/S1",
+          "H/S2",
+          "W/S1",
+          "W/S2",
+          "WSD1",
+          "WSD2",
+          "WEC1",
+          "WEC2",
+          "WLS1",
+          "WLS2",
+          "WVI",
+          "UV",
+          "C/C1"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:32.917930+00:00",
+      "registration_trace": {
+        "raw_text": "DP 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DP이며 status는 active야.\ndisplay_name은 DP이고 aliases는 DP, D/P, DP공정, D/P공정, DP 공정, D/P 공정이야.\nprocesses는 OPER_NAME 값 WET1, WET2, L/T1, L/T2, B/G1, B/G2, H/S1, H/S2, W/S1, W/S2, WSD1, WSD2, WEC1, WEC2, WLS1, WLS2, WVI, UV, C/C1이야.\n별칭마다 별도 item을 만들지 말고 process_groups:DP 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:DS",
+      "section": "process_groups",
+      "key": "DS",
+      "status": "active",
+      "payload": {
+        "display_name": "D/S",
+        "aliases": [
+          "DS",
+          "D/S",
+          "DS공정",
+          "D/S공정",
+          "DS 공정",
+          "D/S 공정"
+        ],
+        "processes": [
+          "D/S1"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:50.610606+00:00",
+      "registration_trace": {
+        "raw_text": "DS 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DS이며 status는 active야.\ndisplay_name은 D/S이고 aliases는 DS, D/S, DS공정, D/S공정, DS 공정, D/S 공정이야.\nprocesses는 OPER_NAME 값 D/S1 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:DS 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:FCB",
+      "section": "process_groups",
+      "key": "FCB",
+      "status": "active",
+      "payload": {
+        "display_name": "FCB",
+        "aliases": [
+          "FCB",
+          "FCB공정",
+          "FCB 공정"
+        ],
+        "processes": [
+          "FCB1",
+          "FCB2",
+          "FCB/H"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:52.033756+00:00",
+      "registration_trace": {
+        "raw_text": "FCB 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 FCB이며 status는 active야.\ndisplay_name은 FCB이고 aliases는 FCB, FCB공정, FCB 공정이야.\nprocesses는 OPER_NAME 값 FCB1, FCB2, FCB/H야.\n별칭마다 별도 item을 만들지 말고 process_groups:FCB 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:FCBH",
+      "section": "process_groups",
+      "key": "FCBH",
+      "status": "active",
+      "payload": {
+        "display_name": "FCB/H",
+        "aliases": [
+          "FCBH",
+          "FCB/H",
+          "FCBH공정",
+          "FCB/H공정",
+          "FCBH 공정",
+          "FCB/H 공정"
+        ],
+        "processes": [
+          "FCB/H"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:53.347199+00:00",
+      "registration_trace": {
+        "raw_text": "FCBH 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 FCBH이며 status는 active야.\ndisplay_name은 FCB/H이고 aliases는 FCBH, FCB/H, FCBH공정, FCB/H공정, FCBH 공정, FCB/H 공정이야.\nprocesses는 OPER_NAME 값 FCB/H 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:FCBH 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:PC",
+      "section": "process_groups",
+      "key": "PC",
+      "status": "active",
+      "payload": {
+        "display_name": "P/C",
+        "aliases": [
+          "PC",
+          "P/C",
+          "PC공정",
+          "P/C공정",
+          "PC 공정",
+          "P/C 공정"
+        ],
+        "processes": [
+          "P/C1",
+          "P/C2",
+          "P/C3",
+          "P/C4",
+          "P/C5"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:56.006105+00:00",
+      "registration_trace": {
+        "raw_text": "PC 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 PC이며 status는 active야.\ndisplay_name은 P/C이고 aliases는 PC, P/C, PC공정, P/C공정, PC 공정, P/C 공정이야.\nprocesses는 OPER_NAME 값 P/C1, P/C2, P/C3, P/C4, P/C5야.\n별칭마다 별도 item을 만들지 말고 process_groups:PC 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:PLH",
+      "section": "process_groups",
+      "key": "PLH",
+      "status": "active",
+      "payload": {
+        "display_name": "P/L",
+        "aliases": [
+          "PLH",
+          "P/L",
+          "PLH공정",
+          "P/L공정",
+          "PLH 공정",
+          "P/L 공정"
+        ],
+        "processes": [
+          "PLH"
+        ]
+      },
+      "updated_at": "2026-07-25T13:35:02.664116+00:00",
+      "registration_trace": {
+        "raw_text": "PLH 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 PLH이며 status는 active야.\ndisplay_name은 P/L이고 aliases는 PLH, P/L, PLH공정, P/L공정, PLH 공정, P/L 공정이야.\nprocesses는 OPER_NAME 값 PLH 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:PLH 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:WB",
+      "section": "process_groups",
+      "key": "WB",
+      "status": "active",
+      "payload": {
+        "display_name": "W/B",
+        "aliases": [
+          "WB",
+          "W/B",
+          "WB공정",
+          "W/B공정",
+          "WB 공정",
+          "W/B 공정"
+        ],
+        "processes": [
+          "W/B1",
+          "W/B2",
+          "W/B3",
+          "W/B4",
+          "W/B5",
+          "W/B6"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:57.246535+00:00",
+      "registration_trace": {
+        "raw_text": "WB 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WB이며 status는 active야.\ndisplay_name은 W/B이고 aliases는 WB, W/B, WB공정, W/B공정, WB 공정, W/B 공정이야.\nprocesses는 OPER_NAME 값 W/B1, W/B2, W/B3, W/B4, W/B5, W/B6야.\n별칭마다 별도 item을 만들지 말고 process_groups:WB 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:WET",
+      "section": "process_groups",
+      "key": "WET",
+      "status": "active",
+      "payload": {
+        "display_name": "WET",
+        "aliases": [
+          "WET",
+          "WET공정",
+          "WET 공정"
+        ],
+        "processes": [
+          "WET1",
+          "WET2"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:34.283083+00:00",
+      "registration_trace": {
+        "raw_text": "WET 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WET이며 status는 active야.\ndisplay_name은 WET이고 aliases는 WET, WET공정, WET 공정이야.\nprocesses는 OPER_NAME 값 WET1, WET2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WET 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:WLS",
+      "section": "process_groups",
+      "key": "WLS",
+      "status": "active",
+      "payload": {
+        "display_name": "WLS",
+        "aliases": [
+          "WLS",
+          "WLS공정",
+          "WLS 공정"
+        ],
+        "processes": [
+          "WLS1",
+          "WLS2"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:44.068447+00:00",
+      "registration_trace": {
+        "raw_text": "WLS 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WLS이며 status는 active야.\ndisplay_name은 WLS이고 aliases는 WLS, WLS공정, WLS 공정이야.\nprocesses는 OPER_NAME 값 WLS1, WLS2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WLS 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:WS",
+      "section": "process_groups",
+      "key": "WS",
+      "status": "active",
+      "payload": {
+        "display_name": "WS",
+        "aliases": [
+          "WS",
+          "W/S",
+          "WS공정",
+          "W/S공정",
+          "WS 공정",
+          "W/S 공정"
+        ],
+        "processes": [
+          "W/S1",
+          "W/S2"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:40.007679+00:00",
+      "registration_trace": {
+        "raw_text": "WS 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WS이며 status는 active야.\ndisplay_name은 WS이고 aliases는 WS, W/S, WS공정, W/S공정, WS 공정, W/S 공정이야.\nprocesses는 OPER_NAME 값 W/S1, W/S2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WS 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:HS",
+      "section": "process_groups",
+      "key": "HS",
+      "status": "active",
+      "payload": {
+        "display_name": "HS",
+        "aliases": [
+          "HS",
+          "H/S",
+          "HS공정",
+          "H/S공정",
+          "HS 공정",
+          "H/S 공정"
+        ],
+        "processes": [
+          "H/S1",
+          "H/S2"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:38.606936+00:00",
+      "registration_trace": {
+        "raw_text": "HS 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 HS이며 status는 active야.\ndisplay_name은 HS이고 aliases는 HS, H/S, HS공정, H/S공정, HS 공정, H/S 공정이야.\nprocesses는 OPER_NAME 값 H/S1, H/S2야.\n별칭마다 별도 item을 만들지 말고 process_groups:HS 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:LT",
+      "section": "process_groups",
+      "key": "LT",
+      "status": "active",
+      "payload": {
+        "display_name": "LT",
+        "aliases": [
+          "LT",
+          "L/T",
+          "LT공정",
+          "L/T공정",
+          "LT 공정",
+          "L/T 공정"
+        ],
+        "processes": [
+          "L/T1",
+          "L/T2"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:35.748923+00:00",
+      "registration_trace": {
+        "raw_text": "LT 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 LT이며 status는 active야.\ndisplay_name은 LT이고 aliases는 LT, L/T, LT공정, L/T공정, LT 공정, L/T 공정이야.\nprocesses는 OPER_NAME 값 L/T1, L/T2야.\n별칭마다 별도 item을 만들지 말고 process_groups:LT 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:PCO",
+      "section": "process_groups",
+      "key": "PCO",
+      "status": "active",
+      "payload": {
+        "display_name": "PCO",
+        "aliases": [
+          "PCO",
+          "PCO공정",
+          "PCO 공정"
+        ],
+        "processes": [
+          "PCO1",
+          "PCO2",
+          "PCO3",
+          "PCO4",
+          "PCO5",
+          "PCO6"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:46.752119+00:00",
+      "registration_trace": {
+        "raw_text": "PCO 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 PCO이며 status는 active야.\ndisplay_name은 PCO이고 aliases는 PCO, PCO공정, PCO 공정이야.\nprocesses는 OPER_NAME 값 PCO1, PCO2, PCO3, PCO4, PCO5, PCO6야.\n별칭마다 별도 item을 만들지 말고 process_groups:PCO 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:WBM",
+      "section": "process_groups",
+      "key": "WBM",
+      "status": "active",
+      "payload": {
+        "display_name": "W/BM",
+        "aliases": [
+          "WBM",
+          "W/BM",
+          "WBM공정",
+          "W/BM공정",
+          "WBM 공정",
+          "W/BM 공정"
+        ],
+        "processes": [
+          "W/BM"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:58.654150+00:00",
+      "registration_trace": {
+        "raw_text": "WBM 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WBM이며 status는 active야.\ndisplay_name은 W/BM이고 aliases는 WBM, W/BM, WBM공정, W/BM공정, WBM 공정, W/BM 공정이야.\nprocesses는 OPER_NAME 값 W/BM 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:WBM 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:DA",
+      "section": "process_groups",
+      "key": "DA",
+      "status": "active",
+      "payload": {
+        "display_name": "D/A",
+        "aliases": [
+          "DA",
+          "D/A",
+          "DA공정",
+          "D/A공정",
+          "DA 공정",
+          "D/A 공정"
+        ],
+        "processes": [
+          "D/A1",
+          "D/A2",
+          "D/A3",
+          "D/A4",
+          "D/A5",
+          "D/A6"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:45.400687+00:00",
+      "registration_trace": {
+        "raw_text": "DA 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DA이며 status는 active야.\ndisplay_name은 D/A이고 aliases는 DA, D/A, DA공정, D/A공정, DA 공정, D/A 공정이야.\nprocesses는 OPER_NAME 값 D/A1, D/A2, D/A3, D/A4, D/A5, D/A6야.\n별칭마다 별도 item을 만들지 말고 process_groups:DA 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:SAT",
+      "section": "process_groups",
+      "key": "SAT",
+      "status": "active",
+      "payload": {
+        "display_name": "SAT",
+        "aliases": [
+          "SAT",
+          "SAT공정",
+          "SAT 공정"
+        ],
+        "processes": [
+          "SAT1",
+          "SAT2"
+        ]
+      },
+      "updated_at": "2026-07-25T13:35:01.327165+00:00",
+      "registration_trace": {
+        "raw_text": "SAT 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 SAT이며 status는 active야.\ndisplay_name은 SAT이고 aliases는 SAT, SAT공정, SAT 공정이야.\nprocesses는 OPER_NAME 값 SAT1, SAT2야.\n별칭마다 별도 item을 만들지 말고 process_groups:SAT 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:SBM",
+      "section": "process_groups",
+      "key": "SBM",
+      "status": "active",
+      "payload": {
+        "display_name": "SBM",
+        "aliases": [
+          "SBM",
+          "SBM공정",
+          "SBM 공정"
+        ],
+        "processes": [
+          "SBM"
+        ]
+      },
+      "updated_at": "2026-07-25T13:35:05.439344+00:00",
+      "registration_trace": {
+        "raw_text": "SBM 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 SBM이며 status는 active야.\ndisplay_name은 SBM이고 aliases는 SBM, SBM공정, SBM 공정이야.\nprocesses는 OPER_NAME 값 SBM 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:SBM 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:WEC",
+      "section": "process_groups",
+      "key": "WEC",
+      "status": "active",
+      "payload": {
+        "display_name": "WEC",
+        "aliases": [
+          "WEC",
+          "WEC공정",
+          "WEC 공정"
+        ],
+        "processes": [
+          "WEC1",
+          "WEC2"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:42.701799+00:00",
+      "registration_trace": {
+        "raw_text": "WEC 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WEC이며 status는 active야.\ndisplay_name은 WEC이고 aliases는 WEC, WEC공정, WEC 공정이야.\nprocesses는 OPER_NAME 값 WEC1, WEC2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WEC 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:DC",
+      "section": "process_groups",
+      "key": "DC",
+      "status": "active",
+      "payload": {
+        "display_name": "D/C",
+        "aliases": [
+          "DC",
+          "D/C",
+          "DC공정",
+          "D/C공정",
+          "DC 공정",
+          "D/C 공정"
+        ],
+        "processes": [
+          "D/C1",
+          "D/C2",
+          "D/C3",
+          "D/C4"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:48.105863+00:00",
+      "registration_trace": {
+        "raw_text": "DC 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DC이며 status는 active야.\ndisplay_name은 D/C이고 aliases는 DC, D/C, DC공정, D/C공정, DC 공정, D/C 공정이야.\nprocesses는 OPER_NAME 값 D/C1, D/C2, D/C3, D/C4야.\n별칭마다 별도 item을 만들지 말고 process_groups:DC 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:DI",
+      "section": "process_groups",
+      "key": "DI",
+      "status": "active",
+      "payload": {
+        "display_name": "D/I",
+        "aliases": [
+          "DI",
+          "D/I",
+          "DVI",
+          "DI공정",
+          "D/I공정",
+          "DVI공정",
+          "DI 공정",
+          "D/I 공정",
+          "DVI 공정"
+        ],
+        "processes": [
+          "D/I"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:49.380664+00:00",
+      "registration_trace": {
+        "raw_text": "DI 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 DI이며 status는 active야.\ndisplay_name은 D/I이고 aliases는 DI, D/I, DVI, DI공정, D/I공정, DVI공정, DI 공정, D/I 공정, DVI 공정이야.\nprocesses는 OPER_NAME 값 D/I 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:DI 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:QCSPC",
+      "section": "process_groups",
+      "key": "QCSPC",
+      "status": "active",
+      "payload": {
+        "display_name": "QCSPC",
+        "aliases": [
+          "QCSPC",
+          "QCSPC공정",
+          "QCSPC 공정"
+        ],
+        "processes": [
+          "QCSPC1",
+          "QCSPC2",
+          "QCSPC3",
+          "QCSPC4"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:59.930040+00:00",
+      "registration_trace": {
+        "raw_text": "QCSPC 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 QCSPC이며 status는 active야.\ndisplay_name은 QCSPC이고 aliases는 QCSPC, QCSPC공정, QCSPC 공정이야.\nprocesses는 OPER_NAME 값 QCSPC1, QCSPC2, QCSPC3, QCSPC4야.\n별칭마다 별도 item을 만들지 말고 process_groups:QCSPC 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:SG",
+      "section": "process_groups",
+      "key": "SG",
+      "status": "active",
+      "payload": {
+        "display_name": "S/G",
+        "aliases": [
+          "SG",
+          "S/G",
+          "SG공정",
+          "S/G공정",
+          "SG 공정",
+          "S/G 공정"
+        ],
+        "processes": [
+          "S/G"
+        ]
+      },
+      "updated_at": "2026-07-25T13:35:03.932267+00:00",
+      "registration_trace": {
+        "raw_text": "SG 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 SG이며 status는 active야.\ndisplay_name은 S/G이고 aliases는 SG, S/G, SG공정, S/G공정, SG 공정, S/G 공정이야.\nprocesses는 OPER_NAME 값 S/G 하나야.\n별칭마다 별도 item을 만들지 말고 process_groups:SG 하나로 저장해."
+      }
+    },
+    {
+      "_id": "domain:process_groups:WSD",
+      "section": "process_groups",
+      "key": "WSD",
+      "status": "active",
+      "payload": {
+        "display_name": "WSD",
+        "aliases": [
+          "WSD",
+          "WSD공정",
+          "WSD 공정"
+        ],
+        "processes": [
+          "WSD1",
+          "WSD2"
+        ]
+      },
+      "updated_at": "2026-07-25T13:34:41.343610+00:00",
+      "registration_trace": {
+        "raw_text": "WSD 공정 그룹을 기존 canonical 항목에 재등록해서 보강해줘.\nsection은 process_groups이고 key는 WSD이며 status는 active야.\ndisplay_name은 WSD이고 aliases는 WSD, WSD공정, WSD 공정이야.\nprocesses는 OPER_NAME 값 WSD1, WSD2야.\n별칭마다 별도 item을 만들지 말고 process_groups:WSD 하나로 저장해."
+      }
+    }
+  ]
+}

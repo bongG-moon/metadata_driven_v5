@@ -1,0 +1,928 @@
+{
+  "status": "ok",
+  "mode": "apply",
+  "database": "datagov",
+  "collection_name": "agent_v4_domain_items",
+  "requested_count": 25,
+  "before_process_group_count": 25,
+  "deleted_count": 25,
+  "dry_run_success_count": 25,
+  "live_success_count": 25,
+  "final_process_group_count": 25,
+  "backup_path": "C:\\Users\\qkekt\\Desktop\\metadata_driven_v5\\metadata_exports\\process_groups_before_replace_20260727_043658.json",
+  "dry_runs": [
+    {
+      "key": "DP",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:DP",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DP | DP | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "WET",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:WET",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WET | WET | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "LT",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:LT",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:LT | LT | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "BG",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:BG",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:BG | BG | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "HS",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:HS",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:HS | HS | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "WS",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:WS",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WS | WS | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "WSD",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:WSD",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WSD | WSD | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "WEC",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:WEC",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WEC | WEC | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "WLS",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:WLS",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WLS | WLS | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "DA",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:DA",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DA | D/A | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "PCO",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:PCO",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:PCO | PCO | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "DC",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:DC",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DC | D/C | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "DI",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:DI",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DI | D/I | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "DS",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:DS",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DS | D/S | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "FCB",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:FCB",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:FCB | FCB | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "FCBH",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:FCBH",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:FCBH | FCB/H | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "BM",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:BM",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:BM | B/M | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "PC",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:PC",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:PC | P/C | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "WB",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:WB",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WB | W/B | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "WBM",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:WBM",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WBM | W/BM | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "QCSPC",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:QCSPC",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:QCSPC | QCSPC | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "SAT",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:SAT",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:SAT | SAT | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "PLH",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:PLH",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:PLH | P/L | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "SG",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:SG",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:SG | S/G | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    },
+    {
+      "key": "SBM",
+      "mode": "dryrun",
+      "http_status": 200,
+      "expected_key": "process_groups:SBM",
+      "message": "### 등록 결과\n도메인 메타데이터 1건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.\n- 처리 구분: 기존 항목 교체 예정 1건\n- 비슷한 기존 메타데이터 1건이 확인되었습니다.\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:SBM | SBM | 저장 예정 | 기존 항목 교체 예정 |\n\n총 1건입니다.\n\n### 확인할 점\n- 충돌 가능성: 충돌 가능성 1건이 있습니다.\n\n### 다음 단계\n- 저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.\n- 저장 후 Metadata QA에서 등록 내용을 확인하세요."
+    }
+  ],
+  "live_runs": [
+    {
+      "key": "DP",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:DP",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DP | DP | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "WET",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:WET",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WET | WET | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "LT",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:LT",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:LT | LT | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "BG",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:BG",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:BG | BG | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "HS",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:HS",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:HS | HS | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "WS",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:WS",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WS | WS | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "WSD",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:WSD",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WSD | WSD | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "WEC",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:WEC",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WEC | WEC | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "WLS",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:WLS",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WLS | WLS | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "DA",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:DA",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DA | D/A | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "PCO",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:PCO",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:PCO | PCO | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "DC",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:DC",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DC | D/C | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "DI",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:DI",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DI | D/I | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "DS",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:DS",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:DS | D/S | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "FCB",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:FCB",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:FCB | FCB | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "FCBH",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:FCBH",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:FCBH | FCB/H | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "BM",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:BM",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:BM | B/M | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "PC",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:PC",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:PC | P/C | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "WB",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:WB",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WB | W/B | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "WBM",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:WBM",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:WBM | W/BM | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "QCSPC",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:QCSPC",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:QCSPC | QCSPC | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "SAT",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:SAT",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:SAT | SAT | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "PLH",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:PLH",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:PLH | P/L | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "SG",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:SG",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:SG | S/G | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    },
+    {
+      "key": "SBM",
+      "mode": "live",
+      "http_status": 200,
+      "expected_key": "process_groups:SBM",
+      "message": "### 등록 결과\n도메인 메타데이터 1건 저장이 완료되었습니다.\n\n### 한눈에 보기\n- 생성된 등록 후보는 1건입니다.\n- MongoDB에 1건을 저장했습니다.\n- 처리 구분: 신규 저장 1건\n\n### 등록 대상 도메인\n| 구분 | 키 | 표시명 | 상태 | 처리 |\n| --- | --- | --- | --- | --- |\n| process_groups | process_groups:SBM | SBM | 저장 완료 | 신규 저장 |\n\n총 1건입니다.\n\n### 다음 단계\n- Metadata QA에서 등록된 도메인 정보를 확인하세요.\n- 분석 flow에서 관련 질문을 테스트하세요."
+    }
+  ],
+  "verified_documents": [
+    {
+      "_id": "domain:process_groups:DP",
+      "section": "process_groups",
+      "key": "DP",
+      "status": "active",
+      "payload": {
+        "display_name": "DP",
+        "aliases": [
+          "DP",
+          "D/P",
+          "DP공정",
+          "D/P공정",
+          "DP 공정",
+          "D/P 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "WET1",
+          "WET2",
+          "L/T1",
+          "L/T2",
+          "B/G1",
+          "B/G2",
+          "H/S1",
+          "H/S2",
+          "W/S1",
+          "W/S2",
+          "WSD1",
+          "WSD2",
+          "WEC1",
+          "WEC2",
+          "WLS1",
+          "WLS2",
+          "WVI",
+          "UV",
+          "C/C1"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:WET",
+      "section": "process_groups",
+      "key": "WET",
+      "status": "active",
+      "payload": {
+        "display_name": "WET",
+        "aliases": [
+          "WET",
+          "WET공정",
+          "WET 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "WET1",
+          "WET2"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:LT",
+      "section": "process_groups",
+      "key": "LT",
+      "status": "active",
+      "payload": {
+        "display_name": "LT",
+        "aliases": [
+          "LT",
+          "L/T",
+          "LT공정",
+          "L/T공정",
+          "LT 공정",
+          "L/T 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "L/T1",
+          "L/T2"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:BG",
+      "section": "process_groups",
+      "key": "BG",
+      "status": "active",
+      "payload": {
+        "display_name": "BG",
+        "aliases": [
+          "BG",
+          "B/G",
+          "BG공정",
+          "B/G공정",
+          "BG 공정",
+          "B/G 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "B/G1",
+          "B/G2"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:HS",
+      "section": "process_groups",
+      "key": "HS",
+      "status": "active",
+      "payload": {
+        "display_name": "HS",
+        "aliases": [
+          "HS",
+          "H/S",
+          "HS공정",
+          "H/S공정",
+          "HS 공정",
+          "H/S 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "H/S1",
+          "H/S2"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:WS",
+      "section": "process_groups",
+      "key": "WS",
+      "status": "active",
+      "payload": {
+        "display_name": "WS",
+        "aliases": [
+          "WS",
+          "W/S",
+          "WS공정",
+          "W/S공정",
+          "WS 공정",
+          "W/S 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "W/S1",
+          "W/S2"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:WSD",
+      "section": "process_groups",
+      "key": "WSD",
+      "status": "active",
+      "payload": {
+        "display_name": "WSD",
+        "aliases": [
+          "WSD",
+          "WSD공정",
+          "WSD 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "WSD1",
+          "WSD2"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:WEC",
+      "section": "process_groups",
+      "key": "WEC",
+      "status": "active",
+      "payload": {
+        "display_name": "WEC",
+        "aliases": [
+          "WEC",
+          "WEC공정",
+          "WEC 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "WEC1",
+          "WEC2"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:WLS",
+      "section": "process_groups",
+      "key": "WLS",
+      "status": "active",
+      "payload": {
+        "display_name": "WLS",
+        "aliases": [
+          "WLS",
+          "WLS공정",
+          "WLS 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "WLS1",
+          "WLS2"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:DA",
+      "section": "process_groups",
+      "key": "DA",
+      "status": "active",
+      "payload": {
+        "display_name": "D/A",
+        "aliases": [
+          "DA",
+          "D/A",
+          "DA공정",
+          "D/A공정",
+          "DA 공정",
+          "D/A 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "D/A1",
+          "D/A2",
+          "D/A3",
+          "D/A4",
+          "D/A5",
+          "D/A6"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:PCO",
+      "section": "process_groups",
+      "key": "PCO",
+      "status": "active",
+      "payload": {
+        "display_name": "PCO",
+        "aliases": [
+          "PCO",
+          "PCO공정",
+          "PCO 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "PCO1",
+          "PCO2",
+          "PCO3",
+          "PCO4",
+          "PCO5",
+          "PCO6"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:DC",
+      "section": "process_groups",
+      "key": "DC",
+      "status": "active",
+      "payload": {
+        "display_name": "D/C",
+        "aliases": [
+          "DC",
+          "D/C",
+          "DC공정",
+          "D/C공정",
+          "DC 공정",
+          "D/C 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "D/C1",
+          "D/C2",
+          "D/C3",
+          "D/C4"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:DI",
+      "section": "process_groups",
+      "key": "DI",
+      "status": "active",
+      "payload": {
+        "display_name": "D/I",
+        "aliases": [
+          "DI",
+          "D/I",
+          "DVI",
+          "DI공정",
+          "D/I공정",
+          "DVI공정",
+          "DI 공정",
+          "D/I 공정",
+          "DVI 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "D/I"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:DS",
+      "section": "process_groups",
+      "key": "DS",
+      "status": "active",
+      "payload": {
+        "display_name": "D/S",
+        "aliases": [
+          "DS",
+          "D/S",
+          "DS공정",
+          "D/S공정",
+          "DS 공정",
+          "D/S 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "D/S1"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:FCB",
+      "section": "process_groups",
+      "key": "FCB",
+      "status": "active",
+      "payload": {
+        "display_name": "FCB",
+        "aliases": [
+          "FCB",
+          "FCB공정",
+          "FCB 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "FCB1",
+          "FCB2",
+          "FCB/H"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:FCBH",
+      "section": "process_groups",
+      "key": "FCBH",
+      "status": "active",
+      "payload": {
+        "display_name": "FCB/H",
+        "aliases": [
+          "FCBH",
+          "FCB/H",
+          "FCBH공정",
+          "FCB/H공정",
+          "FCBH 공정",
+          "FCB/H 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "FCB/H"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:BM",
+      "section": "process_groups",
+      "key": "BM",
+      "status": "active",
+      "payload": {
+        "display_name": "B/M",
+        "aliases": [
+          "BM",
+          "B/M",
+          "비엠",
+          "BM공정",
+          "B/M공정",
+          "비엠공정",
+          "BM 공정",
+          "B/M 공정",
+          "비엠 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "B/M"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:PC",
+      "section": "process_groups",
+      "key": "PC",
+      "status": "active",
+      "payload": {
+        "display_name": "P/C",
+        "aliases": [
+          "PC",
+          "P/C",
+          "PC공정",
+          "P/C공정",
+          "PC 공정",
+          "P/C 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "P/C1",
+          "P/C2",
+          "P/C3",
+          "P/C4",
+          "P/C5"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:WB",
+      "section": "process_groups",
+      "key": "WB",
+      "status": "active",
+      "payload": {
+        "display_name": "W/B",
+        "aliases": [
+          "WB",
+          "W/B",
+          "WB공정",
+          "W/B공정",
+          "WB 공정",
+          "W/B 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "W/B1",
+          "W/B2",
+          "W/B3",
+          "W/B4",
+          "W/B5",
+          "W/B6"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:WBM",
+      "section": "process_groups",
+      "key": "WBM",
+      "status": "active",
+      "payload": {
+        "display_name": "W/BM",
+        "aliases": [
+          "WBM",
+          "W/BM",
+          "WBM공정",
+          "W/BM공정",
+          "WBM 공정",
+          "W/BM 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "W/BM"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:QCSPC",
+      "section": "process_groups",
+      "key": "QCSPC",
+      "status": "active",
+      "payload": {
+        "display_name": "QCSPC",
+        "aliases": [
+          "QCSPC",
+          "QCSPC공정",
+          "QCSPC 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "QCSPC1",
+          "QCSPC2",
+          "QCSPC3",
+          "QCSPC4"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:SAT",
+      "section": "process_groups",
+      "key": "SAT",
+      "status": "active",
+      "payload": {
+        "display_name": "SAT",
+        "aliases": [
+          "SAT",
+          "SAT공정",
+          "SAT 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "SAT1",
+          "SAT2"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:PLH",
+      "section": "process_groups",
+      "key": "PLH",
+      "status": "active",
+      "payload": {
+        "display_name": "P/L",
+        "aliases": [
+          "PLH",
+          "P/L",
+          "PLH공정",
+          "P/L공정",
+          "PLH 공정",
+          "P/L 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "PLH"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:SG",
+      "section": "process_groups",
+      "key": "SG",
+      "status": "active",
+      "payload": {
+        "display_name": "S/G",
+        "aliases": [
+          "SG",
+          "S/G",
+          "SG공정",
+          "S/G공정",
+          "SG 공정",
+          "S/G 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "S/G"
+        ]
+      }
+    },
+    {
+      "_id": "domain:process_groups:SBM",
+      "section": "process_groups",
+      "key": "SBM",
+      "status": "active",
+      "payload": {
+        "display_name": "SBM",
+        "aliases": [
+          "SBM",
+          "SBM공정",
+          "SBM 공정"
+        ],
+        "field": "OPER_NAME",
+        "processes": [
+          "SBM"
+        ]
+      }
+    }
+  ],
+  "rollback_performed": false
+}
