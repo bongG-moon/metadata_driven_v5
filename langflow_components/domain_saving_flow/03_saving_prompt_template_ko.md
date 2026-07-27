@@ -11,7 +11,9 @@
 - 원문에 없는 `_PROCESS_GROUP`, `_TERM`, `_DOMAIN` 같은 설명형 suffix를 key에 임의로 붙이지 않는다.
 - `analysis_recipes`에 dataset 결합 규칙이 명시되면 `source_datasets`, `join_type`, `join_keys`, `left_key_mappings`, `right_key_mappings`, `preserve_left_rows`를 원문에 있는 범위에서 구조화해 보존한다. `context_columns`는 만들지 않는다.
 - 물리 컬럼명이 서로 다른 join은 표준 `join_keys`와 좌우 mapping을 분리해 기록한다. 원문에 없는 join key나 실행 순서를 추측하지 않는다.
-- pandas function case는 실행 helper import가 아니라 적용 조건, 필요한 입력/출력, pseudocode, I/O contract만 담는다.
+- `pandas_function_cases`의 payload에는 원문에 명시된 `display_name`, `function_name`, `aliases`, `required_columns`, `selection_criteria`만 사용한다.
+- pandas function case에는 실제 helper 구현, 함수 시그니처, pandas 코드 예시, `pseudocode`, I/O contract를 저장하지 않는다.
+- helper 선택·적용 조건과 실행 시 `input_text`, `source_alias`에 전달할 규칙은 `selection_criteria`의 문장으로 보존한다. `matching_rules`, `token_priority` 같은 임의의 중첩 key를 새로 만들지 않는다.
 - SQL, source_config, credential은 절대 domain item에 넣지 않는다.
 
 중복 확인은 후보 생성 후 MongoDB의 동일 key와 같은 section의 identity를 대상으로 별도 수행한다. 기존 metadata를 추측하거나 임의로 덮어쓰지 않는다.

@@ -6308,6 +6308,43 @@ def test_domain_langflow_saving_blocks_source_config_in_dry_run():
     assert result["write_result"]["errors"][0]["type"] == "domain_source_config_forbidden"
 
 
+def test_domain_writer_allows_semantic_token_metadata_but_blocks_credentials():
+    request_loader = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "00_domain_saving_request_loader.py")
+    normalizer = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "04_domain_saving_result_normalizer.py")
+    writer = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "07_domain_review_writer.py")
+    semantic_item = {
+        "section": "pandas_function_cases",
+        "key": "ordered_process_range",
+        "status": "active",
+        "payload": {
+            "display_name": "OPER_SEQ 공정 구간 필터",
+            "function_name": "filter_ordered_range",
+            "aliases": ["공정 구간", "ordered range"],
+            "required_columns": ["OPER_NAME", "OPER_SEQ"],
+            "matching_rules": {
+                "token_priority": "L-218의 하이픈보다 시작·끝 공정 표현을 우선한다.",
+                "token_pattern": "D/A1~W/B6",
+            },
+        },
+    }
+
+    payload = request_loader.build_request("공정 구간 function case 등록", "replace", True)
+    payload = normalizer.normalize_authoring(
+        payload,
+        {"items": [semantic_item], "missing_information": [], "assumptions": []},
+    )
+    result = writer.review_and_write(payload)
+
+    assert result["write_result"]["success"] is True
+    assert result["write_result"]["errors"] == []
+    assert writer._secret_paths(semantic_item) == []
+    assert writer._is_secret_key("token_priority") is False
+    assert writer._is_secret_key("tokenPattern") is False
+
+    for key in ("token", "access_token", "refreshToken", "api_token", "password", "client_secret"):
+        assert writer._is_secret_key(key) is True
+
+
 def test_domain_langflow_saving_requires_process_group_field():
     request_loader = load_module(
         ROOT / "langflow_components" / "domain_saving_flow" / "00_domain_saving_request_loader.py"
@@ -12497,6 +12534,9 @@ def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_c
     assert "Domain의 `analysis_recipes`에 등록" in saving_prompt
     assert "`source_datasets`, `join_type`, `join_keys`" in domain_saving_prompt
     assert "`left_key_mappings`, `right_key_mappings`, `preserve_left_rows`" in domain_saving_prompt
+    assert "`display_name`, `function_name`, `aliases`, `required_columns`, `selection_criteria`" in domain_saving_prompt
+    assert "`matching_rules`, `token_priority` 같은 임의의 중첩 key를 새로 만들지 않는다" in domain_saving_prompt
+    assert "pandas 코드 예시, `pseudocode`, I/O contract를 저장하지 않는다" in domain_saving_prompt
     assert "row_identity_columns" not in catalog_text
     assert "context_columns" not in catalog_text
     assert "row_identity_columns" not in saving_prompt

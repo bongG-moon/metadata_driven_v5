@@ -28,7 +28,9 @@ DEFAULT_DATABASE = "datagov"
 DEFAULT_COLLECTION = "agent_v4_domain_items"
 COLLECTION_ENV = "MONGODB_DOMAIN_COLLECTION"
 SAFE_REFERENCE_KEYS = {"token_source", "token_key"}
-SECRET_PATTERNS = ("password", "passwd", "token", "secret", "api_key", "apikey", "authorization", "credential", "access_key", "private_key", "cookie")
+SECRET_KEY_SEGMENTS = {"password", "passwd", "secret", "apikey", "authorization", "credential", "cookie"}
+SECRET_KEY_PHRASES = {("api", "key"), ("access", "key"), ("private", "key")}
+TOKEN_CREDENTIAL_QUALIFIERS = {"access", "refresh", "api", "auth", "authorization", "bearer", "session", "secret", "credential", "value"}
 QA_SNAPSHOT_CACHE_REGISTRY = "_metadata_driven_v5_qa_snapshot_cache_v1"
 
 
@@ -448,10 +450,20 @@ def _secret_paths(value: Any, prefix: str = "") -> list[str]:
     return paths
 
 
-# 함수 설명: `_is_secret_key()`는 필드 이름이 credential·token·password 등 저장 금지 비밀 key인지 판정합니다.
+# 함수 설명: `_is_secret_key()`는 의미 분석용 token metadata와 실제 credential token을 구분해 저장 금지 비밀 key인지 판정합니다.
 def _is_secret_key(key: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", str(key or "").lower())
-    return any(pattern in normalized for pattern in SECRET_PATTERNS)
+    snake_case = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key or ""))
+    normalized = re.sub(r"[^a-z0-9]+", "_", snake_case.lower()).strip("_")
+    segments = {part for part in normalized.split("_") if part}
+    if segments & SECRET_KEY_SEGMENTS:
+        return True
+    if any(set(phrase).issubset(segments) for phrase in SECRET_KEY_PHRASES):
+        return True
+    if "token" not in segments:
+        return False
+    if normalized == "token":
+        return True
+    return bool(segments & TOKEN_CREDENTIAL_QUALIFIERS)
 
 
 # 함수 설명: `_redact_raw_text()`는 등록 원문에 포함될 수 있는 credential 값을 응답·trace에서 마스킹합니다.

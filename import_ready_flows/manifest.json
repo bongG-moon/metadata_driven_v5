@@ -27,7 +27,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "ba7a55b3b2eef628eba98b11a5548309bf2a744e0237ede68013c4dd099aa411",
+  "single_file_ui_import_sha256": "404a96bcd129a1a26a0afdac202fef7b16cc366be766a40f22dbe2709dda0607",
   "flows": [
     {
       "order": 1,
@@ -45,7 +45,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
       "nodes": 14,
       "edges": 15,
-      "sha256": "06ee02f4d371c77611a2fcbff0b644d803a14cf428e7053116c5e8b8abf0fc7e"
+      "sha256": "14c0a51e6a34286ff14dd0c81929adc28d1950aefa153ac01db90e38f1b05aa8"
     },
     {
       "order": 3,
@@ -134,7 +134,7 @@
     "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools"
   },
   "validation": {
-    "pytest": "429 passed",
+    "pytest": "430 passed",
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 120/120 custom nodes to 83 real Python sources; 0 missing",
     "korean_component_documentation": "84/84 Python sources and 1611/1611 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7404/7404 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
