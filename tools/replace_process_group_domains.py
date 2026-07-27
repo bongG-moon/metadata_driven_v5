@@ -48,19 +48,24 @@ def parse_process_group_blocks(text: str) -> list[dict[str, Any]]:
         key = match.group(1).strip()
         status = match.group(2).strip()
         display_line = _next_nonempty_line(lines, index + 1)
-        processes_line = _next_nonempty_line(lines, display_line[0] + 1)
+        field_line = _next_nonempty_line(lines, display_line[0] + 1)
+        processes_line = _next_nonempty_line(lines, field_line[0] + 1)
         display_name, aliases = _parse_display_aliases(display_line[1])
+        field = _parse_field(field_line[1])
         processes = _parse_processes(processes_line[1])
         if key in seen_keys:
             raise ValueError(f"process_groups key가 domain_knowledge.txt에 중복되었습니다: {key}")
-        if not display_name or not aliases or not processes:
-            raise ValueError(f"process_groups:{key} 블록의 display_name, aliases 또는 processes가 비어 있습니다.")
+        if not display_name or not aliases or not field or not processes:
+            raise ValueError(
+                f"process_groups:{key} 블록의 display_name, aliases, field 또는 processes가 비어 있습니다."
+            )
         seen_keys.add(key)
         raw_block = "\n".join(
             [
                 _previous_nonempty_line(lines, index - 1),
                 raw_line.strip(),
                 display_line[1],
+                field_line[1],
                 processes_line[1],
                 f"별칭마다 별도 item을 만들지 말고 process_groups:{key} 하나로 저장해.",
             ]
@@ -73,6 +78,7 @@ def parse_process_group_blocks(text: str) -> list[dict[str, Any]]:
                 "payload": {
                     "display_name": display_name,
                     "aliases": aliases,
+                    "field": field,
                     "processes": processes,
                 },
                 "_raw_text": raw_block,
@@ -106,6 +112,13 @@ def _parse_display_aliases(line: str) -> tuple[str, list[str]]:
     aliases_text = _strip_korean_sentence_ending(aliases_text)
     aliases = [value.strip() for value in aliases_text.split(",") if value.strip()]
     return display_name.strip(), list(dict.fromkeys(aliases))
+
+
+def _parse_field(line: str) -> str:
+    prefix = "field는 "
+    if not line.startswith(prefix):
+        raise ValueError(f"field 형식을 해석할 수 없습니다: {line}")
+    return _strip_korean_sentence_ending(line[len(prefix) :])
 
 
 def _parse_processes(line: str) -> list[str]:

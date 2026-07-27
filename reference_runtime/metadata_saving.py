@@ -117,6 +117,7 @@ def build_authoring_json_prompt(
 - 정제문에만 있고 원문 근거가 없는 값도 새로 만들지 않는다.
 - SQL/query_template은 원문 그대로 보존하고 `...`로 줄이지 않는다.
 - domain에는 SQL/source_config를 넣지 않는다.
+- domain의 process_groups에는 원문에 명시된 표준 필터 컬럼을 payload.field로, 해당 컬럼에 적용할 값 목록을 payload.processes로 보존한다.
 - table catalog에만 source_config/query/filter_mappings를 넣는다.
 - main_flow_filter에는 표준 filter 의미만 넣고 dataset별 물리 mapping은 넣지 않는다.
 
@@ -371,6 +372,23 @@ def review_item(metadata_type: str, item: dict[str, Any]) -> dict[str, Any]:
             errors.append(make_error("unsupported_section", f"지원하지 않는 domain section입니다: {section}", field="section"))
         if "source_config" in payload or "query_template" in payload:
             errors.append(make_error("domain_source_config_forbidden", "domain에는 source/query config를 저장하지 않습니다."))
+        if section == "process_groups":
+            if not str(payload.get("field") or "").strip():
+                errors.append(
+                    make_error(
+                        "missing_process_group_field",
+                        "process_groups에는 payload.field 표준 필터 컬럼이 필요합니다.",
+                        field="payload.field",
+                    )
+                )
+            if not ensure_list(payload.get("processes")):
+                errors.append(
+                    make_error(
+                        "missing_process_group_processes",
+                        "process_groups에는 payload.processes 값 목록이 필요합니다.",
+                        field="payload.processes",
+                    )
+                )
 
     if metadata_type == "table_catalog":
         source_type = payload.get("source_type") or ensure_dict(payload.get("source_config")).get("source_type")

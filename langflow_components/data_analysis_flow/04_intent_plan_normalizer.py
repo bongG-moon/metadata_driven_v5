@@ -33,9 +33,18 @@ def normalize_intent_plan(
     payload = _payload(payload_value)
     parsed = _json(llm_response)
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
+    metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
     retrieval_jobs = _retrieval_jobs(plan)
+    retrieval_jobs, process_group_field_guard = _apply_process_group_filter_fields(
+        retrieval_jobs,
+        metadata_candidates,
+    )
     retrieval_jobs, context_date_guard = _apply_context_date_guard(payload, retrieval_jobs)
     pandas_plan = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+    pandas_plan = _rewrite_process_group_plan_descriptions(
+        pandas_plan,
+        process_group_field_guard,
+    )
     function_cases = _function_case_items(plan, retrieval_jobs)
     pandas_plan = _ensure_function_case_steps(function_cases, pandas_plan, retrieval_jobs)
     request_scope = _request_scope(plan, payload)
@@ -44,7 +53,6 @@ def normalize_intent_plan(
         pandas_plan = _bind_previous_result_alias(pandas_plan)
         function_cases = _bind_previous_result_alias(function_cases)
 
-    metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
     metadata_refs = _metadata_refs(parsed, plan)
     resolved_grain_plan = _resolve_grain_plan(
         plan,
@@ -108,6 +116,7 @@ def normalize_intent_plan(
         "previous_data_reuse": previous_data_reuse,
         "decision_reason": parsed.get("trace", {}).get("decision_reason", []) if isinstance(parsed.get("trace"), dict) else [],
         "context_date_guard": context_date_guard,
+        "process_group_field_guard": process_group_field_guard,
         "resolved_grain_columns": resolved_grain_plan.get("grain_columns", []) if resolved_grain_plan else [],
         "resolved_join_count": len(resolved_join_plan),
     }
@@ -250,6 +259,187 @@ def _retrieval_jobs(plan: dict[str, Any]) -> list[Any]:
                 if str(key) not in RETIRED_JOB_DETAIL_KEYS
             }
         )
+    return result
+
+
+# 함수 설명: 공정 그룹 metadata의 canonical field와 processes 값을 기준으로 LLM filter field 오선택을 교정합니다.
+def _apply_process_group_filter_fields(
+    retrieval_jobs: list[Any],
+    metadata_candidates: dict[str, Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    contracts = _process_group_contracts(metadata_candidates)
+    if not contracts:
+        return retrieval_jobs, {"status": "not_available", "corrections": []}
+
+    normalized_jobs: list[Any] = []
+    corrections: list[dict[str, Any]] = []
+    for item in retrieval_jobs:
+        if not isinstance(item, dict):
+            normalized_jobs.append(deepcopy(item))
+            continue
+        job = deepcopy(item)
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        filters = job.get("filters")
+        if isinstance(filters, dict):
+            normalized_filters = deepcopy(filters)
+            for raw_field, condition in filters.items():
+                canonical_field, group_keys = _process_group_field_for_condition(
+                    raw_field,
+                    condition,
+                    contracts,
+                )
+                if not canonical_field or _normalized_column_key(raw_field) == _normalized_column_key(canonical_field):
+                    continue
+                original_key = str(raw_field)
+                original_value = normalized_filters.pop(original_key, deepcopy(condition))
+                existing_key = next(
+                    (
+                        key
+                        for key in normalized_filters
+                        if _normalized_column_key(key) == _normalized_column_key(canonical_field)
+                    ),
+                    "",
+                )
+                if not existing_key:
+                    normalized_filters[canonical_field] = original_value
+                corrections.append(
+                    {
+                        "source_alias": alias,
+                        "from_field": original_key,
+                        "to_field": canonical_field,
+                        "process_group_keys": group_keys,
+                    }
+                )
+            job["filters"] = normalized_filters
+        elif isinstance(filters, list):
+            normalized_filters = []
+            for condition in filters:
+                normalized = deepcopy(condition)
+                if isinstance(condition, dict):
+                    raw_field = condition.get("field") or condition.get("column")
+                    canonical_field, group_keys = _process_group_field_for_condition(
+                        raw_field,
+                        condition,
+                        contracts,
+                    )
+                    if canonical_field and _normalized_column_key(raw_field) != _normalized_column_key(canonical_field):
+                        normalized["field"] = canonical_field
+                        normalized.pop("column", None)
+                        corrections.append(
+                            {
+                                "source_alias": alias,
+                                "from_field": str(raw_field or ""),
+                                "to_field": canonical_field,
+                                "process_group_keys": group_keys,
+                            }
+                        )
+                normalized_filters.append(normalized)
+            job["filters"] = normalized_filters
+        normalized_jobs.append(job)
+
+    return normalized_jobs, {
+        "status": "applied" if corrections else "not_needed",
+        "corrections": corrections,
+    }
+
+
+# 함수 설명: 후보 Domain에서 공정 그룹별 canonical field와 실제 process 값 계약을 추출합니다.
+def _process_group_contracts(metadata_candidates: dict[str, Any]) -> list[dict[str, Any]]:
+    items = metadata_candidates.get("domain_items")
+    contracts: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or str(item.get("section") or "").strip() != "process_groups":
+            continue
+        payload = _metadata_payload(item)
+        processes = _string_list(payload.get("processes"))
+        if not processes:
+            continue
+        contracts.append(
+            {
+                "key": str(item.get("key") or "").strip(),
+                # 기존 운영 문서의 process_groups는 모두 OPER_NAME 계약이므로
+                # field 재등록 전 문서도 같은 의미로 안전하게 호환합니다.
+                "field": str(payload.get("field") or "OPER_NAME").strip(),
+                "processes": {value.casefold() for value in processes},
+            }
+        )
+    return contracts
+
+
+# 함수 설명: 한 filter 조건의 값이 공정 그룹 processes와 일치할 때 유일한 canonical field를 반환합니다.
+def _process_group_field_for_condition(
+    raw_field: Any,
+    condition: Any,
+    contracts: list[dict[str, Any]],
+) -> tuple[str, list[str]]:
+    if _normalized_column_key(raw_field) not in {"OPER", "OPERNUM", "OPERNAME", "OPERNM"}:
+        return "", []
+    operator = str(condition.get("operator") or condition.get("op") or "eq").strip().lower() if isinstance(condition, dict) else "eq"
+    if operator not in {"eq", "in", "=", "=="}:
+        return "", []
+    raw_values = (
+        condition.get("values", condition.get("value", []))
+        if isinstance(condition, dict)
+        else condition
+    )
+    values = raw_values if isinstance(raw_values, (list, tuple, set)) else [raw_values]
+    normalized_values = {
+        str(value).strip().casefold()
+        for value in values
+        if not isinstance(value, (dict, list, tuple, set)) and str(value or "").strip()
+    }
+    if not normalized_values:
+        return "", []
+
+    matches = [
+        contract
+        for contract in contracts
+        if normalized_values.issubset(contract["processes"])
+    ]
+    fields = {
+        str(contract.get("field") or "").strip()
+        for contract in matches
+        if str(contract.get("field") or "").strip()
+    }
+    if len(fields) != 1:
+        return "", []
+    return next(iter(fields)), [
+        str(contract.get("key") or "")
+        for contract in matches
+        if str(contract.get("key") or "")
+    ]
+
+
+# 함수 설명: filter field 교정 결과를 같은 source의 pandas 계획 설명에도 반영해 표시와 실행 계약을 맞춥니다.
+def _rewrite_process_group_plan_descriptions(
+    pandas_plan: list[Any],
+    guard: dict[str, Any],
+) -> list[Any]:
+    corrections = guard.get("corrections") if isinstance(guard.get("corrections"), list) else []
+    if not corrections:
+        return deepcopy(pandas_plan)
+    result: list[Any] = []
+    for item in pandas_plan:
+        if not isinstance(item, dict):
+            result.append(deepcopy(item))
+            continue
+        normalized = deepcopy(item)
+        alias = str(normalized.get("source_alias") or "").strip()
+        description = str(normalized.get("description") or "")
+        for correction in corrections:
+            if alias != str(correction.get("source_alias") or "").strip():
+                continue
+            from_field = str(correction.get("from_field") or "").strip()
+            to_field = str(correction.get("to_field") or "").strip()
+            if from_field and to_field:
+                description = re.sub(
+                    rf"(?<![\w]){re.escape(from_field)}(?![\w])",
+                    to_field,
+                    description,
+                )
+        if description:
+            normalized["description"] = description
+        result.append(normalized)
     return result
 
 

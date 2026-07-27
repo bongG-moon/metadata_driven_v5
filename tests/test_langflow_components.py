@@ -2445,6 +2445,137 @@ def test_intent_normalizer_parses_langflow_message_text_with_nested_json():
     assert not any(warning.get("type") == "missing_retrieval_jobs" for warning in normalized["trace"]["warnings"])
 
 
+def test_v5_process_group_field_corrects_equipment_oper_filter_before_pandas_execution():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    hydrator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    pandas_executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    da_processes = ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
+    payload = {
+        "request": {
+            "question": "오늘 da공정에서 생산량 상위 3개 제품과 그 제품들에 할당된 장비 대수 알려줘"
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "DA",
+                    "payload": {
+                        "display_name": "D/A",
+                        "aliases": ["DA", "D/A", "DA공정"],
+                        "field": "OPER_NAME",
+                        "processes": da_processes,
+                    },
+                }
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "top_products_with_equipment_count",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production_today",
+                    "source_alias": "prod_today",
+                    "required_params": {"DATE": "20260727"},
+                    "filters": {
+                        "OPER_NAME": {"operator": "in", "value": da_processes}
+                    },
+                },
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "eqp_assign",
+                    "required_params": {},
+                    "filters": {
+                        "OPER": {"operator": "in", "value": da_processes}
+                    },
+                },
+            ],
+            "pandas_execution_plan": [
+                {
+                    "step": 1,
+                    "operation": "apply_filters",
+                    "source_alias": "prod_today",
+                    "description": "production_today 데이터에 OPER_NAME D/A 공정 그룹 필터를 적용한다.",
+                },
+                {
+                    "step": 4,
+                    "operation": "apply_filters",
+                    "source_alias": "eqp_assign",
+                    "description": "equipment_assign 데이터에 OPER D/A 공정 그룹 필터를 적용한다.",
+                },
+            ],
+            "output_contract": {"result_mode": "aggregate"},
+        }
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        llm_response,
+        metadata_candidates,
+    )
+    jobs = normalized["intent_plan"]["retrieval_jobs"]
+    assert jobs[0]["filters"] == {
+        "OPER_NAME": {"operator": "in", "value": da_processes}
+    }
+    assert jobs[1]["filters"] == {
+        "OPER_NAME": {"operator": "in", "value": da_processes}
+    }
+    assert "OPER_NAME D/A" in normalized["intent_plan"]["pandas_execution_plan"][1]["description"]
+    guard = normalized["trace"]["inspection"]["intent"]["process_group_field_guard"]
+    assert guard["status"] == "applied"
+    assert guard["corrections"] == [
+        {
+            "source_alias": "eqp_assign",
+            "from_field": "OPER",
+            "to_field": "OPER_NAME",
+            "process_group_keys": ["DA"],
+        }
+    ]
+
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "source_type": "oracle",
+                    "required_params": ["DATE"],
+                    "source_config": {"db_key": "PNT_RPT"},
+                    "filter_mappings": {"OPER_NAME": ["OPER_NAME"]},
+                },
+            },
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {
+                    "source_type": "oracle",
+                    "required_params": [],
+                    "source_config": {"db_key": "PNT_RPT"},
+                    "filter_mappings": {
+                        "OPER_NUM": ["OPER"],
+                        "OPER_NAME": ["OPER_NM"],
+                    },
+                },
+            },
+        ]
+    }
+    hydrated = hydrator.hydrate_retrieval_jobs(normalized, catalog, retrieval_mode="live")
+    filter_plan = pandas_executor._pandas_filter_plan(hydrated)
+    preamble = pandas_executor._pandas_filter_preamble(filter_plan)
+
+    assert "_filter_col_2_1 = 'OPER_NM' if 'OPER_NM'" in preamble
+    assert "_filter_col_2_1 = 'OPER' if 'OPER'" not in preamble
+
+
 def test_intent_normalizer_accepts_llm_json_with_literal_sql_newlines():
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
     payload = {"request": {"question": "어제 DA공정 차수별 생산량 알려줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
@@ -6174,6 +6305,42 @@ def test_domain_langflow_saving_blocks_source_config_in_dry_run():
     assert result["write_result"]["errors"][0]["type"] == "domain_source_config_forbidden"
 
 
+def test_domain_langflow_saving_requires_process_group_field():
+    request_loader = load_module(
+        ROOT / "langflow_components" / "domain_saving_flow" / "00_domain_saving_request_loader.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "domain_saving_flow" / "04_domain_saving_result_normalizer.py"
+    )
+    writer = load_module(
+        ROOT / "langflow_components" / "domain_saving_flow" / "07_domain_review_writer.py"
+    )
+    payload = request_loader.build_request("DA 공정 그룹", "replace", "true")
+    payload = normalizer.normalize_authoring(
+        payload,
+        {
+            "items": [
+                {
+                    "section": "process_groups",
+                    "key": "DA",
+                    "payload": {
+                        "display_name": "D/A",
+                        "aliases": ["DA", "D/A"],
+                        "processes": ["D/A1", "D/A2"],
+                    },
+                }
+            ]
+        },
+    )
+
+    result = writer.review_and_write(payload)
+
+    assert result["write_result"]["success"] is False
+    assert "missing_process_group_field" in {
+        error["type"] for error in result["write_result"]["errors"]
+    }
+
+
 def test_domain_writer_keeps_deterministic_blockers_even_when_review_is_ready():
     request_loader = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "00_domain_saving_request_loader.py")
     normalizer = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "04_domain_saving_result_normalizer.py")
@@ -6197,7 +6364,7 @@ def test_metadata_writers_preserve_refinement_and_fail_closed_on_missing_informa
             "domain_saving_flow/04_domain_saving_result_normalizer.py",
             "domain_saving_flow/07_domain_review_writer.py",
             "domain_saving_flow/08_domain_saving_response_builder.py",
-            {"items": [{"section": "process_groups", "key": "DA", "payload": {"display_name": "D/A"}}]},
+            {"items": [{"section": "process_groups", "key": "DA", "payload": {"display_name": "D/A", "field": "OPER_NAME", "processes": ["D/A1"]}}]},
         ),
         (
             "table_catalog_saving_flow/00_table_catalog_saving_request_loader.py",
@@ -6392,7 +6559,7 @@ def test_authoring_writers_use_shared_v4_mongo_env_defaults(monkeypatch):
     filter_writer = load_module(ROOT / "langflow_components" / "main_flow_filters_saving_flow" / "07_main_flow_filter_review_writer.py")
 
     domain_payload = domain_request_loader.build_request("DA는 D/A1 공정입니다.", "ask", "false")
-    domain_payload = domain_normalizer.normalize_authoring(domain_payload, {"items": [{"section": "process_groups", "key": "DA", "payload": {"processes": ["D/A1"]}}]})
+    domain_payload = domain_normalizer.normalize_authoring(domain_payload, {"items": [{"section": "process_groups", "key": "DA", "payload": {"field": "OPER_NAME", "processes": ["D/A1"]}}]})
     table_payload = table_request_loader.build_request("wip_today", "ask", "false")
     table_payload = table_normalizer.normalize_authoring(
         table_payload,
@@ -6555,7 +6722,7 @@ def test_metadata_writers_use_deterministic_review_without_second_llm(monkeypatc
             "domain_saving_flow/00_domain_saving_request_loader.py",
             "domain_saving_flow/04_domain_saving_result_normalizer.py",
             "domain_saving_flow/07_domain_review_writer.py",
-            {"items": [{"section": "process_groups", "key": "DA", "payload": {"display_name": "D/A"}}]},
+            {"items": [{"section": "process_groups", "key": "DA", "payload": {"display_name": "D/A", "field": "OPER_NAME", "processes": ["D/A1"]}}]},
             "domain_items",
         ),
         (
@@ -6691,6 +6858,7 @@ def test_domain_replace_resolves_unique_alias_to_existing_canonical_key(monkeypa
                     "payload": {
                         "display_name": "BG 공정 그룹",
                         "aliases": ["BG", "B/G", "B/G 공정 그룹"],
+                        "field": "OPER_NAME",
                         "processes": ["B/G1", "B/G2", "B/G3", "B/G4", "B/G5"],
                     },
                 }
@@ -6735,7 +6903,7 @@ def test_domain_replace_inserts_when_no_similar_existing_item(monkeypatch):
     payload = request_loader.build_request("신규 CMP 공정 그룹", "replace", False)
     payload = normalizer.normalize_authoring(
         payload,
-        {"items": [{"section": "process_groups", "key": "CMP", "payload": {"display_name": "CMP", "aliases": ["CMP"], "processes": ["CMP1"]}}]},
+        {"items": [{"section": "process_groups", "key": "CMP", "payload": {"display_name": "CMP", "aliases": ["CMP"], "field": "OPER_NAME", "processes": ["CMP1"]}}]},
     )
     payload = matcher.check_similarity(payload, {"existing_items": []})
 
@@ -6759,7 +6927,7 @@ def test_domain_replace_blocks_ambiguous_alias_without_writing(monkeypatch):
     before = deepcopy(store["datagov"]["agent_v4_domain_items"])
     payload = {
         "request": {"raw_text": "BG 공정 교체", "duplicate_action": "replace", "dry_run": False},
-        "items": [{"section": "process_groups", "key": "BG_PROCESS_GROUP", "payload": {"display_name": "BG 공정 그룹", "aliases": ["BG", "B/G"], "processes": ["B/G1", "B/G2"]}}],
+        "items": [{"section": "process_groups", "key": "BG_PROCESS_GROUP", "payload": {"display_name": "BG 공정 그룹", "aliases": ["BG", "B/G"], "field": "OPER_NAME", "processes": ["B/G1", "B/G2"]}}],
     }
     payload = matcher.check_similarity(payload, {"existing_items": existing_items})
 
@@ -6775,7 +6943,7 @@ def test_domain_replace_blocks_when_identity_lookup_failed():
     writer = load_module(ROOT / "langflow_components" / "domain_saving_flow" / "07_domain_review_writer.py")
     payload = {
         "request": {"raw_text": "BG 공정 교체", "duplicate_action": "replace", "dry_run": True},
-        "items": [{"section": "process_groups", "key": "BG", "payload": {"display_name": "BG", "aliases": ["BG"], "processes": ["B/G1"]}}],
+        "items": [{"section": "process_groups", "key": "BG", "payload": {"display_name": "BG", "aliases": ["BG"], "field": "OPER_NAME", "processes": ["B/G1"]}}],
         "trace": {"duplicate_lookup": {"status": "error", "errors": [{"type": "mongo_duplicate_lookup_error", "message": "timeout"}]}},
     }
 
@@ -6797,7 +6965,7 @@ def test_domain_replace_blocks_when_identity_lookup_failed():
             {
                 "section": "process_groups",
                 "key": "DA",
-                "payload": {"display_name": "DA", "aliases": ["DA", "D/A"], "processes": ["D/A1"]},
+                "payload": {"display_name": "DA", "aliases": ["DA", "D/A"], "field": "OPER_NAME", "processes": ["D/A1"]},
             },
             "identity_lookup_unavailable",
         ),
@@ -6852,7 +7020,7 @@ def test_metadata_writers_fail_closed_when_explicit_duplicate_lookup_is_unavaila
             {
                 "section": "process_groups",
                 "key": "DA",
-                "payload": {"display_name": "DA", "aliases": ["DA", "D/A"], "processes": ["D/A1"]},
+                "payload": {"display_name": "DA", "aliases": ["DA", "D/A"], "field": "OPER_NAME", "processes": ["D/A1"]},
             },
         ),
         (
@@ -6894,7 +7062,7 @@ def test_metadata_writers_keep_legacy_payload_compatibility_without_duplicate_lo
             {
                 "section": "process_groups",
                 "key": "DA",
-                "payload": {"display_name": "DA", "aliases": ["DA", "D/A"], "processes": ["D/A1"]},
+                "payload": {"display_name": "DA", "aliases": ["DA", "D/A"], "field": "OPER_NAME", "processes": ["D/A1"]},
             },
         ),
         (
@@ -7221,7 +7389,7 @@ def test_successful_metadata_write_invalidates_same_process_qa_snapshot(monkeypa
     authoring = request_loader.build_request("CMP는 CMP1 공정입니다.", "replace", False)
     authoring = normalizer.normalize_authoring(
         authoring,
-        {"items": [{"section": "process_groups", "key": "CMP", "payload": {"display_name": "CMP", "aliases": ["CMP"], "processes": ["CMP1"]}}]},
+        {"items": [{"section": "process_groups", "key": "CMP", "payload": {"display_name": "CMP", "aliases": ["CMP"], "field": "OPER_NAME", "processes": ["CMP1"]}}]},
     )
     write_result = writer.review_and_write(authoring, mongo_uri="mongodb://fake", mongo_database="datagov", collection_name="agent_v4_domain_items")
     refreshed = snapshot_loader.load_metadata_snapshot(qa_request, "mongodb://fake", "datagov", cache_ttl_seconds="30")
@@ -12255,9 +12423,15 @@ def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_c
         / "domain_saving_flow"
         / "03_saving_prompt_template_ko.md"
     ).read_text(encoding="utf-8")
+    from tools.replace_process_group_domains import parse_process_group_blocks
+
+    process_groups = parse_process_group_blocks(domain_text)
 
     assert "key는 DA이며 status는 active" in domain_text
     assert "aliases는 DA, D/A, DA공정" in domain_text
+    assert len(process_groups) == domain_text.count("section은 process_groups이고 key는 ")
+    assert all(item["payload"]["field"] == "OPER_NAME" for item in process_groups)
+    assert all("field는 OPER_NAME이야." in item["_raw_text"] for item in process_groups)
     assert "key는 WBM이며 status는 active" in domain_text
     assert "processes는 OPER_NAME 값 W/BM 하나" in domain_text
     assert "key는 SHIFT_A이며 status는 active" in domain_text
@@ -12283,6 +12457,8 @@ def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_c
     assert "default_detail_columns는 LOT_ID, OPER_NAME, PROD_QTY, WF_QTY, IN_TAT, CUM_TAT, HOLD_STAT, HOLD_REASON, LOT_STAT" in catalog_text
     assert "`default_detail_columns`는 사용자가 출력 컬럼을 따로 지정하지 않은 detail/entity_list 질문" in saving_prompt
     assert "`default_detail_columns는 A, B로 바꿔줘`" in saving_prompt
+    assert "`payload.field`에 보존" in domain_saving_prompt
+    assert '"field": "OPER_NAME"' in domain_saving_prompt
     assert "Domain의 `analysis_recipes`에 등록" in saving_prompt
     assert "`source_datasets`, `join_type`, `join_keys`" in domain_saving_prompt
     assert "`left_key_mappings`, `right_key_mappings`, `preserve_left_rows`" in domain_saving_prompt

@@ -61,6 +61,7 @@ v4 writer는 사용자가 입력한 자연어를 LLM으로 정규화한 뒤, loa
   "status": "active",
   "payload": {
     "display_name": "D/A",
+    "field": "OPER_NAME",
     "processes": ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
   },
   "updated_at": "2026-06-22T00:00:00+00:00"
@@ -78,10 +79,15 @@ v4 writer는 사용자가 입력한 자연어를 LLM으로 정규화한 뒤, loa
   "payload": {
     "display_name": "D/A",
     "aliases": ["DA", "D/A", "da"],
+    "field": "OPER_NAME",
     "processes": ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
   }
 }
 ```
+
+`process_groups.payload.field`는 데이터셋별 물리 컬럼명이 아니라 표준 filter field다. 예를 들어 `field=OPER_NAME`은 production 데이터에서는 `OPER_NAME`, equipment assignment 데이터에서는 table catalog의 `OPER_NAME -> OPER_NM` 매핑을 통해 적용된다.
+
+기존 MongoDB의 `process_groups` 문서에 `field`가 없다면 `domain_knowledge.txt`의 해당 블록을 Domain Saving Flow의 `replace` 모드로 다시 등록한다. 재등록 전 과도기에도 Data Analysis intent 정규화기는 기존 `process_groups`를 `OPER_NAME` 계약으로 호환하지만, 신규·교체 저장 후보는 `field`가 없으면 저장하지 않는다.
 
 제품/상태 용어가 dataset 계열마다 다른 물리 컬럼으로 걸려야 하면 `condition_by_family` 또는 `condition_by_dataset`에 넣는다. 예를 들어 HBM이 생산/재공에서는 `TSV_DIE_TYP not_empty`로 충분하지만 설비 데이터에서는 `PKG_TYPE1=HBM`으로 필터링해야 한다면 아래처럼 저장한다.
 
@@ -475,7 +481,7 @@ Domain의 강한 identity match는 반드시 같은 section에서 유일해야 �
 
 저장 차단 예시:
 
-- `process_groups`인데 `processes`, `filters`, `condition` 중 아무 것도 없다.
+- `process_groups`인데 표준 필터 컬럼인 `field` 또는 해당 컬럼에 적용할 `processes` 값 목록이 없다.
 - `product_terms`나 `status_terms`인데 실제 조건이 전혀 없고 alias만 있다.
 - `quantity_terms`인데 어떤 dataset 또는 quantity column을 의미하는지 전혀 없다.
 - `metric_terms`인데 계산식, source_roles, comparison_rule, pandas_code_instructions 중 계산에 필요한 단서가 전혀 없다.
@@ -852,4 +858,3 @@ LLM mock validation에서는 세 LLM 단계의 결과를 모두 모의한다.
 - main flow filter에는 dataset별 filter mapping을 넣지 않는다. dataset별 실제 컬럼 연결은 table catalog의 `filter_mappings`가 담당한다.
 - custom component input/output 이름은 겹치지 않게 한다. 예를 들어 input이 `payload`면 output은 `payload_out`으로 둔다.
 - 각 component 파일은 Langflow Desktop에서 단독으로 붙여 넣어도 동작해야 한다.
-

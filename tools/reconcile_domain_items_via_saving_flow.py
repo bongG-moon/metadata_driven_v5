@@ -243,7 +243,7 @@ def _semantic_errors(
             errors.append(
                 {
                     "type": "process_group_payload_mismatch",
-                    "message": f"{key}의 display_name, aliases 또는 processes가 원문과 다릅니다.",
+                    "message": f"{key}의 display_name, aliases, field 또는 processes가 원문과 다릅니다.",
                 }
             )
     elif name == "standard_product_keys":

@@ -103,6 +103,23 @@ def _deterministic_review(payload: dict[str, Any]) -> dict[str, Any]:
         p = _dict(item.get("payload"))
         if "source_config" in p or "query_template" in p:
             errors.append({"type": "domain_source_config_forbidden", "message": "domain에는 source/query config를 저장하지 않습니다.", "key": key})
+        if item.get("section") == "process_groups":
+            if not str(p.get("field") or "").strip():
+                errors.append(
+                    {
+                        "type": "missing_process_group_field",
+                        "message": "process_groups에는 payload.field 표준 필터 컬럼이 필요합니다.",
+                        "key": key,
+                    }
+                )
+            if not _list(p.get("processes")):
+                errors.append(
+                    {
+                        "type": "missing_process_group_processes",
+                        "message": "process_groups에는 payload.processes 값 목록이 필요합니다.",
+                        "key": key,
+                    }
+                )
         for path in _secret_paths(item):
             errors.append({"type": "credential_field_forbidden", "message": f"credential/secret 필드는 저장할 수 없습니다: {path}", "key": key, "field": path})
     errors = _unique_errors(errors)

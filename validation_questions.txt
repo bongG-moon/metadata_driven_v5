@@ -67,3 +67,9 @@
    - 확인: target job은 DATE pandas filter, production job은 DATE required param으로 서로 다르게 분류되는지
 39. 2026-07-01T00:00:00+09:00 기준 제품별 OUT 계획을 알려줘
    - 확인: ISO timestamp가 `20260701`로 정규화되고 timestamp 원문이 필터값으로 남지 않는지
+
+공정 그룹 field 계약 실제 Langflow 검증 질문 (40)
+
+40. 오늘 da공정에서 생산량 상위 3개 제품과 그 제품들에 할당된 장비 대수 알려줘
+   - 확인: production_today와 equipment_assign job 모두 `filters.OPER_NAME in [D/A1...D/A6]`을 사용하고 `filters.OPER`를 만들지 않는지
+   - 확인: 실제 pandas 전처리에서는 production_today의 `OPER_NAME`, equipment_assign의 `OPER_NM` 컬럼을 선택하는지

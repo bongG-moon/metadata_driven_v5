@@ -90,7 +90,7 @@ def test_legacy_duplicate_ask_is_normalized_to_safe_skip():
                 {
                     "section": "process_groups",
                     "key": "DA",
-                    "payload": {"aliases": ["DA", "D/A"], "processes": ["D/A1", "D/A2"]},
+                    "payload": {"aliases": ["DA", "D/A"], "field": "OPER_NAME", "processes": ["D/A1", "D/A2"]},
                 }
             ]
         },
@@ -125,6 +125,34 @@ def test_domain_rejects_source_config():
     assert any(error["type"] == "domain_source_config_forbidden" for error in result["write_result"]["errors"])
 
 
+def test_reference_domain_process_group_requires_field():
+    payload = build_authoring_payload("domain", "DA 공정 그룹", dry_run=True)
+    payload = normalize_authoring_result(
+        payload,
+        {
+            "items": [
+                {
+                    "section": "process_groups",
+                    "key": "DA",
+                    "payload": {
+                        "display_name": "D/A",
+                        "aliases": ["DA", "D/A"],
+                        "processes": ["D/A1", "D/A2"],
+                    },
+                }
+            ]
+        },
+    )
+
+    result = apply_review_and_write(payload)
+
+    assert result["write_result"]["success"] is False
+    assert any(
+        error["type"] == "missing_process_group_field"
+        for error in result["write_result"]["errors"]
+    )
+
+
 def test_non_dry_run_requires_explicit_store_and_merge_is_deep():
     store = InMemoryMetadataStore()
     store.upsert_item(
@@ -143,7 +171,7 @@ def test_non_dry_run_requires_explicit_store_and_merge_is_deep():
                 {
                     "section": "process_groups",
                     "key": "WB",
-                    "payload": {"aliases": ["W/B"], "processes": ["W/B1", "W/B2"]},
+                    "payload": {"aliases": ["W/B"], "field": "OPER_NAME", "processes": ["W/B1", "W/B2"]},
                 }
             ]
         },
@@ -172,7 +200,7 @@ def test_reference_domain_replace_retargets_unique_alias_and_inserts_when_new():
                 {
                     "section": "process_groups",
                     "key": "BG_PROCESS_GROUP",
-                    "payload": {"display_name": "BG 공정 그룹", "aliases": ["BG", "B/G"], "processes": ["B/G1", "B/G2", "B/G3"]},
+                    "payload": {"display_name": "BG 공정 그룹", "aliases": ["BG", "B/G"], "field": "OPER_NAME", "processes": ["B/G1", "B/G2", "B/G3"]},
                 }
             ]
         },
@@ -187,7 +215,7 @@ def test_reference_domain_replace_retargets_unique_alias_and_inserts_when_new():
     assert result["write_result"]["operation_by_key"][0]["operation"] == "replaced"
 
     new_payload = build_authoring_payload("domain", "신규 CMP 공정", duplicate_action="replace", dry_run=False)
-    new_payload = normalize_authoring_result(new_payload, {"items": [{"section": "process_groups", "key": "CMP", "payload": {"display_name": "CMP", "aliases": ["CMP"], "processes": ["CMP1"]}}]})
+    new_payload = normalize_authoring_result(new_payload, {"items": [{"section": "process_groups", "key": "CMP", "payload": {"display_name": "CMP", "aliases": ["CMP"], "field": "OPER_NAME", "processes": ["CMP1"]}}]})
     new_result = apply_review_and_write(new_payload, store=store)
     assert new_result["write_result"]["operation_by_key"][0]["operation"] == "created"
     assert store.get_item("domain", "process_groups:CMP") is not None

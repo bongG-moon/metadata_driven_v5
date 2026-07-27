@@ -27,7 +27,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "e1e3809df37e57fa75343506122a3cf17eeaf45603651b0ffe082f79bcfbcd79",
+  "single_file_ui_import_sha256": "a49ccfb2f499057f1cef44ea83a6e59eb6e5596d28ca6b83d6486edd8ad63cae",
   "flows": [
     {
       "order": 1,
@@ -36,7 +36,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 45,
       "edges": 70,
-      "sha256": "906b6685ce9c84cbc405c7fbcefce0622eeb8fbd2fd879181cef478f6243d1e4"
+      "sha256": "f7a0fcbda41a2424966745dd434dd854549bceae96ac9ee49b231fb48da1f379"
     },
     {
       "order": 2,
@@ -45,7 +45,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
       "nodes": 14,
       "edges": 15,
-      "sha256": "69f3a81e5bcd309a2d620102cabd5a4272eb1e506e5bdde0510bc42c3920c4a2"
+      "sha256": "06ee02f4d371c77611a2fcbff0b644d803a14cf428e7053116c5e8b8abf0fc7e"
     },
     {
       "order": 3,
@@ -134,7 +134,7 @@
     "workflow_orchestrator": "Language Model planner plus native Loop and six deterministic sequential Flow tools"
   },
   "validation": {
-    "pytest": "426 passed",
+    "pytest": "429 passed",
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 120/120 custom nodes to 83 real Python sources; 0 missing",
     "korean_component_documentation": "84/84 Python sources and 1611/1611 function definitions documented; 36 component text sources and 11 embedded prompts are BOM-free; 360 embedded custom-code instances preserve 7404/7404 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
