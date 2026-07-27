@@ -8542,8 +8542,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 83
-    assert result["all_component_python_files"] == 84
+    assert result["active_unique_source_files"] == 86
+    assert result["all_component_python_files"] == 87
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -8552,9 +8552,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 10, 120, 83),
-        ("import_ready_individual", 10, 120, 83),
-        ("import_ready_bundle", 10, 120, 83),
+        ("flow_exports", 11, 126, 86),
+        ("import_ready_individual", 11, 126, 86),
+        ("import_ready_bundle", 11, 126, 86),
     }
 
 
@@ -10899,8 +10899,8 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
     }
 
     assert flow["endpoint_name"] == "metadata-driven-v5-workflow-orchestrator"
-    assert len(nodes) == 20
-    assert len(edges) == 28
+    assert len(nodes) == 21
+    assert len(edges) == 29
     assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
     assert not [node for node in nodes.values() if node["data"].get("type") == "Agent"]
     assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
@@ -10927,7 +10927,7 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
         assert embedded == expected, node_id
 
     tools = [node for node_id, node in nodes.items() if node_id.startswith("WorkflowFlowTool-")]
-    assert len(tools) == 6
+    assert len(tools) == 7
     workflow_tool_source = (
         ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     ).read_text(encoding="utf-8")
@@ -10945,6 +10945,7 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
         "run_visualization",
+        "run_realtime_production_report",
     }
 
     expected_core_edges = {

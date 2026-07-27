@@ -41,6 +41,7 @@ EXPECTED_FLOW_DISPLAY_NAMES = [
     "08. v5_workflow_orchestrator",
     "09. v5_workflow_skill_saving",
     "10. v5_html_visualization",
+    "11. v5_realtime_production_report",
 ]
 
 
@@ -79,6 +80,7 @@ def test_v5_auxiliary_builder_uses_numbered_display_names_and_child_targets():
         "workflow_orchestrator": "08. v5_workflow_orchestrator",
         "workflow_skill_saving": "09. v5_workflow_skill_saving",
         "html_visualization": "10. v5_html_visualization",
+        "realtime_production_report": "11. v5_realtime_production_report",
     }
     functions = {
         node.name: ast.get_source_segment(source, node) or ""
@@ -91,6 +93,7 @@ def test_v5_auxiliary_builder_uses_numbered_display_names_and_child_targets():
     assert 'FLOW_DISPLAY_NAMES["agent_tool_router"]' in functions["build_agent_tool_router_flow"]
     assert 'FLOW_DISPLAY_NAMES["workflow_orchestrator"]' in functions["build_workflow_orchestrator_flow"]
     assert 'FLOW_DISPLAY_NAMES["html_visualization"]' in functions["build_html_visualization_flow"]
+    assert 'FLOW_DISPLAY_NAMES["realtime_production_report"]' in functions["build_realtime_production_report_flow"]
     assert "metadata-driven-v5-{spec.slug.replace('_', '-')}-saving" in functions["build_saving_flow"]
     for function_name, endpoint_name in {
         "build_metadata_qa_flow": "metadata-driven-v5-metadata-qa",
@@ -98,6 +101,7 @@ def test_v5_auxiliary_builder_uses_numbered_display_names_and_child_targets():
         "build_agent_tool_router_flow": "metadata-driven-v5-agent-tool-router",
         "build_workflow_orchestrator_flow": "metadata-driven-v5-workflow-orchestrator",
         "build_html_visualization_flow": "metadata-driven-v5-html-visualization",
+        "build_realtime_production_report_flow": "metadata-driven-v5-realtime-production-report",
     }.items():
         assert endpoint_name in functions[function_name]
 
@@ -124,6 +128,7 @@ def test_v5_auxiliary_builder_uses_numbered_display_names_and_child_targets():
     assert child_targets("WORKFLOW_TOOL_ROUTE_SPECS") == {
         **expected_children,
         "html_visualization": "10. v5_html_visualization",
+        "realtime_production_report": "11. v5_realtime_production_report",
     }
     assert ast.literal_eval(assignments["ROUTE_ENDPOINTS"]) == {
         "data_analysis": "metadata-driven-v5-data-analysis",
@@ -170,6 +175,7 @@ def test_custom_structured_terminals_are_explicit_graph_outputs_for_standard_run
         "metadata_qa_flow_v5_standalone.json": "Api-metadata-qa",
         "workflow_skill_saving_flow_v5_standalone.json": "Api-workflow_skill",
         "html_visualization_flow_v5_standalone.json": "HtmlVisualizationApiTerminal-html-visualization",
+        "realtime_production_report_flow_v5_standalone.json": "RealtimeProductionReportApiTerminal-realtime-production-report",
     }
     for filename, node_id in expected_terminals.items():
         flow = json.loads((ROOT / "flow_exports" / filename).read_text(encoding="utf-8"))
@@ -202,6 +208,7 @@ def test_v5_bundle_flow_display_names_follow_import_order_without_changing_slugs
         "workflow_orchestrator",
         "workflow_skill_saving",
         "html_visualization",
+        "realtime_production_report",
     ]
 
 
@@ -436,10 +443,10 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     assert not raw.startswith(b"\xef\xbb\xbf")
     assert b"\r" not in raw
     payload = json.loads(raw.decode("utf-8"))
-    assert len(payload["flows"]) == 10
+    assert len(payload["flows"]) == 11
     assert all(isinstance(flow.get("data"), dict) and flow.get("name") for flow in payload["flows"])
     assert [flow["name"] for flow in payload["flows"]] == EXPECTED_FLOW_DISPLAY_NAMES
-    assert len({flow["endpoint_name"] for flow in payload["flows"]}) == 10
+    assert len({flow["endpoint_name"] for flow in payload["flows"]}) == 11
     assert all("-dummy-" not in flow["endpoint_name"] for flow in payload["flows"])
     assert not list(UI_BUNDLE_PATH.parent.glob("*_dummy_*_flow_v5_standalone.json"))
     router = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-api-router"))
@@ -516,13 +523,13 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     )
 
     individual_flows = sorted(UI_BUNDLE_PATH.parent.glob("[0-9][0-9]_*_v5_standalone.json"))
-    assert [path.name[:2] for path in individual_flows] == [f"{index:02d}" for index in range(1, 11)]
-    assert individual_flows[-1].name == "10_html_visualization_flow_v5_standalone.json"
+    assert [path.name[:2] for path in individual_flows] == [f"{index:02d}" for index in range(1, 12)]
+    assert individual_flows[-1].name == "11_realtime_production_report_flow_v5_standalone.json"
     manifest = json.loads((UI_BUNDLE_PATH.parent / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["flow_count"] == 10
-    assert [item["order"] for item in manifest["flows"]] == list(range(1, 11))
+    assert manifest["flow_count"] == 11
+    assert [item["order"] for item in manifest["flows"]] == list(range(1, 12))
     assert [item["name"] for item in manifest["flows"]] == EXPECTED_FLOW_DISPLAY_NAMES
-    assert manifest["flows"][-1]["file"] == "10_html_visualization_flow_v5_standalone.json"
+    assert manifest["flows"][-1]["file"] == "11_realtime_production_report_flow_v5_standalone.json"
 
 
 def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer():
@@ -535,8 +542,8 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
 
     assert flow["name"] == "08. v5_workflow_orchestrator"
     assert flow["endpoint_name"] == "metadata-driven-v5-complete-20260710-workflow-orchestrator"
-    assert len(nodes) == 20
-    assert len(flow["data"]["edges"]) == 28
+    assert len(nodes) == 21
+    assert len(flow["data"]["edges"]) == 29
     assert not any(node["data"].get("type") == "Agent" for node in nodes.values())
     assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
     assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
@@ -559,7 +566,7 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
         ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     ).read_text(encoding="utf-8")
     tools = [node for node_id, node in nodes.items() if node_id.startswith("WorkflowFlowTool-")]
-    assert len(tools) == 6
+    assert len(tools) == 7
     assert all(node["data"]["node"]["template"]["code"]["value"] == tool_source for node in tools)
     assert all(node["data"]["node"]["template"]["return_direct"]["value"] is False for node in tools)
     assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
@@ -602,6 +609,7 @@ def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
         "run_visualization",
+        "run_realtime_production_report",
     }
     assert catalog_by_name["run_data_analysis"]["can_produce_result_ref"] is True
     assert catalog_by_name["run_data_analysis"]["requires_upstream_result_ref"] is False
@@ -757,7 +765,7 @@ def test_v5_bundle_html_visualization_has_result_ref_input_and_terminal_api_resp
     assert template["mongo_uri"]["load_from_db"] is True
     assert template["mongo_database"]["value"] == "datagov"
     assert template["collection_name"]["value"] == "agent_v4_result_store"
-    assert template["report_api_url"]["value"] == "http://127.0.0.1:8010"
+    assert template["report_api_url"]["value"] == "http://127.0.0.1:8765"
     assert template["report_api_url"]["advanced"] is False
     assert template["report_ttl_hours"]["value"] == "24"
     assert template["report_ttl_hours"]["advanced"] is False
@@ -774,6 +782,56 @@ def test_v5_bundle_html_visualization_has_result_ref_input_and_terminal_api_resp
     )
     assert "should_store_message" not in nodes["GaiAOutputAdapter-html-visualization"]["data"]["node"]["template"]
     assert nodes["ChatOutput-html-visualization"]["data"]["node"]["template"]["should_store_message"]["value"] is True
+
+
+def test_v5_bundle_realtime_production_report_has_dummy_data_interactive_html_and_terminal_api():
+    payload = json.loads(UI_BUNDLE_PATH.read_text(encoding="utf-8"))
+    flow = next(
+        item for item in payload["flows"]
+        if item["endpoint_name"].endswith("-realtime-production-report")
+    )
+    nodes = {node["id"]: node for node in flow["data"]["nodes"]}
+    edges = _edge_keys(flow)
+
+    assert flow["name"] == "11. v5_realtime_production_report"
+    assert set(nodes) == {
+        "ChatInput-realtime-production-report",
+        "GaiAInputAdapter-realtime-production-report",
+        "DummyProductionJudgementData-realtime-production-report",
+        "RealtimeProductionReportBuilder-realtime-production-report",
+        "GaiAOutputAdapter-realtime-production-report",
+        "ChatOutput-realtime-production-report",
+        "RealtimeProductionReportApiTerminal-realtime-production-report",
+    }
+    assert (
+        "DummyProductionJudgementData-realtime-production-report",
+        "dataset",
+        "RealtimeProductionReportBuilder-realtime-production-report",
+        "dataset",
+    ) in edges
+    dummy_template = nodes["DummyProductionJudgementData-realtime-production-report"]["data"]["node"]["template"]
+    assert dummy_template["row_count"]["value"] == "500"
+    assert dummy_template["seed"]["value"] == "20260727"
+    assert dummy_template["code"]["value"] == (
+        ROOT
+        / "langflow_components"
+        / "realtime_production_report_flow"
+        / "00_dummy_production_judgement_data.py"
+    ).read_text(encoding="utf-8")
+    report_template = nodes["RealtimeProductionReportBuilder-realtime-production-report"]["data"]["node"]["template"]
+    assert report_template["report_api_url"]["value"] == "http://127.0.0.1:8765"
+    assert report_template["report_ttl_hours"]["value"] == "4"
+    assert report_template["max_html_rows"]["value"] == "1000"
+    assert "엑셀용 CSV 다운로드" in report_template["code"]["value"]
+    assert "CAPA실적 분석" in report_template["code"]["value"]
+    terminal = nodes["RealtimeProductionReportApiTerminal-realtime-production-report"]
+    assert terminal["data"]["node"]["is_output"] is True
+    assert {output["name"] for output in terminal["data"]["node"]["outputs"]} == {"api_response"}
+    assert not any(source == terminal["id"] for source, _handle, _target, _field in edges)
+    assert not any(
+        node["data"].get("type") in {"Agent", "LanguageModelComponent"}
+        for node in nodes.values()
+    )
 
 
 def test_v5_single_file_ui_bundle_uses_exact_shared_v4_collection_mappings():
@@ -806,7 +864,7 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
             ("-api-router", "-agent-tool-router", "-workflow-orchestrator")
         )
     ]
-    assert len(child_flows) == 7
+    assert len(child_flows) == 8
 
     child_models = []
     for flow in child_flows:

@@ -2,10 +2,11 @@
 
 ## 1. 목적
 
-Data Analysis Flow의 `23 MongoDB 결과 저장소`가 발급한 `data_ref`를 사용해 다음 데이터를 CSV로 바로 내려받습니다.
+Data Analysis Flow의 `23 MongoDB 결과 저장소`가 발급한 `data_ref`를 CSV로 내려받고, HTML Visualization 및 Realtime Production Report가 만든 HTML을 같은 서버에서 등록·보기·다운로드합니다.
 
 - pandas 최종 분석 결과
 - 분석에 사용한 데이터셋별 원본 행
+- HTML 차트 및 실시간 생산 분석 Report
 
 링크는 중간 웹 화면을 열지 않습니다. GaiA 답변 본문의 링크는 `target="_blank"`로 다운로드 요청을 새 탭에 분리하고, 서버는 MongoDB에서 해당 경로를 읽어 `Content-Disposition: attachment`로 CSV를 반환합니다. 따라서 Langflow Playground의 현재 탭을 벗어날 때 나타나는 편집 내용 보호 팝업을 피할 수 있습니다.
 
@@ -35,6 +36,13 @@ MONGODB_RESULT_COLLECTION=agent_v4_result_store
 DATA_REF_DOWNLOAD_HOST=0.0.0.0
 DATA_REF_DOWNLOAD_PORT=8765
 DATA_REF_DOWNLOAD_MAX_BYTES=67108864
+DATA_REF_DOWNLOAD_BASE_URL=http://127.0.0.1:8765
+REPORT_STORAGE_DIR=C:\Users\<사용자명>\Desktop\metadata_driven_v5\report_api\storage
+REPORT_DEFAULT_TTL_HOURS=24
+REPORT_MAX_TTL_HOURS=168
+REPORT_MAX_HTML_BYTES=10485760
+REPORT_MAX_STORAGE_BYTES=536870912
+REPORT_USE_ACCESS_TOKEN=false
 ```
 
 PowerShell 실행 예시:
@@ -49,6 +57,8 @@ python tools\data_ref_download_server.py --host 0.0.0.0 --port 8765
 ```text
 http://127.0.0.1:8765/health
 ```
+
+정상 응답의 `features`에는 `data_ref_csv=true`, `html_reports=true`가 함께 표시됩니다.
 
 ### 같은 포트로 재실행
 
@@ -70,6 +80,7 @@ python tools\data_ref_download_server.py --host 0.0.0.0 --port 8765
 | 입력 | 로컬 예시 | Kubernetes 예시 |
 | --- | --- | --- |
 | 다운로드 링크 Base URL | `http://127.0.0.1:8765` | `https://data-download.example.internal` |
+| HTML Report API 주소 | `http://127.0.0.1:8765` | Langflow가 접근할 수 있는 통합 서버 Service 주소 |
 | 데이터 보관 시간(시간) | `1` | `1` |
 
 Kubernetes에서 `127.0.0.1`, `localhost`, `0.0.0.0`은 사용자 브라우저가 접근할 주소가 아닙니다. Service/Ingress의 내부 HTTPS 주소를 Base URL로 넣어야 합니다.
@@ -96,6 +107,17 @@ X-Content-Type-Options: nosniff
 ```
 
 CSV는 Excel에서 한글을 인식할 수 있도록 UTF-8 BOM을 포함합니다.
+
+HTML Report 계약:
+
+```text
+POST /reports
+GET /reports/view/<report_id>
+GET /reports/download/<report_id>
+DELETE /reports/<report_id>
+```
+
+`POST /reports`는 기존 Report API와 같은 `html`, `title`, `question`, `ttl_hours`, `filename_hint` JSON을 받고 `report_id`, `view_url`, `download_url`, `expires_at`, `ttl_hours`를 반환합니다. 기본 Flow의 `HTML Report API 주소`는 `http://127.0.0.1:8765`입니다.
 
 ## 6. 보호 규칙
 

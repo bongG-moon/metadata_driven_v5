@@ -34,6 +34,7 @@ FLOW_DISPLAY_NAMES = {
     "workflow_orchestrator": "08. v5_workflow_orchestrator",
     "workflow_skill_saving": "09. v5_workflow_skill_saving",
     "html_visualization": "10. v5_html_visualization",
+    "realtime_production_report": "11. v5_realtime_production_report",
 }
 
 
@@ -717,6 +718,12 @@ WORKFLOW_TOOL_ROUTE_SPECS = [
         accepts_upstream_result_ref=True,
         requires_upstream_result_ref=True,
     ),
+    WorkflowToolRouteSpec(
+        "realtime_production_report",
+        FLOW_DISPLAY_NAMES["realtime_production_report"],
+        "run_realtime_production_report",
+        "실시간 생산 판정 Snapshot을 고정 Rule로 집계해 생산실적, 생산부족 원인, CAPA실적, 장비Assign 조정 요약과 interactive HTML Report를 생성합니다. 예시 Flow는 내부 더미 데이터 약 500행을 사용하며 다른 Tool 결과 참조를 소비하지 않습니다.",
+    ),
 ]
 
 
@@ -786,6 +793,7 @@ Markdown code fence, 설명 문장, 주석은 출력하지 않는다.
 15. 없는 Tool이나 Registry 항목을 만들지 않는다.
 16. 금지: run_data_analysis가 결과를 생성한다는 이유로 그 단계에 handoff=result_ref를 쓰지 않는다. producer 단계는 handoff=none이고 consumer인 run_visualization 단계가 handoff=result_ref다.
 17. 출력 직전 모든 depends_on=[] 단계의 handoff가 none인지, run_visualization 단계의 depends_on이 정확히 1개이고 handoff가 result_ref인지 다시 검사한다.
+18. 사용자가 실시간 생산 판정 Report, 생산부족 원인, CAPA실적, 장비Assign 조정 Report를 요청하면 run_realtime_production_report 한 단계를 우선 사용한다. 이 전용 Tool에는 선행 run_data_analysis나 run_visualization을 붙이지 않는다.
 
 [출력 형태]
 {{
@@ -976,7 +984,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_html_visualization_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    """MongoDB result_ref의 분석 결과를 standalone HTML 차트로 만드는 10 Flow를 만듭니다."""
+    """MongoDB 결과 시각화와 실시간 생산 Report를 포함한 보조 Flow export를 만듭니다."""
 
     proto = prototypes(donor)
     flow = empty_flow(
@@ -999,7 +1007,7 @@ def build_html_visualization_flow(donor: dict[str, Any]) -> dict[str, Any]:
     chart_template = chart["data"]["node"]["template"]
     _set_value(chart_template, "mongo_database", "datagov")
     _set_value(chart_template, "collection_name", "agent_v4_result_store")
-    _set_value(chart_template, "report_api_url", "http://127.0.0.1:8010")
+    _set_value(chart_template, "report_api_url", "http://127.0.0.1:8765")
     _set_value(chart_template, "report_ttl_hours", "24")
     output = native_node(proto["chat_output"], "ChatOutput-html-visualization", 900, -130)
     _set_message_storage(output, True)
@@ -1014,6 +1022,60 @@ def build_html_visualization_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, chat, "message", chart, "question")
     add_edge(flow, chart, "message", output, "input_value")
     add_edge(flow, chart, "api_response", api_terminal, "visualization_result")
+    return wrap_gaia_boundaries(flow, proto)
+
+
+def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, Any]:
+    """판정 더미 데이터 약 500행으로 interactive 생산 분석 Report를 만드는 11 Flow를 만듭니다."""
+
+    proto = prototypes(donor)
+    flow = empty_flow(
+        donor,
+        FLOW_DISPLAY_NAMES["realtime_production_report"],
+        "Deterministic realtime production report flow with a 500-row dummy judgement snapshot, four fixed analysis sections, interactive offline HTML tables, CSV export, and compact API artifacts.",
+        "metadata-driven-v5-realtime-production-report",
+        ["v5", "standalone", "realtime-production", "dummy-data", "html-report", "report-api"],
+    )
+    folder = COMPONENT_ROOT / "realtime_production_report_flow"
+    chat = native_node(proto["chat_input"], "ChatInput-realtime-production-report", 0, -140)
+    _set_message_storage(chat, True)
+    dummy = custom_node(
+        proto["custom"],
+        "DummyProductionJudgementData-realtime-production-report",
+        folder / "00_dummy_production_judgement_data.py",
+        360,
+        170,
+    )
+    dummy_template = dummy["data"]["node"]["template"]
+    _set_value(dummy_template, "row_count", "500")
+    _set_value(dummy_template, "seed", "20260727")
+    _set_value(dummy_template, "work_date", "")
+    _set_value(dummy_template, "process_names", "W/B1,W/B2,W/B3,W/B4")
+    report = custom_node(
+        proto["custom"],
+        "RealtimeProductionReportBuilder-realtime-production-report",
+        folder / "01_realtime_production_report_builder.py",
+        760,
+        0,
+    )
+    report_template = report["data"]["node"]["template"]
+    _set_value(report_template, "report_api_url", "http://127.0.0.1:8765")
+    _set_value(report_template, "report_ttl_hours", "4")
+    _set_value(report_template, "max_html_rows", "1000")
+    output = native_node(proto["chat_output"], "ChatOutput-realtime-production-report", 1210, -130)
+    _set_message_storage(output, True)
+    api_terminal = custom_node(
+        proto["custom"],
+        "RealtimeProductionReportApiTerminal-realtime-production-report",
+        folder / "02_realtime_production_report_api_terminal.py",
+        1210,
+        210,
+    )
+    flow["data"]["nodes"].extend([chat, dummy, report, output, api_terminal])
+    add_edge(flow, chat, "message", report, "question")
+    add_edge(flow, dummy, "dataset", report, "dataset")
+    add_edge(flow, report, "message", output, "input_value")
+    add_edge(flow, report, "api_response", api_terminal, "report_result")
     return wrap_gaia_boundaries(flow, proto)
 
 
@@ -1148,7 +1210,7 @@ def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
         ]
     )
 
-    tool_y_positions = (-920, -660, -400, -140, 120, 380)
+    tool_y_positions = (-980, -720, -460, -200, 60, 320, 580)
     for spec, y in zip(WORKFLOW_TOOL_ROUTE_SPECS, tool_y_positions, strict=True):
         tool = custom_node(proto["custom"], f"WorkflowFlowTool-{spec.route_name}", tool_path, 1710, y)
         tool_config = tool["data"]["node"]
@@ -1242,6 +1304,18 @@ def write_flows() -> list[dict[str, Any]]:
             "edges": len(html_visualization["data"]["edges"]),
         }
     )
+    realtime_production_report = _stamp_flow_version(build_realtime_production_report_flow(donor))
+    realtime_production_report_path = EXPORT_ROOT / "realtime_production_report_flow_v5_standalone.json"
+    realtime_production_report_path.write_bytes(
+        (json.dumps(realtime_production_report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    )
+    outputs.append(
+        {
+            "path": str(realtime_production_report_path),
+            "nodes": len(realtime_production_report["data"]["nodes"]),
+            "edges": len(realtime_production_report["data"]["edges"]),
+        }
+    )
     return outputs
 
 
@@ -1257,7 +1331,7 @@ def _stamp_flow_version(flow: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build optimized v5 standalone metadata, Workflow Skill authoring, routers, Workflow Orchestrator, and HTML visualization flows.")
+    parser = argparse.ArgumentParser(description="Build optimized v5 standalone metadata, Workflow Skill authoring, routers, Workflow Orchestrator, HTML visualization, and realtime production report flows.")
     parser.parse_args()
     print(json.dumps(write_flows(), ensure_ascii=False, indent=2))
 

@@ -8,7 +8,7 @@ Langflow의 Flow 화면에서 아래 파일 **하나만** 선택합니다.
 
 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
 
-Langflow UI가 최상위 `flows` 배열을 펼쳐 10개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{"flows":[`입니다.
+Langflow UI가 최상위 `flows` 배열을 펼쳐 11개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{"flows":[`입니다.
 
 ## 개별 Import 방법
 
@@ -23,9 +23,10 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 10개 Flow를 한 번에 impor
 | 5 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 13 | 19 |
 | 6 | `06_api_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-api-router` | 22 | 21 |
 | 7 | `07_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 10 | 9 |
-| 8 | `08_workflow_orchestrator_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-workflow-orchestrator` | 20 | 28 |
+| 8 | `08_workflow_orchestrator_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-workflow-orchestrator` | 21 | 29 |
 | 9 | `09_workflow_skill_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-workflow-skill-saving` | 15 | 16 |
 | 10 | `10_html_visualization_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-html-visualization` | 6 | 5 |
+| 11 | `11_realtime_production_report_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report` | 7 | 6 |
 
 ## 수동 연결 여부
 
@@ -56,11 +57,11 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- 전체 pytest: 430 passed
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 120/120 노드가 실제 Python 원본 83개에 매핑, 누락 0
+- Langflow/Flow 비웹 pytest: 418/418 passed (별도 Streamlit 웹 런타임용 21개 테스트는 제외)
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 126/126 노드가 실제 Python 원본 86개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과
-- Langflow 1.9.2 frontend edge handle codec: 426/426 parse 및 `edge.data` 일치
+- Langflow 1.9.2 frontend edge handle codec: 440/440 parse 및 `edge.data` 일치
 - Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
 - Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: manifest의 전체 노드 검증 통과
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
@@ -68,8 +69,8 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개
 - Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
 - 기존 8개 Flow의 격리 Langflow 서버 import는 검증 완료했으며, Workflow Orchestrator는 이번 bundle/node/edge 계약 검증 후 다음 live-server import 대상입니다.
-- 통합 `00` 단일 JSON은 10개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
-- 하위 Flow 7개, Route V2, Workflow Orchestrator: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
+- 통합 `00` 단일 JSON은 11개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
+- 하위 Flow 8개, Route V2, Workflow Orchestrator: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
 - Data Analysis: executor node 1개, 초기 성공 시 Repair LLM 0회, 실행 오류 시 이전 코드·오류 문맥을 전달해 최대 1회 복구, 단일 최종화 체인 확인
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
@@ -79,11 +80,12 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 표준 Chat Input ID로 내부 변환합니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 실제 Tool 출력 메서드 안에서 부모 runtime/graph `session_id`를 자동 상속합니다. 따라서 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰어도 하위 Flow의 세션 저장/복원이 유지됩니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.
 - 격리 import에서 현재 Langflow 실행 사용자로 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
-- Workflow Orchestrator의 이름 기반 Tool 6개는 `question`과 선택 `upstream_result_ref`만 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
+- Workflow Orchestrator의 이름 기반 Tool 7개는 `question`과 선택 `upstream_result_ref`만 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
 - Workflow Orchestrator는 기본 Language Model 계획기 -> `workflow.plan.v1` 파서 -> 기본 Loop -> 정확한 Tool 단일 실행기 순서로 최대 네 단계를 실행합니다. Registry와 일치하지 않아도 capability catalog의 Tool만으로 해결 가능하면 inline 계획을 만들며 Agent의 자율 반복은 사용하지 않습니다.
 - Workflow Orchestrator는 기본적으로 `datagov.agent_v4_workflow_skills`의 active Skill을 질문 기준 후보로 조회합니다. `inline_seed`는 사용자가 명시적으로 선택한 standalone 테스트 모드에서만 사용하며 MongoDB 오류 시 자동 fallback하지 않습니다.
 - Workflow Orchestrator는 Loop 결과를 compact context로 만든 뒤 기본 Language Model을 한 번만 호출하며, GaiA Output Adapter -> 표준 Chat Output과 terminal `api_response`를 제공합니다.
 - HTML Visualization Flow는 `run_data_analysis`의 `result_ref`를 복원하고 외부 CDN 없는 standalone HTML/SVG 차트를 생성합니다. `HTML Report API 주소`로 게시해 Tauri 상대경로가 아닌 절대 보기·다운로드 링크를 반환하며, 화면 Message와 별도의 API 종료 어댑터가 실제 terminal `api_response`를 제공합니다. 그래프 요청은 `run_data_analysis -> run_visualization` 순서와 `handoff=result_ref`로 실행합니다.
+- Realtime Production Report Flow는 판정 더미 Snapshot 500행을 LLM 없이 집계하고 생산실적·생산부족 원인·CAPA실적·장비Assign 조정 탭, Radio 필터, 검색, 전체 컬럼 전환, 현재 보기 CSV 다운로드가 포함된 standalone HTML을 생성합니다.
 - Metadata 및 Workflow Skill 저장 Flow 4종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/GaiA Output Adapter/표준 Chat Output 사용
 - Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
 - Metadata 후보: 도메인 관련 항목 최대 10건, 테이블 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증

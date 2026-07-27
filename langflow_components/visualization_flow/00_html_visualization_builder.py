@@ -30,7 +30,7 @@ from lfx.schema.message import Message
 
 
 CONTRACT_VERSION = "visualization.result.v1"
-DEFAULT_REPORT_API_URL = "http://127.0.0.1:8010"
+DEFAULT_REPORT_API_URL = "http://127.0.0.1:8765"
 DEFAULT_REPORT_TTL_HOURS = 24
 MAX_REPORT_TTL_HOURS = 24 * 7
 REPORT_API_TIMEOUT_SECONDS = 30
@@ -685,7 +685,7 @@ class HTMLVisualizationBuilder(Component):
         MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", info="Standalone Langflow Global Variable MONGO_URL을 선택합니다.", value="MONGO_URL", load_from_db=True, required=False, advanced=False),
         MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", value=DEFAULT_DATABASE, required=False, advanced=False),
         MessageTextInput(name="collection_name", display_name="결과 컬렉션", value=DEFAULT_COLLECTION, required=False, advanced=False),
-        MessageTextInput(name="report_api_url", display_name="HTML Report API 주소", info="보기·다운로드 절대 URL을 발급하는 서버 주소입니다. 예: http://127.0.0.1:8010", value=DEFAULT_REPORT_API_URL, required=False, advanced=False),
+        MessageTextInput(name="report_api_url", display_name="HTML Report API 주소", info="보기·다운로드 절대 URL을 발급하는 통합 다운로드 서버 주소입니다. 예: http://127.0.0.1:8765", value=DEFAULT_REPORT_API_URL, required=False, advanced=False),
         StrInput(name="report_ttl_hours", display_name="HTML 링크 유효시간", info="링크 유지 시간입니다. 1~168시간 범위로 제한합니다.", value=str(DEFAULT_REPORT_TTL_HOURS), required=False, advanced=False),
         StrInput(name="max_chart_rows", display_name="최대 차트 행 수", info="행이 더 많으면 첫·끝을 포함해 균등 축소합니다.", value=str(DEFAULT_MAX_CHART_ROWS), advanced=True),
     ]

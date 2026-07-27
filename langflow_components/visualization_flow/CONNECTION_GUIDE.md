@@ -29,7 +29,7 @@
 | `mongo_uri` | Global Variable `MONGO_URL` | 화면에 보이는 standalone 입력입니다. 서버 환경변수에 암묵적으로 의존하지 않습니다. |
 | `mongo_database` | `datagov` | Data Analysis Result Store와 같은 DB를 사용합니다. |
 | `collection_name` | `agent_v4_result_store` | Data Analysis 결과 저장 컬렉션입니다. |
-| `report_api_url` | `http://127.0.0.1:8010` | HTML을 게시하고 브라우저용 절대 URL을 반환하는 Report API 주소입니다. |
+| `report_api_url` | `http://127.0.0.1:8765` | HTML과 data_ref 다운로드를 함께 제공하는 통합 서버 주소입니다. |
 | `report_ttl_hours` | `24` | 보기·다운로드 링크 유효시간입니다. 1~168시간으로 제한합니다. |
 | `max_chart_rows` | `500` | 초과 시 첫·끝을 포함한 균등 간격으로 표시 점을 줄입니다. |
 
@@ -54,7 +54,7 @@ Message의 `files`와 API에는 `<flow_id>/<file_name>.html` 형식의 logical p
 생성기는 같은 HTML을 `POST {report_api_url}/reports`로 한 번 게시하고 서버가 반환한 절대 `view_url`·`download_url`을 Message 본문에 Markdown 링크로 넣습니다.
 
 ```markdown
-[HTML 차트 보기](http://127.0.0.1:8010/reports/view/<report-id>) · [HTML 다운로드](http://127.0.0.1:8010/reports/download/<report-id>)
+[HTML 차트 보기](http://127.0.0.1:8765/reports/view/<report-id>) · [HTML 다운로드](http://127.0.0.1:8765/reports/download/<report-id>)
 ```
 
 Report API를 실행하지 않았거나 주소가 잘못되면 HTML의 Langflow 저장 자체는 유지하고 `status=partial`과 `report_api_publish_error` 경고를 반환합니다. 깨진 `tauri.localhost` 링크로 대체하지 않습니다.
@@ -70,8 +70,8 @@ Kubernetes에서는 `report_api_url`에 Langflow pod가 POST할 수 있는 Servi
   "artifact_type": "html_chart",
   "path": "<flow_id>/html-chart-<uuid>.html",
   "report_id": "20260719010101_<uuid>",
-  "view_url": "http://127.0.0.1:8010/reports/view/<report-id>",
-  "download_url": "http://127.0.0.1:8010/reports/download/<report-id>",
+  "view_url": "http://127.0.0.1:8765/reports/view/<report-id>",
+  "download_url": "http://127.0.0.1:8765/reports/download/<report-id>",
   "expires_at": "2026-07-20T01:01:01+00:00",
   "ttl_hours": 24,
   "mime_type": "text/html",

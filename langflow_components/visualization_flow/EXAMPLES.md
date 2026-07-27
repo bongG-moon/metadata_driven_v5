@@ -49,11 +49,11 @@ Planner가 생성해야 하는 핵심 단계는 다음과 같습니다.
 
 ## 직접 Flow 테스트
 
-1. `report_api` 폴더에서 `python server.py`를 실행하고 `http://127.0.0.1:8010/`에 `alive!`가 보이는지 확인합니다.
+1. 프로젝트 루트에서 `python tools\data_ref_download_server.py --host 127.0.0.1 --port 8765`를 실행하고 `http://127.0.0.1:8765/health`의 `features.html_reports=true`를 확인합니다.
 2. 같은 세션에서 Data Analysis Flow를 실행합니다.
 3. Data Analysis의 terminal API 응답에서 `result_ref` 값을 확인합니다.
 4. 10번 Flow의 `upstream_result_ref` 입력에 그 값을 넣습니다.
-5. `HTML Report API 주소`가 `http://127.0.0.1:8010`인지 확인하고 같은 `session_id`로 실행합니다.
+5. `HTML Report API 주소`가 `http://127.0.0.1:8765`인지 확인하고 같은 `session_id`로 실행합니다.
 6. 답변의 `HTML 차트 보기`와 `HTML 다운로드`, terminal `api_response.artifacts[0]`을 확인합니다.
 
 정상 응답의 최소 형태는 다음과 같습니다.
@@ -70,8 +70,8 @@ Planner가 생성해야 하는 핵심 단계는 다음과 같습니다.
       "artifact_type": "html_chart",
       "path": "<flow-id>/html-chart-<uuid>.html",
       "report_id": "20260719010101_<uuid>",
-      "view_url": "http://127.0.0.1:8010/reports/view/<report-id>",
-      "download_url": "http://127.0.0.1:8010/reports/download/<report-id>",
+      "view_url": "http://127.0.0.1:8765/reports/view/<report-id>",
+      "download_url": "http://127.0.0.1:8765/reports/download/<report-id>",
       "expires_at": "2026-07-20T01:01:01+00:00",
       "ttl_hours": 24,
       "mime_type": "text/html",

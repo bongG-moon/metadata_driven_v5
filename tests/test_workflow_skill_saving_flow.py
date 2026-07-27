@@ -269,7 +269,7 @@ def test_workflow_skill_input_examples_cover_supported_tools_and_execution_check
     assert "save_main_flow_filter_metadata" not in text
 
 
-def test_recommended_workflow_registry_contains_only_three_executable_read_flows():
+def test_recommended_workflow_registry_contains_three_read_flows_and_realtime_report():
     registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
     workflows = registry["workflows"]
 
@@ -278,14 +278,26 @@ def test_recommended_workflow_registry_contains_only_three_executable_read_flows
         "daily_manufacturing_briefing",
         "hold_lot_history_metadata_audit",
         "equipment_uph_source_audit",
+        "realtime_production_report",
     }
 
+    read_workflows = [
+        workflow for workflow in workflows if workflow["workflow_key"] != "realtime_production_report"
+    ]
     supported_tools = {"run_data_analysis", "run_metadata_qa"}
-    for workflow in workflows:
+    for workflow in read_workflows:
         assert 1 <= len(workflow["steps"]) <= 4
         assert {step["tool_name"] for step in workflow["steps"]} <= supported_tools
         assert any(step["tool_name"] == "run_data_analysis" for step in workflow["steps"])
         assert any(step["tool_name"] == "run_metadata_qa" for step in workflow["steps"])
+
+    realtime_workflow = next(
+        workflow for workflow in workflows if workflow["workflow_key"] == "realtime_production_report"
+    )
+    assert [step["tool_name"] for step in realtime_workflow["steps"]] == [
+        "run_realtime_production_report"
+    ]
+    assert realtime_workflow["steps"][0]["handoff"] == "none"
 
     hold_workflow = next(
         workflow for workflow in workflows if workflow["workflow_key"] == "hold_lot_history_metadata_audit"
