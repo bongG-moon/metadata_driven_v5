@@ -20,9 +20,8 @@ def _catalog():
                 "dataset_family": "target",
                 "source_type": "goodocs",
                 "source_config": {"source_type": "goodocs", "doc_id": "1212121212121212121212"},
-                "required_params": ["DATE"],
-                "required_param_mappings": {"DATE": ["DATE"]},
-                "filter_mappings": {"MODE": ["Mode"], "MCP_NO": ["MCP NO"]},
+                "required_params": [],
+                "filter_mappings": {"DATE": ["DATE"], "MODE": ["Mode"], "MCP_NO": ["MCP NO"]},
                 "standard_column_aliases": {"MODE": ["Mode"], "MCP_NO": ["MCP NO"], "OUT_PLAN": ["OUT 계획"], "INPUT_PLAN": ["INPUT 계획"]},
             }
         },
@@ -66,8 +65,11 @@ def test_goodocs_target_keeps_source_specific_date_format():
                     "source_alias": "target_data",
                     "dataset_key": "target",
                     "source_type": "goodocs",
-                    "required_params": {"DATE": "2026-07-01"},
-                    "filters": {"MODE": {"operator": "eq", "value": "LPDDR5"}},
+                    "required_params": {},
+                    "filters": {
+                        "DATE": {"operator": "eq", "value": "20260701"},
+                        "MODE": {"operator": "eq", "value": "LPDDR5"},
+                    },
                 }
             ]
         },
@@ -76,6 +78,7 @@ def test_goodocs_target_keeps_source_specific_date_format():
     result = run_data_retriever(payload, _catalog())
 
     assert result["source_results"][0]["row_count"] == 1
+    assert result["source_results"][0]["applied_params"] == {}
     assert result["runtime_sources"]["target_data"][0]["DATE"] == "2026-07-01"
     assert result["runtime_sources"]["target_data"][0]["OUT_PLAN"] == 1200
 

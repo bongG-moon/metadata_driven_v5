@@ -11121,9 +11121,67 @@ def test_v5_trusted_catalog_hydrator_preserves_job_specific_params_without_cross
     missing = hydrator.hydrate_retrieval_jobs(missing_payload, catalog, retrieval_mode="live")
     missing_jobs = missing["intent_plan"]["retrieval_jobs"]
 
-    assert "required_params" not in missing_jobs[1]
+    assert missing_jobs[1]["required_params"] == {}
     assert missing["trace"]["warnings"][-1]["type"] == "missing_catalog_required_params"
     assert missing["trace"]["warnings"][-1]["dataset_key"] == "production_today"
+
+
+def test_v5_trusted_catalog_hydrator_moves_non_required_date_to_filter_and_normalizes_dates():
+    hydrator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "target",
+                "payload": {
+                    "source_type": "goodocs",
+                    "required_params": [],
+                    "source_config": {"doc_id": "trusted-doc"},
+                    "filter_mappings": {"DATE": ["DATE"], "MODE": ["Mode"]},
+                },
+            },
+            {
+                "dataset_key": "production",
+                "payload": {
+                    "source_type": "oracle",
+                    "required_params": ["DATE"],
+                    "source_config": {"db_key": "PNT_RPT", "query_template": "SELECT * WHERE WORK_DATE = {DATE}"},
+                    "filter_mappings": {"DATE": ["WORK_DATE"]},
+                },
+            },
+        ]
+    }
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "target",
+                    "source_alias": "target_data",
+                    "required_params": {"DATE": "2026/7/1"},
+                    "filters": {"MODE": {"operator": "eq", "value": "LPDDR5"}},
+                },
+                {
+                    "dataset_key": "production",
+                    "source_alias": "production_data",
+                    "required_params": {"date": "2026-07-01T08:30:00+09:00"},
+                },
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    hydrated = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
+    target_job, production_job = hydrated["intent_plan"]["retrieval_jobs"]
+
+    assert target_job["required_params"] == {}
+    assert target_job["filters"]["DATE"] == {"operator": "eq", "value": "20260701"}
+    assert target_job["filters"]["MODE"] == {"operator": "eq", "value": "LPDDR5"}
+    assert production_job["required_params"] == {"DATE": "20260701"}
+    assert production_job["filters"] == {}
+    reconciliation = hydrated["trace"]["inspection"]["catalog_hydration"]["condition_reconciliation"]
+    assert reconciliation[0]["dataset_key"] == "target"
+    assert reconciliation[0]["moved_to_filters"] == ["DATE"]
 
 
 def test_v5_trusted_catalog_hydrator_blocks_unknown_live_dataset_but_allows_dummy():
@@ -11768,6 +11826,46 @@ def test_v5_pandas_executor_applies_catalog_filter_mapping_to_physical_column():
 
     assert result["analysis"]["status"] == "ok"
     assert result["data"]["rows"] == [{"EQUIP_ID": "EQ-1", "EQUIP_MODEL": "MODEL-A"}]
+
+
+def test_v5_pandas_executor_matches_multiple_source_date_formats_without_mutating_values():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    source_dates = [
+        "20260701",
+        "2026-07-01",
+        "2026/7/1",
+        "2026-07-01T08:30:00+09:00",
+        "2026.07.02",
+    ]
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "target",
+                    "source_alias": "target_data",
+                    "filters": {"DATE": {"operator": "eq", "value": "2026년 7월 1일"}},
+                    "filter_mappings": {"DATE": ["DATE"]},
+                }
+            ]
+        },
+        "runtime_sources": {
+            "target_data": [
+                {"DATE": value, "OUT_PLAN": index}
+                for index, value in enumerate(source_dates, start=1)
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = executor.execute_pandas_code(payload, {"code": "result = sources['target_data']"})
+
+    assert result["analysis"]["status"] == "ok"
+    assert [row["DATE"] for row in result["data"]["rows"]] == source_dates[:4]
+    assert result["trace"]["inspection"]["pandas_execution"]["pandas_filter_plan"][0]["conditions"][0][
+        "values"
+    ] == ["20260701"]
 
 
 def test_v5_pandas_executor_rejects_missing_required_detail_columns_but_not_aggregate_results():

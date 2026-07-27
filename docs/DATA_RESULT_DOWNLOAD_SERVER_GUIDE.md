@@ -50,6 +50,19 @@ python tools\data_ref_download_server.py --host 0.0.0.0 --port 8765
 http://127.0.0.1:8765/health
 ```
 
+### 같은 포트로 재실행
+
+업데이트된 `data_ref_download_server.py`를 같은 포트로 다시 실행하면 임시 상태 파일과 로컬 health 응답으로 **동일한 서비스인지 검증한 뒤** 기존 인스턴스에 종료를 요청하고 새 인스턴스를 시작합니다. `fuser` 같은 운영체제 명령은 필요하지 않습니다.
+
+```powershell
+python tools\data_ref_download_server.py --host 0.0.0.0 --port 8765
+```
+
+- 기본값은 `--replace-existing`이며, 자동 교체를 끄려면 `--no-replace-existing`을 사용합니다.
+- 이전 버전처럼 서비스 식별 정보와 제어 토큰이 없는 서버에서 처음 전환할 때는 기존 프로세스를 한 번 직접 종료해야 합니다.
+- 같은 포트를 다른 서비스가 사용 중이면 안전을 위해 그 프로세스를 종료하지 않고 오류로 끝납니다. 이 경우 점유 프로세스를 확인하거나 다른 `--port`를 사용하고 23번 노드의 Base URL도 함께 바꿉니다.
+- 운영 서버에 복사해 둔 `/project/workSpace/report_api/data_download_server.py`를 실행한다면 이 저장소의 최신 `tools/data_ref_download_server.py` 내용으로 배포본을 갱신해야 자동 재시작 기능이 적용됩니다.
+
 ## 4. Langflow 설정
 
 `23 MongoDB 결과 저장소`에서 다음 값을 설정합니다.

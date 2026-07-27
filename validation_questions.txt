@@ -52,3 +52,18 @@
 진단 출력 추가 확인
 
 - 28번 질문에서 pandas 코드/실행 진단을 켜고, `filter_ordered_range` 호출은 보이되 함수 정의 본문은 `(함수 숨김처리)`로 접혀 표시되는지 확인한다.
+
+날짜 계약 실제 Langflow 검증 질문 (34~39)
+
+34. 2026-07-01 제품별 INPUT 계획과 OUT 계획을 OUT 계획이 큰 순서로 알려줘
+   - 확인: target job의 `required_params`는 비어 있고 DATE는 `filters.DATE=20260701`로 적용되는지
+35. 2026/7/1 제품별 OUT 계획을 알려줘
+   - 확인: slash 날짜가 `20260701`로 정규화되고 34번과 같은 날짜의 target 행을 조회하는지
+36. 2026년 7월 1일 제품별 INPUT 계획을 알려줘
+   - 확인: 한국어 날짜가 `20260701`로 정규화되고 원본 Goodocs DATE 표기값은 결과에서 변경되지 않는지
+37. 2026-07-01 W/BM 공정 생산량을 알려줘
+   - 확인: production 계열 Oracle job의 DATE는 `required_params.DATE=20260701`에 유지되고 DATE 필터로 중복되지 않는지
+38. 2026/7/1 제품별 INPUT 계획 대비 실제 INPUT 실적과 달성률을 알려줘
+   - 확인: target job은 DATE pandas filter, production job은 DATE required param으로 서로 다르게 분류되는지
+39. 2026-07-01T00:00:00+09:00 기준 제품별 OUT 계획을 알려줘
+   - 확인: ISO timestamp가 `20260701`로 정규화되고 timestamp 원문이 필터값으로 남지 않는지

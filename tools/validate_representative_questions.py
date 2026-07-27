@@ -930,14 +930,18 @@ def job(
     required_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     params = deepcopy(required_params or {})
+    pandas_filters = deepcopy(filters or {})
     if date:
-        params.setdefault("DATE", date)
+        if dataset_key in {"production_today", "production", "wip_today", "wip"}:
+            params.setdefault("DATE", date)
+        else:
+            pandas_filters.setdefault("DATE", eq(date))
     return {
         "dataset_key": dataset_key,
         "source_alias": source_alias,
-        "source_type": "oracle",
+        "source_type": "goodocs" if dataset_key == "target" else "oracle",
         "required_params": params,
-        "filters": deepcopy(filters or {}),
+        "filters": pandas_filters,
     }
 
 
@@ -1041,18 +1045,20 @@ def validation_catalog(case: dict[str, Any]) -> dict[str, Any]:
         if not dataset_key or dataset_key in seen:
             continue
         seen.add(dataset_key)
-        required_param_names = list(job_item.get("required_params", {}))
+        required_param_names = ["DATE"] if dataset_key in {"production_today", "production", "wip_today", "wip"} else []
         query_template = "SELECT * FROM DUMMY"
         if required_param_names:
             predicates = " AND ".join(f"{name} = {{{name}}}" for name in required_param_names)
             query_template = f"SELECT * FROM DUMMY WHERE {predicates}"
+        filter_mappings = {"DATE": ["DATE"]} if dataset_key == "target" else {}
         items.append(
             {
                 "dataset_key": dataset_key,
                 "payload": {
-                    "source_type": "oracle",
+                    "source_type": "goodocs" if dataset_key == "target" else "oracle",
                     "source_config": {"db_key": "VALIDATION_DUMMY", "query_template": query_template},
                     "required_params": required_param_names,
+                    "filter_mappings": filter_mappings,
                 },
             }
         )

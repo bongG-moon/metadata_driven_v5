@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date, datetime
+import re
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
@@ -84,6 +86,7 @@ def hydrate_retrieval_jobs(
     errors: list[dict[str, Any]] = []
     used_refs: list[dict[str, Any]] = []
     deferred_upstream_params: list[dict[str, Any]] = []
+    condition_reconciliation: list[dict[str, Any]] = []
     orchestration = _dict(next_payload.get("orchestration"))
     explicit_upstream = bool(str(orchestration.get("upstream_result_ref") or "").strip())
 
@@ -121,10 +124,25 @@ def hydrate_retrieval_jobs(
             _dict(catalog_payload.get("source_config")) or _dict(catalog_item.get("source_config"))
         )
         # 일부 standalone catalog는 필수 파라미터를 source_config 안에 보관하므로
-        # 세 위치를 모두 읽되 값 자체는 각 retrieval job이 명시한 것을 그대로 사용합니다.
+        # 세 위치를 모두 읽고, 실제 job 값은 catalog 계약에 맞게 다시 분류합니다.
         required_names = _required_param_names(catalog_payload, source_config, catalog_item)
-        supplied_params = _dict(clean_job.get("required_params")) or _dict(clean_job.get("params"))
-        missing_params = [name for name in required_names if supplied_params.get(name) in (None, "", [], {})]
+        safe_job_contract = _safe_catalog_job_contract(catalog_payload, catalog_item)
+        reconciled = _reconcile_job_conditions(
+            clean_job,
+            required_names,
+            safe_job_contract,
+            catalog_payload,
+            catalog_item,
+        )
+        supplied_params = reconciled["required_params"]
+        clean_job["required_params"] = supplied_params
+        clean_job["filters"] = reconciled["filters"]
+        clean_job.pop("params", None)
+        missing_params = [
+            name
+            for name in required_names
+            if _casefold_dict_value(supplied_params, name) in (None, "", [], {})
+        ]
         upstream_targets = _upstream_target_params(source_config) if explicit_upstream else []
         deferred = [name for name in missing_params if name.casefold() in {item.casefold() for item in upstream_targets}]
         missing_params = [name for name in missing_params if name not in deferred]
@@ -136,7 +154,19 @@ def hydrate_retrieval_jobs(
         clean_job["catalog_ref"] = f"table_catalog:{dataset_key}"
         # SQL·접속정보와 달리 컬럼 매핑/기본 상세 표시 계약은 pandas가 실제 source 컬럼을
         # 선택하고 결과 컬럼을 검증하는 데 필요한 작은 신뢰 메타데이터입니다.
-        clean_job.update(_safe_catalog_job_contract(catalog_payload, catalog_item))
+        clean_job.update(safe_job_contract)
+        reconciled["dataset_key"] = dataset_key
+        if reconciled["moved_to_filters"] or reconciled["dropped_params"] or reconciled["normalized_date_fields"]:
+            condition_reconciliation.append(reconciled)
+        for dropped_name in reconciled["dropped_params"]:
+            warnings.append(
+                _issue(
+                    "unexpected_non_catalog_required_param",
+                    f"catalog에 필수 파라미터 또는 허용 필터로 등록되지 않은 조건을 제거했습니다: {dropped_name}",
+                    dataset_key=dataset_key,
+                    param=dropped_name,
+                )
+            )
         if deferred:
             deferred_upstream_params.append({"dataset_key": dataset_key, "params": deferred})
         if missing_params:
@@ -168,6 +198,7 @@ def hydrate_retrieval_jobs(
         "trusted_dataset_keys": [job.get("dataset_key") for job in hydrated if job.get("trusted_catalog")],
         "dummy_only_dataset_keys": [job.get("dataset_key") for job in hydrated if job.get("dummy_only")],
         "deferred_upstream_params": deferred_upstream_params,
+        "condition_reconciliation": condition_reconciliation,
     }
     return next_payload
 
@@ -219,6 +250,217 @@ def _safe_catalog_job_contract(*values: dict[str, Any]) -> dict[str, Any]:
                 result[key] = _sanitize_trusted_config(raw)
                 break
     return result
+
+
+# 함수 설명: `_reconcile_job_conditions()`는 catalog 필수 파라미터를 권위 기준으로 삼아 LLM 조건을 조회 파라미터와 pandas 필터로 다시 나눕니다.
+def _reconcile_job_conditions(
+    job: dict[str, Any],
+    required_names: list[str],
+    safe_job_contract: dict[str, Any],
+    *catalog_values: dict[str, Any],
+) -> dict[str, Any]:
+    supplied = _dict(job.get("required_params")) or _dict(job.get("params"))
+    required_index = {_contract_key(name): name for name in required_names if _contract_key(name)}
+    filter_index = _trusted_filter_field_index(safe_job_contract, *catalog_values)
+    required_params: dict[str, Any] = {}
+    moved_to_filters: list[str] = []
+    dropped_params: list[str] = []
+    normalized_date_fields: list[str] = []
+    filters = _normalize_date_filters(job.get("filters"), normalized_date_fields)
+
+    for raw_name, raw_value in supplied.items():
+        name = str(raw_name or "").strip()
+        key = _contract_key(name)
+        if not key:
+            continue
+        required_name = required_index.get(key)
+        if required_name:
+            value = _normalize_condition_value(required_name, raw_value)
+            required_params[required_name] = value
+            if value != raw_value and required_name not in normalized_date_fields:
+                normalized_date_fields.append(required_name)
+            continue
+        filter_name = filter_index.get(key)
+        if filter_name:
+            value = _normalize_condition_value(filter_name, raw_value)
+            filters = _add_filter_if_missing(filters, filter_name, value)
+            moved_to_filters.append(name)
+            if value != raw_value and filter_name not in normalized_date_fields:
+                normalized_date_fields.append(filter_name)
+            continue
+        dropped_params.append(name)
+
+    return {
+        "required_params": required_params,
+        "filters": filters,
+        "moved_to_filters": moved_to_filters,
+        "dropped_params": dropped_params,
+        "normalized_date_fields": normalized_date_fields,
+    }
+
+
+# 함수 설명: `_trusted_filter_field_index()`는 catalog의 표준·물리 컬럼 alias를 허용된 pandas 필터 field로 역색인합니다.
+def _trusted_filter_field_index(
+    safe_job_contract: dict[str, Any],
+    *catalog_values: dict[str, Any],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for mapping_key in ("filter_mappings", "standard_column_aliases"):
+        mapping = safe_job_contract.get(mapping_key)
+        if not isinstance(mapping, dict):
+            continue
+        for standard, aliases in mapping.items():
+            standard_name = str(standard or "").strip()
+            if not standard_name:
+                continue
+            result.setdefault(_contract_key(standard_name), standard_name)
+            for alias in _string_list(aliases):
+                result.setdefault(_contract_key(alias), standard_name)
+    for catalog_value in catalog_values:
+        for column in _catalog_column_names(catalog_value):
+            result.setdefault(_contract_key(column), column)
+    return result
+
+
+# 함수 설명: `_catalog_column_names()`는 다양한 catalog schema 표현에서 명시된 컬럼명만 추출합니다.
+def _catalog_column_names(value: dict[str, Any]) -> list[str]:
+    raw = value.get("columns") or value.get("schema") or value.get("column_names") or []
+    if isinstance(raw, dict):
+        raw = list(raw)
+    if not isinstance(raw, (list, tuple, set)):
+        raw = [raw]
+    result: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            item = item.get("name") or item.get("column") or item.get("key")
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+# 함수 설명: `_normalize_date_filters()`는 dict/list 필터 안의 날짜 조건값만 YYYYMMDD로 통일하고 원래 필터 구조는 유지합니다.
+def _normalize_date_filters(filters: Any, normalized_fields: list[str]) -> Any:
+    if isinstance(filters, dict):
+        result: dict[str, Any] = {}
+        for field, condition in filters.items():
+            field_name = str(field or "").strip()
+            normalized = _normalize_filter_condition_value(field_name, condition)
+            result[str(field)] = normalized
+            if normalized != condition and field_name not in normalized_fields:
+                normalized_fields.append(field_name)
+        return result
+    if isinstance(filters, list):
+        result_list: list[Any] = []
+        for condition in filters:
+            if not isinstance(condition, dict):
+                result_list.append(deepcopy(condition))
+                continue
+            field_name = str(condition.get("field") or condition.get("column") or "").strip()
+            normalized = deepcopy(condition)
+            if _is_date_condition_key(field_name):
+                for key in ("value", "values"):
+                    if key in normalized:
+                        normalized[key] = _normalize_nested_date_values(normalized[key])
+                if normalized != condition and field_name not in normalized_fields:
+                    normalized_fields.append(field_name)
+            result_list.append(normalized)
+        return result_list
+    return {}
+
+
+# 함수 설명: `_normalize_filter_condition_value()`는 한 filter field가 날짜 의미일 때 value/values 또는 축약값을 YYYYMMDD로 바꿉니다.
+def _normalize_filter_condition_value(field: str, condition: Any) -> Any:
+    if not _is_date_condition_key(field):
+        return deepcopy(condition)
+    if isinstance(condition, dict):
+        normalized = deepcopy(condition)
+        for key in ("value", "values"):
+            if key in normalized:
+                normalized[key] = _normalize_nested_date_values(normalized[key])
+        return normalized
+    return _normalize_nested_date_values(condition)
+
+
+# 함수 설명: `_normalize_nested_date_values()`는 목록을 포함한 날짜 조건값을 재귀적으로 YYYYMMDD로 정규화합니다.
+def _normalize_nested_date_values(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_normalize_nested_date_values(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_nested_date_values(item) for item in value]
+    return _canonical_date_text(value)
+
+
+# 함수 설명: `_add_filter_if_missing()`는 기존 명시 필터를 우선하며 이동된 비필수 파라미터를 중복 없이 추가합니다.
+def _add_filter_if_missing(filters: Any, field: str, value: Any) -> Any:
+    if isinstance(filters, list):
+        if any(
+            isinstance(item, dict)
+            and _contract_key(item.get("field") or item.get("column")) == _contract_key(field)
+            for item in filters
+        ):
+            return filters
+        return [*filters, {"field": field, "operator": "eq", "value": deepcopy(value)}]
+    result = deepcopy(filters) if isinstance(filters, dict) else {}
+    if any(_contract_key(key) == _contract_key(field) for key in result):
+        return result
+    result[field] = {"operator": "eq", "value": deepcopy(value)}
+    return result
+
+
+# 함수 설명: `_normalize_condition_value()`는 날짜 의미 field에만 날짜 정규화를 적용합니다.
+def _normalize_condition_value(field: str, value: Any) -> Any:
+    if not _is_date_condition_key(field):
+        return deepcopy(value)
+    return _normalize_nested_date_values(value)
+
+
+# 함수 설명: `_canonical_date_text()`는 여러 날짜 표기를 검증된 YYYYMMDD 문자열로 정규화하고 해석 불가 값은 보존합니다.
+def _canonical_date_text(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.strftime("%Y%m%d")
+    if isinstance(value, date):
+        return value.strftime("%Y%m%d")
+    if isinstance(value, bool) or value is None:
+        return value
+    text = str(value).strip()
+    if not text:
+        return value
+    if re.fullmatch(r"\d{8}(?:\.0+)?", text):
+        candidate = text[:8]
+    else:
+        match = re.match(
+            r"^(\d{4})\s*(?:[-/.]|년)\s*(\d{1,2})\s*(?:[-/.]|월)\s*(\d{1,2})(?:\s*일)?(?:\D.*)?$",
+            text,
+        )
+        if not match:
+            return value
+        candidate = f"{int(match.group(1)):04d}{int(match.group(2)):02d}{int(match.group(3)):02d}"
+    try:
+        datetime.strptime(candidate, "%Y%m%d")
+    except ValueError:
+        return value
+    return candidate
+
+
+# 함수 설명: `_is_date_condition_key()`는 DATE 또는 DT 토큰으로 선언된 날짜 조건 field를 판별합니다.
+def _is_date_condition_key(value: Any) -> bool:
+    key = _contract_key(value)
+    return bool(key and re.search(r"(?:^|_)(?:DATE|DT)(?:$|_)", key))
+
+
+# 함수 설명: `_contract_key()`는 catalog field 비교에 사용할 대문자 underscore 키를 만듭니다.
+def _contract_key(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]+", "_", str(value or "").strip().upper()).strip("_")
+
+
+# 함수 설명: `_casefold_dict_value()`는 대소문자와 구분자 차이를 무시하고 dict 값을 찾습니다.
+def _casefold_dict_value(value: dict[str, Any], key: str) -> Any:
+    target = _contract_key(key)
+    for raw_key, item in value.items():
+        if _contract_key(raw_key) == target:
+            return item
+    return None
 
 
 # 함수 설명: `_output_contract_with_default_detail()`은 상세 결과에만 trusted catalog 기본 컬럼을 required_columns로 합칩니다.

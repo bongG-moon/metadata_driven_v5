@@ -55,10 +55,12 @@
 - dataset은 질문이 요구한 분석 grain과 metric을 기준으로 선택한다. 관련 컬럼이나 단어가 포함되어 있다는 이유만으로 더 세밀한 entity grain의 dataset을 대신 선택하지 않는다.
 - 예를 들어 집계 재공수량과 LOT별 상태/수량은 서로 다른 grain이다. 사용자가 LOT·랏·로트·LOT_ID·LOT 상태·LOT 건수·HOLD LOT·TAT·wafer/die/unit 같은 LOT 단위 근거를 명시하지 않았다면 일반 `재공`, `재공수량`, `WIP` 요청을 LOT 상세 dataset으로 바꾸지 않는다.
 - 여러 metric이 서로 다른 dataset을 요구하면 metric별 retrieval job을 각각 작성한다. 한 dataset에 다른 metric을 억지로 계산시키거나, 한 job의 조회 실패를 0으로 간주하지 않는다.
-- 질문을 metric/dataset별 절로 먼저 나누고, 각 절에 붙은 날짜·공장·FAB·조·기타 조회 파라미터 값을 해당 retrieval job의 `required_params`에 각각 넣는다. 한 job의 값을 다른 job의 값으로 추정하지 않는다.
+- 질문을 metric/dataset별 절로 먼저 나누고, 각 절에 붙은 날짜·공장·FAB·조·기타 조건을 해당 catalog 계약에 따라 분류한다. catalog가 필수 조회 파라미터로 선언한 조건만 해당 retrieval job의 `required_params`에 넣고, 그 외 조건은 `filters`에 넣는다. 한 job의 값을 다른 job의 값으로 추정하지 않는다.
 - 질문의 하나의 조건이 여러 retrieval job 전체에 공통 적용되고 각 catalog가 같은 필수 파라미터를 요구하면, 같은 확정값을 해당하는 모든 job의 `required_params`에 각각 반복해서 작성한다.
 - 같은 파라미터라도 대상별 값이 다르면 각 job에 서로 다른 값을 작성한다. 예를 들어 `어제 재공과 오늘 생산량`은 재공 job의 DATE와 생산 job의 DATE를 서로 다르게 작성한다.
 - DATE뿐 아니라 PLANT, FAB, SHIFT 등 모든 필수 파라미터에 동일한 scope 원칙을 적용한다. `A FAB 장비와 B FAB UPH`처럼 대상별 값이 다르면 각 job에 별도로 넣는다.
+- 날짜 조건값은 입력 표기가 `YYYYMMDD`, `YYYY-MM-DD`, `YYYY/M/D`, 한국어 날짜, ISO timestamp 중 무엇이든 retrieval job에서는 `YYYYMMDD`로 작성한다. 실제 원본 컬럼의 날짜 표기 차이는 deterministic pandas 필터가 비교할 때만 정규화하며 원본 컬럼값은 변경하지 않는다.
+- 예를 들어 `target` 생산계획처럼 catalog의 `required_params`가 비어 있고 `DATE`가 filter mapping으로 등록된 데이터셋은 `required_params={{}}`와 `filters.DATE={{operator:"eq", value:"YYYYMMDD"}}`로 작성한다. 반대로 catalog가 DATE를 필수로 선언한 Oracle 데이터셋은 `required_params.DATE="YYYYMMDD"`로 작성하고 같은 DATE를 `filters`에 중복하지 않는다.
 - 상대 날짜의 확정값은 날짜가 하나일 때 `state_summary.followup_hint.changed_conditions_hint.date.resolved_value`를 사용할 수 있다. `date.mentions`가 있으면 전역 날짜로 복사하지 말고 각 표현이 수식하는 metric/dataset job에 바인딩한다.
 - pandas 분석 계획에는 `filters`를 먼저 적용한 뒤 집계, 정렬, top/bottom, join 등을 수행한다는 순서를 드러낸다.
 - 사용자가 제품별·제품 기준 집계를 요청하면 후보 Domain의 `product_key_columns` 또는 제품 grain을 정의한 `analysis_recipes`를 선택하고 `intent_plan.grain_plan.metadata_ref`에 그 `section`과 `key`만 기록한다. 실제 제품 키 컬럼 목록을 모델이 추측하거나 고정하지 않는다.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
 from urllib.request import urlopen
 
@@ -165,6 +167,97 @@ def test_data_ref_download_http_link_returns_attachment_without_preview(monkeypa
         assert disposition.startswith("attachment;")
         assert "filename*=UTF-8''" in disposition
         assert content_type.startswith("text/csv")
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=5)
+        httpd.server_close()
+
+
+def test_data_ref_download_server_verified_instance_can_be_restarted(monkeypatch) -> None:
+    config = server.ServerConfig(
+        mongo_uri="",
+        mongo_database="datagov",
+        result_collection="agent_v4_result_store",
+        preview_limit=10,
+        host="127.0.0.1",
+        port=0,
+        control_token="verified-control-token",
+    )
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(config))
+    config.port = httpd.server_port
+    state_path = Path("unused-state.json")
+    monkeypatch.setattr(
+        server,
+        "read_server_state",
+        lambda path: {
+            "service": server.SERVICE_NAME,
+            "pid": config.pid,
+            "host": config.host,
+            "port": config.port,
+            "control_token": config.control_token,
+        },
+    )
+
+    def serve_until_shutdown() -> None:
+        try:
+            httpd.serve_forever()
+        finally:
+            httpd.server_close()
+
+    thread = Thread(target=serve_until_shutdown, daemon=True)
+    thread.start()
+    with urlopen(f"http://127.0.0.1:{httpd.server_port}/health", timeout=5) as response:
+        health = json.loads(response.read().decode("utf-8"))
+
+    assert health["service"] == server.SERVICE_NAME
+    assert health["pid"] == config.pid
+    assert server.request_existing_server_shutdown(
+        "127.0.0.1",
+        httpd.server_port,
+        state_path,
+        timeout_seconds=3,
+    )
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    rebound = ThreadingHTTPServer(("127.0.0.1", config.port), server.make_handler(config))
+    rebound.server_close()
+
+
+def test_data_ref_download_server_does_not_stop_instance_with_wrong_control_token(monkeypatch) -> None:
+    config = server.ServerConfig(
+        mongo_uri="",
+        mongo_database="datagov",
+        result_collection="agent_v4_result_store",
+        preview_limit=10,
+        host="127.0.0.1",
+        port=0,
+        control_token="actual-token",
+    )
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(config))
+    config.port = httpd.server_port
+    state_path = Path("unused-state.json")
+    monkeypatch.setattr(
+        server,
+        "read_server_state",
+        lambda path: {
+            "service": server.SERVICE_NAME,
+            "pid": config.pid,
+            "host": config.host,
+            "port": config.port,
+            "control_token": "wrong-token",
+        },
+    )
+    thread = Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert not server.request_existing_server_shutdown(
+            "127.0.0.1",
+            httpd.server_port,
+            state_path,
+            timeout_seconds=1,
+        )
+        assert thread.is_alive()
     finally:
         httpd.shutdown()
         thread.join(timeout=5)

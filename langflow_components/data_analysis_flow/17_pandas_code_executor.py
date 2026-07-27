@@ -1240,6 +1240,25 @@ def _with_pandas_filter_preamble(code: Any, filter_plan: list[dict[str, Any]]) -
 # 함수 설명: `_pandas_filter_preamble()`는 의도 계획의 필터 조건을 생성 코드보다 먼저 적용할 안전한 pandas 전처리 코드로 만듭니다.
 def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
     lines: list[str] = []
+    if _has_date_filter_condition(filter_plan):
+        lines.extend(
+            [
+                "def _normalize_date_filter_value(value):",
+                "    text = str(value if value is not None else '').strip()",
+                "    if len(text) >= 8 and text[:8].isdigit():",
+                "        return text[:8]",
+                "    normalized = text.replace('년', '-').replace('월', '-').replace('일', '')",
+                "    normalized = normalized.replace('/', '-').replace('.', '-')",
+                "    parts = [part.strip() for part in normalized.split('-') if part.strip()]",
+                "    if len(parts) >= 3 and len(parts[0]) == 4:",
+                "        try:",
+                "            return f'{int(parts[0]):04d}{int(parts[1]):02d}{int(parts[2][:2]):02d}'",
+                "        except Exception:",
+                "            return text",
+                "    return text",
+                "",
+            ]
+        )
     for job_index, item in enumerate(filter_plan, start=1):
         alias = str(item.get("source_alias") or "").strip()
         conditions = item.get("conditions") if isinstance(item.get("conditions"), list) else []
@@ -1276,12 +1295,23 @@ def _condition_code(
     col_var = f"_filter_col_{job_index}_{condition_index}"
     values_var = f"_filter_values_{job_index}_{condition_index}"
     mask_var = f"_filter_mask_{job_index}_{condition_index}"
+    date_series_var = f"_filter_date_series_{job_index}_{condition_index}"
     candidates = _mapped_field_candidates(field, column_mappings)
     lines = [f"    {col_var} = {_column_choice_expression(df_var, candidates)}", f"    {values_var} = {values!r}", f"    if {col_var}:"]
     if operator in {"eq", "in"}:
-        lines.append(f"        {df_var} = {df_var}[{df_var}[{col_var}].isin({values_var})]")
+        if _is_date_filter_field(field):
+            lines.append(f"        {values_var} = [_normalize_date_filter_value(value) for value in {values_var}]")
+            lines.append(f"        {date_series_var} = {df_var}[{col_var}].map(_normalize_date_filter_value)")
+            lines.append(f"        {df_var} = {df_var}[{date_series_var}.isin({values_var})]")
+        else:
+            lines.append(f"        {df_var} = {df_var}[{df_var}[{col_var}].isin({values_var})]")
     elif operator in {"ne", "not_in"}:
-        lines.append(f"        {df_var} = {df_var}[~{df_var}[{col_var}].isin({values_var})]")
+        if _is_date_filter_field(field):
+            lines.append(f"        {values_var} = [_normalize_date_filter_value(value) for value in {values_var}]")
+            lines.append(f"        {date_series_var} = {df_var}[{col_var}].map(_normalize_date_filter_value)")
+            lines.append(f"        {df_var} = {df_var}[~{date_series_var}.isin({values_var})]")
+        else:
+            lines.append(f"        {df_var} = {df_var}[~{df_var}[{col_var}].isin({values_var})]")
     elif operator in {"contains", "like"}:
         lines.append(f"        {mask_var} = {df_var}[{col_var}].astype(str).str.contains(str({values_var}[0]), case=False, na=False, regex=False)")
         lines.append(f"        for _filter_value in {values_var}[1:]:")
@@ -1424,9 +1454,58 @@ def _filter_conditions(filters: Any) -> list[dict[str, Any]]:
             values = condition
         normalized_values = _as_values(values)
         normalized_operator = _normalize_filter_operator(operator or "eq")
+        if _is_date_filter_field(field_text):
+            normalized_values = [_normalize_date_identifier(value) for value in normalized_values]
         if normalized_values or normalized_operator in {"is_null", "is_empty", "null_or_empty", "not_null", "not_empty"}:
             result.append({"field": field_text, "operator": normalized_operator, "values": normalized_values})
     return result
+
+
+# 함수 설명: `_has_date_filter_condition()`은 날짜 비교 helper가 필요한 필터가 있는지 확인합니다.
+def _has_date_filter_condition(filter_plan: list[dict[str, Any]]) -> bool:
+    for item in filter_plan:
+        conditions = item.get("conditions") if isinstance(item.get("conditions"), list) else []
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                continue
+            operator = _normalize_filter_operator(condition.get("operator") or "eq")
+            if _is_date_filter_field(condition.get("field")) and operator in {"eq", "in", "ne", "not_in"}:
+                return True
+    return False
+
+
+# 함수 설명: `_normalize_date_identifier()`는 날짜 필터값을 YYYYMMDD로 통일하고 해석 불가 값은 보존합니다.
+def _normalize_date_identifier(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.strftime("%Y%m%d")
+    if isinstance(value, date):
+        return value.strftime("%Y%m%d")
+    if isinstance(value, bool) or value is None:
+        return value
+    text = str(value).strip()
+    if not text:
+        return value
+    if re.fullmatch(r"\d{8}(?:\.0+)?", text):
+        candidate = text[:8]
+    else:
+        match = re.match(
+            r"^(\d{4})\s*(?:[-/.]|년)\s*(\d{1,2})\s*(?:[-/.]|월)\s*(\d{1,2})(?:\s*일)?(?:\D.*)?$",
+            text,
+        )
+        if not match:
+            return value
+        candidate = f"{int(match.group(1)):04d}{int(match.group(2)):02d}{int(match.group(3)):02d}"
+    try:
+        datetime.strptime(candidate, "%Y%m%d")
+    except ValueError:
+        return value
+    return candidate
+
+
+# 함수 설명: `_is_date_filter_field()`는 DATE 또는 DT 토큰으로 선언된 날짜 필터 field를 판별합니다.
+def _is_date_filter_field(value: Any) -> bool:
+    key = re.sub(r"[^A-Z0-9]+", "_", str(value or "").strip().upper()).strip("_")
+    return bool(key and re.search(r"(?:^|_)(?:DATE|DT)(?:$|_)", key))
 
 
 # 함수 설명: `_as_values()`는 단일 필터 값과 목록 값을 같은 값 목록 형태로 맞춥니다.

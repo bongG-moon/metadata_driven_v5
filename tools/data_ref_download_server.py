@@ -3,17 +3,27 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import errno
+import hmac
 import html
+import ipaddress
 import io
 import json
 import os
 import re
+import secrets
+import socket
 import sys
+import tempfile
+import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +37,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_PREVIEW_LIMIT = 100
 DEFAULT_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+DEFAULT_RESTART_TIMEOUT_SECONDS = 5.0
+SERVICE_NAME = "metadata-driven-data-ref-download-server"
+CONTROL_SHUTDOWN_PATH = "/__control/shutdown"
 
 
 def main() -> int:
@@ -36,18 +49,58 @@ def main() -> int:
     parser.add_argument("--env-file", default=os.getenv("DATA_REF_DOWNLOAD_ENV_FILE", str(ROOT / ".env")))
     parser.add_argument("--preview-limit", type=int, default=int(os.getenv("DATA_REF_DOWNLOAD_PREVIEW_LIMIT", str(DEFAULT_PREVIEW_LIMIT))))
     parser.add_argument("--max-download-bytes", type=int, default=int(os.getenv("DATA_REF_DOWNLOAD_MAX_BYTES", str(DEFAULT_MAX_DOWNLOAD_BYTES))))
+    parser.add_argument(
+        "--replace-existing",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("DATA_REF_DOWNLOAD_REPLACE_EXISTING", True),
+        help="Stop a verified instance of this same service on the selected port before binding (default: true).",
+    )
+    parser.add_argument(
+        "--restart-timeout-seconds",
+        type=float,
+        default=float(os.getenv("DATA_REF_DOWNLOAD_RESTART_TIMEOUT_SECONDS", str(DEFAULT_RESTART_TIMEOUT_SECONDS))),
+    )
+    parser.add_argument("--state-file", default=os.getenv("DATA_REF_DOWNLOAD_STATE_FILE", ""))
     args = parser.parse_args()
 
     load_dotenv(args.env_file)
+    state_path = Path(args.state_file).expanduser() if str(args.state_file).strip() else server_state_path(args.port)
+    if args.replace_existing:
+        request_existing_server_shutdown(
+            args.host,
+            args.port,
+            state_path,
+            timeout_seconds=max(0.5, float(args.restart_timeout_seconds)),
+        )
+    control_token = secrets.token_urlsafe(32)
     config = ServerConfig(
         mongo_uri=os.getenv("MONGODB_URI") or os.getenv("MONGO_URI") or "",
         mongo_database=os.getenv("MONGODB_DATABASE") or os.getenv("MONGO_DB_NAME") or DEFAULT_DATABASE,
         result_collection=os.getenv("MONGODB_RESULT_COLLECTION") or DEFAULT_RESULT_COLLECTION,
         preview_limit=max(0, args.preview_limit),
         max_download_bytes=max(1024, args.max_download_bytes),
+        host=args.host,
+        port=args.port,
+        control_token=control_token,
     )
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(config))
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), make_handler(config))
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        print(
+            f"data_ref download server를 시작하지 못했습니다: {args.host}:{args.port} 포트를 다른 프로세스가 사용 중입니다.",
+            file=sys.stderr,
+        )
+        print(
+            "동일한 최신 data_ref 서버로 확인된 경우에만 자동 종료합니다. "
+            "구버전 서버는 최초 1회 직접 종료하거나 다른 --port를 사용하세요.",
+            file=sys.stderr,
+        )
+        return 2
+    write_server_state(state_path, config)
     print(f"data_ref download server: http://{args.host}:{args.port}")
+    print(f"same-service automatic restart: enabled (state: {state_path})")
     print("Langflow component setting:")
     print(f"  23 MongoDB 결과 저장소.download_base_url = http://{args.host}:{args.port}")
     try:
@@ -56,6 +109,7 @@ def main() -> int:
         print("\nserver stopped")
     finally:
         server.server_close()
+        remove_server_state_if_owned(state_path, control_token)
     return 0
 
 
@@ -67,12 +121,147 @@ class ServerConfig:
         result_collection: str,
         preview_limit: int,
         max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        control_token: str = "",
     ) -> None:
         self.mongo_uri = mongo_uri
         self.mongo_database = mongo_database
         self.result_collection = result_collection
         self.preview_limit = preview_limit
         self.max_download_bytes = max(1024, int(max_download_bytes))
+        self.service_name = SERVICE_NAME
+        self.pid = os.getpid()
+        self.host = str(host)
+        self.port = int(port)
+        self.control_token = str(control_token)
+
+
+def server_state_path(port: int) -> Path:
+    return Path(tempfile.gettempdir()) / f"metadata_driven_data_ref_server_{int(port)}.json"
+
+
+def write_server_state(path: Path, config: ServerConfig) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+        "service": config.service_name,
+        "pid": config.pid,
+        "host": config.host,
+        "port": config.port,
+        "control_token": config.control_token,
+    }
+    temporary = path.with_name(f".{path.name}.{config.pid}.{secrets.token_hex(4)}.tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    os.replace(temporary, path)
+
+
+def read_server_state(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def remove_server_state_if_owned(path: Path, control_token: str) -> None:
+    state = read_server_state(path)
+    if not state or not hmac.compare_digest(str(state.get("control_token") or ""), str(control_token or "")):
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def request_existing_server_shutdown(
+    host: str,
+    port: int,
+    state_path: Path,
+    timeout_seconds: float = DEFAULT_RESTART_TIMEOUT_SECONDS,
+) -> bool:
+    state = read_server_state(state_path)
+    expected_token = str(state.get("control_token") or "")
+    expected_pid = state.get("pid")
+    if (
+        state.get("service") != SERVICE_NAME
+        or int_or_zero(state.get("port")) != int(port)
+        or not expected_token
+        or not expected_pid
+    ):
+        return False
+
+    probe_host = loopback_probe_host(host)
+    health_url = f"http://{url_host(probe_host)}:{int(port)}/health"
+    request_timeout = min(max(0.2, float(timeout_seconds)), 2.0)
+    try:
+        with urlopen(health_url, timeout=request_timeout) as response:
+            health = json.loads(response.read().decode("utf-8"))
+    except (OSError, URLError, ValueError, TypeError):
+        if port_is_bindable(probe_host, port):
+            remove_server_state_if_owned(state_path, expected_token)
+        return False
+    if (
+        not isinstance(health, dict)
+        or health.get("service") != SERVICE_NAME
+        or health.get("pid") != expected_pid
+    ):
+        return False
+
+    shutdown_request = Request(
+        f"http://{url_host(probe_host)}:{int(port)}{CONTROL_SHUTDOWN_PATH}",
+        headers={"X-Data-Ref-Control-Token": expected_token},
+        method="POST",
+    )
+    try:
+        with urlopen(shutdown_request, timeout=request_timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (OSError, URLError, ValueError, TypeError):
+        return False
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return False
+
+    deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        if port_is_bindable(probe_host, port):
+            return True
+        time.sleep(0.05)
+    return port_is_bindable(probe_host, port)
+
+
+def loopback_probe_host(host: str) -> str:
+    text = str(host or "").strip()
+    if text in {"", "0.0.0.0"}:
+        return "127.0.0.1"
+    if text in {"::", "[::]"}:
+        return "::1"
+    return text
+
+
+def url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def port_is_bindable(host: str, port: int) -> bool:
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    probe = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        probe.bind((host, int(port)))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
 
 
 def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
@@ -82,7 +271,15 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path in {"/health", "/healthz"}:
-                self.send_json({"ok": True})
+                self.send_json(
+                    {
+                        "ok": True,
+                        "service": config.service_name,
+                        "pid": config.pid,
+                        "host": config.host,
+                        "port": config.port,
+                    }
+                )
                 return
             # 답변의 링크와 예전 `/?download_ref=...` 링크는 중간 화면 없이 바로 CSV를 내려줍니다.
             if parsed.path in {"/", "/download.csv", "/download"}:
@@ -96,6 +293,29 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                 self.render_json(parsed.query)
                 return
             self.send_error_page(HTTPStatus.NOT_FOUND, "지원하지 않는 경로입니다.")
+
+        def do_POST(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path != CONTROL_SHUTDOWN_PATH:
+                self.send_error_page(HTTPStatus.NOT_FOUND, "지원하지 않는 경로입니다.")
+                return
+            try:
+                is_loopback = ipaddress.ip_address(self.client_address[0]).is_loopback
+            except ValueError:
+                is_loopback = False
+            supplied_token = str(self.headers.get("X-Data-Ref-Control-Token") or "")
+            if (
+                not is_loopback
+                or not config.control_token
+                or not hmac.compare_digest(supplied_token, config.control_token)
+            ):
+                self.send_json(
+                    {"ok": False, "message": "shutdown control 인증에 실패했습니다."},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+                return
+            self.send_json({"ok": True, "message": "server shutdown requested", "pid": config.pid})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
 
         def render_view(self, query: str) -> None:
             resolved = resolve_request(query, config, limit=config.preview_limit)

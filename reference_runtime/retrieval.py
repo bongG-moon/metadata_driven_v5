@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date, datetime
+import re
 from typing import Any
 
 from .contracts import ALLOWED_SOURCE_TYPES, ensure_dict, ensure_list, make_error
@@ -220,14 +222,43 @@ def condition_values(condition: Any) -> tuple[list[Any], str]:
 def apply_filter(rows: list[dict[str, Any]], column: str, values: list[Any], operator: str) -> list[dict[str, Any]]:
     if not values:
         return rows
-    normalized_values = {str(value) for value in values}
+    is_date_field = bool(
+        re.search(
+            r"(?:^|_)(?:DATE|DT)(?:$|_)",
+            re.sub(r"[^A-Z0-9]+", "_", str(column or "").strip().upper()).strip("_"),
+        )
+    )
+    normalize = normalize_date_value if is_date_field else str
+    normalized_values = {normalize(value) for value in values}
     if operator in {"in", "eq"}:
-        return [row for row in rows if str(row.get(column)) in normalized_values]
+        return [row for row in rows if normalize(row.get(column)) in normalized_values]
     if operator == "not_in":
-        return [row for row in rows if str(row.get(column)) not in normalized_values]
+        return [row for row in rows if normalize(row.get(column)) not in normalized_values]
     if operator == "contains":
         return [row for row in rows if any(value in str(row.get(column, "")) for value in normalized_values)]
     return rows
+
+
+def normalize_date_value(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y%m%d")
+    if isinstance(value, date):
+        return value.strftime("%Y%m%d")
+    text = str(value if value is not None else "").strip()
+    if re.fullmatch(r"\d{8}(?:\.0+)?", text):
+        return text[:8]
+    match = re.match(
+        r"^(\d{4})\s*(?:[-/.]|년)\s*(\d{1,2})\s*(?:[-/.]|월)\s*(\d{1,2})(?:\s*일)?(?:\D.*)?$",
+        text,
+    )
+    if not match:
+        return text
+    candidate = f"{int(match.group(1)):04d}{int(match.group(2)):02d}{int(match.group(3)):02d}"
+    try:
+        datetime.strptime(candidate, "%Y%m%d")
+    except ValueError:
+        return text
+    return candidate
 
 
 def apply_standard_aliases(
