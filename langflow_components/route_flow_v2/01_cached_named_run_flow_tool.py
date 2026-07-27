@@ -255,7 +255,10 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         DropdownInput(
             name="flow_name_selected",
             display_name="대상 Flow",
-            info="새로고침 후 실제 환경의 하위 Flow를 선택하세요. 선택 시 현재 Flow ID가 함께 저장됩니다.",
+            info=(
+                "현재 프로젝트의 하위 Flow 목록입니다. Refresh List를 누르면 저장된 Flow ID를 기준으로 "
+                "변경된 이름과 수정 시각이 자동 반영됩니다."
+            ),
             options=[],
             options_metadata=[],
             real_time_refresh=True,
@@ -327,8 +330,8 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         )
     ]
 
-    # 주요 메서드: 기본 Run Flow와 같은 Flow 목록·ID metadata를 드롭다운에 채웁니다.
-    # 동적 child 입력은 노출하지 않아 Agent Tool schema는 고정 question 하나로 유지합니다.
+    # 주요 메서드: 기본 Run Flow와 같은 프로젝트의 Flow 목록·ID metadata를 드롭다운에 채웁니다.
+    # Refresh 시 저장된 Flow ID로 현재 이름·수정 시각을 다시 맞추되, 동적 child 입력은 노출하지 않습니다.
     async def update_build_config(
         self,
         build_config: dict[str, Any],
@@ -350,14 +353,58 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
             bool(build_config.get("is_refresh")) or field_value in (None, "")
         ):
             flows = await self.alist_flows_by_flow_folder()
-            flow_field["options"] = [str(flow.data.get("name") or "") for flow in flows]
-            flow_field["options_metadata"] = [
-                {
-                    "id": str(flow.data.get("id") or ""),
-                    "updated_at": _as_iso_text(flow.data.get("updated_at")),
+            flow_options: list[str] = []
+            flow_metadata: list[dict[str, Any]] = []
+            selected_flow_id = str(
+                id_field.get("value")
+                or getattr(self, "flow_id_selected", "")
+                or attributes.get("flow_id_selected")
+                or ""
+            ).strip()
+            selected_flow_name = str(
+                field_value
+                or flow_field.get("value")
+                or getattr(self, "flow_name_selected", "")
+                or attributes.get("flow_name_selected")
+                or ""
+            ).strip()
+            matched_flow: tuple[str, dict[str, Any]] | None = None
+            same_name_flows: list[tuple[str, dict[str, Any]]] = []
+
+            for flow in flows:
+                flow_data = getattr(flow, "data", None) or {}
+                current_name = str(flow_data.get("name") or "")
+                current_metadata = {
+                    "id": str(flow_data.get("id") or ""),
+                    "updated_at": _as_iso_text(flow_data.get("updated_at")),
                 }
-                for flow in flows
-            ]
+                flow_options.append(current_name)
+                flow_metadata.append(current_metadata)
+                if selected_flow_id and current_metadata["id"] == selected_flow_id:
+                    matched_flow = (current_name, current_metadata)
+                if selected_flow_name and current_name == selected_flow_name:
+                    same_name_flows.append((current_name, current_metadata))
+
+            flow_field["options"] = flow_options
+            flow_field["options_metadata"] = flow_metadata
+
+            # 기본 Run Flow와 같이 저장된 ID를 우선 사용해 이름 변경·Flow 수정 사항을 반영합니다.
+            # standalone import 직후처럼 ID가 아직 없을 때만 프로젝트 내 유일한 동일 이름을 사용합니다.
+            if matched_flow is None and not selected_flow_id and len(same_name_flows) == 1:
+                matched_flow = same_name_flows[0]
+            if matched_flow is not None:
+                current_name, current_metadata = matched_flow
+                current_id = str(current_metadata.get("id") or "").strip()
+                current_updated_at = _as_iso_text(current_metadata.get("updated_at"))
+                flow_field["value"] = current_name
+                flow_field["selected_metadata"] = current_metadata
+                id_field["value"] = current_id
+                self.flow_name_selected = current_name
+                self.flow_id_selected = current_id
+                attributes["flow_name_selected"] = current_name
+                attributes["flow_id_selected"] = current_id
+                attributes["flow_name_selected_updated_at"] = current_updated_at
+                self._cached_flow_updated_at = current_updated_at
         elif field_name == "flow_name_selected" and field_value not in (None, ""):
             selected_metadata = _selected_flow_metadata(build_config)
             selected_id = str(selected_metadata.get("id") or "").strip()

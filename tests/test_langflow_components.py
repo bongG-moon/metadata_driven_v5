@@ -9125,8 +9125,8 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
             types.SimpleNamespace(
                 data={
                     "id": current_flow_id,
-                    "name": "Metadata QA",
-                    "updated_at": "2026-07-12T10:00:00Z",
+                    "name": "Metadata QA Renamed",
+                    "updated_at": "2026-07-13T10:00:00Z",
                 }
             )
         ]
@@ -9137,17 +9137,45 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         "flow_name_selected": {
             "options": [],
             "options_metadata": [],
-            "value": None,
+            "value": "Metadata QA",
         },
-        "flow_id_selected": {"value": ""},
+        "flow_id_selected": {"value": current_flow_id},
     }
     refreshed = asyncio.run(
         flow_picker_instance.update_build_config(build_config, None, "flow_name_selected")
     )
-    assert refreshed["flow_name_selected"]["options"] == ["Metadata QA"]
+    assert refreshed["flow_name_selected"]["options"] == ["Metadata QA Renamed"]
     assert refreshed["flow_name_selected"]["options_metadata"] == [
-        {"id": current_flow_id, "updated_at": "2026-07-12T10:00:00Z"}
+        {"id": current_flow_id, "updated_at": "2026-07-13T10:00:00Z"}
     ]
+    assert refreshed["flow_name_selected"]["value"] == "Metadata QA Renamed"
+    assert refreshed["flow_name_selected"]["selected_metadata"] == {
+        "id": current_flow_id,
+        "updated_at": "2026-07-13T10:00:00Z",
+    }
+    assert refreshed["flow_id_selected"]["value"] == current_flow_id
+    assert flow_picker_instance.flow_name_selected == "Metadata QA Renamed"
+    assert flow_picker_instance._attributes["flow_name_selected_updated_at"] == "2026-07-13T10:00:00Z"
+    assert flow_picker_instance._cached_flow_updated_at == "2026-07-13T10:00:00Z"
+
+    imported_picker_instance = component.CachedNamedRunFlowTool()
+    imported_picker_instance._attributes = {}
+    imported_picker_instance.alist_flows_by_flow_folder = fake_list_flows
+    imported_config = {
+        "is_refresh": True,
+        "flow_name_selected": {
+            "options": [],
+            "options_metadata": [],
+            "value": "Metadata QA Renamed",
+        },
+        "flow_id_selected": {"value": ""},
+    }
+    imported_refreshed = asyncio.run(
+        imported_picker_instance.update_build_config(imported_config, None, "flow_name_selected")
+    )
+    assert imported_refreshed["flow_id_selected"]["value"] == current_flow_id
+    assert imported_refreshed["flow_name_selected"]["selected_metadata"]["id"] == current_flow_id
+
     refreshed["is_refresh"] = False
     refreshed["flow_name_selected"]["selected_metadata"] = {
         "id": current_flow_id,

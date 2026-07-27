@@ -27,7 +27,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "f9cf94bb95d86d39af149275e2241ebbf71be0968922e26fe33dc62f49864a01",
+  "single_file_ui_import_sha256": "ba7a55b3b2eef628eba98b11a5548309bf2a744e0237ede68013c4dd099aa411",
   "flows": [
     {
       "order": 1,
@@ -90,7 +90,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
       "nodes": 10,
       "edges": 9,
-      "sha256": "aa7f155fafeaee609b3fb2bac8f5c425a317fcee0a6d2a138273ddefcd0634e3"
+      "sha256": "b5c05948b89b7fc84ac980ac001b4233b42a9bec6b3b9ceae19987ff337e744b"
     },
     {
       "order": 8,
