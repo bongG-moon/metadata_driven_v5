@@ -1,0 +1,86 @@
+{
+  "contract_version": "realtime.production.report.v1",
+  "response_type": "realtime_production_report",
+  "status": "partial",
+  "success": true,
+  "summary": "4개 공정 500 Case 분석: 생산부족 85건, 장비필요 20건, 교체필요 36건",
+  "message": "### 실시간 생산 분석이 완료되었습니다.\n\n- 기준: `2026-07-27` / W/B1, W/B2, W/B3, W/B4\n- 데이터 시점: `2026-07-27T14:30:00+09:00` / 4개 공정 / 500 Case / 125개 제품\n- 생산실적: 정상/초과 385건(77.0%), Abnormal 30건, 생산부족 85건(17.0%)\n- 생산부족 주원인: 적정재공부족 45건, CAPA부족 25건, 가동율저조 15건\n- CAPA 이상: 생산부진1 20건, 생산부진2 15건, CAPA부족 30건\n- 장비조정 대상: 장비필요 20건, 교체필요 36건\n\n우선 확인 대상은 장비필요 20건과 교체필요 36건입니다.\n\nHTML 파일은 생성했지만 공개 링크를 만들지 못했습니다. Report API 실행 상태와 주소를 확인해 주세요.",
+  "report_scope": {
+    "snapshot_id": "dummy:2026-07-27:20260727:500",
+    "snapshot_at": "2026-07-27T14:30:00+09:00",
+    "work_dates": [
+      "2026-07-27"
+    ],
+    "processes": [
+      "W/B1",
+      "W/B2",
+      "W/B3",
+      "W/B4"
+    ],
+    "process_count": 4,
+    "case_count": 500,
+    "distinct_case_count": 500,
+    "product_count": 125,
+    "source_type": "dummy"
+  },
+  "rules_version": "realtime.production.report.rules.v1",
+  "kpis": {
+    "production": {
+      "normal_excess": 385,
+      "abnormal": 30,
+      "shortage": 85,
+      "unclassified": 0
+    },
+    "shortage": {
+      "case_count": 85,
+      "primary": {
+        "wip": 45,
+        "capa": 25,
+        "utilization": 15,
+        "unclassified": 0
+      },
+      "flags": {
+        "wip": 45,
+        "capa": 30,
+        "utilization": 35
+      },
+      "multi_cause_count": 25
+    },
+    "capa": {
+      "normal": 420,
+      "abnormal": 15,
+      "anomaly": 65,
+      "unclassified": 0,
+      "detail": {
+        "생산부진1": 20,
+        "생산부진2": 15,
+        "CAPA부족": 30
+      },
+      "abnormal_product_count": 15
+    },
+    "equipment": {
+      "정상": 0,
+      "교체불필요": 9,
+      "장비필요": 20,
+      "교체필요": 36,
+      "normal_no_change": 9,
+      "unclassified": 0,
+      "case_count": 65
+    }
+  },
+  "artifacts": [
+    {
+      "artifact_type": "html_report",
+      "path": "samples/realtime_production_report/realtime_production_report_example.html",
+      "mime_type": "text/html",
+      "title": "실시간 생산 분석 Report",
+      "download_name": "realtime_production_report_example.html",
+      "size_bytes": 599722,
+      "row_count": 500,
+      "rendered_row_count": 500,
+      "rules_version": "realtime.production.report.rules.v1"
+    }
+  ],
+  "warnings": [],
+  "errors": []
+}

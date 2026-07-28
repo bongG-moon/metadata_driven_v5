@@ -5,6 +5,7 @@
 # 주요 입력: 런타임 사용자 질문 (question) · 필수, 대상 Flow (flow_name_selected) · 필수, 선택된 Flow ID (flow_id_selected),
 #        Flow 해석 방식 (flow_resolution_mode),
 #        세션 ID (session_id), Flow 그래프 캐시 (cache_flow), 도구 이름 (tool_name) · 필수, 도구 설명 (tool_description) · 필수,
+#        필수 키워드 (required_all_keywords), 허용 호출 구문 (required_any_phrases), 차단 안내 (keyword_gate_message),
 #        결과 직접 반환 (return_direct)
 # 주요 출력: Flow 도구 (component_as_tool)
 # 처리 흐름: UI 선택 ID→이름 fallback 순으로 Flow를 확정한 뒤 선택된 Tool만 runtime Chat I/O ID를 찾아 실행합니다.
@@ -110,6 +111,67 @@ def _question_tweaks(
     if output_id and output_supports_storage_toggle:
         tweaks[output_id] = {"should_store_message": False}
     return tweaks
+
+
+# 함수 설명: Agent Tool 인자에서 node ID와 무관한 고정 question 원문만 추출합니다.
+def _tool_question(flow_tweak_data: Any) -> str:
+    """Return the original question passed through the stable public Tool schema."""
+    tool_values = (
+        flow_tweak_data.model_dump()
+        if hasattr(flow_tweak_data, "model_dump")
+        else flow_tweak_data
+    )
+    if not isinstance(tool_values, dict):
+        return ""
+    return str(tool_values.get("question") or "").strip()
+
+
+# 함수 설명: 줄바꿈 또는 쉼표로 입력한 실행 Gate 규칙을 빈 항목 없이 정규화합니다.
+def _gate_items(value: Any) -> list[str]:
+    """Split a configurable keyword or phrase list into non-empty items."""
+    if isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = re.split(r"[\n,]+", str(value or ""))
+    return [str(item).strip() for item in raw_items if str(item).strip()]
+
+
+# 함수 설명: 질문과 Gate 규칙의 연속 공백과 대소문자를 통일해 안정적으로 비교합니다.
+def _normalize_gate_text(value: Any) -> str:
+    """Normalize whitespace and letter case for deterministic substring matching."""
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+# 함수 설명: 모든 필수 키워드와 하나 이상의 허용 구문이 질문에 있는지 검사하고 차단 문구를 반환합니다.
+def _keyword_gate_error(
+    question: Any,
+    required_all_keywords: Any = "",
+    required_any_phrases: Any = "",
+    keyword_gate_message: Any = "",
+) -> str:
+    """Return an operator-facing explanation when a configured Tool call is not allowed."""
+    required_all = _gate_items(required_all_keywords)
+    required_any = _gate_items(required_any_phrases)
+    if not required_all and not required_any:
+        return ""
+
+    normalized_question = _normalize_gate_text(question)
+    missing_all = [
+        item
+        for item in required_all
+        if _normalize_gate_text(item) not in normalized_question
+    ]
+    has_any_phrase = not required_any or any(
+        _normalize_gate_text(item) in normalized_question
+        for item in required_any
+    )
+    if not missing_all and has_any_phrase:
+        return ""
+
+    configured_message = str(keyword_gate_message or "").strip()
+    if configured_message:
+        return configured_message
+    return "현재 질문은 이 Flow의 실행 키워드 조건을 충족하지 않습니다."
 
 
 # 함수 설명: standalone vertex template에 선택 입력 포트가 실제로 존재하는지 확인합니다.
@@ -310,6 +372,27 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
             display_name="도구 설명",
             info="Agent가 정확히 하나의 하위 Flow를 선택할 수 있도록 사용 범위를 설명합니다.",
             required=True,
+        ),
+        MultilineInput(
+            name="required_all_keywords",
+            display_name="필수 키워드",
+            info="설정한 모든 키워드가 사용자 질문에 포함될 때만 하위 Flow를 실행합니다. 줄바꿈 또는 쉼표로 구분합니다.",
+            value="",
+            advanced=True,
+        ),
+        MultilineInput(
+            name="required_any_phrases",
+            display_name="허용 호출 구문",
+            info="설정한 구문 중 하나 이상이 사용자 질문에 포함될 때만 하위 Flow를 실행합니다. 줄바꿈 또는 쉼표로 구분합니다.",
+            value="",
+            advanced=True,
+        ),
+        MultilineInput(
+            name="keyword_gate_message",
+            display_name="키워드 차단 안내",
+            info="Agent가 잘못 선택했을 때 하위 Flow를 호출하지 않고 사용자에게 반환할 안내 문구입니다.",
+            value="",
+            advanced=True,
         ),
         BoolInput(
             name="return_direct",
@@ -542,6 +625,23 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
     # 함수 설명: `_run_selected_flow()`는 Agent가 실제 선택한 Tool에 대해서만 하위 Flow를 해석·빌드·실행합니다.
     async def _run_selected_flow(self):
         """Resolve, validate, build, and run the selected child flow lazily."""
+        attributes = getattr(self, "_attributes", {}) or {}
+        gate_error = _keyword_gate_error(
+            _tool_question(attributes.get("flow_tweak_data")),
+            getattr(self, "required_all_keywords", ""),
+            getattr(self, "required_any_phrases", ""),
+            getattr(self, "keyword_gate_message", ""),
+        )
+        if gate_error:
+            blocked = Message(text=gate_error)
+            blocked.data = {
+                "route_gate": {
+                    "status": "blocked",
+                    "tool_name": str(getattr(self, "tool_name", "") or ""),
+                }
+            }
+            return blocked
+
         self._inherit_runtime_session()
         self._last_run_outputs = None
         await self._get_cached_run_outputs(user_id=self.user_id, output_type="any")

@@ -8542,8 +8542,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 83
-    assert result["all_component_python_files"] == 84
+    assert result["active_unique_source_files"] == 89
+    assert result["all_component_python_files"] == 90
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -8552,9 +8552,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 10, 120, 83),
-        ("import_ready_individual", 10, 120, 83),
-        ("import_ready_bundle", 10, 120, 83),
+        ("flow_exports", 11, 130, 89),
+        ("import_ready_individual", 11, 130, 89),
+        ("import_ready_bundle", 11, 130, 89),
     }
 
 
@@ -8576,7 +8576,7 @@ def test_route_flow_06_docs_cover_current_api_router_contract():
     assert "Message" in design and "Data" in design
 
 
-def test_route_flow_v2_docs_cover_exactly_five_current_tools():
+def test_route_flow_v2_docs_cover_exactly_six_current_tools():
     route_dir = ROOT / "langflow_components" / "route_flow_v2"
     guide = (route_dir / "CONNECTION_GUIDE.md").read_text(encoding="utf-8")
     system_prompt = (route_dir / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
@@ -8592,6 +8592,7 @@ def test_route_flow_v2_docs_cover_exactly_five_current_tools():
         "save_domain_metadata",
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
+        "run_realtime_production_report",
     ):
         assert slug in guide
         assert slug in system_prompt
@@ -8936,12 +8937,18 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         "cache_flow",
         "tool_name",
         "tool_description",
+        "required_all_keywords",
+        "required_any_phrases",
+        "keyword_gate_message",
         "return_direct",
     ]
     assert inputs["flow_id_selected"]["value"] == ""
     assert inputs["flow_resolution_mode"]["value"] == "Flow ID 우선"
     assert inputs["session_id"]["advanced"] is True
     assert inputs["cache_flow"]["value"] is True
+    assert inputs["required_all_keywords"]["value"] == ""
+    assert inputs["required_any_phrases"]["value"] == ""
+    assert inputs["keyword_gate_message"]["value"] == ""
     assert inputs["return_direct"]["value"] is True
     assert list(outputs) == ["component_as_tool"]
     assert outputs["component_as_tool"]["types"] == ["Tool"]
@@ -8961,12 +8968,27 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert "UUID(requested_flow_id)" not in source
     assert "def _chat_output_target" in source
     assert "def _promote_graph_output" in source
+    assert "def _keyword_gate_error" in source
     assert 'runtime_user_id = str(getattr(self, "user_id"' in source
     assert "self.user_id =" not in source
     assert "tool.return_direct" in source
     assert "def _inherit_runtime_session" in source
     assert "parent_session" in source
     assert "session_source" not in source
+    realtime_phrases = "실시간 생산 분석\n실시간 분석\n실시간 생산분석"
+    for question in (
+        "W/B 공정그룹 실시간 생산 분석을 해줘",
+        "B/G 실시간 분석 부탁해",
+        "D/A 실시간 생산분석 해줘",
+        "W/B  실시간   생산 분석을 해줘",
+    ):
+        assert component._keyword_gate_error(question, "분석", realtime_phrases) == ""
+    for question in (
+        "W/B 실시간 생산 현황을 보여줘",
+        "W/B 생산 분석을 해줘",
+        "",
+    ):
+        assert component._keyword_gate_error(question, "분석", realtime_phrases)
 
     vertices = [
         types.SimpleNamespace(id="ChatInput-runtime", data={"type": "GaiAInput"}, display_name="GaiA Input"),
@@ -10619,6 +10641,9 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         "router": ROOT / "flow_exports" / "api_router_flow_v5_standalone.json",
         "tool_router": ROOT / "flow_exports" / "agent_tool_router_flow_v5_standalone.json",
         "workflow_orchestrator": ROOT / "flow_exports" / "workflow_orchestrator_flow_v5_standalone.json",
+        "realtime_production_report": ROOT
+        / "flow_exports"
+        / "realtime_production_report_flow_v5_standalone.json",
     }
     for path in exports.values():
         assert path.exists(), path
@@ -10800,15 +10825,15 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         )
 
     tool_router = json.loads(exports["tool_router"].read_text(encoding="utf-8"))
-    assert len(tool_router["data"]["nodes"]) == 10
-    assert len(tool_router["data"]["edges"]) == 9
+    assert len(tool_router["data"]["nodes"]) == 11
+    assert len(tool_router["data"]["edges"]) == 10
     tools = [node for node in tool_router["data"]["nodes"] if node["id"].startswith("CachedFlowTool-")]
     agents = [node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "Agent"]
     outputs = [node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]
     output_adapters = [
         node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "GaiAOutputAdapter"
     ]
-    assert len(tools) == 5
+    assert len(tools) == 6
     assert len(agents) == 1
     assert len(outputs) == 1
     assert len(output_adapters) == 1
@@ -10837,6 +10862,7 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
     assert "UUID(requested_flow_id)" not in cached_tool_source
     assert "def _chat_output_target" in cached_tool_source
     assert "def _promote_graph_output" in cached_tool_source
+    assert "def _keyword_gate_error" in cached_tool_source
     assert all(node["data"]["node"]["template"]["code"]["value"] == cached_tool_source for node in tools)
     assert {
         node["data"]["node"]["template"]["tool_name"]["value"] for node in tools
@@ -10846,7 +10872,28 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         "save_domain_metadata",
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
+        "run_realtime_production_report",
     }
+    realtime_tool = next(
+        node
+        for node in tools
+        if node["data"]["node"]["template"]["tool_name"]["value"] == "run_realtime_production_report"
+    )
+    realtime_template = realtime_tool["data"]["node"]["template"]
+    assert realtime_template["required_all_keywords"]["value"] == "분석"
+    assert realtime_template["required_any_phrases"]["value"].splitlines() == [
+        "실시간 생산 분석",
+        "실시간 분석",
+        "실시간 생산분석",
+    ]
+    assert "'분석'" in realtime_template["keyword_gate_message"]["value"]
+    for node in tools:
+        if node is realtime_tool:
+            continue
+        template = node["data"]["node"]["template"]
+        assert template["required_all_keywords"]["value"] == ""
+        assert template["required_any_phrases"]["value"] == ""
+        assert template["keyword_gate_message"]["value"] == ""
     edge_keys = {
         (
             edge["source"],
@@ -10899,8 +10946,8 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
     }
 
     assert flow["endpoint_name"] == "metadata-driven-v5-workflow-orchestrator"
-    assert len(nodes) == 20
-    assert len(edges) == 28
+    assert len(nodes) == 21
+    assert len(edges) == 29
     assert len([node for node in nodes.values() if node["data"].get("type") == "LanguageModelComponent"]) == 2
     assert not [node for node in nodes.values() if node["data"].get("type") == "Agent"]
     assert len([node for node in nodes.values() if node["data"].get("type") == "LoopComponent"]) == 1
@@ -10927,7 +10974,7 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
         assert embedded == expected, node_id
 
     tools = [node for node_id, node in nodes.items() if node_id.startswith("WorkflowFlowTool-")]
-    assert len(tools) == 6
+    assert len(tools) == 7
     workflow_tool_source = (
         ROOT / "langflow_components" / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
     ).read_text(encoding="utf-8")
@@ -10945,6 +10992,7 @@ def test_route_v4_workflow_orchestrator_export_has_exact_loop_and_terminal_contr
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
         "run_visualization",
+        "run_realtime_production_report",
     }
 
     expected_core_edges = {

@@ -14,6 +14,7 @@
 | `langflow_components/data_analysis_flow/CONNECTION_GUIDE.md` | 실제 데이터 조회/분석 flow를 만들 때 |
 | `langflow_components/metadata_qa_flow/CONNECTION_GUIDE.md` | metadata/catalog/help 답변 flow를 만들 때 |
 | `langflow_components/session_state_flow/CONNECTION_GUIDE.md` | 대화별 state load/write를 연결할 때 |
+| `docs/REALTIME_PRODUCTION_REPORT_PRODUCTION_IMPLEMENTATION_GUIDE.md` | 11번 실시간 생산 분석 Report를 실제 Snapshot과 운영 서버에 연결할 때 |
 
 ## Common Runtime Rule
 
@@ -30,7 +31,7 @@ Chat Input
 
 ```text
 Chat Input
--> Agent <- 선택 ID 우선 Cached Run Flow Tool 5개
+-> Agent <- 선택 ID 우선 Cached Run Flow Tool 6개
 -> 단일 Chat Output
 ```
 
@@ -41,7 +42,7 @@ Chat Input
 -> 00A MongoDB Workflow Registry 후보 로더
 -> 기본 Language Model 계획기
 -> 결정론적 계획 파서
--> 기본 Loop <- 이름 기반 Cached Run Flow Tool 6개
+-> 기본 Loop <- 이름 기반 Cached Run Flow Tool 7개
 -> 정확한 Tool 한 개씩 순차 실행
 -> 기본 Language Model 최종 합성
 -> 단일 Chat Output / API 응답
@@ -64,6 +65,16 @@ Chat Input
 -> HTML 시각화 생성기 <- Data Analysis result_ref / MongoDB
 -> 단일 Chat Output
    + terminal api_response
+```
+
+11 Realtime Production Report Flow:
+
+```text
+더미 판정 데이터(운영 시 실제 Snapshot 로더로 교체)
+-> 고정 Rule 생산 분석/HTML Report 생성
+-> GaiA Output Adapter
+-> Chat Output
+-> 별도 terminal api_response
 ```
 
 subflow:

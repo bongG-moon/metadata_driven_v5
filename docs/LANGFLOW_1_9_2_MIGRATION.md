@@ -26,7 +26,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe `
 
 ## 적용 내용
 
-1. 10개 Flow의 `last_tested_version`과 모든 직렬화 노드 `lf_version`을 `1.9.2`로 통일했습니다.
+1. 11개 Flow의 `last_tested_version`과 모든 직렬화 노드 `lf_version`을 `1.9.2`로 통일했습니다.
 2. Data Analysis의 기본 Language Model은 1.9.2 원본을 `tools/assets/langflow_1_9_2_language_model.py`에 고정했습니다. 더 최신 Desktop에서 재생성해도 1.10+ 전용 `provider`, `model_name` 입력이 섞이지 않습니다.
 3. 빌더는 실행 중인 LFX의 `component_index.json`을 우선 사용하며, `LANGFLOW_COMPONENT_INDEX_PATH`로 검증할 인덱스를 명시할 수 있습니다.
 4. `21 답변 메시지 어댑터`가 결과 테이블 미리보기 행 수의 단일 소유자가 되었습니다. Advanced 입력 `table_preview_limit`의 기본값은 10이며 MongoDB 저장 행과 다운로드 전체 데이터에는 영향을 주지 않습니다.
@@ -34,7 +34,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe `
 ## 검증 결과
 
 - 정확한 `langflow 1.9.2 / langflow-base 0.9.2 / lfx 0.4.2` 런타임 import 성공
-- 10개 Flow의 node template 173/173 실제 LFX parse 성공
+- 11개 Flow의 node template 실제 LFX parse 성공
 - 전체 pytest 419/419 성공
 - 모든 export의 `last_tested_version=1.9.2`
 - 모든 직렬화 노드의 `lf_version=1.9.2`

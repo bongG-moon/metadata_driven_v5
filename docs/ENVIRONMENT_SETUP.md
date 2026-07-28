@@ -105,11 +105,13 @@ LANGFLOW_VERTEX_BUILDS_STORAGE_ENABLED=false
 - 전체 tracing provider까지 끄는 `LANGFLOW_DEACTIVATE_TRACING=true`보다 native DB 저장만 끄는 위 설정을 우선한다.
 - tracing을 유지한다면 배포 DB 정책에 맞춘 별도 retention 정리가 필요하다.
 
-운영 기본 API Router에는 Run Flow 노드가 없습니다. 별도로 제공되는 `07_agent_tool_router_flow_v5_standalone.json`에는 선택한 Flow ID를 우선 사용하는 Cached Run Flow Tool 5개, `08_workflow_orchestrator_flow_v5_standalone.json`에는 HTML 시각화를 포함한 이름 기반 Tool 6개가 있으며 모두 `Cache Flow=true`입니다. 07의 `대상 Flow`는 기본 Run Flow와 동일하게 현재 프로젝트의 Flow만 표시합니다. `Refresh List`를 누르면 저장된 Flow ID를 기준으로 변경된 이름과 수정 시각을 자동 반영하며, import 직후 ID가 비어 있을 때는 프로젝트 내 유일하게 일치하는 이름의 ID를 자동 저장합니다. 일치하는 이름이 없거나 중복이면 해당 Tool에서 대상을 한 번 선택해야 합니다. 이 설정은 하위 Flow 그래프만 캐시하고 데이터 조회·pandas·LLM 결과는 캐시하지 않습니다.
+운영 기본 API Router에는 Run Flow 노드가 없습니다. 별도로 제공되는 `07_agent_tool_router_flow_v5_standalone.json`에는 선택한 Flow ID를 우선 사용하는 Cached Run Flow Tool 6개, `08_workflow_orchestrator_flow_v5_standalone.json`에는 HTML 시각화와 실시간 생산 Report를 포함한 이름 기반 Tool 7개가 있으며 모두 `Cache Flow=true`입니다. 07의 여섯 번째 Tool은 질문에 `분석`이 있고 `실시간 생산 분석`·`실시간 분석`·`실시간 생산분석` 중 하나가 있을 때만 11번 Flow를 실행하며, Agent 오선택 시에도 실행 직전 Gate가 차단합니다. 07의 `대상 Flow`는 기본 Run Flow와 동일하게 현재 프로젝트의 Flow만 표시합니다. `Refresh List`를 누르면 저장된 Flow ID를 기준으로 변경된 이름과 수정 시각을 자동 반영하며, import 직후 ID가 비어 있을 때는 프로젝트 내 유일하게 일치하는 이름의 ID를 자동 저장합니다. 일치하는 이름이 없거나 중복이면 해당 Tool에서 대상을 한 번 선택해야 합니다. 이 설정은 하위 Flow 그래프만 캐시하고 데이터 조회·pandas·LLM 결과는 캐시하지 않습니다.
 
 08 Workflow Orchestrator는 기본 Agent 대신 계획용 Language Model, Langflow 기본 Loop, 최종 합성용 Language Model을 사용합니다. 운영 기본값은 `MONGO_URL`로 `datagov.agent_v4_workflow_skills`의 active Skill을 조회하는 `mongodb` 모드이며, 현재 질문과 관련된 후보만 최대 8개·64KB로 제한합니다. `inline_seed`는 명시적 로컬 테스트 모드이고 MongoDB 오류 시 자동 fallback하지 않습니다. 단계는 최대 4개를 순차 호출하며, `handoff=result_ref`가 있는 업무는 `datagov.agent_v4_result_store`, 부모·자식의 동일 `session_id`가 필요합니다. 하위 Flow 실행 시간을 합산해야 하므로 외부 client timeout은 Workflow의 최장 예상 시간보다 길게 설정합니다.
 
 10 HTML Visualization Flow도 같은 `MONGO_URL`, `datagov`, `agent_v4_result_store`를 사용합니다. 08이 `run_data_analysis` 다음 `run_visualization`을 실행할 때 분석 결과 `result_ref`를 그대로 전달하며, 차트 HTML은 외부 CDN 없이 생성합니다. 보기·다운로드 링크는 별도 `report_api` 서버가 발급하므로 Desktop에서는 `http://127.0.0.1:8010`, Kubernetes에서는 Langflow가 호출 가능한 Service 주소와 사용자 브라우저가 접근 가능한 `BASE_URL`을 각각 설정해야 합니다. 자세한 내용은 `docs/HTML_REPORT_LINK_GUIDE.md`를 참고합니다.
+
+11 Realtime Production Report Flow는 예시 실행에서 내부 더미 Snapshot 500행을 사용하고 `HTML Report API 주소=http://127.0.0.1:8765`, 링크 TTL 4시간을 화면 입력으로 노출합니다. 운영에서는 더미 생성 노드를 실제 판정 Snapshot 로더로 교체하되 Report Builder의 `production.judgement.dataset.v1` 입력을 유지합니다.
 
 09 Workflow Skill 저장 Flow는 같은 `MONGO_URL`, `datagov`, `agent_v4_workflow_skills`를 기존 항목 로더·유사 항목 조회기·Writer에 입력합니다. `dry_run=true`가 기본이며 실제 저장 때만 끕니다. 저장 후 08 Workflow Orchestrator는 다음 요청에서 MongoDB를 다시 조회하므로 Flow JSON을 재export할 필요가 없습니다.
 

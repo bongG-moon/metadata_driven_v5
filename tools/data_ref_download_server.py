@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import hashlib
 import errno
 import hmac
 import html
@@ -17,12 +18,13 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -40,15 +42,92 @@ DEFAULT_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 DEFAULT_RESTART_TIMEOUT_SECONDS = 5.0
 SERVICE_NAME = "metadata-driven-data-ref-download-server"
 CONTROL_SHUTDOWN_PATH = "/__control/shutdown"
+DEFAULT_REPORT_STORAGE_DIR = ROOT / "report_api" / "storage"
+DEFAULT_REPORT_TTL_HOURS = 24
+DEFAULT_MAX_REPORT_TTL_HOURS = 24 * 7
+DEFAULT_MAX_REPORT_HTML_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_REPORT_METADATA_BYTES = 1 * 1024 * 1024
+DEFAULT_MAX_REPORT_REQUEST_BYTES = (
+    DEFAULT_MAX_REPORT_HTML_BYTES + DEFAULT_MAX_REPORT_METADATA_BYTES + (64 * 1024)
+)
+DEFAULT_MAX_REPORT_STORAGE_BYTES = 512 * 1024 * 1024
+MAX_REPORT_DATASET_REFS = 100
+REPORT_ID_PATTERN = re.compile(r"[0-9]{14}_[a-f0-9]{32}")
+REPORT_TOKEN_PATTERN = re.compile(r"[a-f0-9]{32,128}")
+REPORT_STORE_LOCK = threading.RLock()
+REPORT_VIEW_CONTENT_SECURITY_POLICY = (
+    "sandbox allow-scripts allow-downloads; "
+    "default-src 'none'; "
+    "script-src 'unsafe-inline' 'unsafe-eval' blob:; "
+    "style-src 'unsafe-inline'; "
+    "img-src data: blob:; "
+    "font-src data:; "
+    "connect-src 'none'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-src 'none'"
+)
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
 
 
 def main() -> int:
+    env_parser = argparse.ArgumentParser(add_help=False)
+    env_parser.add_argument(
+        "--env-file",
+        default=os.getenv("DATA_REF_DOWNLOAD_ENV_FILE", str(ROOT / ".env")),
+    )
+    env_args, _ = env_parser.parse_known_args()
+    load_dotenv(env_args.env_file)
+
     parser = argparse.ArgumentParser(description="Serve MongoDB data_ref rows as local CSV downloads.")
     parser.add_argument("--host", default=os.getenv("DATA_REF_DOWNLOAD_HOST", DEFAULT_HOST))
     parser.add_argument("--port", type=int, default=int(os.getenv("DATA_REF_DOWNLOAD_PORT", str(DEFAULT_PORT))))
-    parser.add_argument("--env-file", default=os.getenv("DATA_REF_DOWNLOAD_ENV_FILE", str(ROOT / ".env")))
+    parser.add_argument("--env-file", default=env_args.env_file)
     parser.add_argument("--preview-limit", type=int, default=int(os.getenv("DATA_REF_DOWNLOAD_PREVIEW_LIMIT", str(DEFAULT_PREVIEW_LIMIT))))
     parser.add_argument("--max-download-bytes", type=int, default=int(os.getenv("DATA_REF_DOWNLOAD_MAX_BYTES", str(DEFAULT_MAX_DOWNLOAD_BYTES))))
+    parser.add_argument(
+        "--public-base-url",
+        default=os.getenv("DATA_REF_DOWNLOAD_BASE_URL") or os.getenv("REPORT_BASE_URL") or "",
+        help="HTML Report 응답에 넣을 사용자 브라우저용 절대 주소. 기본값은 http://127.0.0.1:<port>입니다.",
+    )
+    parser.add_argument(
+        "--report-storage-dir",
+        default=os.getenv("REPORT_STORAGE_DIR") or str(DEFAULT_REPORT_STORAGE_DIR),
+    )
+    parser.add_argument(
+        "--report-default-ttl-hours",
+        type=int,
+        default=int(os.getenv("REPORT_DEFAULT_TTL_HOURS", str(DEFAULT_REPORT_TTL_HOURS))),
+    )
+    parser.add_argument(
+        "--report-max-ttl-hours",
+        type=int,
+        default=int(os.getenv("REPORT_MAX_TTL_HOURS", str(DEFAULT_MAX_REPORT_TTL_HOURS))),
+    )
+    parser.add_argument(
+        "--max-report-html-bytes",
+        type=int,
+        default=int(os.getenv("REPORT_MAX_HTML_BYTES", str(DEFAULT_MAX_REPORT_HTML_BYTES))),
+    )
+    parser.add_argument(
+        "--max-report-storage-bytes",
+        type=int,
+        default=int(os.getenv("REPORT_MAX_STORAGE_BYTES", str(DEFAULT_MAX_REPORT_STORAGE_BYTES))),
+    )
+    parser.add_argument(
+        "--report-access-token",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("REPORT_USE_ACCESS_TOKEN", False),
+        help="HTML Report 보기·다운로드 URL에 임의 access token을 포함합니다.",
+    )
     parser.add_argument(
         "--replace-existing",
         action=argparse.BooleanOptionalAction,
@@ -63,7 +142,6 @@ def main() -> int:
     parser.add_argument("--state-file", default=os.getenv("DATA_REF_DOWNLOAD_STATE_FILE", ""))
     args = parser.parse_args()
 
-    load_dotenv(args.env_file)
     state_path = Path(args.state_file).expanduser() if str(args.state_file).strip() else server_state_path(args.port)
     if args.replace_existing:
         request_existing_server_shutdown(
@@ -82,7 +160,15 @@ def main() -> int:
         host=args.host,
         port=args.port,
         control_token=control_token,
+        report_storage_dir=args.report_storage_dir,
+        report_base_url=args.public_base_url or f"http://127.0.0.1:{args.port}",
+        report_default_ttl_hours=args.report_default_ttl_hours,
+        report_max_ttl_hours=args.report_max_ttl_hours,
+        max_report_html_bytes=args.max_report_html_bytes,
+        max_report_storage_bytes=args.max_report_storage_bytes,
+        use_report_access_token=args.report_access_token,
     )
+    prepare_report_storage(config)
     try:
         server = ThreadingHTTPServer((args.host, args.port), make_handler(config))
     except OSError as exc:
@@ -102,7 +188,12 @@ def main() -> int:
     print(f"data_ref download server: http://{args.host}:{args.port}")
     print(f"same-service automatic restart: enabled (state: {state_path})")
     print("Langflow component setting:")
-    print(f"  23 MongoDB 결과 저장소.download_base_url = http://{args.host}:{args.port}")
+    component_base_url = f"http://{url_host(loopback_probe_host(args.host))}:{args.port}"
+    print(f"  23 MongoDB 결과 저장소.download_base_url = {component_base_url}")
+    print(f"  00 HTML 시각화 생성기.report_api_url = {component_base_url}")
+    print(f"  01 실시간 생산 분석 Report 생성기.report_api_url = {component_base_url}")
+    print(f"HTML Report public base URL: {config.report_base_url}")
+    print(f"HTML Report storage: {report_reports_dir(config)}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -124,6 +215,13 @@ class ServerConfig:
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         control_token: str = "",
+        report_storage_dir: str | Path = DEFAULT_REPORT_STORAGE_DIR,
+        report_base_url: str = "",
+        report_default_ttl_hours: int = DEFAULT_REPORT_TTL_HOURS,
+        report_max_ttl_hours: int = DEFAULT_MAX_REPORT_TTL_HOURS,
+        max_report_html_bytes: int = DEFAULT_MAX_REPORT_HTML_BYTES,
+        max_report_storage_bytes: int = DEFAULT_MAX_REPORT_STORAGE_BYTES,
+        use_report_access_token: bool = False,
     ) -> None:
         self.mongo_uri = mongo_uri
         self.mongo_database = mongo_database
@@ -135,6 +233,24 @@ class ServerConfig:
         self.host = str(host)
         self.port = int(port)
         self.control_token = str(control_token)
+        self.report_storage_dir = Path(report_storage_dir).expanduser().resolve()
+        self.report_base_url = normalize_report_base_url(
+            report_base_url or f"http://127.0.0.1:{self.port}"
+        )
+        self.report_default_ttl_hours = max(1, int(report_default_ttl_hours))
+        self.report_max_ttl_hours = max(1, int(report_max_ttl_hours))
+        if self.report_default_ttl_hours > self.report_max_ttl_hours:
+            raise ValueError("report_default_ttl_hours는 report_max_ttl_hours를 초과할 수 없습니다.")
+        self.max_report_html_bytes = max(1024, int(max_report_html_bytes))
+        self.max_report_metadata_bytes = DEFAULT_MAX_REPORT_METADATA_BYTES
+        self.max_report_request_bytes = (
+            self.max_report_html_bytes + self.max_report_metadata_bytes + (64 * 1024)
+        )
+        self.max_report_storage_bytes = max(
+            self.max_report_html_bytes,
+            int(max_report_storage_bytes),
+        )
+        self.use_report_access_token = bool(use_report_access_token)
 
 
 def server_state_path(port: int) -> Path:
@@ -266,7 +382,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
     class DataRefDownloadHandler(BaseHTTPRequestHandler):
-        server_version = "DataRefDownloadServer/2.0"
+        server_version = "DataRefDownloadServer/3.0"
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
@@ -278,7 +394,28 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                         "pid": config.pid,
                         "host": config.host,
                         "port": config.port,
+                        "features": {
+                            "data_ref_csv": True,
+                            "html_reports": True,
+                        },
+                        "report_base_url": config.report_base_url,
                     }
+                )
+                return
+            report_view_prefix = "/reports/view/"
+            report_download_prefix = "/reports/download/"
+            if parsed.path.startswith(report_view_prefix):
+                self.render_report(
+                    parsed.path[len(report_view_prefix) :],
+                    parsed.query,
+                    download=False,
+                )
+                return
+            if parsed.path.startswith(report_download_prefix):
+                self.render_report(
+                    parsed.path[len(report_download_prefix) :],
+                    parsed.query,
+                    download=True,
                 )
                 return
             # 답변의 링크와 예전 `/?download_ref=...` 링크는 중간 화면 없이 바로 CSV를 내려줍니다.
@@ -296,6 +433,9 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
+            if parsed.path == "/reports":
+                self.create_report()
+                return
             if parsed.path != CONTROL_SHUTDOWN_PATH:
                 self.send_error_page(HTTPStatus.NOT_FOUND, "지원하지 않는 경로입니다.")
                 return
@@ -316,6 +456,68 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                 return
             self.send_json({"ok": True, "message": "server shutdown requested", "pid": config.pid})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+        def do_DELETE(self) -> None:
+            parsed = urlparse(self.path)
+            prefix = "/reports/"
+            if not parsed.path.startswith(prefix):
+                self.send_error_page(HTTPStatus.NOT_FOUND, "지원하지 않는 경로입니다.")
+                return
+            report_id = parsed.path[len(prefix) :]
+            try:
+                deleted = delete_html_report(report_id, report_token_from_query(parsed.query), config)
+            except ReportHttpError as exc:
+                self.send_json({"detail": exc.message}, status=exc.status)
+                return
+            self.send_json({"status": "ok", "deleted": True, "report_id": deleted})
+
+        def create_report(self) -> None:
+            try:
+                payload = self.read_json_body(config.max_report_request_bytes)
+                result = create_html_report(payload, config)
+            except ReportHttpError as exc:
+                self.send_json({"detail": exc.message}, status=exc.status)
+                return
+            self.send_json(result, status=HTTPStatus.CREATED)
+
+        def read_json_body(self, max_bytes: int) -> dict[str, Any]:
+            raw_length = str(self.headers.get("Content-Length") or "").strip()
+            try:
+                content_length = int(raw_length)
+            except ValueError as exc:
+                raise ReportHttpError(HTTPStatus.LENGTH_REQUIRED, "Content-Length가 필요합니다.") from exc
+            if content_length < 0:
+                raise ReportHttpError(HTTPStatus.BAD_REQUEST, "Content-Length가 올바르지 않습니다.")
+            if content_length > max_bytes:
+                raise ReportHttpError(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    f"request body is too large. max_bytes={max_bytes}",
+                )
+            body = self.rfile.read(content_length)
+            if len(body) != content_length:
+                raise ReportHttpError(HTTPStatus.BAD_REQUEST, "요청 body를 완전히 읽지 못했습니다.")
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ReportHttpError(HTTPStatus.BAD_REQUEST, "요청 body는 UTF-8 JSON object여야 합니다.") from exc
+            if not isinstance(payload, dict):
+                raise ReportHttpError(HTTPStatus.BAD_REQUEST, "요청 body는 JSON object여야 합니다.")
+            return payload
+
+        def render_report(self, report_id: str, query: str, *, download: bool) -> None:
+            try:
+                doc, payload = load_active_html_report(
+                    report_id,
+                    report_token_from_query(query),
+                    config,
+                )
+            except ReportHttpError as exc:
+                self.send_json({"detail": exc.message}, status=exc.status)
+                return
+            filename = safe_report_filename(
+                doc.get("download_filename") or doc.get("title") or report_id
+            )
+            self.send_report_bytes(payload, filename, download=download)
 
         def render_view(self, query: str) -> None:
             resolved = resolve_request(query, config, limit=config.preview_limit)
@@ -397,6 +599,24 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(payload)
 
+        def send_report_bytes(self, payload: bytes, filename: str, *, download: bool) -> None:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_common_headers()
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            if not download:
+                self.send_header("Content-Security-Policy", REPORT_VIEW_CONTENT_SECURITY_POLICY)
+            disposition = "attachment" if download else "inline"
+            self.send_header(
+                "Content-Disposition",
+                report_content_disposition(filename, disposition),
+            )
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
         def send_error_page(self, status: HTTPStatus, message: str) -> None:
             self.send_html(error_page(status.phrase, message), status=status)
 
@@ -407,9 +627,445 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
             self.send_header("Referrer-Policy", "no-referrer")
 
         def log_message(self, fmt: str, *args: Any) -> None:
-            print(f"{self.address_string()} - {fmt % args}")
+            print(f"{self.address_string()} - {mask_download_server_log(fmt % args)}")
 
     return DataRefDownloadHandler
+
+
+class ReportHttpError(Exception):
+    """HTML Report HTTP 처리 중 예상 가능한 상태 코드와 사용자 메시지를 함께 전달합니다."""
+
+    def __init__(self, status: HTTPStatus, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = str(message)
+
+
+def normalize_report_base_url(value: Any) -> str:
+    """Report 응답에 사용할 절대 http(s) 기준 주소를 검증하고 끝의 slash를 제거합니다."""
+
+    candidate = str(value or "").strip().rstrip("/")
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError as exc:
+        raise ValueError("report_base_url이 올바른 URL이 아닙니다.") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "report_base_url은 계정정보·query·fragment가 없는 절대 http(s) URL이어야 합니다."
+        )
+    return candidate
+
+
+def mask_download_server_log(value: Any) -> str:
+    """access log의 HTML access token과 data_ref token 원문을 마스킹합니다."""
+
+    return re.sub(
+        r"([?&](?:token|download_ref)=)[^&\s\"]+",
+        r"\1***",
+        str(value or ""),
+        flags=re.IGNORECASE,
+    )
+
+
+def prepare_report_storage(config: ServerConfig) -> None:
+    """통합 서버 시작 전에 Report 저장 폴더와 기존 만료 파일을 정리합니다."""
+
+    with REPORT_STORE_LOCK:
+        report_reports_dir(config).mkdir(parents=True, exist_ok=True)
+        cleanup_html_reports_unlocked(config)
+        enforce_report_storage_limit_unlocked(config, required_bytes=0)
+
+
+def create_html_report(payload: dict[str, Any], config: ServerConfig) -> dict[str, Any]:
+    """POST /reports JSON을 검증해 HTML·metadata 쌍을 저장하고 공개 URL을 발급합니다."""
+
+    html_document = payload.get("html")
+    if not isinstance(html_document, str) or not html_document.strip():
+        raise ReportHttpError(HTTPStatus.BAD_REQUEST, "html is empty")
+    html_bytes = html_document.encode("utf-8")
+    if len(html_bytes) > config.max_report_html_bytes:
+        raise ReportHttpError(
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            f"html is too large. max_bytes={config.max_report_html_bytes}",
+        )
+
+    title = report_text_field(payload, "title", "HTML Report", 200)
+    question = report_text_field(payload, "question", "", 4_000)
+    view_request = report_text_field(payload, "view_request", "", 1_000)
+    filename_hint = report_text_field(payload, "filename_hint", "report", 200)
+    available_datasets = payload.get("available_datasets", [])
+    if not isinstance(available_datasets, list) or len(available_datasets) > MAX_REPORT_DATASET_REFS:
+        raise ReportHttpError(
+            HTTPStatus.BAD_REQUEST,
+            f"available_datasets는 최대 {MAX_REPORT_DATASET_REFS}개 list여야 합니다.",
+        )
+    if any(not isinstance(item, dict) for item in available_datasets):
+        raise ReportHttpError(HTTPStatus.BAD_REQUEST, "available_datasets 항목은 object여야 합니다.")
+    report_plan = payload.get("report_plan", {})
+    if not isinstance(report_plan, dict):
+        raise ReportHttpError(HTTPStatus.BAD_REQUEST, "report_plan은 object여야 합니다.")
+
+    ttl_hours = report_ttl_hours(payload.get("ttl_hours"), config)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=ttl_hours)
+    report_id = now.strftime("%Y%m%d%H%M%S") + "_" + secrets.token_hex(16)
+    access_token = secrets.token_hex(16) if config.use_report_access_token else ""
+    metadata: dict[str, Any] = {
+        "report_id": report_id,
+        "title": title,
+        "question": question,
+        "view_request": view_request,
+        "available_datasets": available_datasets,
+        "report_plan": report_plan,
+        "html_bytes": len(html_bytes),
+        "download_filename": safe_report_filename(filename_hint or title or report_id),
+        "created_at": report_iso(now),
+        "expires_at": report_iso(expires_at),
+        "ttl_hours": ttl_hours,
+    }
+    if access_token:
+        metadata["access_token_sha256"] = hash_report_token(access_token)
+
+    try:
+        metadata_bytes = (
+            json.dumps(metadata, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReportHttpError(HTTPStatus.BAD_REQUEST, "Report metadata를 JSON으로 변환할 수 없습니다.") from exc
+    if len(metadata_bytes) > config.max_report_metadata_bytes:
+        raise ReportHttpError(
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            f"report metadata is too large. max_bytes={config.max_report_metadata_bytes}",
+        )
+
+    with REPORT_STORE_LOCK:
+        report_reports_dir(config).mkdir(parents=True, exist_ok=True)
+        cleanup_html_reports_unlocked(config)
+        enforce_report_storage_limit_unlocked(
+            config,
+            required_bytes=len(html_bytes) + len(metadata_bytes),
+        )
+        write_html_report_pair_unlocked(
+            report_id,
+            html_bytes,
+            metadata_bytes,
+            config,
+        )
+
+    suffix = f"?{urlencode({'token': access_token})}" if access_token else ""
+    return {
+        "report_id": report_id,
+        "title": title,
+        "view_url": f"{config.report_base_url}/reports/view/{report_id}{suffix}",
+        "download_url": f"{config.report_base_url}/reports/download/{report_id}{suffix}",
+        "expires_at": metadata["expires_at"],
+        "ttl_hours": ttl_hours,
+    }
+
+
+def report_text_field(
+    payload: dict[str, Any],
+    key: str,
+    default: str,
+    max_length: int,
+) -> str:
+    """Report 문자열 입력을 타입·길이 계약에 맞게 검증합니다."""
+
+    value = payload.get(key, default)
+    if value is None:
+        value = default
+    if not isinstance(value, str):
+        raise ReportHttpError(HTTPStatus.BAD_REQUEST, f"{key}는 문자열이어야 합니다.")
+    if len(value) > max_length:
+        raise ReportHttpError(
+            HTTPStatus.BAD_REQUEST,
+            f"{key} 길이는 {max_length}자를 초과할 수 없습니다.",
+        )
+    return value.strip() or default
+
+
+def report_ttl_hours(value: Any, config: ServerConfig) -> int:
+    """요청 TTL을 1시간 이상 운영 상한 이하로 제한합니다."""
+
+    if value in (None, ""):
+        return config.report_default_ttl_hours
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ReportHttpError(HTTPStatus.BAD_REQUEST, "ttl_hours는 정수여야 합니다.") from exc
+    if parsed < 1:
+        raise ReportHttpError(HTTPStatus.BAD_REQUEST, "ttl_hours는 1 이상이어야 합니다.")
+    return min(parsed, config.report_max_ttl_hours)
+
+
+def report_reports_dir(config: ServerConfig) -> Path:
+    """HTML·metadata 파일이 저장되는 reports 하위 폴더를 반환합니다."""
+
+    return (config.report_storage_dir / "reports").resolve()
+
+
+def report_path(config: ServerConfig, report_id: str, suffix: str) -> Path:
+    """검증된 report_id만 저장 폴더 아래의 HTML 또는 JSON 경로로 변환합니다."""
+
+    if not REPORT_ID_PATTERN.fullmatch(str(report_id or "")) or suffix not in {".html", ".json"}:
+        raise ReportHttpError(HTTPStatus.BAD_REQUEST, "invalid report_id")
+    base = report_reports_dir(config)
+    candidate = (base / f"{report_id}{suffix}").resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as exc:
+        raise ReportHttpError(HTTPStatus.BAD_REQUEST, "invalid report storage path") from exc
+    return candidate
+
+
+def write_html_report_pair_unlocked(
+    report_id: str,
+    html_bytes: bytes,
+    metadata_bytes: bytes,
+    config: ServerConfig,
+) -> None:
+    """HTML과 metadata를 임시 파일에 쓴 뒤 같은 저장 폴더 안에서 원자적으로 교체합니다."""
+
+    html_path = report_path(config, report_id, ".html")
+    metadata_path = report_path(config, report_id, ".json")
+    if html_path.exists() or metadata_path.exists():
+        raise ReportHttpError(HTTPStatus.CONFLICT, "report_id collision")
+    nonce = secrets.token_hex(8)
+    html_tmp = html_path.with_name(f".{report_id}.{nonce}.html.tmp")
+    metadata_tmp = metadata_path.with_name(f".{report_id}.{nonce}.json.tmp")
+    try:
+        html_tmp.write_bytes(html_bytes)
+        metadata_tmp.write_bytes(metadata_bytes)
+        os.replace(html_tmp, html_path)
+        os.replace(metadata_tmp, metadata_path)
+    except OSError as exc:
+        for path in (html_tmp, metadata_tmp, html_path, metadata_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        raise ReportHttpError(HTTPStatus.INSUFFICIENT_STORAGE, "failed to store report") from exc
+
+
+def load_active_html_report(
+    report_id: str,
+    token: str,
+    config: ServerConfig,
+) -> tuple[dict[str, Any], bytes]:
+    """보기·다운로드 요청의 ID, 만료, token, 파일 크기를 검증해 Report를 읽습니다."""
+
+    with REPORT_STORE_LOCK:
+        return load_active_html_report_unlocked(report_id, token, config)
+
+
+def load_active_html_report_unlocked(
+    report_id: str,
+    token: str,
+    config: ServerConfig,
+) -> tuple[dict[str, Any], bytes]:
+    """REPORT_STORE_LOCK 안에서 활성 Report 쌍을 읽습니다."""
+
+    html_path = report_path(config, report_id, ".html")
+    metadata_path = report_path(config, report_id, ".json")
+    metadata = read_report_metadata(metadata_path)
+    if metadata is None or not html_path.is_file():
+        raise ReportHttpError(HTTPStatus.NOT_FOUND, "report not found")
+    if str(metadata.get("report_id") or "") != report_id:
+        delete_html_report_files_unlocked(report_id, config)
+        raise ReportHttpError(HTTPStatus.INTERNAL_SERVER_ERROR, "report metadata is invalid")
+    expires_at = parse_report_datetime(metadata.get("expires_at"))
+    if expires_at is None:
+        delete_html_report_files_unlocked(report_id, config)
+        raise ReportHttpError(HTTPStatus.INTERNAL_SERVER_ERROR, "report metadata is invalid")
+    if expires_at <= datetime.now(timezone.utc):
+        delete_html_report_files_unlocked(report_id, config)
+        raise ReportHttpError(HTTPStatus.GONE, "report expired")
+    expected_hash = str(metadata.get("access_token_sha256") or "")
+    if expected_hash:
+        if not REPORT_TOKEN_PATTERN.fullmatch(str(token or "")):
+            raise ReportHttpError(HTTPStatus.FORBIDDEN, "invalid access token")
+        if not hmac.compare_digest(hash_report_token(token), expected_hash):
+            raise ReportHttpError(HTTPStatus.FORBIDDEN, "invalid access token")
+    try:
+        html_bytes = html_path.read_bytes()
+    except FileNotFoundError as exc:
+        raise ReportHttpError(HTTPStatus.NOT_FOUND, "report html not found") from exc
+    if len(html_bytes) > config.max_report_html_bytes:
+        raise ReportHttpError(
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+            "stored report exceeds configured size limit",
+        )
+    return metadata, html_bytes
+
+
+def delete_html_report(report_id: str, token: str, config: ServerConfig) -> str:
+    """활성·인증 검증 후 특정 Report 파일 쌍을 삭제합니다."""
+
+    with REPORT_STORE_LOCK:
+        metadata, _ = load_active_html_report_unlocked(report_id, token, config)
+        delete_html_report_files_unlocked(report_id, config)
+    return str(metadata["report_id"])
+
+
+def cleanup_html_reports_unlocked(config: ServerConfig) -> None:
+    """만료 Report, HTML/JSON 한쪽만 남은 고아 파일, 임시 파일을 정리합니다."""
+
+    reports_dir = report_reports_dir(config)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    for path in reports_dir.glob("*.tmp"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    html_ids = {
+        path.stem
+        for path in reports_dir.glob("*.html")
+        if REPORT_ID_PATTERN.fullmatch(path.stem)
+    }
+    metadata_ids = {
+        path.stem
+        for path in reports_dir.glob("*.json")
+        if REPORT_ID_PATTERN.fullmatch(path.stem)
+    }
+    now = datetime.now(timezone.utc)
+    for report_id in html_ids | metadata_ids:
+        if report_id not in html_ids or report_id not in metadata_ids:
+            delete_html_report_files_unlocked(report_id, config)
+            continue
+        metadata = read_report_metadata(report_path(config, report_id, ".json"))
+        expires_at = parse_report_datetime(metadata.get("expires_at")) if metadata else None
+        if (
+            not metadata
+            or str(metadata.get("report_id") or "") != report_id
+            or expires_at is None
+            or expires_at <= now
+        ):
+            delete_html_report_files_unlocked(report_id, config)
+
+
+def enforce_report_storage_limit_unlocked(
+    config: ServerConfig,
+    required_bytes: int,
+) -> None:
+    """저장 상한을 넘기기 전에 오래된 Report부터 파일 쌍 단위로 제거합니다."""
+
+    if required_bytes > config.max_report_storage_bytes:
+        raise ReportHttpError(
+            HTTPStatus.INSUFFICIENT_STORAGE,
+            "report is larger than the total storage limit",
+        )
+    reports_dir = report_reports_dir(config)
+    current_size = sum(
+        path.stat().st_size
+        for path in reports_dir.iterdir()
+        if path.is_file() and not path.is_symlink()
+    )
+    if current_size + required_bytes <= config.max_report_storage_bytes:
+        return
+    report_ids = sorted(
+        {
+            path.stem
+            for path in reports_dir.glob("*.json")
+            if REPORT_ID_PATTERN.fullmatch(path.stem)
+        },
+        key=lambda report_id: report_path(config, report_id, ".json").stat().st_mtime,
+    )
+    for report_id in report_ids:
+        delete_html_report_files_unlocked(report_id, config)
+        current_size = sum(
+            path.stat().st_size
+            for path in reports_dir.iterdir()
+            if path.is_file() and not path.is_symlink()
+        )
+        if current_size + required_bytes <= config.max_report_storage_bytes:
+            return
+    raise ReportHttpError(HTTPStatus.INSUFFICIENT_STORAGE, "report storage limit exceeded")
+
+
+def delete_html_report_files_unlocked(report_id: str, config: ServerConfig) -> None:
+    """검증된 report_id의 HTML·JSON entry만 삭제합니다."""
+
+    for suffix in (".html", ".json"):
+        try:
+            report_path(config, report_id, suffix).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def read_report_metadata(path: Path) -> dict[str, Any] | None:
+    """UTF-8 JSON metadata 파일을 object로만 읽습니다."""
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError, OSError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def report_token_from_query(query: str) -> str:
+    """Report URL query에서 첫 token 문자열을 추출합니다."""
+
+    return first_param(parse_qs(query, keep_blank_values=False), "token")
+
+
+def safe_report_filename(value: Any) -> str:
+    """브라우저 Content-Disposition에 넣을 안전한 HTML 파일명을 만듭니다."""
+
+    text = str(value or "report").strip()
+    text = re.sub(r"[\\/:*?\"<>|\x00-\x1f]+", "_", text)
+    text = re.sub(r"\s+", "_", text).strip(" ._-") or "report"
+    text = re.sub(r"\.html?$", "", text, flags=re.IGNORECASE)
+    if text.split(".", 1)[0].upper() in WINDOWS_RESERVED_NAMES:
+        text = f"report_{text}"
+    return f"{text[:100]}.html"
+
+
+def report_content_disposition(filename: str, disposition: str) -> str:
+    """한글 파일명을 지원하는 inline/attachment Content-Disposition을 생성합니다."""
+
+    if disposition not in {"inline", "attachment"}:
+        raise ValueError("invalid report disposition")
+    safe_filename = safe_report_filename(filename)
+    fallback = safe_filename.encode("ascii", errors="ignore").decode("ascii")
+    fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", fallback).strip("._") or "report.html"
+    return (
+        f"{disposition}; filename=\"{fallback}\"; "
+        f"filename*=UTF-8''{quote(safe_filename, safe='')}"
+    )
+
+
+def hash_report_token(token: str) -> str:
+    """Report access token 원문 대신 비교용 SHA-256을 생성합니다."""
+
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def report_iso(value: datetime) -> str:
+    """timezone-aware datetime을 UTC ISO 문자열로 변환합니다."""
+
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def parse_report_datetime(value: Any) -> datetime | None:
+    """metadata의 ISO 일시를 UTC datetime으로 안전하게 해석합니다."""
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def resolve_request(query: str, config: ServerConfig, limit: int | None) -> dict[str, Any]:

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
+from urllib.error import HTTPError
+from urllib.request import Request
 from urllib.request import urlopen
 
 from tools import data_ref_download_server as server
@@ -26,6 +29,17 @@ def test_data_ref_download_token_round_trip() -> None:
 
     assert decoded == ref
     assert "=" not in token
+
+
+def test_data_ref_download_server_masks_query_tokens_in_access_log() -> None:
+    masked = server.mask_download_server_log(
+        'GET /reports/view/id?token=secret-token&download_ref=secret-ref HTTP/1.1'
+    )
+
+    assert "secret-token" not in masked
+    assert "secret-ref" not in masked
+    assert "token=***" in masked
+    assert "download_ref=***" in masked
 
 
 def test_data_ref_download_query_supports_direct_ref_params() -> None:
@@ -171,6 +185,120 @@ def test_data_ref_download_http_link_returns_attachment_without_preview(monkeypa
         httpd.shutdown()
         thread.join(timeout=5)
         httpd.server_close()
+
+
+def test_data_ref_download_server_creates_views_and_downloads_html_reports(tmp_path) -> None:
+    config = server.ServerConfig(
+        mongo_uri="",
+        mongo_database="datagov",
+        result_collection="agent_v4_result_store",
+        preview_limit=10,
+        host="127.0.0.1",
+        port=0,
+        report_storage_dir=tmp_path / "report-storage",
+        report_base_url="http://127.0.0.1:1",
+    )
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(config))
+    config.port = httpd.server_port
+    config.report_base_url = f"http://127.0.0.1:{httpd.server_port}"
+    server.prepare_report_storage(config)
+    thread = Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"{config.report_base_url}/reports",
+            data=json.dumps(
+                {
+                    "html": "<!doctype html><html><body><h1>실시간 생산 분석</h1></body></html>",
+                    "title": "실시간 생산 분석 Report",
+                    "question": "오늘 생산 분석 Report를 만들어줘",
+                    "ttl_hours": 4,
+                    "filename_hint": "실시간_생산_분석",
+                },
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            created = json.loads(response.read().decode("utf-8"))
+            assert response.status == HTTPStatus.CREATED
+
+        assert created["view_url"].startswith(f"{config.report_base_url}/reports/view/")
+        assert created["download_url"].startswith(f"{config.report_base_url}/reports/download/")
+        assert created["ttl_hours"] == 4
+
+        with urlopen(created["view_url"], timeout=5) as response:
+            viewed = response.read().decode("utf-8")
+            assert response.status == HTTPStatus.OK
+            assert response.headers["Content-Disposition"].startswith("inline;")
+            assert "Content-Security-Policy" in response.headers
+        assert "<h1>실시간 생산 분석</h1>" in viewed
+
+        with urlopen(created["download_url"], timeout=5) as response:
+            downloaded = response.read()
+            assert response.headers["Content-Disposition"].startswith("attachment;")
+            assert "filename*=UTF-8''" in response.headers["Content-Disposition"]
+        assert downloaded.startswith(b"<!doctype html>")
+
+        metadata_path = server.report_path(config, created["report_id"], ".json")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["expires_at"] = (
+            datetime.now(timezone.utc) - timedelta(minutes=1)
+        ).isoformat()
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        try:
+            urlopen(created["view_url"], timeout=5)
+            raise AssertionError("만료된 HTML Report는 410이어야 합니다.")
+        except HTTPError as exc:
+            assert exc.code == HTTPStatus.GONE
+        assert not server.report_path(config, created["report_id"], ".html").exists()
+        assert not metadata_path.exists()
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=5)
+        httpd.server_close()
+
+
+def test_data_ref_download_server_report_access_token_and_validation(tmp_path) -> None:
+    config = server.ServerConfig(
+        mongo_uri="",
+        mongo_database="datagov",
+        result_collection="agent_v4_result_store",
+        preview_limit=10,
+        report_storage_dir=tmp_path / "report-storage",
+        report_base_url="https://reports.example.internal",
+        use_report_access_token=True,
+        max_report_html_bytes=1_024,
+    )
+    server.prepare_report_storage(config)
+
+    created = server.create_html_report(
+        {
+            "html": "<!doctype html><html><body>token report</body></html>",
+            "ttl_hours": 999,
+        },
+        config,
+    )
+
+    assert "?token=" in created["view_url"]
+    assert created["ttl_hours"] == config.report_max_ttl_hours
+    report_id = created["report_id"]
+    token = created["view_url"].split("?token=", 1)[1]
+    metadata, payload = server.load_active_html_report(report_id, token, config)
+    assert metadata["report_id"] == report_id
+    assert payload.startswith(b"<!doctype html>")
+    try:
+        server.load_active_html_report(report_id, "", config)
+        raise AssertionError("token이 없는 요청은 거부되어야 합니다.")
+    except server.ReportHttpError as exc:
+        assert exc.status == HTTPStatus.FORBIDDEN
+
+    try:
+        server.create_html_report({"html": "x" * 1_025}, config)
+        raise AssertionError("HTML byte 상한 초과 요청은 거부되어야 합니다.")
+    except server.ReportHttpError as exc:
+        assert exc.status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
 
 
 def test_data_ref_download_server_verified_instance_can_be_restarted(monkeypatch) -> None:
