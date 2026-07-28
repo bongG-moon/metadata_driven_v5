@@ -1047,6 +1047,10 @@ def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
     assert "pandas_function_case" not in schema["intent_plan"]
     assert schema["intent_plan"]["pandas_function_cases"] == []
     assert "request_scope" in schema["intent_plan"]
+    assert schema["intent_plan"]["reference_mode"] == (
+        "none|previous_result_rows|previous_result_transform|previous_source|previous_filters|previous_trace"
+    )
+    assert "reuse_strategy" not in schema["intent_plan"]
     assert "condition_resolution" in schema["intent_plan"]
     assert "context_columns" not in schema["intent_plan"]["output_contract"]
     assert schema["intent_plan"]["output_contract"]["result_segments"][0]["operation"] == "top_n|bottom_n|filter|comparison"
@@ -1126,6 +1130,188 @@ def test_followup_hint_builder_keeps_complete_question_as_new_analysis():
 
     assert hint["followup_candidate"] is False
     assert hint["request_scope_hint"] == "new_analysis"
+
+
+def test_four_turn_chain_distinguishes_result_transform_from_new_top_n_process_query():
+    hint_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    intent_variables = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "02_intent_variables_builder.py"
+    )
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    retrieval_validator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py"
+    )
+
+    equipment_result_state = {
+        "last_question": "이 제품들에 할당된 현재 장비 대수와 장비 LIST를 제품별로 알려줘.",
+        "current_data": {
+            "columns": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO",
+                "EQUIP_ID_COUNT",
+                "EQUIP_ID_LIST",
+            ],
+            "source_aliases": ["previous_result", "eqp_assign"],
+            "data_ref": {"ref_id": "result:s1:equipment"},
+        },
+        "last_intent_plan": {
+            "analysis_kind": "equipment_count_and_list_by_product",
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_result_rows",
+        },
+        "last_applied_criteria": {
+            "required_params": {"production_today": {"DATE": "20260728"}},
+        },
+    }
+    third_payload = {
+        "request": {
+            "question": "그중 장비 대수가 가장 많은 제품만 보여줘.",
+            "reference_date": "20260728",
+        },
+        "state": equipment_result_state,
+    }
+    third_hint = hint_builder.build_followup_hint(third_payload)["followup_hint"]
+
+    assert third_hint["followup_candidate"] is True
+    assert third_hint["request_scope_hint"] == "followup_transform"
+    assert third_hint["reuse_strategy_hint"] == "previous_result"
+    assert third_hint["matched_cues"]["reference"] == ["그중"]
+    assert third_hint["matched_cues"]["transform"] == ["가장 많은"]
+
+    ranked_equipment_state = {
+        "last_question": "그중 장비 대수가 가장 많은 제품만 보여줘.",
+        "current_data": {
+            "columns": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO",
+                "EQUIP_ID_COUNT",
+            ],
+            "source_aliases": ["previous_result"],
+            "data_ref": {"ref_id": "result:s1:ranked-equipment"},
+        },
+        "last_intent_plan": {
+            "analysis_kind": "top_product_by_equipment_count",
+            "request_scope": "followup_transform",
+            "reference_mode": "previous_result_transform",
+        },
+        "last_applied_criteria": {
+            "required_params": {"production_today": {"DATE": "20260728"}},
+        },
+    }
+    fourth_question = "오늘 WB공정에서 생산량 상위 5개 제품을 알려줘."
+    fourth_payload = {
+        "request": {
+            "question": fourth_question,
+            "reference_date": "20260728",
+        },
+        "state": ranked_equipment_state,
+    }
+    fourth_with_hint = hint_builder.build_followup_hint(fourth_payload)
+    fourth_hint = fourth_with_hint["followup_hint"]
+
+    assert fourth_hint["complete_independent_request"] is True
+    assert fourth_hint["followup_candidate"] is False
+    assert fourth_hint["request_scope_hint"] == "new_analysis"
+    assert fourth_hint["reuse_strategy_hint"] == "none"
+    assert fourth_hint["matched_cues"]["transform"] == ["상위"]
+    assert "reference" not in fourth_hint["matched_cues"]
+
+    variables = intent_variables.build_variables(fourth_with_hint, {})
+    assert json.loads(variables["state_summary"])["state"] == {}
+
+    process_group_hint = hint_builder.build_followup_hint(
+        {
+            "request": {
+                "question": "오늘 DA공정그룹에서 생산량 상위 3개 제품을 알려줘.",
+                "reference_date": "20260728",
+            },
+            "state": ranked_equipment_state,
+        }
+    )["followup_hint"]
+    assert process_group_hint["complete_independent_request"] is True
+    assert process_group_hint["followup_candidate"] is False
+    assert "reference" not in process_group_hint["matched_cues"]
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        fourth_with_hint,
+        {
+            "intent_plan": {
+                "analysis_kind": "production_quantity_rank_by_product",
+                "request_scope": "followup_requery",
+                "reference_mode": "none",
+                "condition_resolution": {
+                    "inherited": {"date": "20260728"},
+                    "dropped": {"target_entity": "top_product_by_equipment_count"},
+                    "new": {
+                        "process_group": "WB",
+                        "metric": "production_quantity",
+                        "ranking": "top_5",
+                    },
+                },
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "production_today",
+                        "source_type": "dummy",
+                        "required_params": {"DATE": "20260728"},
+                        "filters": {
+                            "OPER_NAME": {
+                                "operator": "in",
+                                "value": ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"],
+                            }
+                        },
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "sort_and_top_n",
+                        "source_alias": "production_today",
+                        "sort_by": "PRODUCTION",
+                        "order": "desc",
+                        "limit": 5,
+                    }
+                ],
+            }
+        },
+    )
+
+    assert normalized["intent_plan"]["request_scope"] == "new_analysis"
+    assert normalized["intent_plan"]["reference_mode"] == "none"
+    assert normalized["intent_plan"]["reuse_strategy"] == "none"
+    assert normalized["intent_plan"]["condition_resolution"] == {
+        "new": {
+            "process_group": "WB",
+            "metric": "production_quantity",
+            "ranking": "top_5",
+        }
+    }
+    assert "validation_errors" not in normalized["intent_plan"]
+    assert normalized["trace"]["inspection"]["intent"]["reference_scope_normalization"] == {
+        "status": "adjusted",
+        "input_request_scope": "followup_requery",
+        "request_scope": "new_analysis",
+        "reference_mode": "none",
+        "retrieval_job_count": 1,
+        "reason": "complete_independent_question",
+    }
+
+    validated = retrieval_validator.validate_retrieval_payload(normalized)
+    assert validated["trace"]["inspection"]["data_retrieval"]["job_validation"]["error_count"] == 0
+    assert len(validated["intent_plan"]["retrieval_jobs"]) == 1
 
 
 @pytest.mark.parametrize("question", ["오늘 재공 알려줘", "현재 재공 조회해줘"])
@@ -1269,7 +1455,17 @@ def test_followup_hint_builder_detects_entity_switch_question_without_explicit_r
             "current_data": {
                 "columns": ["TECH", "DEN", "OPER_NAME", "PRODUCTION"],
                 "source_aliases": ["production_data"],
+                "source_columns_by_alias": {
+                    "production_data": ["TECH", "DEN", "OPER_NAME", "PRODUCTION"],
+                },
                 "data_ref": {"ref_id": "result:s1:abc"},
+            },
+            "runtime_source_refs": {
+                "production_data": {
+                    "ref_id": "result:s1:abc",
+                    "role": "source_rows",
+                    "source_alias": "production_data",
+                }
             },
             "last_intent_plan": {
                 "analysis_kind": "production_top_products",
@@ -1294,11 +1490,18 @@ def test_followup_hint_builder_detects_entity_switch_question_without_explicit_r
     hint = hint_builder.build_followup_hint(payload)["followup_hint"]
 
     assert hint["followup_candidate"] is True
-    assert hint["request_scope_hint"] == "followup_requery"
-    assert hint["reuse_strategy_hint"] == "previous_intent_with_new_retrieval"
+    assert hint["request_scope_hint"] == "followup_transform"
+    assert hint["reuse_strategy_hint"] == "previous_source"
+    assert hint["reusable_previous_source_aliases"] == ["production_data"]
     assert hint["matched_cues"]["entity_switch"] == ["에서는", "는 어땠"]
     assert "metric" in hint["inheritance_candidates"]
-    assert "analysis_filters" in hint["inheritance_candidates"]
+    assert "required_params" in hint["inheritance_candidates"]
+
+    no_source_payload = deepcopy(payload)
+    no_source_payload["state"].pop("runtime_source_refs")
+    no_source_hint = hint_builder.build_followup_hint(no_source_payload)["followup_hint"]
+    assert no_source_hint["request_scope_hint"] == "followup_requery"
+    assert no_source_hint["reuse_strategy_hint"] == "previous_intent_with_new_retrieval"
 
 
 def test_followup_hint_builder_does_not_guess_context_date_when_previous_dates_differ():
@@ -1338,8 +1541,17 @@ def test_intent_prompt_requires_complete_params_per_retrieval_job_without_shared
     assert "`어제 재공과 오늘 생산량`" in prompt_text
     assert "`이날`, `이 일자`, `그날`" in prompt_text
     assert "예약 alias `previous_result`" in prompt_text
+    assert "의도 판단 후보 신호이지 최종 결론이 아니다" in prompt_text
+    assert "`intent_plan.reference_mode`" in prompt_text
+    assert "`reuse_strategy`는 출력하지 않는다" in prompt_text
+    assert "이 mode가 의도 분석에서 선택된 뒤에만" in prompt_text
     assert "등록된 canonical 필드·operator·값을 그대로" in prompt_text
     assert "alias 문자열을 filter 값으로 새로 만들지 않는다" in prompt_text
+    assert "`상위 N개`, `하위 N개`의 `위`" in prompt_text
+    assert "`공정그룹`, `제품그룹`의 `그`" in prompt_text
+    assert "비필수 filter 변경은 `retrieval_jobs=[]`" in prompt_text
+    assert "같은 dataset, 같은 `required_params`" in prompt_text
+    assert "날짜도 선택 dataset의 `required_params`에 등록되지 않았다면 비필수 filter" in prompt_text
     assert "shared_required_params" not in prompt_text
 
 
@@ -4040,7 +4252,7 @@ def test_intent_normalizer_preserves_followup_scope_and_allows_previous_result_r
             "intent_plan": {
                 "analysis_kind": "result_top_n",
                 "request_scope": "followup_transform",
-                "reuse_strategy": "previous_result",
+                "reference_mode": "previous_result_transform",
                 "condition_resolution": {
                     "inherited": {"metric": "생산량"},
                     "changed": {"limit": 3},
@@ -4054,6 +4266,7 @@ def test_intent_normalizer_preserves_followup_scope_and_allows_previous_result_r
     )
 
     assert normalized["intent_plan"]["request_scope"] == "followup_transform"
+    assert normalized["intent_plan"]["reference_mode"] == "previous_result_transform"
     assert normalized["intent_plan"]["reuse_strategy"] == "previous_result"
     assert normalized["intent_plan"]["condition_resolution"]["changed"] == {"limit": 3}
     assert normalized["intent_plan"]["pandas_execution_plan"][0]["source_alias"] == "previous_result"
@@ -4062,7 +4275,817 @@ def test_intent_normalizer_preserves_followup_scope_and_allows_previous_result_r
     assert not [item for item in normalized["trace"]["warnings"] if item.get("type") == "missing_retrieval_jobs"]
 
 
-def test_intent_normalizer_warns_when_followup_requery_has_no_retrieval_jobs():
+def test_followup_hint_recognizes_common_this_result_references():
+    followup_hint = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    state = {
+        "last_question": "오늘 DA공정에서 생산량 상위 3개 제품 알려줘",
+        "last_intent_plan": {"analysis_kind": "top_products"},
+    }
+
+    for question in (
+        "이 제품들에 할당된 현재 장비 대수 알려줄래?",
+        "이 항목들에 할당된 장비 목록도 알려줘",
+        "이 결과들만 다시 정렬해줘",
+    ):
+        result = followup_hint.build_followup_hint(
+            {
+                "request": {"question": question},
+                "state": state,
+                "trace": {"warnings": [], "errors": [], "inspection": {}},
+            }
+        )
+        assert result["followup_hint"]["followup_candidate"] is True
+        assert result["followup_hint"]["request_scope_hint"] != "new_analysis"
+        assert result["followup_hint"]["reuse_strategy_hint"] == "previous_result"
+
+
+def test_previous_product_result_reuses_stored_grain_and_ignores_new_equipment_keys():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    pandas_executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    product_ref = {
+        "section": "product_key_columns",
+        "key": "standard_product_keys",
+    }
+    product_keys = [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    **product_ref,
+                    "payload": {
+                        "display_name": "표준 제품 키",
+                        "columns": product_keys,
+                    },
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production_today",
+                    "payload": {
+                        "standard_column_aliases": {
+                            column: [column]
+                            for column in product_keys
+                        }
+                    },
+                }
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    first_turn = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "오늘 DA공정에서 생산량 상위 3개 제품 알려줘"
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "metadata_refs": [product_ref],
+            "intent_plan": {
+                "analysis_kind": "top_products",
+                "request_scope": "new_analysis",
+                "reuse_strategy": "none",
+                "grain_plan": {
+                    "metadata_ref": product_ref,
+                    "source_alias": "production_today",
+                },
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "production_today",
+                        "required_params": {},
+                        "filters": {},
+                    }
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": product_keys,
+                    "metric_columns": ["PRODUCTION"],
+                },
+            },
+        },
+        metadata_candidates,
+    )
+    assert first_turn["intent_plan"]["resolved_grain_plan"]["canonical_columns"] == product_keys
+
+    previous_rows = [
+        {
+            "TECH": "A",
+            "DEN": "8G",
+            "MODE": "M1",
+            "PKG_TYPE1": "P1",
+            "PKG_TYPE2": "P2",
+            "LEAD": "96",
+            "MCP_NO": "",
+            "PRODUCTION": 300,
+        },
+        {
+            "TECH": "B",
+            "DEN": "16G",
+            "MODE": "M2",
+            "PKG_TYPE1": "P1",
+            "PKG_TYPE2": "P2",
+            "LEAD": "78",
+            "MCP_NO": "L-217K9B",
+            "PRODUCTION": 250,
+        },
+        {
+            "TECH": "C",
+            "DEN": "32G",
+            "MODE": "M3",
+            "PKG_TYPE1": "P3",
+            "PKG_TYPE2": "P4",
+            "LEAD": "180",
+            "MCP_NO": None,
+            "PRODUCTION": 200,
+        },
+    ]
+    followup_payload = {
+        "request": {
+            "question": "이 제품들에 할당된 현재 장비 대수 알려줄래?"
+        },
+        "state": {
+            "last_question": "오늘 DA공정에서 생산량 상위 3개 제품 알려줘",
+            "last_intent_plan": first_turn["intent_plan"],
+            "current_data": {
+                "row_count": 3,
+                "columns": [*product_keys, "PRODUCTION"],
+            },
+        },
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_requery",
+            "reuse_strategy_hint": "previous_result",
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    second_turn = intent_normalizer.normalize_intent_plan(
+        followup_payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_count_by_previous_products",
+                "request_scope": "followup_requery",
+                "reference_mode": "previous_result_rows",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_assign",
+                        "required_params": {},
+                        "filters": {},
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "apply_row_match_groups",
+                        "source_alias": "equipment_assign",
+                        "reference_source_alias": "previous_result",
+                        "match_key_ref": {
+                            "section": "analysis_recipes",
+                            "key": "equipment_assignment_uph_join",
+                        },
+                        "match_columns": [
+                            *product_keys,
+                            "EQP_MODEL",
+                            "RECIPE_ID",
+                            "OPER_NAME",
+                        ],
+                    }
+                ],
+            }
+        },
+        metadata_candidates,
+    )
+
+    row_match_step = second_turn["intent_plan"]["pandas_execution_plan"][0]
+    assert row_match_step == {
+        "operation": "apply_row_match_groups",
+        "source_alias": "equipment_assign",
+        "reference_source_alias": "previous_result",
+        "match_columns": product_keys,
+        "blank_policy": "normalize_blank",
+    }
+    guard_step = second_turn["trace"]["inspection"]["intent"]["row_match_guard"]["steps"][0]
+    assert guard_step["match_columns_source"] == "previous_result_resolved_grain"
+    assert guard_step["match_columns"] == product_keys
+
+    second_turn["runtime_sources"] = {
+        "previous_result": previous_rows,
+        "equipment_assign": [
+            {
+                **{key: value for key, value in previous_rows[0].items() if key in product_keys},
+                "MCP_NO": "",
+                "EQP_MODEL": "MODEL-A",
+                "EQUIP_ID": "E1",
+            },
+            {
+                **{key: value for key, value in previous_rows[0].items() if key in product_keys},
+                "MCP_NO": "",
+                "EQP_MODEL": "MODEL-B",
+                "EQUIP_ID": "E2",
+            },
+            {
+                **{key: value for key, value in previous_rows[1].items() if key in product_keys},
+                "EQP_MODEL": "MODEL-C",
+                "EQUIP_ID": "E3",
+            },
+            {
+                "TECH": "OTHER",
+                "DEN": "8G",
+                "MODE": "M1",
+                "PKG_TYPE1": "P1",
+                "PKG_TYPE2": "P2",
+                "LEAD": "96",
+                "MCP_NO": "",
+                "EQP_MODEL": "MODEL-X",
+                "EQUIP_ID": "EXCLUDED",
+            },
+        ],
+    }
+    code = """
+reference = sources["previous_result"].copy()
+equipment = sources["equipment_assign"].copy()
+keys = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
+equipment_counts = (
+    equipment.groupby(keys, dropna=False)["EQUIP_ID"]
+    .nunique()
+    .reset_index(name="EQUIP_COUNT")
+)
+result = reference.merge(equipment_counts, on=keys, how="left")
+result["EQUIP_COUNT"] = result["EQUIP_COUNT"].fillna(0).astype(int)
+"""
+    executed = pandas_executor.execute_pandas_code(second_turn, {"code": code})
+
+    assert executed["analysis"]["status"] == "ok"
+    assert [row["EQUIP_COUNT"] for row in executed["data"]["rows"]] == [2, 1, 0]
+    assert (
+        executed["trace"]["inspection"]["pandas_execution"]["row_match_plan"][0]["match_columns"]
+        == product_keys
+    )
+
+
+def test_previous_result_row_match_does_not_fallback_to_model_columns_without_stored_grain():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "이 항목들의 장비 현황 알려줘"},
+            "state": {
+                "last_question": "항목 조회",
+                "last_intent_plan": {"analysis_kind": "item_list"},
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_by_previous_rows",
+                "request_scope": "followup_requery",
+                "reference_mode": "previous_result_rows",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_assign",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "apply_row_match_groups",
+                        "source_alias": "equipment_assign",
+                        "reference_source_alias": "previous_result",
+                        "match_columns": ["EQP_MODEL", "RECIPE_ID"],
+                    }
+                ],
+            }
+        },
+    )
+
+    row_match_step = normalized["intent_plan"]["pandas_execution_plan"][0]
+    assert row_match_step["match_columns"] == []
+    guard = normalized["trace"]["inspection"]["intent"]["row_match_guard"]
+    assert guard["status"] == "invalid"
+    assert guard["invalid_steps"] == [
+        {
+            "index": 0,
+            "issues": ["missing_previous_result_grain"],
+        }
+    ]
+
+
+def test_previous_result_row_match_is_added_after_intent_selects_previous_result_rows():
+    followup_hint = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    product_keys = [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    payload = followup_hint.build_followup_hint(
+        {
+            "request": {
+                "question": "이 제품들에 할당된 현재 장비 대수 알려줄래?"
+            },
+            "state": {
+                "last_question": "오늘 DA공정에서 생산량 상위 3개 제품 알려줘",
+                "last_intent_plan": {
+                    "analysis_kind": "top_products",
+                    "resolved_grain_plan": {
+                        "canonical_columns": product_keys,
+                        "grain_columns": product_keys,
+                    },
+                    "output_contract": {
+                        "result_mode": "aggregate",
+                        "grain_columns": product_keys,
+                        "metric_columns": ["PRODUCTION"],
+                    },
+                },
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        }
+    )
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_count",
+                "request_scope": "followup_requery",
+                "reference_mode": "previous_result_rows",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_assign",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "equipment_assign",
+                        "agg_column": "EQUIP_ID",
+                        "agg_method": "nunique",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert normalized["intent_plan"]["request_scope"] == "followup_requery"
+    assert normalized["intent_plan"]["reference_mode"] == "previous_result_rows"
+    assert normalized["intent_plan"]["reuse_strategy"] == "previous_result"
+    assert normalized["intent_plan"]["pandas_execution_plan"][0] == {
+        "operation": "apply_row_match_groups",
+        "source_alias": "equipment_assign",
+        "reference_source_alias": "previous_result",
+        "match_columns": product_keys,
+        "blank_policy": "normalize_blank",
+    }
+    assert normalized["intent_plan"]["pandas_execution_plan"][1]["operation"] == "groupby_and_aggregate"
+
+
+def test_followup_hint_is_candidate_and_does_not_force_previous_result_rows():
+    followup_hint = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    payload = followup_hint.build_followup_hint(
+        {
+            "request": {"question": "이 제품들은 신규 장비 분석에서 제외해줘"},
+            "state": {
+                "last_question": "오늘 DA공정에서 생산량 상위 3개 제품 알려줘",
+                "last_intent_plan": {
+                    "analysis_kind": "top_products",
+                    "resolved_grain_plan": {
+                        "canonical_columns": ["TECH", "DEN", "MODE"],
+                    },
+                },
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        }
+    )
+    assert payload["followup_hint"]["followup_candidate"] is True
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "independent_equipment_analysis",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_assign",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "equipment_assign",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert normalized["intent_plan"]["request_scope"] == "new_analysis"
+    assert normalized["intent_plan"]["reference_mode"] == "none"
+    assert normalized["intent_plan"]["reuse_strategy"] == "none"
+    assert [
+        step
+        for step in normalized["intent_plan"]["pandas_execution_plan"]
+        if step.get("operation") == "apply_row_match_groups"
+    ] == []
+    assert normalized["trace"]["inspection"]["intent"]["reference_mode_guard"]["status"] == "valid"
+
+
+def test_reference_mode_scope_conflict_is_blocked_before_retrieval():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    retrieval_validator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py"
+    )
+    retrieval_gate = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "새 장비 현황 알려줘"},
+            "state": {
+                "last_intent_plan": {
+                    "resolved_grain_plan": {
+                        "canonical_columns": ["TECH", "DEN", "MODE"],
+                    }
+                }
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_analysis",
+                "request_scope": "new_analysis",
+                "reference_mode": "previous_result_rows",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_assign",
+                        "source_type": "dummy",
+                    }
+                ],
+                "pandas_execution_plan": [],
+            }
+        },
+    )
+
+    assert normalized["trace"]["inspection"]["intent"]["status"] == "error"
+    assert normalized["intent_plan"]["validation_errors"][0]["type"] == "invalid_reference_mode_contract"
+    assert "reference_mode_scope_mismatch" in normalized["intent_plan"]["validation_errors"][0]["issues"]
+
+    validated = retrieval_validator.validate_retrieval_payload(normalized)
+    assert validated["intent_plan"]["retrieval_jobs"] == []
+    assert validated["trace"]["inspection"]["data_retrieval"]["job_validation"] == {
+        "input_job_count": 1,
+        "valid_job_count": 0,
+        "error_count": 1,
+        "intent_error_count": 1,
+        "errors": [
+            {
+                "type": "invalid_reference_mode_contract",
+                "message": "이전 결과 참조 방식과 의도 실행 계획이 일치하지 않습니다.",
+                "reference_mode": "previous_result_rows",
+                "request_scope": "new_analysis",
+                "issues": ["reference_mode_scope_mismatch"],
+            }
+        ],
+    }
+    gated = retrieval_gate.apply_retrieval_execution_gate(validated)
+    failure = gated["analysis"]["error"]["failures"][0]
+    assert failure["type"] == "retrieval_job_validation_failed"
+    assert failure["issues"] == ["reference_mode_scope_mismatch"]
+    assert failure["validation_errors"][0]["type"] == "invalid_reference_mode_contract"
+
+
+def test_followup_previous_result_rows_repairs_transform_scope_after_real_state_compaction():
+    answer_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py"
+    )
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    retrieval_validator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py"
+    )
+    retrieval_gate = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py"
+    )
+    product_keys = [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    source_product_keys = [
+        "TECH",
+        "DENSITY",
+        "MODE",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    first_turn_state = answer_builder._build_next_turn_state(
+        {
+            "request": {
+                "question": "오늘 DA공정에서 생산량 상위 3개 제품을 알려줘.",
+                "session_id": "followup-scope-session",
+            },
+            "intent_plan": {
+                "analysis_kind": "top_products",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "reuse_strategy": "none",
+                "resolved_grain_plan": {
+                    "metadata_ref": {
+                        "section": "product_key_columns",
+                        "key": "standard_product_keys",
+                    },
+                    "source_alias": "production_today",
+                    "dataset_key": "production_today",
+                    "canonical_columns": product_keys,
+                    "grain_columns": source_product_keys,
+                    "strict": True,
+                },
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "metric_columns": ["PRODUCTION"],
+                },
+            },
+            "analysis": {"status": "ok"},
+            "data": {
+                "columns": [*product_keys, "PRODUCTION"],
+                "rows": [
+                    {
+                        "TECH": "A",
+                        "DEN": "8G",
+                        "MODE": "M1",
+                        "PKG_TYPE1": "P1",
+                        "PKG_TYPE2": "P2",
+                        "LEAD": "96",
+                        "MCP_NO": "",
+                        "PRODUCTION": 300,
+                    }
+                ],
+                "row_count": 1,
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        }
+    )
+
+    stored_grain = first_turn_state["last_intent_plan"]["resolved_grain_plan"]
+    assert stored_grain["canonical_columns"] == product_keys
+    assert stored_grain["grain_columns"] == source_product_keys
+    assert "column_mappings" not in stored_grain
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "이 제품들에 할당된 현재 장비 대수와 장비 LIST를 제품별로 알려줘"
+            },
+            "state": first_turn_state,
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_count_and_list_by_product",
+                "request_scope": "followup_transform",
+                "reference_mode": "previous_result_rows",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_assign",
+                        "source_type": "dummy",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "equipment_assign",
+                        "agg_column": "EQUIP_ID",
+                        "agg_method": "nunique",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert normalized["intent_plan"]["request_scope"] == "followup_requery"
+    assert normalized["intent_plan"]["reference_mode"] == "previous_result_rows"
+    assert "validation_errors" not in normalized["intent_plan"]
+    assert normalized["intent_plan"]["pandas_execution_plan"][0] == {
+        "operation": "apply_row_match_groups",
+        "source_alias": "equipment_assign",
+        "reference_source_alias": "previous_result",
+        "match_columns": product_keys,
+        "blank_policy": "normalize_blank",
+    }
+    scope_normalization = normalized["trace"]["inspection"]["intent"]["reference_scope_normalization"]
+    assert scope_normalization == {
+        "status": "adjusted",
+        "input_request_scope": "followup_transform",
+        "request_scope": "followup_requery",
+        "reference_mode": "previous_result_rows",
+        "retrieval_job_count": 1,
+        "reason": "followup_with_new_retrieval",
+    }
+
+    validated = retrieval_validator.validate_retrieval_payload(normalized)
+    assert validated["trace"]["inspection"]["data_retrieval"]["job_validation"]["error_count"] == 0
+    validated["source_results"] = [
+        {
+            "dataset_key": "equipment_assign",
+            "source_alias": "equipment_assign",
+            "source_type": "dummy",
+            "status": "ok",
+            "errors": [],
+        }
+    ]
+    gated = retrieval_gate.apply_retrieval_execution_gate(validated)
+    assert gated["execution_gate"]["status"] == "continue"
+    assert gated["execution_gate"]["pandas_execution_allowed"] is True
+
+
+def test_followup_scope_uses_requery_for_required_param_changes_and_new_sources():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    scenarios = [
+        {
+            "name": "required_param_change",
+            "plan": {
+                "analysis_kind": "historical_production",
+                "request_scope": "followup_transform",
+                "reference_mode": "previous_filters",
+                "condition_resolution": {
+                    "changed": {
+                        "required_params": {
+                            "DATE": {
+                                "from": "20260709",
+                                "to": "20260710",
+                            }
+                        }
+                    }
+                },
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production",
+                        "source_alias": "production",
+                        "source_type": "dummy",
+                        "required_params": {"DATE": "20260710"},
+                    }
+                ],
+                "pandas_execution_plan": [],
+            },
+            "reference_mode": "previous_filters",
+        },
+        {
+            "name": "new_source",
+            "plan": {
+                "analysis_kind": "equipment_detail_expansion",
+                "request_scope": "followup_expand_source",
+                "reference_mode": "previous_source",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_assign",
+                        "source_type": "dummy",
+                    }
+                ],
+                "pandas_execution_plan": [],
+            },
+            "reference_mode": "previous_source",
+        },
+    ]
+
+    for scenario in scenarios:
+        normalized = intent_normalizer.normalize_intent_plan(
+            {
+                "request": {"question": scenario["name"]},
+                "trace": {"warnings": [], "errors": [], "inspection": {}},
+            },
+            {"intent_plan": scenario["plan"]},
+        )
+        assert normalized["intent_plan"]["request_scope"] == "followup_requery"
+        assert normalized["intent_plan"]["reference_mode"] == scenario["reference_mode"]
+        assert "validation_errors" not in normalized["intent_plan"]
+        scope = normalized["trace"]["inspection"]["intent"]["reference_scope_normalization"]
+        assert scope["status"] == "adjusted"
+        assert scope["reason"] == "followup_with_new_retrieval"
+        assert scope["retrieval_job_count"] == 1
+
+    stored_transform = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "위 결과 중 상위 3개만 보여줘"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "result_top_n",
+                "request_scope": "followup_transform",
+                "reference_mode": "previous_result_transform",
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "sort_and_top_n",
+                        "source_alias": "previous_result",
+                        "limit": 3,
+                    }
+                ],
+            }
+        },
+    )
+    assert stored_transform["intent_plan"]["request_scope"] == "followup_transform"
+    assert stored_transform["intent_plan"]["reference_mode"] == "previous_result_transform"
+    assert "validation_errors" not in stored_transform["intent_plan"]
+    assert (
+        stored_transform["trace"]["inspection"]["intent"]["reference_scope_normalization"]["status"]
+        == "unchanged"
+    )
+
+    previous_source_filter = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "같은 날짜에서 WB공정만 다시 보여줘"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "production_by_process",
+                "request_scope": "followup_requery",
+                "reference_mode": "previous_source",
+                "condition_resolution": {
+                    "inherited": {"required_params": {"DATE": "20260710"}},
+                    "changed": {"filters": {"OPER_NAME": {"from": "D/A", "to": "W/B"}}},
+                },
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "apply_filters",
+                        "source_alias": "production",
+                        "filters": {
+                            "OPER_NAME": {
+                                "operator": "in",
+                                "value": ["W/B1", "W/B2", "W/B3"],
+                            }
+                        },
+                    }
+                ],
+            }
+        },
+    )
+    assert previous_source_filter["intent_plan"]["request_scope"] == "followup_transform"
+    assert previous_source_filter["intent_plan"]["reference_mode"] == "previous_source"
+    assert previous_source_filter["intent_plan"]["retrieval_jobs"] == []
+    assert "validation_errors" not in previous_source_filter["intent_plan"]
+    assert (
+        previous_source_filter["trace"]["inspection"]["intent"]["reference_scope_normalization"]
+        == {
+            "status": "adjusted",
+            "input_request_scope": "followup_requery",
+            "request_scope": "followup_transform",
+            "reference_mode": "previous_source",
+            "retrieval_job_count": 0,
+            "reason": "followup_reuses_previous_source_without_retrieval",
+        }
+    )
+
+
+def test_intent_normalizer_rejects_previous_filters_without_retrieval_jobs():
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
     payload = {"request": {"question": "어제 생산량은?"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
 
@@ -4072,15 +5095,17 @@ def test_intent_normalizer_warns_when_followup_requery_has_no_retrieval_jobs():
             "intent_plan": {
                 "analysis_kind": "production_sum",
                 "request_scope": "followup_requery",
-                "reuse_strategy": "previous_intent_with_new_retrieval",
+                "reference_mode": "previous_filters",
                 "retrieval_jobs": [],
                 "pandas_execution_plan": [],
             }
         },
     )
 
-    assert normalized["trace"]["inspection"]["intent"]["status"] == "warning"
-    assert [item for item in normalized["trace"]["warnings"] if item.get("type") == "missing_retrieval_jobs"]
+    assert normalized["trace"]["inspection"]["intent"]["status"] == "error"
+    assert normalized["intent_plan"]["validation_errors"][0]["issues"] == [
+        "missing_new_retrieval_for_previous_filters"
+    ]
 
 
 def test_intent_normalizer_guards_context_date_and_followup_scope_when_model_uses_today():
@@ -8542,8 +9567,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 89
-    assert result["all_component_python_files"] == 90
+    assert result["active_unique_source_files"] == 90
+    assert result["all_component_python_files"] == 91
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -8552,9 +9577,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 11, 130, 89),
-        ("import_ready_individual", 11, 130, 89),
-        ("import_ready_bundle", 11, 130, 89),
+        ("flow_exports", 11, 131, 90),
+        ("import_ready_individual", 11, 131, 90),
+        ("import_ready_bundle", 11, 131, 90),
     }
 
 
@@ -12589,3 +13614,99 @@ def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_c
     assert "context_columns" not in catalog_text
     assert "row_identity_columns" not in saving_prompt
     assert "context_columns" not in saving_prompt
+
+
+def test_runtime_payload_copies_share_large_buffers_but_isolate_control_fields():
+    component_paths = [
+        ROOT / "langflow_components" / "data_analysis_flow" / "05a_upstream_entity_parameter_binder.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "13_source_retrieval_merger.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py",
+        ROOT / "langflow_components" / "session_state_flow" / "01_mongodb_session_state_writer.py",
+    ]
+    rows = [{"COL": index} for index in range(100)]
+    full_result_rows = [{"RESULT": index} for index in range(50)]
+    payload = {
+        "runtime_sources": {"source": rows},
+        "_runtime_rows_by_alias": {"source": rows},
+        "_full_result_rows": full_result_rows,
+        "trace": {"warnings": [], "inspection": {"marker": {"value": 1}}},
+    }
+
+    for path in component_paths:
+        module = load_module(path)
+        copied = module._payload(payload)
+        assert copied is not payload
+        assert copied["runtime_sources"] is payload["runtime_sources"]
+        assert copied["runtime_sources"]["source"] is rows
+        assert copied["_runtime_rows_by_alias"] is payload["_runtime_rows_by_alias"]
+        assert copied["_full_result_rows"] is full_result_rows
+        assert copied["trace"] is not payload["trace"]
+        assert copied["trace"]["inspection"] is not payload["trace"]["inspection"]
+
+
+def test_read_only_payload_consumers_do_not_clone_runtime_rows():
+    paths = [
+        ROOT / "langflow_components" / "data_analysis_flow" / "07_retrieval_job_router.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "15_pandas_variables_builder.py",
+        ROOT / "langflow_components" / "data_analysis_flow" / "18_answer_variables_builder.py",
+    ]
+    payload = {"runtime_sources": {"source": [{"COL": 1}]}, "trace": {"warnings": []}}
+
+    for path in paths:
+        module = load_module(path)
+        assert module._payload(payload) is payload
+
+
+def test_runtime_cleanup_releases_shared_upstream_rows_and_preserves_final_response():
+    cleanup = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "24_runtime_payload_cleanup.py"
+    )
+    api_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py"
+    )
+    source_rows = [{"DEVICE": "DEV-A"}, {"DEVICE": "DEV-B"}]
+    staged_rows = [{"LOT_ID": "LOT-1"}]
+    full_result_rows = [{"DEVICE": "DEV-A", "EQUIP_COUNT": 2}]
+    upstream_retrieval = {"rows": source_rows}
+    runtime_sources = {"equipment": source_rows}
+    runtime_rows_by_alias = {"equipment": source_rows, "lot": staged_rows}
+    payload = {
+        "request": {"question": "장비 현황을 알려줘", "session_id": "session-1"},
+        "analysis": {"status": "ok", "row_count": 1},
+        "answer_message": "장비 현황입니다.",
+        "answer_sections": {"summary": "장비 현황입니다."},
+        "data": {
+            "columns": ["DEVICE", "EQUIP_COUNT"],
+            "rows": [{"DEVICE": "DEV-A", "EQUIP_COUNT": 2}],
+            "row_count": 1,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+        "runtime_sources": runtime_sources,
+        "_runtime_rows_by_alias": runtime_rows_by_alias,
+        "_full_result_rows": full_result_rows,
+    }
+
+    cleaned = cleanup.release_runtime_payload(payload, "disabled")
+    response = api_builder.build_api_response(cleaned)
+
+    assert upstream_retrieval["rows"] == []
+    assert runtime_sources == {}
+    assert runtime_rows_by_alias == {}
+    assert full_result_rows == []
+    assert all(key not in cleaned for key in cleanup.RUNTIME_BUFFER_KEYS)
+    assert cleaned["data"]["rows"] == [{"DEVICE": "DEV-A", "EQUIP_COUNT": 2}]
+    assert cleaned["runtime_cleanup"] == {
+        "stage": "24_runtime_payload_cleanup",
+        "status": "ok",
+        "gc_mode": "disabled",
+        "gc_collected": 0,
+        "released_row_count": 4,
+        "released_buffer_count": 3,
+    }
+    assert response["status"] == "ok"
+    assert response["message"] == "장비 현황입니다."
+    assert response["data"]["row_count"] == 1

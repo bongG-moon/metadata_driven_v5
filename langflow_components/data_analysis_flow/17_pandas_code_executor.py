@@ -27,6 +27,13 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, DropdownInput, MessageTextInput, ModelInput, Output, SecretStrInput
 from lfx.schema.data import Data
 
+RUNTIME_BUFFER_KEYS = {
+    "runtime_sources",
+    "_runtime_rows_by_alias",
+    "_full_result_rows",
+    "_runtime_result_rows",
+}
+
 FORBIDDEN_NAMES = {"open", "exec", "eval", "__import__", "compile", "input"}
 RESULT_PREVIEW_LIMIT = 50
 TRACE_PREVIEW_LIMIT = 5
@@ -519,7 +526,7 @@ def _analysis_error_value(payload: dict[str, Any]) -> Any:
 
 # 함수 설명: `_with_repair_trace()`는 최초 코드·오류·수정 코드·재실행 결과를 한 번의 repair trace로 합칩니다.
 def _with_repair_trace(payload_value: dict[str, Any], repair_trace: dict[str, Any]) -> dict[str, Any]:
-    payload = deepcopy(payload_value)
+    payload = _payload(payload_value)
     payload.setdefault("trace", {}).setdefault("inspection", {})["pandas_repair"] = deepcopy(repair_trace)
     return payload
 
@@ -1274,9 +1281,6 @@ def _pandas_row_match_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "source_alias": source_alias,
                 "reference_source_alias": str(step.get("reference_source_alias") or "").strip(),
                 "match_columns": _string_list(step.get("match_columns")),
-                "match_key_ref": deepcopy(step.get("match_key_ref"))
-                if isinstance(step.get("match_key_ref"), dict)
-                else {},
                 "blank_policy": "normalize_blank",
                 "column_mappings": deepcopy(mappings_by_alias.get(source_alias, {})),
             }
@@ -1853,7 +1857,17 @@ def _safe_name(value: str) -> str:
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
-    return deepcopy(data) if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    payload = {
+        key: deepcopy(item)
+        for key, item in data.items()
+        if key not in RUNTIME_BUFFER_KEYS
+    }
+    for key in RUNTIME_BUFFER_KEYS:
+        if key in data:
+            payload[key] = data[key]
+    return payload
 
 
 # 함수 설명: `_source_columns_by_alias()`는 컬럼·BY·alias 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.

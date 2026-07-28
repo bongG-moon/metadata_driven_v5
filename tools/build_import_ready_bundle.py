@@ -230,15 +230,15 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "423/423 non-web tests passed in the exact Langflow 1.9.2 runtime; 21 optional Streamlit web-app tests require the separate web runtime",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 130/130 custom nodes to 89 real Python sources; 0 missing",
-            "korean_component_documentation": "90/90 Python sources and 1712/1712 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 390 embedded custom-code instances preserve 8064/8064 documented function instances; strict UTF-8/JSON checks passed",
+            "pytest": "435/435 non-web tests passed in the exact Langflow 1.9.2 runtime; 21 optional Streamlit web-app tests require the separate web runtime",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 131/131 custom nodes to 90 real Python sources; 0 missing",
+            "korean_component_documentation": "91/91 Python sources and 1727/1727 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 393 embedded custom-code instances preserve 8109/8109 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "186/186 passed",
+            "langflow_lfx_node_templates": "187/187 passed",
             "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
             "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
@@ -246,6 +246,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
             "single_chat_output": "8/8 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
             "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
+            "data_analysis_runtime_cleanup": "large runtime row buffers are shared across deterministic stages, cleared after result and session persistence, and followed by one configurable generation-0 GC by default",
             "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
             "unified_download_report_server_contract": "tools/data_ref_download_server.py serves data_ref CSV plus POST /reports, HTML view, download, TTL cleanup, CSP, storage limits, optional hashed access tokens, and masked query logs on the shared 8765 endpoint",
             "table_preview_limit_contract": "21 Answer Message Adapter owns one advanced table_preview_limit input; default 10; result storage and downloads are unaffected",
@@ -1482,8 +1483,8 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- Langflow/Flow 비웹 pytest: 423/423 passed (별도 Streamlit 웹 런타임용 21개 테스트는 제외)
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 130/130 노드가 실제 Python 원본 89개에 매핑, 누락 0
+- Langflow/Flow 비웹 pytest: 435/435 passed (별도 Streamlit 웹 런타임용 21개 테스트는 제외)
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 131/131 노드가 실제 Python 원본 90개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과
 - Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치

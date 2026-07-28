@@ -17,6 +17,13 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
 from lfx.schema.data import Data
 
+RUNTIME_BUFFER_KEYS = {
+    "runtime_sources",
+    "_runtime_rows_by_alias",
+    "_full_result_rows",
+    "_runtime_result_rows",
+}
+
 ALLOWED_SOURCE_TYPES = {"dummy", "oracle", "h_api", "datalake", "goodocs"}
 
 
@@ -27,23 +34,29 @@ def validate_retrieval_payload(payload_value: Any) -> dict[str, Any]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
     valid_jobs = []
-    errors = []
-    for index, job in enumerate(jobs):
-        if not isinstance(job, dict):
-            errors.append(_error("invalid_retrieval_job", "retrieval job must be an object", index=index))
-            continue
-        job_errors = []
-        for field in ("dataset_key", "source_alias", "source_type"):
-            if not job.get(field):
-                job_errors.append(_error("missing_retrieval_job_field", f"{field} is required", field=field, index=index))
-        if job.get("source_type") and job.get("source_type") not in ALLOWED_SOURCE_TYPES:
-            job_errors.append(_error("unsupported_source_type", f"unsupported source_type: {job.get('source_type')}", index=index))
-        if job_errors:
-            errors.extend(job_errors)
-            continue
-        next_job = deepcopy(job)
-        next_job.setdefault("job_id", f"job_{index + 1}")
-        valid_jobs.append(next_job)
+    intent_errors = [
+        deepcopy(item)
+        for item in plan.get("validation_errors", [])
+        if isinstance(item, dict)
+    ] if isinstance(plan.get("validation_errors"), list) else []
+    errors = intent_errors
+    if not intent_errors:
+        for index, job in enumerate(jobs):
+            if not isinstance(job, dict):
+                errors.append(_error("invalid_retrieval_job", "retrieval job must be an object", index=index))
+                continue
+            job_errors = []
+            for field in ("dataset_key", "source_alias", "source_type"):
+                if not job.get(field):
+                    job_errors.append(_error("missing_retrieval_job_field", f"{field} is required", field=field, index=index))
+            if job.get("source_type") and job.get("source_type") not in ALLOWED_SOURCE_TYPES:
+                job_errors.append(_error("unsupported_source_type", f"unsupported source_type: {job.get('source_type')}", index=index))
+            if job_errors:
+                errors.extend(job_errors)
+                continue
+            next_job = deepcopy(job)
+            next_job.setdefault("job_id", f"job_{index + 1}")
+            valid_jobs.append(next_job)
     next_payload = payload
     next_payload.setdefault("intent_plan", {})["retrieval_jobs"] = valid_jobs
     trace = next_payload.setdefault("trace", {})
@@ -52,16 +65,26 @@ def validate_retrieval_payload(payload_value: Any) -> dict[str, Any]:
         "input_job_count": len(jobs),
         "valid_job_count": len(valid_jobs),
         "error_count": len(errors),
+        "intent_error_count": len(intent_errors),
+        "errors": deepcopy(errors),
     }
     return next_payload
 
 
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return deepcopy(value)
-    data = getattr(value, "data", None)
-    return deepcopy(data) if isinstance(data, dict) else {}
+    data = getattr(value, "data", value)
+    if not isinstance(data, dict):
+        return {}
+    payload = {
+        key: deepcopy(item)
+        for key, item in data.items()
+        if key not in RUNTIME_BUFFER_KEYS
+    }
+    for key in RUNTIME_BUFFER_KEYS:
+        if key in data:
+            payload[key] = data[key]
+    return payload
 
 
 # 함수 설명: `_error()`는 조회 작업 검증 오류를 dataset·field·message가 포함된 표준 오류 dict로 만듭니다.

@@ -26,6 +26,12 @@ DEFAULT_SESSION_COLLECTION = "agent_v4_session_states"
 DEFAULT_PREVIEW_ROW_LIMIT = 5
 DEFAULT_HISTORY_LIMIT = 10
 ENABLED_OPTIONS = ["true", "false"]
+RUNTIME_BUFFER_KEYS = {
+    "runtime_sources",
+    "_runtime_rows_by_alias",
+    "_full_result_rows",
+    "_runtime_result_rows",
+}
 
 
 # 주요 함수: 현재 응답의 next state를 세션 문서에 원자적으로 갱신합니다.
@@ -278,25 +284,36 @@ def _session_id_from_state(state: dict[str, Any]) -> str:
 def _payload(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
-    if isinstance(value, dict):
-        return deepcopy(value)
-    data = getattr(value, "data", None)
+    data = getattr(value, "data", value)
     if isinstance(data, dict):
-        return deepcopy(data)
+        return _copy_payload(data)
     text = getattr(value, "text", None) or getattr(value, "content", None)
     if isinstance(text, str):
         try:
             parsed = json.loads(text)
         except Exception:
             return {}
-        return deepcopy(parsed) if isinstance(parsed, dict) else {}
+        return _copy_payload(parsed) if isinstance(parsed, dict) else {}
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
         except Exception:
             return {}
-        return deepcopy(parsed) if isinstance(parsed, dict) else {}
+        return _copy_payload(parsed) if isinstance(parsed, dict) else {}
     return {}
+
+
+# 함수 설명: `_copy_payload()`는 제어 필드는 깊게 복사하되 대용량 런타임 행 버퍼는 최종 정리 노드까지 공유합니다.
+def _copy_payload(data: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        key: deepcopy(item)
+        for key, item in data.items()
+        if key not in RUNTIME_BUFFER_KEYS
+    }
+    for key in RUNTIME_BUFFER_KEYS:
+        if key in data:
+            payload[key] = data[key]
+    return payload
 
 
 # 함수 설명: `_connect_collection()`는 짧은 server selection timeout으로 MongoDB client와 대상 collection을 생성합니다.

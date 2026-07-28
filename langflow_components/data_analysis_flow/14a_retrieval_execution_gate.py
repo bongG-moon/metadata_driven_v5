@@ -101,13 +101,27 @@ def _validation_failures(payload: dict[str, Any]) -> list[dict[str, Any]]:
     hydration = inspection.get("catalog_hydration") if isinstance(inspection.get("catalog_hydration"), dict) else {}
     failures: list[dict[str, Any]] = []
     if _positive_int(validation.get("error_count")):
-        failures.append(
-            {
-                "type": "retrieval_job_validation_failed",
-                "message": "데이터 조회 작업 검증에 실패했습니다.",
-                "error_count": int(validation.get("error_count") or 0),
-            }
-        )
+        validation_errors = [
+            deepcopy(item)
+            for item in validation.get("errors", [])
+            if isinstance(item, dict)
+        ] if isinstance(validation.get("errors"), list) else []
+        issues = []
+        for item in validation_errors:
+            for issue in item.get("issues", []) if isinstance(item.get("issues"), list) else []:
+                text = str(issue or "").strip()
+                if text and text not in issues:
+                    issues.append(text)
+        failure = {
+            "type": "retrieval_job_validation_failed",
+            "message": "데이터 조회 작업 검증에 실패했습니다.",
+            "error_count": int(validation.get("error_count") or 0),
+        }
+        if validation_errors:
+            failure["validation_errors"] = validation_errors
+        if issues:
+            failure["issues"] = issues
+        failures.append(failure)
     if str(hydration.get("status") or "").strip().lower() == "error":
         failures.append(
             {

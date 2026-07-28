@@ -20,6 +20,13 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
+RUNTIME_BUFFER_KEYS = {
+    "runtime_sources",
+    "_runtime_rows_by_alias",
+    "_full_result_rows",
+    "_runtime_result_rows",
+}
+
 
 # 주요 함수: LLM 문장과 분석 결과를 합쳐 최종 구조화 답변과 다음 상태를 만듭니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
@@ -607,7 +614,17 @@ def _dedupe_numbers(values: list[float]) -> list[float]:
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
-    return deepcopy(data) if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    payload = {
+        key: deepcopy(item)
+        for key, item in data.items()
+        if key not in RUNTIME_BUFFER_KEYS
+    }
+    for key in RUNTIME_BUFFER_KEYS:
+        if key in data:
+            payload[key] = data[key]
+    return payload
 
 
 # 함수 설명: `_answer_text()`는 문자열에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
@@ -1030,6 +1047,22 @@ def _compact_intent_plan(plan: dict[str, Any]) -> dict[str, Any]:
             "pandas_execution_plan": deepcopy(_list(plan.get("pandas_execution_plan"))[:8]),
             "pandas_function_cases": deepcopy(_list(plan.get("pandas_function_cases"))[:5]),
             "output_contract": deepcopy(_dict(plan.get("output_contract"))),
+            "resolved_grain_plan": _compact_resolved_grain_plan(plan.get("resolved_grain_plan")),
+        }
+    )
+
+
+# 함수 설명: 직전 결과 행 매칭에 필요한 grain identity만 다음 턴 상태에 작게 보존합니다.
+def _compact_resolved_grain_plan(value: Any) -> dict[str, Any]:
+    plan = _dict(value)
+    return _omit_empty(
+        {
+            "metadata_ref": deepcopy(_dict(plan.get("metadata_ref"))),
+            "source_alias": plan.get("source_alias"),
+            "dataset_key": plan.get("dataset_key"),
+            "canonical_columns": _string_list(plan.get("canonical_columns")),
+            "grain_columns": _string_list(plan.get("grain_columns")),
+            "strict": plan.get("strict"),
         }
     )
 

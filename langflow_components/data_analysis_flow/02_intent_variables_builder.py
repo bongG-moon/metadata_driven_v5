@@ -84,7 +84,7 @@ def _schema() -> dict[str, Any]:
         "intent_plan": {
             "analysis_kind": "string",
             "request_scope": "new_analysis|followup_requery|followup_transform|followup_expand_source|followup_explain|clarification",
-            "reuse_strategy": "none|previous_result|previous_source|previous_intent_with_new_retrieval|trace_only",
+            "reference_mode": "none|previous_result_rows|previous_result_transform|previous_source|previous_filters|previous_trace",
             "condition_resolution": {
                 "inherited": {},
                 "changed": {},
@@ -119,11 +119,7 @@ def _schema() -> dict[str, Any]:
                     "operation": "apply_row_match_groups",
                     "source_alias": "새 조건을 적용할 target DataFrame alias",
                     "reference_source_alias": "조건 행을 제공할 reference DataFrame alias",
-                    "match_key_ref": {
-                        "section": "조건 키 집합을 정의한 Domain section",
-                        "key": "조건 키 집합을 정의한 Domain key",
-                    },
-                    "match_columns": ["두 source에서 행 단위로 모두 일치시킬 조건 컬럼"],
+                    "match_columns": ["previous_result가 아닌 일반 reference source에만 명시할 실제 identity 컬럼"],
                     "blank_policy": "normalize_blank",
                 }
             ],

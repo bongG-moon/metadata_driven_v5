@@ -37,7 +37,7 @@ def build_variables(payload_value: Any) -> dict[str, Any]:
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
-    return deepcopy(data) if isinstance(data, dict) else {}
+    return data if isinstance(data, dict) else {}
 
 
 # 함수 설명: `_compact_applied_scope()`는 적용 조건·분석 범위에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.

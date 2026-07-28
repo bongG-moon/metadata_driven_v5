@@ -84,7 +84,7 @@ def _prompt_output_contract(payload: dict[str, Any]) -> dict[str, Any]:
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
-    return deepcopy(data) if isinstance(data, dict) else {}
+    return data if isinstance(data, dict) else {}
 
 
 # 함수 설명: `_source_schemas()`는 schemas 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.

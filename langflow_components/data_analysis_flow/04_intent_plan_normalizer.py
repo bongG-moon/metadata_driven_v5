@@ -21,6 +21,14 @@ from lfx.schema.data import Data
 
 RETIRED_JOB_DETAIL_KEYS = {"row_identity_columns", "context_columns"}
 PREVIOUS_RESULT_ALIAS = "previous_result"
+REFERENCE_MODE_TO_REUSE_STRATEGY = {
+    "none": "none",
+    "previous_result_rows": "previous_result",
+    "previous_result_transform": "previous_result",
+    "previous_source": "previous_source",
+    "previous_filters": "previous_intent_with_new_retrieval",
+    "previous_trace": "trace_only",
+}
 
 
 # 주요 함수: LLM 의도 결과를 신뢰 가능한 실행 계획 계약으로 정규화합니다.
@@ -54,7 +62,21 @@ def normalize_intent_plan(
     function_cases = _function_case_items(plan, retrieval_jobs)
     pandas_plan = _ensure_function_case_steps(function_cases, pandas_plan, retrieval_jobs)
     request_scope = _request_scope(plan, payload)
-    reuse_strategy = _reuse_strategy(plan, payload, request_scope)
+    reference_mode_resolution = _reference_mode_resolution(plan, payload, request_scope)
+    reference_mode = str(reference_mode_resolution.get("mode") or "none")
+    request_scope, reference_scope_normalization = _normalize_reference_request_scope(
+        request_scope,
+        reference_mode,
+        retrieval_jobs,
+        payload,
+    )
+    reuse_strategy = _reuse_strategy(reference_mode)
+    pandas_plan = _ensure_previous_result_row_match_step(
+        pandas_plan,
+        retrieval_jobs,
+        reference_mode,
+        payload,
+    )
     if reuse_strategy == "previous_result":
         pandas_plan = _bind_previous_result_alias(pandas_plan, retrieval_jobs)
         function_cases = _bind_previous_result_alias(function_cases, retrieval_jobs)
@@ -68,10 +90,17 @@ def normalize_intent_plan(
     pandas_plan, row_match_guard = _normalize_row_match_steps(
         pandas_plan,
         retrieval_jobs,
-        reuse_strategy,
-        resolved_grain_plan,
-        metadata_candidates,
+        reference_mode,
+        payload,
     )
+    reference_mode_guard = _validate_reference_mode(
+        reference_mode_resolution,
+        request_scope,
+        retrieval_jobs,
+        row_match_guard,
+        payload,
+    )
+    validation_errors = _reference_mode_validation_errors(reference_mode_guard)
     resolved_join_plan = _resolve_join_plan(
         plan,
         metadata_refs,
@@ -84,8 +113,17 @@ def normalize_intent_plan(
     normalized_plan.pop("pandas_function_case", None)
     normalized_plan.pop("selected_function_cases", None)
     normalized_plan["request_scope"] = request_scope
+    normalized_plan["reference_mode"] = reference_mode
     normalized_plan["reuse_strategy"] = reuse_strategy
-    normalized_plan["condition_resolution"] = _condition_resolution(plan)
+    if validation_errors:
+        normalized_plan["validation_errors"] = validation_errors
+    else:
+        normalized_plan.pop("validation_errors", None)
+    condition_resolution = _condition_resolution(plan)
+    if reference_scope_normalization.get("reason") == "complete_independent_question":
+        condition_resolution.pop("inherited", None)
+        condition_resolution.pop("dropped", None)
+    normalized_plan["condition_resolution"] = condition_resolution
     normalized_plan["retrieval_jobs"] = retrieval_jobs
     normalized_plan["pandas_execution_plan"] = pandas_plan
     normalized_plan["output_contract"] = _output_contract(
@@ -119,9 +157,14 @@ def normalize_intent_plan(
     previous_data_reuse = _uses_previous_data_without_new_retrieval(normalized_plan)
     next_payload.setdefault("trace", {}).setdefault("inspection", {})["intent"] = {
         "stage": "04_intent_plan_normalizer",
-        "status": "ok" if retrieval_jobs or previous_data_reuse else "warning",
+        "status": (
+            "error"
+            if validation_errors
+            else ("ok" if retrieval_jobs or previous_data_reuse else "warning")
+        ),
         "analysis_kind": next_payload["intent_plan"].get("analysis_kind", ""),
         "request_scope": normalized_plan["request_scope"],
+        "reference_mode": normalized_plan["reference_mode"],
         "reuse_strategy": normalized_plan["reuse_strategy"],
         "retrieval_job_count": len(retrieval_jobs),
         "pandas_step_count": len(pandas_plan),
@@ -129,13 +172,69 @@ def normalize_intent_plan(
         "decision_reason": parsed.get("trace", {}).get("decision_reason", []) if isinstance(parsed.get("trace"), dict) else [],
         "context_date_guard": context_date_guard,
         "process_group_field_guard": process_group_field_guard,
+        "reference_scope_normalization": reference_scope_normalization,
+        "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
         "resolved_grain_columns": resolved_grain_plan.get("grain_columns", []) if resolved_grain_plan else [],
         "resolved_join_count": len(resolved_join_plan),
     }
-    if not retrieval_jobs and not previous_data_reuse:
+    if not retrieval_jobs and not previous_data_reuse and not validation_errors:
         next_payload.setdefault("trace", {}).setdefault("warnings", []).append({"type": "missing_retrieval_jobs", "message": "intent_plan.retrieval_jobs가 비어 있습니다."})
     return next_payload
+
+
+# 함수 설명: 후속 계획에 실제 신규 retrieval job이 있으면 requery로, 이전 source만 재사용하면 transform으로 scope를 교정합니다.
+def _normalize_reference_request_scope(
+    request_scope: str,
+    reference_mode: str,
+    retrieval_jobs: list[Any],
+    payload: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    normalized = request_scope
+    reason = ""
+    payload = payload if isinstance(payload, dict) else {}
+    followup_hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    complete_independent = (
+        followup_hint.get("complete_independent_request") is True
+        or (
+            followup_hint.get("followup_candidate") is False
+            and str(followup_hint.get("request_scope_hint") or "") == "new_analysis"
+        )
+    )
+    if (
+        retrieval_jobs
+        and request_scope
+        in {
+            "followup_transform",
+            "followup_expand_source",
+            "followup_explain",
+        }
+    ):
+        normalized = "followup_requery"
+        reason = "followup_with_new_retrieval"
+    elif (
+        retrieval_jobs
+        and request_scope == "followup_requery"
+        and reference_mode == "none"
+        and complete_independent
+    ):
+        normalized = "new_analysis"
+        reason = "complete_independent_question"
+    elif (
+        not retrieval_jobs
+        and request_scope == "followup_requery"
+        and reference_mode == "previous_source"
+    ):
+        normalized = "followup_transform"
+        reason = "followup_reuses_previous_source_without_retrieval"
+    return normalized, {
+        "status": "adjusted" if normalized != request_scope else "unchanged",
+        "input_request_scope": request_scope,
+        "request_scope": normalized,
+        "reference_mode": reference_mode,
+        "retrieval_job_count": len(retrieval_jobs),
+        "reason": reason,
+    }
 
 
 # 함수 설명: `_request_scope()`는 분석 범위에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
@@ -158,31 +257,144 @@ def _request_scope(plan: dict[str, Any], payload: dict[str, Any] | None = None) 
     return normalized
 
 
-# 함수 설명: `_reuse_strategy()`는 의도 계획의 이전 결과 재사용 전략을 허용된 값으로 정규화합니다.
-def _reuse_strategy(
+# 함수 설명: `_reference_mode_resolution()`은 LLM이 판단한 이전 상태 사용 의미를 표준 mode로 정규화합니다.
+def _reference_mode_resolution(
     plan: dict[str, Any],
     payload: dict[str, Any] | None = None,
     request_scope: str = "",
-) -> str:
-    value = str(plan.get("reuse_strategy") or "").strip()
-    allowed = {
-        "none",
-        "previous_result",
-        "previous_source",
-        "previous_intent_with_new_retrieval",
-        "trace_only",
-    }
-    normalized = value if value in allowed else "none"
-    if request_scope == "clarification":
-        return "none"
+) -> dict[str, Any]:
+    raw_mode = str(plan.get("reference_mode") or "").strip()
+    if raw_mode in REFERENCE_MODE_TO_REUSE_STRATEGY:
+        return {
+            "mode": raw_mode,
+            "source": "intent_plan.reference_mode",
+            "input": raw_mode,
+            "issues": [],
+        }
+    if raw_mode:
+        return {
+            "mode": "none",
+            "source": "intent_plan.reference_mode",
+            "input": raw_mode,
+            "issues": ["unsupported_reference_mode"],
+        }
+
+    legacy_strategy = str(plan.get("reuse_strategy") or "").strip()
     date_hint = _context_date_hint(payload)
     if (
-        normalized == "none"
+        legacy_strategy in {"", "none"}
         and request_scope == "followup_requery"
         and date_hint.get("source") == "previous_context"
     ):
-        return "previous_intent_with_new_retrieval"
-    return normalized
+        return {
+            "mode": "previous_filters",
+            "source": "context_date_guard",
+            "input": legacy_strategy,
+            "issues": [],
+        }
+    legacy_modes = {
+        "none": "none",
+        "previous_source": "previous_source",
+        "previous_intent_with_new_retrieval": "previous_filters",
+        "trace_only": "previous_trace",
+    }
+    if legacy_strategy == "previous_result":
+        legacy_mode = (
+            "previous_result_rows"
+            if request_scope == "followup_requery"
+            else "previous_result_transform"
+        )
+        return {
+            "mode": legacy_mode,
+            "source": "legacy_intent_plan.reuse_strategy",
+            "input": legacy_strategy,
+            "issues": [],
+        }
+    if legacy_strategy in legacy_modes:
+        return {
+            "mode": legacy_modes[legacy_strategy],
+            "source": "legacy_intent_plan.reuse_strategy",
+            "input": legacy_strategy,
+            "issues": [],
+        }
+
+    return {
+        "mode": "none",
+        "source": "default",
+        "input": "",
+        "issues": [],
+    }
+
+
+# 함수 설명: `_reuse_strategy()`는 의미 판단이 끝난 reference mode를 기존 런타임 재사용 전략으로 변환합니다.
+def _reuse_strategy(reference_mode: str) -> str:
+    return REFERENCE_MODE_TO_REUSE_STRATEGY.get(reference_mode, "none")
+
+
+# 함수 설명: `_validate_reference_mode()`는 의도 분석의 reference mode와 실행 계획이 서로 같은 의미인지 검증합니다.
+def _validate_reference_mode(
+    resolution: dict[str, Any],
+    request_scope: str,
+    retrieval_jobs: list[Any],
+    row_match_guard: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    mode = str(resolution.get("mode") or "none")
+    issues = _string_list(resolution.get("issues"))
+    allowed_scopes = {
+        "none": {"new_analysis", "clarification"},
+        "previous_result_rows": {"followup_requery"},
+        "previous_result_transform": {"followup_transform"},
+        "previous_source": {"followup_transform", "followup_expand_source", "followup_requery"},
+        "previous_filters": {"followup_requery"},
+        "previous_trace": {"followup_explain"},
+    }
+    if request_scope not in allowed_scopes.get(mode, set()):
+        issues.append("reference_mode_scope_mismatch")
+
+    if mode == "previous_result_rows":
+        if not retrieval_jobs:
+            issues.append("missing_new_retrieval_for_previous_result_rows")
+        previous_contract = _previous_result_match_contract(payload)
+        if len(_string_list(previous_contract.get("match_columns"))) < 2:
+            issues.append("missing_previous_result_grain")
+        row_status = str(row_match_guard.get("status") or "").strip()
+        if row_status != "applied":
+            issues.append("missing_valid_previous_result_row_match")
+    elif mode in {"previous_result_transform", "previous_trace"} and retrieval_jobs:
+        issues.append("unexpected_new_retrieval_for_reference_mode")
+    elif mode == "previous_filters" and not retrieval_jobs:
+        issues.append("missing_new_retrieval_for_previous_filters")
+
+    unique_issues: list[str] = []
+    for issue in issues:
+        if issue and issue not in unique_issues:
+            unique_issues.append(issue)
+    return {
+        "status": "invalid" if unique_issues else "valid",
+        "reference_mode": mode,
+        "source": str(resolution.get("source") or ""),
+        "input": str(resolution.get("input") or ""),
+        "request_scope": request_scope,
+        "reuse_strategy": _reuse_strategy(mode),
+        "issues": unique_issues,
+    }
+
+
+# 함수 설명: `_reference_mode_validation_errors()`는 mode 정합성 오류를 조회 실행 전에 차단할 표준 오류로 변환합니다.
+def _reference_mode_validation_errors(guard: dict[str, Any]) -> list[dict[str, Any]]:
+    issues = _string_list(guard.get("issues"))
+    if not issues:
+        return []
+    return [
+        {
+            "type": "invalid_reference_mode_contract",
+            "message": "이전 결과 참조 방식과 의도 실행 계획이 일치하지 않습니다.",
+            "reference_mode": str(guard.get("reference_mode") or "none"),
+            "request_scope": str(guard.get("request_scope") or ""),
+            "issues": issues,
+        }
+    ]
 
 
 # 함수 설명: `_context_date_hint()`는 01E가 만든 직전 날짜 상속 힌트만 안전하게 꺼냅니다.
@@ -259,13 +471,48 @@ def _bind_previous_result_alias(
     return result
 
 
+# 함수 설명: `_ensure_previous_result_row_match_step()`는 직전 결과 행과 단일 신규 source를 연결하는 최소 전처리 단계를 LLM 출력과 무관하게 보장합니다.
+def _ensure_previous_result_row_match_step(
+    items: list[Any],
+    retrieval_jobs: list[Any],
+    reference_mode: str,
+    payload: dict[str, Any] | None = None,
+) -> list[Any]:
+    if reference_mode != "previous_result_rows":
+        return items
+    if any(
+        isinstance(item, dict)
+        and str(item.get("operation") or "").strip().lower() == "apply_row_match_groups"
+        for item in items
+    ):
+        return items
+    aliases = [
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    ]
+    if len(aliases) != 1:
+        return items
+    contract = _previous_result_match_contract(payload or {})
+    if len(_string_list(contract.get("match_columns"))) < 2:
+        return items
+    return [
+        {
+            "operation": "apply_row_match_groups",
+            "source_alias": aliases[0],
+            "reference_source_alias": PREVIOUS_RESULT_ALIAS,
+        },
+        *items,
+    ]
+
+
 # 함수 설명: `_normalize_row_match_steps()`는 참조 source의 여러 행을 행 내부 AND·행 사이 OR로 적용할 범용 실행 단계를 표준화합니다.
 def _normalize_row_match_steps(
     items: list[Any],
     retrieval_jobs: list[Any],
-    reuse_strategy: str,
-    resolved_grain_plan: dict[str, Any] | None = None,
-    metadata_candidates: dict[str, Any] | None = None,
+    reference_mode: str,
+    payload: dict[str, Any] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     retrieval_aliases = [
         str(item.get("source_alias") or item.get("dataset_key") or "").strip()
@@ -273,6 +520,7 @@ def _normalize_row_match_steps(
         if isinstance(item, dict)
         and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
     ]
+    previous_result_contract = _previous_result_match_contract(payload or {})
     normalized_items: list[Any] = []
     normalized_steps: list[dict[str, Any]] = []
     invalid_steps: list[dict[str, Any]] = []
@@ -290,38 +538,23 @@ def _normalize_row_match_steps(
         reference_alias = str(normalized.get("reference_source_alias") or "").strip()
         if not source_alias and len(retrieval_aliases) == 1:
             source_alias = retrieval_aliases[0]
-        if not reference_alias and reuse_strategy == "previous_result":
+        if not reference_alias and reference_mode == "previous_result_rows":
             reference_alias = PREVIOUS_RESULT_ALIAS
         plan_match_columns = _string_list(
             normalized.get("match_columns")
             or normalized.get("condition_columns")
             or normalized.get("columns")
         )
-        match_key_ref = _metadata_ref(
-            normalized.get("match_key_ref")
-            or normalized.get("key_metadata_ref")
-            or normalized.get("metadata_ref")
-        )
-        if not match_key_ref:
-            grain_ref = _metadata_ref(
-                (resolved_grain_plan or {}).get("metadata_ref")
-            )
-            if grain_ref.get("section") == "product_key_columns":
-                match_key_ref = grain_ref
-        metadata_match_columns: list[str] = []
-        if match_key_ref:
-            metadata_item = _find_metadata_item(
-                metadata_candidates or {},
-                match_key_ref,
-            )
-            metadata_match_columns = _metadata_key_columns(
-                metadata_item,
-                metadata_candidates or {},
-            )
-        match_columns = metadata_match_columns or (
-            [] if match_key_ref else plan_match_columns
-        )
-        match_columns_source = "metadata" if metadata_match_columns else "plan"
+        if reference_alias == PREVIOUS_RESULT_ALIAS:
+            if reference_mode == "previous_result_rows":
+                match_columns = _string_list(previous_result_contract.get("match_columns"))
+                match_columns_source = str(previous_result_contract.get("source") or "previous_result_grain")
+            else:
+                match_columns = []
+                match_columns_source = "invalid_reference_mode"
+        else:
+            match_columns = plan_match_columns
+            match_columns_source = "plan"
         normalized.update(
             {
                 "operation": "apply_row_match_groups",
@@ -331,11 +564,8 @@ def _normalize_row_match_steps(
                 "blank_policy": "normalize_blank",
             }
         )
-        if match_key_ref:
-            normalized["match_key_ref"] = match_key_ref
-        else:
-            normalized.pop("match_key_ref", None)
         for retired_key in (
+            "match_key_ref",
             "condition_columns",
             "columns",
             "row_match_groups",
@@ -351,10 +581,14 @@ def _normalize_row_match_steps(
             issue_types.append("missing_reference_source_alias")
         if source_alias and source_alias == reference_alias:
             issue_types.append("same_source_and_reference_alias")
-        if match_key_ref and not metadata_match_columns:
-            issue_types.append("unresolved_match_key_ref")
+        if reference_alias == PREVIOUS_RESULT_ALIAS and reference_mode != "previous_result_rows":
+            issue_types.append("previous_result_rows_mode_required")
         if len(match_columns) < 2:
-            issue_types.append("insufficient_match_columns")
+            issue_types.append(
+                "missing_previous_result_grain"
+                if reference_alias == PREVIOUS_RESULT_ALIAS
+                else "insufficient_match_columns"
+            )
         if issue_types:
             invalid_steps.append({"index": index, "issues": issue_types})
         else:
@@ -364,7 +598,6 @@ def _normalize_row_match_steps(
                     "source_alias": source_alias,
                     "reference_source_alias": reference_alias,
                     "match_columns": match_columns,
-                    "match_key_ref": match_key_ref,
                     "match_columns_source": match_columns_source,
                 }
             )
@@ -381,6 +614,51 @@ def _normalize_row_match_steps(
         "steps": normalized_steps,
         "invalid_steps": invalid_steps,
         "blank_policy": "normalize_blank" if normalized_steps or invalid_steps else "",
+        "previous_result_match_contract": previous_result_contract,
+    }
+
+
+# 함수 설명: `_previous_result_match_contract()`는 직전 결과를 만든 grain 계약을 후속 row match의 유일한 identity로 재사용합니다.
+def _previous_result_match_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    previous_plan = (
+        state.get("last_intent_plan")
+        if isinstance(state.get("last_intent_plan"), dict)
+        else {}
+    )
+    resolved_grain = (
+        previous_plan.get("resolved_grain_plan")
+        if isinstance(previous_plan.get("resolved_grain_plan"), dict)
+        else {}
+    )
+    candidates = (
+        (
+            "previous_result_resolved_grain",
+            resolved_grain.get("canonical_columns"),
+        ),
+        (
+            "previous_result_resolved_source_grain",
+            resolved_grain.get("grain_columns"),
+        ),
+        (
+            "previous_result_output_contract",
+            (
+                previous_plan.get("output_contract")
+                if isinstance(previous_plan.get("output_contract"), dict)
+                else {}
+            ).get("grain_columns"),
+        ),
+    )
+    for source, raw_columns in candidates:
+        columns = _string_list(raw_columns)
+        if len(columns) >= 2:
+            return {
+                "source": source,
+                "match_columns": columns,
+            }
+    return {
+        "source": "previous_result_grain_missing",
+        "match_columns": [],
     }
 
 

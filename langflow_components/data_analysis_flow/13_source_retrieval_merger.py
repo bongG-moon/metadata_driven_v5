@@ -18,6 +18,13 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
 from lfx.schema.data import Data
 
+RUNTIME_BUFFER_KEYS = {
+    "runtime_sources",
+    "_runtime_rows_by_alias",
+    "_full_result_rows",
+    "_runtime_result_rows",
+}
+
 # 주요 함수: 여러 조회 분기에서 돌아온 source result와 trace를 하나로 병합합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def merge_source_retrieval_payloads(main_payload_value: Any, *retrieval_values: Any) -> dict[str, Any]:
@@ -46,7 +53,7 @@ def merge_source_retrieval_payloads(main_payload_value: Any, *retrieval_values: 
         next_payload["source_results"] = merged_results
     if compact_results:
         staged_rows = (
-            deepcopy(payload.get("_runtime_rows_by_alias"))
+            dict(payload.get("_runtime_rows_by_alias"))
             if isinstance(payload.get("_runtime_rows_by_alias"), dict)
             else {}
         )
@@ -125,10 +132,18 @@ def _trace_source_summaries(source_results: Any) -> list[dict[str, Any]]:
 
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return deepcopy(value)
-    data = getattr(value, "data", None)
-    return deepcopy(data) if isinstance(data, dict) else {}
+    data = getattr(value, "data", value)
+    if not isinstance(data, dict):
+        return {}
+    payload = {
+        key: deepcopy(item)
+        for key, item in data.items()
+        if key not in RUNTIME_BUFFER_KEYS
+    }
+    for key in RUNTIME_BUFFER_KEYS:
+        if key in data:
+            payload[key] = data[key]
+    return payload
 
 
 # 함수 설명: `_payload_view()`는 조회 branch 결과를 수정하지 않는 읽기 전용 view로 꺼내 대용량 rows 재복사를 피합니다.

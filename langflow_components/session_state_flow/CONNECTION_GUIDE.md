@@ -55,6 +55,6 @@ URI는 OS 환경변수에서 읽지 않는다. import JSON은 실제 URI 대신 
 ## Data Analysis Flow 연결 위치
 
 - 시작부: `00 MongoDB 세션 상태 로더.loaded_state`를 `00 분석 요청 로더.previous_state`에 연결한다.
-- 종료부: `20 답변 응답 생성기.payload_out`을 `01 MongoDB 세션 상태 저장기.response_payload`에 연결하고, 저장기 출력을 `21`, `22`로 넘긴다.
+- 종료부: `20 답변 응답 생성기.payload_out`을 `01 MongoDB 세션 상태 저장기.response_payload`에 연결하고, 저장기 출력을 `24 런타임 페이로드 정리기`로 넘긴 뒤 `24`의 출력을 `21`, `22`에 연결한다.
 
 이렇게 연결하면 “오늘 WB공정 생산량 알려줘” 다음에 “어제 생산량은?”처럼 질문해도 이전 state가 00번에 자동 주입된다.

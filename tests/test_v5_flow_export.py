@@ -144,8 +144,8 @@ def test_v5_flow_export_is_reproducible_and_acyclic():
     checked_in = json.loads(EXPORT_PATH.read_text(encoding="utf-8"))
 
     assert built == checked_in
-    assert len(built["data"]["nodes"]) == 45
-    assert len(built["data"]["edges"]) == 70
+    assert len(built["data"]["nodes"]) == 46
+    assert len(built["data"]["edges"]) == 71
     assert _is_acyclic(built)
 
 
@@ -244,8 +244,8 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     edges = _edge_keys(flow)
     nodes = {node["id"]: node for node in flow["data"]["nodes"]}
 
-    assert len(nodes) == 45
-    assert len(flow["data"]["edges"]) == 70
+    assert len(nodes) == 46
+    assert len(flow["data"]["edges"]) == 71
     assert _is_acyclic(flow)
     assert ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload") in edges
     assert ("CustomComponent-bhiAG", "payload_out", "CustomComponent-v5ExecutionGate", "payload") in edges
@@ -331,8 +331,26 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     assert ("GaiAInputAdapter-data-analysis", "message", "CustomComponent-xpbhS", "question") in edges
     assert ("CustomComponent-A5y0b", "message", "GaiAOutputAdapter-data-analysis", "input_value") in edges
     assert ("GaiAOutputAdapter-data-analysis", "message", "ChatOutput-rwbTs", "input_value") in edges
-    assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-A5y0b", "payload") in edges
-    assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-3eVde", "payload") in edges
+    assert (
+        "CustomComponent-fXdS4",
+        "payload_out",
+        "CustomComponent-v5RuntimeCleanup",
+        "payload",
+    ) in edges
+    assert (
+        "CustomComponent-v5RuntimeCleanup",
+        "payload_out",
+        "CustomComponent-A5y0b",
+        "payload",
+    ) in edges
+    assert (
+        "CustomComponent-v5RuntimeCleanup",
+        "payload_out",
+        "CustomComponent-3eVde",
+        "payload",
+    ) in edges
+    assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-A5y0b", "payload") not in edges
+    assert ("CustomComponent-fXdS4", "payload_out", "CustomComponent-3eVde", "payload") not in edges
     assert ("CustomComponent-BVItv", "payload_out", "CustomComponent-A5y0b", "payload") not in edges
     assert ("CustomComponent-BVItv", "payload_out", "CustomComponent-3eVde", "payload") not in edges
     answer_adapter_template = nodes["CustomComponent-A5y0b"]["data"]["node"]["template"]
@@ -344,6 +362,9 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     assert result_store_template["download_base_url"]["advanced"] is False
     assert result_store_template["ttl_hours"]["value"] == "1"
     assert result_store_template["ttl_hours"]["advanced"] is False
+    cleanup_template = nodes["CustomComponent-v5RuntimeCleanup"]["data"]["node"]["template"]
+    assert cleanup_template["gc_mode"]["value"] == "generation_0"
+    assert cleanup_template["gc_mode"]["options"] == ["disabled", "generation_0", "full"]
 
 
 def test_v5_flow_export_routes_catalog_and_helpers_through_compaction_nodes():

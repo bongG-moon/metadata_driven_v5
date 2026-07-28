@@ -18,6 +18,13 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
 from lfx.schema.data import Data
 
+RUNTIME_BUFFER_KEYS = {
+    "runtime_sources",
+    "_runtime_rows_by_alias",
+    "_full_result_rows",
+    "_runtime_result_rows",
+}
+
 UPSTREAM_SOURCE_ALIAS = "upstream_result"
 DEFAULT_MAX_VALUES = 200
 MAX_ALLOWED_VALUES = 10_000
@@ -389,7 +396,17 @@ def _ref_id(value: Any) -> str:
 # 함수 설명: `_payload()`는 입력 Data를 독립적으로 수정할 수 있도록 표준 dict 복사본으로 변환합니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
-    return deepcopy(data) if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    payload = {
+        key: deepcopy(item)
+        for key, item in data.items()
+        if key not in RUNTIME_BUFFER_KEYS
+    }
+    for key in RUNTIME_BUFFER_KEYS:
+        if key in data:
+            payload[key] = data[key]
+    return payload
 
 
 # Langflow 컴포넌트 클래스: standalone 캔버스에서 한 입력·한 출력의 결정론적 파라미터 바인딩 노드로 사용합니다.

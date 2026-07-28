@@ -45,6 +45,9 @@ LLM 답변 JSON에 answer_sections.result_table.display_columns를 넣을 수 �
 장비 배정과 Recipe를 함께 언급했다는 이유만으로 UPH 조회를 추가하지 않는다. Recipe, RECIPE_ID, 장비 모델은 equipment_assign 안에서도 조회할 수 있는 장비 배정의 조합·표시 속성이며, 그 표현만으로는 UPH 지표를 요청한 것이 아니다.
 현재 질문에 UPH, 시간당 생산량처럼 UPH 지표를 직접 요구하는 표현이 있을 때만 analysis_recipes의 equipment_assignment_uph_join을 선택하고 equipment_assign과 eqp_uph를 함께 조회한다.
 UPH 지표를 요청하지 않고 배정 장비, 장비 모델, Recipe 또는 그 조합·대수·목록만 요청하면 equipment_assignment_uph_join을 선택하지 않고 equipment_assign 하나에서 답한다.
+직전 제품 결과를 가리키며 `이 제품들`, `위 제품들`, `해당 제품들`의 장비 대수나 목록을 묻고 실제로 이전 제품 행별 대응 장비를 찾는 의도이면 `reference_mode=previous_result_rows`로 판단한다. 이때 이전 결과의 grain을 새로 추측하지 않고 `previous_result`의 모든 제품 행을 left 기준으로 유지하며, row-match된 equipment_assign을 정규화된 `match_columns`별로 집계한 뒤 결합한다.
+장비 대수는 equipment_assign 전체의 단일 장비 수를 모든 제품에 붙이지 말고 `match_columns`별 `EQUIP_ID` 또는 실제 장비 ID 컬럼의 `nunique`로 계산한다. 장비가 없는 이전 제품도 결과에서 제거하지 않고 장비 대수 0으로 표시한다.
+장비 LIST도 함께 요청하면 같은 제품 grain별로 장비 ID의 중복 없는 목록을 집계한다. 장비 모델이나 Recipe는 사용자가 표시를 요청한 경우에만 결과 속성으로 사용하고 이전 제품을 찾는 매칭 key에는 추가하지 않는다.
 lot단위 조건 없이 장비 목록이나 작업 장비에 대한 질문은 equipment_assign을 사용한다.
 lot_status에 eqp_id가 있다는 이유만으로 장비 목록 질문을 lot_status로 처리하지 않는다.
 UPH 상세 결과에는 source에 있는 장비 모델(EQUIP_MODEL), Recipe(RECIPE_ID), 공정(OPER_NAME 또는 OPER_NM)을 공통 필수 문맥으로 유지하고, UPH를 요청한 경우 UPH를 지표 컬럼으로 포함한다.

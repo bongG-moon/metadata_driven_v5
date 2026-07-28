@@ -17,11 +17,12 @@
 - 공정/현장 특화 추가 지시가 비어 있지 않으면, 그 지시는 metadata와 충돌하지 않는 범위에서 우선 반영한다.
 - `오늘`, `금일`, `현재`, `어제` 같은 상대 날짜 표현은 한국 기준 현재일로 자동 계산된 `state_summary.request_context.reference_date`를 기준으로 해석한다.
 - `state_summary.request_context.reference_date`가 유일한 기준일이다. 모델 실행 시점의 실제 날짜나 외부 현재일을 새로 추정하지 않는다.
-- `state_summary.followup_hint.followup_candidate=true`이면 현재 질문이 이전 답변/이전 의도에 의존하는지 먼저 판단한다.
+- `state_summary.followup_hint.followup_candidate=true`이면 현재 질문이 이전 답변/이전 의도에 의존하는지 먼저 판단한다. 이 값과 `request_scope_hint`, `reuse_strategy_hint`, `matched_cues`는 의도 판단 후보 신호이지 최종 결론이 아니다.
 - `followup_candidate=false`인 완결 질문은 독립적인 `new_analysis`다. 현재 질문에 없는 이전 데이터셋·지표·source alias를 retrieval job에 추가하지 않는다.
 - `오늘 재공 알려줘`, `현재 재공 조회해줘`처럼 날짜·분석 대상·요청 동사가 모두 있는 질문은 이전 state가 존재해도 독립 질문으로 처리한다.
+- `상위 N개`, `하위 N개`의 `위`와 `공정그룹`, `제품그룹`의 `그`는 이전 결과를 가리키는 대명사가 아니다. `위 제품들`, `위 결과`, `그중`처럼 명시적인 참조 표현이 없으면 후속 질문 근거로 사용하지 않는다.
 - `이날`, `이 일자`, `그날`, `그 일자`, `해당 일자`, `같은 날`은 현재 실행일이나 오늘을 뜻하지 않고 직전 분석의 날짜 조건을 가리키는 후속 표현이다. `state_summary.followup_hint.changed_conditions_hint.date.source=previous_context`이면 그 `resolved_value`를 상속하고 `request_context.reference_date`로 바꾸지 않는다.
-- `이날 다른 공정은?`, `이 일자에 다른 장비는?`처럼 직전 날짜를 유지하면서 대상만 바꾸는 질문은 `followup_requery`로 판단한다. 날짜는 inherited로, 공정·장비 등 바뀐 조건은 changed/new/dropped 중 의미에 맞는 영역으로 구분하고 새 retrieval job을 작성한다.
+- `이날 다른 공정은?`, `이 일자에 다른 장비는?`처럼 직전 날짜를 유지하면서 대상만 바꾸는 질문은 먼저 바뀐 조건이 선택 dataset의 `required_params`인지 확인한다. 필수 변수가 그대로이고 저장된 이전 원본 source가 새 조건의 행·컬럼을 포함하면 `followup_transform + reference_mode=previous_source`로 재분석하며 새 retrieval job을 만들지 않는다. 필수 변수가 바뀌거나 이전 source 범위가 부족할 때만 `followup_requery`로 새 조회한다.
 - 직전 분석에 서로 다른 날짜가 여러 개라 `changed_conditions_hint.date.requires_clarification=true`이면 임의로 오늘 날짜를 넣지 말고 어떤 날짜를 뜻하는지 clarification으로 보낸다.
 - `INPUT 계획`, `OUT 계획`, `투입계획`, `생산계획`은 table catalog에 `target`이 등록되어 있으면 target 계획 지표로 해석한다. 사용자가 실제/실적과의 비교를 함께 요청하지 않았다면 production dataset이나 `OPER_NAME=INPUT` 실적 조건을 추가하지 않는다.
 - `intent_plan.analysis_kind`는 현재 질문의 metric, 분석 operation, grouping/scope를 반영한 구체적이고 안정적인 snake_case로 작성한다.
@@ -32,24 +33,37 @@
 - 새 분석이거나 dataset/metric/grouping이 바뀐 후속 조회라면 이전 `analysis_kind`를 그대로 상속하지 말고 현재 완성된 조회·분석 계획을 기준으로 다시 작성한다.
 - 최종 JSON을 반환하기 전에 `analysis_kind`, retrieval dataset, metric, grouping, sort/top 조건이 서로 같은 분석을 설명하는지 한 번 확인한다.
 - 후속 질문으로 판단하면 `intent_plan.request_scope`를 `followup_requery`, `followup_transform`, `followup_expand_source`, `followup_explain` 중 하나로 설정한다. 독립 질문이면 `new_analysis`로 설정한다.
+- `intent_plan.reference_mode`는 현재 질문이 이전 상태를 실제로 어떤 방식으로 사용하는지 판단한 결과다. 표현 패턴만 보고 정하지 말고 현재 질문, 직전 질문, 직전 결과 schema, 필요한 신규 dataset을 함께 확인한다.
+- 직전 결과의 각 행을 조건 집합으로 사용해 새 dataset에서 대응 데이터를 찾으면 `reference_mode=previous_result_rows`다.
+- 직전 결과 자체를 정렬·재집계·필터링하면 `reference_mode=previous_result_transform`이다.
+- 직전 원본 source의 상세 컬럼이나 원본 행을 다시 사용하면 `reference_mode=previous_source`다.
+- 직전 조건·의도만 상속해 새로 조회하면 `reference_mode=previous_filters`다.
+- 직전 분석 근거·조건·코드만 설명하면 `reference_mode=previous_trace`다.
+- 이전 상태를 실제 분석 입력으로 사용하지 않는 독립 질문 또는 clarification이면 `reference_mode=none`이다.
+- `이 제품들`, `이 항목들`, `이 결과들` 같은 표현이 있어도 문맥상 이전 결과 행을 조건으로 쓰지 않는다면 `previous_result_rows`를 선택하지 않는다. 반대로 이전 결과의 행별 대상에 신규 속성·지표를 붙이는 질문이면 `previous_result_rows`를 선택한다.
+- `reuse_strategy`는 출력하지 않는다. normalizer가 `reference_mode`를 런타임 재사용 전략으로 변환한다.
 - 후속 질문에서는 이전 조건을 무조건 상속하지 않는다. 사용자가 이번 질문에서 유지한다고 볼 수 있는 조건만 `condition_resolution.inherited`에 넣고, 바뀐 조건은 `condition_resolution.changed`, 제거된 조건은 `condition_resolution.dropped`, 새로 추가된 조건은 `condition_resolution.new`에 구분해 남긴다.
 - 예를 들어 이전 질문이 특정 공정의 생산량이고 현재 질문이 `어제 생산량은?`처럼 날짜만 바꾸는 질문이면 metric과 공정/제품/그룹 조건은 상속 후보가 될 수 있고 날짜 조건만 changed로 둔다.
 - 날짜/기준시점이 바뀌는 후속 질문에서는 이전 `dataset_key`를 무조건 상속하지 말고, table catalog의 데이터셋 용도와 필수 조건을 다시 확인해 최종 `dataset_key`를 선택한다. 예를 들어 당일용 데이터셋은 당일 질문에만 사용하고, 과거 날짜/전일/어제/특정 과거일은 catalog에 이력용 데이터셋이 있으면 이력용 데이터셋을 우선 검토한다.
 - 단, 현재 질문이 독립적으로 완성되어 있거나 이전 조건과 충돌하는 새 공정/제품/기간을 명시하면 이전 조건을 억지로 상속하지 않는다.
 - `followup_requery`는 이전 intent/조건을 바탕으로 새 조회가 필요한 경우다. 이때 최종 `retrieval_jobs`에는 상속/변경이 반영된 완성된 조회 계획을 작성한다.
-- `followup_transform`은 이전 결과 또는 이전 원본으로 정렬, top/bottom, 재그룹화, 비율 계산처럼 재분석하는 경우다. 새 조회가 필요 없으면 `retrieval_jobs`는 비워도 되며 `reuse_strategy=previous_result` 또는 `previous_source`를 사용한다.
-- `followup_expand_source`는 이전 결과에 없는 컬럼/세부 원본 속성을 추가해야 하는 경우다. 이전 source data_ref 또는 원본 rows가 필요하면 `reuse_strategy=previous_source`를 사용한다.
-- `followup_explain`은 이전 조회 조건, 의도, pandas 코드, 근거를 설명하는 경우다. 새 조회 없이 `reuse_strategy=trace_only`를 사용한다.
-- `reuse_strategy=previous_result`로 이전 결과 자체만 재분석하면 pandas 계획의 `source_alias`는 MongoDB 로더가 제공하는 예약 alias `previous_result`를 사용한다. 이전 결과를 조건 행으로 삼아 새 source를 조회·분석하는 혼합 계획은 아래 `apply_row_match_groups` 규칙을 따른다.
-- `reuse_strategy=previous_source`이면 재사용할 이전 원본의 `source_alias`를 `pandas_execution_plan`과 `pandas_function_cases`에 명시한다. 현재 계획에 필요한 alias만 복원되므로 단순히 이전 모든 source가 존재한다고 가정하지 않는다.
-- `reuse_strategy=previous_intent_with_new_retrieval`, `trace_only`, `none`은 이전 원본 행을 복원하지 않는다. 필요한 조건·의도·설명 문맥은 compact session state를 사용한다.
+- 후속 질문에서 `retrieval_jobs`가 하나라도 있으면 실제 신규 데이터 조회가 포함된 것이므로 `request_scope=followup_requery`를 사용한다. 그러나 날짜·공정·제품·일반 filter가 바뀌었다는 이유만으로 retrieval job을 만들지는 않는다.
+- 변경 조건이 table catalog의 필수 `required_params`인지 먼저 구분한다. 날짜도 선택 dataset의 `required_params`에 등록되지 않았다면 비필수 filter이며, 공정·제품 조건도 동일하다.
+- 같은 dataset, 같은 `required_params`를 유지하고 `state_summary.state.runtime_source_refs`에 저장된 이전 source가 필요한 행 범위와 컬럼을 포함하면, 비필수 filter 변경은 `retrieval_jobs=[]`, `request_scope=followup_transform`, `reference_mode=previous_source`로 계획한다. 바뀐 filter는 이전 retrieval job으로 복사하지 말고 현재 `pandas_execution_plan`에서 해당 source에 다시 적용한다.
+- dataset 또는 필수 `required_params`가 바뀌거나, 이전 source 참조가 없거나, 저장 source가 새 filter 범위를 포함하지 않거나, 필요한 컬럼이 없으면 `followup_requery`로 새 retrieval job을 만든다. 특히 이전 filter보다 범위를 넓히거나 다른 값으로 바꿀 때는 저장된 원본이 그 범위를 실제 포함하는지 확인한다.
+- `followup_transform`은 이전 결과 또는 이전 원본으로 정렬, top/bottom, 재그룹화, 비율 계산처럼 저장된 데이터를 재분석하고 신규 조회가 전혀 없는 경우다. 이때 `retrieval_jobs`는 비우고 `reference_mode=previous_result_transform` 또는 `previous_source`를 사용한다.
+- `followup_expand_source`는 저장된 이전 source data_ref 또는 원본 rows만 복원해 이전 결과에 없던 상세 컬럼을 추가하고 신규 조회는 하지 않는 경우다. 새 dataset을 조회하거나 기존 dataset을 다른 필수 파라미터로 다시 조회하면 `followup_expand_source`가 아니라 `followup_requery`다.
+- `followup_explain`은 이전 조회 조건, 의도, pandas 코드, 근거를 설명하는 경우다. 새 조회 없이 `reference_mode=previous_trace`를 사용한다.
+- `reference_mode=previous_result_transform`으로 이전 결과 자체만 재분석하면 pandas 계획의 `source_alias`는 MongoDB 로더가 제공하는 예약 alias `previous_result`를 사용한다. 이전 결과를 조건 행으로 삼아 새 source를 조회·분석하는 혼합 계획은 아래 `apply_row_match_groups` 규칙을 따른다.
+- `reference_mode=previous_source`이면 재사용할 이전 원본의 `source_alias`를 `pandas_execution_plan`과 `pandas_function_cases`에 명시한다. 현재 계획에 필요한 alias만 복원되므로 단순히 이전 모든 source가 존재한다고 가정하지 않는다.
+- `reference_mode=previous_filters`, `previous_trace`, `none`은 이전 원본 행을 복원하지 않는다. 필요한 조건·의도·설명 문맥은 compact session state를 사용한다.
 - 후속 질문에서 이전 원본/결과를 재사용할 경우에도 `pandas_execution_plan`에는 어떤 이전 데이터 기준으로 어떤 재분석을 할지 적는다.
 - 이전 결과 또는 다른 reference source의 여러 행에서 2개 이상 컬럼으로 이루어진 조건 집합을 새 source에 적용할 때는 컬럼별 값을 각각 `in` 목록으로 펼치지 않는다. 컬럼별 `in`은 원래 행 조합을 잃어 실제 reference에 없던 조합까지 선택할 수 있다.
 - 이런 다중 컬럼 행 조건은 `pandas_execution_plan`에 `operation=apply_row_match_groups`, 조건을 적용할 `source_alias`, 조건 행을 제공할 `reference_source_alias`를 기록한다. 한 reference 행 내부 조건은 AND, reference 행들 사이는 OR로 적용한다.
-- 제품 행을 제품 기준으로 다시 조회·결합할 때는 후보 Domain에서 선택한 `product_key_columns` 항목의 section/key를 `match_key_ref`에 기록한다. 제품 키 컬럼 일부를 `match_columns`로 추측하거나 축약하지 않는다. normalizer가 `match_key_ref`의 전체 canonical 제품 키를 결정론적으로 해석한다.
-- 제품 외 일반 행 조건에 대응하는 key metadata가 후보 Domain에 있으면 그 section/key를 `match_key_ref`에 기록한다. 적합한 key metadata가 없을 때만 두 source에서 실제 identity 역할을 하는 2개 이상의 컬럼을 `match_columns`에 기록한다.
-- 직전 최종 결과 행을 reference로 쓰면서 새 dataset도 조회하는 경우 `reuse_strategy=previous_result`를 사용하고 `reference_source_alias=previous_result`를 명시한다. 신규 조회 target의 `source_alias`는 `previous_result`로 바꾸지 않는다.
-- `match_key_ref`가 있으면 metadata의 전체 key 집합이 모델이 작성한 `match_columns`보다 우선한다. `match_key_ref`가 없을 때의 `match_columns`에는 두 source에서 조건 identity 역할을 하는 컬럼만 넣고 수량·순위·설명 같은 결과 컬럼은 넣지 않는다. 2개 미만 컬럼이면 `apply_row_match_groups`를 만들지 않는다.
+- 직전 최종 결과 행을 reference로 쓰면서 새 dataset도 조회하는 경우에만 `reference_mode=previous_result_rows`를 사용하고 `reference_source_alias=previous_result`를 명시한다. 신규 조회 target의 `source_alias`는 `previous_result`로 바꾸지 않는다.
+- `reference_mode=previous_result_rows`이면 `match_key_ref`나 `match_columns`를 새로 만들지 않는다. 이 mode가 의도 분석에서 선택된 뒤에만 normalizer가 직전 결과의 `resolved_grain_plan.canonical_columns` 또는 `output_contract.grain_columns`를 행 identity로 사용한다. 현재 질문의 장비 모델·Recipe·지표·표시 컬럼을 이전 결과의 identity에 추가하지 않는다.
+- `reference_mode=previous_result_rows`이고 신규 retrieval job이 정확히 하나이면, 모델이 `apply_row_match_groups` 단계를 빠뜨려도 normalizer가 직전 grain으로 해당 단계를 보완한다. 모델은 이를 대신하려고 컬럼별 `in` 조건이나 임의 join key를 만들지 않는다.
+- `previous_result`가 아닌 일반 reference source에만 두 source에서 실제 identity 역할을 하는 2개 이상의 컬럼을 `match_columns`에 기록한다. 수량·순위·설명·표시 속성은 넣지 않는다.
 - row match의 null, None, NaN, NaT, 빈 문자열, 공백 문자열 및 문자열 `null`, `none`, `nan`, `nat`, `<NA>`, `empty`는 모두 동일한 빈 값 `""`으로 정규화한다. 빈 값 조건을 누락하거나 wildcard로 해석하지 않으며 `blank_policy=normalize_blank`를 사용한다.
 - `apply_row_match_groups`가 있는 target source에 reference 행에서 뽑은 값을 다시 컬럼별 `eq`/`in` 필터로 중복 작성하지 않는다. 날짜·공정처럼 reference 행 집합과 별개로 사용자가 직접 요구한 조건만 일반 filter로 유지한다.
 - 데이터 조회가 필요한 경우 `intent_plan.retrieval_jobs`를 반드시 작성한다.
@@ -107,6 +121,6 @@
 - `metadata_refs`에는 참조한 metadata의 `section`, `key`만 짧게 남긴다. `payload`, `source_config`, `query_template`, 원문 SQL, 긴 설명은 절대 복사하지 않는다.
 - 후보에 없는 dataset key를 만들지 않는다. 적절한 dataset이 없으면 clarification으로 보낸다.
 - `trace.decision_reason`은 반드시 한국어 문장 배열로 작성한다. 후속 질문 판단, 상속한 조건, 변경/추가한 조건, 새 조회 여부를 한국어로 짧게 설명한다.
-- `request_scope`, `reuse_strategy`, `dataset_key`, column명, operator명 같은 schema 값은 영문 값을 유지해도 되지만, 설명 문장 전체를 영어로 작성하지 않는다.
+- `request_scope`, `reference_mode`, `dataset_key`, column명, operator명 같은 schema 값은 영문 값을 유지해도 되지만, 설명 문장 전체를 영어로 작성하지 않는다.
 - 출력은 설명 문장 없이 JSON 하나만 반환한다.
 - 반환 JSON 구조는 입력으로 제공된 `출력 schema`를 따른다.

@@ -21,8 +21,10 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - `sources["alias"]`는 이미 `retrieval_jobs[].filters`가 적용된 DataFrame으로 본다.
 - LLM 코드에서는 `retrieval_jobs[].filters`에 없는 추가 분석 조건만 groupby, 집계, 정렬, head/tail, join보다 먼저 적용한다.
 - executor는 `pandas_execution_plan`의 `apply_row_match_groups`를 결정론적 row-match preamble 코드로 만들고 LLM 코드 앞에 결합해 한 번에 실행한다. 최종 `generated_code`에는 row match, 일반 filter, LLM 분석 코드가 실제 실행 순서대로 모두 포함된다. reference 각 행의 `match_columns`는 AND, 행들 사이는 OR이며 null·None·NaN·NaT·빈 문자열·공백과 문자열 null/none/nan/nat/<NA>/empty는 모두 `""`으로 맞춘다.
-- 제품 row match의 `match_columns`는 `match_key_ref`로 선택된 Domain `product_key_columns` 전체를 normalizer가 해석한 결과다. LLM 코드에서 제품 키를 축약하거나 다른 제품 컬럼으로 교체하지 않는다.
+- 의도 분석에서 `reference_mode=previous_result_rows`로 판단된 경우에만 `reference_source_alias=previous_result` row match를 사용한다. 이때 `match_columns`는 normalizer가 직전 결과의 grain 계약에서 직접 복원한 값이므로 LLM 코드에서 컬럼을 축약하거나 현재 질문의 장비 모델·Recipe·지표·표시 컬럼으로 교체하지 않는다.
 - `apply_row_match_groups`가 적용된 source를 다시 컬럼별 `isin`으로 조합하지 않는다. reference 행도 최종 결과에 남겨야 하면 reference source를 left로 두고 row-match된 target source를 같은 `match_columns`로 결합한다.
+- `이 제품들`, `위 항목들`, `해당 결과들`처럼 reference 행 전체를 가리키는 후속 질문은 target에 대응 행이 없어도 reference 모든 행을 유지한다. target 지표를 `match_columns`별로 먼저 집계한 뒤 `previous_result.merge(..., how="left")`하고, 건수·수량 지표의 미매칭 값은 0으로 표시한다.
+- reference 각 행별 지표를 요청했는데 target 전체의 단일 합계·건수만 계산해 모든 reference 행에 붙이거나, target을 left로 두어 미매칭 reference 행을 제거하지 않는다.
 - 추가 분석 조건의 `operator`가 `eq`이면 `isin([value])`, `in`이면 `isin(values)`, `contains`이면 문자열 contains, `not_in`/`ne`이면 제외 조건으로 구현한다.
 - 질문에 `대비`, `비율`, `효율`, `rate` 같은 표현이 있고 pandas 계획에서 비율/파생 지표를 만들면, 사용자가 절대 수량 기준을 명시하지 않는 한 해당 파생 지표를 우선 정렬 기준으로 사용한다.
 - 일반 import, open, eval, exec, 파일 접근, 네트워크 접근은 사용하지 않는다.

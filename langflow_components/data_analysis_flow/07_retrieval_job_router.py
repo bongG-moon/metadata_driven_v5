@@ -68,10 +68,8 @@ def _retrieval_mode(payload: dict[str, Any]) -> str:
 
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return deepcopy(value)
-    data = getattr(value, "data", None)
-    return deepcopy(data) if isinstance(data, dict) else {}
+    data = getattr(value, "data", value)
+    return data if isinstance(data, dict) else {}
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.

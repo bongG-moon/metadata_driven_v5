@@ -20,12 +20,23 @@ from lfx.io import DataInput, Output
 from lfx.schema.data import Data
 
 FOLLOWUP_REFERENCE_CUES = (
-    "그", "이전", "방금", "위", "아까", "저 결과", "결과에서", "표에서", "여기서", "거기서",
-    "같은 조건", "동일 조건", "그 제품", "그 공정", "해당 제품", "해당 공정",
+    "이전", "방금", "아까", "저 결과", "결과에서", "표에서", "여기서", "거기서", "그중",
+    "그거", "그것", "그 결과", "그 결과들", "그 항목", "그 항목들",
+    "같은 조건", "동일 조건", "그 제품", "그 제품들", "그 공정", "해당 제품", "해당 제품들", "해당 공정",
+    "위 제품", "위 제품들", "위 항목", "위 항목들", "위 결과", "위 결과들",
+    "이 제품", "이 제품들", "이 항목", "이 항목들", "이 결과", "이 결과들",
     "이날", "이 날", "이 일자", "이 날짜", "그날", "그 날", "그 일자", "그 날짜", "해당 일자", "같은 날", "동일 일자",
 )
+ROW_REFERENCE_CUES = (
+    "이 제품", "이 제품들", "그 제품", "그 제품들", "해당 제품", "해당 제품들", "위 제품", "위 제품들",
+    "이 항목", "이 항목들", "그 항목", "그 항목들", "해당 항목", "해당 항목들", "위 항목", "위 항목들",
+    "이 결과", "이 결과들", "그 결과", "그 결과들", "해당 결과", "해당 결과들", "위 결과", "위 결과들",
+)
 EXPLAIN_CUES = ("왜", "이유", "근거", "설명", "어떤 조건", "어떤 데이터", "조회 조건", "pandas", "코드")
-TRANSFORM_CUES = ("상위", "하위", "정렬", "나눠", "분리", "제품별", "공정별", "차수별", "세부", "비율", "rank", "top", "bottom")
+TRANSFORM_CUES = (
+    "상위", "하위", "가장 많은", "가장 적은", "최대", "최소",
+    "정렬", "나눠", "분리", "제품별", "공정별", "차수별", "세부", "비율", "rank", "top", "bottom",
+)
 EXPAND_CUES = ("추가", "넣어", "붙여", "포함", "같이", "함께", "컬럼", "열", "항목", "code", "코드", "번호")
 CHANGE_CUES = ("말고", "대신", "아니", "바꿔", "변경", "다른", "새로", "다시 조회", "재조회")
 ENTITY_SWITCH_CUES = ("에서는", "에선", "은 어때", "는 어때", "은 어땠", "는 어땠", "쪽은", "경우는")
@@ -52,6 +63,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
 
     date_hint = _date_change_hint(question, _dict(payload.get("request")).get("reference_date"), state)
     matched_references = _matched_cues(question, FOLLOWUP_REFERENCE_CUES)
+    matched_row_references = _matched_cues(question, ROW_REFERENCE_CUES)
     matched_explain = _matched_cues(question, EXPLAIN_CUES)
     matched_transform = _matched_cues(question, TRANSFORM_CUES)
     matched_expand = _matched_cues(question, EXPAND_CUES)
@@ -60,6 +72,20 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     requested_columns = _matched_previous_columns(question, _available_previous_columns(state), matched_expand)
     context_dependent = _looks_context_dependent(question)
     entity_switch_followup = _looks_entity_switch_followup(question, matched_entity_switch)
+    reusable_source_aliases = _reusable_previous_source_aliases(state)
+    explicit_requery_requested = any(cue in {"새로", "다시 조회", "재조회"} for cue in matched_change)
+    filter_change_can_reuse_source = bool(
+        reusable_source_aliases
+        and (matched_change or entity_switch_followup)
+        and not explicit_requery_requested
+        and (
+            not date_hint
+            or (
+                date_hint.get("source") == "previous_context"
+                and date_hint.get("requires_clarification") is not True
+            )
+        )
+    )
     complete_independent_request = _looks_complete_independent_request(
         question,
         matched_references=matched_references,
@@ -79,12 +105,36 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             reuse_strategy_hint = "trace_only"
             confidence = "medium" if matched_references else "low"
             required_artifacts = ["previous_trace", "previous_intent_plan", "previous_answer"]
-        elif requested_columns or (matched_expand and (matched_references or context_dependent)):
+        elif matched_transform and (matched_references or context_dependent):
+            scope_hint = "followup_transform"
+            reuse_strategy_hint = "previous_result"
+            confidence = "high" if matched_references else "medium"
+            required_artifacts = ["previous_result", "previous_source", "previous_intent_plan"]
+            inheritance_candidates = ["required_params", "analysis_filters", "pandas_function_cases"]
+        elif requested_columns:
             scope_hint = "followup_expand_source"
             reuse_strategy_hint = "previous_source"
             confidence = "high" if requested_columns or matched_references else "medium"
             required_artifacts = ["previous_source", "previous_result", "previous_intent_plan"]
             inheritance_candidates = ["metric", "required_params", "analysis_filters", "group_by", "pandas_function_cases"]
+        elif matched_row_references:
+            scope_hint = "followup_requery"
+            reuse_strategy_hint = "previous_result"
+            confidence = "high"
+            required_artifacts = ["previous_result", "previous_intent_plan", "previous_applied_criteria"]
+            inheritance_candidates = ["required_params", "analysis_filters", "pandas_function_cases"]
+        elif matched_expand and (matched_references or context_dependent):
+            scope_hint = "followup_expand_source"
+            reuse_strategy_hint = "previous_source"
+            confidence = "high" if matched_references else "medium"
+            required_artifacts = ["previous_source", "previous_result", "previous_intent_plan"]
+            inheritance_candidates = ["metric", "required_params", "analysis_filters", "group_by", "pandas_function_cases"]
+        elif filter_change_can_reuse_source:
+            scope_hint = "followup_transform"
+            reuse_strategy_hint = "previous_source"
+            confidence = "medium"
+            required_artifacts = ["previous_source", "previous_intent_plan", "previous_applied_criteria"]
+            inheritance_candidates = ["metric", "required_params", "group_by", "pandas_function_cases", "output_contract"]
         elif matched_change or (
             date_hint
             and (matched_references or context_dependent)
@@ -95,16 +145,14 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             confidence = "high" if matched_references or entity_switch_followup or _looks_context_dependent(question) else "medium"
             required_artifacts = ["previous_intent_plan", "previous_applied_criteria"]
             inheritance_candidates = ["metric", "analysis_filters", "group_by", "pandas_function_cases", "output_contract"]
-        elif matched_transform and (matched_references or context_dependent):
-            scope_hint = "followup_transform"
-            reuse_strategy_hint = "previous_result"
-            confidence = "high" if matched_references else "medium"
-            required_artifacts = ["previous_result", "previous_source", "previous_intent_plan"]
-            inheritance_candidates = ["required_params", "analysis_filters", "pandas_function_cases"]
         elif matched_references:
             scope_hint = "followup_requery"
-            reuse_strategy_hint = "previous_intent_with_new_retrieval"
-            confidence = "medium"
+            reuse_strategy_hint = (
+                "previous_result"
+                if matched_row_references
+                else "previous_intent_with_new_retrieval"
+            )
+            confidence = "high" if matched_row_references else "medium"
             required_artifacts = ["previous_result", "previous_intent_plan", "previous_applied_criteria"]
             inheritance_candidates = ["metric", "required_params", "analysis_filters", "group_by", "pandas_function_cases"]
 
@@ -118,6 +166,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             "matched_cues": _omit_empty(
                 {
                     "reference": matched_references,
+                    "reference_rows": matched_row_references,
                     "explain": matched_explain,
                     "transform": matched_transform,
                     "expand": matched_expand,
@@ -126,6 +175,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
                 }
             ),
             "requested_columns_hint": requested_columns,
+            "reusable_previous_source_aliases": reusable_source_aliases,
             "required_previous_artifacts": required_artifacts,
             "inheritance_candidates": inheritance_candidates,
             "previous_context": previous_context,
@@ -140,6 +190,19 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
         **hint,
     }
     return next_payload
+
+
+# 함수 설명: `_reusable_previous_source_aliases()`는 직전 결과 문서에 실제 source_rows 참조가 남은 alias만 재사용 후보로 반환합니다.
+def _reusable_previous_source_aliases(state: dict[str, Any]) -> list[str]:
+    current_data = _dict(state.get("current_data"))
+    current_aliases = _string_list(current_data.get("source_aliases"))
+    source_refs = _dict(state.get("runtime_source_refs"))
+    reusable: list[str] = []
+    for alias in current_aliases:
+        ref = _dict(source_refs.get(alias))
+        if ref and str(ref.get("ref_id") or "").strip() and str(ref.get("role") or "source_rows") == "source_rows":
+            reusable.append(alias)
+    return reusable
 
 
 # 함수 설명: `_previous_context()`는 이전 질문·의도·조건·결과 컬럼에서 후속 질문 판단에 필요한 문맥만 추출합니다.
@@ -477,7 +540,9 @@ def _notes(scope_hint: str, reuse_strategy: str, requested_columns: list[str], d
     if reuse_strategy == "previous_intent_with_new_retrieval":
         notes.append("이전 intent의 metric/filter/group 조건을 검토하고, 변경 조건이 required_params에 영향을 주면 새 조회를 생성합니다.")
     if reuse_strategy == "previous_source":
-        notes.append("이전 최종 결과만으로 부족하면 이전 원본 source data_ref를 복원해 pandas 재분석합니다.")
+        notes.append(
+            "이전 원본 source가 현재 필수 변수 범위를 포함하는지 확인하고, 비필수 filter만 바뀌면 새 조회 없이 pandas에서 다시 필터링합니다."
+        )
     if requested_columns:
         notes.append("이전 데이터 컬럼에서 사용자가 다시 보고 싶어 하는 컬럼 후보를 찾았습니다: " + ", ".join(requested_columns))
     if date_hint:

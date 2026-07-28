@@ -156,6 +156,15 @@ NEW_COMPONENTS = {
         ],
         "outputs": [("Data", "retrieval_payload", "조회 페이로드", "build_payload")],
     },
+    "CustomComponent-v5RuntimeCleanup": {
+        "file": "data_analysis_flow/24_runtime_payload_cleanup.py",
+        "position": {"x": 3070.0, "y": 2580.0},
+        "inputs": [
+            ("data", "payload", "응답 페이로드", True, None),
+            ("dropdown", "gc_mode", "GC 모드", False, "generation_0"),
+        ],
+        "outputs": [("Data", "payload_out", "정리된 페이로드", "build_payload")],
+    },
 }
 
 
@@ -397,8 +406,9 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-fc0Vb", "payload"),
         ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-s3mf1", "payload"),
         ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload"),
-        ("CustomComponent-fXdS4", "payload_out", "CustomComponent-A5y0b", "payload"),
-        ("CustomComponent-fXdS4", "payload_out", "CustomComponent-3eVde", "payload"),
+        ("CustomComponent-fXdS4", "payload_out", "CustomComponent-v5RuntimeCleanup", "payload"),
+        ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-A5y0b", "payload"),
+        ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-3eVde", "payload"),
         ("CustomComponent-x6NXu", "oracle_jobs", "CustomComponent-v5Oracle", "payload"),
         ("CustomComponent-v5Oracle", "retrieval_payload", "MongoDBDomainMetadataLoader-geCh1", "oracle_retrieval"),
         ("CustomComponent-x6NXu", "h_api_jobs", "CustomComponent-v5HApi", "payload"),
@@ -417,7 +427,8 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         "v5 standalone flow (dummy default, live retrievers included): bounded metadata candidates, "
         "trusted catalog hydration, explicit same-session upstream result restoration, metadata-declared entity binding, "
         "thin retrieval branches, selected helper code, visible raw Repair Prompt, failure-only one-attempt pandas repair, "
-        "native tool-free Language Model stages, deterministic required-source execution gating, one finalization path, and compact API payload with explicit repair audit details."
+        "native tool-free Language Model stages, deterministic required-source execution gating, shared runtime row buffers, "
+        "deterministic final buffer release with lightweight GC, one finalization path, and compact API payload with explicit repair audit details."
     )
     flow["endpoint_name"] = "metadata-driven-v5-data-analysis"
     flow["tags"] = sorted(set([*flow.get("tags", []), "v5", "dummy-default", "live-ready", "standalone"]))
@@ -932,7 +943,12 @@ def _input_template(
         template = deepcopy(node_index["Agent-nSPco"]["data"]["node"]["template"]["api_key"])
     elif kind == "dropdown":
         template = deepcopy(node_index["CustomComponent-x6NXu"]["data"]["node"]["template"]["retrieval_mode"])
-        template["options"] = ["0", "1"] if name == "max_repair_attempts" else ["dummy", "live"]
+        if name == "max_repair_attempts":
+            template["options"] = ["0", "1"]
+        elif name == "gc_mode":
+            template["options"] = ["disabled", "generation_0", "full"]
+        else:
+            template["options"] = ["dummy", "live"]
     else:
         raise ValueError(kind)
     template.update({"name": name, "display_name": display_name, "required": required})
@@ -948,6 +964,7 @@ def _input_template(
         "max_result_rows",
         "max_source_rows_per_alias",
         "max_document_bytes",
+        "gc_mode",
         "api_key",
     }
     return template

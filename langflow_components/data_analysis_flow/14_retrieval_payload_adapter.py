@@ -17,6 +17,13 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
 from lfx.schema.data import Data
 
+RUNTIME_BUFFER_KEYS = {
+    "runtime_sources",
+    "_runtime_rows_by_alias",
+    "_full_result_rows",
+    "_runtime_result_rows",
+}
+
 # 주요 함수: 조회 행과 LLM용 요약을 분리하는 pandas 실행 직전 페이로드를 만듭니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_retrieval_payload(payload_value: Any) -> dict[str, Any]:
@@ -47,10 +54,18 @@ def _merge_sources_by_alias(existing: dict[str, Any], additions: Any) -> dict[st
 
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return deepcopy(value)
-    data = getattr(value, "data", None)
-    return deepcopy(data) if isinstance(data, dict) else {}
+    data = getattr(value, "data", value)
+    if not isinstance(data, dict):
+        return {}
+    payload = {
+        key: deepcopy(item)
+        for key, item in data.items()
+        if key not in RUNTIME_BUFFER_KEYS
+    }
+    for key in RUNTIME_BUFFER_KEYS:
+        if key in data:
+            payload[key] = data[key]
+    return payload
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.

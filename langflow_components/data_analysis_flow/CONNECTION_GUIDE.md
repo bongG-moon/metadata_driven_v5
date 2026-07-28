@@ -62,6 +62,7 @@ Intent LLM은 `dataset_key`, `source_alias`, `required_params`, `filters`만 선
 `05`는 정규화된 `reuse_strategy`를 먼저 확인합니다. `none`, `previous_intent_with_new_retrieval`, `trace_only`는 MongoDB를 조회하지 않고 skip하며 compact session state만 사용합니다. `previous_result`는 `payload.result_rows`만 `runtime_sources.previous_result`로 복원하고, `previous_source`는 현재 pandas 계획에 명시된 source alias 경로만 projection으로 읽습니다. 일반 후속 질문도 저장 문서와 현재 요청의 `session_id`가 같아야 복원됩니다.
 
 `01E`가 `followup_candidate=false`로 판정한 완결 질문에는 `02`가 이전 `last_intent_plan`, source alias, data ref를 의도 모델에 전달하지 않습니다. `오늘 재공 알려줘`, `현재 재공 조회해줘`처럼 날짜·지표·요청 동사가 모두 있는 질문은 새 분석으로 처리하고, `어제 생산량은?`, `이날 다른 공정은?`처럼 생략 또는 문맥 참조가 있는 질문만 이전 상태를 사용합니다.
+`이 제품들`, `이 항목들`, `이 결과들` 같은 표현은 `01E`가 후속 참조 후보 신호로만 전달합니다. 의도 분석이 현재 질문과 직전 상태를 함께 보고 `reference_mode=previous_result_rows`를 선택한 경우에만 `04`가 직전 `last_intent_plan.resolved_grain_plan`을 사용해 `previous_result -> 신규 source` row match를 구성합니다. 현재 LLM은 새 `match_key_ref`나 장비 모델·Recipe 컬럼을 선택하지 않으며, 직전 grain이 없거나 mode와 실행 계획이 충돌하면 임의 fallback 없이 invalid 계약으로 차단합니다.
 
 `이날`, `이 일자`, `그날`, `해당 일자`, `같은 날`은 오늘이 아니라 직전 분석의 DATE를 가리킵니다. 이전 DATE가 하나면 해당 값을 상속하고 새 조회를 만들며, 서로 다른 DATE가 여러 개면 임의로 오늘을 넣지 않고 clarification으로 보냅니다.
 
@@ -165,7 +166,13 @@ Dummy source를 사용한 경우 `19`는 답변 본문에서 dummy 결과임을 
 | From node.output | To node.input |
 | --- | --- |
 | `20.payload_out` | `01 MongoDB 세션 상태 저장기.response_payload` |
-| `01 세션 상태 저장기.payload_out` | `21 답변 메시지 어댑터.payload` |
+| `01 세션 상태 저장기.payload_out` | `24 런타임 페이로드 정리기.payload` |
+| `24 런타임 페이로드 정리기.payload_out` | `21 답변 메시지 어댑터.payload` |
+| `24 런타임 페이로드 정리기.payload_out` | `22 API 응답 생성기.payload` |
+| `21.message` | `Chat Output.message` |
+| `21.message` | `22 API 응답 생성기.display_message` |
+
+`24`는 결과 저장과 세션 저장이 모두 끝난 뒤 실행합니다. `runtime_sources`, `_runtime_rows_by_alias`, `_full_result_rows`, `_runtime_result_rows`의 공유 행 list를 비워 Langflow가 이전 node 결과를 보관하는 동안에도 대용량 행 객체가 남지 않게 합니다. 기본 `generation_0` GC는 짧은 세대만 정리하며, 운영 노드의 고급 설정에서 `disabled` 또는 `full`로 바꿀 수 있습니다.
 
 ## 결과 데이터 보관 및 직접 다운로드
 
@@ -182,11 +189,8 @@ Dummy source를 사용한 경우 `19`는 답변 본문에서 dummy 결과임을 
 23번은 분석 결과와 조회에 사용한 원본 데이터 각각에 `/download.csv?download_ref=...` URL을 넣습니다. 21번은 Base URL을 다시 조합하지 않고 이 URL을 새 탭용 HTML anchor와 GaiA `metadata.urls`로 표시합니다. 답변 본문의 링크는 현재 Playground 탭을 이동시키지 않으므로 편집 내용 보호 팝업 없이 CSV 다운로드를 시작합니다.
 
 서버 실행과 운영 설정은 [Data Result 다운로드 서버 가이드](../../docs/DATA_RESULT_DOWNLOAD_SERVER_GUIDE.md)를 참고합니다.
-| `01 세션 상태 저장기.payload_out` | `22 API 응답 생성기.payload` |
-| `21.message` | `Chat Output.message` |
-| `21.message` | `22 API 응답 생성기.display_message` |
 
-세션 writer는 최종 출력과 병렬로 연결하지 않습니다. Message/API의 공통 선행 노드로 두어 저장 결과가 trace에 반영된 다음 응답을 만듭니다. 저장기는 전체 rows가 아니라 현재 turn에서 새로 구성한 compact state와 `data_ref`를 저장하며, 이전 state 전체를 다시 병합하지 않습니다. `23`은 현재 pandas 계획에서 참조한 runtime source만 원본 다운로드 대상으로 저장합니다.
+세션 writer는 최종 출력과 병렬로 연결하지 않습니다. `24` 앞의 공통 선행 노드로 두어 저장 결과가 trace에 반영된 다음 런타임 행을 해제하고 응답을 만듭니다. 저장기는 전체 rows가 아니라 현재 turn에서 새로 구성한 compact state와 `data_ref`를 저장하며, 이전 state 전체를 다시 병합하지 않습니다. `23`은 현재 pandas 계획에서 참조한 runtime source만 원본 다운로드 대상으로 저장합니다.
 
 `22 API 응답 생성기`는 Python 코드의 `self.is_output = True` 선언으로 구조화 최종 출력을 스스로 등록합니다. 다른 환경에 옮길 때도 Python 원본을 유지하고 위 표처럼 연결하면 되며, Flow JSON의 `is_output`을 직접 편집하지 않습니다. `21.message`만 Chat Output에 연결하므로 Playground의 답변은 계속 하나만 표시됩니다.
 
