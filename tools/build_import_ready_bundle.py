@@ -67,12 +67,16 @@ EXPLICIT_STRUCTURED_TERMINALS = {
     "realtime_production_report": "RealtimeProductionReportApiTerminal-realtime-production-report",
 }
 
-CHILD_ROUTE_NAMES = {
+API_CHILD_ROUTE_NAMES = {
     "data_analysis",
     "domain_saving",
     "table_catalog_saving",
     "main_flow_filter_saving",
     "metadata_qa",
+}
+CHILD_ROUTE_NAMES = {
+    *API_CHILD_ROUTE_NAMES,
+    "realtime_production_report",
 }
 WORKFLOW_CHILD_ROUTE_NAMES = {*CHILD_ROUTE_NAMES, "html_visualization", "realtime_production_report"}
 
@@ -149,7 +153,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
     endpoint_by_route = {
         route_name: f"{ENDPOINT_PREFIX}-{endpoint_suffix}"
         for _, endpoint_suffix, route_name in FLOW_SPECS
-        if route_name in CHILD_ROUTE_NAMES
+        if route_name in API_CHILD_ROUTE_NAMES
     }
     manifest_flows: list[dict[str, Any]] = []
     for index, (filename, endpoint_suffix, route_name) in enumerate(FLOW_SPECS, start=1):
@@ -222,20 +226,20 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "manual_edge_rewiring_required": False,
             "manual_flow_id_replacement_required": False,
             "api_router": "Smart Router plus five Run API callers",
-            "agent_tool_router": "Agent plus five selected-ID-first cached Flow tools with standalone name fallback",
+            "agent_tool_router": "Agent plus six selected-ID-first cached Flow tools with deterministic realtime-analysis keyword gating and standalone name fallback",
             "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "434/434 non-web tests passed in the exact Langflow 1.9.2 runtime; 21 optional Streamlit web-app tests require the separate web runtime",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 126/126 custom nodes to 86 real Python sources; 0 missing",
-            "korean_component_documentation": "87/87 Python sources and 1676/1676 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 378 embedded custom-code instances preserve 7833/7833 documented function instances; strict UTF-8/JSON checks passed",
+            "pytest": "439/439 non-web tests passed in the exact Langflow 1.9.2 runtime; 21 optional Streamlit web-app tests require the separate web runtime",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 130/130 custom nodes to 89 real Python sources; 0 missing",
+            "korean_component_documentation": "90/90 Python sources and 1712/1712 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 390 embedded custom-code instances preserve 8064/8064 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "181/181 passed",
-            "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with five real tools",
+            "langflow_lfx_node_templates": "186/186 passed",
+            "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
             "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
@@ -249,21 +253,22 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
             "safe_pandas_builtins": "object dtype comparison and zip are provided by the sandbox and succeed without invoking repair",
             "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 5/5 prefer the current UI-selected Flow ID and use name fallback only while exported IDs are blank; Workflow Orchestrator 7/7 remains exact-name resolved; graph cache keys use actual IDs",
-            "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current native Chat Input ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
-            "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
+            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 6/6 prefer the current UI-selected Flow ID and use name fallback only while exported IDs are blank; Workflow Orchestrator 7/7 remains exact-name resolved; graph cache keys use actual IDs",
+            "agent_tool_schema_policy": "6/6 tools expose one required stable question field and resolve the current native Chat Input ID internally; realtime report execution also validates its configured keywords before child graph resolution",
+            "agent_tool_direct_return": "6/6 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
             "agent_tool_history_contract": "Agent retrieves 5 stored messages; native current-message ID filtering leaves the previous 2 user/assistant turns without duplicating current input",
-            "agent_tool_session_contract": "0 session-source ports/edges; all five tools resolve parent runtime/graph session_id inside the actual Tool output method",
+            "agent_tool_session_contract": "0 session-source ports/edges; all six tools resolve parent runtime/graph session_id inside the actual Tool output method",
+            "agent_tool_realtime_keyword_gate": "run_realtime_production_report requires keyword 분석 plus one of 실시간 생산 분석, 실시간 분석, 실시간 생산분석 before Flow 11 graph resolution",
             "agent_tool_partial_build": "isolated import supports name fallback, while runtime Flow dropdown selection persists the current ID for direct cached execution",
             "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the seven-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
             "workflow_orchestrator_result_handoff": "Data Analysis produces an explicit result_ref consumed by a follow-up Data Analysis or HTML Visualization step",
             "html_visualization_contract": "one result_ref-backed custom builder produces offline HTML/SVG, publishes absolute browser view/download URLs through the visible Report API input, and keeps raw HTML out of Workflow payloads; one GaiA Output Adapter plus native Chat Output and one separate API adapter expose the two response surfaces",
-            "realtime_production_report_contract": "one deterministic 500-row dummy judgement dataset feeds four fixed production analyses, interactive offline HTML tables and filtered CSV export; compact API output keeps raw rows and HTML out of Workflow payloads",
+            "realtime_production_report_contract": "one catalog-grounded Language Model selects a process group and one deterministic Gate validates question evidence before filtering the 500-row dummy snapshot; missing or multiple groups return clarification without HTML, while selected groups feed four fixed analyses and compact artifact-only API output",
             "workflow_orchestrator_registry": "visible MongoDB registry loader reads active workflow.registry.v1 items from agent_v4_workflow_skills; inline_seed is an explicit standalone test source, never an implicit fallback",
             "workflow_orchestrator_terminal_contract": "one final Language Model synthesis passes through GaiA Output Adapter to native Chat Output, alongside one terminal api_response; invalid or empty plans still reach the final error response",
             "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
             "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-            "metadata_mongo_defaults": "16 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+            "metadata_mongo_defaults": "17 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
             "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
             "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
             "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes",
@@ -714,9 +719,9 @@ def _validate_bundle(
                     f"Edge {edge.get('id')} targets advanced input {edge.get('target')}.{target_field}; "
                     "Langflow removes connections to advanced component fields during template refresh."
                 )
-    if mongo_default_nodes != 16 or snapshot_default_nodes != 1:
+    if mongo_default_nodes != 17 or snapshot_default_nodes != 1:
         raise ValueError(
-            "Expected 16 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
+            "Expected 17 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
             f"found standard={mongo_default_nodes}, snapshot={snapshot_default_nodes}."
         )
     return validated_edge_handle_count
@@ -731,13 +736,13 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
     input_adapters = [node for node in nodes if node.get("data", {}).get("type") == "GaiAInputAdapter"]
     output_adapters = [node for node in nodes if node.get("data", {}).get("type") == "GaiAOutputAdapter"]
     if (
-        len(tools) != 5
+        len(tools) != 6
         or len(agents) != 1
         or len(chat_outputs) != 1
         or len(input_adapters) != 1
         or len(output_adapters) != 1
     ):
-        raise ValueError("Agent Tool Router must contain five tools, one Agent, native Chat I/O, and one GaiA adapter pair.")
+        raise ValueError("Agent Tool Router must contain six tools, one Agent, native Chat I/O, and one GaiA adapter pair.")
 
     expected_tool_names = {
         "run_data_analysis",
@@ -745,6 +750,7 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
         "save_domain_metadata",
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
+        "run_realtime_production_report",
     }
     actual_edges = {
         (
@@ -770,6 +776,22 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
             raise ValueError(f"{node_id} must prefer a runtime-selected Flow ID.")
         if template["cache_flow"]["value"] is not True or template["return_direct"]["value"] is not True:
             raise ValueError(f"{node_id} must enable graph cache and direct return.")
+        required_all_keywords = str(template.get("required_all_keywords", {}).get("value") or "")
+        required_any_phrases = str(template.get("required_any_phrases", {}).get("value") or "")
+        keyword_gate_message = str(template.get("keyword_gate_message", {}).get("value") or "")
+        if route_name == "realtime_production_report":
+            if required_all_keywords != "분석":
+                raise ValueError(f"{node_id} must require the 분석 keyword.")
+            if required_any_phrases.splitlines() != [
+                "실시간 생산 분석",
+                "실시간 분석",
+                "실시간 생산분석",
+            ]:
+                raise ValueError(f"{node_id} has unexpected realtime analysis phrases.")
+            if "'분석'" not in keyword_gate_message:
+                raise ValueError(f"{node_id} must explain the required 분석 keyword.")
+        elif required_all_keywords or required_any_phrases or keyword_gate_message:
+            raise ValueError(f"{node_id} must not apply the realtime analysis keyword gate.")
         if "session_source" in template:
             raise ValueError(f"{node_id} must inherit graph.session_id without a session-source port.")
         code = str(template.get("code", {}).get("value") or "")
@@ -785,6 +807,7 @@ def _validate_tool_router(flow: dict[str, Any]) -> None:
             or "def _chat_output_target" not in code
             or "def _promote_graph_output" not in code
             or "def _inherit_runtime_session" not in code
+            or "def _keyword_gate_error" not in code
         ):
             raise ValueError(f"{node_id} does not embed the stable question schema policy.")
         if "allowed_names" in code:
@@ -1169,7 +1192,7 @@ def _validate_html_visualization(flow: dict[str, Any]) -> None:
 
 
 def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
-    """실시간 생산 Report Flow의 더미 데이터·HTML·compact terminal 계약을 검증합니다."""
+    """실시간 생산 Report Flow의 공정그룹 선택 Gate·더미 데이터·HTML·compact terminal 계약을 검증합니다."""
 
     nodes = {str(node.get("id") or ""): node for node in flow.get("data", {}).get("nodes", [])}
     edges = {
@@ -1184,14 +1207,18 @@ def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
     expected_node_ids = {
         "ChatInput-realtime-production-report",
         "GaiAInputAdapter-realtime-production-report",
+        "ProcessGroupCatalog-realtime-production-report",
+        "ProcessGroupPrompt-realtime-production-report",
+        "LanguageModelProcessGroup-realtime-production-report",
         "DummyProductionJudgementData-realtime-production-report",
+        "ProcessGroupSelectionGate-realtime-production-report",
         "RealtimeProductionReportBuilder-realtime-production-report",
         "GaiAOutputAdapter-realtime-production-report",
         "ChatOutput-realtime-production-report",
         "RealtimeProductionReportApiTerminal-realtime-production-report",
     }
-    if set(nodes) != expected_node_ids or len(edges) != 6:
-        raise ValueError("Realtime Production Report must contain seven nodes and six edges.")
+    if set(nodes) != expected_node_ids or len(edges) != 13:
+        raise ValueError("Realtime Production Report must contain eleven nodes and thirteen edges.")
     expected_edges = {
         (
             "ChatInput-realtime-production-report",
@@ -1202,12 +1229,54 @@ def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
         (
             "GaiAInputAdapter-realtime-production-report",
             "message",
+            "ProcessGroupPrompt-realtime-production-report",
+            "question",
+        ),
+        (
+            "GaiAInputAdapter-realtime-production-report",
+            "message",
+            "ProcessGroupSelectionGate-realtime-production-report",
+            "question",
+        ),
+        (
+            "GaiAInputAdapter-realtime-production-report",
+            "message",
             "RealtimeProductionReportBuilder-realtime-production-report",
             "question",
         ),
         (
+            "ProcessGroupCatalog-realtime-production-report",
+            "process_group_catalog",
+            "ProcessGroupPrompt-realtime-production-report",
+            "process_group_catalog",
+        ),
+        (
+            "ProcessGroupPrompt-realtime-production-report",
+            "prompt",
+            "LanguageModelProcessGroup-realtime-production-report",
+            "input_value",
+        ),
+        (
+            "ProcessGroupCatalog-realtime-production-report",
+            "process_group_catalog",
+            "ProcessGroupSelectionGate-realtime-production-report",
+            "process_group_catalog",
+        ),
+        (
+            "LanguageModelProcessGroup-realtime-production-report",
+            "text_output",
+            "ProcessGroupSelectionGate-realtime-production-report",
+            "llm_response",
+        ),
+        (
             "DummyProductionJudgementData-realtime-production-report",
             "dataset",
+            "ProcessGroupSelectionGate-realtime-production-report",
+            "dataset",
+        ),
+        (
+            "ProcessGroupSelectionGate-realtime-production-report",
+            "selected_dataset",
             "RealtimeProductionReportBuilder-realtime-production-report",
             "dataset",
         ),
@@ -1235,7 +1304,10 @@ def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
 
     source_root = ROOT / "langflow_components" / "realtime_production_report_flow"
     source_by_node = {
+        "ProcessGroupCatalog-realtime-production-report": source_root / "00a_process_group_catalog_loader.py",
+        "ProcessGroupPrompt-realtime-production-report": source_root / "00b_process_group_selection_prompt.py",
         "DummyProductionJudgementData-realtime-production-report": source_root / "00_dummy_production_judgement_data.py",
+        "ProcessGroupSelectionGate-realtime-production-report": source_root / "00c_process_group_selection_gate.py",
         "RealtimeProductionReportBuilder-realtime-production-report": source_root / "01_realtime_production_report_builder.py",
         "RealtimeProductionReportApiTerminal-realtime-production-report": source_root / "02_realtime_production_report_api_terminal.py",
     }
@@ -1254,9 +1326,23 @@ def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
     if (
         str(dummy_template.get("row_count", {}).get("value") or "") != "500"
         or str(dummy_template.get("seed", {}).get("value") or "") != "20260727"
-        or str(dummy_template.get("process_names", {}).get("value") or "") != "W/B1,W/B2,W/B3,W/B4"
+        or str(dummy_template.get("process_names", {}).get("value") or "")
+        != "W/B1,W/B2,W/B3,W/B4,B/G1,B/G2,B/G3,D/A1,D/A2,D/A3"
     ):
         raise ValueError("Realtime Production Report dummy generator defaults are invalid.")
+    catalog_template = (
+        nodes["ProcessGroupCatalog-realtime-production-report"]
+        .get("data", {})
+        .get("node", {})
+        .get("template", {})
+    )
+    if (
+        str(catalog_template.get("source_mode", {}).get("value") or "") != "inline_json"
+        or str(catalog_template.get("mongo_database", {}).get("value") or "") != "datagov"
+        or str(catalog_template.get("collection_name", {}).get("value") or "") != "agent_v4_domain_items"
+        or catalog_template.get("mongo_uri", {}).get("load_from_db") is not True
+    ):
+        raise ValueError("Realtime Production Report process-group catalog settings are invalid.")
     builder_template = (
         nodes["RealtimeProductionReportBuilder-realtime-production-report"]
         .get("data", {})
@@ -1271,11 +1357,20 @@ def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
         or str(builder_template.get("max_html_rows", {}).get("value") or "") != "1000"
     ):
         raise ValueError("Realtime Production Report must expose visible Report API settings and the HTML row limit.")
-    if any(
-        str(node.get("data", {}).get("type") or "") in {"LanguageModelComponent", "Agent"}
-        for node in nodes.values()
-    ):
-        raise ValueError("Realtime Production Report aggregation must remain deterministic and LLM-free.")
+    language_model_ids = {
+        node_id
+        for node_id, node in nodes.items()
+        if str(node.get("data", {}).get("type") or "") == "LanguageModelComponent"
+    }
+    if language_model_ids != {"LanguageModelProcessGroup-realtime-production-report"}:
+        raise ValueError("Realtime Production Report must use exactly one Language Model for process-group selection.")
+    if (
+        "LanguageModelProcessGroup-realtime-production-report",
+        "text_output",
+        "RealtimeProductionReportBuilder-realtime-production-report",
+        "dataset",
+    ) in edges:
+        raise ValueError("The process-group LLM must not bypass the deterministic selection Gate.")
     terminal_id = "RealtimeProductionReportApiTerminal-realtime-production-report"
     if any(source == terminal_id for source, _handle, _target, _field in edges):
         raise ValueError("Realtime Production Report API adapter must remain terminal.")
@@ -1386,8 +1481,8 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- Langflow/Flow 비웹 pytest: 434/434 passed (별도 Streamlit 웹 런타임용 21개 테스트는 제외)
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 126/126 노드가 실제 Python 원본 86개에 매핑, 누락 0
+- Langflow/Flow 비웹 pytest: 439/439 passed (별도 Streamlit 웹 런타임용 21개 테스트는 제외)
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 130/130 노드가 실제 Python 원본 89개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과
 - Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
@@ -1404,7 +1499,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
 - pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
-- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router의 선택형 Cached Run Flow Tool 5개는 UI에서 저장한 현재 Flow ID를 우선 사용하고 ID가 비어 있을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. `cache_flow=true`, `return_direct=true`이며, 선택 ID 경로에서는 별도 Flow 조회 없이 graph cache를 바로 확인합니다.
+- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router의 선택형 Cached Run Flow Tool 6개는 UI에서 저장한 현재 Flow ID를 우선 사용하고 ID가 비어 있을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. `cache_flow=true`, `return_direct=true`이며, 선택 ID 경로에서는 별도 Flow 조회 없이 graph cache를 바로 확인합니다. 실시간 생산 Report Tool은 `분석`과 지정된 실시간 분석 구문을 실행 직전에 다시 검증합니다.
 - Agent Tool Router는 `n_messages=5`, `max_iterations=1`로 현재 저장 메시지와 이전 2턴을 조회합니다. GaiA Input Adapter가 원본 Message ID를 보존하고 LFX Agent가 현재 입력과 ID가 같은 메시지를 history에서 제거하므로, 현재 질문 중복 없이 이전 사용자/응답 2턴만 남습니다. 하위 Flow의 표준 Chat Output Message를 `return_direct=true`로 반환하며, LFX 0.4.2가 Tool 결과를 Agent 단계 카드에만 기록한 경우 GaiA Output Adapter가 마지막 완료 Tool 출력에서 본문을 복원합니다. Message.data의 `gaia_response`도 보존합니다.
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 표준 Chat Input ID로 내부 변환합니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 실제 Tool 출력 메서드 안에서 부모 runtime/graph `session_id`를 자동 상속합니다. 따라서 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰어도 하위 Flow의 세션 저장/복원이 유지됩니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.
@@ -1414,7 +1509,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Workflow Orchestrator는 기본적으로 `datagov.agent_v4_workflow_skills`의 active Skill을 질문 기준 후보로 조회합니다. `inline_seed`는 사용자가 명시적으로 선택한 standalone 테스트 모드에서만 사용하며 MongoDB 오류 시 자동 fallback하지 않습니다.
 - Workflow Orchestrator는 Loop 결과를 compact context로 만든 뒤 기본 Language Model을 한 번만 호출하며, GaiA Output Adapter -> 표준 Chat Output과 terminal `api_response`를 제공합니다.
 - HTML Visualization Flow는 `run_data_analysis`의 `result_ref`를 복원하고 외부 CDN 없는 standalone HTML/SVG 차트를 생성합니다. `HTML Report API 주소`로 게시해 Tauri 상대경로가 아닌 절대 보기·다운로드 링크를 반환하며, 화면 Message와 별도의 API 종료 어댑터가 실제 terminal `api_response`를 제공합니다. 그래프 요청은 `run_data_analysis -> run_visualization` 순서와 `handoff=result_ref`로 실행합니다.
-- Realtime Production Report Flow는 판정 더미 Snapshot 500행을 LLM 없이 집계하고 생산실적·생산부족 원인·CAPA실적·장비Assign 조정 탭, Radio 필터, 검색, 전체 컬럼 전환, 현재 보기 CSV 다운로드가 포함된 standalone HTML을 생성합니다.
+- Realtime Production Report Flow는 Domain Metadata의 공정그룹을 전용 LLM으로 선택한 뒤 질문 원문과 허용목록으로 재검증합니다. 단일 그룹이 확정될 때만 해당 그룹의 판정 더미 Snapshot을 고정 Rule로 집계하고, 미지정·다중지정이면 HTML 없이 공정그룹을 다시 묻습니다.
 - Metadata 및 Workflow Skill 저장 Flow 4종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/GaiA Output Adapter/표준 Chat Output 사용
 - Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
 - Metadata 후보: 도메인 관련 항목 최대 10건, 테이블 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증

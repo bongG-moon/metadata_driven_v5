@@ -23,7 +23,7 @@ CONTRACT_VERSION = "production.judgement.dataset.v1"
 DEFAULT_ROW_COUNT = 500
 MAX_ROW_COUNT = 5_000
 DEFAULT_SEED = 20260727
-DEFAULT_PROCESSES = "W/B1,W/B2,W/B3,W/B4"
+DEFAULT_PROCESSES = "W/B1,W/B2,W/B3,W/B4,B/G1,B/G2,B/G3,D/A1,D/A2,D/A3"
 KST = timezone(timedelta(hours=9))
 
 COLUMNS = [
@@ -96,7 +96,7 @@ def _process_names(value: Any) -> list[str]:
         name = item.strip()
         if name and name not in names:
             names.append(name)
-    return names[:20] or ["W/B1", "W/B2", "W/B3", "W/B4"]
+    return names[:20] or ["W/B1", "W/B2", "W/B3", "W/B4", "B/G1", "B/G2", "B/G3", "D/A1", "D/A2", "D/A3"]
 
 
 # 함수 설명: `_work_date()`는 00 실시간 생산 판정 더미 데이터 처리 중 날짜 관련 값을 계산·변환하는 내부 helper입니다.
@@ -307,7 +307,7 @@ def build_dummy_production_dataset(
         row = {
             "WORK_DATE": report_date,
             **product,
-            "OPER": f"WB{process_index + 1:02d}0",
+            "OPER": f"OP{process_index + 1:03d}0",
             "OPER_NAME": process_name,
             "OPER_SEQ": (process_index + 1) * 10,
             "NETDIE_300_CNT": rng.randrange(200, 1_600, 20),
@@ -400,7 +400,7 @@ class DummyProductionJudgementData(Component):
         StrInput(
             name="process_names",
             display_name="분석 공정 목록",
-            info="쉼표로 구분합니다. 예: W/B1,W/B2,W/B3,W/B4",
+            info="쉼표로 구분합니다. 예: W/B1,W/B2,B/G1,D/A1",
             value=DEFAULT_PROCESSES,
             required=False,
             advanced=False,

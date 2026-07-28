@@ -30,6 +30,7 @@ from lfx.schema.message import Message
 
 CONTRACT_VERSION = "realtime.production.report.v1"
 DATASET_CONTRACT_VERSION = "production.judgement.dataset.v1"
+SELECTION_CONTRACT_VERSION = "production.process_group.selection.v1"
 RULES_VERSION = "realtime.production.report.rules.v1"
 DEFAULT_REPORT_API_URL = "http://127.0.0.1:8765"
 DEFAULT_REPORT_TTL_HOURS = 4
@@ -299,6 +300,11 @@ def analyze_production_rows(rows: list[dict[str, Any]], dataset: dict[str, Any])
     equipment["unclassified"] = len(equipment_rows) - sum(equipment[value] for value in ("정상", "교체불필요", "장비필요", "교체필요"))
     processes = sorted({_text(row.get("OPER_NAME")) for row in rows if _text(row.get("OPER_NAME"))})
     work_dates = sorted({_text(row.get("WORK_DATE")) for row in rows if _text(row.get("WORK_DATE"))})
+    selected_process_group = (
+        dict(dataset.get("selected_process_group"))
+        if isinstance(dataset.get("selected_process_group"), dict)
+        else {}
+    )
     return {
         "rules_version": RULES_VERSION,
         "scope": {
@@ -311,6 +317,21 @@ def analyze_production_rows(rows: list[dict[str, Any]], dataset: dict[str, Any])
             "distinct_case_count": _distinct_count(rows, CASE_KEY_COLUMNS),
             "product_count": _distinct_count(rows, PRODUCT_KEY_COLUMNS),
             "source_type": _clip(dataset.get("source_type") or "unknown", 40),
+            "process_group": {
+                "key": _clip(selected_process_group.get("key"), 80),
+                "display_name": _clip(selected_process_group.get("display_name"), 200),
+                "field": _clip(selected_process_group.get("field"), 120),
+                "configured_processes": [
+                    _clip(item, 120)
+                    for item in selected_process_group.get("processes", [])
+                    if _text(item)
+                ][:100],
+                "question_evidence": [
+                    _clip(item, 200)
+                    for item in selected_process_group.get("question_evidence", [])
+                    if _text(item)
+                ][:20],
+            },
         },
         "production": production,
         "shortage": {
@@ -452,6 +473,8 @@ def render_production_report_html(
     capa_anomaly_total = capa["anomaly"]
     equipment_total = equipment["case_count"]
     process_label = ", ".join(scope["processes"]) or "-"
+    process_group = scope.get("process_group") or {}
+    process_group_label = process_group.get("display_name") or process_group.get("key") or "미지정"
     work_date_label = ", ".join(scope["work_dates"]) or "-"
     snapshot_label = scope["snapshot_at"] or "생성 시각 정보 없음"
 
@@ -650,7 +673,7 @@ def render_production_report_html(
 </style></head><body><main class="page">
 <header class="hero"><span class="eyebrow">REAL-TIME PRODUCTION INTELLIGENCE</span><h1>실시간 생산 분석 Report</h1>
 <p>판정 Snapshot을 기반으로 생산실적, 생산부족 원인, CAPA실적, 장비Assign 조정을 일관된 Rule로 분석했습니다.</p>
-<div class="scope"><span>WORK_DATE · __WORK_DATE__</span><span>Snapshot · __SNAPSHOT__</span><span>공정 · __PROCESSES__</span><span>Rule · __RULES_VERSION__</span></div></header>
+<div class="scope"><span>공정그룹 · __PROCESS_GROUP__</span><span>WORK_DATE · __WORK_DATE__</span><span>Snapshot · __SNAPSHOT__</span><span>공정 · __PROCESSES__</span><span>Rule · __RULES_VERSION__</span></div></header>
 <section class="metrics">__METRICS__</section>__WARNING__
 <nav class="tabs" aria-label="Report 영역"><button class="active" data-tab="production">생산실적</button><button data-tab="shortage">생산부족 세부</button><button data-tab="capa">CAPA실적</button><button data-tab="equipment">장비Assign</button></nav>
 __SECTIONS__
@@ -718,6 +741,7 @@ document.querySelector('[data-panel="production"]').classList.add("active");rend
         ]
     )
     replacements = {
+        "__PROCESS_GROUP__": html.escape(process_group_label),
         "__WORK_DATE__": html.escape(work_date_label),
         "__SNAPSHOT__": html.escape(snapshot_label),
         "__PROCESSES__": html.escape(process_label),
@@ -884,12 +908,14 @@ def _chat_message(analysis: dict[str, Any], descriptor: dict[str, Any]) -> str:
     shortage = analysis["shortage"]
     capa = analysis["capa"]
     equipment = analysis["equipment"]
+    process_group = scope.get("process_group") or {}
+    process_group_label = process_group.get("display_name") or process_group.get("key") or "미지정"
     process_label = ", ".join(scope["processes"]) or "-"
     work_date = ", ".join(scope["work_dates"]) or "-"
     lines = [
         "### 실시간 생산 분석이 완료되었습니다.",
         "",
-        f"- 기준: `{work_date}` / {process_label}",
+        f"- 기준: `{work_date}` / 공정그룹 `{process_group_label}` / 세부 공정 {process_label}",
         f"- 데이터 시점: `{scope['snapshot_at'] or '-'}` / {scope['process_count']:,}개 공정 / {scope['case_count']:,} Case / {scope['product_count']:,}개 제품",
         f"- 생산실적: 정상/초과 {production['normal_excess']:,}건({_percent(production['normal_excess'], scope['case_count']):.1f}%), Abnormal {production['abnormal']:,}건, 생산부족 {production['shortage']:,}건({_percent(production['shortage'], scope['case_count']):.1f}%)",
         f"- 생산부족 주원인: 적정재공부족 {shortage['primary']['wip']:,}건, CAPA부족 {shortage['primary']['capa']:,}건, 가동율저조 {shortage['primary']['utilization']:,}건",
@@ -906,6 +932,38 @@ def _chat_message(analysis: dict[str, Any], descriptor: dict[str, Any]) -> str:
     else:
         lines.extend(["", "HTML 파일은 생성했지만 공개 링크를 만들지 못했습니다. Report API 실행 상태와 주소를 확인해 주세요."])
     return "\n".join(lines)
+
+
+# 함수 설명: `_selection_boundary_result()`는 공정그룹 미지정·모호·오류 결과를 HTML 생성 없이 Report API 계약으로 전달합니다.
+def _selection_boundary_result(selection: dict[str, Any]) -> dict[str, Any]:
+    status = _text(selection.get("status")) or "error"
+    is_clarification = status == "clarification_required"
+    message = _text(selection.get("message")) or (
+        "### 공정그룹을 선택해 주세요.\n실시간 생산 분석을 실행할 공정그룹을 말씀해 주세요."
+        if is_clarification
+        else "### 실시간 생산 분석 오류\n공정그룹 선택 결과를 확인할 수 없습니다."
+    )
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "response_type": (
+            "realtime_production_process_group_clarification"
+            if is_clarification
+            else "realtime_production_process_group_error"
+        ),
+        "status": status,
+        "success": is_clarification,
+        "summary": "공정그룹 입력 필요" if is_clarification else "",
+        "message": message,
+        "report_scope": {},
+        "rules_version": RULES_VERSION,
+        "kpis": {},
+        "artifacts": [],
+        "process_group_candidates": list(selection.get("process_group_candidates") or []),
+        "matched_process_groups": list(selection.get("matched_process_groups") or []),
+        "llm_decision": dict(selection.get("llm_decision") or {}),
+        "warnings": [],
+        "errors": list(selection.get("errors") or []),
+    }
 
 
 # 함수 설명: `_error_result()`는 예외 정보를 공통 errors 배열과 status가 포함된 실패 결과 구조로 만듭니다.
@@ -942,6 +1000,8 @@ def build_realtime_production_report(
     # 함수 설명: `_run()`는 RUN 실행 경계를 담당하고 성공 결과와 오류를 공통 계약으로 반환합니다.
     async def _run() -> dict[str, Any]:
         dataset = _payload(dataset_value)
+        if dataset.get("contract_version") == SELECTION_CONTRACT_VERSION:
+            return _selection_boundary_result(dataset)
         rows, warnings, validation_error = _validate_dataset(dataset)
         if validation_error:
             return _error_result(validation_error)
@@ -1012,6 +1072,7 @@ def build_realtime_production_report(
             "status": status,
             "success": True,
             "summary": _clip(
+                f"{analysis['scope']['process_group'].get('display_name') or analysis['scope']['process_group'].get('key') or '미지정 그룹'} / "
                 f"{analysis['scope']['process_count']}개 공정 {analysis['scope']['case_count']} Case 분석: "
                 f"생산부족 {analysis['production']['shortage']}건, 장비필요 {analysis['equipment']['장비필요']}건, "
                 f"교체필요 {analysis['equipment']['교체필요']}건",
@@ -1054,8 +1115,8 @@ class RealtimeProductionReportBuilder(Component):
         ),
         DataInput(
             name="dataset",
-            display_name="판정 데이터",
-            info="production.judgement.dataset.v1 Data입니다. 운영에서는 더미 노드를 실제 Snapshot 로더로 교체합니다.",
+            display_name="선택 공정그룹 판정 데이터",
+            info="00C Gate가 반환한 선택 그룹 production.judgement.dataset.v1 또는 clarification/error 계약입니다.",
             required=True,
         ),
         MessageTextInput(

@@ -27,7 +27,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "5fc1a53fc00b96520edd40448285732e9e24671e2424486f8983299ea0af5a09",
+  "single_file_ui_import_sha256": "723472c8303fd9a5fd960ccace3eb4b1a96986a9a084e680af44c07528ed780e",
   "flows": [
     {
       "order": 1,
@@ -88,9 +88,9 @@
       "file": "07_agent_tool_router_flow_v5_standalone.json",
       "name": "07. v5_agent_tool_router",
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
-      "nodes": 10,
-      "edges": 9,
-      "sha256": "b5c05948b89b7fc84ac980ac001b4233b42a9bec6b3b9ceae19987ff337e744b"
+      "nodes": 11,
+      "edges": 10,
+      "sha256": "0d2689f6d4702cae32bca630a71cf4253a0e10c7485bde328acf417aa4065a51"
     },
     {
       "order": 8,
@@ -99,7 +99,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-workflow-orchestrator",
       "nodes": 21,
       "edges": 29,
-      "sha256": "9df4406dc73b7da0969c07290eb7ca39b89dac8161045e6c2f29d846e27f2626"
+      "sha256": "b2bfb8bfbfb20e01a3aa28e56ac48805d5cfb1ddd8963aacfd6eda18535fbdc0"
     },
     {
       "order": 9,
@@ -124,9 +124,9 @@
       "file": "11_realtime_production_report_flow_v5_standalone.json",
       "name": "11. v5_realtime_production_report",
       "endpoint_name": "metadata-driven-v5-complete-20260710-realtime-production-report",
-      "nodes": 7,
-      "edges": 6,
-      "sha256": "5dbddfbd96734d545a6d2751841b6d8768d8235998bb0c6515e99b19fd5c0e0e"
+      "nodes": 11,
+      "edges": 13,
+      "sha256": "8803796820b65fceb64a6ea0c60e955335dbaebc473ef7b289c47256b7dafba1"
     }
   ],
   "router_configuration": {
@@ -139,18 +139,18 @@
     "manual_edge_rewiring_required": false,
     "manual_flow_id_replacement_required": false,
     "api_router": "Smart Router plus five Run API callers",
-    "agent_tool_router": "Agent plus five selected-ID-first cached Flow tools with standalone name fallback",
+    "agent_tool_router": "Agent plus six selected-ID-first cached Flow tools with deterministic realtime-analysis keyword gating and standalone name fallback",
     "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools"
   },
   "validation": {
-    "pytest": "434/434 non-web tests passed in the exact Langflow 1.9.2 runtime; 21 optional Streamlit web-app tests require the separate web runtime",
-    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 126/126 custom nodes to 86 real Python sources; 0 missing",
-    "korean_component_documentation": "87/87 Python sources and 1676/1676 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 378 embedded custom-code instances preserve 7833/7833 documented function instances; strict UTF-8/JSON checks passed",
+    "pytest": "439/439 non-web tests passed in the exact Langflow 1.9.2 runtime; 21 optional Streamlit web-app tests require the separate web runtime",
+    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 130/130 custom nodes to 89 real Python sources; 0 missing",
+    "korean_component_documentation": "90/90 Python sources and 1712/1712 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 390 embedded custom-code instances preserve 8064/8064 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
-    "langflow_frontend_edge_handles": "440/440 parsed and matched edge.data",
+    "langflow_frontend_edge_handles": "456/456 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-    "langflow_lfx_node_templates": "181/181 passed",
-    "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with five real tools",
+    "langflow_lfx_node_templates": "186/186 passed",
+    "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",
     "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
     "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
     "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
@@ -164,21 +164,22 @@
     "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
     "safe_pandas_builtins": "object dtype comparison and zip are provided by the sandbox and succeed without invoking repair",
     "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 5/5 prefer the current UI-selected Flow ID and use name fallback only while exported IDs are blank; Workflow Orchestrator 7/7 remains exact-name resolved; graph cache keys use actual IDs",
-    "agent_tool_schema_policy": "5/5 tools expose one required stable question field and resolve the current native Chat Input ID internally; Data Analysis schema reduced from 26338 to 339 bytes",
-    "agent_tool_direct_return": "5/5 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
+    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 6/6 prefer the current UI-selected Flow ID and use name fallback only while exported IDs are blank; Workflow Orchestrator 7/7 remains exact-name resolved; graph cache keys use actual IDs",
+    "agent_tool_schema_policy": "6/6 tools expose one required stable question field and resolve the current native Chat Input ID internally; realtime report execution also validates its configured keywords before child graph resolution",
+    "agent_tool_direct_return": "6/6 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
     "agent_tool_history_contract": "Agent retrieves 5 stored messages; native current-message ID filtering leaves the previous 2 user/assistant turns without duplicating current input",
-    "agent_tool_session_contract": "0 session-source ports/edges; all five tools resolve parent runtime/graph session_id inside the actual Tool output method",
+    "agent_tool_session_contract": "0 session-source ports/edges; all six tools resolve parent runtime/graph session_id inside the actual Tool output method",
+    "agent_tool_realtime_keyword_gate": "run_realtime_production_report requires keyword 분석 plus one of 실시간 생산 분석, 실시간 분석, 실시간 생산분석 before Flow 11 graph resolution",
     "agent_tool_partial_build": "isolated import supports name fallback, while runtime Flow dropdown selection persists the current ID for direct cached execution",
     "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the seven-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
     "workflow_orchestrator_result_handoff": "Data Analysis produces an explicit result_ref consumed by a follow-up Data Analysis or HTML Visualization step",
     "html_visualization_contract": "one result_ref-backed custom builder produces offline HTML/SVG, publishes absolute browser view/download URLs through the visible Report API input, and keeps raw HTML out of Workflow payloads; one GaiA Output Adapter plus native Chat Output and one separate API adapter expose the two response surfaces",
-    "realtime_production_report_contract": "one deterministic 500-row dummy judgement dataset feeds four fixed production analyses, interactive offline HTML tables and filtered CSV export; compact API output keeps raw rows and HTML out of Workflow payloads",
+    "realtime_production_report_contract": "one catalog-grounded Language Model selects a process group and one deterministic Gate validates question evidence before filtering the 500-row dummy snapshot; missing or multiple groups return clarification without HTML, while selected groups feed four fixed analyses and compact artifact-only API output",
     "workflow_orchestrator_registry": "visible MongoDB registry loader reads active workflow.registry.v1 items from agent_v4_workflow_skills; inline_seed is an explicit standalone test source, never an implicit fallback",
     "workflow_orchestrator_terminal_contract": "one final Language Model synthesis passes through GaiA Output Adapter to native Chat Output, alongside one terminal api_response; invalid or empty plans still reach the final error response",
     "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
     "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-    "metadata_mongo_defaults": "16 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+    "metadata_mongo_defaults": "17 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
     "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
     "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
     "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes"

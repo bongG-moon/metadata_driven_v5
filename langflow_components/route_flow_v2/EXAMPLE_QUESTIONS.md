@@ -8,5 +8,9 @@
 | `BG 또는 B/G 그룹에 B/G1부터 B/G5까지 포함하도록 replace해줘` | `save_domain_metadata` 1회 |
 | `eqp_uph 테이블의 query template과 컬럼을 등록해줘` | `save_table_catalog_metadata` 1회 |
 | `OPER_NAME 필터 정의를 저장해줘` | `save_main_flow_filter_metadata` 1회 |
+| `W/B 공정그룹 실시간 생산 분석을 해줘` | `run_realtime_production_report` 1회 |
+| `B/G 실시간 분석 부탁해` | `run_realtime_production_report` 1회 |
+| `D/A 실시간 생산분석 해줘` | `run_realtime_production_report` 1회 |
+| `W/B 실시간 생산 현황을 보여줘` | `run_realtime_production_report` 호출 금지, 명확한 수치 조회이면 `run_data_analysis` |
 | `안녕, 어떤 일을 할 수 있어?` | Tool 없이 직접 안내 |
 | `이거 처리해줘` | Tool 없이 구체적인 확인 질문 1회 |

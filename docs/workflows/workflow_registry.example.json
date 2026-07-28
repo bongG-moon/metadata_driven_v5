@@ -169,7 +169,7 @@
     {
       "workflow_key": "realtime_production_report",
       "title": "실시간 생산 분석 Report",
-      "description": "실시간 생산 판정 Snapshot을 고정 Rule로 분석해 생산실적, 생산부족 원인, CAPA실적, 장비Assign 조정 HTML Report를 생성합니다.",
+      "description": "사용자 원문의 공정그룹을 Domain Metadata로 선택·검증한 뒤 해당 그룹의 생산 판정 Snapshot을 고정 Rule로 분석합니다. 공정그룹이 없으면 Report 대신 그룹을 다시 묻습니다.",
       "aliases": [
         "실시간 생산 리포트",
         "생산부족 CAPA 장비 분석",
@@ -197,7 +197,7 @@
         {
           "step_id": "realtime_production_report",
           "tool_name": "run_realtime_production_report",
-          "question": "현재 판정 Snapshot으로 생산실적, 생산부족 원인, CAPA실적, 장비Assign 조정을 분석하고 상세 HTML Report를 생성해.",
+          "question": "{{user_question}}",
           "depends_on": [],
           "handoff": "none",
           "on_error": "stop"

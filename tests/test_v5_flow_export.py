@@ -111,6 +111,7 @@ def test_v5_auxiliary_builder_uses_numbered_display_names_and_child_targets():
         "domain_saving": "02. v5_domain_saving",
         "table_catalog_saving": "03. v5_table_catalog_saving",
         "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
+        "realtime_production_report": "11. v5_realtime_production_report",
     }
 
     def child_targets(assignment_name: str) -> dict[str, str]:
@@ -128,7 +129,6 @@ def test_v5_auxiliary_builder_uses_numbered_display_names_and_child_targets():
     assert child_targets("WORKFLOW_TOOL_ROUTE_SPECS") == {
         **expected_children,
         "html_visualization": "10. v5_html_visualization",
-        "realtime_production_report": "11. v5_realtime_production_report",
     }
     assert ast.literal_eval(assignments["ROUTE_ENDPOINTS"]) == {
         "data_analysis": "metadata-driven-v5-data-analysis",
@@ -482,7 +482,7 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
 
     tool_router = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-agent-tool-router"))
     tools = [node for node in tool_router["data"]["nodes"] if str(node.get("id") or "").startswith("CachedFlowTool-")]
-    assert len(tools) == 5
+    assert len(tools) == 6
     assert len([node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]) == 1
     assert len([node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "GaiAOutputAdapter"]) == 1
     assert all(node["data"]["node"]["template"]["cache_flow"]["value"] is True for node in tools)
@@ -491,6 +491,24 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     assert all(
         node["data"]["node"]["template"]["flow_resolution_mode"]["value"] == "Flow ID 우선"
         for node in tools
+    )
+    realtime_tool = next(
+        node for node in tools if node["id"] == "CachedFlowTool-realtime_production_report"
+    )
+    realtime_template = realtime_tool["data"]["node"]["template"]
+    assert realtime_template["required_all_keywords"]["value"] == "분석"
+    assert realtime_template["required_any_phrases"]["value"].splitlines() == [
+        "실시간 생산 분석",
+        "실시간 분석",
+        "실시간 생산분석",
+    ]
+    assert "'분석'" in realtime_template["keyword_gate_message"]["value"]
+    assert all(
+        not node["data"]["node"]["template"]["required_all_keywords"]["value"]
+        and not node["data"]["node"]["template"]["required_any_phrases"]["value"]
+        and not node["data"]["node"]["template"]["keyword_gate_message"]["value"]
+        for node in tools
+        if node is not realtime_tool
     )
     assert all("session_source" not in node["data"]["node"]["template"] for node in tools)
     assert all(
@@ -797,7 +815,11 @@ def test_v5_bundle_realtime_production_report_has_dummy_data_interactive_html_an
     assert set(nodes) == {
         "ChatInput-realtime-production-report",
         "GaiAInputAdapter-realtime-production-report",
+        "ProcessGroupCatalog-realtime-production-report",
+        "ProcessGroupPrompt-realtime-production-report",
+        "LanguageModelProcessGroup-realtime-production-report",
         "DummyProductionJudgementData-realtime-production-report",
+        "ProcessGroupSelectionGate-realtime-production-report",
         "RealtimeProductionReportBuilder-realtime-production-report",
         "GaiAOutputAdapter-realtime-production-report",
         "ChatOutput-realtime-production-report",
@@ -806,12 +828,38 @@ def test_v5_bundle_realtime_production_report_has_dummy_data_interactive_html_an
     assert (
         "DummyProductionJudgementData-realtime-production-report",
         "dataset",
+        "ProcessGroupSelectionGate-realtime-production-report",
+        "dataset",
+    ) in edges
+    assert (
+        "ProcessGroupSelectionGate-realtime-production-report",
+        "selected_dataset",
         "RealtimeProductionReportBuilder-realtime-production-report",
         "dataset",
     ) in edges
+    assert (
+        "LanguageModelProcessGroup-realtime-production-report",
+        "text_output",
+        "ProcessGroupSelectionGate-realtime-production-report",
+        "llm_response",
+    ) in edges
+    catalog_template = nodes["ProcessGroupCatalog-realtime-production-report"]["data"]["node"]["template"]
+    assert catalog_template["source_mode"]["value"] == "inline_json"
+    assert catalog_template["mongo_database"]["value"] == "datagov"
+    assert catalog_template["collection_name"]["value"] == "agent_v4_domain_items"
+    assert catalog_template["mongo_uri"]["load_from_db"] is True
+    for node_id, source_name in (
+        ("ProcessGroupCatalog-realtime-production-report", "00a_process_group_catalog_loader.py"),
+        ("ProcessGroupPrompt-realtime-production-report", "00b_process_group_selection_prompt.py"),
+        ("ProcessGroupSelectionGate-realtime-production-report", "00c_process_group_selection_gate.py"),
+    ):
+        assert nodes[node_id]["data"]["node"]["template"]["code"]["value"] == (
+            ROOT / "langflow_components" / "realtime_production_report_flow" / source_name
+        ).read_text(encoding="utf-8")
     dummy_template = nodes["DummyProductionJudgementData-realtime-production-report"]["data"]["node"]["template"]
     assert dummy_template["row_count"]["value"] == "500"
     assert dummy_template["seed"]["value"] == "20260727"
+    assert dummy_template["process_names"]["value"] == "W/B1,W/B2,W/B3,W/B4,B/G1,B/G2,B/G3,D/A1,D/A2,D/A3"
     assert dummy_template["code"]["value"] == (
         ROOT
         / "langflow_components"
@@ -828,10 +876,12 @@ def test_v5_bundle_realtime_production_report_has_dummy_data_interactive_html_an
     assert terminal["data"]["node"]["is_output"] is True
     assert {output["name"] for output in terminal["data"]["node"]["outputs"]} == {"api_response"}
     assert not any(source == terminal["id"] for source, _handle, _target, _field in edges)
-    assert not any(
-        node["data"].get("type") in {"Agent", "LanguageModelComponent"}
-        for node in nodes.values()
-    )
+    assert not any(node["data"].get("type") == "Agent" for node in nodes.values())
+    assert {
+        node_id
+        for node_id, node in nodes.items()
+        if node["data"].get("type") == "LanguageModelComponent"
+    } == {"LanguageModelProcessGroup-realtime-production-report"}
 
 
 def test_v5_single_file_ui_bundle_uses_exact_shared_v4_collection_mappings():
@@ -890,10 +940,15 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
             if node["data"].get("type") == "LanguageModelComponent"
         )
 
-    assert len(child_models) == 8
+    assert len(child_models) == 9
     for node in child_models:
         template = node["data"]["node"]["template"]
-        assert template["max_tokens"]["value"] == 8192
+        expected_max_tokens = (
+            700
+            if node["id"] == "LanguageModelProcessGroup-realtime-production-report"
+            else 8192
+        )
+        assert template["max_tokens"]["value"] == expected_max_tokens
         assert template["stream"]["value"] is False
         assert template["temperature"]["value"] == 0.1
         assert "tools" not in template

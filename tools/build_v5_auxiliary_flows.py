@@ -92,6 +92,9 @@ class ToolRouteSpec:
     flow_name: str
     tool_name: str
     tool_description: str
+    required_all_keywords: str = ""
+    required_any_phrases: str = ""
+    keyword_gate_message: str = ""
 
 
 @dataclass(frozen=True)
@@ -670,6 +673,18 @@ TOOL_ROUTE_SPECS = [
         "save_main_flow_filter_metadata",
         "DATE, OPER_NAME, ORG 등 분석 전반에 공통으로 적용할 메인 필터 정의를 등록하거나 변경하라는 명시적 요청에 사용합니다.",
     ),
+    ToolRouteSpec(
+        "realtime_production_report",
+        FLOW_DISPLAY_NAMES["realtime_production_report"],
+        "run_realtime_production_report",
+        "현재 질문에 '분석'이 포함되고 '실시간 생산 분석', '실시간 분석', '실시간 생산분석' 중 하나가 명시된 경우에만 사용합니다. 일반 생산 조회보다 우선하며, 질문 원문을 그대로 전달해 하위 Flow가 공정그룹을 선택하거나 누락 시 다시 묻도록 합니다.",
+        required_all_keywords="분석",
+        required_any_phrases="실시간 생산 분석\n실시간 분석\n실시간 생산분석",
+        keyword_gate_message=(
+            "실시간 생산 Report를 실행하려면 질문에 '분석'을 포함해 주세요. "
+            "예: 'W/B 공정그룹 실시간 생산 분석을 해줘'."
+        ),
+    ),
 ]
 
 
@@ -722,7 +737,7 @@ WORKFLOW_TOOL_ROUTE_SPECS = [
         "realtime_production_report",
         FLOW_DISPLAY_NAMES["realtime_production_report"],
         "run_realtime_production_report",
-        "실시간 생산 판정 Snapshot을 고정 Rule로 집계해 생산실적, 생산부족 원인, CAPA실적, 장비Assign 조정 요약과 interactive HTML Report를 생성합니다. 예시 Flow는 내부 더미 데이터 약 500행을 사용하며 다른 Tool 결과 참조를 소비하지 않습니다.",
+        "질문에서 Domain Metadata의 공정그룹 하나를 먼저 선택·검증한 뒤 해당 그룹의 실시간 생산 판정 Snapshot만 고정 Rule로 집계합니다. 공정그룹이 없거나 모호하면 Report를 만들지 않고 그룹을 다시 묻습니다.",
     ),
 ]
 
@@ -794,6 +809,7 @@ Markdown code fence, 설명 문장, 주석은 출력하지 않는다.
 16. 금지: run_data_analysis가 결과를 생성한다는 이유로 그 단계에 handoff=result_ref를 쓰지 않는다. producer 단계는 handoff=none이고 consumer인 run_visualization 단계가 handoff=result_ref다.
 17. 출력 직전 모든 depends_on=[] 단계의 handoff가 none인지, run_visualization 단계의 depends_on이 정확히 1개이고 handoff가 result_ref인지 다시 검사한다.
 18. 사용자가 실시간 생산 판정 Report, 생산부족 원인, CAPA실적, 장비Assign 조정 Report를 요청하면 run_realtime_production_report 한 단계를 우선 사용한다. 이 전용 Tool에는 선행 run_data_analysis나 run_visualization을 붙이지 않는다.
+19. run_realtime_production_report 단계의 question에는 사용자 원문에 명시된 공정그룹 표현을 반드시 보존한다. 공정그룹이 없으면 임의 그룹이나 전체 공정을 보충하지 말고 원문 그대로 전달해 하위 Flow가 공정그룹을 다시 묻게 한다.
 
 [출력 형태]
 {{
@@ -938,7 +954,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["agent_tool_router"],
-        "LLM Agent router with five compact selected-ID-first cached Flow tools, name fallback for standalone imports, shared session propagation, direct child responses, and one final Chat Output.",
+        "LLM Agent router with six compact selected-ID-first cached Flow tools, deterministic realtime-analysis keyword gating, name fallback for standalone imports, shared session propagation, direct child responses, and one final Chat Output.",
         "metadata-driven-v5-agent-tool-router",
         ["v5", "standalone", "agent-router", "tool-mode", "selected-flow-id", "cached-flow", "optimized"],
     )
@@ -963,7 +979,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow["data"]["nodes"].extend([chat, agent, output])
     add_edge(flow, chat, "message", agent, "input_value")
 
-    y_positions = (-520, -260, 0, 260, 520)
+    y_positions = (-650, -390, -130, 130, 390, 650)
     for spec, y in zip(TOOL_ROUTE_SPECS, y_positions, strict=True):
         tool = custom_node(proto["custom"], f"CachedFlowTool-{spec.route_name}", tool_path, 350, y)
         tool_config = tool["data"]["node"]
@@ -975,6 +991,9 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         _set_value(template, "cache_flow", True)
         _set_value(template, "tool_name", spec.tool_name)
         _set_value(template, "tool_description", spec.tool_description)
+        _set_value(template, "required_all_keywords", spec.required_all_keywords)
+        _set_value(template, "required_any_phrases", spec.required_any_phrases)
+        _set_value(template, "keyword_gate_message", spec.keyword_gate_message)
         _set_value(template, "return_direct", True)
         flow["data"]["nodes"].append(tool)
         add_edge(flow, tool, "component_as_tool", agent, "tools")
@@ -1026,54 +1045,97 @@ def build_html_visualization_flow(donor: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    """판정 더미 데이터 약 500행으로 interactive 생산 분석 Report를 만드는 11 Flow를 만듭니다."""
+    """Domain 공정그룹을 먼저 선택한 뒤 판정 더미 데이터로 Report를 만드는 11 Flow를 만듭니다."""
 
     proto = prototypes(donor)
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["realtime_production_report"],
-        "Deterministic realtime production report flow with a 500-row dummy judgement snapshot, four fixed analysis sections, interactive offline HTML tables, CSV export, and compact API artifacts.",
+        "Realtime production report flow with Domain process-group catalog grounding, native LLM group selection, deterministic evidence validation and row filtering, clarification without HTML when no group is specified, and four fixed report sections.",
         "metadata-driven-v5-realtime-production-report",
-        ["v5", "standalone", "realtime-production", "dummy-data", "html-report", "report-api"],
+        ["v5", "standalone", "realtime-production", "process-group", "dummy-data", "html-report", "report-api"],
     )
     folder = COMPONENT_ROOT / "realtime_production_report_flow"
-    chat = native_node(proto["chat_input"], "ChatInput-realtime-production-report", 0, -140)
+    chat = native_node(proto["chat_input"], "ChatInput-realtime-production-report", 0, -180)
     _set_message_storage(chat, True)
+    catalog = custom_node(
+        proto["custom"],
+        "ProcessGroupCatalog-realtime-production-report",
+        folder / "00a_process_group_catalog_loader.py",
+        350,
+        -360,
+    )
+    catalog_template = catalog["data"]["node"]["template"]
+    _set_value(catalog_template, "source_mode", "inline_json")
+    _set_value(catalog_template, "mongo_database", "datagov")
+    _set_value(catalog_template, "collection_name", "agent_v4_domain_items")
+    _set_value(catalog_template, "status_filter", "active")
+    prompt = custom_node(
+        proto["custom"],
+        "ProcessGroupPrompt-realtime-production-report",
+        folder / "00b_process_group_selection_prompt.py",
+        760,
+        -380,
+    )
+    selector_model = language_model_node(
+        proto["language_model"],
+        "LanguageModelProcessGroup-realtime-production-report",
+        1160,
+        -380,
+        "Select only one explicitly evidenced process-group key from the supplied domain catalog. Return exactly one JSON object and never guess a default group.",
+    )
+    _set_value(selector_model["data"]["node"]["template"], "max_tokens", 700)
     dummy = custom_node(
         proto["custom"],
         "DummyProductionJudgementData-realtime-production-report",
         folder / "00_dummy_production_judgement_data.py",
-        360,
-        170,
+        760,
+        260,
     )
     dummy_template = dummy["data"]["node"]["template"]
     _set_value(dummy_template, "row_count", "500")
     _set_value(dummy_template, "seed", "20260727")
     _set_value(dummy_template, "work_date", "")
-    _set_value(dummy_template, "process_names", "W/B1,W/B2,W/B3,W/B4")
+    _set_value(dummy_template, "process_names", "W/B1,W/B2,W/B3,W/B4,B/G1,B/G2,B/G3,D/A1,D/A2,D/A3")
+    gate = custom_node(
+        proto["custom"],
+        "ProcessGroupSelectionGate-realtime-production-report",
+        folder / "00c_process_group_selection_gate.py",
+        1540,
+        0,
+    )
     report = custom_node(
         proto["custom"],
         "RealtimeProductionReportBuilder-realtime-production-report",
         folder / "01_realtime_production_report_builder.py",
-        760,
+        1940,
         0,
     )
     report_template = report["data"]["node"]["template"]
     _set_value(report_template, "report_api_url", "http://127.0.0.1:8765")
     _set_value(report_template, "report_ttl_hours", "4")
     _set_value(report_template, "max_html_rows", "1000")
-    output = native_node(proto["chat_output"], "ChatOutput-realtime-production-report", 1210, -130)
+    output = native_node(proto["chat_output"], "ChatOutput-realtime-production-report", 2390, -130)
     _set_message_storage(output, True)
     api_terminal = custom_node(
         proto["custom"],
         "RealtimeProductionReportApiTerminal-realtime-production-report",
         folder / "02_realtime_production_report_api_terminal.py",
-        1210,
+        2390,
         210,
     )
-    flow["data"]["nodes"].extend([chat, dummy, report, output, api_terminal])
+    flow["data"]["nodes"].extend(
+        [chat, catalog, prompt, selector_model, dummy, gate, report, output, api_terminal]
+    )
+    add_edge(flow, chat, "message", prompt, "question")
+    add_edge(flow, catalog, "process_group_catalog", prompt, "process_group_catalog")
+    add_edge(flow, prompt, "prompt", selector_model, "input_value")
+    add_edge(flow, chat, "message", gate, "question")
+    add_edge(flow, catalog, "process_group_catalog", gate, "process_group_catalog")
+    add_edge(flow, selector_model, "text_output", gate, "llm_response")
+    add_edge(flow, dummy, "dataset", gate, "dataset")
     add_edge(flow, chat, "message", report, "question")
-    add_edge(flow, dummy, "dataset", report, "dataset")
+    add_edge(flow, gate, "selected_dataset", report, "dataset")
     add_edge(flow, report, "message", output, "input_value")
     add_edge(flow, report, "api_response", api_terminal, "report_result")
     return wrap_gaia_boundaries(flow, proto)

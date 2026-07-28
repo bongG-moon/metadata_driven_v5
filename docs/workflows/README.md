@@ -49,7 +49,7 @@ docs/workflows/
 
 “최근 3일 생산량을 조회한 뒤 그래프로 표시”는 `run_data_analysis`가 만든 실제 결과가 필요하므로 `run_visualization` 단계가 분석 단계 하나를 `depends_on`으로 지정하고 `handoff="result_ref"`를 사용한다. 자주 반복하지 않는 작은 조합은 Registry에 미리 저장하지 않아도 08의 inline 계획으로 실행할 수 있다.
 
-“실시간 생산 판정 Report”는 전용 `run_realtime_production_report` 한 단계만 사용한다. 이 Flow가 판정 Snapshot, 고정 Rule 집계, HTML Report 게시를 소유하므로 선행 `run_data_analysis`나 후행 `run_visualization`을 추가하지 않는다.
+“실시간 생산 판정 Report”는 전용 `run_realtime_production_report` 한 단계만 사용한다. Registry 단계의 `question={{user_question}}`로 공정그룹 표현을 포함한 사용자 원문을 보존한다. 하위 Flow가 Domain 공정그룹 선택과 검증, 판정 Snapshot, 고정 Rule 집계, HTML Report 게시를 소유하므로 선행 `run_data_analysis`나 후행 `run_visualization`을 추가하지 않는다. 사용자 원문에 공정그룹이 없으면 전체 공정을 실행하지 않고 하위 Flow가 공정그룹을 다시 묻는다.
 
 ## 자연어 업무 입력 예시
 

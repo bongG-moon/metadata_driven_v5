@@ -4,7 +4,7 @@
 
 이 문서는 `11. v5_realtime_production_report` 예시 Flow를 실제 생산 환경에 적용하기 위한 구현 기준을 정의한다.
 
-현재 예시는 약 500행의 판정 더미 데이터를 내부에서 생성하지만, 운영 환경에서는 기존 생산 판정 Python Job이 생성한 완료 Snapshot을 조회해야 한다. 운영 전환 시 Report의 집계·메시지·HTML 생성 규칙을 다시 구현하지 않고, 더미 데이터 생성 노드만 실제 Snapshot Loader로 교체하는 것을 기본 원칙으로 한다.
+현재 예시는 여러 공정그룹에 걸친 약 500행의 판정 더미 데이터를 내부에서 생성하지만, 운영 환경에서는 Domain Metadata의 실제 공정그룹과 기존 생산 판정 Python Job이 생성한 완료 Snapshot을 조회해야 한다. 운영 전환 시 Report의 집계·메시지·HTML 생성 규칙을 다시 구현하지 않고, 공정그룹 카탈로그의 조회 방식을 MongoDB로 전환하고 더미 데이터 생성 노드만 실제 Snapshot Loader로 교체하는 것을 기본 원칙으로 한다.
 
 이 문서의 범위는 다음과 같다.
 
@@ -35,17 +35,41 @@
 
 운영 구현은 아래 구조를 권장한다.
 
+### 2.0 07 Agent Tool Router 진입 조건
+
+일반 단일 질문은 `07. v5_agent_tool_router`가 먼저 받고 다음 조건을 모두 만족할 때만 `run_realtime_production_report`로 11번 Flow를 호출한다.
+
+1. 현재 질문 원문에 `분석`이 포함되어야 한다.
+2. `실시간 생산 분석`, `실시간 분석`, `실시간 생산분석` 중 하나가 포함되어야 한다.
+
+예를 들어 `W/B 공정그룹 실시간 생산 분석을 해줘`는 11번 Flow로 전달되지만, `W/B 실시간 생산 현황을 보여줘`는 이 Tool의 호출 조건이 아니다. 전자는 공정그룹까지 명시했으므로 바로 Report를 만들고, `실시간 분석을 해줘`처럼 호출 조건만 있고 공정그룹이 없으면 11번 Flow가 전체 공정을 실행하지 않고 공정그룹을 다시 묻는다.
+
+이 조건은 두 단계로 적용한다.
+
+- Agent System Prompt가 일반 `run_data_analysis`보다 전용 Report Tool을 우선 선택한다.
+- 선택형 Cached Flow Tool의 `필수 키워드`, `허용 호출 구문` 입력이 하위 graph를 열기 직전에 다시 검사한다.
+
+따라서 LLM이 Tool을 잘못 선택해도 키워드 조건이 맞지 않으면 11번 Flow, Snapshot 조회, HTML 생성은 실행되지 않는다. `08. v5_workflow_orchestrator`의 등록 Workflow 호출은 별도 계획 경로이며 기존 `run_realtime_production_report` 한 단계 계약을 유지한다.
+
 ```mermaid
 flowchart LR
     A["기존 생산 판정 Python Job"] --> B["판정 결과 검증"]
     B --> C[("완료된 생산 Snapshot 저장소")]
-    D["사용자 질문 또는 정기 실행"] --> E["조회조건 결정"]
-    E --> F["실시간 생산 Snapshot Loader"]
-    C --> F
-    F --> G["실시간 생산 분석 Report 생성기"]
-    G --> H["채팅 요약"]
-    G --> I["통합 Report API :8765"]
-    I --> J["HTML 보기·다운로드"]
+    D["사용자 질문"] --> R["07 Agent Tool Router<br/>분석 + 실시간 구문 Gate"]
+    R --> E["Domain 공정그룹 카탈로그"]
+    R --> F["공정그룹 선택 LLM"]
+    E --> F
+    F --> G["결정론적 선택 Gate"]
+    R --> G
+    E --> G
+    G -->|"그룹 없음·모호"| H["공정그룹 재질문<br/>HTML 미생성"]
+    G -->|"단일 그룹 확정"| I["실시간 생산 Snapshot Loader"]
+    C --> I
+    I --> J["선택 공정그룹 행 필터"]
+    J --> K["실시간 생산 분석 Report 생성기"]
+    K --> L["채팅 요약"]
+    K --> M["통합 Report API :8765"]
+    M --> N["HTML 보기·다운로드"]
 ```
 
 ### 2.1 권장 원칙
@@ -57,6 +81,9 @@ flowchart LR
 5. Snapshot Loader는 `status=complete`인 최신 Snapshot만 읽는다.
 6. 채팅에는 요약과 링크만 전달하고 원본 행과 HTML 본문은 전달하지 않는다.
 7. HTML 상세 표와 전체 데이터 다운로드는 분리 가능한 구조로 운영한다.
+8. LLM은 Domain Metadata에 등록된 공정그룹 key 하나만 선택하며 쿼리 조건을 직접 만들지 않는다.
+9. 선택 결과는 질문 원문, alias, 세부 공정 목록을 사용해 결정론적으로 재검증한다.
+10. 질문에 공정그룹 근거가 없거나 둘 이상이면 전체 공정을 기본값으로 사용하지 않고 공정그룹을 다시 묻는다.
 
 ### 2.2 권장하지 않는 방식
 
@@ -64,6 +91,8 @@ flowchart LR
 - 저장 중인 운영 테이블을 완료 여부 확인 없이 직접 조회
 - LLM이 생산 판정값이나 최종 집계 숫자를 임의로 생성
 - 사용자 질문에서 추출한 공정명을 허용목록 검증 없이 쿼리에 사용
+- 공정그룹이 없는 질문을 기본 공정 또는 전체 공정으로 임의 실행
+- LLM 선택 key를 Domain Metadata와 질문 원문 재검증 없이 사용
 - 수천 행의 원본 데이터를 Chat Output이나 Workflow observation에 포함
 - 운영 Report 서버를 인증 없이 외부 인터넷에 직접 노출
 
@@ -74,11 +103,22 @@ flowchart LR
 현재 Flow는 다음과 같이 연결되어 있다.
 
 ```text
-00 실시간 생산 판정 더미 데이터.dataset
-  -> 01 실시간 생산 분석 Report 생성기.dataset
-
 Chat Input
+  -> 00B 공정그룹 선택 Prompt.question
+  -> 00C 공정그룹 선택 Gate.question
   -> 01 실시간 생산 분석 Report 생성기.question
+
+00A Domain 공정그룹 카탈로그
+  -> 00B 공정그룹 선택 Prompt
+  -> 00C 공정그룹 선택 Gate
+
+00B Prompt -> Language Model -> 00C Gate
+
+00 실시간 생산 판정 더미 데이터.dataset
+  -> 00C Gate.dataset
+
+00C Gate.selected_dataset
+  -> 01 실시간 생산 분석 Report 생성기.dataset
 
 01 Report 생성기.message
   -> GaiA Output Adapter
@@ -88,14 +128,17 @@ Chat Input
   -> 02 API 종료 어댑터
 ```
 
-운영 전환 후에는 첫 번째 연결만 아래와 같이 변경한다.
+운영 전환 후에는 카탈로그와 Snapshot 공급 노드를 아래와 같이 변경한다.
 
 ```text
+00A 공정그룹 카탈로그.source_mode = mongodb
+  -> datagov.agent_v4_domain_items의 section=process_groups 조회
+
 00 실시간 생산 판정 Snapshot Loader.dataset
-  -> 01 실시간 생산 분석 Report 생성기.dataset
+  -> 00C 공정그룹 선택 Gate.dataset
 ```
 
-`01 실시간 생산 분석 Report 생성기`, Chat Output, API 종료 어댑터 및 Report API 계약은 그대로 유지한다.
+`00B Prompt`, `00C Gate`, `01 실시간 생산 분석 Report 생성기`, Chat Output, API 종료 어댑터 및 Report API 계약은 그대로 유지한다.
 
 ### 3.1 컴포넌트별 책임
 
@@ -103,11 +146,65 @@ Chat Input
 | --- | --- |
 | 생산 판정 Python Job | 원천 데이터 조회, 업무 계산, 전체 판정 컬럼 생성 |
 | Snapshot 저장소 | 불변 판정 행과 Snapshot 완료 상태 보관 |
-| 조회조건 결정기 | 기준일·공정·Snapshot 조건을 결정론적으로 확정 |
+| Domain 공정그룹 카탈로그 | 활성 `process_groups`의 key·alias·field·processes 허용목록 제공 |
+| 공정그룹 선택 LLM | 사용자 표현을 허용 key 하나 또는 missing/ambiguous로 분류 |
+| 공정그룹 선택 Gate | LLM 결과를 질문 원문과 허용목록으로 재검증하고 선택 그룹의 행만 필터 |
 | Snapshot Loader | 최신 완료 Snapshot 조회, 타입 정규화, 계약 검증 |
 | Report 생성기 | 고정 Rule 집계, 채팅 요약, HTML 생성 |
 | Report API 서버 | HTML 등록, 보기·다운로드 URL 발급, TTL 정리 |
 | Router/Orchestrator | 사용자 요청을 전용 Report Flow로 전달 |
+
+### 3.2 공정그룹 선택 계약
+
+운영 Domain Metadata는 최소 다음 구조를 가져야 한다.
+
+```json
+{
+  "_id": "domain:process_groups:WB",
+  "section": "process_groups",
+  "key": "WB",
+  "status": "active",
+  "payload": {
+    "display_name": "W/B 공정 그룹",
+    "aliases": ["WB", "W/B", "W/B 공정 그룹"],
+    "field": "OPER_NAME",
+    "processes": ["W/B1", "W/B2", "W/B3", "W/B4"]
+  }
+}
+```
+
+LLM은 다음 JSON object 하나만 반환한다.
+
+```json
+{
+  "status": "selected",
+  "process_group_key": "WB",
+  "reason": "질문에 W/B가 명시됨",
+  "evidence": ["W/B"]
+}
+```
+
+Gate는 아래 순서로 검증한다.
+
+1. 카탈로그가 `status=ok`이고 후보가 한 개 이상인지 확인한다.
+2. 질문에 key, display name, alias 또는 세부 공정명이 실제로 존재하는지 찾는다.
+3. 질문에서 식별되는 그룹이 정확히 하나인지 확인한다.
+4. LLM의 `process_group_key`가 질문 근거 그룹과 같은지 확인한다.
+5. `payload.field` 값이 `payload.processes` 허용목록에 포함된 행만 남긴다.
+6. 선택 행이 없으면 오류로 종료하고 HTML을 생성하지 않는다.
+
+질문에 그룹이 없으면 다음처럼 반환한다.
+
+```json
+{
+  "contract_version": "realtime.production.report.v1",
+  "response_type": "realtime_production_process_group_clarification",
+  "status": "clarification_required",
+  "success": true,
+  "message": "실시간 생산 분석을 실행할 공정그룹을 말씀해 주세요.",
+  "artifacts": []
+}
+```
 
 ---
 
@@ -317,7 +414,8 @@ class name: LiveProductionJudgementSnapshotLoader
 | `snapshot_collection` | DB 사용 시 | Snapshot 메타데이터 컬렉션 |
 | `rows_collection` | DB 사용 시 | 판정 행 컬렉션 |
 | `work_date` | 아니오 | 빈 값 또는 `latest`이면 최신 기준일 |
-| `oper_names` | 아니오 | 허용된 공정명 목록 |
+| `selected_process_group` | 예 | Gate가 확정한 key·field·processes |
+| `oper_names` | 예 | `selected_process_group.processes`에서 파생한 허용 공정명 목록 |
 | `snapshot_id` | 아니오 | 특정 Snapshot 재현 시 사용 |
 | `max_snapshot_age_minutes` | 예 | 실시간으로 인정할 최대 경과시간 |
 | `query_timeout_seconds` | 예 | DB/API Timeout |
@@ -328,24 +426,26 @@ class name: LiveProductionJudgementSnapshotLoader
 
 ```mermaid
 flowchart TD
-    A["조회조건 입력"] --> B{"snapshot_id 지정?"}
-    B -- "예" --> C["해당 Snapshot 조회"]
-    B -- "아니오" --> D["최신 complete Snapshot 조회"]
-    C --> E["Snapshot freshness 확인"]
-    D --> E
-    E --> F["대상 공정 행 조회"]
-    F --> G["행 수·컬럼·타입·판정값 검증"]
-    G --> H["production.judgement.dataset.v1 반환"]
+    A["Gate가 검증한 공정그룹"] --> B["field/processes 허용목록 확정"]
+    B --> C{"snapshot_id 지정?"}
+    C -- "예" --> D["해당 Snapshot 조회"]
+    C -- "아니오" --> E["최신 complete Snapshot 조회"]
+    D --> F["Snapshot freshness 확인"]
+    E --> F
+    F --> G["허용된 대상 공정 행 조회"]
+    G --> H["행 수·컬럼·타입·판정값 검증"]
+    H --> I["production.judgement.dataset.v1 반환"]
 ```
 
 ### 6.3 조회 규칙
 
 1. 특정 `snapshot_id`가 있으면 그 Snapshot만 조회한다.
-2. 없으면 `status=complete` 중 기준일과 공정 조건을 만족하는 최신 Snapshot을 조회한다.
+2. 없으면 `status=complete` 중 기준일과 Gate가 확정한 공정 조건을 만족하는 최신 Snapshot을 조회한다.
 3. Snapshot 시각이 `max_snapshot_age_minutes`보다 오래되면 중단한다.
 4. 메타데이터 `row_count`와 전체 Snapshot 행 수가 일치하는지 확인한다.
 5. 공정 필터 적용 후 0행이면 빈 정상 결과가 아니라 조회 오류로 처리한다.
 6. `max_rows`를 초과하면 전체를 임의 절단하지 않고 오류 또는 별도 대용량 모드로 전환한다.
+7. `oper_names`는 사용자 원문이나 LLM 자유문에서 만들지 않고 Domain Metadata의 `payload.processes`에서만 가져온다.
 
 ### 6.4 운영 검증 정책
 
@@ -1016,7 +1116,9 @@ realtime_production_report_flow_live
 
 - [ ] Case와 Product Grain이 확정되었는가
 - [ ] 복합 생산부족 원인 우선순위가 승인되었는가
-- [ ] 공정 선택이 고정형인지 채팅 조건형인지 정해졌는가
+- [ ] 운영 Domain Metadata에 모든 공정그룹의 key·alias·field·processes가 등록되었는가
+- [ ] 세부 공정명으로 공정그룹을 식별하는 정책이 승인되었는가
+- [ ] 공정그룹 미지정·다중지정 시 Report를 만들지 않는 정책이 승인되었는가
 - [ ] Snapshot 최대 허용시간이 정해졌는가
 - [ ] Action 문구의 담당부서와 운영 절차가 맞는가
 
@@ -1042,6 +1144,9 @@ realtime_production_report_flow_live
 
 | 목적 | 파일 |
 | --- | --- |
+| 공정그룹 카탈로그 로더 | `langflow_components/realtime_production_report_flow/00a_process_group_catalog_loader.py` |
+| 공정그룹 선택 Prompt | `langflow_components/realtime_production_report_flow/00b_process_group_selection_prompt.py` |
+| 공정그룹 선택 검증 Gate | `langflow_components/realtime_production_report_flow/00c_process_group_selection_gate.py` |
 | 현재 더미 데이터 생성기 | `langflow_components/realtime_production_report_flow/00_dummy_production_judgement_data.py` |
 | 현재 Report 생성기 | `langflow_components/realtime_production_report_flow/01_realtime_production_report_builder.py` |
 | API 종료 어댑터 | `langflow_components/realtime_production_report_flow/02_realtime_production_report_api_terminal.py` |
@@ -1058,7 +1163,9 @@ realtime_production_report_flow_live
 최초 운영 버전은 아래 범위로 제한한다.
 
 ```text
-고정 공정형
+Domain Metadata 기반 단일 공정그룹 선택
++ LLM 선택 후 질문 원문·허용목록 결정론적 Gate 검증
++ 공정그룹 미지정·다중지정 시 clarification_required와 HTML 미생성
 + 최신 complete Snapshot
 + Snapshot 최대 허용시간 검증
 + 45개 전체 컬럼 strict 검증
@@ -1068,4 +1175,4 @@ realtime_production_report_flow_live
 + 전체 CSV/XLSX는 서버 측 별도 다운로드
 ```
 
-이 구성으로 운영 안정성을 먼저 확보한 뒤 다음 단계에서 채팅 기반 공정 선택, 정기 선생성, 다중 Replica, 대용량 XLSX 생성 기능을 확장한다.
+이 구성으로 단일 공정그룹 채팅 선택의 운영 안정성을 먼저 확보한 뒤 다음 단계에서 명시적인 다중 그룹 분석, 정기 선생성, 다중 Replica, 대용량 XLSX 생성 기능을 확장한다. 다중 그룹 분석은 현재 단일 그룹 Gate를 우회하지 말고 별도 승인된 계약으로 추가한다.

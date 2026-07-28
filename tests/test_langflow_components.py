@@ -9487,8 +9487,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 86
-    assert result["all_component_python_files"] == 87
+    assert result["active_unique_source_files"] == 89
+    assert result["all_component_python_files"] == 90
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -9497,9 +9497,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 11, 126, 86),
-        ("import_ready_individual", 11, 126, 86),
-        ("import_ready_bundle", 11, 126, 86),
+        ("flow_exports", 11, 130, 89),
+        ("import_ready_individual", 11, 130, 89),
+        ("import_ready_bundle", 11, 130, 89),
     }
 
 
@@ -9521,7 +9521,7 @@ def test_route_flow_06_docs_cover_current_api_router_contract():
     assert "Message" in design and "Data" in design
 
 
-def test_route_flow_v2_docs_cover_exactly_five_current_tools():
+def test_route_flow_v2_docs_cover_exactly_six_current_tools():
     route_dir = ROOT / "langflow_components" / "route_flow_v2"
     guide = (route_dir / "CONNECTION_GUIDE.md").read_text(encoding="utf-8")
     system_prompt = (route_dir / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
@@ -9537,6 +9537,7 @@ def test_route_flow_v2_docs_cover_exactly_five_current_tools():
         "save_domain_metadata",
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
+        "run_realtime_production_report",
     ):
         assert slug in guide
         assert slug in system_prompt
@@ -9881,12 +9882,18 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         "cache_flow",
         "tool_name",
         "tool_description",
+        "required_all_keywords",
+        "required_any_phrases",
+        "keyword_gate_message",
         "return_direct",
     ]
     assert inputs["flow_id_selected"]["value"] == ""
     assert inputs["flow_resolution_mode"]["value"] == "Flow ID 우선"
     assert inputs["session_id"]["advanced"] is True
     assert inputs["cache_flow"]["value"] is True
+    assert inputs["required_all_keywords"]["value"] == ""
+    assert inputs["required_any_phrases"]["value"] == ""
+    assert inputs["keyword_gate_message"]["value"] == ""
     assert inputs["return_direct"]["value"] is True
     assert list(outputs) == ["component_as_tool"]
     assert outputs["component_as_tool"]["types"] == ["Tool"]
@@ -9910,6 +9917,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert "self.user_id =" not in source
     assert "tool.return_direct" in source
     assert "def _inherit_runtime_session" in source
+    assert "def _keyword_gate_error" in source
     assert "parent_session" in source
     assert "session_source" not in source
 
@@ -9955,6 +9963,30 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         {"question": "외부 표준 GaiA 컴포넌트 호환"},
         "ChatOutput-runtime",
     ) == {"ChatInput-runtime": {"input_value": "외부 표준 GaiA 컴포넌트 호환"}}
+    realtime_phrases = "실시간 생산 분석\n실시간 분석\n실시간 생산분석"
+    for question in (
+        "W/B 공정그룹 실시간 생산 분석을 해줘",
+        "B/G 실시간 분석 부탁해",
+        "D/A 실시간 생산분석 해줘",
+        "W/B  실시간   생산 분석을 해줘",
+    ):
+        assert component._keyword_gate_error(
+            question,
+            "분석",
+            realtime_phrases,
+            "키워드 안내",
+        ) == ""
+    for question in (
+        "W/B 실시간 생산 현황을 보여줘",
+        "W/B 생산 분석을 해줘",
+        "",
+    ):
+        assert component._keyword_gate_error(
+            question,
+            "분석",
+            realtime_phrases,
+            "키워드 안내",
+        ) == "키워드 안내"
 
     try:
         component._question_tweaks("ChatInput-runtime", {"ChatInput_runtime_input_value": "잘못된 키"})
@@ -10201,6 +10233,28 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         ("run", "user-1", "any"),
         ("resolve_output", "ChatOutput-current", "gaia_response"),
     ]
+
+    blocked_instance = component.CachedNamedRunFlowTool()
+    blocked_instance._attributes = {
+        "flow_tweak_data": {"question": "W/B 실시간 생산 현황을 보여줘"}
+    }
+    blocked_instance.tool_name = "run_realtime_production_report"
+    blocked_instance.required_all_keywords = "분석"
+    blocked_instance.required_any_phrases = realtime_phrases
+    blocked_instance.keyword_gate_message = "질문에 분석을 포함해 주세요."
+
+    async def fail_if_child_runs(*args, **kwargs):
+        raise AssertionError("키워드 Gate가 차단한 요청은 하위 Flow를 실행하면 안 됩니다.")
+
+    blocked_instance._get_cached_run_outputs = fail_if_child_runs
+    blocked_message = asyncio.run(blocked_instance._run_selected_flow())
+    assert blocked_message.text == "질문에 분석을 포함해 주세요."
+    assert blocked_message.data == {
+        "route_gate": {
+            "status": "blocked",
+            "tool_name": "run_realtime_production_report",
+        }
+    }
 
 
 def test_orchestrated_named_run_flow_tool_has_optional_ref_and_compact_result_contract():
@@ -11745,15 +11799,15 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         )
 
     tool_router = json.loads(exports["tool_router"].read_text(encoding="utf-8"))
-    assert len(tool_router["data"]["nodes"]) == 10
-    assert len(tool_router["data"]["edges"]) == 9
+    assert len(tool_router["data"]["nodes"]) == 11
+    assert len(tool_router["data"]["edges"]) == 10
     tools = [node for node in tool_router["data"]["nodes"] if node["id"].startswith("CachedFlowTool-")]
     agents = [node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "Agent"]
     outputs = [node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]
     output_adapters = [
         node for node in tool_router["data"]["nodes"] if node["data"].get("type") == "GaiAOutputAdapter"
     ]
-    assert len(tools) == 5
+    assert len(tools) == 6
     assert len(agents) == 1
     assert len(outputs) == 1
     assert len(output_adapters) == 1
@@ -11773,6 +11827,24 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         node["data"]["node"]["template"]["flow_resolution_mode"]["value"] == "Flow ID 우선"
         for node in tools
     )
+    realtime_tool = next(
+        node for node in tools if node["id"] == "CachedFlowTool-realtime_production_report"
+    )
+    realtime_template = realtime_tool["data"]["node"]["template"]
+    assert realtime_template["required_all_keywords"]["value"] == "분석"
+    assert realtime_template["required_any_phrases"]["value"].splitlines() == [
+        "실시간 생산 분석",
+        "실시간 분석",
+        "실시간 생산분석",
+    ]
+    assert "'분석'" in realtime_template["keyword_gate_message"]["value"]
+    assert all(
+        not node["data"]["node"]["template"]["required_all_keywords"]["value"]
+        and not node["data"]["node"]["template"]["required_any_phrases"]["value"]
+        and not node["data"]["node"]["template"]["keyword_gate_message"]["value"]
+        for node in tools
+        if node is not realtime_tool
+    )
     assert all("session_source" not in node["data"]["node"]["template"] for node in tools)
     cached_tool_source = (
         ROOT / "langflow_components" / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
@@ -11791,6 +11863,7 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         "save_domain_metadata",
         "save_table_catalog_metadata",
         "save_main_flow_filter_metadata",
+        "run_realtime_production_report",
     }
     edge_keys = {
         (

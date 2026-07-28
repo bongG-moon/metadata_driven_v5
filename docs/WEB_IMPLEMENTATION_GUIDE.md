@@ -66,7 +66,7 @@ Query runtime의 운영 기본은 API Router split mode입니다. Web backend는
 | Flow | 폴더 | Web 관점의 역할 |
 | --- | --- | --- |
 | Query router (06) | `langflow_components/route_flow/` | 질문 유형을 분류하고 선택 branch에서 하위 Flow Run API 호출 |
-| Agent Tool router (07) | `langflow_components/route_flow_v2/` | Agent가 선택 ID 우선 cached Flow Tool 5개 중 하나를 선택하고 단일 Chat Output 반환 |
+| Agent Tool router (07) | `langflow_components/route_flow_v2/` | Agent가 선택 ID 우선 cached Flow Tool 6개 중 하나를 선택하고, 실시간 생산 분석은 결정론적 키워드 Gate를 거쳐 단일 Chat Output 반환 |
 | Metadata QA | `langflow_components/metadata_qa_flow/` | metadata 질문에 직접 답변 |
 | Data analysis | `langflow_components/data_analysis_flow/` | 질문, state, metadata를 받아 retrieval, pandas, 답변, next state 생성 |
 | Data retrieval | `langflow_components/data_analysis_flow/07~12_*` | `source_type`별 조회 결과를 `retrieval_payload`로 병합 |

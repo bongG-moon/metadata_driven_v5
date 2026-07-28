@@ -7,5 +7,8 @@
 | `save_domain_metadata` | 용어·별칭, 공정/제품 그룹, 분석 규칙의 등록·변경 | 테이블 스키마, 공통 필터 |
 | `save_table_catalog_metadata` | source type, query template, 필수 파라미터, 컬럼 스키마의 등록·변경 | 도메인 용어, 공통 필터 |
 | `save_main_flow_filter_metadata` | DATE, OPER_NAME, ORG 등 공통 필터 정의의 등록·변경 | 도메인, 테이블 카탈로그 |
+| `run_realtime_production_report` | 질문에 `분석`이 있고 `실시간 생산 분석`·`실시간 분석`·`실시간 생산분석` 중 하나가 있는 고정 생산 Report 요청 | `분석`이 없는 실시간 현황 조회, 일반 생산 데이터 조회 |
 
 모든 Tool은 사용자 원문을 node ID가 없는 필수 `question` 인자로 받고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 내부 변환됩니다. 한 요청에서는 정확히 하나만 선택됩니다.
+
+`run_realtime_production_report` 노드는 Agent의 선택과 별개로 실행 직전에 같은 키워드 조건을 다시 검사합니다. 조건이 맞지 않으면 11번 Flow를 호출하지 않고 `키워드 차단 안내`를 직접 반환합니다. 공정그룹 선택과 누락 시 재질문은 11번 Flow가 담당합니다.

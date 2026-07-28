@@ -10,6 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FLOW_ROOT = ROOT / "langflow_components" / "realtime_production_report_flow"
 GENERATOR_PATH = FLOW_ROOT / "00_dummy_production_judgement_data.py"
+CATALOG_PATH = FLOW_ROOT / "00a_process_group_catalog_loader.py"
+PROMPT_PATH = FLOW_ROOT / "00b_process_group_selection_prompt.py"
+GATE_PATH = FLOW_ROOT / "00c_process_group_selection_gate.py"
 BUILDER_PATH = FLOW_ROOT / "01_realtime_production_report_builder.py"
 TERMINAL_PATH = FLOW_ROOT / "02_realtime_production_report_api_terminal.py"
 
@@ -49,7 +52,15 @@ def _install_lfx_stubs() -> None:
         sys.modules.setdefault(name, types.ModuleType(name))
     sys.modules["lfx.custom.custom_component.component"].Component = Component
     io_module = sys.modules["lfx.io"]
-    for name in ("DataInput", "HandleInput", "MessageTextInput", "Output", "StrInput"):
+    for name in (
+        "DataInput",
+        "DropdownInput",
+        "HandleInput",
+        "MessageTextInput",
+        "MultilineInput",
+        "Output",
+        "StrInput",
+    ):
         setattr(io_module, name, InputBase)
     sys.modules["lfx.schema.data"].Data = Data
     sys.modules["lfx.schema.message"].Message = Message
@@ -67,6 +78,9 @@ def _load(name: str, path: Path):
 
 _install_lfx_stubs()
 generator = _load("realtime_production_dummy_test", GENERATOR_PATH)
+catalog = _load("realtime_production_process_group_catalog_test", CATALOG_PATH)
+prompt = _load("realtime_production_process_group_prompt_test", PROMPT_PATH)
+gate = _load("realtime_production_process_group_gate_test", GATE_PATH)
 builder = _load("realtime_production_report_builder_test", BUILDER_PATH)
 terminal = _load("realtime_production_report_terminal_test", TERMINAL_PATH)
 
@@ -84,6 +98,141 @@ class FakeStorage:
 
     async def save_file(self, **kwargs):
         self.calls.append(kwargs)
+
+
+def _multi_group_dataset():
+    return generator.build_dummy_production_dataset(
+        row_count=500,
+        seed=20260727,
+        work_date="2026-07-27",
+        process_names=generator.DEFAULT_PROCESSES,
+        snapshot_at="2026-07-27T14:30:00+09:00",
+    )
+
+
+def _process_group_catalog():
+    return catalog.load_process_group_catalog(
+        source_mode="inline_json",
+        inline_catalog_json=catalog.DEFAULT_INLINE_CATALOG_JSON,
+    )
+
+
+def test_process_group_catalog_and_prompt_are_domain_grounded():
+    result = _process_group_catalog()
+    assert result["contract_version"] == "domain.process_group.catalog.v1"
+    assert result["status"] == "ok"
+    assert [item["key"] for item in result["process_groups"]] == ["BG", "DA", "WB"]
+    assert next(item for item in result["process_groups"] if item["key"] == "WB")["processes"] == [
+        "W/B1",
+        "W/B2",
+        "W/B3",
+        "W/B4",
+    ]
+
+    text = prompt.build_process_group_selection_prompt(
+        Question("W/B2 공정의 실시간 생산 분석을 해줘"),
+        result,
+    )
+    assert "W/B2 공정의 실시간 생산 분석을 해줘" in text
+    assert '"key": "WB"' in text
+    assert "질문에 없는 그룹을 추천하거나 기본값으로 선택하지 않는다" in text
+
+
+def test_process_group_gate_filters_selected_group_and_accepts_detail_process_evidence():
+    dataset = _multi_group_dataset()
+    selected = gate.select_process_group_dataset(
+        question_value=Question("W/B2 공정의 실시간 생산 분석 Report를 만들어줘"),
+        catalog_value=_process_group_catalog(),
+        llm_response_value={
+            "status": "selected",
+            "process_group_key": "WB",
+            "reason": "W/B2는 WB 그룹의 세부 공정입니다.",
+            "evidence": ["W/B2"],
+        },
+        dataset_value=dataset,
+    )
+
+    assert selected["contract_version"] == "production.judgement.dataset.v1"
+    assert selected["selected_process_group"]["key"] == "WB"
+    assert selected["unfiltered_row_count"] == 500
+    assert 0 < selected["row_count"] < 500
+    assert {row["OPER_NAME"] for row in selected["rows"]} <= {"W/B1", "W/B2", "W/B3", "W/B4"}
+    rows, warnings, error = builder._validate_dataset(selected)
+    assert error is None
+    analysis = builder.analyze_production_rows(rows, selected)
+    document = builder.render_production_report_html(rows, analysis, warnings=warnings)
+    assert analysis["scope"]["process_group"]["key"] == "WB"
+    assert "공정그룹 · W/B 공정 그룹" in document
+
+
+def test_process_group_gate_requires_explicit_single_group_even_if_llm_guesses():
+    dataset = _multi_group_dataset()
+    missing = gate.select_process_group_dataset(
+        question_value=Question("실시간 생산 분석 Report를 만들어줘"),
+        catalog_value=_process_group_catalog(),
+        llm_response_value={
+            "status": "selected",
+            "process_group_key": "WB",
+            "reason": "기본 그룹으로 추정",
+            "evidence": [],
+        },
+        dataset_value=dataset,
+    )
+    assert missing["contract_version"] == "production.process_group.selection.v1"
+    assert missing["status"] == "clarification_required"
+    assert missing["success"] is True
+    assert "공정그룹을 선택해 주세요" in missing["message"]
+    assert "Report는 아직 생성하지 않았습니다" in missing["message"]
+    assert "rows" not in missing
+
+    ambiguous = gate.select_process_group_dataset(
+        question_value=Question("W/B와 B/G 공정그룹을 분석해줘"),
+        catalog_value=_process_group_catalog(),
+        llm_response_value={
+            "status": "ambiguous",
+            "process_group_key": "",
+            "reason": "두 그룹이 함께 언급됨",
+            "evidence": ["W/B", "B/G"],
+        },
+        dataset_value=dataset,
+    )
+    assert ambiguous["status"] == "clarification_required"
+    assert {item["key"] for item in ambiguous["matched_process_groups"]} == {"WB", "BG"}
+
+
+def test_missing_process_group_returns_message_without_creating_html():
+    selection = gate.select_process_group_dataset(
+        question_value=Question("오늘 실시간 생산 분석을 해줘"),
+        catalog_value=_process_group_catalog(),
+        llm_response_value={
+            "status": "missing",
+            "process_group_key": "",
+            "reason": "그룹 표현 없음",
+            "evidence": [],
+        },
+        dataset_value=_multi_group_dataset(),
+    )
+    storage = FakeStorage()
+    result = asyncio.run(
+        builder.build_realtime_production_report(
+            dataset_value=selection,
+            question_value=Question("오늘 실시간 생산 분석을 해줘"),
+            max_html_rows=1_000,
+            report_api_url="https://reports.example.internal",
+            report_ttl_hours=4,
+            flow_id="flow-report",
+            storage_service=storage,
+            report_publisher_fn=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not publish")),
+            file_token="fixed",
+        )
+    )
+
+    assert result["contract_version"] == "realtime.production.report.v1"
+    assert result["response_type"] == "realtime_production_process_group_clarification"
+    assert result["status"] == "clarification_required"
+    assert result["artifacts"] == []
+    assert "공정그룹을 선택해 주세요" in result["message"]
+    assert storage.calls == []
 
 
 def test_dummy_dataset_has_500_rows_and_all_expected_judgements():
