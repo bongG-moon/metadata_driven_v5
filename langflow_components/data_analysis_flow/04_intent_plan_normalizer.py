@@ -608,27 +608,63 @@ def _explicit_process_mentions(
     return result
 
 
-# 함수 설명: 질문에 직접 명시된 세부 공정과 `공정`이 붙은 그룹 별칭을 하나의 실행 범위로 합칩니다.
+# 함수 설명: 질문에 직접 명시된 세부 공정과 명시·공유 `공정` 접미사가 적용된 그룹 별칭을 하나의 실행 범위로 합칩니다.
 def _requested_process_scope(
     question: str,
     contracts: list[dict[str, Any]],
 ) -> list[str]:
     result = _explicit_process_mentions(question, contracts)
     text = str(question or "")
-    for contract in contracts:
-        group_mentioned = False
+    mentioned_group_indexes = _mentioned_process_group_indexes(text, contracts)
+    for index, contract in enumerate(contracts):
+        if index not in mentioned_group_indexes:
+            continue
+        result = _merge_strings(result, _string_list(contract.get("process_values")))
+    return result
+
+
+# 함수 설명: metadata group alias의 직접 `공정` 표현과 연결 목록 마지막의 공유 `공정` 접미사를 안전하게 찾습니다.
+def _mentioned_process_group_indexes(
+    question: str,
+    contracts: list[dict[str, Any]],
+) -> set[int]:
+    text = str(question or "")
+    mentioned: set[int] = set()
+    alias_to_indexes: dict[str, list[int]] = {}
+    alias_values: list[str] = []
+    for index, contract in enumerate(contracts):
         for alias in contract.get("aliases", []):
             base_alias = re.sub(r"\s*공정\s*$", "", str(alias or "").strip(), flags=re.IGNORECASE)
             if not base_alias:
                 continue
+            normalized_alias = base_alias.casefold()
+            alias_to_indexes.setdefault(normalized_alias, [])
+            if index not in alias_to_indexes[normalized_alias]:
+                alias_to_indexes[normalized_alias].append(index)
+            if base_alias not in alias_values:
+                alias_values.append(base_alias)
             pattern = rf"(?<![0-9A-Za-z가-힣]){re.escape(base_alias)}\s*공정"
             if re.search(pattern, text, flags=re.IGNORECASE):
-                group_mentioned = True
-                break
-        if not group_mentioned:
-            continue
-        result = _merge_strings(result, _string_list(contract.get("process_values")))
-    return result
+                mentioned.add(index)
+
+    if len(alias_values) < 2:
+        return mentioned
+    alias_pattern = "(?:" + "|".join(
+        re.escape(alias)
+        for alias in sorted(alias_values, key=lambda value: (-len(value), value.casefold()))
+    ) + ")"
+    connector_pattern = r"\s*(?:,|&|및|와|과)\s*"
+    shared_suffix_pattern = re.compile(
+        rf"(?<![0-9A-Za-z가-힣])(?P<aliases>{alias_pattern}(?:{connector_pattern}{alias_pattern})+)\s*공정",
+        flags=re.IGNORECASE,
+    )
+    alias_matcher = re.compile(alias_pattern, flags=re.IGNORECASE)
+    for sequence_match in shared_suffix_pattern.finditer(text):
+        sequence = sequence_match.group("aliases")
+        for alias_match in alias_matcher.finditer(sequence):
+            for index in alias_to_indexes.get(alias_match.group(0).casefold(), []):
+                mentioned.add(index)
+    return mentioned
 
 
 # 함수 설명: 공정 관련 LLM filter를 질문에서 요청한 세부 공정과 공정 그룹의 합집합에 일치시킵니다.

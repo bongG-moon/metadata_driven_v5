@@ -75,6 +75,9 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - 실제로 필요한 함수만 `function_case_selection_json.selected_steps`의 `function_name`, `input_text`, `source_alias`에 맞춰 호출한다.
 - helper가 선택된 조건을 일반 column filter로 임의 대체하지 않는다. helper 함수 정의를 포함하고 선택된 `input_text`, `source_alias`를 보존해 호출한다.
 - 여러 function case가 선택되면 `function_case_selection_json.selected_steps` 순서대로 필요한 helper만 호출한다.
+- `pandas_execution_plan`에서 `apply_pandas_function_case` 다음에 같은 source의 `apply_filters`가 있으면 반드시 계획 순서대로 코드를 작성한다. helper 반환값을 작업 DataFrame에 저장한 뒤 그 DataFrame에 후속 filter를 적용한다.
+- ordered range 이후의 HOLD, 상태, LOT, 제품 조건은 `retrieval_jobs[].filters`에 없더라도 누락하지 않는다. `pandas_execution_plan`의 후속 `apply_filters` 단계에 기록된 `field`, `operator`, `value`를 사용한다.
+- function case 뒤에 배치된 후속 filter를 `sources` 원본에 먼저 적용하거나 helper 호출보다 앞으로 이동하지 않는다. 집계, 정렬, 컬럼 선택도 helper와 후속 filter가 끝난 다음 수행한다.
 - helper 호출 결과가 답변 근거로 필요하면 `record_function_case_result(function_name, input_text, result_dataframe, description="설명")`로 기록한다. helper 자체가 기록을 수행하면 중복 기록하지 않는다.
 - source preview가 비어 있거나 filter 후 행이 없을 수 있어도 없는 column을 바로 참조하지 않는다. 필요한 경우 `if "COLUMN" in df.columns:`처럼 확인한 뒤 처리한다.
 - executor가 붙이는 pandas filter preamble을 생성 코드에 복사하지 않는다.

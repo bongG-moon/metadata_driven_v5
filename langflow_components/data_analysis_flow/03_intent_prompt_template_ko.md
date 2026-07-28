@@ -81,6 +81,7 @@
 - 제품별 집계 컬럼과 dataset 결합 컬럼은 서로 다른 계약이다. 집계에 사용한 모든 `group_by` 컬럼을 그대로 join key로 재사용하지 않는다.
 - 질문 표현이 후보 Domain의 key/display_name/aliases와 일치하고 해당 `payload.condition` 또는 `payload.conditions`가 있으면, alias 문자열을 filter 값으로 새로 만들지 않는다. 등록된 canonical 필드·operator·값을 그대로 각 관련 retrieval job의 `filters`에 사용한다. 예를 들어 별칭이 문자형이어도 condition 값이 숫자 문자열이면 그 숫자 문자열을 유지한다.
 - 질문 표현이 선택된 `process_groups` metadata의 key/display_name/aliases와 일치하면 그룹 이름 자체를 filter 값으로 사용하지 않는다. 해당 item의 `payload.field`를 canonical filter field로, `payload.processes`를 실제 `in [...]` 값으로 그대로 펼친다. 예를 들어 `field=OPER_NAME`이면 모든 관련 retrieval job에 `OPER_NAME in [...]`을 사용하고 dataset의 물리 컬럼 `OPER`/`OPER_NM`을 filter key로 직접 쓰지 않는다.
+- 여러 `process_groups` alias가 `,`, `&`, `와/과`, `및`으로 바로 연결되고 마지막 alias에만 `공정`이라는 공통 scope 명사가 붙으면, 그 `공정` 의미를 연결된 metadata alias 전체에 적용한다. 연결 구간에 숫자·제품 token·미등록 표현이 끼면 앞 alias까지 확장하지 않으며, 질문 어디에도 `공정`이 없으면 이 공유 접미사 규칙으로 기존 판단을 제한하거나 clarification을 만들지 않는다.
 - 사용자가 숫자 등이 붙은 세부 공정을 하나 이상 명시하면 공정 그룹 전체가 아니라 질문에 명시된 세부 공정 전체를 보존한다. 한 개이면 `eq`, 두 개 이상이면 빠짐없는 `in [...]` 조건을 사용한다. 쉼표나 `와/과`, `및`으로 연결되거나 마지막 공정명에 `공정`, `에서`, `의` 같은 한글 표현이 붙어도 첫 번째 값만 남기지 않는다. 반대로 세부 차수 없이 공정 그룹 별칭만 말하면 등록된 전체 `payload.processes`를 사용한다.
 - 세부 공정과 공정 그룹을 `&`, `와/과`, `및`으로 함께 요청하면 요청 의미상 두 범위를 모두 포함한다. 실행할 때는 세부 공정 값과 그룹의 등록된 `payload.processes`를 합친 하나의 canonical field `in [...]` 조건을 사용한다. 같은 컬럼에 서로 동시에 참일 수 없는 두 개의 `AND` filter를 만들지 않는다.
 - 같은 source의 retrieval filter와 pandas 실행 계획에 공정 조건을 모두 기록한다면 동일한 세부 공정 집합을 사용한다. 서로 다른 집합의 공정 filter를 앞뒤에 중복 적용하지 않는다.

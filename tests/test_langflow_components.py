@@ -2794,6 +2794,138 @@ def test_v5_process_group_guard_preserves_all_explicit_processes_with_korean_suf
     assert f"_filter_values_1_1 = {mixed_values!r}" in mixed_preamble
 
 
+def test_v5_process_group_scope_supports_shared_process_suffix_without_restricting_bare_aliases():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    da_processes = ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
+    wb_processes = ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"]
+    domain_items = [
+        {
+            "section": "process_groups",
+            "key": "DA",
+            "payload": {
+                "display_name": "D/A",
+                "aliases": ["DA", "D/A", "DA공정", "D/A공정", "DA 공정", "D/A 공정"],
+                "field": "OPER_NAME",
+                "processes": da_processes,
+            },
+        },
+        {
+            "section": "process_groups",
+            "key": "WB",
+            "payload": {
+                "display_name": "W/B",
+                "aliases": ["WB", "W/B", "WB공정", "W/B공정", "WB 공정", "W/B 공정"],
+                "field": "OPER_NAME",
+                "processes": wb_processes,
+            },
+        },
+        {
+            "section": "process_groups",
+            "key": "DS",
+            "payload": {
+                "display_name": "D/S",
+                "aliases": ["DS", "D/S", "DS공정", "D/S공정", "DS 공정", "D/S 공정"],
+                "field": "OPER_NAME",
+                "processes": ["D/S1"],
+            },
+        },
+        {
+            "section": "process_groups",
+            "key": "FCB",
+            "payload": {
+                "display_name": "FCB",
+                "aliases": ["FCB", "FCB공정", "FCB 공정"],
+                "field": "OPER_NAME",
+                "processes": ["FCB1", "FCB2", "FCB/H"],
+            },
+        },
+        {
+            "section": "process_groups",
+            "key": "FCBH",
+            "payload": {
+                "display_name": "FCB/H",
+                "aliases": ["FCBH", "FCB/H", "FCBH공정", "FCB/H공정", "FCBH 공정", "FCB/H 공정"],
+                "field": "OPER_NAME",
+                "processes": ["FCB/H"],
+            },
+        },
+    ]
+    contracts = intent_normalizer._process_group_contracts({"domain_items": domain_items})
+    expected_da_wb = [*da_processes, *wb_processes]
+
+    assert intent_normalizer._requested_process_scope(
+        "DA, WB공정 HOLD LOT 알려줘",
+        contracts,
+    ) == expected_da_wb
+    assert intent_normalizer._requested_process_scope(
+        "DA공정, WB공정 HOLD LOT 알려줘",
+        contracts,
+    ) == expected_da_wb
+    assert intent_normalizer._requested_process_scope(
+        "WB & DA 공정 Hold Lot LIST알려줘",
+        contracts,
+    ) == expected_da_wb
+    assert intent_normalizer._requested_process_scope(
+        "D/S1&D/A 공정 Hold Lot LIST알려줘",
+        contracts,
+    ) == ["D/S1", *da_processes]
+    assert intent_normalizer._requested_process_scope(
+        "7월 5일 FCB1,FCB2,FCB/H 공정 실적 알려줘",
+        contracts,
+    ) == ["FCB1", "FCB2", "FCB/H"]
+    assert intent_normalizer._requested_process_scope(
+        "DA 16G, WB공정 HOLD LOT 알려줘",
+        contracts,
+    ) == wb_processes
+    assert intent_normalizer._requested_process_scope(
+        "DA, WB HOLD LOT 알려줘",
+        contracts,
+    ) == []
+
+    payload = {
+        "request": {"question": "DA, WB공정 HOLD LOT 알려줘"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": domain_items,
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "hold_lot_by_process_group",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "lot_status",
+                    "source_alias": "lot_status",
+                    "filters": {
+                        "OPER": {
+                            "operator": "in",
+                            "value": expected_da_wb,
+                        }
+                    },
+                }
+            ],
+            "pandas_execution_plan": [],
+        }
+    }
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        llm_response,
+        candidates,
+    )
+    assert normalized["intent_plan"]["retrieval_jobs"][0]["filters"] == {
+        "OPER_NAME": {
+            "operator": "in",
+            "value": expected_da_wb,
+        }
+    }
+
+
 def test_intent_normalizer_accepts_llm_json_with_literal_sql_newlines():
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
     payload = {"request": {"question": "어제 DA공정 차수별 생산량 알려줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
