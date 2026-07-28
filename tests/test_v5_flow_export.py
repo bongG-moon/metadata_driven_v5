@@ -844,7 +844,8 @@ def test_v5_bundle_realtime_production_report_has_dummy_data_interactive_html_an
         "llm_response",
     ) in edges
     catalog_template = nodes["ProcessGroupCatalog-realtime-production-report"]["data"]["node"]["template"]
-    assert catalog_template["source_mode"]["value"] == "inline_json"
+    assert "source_mode" not in catalog_template
+    assert "inline_catalog_json" not in catalog_template
     assert catalog_template["mongo_database"]["value"] == "datagov"
     assert catalog_template["collection_name"]["value"] == "agent_v4_domain_items"
     assert catalog_template["mongo_uri"]["load_from_db"] is True

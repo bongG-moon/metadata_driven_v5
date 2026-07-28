@@ -110,17 +110,87 @@ def _multi_group_dataset():
     )
 
 
+PROCESS_GROUP_ITEMS = [
+    {
+        "_id": "domain:process_groups:WB",
+        "section": "process_groups",
+        "key": "WB",
+        "status": "active",
+        "payload": {
+            "display_name": "W/B 공정 그룹",
+            "aliases": ["WB", "W/B", "W/B 공정", "W/B 공정 그룹"],
+            "field": "OPER_NAME",
+            "processes": ["W/B1", "W/B2", "W/B3", "W/B4"],
+        },
+    },
+    {
+        "_id": "domain:process_groups:BG",
+        "section": "process_groups",
+        "key": "BG",
+        "status": "active",
+        "payload": {
+            "display_name": "B/G 공정 그룹",
+            "aliases": ["BG", "B/G", "B/G 공정", "B/G 공정 그룹"],
+            "field": "OPER_NAME",
+            "processes": ["B/G1", "B/G2", "B/G3"],
+        },
+    },
+    {
+        "_id": "domain:process_groups:DA",
+        "section": "process_groups",
+        "key": "DA",
+        "status": "active",
+        "payload": {
+            "display_name": "D/A 공정 그룹",
+            "aliases": ["DA", "D/A", "D/A 공정", "D/A 공정 그룹"],
+            "field": "OPER_NAME",
+            "processes": ["D/A1", "D/A2", "D/A3"],
+        },
+    },
+]
+
+
 def _process_group_catalog():
-    return catalog.load_process_group_catalog(
-        source_mode="inline_json",
-        inline_catalog_json=catalog.DEFAULT_INLINE_CATALOG_JSON,
-    )
+    class FakeCursor(list):
+        def limit(self, value):
+            assert value == 200
+            return self
+
+    class FakeCollection:
+        def find(self, query):
+            assert query == {"section": "process_groups", "status": "active"}
+            return FakeCursor(PROCESS_GROUP_ITEMS)
+
+    class FakeDatabase:
+        def __getitem__(self, collection_name):
+            assert collection_name == "agent_v4_domain_items"
+            return FakeCollection()
+
+    class FakeMongoClient:
+        def __init__(self, uri, **kwargs):
+            assert uri == "mongodb://fake"
+            assert kwargs["serverSelectionTimeoutMS"] == 5000
+
+        def __getitem__(self, database_name):
+            assert database_name == "datagov"
+            return FakeDatabase()
+
+        def close(self):
+            return None
+
+    original_import_module = catalog.import_module
+    catalog.import_module = lambda name: types.SimpleNamespace(MongoClient=FakeMongoClient)
+    try:
+        return catalog.load_process_group_catalog(mongo_uri="mongodb://fake")
+    finally:
+        catalog.import_module = original_import_module
 
 
 def test_process_group_catalog_and_prompt_are_domain_grounded():
     result = _process_group_catalog()
     assert result["contract_version"] == "domain.process_group.catalog.v1"
     assert result["status"] == "ok"
+    assert result["source_type"] == "mongodb"
     assert [item["key"] for item in result["process_groups"]] == ["BG", "DA", "WB"]
     assert next(item for item in result["process_groups"] if item["key"] == "WB")["processes"] == [
         "W/B1",
@@ -136,6 +206,19 @@ def test_process_group_catalog_and_prompt_are_domain_grounded():
     assert "W/B2 공정의 실시간 생산 분석을 해줘" in text
     assert '"key": "WB"' in text
     assert "질문에 없는 그룹을 추천하거나 기본값으로 선택하지 않는다" in text
+
+
+def test_process_group_catalog_component_exposes_only_mongodb_configuration():
+    input_names = [item.kwargs["name"] for item in catalog.RealtimeProductionProcessGroupCatalogLoader.inputs]
+    assert input_names == [
+        "mongo_uri",
+        "mongo_database",
+        "collection_name",
+        "status_filter",
+        "limit",
+    ]
+    assert "source_mode" not in input_names
+    assert "inline_catalog_json" not in input_names
 
 
 def test_process_group_gate_filters_selected_group_and_accepts_detail_process_evidence():

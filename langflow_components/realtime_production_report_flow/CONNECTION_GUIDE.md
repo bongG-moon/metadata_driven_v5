@@ -70,7 +70,7 @@ LLM 출력은 아래 JSON object 하나로 제한됩니다.
 
 ## Domain Metadata 계약
 
-예시 Flow의 `00A 공정그룹 카탈로그`는 `inline_json` 모드로 W/B, B/G, D/A 예시를 제공합니다. 운영에서는 `source_mode=mongodb`로 바꾸고 아래 문서를 `datagov.agent_v4_domain_items`에서 조회합니다.
+`00A 공정그룹 카탈로그`는 별도 조회 방식 선택 없이 항상 `datagov.agent_v4_domain_items`의 MongoDB 문서를 조회합니다.
 
 ```json
 {

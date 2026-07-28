@@ -1066,7 +1066,6 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
         -360,
     )
     catalog_template = catalog["data"]["node"]["template"]
-    _set_value(catalog_template, "source_mode", "inline_json")
     _set_value(catalog_template, "mongo_database", "datagov")
     _set_value(catalog_template, "collection_name", "agent_v4_domain_items")
     _set_value(catalog_template, "status_filter", "active")

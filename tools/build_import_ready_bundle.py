@@ -230,9 +230,9 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "422/422 non-web tests passed in the exact Langflow 1.9.2 runtime; 21 optional Streamlit web-app tests require the separate web runtime",
+            "pytest": "423/423 non-web tests passed in the exact Langflow 1.9.2 runtime; 21 optional Streamlit web-app tests require the separate web runtime",
             "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 130/130 custom nodes to 89 real Python sources; 0 missing",
-            "korean_component_documentation": "90/90 Python sources and 1695/1695 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 390 embedded custom-code instances preserve 8013/8013 documented function instances; strict UTF-8/JSON checks passed",
+            "korean_component_documentation": "90/90 Python sources and 1712/1712 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 390 embedded custom-code instances preserve 8064/8064 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
@@ -1337,12 +1337,13 @@ def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
         .get("template", {})
     )
     if (
-        str(catalog_template.get("source_mode", {}).get("value") or "") != "inline_json"
+        "source_mode" in catalog_template
+        or "inline_catalog_json" in catalog_template
         or str(catalog_template.get("mongo_database", {}).get("value") or "") != "datagov"
         or str(catalog_template.get("collection_name", {}).get("value") or "") != "agent_v4_domain_items"
         or catalog_template.get("mongo_uri", {}).get("load_from_db") is not True
     ):
-        raise ValueError("Realtime Production Report process-group catalog settings are invalid.")
+        raise ValueError("Realtime Production Report process-group catalog must use MongoDB without a source selector.")
     builder_template = (
         nodes["RealtimeProductionReportBuilder-realtime-production-report"]
         .get("data", {})
@@ -1481,7 +1482,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- Langflow/Flow 비웹 pytest: 422/422 passed (별도 Streamlit 웹 런타임용 21개 테스트는 제외)
+- Langflow/Flow 비웹 pytest: 423/423 passed (별도 Streamlit 웹 런타임용 21개 테스트는 제외)
 - 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 130/130 노드가 실제 Python 원본 89개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 31/31 통과

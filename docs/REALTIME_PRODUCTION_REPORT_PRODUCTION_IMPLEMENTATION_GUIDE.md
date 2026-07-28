@@ -131,7 +131,7 @@ Chat Input
 운영 전환 후에는 카탈로그와 Snapshot 공급 노드를 아래와 같이 변경한다.
 
 ```text
-00A 공정그룹 카탈로그.source_mode = mongodb
+00A 공정그룹 카탈로그는 별도 조회 방식 입력 없이 MongoDB를 고정 사용
   -> datagov.agent_v4_domain_items의 section=process_groups 조회
 
 00 실시간 생산 판정 Snapshot Loader.dataset
