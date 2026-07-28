@@ -32,7 +32,9 @@ RESULT_PREVIEW_LIMIT = 50
 TRACE_PREVIEW_LIMIT = 5
 DEFAULT_MAX_REPAIR_ATTEMPTS = 1
 REPAIR_CODE_PREVIEW_LIMIT = 1000
+LLM_RESPONSE_PREVIEW_LIMIT = 500
 SAFE_IMPORT_POLICY = "exact pandas/numpy aliases are removed and trusted namespaces are injected"
+BLANK_MATCH_TEXTS = {"", "null", "none", "nan", "nat", "<na>", "empty"}
 SAFE_NUMPY_ATTRIBUTES = (
     "abs",
     "array",
@@ -143,8 +145,7 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
     payload = _payload(payload_value)
     if _execution_blocked(payload):
         return _blocked_execution_payload(payload)
-    parsed = _json(llm_response)
-    llm_code = str(parsed.get("code") or parsed.get("pandas_code") or "")
+    llm_code, response_parse = _parse_pandas_llm_response(llm_response)
     normalized_llm_code, safe_imports = _normalize_safe_imports(llm_code)
     code = normalized_llm_code
     next_payload = payload
@@ -159,9 +160,12 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             "",
             [],
             safe_imports,
+            response_parse=response_parse,
         )
     filter_plan = _pandas_filter_plan(next_payload)
+    row_match_plan = _pandas_row_match_plan(next_payload)
     filter_preamble = _pandas_filter_preamble(filter_plan)
+    row_match_preamble = _pandas_row_match_preamble(row_match_plan)
     unsupported_filters = _unsupported_filter_operators(filter_plan)
     if unsupported_filters:
         return _analysis_error(
@@ -174,8 +178,15 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             filter_preamble,
             filter_plan,
             safe_imports,
+            row_match_plan,
+            row_match_preamble,
+            response_parse,
         )
-    code = _with_pandas_filter_preamble(code, filter_plan)
+    code = _with_pandas_execution_preambles(
+        code,
+        row_match_preamble,
+        filter_preamble,
+    )
     helper_trace = _runtime_helper_trace(code)
     guard_error = _guard_code(code)
     if guard_error:
@@ -189,6 +200,9 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             filter_preamble,
             filter_plan,
             safe_imports,
+            row_match_plan,
+            row_match_preamble,
+            response_parse,
         )
     try:
         import pandas as pd  # type: ignore
@@ -217,6 +231,7 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             "list": list,
             "max": max,
             "min": min,
+            "object": object,
             "range": range,
             "round": round,
             "set": set,
@@ -251,6 +266,12 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
         if safe_imports.get("numpy_requested") is True:
             exec_ns["np"] = _safe_numpy_namespace()
         exec(compile(code, "<pandas_code>", "exec"), exec_ns, exec_ns)
+        row_match_execution_value = exec_ns.get("_row_match_execution", [])
+        row_match_execution = (
+            deepcopy(row_match_execution_value)
+            if isinstance(row_match_execution_value, list)
+            else []
+        )
         result = exec_ns.get("result")
         if result is None:
             result = exec_ns.get("result_df")
@@ -277,10 +298,14 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             "stage": "17_pandas_code_executor",
             "status": "ok",
             "generated_code": code,
+            "llm_response_parse": response_parse,
             "safe_import_normalization": _safe_import_trace(safe_imports),
             "used_helpers": helper_trace["used_helpers"],
             "helper_sources": helper_trace["helper_sources"],
             "pandas_filter_plan": filter_plan,
+            "row_match_preamble": row_match_preamble,
+            "row_match_plan": row_match_plan,
+            "row_match_execution": row_match_execution,
             "execution_result": {"row_count": len(rows), "columns": columns, "preview_rows": rows[:TRACE_PREVIEW_LIMIT]},
             "error": None,
         }
@@ -296,6 +321,9 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             filter_preamble,
             filter_plan,
             safe_imports,
+            row_match_plan,
+            row_match_preamble,
+            response_parse,
         )
     except Exception as exc:
         return _analysis_error(
@@ -308,6 +336,9 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             filter_preamble,
             filter_plan,
             safe_imports,
+            row_match_plan,
+            row_match_preamble,
+            response_parse,
         )
 
 
@@ -426,9 +457,11 @@ def build_pandas_repair_prompt(payload_value: Any, template: Any, function_case_
                 "repairable_errors": deepcopy(analysis.get("repairable_errors", [])),
                 "trace_error": deepcopy(pandas_trace.get("error", {})),
                 "executed_code_with_preamble": str(pandas_trace.get("generated_code") or analysis.get("analysis_code") or ""),
+                "row_match_preamble": str(pandas_trace.get("row_match_preamble") or ""),
                 "pandas_filter_preamble": str(pandas_trace.get("pandas_filter_preamble") or analysis.get("pandas_filter_preamble") or ""),
                 "pandas_filter_plan": deepcopy(pandas_trace.get("pandas_filter_plan", [])),
-                "repair_code_scope": "executor가 동일한 pandas filter preamble을 retry 코드에 다시 자동 적용합니다.",
+                "row_match_plan": deepcopy(pandas_trace.get("row_match_plan", [])),
+                "repair_code_scope": "executor가 동일한 pandas filter preamble을 retry 코드에 다시 자동 적용하며, 동일한 row match도 먼저 재적용합니다.",
             },
             ensure_ascii=False,
             indent=2,
@@ -1077,6 +1110,9 @@ def _analysis_error(
     filter_preamble: str = "",
     filter_plan: list[dict[str, Any]] | None = None,
     safe_imports: dict[str, Any] | None = None,
+    row_match_plan: list[dict[str, Any]] | None = None,
+    row_match_preamble: str = "",
+    response_parse: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     safe_import_info = safe_imports if isinstance(safe_imports, dict) else {}
     helper_trace = _runtime_helper_trace(code)
@@ -1097,9 +1133,12 @@ def _analysis_error(
         "status": "error",
         "generated_code": code,
         "llm_generated_code": llm_code or code,
+        "llm_response_parse": deepcopy(response_parse) if isinstance(response_parse, dict) else {},
         "safe_import_normalization": _safe_import_trace(safe_import_info),
+        "row_match_preamble": row_match_preamble,
         "pandas_filter_preamble": filter_preamble,
         "pandas_filter_plan": filter_plan or [],
+        "row_match_plan": row_match_plan or [],
         "used_helpers": helper_trace["used_helpers"],
         "helper_sources": helper_trace["helper_sources"],
         "error": {"type": error_type, "message": message, "traceback_summary": tb[:1000]},
@@ -1205,6 +1244,206 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return filter_plan
 
 
+# 함수 설명: `_pandas_row_match_plan()`은 pandas 실행 계획의 reference 행 단위 조건을 source alias별 결정론적 매칭 계획으로 바꿉니다.
+def _pandas_row_match_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    mappings_by_alias: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if not alias:
+            continue
+        mappings_by_alias[alias] = {
+            **(job.get("standard_column_aliases") if isinstance(job.get("standard_column_aliases"), dict) else {}),
+            **(job.get("filter_mappings") if isinstance(job.get("filter_mappings"), dict) else {}),
+        }
+
+    result: list[dict[str, Any]] = []
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        if str(step.get("operation") or "").strip().lower() != "apply_row_match_groups":
+            continue
+        source_alias = str(step.get("source_alias") or "").strip()
+        result.append(
+            {
+                "step_index": index,
+                "source_alias": source_alias,
+                "reference_source_alias": str(step.get("reference_source_alias") or "").strip(),
+                "match_columns": _string_list(step.get("match_columns")),
+                "match_key_ref": deepcopy(step.get("match_key_ref"))
+                if isinstance(step.get("match_key_ref"), dict)
+                else {},
+                "blank_policy": "normalize_blank",
+                "column_mappings": deepcopy(mappings_by_alias.get(source_alias, {})),
+            }
+        )
+    return result
+
+
+# 함수 설명: `_pandas_row_match_preamble()`은 행 내부 AND·행 사이 OR 매칭을 생성 코드에 포함할 결정론적 pandas 전처리 코드로 만듭니다.
+def _pandas_row_match_preamble(row_match_plan: list[dict[str, Any]]) -> str:
+    if not row_match_plan:
+        return ""
+
+    lines = [
+        "_row_match_execution = []",
+        f"_row_match_blank_texts = {sorted(BLANK_MATCH_TEXTS)!r}",
+        "def _normalize_row_match_value(value):",
+        "    if value is None:",
+        "        return ''",
+        "    text = str(value).strip()",
+        "    if text.casefold() in _row_match_blank_texts:",
+        "        return ''",
+        "    signless = text[1:] if text.startswith('-') else text",
+        "    number_parts = signless.split('.', 1)",
+        "    if len(number_parts) == 2 and number_parts[0].isdigit() and number_parts[1] and set(number_parts[1]) == {'0'}:",
+        "        return text.split('.', 1)[0]",
+        "    return text",
+        "",
+        "def _find_row_match_column(frame, candidates):",
+        "    actual_by_casefold = {str(column).casefold(): str(column) for column in frame.columns}",
+        "    for candidate in candidates:",
+        "        actual = actual_by_casefold.get(str(candidate).casefold())",
+        "        if actual:",
+        "            return actual",
+        "    return ''",
+        "",
+    ]
+
+    for plan_index, item in enumerate(row_match_plan, start=1):
+        source_alias = str(item.get("source_alias") or "").strip()
+        reference_alias = str(item.get("reference_source_alias") or "").strip()
+        match_columns = _string_list(item.get("match_columns"))
+        mappings = item.get("column_mappings") if isinstance(item.get("column_mappings"), dict) else {}
+        if not source_alias or not reference_alias:
+            lines.append(
+                "raise Exception("
+                + repr("apply_row_match_groups에는 source_alias와 reference_source_alias가 모두 필요합니다.")
+                + ")"
+            )
+            continue
+        if source_alias == reference_alias:
+            lines.append(
+                "raise Exception("
+                + repr("apply_row_match_groups의 source_alias와 reference_source_alias는 서로 달라야 합니다.")
+                + ")"
+            )
+            continue
+        if len(match_columns) < 2:
+            lines.append(
+                "raise Exception("
+                + repr("apply_row_match_groups에는 서로 다른 match_columns가 2개 이상 필요합니다.")
+                + ")"
+            )
+            continue
+
+        suffix = f"{plan_index}_{_safe_name(source_alias)}"
+        target_var = f"_row_match_target_{suffix}"
+        reference_var = f"_row_match_reference_{suffix}"
+        pairs_var = f"_row_match_pairs_{suffix}"
+        used_pairs_var = f"_row_match_used_pairs_{suffix}"
+        groups_var = f"_row_match_groups_{suffix}"
+        keys_var = f"_row_match_keys_{suffix}"
+        mask_var = f"_row_match_mask_{suffix}"
+        before_count_var = f"_row_match_before_count_{suffix}"
+
+        lines.extend(
+            [
+                f"{target_var} = sources.get({source_alias!r})",
+                f"{reference_var} = sources.get({reference_alias!r})",
+                f"if {target_var} is None:",
+                f"    raise Exception({f'row match target source를 찾을 수 없습니다: {source_alias}'!r})",
+                f"if {reference_var} is None:",
+                f"    raise Exception({f'row match reference source를 찾을 수 없습니다: {reference_alias}'!r})",
+                f"{target_var} = {target_var}.copy()",
+                f"{pairs_var} = []",
+                f"{used_pairs_var} = set()",
+            ]
+        )
+        for column_index, canonical_column in enumerate(match_columns, start=1):
+            candidates = _mapped_field_candidates(canonical_column, mappings)
+            source_column_var = f"_row_match_source_column_{plan_index}_{column_index}"
+            reference_column_var = f"_row_match_reference_column_{plan_index}_{column_index}"
+            pair_key_var = f"_row_match_pair_key_{plan_index}_{column_index}"
+            missing_message = (
+                "row match 컬럼을 두 source에서 모두 찾을 수 없습니다: "
+                f"{canonical_column} (target={source_alias}, reference={reference_alias})"
+            )
+            lines.extend(
+                [
+                    f"{source_column_var} = _find_row_match_column({target_var}, {candidates!r})",
+                    f"{reference_column_var} = _find_row_match_column({reference_var}, {candidates!r})",
+                    f"if not {source_column_var} or not {reference_column_var}:",
+                    f"    raise Exception({missing_message!r})",
+                    f"{pair_key_var} = ({source_column_var}.casefold(), {reference_column_var}.casefold())",
+                    f"if {pair_key_var} not in {used_pairs_var}:",
+                    f"    {used_pairs_var}.add({pair_key_var})",
+                    f"    {pairs_var}.append(({canonical_column!r}, {source_column_var}, {reference_column_var}))",
+                ]
+            )
+        lines.extend(
+            [
+                f"if len({pairs_var}) < 2:",
+                "    raise Exception('apply_row_match_groups에서 중복을 제외한 실제 매칭 컬럼이 2개 미만입니다.')",
+                f"{groups_var} = {{",
+                "    tuple(_normalize_row_match_value(row.get(pair[2])) for pair in " + pairs_var + ")",
+                f"    for row in {reference_var}.to_dict(orient='records')",
+                "}",
+                f"{before_count_var} = len({target_var})",
+                f"if {groups_var}:",
+                f"    {keys_var} = [",
+                "        tuple(_normalize_row_match_value(row.get(pair[1])) for pair in " + pairs_var + ")",
+                f"        for row in {target_var}.to_dict(orient='records')",
+                "    ]",
+                f"    {mask_var} = pd.Series(",
+                f"        [key in {groups_var} for key in {keys_var}],",
+                f"        index={target_var}.index,",
+                "        dtype=bool,",
+                "    )",
+                f"    {target_var} = {target_var}[{mask_var}].copy()",
+                "else:",
+                f"    {target_var} = {target_var}.iloc[0:0].copy()",
+                "sources = dict(sources)",
+                f"sources[{source_alias!r}] = {target_var}",
+                "_row_match_execution.append({",
+                f"    'source_alias': {source_alias!r},",
+                f"    'reference_source_alias': {reference_alias!r},",
+                f"    'match_columns': {match_columns!r},",
+                "    'resolved_columns': [",
+                "        {",
+                "            'canonical_column': pair[0],",
+                "            'source_column': pair[1],",
+                "            'reference_column': pair[2],",
+                "        }",
+                f"        for pair in {pairs_var}",
+                "    ],",
+                f"    'reference_row_count': len({reference_var}),",
+                f"    'unique_condition_group_count': len({groups_var}),",
+                f"    'source_row_count_before': {before_count_var},",
+                f"    'source_row_count_after': len({target_var}),",
+                "    'blank_policy': 'normalize_blank',",
+                "})",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
+# 함수 설명: `_is_blank_match_value()`는 실제 missing 값과 문자열 missing 표기를 행 조건의 동일한 blank 값으로 판정합니다.
+def _is_blank_match_value(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        text = str(value).strip().casefold()
+    except Exception:
+        return False
+    return text in BLANK_MATCH_TEXTS
+
+
 # 함수 설명: `_unsupported_filter_operators()`는 executor가 구현하지 않은 필터를 실행 전 찾아 무필터 통과를 차단합니다.
 def _unsupported_filter_operators(filter_plan: list[dict[str, Any]]) -> list[str]:
     unsupported: list[str] = []
@@ -1228,13 +1467,27 @@ def _unsupported_filter_operators(filter_plan: list[dict[str, Any]]) -> list[str
     return unsupported
 
 
-# 함수 설명: `_with_pandas_filter_preamble()`는 생성 코드 앞에 결정론적 필터 preamble을 한 번만 결합합니다.
+# 함수 설명: `_with_pandas_execution_preambles()`는 row match·일반 filter·LLM 분석 코드를 실제 실행 순서대로 하나의 코드로 결합합니다.
+def _with_pandas_execution_preambles(
+    code: Any,
+    row_match_preamble: str,
+    filter_preamble: str,
+) -> str:
+    segments = [
+        str(segment or "").strip()
+        for segment in (row_match_preamble, filter_preamble, code)
+        if str(segment or "").strip()
+    ]
+    return "\n\n".join(segments)
+
+
+# 함수 설명: `_with_pandas_filter_preamble()`는 기존 호출 호환을 위해 일반 filter와 생성 코드를 같은 결합기로 연결합니다.
 def _with_pandas_filter_preamble(code: Any, filter_plan: list[dict[str, Any]]) -> str:
-    base_code = str(code or "").strip()
-    preamble = _pandas_filter_preamble(filter_plan)
-    if not preamble:
-        return base_code
-    return preamble + "\n\n" + base_code
+    return _with_pandas_execution_preambles(
+        code,
+        "",
+        _pandas_filter_preamble(filter_plan),
+    )
 
 
 # 함수 설명: `_pandas_filter_preamble()`는 의도 계획의 필터 조건을 생성 코드보다 먼저 적용할 안전한 pandas 전처리 코드로 만듭니다.
@@ -1245,6 +1498,8 @@ def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
             [
                 "def _normalize_date_filter_value(value):",
                 "    text = str(value if value is not None else '').strip()",
+                "    if text.casefold() in ('', 'null', 'none', 'nan', 'nat', '<na>', 'empty'):",
+                "        return ''",
                 "    if len(text) >= 8 and text[:8].isdigit():",
                 "        return text[:8]",
                 "    normalized = text.replace('년', '-').replace('월', '-').replace('일', '')",
@@ -1303,6 +1558,10 @@ def _condition_code(
             lines.append(f"        {values_var} = [_normalize_date_filter_value(value) for value in {values_var}]")
             lines.append(f"        {date_series_var} = {df_var}[{col_var}].map(_normalize_date_filter_value)")
             lines.append(f"        {df_var} = {df_var}[{date_series_var}.isin({values_var})]")
+        elif _has_blank_match_values(values):
+            expression = _blank_aware_membership_expression(f"{df_var}[{col_var}]", values)
+            lines.append(f"        {mask_var} = {expression}")
+            lines.append(f"        {df_var} = {df_var}[{mask_var}]")
         else:
             lines.append(f"        {df_var} = {df_var}[{df_var}[{col_var}].isin({values_var})]")
     elif operator in {"ne", "not_in"}:
@@ -1310,6 +1569,10 @@ def _condition_code(
             lines.append(f"        {values_var} = [_normalize_date_filter_value(value) for value in {values_var}]")
             lines.append(f"        {date_series_var} = {df_var}[{col_var}].map(_normalize_date_filter_value)")
             lines.append(f"        {df_var} = {df_var}[~{date_series_var}.isin({values_var})]")
+        elif _has_blank_match_values(values):
+            expression = _blank_aware_membership_expression(f"{df_var}[{col_var}]", values)
+            lines.append(f"        {mask_var} = {expression}")
+            lines.append(f"        {df_var} = {df_var}[~{mask_var}]")
         else:
             lines.append(f"        {df_var} = {df_var}[~{df_var}[{col_var}].isin({values_var})]")
     elif operator in {"contains", "like"}:
@@ -1380,7 +1643,7 @@ def _null_empty_condition_lines(df_var: str, col_var: str, mask_var: str, operat
     if operator == "is_empty":
         return [f"        {df_var} = {df_var}[{series}.astype(str).str.strip().eq('')]"]
     if operator == "null_or_empty":
-        return [f"        {mask_var} = {series}.isna() | {series}.astype(str).str.strip().eq('')", f"        {df_var} = {df_var}[{mask_var}]"]
+        return [f"        {mask_var} = {_blank_aware_membership_expression(series, [''])}", f"        {df_var} = {df_var}[{mask_var}]"]
     if operator == "not_null":
         return [f"        {df_var} = {df_var}[{series}.notna()]"]
     if operator == "not_empty":
@@ -1401,15 +1664,21 @@ def _compound_condition_lines(df_var: str, col_var: str, mask_var: str, values: 
         if not isinstance(item, dict):
             continue
         op = _normalize_filter_operator(item.get("operator") or item.get("op") or "eq")
-        raw_values = _as_values(item.get("values", item.get("value", [])))
+        raw_values = _as_values(
+            item.get("values", item.get("value", [])),
+            preserve_blank=op in {"eq", "in", "ne", "not_in"},
+        )
         if op == "is_null":
             lines.append(f"        {mask_var} = {mask_var} | {series}.isna()")
         elif op == "is_empty":
             lines.append(f"        {mask_var} = {mask_var} | {series}.astype(str).str.strip().eq('')")
         elif op == "null_or_empty":
-            lines.append(f"        {mask_var} = {mask_var} | {series}.isna() | {series}.astype(str).str.strip().eq('')")
+            lines.append(f"        {mask_var} = {mask_var} | ({_blank_aware_membership_expression(series, [''])})")
         elif op in {"eq", "in"} and raw_values:
-            lines.append(f"        {mask_var} = {mask_var} | {series}.isin({raw_values!r})")
+            if _has_blank_match_values(raw_values):
+                lines.append(f"        {mask_var} = {mask_var} | ({_blank_aware_membership_expression(series, raw_values)})")
+            else:
+                lines.append(f"        {mask_var} = {mask_var} | {series}.isin({raw_values!r})")
         elif op == "starts_with" and raw_values:
             lines.append(f"        {mask_var} = {mask_var} | {series}.astype(str).str.startswith(str({raw_values[0]!r}), na=False)")
             for raw_value in raw_values[1:]:
@@ -1452,8 +1721,11 @@ def _filter_conditions(filters: Any) -> list[dict[str, Any]]:
         else:
             operator = "eq"
             values = condition
-        normalized_values = _as_values(values)
         normalized_operator = _normalize_filter_operator(operator or "eq")
+        normalized_values = _as_values(
+            values,
+            preserve_blank=normalized_operator in {"eq", "in", "ne", "not_in"},
+        )
         if _is_date_filter_field(field_text):
             normalized_values = [_normalize_date_identifier(value) for value in normalized_values]
         if normalized_values or normalized_operator in {"is_null", "is_empty", "null_or_empty", "not_null", "not_empty"}:
@@ -1508,15 +1780,34 @@ def _is_date_filter_field(value: Any) -> bool:
     return bool(key and re.search(r"(?:^|_)(?:DATE|DT)(?:$|_)", key))
 
 
-# 함수 설명: `_as_values()`는 단일 필터 값과 목록 값을 같은 값 목록 형태로 맞춥니다.
-def _as_values(value: Any) -> list[Any]:
+# 함수 설명: `_as_values()`는 단일 필터 값과 목록 값을 같은 값 목록으로 맞추고 equality 계열에서는 blank 값을 조건으로 보존합니다.
+def _as_values(value: Any, preserve_blank: bool = False) -> list[Any]:
     if isinstance(value, list):
-        return [item for item in value if item not in (None, "")]
+        return list(value) if preserve_blank else [item for item in value if item not in (None, "")]
     if isinstance(value, tuple):
-        return [item for item in value if item not in (None, "")]
-    if value in (None, ""):
+        return list(value) if preserve_blank else [item for item in value if item not in (None, "")]
+    if value in (None, "") and not preserve_blank:
         return []
     return [value]
+
+
+# 함수 설명: `_has_blank_match_values()`는 값 목록에 null·NaN·empty 계열의 명시적 blank 조건이 포함됐는지 확인합니다.
+def _has_blank_match_values(values: list[Any]) -> bool:
+    return any(_is_blank_match_value(value) for value in values)
+
+
+# 함수 설명: `_blank_aware_membership_expression()`은 일반 값 isin과 모든 blank 표현을 하나의 pandas mask 식으로 결합합니다.
+def _blank_aware_membership_expression(series: str, values: list[Any]) -> str:
+    non_blank_values = [value for value in values if not _is_blank_match_value(value)]
+    expressions: list[str] = []
+    if non_blank_values:
+        expressions.append(f"{series}.isin({non_blank_values!r})")
+    if _has_blank_match_values(values):
+        blank_texts = sorted(BLANK_MATCH_TEXTS)
+        expressions.append(
+            f"{series}.isna() | {series}.astype(str).str.strip().str.casefold().isin({blank_texts!r})"
+        )
+    return " | ".join(f"({expression})" for expression in expressions) or "False"
 
 
 # 함수 설명: `_field_candidates()`는 표준 필터 field에 대응할 수 있는 실제 컬럼 alias 후보를 반환합니다.
@@ -1609,8 +1900,84 @@ def _json(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+# 함수 설명: `_parse_pandas_llm_response()`는 표준 JSON을 우선 사용하고, 호환용으로 result를 설정하는 원시 Python만 허용합니다.
+def _parse_pandas_llm_response(value: Any) -> tuple[str, dict[str, Any]]:
+    raw_text = (
+        json.dumps(value, ensure_ascii=False, default=str)
+        if isinstance(value, dict)
+        else _text_value(value)
+    )
+    preview = str(raw_text or "").strip()[:LLM_RESPONSE_PREVIEW_LIMIT]
+    stripped = str(raw_text or "").strip()
+    looks_like_json = (
+        isinstance(value, dict)
+        or stripped.startswith("{")
+        or bool(re.fullmatch(r"```json\s*.*?\s*```", stripped, re.DOTALL | re.IGNORECASE))
+    )
+    parsed = _json(value) if looks_like_json else {}
+    if parsed:
+        code_value = parsed.get("code", parsed.get("pandas_code"))
+        if code_value not in (None, ""):
+            return str(code_value), {
+                "mode": "json",
+                "error": "",
+                "raw_response_preview": preview,
+            }
+        return "", {
+            "mode": "json",
+            "error": "JSON 응답의 code 필드가 비어 있습니다.",
+            "raw_response_preview": preview,
+        }
+
+    candidate = _raw_python_candidate(raw_text)
+    if candidate:
+        try:
+            tree = ast.parse(candidate)
+        except SyntaxError as exc:
+            parse_error = f"Python 구문 오류: {exc.msg}"
+        else:
+            if _sets_result_variable(tree):
+                return candidate, {
+                    "mode": "raw_python",
+                    "error": "",
+                    "raw_response_preview": preview,
+                }
+            parse_error = "원시 Python 응답이 result 또는 result_df를 설정하지 않습니다."
+    else:
+        parse_error = "LLM 응답이 비어 있거나 지원하는 JSON/Python 형식이 아닙니다."
+    return "", {
+        "mode": "invalid",
+        "error": parse_error,
+        "raw_response_preview": preview,
+    }
+
+
+# 함수 설명: `_raw_python_candidate()`는 단일 Python Markdown fence만 제거하고 설명이 섞인 응답은 그대로 거부할 수 있게 유지합니다.
+def _raw_python_candidate(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.fullmatch(r"```(?:python|py)?\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    return (match.group(1) if match else text).strip()
+
+
+# 함수 설명: `_sets_result_variable()`는 원시 Python 호환 응답이 executor의 최종 결과 계약을 충족하는지 확인합니다.
+def _sets_result_variable(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        targets: list[ast.AST] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id in {"result", "result_df"}:
+                return True
+    return False
+
+
 # 함수 설명: `_text_value()`는 Langflow Message/Data에서 실제 문자열 값을 꺼내 공통 텍스트 형식으로 맞춥니다.
 def _text_value(value: Any) -> str:
+    structured_text = _structured_text(value)
+    if structured_text:
+        return structured_text
     for attr in ("text", "content", "message"):
         text = getattr(value, attr, None)
         if isinstance(text, str):
@@ -1621,6 +1988,27 @@ def _text_value(value: Any) -> str:
             if isinstance(data.get(key), str):
                 return data[key]
     return str(value or "")
+
+
+# 함수 설명: `_structured_text()`는 모델의 문자열 또는 Langflow content block 목록에서 실행 응답 텍스트를 꺼냅니다.
+def _structured_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "".join(_structured_text(item) for item in value).strip()
+    if isinstance(value, dict):
+        for key in ("text", "content", "message", "output", "code", "contents", "content_blocks", "data"):
+            text = _structured_text(value.get(key))
+            if text:
+                return text
+        return ""
+    for attr in ("text", "content", "message", "output", "code", "contents", "content_blocks", "data"):
+        text = _structured_text(getattr(value, attr, None))
+        if text:
+            return text
+    return ""
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
@@ -1677,8 +2065,7 @@ class PandasCodeExecutor(Component):
         )
         if llm is None or not hasattr(llm, "invoke"):
             raise RuntimeError("Repair Language Model이 연결되지 않았습니다.")
-        response = llm.invoke(prompt)
-        return getattr(response, "content", response)
+        return llm.invoke(prompt)
 
     # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.

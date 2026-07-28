@@ -17,6 +17,10 @@ lead/ball suffix가 붙은 숫자 표현은 LEAD 제품 속성 token이다. 예:
 단, domain metadata에 등록된 제품군/제품 조건 alias는 product_token_match가 아니라 해당 domain 조건으로 처리한다. 예를 들어 POP제품, MOBILE/모바일 제품, HBM제품처럼 등록된 제품군을 부르는 경우에는 제품 token helper를 선택하지 않는다.
 DA공정, D/A공정, WB공정, W/B공정, FCB공정, BG공정처럼 공정명 또는 공정 그룹만 말한 경우는 제품 token 매칭이 아니다.
 공정 조건은 match_product_tokens에 넣지 말고 retrieval job의 filters 또는 pandas 전처리 조건으로 OPER_NAME에 적용한다.
+예를 들어 `D/A1, D/A2공정`처럼 여러 세부 공정을 명시하면 `OPER_NAME in ["D/A1", "D/A2"]`로 전체 목록을 보존한다. 마지막 값에 `공정`, `에서`, `의` 같은 한글 표현이 붙어도 그 값을 누락하거나 첫 번째 공정만 남기지 않는다.
+`D/S1 & D/A 공정`처럼 세부 공정 하나와 공정 그룹을 함께 요청하면 AND로 함께 요청한 두 범위를 모두 포함한다. 행 filter는 같은 OPER_NAME 컬럼에 서로 배타적인 AND 조건 두 개를 걸지 말고 `OPER_NAME in ["D/S1", "D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]`처럼 합친다.
+`DA, WB공정`, `WB & DA 공정`, `DA와 WB공정`처럼 연결된 공정 그룹 별칭의 마지막에만 `공정`이 붙으면 연결된 모든 등록 그룹을 포함한다. 각각 `DA공정, WB공정`이라고 쓴 것과 같은 범위다.
+반대로 `DA 16G, WB공정`처럼 별칭 사이에 제품 속성 token이 끼면 DA까지 공정 그룹으로 확장하지 않는다. `DA, WB HOLD LOT`처럼 질문 어디에도 `공정`이 없는 표현도 이 공유 접미사 규칙으로 차단하거나 clarification으로 바꾸지 않고 기존 intent 판단을 유지한다.
 
 두 세부 공정을 `~`, `∼`, `～`, `부터 ... 까지`, `사이`, `구간`, `범위`로 이은 질문은 양 끝 공정만 고르는 조건이 아니라 순서 구간인지 먼저 확인한다.
 예: `D/S1~D/A5`는 질문에 적힌 순서와 무관하게 두 label의 숫자 OPER_SEQ 최소값과 최대값 사이를 양 끝 포함해 조회하는 ordered range다.
@@ -27,6 +31,10 @@ helper 호출 시 실제 schema의 label 컬럼과 order 컬럼을 각각 `label
 끝점이 source label에 없거나, 같은 정규화 label이 서로 다른 order로 연결되거나, label/order 컬럼이 없으면 값을 추측하지 않고 빈 결과로 닫는다.
 `D/A1-W/B6`처럼 hyphen 양쪽이 실제 공정 label로 각각 확인될 때만 hyphen을 범위 구분자로 본다. `L-218` 같은 영문 1자리-숫자 3자리 MCP_NO token 내부 hyphen은 범위 기호가 아니므로 filter_ordered_range를 선택하지 않는다.
 구분자를 생략해 두 실제 label을 붙여 쓴 표현도 metadata의 ordered range 규칙과 source label lookup으로 두 끝점이 유일하게 확인될 때만 선택한다.
+ordered process range와 HOLD, 상태, LOT, 제품 같은 일반 row filter가 같은 source에 함께 적용되면 ordered range helper를 먼저 실행한다.
+helper보다 뒤에 적용해야 하는 일반 조건은 해당 retrieval job의 filters에 넣지 않는다. retrieval_jobs의 filters에 넣으면 Executor가 helper보다 먼저 적용해 endpoint 공정 행을 제거할 수 있다.
+대신 pandas_execution_plan에서 operation=apply_pandas_function_case인 filter_ordered_range 단계를 먼저 기록하고, 바로 다음 operation=apply_filters 단계에 같은 source_alias와 후속 조건의 field, operator, value를 기록한다.
+예를 들어 `D/S1~D/A4 공정 Hold 된 Lot ID` 질문은 HOLD_STAT=OnHold를 retrieval_jobs의 filters에 넣지 않는다. 먼저 filter_ordered_range를 실행하고, 그 결과에 HOLD_STAT=OnHold를 적용한 뒤 LOT_ID를 선택한다.
 
 질문에 제품별과 DEVICE/디바이스/device가 함께 나오면 DEVICE만 단독으로 보여주지 않는다.
 이 경우 결과 groupby/display 기준에는 DEVICE와 함께 제품 식별 속성도 포함한다.
@@ -34,6 +42,9 @@ helper 호출 시 실제 schema의 label 컬럼과 order 컬럼을 각각 `label
 LLM 답변 JSON에 answer_sections.result_table.display_columns를 넣을 수 있으면 위 원본 컬럼명 순서를 사용한다.
 
 장비 배정 정보와 UPH를 함께 요청하면 equipment_assign과 eqp_uph의 실제 공통 모델·공정·Recipe 문맥으로 결합한다.
+장비 배정과 Recipe를 함께 언급했다는 이유만으로 UPH 조회를 추가하지 않는다. Recipe, RECIPE_ID, 장비 모델은 equipment_assign 안에서도 조회할 수 있는 장비 배정의 조합·표시 속성이며, 그 표현만으로는 UPH 지표를 요청한 것이 아니다.
+현재 질문에 UPH, 시간당 생산량처럼 UPH 지표를 직접 요구하는 표현이 있을 때만 analysis_recipes의 equipment_assignment_uph_join을 선택하고 equipment_assign과 eqp_uph를 함께 조회한다.
+UPH 지표를 요청하지 않고 배정 장비, 장비 모델, Recipe 또는 그 조합·대수·목록만 요청하면 equipment_assignment_uph_join을 선택하지 않고 equipment_assign 하나에서 답한다.
 lot단위 조건 없이 장비 목록이나 작업 장비에 대한 질문은 equipment_assign을 사용한다.
 lot_status에 eqp_id가 있다는 이유만으로 장비 목록 질문을 lot_status로 처리하지 않는다.
 UPH 상세 결과에는 source에 있는 장비 모델(EQUIP_MODEL), Recipe(RECIPE_ID), 공정(OPER_NAME 또는 OPER_NM)을 공통 필수 문맥으로 유지하고, UPH를 요청한 경우 UPH를 지표 컬럼으로 포함한다.

@@ -25,7 +25,7 @@ LANGUAGE_MODEL_NODE_IDS = {
 }
 LANGUAGE_MODEL_SYSTEM_MESSAGES = {
     "LanguageModel-intent": "Follow the supplied prompt exactly and return only the requested JSON object.",
-    "LanguageModel-pandas": "Follow the supplied prompt exactly and return only executable pandas code without markdown fences.",
+    "LanguageModel-pandas": 'Follow the supplied prompt exactly and return one JSON object with a non-empty "code" field. Do not return markdown fences or explanatory text.',
     "LanguageModel-answer": "Follow the supplied prompt exactly and return only the requested answer text.",
 }
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"

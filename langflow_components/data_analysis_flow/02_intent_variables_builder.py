@@ -114,7 +114,19 @@ def _schema() -> dict[str, Any]:
                     "filters": {"PANDAS_FILTER_COLUMN": {"operator": "eq|in|contains|not_in", "value": "value or list"}},
                 }
             ],
-            "pandas_execution_plan": [],
+            "pandas_execution_plan": [
+                {
+                    "operation": "apply_row_match_groups",
+                    "source_alias": "새 조건을 적용할 target DataFrame alias",
+                    "reference_source_alias": "조건 행을 제공할 reference DataFrame alias",
+                    "match_key_ref": {
+                        "section": "조건 키 집합을 정의한 Domain section",
+                        "key": "조건 키 집합을 정의한 Domain key",
+                    },
+                    "match_columns": ["두 source에서 행 단위로 모두 일치시킬 조건 컬럼"],
+                    "blank_policy": "normalize_blank",
+                }
+            ],
             "output_contract": {
                 "result_mode": "aggregate|detail|entity_list|scalar|explanation",
                 "required_columns": [],
