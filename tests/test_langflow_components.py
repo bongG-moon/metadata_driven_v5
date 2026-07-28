@@ -1052,6 +1052,10 @@ def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
     )
     assert "reuse_strategy" not in schema["intent_plan"]
     assert "condition_resolution" in schema["intent_plan"]
+    pandas_step_schema = schema["intent_plan"]["pandas_execution_plan"][0]
+    assert "compare_group_attributes" in pandas_step_schema["operation"]
+    assert "find_duplicate_groups" in pandas_step_schema["operation"]
+    assert pandas_step_schema["comparison_rule"] == "any|all"
     assert "context_columns" not in schema["intent_plan"]["output_contract"]
     assert schema["intent_plan"]["output_contract"]["result_segments"][0]["operation"] == "top_n|bottom_n|filter|comparison"
     assert state["state"]["last_intent_plan"]["output_contract"] == {"required_columns": ["WIP"]}
@@ -1547,6 +1551,16 @@ def test_intent_prompt_requires_complete_params_per_retrieval_job_without_shared
     assert "이 mode가 의도 분석에서 선택된 뒤에만" in prompt_text
     assert "등록된 canonical 필드·operator·값을 그대로" in prompt_text
     assert "alias 문자열을 filter 값으로 새로 만들지 않는다" in prompt_text
+    assert "column 이름 자체를 같은 field의 `eq`/`in` filter 값으로 넣지 않는다" in prompt_text
+    assert "`operation=compare_group_attributes`" in prompt_text
+    assert "`group_by=[A,B]`" in prompt_text
+    assert "`comparison_columns=[C,D]`" in prompt_text
+    assert "`operation=find_duplicate_groups`" in prompt_text
+    assert "`required_params.DATE`에 `reference_date`" in prompt_text
+    assert "`DATE` 대신 `WORK_DT`·`WORK_DATE`·`date`" in prompt_text
+    assert "`group_by + comparison_columns`의 고유 속성 조합" in prompt_text
+    assert "`dataset_family`, `display_name`, metric 컬럼, schema의 primary key" in prompt_text
+    assert "해당 entity를 family 또는 primary key로 삼는 dataset" in prompt_text
     assert "`상위 N개`, `하위 N개`의 `위`" in prompt_text
     assert "`공정그룹`, `제품그룹`의 `그`" in prompt_text
     assert "비필수 filter 변경은 `retrieval_jobs=[]`" in prompt_text
@@ -4299,6 +4313,377 @@ def test_followup_hint_recognizes_common_this_result_references():
         assert result["followup_hint"]["followup_candidate"] is True
         assert result["followup_hint"]["request_scope_hint"] != "new_analysis"
         assert result["followup_hint"]["reuse_strategy_hint"] == "previous_result"
+
+
+def test_intent_normalizer_maps_pandas_plan_columns_to_catalog_physical_names():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    pandas_variables = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "15_pandas_variables_builder.py"
+    )
+    product_ref = {
+        "section": "product_key_columns",
+        "key": "standard_product_keys",
+    }
+    product_keys = [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    **product_ref,
+                    "payload": {"columns": product_keys},
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production_today",
+                    "payload": {
+                        "columns": [
+                            "TECH",
+                            "DEN",
+                            "DENSITY",
+                            "MODE",
+                            "PKG_TYPE1",
+                            "PKG1",
+                            "PKG_TYPE2",
+                            "PKG2",
+                            "LEAD",
+                            "MCP_NO",
+                            "PRODUCTION",
+                        ],
+                        "standard_column_aliases": {
+                            "DEN": ["DENSITY"],
+                            "PKG_TYPE1": ["PKG1"],
+                            "PKG_TYPE2": ["PKG2"],
+                        },
+                    },
+                }
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": (
+                    "현재 제품 중 TECH, DEN, PKG_TYPE2, MCP_NO는 같지만 "
+                    "MODE, PKG_TYPE1 또는 LEAD가 다른 제품들을 찾아서 보여줘."
+                )
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "metadata_refs": [product_ref],
+            "intent_plan": {
+                "analysis_kind": "compare_product_attributes",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "grain_plan": {
+                    "metadata_ref": product_ref,
+                    "source_alias": "production",
+                },
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "production",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "compare_group_attributes",
+                        "source_alias": "production",
+                        "group_by": [
+                            "TECH",
+                            "DEN",
+                            "DENSITY",
+                            "PKG_TYPE2",
+                            "MCP_NO",
+                        ],
+                        "comparison_columns": [
+                            "MODE",
+                            "PKG_TYPE1",
+                            "PKG1",
+                            "LEAD",
+                        ],
+                        "conditions": [
+                            {
+                                "field": "DEN",
+                                "operator": "not_empty",
+                            }
+                        ],
+                        "match_columns": product_keys,
+                    }
+                ],
+            },
+        },
+        metadata_candidates,
+    )
+
+    step = normalized["intent_plan"]["pandas_execution_plan"][0]
+    assert step["group_by"] == ["TECH", "DENSITY", "PKG2", "MCP_NO"]
+    assert step["comparison_columns"] == ["MODE", "PKG1", "LEAD"]
+    assert step["conditions"][0]["field"] == "DENSITY"
+    assert step["match_columns"] == product_keys
+    assert normalized["intent_plan"]["resolved_grain_plan"]["grain_columns"] == [
+        "TECH",
+        "DENSITY",
+        "MODE",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    trace = normalized["trace"]["inspection"]["intent"]["pandas_column_normalization"]
+    assert trace["status"] == "applied"
+    assert trace["change_count"] >= 4
+
+    prompt_plan = json.loads(pandas_variables.build_variables(normalized)["intent_plan_json"])
+    prompt_step = prompt_plan["pandas_execution_plan"][0]
+    assert prompt_step["group_by"] == ["TECH", "DENSITY", "PKG2", "MCP_NO"]
+    assert prompt_step["comparison_columns"] == ["MODE", "PKG1", "LEAD"]
+
+
+def test_intent_normalizer_populates_current_date_only_for_catalog_required_param():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "현재 제품을 보여줘.",
+                "reference_date": "20260729",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "current_products",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "current_history",
+                        "source_alias": "current_rows",
+                        "required_params": {},
+                    },
+                    {
+                        "dataset_key": "snapshot_without_date",
+                        "source_alias": "snapshot_rows",
+                        "required_params": {},
+                    },
+                ],
+                "pandas_execution_plan": [],
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "current_history",
+                        "payload": {
+                            "required_params": ["DATE"],
+                            "source_config": {"required_params": ["DATE"]},
+                        },
+                    },
+                    {
+                        "dataset_key": "snapshot_without_date",
+                        "payload": {"required_params": []},
+                    },
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    jobs = normalized["intent_plan"]["retrieval_jobs"]
+    assert jobs[0]["required_params"] == {"DATE": "20260729"}
+    assert jobs[1]["required_params"] == {}
+    guard = normalized["trace"]["inspection"]["intent"]["context_date_guard"]
+    assert guard["populated_required_date_aliases"] == ["current_rows"]
+
+
+def test_intent_normalizer_applies_catalog_aliases_beyond_product_columns():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "장비 모델과 공정별 장비 대수를 보여줘."},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_count_by_model_and_process",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "equipment",
+                        "group_by": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                        "agg_column": "EQP_ID",
+                        "agg_method": "nunique",
+                    }
+                ],
+            },
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "payload": {
+                            "columns": [
+                                "EQUIP_MODEL",
+                                "RECIPE_ID",
+                                "OPER_NM",
+                                "EQUIP_ID",
+                            ],
+                            "standard_column_aliases": {
+                                "EQP_MODEL": ["EQUIP_MODEL"],
+                                "OPER_NAME": ["OPER_NM"],
+                                "EQP_ID": ["EQUIP_ID"],
+                            },
+                        },
+                    }
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    step = normalized["intent_plan"]["pandas_execution_plan"][0]
+    assert step["group_by"] == ["EQUIP_MODEL", "RECIPE_ID", "OPER_NM"]
+    assert step["agg_column"] == "EQUIP_ID"
+
+
+def test_intent_normalizer_does_not_guess_when_catalog_aliases_conflict():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "제품 밀도별로 보여줘."},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "density_list",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "ambiguous_density",
+                        "source_alias": "items",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "group_by",
+                        "source_alias": "items",
+                        "group_by": ["DEN", "DENSITY"],
+                    }
+                ],
+            },
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "ambiguous_density",
+                        "payload": {
+                            "columns": ["DEN", "DENSITY"],
+                            "standard_column_aliases": {
+                                "DEN": ["DENSITY"],
+                                "DENSITY": ["DEN"],
+                            },
+                        },
+                    }
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    step = normalized["intent_plan"]["pandas_execution_plan"][0]
+    assert step["group_by"] == ["DEN", "DENSITY"]
+    trace = normalized["trace"]["inspection"]["intent"]["pandas_column_normalization"]
+    assert trace["status"] == "not_needed"
+    assert trace["changes"] == []
+
+
+def test_intent_normalizer_keeps_declared_canonical_column_when_physical_alias_is_absent():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "밀도별로 보여줘."},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "density_list",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "canonical_density",
+                        "source_alias": "items",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "group_by",
+                        "source_alias": "items",
+                        "group_by": ["DEN", "DENSITY"],
+                    }
+                ],
+            },
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "canonical_density",
+                        "payload": {
+                            "columns": ["DEN"],
+                            "standard_column_aliases": {
+                                "DEN": ["DENSITY"],
+                            },
+                        },
+                    }
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    step = normalized["intent_plan"]["pandas_execution_plan"][0]
+    assert step["group_by"] == ["DEN"]
+    trace = normalized["trace"]["inspection"]["intent"]["pandas_column_normalization"]
+    assert trace["status"] == "applied"
+    assert trace["changes"][0]["from"] == "DENSITY"
+    assert trace["changes"][0]["to"] == "DEN"
 
 
 def test_previous_product_result_reuses_stored_grain_and_ignores_new_equipment_keys():
@@ -12238,6 +12623,59 @@ def test_v5_metadata_candidates_apply_per_pool_policy_for_equipment_uph_question
     assert "domain_items" not in result
 
 
+def test_v5_metadata_candidates_treat_declared_columns_as_structured_domain_evidence():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    result = builder.build_metadata_candidates(
+        {
+            "request": {
+                "question": (
+                    "COL_A, COL_B는 같지만 COL_C 또는 COL_D가 다른 행을 보여줘"
+                )
+            }
+        },
+        {
+            "domain_items": [
+                {
+                    "section": "entity_key_columns",
+                    "key": "sample_entity_keys",
+                    "payload": {
+                        "columns": ["COL_A", "COL_B", "COL_C", "COL_D"],
+                    },
+                },
+                {
+                    "section": "analysis_recipes",
+                    "key": "unrelated_join",
+                    "payload": {
+                        "join_keys": ["OTHER_A", "OTHER_B"],
+                    },
+                },
+            ]
+        },
+        {
+            "table_catalog_items": [
+                {
+                    "dataset_key": "sample_rows",
+                    "payload": {
+                        "columns": ["COL_A", "COL_B", "COL_C", "COL_D"],
+                    },
+                }
+            ]
+        },
+        {"main_flow_filters": []},
+        max_domain_items=2,
+        min_table_items=1,
+        max_table_items=1,
+    )
+
+    selected = result["metadata_candidates"]
+    assert [item["key"] for item in selected["domain_items"]] == [
+        "sample_entity_keys"
+    ]
+    assert selected["table_catalog_items"][0]["dataset_key"] == "sample_rows"
+
+
 def test_v5_metadata_candidate_byte_fit_trims_domain_before_protected_table_and_filters():
     builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py")
     domains = {
@@ -12491,6 +12929,59 @@ def test_v5_trusted_catalog_hydrator_moves_non_required_date_to_filter_and_norma
     reconciliation = hydrated["trace"]["inspection"]["catalog_hydration"]["condition_reconciliation"]
     assert reconciliation[0]["dataset_key"] == "target"
     assert reconciliation[0]["moved_to_filters"] == ["DATE"]
+
+
+def test_v5_trusted_catalog_hydrator_maps_declared_column_alias_to_required_param():
+    hydrator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "history_data",
+                    "source_alias": "history",
+                    "required_params": {"WORK_DT": "2026-07-29"},
+                }
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "history_data",
+                "payload": {
+                    "source_type": "oracle",
+                    "required_params": ["DATE"],
+                    "source_config": {
+                        "query_template": "SELECT * FROM HISTORY WHERE WORK_DATE = {DATE}"
+                    },
+                    "filter_mappings": {"DATE": ["WORK_DATE"]},
+                    "standard_column_aliases": {"date": "WORK_DT"},
+                },
+            }
+        ]
+    }
+
+    hydrated = hydrator.hydrate_retrieval_jobs(
+        payload,
+        catalog,
+        retrieval_mode="live",
+    )
+    job = hydrated["intent_plan"]["retrieval_jobs"][0]
+    assert job["required_params"] == {"DATE": "20260729"}
+    assert job["filters"] == {}
+    assert not any(
+        item.get("type") == "missing_catalog_required_params"
+        for item in hydrated["trace"]["warnings"]
+    )
+    reconciliation = hydrated["trace"]["inspection"]["catalog_hydration"][
+        "condition_reconciliation"
+    ][0]
+    assert reconciliation["remapped_required_params"] == [
+        {"from": "WORK_DT", "to": "DATE"}
+    ]
 
 
 def test_v5_trusted_catalog_hydrator_blocks_unknown_live_dataset_but_allows_dummy():
@@ -13016,6 +13507,23 @@ def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
     ).read_text(encoding="utf-8")
 
     assert "resolved_grain_plan.strict=true" in pandas_prompt
+    assert "실제 물리 컬럼명으로 정규화한 값" in pandas_prompt
+    assert "canonical alias로 다시 rename하지 않는다" in pandas_prompt
+    assert "`result[canonical] = result[physical]`" in pandas_prompt
+    assert "실행용 물리 컬럼과 구분한다" in pandas_prompt
+    assert "`pandas_execution_plan.operation=compare_group_attributes`" in pandas_prompt
+    assert "`comparison_rule=any`" in pandas_prompt
+    assert "`pandas_execution_plan.operation=find_duplicate_groups`" in pandas_prompt
+    assert "`group_by + comparison_columns`의 존재하는 컬럼" in pandas_prompt
+    assert "`pd.DataFrame(columns=group_cols + comp_cols)`" in pandas_prompt
+    assert "`grouped.groups.keys()`" in pandas_prompt
+    assert "`valid_keys = counts[mask].reset_index()[group_cols]`" in pandas_prompt
+    assert "canonical alias로 다시 rename하지 않는다" in repair_prompt
+    assert "`result[canonical] = result[physical]`" in repair_prompt
+    assert "`operation=compare_group_attributes` 코드가 실패했다면" in repair_prompt
+    assert "`group_by + comparison_columns`로 `drop_duplicates()`" in repair_prompt
+    assert "`pd.DataFrame(columns=group_cols + comp_cols)`" in repair_prompt
+    assert "`grouped.groups.keys()` index에 원본 행 index의 `transform()`" in repair_prompt
     assert "집계용 `group_cols` 전체를 join key로 재사용하지 않는다" in pandas_prompt
     assert "multi_match_policy=collect_unique" in pandas_prompt
     assert "resolved_grain_plan.strict=true" in repair_prompt

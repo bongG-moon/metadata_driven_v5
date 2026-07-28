@@ -17,6 +17,7 @@
 - 공정/현장 특화 추가 지시가 비어 있지 않으면, 그 지시는 metadata와 충돌하지 않는 범위에서 우선 반영한다.
 - `오늘`, `금일`, `현재`, `어제` 같은 상대 날짜 표현은 한국 기준 현재일로 자동 계산된 `state_summary.request_context.reference_date`를 기준으로 해석한다.
 - `state_summary.request_context.reference_date`가 유일한 기준일이다. 모델 실행 시점의 실제 날짜나 외부 현재일을 새로 추정하지 않는다.
+- 상대 날짜 표현이 있고 선택한 table catalog가 `DATE`를 필수 `required_params`로 선언하면, `현재 제품`, `현재 장비`, `현재 LOT`처럼 현재 시점의 대상을 묻는 표현도 포함해 해당 retrieval job의 `required_params.DATE`에 `reference_date`를 넣는다. DATE가 필수가 아닌 catalog에는 이 규칙으로 required param을 새로 만들지 않는다.
 - `state_summary.followup_hint.followup_candidate=true`이면 현재 질문이 이전 답변/이전 의도에 의존하는지 먼저 판단한다. 이 값과 `request_scope_hint`, `reuse_strategy_hint`, `matched_cues`는 의도 판단 후보 신호이지 최종 결론이 아니다.
 - `followup_candidate=false`인 완결 질문은 독립적인 `new_analysis`다. 현재 질문에 없는 이전 데이터셋·지표·source alias를 retrieval job에 추가하지 않는다.
 - `오늘 재공 알려줘`, `현재 재공 조회해줘`처럼 날짜·분석 대상·요청 동사가 모두 있는 질문은 이전 state가 존재해도 독립 질문으로 처리한다.
@@ -69,12 +70,21 @@
 - 데이터 조회가 필요한 경우 `intent_plan.retrieval_jobs`를 반드시 작성한다.
 - 각 retrieval job은 `dataset_key`, `source_alias`, `required_params`, `filters`만 포함한다.
 - 각 retrieval job의 `required_params`는 다른 job을 참조하지 않아도 바로 실행할 수 있는 완성된 값이어야 한다. plan 수준의 공통 파라미터나 다른 job의 값을 조회 단계에서 복사한다고 가정하지 않는다.
+- `required_params`의 key는 table catalog가 선언한 필수 파라미터 이름을 정확히 사용한다. `filter_mappings`나 `standard_column_aliases`의 물리 컬럼명은 pandas filter용이며, `DATE` 대신 `WORK_DT`·`WORK_DATE`·`date`를 필수 파라미터 key로 쓰지 않는다.
 - `source_type`, `source_config`, `db_key`, query/endpoint는 작성하지 않는다. 다음 deterministic component가 `dataset_key`를 active table catalog와 대조해 신뢰 가능한 설정을 주입한다.
 - `required_params`에는 table catalog/source_config가 필수로 요구하는 파라미터만 넣는다. 필수 파라미터는 데이터 조회 시 SQL/API/template에 적용된다.
 - `filters`에는 사용자가 말한 공정, 제품, 상태, 장비, LOT 등 분석 조건을 넣는다. `filters`는 데이터 조회기가 아니라 pandas 전처리 단계에서 적용된다.
+- 사용자가 임의의 컬럼 집합을 직접 열거하며 `A, B는 같지만 C 또는 D가 다른 행`, `특정 컬럼 조합의 중복`, `컬럼 값 조합 비교`를 요청하면 열거된 이름은 schema column 식별자다. column 이름 자체를 같은 field의 `eq`/`in` filter 값으로 넣지 않는다.
+- `A, B는 같지만 C 또는 D가 다른 행`처럼 기준 컬럼과 비교 컬럼이 분리된 요청은 `operation=compare_group_attributes`, `group_by=[A,B]`, `comparison_columns=[C,D]`, `comparison_rule=any`로 작성한다. `그리고/모두`처럼 비교 컬럼 전부가 달라야 한다고 명시한 경우에만 `comparison_rule=all`을 사용한다.
+- 이 비교 계획의 `group_by`에는 질문에서 같다고 지정한 기준 컬럼만, `comparison_columns`에는 다르다고 지정한 비교 컬럼만 넣는다. 제품 grain metadata 전체를 두 목록에 복사하거나 합쳐서 단순 전체 컬럼 groupby로 바꾸지 않는다. `grain_plan`은 entity의 표준 컬럼 계약이고 질문에서 지정한 비교 기준을 대체하지 않는다.
+- `compare_group_attributes`의 결과는 기본적으로 `group_by + comparison_columns`의 고유 속성 조합을 한 번씩 보여준다. 사용자가 원본 이벤트·LOT·시점별 행과 그 식별 컬럼을 명시적으로 요구한 경우에만 반복 원본 행을 유지한다.
+- `특정 컬럼 조합이 중복된 행`처럼 값 차이 비교 없이 동일 조합의 반복만 찾는 요청은 `operation=find_duplicate_groups`와 해당 `group_by` 컬럼을 사용한다.
+- 이런 동일·차이·중복 비교는 요청한 컬럼을 모두 가진 하나의 dataset을 선택한다. 질문에 없는 metric·entity를 이유 없이 추가하거나, 동일한 컬럼명이 다른 join recipe에 있다는 이유만으로 보조 dataset을 추가하지 않는다.
 - 필수 파라미터가 아닌 조건을 `required_params`에 넣지 않는다.
 - table catalog의 필수 조회 파라미터가 아닌 분석 조건은 `required_params`에 넣지 않고 `filters` 또는 특화 지시가 지정한 pandas function case로 남긴다.
 - dataset은 질문이 요구한 분석 grain과 metric을 기준으로 선택한다. 관련 컬럼이나 단어가 포함되어 있다는 이유만으로 더 세밀한 entity grain의 dataset을 대신 선택하지 않는다.
+- 여러 dataset이 요청 컬럼을 모두 가지고 있으면 `dataset_family`, `display_name`, metric 컬럼, schema의 primary key를 함께 비교한다. 질문에 LOT·장비·HOLD·계획 같은 세부 entity가 없는데 해당 entity를 family 또는 primary key로 삼는 dataset을 컬럼 존재만으로 선택하지 않는다.
+- dimension 컬럼 비교처럼 metric이 없는 요청도 질문의 대상 entity와 시점에 가장 가까운 catalog를 선택한다. 더 세밀한 entity dataset만 후보로 남아 분석 grain을 확정할 수 없으면 임의 선택하지 말고 clarification으로 보낸다.
 - 사용자가 요청한 dimension 또는 표시 컬럼이 이미 하나의 dataset에 모두 있으면, 해당 컬럼명이 다른 join recipe에도 등장한다는 이유만으로 보조 dataset을 추가하지 않는다.
 - 예를 들어 집계 재공수량과 LOT별 상태/수량은 서로 다른 grain이다. 사용자가 LOT·랏·로트·LOT_ID·LOT 상태·LOT 건수·HOLD LOT·TAT·wafer/die/unit 같은 LOT 단위 근거를 명시하지 않았다면 일반 `재공`, `재공수량`, `WIP` 요청을 LOT 상세 dataset으로 바꾸지 않는다.
 - 여러 metric이 서로 다른 dataset을 요구하면 metric별 retrieval job을 각각 작성한다. 한 dataset에 다른 metric을 억지로 계산시키거나, 한 job의 조회 실패를 0으로 간주하지 않는다.
@@ -88,8 +98,6 @@
 - pandas 분석 계획에는 `filters`를 먼저 적용한 뒤 집계, 정렬, top/bottom, join 등을 수행한다는 순서를 드러낸다.
 - 사용자가 제품별·제품 기준 집계를 요청하면 후보 Domain의 `product_key_columns` 또는 제품 grain을 정의한 `analysis_recipes`를 선택하고 `intent_plan.grain_plan.metadata_ref`에 그 `section`과 `key`만 기록한다. 실제 제품 키 컬럼 목록을 모델이 추측하거나 고정하지 않는다.
 - 여러 dataset을 제품 기준으로 결합하면 후보 Domain의 제품 키 또는 join recipe를 선택하고 각 결합을 `intent_plan.join_plan`에 기록한다. `metadata_ref`, 좌우 `source_alias`, `join_type`, 사용자가 요청한 우측 결과 컬럼과 다중 일치 정책만 작성하며 실제 좌우 join column은 다음 정규화기가 metadata와 table catalog mapping으로 해석한다.
-- 두 dataset을 결합할 때 pandas 단계에 임의의 `filter_and_join`과 `source_alias`/`reference_source_alias` 조합만 남기지 않는다. 반드시 `intent_plan.join_plan`에 `left_source_alias`와 `right_source_alias`를 기록하고 pandas 단계도 같은 좌우 alias를 사용한다.
-- 두 dataset을 결합할 때 pandas 단계에 임의의 `filter_and_join`과 `source_alias`/`reference_source_alias` 조합만 남기지 않는다. 반드시 `intent_plan.join_plan`에 `left_source_alias`와 `right_source_alias`를 기록하고 pandas 단계도 같은 좌우 alias를 사용한다.
 - 두 dataset을 결합할 때 pandas 단계에 임의의 `filter_and_join`과 `source_alias`/`reference_source_alias` 조합만 남기지 않는다. 반드시 `intent_plan.join_plan`에 `left_source_alias`와 `right_source_alias`를 기록하고 pandas 단계도 같은 좌우 alias를 사용한다.
 - `grain_plan` 또는 `join_plan`에 참조할 metadata가 후보에 없으면 source schema에서 보이는 컬럼을 임의의 표준 제품 키로 만들지 말고 clarification으로 보낸다.
 - 제품별 집계 컬럼과 dataset 결합 컬럼은 서로 다른 계약이다. 집계에 사용한 모든 `group_by` 컬럼을 그대로 join key로 재사용하지 않는다.

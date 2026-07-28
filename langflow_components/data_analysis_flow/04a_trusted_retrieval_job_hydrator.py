@@ -156,7 +156,12 @@ def hydrate_retrieval_jobs(
         # 선택하고 결과 컬럼을 검증하는 데 필요한 작은 신뢰 메타데이터입니다.
         clean_job.update(safe_job_contract)
         reconciled["dataset_key"] = dataset_key
-        if reconciled["moved_to_filters"] or reconciled["dropped_params"] or reconciled["normalized_date_fields"]:
+        if (
+            reconciled["remapped_required_params"]
+            or reconciled["moved_to_filters"]
+            or reconciled["dropped_params"]
+            or reconciled["normalized_date_fields"]
+        ):
             condition_reconciliation.append(reconciled)
         for dropped_name in reconciled["dropped_params"]:
             warnings.append(
@@ -260,9 +265,10 @@ def _reconcile_job_conditions(
     *catalog_values: dict[str, Any],
 ) -> dict[str, Any]:
     supplied = _dict(job.get("required_params")) or _dict(job.get("params"))
-    required_index = {_contract_key(name): name for name in required_names if _contract_key(name)}
+    required_index = _required_param_alias_index(required_names, safe_job_contract)
     filter_index = _trusted_filter_field_index(safe_job_contract, *catalog_values)
     required_params: dict[str, Any] = {}
+    remapped_required_params: list[dict[str, str]] = []
     moved_to_filters: list[str] = []
     dropped_params: list[str] = []
     normalized_date_fields: list[str] = []
@@ -277,6 +283,8 @@ def _reconcile_job_conditions(
         if required_name:
             value = _normalize_condition_value(required_name, raw_value)
             required_params[required_name] = value
+            if key != _contract_key(required_name):
+                remapped_required_params.append({"from": name, "to": required_name})
             if value != raw_value and required_name not in normalized_date_fields:
                 normalized_date_fields.append(required_name)
             continue
@@ -292,11 +300,42 @@ def _reconcile_job_conditions(
 
     return {
         "required_params": required_params,
+        "remapped_required_params": remapped_required_params,
         "filters": filters,
         "moved_to_filters": moved_to_filters,
         "dropped_params": dropped_params,
         "normalized_date_fields": normalized_date_fields,
     }
+
+
+# 함수 설명: 필수 파라미터의 catalog 표준명과 명시적 컬럼 alias만 역색인하고 충돌 alias는 자동 변환하지 않습니다.
+def _required_param_alias_index(
+    required_names: list[str],
+    safe_job_contract: dict[str, Any],
+) -> dict[str, str]:
+    exact = {
+        _contract_key(name): name
+        for name in required_names
+        if _contract_key(name)
+    }
+    alias_targets: dict[str, set[str]] = {}
+    for mapping_key in ("filter_mappings", "standard_column_aliases"):
+        mapping = safe_job_contract.get(mapping_key)
+        if not isinstance(mapping, dict):
+            continue
+        for standard, aliases in mapping.items():
+            required_name = exact.get(_contract_key(standard))
+            if not required_name:
+                continue
+            for alias in [str(standard or "").strip(), *_string_list(aliases)]:
+                key = _contract_key(alias)
+                if key:
+                    alias_targets.setdefault(key, set()).add(required_name)
+    result = dict(exact)
+    for key, targets in alias_targets.items():
+        if len(targets) == 1:
+            result.setdefault(key, next(iter(targets)))
+    return result
 
 
 # 함수 설명: `_trusted_filter_field_index()`는 catalog의 표준·물리 컬럼 alias를 허용된 pandas 필터 field로 역색인합니다.

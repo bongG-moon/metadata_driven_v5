@@ -289,11 +289,9 @@ def validate_question(
         for item in payload.get("trace", {}).get("warnings", [])
         if isinstance(item, dict)
     ]
-    pandas_inspection = (
-        payload.get("trace", {})
-        .get("inspection", {})
-        .get("pandas_execution", {})
-    )
+    trace_inspection = payload.get("trace", {}).get("inspection", {})
+    pandas_inspection = trace_inspection.get("pandas_execution", {})
+    pandas_repair_inspection = trace_inspection.get("pandas_repair", {})
     source_results = [
         {
             "dataset_key": item.get("dataset_key"),
@@ -361,10 +359,8 @@ def validate_question(
         "pandas": {
             "prompt_chars": len(pandas_prompt),
             "status": payload.get("analysis", {}).get("status"),
-            "repair_attempted": bool(
-                pandas_inspection.get("repair_attempted")
-                or pandas_inspection.get("repair_used")
-            ),
+            "repair_attempted": bool(pandas_repair_inspection.get("attempted")),
+            "repair_selected": pandas_repair_inspection.get("selected", ""),
             "generated_code": pandas_inspection.get("generated_code", ""),
             "used_helpers": pandas_inspection.get("used_helpers", []),
             "row_count": payload.get("analysis", {}).get("row_count", 0),

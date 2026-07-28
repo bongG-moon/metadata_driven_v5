@@ -116,9 +116,12 @@ def _schema() -> dict[str, Any]:
             ],
             "pandas_execution_plan": [
                 {
-                    "operation": "apply_row_match_groups",
-                    "source_alias": "새 조건을 적용할 target DataFrame alias",
-                    "reference_source_alias": "조건 행을 제공할 reference DataFrame alias",
+                    "operation": "apply_filters|groupby_and_aggregate|sort_and_top_n|join|compare_group_attributes|find_duplicate_groups|apply_row_match_groups|apply_pandas_function_case",
+                    "source_alias": "분석할 DataFrame alias",
+                    "group_by": ["같아야 하는 기준 컬럼 또는 중복을 판단할 컬럼"],
+                    "comparison_columns": ["기준 그룹 안에서 값 차이를 확인할 컬럼"],
+                    "comparison_rule": "any|all",
+                    "reference_source_alias": "row match 조건 행을 제공할 reference DataFrame alias",
                     "match_columns": ["previous_result가 아닌 일반 reference source에만 명시할 실제 identity 컬럼"],
                     "blank_policy": "normalize_blank",
                 }

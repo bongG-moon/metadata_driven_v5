@@ -29,6 +29,56 @@ REFERENCE_MODE_TO_REUSE_STRATEGY = {
     "previous_filters": "previous_intent_with_new_retrieval",
     "previous_trace": "trace_only",
 }
+PANDAS_COLUMN_SCALAR_KEYS = {
+    "field",
+    "column",
+    "agg_column",
+    "aggregate_column",
+    "aggregation_column",
+    "value_column",
+    "metric_column",
+    "sort_by",
+    "order_by",
+    "rank_by",
+    "rank_column",
+    "label_column",
+    "order_column",
+    "date_column",
+    "id_column",
+}
+PANDAS_COLUMN_LIST_KEYS = {
+    "columns",
+    "group_by",
+    "group_by_columns",
+    "group_columns",
+    "group_cols",
+    "dimension_columns",
+    "compare_columns",
+    "comparison_columns",
+    "select_columns",
+    "selected_columns",
+    "display_columns",
+    "output_columns",
+    "required_columns",
+    "metric_columns",
+    "value_columns",
+    "sort_columns",
+    "order_columns",
+    "partition_by",
+}
+PANDAS_LEFT_COLUMN_KEYS = {"left_key", "left_keys", "left_columns", "left_on"}
+PANDAS_RIGHT_COLUMN_KEYS = {
+    "right_key",
+    "right_keys",
+    "right_columns",
+    "right_on",
+    "right_value_columns",
+}
+PANDAS_CANONICAL_COLUMN_KEYS = {
+    "match_columns",
+    "canonical_columns",
+    "canonical_keys",
+}
 
 
 # 주요 함수: LLM 의도 결과를 신뢰 가능한 실행 계획 계약으로 정규화합니다.
@@ -53,7 +103,11 @@ def normalize_intent_plan(
         question,
         align_explicit_scope=not _has_ordered_process_range_case(plan),
     )
-    retrieval_jobs, context_date_guard = _apply_context_date_guard(payload, retrieval_jobs)
+    retrieval_jobs, context_date_guard = _apply_context_date_guard(
+        payload,
+        retrieval_jobs,
+        metadata_candidates,
+    )
     pandas_plan = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
     pandas_plan = _rewrite_process_group_plan_descriptions(
         pandas_plan,
@@ -107,6 +161,13 @@ def normalize_intent_plan(
         metadata_candidates,
         retrieval_jobs,
         pandas_plan,
+    )
+    pandas_plan, pandas_column_normalization = _normalize_pandas_plan_columns(
+        pandas_plan,
+        metadata_candidates,
+        retrieval_jobs,
+        resolved_grain_plan,
+        resolved_join_plan,
     )
 
     normalized_plan = deepcopy(plan)
@@ -175,6 +236,7 @@ def normalize_intent_plan(
         "reference_scope_normalization": reference_scope_normalization,
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
+        "pandas_column_normalization": pandas_column_normalization,
         "resolved_grain_columns": resolved_grain_plan.get("grain_columns", []) if resolved_grain_plan else [],
         "resolved_join_count": len(resolved_join_plan),
     }
@@ -412,33 +474,68 @@ def _context_date_hint(payload: dict[str, Any] | None) -> dict[str, Any]:
 def _apply_context_date_guard(
     payload: dict[str, Any],
     retrieval_jobs: list[Any],
+    metadata_candidates: dict[str, Any] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     date_hint = _context_date_hint(payload)
     inherited_date = str(date_hint.get("resolved_value") or "").strip()
-    if date_hint.get("source") != "previous_context" or not re.fullmatch(r"20\d{6}", inherited_date):
-        return retrieval_jobs, {}
-
     result: list[Any] = []
     corrected_aliases: list[str] = []
+    populated_aliases: list[str] = []
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    question = str(request.get("question") or "")
+    reference_date = str(request.get("reference_date") or "").strip()
+    current_date_requested = bool(
+        re.search(r"(?<![가-힣A-Za-z0-9])(오늘|금일|현재)(?![가-힣A-Za-z0-9])", question)
+    )
     for item in retrieval_jobs:
         if not isinstance(item, dict):
             result.append(deepcopy(item))
             continue
         job = deepcopy(item)
-        required_params = job.get("required_params") if isinstance(job.get("required_params"), dict) else {}
-        if "DATE" in required_params and str(required_params.get("DATE") or "").strip() != inherited_date:
+        required_params = (
+            deepcopy(job.get("required_params"))
+            if isinstance(job.get("required_params"), dict)
+            else {}
+        )
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if (
+            date_hint.get("source") == "previous_context"
+            and re.fullmatch(r"20\d{6}", inherited_date)
+            and "DATE" in required_params
+            and str(required_params.get("DATE") or "").strip() != inherited_date
+        ):
             required_params["DATE"] = inherited_date
             job["required_params"] = required_params
-            alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
             if alias and alias not in corrected_aliases:
                 corrected_aliases.append(alias)
+        elif (
+            current_date_requested
+            and re.fullmatch(r"20\d{6}", reference_date)
+            and _catalog_requires_param(
+                metadata_candidates or {},
+                str(job.get("dataset_key") or "").strip(),
+                "DATE",
+            )
+            and not any(
+                _normalized_column_key(name) == "DATE"
+                and str(value or "").strip()
+                for name, value in required_params.items()
+            )
+        ):
+            required_params["DATE"] = reference_date
+            job["required_params"] = required_params
+            if alias and alias not in populated_aliases:
+                populated_aliases.append(alias)
         result.append(job)
-    return result, {
-        "status": "applied" if corrected_aliases else "not_needed",
+    guard = {
+        "status": "applied" if corrected_aliases or populated_aliases else "not_needed",
         "expression": date_hint.get("expression"),
-        "resolved_value": inherited_date,
+        "resolved_value": inherited_date or (reference_date if populated_aliases else ""),
         "corrected_source_aliases": corrected_aliases,
     }
+    if populated_aliases:
+        guard["populated_required_date_aliases"] = populated_aliases
+    return result, guard
 
 
 # 함수 설명: `_bind_previous_result_alias()`는 이전 결과만 재분석할 때는 예약 alias로 통일하고 신규 조회가 함께 있으면 명시한 source alias를 보존합니다.
@@ -1475,6 +1572,289 @@ def _resolve_join_plan(
     return result
 
 
+# 함수 설명: pandas 실행 계획의 컬럼 참조를 source별 metadata 계약에 등록된 실제 물리 컬럼명으로 정규화합니다.
+def _normalize_pandas_plan_columns(
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    resolved_grain_plan: dict[str, Any] | None = None,
+    resolved_join_plan: list[dict[str, Any]] | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    alias_maps = _pandas_column_alias_maps(
+        candidates,
+        retrieval_jobs,
+        resolved_grain_plan or {},
+        resolved_join_plan or [],
+    )
+    changes: list[dict[str, Any]] = []
+    normalized: list[Any] = []
+    for index, raw_step in enumerate(pandas_plan):
+        if not isinstance(raw_step, dict):
+            normalized.append(deepcopy(raw_step))
+            continue
+        normalized.append(
+            _normalize_pandas_plan_value(
+                raw_step,
+                alias_maps,
+                {},
+                f"pandas_execution_plan[{index}]",
+                changes,
+            )
+        )
+    return normalized, {
+        "status": "applied" if changes else "not_needed",
+        "change_count": len(changes),
+        "changes": changes,
+    }
+
+
+# 함수 설명: 중첩된 pandas 단계에서 source alias 문맥을 유지하며 명시적인 컬럼 필드만 실제 컬럼명으로 바꿉니다.
+def _normalize_pandas_plan_value(
+    value: Any,
+    alias_maps: dict[str, dict[str, str]],
+    inherited_context: dict[str, str],
+    path: str,
+    changes: list[dict[str, Any]],
+) -> Any:
+    if isinstance(value, list):
+        return [
+            _normalize_pandas_plan_value(
+                item,
+                alias_maps,
+                inherited_context,
+                f"{path}[{index}]",
+                changes,
+            )
+            for index, item in enumerate(value)
+        ]
+    if not isinstance(value, dict):
+        return deepcopy(value)
+
+    context = dict(inherited_context)
+    for context_key in ("source_alias", "left_source_alias", "right_source_alias"):
+        text = str(value.get(context_key) or "").strip()
+        if text:
+            context[context_key] = text
+    source_mapping = alias_maps.get(context.get("source_alias", ""), {})
+    left_mapping = alias_maps.get(context.get("left_source_alias", ""), {})
+    right_mapping = alias_maps.get(context.get("right_source_alias", ""), {})
+
+    result: dict[str, Any] = {}
+    for raw_key, raw_item in value.items():
+        key = str(raw_key)
+        item_path = f"{path}.{key}"
+        if key in PANDAS_CANONICAL_COLUMN_KEYS:
+            result[raw_key] = deepcopy(raw_item)
+            continue
+        if key in PANDAS_LEFT_COLUMN_KEYS:
+            result[raw_key] = _normalize_column_field_value(
+                raw_item,
+                left_mapping,
+                context.get("left_source_alias", ""),
+                item_path,
+                changes,
+            )
+            continue
+        if key in PANDAS_RIGHT_COLUMN_KEYS:
+            result[raw_key] = _normalize_column_field_value(
+                raw_item,
+                right_mapping,
+                context.get("right_source_alias", ""),
+                item_path,
+                changes,
+            )
+            continue
+        if key in PANDAS_COLUMN_SCALAR_KEYS or key in PANDAS_COLUMN_LIST_KEYS:
+            result[raw_key] = _normalize_column_field_value(
+                raw_item,
+                source_mapping,
+                context.get("source_alias", ""),
+                item_path,
+                changes,
+            )
+            continue
+        result[raw_key] = _normalize_pandas_plan_value(
+            raw_item,
+            alias_maps,
+            context,
+            item_path,
+            changes,
+        )
+    return result
+
+
+# 함수 설명: 문자열 또는 문자열 목록에 metadata로 확정된 alias 매핑만 적용하고 변경 근거를 trace에 기록합니다.
+def _normalize_column_field_value(
+    value: Any,
+    mapping: dict[str, str],
+    source_alias: str,
+    path: str,
+    changes: list[dict[str, Any]],
+) -> Any:
+    if isinstance(value, list):
+        normalized_items = [
+            _normalize_column_field_value(
+                item,
+                mapping,
+                source_alias,
+                f"{path}[{index}]",
+                changes,
+            )
+            for index, item in enumerate(value)
+        ]
+        result: list[Any] = []
+        seen_columns: set[str] = set()
+        for item in normalized_items:
+            if isinstance(item, str):
+                key = _normalized_column_key(item)
+                if key and key in seen_columns:
+                    continue
+                if key:
+                    seen_columns.add(key)
+            result.append(item)
+        return result
+    if not isinstance(value, str) or not mapping:
+        return deepcopy(value)
+    normalized_key = _normalized_column_key(value)
+    target = mapping.get(normalized_key)
+    if not target or target == value:
+        return value
+    changes.append(
+        {
+            "path": path,
+            "source_alias": source_alias,
+            "from": value,
+            "to": target,
+        }
+    )
+    return target
+
+
+# 함수 설명: retrieval source별 Table Catalog와 resolved grain/join 계약을 하나의 비모호한 alias→물리 컬럼 맵으로 합칩니다.
+def _pandas_column_alias_maps(
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    resolved_grain_plan: dict[str, Any],
+    resolved_join_plan: list[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    groups_by_alias: dict[str, list[tuple[str, list[str]]]] = {}
+    for job in retrieval_jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        if not alias or not dataset_key:
+            continue
+        table_item = _table_catalog_item(candidates, dataset_key)
+        groups_by_alias.setdefault(alias, []).extend(_table_column_alias_groups(table_item))
+
+    grain_alias = str(resolved_grain_plan.get("source_alias") or "").strip()
+    if grain_alias:
+        for item in resolved_grain_plan.get("column_mappings", []):
+            if not isinstance(item, dict):
+                continue
+            canonical = str(item.get("canonical_key") or "").strip()
+            physical = _string_list(item.get("source_candidates"))
+            if canonical and physical:
+                groups_by_alias.setdefault(grain_alias, []).append((physical[0], [canonical, *physical]))
+
+    for join in resolved_join_plan:
+        if not isinstance(join, dict):
+            continue
+        left_alias = str(join.get("left_source_alias") or "").strip()
+        right_alias = str(join.get("right_source_alias") or "").strip()
+        for item in join.get("key_mappings", []):
+            if not isinstance(item, dict):
+                continue
+            canonical = str(item.get("canonical_key") or "").strip()
+            left_candidates = _string_list(item.get("left_candidates"))
+            right_candidates = _string_list(item.get("right_candidates"))
+            if left_alias and canonical and left_candidates:
+                groups_by_alias.setdefault(left_alias, []).append(
+                    (left_candidates[0], [canonical, *left_candidates])
+                )
+            if right_alias and canonical and right_candidates:
+                groups_by_alias.setdefault(right_alias, []).append(
+                    (right_candidates[0], [canonical, *right_candidates])
+                )
+
+    return {
+        alias: _unambiguous_column_alias_map(groups)
+        for alias, groups in groups_by_alias.items()
+        if groups
+    }
+
+
+# 함수 설명: Table Catalog의 표준 alias 그룹에서 선언된 source column을 우선해 물리 컬럼 대상을 결정합니다.
+def _table_column_alias_groups(item: dict[str, Any]) -> list[tuple[str, list[str]]]:
+    payload = _metadata_payload(item)
+    declared_columns = _catalog_declared_columns(payload)
+    declared_index = {
+        _normalized_column_key(column): column
+        for column in declared_columns
+    }
+    result: list[tuple[str, list[str]]] = []
+    for mapping_name in ("filter_mappings", "standard_column_aliases"):
+        mapping = payload.get(mapping_name)
+        if not isinstance(mapping, dict):
+            continue
+        for standard, raw_aliases in mapping.items():
+            standard_name = str(standard or "").strip()
+            aliases = _string_list(raw_aliases)
+            if not standard_name or not aliases:
+                continue
+            physical = next(
+                (
+                    declared_index[_normalized_column_key(alias)]
+                    for alias in aliases
+                    if _normalized_column_key(alias) in declared_index
+                ),
+                declared_index.get(_normalized_column_key(standard_name), aliases[0]),
+            )
+            result.append((physical, [standard_name, *aliases]))
+    return result
+
+
+# 함수 설명: Table Catalog가 선언한 실제 source column 목록을 다양한 schema 표기에서 추출합니다.
+def _catalog_declared_columns(payload: dict[str, Any]) -> list[str]:
+    raw = payload.get("columns") or payload.get("schema") or payload.get("column_names") or []
+    if isinstance(raw, dict):
+        raw = list(raw)
+    if not isinstance(raw, (list, tuple, set)):
+        raw = [raw]
+    result: list[str] = []
+    for item in raw:
+        if isinstance(item, dict):
+            item = item.get("name") or item.get("column") or item.get("key")
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+# 함수 설명: 같은 alias가 서로 다른 물리 컬럼을 가리키면 추측하지 않고 해당 alias의 자동 정규화를 비활성화합니다.
+def _unambiguous_column_alias_map(
+    groups: list[tuple[str, list[str]]],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for raw_target, raw_aliases in groups:
+        target = str(raw_target or "").strip()
+        if not target:
+            continue
+        for alias in _merge_strings([target], _string_list(raw_aliases)):
+            key = _normalized_column_key(alias)
+            if not key or key in ambiguous:
+                continue
+            existing = result.get(key)
+            if existing and _normalized_column_key(existing) != _normalized_column_key(target):
+                result.pop(key, None)
+                ambiguous.add(key)
+                continue
+            result[key] = target
+    return result
+
+
 # 함수 설명: 참조 section/key와 정확히 일치하는 후보 metadata 문서를 찾습니다.
 def _find_metadata_item(
     candidates: dict[str, Any],
@@ -1571,6 +1951,36 @@ def _table_catalog_item(candidates: dict[str, Any], dataset_key: str) -> dict[st
         candidates,
         {"section": "table_catalog", "key": dataset_key},
     )
+
+
+# 함수 설명: 선택 dataset의 catalog가 특정 조회 필수 파라미터를 선언했는지 정확한 이름 기준으로 확인합니다.
+def _catalog_requires_param(
+    candidates: dict[str, Any],
+    dataset_key: str,
+    param_name: str,
+) -> bool:
+    item = _table_catalog_item(candidates, dataset_key)
+    payload = _metadata_payload(item)
+    values = [
+        payload,
+        payload.get("source_config")
+        if isinstance(payload.get("source_config"), dict)
+        else {},
+        item,
+    ]
+    target = _normalized_column_key(param_name)
+    for value in values:
+        raw = value.get("required_params") or value.get("required_param_names") or []
+        if isinstance(raw, dict):
+            raw = list(raw)
+        if not isinstance(raw, (list, tuple, set)):
+            raw = [raw]
+        for entry in raw:
+            if isinstance(entry, dict):
+                entry = entry.get("name") or entry.get("key")
+            if _normalized_column_key(entry) == target:
+                return True
+    return False
 
 
 # 함수 설명: canonical key를 table catalog의 실제 source column 후보로 변환합니다.

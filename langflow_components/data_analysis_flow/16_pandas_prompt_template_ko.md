@@ -46,7 +46,12 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - 없는 column을 임의로 만들지 않는다.
 - groupby, 정렬, 컬럼 선택에 사용할 column은 반드시 `source schema` 또는 실제 DataFrame의 `df.columns`에 있는지 확인한다.
 - `intent_plan.resolved_grain_plan.strict=true`이면 `grain_columns`는 선택된 Domain metadata에서 해석된 정확한 집계 차원이다. 제품별 질문이라고 해서 source schema의 `DEVICE`, `DEVICE_DESC` 또는 다른 dimension을 임의로 추가하지 않는다.
-- `resolved_grain_plan.column_mappings[].source_candidates` 중 실제 source에 존재하는 첫 컬럼을 사용하되, metadata에 없는 제품 key를 모델이 추측해 추가하지 않는다.
+- `pandas_execution_plan`의 groupby·비교·집계·정렬·선택 컬럼은 normalizer가 source별 Table Catalog와 resolved grain/join 계약에 따라 실제 물리 컬럼명으로 정규화한 값이다. 계획에 기록된 물리 컬럼을 우선 사용하고 canonical alias로 다시 rename하지 않는다.
+- `resolved_grain_plan.column_mappings[].source_candidates` 중 실제 source에 존재하는 첫 컬럼을 사용하되, metadata에 없는 제품 key를 모델이 추측해 추가하지 않는다. source schema에 canonical 이름과 물리 alias가 함께 있어도 계획과 `grain_columns`가 지정한 물리 컬럼 하나만 사용한다.
+- `output_contract.required_columns`는 표시용 canonical 이름일 수 있으므로 실행용 물리 컬럼과 구분한다. `resolved_grain_plan.column_mappings`에 대응 관계가 있고 canonical 대상 컬럼이 결과에 없을 때만 `result[canonical] = result[physical]`로 값을 복사한 뒤 표시 컬럼을 선택한다.
+- canonical 대상 컬럼이 이미 있으면 물리 컬럼을 같은 이름으로 rename하거나 덮어쓰지 않는다. metadata 대응 관계가 없거나 실제 source에 없는 required column을 빈 문자열로 임의 생성하지 않는다.
+- `output_contract.required_columns`로 최종 컬럼을 선택하기 전에는 대응하는 물리 컬럼 값을 canonical 컬럼에 먼저 복사해야 한다. 즉 `required_columns`와 이름이 같은 컬럼만 바로 골라 물리 컬럼을 누락시키지 않는다. 표시용 복사를 하지 않을 경우에는 계획의 실제 `group_by`, `comparison_columns`, 집계·선택 컬럼을 그대로 결과에 남긴다.
+- 표시 컬럼 정리는 다음 일반 순서를 따른다: `resolved_grain_plan.column_mappings`를 순회하며 실제 존재하는 `source_candidates`를 찾고, canonical 컬럼이 없을 때만 복사한 뒤, 마지막에 실제 존재하는 `required_columns`를 선택한다. 이는 특정 제품 컬럼에 고정된 예외가 아니라 metadata 매핑 전체에 동일하게 적용한다.
 - `intent_plan.resolved_join_plan`이 있으면 각 항목의 `left_keys`와 `right_keys` 또는 `key_mappings`에 기록된 좌우 후보만 join key로 사용한다. 집계용 `group_cols` 전체를 join key로 재사용하지 않는다.
 - resolved join의 같은 canonical key가 좌우에서 서로 다른 실제 컬럼명으로 해석되면 컬럼을 같은 이름으로 `rename`하지 않는다. `left_keys`와 `right_keys`를 각각 유지하고 `merge(..., left_on=left_keys, right_on=right_keys)`를 사용한다. 특히 rename 대상 이름이 DataFrame에 이미 있으면 중복 컬럼 label이 생겨 `df[key]`가 Series가 아닌 DataFrame이 될 수 있으므로 금지한다.
 - 좌우 실제 key 목록이 완전히 같을 때만 `merge(..., on=keys)`를 사용할 수 있다. 하나라도 다르면 반드시 같은 순서의 `left_on`/`right_on`을 사용하고, 각 실제 key Series를 자기 DataFrame에서 독립적으로 정규화한다.
@@ -56,7 +61,13 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - `multi_match_policy=collect_unique`이면 같은 제품 key에 여러 장비 등 여러 우측 값이 있을 때 첫 행 하나를 `drop_duplicates`로 남기지 않는다. `right_value_columns`별 중복 없는 값을 모아 한 제품 행에 보존한다.
 - `multi_match_policy=preserve_rows`이면 유효한 우측 매칭 행을 모두 유지하고, `first`일 때만 metadata 계약에 따라 첫 행을 사용할 수 있다.
 - `resolved_join_plan`이 있는데 일부 key가 source schema에 없으면 임의의 대체 key를 추측하지 않는다. 사용 가능한 metadata key pair만 사용하고, 하나도 없으면 빈 결과 또는 명시적 오류가 되도록 처리한다.
-- 사용자가 일부 기준 컬럼은 같지만 다른 비교 컬럼 값이 서로 다른 행을 요청하면, 기준 컬럼으로 `groupby(..., dropna=False)`한 뒤 비교 컬럼의 `nunique(dropna=False)`를 계산하고 `(counts > 1).any(axis=1)`인 기준키만 원본과 `merge`한다. 비교 컬럼별 조건을 Python `or`/`and`로 연결하거나 SQL 문법을 pandas 코드에 섞지 않는다.
+- `pandas_execution_plan.operation=compare_group_attributes`이면 계획의 `group_by`만 기준키로, `comparison_columns`만 값 차이 판정 대상으로 사용한다. `resolved_grain_plan.grain_columns` 전체로 두 목록을 대체하거나 두 목록을 합쳐 groupby하지 않는다.
+- 기준 컬럼으로 `groupby(..., dropna=False)`한 뒤 비교 컬럼의 `nunique(dropna=False)`를 계산한다. `comparison_rule=any`이면 `(counts > 1).any(axis=1)`, `all`이면 `(counts > 1).all(axis=1)`인 기준키만 원본과 `merge`한다. 비교 컬럼별 조건을 Python `or`/`and`로 연결하거나 SQL 문법을 pandas 코드에 섞지 않는다.
+- 비교 counts는 반드시 `counts = df.groupby(group_cols, dropna=False)[comp_cols].nunique(dropna=False)`처럼 그룹 key index를 가진 집계표로 만든다. `grouped.groups.keys()`로 별도 index를 만들고 원본 행 index의 `transform()` 결과를 대입하지 않는다. 두 index가 어긋나면 실제 일치 그룹이 있어도 모두 0건처럼 보일 수 있다.
+- 유효 key는 `valid_keys = counts[mask].reset_index()[group_cols]`로 만들고 원본과 `merge(..., on=group_cols)`한다.
+- `compare_group_attributes` 결과는 기본적으로 `group_by + comparison_columns`의 존재하는 컬럼을 선택하고 `drop_duplicates()`하여 고유 속성 조합을 한 번씩 반환한다. 사용자가 원본 이벤트·LOT·시점 행과 그 식별 컬럼을 명시적으로 요청한 경우에만 원본 반복 행을 유지한다.
+- source가 비었거나 일치 그룹이 없을 때도 `pd.DataFrame(columns=group_cols + comp_cols)`처럼 계획의 물리 컬럼 schema를 가진 빈 결과를 만든다. 컬럼이 하나도 없는 `pd.DataFrame()`을 반환해 정상적인 0건 결과를 output contract 오류로 바꾸지 않는다.
+- `pandas_execution_plan.operation=find_duplicate_groups`이면 계획의 `group_by` 조합으로 `groupby(..., dropna=False).size()`를 계산하고 건수가 2 이상인 그룹의 원본 행을 반환한다. 이를 `compare_group_attributes`의 값 차이 판정과 혼동하지 않는다.
 - `df.groupby(["A", "B"])`처럼 고정 리스트를 바로 넣지 말고, `group_cols = [c for c in desired_cols if c in df.columns]`처럼 존재하는 컬럼만 사용한다.
 - dimension별 집계에서는 null, 빈 문자열, 공백만 있는 group 값의 원본 행도 제외하지 않는다. groupby에는 `dropna=False`를 명시하고, 집계 전에 group column에 `notna()`나 빈 값 제외 filter를 적용하지 않는다.
 - 집계가 끝난 뒤 표시용 결과의 dimension column에만 `fillna("")`와 `replace(r"^\s*$", "", regex=True)`를 적용해 null/blank를 빈 문자열로 보여준다. dimension 값을 `미등록` 같은 대체 문구로 바꾸지 않는다.
