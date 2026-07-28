@@ -2645,6 +2645,155 @@ def test_v5_process_group_guard_narrows_single_detailed_process_from_group_expan
     ]
 
 
+def test_v5_process_group_guard_preserves_all_explicit_processes_with_korean_suffix():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    pandas_executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    da_processes = ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
+    payload = {
+        "request": {
+            "question": "7/9 D/A1, D/A2공정에서 생산 실적 알려줘"
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "DA",
+                    "payload": {
+                        "display_name": "D/A",
+                        "aliases": ["DA", "D/A"],
+                        "field": "OPER_NAME",
+                        "processes": da_processes,
+                    },
+                },
+                {
+                    "section": "process_groups",
+                    "key": "DS",
+                    "payload": {
+                        "display_name": "D/S",
+                        "aliases": ["DS", "D/S", "DS공정", "D/S공정", "DS 공정", "D/S 공정"],
+                        "field": "OPER_NAME",
+                        "processes": ["D/S1"],
+                    },
+                }
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "production_actual_by_process",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production",
+                    "source_alias": "production",
+                    "filters": {
+                        "OPER_NAME": {
+                            "operator": "in",
+                            "value": da_processes,
+                        }
+                    },
+                }
+            ],
+            "pandas_execution_plan": [],
+        }
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        llm_response,
+        candidates,
+    )
+
+    condition = normalized["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"]
+    assert condition == {"operator": "in", "value": ["D/A1", "D/A2"]}
+    guard = normalized["trace"]["inspection"]["intent"]["process_group_field_guard"]
+    assert guard["corrections"] == [
+        {
+            "source_alias": "production",
+            "field": "OPER_NAME",
+            "correction_type": "specific_process_scope",
+            "from_values": da_processes,
+            "to_values": ["D/A1", "D/A2"],
+        }
+    ]
+
+    filter_plan = pandas_executor._pandas_filter_plan(normalized)
+    preamble = pandas_executor._pandas_filter_preamble(filter_plan)
+    assert "_filter_values_1_1 = ['D/A1', 'D/A2']" in preamble
+
+    llm_response["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"] = {
+        "operator": "eq",
+        "value": "D/A1",
+    }
+    normalized_from_partial_filter = intent_normalizer.normalize_intent_plan(
+        payload,
+        llm_response,
+        candidates,
+    )
+    partial_condition = normalized_from_partial_filter["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"]
+    assert partial_condition == {"operator": "in", "value": ["D/A1", "D/A2"]}
+    partial_filter_plan = pandas_executor._pandas_filter_plan(normalized_from_partial_filter)
+    partial_preamble = pandas_executor._pandas_filter_preamble(partial_filter_plan)
+    assert "_filter_values_1_1 = ['D/A1', 'D/A2']" in partial_preamble
+
+    range_payload = {
+        **payload,
+        "request": {"question": "D/A1~D/A2 공정 구간의 생산 실적 알려줘"},
+    }
+    llm_response["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"] = {
+        "operator": "in",
+        "value": da_processes,
+    }
+    llm_response["intent_plan"]["pandas_function_cases"] = [
+        {
+            "key": "ordered_process_range",
+            "function_name": "filter_ordered_range",
+            "input_text": "D/A1~D/A2",
+            "source_alias": "production",
+        }
+    ]
+    normalized_range = intent_normalizer.normalize_intent_plan(
+        range_payload,
+        llm_response,
+        candidates,
+    )
+    range_condition = normalized_range["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"]
+    assert range_condition == {"operator": "in", "value": da_processes}
+
+    mixed_payload = {
+        **payload,
+        "request": {"question": "7/9 D/S1 & D/A 공정에서 생산 실적 알려줘"},
+    }
+    llm_response["intent_plan"].pop("pandas_function_cases", None)
+    llm_response["intent_plan"]["retrieval_jobs"][0]["filters"] = {
+        "OPER": {"operator": "eq", "value": "D/S1"}
+    }
+    normalized_mixed = intent_normalizer.normalize_intent_plan(
+        mixed_payload,
+        llm_response,
+        candidates,
+    )
+    mixed_values = ["D/S1", *da_processes]
+    mixed_filters = normalized_mixed["intent_plan"]["retrieval_jobs"][0]["filters"]
+    assert mixed_filters == {
+        "OPER_NAME": {
+            "operator": "in",
+            "value": mixed_values,
+        }
+    }
+    mixed_filter_plan = pandas_executor._pandas_filter_plan(normalized_mixed)
+    mixed_preamble = pandas_executor._pandas_filter_preamble(mixed_filter_plan)
+    assert f"_filter_values_1_1 = {mixed_values!r}" in mixed_preamble
+
+
 def test_intent_normalizer_accepts_llm_json_with_literal_sql_newlines():
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
     payload = {"request": {"question": "어제 DA공정 차수별 생산량 알려줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}

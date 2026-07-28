@@ -43,6 +43,7 @@ def normalize_intent_plan(
         retrieval_jobs,
         metadata_candidates,
         question,
+        align_explicit_scope=not _has_ordered_process_range_case(plan),
     )
     retrieval_jobs, context_date_guard = _apply_context_date_guard(payload, retrieval_jobs)
     pandas_plan = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
@@ -418,11 +419,12 @@ def _apply_process_group_filter_fields(
     retrieval_jobs: list[Any],
     metadata_candidates: dict[str, Any],
     question: str = "",
+    align_explicit_scope: bool = True,
 ) -> tuple[list[Any], dict[str, Any]]:
     contracts = _process_group_contracts(metadata_candidates)
     if not contracts:
         return retrieval_jobs, {"status": "not_available", "corrections": []}
-    explicit_processes = _explicit_process_mentions(question, contracts)
+    requested_processes = _requested_process_scope(question, contracts) if align_explicit_scope else []
 
     normalized_jobs: list[Any] = []
     corrections: list[dict[str, Any]] = []
@@ -436,10 +438,10 @@ def _apply_process_group_filter_fields(
         if isinstance(filters, dict):
             normalized_filters = deepcopy(filters)
             for raw_field, condition in filters.items():
-                narrowed_condition = _narrow_single_process_condition(
+                narrowed_condition = _align_requested_process_condition(
                     condition,
                     contracts,
-                    explicit_processes,
+                    requested_processes,
                 )
                 if narrowed_condition != condition:
                     normalized_filters[str(raw_field)] = narrowed_condition
@@ -486,10 +488,10 @@ def _apply_process_group_filter_fields(
             for condition in filters:
                 normalized = deepcopy(condition)
                 if isinstance(condition, dict):
-                    narrowed_condition = _narrow_single_process_condition(
+                    narrowed_condition = _align_requested_process_condition(
                         condition,
                         contracts,
-                        explicit_processes,
+                        requested_processes,
                     )
                     if narrowed_condition != condition:
                         normalized = narrowed_condition
@@ -534,6 +536,24 @@ def _apply_process_group_filter_fields(
     }
 
 
+# 함수 설명: ordered process range helper가 선택된 계획인지 판별해 양 끝 공정 filter로 잘못 축소되는 것을 막습니다.
+def _has_ordered_process_range_case(plan: dict[str, Any]) -> bool:
+    candidates: list[Any] = []
+    for key in ("pandas_function_case", "pandas_function_cases", "selected_function_cases"):
+        value = plan.get(key)
+        candidates.extend(value if isinstance(value, list) else [value])
+    pandas_plan = plan.get("pandas_execution_plan")
+    candidates.extend(pandas_plan if isinstance(pandas_plan, list) else [])
+    return any(
+        isinstance(item, dict)
+        and (
+            str(item.get("function_name") or "").strip() == "filter_ordered_range"
+            or str(item.get("key") or item.get("function_case_key") or "").strip() == "ordered_process_range"
+        )
+        for item in candidates
+    )
+
+
 # 함수 설명: 후보 Domain에서 공정 그룹별 canonical field와 실제 process 값 계약을 추출합니다.
 def _process_group_contracts(metadata_candidates: dict[str, Any]) -> list[dict[str, Any]]:
     items = metadata_candidates.get("domain_items")
@@ -545,12 +565,23 @@ def _process_group_contracts(metadata_candidates: dict[str, Any]) -> list[dict[s
         processes = _string_list(payload.get("processes"))
         if not processes:
             continue
+        aliases = _merge_strings(
+            _string_list(payload.get("aliases")),
+            _string_list(
+                [
+                    payload.get("display_name"),
+                    item.get("display_name"),
+                    item.get("key"),
+                ]
+            ),
+        )
         contracts.append(
             {
                 "key": str(item.get("key") or "").strip(),
                 # 기존 운영 문서의 process_groups는 모두 OPER_NAME 계약이므로
                 # field 재등록 전 문서도 같은 의미로 안전하게 호환합니다.
                 "field": str(payload.get("field") or "OPER_NAME").strip(),
+                "aliases": aliases,
                 "process_values": processes,
                 "processes": {value.casefold() for value in processes},
             }
@@ -558,7 +589,7 @@ def _process_group_contracts(metadata_candidates: dict[str, Any]) -> list[dict[s
     return contracts
 
 
-# 함수 설명: 질문에 독립된 token으로 명시된 세부 공정명을 공정 그룹 metadata에서 찾습니다.
+# 함수 설명: 질문에 명시된 세부 공정명을 공정 그룹 metadata에서 찾고 코드형 공정명 뒤의 한글 표현을 허용합니다.
 def _explicit_process_mentions(
     question: str,
     contracts: list[dict[str, Any]],
@@ -570,45 +601,62 @@ def _explicit_process_mentions(
             value = str(process or "").strip()
             if not value or value in result:
                 continue
-            pattern = rf"(?<![0-9A-Za-z가-힣]){re.escape(value)}(?![0-9A-Za-z가-힣])"
+            right_boundary = r"(?![0-9A-Za-z])" if re.search(r"[0-9A-Za-z]$", value) else r"(?![0-9A-Za-z가-힣])"
+            pattern = rf"(?<![0-9A-Za-z가-힣]){re.escape(value)}{right_boundary}"
             if re.search(pattern, text, flags=re.IGNORECASE):
                 result.append(value)
     return result
 
 
-# 함수 설명: 질문이 단일 세부 공정을 명시했는데 LLM이 같은 그룹 전체를 펼친 filter를 해당 공정 하나로 좁힙니다.
-def _narrow_single_process_condition(
+# 함수 설명: 질문에 직접 명시된 세부 공정과 `공정`이 붙은 그룹 별칭을 하나의 실행 범위로 합칩니다.
+def _requested_process_scope(
+    question: str,
+    contracts: list[dict[str, Any]],
+) -> list[str]:
+    result = _explicit_process_mentions(question, contracts)
+    text = str(question or "")
+    for contract in contracts:
+        group_mentioned = False
+        for alias in contract.get("aliases", []):
+            base_alias = re.sub(r"\s*공정\s*$", "", str(alias or "").strip(), flags=re.IGNORECASE)
+            if not base_alias:
+                continue
+            pattern = rf"(?<![0-9A-Za-z가-힣]){re.escape(base_alias)}\s*공정"
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                group_mentioned = True
+                break
+        if not group_mentioned:
+            continue
+        result = _merge_strings(result, _string_list(contract.get("process_values")))
+    return result
+
+
+# 함수 설명: 공정 관련 LLM filter를 질문에서 요청한 세부 공정과 공정 그룹의 합집합에 일치시킵니다.
+def _align_requested_process_condition(
     condition: Any,
     contracts: list[dict[str, Any]],
-    explicit_processes: list[str],
+    requested_processes: list[str],
 ) -> Any:
-    if len(explicit_processes) != 1 or not isinstance(condition, dict):
+    if not requested_processes or not isinstance(condition, dict):
         return deepcopy(condition)
     operator = str(condition.get("operator") or condition.get("op") or "eq").strip().lower()
     if operator not in {"eq", "in", "=", "=="}:
         return deepcopy(condition)
     values = _condition_scalar_values(condition)
-    if len(values) <= 1:
+    if not values:
         return deepcopy(condition)
     normalized_values = {value.casefold() for value in values}
-    explicit = explicit_processes[0]
-    explicit_normalized = explicit.casefold()
-    matching_contracts = [
-        contract
-        for contract in contracts
-        if explicit_normalized in contract.get("processes", set())
-        and normalized_values.issubset(contract.get("processes", set()))
-    ]
-    if not matching_contracts:
+    known_processes = set().union(*(contract.get("processes", set()) for contract in contracts))
+    if not normalized_values.issubset(known_processes):
         return deepcopy(condition)
     narrowed = deepcopy(condition)
-    narrowed["operator"] = "eq"
+    narrowed["operator"] = "eq" if len(requested_processes) == 1 else "in"
     narrowed.pop("op", None)
     if "values" in narrowed:
-        narrowed["values"] = [explicit]
+        narrowed["values"] = list(requested_processes)
         narrowed.pop("value", None)
     else:
-        narrowed["value"] = explicit
+        narrowed["value"] = requested_processes[0] if len(requested_processes) == 1 else list(requested_processes)
     return narrowed
 
 
@@ -656,8 +704,11 @@ def _process_group_field_for_condition(
     matches = [
         contract
         for contract in contracts
-        if normalized_values.issubset(contract["processes"])
+        if normalized_values.intersection(contract["processes"])
     ]
+    covered_values = set().union(*(contract["processes"] for contract in matches))
+    if not normalized_values.issubset(covered_values):
+        return "", []
     fields = {
         str(contract.get("field") or "").strip()
         for contract in matches
