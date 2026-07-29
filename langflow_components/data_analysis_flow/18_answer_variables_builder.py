@@ -156,6 +156,14 @@ def _answer_context(payload: dict[str, Any]) -> dict[str, Any]:
                 "has_zero_values": _has_zero_values(rows),
                 "primary_metric_columns": metric_columns,
                 "primary_dimension_columns": _dimension_columns(columns, metric_columns),
+                "primary_metric": output_contract.get("primary_metric"),
+                "ordering": deepcopy(_dict(output_contract.get("ordering"))),
+                "column_labels": deepcopy(_dict(output_contract.get("column_labels"))),
+                "operations": [
+                    str(item.get("operation") or "").strip()
+                    for item in _list(_dict(payload.get("intent_plan")).get("pandas_execution_plan"))
+                    if isinstance(item, dict) and str(item.get("operation") or "").strip()
+                ],
                 "result_segments": deepcopy(_list(output_contract.get("result_segments"))),
                 "segment_column": output_contract.get("segment_column"),
                 "rank_column": output_contract.get("rank_column"),
@@ -197,6 +205,13 @@ def _applied_criteria(payload: dict[str, Any]) -> dict[str, Any]:
         filters = _dict(source.get("pandas_filters")) or _dict(source.get("applied_filters"))
         if filters:
             analysis_filters[alias or dataset_key or f"source_{len(analysis_filters) + 1}"] = deepcopy(filters)
+    effective_filters = _dict(_dict(plan.get("condition_resolution")).get("effective_filters"))
+    for alias, item in effective_filters.items():
+        if not isinstance(item, dict):
+            continue
+        filters = item.get("filters")
+        if filters not in (None, "", [], {}):
+            analysis_filters[str(alias)] = deepcopy(filters)
     return _omit_empty(
         {
             "required_params": required_params,

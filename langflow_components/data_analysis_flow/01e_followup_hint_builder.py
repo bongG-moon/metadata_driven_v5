@@ -38,6 +38,7 @@ TRANSFORM_CUES = (
     "정렬", "나눠", "분리", "제품별", "공정별", "차수별", "세부", "비율", "rank", "top", "bottom",
 )
 EXPAND_CUES = ("추가", "넣어", "붙여", "포함", "같이", "함께", "컬럼", "열", "항목", "code", "코드", "번호")
+ENTITY_DETAIL_CUES = ("이력", "내역", "상세", "사유", "원인", "추이", "로그", "history", "detail")
 CHANGE_CUES = ("말고", "대신", "아니", "바꿔", "변경", "다른", "새로", "다시 조회", "재조회")
 ENTITY_SWITCH_CUES = ("에서는", "에선", "은 어때", "는 어때", "은 어땠", "는 어땠", "쪽은", "경우는")
 STANDALONE_REQUEST_CUES = (
@@ -70,6 +71,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     matched_change = _matched_cues(question, CHANGE_CUES)
     matched_entity_switch = _matched_cues(question, ENTITY_SWITCH_CUES)
     requested_columns = _matched_previous_columns(question, _available_previous_columns(state), matched_expand)
+    entity_continuation_columns = _matched_previous_entity_identifiers(question, state)
     context_dependent = _looks_context_dependent(question)
     entity_switch_followup = _looks_entity_switch_followup(question, matched_entity_switch)
     reusable_source_aliases = _reusable_previous_source_aliases(state)
@@ -92,6 +94,8 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
         matched_change=matched_change,
         date_hint=date_hint,
     )
+    if entity_continuation_columns:
+        complete_independent_request = False
 
     scope_hint = "new_analysis"
     reuse_strategy_hint = "none"
@@ -117,6 +121,12 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             confidence = "high" if requested_columns or matched_references else "medium"
             required_artifacts = ["previous_source", "previous_result", "previous_intent_plan"]
             inheritance_candidates = ["metric", "required_params", "analysis_filters", "group_by", "pandas_function_cases"]
+        elif entity_continuation_columns:
+            scope_hint = "followup_requery"
+            reuse_strategy_hint = "previous_result"
+            confidence = "medium"
+            required_artifacts = ["previous_result", "previous_intent_plan", "previous_applied_criteria"]
+            inheritance_candidates = ["required_params", "analysis_filters", "pandas_function_cases"]
         elif matched_row_references:
             scope_hint = "followup_requery"
             reuse_strategy_hint = "previous_result"
@@ -172,13 +182,13 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
                     "expand": matched_expand,
                     "change": matched_change,
                     "entity_switch": matched_entity_switch,
+                    "previous_entity_identifiers": entity_continuation_columns,
                 }
             ),
             "requested_columns_hint": requested_columns,
             "reusable_previous_source_aliases": reusable_source_aliases,
             "required_previous_artifacts": required_artifacts,
             "inheritance_candidates": inheritance_candidates,
-            "previous_context": previous_context,
             "complete_independent_request": complete_independent_request,
             "notes": _notes(scope_hint, reuse_strategy_hint, requested_columns, date_hint),
         }
@@ -463,6 +473,29 @@ def _available_previous_columns(state: dict[str, Any]) -> list[str]:
         if isinstance(source, dict):
             _extend_unique(columns, _string_list(source.get("columns")))
     return columns
+
+
+# 함수 설명: 직전 결과의 식별 컬럼과 현재 상세·이력 요청이 연결되는 경우에만 후속 판단 후보를 제공합니다.
+def _matched_previous_entity_identifiers(question: str, state: dict[str, Any]) -> list[str]:
+    normalized_question = _normalize(question)
+    if not normalized_question or not any(
+        _normalize(cue) in normalized_question for cue in ENTITY_DETAIL_CUES
+    ):
+        return []
+    current_data = _dict(state.get("current_data"))
+    result_columns = _string_list(current_data.get("columns")) or _string_list(
+        current_data.get("result_columns")
+    )
+    matched: list[str] = []
+    for column in result_columns:
+        upper = str(column or "").strip().upper()
+        if not upper.endswith(("_ID", "_NO")):
+            continue
+        if any(
+            _normalize(alias) in normalized_question for alias in _column_aliases(column)
+        ):
+            matched.append(column)
+    return matched
 
 
 # 함수 설명: `_column_aliases()`는 aliases 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.

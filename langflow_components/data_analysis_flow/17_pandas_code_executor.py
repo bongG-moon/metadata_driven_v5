@@ -117,6 +117,10 @@ SUPPORTED_FILTER_OPERATORS = {
     "in",
     "ne",
     "not_in",
+    "gt",
+    "ge",
+    "lt",
+    "le",
     "contains",
     "like",
     "starts_with",
@@ -220,6 +224,22 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             row_match_preamble,
             response_parse,
         )
+    metric_semantics_error = _metric_semantics_contract_error(next_payload, code)
+    if metric_semantics_error:
+        return _analysis_error(
+            next_payload,
+            "output_contract_violation",
+            metric_semantics_error,
+            code,
+            "",
+            llm_code,
+            filter_preamble,
+            filter_plan,
+            safe_imports,
+            row_match_plan,
+            row_match_preamble,
+            response_parse,
+        )
     try:
         import pandas as pd  # type: ignore
 
@@ -295,11 +315,15 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
         rows = _normalize_blank_dimension_values(rows, next_payload)
         rows = _normalize_missing_metric_values(rows, next_payload)
         missing_columns = _missing_required_output_columns(next_payload, columns)
+        missing_columns.extend(_missing_aggregate_grain_columns(next_payload, columns))
         missing_columns.extend(_missing_result_segment_columns(next_payload, columns))
         if missing_columns:
             raise OutputContractError(
                 "결과 계약에 필요한 컬럼이 누락되었습니다: " + ", ".join(missing_columns)
             )
+        ordering_error = _ordering_contract_error(next_payload, rows, columns)
+        if ordering_error:
+            raise OutputContractError(ordering_error)
         next_payload["_full_result_rows"] = rows
         next_payload["analysis"] = {
             "status": "ok",
@@ -657,6 +681,122 @@ def _guard_code(code: str) -> str:
     return ""
 
 
+# 함수 설명: trusted catalog의 비가산 metric 계약과 pandas 계획·코드의 집계 방식이 충돌하는지 검사합니다.
+def _metric_semantics_contract_error(payload: dict[str, Any], code: str) -> str:
+    semantics = _non_additive_metric_semantics(payload)
+    if not semantics:
+        return ""
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        aggregation_specs = [
+            {
+                "column": (
+                    step.get("agg_column")
+                    or step.get("aggregate_column")
+                    or step.get("aggregation_column")
+                    or step.get("metric_column")
+                ),
+                "method": (
+                    step.get("agg_method")
+                    or step.get("aggregate_method")
+                    or step.get("aggregation")
+                ),
+            }
+        ]
+        if isinstance(step.get("aggregations"), list):
+            aggregation_specs.extend(
+                item
+                for item in step["aggregations"]
+                if isinstance(item, dict)
+            )
+        for spec in aggregation_specs:
+            metric = str(spec.get("column") or "").strip()
+            method = str(spec.get("method") or "").strip().lower()
+            contract = semantics.get(metric.casefold())
+            if contract and method and method not in contract["allowed_rollups"]:
+                return f"비가산 metric {metric}에는 {method} 집계를 사용할 수 없습니다."
+    try:
+        tree = ast.parse(code or "")
+    except SyntaxError:
+        return ""
+    declared_metrics = {
+        item.casefold()
+        for item in _string_list(
+            (plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}).get("metric_columns")
+        )
+    }
+    active_metrics = {
+        metric: contract
+        for metric, contract in semantics.items()
+        if not declared_metrics or metric in declared_metrics
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function_name = (
+            node.func.attr.lower()
+            if isinstance(node.func, ast.Attribute)
+            else node.func.id.lower()
+            if isinstance(node.func, ast.Name)
+            else ""
+        )
+        string_values = {
+            str(item.value).strip().casefold()
+            for item in ast.walk(node)
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        }
+        if function_name in {"agg", "aggregate"} and "sum" in string_values:
+            matched = [metric for metric in active_metrics if metric in string_values]
+            if matched:
+                return f"비가산 metric {matched[0]}에는 sum 집계를 사용할 수 없습니다."
+        if function_name != "sum":
+            continue
+        matched = [metric for metric in active_metrics if metric in string_values]
+        if matched:
+            return f"비가산 metric {matched[0]}에는 sum 집계를 사용할 수 없습니다."
+        receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+        has_groupby = any(
+            isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Attribute)
+            and item.func.attr == "groupby"
+            for item in ast.walk(receiver)
+        ) if receiver is not None else False
+        has_column_selection = any(isinstance(item, ast.Subscript) for item in ast.walk(receiver)) if receiver is not None else False
+        if has_groupby and not has_column_selection and active_metrics:
+            metric = next(iter(active_metrics))
+            return f"비가산 metric {metric}을 포함한 groupby 결과 전체에 sum을 사용할 수 없습니다."
+    return ""
+
+
+# 함수 설명: retrieval job별 metric_semantics에서 additive=false metric과 허용 집계를 모읍니다.
+def _non_additive_metric_semantics(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    result: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        semantics = job.get("metric_semantics") if isinstance(job.get("metric_semantics"), dict) else {}
+        for metric, raw_contract in semantics.items():
+            if not isinstance(raw_contract, dict) or raw_contract.get("additive") is not False:
+                continue
+            allowed = {
+                str(item).strip().lower()
+                for item in _string_list(raw_contract.get("allowed_rollups"))
+                if str(item).strip()
+            }
+            default_rollup = str(raw_contract.get("default_rollup") or "").strip().lower()
+            if default_rollup:
+                allowed.add(default_rollup)
+            result[str(metric).strip().casefold()] = {
+                "allowed_rollups": allowed or {"mean"},
+            }
+    return result
+
+
 # 함수 설명: `_result_to_rows()`는 DataFrame·list·dict·scalar 실행 결과를 rows와 columns 계약으로 변환합니다.
 def _result_to_rows(result: Any, payload: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     if result is None:
@@ -888,6 +1028,77 @@ def _missing_required_output_columns(payload: dict[str, Any], result_columns: li
         if not _has_equivalent_column(result_columns, equivalents):
             missing.append(required_column)
     return missing
+
+
+# 함수 설명: 집계 결과가 선언된 분석 grain을 잃고 전체 한 행으로 축약되지 않았는지 검증합니다.
+def _missing_aggregate_grain_columns(payload: dict[str, Any], result_columns: list[str]) -> list[str]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    if str(contract.get("result_mode") or "").strip().lower() != "aggregate":
+        return []
+    missing: list[str] = []
+    for column in _string_list(contract.get("grain_columns")):
+        if not _has_equivalent_column(result_columns, _equivalent_column_names(column, payload)):
+            missing.append(column)
+    return missing
+
+
+# 함수 설명: 최종 결과가 구조화 ordering 계약의 컬럼·방향·limit를 실제로 지켰는지 검증합니다.
+def _ordering_contract_error(
+    payload: dict[str, Any],
+    rows: list[dict[str, Any]],
+    result_columns: list[str],
+) -> str:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    ordering = contract.get("ordering") if isinstance(contract.get("ordering"), dict) else {}
+    sort_by = str(ordering.get("sort_by") or "").strip()
+    if not sort_by:
+        return ""
+    actual_column = _equivalent_result_column(sort_by, result_columns, payload)
+    if not actual_column:
+        return f"정렬 기준 컬럼이 결과에 없습니다: {sort_by}"
+    try:
+        limit = max(0, int(ordering.get("limit") or 0))
+    except Exception:
+        limit = 0
+    if limit and len(rows) > limit:
+        return f"정렬 결과 limit={limit}을 초과했습니다: {len(rows)}건"
+    values: list[float] = []
+    for row in rows:
+        value = row.get(actual_column)
+        if value in (None, "") or isinstance(value, bool):
+            continue
+        try:
+            values.append(float(value))
+        except Exception:
+            return ""
+    if len(values) < 2:
+        return ""
+    order = str(ordering.get("order") or "desc").strip().lower()
+    pairs = zip(values, values[1:])
+    valid = (
+        all(left <= right for left, right in pairs)
+        if order == "asc"
+        else all(left >= right for left, right in pairs)
+    )
+    if not valid:
+        return f"결과가 ordering 계약({sort_by} {order})대로 정렬되지 않았습니다."
+    return ""
+
+
+# 함수 설명: canonical/physical alias 후보 중 실제 결과에 존재하는 컬럼명을 반환합니다.
+def _equivalent_result_column(
+    column: str,
+    result_columns: list[str],
+    payload: dict[str, Any],
+) -> str:
+    available = {str(item).strip().casefold(): str(item) for item in result_columns if str(item).strip()}
+    for candidate in _equivalent_column_names(column, payload):
+        matched = available.get(str(candidate).strip().casefold())
+        if matched:
+            return matched
+    return ""
 
 
 # 함수 설명: 여러 결과 구간을 합친 표가 구분과 구간 내 순위를 잃지 않았는지 검증합니다.
@@ -1250,7 +1461,7 @@ def _as_list(value: Any) -> list[Any]:
 def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
-    filter_plan: list[dict[str, Any]] = []
+    filter_plan_by_alias: dict[str, dict[str, Any]] = {}
     for job in jobs:
         if not isinstance(job, dict):
             continue
@@ -1268,8 +1479,43 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 mapping = job.get(mapping_key)
                 if isinstance(mapping, dict) and mapping:
                     item[mapping_key] = deepcopy(mapping)
-            filter_plan.append(item)
-    return filter_plan
+            filter_plan_by_alias[alias] = item
+    condition_resolution = plan.get("condition_resolution") if isinstance(plan.get("condition_resolution"), dict) else {}
+    effective_filters = (
+        condition_resolution.get("effective_filters")
+        if isinstance(condition_resolution.get("effective_filters"), dict)
+        else {}
+    )
+    for raw_alias, raw_item in effective_filters.items():
+        alias = str(raw_alias or "").strip()
+        if not alias or not isinstance(raw_item, dict):
+            continue
+        conditions = _filter_conditions(raw_item.get("filters"))
+        if not conditions:
+            continue
+        item = filter_plan_by_alias.setdefault(
+            alias,
+            {
+                "source_alias": alias,
+                "dataset_key": raw_item.get("dataset_key", ""),
+                "conditions": [],
+            },
+        )
+        existing = {
+            json.dumps(condition, ensure_ascii=False, sort_keys=True, default=str)
+            for condition in item.get("conditions", [])
+            if isinstance(condition, dict)
+        }
+        for condition in conditions:
+            marker = json.dumps(condition, ensure_ascii=False, sort_keys=True, default=str)
+            if marker not in existing:
+                item.setdefault("conditions", []).append(condition)
+                existing.add(marker)
+        for mapping_key in ("filter_mappings", "standard_column_aliases"):
+            mapping = raw_item.get(mapping_key)
+            if isinstance(mapping, dict) and mapping:
+                item[mapping_key] = deepcopy(mapping)
+    return list(filter_plan_by_alias.values())
 
 
 # 함수 설명: `_pandas_row_match_plan()`은 pandas 실행 계획의 reference 행 단위 조건을 source alias별 결정론적 매칭 계획으로 바꿉니다.
@@ -1358,10 +1604,14 @@ def _pandas_row_match_preamble(row_match_plan: list[dict[str, Any]]) -> str:
                 + ")"
             )
             continue
-        if len(match_columns) < 2:
+        minimum_columns = 1 if reference_alias == "previous_result" else 2
+        if len(match_columns) < minimum_columns:
             lines.append(
                 "raise Exception("
-                + repr("apply_row_match_groups에는 서로 다른 match_columns가 2개 이상 필요합니다.")
+                + repr(
+                    "apply_row_match_groups에는 previous_result 기준 1개 이상, "
+                    "일반 reference 기준 2개 이상의 match_columns가 필요합니다."
+                )
                 + ")"
             )
             continue
@@ -1412,8 +1662,11 @@ def _pandas_row_match_preamble(row_match_plan: list[dict[str, Any]]) -> str:
             )
         lines.extend(
             [
-                f"if len({pairs_var}) < 2:",
-                "    raise Exception('apply_row_match_groups에서 중복을 제외한 실제 매칭 컬럼이 2개 미만입니다.')",
+                f"if len({pairs_var}) < {minimum_columns}:",
+                (
+                    "    raise Exception('apply_row_match_groups에서 중복을 제외한 실제 매칭 컬럼이 "
+                    + f"{minimum_columns}개 미만입니다.')"
+                ),
                 f"{groups_var} = {{",
                 "    tuple(_normalize_row_match_value(row.get(pair[2])) for pair in " + pairs_var + ")",
                 f"    for row in {reference_var}.to_dict(orient='records')",
@@ -1600,6 +1853,21 @@ def _condition_code(
             lines.append(f"        {df_var} = {df_var}[~{mask_var}]")
         else:
             lines.append(f"        {df_var} = {df_var}[~{df_var}[{col_var}].isin({values_var})]")
+    elif operator in {"gt", "ge", "lt", "le"}:
+        numeric_series_var = f"_filter_numeric_series_{job_index}_{condition_index}"
+        numeric_value_var = f"_filter_numeric_value_{job_index}_{condition_index}"
+        lines.append(f"        {numeric_series_var} = pd.to_numeric({df_var}[{col_var}], errors='coerce')")
+        lines.append(f"        {numeric_value_var} = pd.to_numeric(pd.Series([{values_var}[0]]), errors='coerce').iloc[0]")
+        lines.append(f"        if pd.notna({numeric_value_var}):")
+        comparison = {
+            "gt": ">",
+            "ge": ">=",
+            "lt": "<",
+            "le": "<=",
+        }[operator]
+        lines.append(f"            {df_var} = {df_var}[{numeric_series_var} {comparison} {numeric_value_var}]")
+        lines.append("        else:")
+        lines.append(f"            {df_var} = {df_var}.iloc[0:0]")
     elif operator in {"contains", "like"}:
         lines.append(f"        {mask_var} = {df_var}[{col_var}].astype(str).str.contains(str({values_var}[0]), case=False, na=False, regex=False)")
         lines.append(f"        for _filter_value in {values_var}[1:]:")
@@ -1631,6 +1899,16 @@ def _normalize_filter_operator(value: Any) -> str:
         "=": "eq",
         "==": "eq",
         "!=": "ne",
+        ">": "gt",
+        ">=": "ge",
+        "gte": "ge",
+        "greater_than": "gt",
+        "greater_than_or_equal": "ge",
+        "<": "lt",
+        "<=": "le",
+        "lte": "le",
+        "less_than": "lt",
+        "less_than_or_equal": "le",
         "not in": "not_in",
         "notin": "not_in",
         "starts": "starts_with",

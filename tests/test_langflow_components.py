@@ -1056,6 +1056,7 @@ def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
     assert "compare_group_attributes" in pandas_step_schema["operation"]
     assert "find_duplicate_groups" in pandas_step_schema["operation"]
     assert pandas_step_schema["comparison_rule"] == "any|all"
+    assert pandas_step_schema["aggregations"][0]["method"].endswith("collect_unique")
     assert "context_columns" not in schema["intent_plan"]["output_contract"]
     assert schema["intent_plan"]["output_contract"]["result_segments"][0]["operation"] == "top_n|bottom_n|filter|comparison"
     assert state["request_context"] == {
@@ -1119,7 +1120,8 @@ def test_followup_hint_builder_detects_date_change_followup_without_pkg_fallback
     assert hint["reuse_strategy_hint"] == "previous_intent_with_new_retrieval"
     assert hint["changed_conditions_hint"]["date"]["resolved_value"] == "20260706"
     assert "analysis_filters" in hint["inheritance_candidates"]
-    previous_job = hint["previous_context"]["last_intent_plan"]["retrieval_jobs"][0]
+    assert "previous_context" not in hint
+    previous_job = result["state"]["last_intent_plan"]["retrieval_jobs"][0]
     assert previous_job["filters"]["OPER_NAME"]["value"] == ["W/B1", "W/B2"]
 
 
@@ -1135,6 +1137,64 @@ def test_followup_hint_builder_keeps_complete_question_as_new_analysis():
 
     result = hint_builder.build_followup_hint(payload)
     hint = result["followup_hint"]
+
+    assert hint["followup_candidate"] is False
+    assert hint["request_scope_hint"] == "new_analysis"
+
+
+def test_followup_hint_builder_exposes_previous_entity_schema_for_detail_requery_candidate():
+    hint_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
+    intent_variables = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "02_intent_variables_builder.py"
+    )
+    payload = {
+        "request": {
+            "question": "HOLD 시간이 가장 오래된 LOT의 이력을 보여줘",
+            "reference_date": "20260729",
+        },
+        "state": {
+            "last_question": "W/B공정 현재 HOLD LOT와 HOLD사유 알려줘",
+            "current_data": {
+                "row_count": 2,
+                "columns": ["LOT_ID", "OPER_NAME", "HOLD_REASON"],
+                "data_ref": {"ref_id": "result:s1:hold"},
+            },
+            "last_intent_plan": {
+                "analysis_kind": "current_hold_lots",
+                "retrieval_jobs": [{"dataset_key": "lot_status", "source_alias": "lot_status"}],
+            },
+        },
+    }
+
+    result = hint_builder.build_followup_hint(payload)
+    hint = result["followup_hint"]
+    state_summary = json.loads(intent_variables.build_variables(result, {})["state_summary"])
+
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "followup_requery"
+    assert hint["reuse_strategy_hint"] == "previous_result"
+    assert hint["matched_cues"]["previous_entity_identifiers"] == ["LOT_ID"]
+    assert state_summary["state"]["current_data"]["columns"] == ["LOT_ID", "OPER_NAME", "HOLD_REASON"]
+
+
+def test_followup_hint_builder_does_not_use_source_only_identifier_as_entity_continuation():
+    hint_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py")
+    payload = {
+        "request": {
+            "question": "LOT 이력을 보여줘",
+            "reference_date": "20260729",
+        },
+        "state": {
+            "last_question": "오늘 생산량 알려줘",
+            "current_data": {
+                "row_count": 2,
+                "columns": ["TECH", "PRODUCTION"],
+                "source_columns_by_alias": {"production": ["TECH", "LOT_ID", "PRODUCTION"]},
+            },
+        },
+    }
+
+    hint = hint_builder.build_followup_hint(payload)["followup_hint"]
 
     assert hint["followup_candidate"] is False
     assert hint["request_scope_hint"] == "new_analysis"
@@ -1696,6 +1756,22 @@ def _dummy_shape_params(dataset_key):
     return {"DATE": "20260701"}
 
 
+def test_dummy_lot_status_and_history_share_a_wb_hold_entity():
+    dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
+
+    lot_rows = dummy._lot_status_rows()
+    history_rows = dummy._hold_history_rows()
+
+    wb_hold_ids = {
+        row["LOT_ID"]
+        for row in lot_rows
+        if row.get("OPER_NAME") == "W/B1" and row.get("HOLD_STAT") == "OnHold"
+    }
+    history_ids = {row["LOT_ID"] for row in history_rows}
+    assert wb_hold_ids
+    assert wb_hold_ids.issubset(history_ids)
+
+
 def test_langflow_dummy_data_applies_required_params_and_preserves_pandas_filters():
     dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
     payload = dummy.retrieve_dummy_data(
@@ -1802,37 +1878,65 @@ def test_representative_questions_have_answerable_dummy_data_coverage():
     assert results[1]["preview_rows"][0]["MCP_NO"].startswith("L-267")
     assert results[8]["preview_rows"][0]["DEVICE"] == "DEV-RG-DDR4"
     assert results[9]["preview_rows"][0]["DEVICE"] == "DEV-SP-DDR5"
-    assert results[12]["preview_rows"][0]["MCP_NO"] == "L-218K8H"
-    assert results[13]["preview_rows"][0]["DEVICE"] == "DEV-DA-GDDR6"
-    assert results[26]["row_count"] == 4
+    assert set(results) == set(range(1, 32))
+    assert all(row["DA_WIP"] == 0 for row in results[11]["preview_rows"])
+    jobs_12 = results[12]["intent_plan"]["retrieval_jobs"]
+    assert jobs_12[0]["filters"]["OPER_NAME"]["value"] == ["FCB1", "FCB2", "FCB/H"]
+    assert jobs_12[1]["filters"]["OPER_NAME"]["value"] == "W/B2"
+    assert {row["LOT_ID"] for row in results[13]["preview_rows"]} == {
+        "T1234567GEN1",
+        "V-WB3-HIGH-TAT",
+    }
+    assert results[14]["used_helpers"] == ["filter_ordered_range"]
+    assert {row["LOT_ID"] for row in results[14]["preview_rows"]} == {
+        "V-RANGE-MIDDLE-HOLD",
+        "V-RANGE-START-HOLD",
+    }
+    assert results[15]["row_count"] == 13
+    assert results[15]["used_helpers"] == ["filter_ordered_range"]
+    assert {row["OPER_NAME"] for row in results[16]["preview_rows"]} == {"D/A5", "W/B1"}
+    assert {row["OPER_NAME"] for row in results[17]["preview_rows"]} == {"D/A5", "W/B1"}
+    assert {row["OPER_NAME"] for row in results[18]["preview_rows"]} == {"D/A5", "D/S1"}
+    assert {row["OPER_NAME"] for row in results[19]["preview_rows"]} == {
+        "FCB1",
+        "FCB2",
+        "FCB/H",
+    }
+    assert {row["OPER_NAME"] for row in results[20]["preview_rows"]} == {"D/A1", "D/A2"}
+    assert results[21]["row_count"] == 4
     assert any(
         row["DEVICE"] == "DEV-WBM-BLANK"
         and row["TECH"] == ""
         and row["TOTAL_PRODUCTION"] == 37
-        for row in results[26]["preview_rows"]
+        for row in results[21]["preview_rows"]
     )
     assert any(
         row["DEVICE"] == "DEV-WBM-NULL-QTY" and row["TOTAL_PRODUCTION"] == 0
-        for row in results[26]["preview_rows"]
+        for row in results[21]["preview_rows"]
     )
-    assert results[27]["columns"] == ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]
-    assert results[28]["row_count"] == 13
-    assert results[28]["used_helpers"] == ["filter_ordered_range"]
-    assert {row["OPER_NAME"] for row in results[28]["preview_rows"]}.issubset(
-        {"D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6", "D/S1", "W/B1", "W/B2", "W/B3"}
-    )
-    assert results[29]["row_count"] == 6
-    assert results[30]["preview_rows"][0]["DEVICE"] == "DEV-SP-DDR5"
-    assert results[30]["preview_rows"][0]["ORG"] == "4"
-    assert results[30]["preview_rows"][0]["PKG_TYPE1"] == "FCBGA"
-    assert results[30]["preview_rows"][0]["LEAD"] == "78"
-    assert "DEV-WBM-B-SHIFT-DECOY" not in {
-        row["DEVICE"] for row in results[31]["preview_rows"]
+    assert {row["DEVICE"] for row in results[22]["preview_rows"]} == {
+        "DEV-COMPARE-BASE",
+        "DEV-COMPARE-MODE",
+        "DEV-COMPARE-PKG1",
+        "DEV-COMPARE-LEAD",
     }
-    assert results[32]["preview_rows"] == [
-        {"OPER_SEQ": "260", "OPER_NAME": "W/BM", "TOTAL_PRODUCTION": 1000.0}
-    ]
-    assert results[33]["preview_rows"][0]["EQP_ID"] == "EQP002"
+    assert {row["UPH"] for row in results[23]["preview_rows"]} == {140.0, 173.4}
+    assert results[24]["used_helpers"] == ["match_product_tokens"]
+    assert {row["UPH"] for row in results[24]["preview_rows"]} == {123.4, 97.5}
+    assert results[25]["used_helpers"] == ["match_product_tokens"]
+    assert results[25]["preview_rows"] == [{"OPER_NAME": "W/B1", "UPH": 112.0}]
+    assert results[26]["columns"] == ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]
+    assert results[27]["preview_rows"][0]["EQP_ID"] == "EQP002"
+    assert results[28]["preview_rows"][0]["LOT_ID"] == "T1234567GEN1"
+    assert results[29]["row_count"] == 3
+    assert {row["HOLD_CD"] for row in results[30]["preview_rows"]} == {
+        "H001",
+        "H-DA5",
+        "H-DS1",
+    }
+    assert results[31]["preview_rows"][0]["MCP_NO"] == ""
+    assert results[31]["preview_rows"][0]["EQUIP_COUNT"] == 2
+    assert results[31]["preview_rows"][0]["EQUIP_LIST"] == "EQP-NULL-1, EQP-NULL-2"
 
 
 def test_data_analysis_langflow_dummy_path_reaches_api_response():
@@ -2653,6 +2757,149 @@ def test_answer_grounding_summarizes_multi_row_comparison_without_first_row_bias
     assert result["trace"]["inspection"]["answer_grounding"]["unsupported_numeric_claims"] == ["19.2K"]
 
 
+def test_v5_output_contract_preserves_primary_metric_ordering_and_context_labels():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    payload = {
+        "request": {"question": "6/24일 투입 실적 대비 D/S1, DA1공정에서 WIP 많은 제품 알려줘"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "production_and_wip_by_product",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [
+                {
+                    "operation": "sort_and_top_n",
+                    "sort_by": "WIP",
+                    "order": "desc",
+                }
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["TECH", "DEN"],
+                "metric_columns": ["PRODUCTION", "WIP"],
+                "primary_metric": "WIP",
+                "ordering": {"sort_by": "WIP", "order": "desc"},
+                "column_labels": {
+                    "PRODUCTION": "6/24 INPUT 투입 실적",
+                    "WIP": "D/S1·D/A1 공정 재공 수량",
+                },
+            },
+        }
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(payload, llm_response)
+    contract = normalized["intent_plan"]["output_contract"]
+
+    assert contract["primary_metric"] == "WIP"
+    assert contract["ordering"] == {"sort_by": "WIP", "order": "desc"}
+    assert contract["column_labels"]["PRODUCTION"] == "6/24 INPUT 투입 실적"
+    assert contract["column_labels"]["WIP"] == "D/S1·D/A1 공정 재공 수량"
+
+
+def test_v5_pandas_executor_enforces_aggregate_grain_and_ordering_contract():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{"dataset_key": "metrics", "source_alias": "metrics"}],
+            "pandas_execution_plan": [
+                {"operation": "sort_and_top_n", "sort_by": "WIP", "order": "desc"}
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["PRODUCT"],
+                "metric_columns": ["PRODUCTION", "WIP"],
+                "primary_metric": "WIP",
+                "ordering": {"sort_by": "WIP", "order": "desc"},
+            },
+        },
+        "runtime_sources": {
+            "metrics": [
+                {"PRODUCT": "A", "PRODUCTION": 10, "WIP": 3},
+                {"PRODUCT": "B", "PRODUCTION": 7, "WIP": 9},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    missing_grain = executor.execute_pandas_code(
+        payload,
+        {"code": "result = pd.DataFrame([{'PRODUCTION': 17, 'WIP': 12}])"},
+    )
+    assert missing_grain["analysis"]["error"]["type"] == "output_contract_violation"
+    assert "PRODUCT" in missing_grain["analysis"]["error"]["message"]
+
+    unsorted = executor.execute_pandas_code(
+        payload,
+        {"code": "result = sources['metrics'].copy()"},
+    )
+    assert unsorted["analysis"]["error"]["type"] == "output_contract_violation"
+    assert "정렬되지 않았습니다" in unsorted["analysis"]["error"]["message"]
+
+    sorted_result = executor.execute_pandas_code(
+        payload,
+        {"code": "result = sources['metrics'].sort_values('WIP', ascending=False).reset_index(drop=True)"},
+    )
+    assert sorted_result["analysis"]["status"] == "ok"
+    assert [row["PRODUCT"] for row in sorted_result["data"]["rows"]] == ["B", "A"]
+
+
+def test_v5_answer_grounding_uses_presence_semantics_product_grain_and_context_labels():
+    answer_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py"
+    )
+    payload = {
+        "request": {"question": "현시간 기준 INPUT 실적은 있으나 D/A 공정 WIP 없는 제품 확인해줘"},
+        "intent_plan": {
+            "pandas_execution_plan": [
+                {
+                    "operation": "compare_presence",
+                    "left_source_alias": "production",
+                    "right_source_alias": "wip",
+                }
+            ],
+            "resolved_grain_plan": {
+                "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
+            },
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"],
+                "metric_columns": ["PRODUCTION", "WIP"],
+                "primary_metric": "WIP",
+                "column_labels": {
+                    "PRODUCTION": "INPUT 투입 실적",
+                    "WIP": "D/A 공정 재공 수량",
+                },
+            },
+        },
+        "analysis": {"status": "ok"},
+        "data": {
+            "columns": ["TECH", "DEN", "PRODUCTION", "WIP"],
+            "rows": [
+                {"TECH": "A", "DEN": "16G", "PRODUCTION": 10, "WIP": 0},
+                {"TECH": "B", "DEN": "32G", "PRODUCTION": 7, "WIP": 0},
+            ],
+            "row_count": 2,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = answer_builder.build_answer_response(
+        payload,
+        "생산량이 가장 많은 공정은 잘못된 999입니다.",
+    )
+
+    assert "존재·부재 조건을 만족한 제품은 총 2건" in result["answer_message"]
+    assert "가장 많은 공정" not in result["answer_message"]
+    labels = result["answer_sections"]["result_table"]["column_labels"]
+    assert labels["PRODUCTION"] == "INPUT 투입 실적"
+    assert labels["WIP"] == "D/A 공정 재공 수량"
+
+
 def test_intent_normalizer_parses_langflow_message_text_with_nested_json():
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
     payload = {"request": {"question": "오늘 da공정 생산량 상위 3개 제품 알려줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
@@ -2907,6 +3154,67 @@ def test_v5_process_scope_alignment_preserves_distinct_multi_source_filters():
         {"source_alias": "input_actual", "values": ["INPUT"]},
         {"source_alias": "da_wip", "values": da_processes},
     ]
+
+
+def test_v5_process_scope_alignment_expands_registered_group_alias_value():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    wb_processes = ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"]
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "WB공정 L-217제품 차수별, 장비 기종별 UPH 알려줘"
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "uph_by_process_sequence_and_equipment_model",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "eqp_uph",
+                        "source_alias": "eqp_uph",
+                        "filters": {
+                            "OPER_NAME": {"operator": "eq", "value": "WB"}
+                        },
+                    }
+                ],
+                "pandas_execution_plan": [],
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [
+                    {
+                        "section": "process_groups",
+                        "key": "WB",
+                        "payload": {
+                            "display_name": "W/B",
+                            "aliases": ["WB", "W/B", "WB공정", "W/B공정"],
+                            "field": "OPER_NAME",
+                            "processes": wb_processes,
+                        },
+                    }
+                ],
+                "table_catalog_items": [],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    assert normalized["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": wb_processes,
+    }
+    correction = normalized["trace"]["inspection"]["intent"]["process_group_field_guard"][
+        "corrections"
+    ][0]
+    assert correction["correction_type"] == "specific_process_scope"
+    assert correction["from_values"] == ["WB"]
+    assert correction["to_values"] == wb_processes
 
 
 def test_v5_process_scope_alignment_expands_group_only_within_its_source():
@@ -4557,6 +4865,69 @@ def test_intent_and_pandas_variables_expose_selected_function_case_context():
     assert context["selected_steps"][0]["input_text"] == "RG 32G DDR4 FBGA 96 DDP"
 
 
+def test_intent_normalizer_removes_only_filters_owned_by_product_token_helper():
+    intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {"question": "WB공정 L-217제품 차수별, 장비 기종별 UPH 알려줘"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "uph_by_product_model_recipe",
+                "pandas_function_case": {
+                    "key": "product_token_match",
+                    "function_name": "match_product_tokens",
+                    "input_text": "L-217",
+                    "source_alias": "eqp_uph",
+                },
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "eqp_uph",
+                        "source_alias": "eqp_uph",
+                        "filters": {
+                            "OPER_NAME": {
+                                "operator": "in",
+                                "value": ["W/B1", "W/B2"],
+                            },
+                            "MCP_NO": {"operator": "eq", "value": "L-217"},
+                            "TSV_DIE_TYP": {
+                                "operator": "not_blank",
+                                "value": "",
+                            },
+                        },
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "apply_pandas_function_case",
+                        "function_name": "match_product_tokens",
+                        "input_text": "L-217",
+                        "source_alias": "eqp_uph",
+                    }
+                ],
+            }
+        },
+    )
+
+    filters = normalized["intent_plan"]["retrieval_jobs"][0]["filters"]
+    assert "MCP_NO" not in filters
+    assert filters["OPER_NAME"]["value"] == ["W/B1", "W/B2"]
+    assert filters["TSV_DIE_TYP"]["operator"] == "not_blank"
+    removed = normalized["trace"]["inspection"]["intent"][
+        "function_owned_filter_normalization"
+    ]["removed"]
+    assert removed == [
+        {
+            "source_alias": "eqp_uph",
+            "field": "MCP_NO",
+            "function_name": "match_product_tokens",
+            "function_case_key": "product_token_match",
+        }
+    ]
+
+
 def test_multiple_function_cases_expose_multiple_helpers_and_dummy_runtime():
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
     pandas_variables = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "15_pandas_variables_builder.py")
@@ -5385,6 +5756,479 @@ def test_previous_result_row_match_does_not_fallback_to_model_columns_without_st
     ]
 
 
+def test_previous_result_single_primary_key_supports_followup_requery_and_row_match():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    pandas_executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "request": {"question": "HOLD 시간이 가장 오래된 LOT의 이력을 보여줘"},
+        "state": {
+            "last_intent_plan": {
+                "analysis_kind": "current_hold_lots",
+                "resolved_grain_plan": {
+                    "canonical_columns": ["LOT_ID"],
+                    "grain_columns": ["LOT_ID"],
+                },
+                "output_contract": {
+                    "result_mode": "entity_list",
+                    "grain_columns": ["LOT_ID"],
+                },
+            },
+            "current_data": {
+                "columns": ["LOT_ID", "HOLD_REASON"],
+                "row_count": 2,
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "hold_history_for_previous_lots",
+                "request_scope": "followup_requery",
+                "reference_mode": "previous_result_rows",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "hold_history",
+                        "source_alias": "hold_history",
+                        "required_params": {},
+                        "filters": {},
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "sort_and_top_n",
+                        "source_alias": "hold_history",
+                        "sort_by": "HOLD_TM",
+                        "order": "asc",
+                        "limit": 1,
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "entity_list",
+                    "required_columns": ["LOT_ID", "HOLD_TM", "HOLD_DESC"],
+                    "ordering": {"sort_by": "HOLD_TM", "order": "asc", "limit": 1},
+                },
+            }
+        },
+    )
+
+    plan = normalized["intent_plan"]
+    assert plan.get("validation_errors", []) == []
+    assert plan["pandas_execution_plan"][0]["operation"] == "apply_row_match_groups"
+    assert plan["pandas_execution_plan"][0]["match_columns"] == ["LOT_ID"]
+    assert normalized["trace"]["inspection"]["intent"]["row_match_guard"]["status"] == "applied"
+
+    normalized["runtime_sources"] = {
+        "previous_result": [
+            {"LOT_ID": "LOT-1"},
+            {"LOT_ID": "LOT-2"},
+        ],
+        "hold_history": [
+            {"LOT_ID": "LOT-1", "HOLD_TM": "2026-07-01 08:00", "HOLD_DESC": "old"},
+            {"LOT_ID": "LOT-2", "HOLD_TM": "2026-07-02 08:00", "HOLD_DESC": "new"},
+            {"LOT_ID": "LOT-X", "HOLD_TM": "2026-06-01 08:00", "HOLD_DESC": "exclude"},
+        ],
+    }
+    result = pandas_executor.execute_pandas_code(
+        normalized,
+        {
+            "code": (
+                "result = sources['hold_history'].sort_values('HOLD_TM', ascending=True)"
+                ".head(1).reset_index(drop=True)"
+            )
+        },
+    )
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["rows"][0]["LOT_ID"] == "LOT-1"
+
+
+def test_previous_result_entity_identifier_hint_completes_row_match_after_llm_selects_reference_rows():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    payload = {
+        "request": {"question": "HOLD 시간이 가장 오래된 LOT의 이력을 보여줘"},
+        "state": {
+            "last_intent_plan": {
+                "analysis_kind": "current_hold_lots",
+                "output_contract": {
+                    "result_mode": "detail",
+                    "required_columns": ["LOT_ID", "HOLD_REASON"],
+                },
+            },
+            "current_data": {
+                "columns": ["LOT_ID", "HOLD_REASON"],
+                "row_count": 1,
+            },
+        },
+        "followup_hint": {
+            "followup_candidate": True,
+            "matched_cues": {
+                "previous_entity_identifiers": ["LOT_ID"],
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "hold_history_for_previous_lots",
+                "request_scope": "followup_requery",
+                "reference_mode": "previous_result_rows",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "hold_history",
+                        "source_alias": "hold_history",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "sort_and_top_n",
+                        "source_alias": "hold_history",
+                        "sort_by": "HOLD_TM",
+                        "order": "desc",
+                        "limit": 1,
+                    }
+                ],
+            }
+        },
+    )
+
+    plan = normalized["intent_plan"]
+    assert plan.get("validation_errors", []) == []
+    assert plan["pandas_execution_plan"][0] == {
+        "operation": "apply_row_match_groups",
+        "source_alias": "hold_history",
+        "reference_source_alias": "previous_result",
+        "match_columns": ["LOT_ID"],
+        "blank_policy": "normalize_blank",
+    }
+    guard = normalized["trace"]["inspection"]["intent"]["row_match_guard"]
+    assert guard["status"] == "applied"
+    assert (
+        guard["steps"][0]["match_columns_source"]
+        == "followup_hint_previous_entity_identifiers"
+    )
+
+
+def test_previous_source_effective_filters_are_normalized_and_applied_before_llm_code():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    pandas_executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "request": {"question": "위 결과를 제품별로 보여줘, 공정 조건도 유지해줘"},
+        "state": {
+            "last_intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "wip_today",
+                        "source_alias": "wip_data",
+                        "filters": {
+                            "OPER_NAME": {
+                                "operator": "in",
+                                "value": ["W/B1", "W/B2"],
+                            }
+                        },
+                    }
+                ]
+            }
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    metadata_candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "wip_today",
+                "payload": {
+                    "filter_mappings": {"OPER_NAME": ["OPER_NM"]},
+                    "standard_column_aliases": {"DEN": ["DENSITY"]},
+                },
+            }
+        ]
+    }
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "wip_by_product",
+                "request_scope": "followup_transform",
+                "reference_mode": "previous_source",
+                "condition_resolution": {
+                    "inherited": {"process": ["W/B1", "W/B2"]},
+                    "effective_filters": {
+                        "wip_data": {
+                            "dataset_key": "wip_today",
+                            "filters": {
+                                "OPER_NAME": {
+                                    "operator": "in",
+                                    "value": ["W/B1", "W/B2"],
+                                }
+                            },
+                        }
+                    },
+                },
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "wip_data",
+                        "group_by": ["TECH"],
+                        "agg_column": "WIP",
+                        "agg_method": "sum",
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["TECH"],
+                    "metric_columns": ["WIP"],
+                },
+            }
+        },
+        metadata_candidates,
+    )
+    effective = normalized["intent_plan"]["condition_resolution"]["effective_filters"]["wip_data"]
+    assert effective["filter_mappings"] == {"OPER_NAME": ["OPER_NM"]}
+
+    normalized["runtime_sources"] = {
+        "wip_data": [
+            {"OPER_NM": "W/B1", "TECH": "A", "WIP": 3},
+            {"OPER_NM": "W/B2", "TECH": "A", "WIP": 4},
+            {"OPER_NM": "D/A1", "TECH": "A", "WIP": 100},
+        ]
+    }
+    result = pandas_executor.execute_pandas_code(
+        normalized,
+        {
+            "code": (
+                "result = sources['wip_data'].groupby('TECH', dropna=False)['WIP']"
+                ".sum().reset_index()"
+            )
+        },
+    )
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["rows"] == [{"TECH": "A", "WIP": 7}]
+    filter_plan = result["trace"]["inspection"]["pandas_execution"]["pandas_filter_plan"]
+    assert filter_plan[0]["source_alias"] == "wip_data"
+    assert filter_plan[0]["conditions"][0]["field"] == "OPER_NAME"
+
+
+def test_function_case_execution_contract_defers_source_filters_without_function_name_hardcoding():
+    normalizer = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04_intent_plan_normalizer.py"
+    )
+    payload = {"request": {"question": "custom helper 뒤에 상태 조건을 적용해줘"}}
+    metadata_candidates = {
+        "domain_items": [
+            {
+                "section": "pandas_function_cases",
+                "key": "custom_before_filter",
+                "payload": {
+                    "function_name": "custom_helper",
+                    "execution_contract": {
+                        "source_filter_order": "after_helper",
+                    },
+                },
+            }
+        ],
+        "table_catalog_items": [],
+        "main_flow_filters": [],
+    }
+    result = normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "custom_helper_filter_order",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "custom_data",
+                        "source_alias": "custom_source",
+                        "required_params": {},
+                        "filters": {
+                            "STATUS": {
+                                "operator": "eq",
+                                "value": "ACTIVE",
+                            }
+                        },
+                    }
+                ],
+                "condition_resolution": {
+                    "effective_filters": {
+                        "custom_source": {
+                            "dataset_key": "custom_data",
+                            "filters": {
+                                "STATUS": {
+                                    "operator": "eq",
+                                    "value": "ACTIVE",
+                                }
+                            },
+                        }
+                    }
+                },
+                "pandas_function_cases": [
+                    {
+                        "key": "custom_before_filter",
+                        "function_name": "custom_helper",
+                        "input_text": "custom",
+                        "source_alias": "custom_source",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "apply_filters",
+                        "source_alias": "custom_source",
+                    },
+                    {
+                        "operation": "apply_pandas_function_case",
+                        "function_case_key": "custom_before_filter",
+                        "function_name": "custom_helper",
+                        "input_text": "custom",
+                        "source_alias": "custom_source",
+                    },
+                ],
+            }
+        },
+        metadata_candidates,
+    )
+    plan = result["intent_plan"]
+
+    assert plan["retrieval_jobs"][0]["filters"] == {}
+    assert "effective_filters" not in plan["condition_resolution"]
+    assert plan["pandas_function_cases"][0]["execution_contract"] == {
+        "source_filter_order": "after_helper",
+    }
+    assert [
+        step["operation"]
+        for step in plan["pandas_execution_plan"][:2]
+    ] == ["apply_pandas_function_case", "apply_filters"]
+    assert plan["pandas_execution_plan"][1] == {
+        "step": "Function Case 이후 필터 적용",
+        "operation": "apply_filters",
+        "source_alias": "custom_source",
+        "field": "STATUS",
+        "operator": "eq",
+        "value": "ACTIVE",
+    }
+    applied = result["trace"]["inspection"]["intent"][
+        "function_case_execution_contracts"
+    ]["applied"]
+    assert applied == [
+        {
+            "source_alias": "custom_source",
+            "function_case_key": "custom_before_filter",
+            "function_name": "custom_helper",
+            "source_filter_order": "after_helper",
+            "deferred_filter_fields": ["STATUS"],
+        }
+    ]
+
+
+def test_previous_source_llm_condition_decisions_compile_to_final_effective_filters():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    payload = {
+        "state": {
+            "last_intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production",
+                        "source_alias": "production_source",
+                    }
+                ]
+            }
+        }
+    }
+    metadata_candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "production",
+                "payload": {
+                    "filter_mappings": {
+                        "MODE": ["MODE"],
+                        "PKG_TYPE1": ["PKG1"],
+                        "MCP_NO": ["MCP_NO"],
+                    }
+                },
+            }
+        ]
+    }
+    result = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "production_by_pop_product",
+                "request_scope": "followup_transform",
+                "reference_mode": "previous_source",
+                "retrieval_jobs": [],
+                "condition_resolution": {
+                    "inherited": {
+                        "effective_filters": {
+                            "production_source": {
+                                "dataset_key": "production",
+                                "filters": {
+                                    "MODE": {
+                                        "operator": "starts_with",
+                                        "value": "LP",
+                                    },
+                                    "PKG_TYPE1": {
+                                        "operator": "in",
+                                        "value": ["LFBGA", "UFBGA"],
+                                    },
+                                    "MCP_NO": {
+                                        "operator": "null_or_empty",
+                                    },
+                                },
+                            }
+                        }
+                    },
+                    "dropped": {
+                        "filters": {
+                            "production_source": ["MCP_NO"],
+                        }
+                    },
+                    "new": {
+                        "filters": {
+                            "production_source": {
+                                "MCP_NO": {
+                                    "operator": "not_blank",
+                                }
+                            }
+                        }
+                    },
+                },
+                "pandas_execution_plan": [],
+            }
+        },
+        metadata_candidates,
+    )
+    effective = result["intent_plan"]["condition_resolution"]["effective_filters"][
+        "production_source"
+    ]
+
+    assert effective["filters"] == {
+        "MODE": {"operator": "starts_with", "value": "LP"},
+        "PKG_TYPE1": {"operator": "in", "value": ["LFBGA", "UFBGA"]},
+        "MCP_NO": {"operator": "not_blank"},
+    }
+    assert effective["filter_mappings"]["PKG_TYPE1"] == ["PKG1"]
+
+
 def test_previous_result_row_match_is_added_after_intent_selects_previous_result_rows():
     followup_hint = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
@@ -5882,6 +6726,105 @@ def test_followup_scope_uses_requery_for_required_param_changes_and_new_sources(
             "reason": "followup_reuses_previous_source_without_retrieval",
         }
     )
+
+
+def test_followup_contract_completion_uses_reusable_previous_source_after_llm_selects_followup_scope():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "pop제품은어땠어?"},
+            "followup_hint": {
+                "followup_candidate": True,
+                "request_scope_hint": "followup_transform",
+                "reuse_strategy_hint": "previous_source",
+                "reusable_previous_source_aliases": ["production_history"],
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "pop_product_performance_by_product",
+                "request_scope": "followup_requery",
+                "reference_mode": "none",
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "apply_filters",
+                        "source_alias": "production_history",
+                    },
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "production_history",
+                    },
+                ],
+            }
+        },
+    )
+
+    plan = normalized["intent_plan"]
+    assert plan["request_scope"] == "followup_transform"
+    assert plan["reference_mode"] == "previous_source"
+    assert plan["reuse_strategy"] == "previous_source"
+    assert plan.get("validation_errors", []) == []
+    reference = normalized["trace"]["inspection"]["intent"]["reference_mode_guard"]
+    assert reference["status"] == "valid"
+    assert reference["source"] == "followup_contract_completion"
+
+
+def test_output_contract_preserves_all_declared_multi_aggregation_outputs():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "제품별 장비 대수와 장비 LIST를 알려줘"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_count_and_list_by_product",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_assign",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "equipment_assign",
+                        "group_by": ["TECH"],
+                        "aggregations": [
+                            {
+                                "column": "EQUIP_ID",
+                                "method": "nunique",
+                                "output_column": "EQUIP_COUNT",
+                            },
+                            {
+                                "column": "EQUIP_ID",
+                                "method": "collect_unique",
+                                "output_column": "EQUIP_LIST",
+                            },
+                        ],
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["TECH"],
+                    "required_columns": ["TECH", "EQUIP_COUNT"],
+                    "metric_columns": ["EQUIP_COUNT"],
+                },
+            }
+        },
+    )
+
+    contract = normalized["intent_plan"]["output_contract"]
+    assert contract["required_columns"] == ["TECH", "EQUIP_COUNT", "EQUIP_LIST"]
+    assert contract["metric_columns"] == ["EQUIP_COUNT"]
 
 
 def test_intent_normalizer_rejects_previous_filters_without_retrieval_jobs():
@@ -6716,6 +7659,218 @@ def test_langflow_dummy_fixture_has_auxiliary_multirow_join_controls():
     ]
 
 
+def test_langflow_dummy_fixture_covers_current_validation_question_set():
+    dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
+    today = dummy._korea_today()
+    payload = dummy.retrieve_dummy_data(
+        {
+            "retrieval_job_bundle": {
+                "source_type": "dummy",
+                "jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "production_today",
+                        "required_params": {"DATE": today},
+                    },
+                    {
+                        "dataset_key": "production",
+                        "source_alias": "production_0705",
+                        "required_params": {"DATE": "20260705"},
+                    },
+                    {
+                        "dataset_key": "wip_today",
+                        "source_alias": "wip_today",
+                        "required_params": {"DATE": today},
+                    },
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_assign",
+                        "required_params": {},
+                    },
+                    {
+                        "dataset_key": "eqp_uph",
+                        "source_alias": "eqp_uph",
+                        "required_params": {},
+                    },
+                    {
+                        "dataset_key": "lot_status",
+                        "source_alias": "lot_status",
+                        "required_params": {},
+                    },
+                ],
+            }
+        }
+    )
+    results = {item["source_alias"]: item["rows"] for item in payload["source_results"]}
+
+    fcb_0705 = {
+        row["OPER_NAME"]
+        for row in results["production_0705"]
+        if row["OPER_NAME"] in {"FCB1", "FCB2", "FCB/H"}
+    }
+    null_products = [
+        row
+        for row in results["production_today"]
+        if row["DEVICE"] == "DEV-ROW-MATCH-NULL"
+    ]
+    production_comparison = [
+        row
+        for row in results["production_today"]
+        if row["DEVICE"].startswith("DEV-COMPARE-")
+        and row["DEVICE"] != "DEV-COMPARE-MCP_DECOY"
+    ]
+    wip_comparison = [
+        row
+        for row in results["wip_today"]
+        if row["DEVICE"].startswith("DEV-COMPARE-")
+        and row["DEVICE"] != "DEV-COMPARE-MCP_DECOY"
+    ]
+    lot_comparison = [
+        row
+        for row in results["lot_status"]
+        if row["DEVICE"].startswith("DEV-COMPARE-")
+        and row["DEVICE"] != "DEV-COMPARE-MCP_DECOY"
+    ]
+    l217_equipment = {
+        (row["OPER_NAME"], row["EQP_MODEL"], row["RECIPE_ID"]): row["EQP_ID"]
+        for row in results["equipment_assign"]
+        if str(row["MCP_NO"]).startswith("L-217")
+        and row["RECIPE_ID"].startswith("RCP-L217-")
+    }
+    null_equipment = {
+        row["EQP_ID"]: row["MCP_NO"]
+        for row in results["equipment_assign"]
+        if row["DEVICE"] == "DEV-ROW-MATCH-NULL"
+    }
+    fcb2_uph = {
+        row["RECIPE_ID"]: row["UPH"]
+        for row in results["eqp_uph"]
+        if row["OPER_NAME"] == "FCB2"
+        and row["RECIPE_ID"].startswith("RCP-FCB2-")
+    }
+    l217_uph = {
+        (row["OPER_NAME"], row["EQP_MODEL"], row["RECIPE_ID"]): row["UPH"]
+        for row in results["eqp_uph"]
+        if str(row["MCP_NO"]).startswith("L-217")
+    }
+    f315_l116_uph = {
+        row["RECIPE_ID"]: row["UPH"]
+        for row in results["eqp_uph"]
+        if row["EQP_MODEL"] == "F315"
+        and str(row["MCP_NO"]).startswith("L-116")
+    }
+    wb_tat_10_or_more = {
+        row["LOT_ID"]
+        for row in results["lot_status"]
+        if row["OPER_NAME"].startswith("W/B")
+        and float(row["IN_TAT"]) >= 10
+    }
+    hold_lots = {
+        (row["LOT_ID"], row["OPER_NAME"])
+        for row in results["lot_status"]
+        if row["HOLD_STAT"] == "OnHold"
+    }
+    range_processes = {
+        row["OPER_NAME"]
+        for row in results["lot_status"]
+        if row["OPER_NAME"] in {"D/A4", "D/A5", "D/S1"}
+    }
+
+    assert fcb_0705 == {"FCB1", "FCB2", "FCB/H"}
+    assert len(null_products) == 1
+    assert null_products[0]["MCP_NO"] is None
+    assert null_products[0]["PRODUCTION"] == 10000
+    assert {
+        (
+            row["TECH"],
+            row["DEN"],
+            row["PKG_TYPE2"],
+            row["MCP_NO"],
+        )
+        for row in production_comparison
+    } == {("CMP", "8G", "COMPARE", "")}
+    assert {row["DEVICE"] for row in production_comparison} == {
+        "DEV-COMPARE-BASE",
+        "DEV-COMPARE-MODE",
+        "DEV-COMPARE-PKG1",
+        "DEV-COMPARE-LEAD",
+    }
+    assert {row["DEVICE"] for row in wip_comparison} == {
+        "DEV-COMPARE-BASE",
+        "DEV-COMPARE-MODE",
+        "DEV-COMPARE-PKG1",
+        "DEV-COMPARE-LEAD",
+    }
+    assert {row["DEVICE"] for row in lot_comparison} == {
+        "DEV-COMPARE-BASE",
+        "DEV-COMPARE-MODE",
+        "DEV-COMPARE-PKG1",
+        "DEV-COMPARE-LEAD",
+    }
+    assert {
+        (
+            row["TECH"],
+            row["DEN"],
+            row["PKG_TYPE2"],
+            row["MCP_NO"],
+        )
+        for row in lot_comparison
+    } == {("CMP", "8G", "COMPARE", "")}
+    assert null_equipment == {
+        "EQP-NULL-1": "<NA>",
+        "EQP-NULL-2": "empty",
+    }
+    assert fcb2_uph == {
+        "RCP-FCB2-A": 140.0,
+        "RCP-FCB2-B": 173.4,
+    }
+    assert l217_uph == {
+        ("W/B1", "EQM-A", "RCP-L217-WB1-A"): 100.0,
+        ("W/B1", "EQM-A", "RCP-L217-WB1-B"): 146.8,
+        ("W/B2", "EQM-BG", "RCP-L217-WB2-A"): 90.0,
+        ("W/B2", "EQM-BG", "RCP-L217-WB2-B"): 105.0,
+    }
+    assert l217_equipment == {
+        ("W/B1", "EQM-A", "RCP-L217-WB1-A"): "EQP001",
+        ("W/B1", "EQM-A", "RCP-L217-WB1-B"): "EQP006",
+        ("W/B2", "EQM-BG", "RCP-L217-WB2-A"): "EQP005",
+        ("W/B2", "EQM-BG", "RCP-L217-WB2-B"): "EQP005",
+    }
+    assert f315_l116_uph == {
+        "RCP-F315-L116-A": 104.0,
+        "RCP-F315-L116-B": 120.0,
+    }
+    assert {
+        row["LEAD"]
+        for row in results["eqp_uph"]
+        if row["RECIPE_ID"] in f315_l116_uph
+    } == {"315"}
+    assert next(
+        row["LEAD"]
+        for row in results["eqp_uph"]
+        if row["RECIPE_ID"] == "RCP-F316-L116-DECOY"
+    ) == "316"
+    assert wb_tat_10_or_more == {
+        "T1234567GEN1",
+        "V-WB3-HIGH-TAT",
+    }
+    assert hold_lots == {
+        ("T1234567GEN1", "W/B1"),
+        ("V-RANGE-MIDDLE-HOLD", "D/A5"),
+        ("V-RANGE-START-HOLD", "D/S1"),
+    }
+    assert range_processes == {"D/A4", "D/A5", "D/S1"}
+    assert {
+        (row["OPER_NAME"], row["OPER_SEQ"])
+        for row in results["lot_status"]
+        if row["OPER_NAME"] in {"D/A4", "D/A5", "D/S1"}
+    } == {
+        ("D/A4", "130"),
+        ("D/A5", "140"),
+        ("D/S1", "160"),
+    }
+
+
 def test_data_analysis_split_mongodb_metadata_loaders_use_standalone_v4_node_inputs(monkeypatch):
     store = install_fake_pymongo(monkeypatch)
     set_shared_v4_mongo_env(monkeypatch)
@@ -6988,6 +8143,49 @@ def test_metadata_candidates_normalize_slash_process_alias_with_korean_suffix():
     assert "WB" in selected_keys
 
 
+def test_metadata_candidates_select_process_group_for_slashless_numeric_detail():
+    builder = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "01d_metadata_candidates_builder.py"
+    )
+    question = "6/24일 투입 실적 대비 D/S1, DA1공정에서 WIP 많은 제품 알려줘"
+    tokens = builder._tokens(question)
+
+    assert "da" in tokens
+
+    result = builder.build_metadata_candidates(
+        {"request": {"question": question}},
+        {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "DA",
+                    "status": "active",
+                    "payload": {
+                        "display_name": "D/A",
+                        "aliases": ["DA", "D/A", "DA공정", "D/A공정"],
+                        "field": "OPER_NAME",
+                        "processes": ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"],
+                    },
+                }
+            ]
+        },
+        {"table_catalog_items": []},
+        {"main_flow_filters": []},
+    )
+
+    selected = result["metadata_candidates"]["domain_items"]
+    assert {item["key"] for item in selected} == {"DA"}
+    assert selected[0]["question_match"] == {
+        "processes": ["D/A1"],
+        "match_type": "numeric_detail_canonical",
+        "original_process_count": 6,
+    }
+    assert selected[0]["payload"]["processes"] == ["D/A1"]
+
+
 def test_metadata_candidates_prioritize_exact_alias_with_canonical_condition():
     builder = load_module(
         ROOT
@@ -7048,6 +8246,54 @@ def test_metadata_candidates_prioritize_exact_alias_with_canonical_condition():
     assert {item["key"] for item in selected} == {"SHIFT_A", "DA"}
     shift_item = next(item for item in selected if item["key"] == "SHIFT_A")
     assert shift_item["payload"]["condition"] == {"SHIFT": "1"}
+
+
+def test_metadata_candidates_collapse_same_field_null_or_empty_domain_condition():
+    builder = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "01d_metadata_candidates_builder.py"
+    )
+    domain_items = [
+        {
+            "section": "product_terms",
+            "key": "MOBILE_PRODUCT",
+            "payload": {
+                "display_name": "MOBILE 제품",
+                "aliases": ["MOBILE 제품", "MOBILE"],
+                "condition_by_family": {
+                    "production": {
+                        "operator": "and",
+                        "operands": [
+                            {"field": "MODE", "operator": "startsWith", "value": "LP"},
+                            {
+                                "operator": "or",
+                                "operands": [
+                                    {"field": "MCP_NO", "operator": "isNull"},
+                                    {"field": "MCP_NO", "operator": "isEmpty"},
+                                ],
+                            },
+                        ],
+                    }
+                },
+            },
+        }
+    ]
+
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "MOBILE 제품 생산량 알려줘"}},
+        {"domain_items": domain_items},
+        {"table_catalog_items": []},
+        {"main_flow_filters": []},
+    )
+    selected = result["metadata_candidates"]["domain_items"][0]
+    operands = selected["payload"]["condition_by_family"]["production"]["operands"]
+
+    assert operands == [
+        {"field": "MODE", "operator": "starts_with", "value": "LP"},
+        {"field": "MCP_NO", "operator": "null_or_empty"},
+    ]
 
 
 def test_data_analysis_mongodb_result_store_and_loader_round_trip(monkeypatch):
@@ -7362,6 +8608,94 @@ def test_upstream_entity_binder_uses_only_trusted_catalog_rules_and_fails_closed
     assert blocked_job["upstream_binding_original_source_type"] == "oracle"
     assert limited["orchestration"]["binding_status"] == "error"
     assert limited["trace"]["errors"][0]["type"] == "upstream_entity_limit_exceeded"
+
+
+def test_upstream_entity_binder_supports_previous_result_rows_for_same_session_requery():
+    binder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "05a_upstream_entity_parameter_binder.py"
+    )
+    payload = {
+        "runtime_sources": {
+            "previous_result": [
+                {"LOT_ID": "LOT-001"},
+                {"LOT_ID": "LOT-002"},
+                {"LOT_ID": "LOT-001"},
+            ]
+        },
+        "intent_plan": {
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "hold_history",
+                    "source_alias": "hold_history",
+                    "source_type": "oracle",
+                    "trusted_catalog": True,
+                    "required_params": {},
+                    "source_config": {
+                        "upstream_bindings": [
+                            {
+                                "entity_type": "lot",
+                                "source_alias": "previous_result",
+                                "source_column": "LOT_ID",
+                                "target_param": "LOT_ID",
+                                "operator": "in",
+                                "max_values": 200,
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = binder.bind_upstream_entity_parameters(payload)
+    job = result["intent_plan"]["retrieval_jobs"][0]
+
+    assert job["required_params"]["LOT_ID"] == ["LOT-001", "LOT-002"]
+    assert job["upstream_source_alias"] == "previous_result"
+    assert result["orchestration"]["binding_status"] == "ok"
+    assert result["trace"]["inspection"]["upstream_parameter_binding"]["bindings"][0][
+        "source_alias"
+    ] == "previous_result"
+
+
+def test_upstream_entity_binder_leaves_previous_result_row_match_job_without_param_binding():
+    binder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "05a_upstream_entity_parameter_binder.py"
+    )
+    payload = {
+        "runtime_sources": {
+            "previous_result": [
+                {"TECH": "1A", "DEN": "24G"},
+                {"TECH": "1B", "DEN": "32G"},
+            ]
+        },
+        "intent_plan": {
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "equipment_assign_1",
+                    "source_type": "oracle",
+                    "trusted_catalog": True,
+                    "required_params": {},
+                    "source_config": {},
+                }
+            ],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = binder.bind_upstream_entity_parameters(payload)
+    job = result["intent_plan"]["retrieval_jobs"][0]
+
+    assert job["source_type"] == "oracle"
+    assert job.get("upstream_binding_applied") is not True
+    assert result["orchestration"]["binding_status"] == "ok"
+    assert result["trace"]["errors"] == []
 
 
 def test_data_analysis_mongodb_result_store_has_ttl_input():
@@ -7842,6 +9176,39 @@ def test_langflow_prompt_templates_are_external_files_for_native_model_nodes():
         assert "Langflow Agent/LLM" in guide or "Language Model" in guide
 
 
+def test_data_analysis_prompts_separate_inherited_filters_from_current_result_grain():
+    intent_prompt = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "03_intent_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    pandas_prompt = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "16_pandas_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+
+    assert "유지한 조건의 컬럼을 현재 결과의 grouping으로 자동 상속하지 않는다" in intent_prompt
+    assert "filter에 사용한 컬럼을 이유만으로 groupby 또는 최종 출력 grain에 남기지 않는다" in pandas_prompt
+
+
+def test_table_catalog_saving_prompt_renders_metric_and_upstream_binding_examples():
+    prompt_text = (
+        ROOT
+        / "langflow_components"
+        / "table_catalog_saving_flow"
+        / "03_saving_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+
+    rendered = prompt_text.format(source_text="dataset 원문")
+
+    assert "dataset 원문" in rendered
+    assert '"metric_semantics": {' in rendered
+    assert '"source_alias": "previous_result"' in rendered
+
+
 def test_metadata_saving_guide_uses_current_writer_ports():
     guide = (ROOT / "docs" / "METADATA_SAVING_FLOW_GUIDE.md").read_text(encoding="utf-8")
 
@@ -7989,6 +9356,27 @@ def test_v5_specialized_prompt_routes_current_hold_lists_away_from_hold_history(
     assert "lot_status를 선택하고 HOLD_STAT=OnHold 조건을 적용한다." in specialized_prompt
     assert "required_params.LOT_ID를 빈 문자열로 만든 채 선택하지 않는다." in specialized_prompt
     assert "특정 LOT의 최근 HOLD 코드" in specialized_prompt
+
+
+def test_ordered_range_filter_precedence_stays_in_specialized_contract():
+    component_dir = ROOT / "langflow_components" / "data_analysis_flow"
+    specialized_prompt = (
+        component_dir / "specialized_prompt_input_example_ko.md"
+    ).read_text(encoding="utf-8")
+    intent_normalizer = (
+        component_dir / "04_intent_plan_normalizer.py"
+    ).read_text(encoding="utf-8")
+    pandas_executor = (
+        component_dir / "17_pandas_code_executor.py"
+    ).read_text(encoding="utf-8")
+
+    assert "filter_ordered_range가 선택된 source에서는" in specialized_prompt
+    assert "모든 일반 pandas row filter보다 항상 먼저 실행" in specialized_prompt
+    assert "`retrieval_jobs[].filters`와 `condition_resolution.effective_filters`에 넣지 않는다" in specialized_prompt
+    assert "catalog의 `required_params`는 이 규칙의 대상이 아니다" in specialized_prompt
+    assert "helper 뒤의 `apply_filters` 단계로 옮긴다" in specialized_prompt
+    assert "_defer_ordered_range_retrieval_filters" not in intent_normalizer
+    assert "_ordered_range_filter_source_aliases" not in pandas_executor
 
 
 def test_pandas_prompt_templates_do_not_repeat_executor_filter_preamble():
@@ -8244,6 +9632,57 @@ def test_domain_writer_allows_semantic_token_metadata_but_blocks_credentials():
 
     for key in ("token", "access_token", "refreshToken", "api_token", "password", "client_secret"):
         assert writer._is_secret_key(key) is True
+
+
+def test_domain_function_case_execution_contract_is_validated_generically():
+    normalizer = load_module(
+        ROOT
+        / "langflow_components"
+        / "domain_saving_flow"
+        / "04_domain_saving_result_normalizer.py"
+    )
+    valid = normalizer.normalize_authoring(
+        {},
+        {
+            "items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "custom_case",
+                    "payload": {
+                        "function_name": "custom_helper",
+                        "execution_contract": {
+                            "source_filter_order": "after_helper",
+                        },
+                    },
+                }
+            ]
+        },
+    )
+    invalid = normalizer.normalize_authoring(
+        {},
+        {
+            "items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "invalid_case",
+                    "payload": {
+                        "function_name": "invalid_helper",
+                        "execution_contract": {
+                            "source_filter_order": "sometimes",
+                        },
+                    },
+                }
+            ]
+        },
+    )
+
+    assert valid["items"][0]["payload"]["execution_contract"] == {
+        "source_filter_order": "after_helper",
+    }
+    assert valid["errors"] == []
+    assert invalid["errors"][0]["type"] == (
+        "invalid_function_case_source_filter_order"
+    )
 
 
 def test_domain_langflow_saving_requires_process_group_field():
@@ -8768,6 +10207,51 @@ def test_table_catalog_writer_rejects_secret_fields_before_dry_run():
     error_types = {error["type"] for error in result["write_result"]["errors"]}
     assert "credential_field_forbidden" in error_types
     assert "forbidden_source_config_key" in error_types
+
+
+def test_table_catalog_writer_rejects_sum_for_non_additive_metric():
+    request_loader = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "00_table_catalog_saving_request_loader.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "04_table_catalog_saving_result_normalizer.py"
+    )
+    writer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "07_table_catalog_review_writer.py"
+    )
+    payload = request_loader.build_request("UPH metadata", "replace", True)
+    payload = normalizer.normalize_authoring(
+        payload,
+        {
+            "items": [
+                {
+                    "dataset_key": "eqp_uph",
+                    "payload": {
+                        "source_type": "oracle",
+                        "source_config": {
+                            "source_type": "oracle",
+                            "db_key": "GMS_DB",
+                            "query_template": "SELECT UPH FROM UPH",
+                        },
+                        "metric_semantics": {
+                            "UPH": {
+                                "semantic_type": "average",
+                                "additive": False,
+                                "default_rollup": "sum",
+                                "allowed_rollups": ["sum"],
+                            }
+                        },
+                    },
+                }
+            ]
+        },
+    )
+
+    result = writer.review_and_write(payload)
+
+    assert result["write_result"]["success"] is False
+    error_types = {error["type"] for error in result["write_result"]["errors"]}
+    assert "non_additive_metric_sum_forbidden" in error_types
 
 
 def test_domain_replace_resolves_unique_alias_to_existing_canonical_key(monkeypatch):
@@ -13350,6 +14834,174 @@ def test_v5_trusted_catalog_hydrator_replaces_llm_source_settings():
     assert result["trace"]["inspection"]["catalog_hydration"]["status"] == "ok"
 
 
+def test_v5_trusted_catalog_hydrator_restores_metric_semantics_and_default_detail_columns():
+    hydrator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{"dataset_key": "eqp_uph", "source_alias": "uph"}],
+            "output_contract": {
+                "result_mode": "entity_list",
+                "required_columns": ["UPH"],
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {
+                    "source_type": "oracle",
+                    "source_config": {
+                        "db_key": "GMS_DB",
+                        "query_template": "SELECT EQUIP_MODEL, RECIPE_ID, OPER_NAME, UPH FROM UPH",
+                    },
+                    "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "metric_semantics": {
+                        "UPH": {
+                            "semantic_type": "average",
+                            "additive": False,
+                            "default_rollup": "mean",
+                            "allowed_rollups": ["mean"],
+                            "source_already_aggregated": True,
+                        }
+                    },
+                },
+            }
+        ]
+    }
+
+    result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
+    job = result["intent_plan"]["retrieval_jobs"][0]
+
+    assert job["metric_semantics"]["UPH"]["additive"] is False
+    assert job["metric_semantics"]["UPH"]["allowed_rollups"] == ["mean"]
+    assert result["intent_plan"]["output_contract"]["required_columns"] == [
+        "UPH",
+        "EQUIP_MODEL",
+        "RECIPE_ID",
+        "OPER_NAME",
+    ]
+
+
+def test_v5_trusted_catalog_hydrator_defers_previous_result_bound_param_over_model_placeholder():
+    hydrator = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    payload = {
+        "request": {"question": "가장 오래된 LOT의 이력을 보여줘"},
+        "intent_plan": {
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "hold_history",
+                    "source_alias": "hold_history",
+                    "required_params": {"LOT_ID": "DYNAMIC_LOT_ID"},
+                    "filters": {},
+                }
+            ],
+        },
+    }
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "hold_history",
+                "status": "active",
+                "payload": {
+                    "source_type": "oracle",
+                    "required_params": ["LOT_ID"],
+                    "source_config": {
+                        "source_type": "oracle",
+                        "db_key": "PNT_RPT",
+                        "query_template": "SELECT * FROM HOLD_HIS WHERE LOT_ID IN ({LOT_ID})",
+                        "upstream_bindings": [
+                            {
+                                "entity_type": "lot",
+                                "source_alias": "previous_result",
+                                "source_column": "LOT_ID",
+                                "target_param": "LOT_ID",
+                                "operator": "in",
+                                "max_values": 200,
+                            }
+                        ],
+                    },
+                },
+            }
+        ]
+    }
+
+    result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="dummy")
+    job = result["intent_plan"]["retrieval_jobs"][0]
+    inspection = result["trace"]["inspection"]["catalog_hydration"]
+
+    assert job["required_params"] == {}
+    assert inspection["deferred_upstream_params"] == [
+        {"dataset_key": "hold_history", "params": ["LOT_ID"]}
+    ]
+    assert inspection["condition_reconciliation"][0][
+        "replaced_by_previous_result_binding"
+    ] == ["LOT_ID"]
+
+
+def test_v5_trusted_catalog_hydrator_defers_previous_result_bound_required_param():
+    hydrator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    payload = {
+        "intent_plan": {
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "hold_history",
+                    "source_alias": "hold_history",
+                    "required_params": {},
+                }
+            ],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "hold_history",
+                "payload": {
+                    "source_type": "oracle",
+                    "required_params": ["LOT_ID"],
+                    "source_config": {
+                        "db_key": "PNT_RPT",
+                        "query_template": "SELECT * FROM HOLD_HIS WHERE LOT_ID IN ({LOT_ID})",
+                        "upstream_bindings": [
+                            {
+                                "entity_type": "lot",
+                                "source_alias": "previous_result",
+                                "source_column": "LOT_ID",
+                                "target_param": "LOT_ID",
+                                "operator": "in",
+                                "max_values": 200,
+                            }
+                        ],
+                    },
+                },
+            }
+        ]
+    }
+
+    result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
+
+    warning_types = {item["type"] for item in result["trace"]["warnings"]}
+    assert "missing_catalog_required_params" not in warning_types
+    assert result["trace"]["inspection"]["catalog_hydration"]["deferred_upstream_params"] == [
+        {"dataset_key": "hold_history", "params": ["LOT_ID"]}
+    ]
+
+
 def test_v5_trusted_catalog_hydrator_preserves_job_specific_params_without_cross_job_copy():
     hydrator = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py"
@@ -13877,6 +15529,8 @@ def test_v5_specialized_prompt_requires_standard_product_keys_for_product_grain(
     assert "key=standard_product_keys" in specialized_prompt
     assert "`metadata_refs`와 `intent_plan.grain_plan.metadata_ref`에 기록" in specialized_prompt
     assert "제품 키 컬럼을 추측하거나 DEVICE를 대신 사용하지 말고 clarification" in specialized_prompt
+    assert "F315 L-116" in specialized_prompt
+    assert "모든 제품 token을 원문 순서대로 하나의 input_text에 보존" in specialized_prompt
 
 
 def test_v5_intent_normalizer_resolves_metadata_driven_grain_and_join_without_device():
@@ -14059,12 +15713,16 @@ def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
     assert "`pd.DataFrame(columns=group_cols + comp_cols)`" in pandas_prompt
     assert "`grouped.groups.keys()`" in pandas_prompt
     assert "`valid_keys = counts[mask].reset_index()[group_cols]`" in pandas_prompt
+    assert "`group_cols`는 반드시 해당 단계의 `group_by`" in pandas_prompt
+    assert "`cannot insert ..., already exists`" in pandas_prompt
     assert "canonical alias로 다시 rename하지 않는다" in repair_prompt
     assert "`result[canonical] = result[physical]`" in repair_prompt
     assert "`operation=compare_group_attributes` 코드가 실패했다면" in repair_prompt
     assert "`group_by + comparison_columns`로 `drop_duplicates()`" in repair_prompt
     assert "`pd.DataFrame(columns=group_cols + comp_cols)`" in repair_prompt
     assert "`grouped.groups.keys()` index에 원본 행 index의 `transform()`" in repair_prompt
+    assert "`resolved_grain_plan.grain_columns` 전체를 group_cols로 사용하지 않으며" in repair_prompt
+    assert "`ValueError: cannot insert ..., already exists`" in repair_prompt
     assert "집계용 `group_cols` 전체를 join key로 재사용하지 않는다" in pandas_prompt
     assert "multi_match_policy=collect_unique" in pandas_prompt
     assert "resolved_grain_plan.strict=true" in repair_prompt
@@ -14075,8 +15733,19 @@ def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
     assert "같은 `str(...dtype)` 호출을 retry code에 남기지 않는다" in repair_prompt
     assert "`pandas_execution_plan.operation=compare_presence`" in pandas_prompt
     assert "left anti-join" in pandas_prompt
+    assert "`condition_resolution`은 의도 추적과 답변 설명용" in pandas_prompt
+    assert "function case가 소유한 `input_text` 조건" in pandas_prompt
     assert "`operation=compare_presence`" in repair_prompt
     assert "source별 retrieval filter가 이미 독립적으로 적용" in repair_prompt
+    assert "`condition_resolution`은 의도 추적과 답변 설명용" in repair_prompt
+    assert "function case가 처리한 `input_text`" in repair_prompt
+    specialized_prompt = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "specialized_prompt_input_example_ko.md"
+    ).read_text(encoding="utf-8")
+    assert 'MCP_NO == "L-217"' in specialized_prompt
 
 
 def test_v5_catalog_hydrator_propagates_only_safe_column_contract():
@@ -14197,6 +15866,41 @@ def test_v5_pandas_executor_rejects_valueless_unsupported_filter_instead_of_drop
     assert result["analysis"]["status"] == "error"
     assert result["analysis"]["error"]["type"] == "unsupported_filter_operator"
     assert "unknown_blank_predicate" in result["analysis"]["error"]["message"]
+
+
+def test_v5_pandas_executor_applies_numeric_comparison_filters_with_null_safe_coercion():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "lot_status",
+                    "source_alias": "lot_status",
+                    "filters": {"IN_TAT": {"operator": "ge", "value": 10}},
+                }
+            ]
+        },
+        "runtime_sources": {
+            "lot_status": [
+                {"LOT_ID": "LOT-9", "IN_TAT": "9"},
+                {"LOT_ID": "LOT-10", "IN_TAT": "10"},
+                {"LOT_ID": "LOT-11", "IN_TAT": 11},
+                {"LOT_ID": "LOT-NULL", "IN_TAT": None},
+                {"LOT_ID": "LOT-TEXT", "IN_TAT": "unknown"},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = executor.execute_pandas_code(
+        payload,
+        {"code": "result = sources['lot_status'][['LOT_ID', 'IN_TAT']]"},
+    )
+
+    assert result["analysis"]["status"] == "ok"
+    assert [row["LOT_ID"] for row in result["data"]["rows"]] == ["LOT-10", "LOT-11"]
 
 
 def test_v5_pandas_executor_applies_not_blank_to_all_blank_representations():
@@ -14356,6 +16060,93 @@ def test_v5_pandas_executor_rejects_missing_required_detail_columns_but_not_aggr
     )
     assert aggregate["analysis"]["status"] == "ok"
     assert aggregate["data"]["columns"] == ["OPER_NAME", "UPH"]
+
+
+def test_v5_pandas_executor_blocks_non_additive_metric_sum_and_accepts_catalog_rollup():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "eqp_uph",
+                    "source_alias": "uph",
+                    "metric_semantics": {
+                        "UPH": {
+                            "semantic_type": "average",
+                            "additive": False,
+                            "default_rollup": "mean",
+                            "allowed_rollups": ["mean"],
+                        }
+                    },
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "groupby_and_aggregate",
+                    "source_alias": "uph",
+                    "group_by": ["EQUIP_MODEL"],
+                    "agg_column": "UPH",
+                    "agg_method": "mean",
+                }
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["EQUIP_MODEL"],
+                "metric_columns": ["UPH"],
+            },
+        },
+        "runtime_sources": {
+            "uph": [
+                {"EQUIP_MODEL": "M1", "UPH": 100},
+                {"EQUIP_MODEL": "M1", "UPH": 120},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    summed = executor.execute_pandas_code(
+        payload,
+        {
+            "code": (
+                "result = sources['uph'].groupby('EQUIP_MODEL', dropna=False)['UPH']"
+                ".sum().reset_index()"
+            )
+        },
+    )
+    assert summed["analysis"]["error"]["type"] == "output_contract_violation"
+    assert "비가산 metric uph" in summed["analysis"]["error"]["message"].lower()
+
+    nested_sum_payload = deepcopy(payload)
+    nested_sum_payload["intent_plan"]["pandas_execution_plan"][0].pop("agg_column")
+    nested_sum_payload["intent_plan"]["pandas_execution_plan"][0].pop("agg_method")
+    nested_sum_payload["intent_plan"]["pandas_execution_plan"][0]["aggregations"] = [
+        {"column": "UPH", "method": "sum", "output_column": "TOTAL_UPH"}
+    ]
+    nested_sum = executor.execute_pandas_code(
+        nested_sum_payload,
+        {
+            "code": (
+                "result = sources['uph'].groupby('EQUIP_MODEL', dropna=False)['UPH']"
+                ".mean().reset_index()"
+            )
+        },
+    )
+    assert nested_sum["analysis"]["error"]["type"] == "output_contract_violation"
+    assert "비가산 metric uph" in nested_sum["analysis"]["error"]["message"].lower()
+
+    averaged = executor.execute_pandas_code(
+        payload,
+        {
+            "code": (
+                "result = sources['uph'].groupby('EQUIP_MODEL', dropna=False)['UPH']"
+                ".mean().reset_index()"
+            )
+        },
+    )
+    assert averaged["analysis"]["status"] == "ok"
+    assert averaged["data"]["rows"] == [{"EQUIP_MODEL": "M1", "UPH": 110.0}]
 
 
 def test_v5_pandas_executor_preserves_null_group_and_displays_blank_dimension():
@@ -14594,6 +16385,146 @@ def test_v5_ordered_range_helper_uses_numeric_inclusive_bounds_in_either_questio
     assert result["analysis"]["function_case_results"][0]["function_name"] == "filter_ordered_range"
 
 
+def test_v5_ordered_range_metadata_contract_keeps_endpoints_until_helper_runs():
+    normalizer = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04_intent_plan_normalizer.py"
+    )
+    executor = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "17_pandas_code_executor.py"
+    )
+    metadata_candidates = {
+        "domain_items": [
+            {
+                "section": "pandas_function_cases",
+                "key": "ordered_process_range",
+                "payload": {
+                    "function_name": "filter_ordered_range",
+                    "execution_contract": {
+                        "source_filter_order": "after_helper",
+                    },
+                },
+            }
+        ],
+        "table_catalog_items": [],
+        "main_flow_filters": [],
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "D/S1~D/A4 공정 Hold 된 Lot ID 알려줘"}},
+        {
+            "intent_plan": {
+                "analysis_kind": "ordered_range_hold_lots",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "lot_status",
+                        "source_alias": "lot_status_source",
+                        "required_params": {},
+                        "filters": {
+                            "HOLD_STAT": {
+                                "operator": "eq",
+                                "value": "OnHold",
+                            }
+                        },
+                    }
+                ],
+                "condition_resolution": {
+                    "effective_filters": {
+                        "lot_status_source": {
+                            "dataset_key": "lot_status",
+                            "filters": {
+                                "HOLD_STAT": {
+                                    "operator": "eq",
+                                    "value": "OnHold",
+                                }
+                            },
+                        }
+                    }
+                },
+                "pandas_function_cases": [
+                    {
+                        "key": "ordered_process_range",
+                        "function_name": "filter_ordered_range",
+                        "input_text": "D/S1~D/A4",
+                        "source_alias": "lot_status_source",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "apply_filters",
+                        "source_alias": "lot_status_source",
+                    },
+                    {
+                        "operation": "apply_pandas_function_case",
+                        "function_case_key": "ordered_process_range",
+                        "function_name": "filter_ordered_range",
+                        "input_text": "D/S1~D/A4",
+                        "source_alias": "lot_status_source",
+                    },
+                ],
+            }
+        },
+        metadata_candidates,
+    )
+    normalized["runtime_sources"] = {
+        "lot_status_source": [
+            {
+                "LOT_ID": "END-NONHOLD",
+                "OPER_NAME": "D/A4",
+                "OPER_SEQ": "100",
+                "HOLD_STAT": "Released",
+            },
+            {
+                "LOT_ID": "MIDDLE-HOLD",
+                "OPER_NAME": "D/A5",
+                "OPER_SEQ": "110",
+                "HOLD_STAT": "OnHold",
+            },
+            {
+                "LOT_ID": "MIDDLE-NONHOLD",
+                "OPER_NAME": "D/A6",
+                "OPER_SEQ": "120",
+                "HOLD_STAT": "Released",
+            },
+            {
+                "LOT_ID": "START-HOLD",
+                "OPER_NAME": "D/S1",
+                "OPER_SEQ": "130",
+                "HOLD_STAT": "OnHold",
+            },
+            {
+                "LOT_ID": "OUTSIDE-HOLD",
+                "OPER_NAME": "D/S2",
+                "OPER_SEQ": "140",
+                "HOLD_STAT": "OnHold",
+            },
+        ]
+    }
+    code = (
+        function_case_source("filter_ordered_range")
+        + "\n\ndf = filter_ordered_range('D/S1~D/A4', sources['lot_status_source'])\n"
+        + "df = df[df['HOLD_STAT'].eq('OnHold')]\n"
+        + "result = df[['LOT_ID', 'OPER_NAME', 'HOLD_STAT']]"
+    )
+
+    result = executor.execute_pandas_code(normalized, {"code": code})
+
+    assert result["analysis"]["status"] == "ok"
+    assert [row["LOT_ID"] for row in result["data"]["rows"]] == [
+        "MIDDLE-HOLD",
+        "START-HOLD",
+    ]
+    execution = result["trace"]["inspection"]["pandas_execution"]
+    assert execution["pandas_filter_plan"] == []
+    assert "_filtered_source_" not in execution["generated_code"]
+
+
 def test_v5_range_candidate_is_selected_for_process_range_but_not_mcp_hyphen():
     builder = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
@@ -14638,6 +16569,10 @@ def test_v5_range_candidate_is_selected_for_process_range_but_not_mcp_hyphen():
     mcp_keys = {item["key"] for item in mcp_result["metadata_candidates"]["domain_items"]}
     assert "ordered_process_range" in range_keys
     assert "ordered_process_range" not in mcp_keys
+    assert "product_token_match" in mcp_keys
+    assert "match_product_tokens" in builder._tokens(
+        "F315 L-116로 시작하는 제품 WB 공정 차수별 UPH 알려줘"
+    )
     assert any(
         item["function_name"] == "filter_ordered_range"
         for item in range_result["metadata_candidates"]["runtime_function_helpers"]
@@ -14720,6 +16655,10 @@ def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_c
     assert "function_name은 filter_ordered_range" in domain_text
     assert "D/A1~W/B6, D/A1-W/B6, D/A1W/B6" in domain_text
     assert "L-218처럼 제품 MCP_NO 내부에 포함된 하이픈" in domain_text
+    assert "filter_ordered_range를 모든 일반 pandas row filter보다 항상 먼저 실행" in domain_text
+    assert "execution_contract의 source_filter_order는 after_helper야" in domain_text
+    assert "condition_resolution.effective_filters에 넣지 말고" in domain_text
+    assert "table catalog의 required_params는 위 후순위 대상이 아니야" in domain_text
     assert "key는 equipment_assignment_uph_join" in domain_text
     assert "표준 join_keys는 EQP_MODEL, RECIPE_ID, OPER_NAME" in domain_text
     assert "preserve_left_rows는 true" in domain_text

@@ -111,9 +111,77 @@ def _deterministic_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
             if str(field) not in ALLOWED_SOURCE_CONFIG_KEYS:
                 errors.append({"type": "forbidden_source_config_key", "message": f"허용되지 않은 source_config 필드입니다: {field}", "key": item_key, "field": str(field)})
         errors.extend(_upstream_binding_errors(sc.get("upstream_bindings"), item_key))
+        errors.extend(_metric_semantics_errors(p.get("metric_semantics"), item_key))
         for path in _secret_paths(item):
             errors.append({"type": "credential_field_forbidden", "message": f"credential/secret 필드는 저장할 수 없습니다: {path}", "key": item_key, "field": path})
     return _unique_errors(errors)
+
+
+# 함수 설명: metric별 가산성·기본 집계 계약을 작은 허용 스키마로 검증합니다.
+def _metric_semantics_errors(value: Any, item_key: str) -> list[dict[str, Any]]:
+    if value in (None, "", {}):
+        return []
+    if not isinstance(value, dict):
+        return [{
+            "type": "invalid_metric_semantics",
+            "message": "payload.metric_semantics는 metric 컬럼명을 key로 갖는 object여야 합니다.",
+            "key": item_key,
+        }]
+    allowed_fields = {
+        "semantic_type",
+        "additive",
+        "default_rollup",
+        "allowed_rollups",
+        "source_already_aggregated",
+    }
+    allowed_rollups = {"sum", "mean", "min", "max", "count", "nunique", "first", "last"}
+    errors: list[dict[str, Any]] = []
+    for metric, raw_contract in value.items():
+        metric_name = str(metric or "").strip()
+        location = {"key": item_key, "metric": metric_name}
+        if not metric_name or not isinstance(raw_contract, dict):
+            errors.append({
+                "type": "invalid_metric_semantic_contract",
+                "message": "metric_semantics의 각 metric 계약은 object여야 합니다.",
+                **location,
+            })
+            continue
+        for field in raw_contract:
+            if str(field) not in allowed_fields:
+                errors.append({
+                    "type": "forbidden_metric_semantics_key",
+                    "message": f"허용되지 않은 metric_semantics 필드입니다: {field}",
+                    "field": str(field),
+                    **location,
+                })
+        additive = raw_contract.get("additive")
+        if additive is not None and not isinstance(additive, bool):
+            errors.append({
+                "type": "invalid_metric_additive_flag",
+                "message": "metric_semantics.additive는 boolean이어야 합니다.",
+                **location,
+            })
+        raw_rollups = raw_contract.get("allowed_rollups")
+        values = raw_rollups if isinstance(raw_rollups, (list, tuple, set)) else [raw_rollups]
+        rollups = [str(item).strip() for item in values if str(item or "").strip()]
+        default_rollup = str(raw_contract.get("default_rollup") or "").strip().lower()
+        invalid_rollups = [item for item in [default_rollup, *rollups] if item and item.lower() not in allowed_rollups]
+        if invalid_rollups:
+            errors.append({
+                "type": "invalid_metric_rollup",
+                "message": "지원하지 않는 metric 집계 방식이 있습니다: " + ", ".join(invalid_rollups),
+                **location,
+            })
+        if additive is False and (
+            default_rollup == "sum"
+            or any(item.lower() == "sum" for item in rollups)
+        ):
+            errors.append({
+                "type": "non_additive_metric_sum_forbidden",
+                "message": "additive=false metric에는 sum 집계를 허용할 수 없습니다.",
+                **location,
+            })
+    return errors
 
 
 # 함수 설명: `_duplicate_lookup_errors()`는 05 조회기가 명시적으로 실패·건너뜀 경우 중복 정책 저장을 차단합니다.
@@ -178,10 +246,10 @@ def _upstream_binding_errors(value: Any, item_key: str) -> list[dict[str, Any]]:
                     **location,
                 })
         source_alias = str(binding.get("source_alias") or "upstream_result").strip()
-        if source_alias != "upstream_result":
+        if source_alias not in {"upstream_result", "previous_result"}:
             errors.append({
                 "type": "unsupported_upstream_source_alias",
-                "message": "현재 upstream binding의 source_alias는 upstream_result만 지원합니다.",
+                "message": "upstream binding의 source_alias는 upstream_result 또는 previous_result만 지원합니다.",
                 **location,
             })
         operator = str(binding.get("operator") or "in").strip().lower()

@@ -1,0 +1,699 @@
+{
+  "status": "ok",
+  "mode": "live_llm_dummy_retrieval_real_mongodb_state",
+  "environment": {
+    "reference_date": "20260729",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-3.5-flash-lite",
+    "retrieval_mode": "dummy",
+    "result_store": "agent_v4_result_store",
+    "session_store": "agent_v4_session_states"
+  },
+  "session_id": "validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca",
+  "questions": [
+    "어제 Mobile제품의 PKG OUT실적을 제품별로 알려줘",
+    "pop제품은어땠어?"
+  ],
+  "validation_profile": "generic",
+  "turns": [
+    {
+      "turn": 1,
+      "question": "어제 Mobile제품의 PKG OUT실적을 제품별로 알려줘",
+      "status": "ok",
+      "elapsed_seconds": 9.475,
+      "session_state_load": {
+        "stage": "00_mongodb_session_state_loader",
+        "enabled": true,
+        "loaded": false,
+        "source": "mongodb_not_found",
+        "session_id": "validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca",
+        "collection_name": "agent_v4_session_states",
+        "errors": []
+      },
+      "followup_hint": {
+        "followup_candidate": false,
+        "request_scope_hint": "new_analysis",
+        "reuse_strategy_hint": "none",
+        "confidence": "low",
+        "changed_conditions_hint": {
+          "date": {
+            "expression": "어제",
+            "resolved_value": "20260728"
+          }
+        },
+        "matched_cues": {
+          "transform": [
+            "제품별"
+          ]
+        },
+        "complete_independent_request": true,
+        "notes": [
+          "독립 질문으로 보이며 이전 조건 상속은 필수로 판단하지 않았습니다.",
+          "날짜/기준시점 변경 표현을 감지했습니다."
+        ]
+      },
+      "intent": {
+        "analysis_kind": "production_by_product_yesterday",
+        "request_scope": "new_analysis",
+        "reference_mode": "none",
+        "reuse_strategy": "none",
+        "retrieval_jobs": [
+          {
+            "dataset_key": "production",
+            "source_alias": "production_yesterday",
+            "required_params": {
+              "DATE": "20260728"
+            },
+            "filters": {
+              "MODE": {
+                "operator": "starts_with",
+                "value": "LP"
+              },
+              "PKG_TYPE1": {
+                "operator": "in",
+                "value": [
+                  "LFBGA",
+                  "TFBGA",
+                  "UFBGA",
+                  "VFBGA",
+                  "WFBGA"
+                ]
+              },
+              "MCP_NO": {
+                "operator": "null_or_empty"
+              }
+            },
+            "source_type": "oracle",
+            "source_config": {
+              "source_type": "oracle",
+              "db_key": "PNT_RPT",
+              "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ, PRODUCTION \nFROM PROD_TABLE2\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+            },
+            "required_param_names": [
+              "DATE"
+            ],
+            "trusted_catalog": true,
+            "catalog_ref": "table_catalog:production",
+            "filter_mappings": {
+              "DATE": [
+                "WORK_DATE"
+              ],
+              "MODE": [
+                "MODE"
+              ],
+              "DEN": [
+                "DENSITY"
+              ],
+              "TECH": [
+                "TECH"
+              ],
+              "ORG": [
+                "ORG"
+              ],
+              "PKG_TYPE1": [
+                "PKG1"
+              ],
+              "PKG_TYPE2": [
+                "PKG2"
+              ],
+              "LEAD": [
+                "LEAD"
+              ],
+              "MCP_NO": [
+                "MCP_NO"
+              ],
+              "TSV_DIE_TYP": [
+                "TSV_DIE_TYP"
+              ],
+              "DEVICE": [
+                "DEVICE"
+              ],
+              "DEVICE_DESC": [
+                "DEVICE_DESC"
+              ],
+              "OPER_NUM": [
+                "OPER"
+              ],
+              "OPER_NAME": [
+                "OPER_NAME"
+              ]
+            },
+            "standard_column_aliases": {
+              "date": "WORK_DT",
+              "date_format": "YYYYMMDD",
+              "quantity": "PRODUCTION"
+            },
+            "job_id": "job_1"
+          }
+        ],
+        "pandas_execution_plan": [
+          {
+            "operation": "apply_filters",
+            "source_alias": "production_yesterday"
+          },
+          {
+            "operation": "groupby_and_aggregate",
+            "source_alias": "production_yesterday",
+            "group_by": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "agg_column": "PRODUCTION",
+            "agg_method": "sum"
+          }
+        ],
+        "condition_resolution": {
+          "new": {
+            "date": "20260728",
+            "product_family": "MOBILE_PRODUCT"
+          }
+        },
+        "output_contract": {
+          "result_mode": "aggregate",
+          "required_columns": [
+            "TECH",
+            "DENSITY",
+            "MODE",
+            "PKG1",
+            "PKG2",
+            "LEAD",
+            "MCP_NO",
+            "PRODUCTION"
+          ],
+          "grain_columns": [
+            "TECH",
+            "DENSITY",
+            "MODE",
+            "PKG1",
+            "PKG2",
+            "LEAD",
+            "MCP_NO"
+          ],
+          "metric_columns": [
+            "PRODUCTION"
+          ],
+          "null_group_policy": "preserve_as_blank",
+          "metric_null_policy": "display_zero",
+          "primary_metric": "PRODUCTION",
+          "column_labels": {
+            "PRODUCTION": "PKG OUT 실적"
+          }
+        }
+      },
+      "catalog_hydration": {
+        "stage": "04a_trusted_retrieval_job_hydrator",
+        "status": "ok",
+        "retrieval_mode": "dummy",
+        "input_job_count": 1,
+        "hydrated_job_count": 1,
+        "catalog_item_count": 9,
+        "trusted_dataset_keys": [
+          "production"
+        ],
+        "dummy_only_dataset_keys": [],
+        "deferred_upstream_params": [],
+        "condition_reconciliation": [
+          {
+            "required_params": {
+              "DATE": "20260728"
+            },
+            "remapped_required_params": [
+              {
+                "from": "WORK_DT",
+                "to": "DATE"
+              }
+            ],
+            "filters": {
+              "MODE": {
+                "operator": "starts_with",
+                "value": "LP"
+              },
+              "PKG_TYPE1": {
+                "operator": "in",
+                "value": [
+                  "LFBGA",
+                  "TFBGA",
+                  "UFBGA",
+                  "VFBGA",
+                  "WFBGA"
+                ]
+              },
+              "MCP_NO": {
+                "operator": "null_or_empty"
+              }
+            },
+            "moved_to_filters": [],
+            "dropped_params": [],
+            "normalized_date_fields": [],
+            "dataset_key": "production",
+            "replaced_by_previous_result_binding": []
+          }
+        ]
+      },
+      "upstream_parameter_binding": {},
+      "result_loader": {
+        "stage": "05_mongodb_result_loader",
+        "status": "skipped",
+        "database": "datagov",
+        "collection_name": "agent_v4_result_store",
+        "data_ref": "",
+        "errors": [
+          {
+            "type": "reuse_strategy_without_row_restore",
+            "message": "reuse_strategy=none에는 이전 결과 행 복원이 필요하지 않습니다."
+          }
+        ]
+      },
+      "source_results": [
+        {
+          "dataset_key": "production",
+          "source_alias": "production_yesterday",
+          "status": "ok",
+          "row_count": 65
+        }
+      ],
+      "pandas": {
+        "status": "ok",
+        "row_count": 1,
+        "columns": [
+          "TECH",
+          "DENSITY",
+          "MODE",
+          "PKG1",
+          "PKG2",
+          "LEAD",
+          "MCP_NO",
+          "PRODUCTION"
+        ],
+        "generated_code": "_filtered_source_1_production_yesterday = sources.get('production_yesterday')\nif _filtered_source_1_production_yesterday is not None:\n    sources = dict(sources)\n    _filtered_source_1_production_yesterday = _filtered_source_1_production_yesterday.copy()\n    _filter_col_1_1 = 'MODE' if 'MODE' in _filtered_source_1_production_yesterday.columns else ('')\n    _filter_values_1_1 = ['LP']\n    if _filter_col_1_1:\n        _filter_mask_1_1 = _filtered_source_1_production_yesterday[_filter_col_1_1].astype(str).str.startswith(str(_filter_values_1_1[0]), na=False)\n        for _filter_value in _filter_values_1_1[1:]:\n            _filter_mask_1_1 = _filter_mask_1_1 | _filtered_source_1_production_yesterday[_filter_col_1_1].astype(str).str.startswith(str(_filter_value), na=False)\n        _filtered_source_1_production_yesterday = _filtered_source_1_production_yesterday[_filter_mask_1_1]\n    _filter_col_1_2 = 'PKG1' if 'PKG1' in _filtered_source_1_production_yesterday.columns else ('PKG_TYPE1' if 'PKG_TYPE1' in _filtered_source_1_production_yesterday.columns else (''))\n    _filter_values_1_2 = ['LFBGA', 'TFBGA', 'UFBGA', 'VFBGA', 'WFBGA']\n    if _filter_col_1_2:\n        _filtered_source_1_production_yesterday = _filtered_source_1_production_yesterday[_filtered_source_1_production_yesterday[_filter_col_1_2].isin(_filter_values_1_2)]\n    _filter_col_1_3 = 'MCP_NO' if 'MCP_NO' in _filtered_source_1_production_yesterday.columns else ('MCP NO' if 'MCP NO' in _filtered_source_1_production_yesterday.columns else (''))\n    _filter_values_1_3 = []\n    if _filter_col_1_3:\n        _filter_mask_1_3 = (_filtered_source_1_production_yesterday[_filter_col_1_3].isna() | _filtered_source_1_production_yesterday[_filter_col_1_3].astype(str).str.strip().str.casefold().isin(['', '<na>', 'empty', 'nan', 'nat', 'none', 'null']))\n        _filtered_source_1_production_yesterday = _filtered_source_1_production_yesterday[_filter_mask_1_3]\n    sources['production_yesterday'] = _filtered_source_1_production_yesterday\n\ndf = sources[\"production_yesterday\"].copy()\n\ngroup_cols = [\n    \"TECH\",\n    \"DENSITY\",\n    \"MODE\",\n    \"PKG1\",\n    \"PKG2\",\n    \"LEAD\",\n    \"MCP_NO\"\n]\n\navail_group_cols = [c for c in group_cols if c in df.columns]\n\nif \"PRODUCTION\" in df.columns:\n    df[\"PRODUCTION\"] = pd.to_numeric(df[\"PRODUCTION\"], errors=\"coerce\").fillna(0)\n    result = df.groupby(avail_group_cols, dropna=False)[\"PRODUCTION\"].sum().reset_index()\nelse:\n    result = df.groupby(avail_group_cols, dropna=False).size().reset_index(name=\"PRODUCTION\")\n\nfor col in avail_group_cols:\n    result[col] = result[col].fillna(\"\").astype(str).str.replace(r\"^\\s*$\", \"\", regex=True)\n\nreq_cols = [\n    \"TECH\",\n    \"DENSITY\",\n    \"MODE\",\n    \"PKG1\",\n    \"PKG2\",\n    \"LEAD\",\n    \"MCP_NO\",\n    \"PRODUCTION\"\n]\n\nfinal_cols = [c for c in req_cols if c in result.columns]\nresult = result[final_cols]",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "error": {}
+      },
+      "data_preview": [
+        {
+          "TECH": "1B",
+          "DENSITY": "32G",
+          "MODE": "LPDDR5X",
+          "PKG1": "UFBGA",
+          "PKG2": "MOBILE",
+          "LEAD": "180",
+          "MCP_NO": "",
+          "PRODUCTION": 7305
+        }
+      ],
+      "result_store": {
+        "status": "ok",
+        "data_ref": "result:validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca:c2cacecba64941da98df220464256e8e",
+        "errors": []
+      },
+      "session_state_write": {
+        "stage": "01_mongodb_session_state_writer",
+        "enabled": true,
+        "saved": true,
+        "session_id": "validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca",
+        "collection_name": "agent_v4_session_states",
+        "errors": [],
+        "turn_count": 1,
+        "preview_row_limit": 5,
+        "state_keys": [
+          "current_data",
+          "followup_source_results",
+          "last_answer_message",
+          "last_applied_criteria",
+          "last_intent_plan",
+          "last_question",
+          "runtime_source_refs",
+          "session_id"
+        ]
+      },
+      "issues": [],
+      "api_response": {
+        "response_type": "data_analysis",
+        "data_mode": "dummy",
+        "message_preview": "### 답변\n어제 Mobile 제품의 PKG OUT 실적 조회 결과, 1B 테크놀로지, 32G 밀도, LPDDR5X 모드, UFBGA(MOBILE) 패키지 조건에서 총 7,305개의 실적이 집계되었습니다.\n\n적용된 기준일은 2026년 07월 28일이며, 모바일(LP) 계열 제품 및 단일 패키지(MCP 제외) 조건을 기준으로 조회되었습니다.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| TECH | DENSITY | MODE | PKG1 | PKG2 | LEAD | MCP_NO | PKG OUT 실적 |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| 1B | 32G | LPDDR5X | UFBGA | MOBILE | 180 |  | 7,305 |\n\n총 1건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=production, source_alias=production_yesterday, so"
+      },
+      "runtime_cleanup": {}
+    },
+    {
+      "turn": 2,
+      "question": "pop제품은어땠어?",
+      "status": "ok",
+      "elapsed_seconds": 10.964,
+      "session_state_load": {
+        "stage": "00_mongodb_session_state_loader",
+        "enabled": true,
+        "loaded": true,
+        "source": "mongodb",
+        "session_id": "validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca",
+        "collection_name": "agent_v4_session_states",
+        "errors": [],
+        "updated_at": "2026-07-29T11:44:59.458729+00:00",
+        "turn_count": 1,
+        "preview_row_limit": 5
+      },
+      "followup_hint": {
+        "followup_candidate": true,
+        "request_scope_hint": "followup_transform",
+        "reuse_strategy_hint": "previous_source",
+        "confidence": "medium",
+        "matched_cues": {
+          "entity_switch": [
+            "은 어땠"
+          ]
+        },
+        "reusable_previous_source_aliases": [
+          "production_yesterday"
+        ],
+        "required_previous_artifacts": [
+          "previous_source",
+          "previous_intent_plan",
+          "previous_applied_criteria"
+        ],
+        "inheritance_candidates": [
+          "metric",
+          "required_params",
+          "group_by",
+          "pandas_function_cases",
+          "output_contract"
+        ],
+        "complete_independent_request": false,
+        "notes": [
+          "후속 질문 가능성이 있으므로 이전 조건의 상속/변경 여부를 의도 분석에서 최종 판단해야 합니다.",
+          "이전 원본 source가 현재 필수 변수 범위를 포함하는지 확인하고, 비필수 filter만 바뀌면 새 조회 없이 pandas에서 다시 필터링합니다."
+        ]
+      },
+      "intent": {
+        "analysis_kind": "production_by_pop_product_yesterday",
+        "request_scope": "followup_transform",
+        "reference_mode": "previous_source",
+        "reuse_strategy": "previous_source",
+        "retrieval_jobs": [],
+        "pandas_execution_plan": [
+          {
+            "operation": "apply_filters",
+            "source_alias": "production_yesterday"
+          },
+          {
+            "operation": "groupby_and_aggregate",
+            "source_alias": "production_yesterday",
+            "group_by": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "agg_column": "PRODUCTION",
+            "agg_method": "sum"
+          }
+        ],
+        "condition_resolution": {
+          "inherited": {
+            "date": "20260728"
+          },
+          "new": {
+            "product_family": "POP"
+          },
+          "effective_filters": {
+            "production_yesterday": {
+              "filters": {
+                "MODE": {
+                  "operator": "starts_with",
+                  "value": "LP"
+                },
+                "PKG_TYPE1": {
+                  "operator": "in",
+                  "value": [
+                    "LFBGA",
+                    "TFBGA",
+                    "UFBGA",
+                    "VFBGA",
+                    "WFBGA"
+                  ]
+                },
+                "MCP_NO": {
+                  "operator": "not_blank"
+                }
+              },
+              "dataset_key": "production",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "standard_column_aliases": {
+                "date": "WORK_DT",
+                "date_format": "YYYYMMDD",
+                "quantity": "PRODUCTION"
+              }
+            }
+          }
+        },
+        "output_contract": {
+          "result_mode": "aggregate",
+          "required_columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO",
+            "PRODUCTION"
+          ],
+          "grain_columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO"
+          ],
+          "metric_columns": [
+            "PRODUCTION"
+          ],
+          "null_group_policy": "preserve_as_blank",
+          "metric_null_policy": "display_zero",
+          "primary_metric": "PRODUCTION",
+          "column_labels": {
+            "PRODUCTION": "POP 제품 PKG OUT 실적"
+          }
+        }
+      },
+      "catalog_hydration": {
+        "stage": "04a_trusted_retrieval_job_hydrator",
+        "status": "ok",
+        "retrieval_mode": "dummy",
+        "input_job_count": 0,
+        "hydrated_job_count": 0,
+        "catalog_item_count": 9,
+        "trusted_dataset_keys": [],
+        "dummy_only_dataset_keys": [],
+        "deferred_upstream_params": [],
+        "condition_reconciliation": []
+      },
+      "upstream_parameter_binding": {},
+      "result_loader": {
+        "stage": "05_mongodb_result_loader",
+        "status": "ok",
+        "mode": "previous_source",
+        "database": "datagov",
+        "collection_name": "agent_v4_result_store",
+        "data_ref": "result:validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca:c2cacecba64941da98df220464256e8e",
+        "loaded_source_aliases": [
+          "production_yesterday"
+        ],
+        "projection_paths": [
+          "payload.runtime_sources.production_yesterday"
+        ],
+        "errors": []
+      },
+      "source_results": [
+        {
+          "dataset_key": "production",
+          "source_alias": "production_yesterday",
+          "status": "ok",
+          "row_count": 65
+        }
+      ],
+      "pandas": {
+        "status": "ok",
+        "row_count": 2,
+        "columns": [
+          "TECH",
+          "DEN",
+          "MODE",
+          "PKG_TYPE1",
+          "PKG_TYPE2",
+          "LEAD",
+          "MCP_NO",
+          "PRODUCTION"
+        ],
+        "generated_code": "_filtered_source_1_production_yesterday = sources.get('production_yesterday')\nif _filtered_source_1_production_yesterday is not None:\n    sources = dict(sources)\n    _filtered_source_1_production_yesterday = _filtered_source_1_production_yesterday.copy()\n    _filter_col_1_1 = 'MODE' if 'MODE' in _filtered_source_1_production_yesterday.columns else ('')\n    _filter_values_1_1 = ['LP']\n    if _filter_col_1_1:\n        _filter_mask_1_1 = _filtered_source_1_production_yesterday[_filter_col_1_1].astype(str).str.startswith(str(_filter_values_1_1[0]), na=False)\n        for _filter_value in _filter_values_1_1[1:]:\n            _filter_mask_1_1 = _filter_mask_1_1 | _filtered_source_1_production_yesterday[_filter_col_1_1].astype(str).str.startswith(str(_filter_value), na=False)\n        _filtered_source_1_production_yesterday = _filtered_source_1_production_yesterday[_filter_mask_1_1]\n    _filter_col_1_2 = 'PKG1' if 'PKG1' in _filtered_source_1_production_yesterday.columns else ('PKG_TYPE1' if 'PKG_TYPE1' in _filtered_source_1_production_yesterday.columns else (''))\n    _filter_values_1_2 = ['LFBGA', 'TFBGA', 'UFBGA', 'VFBGA', 'WFBGA']\n    if _filter_col_1_2:\n        _filtered_source_1_production_yesterday = _filtered_source_1_production_yesterday[_filtered_source_1_production_yesterday[_filter_col_1_2].isin(_filter_values_1_2)]\n    _filter_col_1_3 = 'MCP_NO' if 'MCP_NO' in _filtered_source_1_production_yesterday.columns else ('MCP NO' if 'MCP NO' in _filtered_source_1_production_yesterday.columns else (''))\n    _filter_values_1_3 = []\n    if _filter_col_1_3:\n        _filter_mask_1_3 = (_filtered_source_1_production_yesterday[_filter_col_1_3].isna() | _filtered_source_1_production_yesterday[_filter_col_1_3].astype(str).str.strip().str.casefold().isin(['', '<na>', 'empty', 'nan', 'nat', 'none', 'null']))\n        _filtered_source_1_production_yesterday = _filtered_source_1_production_yesterday[~_filter_mask_1_3]\n    sources['production_yesterday'] = _filtered_source_1_production_yesterday\n\ndf = sources[\"production_yesterday\"].copy()\n\n# Filter for MODE starting with 'LP', PKG_TYPE1 in specified list, and MCP_NO not blank\nmask = df[\"MODE\"].astype(str).str.startswith(\"LP\") & \\\n       df[\"PKG_TYPE1\"].isin([\"LFBGA\", \"TFBGA\", \"UFBGA\", \"VFBGA\", \"WFBGA\"]) & \\\n       df[\"MCP_NO\"].notna() & \\\n       (df[\"MCP_NO\"].astype(str).str.strip() != \"\")\n\nfiltered_df = df[mask]\n\n# Groupby and aggregate\ngroup_cols = [\"TECH\", \"DENSITY\", \"MODE\", \"PKG_TYPE1\", \"PKG_TYPE2\", \"LEAD\", \"MCP_NO\"]\nexisting_group_cols = [c for c in group_cols if c in filtered_df.columns]\n\nif not filtered_df.empty and existing_group_cols:\n    result = filtered_df.groupby(existing_group_cols, dropna=False)[\"PRODUCTION\"].sum().reset_index()\nelse:\n    result = pd.DataFrame(columns=group_cols + [\"PRODUCTION\"])\n\n# Ensure canonical columns and metrics mapping\nif \"DEN\" in result.columns and \"DENSITY\" not in result.columns:\n    result[\"DENSITY\"] = result[\"DEN\"]\nelif \"DENSITY\" in result.columns and \"DEN\" not in result.columns:\n    result[\"DEN\"] = result[\"DENSITY\"]\n\n# Fill nulls in dimension columns as blank\nfor col in existing_group_cols:\n    if col in result.columns:\n        result[col] = result[col].fillna(\"\").astype(str).str.replace(r\"^\\s*$\", \"\", regex=True)\n\n# Fill nulls in metric as zero\nif \"PRODUCTION\" in result.columns:\n    result[\"PRODUCTION\"] = pd.to_numeric(result[\"PRODUCTION\"], errors=\"coerce\").fillna(0)\nelse:\n    result[\"PRODUCTION\"] = 0\n\n# Select final required columns\nrequired_cols = [\"TECH\", \"DEN\", \"MODE\", \"PKG_TYPE1\", \"PKG_TYPE2\", \"LEAD\", \"MCP_NO\", \"PRODUCTION\"]\nfinal_cols = [c for c in required_cols if c in result.columns]\nresult = result[final_cols]",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "error": {}
+      },
+      "data_preview": [
+        {
+          "TECH": "1C",
+          "DEN": "16G",
+          "MODE": "LPDDR5",
+          "PKG_TYPE1": "LFBGA",
+          "PKG_TYPE2": "MOBILE",
+          "LEAD": "267",
+          "MCP_NO": "L-267A1",
+          "PRODUCTION": 1672
+        },
+        {
+          "TECH": "1Z",
+          "DEN": "16G",
+          "MODE": "LPDDR5",
+          "PKG_TYPE1": "LFBGA",
+          "PKG_TYPE2": "POP",
+          "LEAD": "200",
+          "MCP_NO": "M-001",
+          "PRODUCTION": 5899
+        }
+      ],
+      "result_store": {
+        "status": "ok",
+        "data_ref": "result:validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca:72b84d9e57ca44d8bd9692bf808f1640",
+        "errors": []
+      },
+      "session_state_write": {
+        "stage": "01_mongodb_session_state_writer",
+        "enabled": true,
+        "saved": true,
+        "session_id": "validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca",
+        "collection_name": "agent_v4_session_states",
+        "errors": [],
+        "turn_count": 2,
+        "preview_row_limit": 5,
+        "state_keys": [
+          "current_data",
+          "followup_source_results",
+          "last_answer_message",
+          "last_applied_criteria",
+          "last_intent_plan",
+          "last_question",
+          "runtime_source_refs",
+          "session_id"
+        ]
+      },
+      "issues": [],
+      "api_response": {
+        "response_type": "data_analysis",
+        "data_mode": "dummy",
+        "message_preview": "### 답변\n1C 16G LPDDR5 LFBGA MOBILE 267 L-267A1의 POP 제품 PKG OUT 실적은 1,672입니다.\n\n전체 결과는 총 2건이며, 상세 값은 아래 결과 표에서 확인할 수 있습니다.\n\n### 결과 테이블\n| TECH | DEN | MODE | PKG_TYPE1 | PKG_TYPE2 | LEAD | MCP_NO | POP 제품 PKG OUT 실적 |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| 1C | 16G | LPDDR5 | LFBGA | MOBILE | 267 | L-267A1 | 1,672 |\n| 1Z | 16G | LPDDR5 | LFBGA | POP | 200 | M-001 | 5,899 |\n\n총 2건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=production, source_alias=production_yesterday, source_type=oracle, ro"
+      },
+      "runtime_cleanup": {}
+    }
+  ],
+  "mongodb_verification": {
+    "session_document": {
+      "_id": "session_state:validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca",
+      "session_id": "validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca",
+      "state": {
+        "current_data": {
+          "data_ref": {
+            "store": "mongodb",
+            "ref_id": "result:validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca:72b84d9e57ca44d8bd9692bf808f1640",
+            "database": "datagov",
+            "collection_name": "agent_v4_result_store",
+            "path": "payload.result_rows",
+            "role": "analysis_result",
+            "label": "분석 결과 데이터",
+            "row_count": 2,
+            "columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "PRODUCTION"
+            ],
+            "expires_at": "2026-07-29T12:45:07.166896+00:00",
+            "ttl_hours": 1,
+            "download_url": "http://127.0.0.1:8765/download.csv?download_ref=eyJzdG9yZSI6Im1vbmdvZGIiLCJyZWZfaWQiOiJyZXN1bHQ6dmFsaWRhdGlvbi1tdWx0aXR1cm4tMWQ1NzljNmYtNjc2ZC00ODlmLWI5OGItODQyZmY2ZGJjM2NhOjcyYjg0ZDllNTdjYTQ0ZDhiZDk2OTJiZjgwOGYxNjQwIiwiZGF0YWJhc2UiOiJkYXRhZ292IiwiY29sbGVjdGlvbl9uYW1lIjoiYWdlbnRfdjRfcmVzdWx0X3N0b3JlIiwicGF0aCI6InBheWxvYWQucmVzdWx0X3Jvd3MiLCJyb2xlIjoiYW5hbHlzaXNfcmVzdWx0IiwibGFiZWwiOiLrtoTshJ0g6rKw6rO8IOuNsOydtO2EsCJ9",
+            "download_format": "csv"
+          }
+        },
+        "last_intent_plan": {
+          "request_scope": "followup_transform"
+        }
+      },
+      "turn_count": 2
+    },
+    "result_documents": [
+      {
+        "_id": "result:validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca:c2cacecba64941da98df220464256e8e",
+        "session_id": "validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca",
+        "question": "어제 Mobile제품의 PKG OUT실적을 제품별로 알려줘"
+      },
+      {
+        "_id": "result:validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca:72b84d9e57ca44d8bd9692bf808f1640",
+        "session_id": "validation-multiturn-1d579c6f-676d-489f-b98b-842ff6dbc3ca",
+        "question": "pop제품은어땠어?"
+      }
+    ],
+    "result_document_count": 2,
+    "issues": []
+  },
+  "cleanup": {
+    "status": "ok",
+    "session_deleted_count": 1,
+    "result_deleted_count": 2
+  },
+  "errors": []
+}

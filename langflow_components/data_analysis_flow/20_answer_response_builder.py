@@ -186,9 +186,12 @@ def _authoritative_result_message(payload: dict[str, Any]) -> str:
     question = str(_dict(payload.get("request")).get("question") or "").strip()
     metric_column = _primary_metric_column(payload, columns, rows, question)
     subject = _result_subject(payload, first_row, columns, metric_column)
+    presence_message = _presence_comparison_message(payload, row_count, columns, metric_column, question)
+    if presence_message:
+        return presence_message
 
     if metric_column and metric_column in first_row:
-        metric_label = _metric_label(metric_column)
+        metric_label = _metric_label(payload, metric_column)
         metric_value = _display_value(first_row.get(metric_column))
         segmented_message = _segmented_result_message(
             payload,
@@ -199,14 +202,15 @@ def _authoritative_result_message(payload: dict[str, Any]) -> str:
         )
         if segmented_message:
             return segmented_message
-        if _is_ranking_question(question):
+        if _is_ranking_question(question) or _output_ordering(payload):
             requested_count = _requested_result_count(payload)
-            rank_label = "하위" if _is_lowest_ranking(question) else "상위"
+            is_lowest = _is_lowest_ranking(question) or str(_output_ordering(payload).get("order")) == "asc"
+            rank_label = "하위" if is_lowest else "상위"
             if requested_count and row_count < requested_count:
                 intro = f"{rank_label} {requested_count}개를 요청했으며, 조건에 맞는 결과는 {row_count:,}건입니다."
             else:
                 intro = f"조건에 맞는 순위 결과는 총 {row_count:,}건입니다."
-            direction = "가장 적은" if _is_lowest_ranking(question) else "가장 많은"
+            direction = "가장 적은" if is_lowest else "가장 많은"
             metric_sentence = (
                 f"이 중 {metric_label}이 {direction} 대상은 {subject}이며, "
                 f"{metric_label}은 {metric_value}입니다."
@@ -217,16 +221,17 @@ def _authoritative_result_message(payload: dict[str, Any]) -> str:
             details.append("나머지 대상별 상세 결과는 아래 결과 표에서 확인할 수 있습니다.")
             return "\n\n".join(details)
 
-        comparison_message = _multi_row_comparison_message(
-            payload,
-            rows,
-            columns,
-            metric_column,
-            row_count,
-            question,
-        )
-        if comparison_message:
-            return comparison_message
+        if _should_compare_extremes(payload, question):
+            comparison_message = _multi_row_comparison_message(
+                payload,
+                rows,
+                columns,
+                metric_column,
+                row_count,
+                question,
+            )
+            if comparison_message:
+                return comparison_message
 
         metric_sentence = (
             f"{subject}의 {metric_label}은 {metric_value}입니다."
@@ -269,7 +274,7 @@ def _multi_row_comparison_message(
 
     highest_row, highest_value = max(numeric_rows, key=lambda item: item[1])
     lowest_row, lowest_value = min(numeric_rows, key=lambda item: item[1])
-    metric_label = _metric_label(metric_column)
+    metric_label = _metric_label(payload, metric_column)
     dimension_label = _comparison_dimension_label(payload, columns, metric_column, question)
     highest_subject = _comparison_subject(payload, highest_row, columns, metric_column, dimension_label)
     lowest_subject = _comparison_subject(payload, lowest_row, columns, metric_column, dimension_label)
@@ -311,18 +316,6 @@ def _comparison_dimension_label(
     metric_column: str,
     question: str,
 ) -> str:
-    lowered = str(question or "").lower()
-    question_labels = (
-        (("공정", "oper"), "공정"),
-        (("제품", "product", "device"), "제품"),
-        (("장비", "equipment", "eqp"), "장비"),
-        (("lot", "랏"), "LOT"),
-        (("일자", "날짜", "기준일", "date"), "기준일"),
-    )
-    for tokens, label in question_labels:
-        if any(token in lowered for token in tokens):
-            return label
-
     resolved_grain = _dict(_dict(payload.get("intent_plan")).get("resolved_grain_plan"))
     grain_columns = _string_list(resolved_grain.get("grain_columns"))
     candidates = grain_columns or [column for column in columns if column != metric_column]
@@ -338,6 +331,17 @@ def _comparison_dimension_label(
     product_columns = {"TECH", "DENSITY", "DEN", "MODE", "ORG", "PKG1", "PKG2", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"}
     if len(normalized.intersection(product_columns)) >= 2:
         return "제품"
+    lowered = str(question or "").lower()
+    question_labels = (
+        (("제품", "product", "device"), "제품"),
+        (("장비", "equipment", "eqp"), "장비"),
+        (("lot", "랏"), "LOT"),
+        (("공정", "oper"), "공정"),
+        (("일자", "날짜", "기준일", "date"), "기준일"),
+    )
+    for tokens, label in question_labels:
+        if any(token in lowered for token in tokens):
+            return label
     return "대상"
 
 
@@ -399,7 +403,14 @@ def _primary_metric_column(
     question: str,
 ) -> str:
     output_contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
-    explicit = _string_list(output_contract.get("metric_columns"))
+    ordering = _dict(output_contract.get("ordering"))
+    explicit = _string_list(
+        [
+            ordering.get("sort_by"),
+            output_contract.get("primary_metric"),
+            *_string_list(output_contract.get("metric_columns")),
+        ]
+    )
     for column in explicit:
         if column in columns:
             return column
@@ -422,6 +433,48 @@ def _primary_metric_column(
             if token_upper in column.upper() and _column_has_numeric_value(rows, column):
                 return column
     return ""
+
+
+# 함수 설명: 존재/부재 비교 결과를 일반 최대·최소 집계로 오해하지 않고 비교 조건에 맞는 건수 문장으로 설명합니다.
+def _presence_comparison_message(
+    payload: dict[str, Any],
+    row_count: int,
+    columns: list[str],
+    metric_column: str,
+    question: str,
+) -> str:
+    plan = _dict(payload.get("intent_plan"))
+    steps = [item for item in _list(plan.get("pandas_execution_plan")) if isinstance(item, dict)]
+    if not any(str(item.get("operation") or "").strip() == "compare_presence" for item in steps):
+        return ""
+    dimension_label = _comparison_dimension_label(payload, columns, metric_column, question)
+    target = f"{dimension_label}은" if dimension_label != "대상" else "대상은"
+    return "\n\n".join(
+        [
+            f"요청한 존재·부재 조건을 만족한 {target} 총 {row_count:,}건입니다.",
+            "왼쪽 기준에는 값이 존재하고 오른쪽 기준에는 값이 없거나 0인 결과만 아래 표에 표시했습니다.",
+        ]
+    )
+
+
+# 함수 설명: 사용자가 실제 최대·최소 비교를 요청했을 때만 다건 극값 요약을 허용합니다.
+def _should_compare_extremes(payload: dict[str, Any], question: str) -> bool:
+    if _output_ordering(payload):
+        return True
+    lowered = str(question or "").lower()
+    return (
+        ("다른" in lowered and any(token in lowered for token in ("어때", "어떻", "비교")))
+        or any(
+        token in lowered
+        for token in ("비교", "가장", "상위", "하위", "많은", "적은", "높은", "낮은", "최대", "최소")
+        )
+    )
+
+
+# 함수 설명: output contract의 단일 정렬 계약을 안전한 dict로 반환합니다.
+def _output_ordering(payload: dict[str, Any]) -> dict[str, Any]:
+    contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
+    return _dict(contract.get("ordering"))
 
 
 # 함수 설명: metadata grain 또는 첫 dimension 값을 key=value 나열 대신 사람이 읽을 대표 대상 표현으로 묶습니다.
@@ -573,6 +626,9 @@ def _row_entity_signature(
 # 함수 설명: intent output contract 또는 질문에서 요청한 순위 건수를 추출합니다.
 def _requested_result_count(payload: dict[str, Any]) -> int:
     output_contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
+    ordering_limit = _int(_dict(output_contract.get("ordering")).get("limit"), 0)
+    if ordering_limit > 0:
+        return ordering_limit
     for key in ("top_n", "bottom_n", "limit"):
         count = _int(output_contract.get(key), 0)
         if count > 0:
@@ -582,8 +638,12 @@ def _requested_result_count(payload: dict[str, Any]) -> int:
     return _int(match.group(1), 0) if match else 0
 
 
-# 함수 설명: 내부 지표 컬럼명을 답변에 사용할 자연어 지표명으로 변환합니다.
-def _metric_label(column: str) -> str:
+# 함수 설명: output contract의 문맥 표시명을 우선 사용하고 내부 지표 컬럼명을 자연어 지표명으로 변환합니다.
+def _metric_label(payload: dict[str, Any], column: str) -> str:
+    labels = _dict(_dict(_dict(payload.get("intent_plan")).get("output_contract")).get("column_labels"))
+    explicit = str(labels.get(column) or "").strip()
+    if explicit:
+        return explicit
     upper = str(column or "").upper()
     if "TOTAL" in upper and ("QUANTITY" in upper or "QTY" in upper or "수량" in column):
         return "합계 수량"
@@ -742,7 +802,11 @@ def _result_contract_column_labels(payload: dict[str, Any], columns: list[str]) 
     contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
     segment_column = str(contract.get("segment_column") or "RESULT_GROUP").strip()
     rank_column = str(contract.get("rank_column") or "RESULT_RANK").strip()
-    labels: dict[str, str] = {}
+    labels: dict[str, str] = {
+        column: str(label).strip()
+        for column, label in _dict(contract.get("column_labels")).items()
+        if column in columns and str(label).strip()
+    }
     if segment_column in columns:
         labels[segment_column] = "구분"
     if rank_column in columns:
@@ -791,6 +855,14 @@ def _applied_criteria(payload: dict[str, Any]) -> dict[str, Any]:
         retriever_filters = _dict(_dict(source.get("source_execution")).get("filters_applied_in_retriever"))
         if retriever_filters:
             retrieval_filters[alias or dataset_key or f"source_{len(retrieval_filters) + 1}"] = deepcopy(retriever_filters)
+    condition_resolution = _dict(plan.get("condition_resolution"))
+    effective_filters = _dict(condition_resolution.get("effective_filters"))
+    for alias, item in effective_filters.items():
+        if not isinstance(item, dict):
+            continue
+        filters = item.get("filters")
+        if filters not in (None, "", [], {}):
+            analysis_filters[str(alias)] = deepcopy(filters)
     return _omit_empty(
         {
             "required_params": required_params,

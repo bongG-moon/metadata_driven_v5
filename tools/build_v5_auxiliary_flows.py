@@ -1026,7 +1026,7 @@ def build_html_visualization_flow(donor: dict[str, Any]) -> dict[str, Any]:
     chart_template = chart["data"]["node"]["template"]
     _set_value(chart_template, "mongo_database", "datagov")
     _set_value(chart_template, "collection_name", "agent_v4_result_store")
-    _set_value(chart_template, "report_api_url", "http://127.0.0.1:8765")
+    _set_value(chart_template, "report_api_url", "http://127.0.0.1:8010")
     _set_value(chart_template, "report_ttl_hours", "24")
     output = native_node(proto["chat_output"], "ChatOutput-html-visualization", 900, -130)
     _set_message_storage(output, True)

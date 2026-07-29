@@ -26,43 +26,77 @@ RUNTIME_BUFFER_KEYS = {
 }
 
 UPSTREAM_SOURCE_ALIAS = "upstream_result"
+PREVIOUS_RESULT_SOURCE_ALIAS = "previous_result"
 DEFAULT_MAX_VALUES = 200
 MAX_ALLOWED_VALUES = 10_000
 SUPPORTED_OPERATORS = {"in", "eq"}
 BLOCKED_SOURCE_TYPE = "upstream_binding_blocked"
 
 
-# 주요 함수: 명시적 orchestration 요청에서만 상위 결과 식별자를 다음 retrieval job의 required_params로 연결합니다.
+# 주요 함수: 외부 상위 결과 또는 의도 분석이 선택한 직전 결과 식별자를 다음 retrieval job의 required_params로 연결합니다.
 def bind_upstream_entity_parameters(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     orchestration = payload.get("orchestration") if isinstance(payload.get("orchestration"), dict) else {}
     upstream_ref = _ref_id(orchestration.get("upstream_result_ref"))
-    if not upstream_ref:
-        # 기존 단일/후속 분석에서는 payload와 trace를 전혀 바꾸지 않습니다.
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    reference_mode = str(plan.get("reference_mode") or "").strip()
+    allowed_source_aliases: set[str] = set()
+    if upstream_ref:
+        allowed_source_aliases.add(UPSTREAM_SOURCE_ALIAS)
+    if reference_mode == "previous_result_rows":
+        allowed_source_aliases.add(PREVIOUS_RESULT_SOURCE_ALIAS)
+    if not allowed_source_aliases:
+        # 기존 단일 분석과 previous_result_rows가 아닌 후속 분석은 변경하지 않습니다.
         return payload
 
-    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     jobs = [item for item in plan.get("retrieval_jobs", []) if isinstance(item, dict)] if isinstance(plan.get("retrieval_jobs"), list) else []
     if not jobs:
         _record_inspection(payload, "skipped", [], [], reason="no_retrieval_jobs")
         return payload
 
     runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
-    upstream_rows = runtime_sources.get(UPSTREAM_SOURCE_ALIAS)
+    source_rows_by_alias: dict[str, list[Any]] = {}
     errors: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
     bound_jobs: list[dict[str, Any]] = []
 
-    if str(orchestration.get("status") or "").lower() != "ok" or not isinstance(upstream_rows, list) or not upstream_rows:
+    if UPSTREAM_SOURCE_ALIAS in allowed_source_aliases and (
+        str(orchestration.get("status") or "").lower() != "ok"
+        or not isinstance(runtime_sources.get(UPSTREAM_SOURCE_ALIAS), list)
+        or not runtime_sources.get(UPSTREAM_SOURCE_ALIAS)
+    ):
         errors.append(
             _issue(
                 "upstream_result_unavailable",
                 "MongoDB에서 완전한 상위 결과를 복원하지 못해 후속 데이터 조회를 차단했습니다.",
             )
         )
-    else:
+    elif UPSTREAM_SOURCE_ALIAS in allowed_source_aliases:
+        source_rows_by_alias[UPSTREAM_SOURCE_ALIAS] = runtime_sources[UPSTREAM_SOURCE_ALIAS]
+
+    if PREVIOUS_RESULT_SOURCE_ALIAS in allowed_source_aliases and (
+        not isinstance(runtime_sources.get(PREVIOUS_RESULT_SOURCE_ALIAS), list)
+        or not runtime_sources.get(PREVIOUS_RESULT_SOURCE_ALIAS)
+    ):
+        errors.append(
+            _issue(
+                "previous_result_unavailable",
+                "같은 세션의 완전한 직전 결과를 복원하지 못해 후속 데이터 조회를 차단했습니다.",
+            )
+        )
+    elif PREVIOUS_RESULT_SOURCE_ALIAS in allowed_source_aliases:
+        source_rows_by_alias[PREVIOUS_RESULT_SOURCE_ALIAS] = runtime_sources[PREVIOUS_RESULT_SOURCE_ALIAS]
+
+    if not errors:
+        binding_required = UPSTREAM_SOURCE_ALIAS in allowed_source_aliases
         for index, job in enumerate(jobs):
-            bound_job, job_summaries, job_errors = _bind_job(job, upstream_rows, index)
+            bound_job, job_summaries, job_errors = _bind_job(
+                job,
+                source_rows_by_alias,
+                allowed_source_aliases,
+                index,
+                binding_required=binding_required,
+            )
             bound_jobs.append(bound_job)
             summaries.extend(job_summaries)
             errors.extend(job_errors)
@@ -88,12 +122,17 @@ def bind_upstream_entity_parameters(payload_value: Any) -> dict[str, Any]:
 # 함수 설명: `_bind_job()`은 단일 신뢰 조회 작업의 binding 목록을 검증하고 충돌 없이 파라미터를 채웁니다.
 def _bind_job(
     job: dict[str, Any],
-    upstream_rows: list[Any],
+    source_rows_by_alias: dict[str, list[Any]],
+    allowed_source_aliases: set[str],
     job_index: int,
+    *,
+    binding_required: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     next_job = deepcopy(job)
     dataset_key = str(next_job.get("dataset_key") or "").strip()
     if next_job.get("trusted_catalog") is not True:
+        if not binding_required:
+            return next_job, [], []
         return next_job, [], [
             _issue(
                 "untrusted_upstream_binding",
@@ -106,6 +145,8 @@ def _bind_job(
     source_config = next_job.get("source_config") if isinstance(next_job.get("source_config"), dict) else {}
     bindings = source_config.get("upstream_bindings")
     if not isinstance(bindings, list) or not bindings:
+        if not binding_required:
+            return next_job, [], []
         return next_job, [], [
             _issue(
                 "upstream_binding_missing",
@@ -115,12 +156,31 @@ def _bind_job(
             )
         ]
 
+    applicable_bindings = [
+        binding
+        for binding in bindings
+        if isinstance(binding, dict)
+        and str(binding.get("source_alias") or UPSTREAM_SOURCE_ALIAS).strip() in allowed_source_aliases
+    ]
+    if not applicable_bindings:
+        if not binding_required:
+            return next_job, [], []
+        return next_job, [], [
+            _issue(
+                "upstream_binding_missing",
+                "현재 참조 결과 alias에 대응하는 신뢰 catalog binding이 없습니다.",
+                dataset_key=dataset_key,
+                index=job_index,
+                allowed_source_aliases=sorted(allowed_source_aliases),
+            )
+        ]
+
     params = deepcopy(next_job.get("required_params")) if isinstance(next_job.get("required_params"), dict) else {}
     summaries: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     target_params: set[str] = set()
 
-    for binding_index, binding in enumerate(bindings):
+    for binding_index, binding in enumerate(applicable_bindings):
         if not isinstance(binding, dict):
             errors.append(
                 _issue(
@@ -132,9 +192,11 @@ def _bind_job(
                 )
             )
             continue
+        binding_source_alias = str(binding.get("source_alias") or UPSTREAM_SOURCE_ALIAS).strip()
         binding_errors, summary, target_param, bound_value = _resolve_binding(
             binding,
-            upstream_rows,
+            source_rows_by_alias.get(binding_source_alias, []),
+            allowed_source_aliases,
             dataset_key,
             job_index,
             binding_index,
@@ -173,7 +235,14 @@ def _bind_job(
     if not errors:
         next_job["required_params"] = params
         next_job["upstream_binding_applied"] = True
-        next_job["upstream_source_alias"] = UPSTREAM_SOURCE_ALIAS
+        next_job["upstream_source_aliases"] = sorted(
+            {
+                str(item.get("source_alias") or UPSTREAM_SOURCE_ALIAS).strip()
+                for item in applicable_bindings
+            }
+        )
+        if len(next_job["upstream_source_aliases"]) == 1:
+            next_job["upstream_source_alias"] = next_job["upstream_source_aliases"][0]
     return next_job, summaries, errors
 
 
@@ -181,6 +250,7 @@ def _bind_job(
 def _resolve_binding(
     binding: dict[str, Any],
     upstream_rows: list[Any],
+    allowed_source_aliases: set[str],
     dataset_key: str,
     job_index: int,
     binding_index: int,
@@ -201,11 +271,11 @@ def _resolve_binding(
                 **location,
             )
         )
-    if source_alias != UPSTREAM_SOURCE_ALIAS:
+    if source_alias not in allowed_source_aliases:
         errors.append(
             _issue(
                 "unsupported_upstream_source_alias",
-                f"현재 지원하는 상위 source alias는 {UPSTREAM_SOURCE_ALIAS} 하나입니다.",
+                f"현재 요청에서 허용되지 않은 reference source alias입니다: {source_alias}",
                 **location,
             )
         )

@@ -18,7 +18,10 @@
 
 - `repair_required`가 `false`이면 `{{"code": ""}}`만 반환한다.
 - `repair_required`가 `true`이면 설명 없이 JSON 하나만 반환한다.
+- 오류 type이 `missing_code`이거나 `실패 pandas 코드`가 비어 있으면 수정할 기존 코드가 없는 경우다. 이때도 빈 code를 반환하지 말고 `intent plan`, `source schema`, `source preview`, `output schema`만으로 처음부터 완전한 실행 코드를 생성하며 마지막에 반드시 `result` 또는 `result_df`를 설정한다.
 - 코드는 `sources` dict에 들어 있는 DataFrame만 사용한다.
+- 입력으로 제공된 intent plan, source schema, output contract JSON 전체를 retry 코드 안의 dict로 다시 복사하지 않는다. 분석에 실제로 필요한 컬럼·조건·계약 값만 Python 변수로 작성한다.
+- 실패 코드에 JSON 전용 literal `true`, `false`, `null`이 들어 있으면 해당 JSON 복사 블록을 제거한다. 불리언·결측 상수가 실제로 필요하면 Python의 `True`, `False`, `None`을 사용한다.
 - `pd`, `sources`, 정확한 import로 선언된 제한형 `np` 외 외부 객체를 가정하지 않는다. 특화 helper가 필요하면 `function_case_helper_code`의 필요한 함수 정의를 retry code 상단에 포함한다.
 - 일반 import, open, eval, exec, 파일 접근, 네트워크 접근은 사용하지 않는다.
 - executor가 제공하는 안전 builtin은 `Exception`, `all`, `any`, `bool`, `dict`, `enumerate`, `float`, `hasattr`, `int`, `isinstance`, `len`, `list`, `max`, `min`, `object`, `range`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`이다. 실패 코드의 `object` dtype 비교와 `zip`은 제거하지 않아도 되며 이 목록 밖 builtin은 새로 가정하지 않는다.
@@ -40,6 +43,7 @@
 - retry 응답의 `code`에는 executor preamble을 복사해서 넣지 않는다. retry executor가 `pandas_execution_plan.apply_row_match_groups`와 `intent_plan.retrieval_jobs[].filters` 기반 preamble을 다시 자동으로 붙인다.
 - `intent_plan.retrieval_jobs[].filters`는 executor가 pandas 전처리 조건으로 먼저 적용한다.
 - retry code에는 `intent_plan.retrieval_jobs[].filters`와 같은 필터를 다시 작성하지 않는다.
+- `condition_resolution`은 의도 추적과 답변 설명용이므로 retry filter의 실행 원본으로 사용하지 않는다. 실행 filter는 `retrieval_jobs[].filters` 또는 `pandas_execution_plan.apply_filters`에 field·operator·value가 구조적으로 명시된 조건만 사용한다.
 - retry code에서는 이미 필터된 `sources["alias"]`를 기준으로 오류 원인, 집계, 정렬, join, 추가 분석 조건만 수정한다.
 - `KeyError: '컬럼명'` 또는 source schema에 없는 컬럼 오류가 있으면, 해당 컬럼을 무조건 참조하지 말고 `df.columns`에 존재하는 컬럼만 groupby/선택/정렬에 사용한다.
 - `pandas_execution_plan`의 groupby·비교·집계·정렬·선택 컬럼은 normalizer가 source별 metadata 계약에 따라 실제 물리 컬럼명으로 정규화한 값이다. retry에서도 계획에 기록된 물리 컬럼을 사용하고 canonical alias로 다시 rename하지 않는다.
@@ -55,16 +59,21 @@
 - join key 정규화에서는 dtype을 문자열로 검사하지 않는다. `replace("", pd.NA).fillna("")`처럼 결과가 동일한 불필요한 결측값 왕복도 제거한다.
 - join key 오류를 고칠 때도 source 전체 column을 순회하며 일괄 문자열 변환하지 말고, 계약의 실제 좌우 join key copy만 정규화한다.
 - `multi_match_policy=collect_unique`인데 실패 코드가 `drop_duplicates(subset=join_keys)`로 장비 등 여러 우측 값을 하나만 남겼다면, `right_value_columns`별 중복 없는 값을 집계해 보존하도록 수정한다.
+- left join의 오른쪽 source가 filter 후 0건이라 선언된 오른쪽 metric 또는 정렬 기준 컬럼이 사라진 경우, source schema와 `resolved_join_plan`·`output_contract.metric_columns`에 선언된 실제 컬럼으로 빈 오른쪽 집계표를 만든다. left join 뒤 `metric_null_policy=display_zero`인 선언 metric이 결과에 없으면 0 컬럼을 추가하고, 이미 있는 결측값도 0으로 채운 다음 정렬·컬럼 선택을 재실행한다. 계약에 없는 임의 컬럼은 만들지 않는다.
+- 오른쪽 source 0건을 컬럼 없는 `pd.DataFrame()`으로 처리해 같은 output contract 오류를 반복하지 않는다. 왼쪽 행은 유지하고 선언된 결과 schema를 보존한다.
 - `operation=compare_presence`인데 실패 코드가 단순 left join 후 전체 행을 반환했다면, source별 기존 filter는 건드리지 말고 presence 비교만 복구한다. `left_metric_column` 합계가 0보다 큰 왼쪽 대상과 `right_metric_column` 합계가 0보다 큰 오른쪽 대상을 각각 만든 뒤, resolved join key로 left anti-join하여 오른쪽이 없거나 합계 0인 왼쪽 대상만 남긴다.
 - `presence_rule=left_positive_right_missing_or_zero`에서 오른쪽 null을 0으로 채우는 것만으로 끝내지 않는다. 오른쪽 양수 대상은 결과에서 제외하고 왼쪽 metric이 0인 대상도 제외한다.
 - 서로 다른 source의 공정 filter를 repair 코드에서 합치거나 양쪽에 다시 쓰지 않는다. `sources["alias"]`는 source별 retrieval filter가 이미 독립적으로 적용된 상태다.
 - `operation=compare_group_attributes` 코드가 실패했다면 계획의 `group_by`만 기준키로, `comparison_columns`만 비교 대상으로 사용한다. 기준 컬럼 `groupby(..., dropna=False)` → 비교 컬럼 `nunique(dropna=False)` → `comparison_rule`에 따른 `any/all` 기준키 선택 → 원본 `merge` 순서로 단순하게 다시 작성하고, 최종 고유 속성 조합은 `group_by + comparison_columns`로 `drop_duplicates()`한다.
+- retry의 `group_cols`는 해당 단계의 `group_by`를 그대로 옮기고 `comp_cols`는 `comparison_columns`를 그대로 옮긴다. `resolved_grain_plan.grain_columns` 전체를 group_cols로 사용하지 않으며, 표준 제품 grain에 들어 있다는 이유로 MODE·PKG1·LEAD 같은 비교 컬럼을 group_cols에 추가하지 않는다.
 - 비교 counts는 `counts = df.groupby(group_cols, dropna=False)[comp_cols].nunique(dropna=False)` 형태로 만들고, `grouped.groups.keys()` index에 원본 행 index의 `transform()` 결과를 대입한 코드는 제거한다. `valid_keys = counts[mask].reset_index()[group_cols]`를 원본과 merge한다.
+- `ValueError: cannot insert ..., already exists`이면 비교 컬럼이 group_cols에도 중복 포함되었는지 먼저 확인하고 제거한다. 최종 선택용 `group_cols + comp_cols`도 순서를 보존해 중복 제거한다.
 - 비교 결과가 0건이어도 `pd.DataFrame(columns=group_cols + comp_cols)`처럼 계획의 물리 컬럼 schema를 유지하고, 컬럼 없는 빈 DataFrame 때문에 output contract 오류가 반복되지 않게 한다.
 - metadata join key가 source schema에 하나도 없으면 다른 key를 추측하지 말고 빈 결과 또는 명시적 오류로 끝낸다.
 - `df.groupby(["A", "B"])`처럼 실패한 고정 컬럼 리스트는 `desired_cols`와 `group_cols = [c for c in desired_cols if c in df.columns]` 구조로 바꾼다.
 - 실패 코드의 dimension groupby가 null, 빈 문자열, 공백 group 행을 누락했다면 `dropna=False`를 명시하고 집계 전 group column의 null/blank 제외 filter를 제거한다.
 - `apply_row_match_groups`는 executor가 이미 reference 행 내부 AND·행 사이 OR로 적용한다. repair 코드에서 이를 컬럼별 독립 `isin`으로 다시 풀지 말고, null·None·NaN·빈 문자열·공백과 문자열 null/none/nan/<NA>를 동일한 `""`으로 보는 executor 결과를 유지한다.
+- previous_result를 left로 보존하는 merge에서 결과 grain이 `TECH_x`/`TECH_y`처럼 suffix되어 output contract 컬럼이 사라졌다면, reference의 원래 identity 컬럼은 그대로 두고 오른쪽 집계표는 임시 정규화 key와 집계 output_column만 projection한 뒤 merge한다. suffix 컬럼을 다시 추측해 rename하는 방식보다 오른쪽 중복 grain 컬럼이 merge에 들어오지 않게 수정한다.
 - 집계 후 표시용 dimension column에만 `fillna("")`와 `replace(r"^\s*$", "", regex=True)`를 적용한다. dimension null/blank를 `미등록`으로 바꾼 코드는 빈 문자열 표시로 수정한다.
 - 최종 표시용 metric column은 `intent_plan.output_contract.metric_columns`를 최우선으로 사용한다. 이 계약이 없을 때만 실제 숫자 값이 있는 컬럼 또는 생산량·재공·UPH·QTY·COUNT·RATE처럼 지표 의미가 분명한 컬럼을 보수적으로 선택하며, ID·코드·날짜·dimension 컬럼을 metric으로 추정하지 않는다.
 - `groupby_and_aggregate`에서 `output_contract.metric_columns`의 실제 metric 컬럼이 source에 있으면 생산량·재공·수량·계획 값은 `sum`으로 집계한다. 실제 metric이 있는데 `groupby(...).size()`로 행 수를 계산해 같은 metric 이름을 붙인 실패 코드는 수정한다.
@@ -76,6 +85,7 @@
 - 실패한 코드와 `function_case_selection_json.selected_steps`에 실제로 필요한 helper만 사용한다.
 - `function_case_helper_code`에는 사용할 수 있는 helper 함수 정의 코드만 들어 있다.
 - helper가 선택된 조건을 일반 column filter로 임의 대체하지 않는다. helper 함수 정의를 포함하고 선택된 `input_text`, `source_alias`를 보존해 호출한다.
+- function case가 처리한 `input_text`를 같은 source의 별도 일반 filter로 다시 적용한 실패 코드는 그 중복 filter를 제거한다.
 - 실패 코드가 `record_step` 또는 `record_function_case_result`를 사용했다면 retry 코드에서도 같은 목적의 기록을 유지한다.
 - 단계형 분석에서 답변 기준이 되는 중간 결과가 명확하다면 `record_step("key", dataframe_or_value, description="설명", role="basis")`로 compact하게 기록한다.
 - 최종 결과는 반드시 `result` 또는 `result_df` 변수에 넣는다.

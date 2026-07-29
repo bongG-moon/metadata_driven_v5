@@ -219,7 +219,19 @@ def _rows_for_dataset(dataset_key: str) -> list[dict[str, Any]]:
     two_days_ago = _date_delta(today, -2)
     rows = {
         "production_today": _production_rows(_unique_dates([today, "20260701"])),
-        "production": _production_rows(_unique_dates([yesterday, "20260701", "20260630", "20260627", "20260624"])),
+        "production": _production_rows(
+            _unique_dates(
+                [
+                    yesterday,
+                    "20260709",
+                    "20260705",
+                    "20260701",
+                    "20260630",
+                    "20260627",
+                    "20260624",
+                ]
+            )
+        ),
         "wip_today": _wip_rows(_unique_dates([today, "20260701"])),
         "wip": _wip_rows(_unique_dates([yesterday, two_days_ago, "20260701", "20260630", "20260626", "20260624", "20260623"])),
         "product_token_fixture": _product_token_fixture_rows(_unique_dates([today, "20260701"])),
@@ -464,6 +476,64 @@ def _validation_production_rows(work_date: str) -> list[dict[str, Any]]:
                 ),
             ]
         )
+        # 후속 제품 행 매칭에서 이전 결과의 null과 장비 source의 문자열 blank 표현이
+        # 동일한 빈 값으로 연결되는지 실제 상위 제품 질문에서 검증한다.
+        rows.append(
+            _scenario_row(
+                work_date,
+                0,
+                "D/A1",
+                "PRODUCTION",
+                10000,
+                **_row_match_null_identity(),
+            )
+        )
+        # 동일한 base 제품 키 안에서 MODE·PKG1·LEAD 중 일부만 다른 비교 질문용 행이다.
+        # 어느 한 컬럼만 다른 대조 행도 놓치지 않도록 네 변형을 함께 둔다.
+        rows.extend(
+            [
+                _scenario_row(
+                    work_date,
+                    0,
+                    "INPUT",
+                    "PRODUCTION",
+                    41,
+                    **_comparison_identity("BASE"),
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "INPUT",
+                    "PRODUCTION",
+                    42,
+                    **_comparison_identity("MODE"),
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "INPUT",
+                    "PRODUCTION",
+                    43,
+                    **_comparison_identity("PKG1"),
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "INPUT",
+                    "PRODUCTION",
+                    44,
+                    **_comparison_identity("LEAD"),
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "INPUT",
+                    "PRODUCTION",
+                    999,
+                    **_comparison_identity("MCP_DECOY"),
+                ),
+            ]
+        )
     if work_date == "20260624":
         for index in range(6):
             rows.append(
@@ -538,6 +608,61 @@ def _validation_wip_rows(work_date: str) -> list[dict[str, Any]]:
                         SNAPSHOT_TIME="07:00",
                     )
                 )
+    if work_date in {"20260701", _korea_today()}:
+        rows.extend(
+            [
+                _scenario_row(
+                    work_date,
+                    0,
+                    "D/A6",
+                    "WIP",
+                    21,
+                    **_comparison_identity("BASE"),
+                    LOT_ID="CMP-BASE",
+                    SNAPSHOT_TIME="07:00",
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "D/A6",
+                    "WIP",
+                    22,
+                    **_comparison_identity("MODE"),
+                    LOT_ID="CMP-MODE",
+                    SNAPSHOT_TIME="07:00",
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "D/A6",
+                    "WIP",
+                    23,
+                    **_comparison_identity("PKG1"),
+                    LOT_ID="CMP-PKG1",
+                    SNAPSHOT_TIME="07:00",
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "D/A6",
+                    "WIP",
+                    24,
+                    **_comparison_identity("LEAD"),
+                    LOT_ID="CMP-LEAD",
+                    SNAPSHOT_TIME="07:00",
+                ),
+                _scenario_row(
+                    work_date,
+                    0,
+                    "D/A6",
+                    "WIP",
+                    25,
+                    **_comparison_identity("MCP_DECOY"),
+                    LOT_ID="CMP-MCP-DECOY",
+                    SNAPSHOT_TIME="07:00",
+                ),
+            ]
+        )
     return rows
 
 
@@ -608,6 +733,60 @@ def _zero_semantics_identity(label: str, mcp_no: str) -> dict[str, Any]:
         "DEVICE": f"DEV-ZERO-{label}",
         "DEVICE_DESC": f"zero semantics {label} control",
     }
+
+
+# 함수 설명: `_row_match_null_identity()`는 null 제품 키가 문자열 blank 표현과 동일하게 매칭되는 후속 질문용 제품을 만듭니다.
+def _row_match_null_identity() -> dict[str, Any]:
+    return {
+        "FAMILY": "VALIDATION",
+        "TECH": "VM",
+        "DENSITY": "64G",
+        "DEN": "64G",
+        "MODE": "NULLKEY",
+        "ORG": "TEST",
+        "PKG1": "BGA",
+        "PKG_TYPE1": "BGA",
+        "PKG2": "ROWMATCH",
+        "PKG_TYPE2": "ROWMATCH",
+        "LEAD": "999",
+        "MCP_NO": None,
+        "TSV_DIE_TYP": "",
+        "TSV_DIE_TYPE": "",
+        "DEVICE": "DEV-ROW-MATCH-NULL",
+        "DEVICE_DESC": "previous result null product key row match validation",
+    }
+
+
+# 함수 설명: `_comparison_identity()`는 같은 base 키를 공유하면서 비교 대상 속성 하나만 다른 제품 행을 만듭니다.
+def _comparison_identity(variant: str) -> dict[str, Any]:
+    values = {
+        "FAMILY": "VALIDATION",
+        "TECH": "CMP",
+        "DENSITY": "8G",
+        "DEN": "8G",
+        "MODE": "DDR4",
+        "ORG": "TEST",
+        "PKG1": "FBGA",
+        "PKG_TYPE1": "FBGA",
+        "PKG2": "COMPARE",
+        "PKG_TYPE2": "COMPARE",
+        "LEAD": "96",
+        "MCP_NO": "",
+        "TSV_DIE_TYP": "",
+        "TSV_DIE_TYPE": "",
+        "DEVICE": f"DEV-COMPARE-{variant}",
+        "DEVICE_DESC": f"comparison product variant {variant}",
+    }
+    if variant == "MODE":
+        values["MODE"] = "DDR5"
+    elif variant == "PKG1":
+        values["PKG1"] = "VFBGA"
+        values["PKG_TYPE1"] = "VFBGA"
+    elif variant == "LEAD":
+        values["LEAD"] = "78"
+    elif variant == "MCP_DECOY":
+        values["MCP_NO"] = "CMP-DECOY"
+    return values
 
 
 # 함수 설명: `_production_processes_for_product()`는 지정 제품의 dummy 생산 실적이 존재하는 세부 공정 목록을 반환합니다.
@@ -774,7 +953,129 @@ def _equipment_assign_rows() -> list[dict[str, Any]]:
                 "OPER_NUM": process["OPER"],
             }
         )
+    null_identity = _row_match_null_identity()
+    for offset, blank_value in enumerate(("<NA>", "empty"), start=1):
+        rows.append(
+            {
+                "BAY_ID": f"BAY-NULL-{offset}",
+                "EQUIP_ID": f"EQP-NULL-{offset}",
+                "EQUIP_MODEL": "EQM-A",
+                "PRESS_CNT": 2,
+                "OPER": "DA2",
+                "OPER_NM": "D/A2",
+                "MODE": null_identity["MODE"],
+                "DENSITY": null_identity["DENSITY"],
+                "TECH": null_identity["TECH"],
+                "PKG1": null_identity["PKG1"],
+                "PKG2": null_identity["PKG2"],
+                "LEAD": null_identity["LEAD"],
+                "ORG": null_identity["ORG"],
+                "PKGSIZE": "12x12",
+                "MCP_NO": blank_value,
+                "DEVICE": null_identity["DEVICE"],
+                "DEVICE_DESC": null_identity["DEVICE_DESC"],
+                "LOT_ID": f"T-NULL-{offset}",
+                "RECIPE_ID": f"RCP-NULL-{offset}",
+                "EQP_ID": f"EQP-NULL-{offset}",
+                "EQP_MODEL": "EQM-A",
+                "EQPIP_MODEL": "EQM-A",
+                "DEN": null_identity["DEN"],
+                "PKG_TYPE1": null_identity["PKG_TYPE1"],
+                "PKG_TYPE2": null_identity["PKG_TYPE2"],
+                "OPER_NAME": "D/A2",
+                "OPER_NUM": "DA2",
+            }
+        )
+    # L-217 UPH 질문은 equipment_assign과 eqp_uph를 모델·Recipe·공정으로
+    # 실제 결합하므로 양쪽 source에 같은 계약 키를 가진 행을 둔다.
+    # 기존 장비 ID를 재사용해 전체 고유 장비 대수 기대값은 바꾸지 않는다.
+    rows.extend(
+        [
+            _equipment_validation_row(
+                7,
+                "W/B1",
+                "EQM-A",
+                "RCP-L217-WB1-A",
+                "EQP001",
+                LEAD="217",
+                MCP_NO="L-217K9B",
+            ),
+            _equipment_validation_row(
+                7,
+                "W/B1",
+                "EQM-A",
+                "RCP-L217-WB1-B",
+                "EQP006",
+                LEAD="217",
+                MCP_NO="L-217K9B",
+            ),
+            _equipment_validation_row(
+                7,
+                "W/B2",
+                "EQM-BG",
+                "RCP-L217-WB2-A",
+                "EQP005",
+                LEAD="217",
+                MCP_NO="L-217K9B",
+            ),
+            _equipment_validation_row(
+                7,
+                "W/B2",
+                "EQM-BG",
+                "RCP-L217-WB2-B",
+                "EQP005",
+                LEAD="217",
+                MCP_NO="L-217K9B",
+            ),
+        ]
+    )
     return rows
+
+
+# 함수 설명: `_equipment_validation_row()`는 UPH 결합 검증용 장비 할당 행을 실제 컬럼 계약으로 생성합니다.
+def _equipment_validation_row(
+    product_index: int,
+    process_name: str,
+    equipment_model: str,
+    recipe_id: str,
+    equipment_id: str,
+    **overrides: Any,
+) -> dict[str, Any]:
+    base = _product_process_row(
+        "20260701",
+        product_index,
+        _process_index(process_name),
+    )
+    base.update(overrides)
+    return {
+        "BAY_ID": f"BAY-{equipment_id}-{recipe_id}",
+        "EQUIP_ID": equipment_id,
+        "EQUIP_MODEL": equipment_model,
+        "PRESS_CNT": 2,
+        "OPER": base["OPER"],
+        "OPER_NM": base["OPER_NAME"],
+        "MODE": base["MODE"],
+        "DENSITY": base["DENSITY"],
+        "TECH": base["TECH"],
+        "PKG1": base["PKG1"],
+        "PKG2": base["PKG2"],
+        "LEAD": base["LEAD"],
+        "ORG": base["ORG"],
+        "PKGSIZE": "12x12",
+        "MCP_NO": base["MCP_NO"],
+        "DEVICE": base["DEVICE"],
+        "DEVICE_DESC": base["DEVICE_DESC"],
+        "LOT_ID": f"T-{equipment_id}-{recipe_id}",
+        "RECIPE_ID": recipe_id,
+        "EQP_ID": equipment_id,
+        "EQP_MODEL": equipment_model,
+        "EQPIP_MODEL": equipment_model,
+        "DEN": base["DENSITY"],
+        "PKG_TYPE1": base["PKG1"],
+        "PKG_TYPE2": base["PKG2"],
+        "OPER_NAME": base["OPER_NAME"],
+        "OPER_NUM": base["OPER"],
+    }
 
 
 # 함수 설명: `_eqp_uph_rows()`는 UPH·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
@@ -822,28 +1123,208 @@ def _eqp_uph_rows() -> list[dict[str, Any]]:
         }
     )
     rows.append(hbm_alternate)
+    # FCB2 제품별 UPH는 두 Recipe의 평균과 원본 상세 보존을 함께 검증한다.
+    rows.extend(
+        [
+            _uph_validation_row(
+                6,
+                "FCB2",
+                "EQM-MOBILE",
+                "RCP-FCB2-A",
+                140.0,
+            ),
+            _uph_validation_row(
+                6,
+                "FCB2",
+                "EQM-MOBILE",
+                "RCP-FCB2-B",
+                173.4,
+            ),
+            # L-217 제품은 차수·장비 모델 그룹마다 두 행을 두어 mean과 sum을 구분한다.
+            _uph_validation_row(
+                7,
+                "W/B1",
+                "EQM-A",
+                "RCP-L217-WB1-A",
+                100.0,
+                LEAD="217",
+                MCP_NO="L-217K9B",
+            ),
+            _uph_validation_row(
+                7,
+                "W/B1",
+                "EQM-A",
+                "RCP-L217-WB1-B",
+                146.8,
+                LEAD="217",
+                MCP_NO="L-217K9B",
+            ),
+            _uph_validation_row(
+                7,
+                "W/B2",
+                "EQM-BG",
+                "RCP-L217-WB2-A",
+                90.0,
+                LEAD="217",
+                MCP_NO="L-217K9B",
+            ),
+            _uph_validation_row(
+                7,
+                "W/B2",
+                "EQM-BG",
+                "RCP-L217-WB2-B",
+                105.0,
+                LEAD="217",
+                MCP_NO="L-217K9B",
+            ),
+            # match_product_tokens에서 F+숫자는 LEAD 역할이므로 F315는 LEAD=315,
+            # L-116은 MCP_NO prefix로 함께 구분한다.
+            _uph_validation_row(
+                7,
+                "W/B1",
+                "F315",
+                "RCP-F315-L116-A",
+                104.0,
+                LEAD="315",
+                MCP_NO="L-116A1",
+            ),
+            _uph_validation_row(
+                7,
+                "W/B1",
+                "F315",
+                "RCP-F315-L116-B",
+                120.0,
+                LEAD="315",
+                MCP_NO="L-116A1",
+            ),
+            _uph_validation_row(
+                7,
+                "W/B1",
+                "F316",
+                "RCP-F316-L116-DECOY",
+                999.0,
+                LEAD="316",
+                MCP_NO="L-116A1",
+            ),
+            _uph_validation_row(
+                7,
+                "W/B1",
+                "F315",
+                "RCP-F315-L117-DECOY",
+                888.0,
+                LEAD="315",
+                MCP_NO="L-117A1",
+            ),
+        ]
+    )
     return rows
+
+
+# 함수 설명: `_uph_validation_row()`는 UPH 질문별 양성·대조 행을 실제 eqp_uph 컬럼 계약으로 생성합니다.
+def _uph_validation_row(
+    product_index: int,
+    process_name: str,
+    equipment_model: str,
+    recipe_id: str,
+    uph: float,
+    **overrides: Any,
+) -> dict[str, Any]:
+    base = _product_process_row(
+        "20260701",
+        product_index,
+        _process_index(process_name),
+    )
+    row = {
+        "EQUIP_MODEL": equipment_model,
+        "EQP_MODEL": equipment_model,
+        "OPER": base["OPER"],
+        "OPER_NAME": base["OPER_NAME"],
+        "OPER_NUM": base["OPER"],
+        "PRESS_CNT": 2,
+        "MODE": base["MODE"],
+        "TECH": base["TECH"],
+        "ORG": base["ORG"],
+        "DENSITY": base["DENSITY"],
+        "DEN": base["DENSITY"],
+        "PKG1": base["PKG1"],
+        "PKG_TYPE1": base["PKG1"],
+        "PKG2": base["PKG2"],
+        "PKG_TYPE2": base["PKG2"],
+        "LEAD": base["LEAD"],
+        "MCP_NO": base["MCP_NO"],
+        "RECIPE_ID": recipe_id,
+        "UPH": uph,
+        "LOAD_DT": "20260701",
+        "BASE_DT": "20260701",
+    }
+    row.update(overrides)
+    return row
 
 
 # 함수 설명: `_lot_status_rows()`는 상태·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _lot_status_rows() -> list[dict[str, Any]]:
-    return [
-        _lot_row(_product_process_row("20260701", 0, 0), "T1234567GEN1", "OnHold", "WAITING", 100, 25, 12.5, 40.0, "검증용 HOLD"),
+    rows = [
+        _lot_row(_product_process_row("20260701", 0, _process_index("W/B1")), "T1234567GEN1", "OnHold", "WAITING", 100, 25, 12.5, 40.0, "검증용 HOLD"),
         _lot_row(_product_process_row("20260701", 1, 1), "T7654321GEN1", "NotOnHold", "RUNNING", 80, 20, 5.0, 25.0, ""),
         _lot_row(_product_process_row("20260701", 2, 2), "T2222222GEN1", "NotOnHold", "WAITING", 60, 18, 3.5, 18.0, ""),
         _lot_row(_product_process_row("20260701", 2, 3), "T2222223GEN1", "NotOnHold", "RUNNING", 70, 16, 2.0, 11.0, ""),
+        _lot_row(_product_process_row("20260701", 0, _process_index("W/B2")), "V-WB2-LOW-TAT", "NotOnHold", "RUNNING", 40, 10, 8.0, 20.0, ""),
+        _lot_row(_product_process_row("20260701", 0, _process_index("W/B3")), "V-WB3-HIGH-TAT", "NotOnHold", "WAITING", 45, 11, 11.0, 21.0, ""),
+        _lot_row(_product_process_row("20260701", 0, _process_index("D/A4")), "V-RANGE-END", "NotOnHold", "RUNNING", 30, 8, 3.0, 12.0, ""),
+        _lot_row(_product_process_row("20260701", 0, _process_index("D/A5")), "V-RANGE-MIDDLE-HOLD", "OnHold", "WAITING", 35, 9, 6.0, 18.0, "공정 범위 중간 HOLD"),
+        _lot_row(_product_process_row("20260701", 0, _process_index("D/S1")), "V-RANGE-START-HOLD", "OnHold", "WAITING", 38, 9, 7.0, 19.0, "D/S1 HOLD"),
     ]
+    # 현재 제품 source로 lot_status가 선택되어도 같은 기준 키 안의 MODE,
+    # PKG1, LEAD 차이와 MCP_NO 대조군을 판별할 수 있게 한다.
+    for index, variant in enumerate(("BASE", "MODE", "PKG1", "LEAD", "MCP_DECOY"), start=1):
+        rows.append(
+            _lot_row(
+                _product_process_row(
+                    "20260701",
+                    0,
+                    _process_index("D/A6"),
+                    **_comparison_identity(variant),
+                ),
+                f"V-COMPARE-{index}",
+                "NotOnHold",
+                "WAITING",
+                10 + index,
+                5 + index,
+                1.0 + index,
+                5.0 + index,
+                "",
+            )
+        )
+    return rows
 
 
 # 함수 설명: `_hold_history_rows()`는 history·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _hold_history_rows() -> list[dict[str, Any]]:
     return [
         {
-            **_hold_row(_product_process_row("20260701", 0, 0), "T1234567GEN1", "H000", "검증용 이전 HOLD 이력"),
+            **_hold_row(_product_process_row("20260701", 0, _process_index("W/B1")), "T1234567GEN1", "H000", "검증용 이전 HOLD 이력"),
             "HOLD_TM": "2026-06-30 18:00:00",
         },
-        _hold_row(_product_process_row("20260701", 0, 0), "T1234567GEN1", "H001", "검증용 HOLD 이력"),
+        _hold_row(_product_process_row("20260701", 0, _process_index("W/B1")), "T1234567GEN1", "H001", "검증용 HOLD 이력"),
         _hold_row(_product_process_row("20260701", 1, 1), "T7654321GEN1", "H002", "레시피 확인 HOLD"),
+        {
+            **_hold_row(
+                _product_process_row("20260701", 0, _process_index("D/A5")),
+                "V-RANGE-MIDDLE-HOLD",
+                "H-DA5",
+                "공정 범위 중간 HOLD 이력",
+            ),
+            "HOLD_TM": "2026-07-01 07:30:00",
+        },
+        {
+            **_hold_row(
+                _product_process_row("20260701", 0, _process_index("D/S1")),
+                "V-RANGE-START-HOLD",
+                "H-DS1",
+                "D/S1 HOLD 이력",
+            ),
+            "HOLD_TM": "2026-07-01 06:30:00",
+        },
     ]
 
 
@@ -891,6 +1372,7 @@ def _lot_row(base: dict[str, Any], lot_id: str, hold_stat: str, lot_stat: str, p
         "ERM_ID": "ERM-PKG",
         "OPER": base["OPER"],
         "OPER_NAME": base["OPER_NAME"],
+        "OPER_SEQ": base["OPER_SEQ"],
         "FAB": base["FAB"],
         "OWNER": "PNT",
         "GRADE": "A",

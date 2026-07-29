@@ -160,3 +160,77 @@ def test_intent_normalizer_canonicalizes_blank_operator_without_changing_value_f
     trace = normalized["trace"]["inspection"]["intent"]["filter_operator_normalization"]
     assert trace["status"] == "applied"
     assert trace["changes"][0]["to"] == "not_blank"
+
+
+def test_numeric_comparison_operator_contract_is_canonicalized_and_saved():
+    intent_normalizer = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04_intent_plan_normalizer.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "IN TAT 10시간 이상 LOT",
+                "reference_date": "20260729",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "lot_in_tat_threshold",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "lot_status",
+                        "source_alias": "lot_status",
+                        "filters": {
+                            "IN_TAT": {
+                                "operator": ">=",
+                                "value": 10,
+                            }
+                        },
+                    }
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {},
+            }
+        },
+        {},
+    )
+
+    assert normalized["intent_plan"]["retrieval_jobs"][0]["filters"]["IN_TAT"] == {
+        "operator": "ge",
+        "value": 10,
+    }
+
+    domain_normalizer = load_module(
+        ROOT
+        / "langflow_components"
+        / "domain_saving_flow"
+        / "04_domain_saving_result_normalizer.py"
+    )
+    saved = domain_normalizer.normalize_authoring(
+        {},
+        {
+            "items": [
+                {
+                    "section": "analysis_recipes",
+                    "key": "tat_threshold",
+                    "payload": {
+                        "conditions": [
+                            {
+                                "column": "IN_TAT",
+                                "operator": "gte",
+                                "value": 10,
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+    assert saved["items"][0]["payload"]["conditions"][0]["operator"] == "ge"
+    assert saved["errors"] == []

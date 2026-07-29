@@ -53,6 +53,7 @@ SAFE_CATALOG_JOB_KEYS = (
     "filter_mappings",
     "standard_column_aliases",
     "default_detail_columns",
+    "metric_semantics",
 )
 RETIRED_OUTPUT_CONTRACT_KEYS = {"row_identity_columns", "context_columns", "default_detail_columns"}
 
@@ -89,6 +90,12 @@ def hydrate_retrieval_jobs(
     condition_reconciliation: list[dict[str, Any]] = []
     orchestration = _dict(next_payload.get("orchestration"))
     explicit_upstream = bool(str(orchestration.get("upstream_result_ref") or "").strip())
+    reference_mode = str(plan.get("reference_mode") or "").strip()
+    deferred_binding_aliases: set[str] = set()
+    if explicit_upstream:
+        deferred_binding_aliases.add("upstream_result")
+    if reference_mode == "previous_result_rows":
+        deferred_binding_aliases.add("previous_result")
 
     for index, raw_job in enumerate(jobs):
         if not isinstance(raw_job, dict):
@@ -135,6 +142,24 @@ def hydrate_retrieval_jobs(
             catalog_item,
         )
         supplied_params = reconciled["required_params"]
+        previous_result_targets = (
+            _upstream_target_params(source_config, {"previous_result"})
+            if reference_mode == "previous_result_rows"
+            else []
+        )
+        replaced_by_previous_result_binding: list[str] = []
+        for target_name in previous_result_targets:
+            supplied_key = next(
+                (
+                    key
+                    for key in supplied_params
+                    if str(key).casefold() == target_name.casefold()
+                ),
+                "",
+            )
+            if supplied_key:
+                supplied_params.pop(supplied_key, None)
+                replaced_by_previous_result_binding.append(target_name)
         clean_job["required_params"] = supplied_params
         clean_job["filters"] = reconciled["filters"]
         clean_job.pop("params", None)
@@ -143,7 +168,10 @@ def hydrate_retrieval_jobs(
             for name in required_names
             if _casefold_dict_value(supplied_params, name) in (None, "", [], {})
         ]
-        upstream_targets = _upstream_target_params(source_config) if explicit_upstream else []
+        upstream_targets = _upstream_target_params(
+            source_config,
+            deferred_binding_aliases,
+        )
         deferred = [name for name in missing_params if name.casefold() in {item.casefold() for item in upstream_targets}]
         missing_params = [name for name in missing_params if name not in deferred]
 
@@ -161,7 +189,11 @@ def hydrate_retrieval_jobs(
             or reconciled["moved_to_filters"]
             or reconciled["dropped_params"]
             or reconciled["normalized_date_fields"]
+            or replaced_by_previous_result_binding
         ):
+            reconciled["replaced_by_previous_result_binding"] = (
+                replaced_by_previous_result_binding
+            )
             condition_reconciliation.append(reconciled)
         for dropped_name in reconciled["dropped_params"]:
             warnings.append(
@@ -245,7 +277,7 @@ def _required_param_names(*values: dict[str, Any]) -> list[str]:
     return result
 
 
-# 함수 설명: `_safe_catalog_job_contract()`는 실행 job에 전달할 컬럼 매핑과 기본 상세 표시 계약만 카탈로그에서 복원합니다.
+# 함수 설명: `_safe_catalog_job_contract()`는 실행 job에 전달할 컬럼 매핑·기본 표시·metric 의미 계약만 카탈로그에서 복원합니다.
 def _safe_catalog_job_contract(*values: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in SAFE_CATALOG_JOB_KEYS:
@@ -547,13 +579,20 @@ def _merge_strings(*values: list[str]) -> list[str]:
 
 
 # 함수 설명: `_upstream_target_params()`는 신뢰 source_config의 binding이 후속 단계에서 채울 파라미터 이름만 추출합니다.
-def _upstream_target_params(source_config: dict[str, Any]) -> list[str]:
+def _upstream_target_params(
+    source_config: dict[str, Any],
+    allowed_source_aliases: set[str] | None = None,
+) -> list[str]:
     bindings = source_config.get("upstream_bindings")
     if not isinstance(bindings, list):
         return []
     result: list[str] = []
+    allowed = allowed_source_aliases or set()
     for binding in bindings:
         if not isinstance(binding, dict):
+            continue
+        source_alias = str(binding.get("source_alias") or "upstream_result").strip()
+        if not allowed or source_alias not in allowed:
             continue
         target = str(binding.get("target_param") or "").strip()
         if target and target.casefold() not in {item.casefold() for item in result}:

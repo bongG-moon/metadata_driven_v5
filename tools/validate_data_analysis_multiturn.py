@@ -65,6 +65,12 @@ def main() -> int:
         action="store_true",
         help="검증 후 MongoDB의 임시 session/result 문서를 삭제하지 않습니다.",
     )
+    parser.add_argument(
+        "--validation-profile",
+        choices=["auto", "default", "generic"],
+        default="auto",
+        help="기본 4턴은 상세 계약을, 사용자 지정 질문은 공통 실행·저장 계약을 검증합니다.",
+    )
     args = parser.parse_args()
 
     flow_validator.load_dotenv(ROOT / ".env")
@@ -80,6 +86,13 @@ def main() -> int:
     questions = [
         str(item).strip() for item in (args.question or DEFAULT_QUESTIONS) if str(item).strip()
     ]
+    validation_profile = (
+        "default"
+        if args.validation_profile == "auto" and not args.question
+        else "generic"
+        if args.validation_profile == "auto"
+        else args.validation_profile
+    )
     session_id = (
         str(args.session_id or "").strip()
         or f"validation-multiturn-{uuid.uuid4()}"
@@ -98,6 +111,7 @@ def main() -> int:
         },
         "session_id": session_id,
         "questions": questions,
+        "validation_profile": validation_profile,
         "turns": [],
         "mongodb_verification": {},
         "cleanup": {},
@@ -115,6 +129,7 @@ def main() -> int:
                 metadata_context=metadata_context,
                 llm_config=llm_config,
                 mongo=mongo,
+                validation_profile=validation_profile,
             )
             report["turns"].append(turn)
             if turn["status"] != "ok":
@@ -199,6 +214,7 @@ def _execute_turn(
     metadata_context: dict[str, Any],
     llm_config: dict[str, Any],
     mongo: dict[str, str],
+    validation_profile: str,
 ) -> dict[str, Any]:
     """한 턴을 실제 Flow의 저장·복원 순서대로 실행합니다."""
 
@@ -353,7 +369,13 @@ def _execute_turn(
             "pandas_execution_plan": deepcopy(
                 plan.get("pandas_execution_plan") or []
             ),
+            "condition_resolution": deepcopy(plan.get("condition_resolution") or {}),
+            "output_contract": deepcopy(plan.get("output_contract") or {}),
         },
+        "catalog_hydration": deepcopy(inspection.get("catalog_hydration") or {}),
+        "upstream_parameter_binding": deepcopy(
+            inspection.get("upstream_parameter_binding") or {}
+        ),
         "result_loader": deepcopy(result_loader),
         "source_results": [
             {
@@ -383,7 +405,7 @@ def _execute_turn(
         "session_state_write": deepcopy(session_write),
         "issues": [],
     }
-    turn["issues"] = _turn_issues(turn)
+    turn["issues"] = _turn_issues(turn, validation_profile)
     turn["status"] = "ok" if not turn["issues"] else "error"
 
     cleaned = modules["runtime_cleanup"].release_runtime_payload(
@@ -406,7 +428,10 @@ def _execute_turn(
     return flow_validator.json_safe(turn)
 
 
-def _turn_issues(turn: dict[str, Any]) -> list[dict[str, Any]]:
+def _turn_issues(
+    turn: dict[str, Any],
+    validation_profile: str = "default",
+) -> list[dict[str, Any]]:
     """각 턴의 후속 계약과 저장·복원 결과를 검증합니다."""
 
     index = int(turn.get("turn") or 0)
@@ -422,12 +447,13 @@ def _turn_issues(turn: dict[str, Any]) -> list[dict[str, Any]]:
         if not condition:
             issues.append({"type": issue_type, "turn": index, "message": message})
 
+    default_profile = validation_profile == "default"
     expected = {
         1: ("new_analysis", "none", "none"),
         2: ("followup_requery", "previous_result_rows", "previous_result"),
         3: ("followup_transform", "previous_result_transform", "previous_result"),
         4: ("new_analysis", "none", "none"),
-    }.get(index)
+    }.get(index) if default_profile else None
     if expected:
         require(
             intent.get("request_scope") == expected[0],
@@ -450,19 +476,19 @@ def _turn_issues(turn: dict[str, Any]) -> list[dict[str, Any]]:
         f"pandas status={pandas.get('status')!r}: {pandas.get('error')}",
     )
     row_count = int(pandas.get("row_count") or 0)
-    if index in {1, 2}:
+    if default_profile and index in {1, 2}:
         require(
             row_count == 3,
             "unexpected_product_row_count",
             f"{index}턴 제품 결과는 3행이어야 하지만 {row_count}행입니다.",
         )
-    elif index == 3:
+    elif default_profile and index == 3:
         require(
             row_count == 1,
             "unexpected_transform_row_count",
             f"3턴 최다 장비 제품 결과는 1행이어야 하지만 {row_count}행입니다.",
         )
-    elif index == 4:
+    elif default_profile and index == 4:
         require(
             0 < row_count <= 5,
             "unexpected_top_n_row_count",
@@ -494,18 +520,25 @@ def _turn_issues(turn: dict[str, Any]) -> list[dict[str, Any]]:
             "unexpected_initial_state",
             f"첫 턴 session source={loader.get('source')!r}",
         )
-        require(
-            int(pandas.get("row_count") or 0) > 0,
-            "empty_first_turn_result",
-            "첫 턴 생산량 상위 제품 결과가 비어 있습니다.",
-        )
-    if index in {2, 3, 4}:
+        if default_profile:
+            require(
+                int(pandas.get("row_count") or 0) > 0,
+                "empty_first_turn_result",
+                "첫 턴 생산량 상위 제품 결과가 비어 있습니다.",
+            )
+    if index >= 2:
         require(
             loader.get("source") == "mongodb",
             "session_state_not_restored",
             f"session source={loader.get('source')!r}",
         )
-    if index in {2, 3}:
+    needs_previous_result = intent.get("reference_mode") in {
+        "previous_result_rows",
+        "previous_result_transform",
+    }
+    if (default_profile and index in {2, 3}) or (
+        not default_profile and needs_previous_result
+    ):
         require(
             result_loader.get("status") == "ok",
             "previous_result_not_restored",
@@ -521,7 +554,7 @@ def _turn_issues(turn: dict[str, Any]) -> list[dict[str, Any]]:
             "previous_result_alias_missing",
             "복원 source 목록에 previous_result가 없습니다.",
         )
-    if index == 2:
+    if default_profile and index == 2:
         jobs = [
             item
             for item in intent.get("retrieval_jobs", [])

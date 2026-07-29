@@ -1,0 +1,544 @@
+{
+  "status": "ok",
+  "generated_at": "2026-07-29T12:03:15.482373+00:00",
+  "environment": {
+    "reference_date": "20260729",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-3.5-flash-lite",
+    "retrieval_mode": "dummy",
+    "session_state": "real_mongodb"
+  },
+  "summary": {
+    "scenario_count": 10,
+    "passed": 10,
+    "failed": 0,
+    "single_turn_questions": 6,
+    "multiturn_scenarios": 4,
+    "multiturn_turns": 10
+  },
+  "stability_observations": [
+    {
+      "question": "6/24일 투입 실적 대비 D/S1, DA1공정에서 WIP 많은 제품 알려줘",
+      "initial_batch_status": "error",
+      "initial_error": [
+        {
+          "type": "missing_code",
+          "message": "pandas code LLM 응답에 실행 가능한 code가 없습니다."
+        }
+      ],
+      "same_configuration_rerun_status": "ok",
+      "interpretation": "Gemini가 한 번 code 없는 응답을 반환했으나 동일 최신 구성 재실행은 정상 코드를 생성했습니다. missing_code repair 프롬프트에는 기존 코드가 없어도 intent/schema로 전체 코드를 재생성하도록 보강했습니다."
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "input_vs_process_wip_ranking",
+      "questions": [
+        "6/24일 투입 실적 대비 D/S1, DA1공정에서 WIP 많은 제품 알려줘"
+      ],
+      "status": "ok",
+      "checks": {
+        "pipeline_ok": true,
+        "production_input_only": true,
+        "wip_processes_only": true,
+        "wip_desc_without_arbitrary_limit": true,
+        "no_presence_or_ratio_rewrite": true,
+        "pandas_ok_without_repair": true,
+        "result_schema_and_rows": true
+      },
+      "failed_checks": [],
+      "details": {
+        "analysis_kind": "input_performance_vs_wip_by_product",
+        "filters_by_alias": {
+          "production": {
+            "OPER_NAME": {
+              "operator": "eq",
+              "value": "INPUT"
+            }
+          },
+          "wip_today": {
+            "OPER_NAME": {
+              "operator": "in",
+              "value": [
+                "D/S1",
+                "D/A1"
+              ]
+            }
+          }
+        },
+        "ordering": {
+          "sort_by": "WIP",
+          "order": "desc"
+        },
+        "row_count": 14,
+        "columns": [
+          "TECH",
+          "DENSITY",
+          "MODE",
+          "PKG1",
+          "PKG2",
+          "LEAD",
+          "MCP_NO",
+          "PRODUCTION",
+          "WIP"
+        ]
+      }
+    },
+    {
+      "name": "input_exists_da_wip_absent",
+      "questions": [
+        "현시간 기준 Input 실적은 있으나 D/A 공정 WIP 없는 제품 확인해줘"
+      ],
+      "status": "ok",
+      "checks": {
+        "pipeline_ok": true,
+        "source_specific_filters": true,
+        "presence_comparison_used": true,
+        "contextual_metrics": true,
+        "pandas_ok_without_repair": true
+      },
+      "failed_checks": [],
+      "details": {
+        "row_count": 5,
+        "columns": [
+          "TECH",
+          "DENSITY",
+          "MODE",
+          "ORG",
+          "PKG1",
+          "PKG2",
+          "LEAD",
+          "MCP_NO",
+          "INPUT_QTY",
+          "DA_WIP_QTY"
+        ],
+        "operations": [
+          "groupby_and_aggregate",
+          "groupby_and_aggregate",
+          "compare_presence"
+        ]
+      }
+    },
+    {
+      "name": "numeric_tat_filter",
+      "questions": [
+        "W/B공정 IN TAT 10시간이상 된 LOT 알려줘"
+      ],
+      "status": "ok",
+      "checks": {
+        "pipeline_ok": true,
+        "numeric_ge_filter": true,
+        "wb_process_expansion": true,
+        "pandas_ok_without_repair": true
+      },
+      "failed_checks": [],
+      "details": {
+        "row_count": 1,
+        "columns": [
+          "LOT_ID",
+          "OPER_NAME",
+          "PROD_QTY",
+          "WF_QTY",
+          "IN_TAT",
+          "CUM_TAT",
+          "HOLD_STAT",
+          "HOLD_REASON",
+          "LOT_STAT"
+        ]
+      }
+    },
+    {
+      "name": "uph_non_additive_1",
+      "questions": [
+        "FCB2공정 제품별 UPH 알려줘"
+      ],
+      "status": "ok",
+      "checks": {
+        "pipeline_ok": true,
+        "mean_used": true,
+        "sum_not_used": true,
+        "context_columns_preserved": true,
+        "pandas_ok_without_repair": true
+      },
+      "failed_checks": [],
+      "details": {
+        "aggregation_methods": [
+          "mean"
+        ],
+        "row_count": 0,
+        "columns": [
+          "TECH",
+          "DENSITY",
+          "MODE",
+          "ORG",
+          "PKG1",
+          "PKG2",
+          "LEAD",
+          "MCP_NO",
+          "EQUIP_MODEL",
+          "RECIPE_ID",
+          "OPER_NAME",
+          "UPH"
+        ]
+      }
+    },
+    {
+      "name": "uph_non_additive_2",
+      "questions": [
+        "WB공정 L-217제품 차수별, 장비 기종별 UPH 알려줘"
+      ],
+      "status": "ok",
+      "checks": {
+        "pipeline_ok": true,
+        "mean_used": true,
+        "sum_not_used": true,
+        "context_columns_preserved": true,
+        "pandas_ok_without_repair": true
+      },
+      "failed_checks": [],
+      "details": {
+        "aggregation_methods": [
+          "mean"
+        ],
+        "row_count": 0,
+        "columns": [
+          "OPER_NAME",
+          "EQUIP_MODEL",
+          "RECIPE_ID",
+          "UPH"
+        ]
+      }
+    },
+    {
+      "name": "uph_non_additive_3",
+      "questions": [
+        "F315 L-116로 시작하는 제품 WB 공정 차수별 UPH 알려줘"
+      ],
+      "status": "ok",
+      "checks": {
+        "pipeline_ok": true,
+        "mean_used": true,
+        "sum_not_used": true,
+        "context_columns_preserved": true,
+        "pandas_ok_without_repair": true
+      },
+      "failed_checks": [],
+      "details": {
+        "aggregation_methods": [
+          "mean"
+        ],
+        "row_count": 0,
+        "columns": [
+          "EQUIP_MODEL",
+          "RECIPE_ID",
+          "OPER_NAME",
+          "UPH"
+        ]
+      }
+    },
+    {
+      "name": "hold_lot_to_history_followup",
+      "questions": [
+        "W/B공정 현재 HOLD LOT와 HOLD사유 알려줘",
+        "HOLD 시간이 가장 오래된 LOT의 이력을 보여줘"
+      ],
+      "status": "ok",
+      "checks": {
+        "session_pipeline_ok": true,
+        "followup_requery_selected": true,
+        "lot_id_bound": true,
+        "one_history_row": true,
+        "session_and_results_stored": true
+      },
+      "failed_checks": [],
+      "details": {
+        "binding": {
+          "stage": "05a_upstream_entity_parameter_binder",
+          "status": "ok",
+          "reason": "",
+          "binding_count": 1,
+          "bindings": [
+            {
+              "dataset_key": "hold_history",
+              "entity_type": "lot",
+              "source_alias": "previous_result",
+              "source_column": "LOT_ID",
+              "target_param": "LOT_ID",
+              "operator": "in",
+              "value_count": 1,
+              "max_values": 200
+            }
+          ],
+          "error_count": 0,
+          "errors": []
+        },
+        "columns": [
+          "LOT_ID",
+          "OPER_NAME",
+          "HOLD_TM",
+          "HOLD_CD",
+          "HOLD_DESC"
+        ]
+      }
+    },
+    {
+      "name": "process_filter_inheritance_and_regroup",
+      "questions": [
+        "W/B공정 차수별 생산량과 재공수량 알려줘",
+        "위 결과를 제품별로 보여줘, 공정 조건도 유지해줘"
+      ],
+      "status": "ok",
+      "checks": {
+        "session_pipeline_ok": true,
+        "previous_source_transform": true,
+        "no_new_retrieval": true,
+        "wb_filters_kept_on_both_sources": true,
+        "product_grain_without_process_column": true
+      },
+      "failed_checks": [],
+      "details": {
+        "effective_filters": {
+          "production_source": {
+            "filters": {
+              "OPER_NAME": {
+                "operator": "in",
+                "value": [
+                  "W/B1",
+                  "W/B2",
+                  "W/B3",
+                  "W/B4",
+                  "W/B5",
+                  "W/B6"
+                ]
+              }
+            },
+            "dataset_key": "production_today",
+            "filter_mappings": {
+              "DATE": [
+                "WORK_DATE"
+              ],
+              "MODE": [
+                "MODE"
+              ],
+              "DEN": [
+                "DENSITY"
+              ],
+              "TECH": [
+                "TECH"
+              ],
+              "ORG": [
+                "ORG"
+              ],
+              "PKG_TYPE1": [
+                "PKG1"
+              ],
+              "PKG_TYPE2": [
+                "PKG2"
+              ],
+              "LEAD": [
+                "LEAD"
+              ],
+              "MCP_NO": [
+                "MCP_NO"
+              ],
+              "TSV_DIE_TYP": [
+                "TSV_DIE_TYP"
+              ],
+              "DEVICE": [
+                "DEVICE"
+              ],
+              "DEVICE_DESC": [
+                "DEVICE_DESC"
+              ],
+              "OPER_NUM": [
+                "OPER"
+              ],
+              "OPER_NAME": [
+                "OPER_NAME"
+              ]
+            },
+            "standard_column_aliases": {
+              "QUANTITY": "PRODUCTION"
+            }
+          },
+          "wip_source": {
+            "filters": {
+              "OPER_NAME": {
+                "operator": "in",
+                "value": [
+                  "W/B1",
+                  "W/B2",
+                  "W/B3",
+                  "W/B4",
+                  "W/B5",
+                  "W/B6"
+                ]
+              }
+            },
+            "dataset_key": "wip_today",
+            "filter_mappings": {
+              "DATE": [
+                "WORK_DATE"
+              ],
+              "MODE": [
+                "MODE"
+              ],
+              "DEN": [
+                "DENSITY"
+              ],
+              "TECH": [
+                "TECH"
+              ],
+              "ORG": [
+                "ORG"
+              ],
+              "PKG_TYPE1": [
+                "PKG1"
+              ],
+              "PKG_TYPE2": [
+                "PKG2"
+              ],
+              "LEAD": [
+                "LEAD"
+              ],
+              "MCP_NO": [
+                "MCP_NO"
+              ],
+              "TSV_DIE_TYP": [
+                "TSV_DIE_TYP"
+              ],
+              "DEVICE": [
+                "DEVICE"
+              ],
+              "DEVICE_DESC": [
+                "DEVICE_DESC"
+              ],
+              "OPER_NUM": [
+                "OPER"
+              ],
+              "OPER_NAME": [
+                "OPER_NAME"
+              ]
+            },
+            "standard_column_aliases": {
+              "QUANTITY": [
+                "WIP"
+              ]
+            }
+          }
+        },
+        "columns": [
+          "TECH",
+          "DEN",
+          "MODE",
+          "PKG_TYPE1",
+          "PKG_TYPE2",
+          "LEAD",
+          "MCP_NO",
+          "PRODUCTION",
+          "WIP"
+        ]
+      }
+    },
+    {
+      "name": "mobile_to_pop_filter_switch",
+      "questions": [
+        "어제 Mobile제품의 PKG OUT실적을 제품별로 알려줘",
+        "pop제품은어땠어?"
+      ],
+      "status": "ok",
+      "checks": {
+        "session_pipeline_ok": true,
+        "mobile_null_or_empty": true,
+        "previous_source_transform": true,
+        "pop_not_blank": true,
+        "no_new_retrieval": true,
+        "result_rows_present": true
+      },
+      "failed_checks": [],
+      "details": {
+        "mobile_mcp_filter": {
+          "operator": "null_or_empty"
+        },
+        "pop_mcp_filter": {
+          "operator": "not_blank"
+        },
+        "columns": [
+          "TECH",
+          "DEN",
+          "MODE",
+          "PKG_TYPE1",
+          "PKG_TYPE2",
+          "LEAD",
+          "MCP_NO",
+          "PRODUCTION"
+        ]
+      }
+    },
+    {
+      "name": "product_equipment_transform_and_independent_reset",
+      "questions": [
+        "오늘 DA공정에서 생산량 상위 3개 제품을 알려줘.",
+        "이 제품들에 할당된 현재 장비 대수와 장비 LIST를 제품별로 알려줘.",
+        "그중 장비 대수가 가장 많은 제품만 보여줘.",
+        "오늘 WB공정에서 생산량 상위 5개 제품을 알려줘."
+      ],
+      "status": "ok",
+      "checks": {
+        "session_pipeline_ok": true,
+        "scope_sequence": true,
+        "equipment_count_and_list": true,
+        "top_transform_one_row": true,
+        "independent_wb_retrieval": true,
+        "session_and_results_stored": true
+      },
+      "failed_checks": [],
+      "details": {
+        "scope_sequence": [
+          [
+            "new_analysis",
+            "none"
+          ],
+          [
+            "followup_requery",
+            "previous_result_rows"
+          ],
+          [
+            "followup_transform",
+            "previous_result_transform"
+          ],
+          [
+            "new_analysis",
+            "none"
+          ]
+        ],
+        "row_counts": [
+          3,
+          3,
+          1,
+          3
+        ],
+        "turn2_columns": [
+          "TECH",
+          "DENSITY",
+          "MODE",
+          "PKG1",
+          "PKG2",
+          "LEAD",
+          "MCP_NO",
+          "EQUIP_COUNT",
+          "EQUIP_LIST"
+        ]
+      }
+    }
+  ],
+  "failures": [],
+  "source_reports": {
+    "single_q1": "validation_outputs\\business_q1_raw_diagnostic_20260729.json",
+    "single_batch": "validation_outputs\\data_analysis_business_singleturn_live_20260729_final.json",
+    "hold": "validation_outputs\\business_followup_hold_live_20260729_rerun.json",
+    "regroup": "validation_outputs\\business_followup_regroup_live_20260729.json",
+    "product_switch": "validation_outputs\\business_followup_product_switch_live_20260729_rerun.json",
+    "equipment": "validation_outputs\\business_followup_equipment_live_20260729_rerun3.json"
+  }
+}

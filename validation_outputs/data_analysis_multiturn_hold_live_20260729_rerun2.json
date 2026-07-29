@@ -1,0 +1,756 @@
+{
+  "status": "ok",
+  "mode": "live_llm_dummy_retrieval_real_mongodb_state",
+  "environment": {
+    "reference_date": "20260729",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-3.5-flash-lite",
+    "retrieval_mode": "dummy",
+    "result_store": "agent_v4_result_store",
+    "session_store": "agent_v4_session_states"
+  },
+  "session_id": "validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264",
+  "questions": [
+    "W/B공정 현재 HOLD LOT와 HOLD사유 알려줘",
+    "HOLD 시간이 가장 오래된 LOT의 이력을 보여줘"
+  ],
+  "validation_profile": "generic",
+  "turns": [
+    {
+      "turn": 1,
+      "question": "W/B공정 현재 HOLD LOT와 HOLD사유 알려줘",
+      "status": "ok",
+      "elapsed_seconds": 9.157,
+      "session_state_load": {
+        "stage": "00_mongodb_session_state_loader",
+        "enabled": true,
+        "loaded": false,
+        "source": "mongodb_not_found",
+        "session_id": "validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264",
+        "collection_name": "agent_v4_session_states",
+        "errors": []
+      },
+      "followup_hint": {
+        "followup_candidate": false,
+        "request_scope_hint": "new_analysis",
+        "reuse_strategy_hint": "none",
+        "confidence": "low",
+        "changed_conditions_hint": {
+          "date": {
+            "expression": "현재",
+            "resolved_value": "20260729"
+          }
+        },
+        "complete_independent_request": true,
+        "notes": [
+          "독립 질문으로 보이며 이전 조건 상속은 필수로 판단하지 않았습니다.",
+          "날짜/기준시점 변경 표현을 감지했습니다."
+        ]
+      },
+      "intent": {
+        "analysis_kind": "wb_process_hold_lots",
+        "request_scope": "new_analysis",
+        "reference_mode": "none",
+        "reuse_strategy": "none",
+        "retrieval_jobs": [
+          {
+            "dataset_key": "lot_status",
+            "source_alias": "lot_status_src",
+            "required_params": {},
+            "filters": {
+              "OPER_NAME": {
+                "operator": "in",
+                "value": [
+                  "W/B1",
+                  "W/B2",
+                  "W/B3",
+                  "W/B4",
+                  "W/B5",
+                  "W/B6"
+                ]
+              },
+              "HOLD_STAT": {
+                "operator": "eq",
+                "value": "OnHold"
+              }
+            },
+            "source_type": "oracle",
+            "source_config": {
+              "source_type": "oracle",
+              "db_key": "PNT_RPT",
+              "query_template": "/*Current Wip Status*/\nSELECT\nERM_ID,OPER,OPER_NAME,FAB,OWNER,GRADE,DEVICE,LOT_ID,SUB_LOT_ID,PROD_QTY,WF_QTY,IN_TAT,CUM_TAT,EQP_ID,FLOW_ID,OPER_IN_TM,FAC_IN_TIME,HOLD_STAT,HOLD_REASON,FAMILY,MODE,DENSITY,TECH,ORG,PKG1,PKG2,PKG3,LEAD,MCP_NO,THK_CD,LOT_STAT,LOT_GRP,PKG_SIZE,HOT_LOT,HOT_LEVEL,PKG_COMPOSIT,DURABLE_ID,DURABLE_TYP,SUB_QTY,TSV_DIE_TYPE,EVENT_DESC,MOVE_IN_TM,PAD_ABNORMAL,SWR_REQ_NO,INSP_TARGET\nFROM WIP_STATE\nWHERE 1=1"
+            },
+            "required_param_names": [],
+            "trusted_catalog": true,
+            "catalog_ref": "table_catalog:lot_status",
+            "filter_mappings": {
+              "OPER_NAME": [
+                "OPER_NAME"
+              ],
+              "OPER_NUM": [
+                "OPER"
+              ],
+              "MODE": [
+                "MODE"
+              ],
+              "DEN": [
+                "DENSITY"
+              ],
+              "TECH": [
+                "TECH"
+              ],
+              "ORG": [
+                "ORG"
+              ],
+              "PKG_TYPE1": [
+                "PKG1"
+              ],
+              "PKG_TYPE2": [
+                "PKG2"
+              ],
+              "LEAD": [
+                "LEAD"
+              ],
+              "MCP_NO": [
+                "MCP_NO"
+              ],
+              "TSV_DIE_TYP": [
+                "TSV_DIE_TYPE"
+              ],
+              "EQP_ID": [
+                "EQP_ID"
+              ],
+              "LOT_ID": [
+                "LOT_ID"
+              ]
+            },
+            "default_detail_columns": [
+              "LOT_ID",
+              "OPER_NAME",
+              "PROD_QTY",
+              "WF_QTY",
+              "IN_TAT",
+              "CUM_TAT",
+              "HOLD_STAT",
+              "HOLD_REASON",
+              "LOT_STAT"
+            ],
+            "metric_semantics": {
+              "PROD_QTY": {
+                "semantic_type": "quantity",
+                "additive": true,
+                "default_rollup": "sum",
+                "allowed_rollups": [
+                  "sum",
+                  "mean",
+                  "min",
+                  "max"
+                ],
+                "source_already_aggregated": false
+              },
+              "WF_QTY": {
+                "semantic_type": "quantity",
+                "additive": true,
+                "default_rollup": "sum",
+                "allowed_rollups": [
+                  "sum",
+                  "mean",
+                  "min",
+                  "max"
+                ],
+                "source_already_aggregated": false
+              },
+              "IN_TAT": {
+                "semantic_type": "average",
+                "additive": false,
+                "default_rollup": "mean",
+                "allowed_rollups": [
+                  "mean"
+                ],
+                "source_already_aggregated": false
+              },
+              "CUM_TAT": {
+                "semantic_type": "average",
+                "additive": false,
+                "default_rollup": "mean",
+                "allowed_rollups": [
+                  "mean"
+                ],
+                "source_already_aggregated": false
+              }
+            },
+            "job_id": "job_1"
+          }
+        ],
+        "pandas_execution_plan": [
+          {
+            "operation": "apply_filters",
+            "source_alias": "lot_status_src"
+          }
+        ],
+        "condition_resolution": {
+          "new": {
+            "oper_name": [
+              "W/B1",
+              "W/B2",
+              "W/B3",
+              "W/B4",
+              "W/B5",
+              "W/B6"
+            ],
+            "hold_stat": "OnHold"
+          }
+        },
+        "output_contract": {
+          "result_mode": "detail",
+          "required_columns": [
+            "LOT_ID",
+            "OPER_NAME",
+            "PROD_QTY",
+            "WF_QTY",
+            "HOLD_STAT",
+            "HOLD_REASON",
+            "IN_TAT",
+            "CUM_TAT",
+            "LOT_STAT"
+          ],
+          "grain_columns": [
+            "LOT_ID"
+          ],
+          "null_group_policy": "preserve_as_blank",
+          "metric_null_policy": "display_zero",
+          "primary_metric": "PROD_QTY",
+          "ordering": {
+            "sort_by": "LOT_ID",
+            "order": "asc"
+          },
+          "column_labels": {
+            "LOT_ID": "Lot ID",
+            "OPER_NAME": "공정명",
+            "PROD_QTY": "제품 수량",
+            "WF_QTY": "웨이퍼 수량",
+            "HOLD_STAT": "HOLD 상태",
+            "HOLD_REASON": "HOLD 사유"
+          }
+        }
+      },
+      "catalog_hydration": {
+        "stage": "04a_trusted_retrieval_job_hydrator",
+        "status": "ok",
+        "retrieval_mode": "dummy",
+        "input_job_count": 1,
+        "hydrated_job_count": 1,
+        "catalog_item_count": 9,
+        "trusted_dataset_keys": [
+          "lot_status"
+        ],
+        "dummy_only_dataset_keys": [],
+        "deferred_upstream_params": [],
+        "condition_reconciliation": []
+      },
+      "upstream_parameter_binding": {},
+      "result_loader": {
+        "stage": "05_mongodb_result_loader",
+        "status": "skipped",
+        "database": "datagov",
+        "collection_name": "agent_v4_result_store",
+        "data_ref": "",
+        "errors": [
+          {
+            "type": "reuse_strategy_without_row_restore",
+            "message": "reuse_strategy=none에는 이전 결과 행 복원이 필요하지 않습니다."
+          }
+        ]
+      },
+      "source_results": [
+        {
+          "dataset_key": "lot_status",
+          "source_alias": "lot_status_src",
+          "status": "ok",
+          "row_count": 4
+        }
+      ],
+      "pandas": {
+        "status": "ok",
+        "row_count": 1,
+        "columns": [
+          "LOT_ID",
+          "OPER_NAME",
+          "PROD_QTY",
+          "WF_QTY",
+          "HOLD_STAT",
+          "HOLD_REASON",
+          "IN_TAT",
+          "CUM_TAT",
+          "LOT_STAT"
+        ],
+        "generated_code": "_filtered_source_1_lot_status_src = sources.get('lot_status_src')\nif _filtered_source_1_lot_status_src is not None:\n    sources = dict(sources)\n    _filtered_source_1_lot_status_src = _filtered_source_1_lot_status_src.copy()\n    _filter_col_1_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_1_lot_status_src.columns else ('OPER_NM' if 'OPER_NM' in _filtered_source_1_lot_status_src.columns else (''))\n    _filter_values_1_1 = ['W/B1', 'W/B2', 'W/B3', 'W/B4', 'W/B5', 'W/B6']\n    if _filter_col_1_1:\n        _filtered_source_1_lot_status_src = _filtered_source_1_lot_status_src[_filtered_source_1_lot_status_src[_filter_col_1_1].isin(_filter_values_1_1)]\n    _filter_col_1_2 = 'HOLD_STAT' if 'HOLD_STAT' in _filtered_source_1_lot_status_src.columns else ('')\n    _filter_values_1_2 = ['OnHold']\n    if _filter_col_1_2:\n        _filtered_source_1_lot_status_src = _filtered_source_1_lot_status_src[_filtered_source_1_lot_status_src[_filter_col_1_2].isin(_filter_values_1_2)]\n    sources['lot_status_src'] = _filtered_source_1_lot_status_src\n\ndf = sources[\"lot_status_src\"].copy()\nrequired_cols = [\"LOT_ID\", \"OPER_NAME\", \"PROD_QTY\", \"WF_QTY\", \"HOLD_STAT\", \"HOLD_REASON\", \"IN_TAT\", \"CUM_TAT\", \"LOT_STAT\"]\nexisting_cols = [c for c in required_cols if c in df.columns]\n\nfor col in existing_cols:\n    if col not in [\"PROD_QTY\", \"WF_QTY\", \"IN_TAT\", \"CUM_TAT\"]:\n        df[col] = df[col].astype(str).str.strip().replace({\"nan\": \"\", \"None\": \"\", \"<NA>\": \"\"})\n    else:\n        df[col] = pd.to_numeric(df[col], errors=\"coerce\").fillna(0)\n\nresult = df[existing_cols].sort_values(by=\"LOT_ID\", ascending=True).reset_index(drop=True)",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "error": {}
+      },
+      "data_preview": [
+        {
+          "LOT_ID": "T1234567GEN1",
+          "OPER_NAME": "W/B1",
+          "PROD_QTY": 100,
+          "WF_QTY": 25,
+          "HOLD_STAT": "OnHold",
+          "HOLD_REASON": "검증용 HOLD",
+          "IN_TAT": 12.5,
+          "CUM_TAT": 40.0,
+          "LOT_STAT": "WAITING"
+        }
+      ],
+      "result_store": {
+        "status": "ok",
+        "data_ref": "result:validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264:a208df0863b84fffa541281135892d2d",
+        "errors": []
+      },
+      "session_state_write": {
+        "stage": "01_mongodb_session_state_writer",
+        "enabled": true,
+        "saved": true,
+        "session_id": "validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264",
+        "collection_name": "agent_v4_session_states",
+        "errors": [],
+        "turn_count": 1,
+        "preview_row_limit": 5,
+        "state_keys": [
+          "current_data",
+          "followup_source_results",
+          "last_answer_message",
+          "last_applied_criteria",
+          "last_intent_plan",
+          "last_question",
+          "runtime_source_refs",
+          "session_id"
+        ]
+      },
+      "issues": [],
+      "api_response": {
+        "response_type": "data_analysis",
+        "data_mode": "dummy",
+        "message_preview": "### 답변\nW/B공정의 현재 HOLD LOT 조회 결과, 총 1건의 HOLD LOT가 확인되었습니다.\n\n해당 LOT(T1234567GEN1)는 W/B1 공정에서 OnHold 상태이며, 검증용 HOLD 사유로 대기 중입니다. 제품 수량은 100개, 웨이퍼 수량은 25장입니다.\n\n적용 기준: W/B1\\~W/B6 공정 및 OnHold 상태를 기준으로 조회되었습니다.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| Lot ID | 공정 | 제품 수량 | 웨이퍼 수량 | HOLD 상태 | HOLD 사유 | IN_TAT | CUM_TAT | LOT_STAT |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| T1234567GEN1 | W/B1 | 100 | 25 | OnHold | 검증용 HOLD | 12.5 | 40 | WAITING |\n\n총 1건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_"
+      },
+      "runtime_cleanup": {}
+    },
+    {
+      "turn": 2,
+      "question": "HOLD 시간이 가장 오래된 LOT의 이력을 보여줘",
+      "status": "ok",
+      "elapsed_seconds": 9.013,
+      "session_state_load": {
+        "stage": "00_mongodb_session_state_loader",
+        "enabled": true,
+        "loaded": true,
+        "source": "mongodb",
+        "session_id": "validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264",
+        "collection_name": "agent_v4_session_states",
+        "errors": [],
+        "updated_at": "2026-07-29T11:09:16.291952+00:00",
+        "turn_count": 1,
+        "preview_row_limit": 5
+      },
+      "followup_hint": {
+        "followup_candidate": true,
+        "request_scope_hint": "followup_requery",
+        "reuse_strategy_hint": "previous_result",
+        "confidence": "medium",
+        "matched_cues": {
+          "previous_entity_identifiers": [
+            "LOT_ID"
+          ]
+        },
+        "reusable_previous_source_aliases": [
+          "lot_status_src"
+        ],
+        "required_previous_artifacts": [
+          "previous_result",
+          "previous_intent_plan",
+          "previous_applied_criteria"
+        ],
+        "inheritance_candidates": [
+          "required_params",
+          "analysis_filters",
+          "pandas_function_cases"
+        ],
+        "complete_independent_request": false,
+        "notes": [
+          "후속 질문 가능성이 있으므로 이전 조건의 상속/변경 여부를 의도 분석에서 최종 판단해야 합니다."
+        ]
+      },
+      "intent": {
+        "analysis_kind": "longest_hold_lot_history",
+        "request_scope": "followup_requery",
+        "reference_mode": "previous_result_rows",
+        "reuse_strategy": "previous_result",
+        "retrieval_jobs": [
+          {
+            "dataset_key": "hold_history",
+            "source_alias": "hold_history_src",
+            "required_params": {
+              "LOT_ID": [
+                "T1234567GEN1"
+              ]
+            },
+            "filters": {},
+            "source_type": "oracle",
+            "source_config": {
+              "source_type": "oracle",
+              "db_key": "PNT_RPT",
+              "query_template": "/*HOLD_LOT_HISTORY*/\n\n        SELECT\n\n            LOT_ID,\n            PROD_QTY,\n            OPER,\n            OPER_NAME,\n            HOLD_TM,\n            HOLD_CD,\n            HOLD_USER,\n            HOLD_DESC,\n            FAB,\n            FAMILY,\n            MODE,\n            DENSITY,\n            TECH,\n            ORG,\n            PKG1,\n            PKG2,\n            LEAD,\n            MCP_NO,\n            GRADE,\n            OWNER,\n            \n            DEVICE,\n            DEVICE_DESC,\n            PKG_SIZE,\n            THK_CD,\n            flow_id   \n        FROM HOLD_HIS\n        WHERE LOT_ID IN ({LOT_ID})",
+              "upstream_bindings": [
+                {
+                  "entity_type": "lot",
+                  "source_alias": "previous_result",
+                  "source_column": "LOT_ID",
+                  "target_param": "LOT_ID",
+                  "operator": "in",
+                  "max_values": 200
+                }
+              ]
+            },
+            "required_param_names": [
+              "LOT_ID"
+            ],
+            "trusted_catalog": true,
+            "catalog_ref": "table_catalog:hold_history",
+            "filter_mappings": {
+              "LOT_ID": [
+                "LOT_ID"
+              ],
+              "OPER_NAME": [
+                "OPER_NAME"
+              ],
+              "OPER_NUM": [
+                "OPER"
+              ],
+              "MODE": [
+                "MODE"
+              ],
+              "DEN": [
+                "DENSITY"
+              ],
+              "TECH": [
+                "TECH"
+              ],
+              "ORG": [
+                "ORG"
+              ],
+              "PKG_TYPE1": [
+                "PKG1"
+              ],
+              "PKG_TYPE2": [
+                "PKG2"
+              ],
+              "LEAD": [
+                "LEAD"
+              ],
+              "MCP_NO": [
+                "MCP_NO"
+              ],
+              "TSV_DIE_TYP": [
+                "TSV_DIE_TYPE"
+              ],
+              "DEVICE": [
+                "DEVICE"
+              ],
+              "DEVICE_DESC": [
+                "DEVICE_DESC"
+              ]
+            },
+            "default_detail_columns": [
+              "LOT_ID",
+              "OPER_NAME",
+              "HOLD_TM",
+              "HOLD_CD",
+              "HOLD_DESC"
+            ],
+            "metric_semantics": {
+              "LOT_ID": {
+                "semantic_type": "count",
+                "additive": false,
+                "default_rollup": "nunique",
+                "allowed_rollups": [
+                  "nunique"
+                ],
+                "source_already_aggregated": false
+              },
+              "OLD_SUB_PROD_QTY": {
+                "semantic_type": "quantity",
+                "additive": true,
+                "default_rollup": "sum",
+                "allowed_rollups": [
+                  "sum",
+                  "mean"
+                ],
+                "source_already_aggregated": false
+              }
+            },
+            "upstream_binding_applied": true,
+            "upstream_source_aliases": [
+              "previous_result"
+            ],
+            "upstream_source_alias": "previous_result",
+            "job_id": "job_1"
+          }
+        ],
+        "pandas_execution_plan": [
+          {
+            "operation": "apply_row_match_groups",
+            "source_alias": "hold_history_src",
+            "reference_source_alias": "previous_result",
+            "match_columns": [
+              "LOT_ID"
+            ],
+            "blank_policy": "normalize_blank"
+          },
+          {
+            "operation": "sort_and_top_n",
+            "source_alias": "hold_history_src",
+            "sort_by": "HOLD_TM",
+            "order": "asc",
+            "limit": 1
+          }
+        ],
+        "condition_resolution": {
+          "inherited": {
+            "HOLD_STAT": "OnHold"
+          }
+        },
+        "output_contract": {
+          "result_mode": "detail",
+          "required_columns": [
+            "LOT_ID",
+            "OPER_NAME",
+            "HOLD_TM",
+            "HOLD_CD",
+            "HOLD_DESC",
+            "HOLD_USER"
+          ],
+          "grain_columns": [
+            "LOT_ID",
+            "HOLD_TM"
+          ],
+          "null_group_policy": "preserve_as_blank",
+          "metric_null_policy": "display_zero",
+          "primary_metric": "HOLD_TM",
+          "ordering": {
+            "sort_by": "HOLD_TM",
+            "order": "asc",
+            "limit": 1
+          },
+          "column_labels": {
+            "LOT_ID": "Lot ID",
+            "OPER_NAME": "공정명",
+            "HOLD_TM": "HOLD 시각",
+            "HOLD_CD": "HOLD 코드",
+            "HOLD_DESC": "HOLD 상세 사유",
+            "HOLD_USER": "HOLD 담당자"
+          }
+        }
+      },
+      "catalog_hydration": {
+        "stage": "04a_trusted_retrieval_job_hydrator",
+        "status": "ok",
+        "retrieval_mode": "dummy",
+        "input_job_count": 1,
+        "hydrated_job_count": 1,
+        "catalog_item_count": 9,
+        "trusted_dataset_keys": [
+          "hold_history"
+        ],
+        "dummy_only_dataset_keys": [],
+        "deferred_upstream_params": [
+          {
+            "dataset_key": "hold_history",
+            "params": [
+              "LOT_ID"
+            ]
+          }
+        ],
+        "condition_reconciliation": [
+          {
+            "required_params": {},
+            "remapped_required_params": [],
+            "filters": {},
+            "moved_to_filters": [],
+            "dropped_params": [],
+            "normalized_date_fields": [],
+            "dataset_key": "hold_history",
+            "replaced_by_previous_result_binding": [
+              "LOT_ID"
+            ]
+          }
+        ]
+      },
+      "upstream_parameter_binding": {
+        "stage": "05a_upstream_entity_parameter_binder",
+        "status": "ok",
+        "reason": "",
+        "binding_count": 1,
+        "bindings": [
+          {
+            "dataset_key": "hold_history",
+            "entity_type": "lot",
+            "source_alias": "previous_result",
+            "source_column": "LOT_ID",
+            "target_param": "LOT_ID",
+            "operator": "in",
+            "value_count": 1,
+            "max_values": 200
+          }
+        ],
+        "error_count": 0,
+        "errors": []
+      },
+      "result_loader": {
+        "stage": "05_mongodb_result_loader",
+        "status": "ok",
+        "mode": "previous_result",
+        "database": "datagov",
+        "collection_name": "agent_v4_result_store",
+        "data_ref": "result:validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264:a208df0863b84fffa541281135892d2d",
+        "loaded_source_aliases": [
+          "previous_result"
+        ],
+        "projection_paths": [
+          "payload.result_rows",
+          "payload.data",
+          "payload.analysis",
+          "payload.storage_manifest"
+        ],
+        "errors": []
+      },
+      "source_results": [
+        {
+          "dataset_key": "previous_result",
+          "source_alias": "previous_result",
+          "status": "ok",
+          "row_count": 1
+        },
+        {
+          "dataset_key": "hold_history",
+          "source_alias": "hold_history_src",
+          "status": "ok",
+          "row_count": 2
+        }
+      ],
+      "pandas": {
+        "status": "ok",
+        "row_count": 1,
+        "columns": [
+          "LOT_ID",
+          "OPER_NAME",
+          "HOLD_TM",
+          "HOLD_CD",
+          "HOLD_DESC",
+          "HOLD_USER"
+        ],
+        "generated_code": "_row_match_execution = []\n_row_match_blank_texts = ['', '<na>', 'empty', 'nan', 'nat', 'none', 'null']\ndef _normalize_row_match_value(value):\n    if value is None:\n        return ''\n    text = str(value).strip()\n    if text.casefold() in _row_match_blank_texts:\n        return ''\n    signless = text[1:] if text.startswith('-') else text\n    number_parts = signless.split('.', 1)\n    if len(number_parts) == 2 and number_parts[0].isdigit() and number_parts[1] and set(number_parts[1]) == {'0'}:\n        return text.split('.', 1)[0]\n    return text\n\ndef _find_row_match_column(frame, candidates):\n    actual_by_casefold = {str(column).casefold(): str(column) for column in frame.columns}\n    for candidate in candidates:\n        actual = actual_by_casefold.get(str(candidate).casefold())\n        if actual:\n            return actual\n    return ''\n\n_row_match_target_1_hold_history_src = sources.get('hold_history_src')\n_row_match_reference_1_hold_history_src = sources.get('previous_result')\nif _row_match_target_1_hold_history_src is None:\n    raise Exception('row match target source를 찾을 수 없습니다: hold_history_src')\nif _row_match_reference_1_hold_history_src is None:\n    raise Exception('row match reference source를 찾을 수 없습니다: previous_result')\n_row_match_target_1_hold_history_src = _row_match_target_1_hold_history_src.copy()\n_row_match_pairs_1_hold_history_src = []\n_row_match_used_pairs_1_hold_history_src = set()\n_row_match_source_column_1_1 = _find_row_match_column(_row_match_target_1_hold_history_src, ['LOT_ID'])\n_row_match_reference_column_1_1 = _find_row_match_column(_row_match_reference_1_hold_history_src, ['LOT_ID'])\nif not _row_match_source_column_1_1 or not _row_match_reference_column_1_1:\n    raise Exception('row match 컬럼을 두 source에서 모두 찾을 수 없습니다: LOT_ID (target=hold_history_src, reference=previous_result)')\n_row_match_pair_key_1_1 = (_row_match_source_column_1_1.casefold(), _row_match_reference_column_1_1.casefold())\nif _row_match_pair_key_1_1 not in _row_match_used_pairs_1_hold_history_src:\n    _row_match_used_pairs_1_hold_history_src.add(_row_match_pair_key_1_1)\n    _row_match_pairs_1_hold_history_src.append(('LOT_ID', _row_match_source_column_1_1, _row_match_reference_column_1_1))\nif len(_row_match_pairs_1_hold_history_src) < 1:\n    raise Exception('apply_row_match_groups에서 중복을 제외한 실제 매칭 컬럼이 1개 미만입니다.')\n_row_match_groups_1_hold_history_src = {\n    tuple(_normalize_row_match_value(row.get(pair[2])) for pair in _row_match_pairs_1_hold_history_src)\n    for row in _row_match_reference_1_hold_history_src.to_dict(orient='records')\n}\n_row_match_before_count_1_hold_history_src = len(_row_match_target_1_hold_history_src)\nif _row_match_groups_1_hold_history_src:\n    _row_match_keys_1_hold_history_src = [\n        tuple(_normalize_row_match_value(row.get(pair[1])) for pair in _row_match_pairs_1_hold_history_src)\n        for row in _row_match_target_1_hold_history_src.to_dict(orient='records')\n    ]\n    _row_match_mask_1_hold_history_src = pd.Series(\n        [key in _row_match_groups_1_hold_history_src for key in _row_match_keys_1_hold_history_src],\n        index=_row_match_target_1_hold_history_src.index,\n        dtype=bool,\n    )\n    _row_match_target_1_hold_history_src = _row_match_target_1_hold_history_src[_row_match_mask_1_hold_history_src].copy()\nelse:\n    _row_match_target_1_hold_history_src = _row_match_target_1_hold_history_src.iloc[0:0].copy()\nsources = dict(sources)\nsources['hold_history_src'] = _row_match_target_1_hold_history_src\n_row_match_execution.append({\n    'source_alias': 'hold_history_src',\n    'reference_source_alias': 'previous_result',\n    'match_columns': ['LOT_ID'],\n    'resolved_columns': [\n        {\n            'canonical_column': pair[0],\n            'source_column': pair[1],\n            'reference_column': pair[2],\n        }\n        for pair in _row_match_pairs_1_hold_history_src\n    ],\n    'reference_row_count': len(_row_match_reference_1_hold_history_src),\n    'unique_condition_group_count': len(_row_match_groups_1_hold_history_src),\n    'source_row_count_before': _row_match_before_count_1_hold_history_src,\n    'source_row_count_after': len(_row_match_target_1_hold_history_src),\n    'blank_policy': 'normalize_blank',\n})\n\ndf = sources[\"hold_history_src\"]\nreq_df = sources[\"previous_result\"]\n\nmatch_cols = [\"LOT_ID\"]\nfor c in match_cols:\n    if c in df.columns and c in req_df.columns:\n        df[c] = df[c].astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n        req_df[c] = req_df[c].astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n\nmerged = pd.merge(req_df[match_cols], df, on=match_cols, how=\"left\")\n\nif \"HOLD_TM\" in merged.columns:\n    merged = merged.sort_values(by=\"HOLD_TM\", ascending=True)\n    res_row = merged.head(1)\nelse:\n    res_row = merged.head(1)\n\nreq_cols = [\"LOT_ID\", \"OPER_NAME\", \"HOLD_TM\", \"HOLD_CD\", \"HOLD_DESC\", \"HOLD_USER\"]\nexisting_cols = [c for c in req_cols if c in res_row.columns]\nresult = res_row[existing_cols].copy()",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "error": {}
+      },
+      "data_preview": [
+        {
+          "LOT_ID": "T1234567GEN1",
+          "OPER_NAME": "W/B1",
+          "HOLD_TM": "2026-06-30 18:00:00",
+          "HOLD_CD": "H000",
+          "HOLD_DESC": "검증용 이전 HOLD 이력",
+          "HOLD_USER": "USER01"
+        }
+      ],
+      "result_store": {
+        "status": "ok",
+        "data_ref": "result:validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264:c36aeef5843d4bf1a76fa791c695c7f3",
+        "errors": []
+      },
+      "session_state_write": {
+        "stage": "01_mongodb_session_state_writer",
+        "enabled": true,
+        "saved": true,
+        "session_id": "validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264",
+        "collection_name": "agent_v4_session_states",
+        "errors": [],
+        "turn_count": 2,
+        "preview_row_limit": 5,
+        "state_keys": [
+          "current_data",
+          "followup_source_results",
+          "last_answer_message",
+          "last_applied_criteria",
+          "last_intent_plan",
+          "last_question",
+          "runtime_source_refs",
+          "session_id"
+        ]
+      },
+      "issues": [],
+      "api_response": {
+        "response_type": "data_analysis",
+        "data_mode": "dummy",
+        "message_preview": "### 답변\n요청하신 HOLD 시간이 가장 오래된 LOT의 이력 조회 결과, 대상 LOT(T1234567GEN1)의 HOLD 이력은 총 1건 확인되었습니다.\n\n해당 LOT은 W/B1 공정에서 2026-06-30 18:00:00에 HOLD 되었으며, HOLD 코드 H000('검증용 이전 HOLD 이력') 사유로 USER01에 의해 처리되었습니다.\n\n본 조회는 입력된 LOT ID(T1234567GEN1) 조건을 기준으로 수행되었습니다.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| Lot ID | 공정 | HOLD 시각 | HOLD 코드 | HOLD 상세 사유 | HOLD 담당자 |\n| --- | --- | --- | --- | --- | --- |\n| T1234567GEN1 | W/B1 | 2026-06-30 18:00:00 | H000 | 검증용 이전 HOLD 이력 | USER01 |\n\n총 1건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset"
+      },
+      "runtime_cleanup": {}
+    }
+  ],
+  "mongodb_verification": {
+    "session_document": {
+      "_id": "session_state:validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264",
+      "session_id": "validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264",
+      "state": {
+        "current_data": {
+          "data_ref": {
+            "store": "mongodb",
+            "ref_id": "result:validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264:c36aeef5843d4bf1a76fa791c695c7f3",
+            "database": "datagov",
+            "collection_name": "agent_v4_result_store",
+            "path": "payload.result_rows",
+            "role": "analysis_result",
+            "label": "분석 결과 데이터",
+            "row_count": 1,
+            "columns": [
+              "LOT_ID",
+              "OPER_NAME",
+              "HOLD_TM",
+              "HOLD_CD",
+              "HOLD_DESC",
+              "HOLD_USER"
+            ],
+            "expires_at": "2026-07-29T12:09:22.822511+00:00",
+            "ttl_hours": 1,
+            "download_url": "http://127.0.0.1:8765/download.csv?download_ref=eyJzdG9yZSI6Im1vbmdvZGIiLCJyZWZfaWQiOiJyZXN1bHQ6dmFsaWRhdGlvbi1tdWx0aXR1cm4tYmQxN2VkM2YtYzVlNC00MTkzLTliZmEtN2VjN2YxMzY4MjY0OmMzNmFlZWY1ODQzZDRiZjFhNzZmYTc5MWM2OTVjN2YzIiwiZGF0YWJhc2UiOiJkYXRhZ292IiwiY29sbGVjdGlvbl9uYW1lIjoiYWdlbnRfdjRfcmVzdWx0X3N0b3JlIiwicGF0aCI6InBheWxvYWQucmVzdWx0X3Jvd3MiLCJyb2xlIjoiYW5hbHlzaXNfcmVzdWx0IiwibGFiZWwiOiLrtoTshJ0g6rKw6rO8IOuNsOydtO2EsCJ9",
+            "download_format": "csv"
+          }
+        },
+        "last_intent_plan": {
+          "request_scope": "followup_requery"
+        }
+      },
+      "turn_count": 2
+    },
+    "result_documents": [
+      {
+        "_id": "result:validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264:a208df0863b84fffa541281135892d2d",
+        "session_id": "validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264",
+        "question": "W/B공정 현재 HOLD LOT와 HOLD사유 알려줘"
+      },
+      {
+        "_id": "result:validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264:c36aeef5843d4bf1a76fa791c695c7f3",
+        "session_id": "validation-multiturn-bd17ed3f-c5e4-4193-9bfa-7ec7f1368264",
+        "question": "HOLD 시간이 가장 오래된 LOT의 이력을 보여줘"
+      }
+    ],
+    "result_document_count": 2,
+    "issues": []
+  },
+  "cleanup": {
+    "status": "ok",
+    "session_deleted_count": 1,
+    "result_deleted_count": 2
+  },
+  "errors": []
+}

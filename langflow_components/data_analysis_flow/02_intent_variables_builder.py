@@ -103,6 +103,17 @@ def _schema() -> dict[str, Any]:
                 "changed": {},
                 "dropped": {},
                 "new": {},
+                "effective_filters": {
+                    "PREVIOUS_SOURCE_ALIAS": {
+                        "dataset_key": "직전 source의 dataset_key",
+                        "filters": {
+                            "PANDAS_FILTER_COLUMN": {
+                                "operator": "eq|in|ne|not_in|gt|ge|lt|le|contains|like|starts_with|ends_with|is_null|is_empty|null_or_empty|not_null|not_empty|not_blank",
+                                "value": "value or list; omit for valueless operators",
+                            }
+                        },
+                    }
+                },
             },
             "pandas_function_cases": [],
             "grain_plan": {
@@ -126,7 +137,7 @@ def _schema() -> dict[str, Any]:
                     "required_params": {"DATA_CATALOG_REQUIRED_PARAM": "value"},
                     "filters": {
                         "PANDAS_FILTER_COLUMN": {
-                            "operator": "eq|in|ne|not_in|contains|like|starts_with|ends_with|is_null|is_empty|null_or_empty|not_null|not_empty|not_blank",
+                            "operator": "eq|in|ne|not_in|gt|ge|lt|le|contains|like|starts_with|ends_with|is_null|is_empty|null_or_empty|not_null|not_empty|not_blank",
                             "value": "value or list; omit for valueless operators",
                         }
                     },
@@ -147,6 +158,18 @@ def _schema() -> dict[str, Any]:
                     "reference_source_alias": "row match 조건 행을 제공할 reference DataFrame alias",
                     "match_columns": ["previous_result가 아닌 일반 reference source에만 명시할 실제 identity 컬럼"],
                     "blank_policy": "normalize_blank",
+                    "agg_column": "집계할 실제 metric 컬럼",
+                    "agg_method": "sum|mean|nunique|count|min|max",
+                    "aggregations": [
+                        {
+                            "column": "같은 group_by에서 집계할 실제 컬럼",
+                            "method": "sum|mean|nunique|count|min|max|collect_unique",
+                            "output_column": "서로 구분되는 결과 컬럼명",
+                        }
+                    ],
+                    "sort_by": "정렬할 결과 metric 컬럼",
+                    "order": "asc|desc",
+                    "limit": 0,
                 }
             ],
             "output_contract": {
@@ -154,6 +177,15 @@ def _schema() -> dict[str, Any]:
                 "required_columns": [],
                 "grain_columns": [],
                 "metric_columns": [],
+                "primary_metric": "답변과 정렬의 대표 metric 컬럼",
+                "ordering": {
+                    "sort_by": "정렬할 결과 metric 컬럼",
+                    "order": "asc|desc",
+                    "limit": 0,
+                },
+                "column_labels": {
+                    "RESULT_COLUMN": "질문의 조건과 의미를 반영한 사용자 표시명"
+                },
                 "result_segments": [
                     {
                         "label": "string",

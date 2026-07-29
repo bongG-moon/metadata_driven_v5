@@ -284,6 +284,15 @@ eqp_uph의 right_key_mappings는 EQP_MODEL -> EQUIP_MODEL, RECIPE_ID -> RECIPE_I
 장비 배정 결과를 보존하도록 preserve_left_rows는 true야.
 사용자가 공정에 배정된 장비와 해당 장비 모델 또는 Recipe의 UPH를 함께 요청할 때 이 recipe를 사용해.
 
+UPH 결과 해석 규칙을 등록해줘.
+section은 analysis_recipes이고 key는 uph_result_policy이며 status는 active야.
+display_name은 UPH 비가산 집계 및 표시 규칙이야.
+aliases와 선택 단서는 UPH, 시간당 생산량, 장비 기종별 UPH, 장비 모델별 UPH, 차수별 UPH야.
+UPH는 평균형 비가산 metric이므로 합산하지 않아.
+사용자가 별도 grouping 없이 제품별 UPH를 요청하면 장비 모델, Recipe, 공정별 개별 UPH 문맥을 유지해.
+사용자가 차수별, 장비 기종별, 장비 모델별처럼 grouping을 명시하면 해당 그룹별 UPH 평균을 사용해.
+장비 기종, 기종, 장비 모델은 EQUIP_MODEL을 뜻하고 Recipe, 레시피는 RECIPE_ID를 뜻해.
+
 
 원본 상세 데이터 표시 규칙을 등록해줘.
 section은 analysis_recipes이고 key는 raw_data_display_policy이며 status는 active야.
@@ -308,6 +317,12 @@ helper는 시작 공정과 끝 공정의 OPER_SEQ를 찾고, OPER_SEQ를 문자�
 input_text에는 시작 공정과 끝 공정 표현만 남기고 source_alias에는 helper를 적용할 DataFrame alias를 남겨.
 양 끝 OPER_NAME만 `in` 조건으로 거는 계획을 만들면 안 되고, 단일 공정 질문에는 이 case를 선택하지 마.
 L-218처럼 제품 MCP_NO 내부에 포함된 하이픈은 공정 범위 구분자로 해석하지 마.
+이 case가 선택된 source에서는 filter_ordered_range를 모든 일반 pandas row filter보다 항상 먼저 실행해.
+execution_contract의 source_filter_order는 after_helper야.
+같은 source의 HOLD, 상태, LOT, 제품 및 다른 일반 조건은 retrieval_jobs의 filters나 condition_resolution.effective_filters에 넣지 말고, pandas_execution_plan에서 filter_ordered_range 다음의 apply_filters 단계로 적용해.
+단, 데이터를 조회하는 데 필요한 table catalog의 required_params는 위 후순위 대상이 아니야.
+최종 계획을 반환하기 전에 같은 source_alias의 일반 조건이 선행 filters에 남아 있지 않고, filter_ordered_range 단계가 해당 source의 일반 apply_filters보다 앞에 있는지 확인해.
+예를 들어 D/S1~D/A4 공정 Hold 된 Lot ID 질문은 먼저 전체 source에서 공정 범위를 찾고, 그 범위 결과에 HOLD_STAT=OnHold를 적용해.
 이 규칙은 생산량이나 재공처럼 OPER_NAME과 OPER_SEQ가 있는 데이터에서 공정 구간을 요청할 때 사용해.
 
 제품 속성 token 매칭 function case를 등록해줘.

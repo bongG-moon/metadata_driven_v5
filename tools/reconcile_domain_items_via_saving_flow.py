@@ -67,6 +67,7 @@ EXPECTED_FINAL_KEYS = {
     "analysis_recipes:equipment_assignment_uph_join",
     "analysis_recipes:product_grain_and_join_policy",
     "analysis_recipes:raw_data_display_policy",
+    "analysis_recipes:uph_result_policy",
     "pandas_function_cases:ordered_process_range",
     "pandas_function_cases:product_token_match",
     "pandas_function_cases:sample_passthrough_demo",
@@ -112,8 +113,14 @@ def build_registration_requests(text: str) -> list[dict[str, Any]]:
         (
             "equipment_assignment_uph_join",
             "장비 배정과 Recipe UPH 결합 규칙을 등록해줘.",
-            "원본 상세 데이터 표시 규칙을 등록해줘.",
+            "UPH 결과 해석 규칙을 등록해줘.",
             ["analysis_recipes:equipment_assignment_uph_join"],
+        ),
+        (
+            "uph_result_policy",
+            "UPH 결과 해석 규칙을 등록해줘.",
+            "원본 상세 데이터 표시 규칙을 등록해줘.",
+            ["analysis_recipes:uph_result_policy"],
         ),
         (
             "raw_data_display_policy",
@@ -320,6 +327,26 @@ def _semantic_errors(
                         "message": f"장비-UPH 결합 정책의 {field} 값이 원문과 다릅니다.",
                     }
                 )
+    elif name == "uph_result_policy":
+        payload = (
+            item_by_key.get("analysis_recipes:uph_result_policy") or {}
+        ).get("payload", {})
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        for token in ("UPH", "평균", "EQUIP_MODEL", "RECIPE_ID"):
+            if token not in payload_text:
+                errors.append(
+                    {
+                        "type": "uph_result_policy_mismatch",
+                        "message": f"UPH 결과 정책에 {token} 기준이 누락되었습니다.",
+                    }
+                )
+        if "sum" in payload_text.lower() or "합산" not in payload_text:
+            errors.append(
+                {
+                    "type": "uph_result_policy_additive_mismatch",
+                    "message": "UPH 비가산·합산 금지 기준이 정확히 보존되지 않았습니다.",
+                }
+            )
     elif name == "raw_data_display_policy":
         payload = (
             item_by_key.get("analysis_recipes:raw_data_display_policy") or {}
@@ -340,6 +367,18 @@ def _semantic_errors(
                 {
                     "type": "function_name_mismatch",
                     "message": "ordered_process_range function_name이 잘못되었습니다.",
+                }
+            )
+        if payload.get("execution_contract") != {
+            "source_filter_order": "after_helper"
+        }:
+            errors.append(
+                {
+                    "type": "execution_contract_mismatch",
+                    "message": (
+                        "ordered_process_range의 source filter는 "
+                        "helper 실행 뒤에 적용되어야 합니다."
+                    ),
                 }
             )
     elif name == "product_token_match":
@@ -595,6 +634,102 @@ def apply_reconciliation(
         client.close()
 
 
+def apply_selected_reconciliation(
+    prepared: list[dict[str, Any]],
+    *,
+    components: dict[str, Any],
+    mongo_uri: str,
+    mongo_database: str,
+    collection_name: str,
+) -> dict[str, Any]:
+    """선택한 canonical Domain 문서만 replace하고 실패 시 그 문서들만 복원합니다."""
+
+    from pymongo import MongoClient
+
+    target_ids = [
+        f"domain:{item.get('section')}:{item.get('key')}"
+        for prepared_item in prepared
+        for item in prepared_item.get("items", [])
+        if isinstance(item, dict)
+    ]
+    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+    collection = client[mongo_database][collection_name]
+    backups = {
+        doc_id: collection.find_one({"_id": doc_id})
+        for doc_id in target_ids
+    }
+    writes: list[dict[str, Any]] = []
+    try:
+        for prepared_item in prepared:
+            payload = components["request"].build_request(
+                prepared_item["raw_text"],
+                duplicate_action="replace",
+                dry_run=False,
+            )
+            payload = components["normalizer"].normalize_authoring(
+                payload,
+                prepared_item["llm_response"],
+            )
+            payload = components["similarity"].check_similarity(
+                payload,
+                mongo_uri=mongo_uri,
+                mongo_database=mongo_database,
+                collection_name=collection_name,
+            )
+            payload = components["writer"].review_and_write(
+                payload,
+                mongo_uri=mongo_uri,
+                mongo_database=mongo_database,
+                collection_name=collection_name,
+            )
+            write_result = (
+                payload.get("write_result")
+                if isinstance(payload.get("write_result"), dict)
+                else {}
+            )
+            writes.append(
+                {
+                    "name": prepared_item["name"],
+                    "generated_keys": _logical_keys(payload.get("items") or []),
+                    "success": bool(write_result.get("success")),
+                    "write_result": deepcopy(write_result),
+                    "errors": deepcopy(payload.get("errors") or []),
+                }
+            )
+            if not write_result.get("success") or payload.get("errors"):
+                raise RuntimeError(
+                    f"Domain Saving selected live write failed: {prepared_item['name']}"
+                )
+
+        saved_ids = sorted(
+            str(item["_id"])
+            for item in collection.find(
+                {"_id": {"$in": target_ids}},
+                {"_id": 1},
+            )
+        )
+        missing_ids = sorted(set(target_ids) - set(saved_ids))
+        if missing_ids:
+            raise RuntimeError(
+                f"selected post-apply verification failed: missing_ids={missing_ids}"
+            )
+        return {
+            "success": True,
+            "mode": "selected_replace",
+            "writes": writes,
+            "verified_ids": saved_ids,
+        }
+    except Exception:
+        for doc_id in target_ids:
+            collection.delete_one({"_id": doc_id})
+            backup = backups.get(doc_id)
+            if backup:
+                collection.replace_one({"_id": doc_id}, backup, upsert=True)
+        raise
+    finally:
+        client.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -623,6 +758,12 @@ def main() -> int:
         default=[],
         help="resume 결과가 있어도 지정한 요청 이름은 Google API로 다시 생성합니다.",
     )
+    parser.add_argument(
+        "--only",
+        nargs="*",
+        default=[],
+        help="지정한 request name만 검증·replace합니다. 이 모드에서는 obsolete 문서를 삭제하지 않습니다.",
+    )
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env")
@@ -641,6 +782,19 @@ def main() -> int:
     requests = build_registration_requests(
         DOMAIN_KNOWLEDGE_PATH.read_text(encoding="utf-8")
     )
+    if args.only:
+        selected_names = {str(name).strip() for name in args.only if str(name).strip()}
+        requests = [
+            item for item in requests
+            if str(item.get("name") or "") in selected_names
+        ]
+        found_names = {str(item.get("name") or "") for item in requests}
+        missing_names = sorted(selected_names - found_names)
+        if missing_names:
+            raise RuntimeError(
+                "알 수 없는 Domain Saving request name입니다: "
+                + ", ".join(missing_names)
+            )
     cached_responses: dict[str, str] = {}
     if args.resume_from:
         resume_path = Path(args.resume_from)
@@ -676,12 +830,22 @@ def main() -> int:
     if args.apply:
         if not dry_run_success:
             raise RuntimeError("Dry-run 검증이 모두 성공하지 않아 실제 저장을 중단했습니다.")
-        apply_result = apply_reconciliation(
-            prepared,
-            components=components,
-            mongo_uri=mongo_uri,
-            mongo_database=mongo_database,
-            collection_name=collection_name,
+        apply_result = (
+            apply_selected_reconciliation(
+                prepared,
+                components=components,
+                mongo_uri=mongo_uri,
+                mongo_database=mongo_database,
+                collection_name=collection_name,
+            )
+            if args.only
+            else apply_reconciliation(
+                prepared,
+                components=components,
+                mongo_uri=mongo_uri,
+                mongo_database=mongo_database,
+                collection_name=collection_name,
+            )
         )
         status = "applied" if apply_result.get("success") else "apply_error"
 

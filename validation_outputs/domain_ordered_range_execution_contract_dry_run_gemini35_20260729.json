@@ -1,0 +1,54 @@
+{
+  "status": "dry_run_ok",
+  "generated_at": "2026-07-29T13:56:54.434711+00:00",
+  "mode": "dry_run",
+  "database": "datagov",
+  "collection_name": "agent_v4_domain_items",
+  "llm": {
+    "provider": "Google Generative AI",
+    "model": "gemini-3.5-flash-lite",
+    "temperature": 0.1,
+    "max_output_tokens": 8192
+  },
+  "request_count": 1,
+  "prepared_count": 1,
+  "dry_run_results": [
+    {
+      "name": "ordered_process_range",
+      "expected_keys": [
+        "pandas_function_cases:ordered_process_range"
+      ],
+      "generated_keys": [
+        "pandas_function_cases:ordered_process_range"
+      ],
+      "key_match": true,
+      "semantic_errors": [],
+      "success": true,
+      "response_source": "google_api",
+      "dry_run_result": {
+        "success": true,
+        "ready_to_save": true,
+        "dry_run": true,
+        "saved_count": 0,
+        "would_save_count": 1,
+        "skipped_count": 0,
+        "operation_by_key": [
+          {
+            "key": "pandas_function_cases:ordered_process_range",
+            "operation": "replaced",
+            "target_key": "pandas_function_cases:ordered_process_range",
+            "target_id": "domain:pandas_function_cases:ordered_process_range"
+          }
+        ],
+        "message": "드라이런입니다. MongoDB에는 저장하지 않았습니다.",
+        "keys": [
+          "pandas_function_cases:ordered_process_range"
+        ],
+        "errors": []
+      },
+      "normalization_errors": [],
+      "llm_response": "{\n  \"items\": [\n    {\n      \"section\": \"pandas_function_cases\",\n      \"key\": \"ordered_process_range\",\n      \"status\": \"active\",\n      \"payload\": {\n        \"display_name\": \"OPER_SEQ 공정 구간 필터\",\n        \"function_name\": \"filter_ordered_range\",\n        \"aliases\": [\n          \"공정 구간\",\n          \"공정 범위\",\n          \"OPER_SEQ 범위\",\n          \"ordered range\"\n        ],\n        \"required_columns\": [\n          \"OPER_NAME\",\n          \"OPER_SEQ\"\n        ],\n        \"selection_criteria\": [\n          \"사용자가 D/A1~W/B6, D/A1-W/B6, D/A1W/B6처럼 시작 공정과 끝 공정을 이어서 그 사이 전체 구간을 요청하고, 대상 source에 OPER_NAME과 OPER_SEQ가 모두 있을 때만 이 case를 선택해.\",\n          \"이 표현은 공정 그룹을 펼치는 의미가 아니며 양 끝 공정만 조회하는 의미도 아니야.\",\n          \"양 끝 OPER_NAME만 in 조건으로 거는 계획을 만들면 안 되고, 단일 공정 질문에는 이 case를 선택하지 마.\",\n          \"L-218처럼 제품 MCP_NO 내부에 포함된 하이픈은 공정 범위 구분자로 해석하지 마.\",\n          \"이 규칙은 생산량이나 재공처럼 OPER_NAME과 OPER_SEQ가 있는 데이터에서 공정 구간을 요청할 때 사용해.\"\n        ],\n        \"execution_contract\": {\n          \"source_filter_order\": \"after_helper\"\n        }\n      }\n    }\n  ],\n  \"missing_information\": [],\n  \"assumptions\": []\n}"
+    }
+  ],
+  "apply_result": {}
+}

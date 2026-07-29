@@ -44,6 +44,7 @@ STRUCTURED_SEARCH_KEYS = {
     "comparison_columns",
     "metrics",
     "metric_columns",
+    "metric_semantics",
     "quantity_columns",
     "join_keys",
     "required_params",
@@ -70,6 +71,24 @@ LEGACY_NOT_BLANK_OPERATORS = {
     "is_not_null_and_not_empty",
     "not_null_or_empty",
     "not_null_and_not_empty",
+}
+FILTER_OPERATOR_ALIASES = {
+    ">": "gt",
+    ">=": "ge",
+    "gte": "ge",
+    "greater_than": "gt",
+    "greater_than_or_equal": "ge",
+    "<": "lt",
+    "<=": "le",
+    "lte": "le",
+    "less_than": "lt",
+    "less_than_or_equal": "le",
+    "startswith": "starts_with",
+    "endswith": "ends_with",
+    "isnull": "is_null",
+    "isempty": "is_empty",
+    "is_null_or_empty": "null_or_empty",
+    "null_or_empty": "null_or_empty",
 }
 DEPRECATED_TABLE_CATALOG_KEYS = {"row_identity_columns", "context_columns"}
 KOREAN_SUFFIXES = (
@@ -265,6 +284,10 @@ def build_metadata_candidates(
         table_minimum,
         table_limit,
     )
+    selected["domain_items"] = _annotate_process_detail_matches(
+        selected["domain_items"],
+        question,
+    )
     candidates = {
         "domain_items": selected["domain_items"],
         "table_catalog_items": selected["table_catalog_items"],
@@ -425,6 +448,50 @@ def _select_candidates(
             for key, values in ranked.items()
         }
     }
+
+
+# 함수 설명: 질문의 숫자 세부 공정을 공정 그룹 payload.processes의 유일한 canonical 값과 연결해 후보에 표시합니다.
+def _annotate_process_detail_matches(
+    items: list[dict[str, Any]],
+    question: str,
+) -> list[dict[str, Any]]:
+    mentioned = {
+        re.sub(r"[/\\]+", "", value).lower()
+        for value in re.findall(
+            r"[A-Za-z]+(?:[/\\][A-Za-z]+)*\d+",
+            str(question or ""),
+        )
+    }
+    if not mentioned:
+        return items
+    annotated: list[dict[str, Any]] = []
+    for item in items:
+        next_item = deepcopy(item)
+        payload = _dict(next_item.get("payload"))
+        if str(next_item.get("section") or "") == "process_groups":
+            process_by_compact: dict[str, list[str]] = {}
+            for process in _list(payload.get("processes")):
+                process_text = str(process or "").strip()
+                if not process_text:
+                    continue
+                compact = re.sub(r"[/\\]+", "", process_text).lower()
+                process_by_compact.setdefault(compact, []).append(process_text)
+            matches = [
+                values[0]
+                for compact, values in process_by_compact.items()
+                if compact in mentioned and len(values) == 1
+            ]
+            if matches:
+                next_payload = deepcopy(payload)
+                next_payload["processes"] = matches
+                next_item["payload"] = next_payload
+                next_item["question_match"] = {
+                    "processes": matches,
+                    "match_type": "numeric_detail_canonical",
+                    "original_process_count": len(_list(payload.get("processes"))),
+                }
+        annotated.append(next_item)
+    return annotated
 
 
 # 함수 설명: `_rank()`는 RANK의 일치도나 건수를 계산해 후보 비교와 요약에 사용합니다.
@@ -693,9 +760,9 @@ def _normalize_domain_filter_contracts(item: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-# 함수 설명: 조건 컨테이너 안의 legacy null/empty 제외 표현만 의미가 같은 not_blank로 변환합니다.
+# 함수 설명: 조건 컨테이너 안의 legacy operator를 공통 canonical 이름으로 변환합니다.
 def _normalize_domain_filter_value(value: Any) -> Any:
-    """조건 컨테이너 안의 legacy null/empty 제외 표현만 의미가 같은 not_blank로 변환합니다."""
+    """조건 컨테이너 안의 legacy operator를 공통 canonical 이름으로 변환합니다."""
     if isinstance(value, list):
         return [_normalize_domain_filter_value(item) for item in value]
     if not isinstance(value, dict):
@@ -709,12 +776,48 @@ def _normalize_domain_filter_value(value: Any) -> Any:
             normalized.pop("op", None)
             normalized.pop("value", None)
             normalized.pop("values", None)
+        elif operator in FILTER_OPERATOR_ALIASES:
+            normalized["operator"] = FILTER_OPERATOR_ALIASES[operator]
+            normalized.pop("op", None)
     for key, item in list(normalized.items()):
         if key in {"operator", "op", "value", "values"}:
             continue
         if isinstance(item, (dict, list)):
             normalized[key] = _normalize_domain_filter_value(item)
-    return normalized
+    return _collapse_same_field_null_or_empty(normalized)
+
+
+# 함수 설명: 같은 field의 is_null OR is_empty 조건을 실행 가능한 단일 canonical 연산자로 축약합니다.
+def _collapse_same_field_null_or_empty(value: dict[str, Any]) -> dict[str, Any]:
+    if str(value.get("operator") or "").strip().lower() != "or":
+        return value
+    operands = value.get("operands")
+    if not isinstance(operands, list) or len(operands) != 2:
+        return value
+    normalized_operands = [item for item in operands if isinstance(item, dict)]
+    if len(normalized_operands) != 2:
+        return value
+    field_values = [
+        str(item.get("field") or item.get("column") or "").strip()
+        for item in normalized_operands
+    ]
+    operators = {
+        str(item.get("operator") or "").strip().lower()
+        for item in normalized_operands
+    }
+    if not field_values[0] or len(set(field_values)) != 1:
+        return value
+    if operators != {"is_null", "is_empty"}:
+        return value
+    field_key = (
+        "field"
+        if all("field" in item for item in normalized_operands)
+        else "column"
+    )
+    return {
+        field_key: field_values[0],
+        "operator": "null_or_empty",
+    }
 
 
 # 함수 설명: 선택 가능한 Function Case의 runtime 사용 가능 여부와 선택 근거를 명시합니다.
@@ -788,6 +891,13 @@ def _tokens(value: str) -> list[str]:
     if _looks_like_ordered_range(value):
         # 구간 표현은 원문 끝점이 metadata에 직접 없더라도 runtime helper/OPER_SEQ recipe가 후보가 되게 한다.
         result.extend(("filter_ordered_range", "ordered_range", "oper_seq", "공정구간", "범위"))
+    if _looks_like_product_token_expression(value):
+        # 구조화 제품 token은 실제 값 자체가 metadata alias에 없으므로 helper의 기술 식별자를
+        # 검색 token으로 보강해 등록된 product_token_match case가 후보 제한에서 밀리지 않게 한다.
+        result.extend(("match_product_tokens", "product_token_match", "제품token"))
+    for token in _process_detail_group_tokens(value):
+        if token not in result:
+            result.append(token)
     for token in _separator_normalized_tokens(value):
         if len(token) >= 2 and token not in result:
             result.append(token)
@@ -797,6 +907,20 @@ def _tokens(value: str) -> list[str]:
                 continue
             result.append(token)
     return result[:60]
+
+
+# 함수 설명: 숫자 세부 공정 뒤에 공정 접미사가 붙은 표현에서 metadata 공정 그룹을 찾을 stem을 추출합니다.
+def _process_detail_group_tokens(value: str) -> list[str]:
+    result: list[str] = []
+    for match in re.finditer(
+        r"([A-Za-z]+(?:[/\\][A-Za-z]+)*)\d+\s*(?:차)?\s*공정",
+        str(value or ""),
+        flags=re.IGNORECASE,
+    ):
+        normalized = re.sub(r"[/\\]+", "", match.group(1)).lower()
+        if len(normalized) >= 2 and normalized not in result:
+            result.append(normalized)
+    return result
 
 
 # 함수 설명: `_separator_normalized_tokens()`는 slash 등 label 내부 구분자를 제거한 값과 한국어 조사·공정 표현을 제거한 stem을 후보 token으로 만듭니다.
@@ -876,6 +1000,22 @@ def _looks_like_ordered_endpoint(value: str) -> bool:
 # 함수 설명: `_looks_like_mcp_token()`는 label 범위 구분자와 혼동하기 쉬운 영문 1자리-숫자 3자리 제품 token을 판정합니다.
 def _looks_like_mcp_token(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z]-\d{3}[A-Za-z0-9]*", str(value or "").strip()))
+
+
+# 함수 설명: `_looks_like_product_token_expression()`은 metadata 값 자체가 아닌 구조화 제품 식별 표현이 질문에 있는지 판정합니다.
+def _looks_like_product_token_expression(value: str) -> bool:
+    text = str(value or "")
+    if re.search(r"(?<![0-9A-Za-z])[A-Za-z]-\d{3}[A-Za-z0-9]*(?![0-9A-Za-z])", text):
+        return True
+    if re.search(r"(?<![0-9A-Za-z])(?:FC|F|X)\d+(?![0-9A-Za-z])", text, flags=re.IGNORECASE):
+        return True
+    return bool(
+        re.search(
+            r"(?<![0-9A-Za-z])\d+\s*(?:lead|ball)(?![0-9A-Za-z])",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 # 함수 설명: `_token_variants()`는 질문 token의 한국어 조사·접미 표현을 단계적으로 제거해 등록 alias와 비교할 변형을 만듭니다.

@@ -453,17 +453,16 @@ def representative_cases() -> list[dict[str, Any]]:
                 "inp = sources['input_data'].groupby(keys, as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'INPUT_QTY'})\n"
                 "wip = sources['wip_data'].groupby(keys, as_index=False)['WIP'].sum().rename(columns={'WIP': 'TOTAL_WIP'})\n"
                 "result = inp.merge(wip, on=keys, how='inner')\n"
-                "result['WIP_PER_INPUT'] = result['TOTAL_WIP'] / result['INPUT_QTY']\n"
-                "result = result.sort_values(['WIP_PER_INPUT', 'TOTAL_WIP'], ascending=[False, False]).head(5)"
+                "result = result.sort_values(['TOTAL_WIP', 'DEVICE'], ascending=[False, True])"
             ),
-            ["INPUT_QTY", "TOTAL_WIP", "WIP_PER_INPUT", "DEVICE"],
-            expected_row_count=5,
-            expected_first_row={"DEVICE": "DEV-RANK-1", "INPUT_QTY": 100, "TOTAL_WIP": 1200, "WIP_PER_INPUT": 12.0},
-            forbidden_values={"DEVICE": ["DEV-RANK-6"]},
+            ["INPUT_QTY", "TOTAL_WIP", "DEVICE"],
+            min_rows=6,
+            expected_first_row={"DEVICE": "DEV-RANK-1", "INPUT_QTY": 100, "TOTAL_WIP": 1200},
+            expected_rows=[{"DEVICE": "DEV-RANK-6", "INPUT_QTY": 100, "TOTAL_WIP": 200}],
         ),
         case(
             11,
-            "7/1 현시간 기준 Input 실적은 있으나 D/A 공정 WIP 없는 제품 확인해줘",
+            "오늘 현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘",
             "input_exists_no_da_wip",
             [
                 job("production_today", "input_data", "20260701", {"OPER_NAME": eq("INPUT")}),
@@ -476,194 +475,177 @@ def representative_cases() -> list[dict[str, Any]]:
                 "inp = inp[inp['INPUT_QTY'] > 0]\n"
                 "da = da[da['DA_WIP'] > 0]\n"
                 "merged = inp.merge(da[keys], on=keys, how='left', indicator=True)\n"
-                "result = merged[merged['_merge'].eq('left_only')].drop(columns=['_merge']).sort_values('INPUT_QTY', ascending=False)"
+                "result = merged[merged['_merge'].eq('left_only')].drop(columns=['_merge']).sort_values('INPUT_QTY', ascending=False)\n"
+                "result['DA_WIP'] = 0"
             ),
-            ["INPUT_QTY", "DEVICE"],
+            ["INPUT_QTY", "DA_WIP", "DEVICE"],
             expected_row_count=6,
-            expected_first_row={"DEVICE": "DEV-L218K8H", "INPUT_QTY": 440},
-            expected_rows=[{"DEVICE": "DEV-ZERO-DA-WIP", "INPUT_QTY": 50}],
+            expected_first_row={"DEVICE": "DEV-L218K8H", "INPUT_QTY": 440, "DA_WIP": 0},
+            expected_rows=[{"DEVICE": "DEV-ZERO-DA-WIP", "INPUT_QTY": 50, "DA_WIP": 0}],
             forbidden_values={"DEVICE": ["DEV-ZERO-INPUT"]},
         ),
         case(
             12,
-            "전일 L-218K8H 제품의 SBM공정에서 생산 실적 알려줘",
-            "l218k8h_sbm_previous_day_production",
-            [job("production", "production_data", "20260630", {"OPER_NAME": eq("SBM"), "MCP_NO": eq("L-218K8H")})],
-            code_group_sum("production_data", PRODUCT_KEYS, "PRODUCTION", "TOTAL_PRODUCTION"),
-            ["TOTAL_PRODUCTION", "MCP_NO", "DEVICE"],
-            expected_row_count=1,
-            expected_first_row={"DEVICE": "DEV-L218K8H", "MCP_NO": "L-218K8H", "TOTAL_PRODUCTION": 678},
-            forbidden_values={"DEVICE": ["DEV-L218-PREFIX-DECOY"]},
-        ),
-        product_case(
-            13,
-            "오늘 아침 07시 기준 DA 16G GDDR6 180 제품 재공 수량 알려줘",
-            "da_gddr6_today_boh_wip",
-            "DA 16G GDDR6 180",
-            [job("wip", "wip_data", "20260630", {"SNAPSHOT_TIME": eq("07:00")})],
-            (
-                "df = match_product_tokens('DA 16G GDDR6 180', sources['wip_data'])\n"
-                "result = df.groupby(['TECH', 'DEN', 'MODE', 'PKG_TYPE1', 'PKG_TYPE2', 'LEAD', 'MCP_NO', 'DEVICE'], as_index=False)['WIP'].sum().rename(columns={'WIP': 'BOH_WIP'})"
-            ),
-            ["BOH_WIP", "DEVICE"],
-            expected_row_count=1,
-            expected_first_row={"DEVICE": "DEV-DA-GDDR6", "BOH_WIP": 224},
-        ),
-        case(
-            14,
-            "7월 1일 제품별 INPUT 계획과 OUT 계획을 OUT 계획이 큰 순서로 알려줘",
-            "target_plan_by_product",
-            [job("target", "target_data", "20260701")],
-            (
-                f"columns = {TARGET_PRODUCT_KEYS!r} + ['INPUT_PLAN', 'OUT_PLAN']\n"
-                "result = sources['target_data'].reindex(columns=columns).sort_values(['OUT_PLAN', 'TECH'], ascending=[False, True])"
-            ),
-            ["INPUT_PLAN", "OUT_PLAN", "TECH"],
-            expected_row_count=8,
-            expected_first_row={"TECH": "1Z", "INPUT_PLAN": 800, "OUT_PLAN": 1200},
-        ),
-        case(
-            15,
-            "현재 장비 모델별 보유 장비 대수를 알려줘. 장비 ID 중복은 제외해줘",
-            "distinct_equipment_count_by_model",
-            [job("equipment_assign", "equipment_data")],
-            (
-                "df = sources['equipment_data']\n"
-                "result = df.groupby('EQP_MODEL', as_index=False)['EQP_ID'].nunique().rename(columns={'EQP_ID': 'EQP_COUNT'}).sort_values(['EQP_COUNT', 'EQP_MODEL'], ascending=[False, True])"
-            ),
-            ["EQP_MODEL", "EQP_COUNT"],
-            expected_row_count=5,
-            expected_first_row={"EQP_MODEL": "EQM-A", "EQP_COUNT": 2},
-            expected_rows=[
-                {"EQP_MODEL": "EQM-HBM", "EQP_COUNT": 2},
-                {"EQP_MODEL": "EQM-BG", "EQP_COUNT": 1},
+            "FCB 공정 생산 실적과 W/B2 공정 재공수량을 제품별로 비교해줘",
+            "source_specific_fcb_production_vs_wb2_wip",
+            [
+                job("production_today", "production_data", "20260701", {"OPER_NAME": in_values(FCB_PROCESSES)}),
+                job("wip_today", "wip_data", "20260701", {"OPER_NAME": eq("W/B2")}),
             ],
+            (
+                "keys = ['TECH', 'DEN', 'MODE', 'PKG_TYPE1', 'PKG_TYPE2', 'LEAD', 'MCP_NO', 'DEVICE']\n"
+                "prod = sources['production_data'].groupby(keys, dropna=False, as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'FCB_PRODUCTION'})\n"
+                "wip = sources['wip_data'].groupby(keys, dropna=False, as_index=False)['WIP'].sum().rename(columns={'WIP': 'WB2_WIP'})\n"
+                "result = prod.merge(wip, on=keys, how='outer')\n"
+                "result['FCB_PRODUCTION'] = result['FCB_PRODUCTION'].fillna(0)\n"
+                "result['WB2_WIP'] = result['WB2_WIP'].fillna(0)\n"
+                "result = result.sort_values(['FCB_PRODUCTION', 'WB2_WIP'], ascending=[False, False])"
+            ),
+            ["FCB_PRODUCTION", "WB2_WIP", "DEVICE"],
+            expected_row_count=4,
+            expected_rows=[
+                {"DEVICE": "DEV-SP-DDR5", "WB2_WIP": 0},
+                {"DEVICE": "DEV001", "FCB_PRODUCTION": 692, "WB2_WIP": 135},
+            ],
+        ),
+        case(
+            13,
+            "W/B공정 IN TAT 10시간이상 된 LOT 알려줘",
+            "wb_lot_in_tat_ge_10",
+            [job("lot_status", "lot_data", filters={"OPER_NAME": in_values(WB_PROCESSES), "IN_TAT": {"operator": "ge", "value": 10}})],
+            (
+                "df = sources['lot_data'].copy()\n"
+                "result = df[['LOT_ID', 'OPER_NAME', 'IN_TAT', 'HOLD_STAT']].sort_values(['IN_TAT', 'LOT_ID'], ascending=[False, True])"
+            ),
+            ["LOT_ID", "OPER_NAME", "IN_TAT"],
+            expected_row_count=2,
+            expected_first_row={"LOT_ID": "T1234567GEN1", "OPER_NAME": "W/B1", "IN_TAT": 12.5},
+            expected_rows=[{"LOT_ID": "V-WB3-HIGH-TAT", "IN_TAT": 11.0}],
+            forbidden_values={"LOT_ID": ["V-WB2-LOW-TAT"]},
+        ),
+        ordered_range_case(
+            14,
+            "D/S1~D/A4 공정 Hold 된 Lot ID 알려줘",
+            "ordered_process_range_hold_lots",
+            "D/S1~D/A4",
+            "lot_data",
+            [job("lot_status", "lot_data")],
+            (
+                "df = filter_ordered_range('D/S1~D/A4', sources['lot_data'])\n"
+                "df = df[df['HOLD_STAT'].eq('OnHold')]\n"
+                "result = df[['LOT_ID', 'OPER_NAME', 'HOLD_STAT', 'HOLD_REASON']].sort_values(['OPER_NAME', 'LOT_ID'])"
+            ),
+            ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"],
+            expected_row_count=2,
+            expected_rows=[
+                {"LOT_ID": "V-RANGE-START-HOLD", "OPER_NAME": "D/S1"},
+                {"LOT_ID": "V-RANGE-MIDDLE-HOLD", "OPER_NAME": "D/A5"},
+            ],
+        ),
+        ordered_range_case(
+            15,
+            "7월 1일 D/A1~W/B6 공정 구간의 공정별 생산량을 OPER_SEQ 순서로 알려줘",
+            "ordered_process_range_production",
+            "D/A1~W/B6",
+            "production_data",
+            [job("production_today", "production_data", "20260701")],
+            (
+                "df = filter_ordered_range('D/A1~W/B6', sources['production_data'])\n"
+                "df['OPER_SEQ_NUM'] = pd.to_numeric(df['OPER_SEQ'], errors='coerce')\n"
+                "result = df.groupby(['OPER_SEQ_NUM', 'OPER_NAME'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})\n"
+                "result = result.sort_values(['OPER_SEQ_NUM', 'OPER_NAME']).rename(columns={'OPER_SEQ_NUM': 'OPER_SEQ'})"
+            ),
+            ["OPER_SEQ", "OPER_NAME", "TOTAL_PRODUCTION"],
+            expected_row_count=13,
+            expected_first_row={"OPER_SEQ": 100, "OPER_NAME": "D/A1", "TOTAL_PRODUCTION": 11212},
+            expected_rows=[{"OPER_SEQ": 250, "OPER_NAME": "W/B6"}],
+            forbidden_values={"OPER_NAME": ["W/BM", "FCB1"]},
         ),
         case(
             16,
-            "장비 모델별 평균 UPH를 낮은 순서로 보여줘",
-            "average_uph_by_equipment_model",
-            [job("eqp_uph", "uph_data")],
+            "DA, WB공정 HOLD LOT 알려줘",
+            "da_wb_group_hold_lots_comma_shared_suffix",
+            [job("lot_status", "lot_data", filters={"OPER_NAME": in_values([*DA_PROCESSES, *WB_PROCESSES]), "HOLD_STAT": eq("OnHold")})],
             (
-                "df = sources['uph_data']\n"
-                "result = df.groupby('EQP_MODEL', as_index=False)['UPH'].mean().rename(columns={'UPH': 'AVG_UPH'})\n"
-                "result['AVG_UPH'] = result['AVG_UPH'].round(2)\n"
-                "result = result.sort_values(['AVG_UPH', 'EQP_MODEL'])"
+                "df = sources['lot_data'].copy()\n"
+                "result = df[['LOT_ID', 'OPER_NAME', 'HOLD_REASON']].sort_values(['OPER_NAME', 'LOT_ID'])"
             ),
-            ["EQP_MODEL", "AVG_UPH"],
-            expected_row_count=5,
-            expected_first_row={"EQP_MODEL": "EQM-HBM", "AVG_UPH": 92.73},
+            ["LOT_ID", "OPER_NAME", "HOLD_REASON"],
+            expected_row_count=2,
+            expected_rows=[
+                {"LOT_ID": "T1234567GEN1", "OPER_NAME": "W/B1"},
+                {"LOT_ID": "V-RANGE-MIDDLE-HOLD", "OPER_NAME": "D/A5"},
+            ],
+            forbidden_values={"LOT_ID": ["V-RANGE-START-HOLD"]},
         ),
         case(
             17,
-            "현재 HOLD 중인 LOT 목록과 LOT별 UNIT 수량, Wafer 수량, 현재·누적 TAT를 보여줘",
-            "current_hold_lot_details",
-            [job("lot_status", "lot_data", filters={"HOLD_STAT": eq("OnHold")})],
+            "WB & DA 공정 Hold Lot LIST알려줘",
+            "wb_da_group_hold_lots_ampersand",
+            [job("lot_status", "lot_data", filters={"OPER_NAME": in_values([*WB_PROCESSES, *DA_PROCESSES]), "HOLD_STAT": eq("OnHold")})],
             (
                 "df = sources['lot_data'].copy()\n"
-                "result = df[['LOT_ID', 'DEVICE', 'PROD_QTY', 'WF_QTY', 'IN_TAT', 'CUM_TAT', 'HOLD_STAT', 'HOLD_REASON']].rename(columns={'PROD_QTY': 'UNIT_QTY', 'WF_QTY': 'WAFER_QTY'}).sort_values('LOT_ID')"
+                "result = df[['LOT_ID', 'OPER_NAME', 'HOLD_REASON']].sort_values(['OPER_NAME', 'LOT_ID'])"
             ),
-            ["LOT_ID", "UNIT_QTY", "WAFER_QTY", "IN_TAT", "CUM_TAT"],
-            expected_row_count=1,
-            expected_first_row={"LOT_ID": "T1234567GEN1", "UNIT_QTY": 100, "WAFER_QTY": 25, "IN_TAT": 12.5, "CUM_TAT": 40.0},
+            ["LOT_ID", "OPER_NAME", "HOLD_REASON"],
+            expected_row_count=2,
+            expected_rows=[
+                {"LOT_ID": "T1234567GEN1", "OPER_NAME": "W/B1"},
+                {"LOT_ID": "V-RANGE-MIDDLE-HOLD", "OPER_NAME": "D/A5"},
+            ],
         ),
         case(
             18,
-            "7월 1일 제품별 INPUT 계획 대비 실제 INPUT 실적과 달성률을 알려줘",
-            "input_plan_vs_actual_achievement",
-            [
-                job("target", "target_data", "20260701"),
-                job("production_today", "input_data", "20260701", {"OPER_NAME": eq("INPUT")}),
-            ],
+            "D/S1&D/A 공정 Hold Lot LIST알려줘",
+            "single_process_and_da_group_hold_lots",
+            [job("lot_status", "lot_data", filters={"OPER_NAME": in_values(["D/S1", *DA_PROCESSES]), "HOLD_STAT": eq("OnHold")})],
             (
-                f"keys = {TARGET_PRODUCT_KEYS!r}\n"
-                "target = sources['target_data'].groupby(keys, as_index=False)['INPUT_PLAN'].sum()\n"
-                "actual = sources['input_data'].groupby(keys + ['DEVICE'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'INPUT_ACTUAL'})\n"
-                "result = target.merge(actual, on=keys, how='left')\n"
-                "result['INPUT_ACTUAL'] = result['INPUT_ACTUAL'].fillna(0)\n"
-                "result['SHORTFALL'] = result['INPUT_PLAN'] - result['INPUT_ACTUAL']\n"
-                "result['ACHIEVEMENT_RATE'] = (result['INPUT_ACTUAL'] / result['INPUT_PLAN'] * 100).round(2)\n"
-                "result = result.sort_values(['ACHIEVEMENT_RATE', 'TECH'])"
+                "df = sources['lot_data'].copy()\n"
+                "result = df[['LOT_ID', 'OPER_NAME', 'HOLD_REASON']].sort_values(['OPER_NAME', 'LOT_ID'])"
             ),
-            ["DEVICE", "INPUT_PLAN", "INPUT_ACTUAL", "SHORTFALL", "ACHIEVEMENT_RATE"],
-            expected_row_count=8,
-            expected_first_row={"TECH": "1Z", "DEVICE": "DEV001", "INPUT_PLAN": 800, "INPUT_ACTUAL": 181},
+            ["LOT_ID", "OPER_NAME", "HOLD_REASON"],
+            expected_row_count=2,
+            expected_rows=[
+                {"LOT_ID": "V-RANGE-START-HOLD", "OPER_NAME": "D/S1"},
+                {"LOT_ID": "V-RANGE-MIDDLE-HOLD", "OPER_NAME": "D/A5"},
+            ],
+            forbidden_values={"LOT_ID": ["T1234567GEN1"]},
         ),
         case(
             19,
-            "현재 D/A1 공정에 배정된 장비와 해당 Recipe의 UPH를 함께 보여줘",
-            "da1_equipment_recipe_uph",
-            [
-                job("equipment_assign", "equipment_data", filters={"OPER_NAME": eq("D/A1")}),
-                job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("D/A1")}),
-            ],
+            "7월 5일 FCB1,FCB2,FCB/H 공정 실적 알려줘",
+            "explicit_fcb_process_list_production",
+            [job("production", "production_data", "20260705", {"OPER_NAME": in_values(FCB_PROCESSES)})],
             (
-                "assign = sources['equipment_data']\n"
-                "uph = sources['uph_data'][['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']]\n"
-                "result = assign.merge(uph, on=['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME'], how='left')\n"
-                "result = result[['EQP_ID', 'EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'PRESS_CNT', 'UPH']].sort_values('EQP_ID')"
+                "df = sources['production_data'].copy()\n"
+                "result = df.groupby('OPER_NAME', as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'}).sort_values('OPER_NAME')"
             ),
-            ["EQP_ID", "EQP_MODEL", "RECIPE_ID", "PRESS_CNT", "UPH"],
-            expected_row_count=1,
-            expected_first_row={"EQP_ID": "EQP002", "EQP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "PRESS_CNT": 4, "UPH": 88.2},
+            ["OPER_NAME", "TOTAL_PRODUCTION"],
+            expected_row_count=3,
+            expected_rows=[
+                {"OPER_NAME": "FCB1"},
+                {"OPER_NAME": "FCB2"},
+                {"OPER_NAME": "FCB/H"},
+            ],
         ),
         case(
             20,
-            "현재 HOLD 중인 LOT별 가장 최근 HOLD 코드와 상세 사유를 알려줘",
-            "current_hold_latest_history",
-            [
-                job("lot_status", "lot_data", filters={"HOLD_STAT": eq("OnHold")}),
-                job("hold_history", "hold_data"),
-            ],
+            "7/9 D/A1, D/A2공정에서 생산 실적 알려줘",
+            "explicit_da1_da2_production",
+            [job("production", "production_data", "20260709", {"OPER_NAME": in_values(["D/A1", "D/A2"])})],
             (
-                "holds = sources['lot_data'][['LOT_ID', 'DEVICE', 'HOLD_STAT']]\n"
-                "history = sources['hold_data'].sort_values(['LOT_ID', 'HOLD_TM']).drop_duplicates('LOT_ID', keep='last')\n"
-                "result = holds.merge(history[['LOT_ID', 'HOLD_TM', 'HOLD_CD', 'HOLD_DESC']], on='LOT_ID', how='left').sort_values('LOT_ID')"
+                "df = sources['production_data'].copy()\n"
+                "result = df.groupby('OPER_NAME', as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'}).sort_values('OPER_NAME')"
             ),
-            ["LOT_ID", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
-            expected_row_count=1,
-            expected_first_row={"LOT_ID": "T1234567GEN1", "HOLD_CD": "H001", "HOLD_DESC": "검증용 HOLD 이력"},
-            forbidden_values={"HOLD_CD": ["H000"]},
+            ["OPER_NAME", "TOTAL_PRODUCTION"],
+            expected_row_count=2,
+            expected_rows=[
+                {"OPER_NAME": "D/A1"},
+                {"OPER_NAME": "D/A2"},
+            ],
         ),
         case(
             21,
-            "7월 1일 DA 공정 재공이 가장 많은 제품의 현재 LOT 수, UNIT 수량, Wafer 수량을 알려줘",
-            "top_da_wip_product_lot_summary",
-            [
-                job("wip_today", "da_wip_data", "20260701", {"OPER_NAME": in_values(DA_PROCESSES)}),
-                job("lot_status", "lot_data"),
-            ],
-            (
-                "wip = sources['da_wip_data'].groupby('DEVICE', as_index=False)['WIP'].sum().rename(columns={'WIP': 'TOP_DA_WIP'}).sort_values(['TOP_DA_WIP', 'DEVICE'], ascending=[False, True]).head(1)\n"
-                "lots = sources['lot_data'].groupby('DEVICE', as_index=False).agg(LOT_COUNT=('LOT_ID', 'nunique'), UNIT_QTY=('PROD_QTY', 'sum'), WAFER_QTY=('WF_QTY', 'sum'))\n"
-                "result = wip.merge(lots, on='DEVICE', how='left')"
-            ),
-            ["DEVICE", "TOP_DA_WIP", "LOT_COUNT", "UNIT_QTY", "WAFER_QTY"],
-            expected_row_count=1,
-            expected_first_row={"DEVICE": "DEV002", "TOP_DA_WIP": 891, "LOT_COUNT": 2, "UNIT_QTY": 130, "WAFER_QTY": 34},
-        ),
-        case(
-            22,
-            "LOT T9999999GEN1의 현재 상태와 TAT를 알려줘",
-            "lot_status_not_found",
-            [job("lot_status", "lot_data", filters={"LOT_ID": eq("T9999999GEN1")})],
-            "result = sources['lot_data'].reindex(columns=['LOT_ID', 'LOT_STAT', 'HOLD_STAT', 'IN_TAT', 'CUM_TAT'])",
-            ["LOT_ID", "LOT_STAT", "HOLD_STAT", "IN_TAT", "CUM_TAT"],
-            min_rows=0,
-            expected_row_count=0,
-        ),
-        case(
-            23,
-            "7월 2일 제품별 OUT 계획을 알려줘",
-            "target_plan_not_found",
-            [job("target", "target_data", "20260702")],
-            f"result = sources['target_data'].reindex(columns={TARGET_PRODUCT_KEYS!r} + ['OUT_PLAN'])",
-            ["OUT_PLAN", "TECH"],
-            min_rows=0,
-            expected_row_count=0,
-        ),
-        case(
-            26,
             "오늘 WBM 공정의 제품별 생산량을 알려줘. 제품 정보가 비어 있는 행도 제외하지 말고, 비어 있는 제품 정보는 빈칸으로, 생산량이 비어 있으면 0으로 보여줘.",
             "wbm_product_production_with_blank_dimensions",
             [job("production_today", "production_data", "20260701", {"OPER_NAME": eq("W/BM")})],
@@ -685,118 +667,184 @@ def representative_cases() -> list[dict[str, Any]]:
             ],
         ),
         case(
-            27,
+            22,
+            "현재 제품 중 TECH, DEN, PKG_TYPE2, MCP_NO는 같지만 MODE, PKG_TYPE1 또는 LEAD가 다른 제품들을 찾아서 보여줘.",
+            "compare_product_attributes_with_same_base_keys",
+            [job("production_today", "product_data", "20260701", {"TECH": eq("CMP")})],
+            (
+                "df = sources['product_data'].copy()\n"
+                "group_cols = ['TECH', 'DEN', 'PKG_TYPE2', 'MCP_NO']\n"
+                "comp_cols = ['MODE', 'PKG_TYPE1', 'LEAD']\n"
+                "unique_rows = df[group_cols + comp_cols + ['DEVICE']].drop_duplicates()\n"
+                "counts = unique_rows.groupby(group_cols, dropna=False)[comp_cols].nunique(dropna=False)\n"
+                "valid_keys = counts[(counts > 1).any(axis=1)].reset_index()[group_cols]\n"
+                "result = unique_rows.merge(valid_keys, on=group_cols, how='inner').sort_values(['MODE', 'PKG_TYPE1', 'LEAD', 'DEVICE'])"
+            ),
+            ["TECH", "DEN", "PKG_TYPE2", "MCP_NO", "MODE", "PKG_TYPE1", "LEAD", "DEVICE"],
+            expected_row_count=4,
+            expected_rows=[
+                {"DEVICE": "DEV-COMPARE-BASE", "MCP_NO": ""},
+                {"DEVICE": "DEV-COMPARE-MODE", "MODE": "DDR5"},
+                {"DEVICE": "DEV-COMPARE-PKG1", "PKG_TYPE1": "VFBGA"},
+                {"DEVICE": "DEV-COMPARE-LEAD", "LEAD": "78"},
+            ],
+            forbidden_values={"DEVICE": ["DEV-COMPARE-MCP_DECOY"]},
+        ),
+        case(
+            23,
+            "FCB2공정 제품별 UPH 알려줘",
+            "fcb2_product_uph_detail",
+            [job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("FCB2")})],
+            (
+                "df = sources['uph_data'].copy()\n"
+                "group_cols = ['TECH', 'DEN', 'MODE', 'PKG_TYPE1', 'PKG_TYPE2', 'LEAD', 'MCP_NO', 'EQUIP_MODEL', 'RECIPE_ID', 'OPER_NAME']\n"
+                "result = df.groupby(group_cols, dropna=False, as_index=False)['UPH'].mean().sort_values(['UPH', 'RECIPE_ID'], ascending=[False, True])"
+            ),
+            ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            expected_row_count=2,
+            expected_first_row={"RECIPE_ID": "RCP-FCB2-B", "UPH": 173.4},
+            expected_rows=[{"RECIPE_ID": "RCP-FCB2-A", "UPH": 140.0}],
+        ),
+        product_case(
+            24,
+            "WB공정 L-217제품 차수별, 장비 기종별 UPH 알려줘",
+            "l217_wb_uph_by_step_and_model",
+            "L-217",
+            [job("eqp_uph", "uph_data", filters={"OPER_NAME": in_values(WB_PROCESSES)})],
+            (
+                "df = match_product_tokens('L-217', sources['uph_data'])\n"
+                "result = df.groupby(['OPER_NAME', 'EQUIP_MODEL'], dropna=False, as_index=False)['UPH'].mean().round({'UPH': 2}).sort_values(['OPER_NAME', 'EQUIP_MODEL'])"
+            ),
+            ["OPER_NAME", "EQUIP_MODEL", "UPH"],
+            expected_row_count=2,
+            expected_rows=[
+                {"OPER_NAME": "W/B1", "EQUIP_MODEL": "EQM-A", "UPH": 123.4},
+                {"OPER_NAME": "W/B2", "EQUIP_MODEL": "EQM-BG", "UPH": 97.5},
+            ],
+        ),
+        product_case(
+            25,
+            "F315 L-116로 시작하는 제품 WB 공정 차수별 UPH 알려줘",
+            "f315_l116_wb_uph_by_step",
+            "F315 L-116",
+            [job("eqp_uph", "uph_data", filters={"OPER_NAME": in_values(WB_PROCESSES)})],
+            (
+                "df = match_product_tokens('F315 L-116', sources['uph_data'])\n"
+                "result = df.groupby('OPER_NAME', dropna=False, as_index=False)['UPH'].mean().round({'UPH': 2}).sort_values('OPER_NAME')"
+            ),
+            ["OPER_NAME", "UPH"],
+            expected_row_count=1,
+            expected_first_row={"OPER_NAME": "W/B1", "UPH": 112.0},
+        ),
+        case(
+            26,
             "현재 D/A1 공정의 장비 모델, Recipe, 공정, UPH를 보여줘",
             "da1_uph_default_detail_columns",
             [job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("D/A1")})],
             (
                 "df = sources['uph_data'].copy()\n"
-                "result = df[['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']].sort_values(['EQP_MODEL', 'RECIPE_ID'])"
+                "result = df[['EQUIP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']].sort_values(['EQUIP_MODEL', 'RECIPE_ID'])"
             ),
-            ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
             expected_row_count=1,
-            expected_first_row={"EQP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1", "UPH": 88.2},
+            expected_first_row={"EQUIP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1", "UPH": 88.2},
         ),
-        ordered_range_case(
-            28,
-            "7월 1일 D/A1~W/B6 공정 구간의 공정별 생산량을 OPER_SEQ 순서로 알려줘",
-            "ordered_process_range_production",
-            "D/A1~W/B6",
-            "production_data",
-            [job("production_today", "production_data", "20260701")],
+        case(
+            27,
+            "현재 D/A1 공정에 배정된 장비를 장비 모델과 Recipe 조합별로 보여줘",
+            "da1_equipment_by_model_and_recipe",
+            [job("equipment_assign", "equipment_data", filters={"OPER_NAME": eq("D/A1")})],
             (
-                "df = filter_ordered_range('D/A1~W/B6', sources['production_data'])\n"
-                "df['OPER_SEQ_NUM'] = pd.to_numeric(df['OPER_SEQ'], errors='coerce')\n"
-                "result = df.groupby(['OPER_SEQ_NUM', 'OPER_NAME'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})\n"
-                "result = result.sort_values(['OPER_SEQ_NUM', 'OPER_NAME']).rename(columns={'OPER_SEQ_NUM': 'OPER_SEQ'})"
+                "df = sources['equipment_data'].copy()\n"
+                "result = df[['EQP_ID', 'EQUIP_MODEL', 'RECIPE_ID', 'OPER_NAME']].drop_duplicates().sort_values(['EQUIP_MODEL', 'RECIPE_ID', 'EQP_ID'])"
             ),
-            ["OPER_SEQ", "OPER_NAME", "TOTAL_PRODUCTION"],
-            expected_row_count=13,
-            expected_first_row={"OPER_SEQ": 100, "OPER_NAME": "D/A1", "TOTAL_PRODUCTION": 1212},
-            expected_rows=[{"OPER_SEQ": 250, "OPER_NAME": "W/B6"}],
-            forbidden_values={"OPER_NAME": ["W/BM", "FCB1"]},
+            ["EQP_ID", "EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            expected_row_count=1,
+            expected_first_row={"EQP_ID": "EQP002", "EQUIP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1"},
+        ),
+        case(
+            28,
+            "W/B공정 현재 HOLD LOT와 HOLD사유 알려줘",
+            "wb_current_hold_lots_with_reason",
+            [job("lot_status", "lot_data", filters={"OPER_NAME": in_values(WB_PROCESSES), "HOLD_STAT": eq("OnHold")})],
+            (
+                "df = sources['lot_data'].copy()\n"
+                "result = df[['LOT_ID', 'OPER_NAME', 'HOLD_STAT', 'HOLD_REASON', 'OPER_IN_TM']].sort_values(['OPER_IN_TM', 'LOT_ID'])"
+            ),
+            ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON", "OPER_IN_TM"],
+            expected_row_count=1,
+            expected_first_row={"LOT_ID": "T1234567GEN1", "OPER_NAME": "W/B1", "HOLD_REASON": "검증용 HOLD"},
         ),
         case(
             29,
-            "오늘 DA 공정 생산량을 세부 공정별로 알려줘",
-            "da_group_expansion_by_step",
-            [job("production_today", "production_data", "20260701", {"OPER_NAME": in_values(DA_PROCESSES)})],
+            "현재 HOLD 중인 LOT 목록과 LOT별 UNIT 수량, Wafer 수량, 현재·누적 TAT를 보여줘",
+            "current_hold_lot_details",
+            [job("lot_status", "lot_data", filters={"HOLD_STAT": eq("OnHold")})],
             (
-                "df = sources['production_data'].copy()\n"
-                "result = df.groupby(['OPER_SEQ', 'OPER_NAME'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})\n"
-                "result = result.sort_values(['OPER_SEQ', 'OPER_NAME'])"
+                "df = sources['lot_data'].copy()\n"
+                "result = df[['LOT_ID', 'DEVICE', 'PROD_QTY', 'WF_QTY', 'IN_TAT', 'CUM_TAT', 'HOLD_STAT', 'HOLD_REASON']].rename(columns={'PROD_QTY': 'UNIT_QTY', 'WF_QTY': 'WAFER_QTY'}).sort_values('LOT_ID')"
             ),
-            ["OPER_SEQ", "OPER_NAME", "TOTAL_PRODUCTION"],
-            expected_row_count=6,
-            expected_first_row={"OPER_SEQ": "100", "OPER_NAME": "D/A1", "TOTAL_PRODUCTION": 1212},
-            expected_rows=[{"OPER_NAME": "D/A6"}],
+            ["LOT_ID", "UNIT_QTY", "WAFER_QTY", "IN_TAT", "CUM_TAT"],
+            expected_row_count=3,
+            expected_rows=[
+                {"LOT_ID": "T1234567GEN1", "UNIT_QTY": 100, "WAFER_QTY": 25},
+                {"LOT_ID": "V-RANGE-MIDDLE-HOLD", "UNIT_QTY": 35, "WAFER_QTY": 9},
+                {"LOT_ID": "V-RANGE-START-HOLD", "UNIT_QTY": 38, "WAFER_QTY": 9},
+            ],
         ),
-        product_case(
+        case(
             30,
-            "6월 30일 FCB 공정에서 SP 16G DDR5 2ND X4 FC78 제품 생산량을 알려줘",
-            "sp_ddr5_fc78_shorthand_production",
-            "SP 16G DDR5 2ND X4 FC78",
-            [job("production", "production_data", "20260630", {"OPER_NAME": in_values(FCB_PROCESSES)})],
+            "현재 HOLD 중인 LOT별 가장 최근 HOLD 코드와 상세 사유를 알려줘",
+            "current_hold_latest_history",
+            [
+                job("lot_status", "lot_data", filters={"HOLD_STAT": eq("OnHold")}),
+                job("hold_history", "hold_data"),
+            ],
             (
-                "df = match_product_tokens('SP 16G DDR5 2ND X4 FC78', sources['production_data'])\n"
-                "result = df.groupby(['TECH', 'DEN', 'MODE', 'ORG', 'PKG_TYPE1', 'LEAD', 'DEVICE'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})"
+                "holds = sources['lot_data'][['LOT_ID', 'DEVICE', 'HOLD_STAT']]\n"
+                "history = sources['hold_data'].sort_values(['LOT_ID', 'HOLD_TM']).drop_duplicates('LOT_ID', keep='last')\n"
+                "result = holds.merge(history[['LOT_ID', 'HOLD_TM', 'HOLD_CD', 'HOLD_DESC']], on='LOT_ID', how='left').sort_values('LOT_ID')"
             ),
-            ["TECH", "DEN", "MODE", "ORG", "PKG_TYPE1", "LEAD", "DEVICE", "TOTAL_PRODUCTION"],
-            expected_row_count=1,
-            expected_first_row={"DEVICE": "DEV-SP-DDR5", "ORG": "4", "PKG_TYPE1": "FCBGA", "LEAD": "78", "TOTAL_PRODUCTION": 1791},
-            forbidden_values={"DEVICE": ["DEV-SP-DECOY-X8", "DEV-SP-DECOY-LEAD96", "DEV-SP-DECOY-VFBGA"]},
+            ["LOT_ID", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+            expected_row_count=3,
+            expected_rows=[
+                {"LOT_ID": "T1234567GEN1", "HOLD_CD": "H001", "HOLD_DESC": "검증용 HOLD 이력"},
+                {"LOT_ID": "V-RANGE-MIDDLE-HOLD", "HOLD_CD": "H-DA5"},
+                {"LOT_ID": "V-RANGE-START-HOLD", "HOLD_CD": "H-DS1"},
+            ],
+            forbidden_values={"HOLD_CD": ["H000"]},
         ),
         case(
             31,
-            "오늘 A조 WBM 공정의 생산량을 제품별로 알려줘",
-            "a_shift_wbm_production",
-            [job("production_today", "production_data", "20260701", {"OPER_NAME": eq("W/BM"), "SHIFT": eq("1")})],
-            (
-                "df = sources['production_data'].copy()\n"
-                "df['PRODUCTION'] = pd.to_numeric(df['PRODUCTION'], errors='coerce').fillna(0)\n"
-                "result = df.groupby('DEVICE', as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'}).sort_values(['TOTAL_PRODUCTION', 'DEVICE'], ascending=[False, True])"
-            ),
-            ["DEVICE", "TOTAL_PRODUCTION"],
-            expected_row_count=3,
-            expected_first_row={"DEVICE": "DEV-WBM-A-SHIFT", "TOTAL_PRODUCTION": 63},
-            expected_rows=[
-                {"DEVICE": "DEV-WBM-BLANK", "TOTAL_PRODUCTION": 37},
-                {"DEVICE": "DEV-WBM-NULL-QTY", "TOTAL_PRODUCTION": 0},
-            ],
-            forbidden_values={"DEVICE": ["DEV-WBM-B-SHIFT-DECOY"]},
-        ),
-        case(
-            32,
-            "오늘 WBM 공정 생산량을 알려줘",
-            "wbm_single_process_production",
-            [job("production_today", "production_data", "20260701", {"OPER_NAME": eq("W/BM")})],
-            (
-                "df = sources['production_data'].copy()\n"
-                "df['PRODUCTION'] = pd.to_numeric(df['PRODUCTION'], errors='coerce').fillna(0)\n"
-                "result = df.groupby(['OPER_SEQ', 'OPER_NAME'], as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'TOTAL_PRODUCTION'})"
-            ),
-            ["OPER_SEQ", "OPER_NAME", "TOTAL_PRODUCTION"],
-            expected_row_count=1,
-            expected_first_row={"OPER_SEQ": "260", "OPER_NAME": "W/BM", "TOTAL_PRODUCTION": 1000},
-            forbidden_values={"OPER_NAME": WB_PROCESSES},
-        ),
-        case(
-            33,
-            "현재 D/A1 공정에 배정된 장비와 장비 모델, Recipe, UPH를 보여줘",
-            "da1_equipment_default_identity_and_uph",
+            "오늘 DA공정에서 생산량 상위 3개 제품과 각 제품에 할당된 장비 대수 및 LIST를 알려줘",
+            "top3_da_products_with_equipment_count_and_list",
             [
-                job("equipment_assign", "equipment_data", filters={"OPER_NAME": eq("D/A1")}),
-                job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("D/A1")}),
+                job("production_today", "production_data", "20260701", {"OPER_NAME": in_values(DA_PROCESSES)}),
+                job("equipment_assign", "equipment_data"),
             ],
             (
-                "assign = sources['equipment_data'].copy()\n"
-                "uph = sources['uph_data'][['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']]\n"
-                "result = assign.merge(uph, on=['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME'], how='left')\n"
-                "result = result[['EQP_ID', 'EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']].sort_values('EQP_ID')"
+                "keys = ['TECH', 'DEN', 'MODE', 'PKG_TYPE1', 'PKG_TYPE2', 'LEAD', 'MCP_NO']\n"
+                "prod = sources['production_data'].copy()\n"
+                "eqp = sources['equipment_data'].copy()\n"
+                "for column in keys:\n"
+                "    prod[column] = prod[column].astype('string').fillna('').str.strip().replace({'<NA>': '', 'empty': '', 'nan': '', 'None': '', 'null': ''})\n"
+                "    eqp[column] = eqp[column].astype('string').fillna('').str.strip().replace({'<NA>': '', 'empty': '', 'nan': '', 'None': '', 'null': ''})\n"
+                "prod_agg = prod.groupby(keys, dropna=False, as_index=False)['PRODUCTION'].sum().sort_values('PRODUCTION', ascending=False).head(3)\n"
+                "eqp_agg = eqp.groupby(keys, dropna=False, as_index=False).agg(EQUIP_COUNT=('EQP_ID', 'nunique'), EQUIP_LIST=('EQP_ID', lambda values: ', '.join(sorted(values.dropna().astype(str).unique().tolist()))))\n"
+                "result = prod_agg.merge(eqp_agg, on=keys, how='left')\n"
+                "result['EQUIP_COUNT'] = result['EQUIP_COUNT'].fillna(0)\n"
+                "result['EQUIP_LIST'] = result['EQUIP_LIST'].fillna('')\n"
+                "result = result.sort_values('PRODUCTION', ascending=False)"
             ),
-            ["EQP_ID", "EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
-            expected_row_count=1,
-            expected_first_row={"EQP_ID": "EQP002", "EQP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1", "UPH": 88.2},
+            [*TARGET_PRODUCT_KEYS, "PRODUCTION", "EQUIP_COUNT", "EQUIP_LIST"],
+            expected_row_count=3,
+            expected_first_row={
+                "TECH": "VM",
+                "MCP_NO": "",
+                "PRODUCTION": 10000,
+                "EQUIP_COUNT": 2,
+                "EQUIP_LIST": "EQP-NULL-1, EQP-NULL-2",
+            },
         ),
     ]
 

@@ -21,11 +21,16 @@ from lfx.schema.data import Data
 
 ALLOWED_SECTIONS = {"process_groups", "product_terms", "quantity_terms", "metric_terms", "analysis_recipes", "status_terms", "product_key_columns", "pandas_function_cases"}
 FILTER_CONTAINER_KEYS = {"condition", "conditions", "condition_by_family", "condition_by_dataset"}
+FUNCTION_CASE_SOURCE_FILTER_ORDERS = {"before_helper", "after_helper"}
 SUPPORTED_FILTER_OPERATORS = {
     "eq",
     "in",
     "ne",
     "not_in",
+    "gt",
+    "ge",
+    "lt",
+    "le",
     "contains",
     "like",
     "starts_with",
@@ -43,6 +48,16 @@ FILTER_OPERATOR_ALIASES = {
     "=": "eq",
     "==": "eq",
     "!=": "ne",
+    ">": "gt",
+    ">=": "ge",
+    "gte": "ge",
+    "greater_than": "gt",
+    "greater_than_or_equal": "ge",
+    "<": "lt",
+    "<=": "le",
+    "lte": "le",
+    "less_than": "lt",
+    "less_than_or_equal": "le",
     "notin": "not_in",
     "not in": "not_in",
     "startswith": "starts_with",
@@ -90,6 +105,14 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
             f"items[{index}].payload",
         )
         errors.extend(operator_errors)
+        if item.get("section") == "pandas_function_cases":
+            item["payload"], execution_contract_errors = (
+                _normalize_function_case_execution_contract(
+                    item["payload"],
+                    f"items[{index}].payload.execution_contract",
+                )
+            )
+            errors.extend(execution_contract_errors)
         if item.get("section") not in ALLOWED_SECTIONS:
             errors.append({"type": "unsupported_section", "message": f"지원하지 않는 domain section입니다: {item.get('section')}", "index": index})
         items.append(item)
@@ -121,6 +144,44 @@ def _normalize_domain_filter_contracts(
             errors,
         )
     return normalized, errors
+
+
+# 함수 설명: Function Case 실행 순서 metadata를 공통 허용값으로 검증하고 표준화합니다.
+def _normalize_function_case_execution_contract(
+    payload: dict[str, Any],
+    path: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    normalized = deepcopy(payload)
+    raw_contract = normalized.get("execution_contract")
+    if raw_contract in (None, "", {}):
+        normalized.pop("execution_contract", None)
+        return normalized, []
+    if not isinstance(raw_contract, dict):
+        return normalized, [
+            {
+                "type": "invalid_function_case_execution_contract",
+                "message": "pandas function case의 execution_contract는 object여야 합니다.",
+                "path": path,
+            }
+        ]
+    source_filter_order = str(
+        raw_contract.get("source_filter_order") or ""
+    ).strip()
+    if source_filter_order not in FUNCTION_CASE_SOURCE_FILTER_ORDERS:
+        return normalized, [
+            {
+                "type": "invalid_function_case_source_filter_order",
+                "message": (
+                    "source_filter_order는 before_helper 또는 "
+                    "after_helper만 사용할 수 있습니다."
+                ),
+                "path": f"{path}.source_filter_order",
+            }
+        ]
+    normalized["execution_contract"] = {
+        "source_filter_order": source_filter_order,
+    }
+    return normalized, []
 
 
 # 함수 설명: condition 내부 operator만 정규화하고 field/value 업무 조건은 보존합니다.

@@ -90,6 +90,16 @@ FILTER_OPERATOR_ALIASES = {
     "=": "eq",
     "==": "eq",
     "!=": "ne",
+    ">": "gt",
+    ">=": "ge",
+    "gte": "ge",
+    "greater_than": "gt",
+    "greater_than_or_equal": "ge",
+    "<": "lt",
+    "<=": "le",
+    "lte": "le",
+    "less_than": "lt",
+    "less_than_or_equal": "le",
     "notin": "not_in",
     "not in": "not_in",
     "startswith": "starts_with",
@@ -145,7 +155,17 @@ def normalize_intent_plan(
         pandas_plan,
         process_group_field_guard,
     )
-    function_cases = _function_case_items(plan, retrieval_jobs)
+    function_cases = _function_case_items(
+        plan,
+        retrieval_jobs,
+        metadata_candidates,
+    )
+    retrieval_jobs, function_owned_filter_normalization = (
+        _remove_function_owned_retrieval_filters(
+            retrieval_jobs,
+            function_cases,
+        )
+    )
     pandas_plan = _ensure_function_case_steps(function_cases, pandas_plan, retrieval_jobs)
     request_scope = _request_scope(plan, payload)
     reference_mode_resolution = _reference_mode_resolution(plan, payload, request_scope)
@@ -194,6 +214,23 @@ def normalize_intent_plan(
         retrieval_jobs,
         pandas_plan,
     )
+    condition_resolution = _condition_resolution(
+        plan,
+        payload,
+        metadata_candidates,
+        retrieval_jobs,
+    )
+    (
+        retrieval_jobs,
+        pandas_plan,
+        condition_resolution,
+        function_case_execution_contracts,
+    ) = _apply_function_case_execution_contracts(
+        retrieval_jobs,
+        pandas_plan,
+        function_cases,
+        condition_resolution,
+    )
     pandas_plan, pandas_column_normalization = _normalize_pandas_plan_columns(
         pandas_plan,
         metadata_candidates,
@@ -212,7 +249,6 @@ def normalize_intent_plan(
         normalized_plan["validation_errors"] = validation_errors
     else:
         normalized_plan.pop("validation_errors", None)
-    condition_resolution = _condition_resolution(plan)
     if reference_scope_normalization.get("reason") == "complete_independent_question":
         condition_resolution.pop("inherited", None)
         condition_resolution.pop("dropped", None)
@@ -266,6 +302,8 @@ def normalize_intent_plan(
         "context_date_guard": context_date_guard,
         "process_group_field_guard": process_group_field_guard,
         "filter_operator_normalization": filter_operator_normalization,
+        "function_owned_filter_normalization": function_owned_filter_normalization,
+        "function_case_execution_contracts": function_case_execution_contracts,
         "reference_scope_normalization": reference_scope_normalization,
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
@@ -359,6 +397,51 @@ def _reference_mode_resolution(
     request_scope: str = "",
 ) -> dict[str, Any]:
     raw_mode = str(plan.get("reference_mode") or "").strip()
+    payload = payload if isinstance(payload, dict) else {}
+    followup_hint = (
+        payload.get("followup_hint")
+        if isinstance(payload.get("followup_hint"), dict)
+        else {}
+    )
+    if (
+        raw_mode == "none"
+        and request_scope
+        in {
+            "followup_requery",
+            "followup_transform",
+            "followup_expand_source",
+        }
+        and followup_hint.get("followup_candidate") is True
+        and str(followup_hint.get("reuse_strategy_hint") or "").strip()
+        == "previous_source"
+        and not _retrieval_jobs(plan)
+    ):
+        reusable_aliases = {
+            str(alias).strip()
+            for alias in _string_list(
+                followup_hint.get("reusable_previous_source_aliases")
+            )
+            if str(alias).strip()
+        }
+        planned_aliases: set[str] = set()
+        for step in (
+            plan.get("pandas_execution_plan")
+            if isinstance(plan.get("pandas_execution_plan"), list)
+            else []
+        ):
+            if not isinstance(step, dict):
+                continue
+            for key in ("source_alias", "left_source_alias", "right_source_alias"):
+                alias = str(step.get(key) or "").strip()
+                if alias:
+                    planned_aliases.add(alias)
+        if reusable_aliases.intersection(planned_aliases):
+            return {
+                "mode": "previous_source",
+                "source": "followup_contract_completion",
+                "input": raw_mode,
+                "issues": [],
+            }
     if raw_mode in REFERENCE_MODE_TO_REUSE_STRATEGY:
         return {
             "mode": raw_mode,
@@ -451,7 +534,7 @@ def _validate_reference_mode(
         if not retrieval_jobs:
             issues.append("missing_new_retrieval_for_previous_result_rows")
         previous_contract = _previous_result_match_contract(payload)
-        if len(_string_list(previous_contract.get("match_columns"))) < 2:
+        if not _string_list(previous_contract.get("match_columns")):
             issues.append("missing_previous_result_grain")
         row_status = str(row_match_guard.get("status") or "").strip()
         if row_status != "applied":
@@ -625,7 +708,7 @@ def _ensure_previous_result_row_match_step(
     if len(aliases) != 1:
         return items
     contract = _previous_result_match_contract(payload or {})
-    if len(_string_list(contract.get("match_columns"))) < 2:
+    if not _string_list(contract.get("match_columns")):
         return items
     return [
         {
@@ -713,7 +796,8 @@ def _normalize_row_match_steps(
             issue_types.append("same_source_and_reference_alias")
         if reference_alias == PREVIOUS_RESULT_ALIAS and reference_mode != "previous_result_rows":
             issue_types.append("previous_result_rows_mode_required")
-        if len(match_columns) < 2:
+        minimum_columns = 1 if reference_alias == PREVIOUS_RESULT_ALIAS else 2
+        if len(match_columns) < minimum_columns:
             issue_types.append(
                 "missing_previous_result_grain"
                 if reference_alias == PREVIOUS_RESULT_ALIAS
@@ -781,11 +865,47 @@ def _previous_result_match_contract(payload: dict[str, Any]) -> dict[str, Any]:
     )
     for source, raw_columns in candidates:
         columns = _string_list(raw_columns)
-        if len(columns) >= 2:
+        if columns:
             return {
                 "source": source,
                 "match_columns": columns,
             }
+    followup_hint = (
+        payload.get("followup_hint")
+        if isinstance(payload.get("followup_hint"), dict)
+        else {}
+    )
+    matched_cues = (
+        followup_hint.get("matched_cues")
+        if isinstance(followup_hint.get("matched_cues"), dict)
+        else {}
+    )
+    hinted_identifiers = _string_list(
+        matched_cues.get("previous_entity_identifiers")
+    )
+    state_current_data = (
+        state.get("current_data")
+        if isinstance(state.get("current_data"), dict)
+        else {}
+    )
+    previous_columns = {
+        str(column).strip().casefold()
+        for column in (
+            _string_list(state_current_data.get("columns"))
+            or _string_list(state_current_data.get("result_columns"))
+        )
+        if str(column).strip()
+    }
+    verified_identifiers = [
+        column
+        for column in hinted_identifiers
+        if not previous_columns or column.casefold() in previous_columns
+    ]
+    if verified_identifiers:
+        return {
+            "source": "followup_hint_previous_entity_identifiers",
+            "match_columns": verified_identifiers,
+        }
     return {
         "source": "previous_result_grain_missing",
         "match_columns": [],
@@ -793,15 +913,185 @@ def _previous_result_match_contract(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # 함수 설명: `_condition_resolution()`는 이전 조건의 inherited·changed·dropped·new 내역을 표준 구조로 정리합니다.
-def _condition_resolution(plan: dict[str, Any]) -> dict[str, Any]:
+def _condition_resolution(
+    plan: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+    metadata_candidates: dict[str, Any] | None = None,
+    retrieval_jobs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     value = plan.get("condition_resolution")
     if not isinstance(value, dict):
         return {}
-    return {
+    result = {
         key: deepcopy(value.get(key))
         for key in ("inherited", "changed", "dropped", "new")
         if value.get(key) not in (None, "", [], {})
     }
+    raw_effective_filters = value.get("effective_filters")
+    if str(plan.get("reference_mode") or "").strip() == "previous_source":
+        raw_effective_filters = _compile_previous_source_effective_filters(value)
+    effective_filters = _effective_filter_contract(
+        raw_effective_filters,
+        payload or {},
+        metadata_candidates or {},
+        retrieval_jobs or [],
+    )
+    if effective_filters:
+        result["effective_filters"] = effective_filters
+    return result
+
+
+# 함수 설명: LLM이 inherited/changed/new/dropped에 나눠 둔 previous_source 조건을 최종 실행 filter로 합칩니다.
+def _compile_previous_source_effective_filters(
+    condition_resolution: dict[str, Any],
+) -> dict[str, Any]:
+    compiled = deepcopy(
+        condition_resolution.get("effective_filters")
+        if isinstance(condition_resolution.get("effective_filters"), dict)
+        else {}
+    )
+    inherited = (
+        condition_resolution.get("inherited")
+        if isinstance(condition_resolution.get("inherited"), dict)
+        else {}
+    )
+    inherited_effective = inherited.get("effective_filters")
+    if isinstance(inherited_effective, dict):
+        for alias, raw_item in inherited_effective.items():
+            if not isinstance(raw_item, dict):
+                continue
+            existing = compiled.get(alias)
+            if not isinstance(existing, dict):
+                compiled[alias] = deepcopy(raw_item)
+                continue
+            merged = deepcopy(raw_item)
+            merged.update(existing)
+            inherited_filters = (
+                raw_item.get("filters")
+                if isinstance(raw_item.get("filters"), dict)
+                else {}
+            )
+            existing_filters = (
+                existing.get("filters")
+                if isinstance(existing.get("filters"), dict)
+                else {}
+            )
+            if inherited_filters or existing_filters:
+                merged["filters"] = {
+                    **deepcopy(inherited_filters),
+                    **deepcopy(existing_filters),
+                }
+            compiled[alias] = merged
+
+    dropped = (
+        condition_resolution.get("dropped")
+        if isinstance(condition_resolution.get("dropped"), dict)
+        else {}
+    )
+    dropped_by_alias = dropped.get("filters")
+    if isinstance(dropped_by_alias, dict):
+        for alias, raw_fields in dropped_by_alias.items():
+            current = compiled.get(alias)
+            if not isinstance(current, dict):
+                continue
+            current_filters = (
+                current.get("filters")
+                if isinstance(current.get("filters"), dict)
+                else {}
+            )
+            if isinstance(raw_fields, dict):
+                fields = [str(field) for field in raw_fields]
+            elif isinstance(raw_fields, (list, tuple, set)):
+                fields = [str(field) for field in raw_fields]
+            else:
+                fields = [str(raw_fields or "")]
+            dropped_markers = {field.casefold() for field in fields if field}
+            current["filters"] = {
+                key: item
+                for key, item in current_filters.items()
+                if str(key).casefold() not in dropped_markers
+            }
+            compiled[alias] = current
+
+    for section_name in ("changed", "new"):
+        section = (
+            condition_resolution.get(section_name)
+            if isinstance(condition_resolution.get(section_name), dict)
+            else {}
+        )
+        filters_by_alias = section.get("filters")
+        if not isinstance(filters_by_alias, dict):
+            continue
+        for alias, raw_filters in filters_by_alias.items():
+            if not isinstance(raw_filters, dict):
+                continue
+            current = compiled.get(alias)
+            current = deepcopy(current) if isinstance(current, dict) else {}
+            current_filters = (
+                current.get("filters")
+                if isinstance(current.get("filters"), dict)
+                else {}
+            )
+            current["filters"] = {
+                **deepcopy(current_filters),
+                **deepcopy(raw_filters),
+            }
+            compiled[alias] = current
+    return compiled
+
+
+# 함수 설명: LLM이 선택한 previous_source 조건을 alias별 실행 filter와 trusted catalog mapping으로 정규화합니다.
+def _effective_filter_contract(
+    value: Any,
+    payload: dict[str, Any],
+    metadata_candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    previous_plan = state.get("last_intent_plan") if isinstance(state.get("last_intent_plan"), dict) else {}
+    previous_jobs = previous_plan.get("retrieval_jobs") if isinstance(previous_plan.get("retrieval_jobs"), list) else []
+    all_jobs = [*retrieval_jobs, *[item for item in previous_jobs if isinstance(item, dict)]]
+    result: dict[str, dict[str, Any]] = {}
+    for raw_alias, raw_item in value.items():
+        alias = str(raw_alias or "").strip()
+        if not alias or not isinstance(raw_item, dict):
+            continue
+        filters = (
+            raw_item.get("filters")
+            if isinstance(raw_item.get("filters"), (dict, list))
+            else {
+                key: item
+                for key, item in raw_item.items()
+                if str(key) not in {"dataset_key", "filter_mappings", "standard_column_aliases"}
+            }
+        )
+        changes: list[dict[str, Any]] = []
+        normalized_filters = _normalize_filter_operator_value(
+            filters,
+            f"condition_resolution.effective_filters.{alias}",
+            changes,
+        )
+        if normalized_filters in (None, "", [], {}):
+            continue
+        dataset_key = str(raw_item.get("dataset_key") or "").strip()
+        if not dataset_key:
+            dataset_key = _dataset_key_for_alias(alias, all_jobs)
+        catalog_payload = _metadata_payload(
+            _table_catalog_item(metadata_candidates, dataset_key)
+        )
+        item: dict[str, Any] = {
+            "filters": normalized_filters,
+        }
+        if dataset_key:
+            item["dataset_key"] = dataset_key
+        for mapping_key in ("filter_mappings", "standard_column_aliases"):
+            mapping = catalog_payload.get(mapping_key)
+            if isinstance(mapping, dict) and mapping:
+                item[mapping_key] = deepcopy(mapping)
+        result[alias] = item
+    return result
 
 
 # 함수 설명: `_retrieval_jobs()`는 조회 job을 복사하면서 폐기된 상세 컬럼 계약을 runtime payload에서 제거합니다.
@@ -1265,7 +1555,16 @@ def _align_requested_process_condition(
         return deepcopy(condition)
     normalized_values = {value.casefold() for value in values}
     known_processes = set().union(*(contract.get("processes", set()) for contract in contracts))
-    if not normalized_values.issubset(known_processes):
+    known_aliases = {
+        str(alias).strip().casefold()
+        for contract in contracts
+        for alias in contract.get("aliases", [])
+        if str(alias or "").strip()
+    }
+    # 질문에서 실제로 언급된 공정 그룹 범위가 requested_processes로 해석된 경우,
+    # LLM이 canonical 세부 공정 대신 등록 alias 자체를 filter 값으로 써도 같은 metadata
+    # processes 계약으로 정규화한다. 등록되지 않은 일반 값은 그대로 유지한다.
+    if not normalized_values.issubset(known_processes | known_aliases):
         return deepcopy(condition)
     narrowed = deepcopy(condition)
     narrowed["operator"] = "eq" if len(requested_processes) == 1 else "in"
@@ -1340,6 +1639,7 @@ def _expand_requested_process_groups_within_condition(
     return expanded
 
 
+# 함수 설명: 단일 filter 조건의 value/values를 중복 없는 문자열 목록으로 정규화합니다.
 def _condition_scalar_values(condition: Any) -> list[str]:
     raw_values = (
         condition.get("values", condition.get("value", []))
@@ -1458,12 +1758,34 @@ def _output_contract(
         "null_group_policy": str(raw.get("null_group_policy") or "preserve_as_blank").strip(),
         "metric_null_policy": str(raw.get("metric_null_policy") or "display_zero").strip(),
     }
+    aggregation_outputs = _aggregation_output_contract(plan)
+    contract["required_columns"] = _merge_strings(
+        contract["required_columns"],
+        aggregation_outputs["all"],
+    )
+    contract["metric_columns"] = _merge_strings(
+        contract["metric_columns"],
+        aggregation_outputs["numeric"],
+    )
+    ordering = _ordering_contract(raw, plan)
+    primary_metric = str(raw.get("primary_metric") or "").strip()
+    if not primary_metric and ordering:
+        primary_metric = str(ordering.get("sort_by") or "").strip()
+    if primary_metric:
+        contract["primary_metric"] = primary_metric
+    if ordering:
+        contract["ordering"] = ordering
+    column_labels = _column_labels(raw.get("column_labels"))
+    if column_labels:
+        contract["column_labels"] = column_labels
     result_segments = _result_segments(raw.get("result_segments"))
     if len(result_segments) >= 2:
         contract["result_segments"] = result_segments
         contract["segment_column"] = "RESULT_GROUP"
         if any(item.get("operation") in {"top_n", "bottom_n"} for item in result_segments):
             contract["rank_column"] = "RESULT_RANK"
+        # 서로 다른 방향의 구간을 합친 결과에는 표 전체 기준의 단일 ordering 계약을 적용할 수 없습니다.
+        contract.pop("ordering", None)
 
     # 상세/entity 목록에만 table catalog의 기본 상세 컬럼을 사용합니다.
     # 집계 결과에 LOT_ID 같은 row key가 강제로 추가되지 않도록 result_mode로 범위를 제한합니다.
@@ -1491,6 +1813,7 @@ def _output_contract(
             contract["grain_columns"],
             contract["metric_columns"],
             join_value_columns,
+            aggregation_outputs["all"],
         )
 
     return {
@@ -1498,6 +1821,101 @@ def _output_contract(
         for key, value in contract.items()
         if value not in (None, "", [], {})
     }
+
+
+# 함수 설명: pandas 다중 집계의 명시적 output_column을 최종 결과 계약에 보존합니다.
+def _aggregation_output_contract(plan: dict[str, Any]) -> dict[str, list[str]]:
+    all_outputs: list[str] = []
+    numeric_outputs: list[str] = []
+    numeric_methods = {
+        "sum",
+        "mean",
+        "avg",
+        "average",
+        "min",
+        "max",
+        "count",
+        "nunique",
+        "median",
+        "std",
+        "var",
+    }
+    steps = (
+        plan.get("pandas_execution_plan")
+        if isinstance(plan.get("pandas_execution_plan"), list)
+        else []
+    )
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        aggregations = (
+            step.get("aggregations")
+            if isinstance(step.get("aggregations"), list)
+            else []
+        )
+        for aggregation in aggregations:
+            if not isinstance(aggregation, dict):
+                continue
+            output_column = str(
+                aggregation.get("output_column")
+                or aggregation.get("result_column")
+                or ""
+            ).strip()
+            if not output_column:
+                continue
+            if output_column not in all_outputs:
+                all_outputs.append(output_column)
+            method = str(
+                aggregation.get("method")
+                or aggregation.get("agg_method")
+                or ""
+            ).strip().lower()
+            if method in numeric_methods and output_column not in numeric_outputs:
+                numeric_outputs.append(output_column)
+    return {
+        "all": all_outputs,
+        "numeric": numeric_outputs,
+    }
+
+
+# 함수 설명: 단일 정렬 요청을 output contract로 정규화하며, 명시 계약이 없으면 구조화 pandas 정렬 단계만 사용합니다.
+def _ordering_contract(raw: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    value = raw.get("ordering") if isinstance(raw.get("ordering"), dict) else {}
+    if not value:
+        steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+        for step in reversed(steps):
+            if not isinstance(step, dict):
+                continue
+            operation = str(step.get("operation") or "").strip().lower()
+            if operation not in {"sort", "sort_and_top_n", "top_n", "bottom_n"} and not step.get("sort_by"):
+                continue
+            value = step
+            break
+    sort_by = str(value.get("sort_by") or value.get("order_by") or value.get("rank_by") or "").strip()
+    if not sort_by:
+        return {}
+    order = str(value.get("order") or value.get("direction") or "").strip().lower()
+    if order not in {"asc", "desc"}:
+        operation = str(value.get("operation") or "").strip().lower()
+        order = "asc" if operation == "bottom_n" else "desc"
+    result: dict[str, Any] = {"sort_by": sort_by, "order": order}
+    limit = _positive_int(value.get("limit") or value.get("top_n") or value.get("bottom_n"))
+    if limit:
+        result["limit"] = limit
+    return result
+
+
+# 함수 설명: LLM이 선언한 결과 컬럼 표시명 중 유효한 문자열 매핑만 보존합니다.
+def _column_labels(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, str] = {}
+    for column, label in value.items():
+        column_text = str(column or "").strip()
+        label_text = str(label or "").strip()
+        if column_text and label_text:
+            result[column_text[:120]] = label_text[:160]
+    return result
 
 
 # 함수 설명: 서로 다른 조건 결과를 한 표에 합칠 때 사용할 구간 표시 계약을 안전한 작은 구조로 정규화합니다.
@@ -2311,8 +2729,12 @@ def _uses_previous_data_without_new_retrieval(plan: dict[str, Any]) -> bool:
     return request_scope in {"followup_transform", "followup_expand_source"} and reuse_strategy in {"previous_result", "previous_source", "trace_only"}
 
 
-# 함수 설명: `_function_case_items()`는 Function Case·항목 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
-def _function_case_items(plan: dict[str, Any], retrieval_jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+# 함수 설명: `_function_case_items()`는 선택된 Function Case에 신뢰 가능한 Domain 실행 계약을 결합해 전달합니다.
+def _function_case_items(
+    plan: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    metadata_candidates: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     single = plan.get("pandas_function_case")
     if isinstance(single, dict) and single:
@@ -2324,7 +2746,212 @@ def _function_case_items(plan: dict[str, Any], retrieval_jobs: list[dict[str, An
         items.append(deepcopy(multiple))
     elif isinstance(multiple, list):
         items.extend(deepcopy(item) for item in multiple if isinstance(item, dict) and item)
-    return _dedupe_cases([_normalize_case(item, retrieval_jobs) for item in items])
+    normalized = _dedupe_cases(
+        [_normalize_case(item, retrieval_jobs) for item in items]
+    )
+    return _attach_function_case_execution_contracts(
+        normalized,
+        metadata_candidates or {},
+    )
+
+
+# 함수 설명: 선택된 case의 key 또는 function_name과 일치하는 Domain metadata에서 공통 실행 계약만 복원합니다.
+def _attach_function_case_execution_contracts(
+    function_cases: list[dict[str, Any]],
+    metadata_candidates: dict[str, Any],
+) -> list[dict[str, Any]]:
+    domain_items = (
+        metadata_candidates.get("domain_items")
+        if isinstance(metadata_candidates.get("domain_items"), list)
+        else []
+    )
+    contracts: list[dict[str, Any]] = []
+    for item in domain_items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("section") or "").strip() != "pandas_function_cases":
+            continue
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        execution_contract = (
+            payload.get("execution_contract")
+            if isinstance(payload.get("execution_contract"), dict)
+            else {}
+        )
+        source_filter_order = str(
+            execution_contract.get("source_filter_order") or ""
+        ).strip()
+        if source_filter_order not in {"before_helper", "after_helper"}:
+            continue
+        contracts.append(
+            {
+                "key": str(item.get("key") or "").strip(),
+                "function_name": str(
+                    item.get("function_name")
+                    or payload.get("function_name")
+                    or ""
+                ).strip(),
+                "execution_contract": {
+                    "source_filter_order": source_filter_order,
+                },
+            }
+        )
+
+    result: list[dict[str, Any]] = []
+    for case in function_cases:
+        next_case = deepcopy(case)
+        case_key = str(next_case.get("key") or "").strip()
+        function_name = str(next_case.get("function_name") or "").strip()
+        trusted = next(
+            (
+                item
+                for item in contracts
+                if (
+                    case_key
+                    and case_key == str(item.get("key") or "").strip()
+                )
+                or (
+                    function_name
+                    and function_name
+                    == str(item.get("function_name") or "").strip()
+                )
+            ),
+            None,
+        )
+        if trusted is not None:
+            next_case["execution_contract"] = deepcopy(
+                trusted["execution_contract"]
+            )
+        else:
+            next_case.pop("execution_contract", None)
+        result.append(next_case)
+    return result
+
+
+# 함수 설명: 제품 token helper가 해석할 원문 token을 같은 source의 단순 조회 filter로 중복 적용하지 않도록 실행 책임을 한 곳으로 모읍니다.
+def _remove_function_owned_retrieval_filters(
+    retrieval_jobs: list[dict[str, Any]],
+    function_cases: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    product_filter_fields = {
+        "TECH",
+        "DEN",
+        "DENSITY",
+        "MODE",
+        "PKGTYPE1",
+        "PKG1",
+        "PKGTYP1",
+        "PKGTYPE2",
+        "PKG2",
+        "PKGTYP2",
+        "LEAD",
+        "MCPNO",
+        "MCPSALESNO",
+        "MCPSALECD",
+        "DEVICE",
+        "DEVICEDESC",
+        "ORG",
+        "ORGANIZCD",
+    }
+    owned_cases = [
+        item
+        for item in function_cases
+        if str(item.get("function_name") or "").strip() == "match_product_tokens"
+        and str(item.get("input_text") or "").strip()
+    ]
+    if not owned_cases:
+        return retrieval_jobs, {"removed": []}
+
+    normalized_jobs = deepcopy(retrieval_jobs)
+    removed: list[dict[str, Any]] = []
+    for job in normalized_jobs:
+        if not isinstance(job, dict):
+            continue
+        source_alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        matching_cases = [
+            item
+            for item in owned_cases
+            if not str(item.get("source_alias") or "").strip()
+            or str(item.get("source_alias") or "").strip() == source_alias
+        ]
+        filters = job.get("filters")
+        if not matching_cases or not isinstance(filters, dict):
+            continue
+        retained_filters: dict[str, Any] = {}
+        for field, condition in filters.items():
+            normalized_field = _normalized_column_key(field)
+            owner = next(
+                (
+                    item
+                    for item in matching_cases
+                    if normalized_field in product_filter_fields
+                    and _function_case_owns_filter_value(
+                        normalized_field,
+                        condition,
+                        str(item.get("input_text") or ""),
+                    )
+                ),
+                None,
+            )
+            if owner is None:
+                retained_filters[field] = condition
+                continue
+            removed.append(
+                {
+                    "source_alias": source_alias,
+                    "field": str(field),
+                    "function_name": "match_product_tokens",
+                    "function_case_key": str(owner.get("key") or ""),
+                }
+            )
+        job["filters"] = retained_filters
+    return normalized_jobs, {"removed": removed}
+
+
+# 함수 설명: filter 값이 helper input에 직접 포함된 제품 token인지 판정하며, domain이 소유한 별도 조건은 유지합니다.
+def _function_case_owns_filter_value(
+    normalized_field: str,
+    condition: Any,
+    input_text: str,
+) -> bool:
+    if isinstance(condition, dict):
+        operator = str(condition.get("operator") or "eq").strip().casefold()
+        raw_value = (
+            condition.get("values")
+            if condition.get("values") is not None
+            else condition.get("value")
+        )
+    else:
+        operator = "eq"
+        raw_value = condition
+    if operator not in {"eq", "in", "contains", "starts_with", "startswith"}:
+        return False
+    raw_values = raw_value if isinstance(raw_value, (list, tuple, set)) else [raw_value]
+    values = [_function_token(item) for item in raw_values]
+    values = [item for item in values if item]
+    if not values:
+        return False
+    input_tokens = {
+        _function_token(item)
+        for item in re.findall(r"[A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)*", input_text)
+    }
+    input_tokens.discard("")
+    if not input_tokens:
+        return False
+
+    for value in values:
+        candidates = {value}
+        if normalized_field == "LEAD":
+            candidates.update({f"F{value}", f"FC{value}", f"{value}LEAD", f"{value}BALL"})
+        elif normalized_field in {"ORG", "ORGANIZCD"}:
+            candidates.add(f"X{value}")
+        if not candidates.intersection(input_tokens):
+            return False
+    return True
+
+
+# 함수 설명: 제품 token과 filter 값을 공백·구분자·대소문자 차이 없이 비교할 최소 형태로 정규화합니다.
+def _function_token(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", str(value or "").strip().upper())
 
 
 # 함수 설명: `_normalize_case()`는 Function Case의 표기·자료형 차이를 비교와 저장에 사용할 표준 형태로 정규화합니다.
@@ -2393,6 +3020,247 @@ def _ensure_function_case_steps(function_cases: list[dict[str, Any]], pandas_pla
             }
         )
     return [*steps_to_add, *pandas_plan]
+
+
+# 함수 설명: Domain Function Case가 선언한 공통 실행 순서에 따라 source filter를 helper 뒤 단계로 이동합니다.
+def _apply_function_case_execution_contracts(
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+    function_cases: list[dict[str, Any]],
+    condition_resolution: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[Any], dict[str, Any], dict[str, Any]]:
+    deferred_cases = [
+        item
+        for item in function_cases
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or "").strip()
+        and isinstance(item.get("execution_contract"), dict)
+        and str(
+            item["execution_contract"].get("source_filter_order") or ""
+        ).strip()
+        == "after_helper"
+    ]
+    if not deferred_cases:
+        return (
+            retrieval_jobs,
+            pandas_plan,
+            condition_resolution,
+            {"applied": []},
+        )
+
+    aliases = {
+        str(item.get("source_alias") or "").strip()
+        for item in deferred_cases
+    }
+    normalized_jobs = deepcopy(retrieval_jobs)
+    filter_contracts: dict[str, list[Any]] = {alias: [] for alias in aliases}
+    for job in normalized_jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(
+            job.get("source_alias") or job.get("dataset_key") or ""
+        ).strip()
+        filters = job.get("filters")
+        if alias in aliases and filters not in (None, "", [], {}):
+            filter_contracts[alias].append(deepcopy(filters))
+            job["filters"] = {}
+
+    normalized_condition = deepcopy(condition_resolution)
+    effective_filters = (
+        normalized_condition.get("effective_filters")
+        if isinstance(normalized_condition.get("effective_filters"), dict)
+        else {}
+    )
+    retained_effective_filters: dict[str, Any] = {}
+    for alias, item in effective_filters.items():
+        alias_text = str(alias or "").strip()
+        filters = (
+            item.get("filters")
+            if isinstance(item, dict)
+            else None
+        )
+        if alias_text in aliases:
+            if filters not in (None, "", [], {}):
+                filter_contracts[alias_text].append(deepcopy(filters))
+            continue
+        retained_effective_filters[alias] = deepcopy(item)
+    if retained_effective_filters:
+        normalized_condition["effective_filters"] = retained_effective_filters
+    else:
+        normalized_condition.pop("effective_filters", None)
+
+    deferred_steps = {
+        alias: _function_contract_filter_steps(alias, contracts)
+        for alias, contracts in filter_contracts.items()
+    }
+    reordered_plan = _place_function_contract_filters(
+        pandas_plan,
+        deferred_cases,
+        deferred_steps,
+    )
+    applied = []
+    for case in deferred_cases:
+        alias = str(case.get("source_alias") or "").strip()
+        fields = [
+            str(step.get("field") or "").strip()
+            for step in deferred_steps.get(alias, [])
+            if isinstance(step, dict) and str(step.get("field") or "").strip()
+        ]
+        applied.append(
+            {
+                "source_alias": alias,
+                "function_case_key": str(case.get("key") or "").strip(),
+                "function_name": str(case.get("function_name") or "").strip(),
+                "source_filter_order": "after_helper",
+                "deferred_filter_fields": list(dict.fromkeys(fields)),
+            }
+        )
+    return (
+        normalized_jobs,
+        reordered_plan,
+        normalized_condition,
+        {"applied": applied},
+    )
+
+
+# 함수 설명: 조회·effective filter 구조를 helper 뒤에서 실행할 명시적 apply_filters 단계로 바꿉니다.
+def _function_contract_filter_steps(
+    source_alias: str,
+    filter_contracts: list[Any],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for filters in filter_contracts:
+        if isinstance(filters, dict):
+            raw_steps = [
+                _function_contract_filter_step(
+                    source_alias,
+                    str(field),
+                    condition,
+                )
+                for field, condition in filters.items()
+            ]
+        elif isinstance(filters, list):
+            raw_steps = [
+                {
+                    "step": "Function Case 이후 필터 적용",
+                    "operation": "apply_filters",
+                    "source_alias": source_alias,
+                    **deepcopy(item),
+                }
+                for item in filters
+                if isinstance(item, dict)
+            ]
+        else:
+            raw_steps = []
+        for step in raw_steps:
+            marker = json.dumps(
+                {
+                    key: value
+                    for key, value in step.items()
+                    if key != "step"
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(step)
+    return result
+
+
+# 함수 설명: field별 filter condition을 pandas plan의 표준 apply_filters 한 단계로 변환합니다.
+def _function_contract_filter_step(
+    source_alias: str,
+    field: str,
+    condition: Any,
+) -> dict[str, Any]:
+    step: dict[str, Any] = {
+        "step": "Function Case 이후 필터 적용",
+        "operation": "apply_filters",
+        "source_alias": source_alias,
+        "field": field,
+    }
+    if not isinstance(condition, dict):
+        step.update({"operator": "eq", "value": deepcopy(condition)})
+        return step
+    step["operator"] = str(condition.get("operator") or "eq")
+    if "values" in condition:
+        step["values"] = deepcopy(condition.get("values"))
+    elif "value" in condition:
+        step["value"] = deepcopy(condition.get("value"))
+    else:
+        step["condition"] = deepcopy(condition)
+    return step
+
+
+# 함수 설명: 계약 대상 source의 apply_filters를 모아 해당 Function Case helper 직후에 배치합니다.
+def _place_function_contract_filters(
+    pandas_plan: list[Any],
+    deferred_cases: list[dict[str, Any]],
+    deferred_steps: dict[str, list[dict[str, Any]]],
+) -> list[Any]:
+    filters_by_alias: dict[str, list[dict[str, Any]]] = {
+        alias: list(steps)
+        for alias, steps in deferred_steps.items()
+    }
+    remaining: list[Any] = []
+    for raw_step in deepcopy(pandas_plan):
+        if not isinstance(raw_step, dict):
+            remaining.append(raw_step)
+            continue
+        operation = str(raw_step.get("operation") or "").strip()
+        alias = str(raw_step.get("source_alias") or "").strip()
+        if operation == "apply_filters" and alias in filters_by_alias:
+            if any(
+                key in raw_step
+                for key in ("field", "filters", "condition")
+            ):
+                filters_by_alias[alias].append(raw_step)
+            continue
+        remaining.append(raw_step)
+
+    result: list[Any] = []
+    inserted: set[str] = set()
+    for raw_step in remaining:
+        result.append(raw_step)
+        if not isinstance(raw_step, dict):
+            continue
+        if str(raw_step.get("operation") or "").strip() != "apply_pandas_function_case":
+            continue
+        for case in deferred_cases:
+            alias = str(case.get("source_alias") or "").strip()
+            if alias in inserted or not _function_step_matches_case(raw_step, case):
+                continue
+            result.extend(filters_by_alias.get(alias, []))
+            inserted.add(alias)
+    for alias, steps in filters_by_alias.items():
+        if alias not in inserted:
+            result.extend(steps)
+    return result
+
+
+# 함수 설명: pandas helper 단계가 metadata 실행 계약을 가진 선택 case와 같은지 확인합니다.
+def _function_step_matches_case(
+    step: dict[str, Any],
+    case: dict[str, Any],
+) -> bool:
+    if str(step.get("source_alias") or "").strip() != str(
+        case.get("source_alias") or ""
+    ).strip():
+        return False
+    case_key = str(case.get("key") or "").strip()
+    function_name = str(case.get("function_name") or "").strip()
+    if case_key and str(
+        step.get("function_case_key") or step.get("key") or ""
+    ).strip() == case_key:
+        return True
+    return bool(
+        function_name
+        and str(step.get("function_name") or "").strip() == function_name
+    )
 
 
 # 함수 설명: `_has_function_case_step()`는 입력값이 함수·Function Case·STEP 조건에 해당하는지 부작용 없이 bool로 판정합니다.
