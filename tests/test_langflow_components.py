@@ -1058,6 +1058,10 @@ def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
     assert pandas_step_schema["comparison_rule"] == "any|all"
     assert "context_columns" not in schema["intent_plan"]["output_contract"]
     assert schema["intent_plan"]["output_contract"]["result_segments"][0]["operation"] == "top_n|bottom_n|filter|comparison"
+    assert state["request_context"] == {
+        "reference_date": "20260701",
+        "previous_date": "20260630",
+    }
     assert state["state"]["last_intent_plan"]["output_contract"] == {"required_columns": ["WIP"]}
     assert state["state"]["last_intent_plan"]["retrieval_jobs"] == [
         {"dataset_key": "wip_today", "join_keys": ["DEVICE"]}
@@ -1567,6 +1571,20 @@ def test_intent_prompt_requires_complete_params_per_retrieval_job_without_shared
     assert "같은 dataset, 같은 `required_params`" in prompt_text
     assert "날짜도 선택 dataset의 `required_params`에 등록되지 않았다면 비필수 filter" in prompt_text
     assert "shared_required_params" not in prompt_text
+
+
+def test_pandas_prompts_distinguish_metric_sum_from_row_count():
+    pandas_prompt = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "16_pandas_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    repair_prompt = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "17b_pandas_repair_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+
+    for prompt_text in (pandas_prompt, repair_prompt):
+        assert "실제 metric" in prompt_text
+        assert "`groupby(...).size()`" in prompt_text
+        assert "`nunique`" in prompt_text
 
 
 def test_intent_variables_builder_includes_followup_hint_and_compact_previous_context():
@@ -13613,6 +13631,83 @@ def test_v5_pandas_executor_rejects_unsupported_filter_instead_of_running_unfilt
     assert result["analysis"]["status"] == "error"
     assert result["analysis"]["error"]["type"] == "unsupported_filter_operator"
     assert "between" in result["analysis"]["error"]["message"]
+
+
+def test_v5_pandas_executor_rejects_valueless_unsupported_filter_instead_of_dropping_it():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "wip_today",
+                    "source_alias": "wip",
+                    "filters": {
+                        "TSV_DIE_TYP": {
+                            "operator": "unknown_blank_predicate",
+                            "value": "",
+                        }
+                    },
+                }
+            ]
+        },
+        "runtime_sources": {
+            "wip": [
+                {"TSV_DIE_TYP": "12Hi", "WIP": 10},
+                {"TSV_DIE_TYP": "", "WIP": 20},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = executor.execute_pandas_code(payload, {"code": "result = sources['wip']"})
+
+    assert result["analysis"]["status"] == "error"
+    assert result["analysis"]["error"]["type"] == "unsupported_filter_operator"
+    assert "unknown_blank_predicate" in result["analysis"]["error"]["message"]
+
+
+def test_v5_pandas_executor_applies_not_blank_to_all_blank_representations():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "wip_today",
+                    "source_alias": "wip",
+                    "filters": {
+                        "TSV_DIE_TYP": {
+                            "operator": "not_blank",
+                        }
+                    },
+                }
+            ]
+        },
+        "runtime_sources": {
+            "wip": [
+                {"DEVICE": "HBM-1", "TSV_DIE_TYP": "12Hi", "WIP": 10},
+                {"DEVICE": "HBM-2", "TSV_DIE_TYP": " 8Hi ", "WIP": 20},
+                {"DEVICE": "NULL", "TSV_DIE_TYP": None, "WIP": 30},
+                {"DEVICE": "EMPTY", "TSV_DIE_TYP": "", "WIP": 40},
+                {"DEVICE": "SPACE", "TSV_DIE_TYP": "   ", "WIP": 50},
+                {"DEVICE": "NAN", "TSV_DIE_TYP": "NaN", "WIP": 60},
+                {"DEVICE": "NA", "TSV_DIE_TYP": "<NA>", "WIP": 70},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = executor.execute_pandas_code(payload, {"code": "result = sources['wip']"})
+
+    assert result["analysis"]["status"] == "ok"
+    assert [row["DEVICE"] for row in result["data"]["rows"]] == ["HBM-1", "HBM-2"]
+    filter_plan = result["trace"]["inspection"]["pandas_execution"]["pandas_filter_plan"]
+    assert filter_plan[0]["conditions"] == [
+        {"field": "TSV_DIE_TYP", "operator": "not_blank", "values": []}
+    ]
 
 
 def test_v5_pandas_executor_applies_catalog_filter_mapping_to_physical_column():

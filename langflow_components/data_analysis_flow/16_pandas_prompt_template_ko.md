@@ -70,6 +70,8 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - `pandas_execution_plan.operation=find_duplicate_groups`이면 계획의 `group_by` 조합으로 `groupby(..., dropna=False).size()`를 계산하고 건수가 2 이상인 그룹의 원본 행을 반환한다. 이를 `compare_group_attributes`의 값 차이 판정과 혼동하지 않는다.
 - `df.groupby(["A", "B"])`처럼 고정 리스트를 바로 넣지 말고, `group_cols = [c for c in desired_cols if c in df.columns]`처럼 존재하는 컬럼만 사용한다.
 - dimension별 집계에서는 null, 빈 문자열, 공백만 있는 group 값의 원본 행도 제외하지 않는다. groupby에는 `dropna=False`를 명시하고, 집계 전에 group column에 `notna()`나 빈 값 제외 filter를 적용하지 않는다.
+- `pandas_execution_plan.operation=groupby_and_aggregate`이고 `output_contract.metric_columns`의 metric이 source에 실제로 있으면 그 metric 값을 집계한다. 생산량·재공·수량·계획처럼 가산 가능한 수량 요청은 `sum`을 사용하며, 실제 metric 컬럼이 있는데 `groupby(...).size()`로 행 수를 계산해 같은 metric 이름을 붙이지 않는다.
+- `groupby(...).size()` 또는 `count`는 사용자가 행 수·건수·개수를 요청했고 집계할 실제 metric 컬럼이 없는 경우에만 사용한다. 장비·LOT처럼 고유 대상 수를 요청하면 해당 ID 컬럼의 `nunique`를 사용하고 수량 합계와 구분한다.
 - 집계가 끝난 뒤 표시용 결과의 dimension column에만 `fillna("")`와 `replace(r"^\s*$", "", regex=True)`를 적용해 null/blank를 빈 문자열로 보여준다. dimension 값을 `미등록` 같은 대체 문구로 바꾸지 않는다.
 - 최종 표시용 metric column은 `intent_plan.output_contract.metric_columns`를 최우선으로 사용한다. 이 계약이 없을 때만 실제 숫자 값이 있는 컬럼 또는 생산량·재공·UPH·QTY·COUNT·RATE처럼 지표 의미가 분명한 컬럼을 보수적으로 선택하며, ID·코드·날짜·dimension 컬럼을 metric으로 추정하지 않는다.
 - 선택된 metric column의 `None`/`NaN`/빈 문자열/공백 문자열은 표시용 숫자 `0`으로 맞춘다. 이 규칙을 result 전체에 적용하지 말고, dimension null/blank는 계속 빈 문자열 `""`로 유지한다.

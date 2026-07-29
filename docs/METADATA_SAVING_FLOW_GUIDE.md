@@ -89,7 +89,7 @@ v4 writer는 사용자가 입력한 자연어를 LLM으로 정규화한 뒤, loa
 
 기존 MongoDB의 `process_groups` 문서에 `field`가 없다면 `domain_knowledge.txt`의 해당 블록을 Domain Saving Flow의 `replace` 모드로 다시 등록한다. 재등록 전 과도기에도 Data Analysis intent 정규화기는 기존 `process_groups`를 `OPER_NAME` 계약으로 호환하지만, 신규·교체 저장 후보는 `field`가 없으면 저장하지 않는다.
 
-제품/상태 용어가 dataset 계열마다 다른 물리 컬럼으로 걸려야 하면 `condition_by_family` 또는 `condition_by_dataset`에 넣는다. 예를 들어 HBM이 생산/재공에서는 `TSV_DIE_TYP not_empty`로 충분하지만 설비 데이터에서는 `PKG_TYPE1=HBM`으로 필터링해야 한다면 아래처럼 저장한다.
+제품/상태 용어가 dataset 계열마다 다른 물리 컬럼으로 걸려야 하면 `condition_by_family` 또는 `condition_by_dataset`에 넣는다. 예를 들어 HBM이 생산/재공에서는 `TSV_DIE_TYP not_blank` 조건이고 설비 데이터에서는 `PKG_TYPE1=HBM`으로 필터링해야 한다면 아래처럼 저장한다.
 
 ```json
 {
@@ -98,7 +98,7 @@ v4 writer는 사용자가 입력한 자연어를 LLM으로 정규화한 뒤, loa
   "payload": {
     "display_name": "HBM 제품",
     "aliases": ["HBM", "3DS", "TSV"],
-    "condition": {"TSV_DIE_TYP": {"exists": true, "not_in": [null, ""]}},
+    "condition": {"TSV_DIE_TYP": {"operator": "not_blank"}},
     "condition_by_family": {
       "equipment": {"PKG_TYPE1": "HBM"}
     }

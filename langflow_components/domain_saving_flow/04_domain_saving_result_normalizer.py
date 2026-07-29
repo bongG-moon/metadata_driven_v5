@@ -20,6 +20,48 @@ from lfx.io import DataInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
 ALLOWED_SECTIONS = {"process_groups", "product_terms", "quantity_terms", "metric_terms", "analysis_recipes", "status_terms", "product_key_columns", "pandas_function_cases"}
+FILTER_CONTAINER_KEYS = {"condition", "conditions", "condition_by_family", "condition_by_dataset"}
+SUPPORTED_FILTER_OPERATORS = {
+    "eq",
+    "in",
+    "ne",
+    "not_in",
+    "contains",
+    "like",
+    "starts_with",
+    "ends_with",
+    "is_null",
+    "is_empty",
+    "null_or_empty",
+    "not_null",
+    "not_empty",
+    "not_blank",
+    "or",
+    "any",
+}
+FILTER_OPERATOR_ALIASES = {
+    "=": "eq",
+    "==": "eq",
+    "!=": "ne",
+    "notin": "not_in",
+    "not in": "not_in",
+    "startswith": "starts_with",
+    "prefix": "starts_with",
+    "endswith": "ends_with",
+    "suffix": "ends_with",
+    "isnull": "is_null",
+    "isempty": "is_empty",
+    "is_null_or_empty": "null_or_empty",
+    "notnull": "not_null",
+    "notempty": "not_empty",
+    "notblank": "not_blank",
+    "is_not_blank": "not_blank",
+    # 이전 저장본과 LLM이 사용하던 두 표현은 모두 "null 또는 empty가 아님"을 뜻합니다.
+    "is_not_null_or_empty": "not_blank",
+    "is_not_null_and_not_empty": "not_blank",
+    "not_null_or_empty": "not_blank",
+    "not_null_and_not_empty": "not_blank",
+}
 
 
 # 주요 함수: LLM 등록 후보 JSON을 추출·검증해 저장 전 표준 items 배열로 정리합니다.
@@ -43,6 +85,11 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
             item["section"] = item["gbn"]
         item.setdefault("status", "active")
         item["payload"] = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        item["payload"], operator_errors = _normalize_domain_filter_contracts(
+            item["payload"],
+            f"items[{index}].payload",
+        )
+        errors.extend(operator_errors)
         if item.get("section") not in ALLOWED_SECTIONS:
             errors.append({"type": "unsupported_section", "message": f"지원하지 않는 domain section입니다: {item.get('section')}", "index": index})
         items.append(item)
@@ -57,6 +104,80 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
 
 
 # 함수 설명: `_refinement()`는 LLM이 반환한 보완 필요 정보와 가정을 저장 전 검수 단계까지 보존합니다.
+# 함수 설명: Domain payload의 조건 컨테이너만 공통 filter operator 계약으로 정규화합니다.
+def _normalize_domain_filter_contracts(
+    payload: dict[str, Any],
+    path: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Domain payload의 조건 컨테이너만 공통 filter operator 계약으로 정규화합니다."""
+    normalized = deepcopy(payload)
+    errors: list[dict[str, Any]] = []
+    for key, value in list(normalized.items()):
+        if str(key) not in FILTER_CONTAINER_KEYS:
+            continue
+        normalized[key] = _normalize_filter_contract_value(
+            value,
+            f"{path}.{key}",
+            errors,
+        )
+    return normalized, errors
+
+
+# 함수 설명: condition 내부 operator만 정규화하고 field/value 업무 조건은 보존합니다.
+def _normalize_filter_contract_value(
+    value: Any,
+    path: str,
+    errors: list[dict[str, Any]],
+) -> Any:
+    """condition 내부 operator만 정규화하고 field/value 업무 조건은 보존합니다."""
+    if isinstance(value, list):
+        return [
+            _normalize_filter_contract_value(item, f"{path}[{index}]", errors)
+            for index, item in enumerate(value)
+        ]
+    if not isinstance(value, dict):
+        return deepcopy(value)
+
+    normalized = deepcopy(value)
+    operator_key = "operator" if "operator" in normalized else ("op" if "op" in normalized else "")
+    if operator_key:
+        raw_operator = normalized.get(operator_key)
+        canonical = _canonical_filter_operator(raw_operator)
+        if canonical not in SUPPORTED_FILTER_OPERATORS:
+            errors.append(
+                {
+                    "type": "unsupported_filter_operator",
+                    "message": f"지원하지 않는 domain filter operator입니다: {raw_operator}",
+                    "path": f"{path}.{operator_key}",
+                }
+            )
+        else:
+            normalized["operator"] = canonical
+            normalized.pop("op", None)
+            if canonical == "not_blank":
+                normalized.pop("value", None)
+                normalized.pop("values", None)
+
+    for key, item in list(normalized.items()):
+        if key in {"operator", "op", "value", "values"}:
+            continue
+        if isinstance(item, (dict, list)):
+            normalized[key] = _normalize_filter_contract_value(
+                item,
+                f"{path}.{key}",
+                errors,
+            )
+    return normalized
+
+
+# 함수 설명: 여러 filter operator 표기를 Data Analysis runtime의 canonical 이름으로 바꿉니다.
+def _canonical_filter_operator(value: Any) -> str:
+    """여러 filter operator 표기를 Data Analysis runtime의 canonical 이름으로 바꿉니다."""
+    text = re.sub(r"[\s-]+", "_", str(value or "eq").strip()).lower()
+    return FILTER_OPERATOR_ALIASES.get(text, text)
+
+
+# 함수 설명: LLM이 반환한 보완 필요 정보와 가정을 저장 전 검토 단계까지 보존합니다.
 def _refinement(payload: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:
     current = deepcopy(payload.get("refinement")) if isinstance(payload.get("refinement"), dict) else {}
     parsed_refinement = parsed.get("refinement") if isinstance(parsed.get("refinement"), dict) else {}

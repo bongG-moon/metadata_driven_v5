@@ -34,6 +34,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="Validate only the first N cases.")
     parser.add_argument("--ids", default="", help="Comma-separated case ids to validate, for example: 3,8,13.")
     parser.add_argument("--reference-date", default="", help="Override request.reference_date for this validation run. Defaults to VALIDATION_REFERENCE_DATE or 20260701.")
+    parser.add_argument("--output", default="", help="Write the full UTF-8 JSON validation report to this path.")
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env")
@@ -54,8 +55,18 @@ def main() -> int:
         results = [run_case(case, modules, reference_date) for case in cases]
     failed = [item for item in results if item["status"] != "ok"]
 
+    report = {"status": "ok" if not failed else "error", "results": results}
+    if args.output:
+        output_path = Path(args.output)
+        if not output_path.is_absolute():
+            output_path = ROOT / output_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     if args.json:
-        print(json.dumps({"status": "ok" if not failed else "error", "results": results}, ensure_ascii=False, indent=2))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         for item in results:
             marker = "OK" if item["status"] == "ok" else "FAIL"

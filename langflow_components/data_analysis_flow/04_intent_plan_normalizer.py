@@ -79,6 +79,28 @@ PANDAS_CANONICAL_COLUMN_KEYS = {
     "canonical_columns",
     "canonical_keys",
 }
+FILTER_OPERATOR_ALIASES = {
+    "=": "eq",
+    "==": "eq",
+    "!=": "ne",
+    "notin": "not_in",
+    "not in": "not_in",
+    "startswith": "starts_with",
+    "prefix": "starts_with",
+    "endswith": "ends_with",
+    "suffix": "ends_with",
+    "isnull": "is_null",
+    "isempty": "is_empty",
+    "is_null_or_empty": "null_or_empty",
+    "notnull": "not_null",
+    "notempty": "not_empty",
+    "notblank": "not_blank",
+    "is_not_blank": "not_blank",
+    "is_not_null_or_empty": "not_blank",
+    "is_not_null_and_not_empty": "not_blank",
+    "not_null_or_empty": "not_blank",
+    "not_null_and_not_empty": "not_blank",
+}
 
 
 # 주요 함수: LLM 의도 결과를 신뢰 가능한 실행 계획 계약으로 정규화합니다.
@@ -102,6 +124,9 @@ def normalize_intent_plan(
         metadata_candidates,
         question,
         align_explicit_scope=not _has_ordered_process_range_case(plan),
+    )
+    retrieval_jobs, filter_operator_normalization = _normalize_retrieval_filter_operators(
+        retrieval_jobs
     )
     retrieval_jobs, context_date_guard = _apply_context_date_guard(
         payload,
@@ -233,6 +258,7 @@ def normalize_intent_plan(
         "decision_reason": parsed.get("trace", {}).get("decision_reason", []) if isinstance(parsed.get("trace"), dict) else [],
         "context_date_guard": context_date_guard,
         "process_group_field_guard": process_group_field_guard,
+        "filter_operator_normalization": filter_operator_normalization,
         "reference_scope_normalization": reference_scope_normalization,
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
@@ -790,6 +816,86 @@ def _retrieval_jobs(plan: dict[str, Any]) -> list[Any]:
 
 
 # 함수 설명: 공정 그룹 metadata의 canonical field와 processes 값을 기준으로 LLM filter field 오선택을 교정합니다.
+# 함수 설명: 모든 retrieval filter operator를 동일한 canonical vocabulary로 정규화합니다.
+def _normalize_retrieval_filter_operators(
+    retrieval_jobs: list[Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    """모든 retrieval filter operator를 동일한 canonical vocabulary로 정규화합니다."""
+    normalized_jobs: list[Any] = []
+    changes: list[dict[str, Any]] = []
+    for index, item in enumerate(retrieval_jobs):
+        if not isinstance(item, dict):
+            normalized_jobs.append(deepcopy(item))
+            continue
+        job = deepcopy(item)
+        if isinstance(job.get("filters"), (dict, list)):
+            job["filters"] = _normalize_filter_operator_value(
+                job["filters"],
+                f"retrieval_jobs[{index}].filters",
+                changes,
+            )
+        normalized_jobs.append(job)
+    return normalized_jobs, {
+        "status": "applied" if changes else "not_needed",
+        "change_count": len(changes),
+        "changes": changes,
+    }
+
+
+# 함수 설명: 중첩 filter 조건의 operator만 바꾸고 field/value는 그대로 보존합니다.
+def _normalize_filter_operator_value(
+    value: Any,
+    path: str,
+    changes: list[dict[str, Any]],
+) -> Any:
+    """중첩 filter 조건의 operator만 바꾸고 field/value는 그대로 보존합니다."""
+    if isinstance(value, list):
+        return [
+            _normalize_filter_operator_value(item, f"{path}[{index}]", changes)
+            for index, item in enumerate(value)
+        ]
+    if not isinstance(value, dict):
+        return deepcopy(value)
+
+    normalized = deepcopy(value)
+    operator_key = "operator" if "operator" in normalized else ("op" if "op" in normalized else "")
+    if operator_key:
+        raw_operator = str(normalized.get(operator_key) or "eq").strip()
+        canonical = _canonical_filter_operator(raw_operator)
+        if canonical != raw_operator or operator_key == "op":
+            changes.append(
+                {
+                    "path": f"{path}.{operator_key}",
+                    "from": raw_operator,
+                    "to": canonical,
+                }
+            )
+        normalized["operator"] = canonical
+        normalized.pop("op", None)
+        if canonical == "not_blank":
+            normalized.pop("value", None)
+            normalized.pop("values", None)
+
+    for key, item in list(normalized.items()):
+        if key in {"operator", "op", "value", "values"}:
+            continue
+        if isinstance(item, (dict, list)):
+            normalized[key] = _normalize_filter_operator_value(
+                item,
+                f"{path}.{key}",
+                changes,
+            )
+    return normalized
+
+
+# 함수 설명: 여러 filter operator 표기를 Executor가 이해하는 canonical 이름으로 바꿉니다.
+def _canonical_filter_operator(value: Any) -> str:
+    """여러 filter operator 표기를 Executor가 이해하는 canonical 이름으로 바꿉니다."""
+    text = re.sub(r"[\s-]+", "_", str(value or "eq").strip()).lower()
+    return FILTER_OPERATOR_ALIASES.get(text, text)
+
+
+# 함수 설명: 공정 그룹 metadata의 canonical field와 processes 값으로 LLM의 filter field 오선택을 교정합니다.
 def _apply_process_group_filter_fields(
     retrieval_jobs: list[Any],
     metadata_candidates: dict[str, Any],

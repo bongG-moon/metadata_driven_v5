@@ -126,8 +126,17 @@ SUPPORTED_FILTER_OPERATORS = {
     "null_or_empty",
     "not_null",
     "not_empty",
+    "not_blank",
     "or",
     "any",
+}
+VALUELESS_FILTER_OPERATORS = {
+    "is_null",
+    "is_empty",
+    "null_or_empty",
+    "not_null",
+    "not_empty",
+    "not_blank",
 }
 SUPPORTED_COMPOUND_FILTER_OPERATORS = {
     "eq",
@@ -1549,7 +1558,7 @@ def _condition_code(
     field = str(condition.get("field") or "").strip()
     operator = _normalize_filter_operator(condition.get("operator") or "eq")
     values = condition.get("values") if isinstance(condition.get("values"), list) else []
-    if not field or (not values and operator not in {"is_null", "is_empty", "null_or_empty", "not_null", "not_empty"}):
+    if not field or (not values and operator not in VALUELESS_FILTER_OPERATORS):
         return []
     col_var = f"_filter_col_{job_index}_{condition_index}"
     values_var = f"_filter_values_{job_index}_{condition_index}"
@@ -1594,7 +1603,7 @@ def _condition_code(
         lines.append(f"        for _filter_value in {values_var}[1:]:")
         lines.append(f"            {mask_var} = {mask_var} | {df_var}[{col_var}].astype(str).str.endswith(str(_filter_value), na=False)")
         lines.append(f"        {df_var} = {df_var}[{mask_var}]")
-    elif operator in {"is_null", "is_empty", "null_or_empty", "not_null", "not_empty"}:
+    elif operator in VALUELESS_FILTER_OPERATORS:
         lines.extend(_null_empty_condition_lines(df_var, col_var, mask_var, operator))
     elif operator in {"or", "any"} and _has_operator_dict(values):
         lines.extend(_compound_condition_lines(df_var, col_var, mask_var, values))
@@ -1633,6 +1642,13 @@ def _normalize_filter_operator(value: Any) -> str:
         "not_null": "not_null",
         "notempty": "not_empty",
         "not_empty": "not_empty",
+        "notblank": "not_blank",
+        "not_blank": "not_blank",
+        "is_not_blank": "not_blank",
+        "is_not_null_or_empty": "not_blank",
+        "is_not_null_and_not_empty": "not_blank",
+        "not_null_or_empty": "not_blank",
+        "not_null_and_not_empty": "not_blank",
         "any": "any",
         "or": "or",
     }
@@ -1652,6 +1668,9 @@ def _null_empty_condition_lines(df_var: str, col_var: str, mask_var: str, operat
         return [f"        {df_var} = {df_var}[{series}.notna()]"]
     if operator == "not_empty":
         return [f"        {df_var} = {df_var}[~{series}.astype(str).str.strip().eq('')]"]
+    if operator == "not_blank":
+        expression = _blank_aware_membership_expression(series, [""])
+        return [f"        {mask_var} = {expression}", f"        {df_var} = {df_var}[~{mask_var}]"]
     return ["        pass"]
 
 
@@ -1732,7 +1751,11 @@ def _filter_conditions(filters: Any) -> list[dict[str, Any]]:
         )
         if _is_date_filter_field(field_text):
             normalized_values = [_normalize_date_identifier(value) for value in normalized_values]
-        if normalized_values or normalized_operator in {"is_null", "is_empty", "null_or_empty", "not_null", "not_empty"}:
+        if (
+            normalized_values
+            or normalized_operator in VALUELESS_FILTER_OPERATORS
+            or normalized_operator not in SUPPORTED_FILTER_OPERATORS
+        ):
             result.append({"field": field_text, "operator": normalized_operator, "values": normalized_values})
     return result
 

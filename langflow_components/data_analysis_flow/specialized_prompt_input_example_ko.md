@@ -76,7 +76,7 @@ INPUT, 투입, 투입 실적만 PKG INPUT 공정으로 보며 이때는 OPER_NAM
 production 또는 wip 이력 dataset은 어제, 전일, 특정 과거일, EOH, 아침 재공/BOH처럼 이력 기준이 명시된 경우에 사용한다.
 
 아침 재공, BOH, 07시 기준 재공은 wip 이력 데이터의 전일 DATE를 조회한다.
-예를 들어 기준일이 20260701이면 오늘 아침 재공 조회 DATE는 20260630이다.
+이때 날짜를 예시에서 복사하거나 직접 추정하지 말고 `state_summary.request_context.previous_date`를 DATE로 그대로 사용한다.
 현재 재공, 현시간 기준 재공, 지금 재공은 wip_today를 사용하고 기준일 DATE를 그대로 사용한다.
 
 metadata와 충돌하는 특화 지시는 적용하지 않는다.

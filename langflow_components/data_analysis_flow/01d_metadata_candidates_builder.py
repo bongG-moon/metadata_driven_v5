@@ -59,6 +59,18 @@ CANONICAL_MAPPING_KEYS = {
     "process_groups",
     "members",
 }
+DOMAIN_FILTER_CONTAINER_KEYS = {
+    "condition",
+    "conditions",
+    "condition_by_family",
+    "condition_by_dataset",
+}
+LEGACY_NOT_BLANK_OPERATORS = {
+    "is_not_null_or_empty",
+    "is_not_null_and_not_empty",
+    "not_null_or_empty",
+    "not_null_and_not_empty",
+}
 DEPRECATED_TABLE_CATALOG_KEYS = {"row_identity_columns", "context_columns"}
 KOREAN_SUFFIXES = (
     "으로부터",
@@ -641,6 +653,8 @@ def _sanitize_items(items: list[dict[str, Any]], metadata_type: str) -> list[dic
 # 함수 설명: `_sanitize_metadata_item()`는 메타데이터·항목에서 비밀값·내부 필드·직렬화 불가 값을 제거하거나 마스킹합니다.
 def _sanitize_metadata_item(item: dict[str, Any], metadata_type: str) -> dict[str, Any]:
     sanitized = _sanitize_value(item, metadata_type == "table_catalog")
+    if metadata_type == "domain" and isinstance(sanitized, dict):
+        sanitized = _normalize_domain_filter_contracts(sanitized)
     return sanitized if isinstance(sanitized, dict) else {}
 
 
@@ -664,6 +678,46 @@ def _sanitize_value(value: Any, compact_source_config: bool = False) -> Any:
 
 
 # 함수 설명: `_annotate_runtime_function_cases()`는 선택 가능한 Function Case에 runtime 사용 가능 여부와 선택 근거를 덧붙입니다.
+# 함수 설명: 기존 Domain 저장본의 legacy blank operator를 prompt 전달 전에 canonical 값으로 바꿉니다.
+def _normalize_domain_filter_contracts(item: dict[str, Any]) -> dict[str, Any]:
+    """기존 Domain 저장본의 legacy blank operator를 prompt 전달 전에 canonical 값으로 바꿉니다."""
+    normalized = deepcopy(item)
+    payload = normalized.get("payload")
+    if not isinstance(payload, dict):
+        return normalized
+    next_payload = deepcopy(payload)
+    for key, value in list(next_payload.items()):
+        if str(key) in DOMAIN_FILTER_CONTAINER_KEYS:
+            next_payload[key] = _normalize_domain_filter_value(value)
+    normalized["payload"] = next_payload
+    return normalized
+
+
+# 함수 설명: 조건 컨테이너 안의 legacy null/empty 제외 표현만 의미가 같은 not_blank로 변환합니다.
+def _normalize_domain_filter_value(value: Any) -> Any:
+    """조건 컨테이너 안의 legacy null/empty 제외 표현만 의미가 같은 not_blank로 변환합니다."""
+    if isinstance(value, list):
+        return [_normalize_domain_filter_value(item) for item in value]
+    if not isinstance(value, dict):
+        return deepcopy(value)
+    normalized = deepcopy(value)
+    operator_key = "operator" if "operator" in normalized else ("op" if "op" in normalized else "")
+    if operator_key:
+        operator = re.sub(r"[\s-]+", "_", str(normalized.get(operator_key) or "").strip()).lower()
+        if operator in LEGACY_NOT_BLANK_OPERATORS:
+            normalized["operator"] = "not_blank"
+            normalized.pop("op", None)
+            normalized.pop("value", None)
+            normalized.pop("values", None)
+    for key, item in list(normalized.items()):
+        if key in {"operator", "op", "value", "values"}:
+            continue
+        if isinstance(item, (dict, list)):
+            normalized[key] = _normalize_domain_filter_value(item)
+    return normalized
+
+
+# 함수 설명: 선택 가능한 Function Case의 runtime 사용 가능 여부와 선택 근거를 명시합니다.
 def _annotate_runtime_function_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     helper_by_name = {item["function_name"]: item for item in RUNTIME_FUNCTION_HELPERS}
     annotated = []

@@ -102,6 +102,8 @@
 - `grain_plan` 또는 `join_plan`에 참조할 metadata가 후보에 없으면 source schema에서 보이는 컬럼을 임의의 표준 제품 키로 만들지 말고 clarification으로 보낸다.
 - 제품별 집계 컬럼과 dataset 결합 컬럼은 서로 다른 계약이다. 집계에 사용한 모든 `group_by` 컬럼을 그대로 join key로 재사용하지 않는다.
 - 질문 표현이 후보 Domain의 key/display_name/aliases와 일치하고 해당 `payload.condition` 또는 `payload.conditions`가 있으면, alias 문자열을 filter 값으로 새로 만들지 않는다. 등록된 canonical 필드·operator·값을 그대로 각 관련 retrieval job의 `filters`에 사용한다. 예를 들어 별칭이 문자형이어도 condition 값이 숫자 문자열이면 그 숫자 문자열을 유지한다.
+- null·빈 문자열·공백·문자열 null/none/nan/nat/<NA>/empty를 모두 제외하는 조건의 canonical operator는 `not_blank`다. `is_not_null_or_empty`, `is_not_null_and_not_empty`처럼 새 operator 이름을 만들지 말고 `{{"operator":"not_blank"}}`로 작성하며 value는 생략한다.
+- filter operator는 output schema에 열거된 canonical 값만 사용한다. Domain 후보에 legacy operator가 보이더라도 의미가 같은 canonical 값으로만 옮기고, 지원 여부를 알 수 없는 operator를 추측해서 만들지 않는다.
 - 질문 표현이 선택된 `process_groups` metadata의 key/display_name/aliases와 일치하면 그룹 이름 자체를 filter 값으로 사용하지 않는다. 해당 item의 `payload.field`를 canonical filter field로, `payload.processes`를 실제 `in [...]` 값으로 그대로 펼친다. 예를 들어 `field=OPER_NAME`이면 모든 관련 retrieval job에 `OPER_NAME in [...]`을 사용하고 dataset의 물리 컬럼 `OPER`/`OPER_NM`을 filter key로 직접 쓰지 않는다.
 - 여러 `process_groups` alias가 `,`, `&`, `와/과`, `및`으로 바로 연결되고 마지막 alias에만 `공정`이라는 공통 scope 명사가 붙으면, 그 `공정` 의미를 연결된 metadata alias 전체에 적용한다. 연결 구간에 숫자·제품 token·미등록 표현이 끼면 앞 alias까지 확장하지 않으며, 질문 어디에도 `공정`이 없으면 이 공유 접미사 규칙으로 기존 판단을 제한하거나 clarification을 만들지 않는다.
 - 사용자가 숫자 등이 붙은 세부 공정을 하나 이상 명시하면 공정 그룹 전체가 아니라 질문에 명시된 세부 공정 전체를 보존한다. 한 개이면 `eq`, 두 개 이상이면 빠짐없는 `in [...]` 조건을 사용한다. 쉼표나 `와/과`, `및`으로 연결되거나 마지막 공정명에 `공정`, `에서`, `의` 같은 한글 표현이 붙어도 첫 번째 값만 남기지 않는다. 반대로 세부 차수 없이 공정 그룹 별칭만 말하면 등록된 전체 `payload.processes`를 사용한다.

@@ -62,6 +62,8 @@
 - `apply_row_match_groups`는 executor가 이미 reference 행 내부 AND·행 사이 OR로 적용한다. repair 코드에서 이를 컬럼별 독립 `isin`으로 다시 풀지 말고, null·None·NaN·빈 문자열·공백과 문자열 null/none/nan/<NA>를 동일한 `""`으로 보는 executor 결과를 유지한다.
 - 집계 후 표시용 dimension column에만 `fillna("")`와 `replace(r"^\s*$", "", regex=True)`를 적용한다. dimension null/blank를 `미등록`으로 바꾼 코드는 빈 문자열 표시로 수정한다.
 - 최종 표시용 metric column은 `intent_plan.output_contract.metric_columns`를 최우선으로 사용한다. 이 계약이 없을 때만 실제 숫자 값이 있는 컬럼 또는 생산량·재공·UPH·QTY·COUNT·RATE처럼 지표 의미가 분명한 컬럼을 보수적으로 선택하며, ID·코드·날짜·dimension 컬럼을 metric으로 추정하지 않는다.
+- `groupby_and_aggregate`에서 `output_contract.metric_columns`의 실제 metric 컬럼이 source에 있으면 생산량·재공·수량·계획 값은 `sum`으로 집계한다. 실제 metric이 있는데 `groupby(...).size()`로 행 수를 계산해 같은 metric 이름을 붙인 실패 코드는 수정한다.
+- 행 수·건수 요청만 `size`/`count`를 사용하고, 장비·LOT 같은 고유 대상 수는 해당 ID의 `nunique`를 사용한다.
 - 선택된 metric column의 `None`/`NaN`/빈 문자열/공백 문자열은 표시용 숫자 `0`으로 복구한다. result 전체를 `fillna(0)`로 채우지 말고, dimension null/blank는 계속 빈 문자열 `""`로 유지한다.
 - 결과 컬럼 재정렬도 존재하는 컬럼만 선택하도록 수정한다.
 - 필수 집계 컬럼이 없거나 group column이 모두 없으면 오류를 반복하지 말고 빈 DataFrame을 `result`에 넣는다.

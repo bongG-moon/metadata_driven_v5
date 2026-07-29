@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import datetime, timedelta
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
@@ -52,6 +53,7 @@ def _state_summary(payload: dict[str, Any]) -> dict[str, Any]:
     summary = {
         "request_context": {
             "reference_date": request.get("reference_date", ""),
+            "previous_date": _previous_date(request.get("reference_date")),
         },
         "followup_hint": followup_hint,
         "state": state_for_model,
@@ -60,6 +62,17 @@ def _state_summary(payload: dict[str, Any]) -> dict[str, Any]:
     if orchestration:
         summary["orchestration"] = orchestration
     return summary
+
+
+# 함수 설명: 기준일이 유효한 YYYYMMDD일 때 LLM이 날짜 산술을 추정하지 않도록 전일을 함께 제공합니다.
+def _previous_date(value: Any) -> str:
+    text = str(value or "").strip()
+    try:
+        return (datetime.strptime(text, "%Y%m%d") - timedelta(days=1)).strftime(
+            "%Y%m%d"
+        )
+    except ValueError:
+        return ""
 
 
 # 함수 설명: `_compact_orchestration()`은 상위 Tool 결과가 있다는 사실과 고정 alias만 의도 LLM에 짧게 알립니다.
@@ -111,7 +124,12 @@ def _schema() -> dict[str, Any]:
                     "dataset_key": "string",
                     "source_alias": "string",
                     "required_params": {"DATA_CATALOG_REQUIRED_PARAM": "value"},
-                    "filters": {"PANDAS_FILTER_COLUMN": {"operator": "eq|in|contains|not_in", "value": "value or list"}},
+                    "filters": {
+                        "PANDAS_FILTER_COLUMN": {
+                            "operator": "eq|in|ne|not_in|contains|like|starts_with|ends_with|is_null|is_empty|null_or_empty|not_null|not_empty|not_blank",
+                            "value": "value or list; omit for valueless operators",
+                        }
+                    },
                 }
             ],
             "pandas_execution_plan": [

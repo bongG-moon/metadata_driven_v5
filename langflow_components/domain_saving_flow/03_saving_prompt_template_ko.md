@@ -5,6 +5,8 @@
 - 허용 section만 사용한다: `process_groups`, `product_terms`, `quantity_terms`, `metric_terms`, `analysis_recipes`, `status_terms`, `product_key_columns`, `pandas_function_cases`.
 - 원문에 없는 조건을 강화하거나 완화하지 않는다.
 - 제품/공정/상태 조건은 원문에 명시된 조건만 payload에 넣는다.
+- 조건의 operator는 `eq`, `in`, `ne`, `not_in`, `contains`, `like`, `starts_with`, `ends_with`, `is_null`, `is_empty`, `null_or_empty`, `not_null`, `not_empty`, `not_blank`, `or`, `any` 중 하나만 사용한다.
+- null·빈 문자열·공백·문자열 null/none/nan/nat/<NA>/empty를 모두 제외하는 조건은 `not_blank`로 저장하고 value는 만들지 않는다. `is_not_null_or_empty`, `is_not_null_and_not_empty` 같은 별도 operator를 만들지 않는다.
 - `process_groups`의 key는 원문에 명시된 대표 식별자를 그대로 사용한다. 예를 들어 `BG 또는 B/G 공정 그룹`이면 key는 `BG`, aliases는 `["BG", "B/G"]`로 만든다.
 - `process_groups`는 원문에 명시된 표준 필터 field를 `payload.field`에 보존한다. `field=OPER_NAME`으로 명시된 공정 그룹을 물리 컬럼 `OPER`나 `OPER_NM`으로 바꾸지 않는다.
 - `process_groups.payload.processes`는 `payload.field`에 적용할 값 목록이다. field를 누락하거나 processes 값만 보고 다른 컬럼을 추측하지 않는다.
