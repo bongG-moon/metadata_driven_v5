@@ -66,13 +66,20 @@ PANDAS_COLUMN_LIST_KEYS = {
     "order_columns",
     "partition_by",
 }
-PANDAS_LEFT_COLUMN_KEYS = {"left_key", "left_keys", "left_columns", "left_on"}
+PANDAS_LEFT_COLUMN_KEYS = {
+    "left_key",
+    "left_keys",
+    "left_columns",
+    "left_on",
+    "left_metric_column",
+}
 PANDAS_RIGHT_COLUMN_KEYS = {
     "right_key",
     "right_keys",
     "right_columns",
     "right_on",
     "right_value_columns",
+    "right_metric_column",
 }
 PANDAS_CANONICAL_COLUMN_KEYS = {
     "match_columns",
@@ -906,6 +913,13 @@ def _apply_process_group_filter_fields(
     if not contracts:
         return retrieval_jobs, {"status": "not_available", "corrections": []}
     requested_processes = _requested_process_scope(question, contracts) if align_explicit_scope else []
+    mentioned_group_indexes = (
+        _mentioned_process_group_indexes(question, contracts)
+        if align_explicit_scope
+        else set()
+    )
+    alignment_scope = _process_filter_alignment_scope(retrieval_jobs)
+    preserve_distinct_job_scopes = alignment_scope["has_disjoint_scopes"]
 
     normalized_jobs: list[Any] = []
     corrections: list[dict[str, Any]] = []
@@ -919,10 +933,18 @@ def _apply_process_group_filter_fields(
         if isinstance(filters, dict):
             normalized_filters = deepcopy(filters)
             for raw_field, condition in filters.items():
-                narrowed_condition = _align_requested_process_condition(
-                    condition,
-                    contracts,
-                    requested_processes,
+                narrowed_condition = (
+                    _expand_requested_process_groups_within_condition(
+                        condition,
+                        contracts,
+                        mentioned_group_indexes,
+                    )
+                    if preserve_distinct_job_scopes
+                    else _align_requested_process_condition(
+                        condition,
+                        contracts,
+                        requested_processes,
+                    )
                 )
                 if narrowed_condition != condition:
                     normalized_filters[str(raw_field)] = narrowed_condition
@@ -930,7 +952,11 @@ def _apply_process_group_filter_fields(
                         {
                             "source_alias": alias,
                             "field": str(raw_field),
-                            "correction_type": "specific_process_scope",
+                            "correction_type": (
+                                "source_process_group_expansion"
+                                if preserve_distinct_job_scopes
+                                else "specific_process_scope"
+                            ),
                             "from_values": _condition_scalar_values(condition),
                             "to_values": _condition_scalar_values(narrowed_condition),
                         }
@@ -969,10 +995,18 @@ def _apply_process_group_filter_fields(
             for condition in filters:
                 normalized = deepcopy(condition)
                 if isinstance(condition, dict):
-                    narrowed_condition = _align_requested_process_condition(
-                        condition,
-                        contracts,
-                        requested_processes,
+                    narrowed_condition = (
+                        _expand_requested_process_groups_within_condition(
+                            condition,
+                            contracts,
+                            mentioned_group_indexes,
+                        )
+                        if preserve_distinct_job_scopes
+                        else _align_requested_process_condition(
+                            condition,
+                            contracts,
+                            requested_processes,
+                        )
                     )
                     if narrowed_condition != condition:
                         normalized = narrowed_condition
@@ -984,7 +1018,11 @@ def _apply_process_group_filter_fields(
                                     or condition.get("column")
                                     or ""
                                 ),
-                                "correction_type": "specific_process_scope",
+                                "correction_type": (
+                                    "source_process_group_expansion"
+                                    if preserve_distinct_job_scopes
+                                    else "specific_process_scope"
+                                ),
                                 "from_values": _condition_scalar_values(condition),
                                 "to_values": _condition_scalar_values(narrowed_condition),
                             }
@@ -1014,6 +1052,69 @@ def _apply_process_group_filter_fields(
     return normalized_jobs, {
         "status": "applied" if corrections else "not_needed",
         "corrections": corrections,
+        "value_alignment_mode": (
+            "preserve_distinct_job_scopes"
+            if preserve_distinct_job_scopes
+            else "question_scope_alignment"
+        ),
+        "job_process_scopes": alignment_scope["job_process_scopes"],
+    }
+
+
+# 함수 설명: 여러 retrieval job에 서로 다른 공정 조건이 있으면 질문 전체 공정 합집합으로 덮어쓰지 않도록 source별 범위를 식별합니다.
+def _process_filter_alignment_scope(retrieval_jobs: list[Any]) -> dict[str, Any]:
+    job_process_scopes: list[dict[str, Any]] = []
+    normalized_scopes: list[set[str]] = []
+    for item in retrieval_jobs:
+        if not isinstance(item, dict):
+            continue
+        filters = item.get("filters")
+        if isinstance(filters, dict):
+            conditions = list(filters.items())
+        elif isinstance(filters, list):
+            conditions = [
+                (
+                    condition.get("field") or condition.get("column"),
+                    condition,
+                )
+                for condition in filters
+                if isinstance(condition, dict)
+            ]
+        else:
+            conditions = []
+
+        values: list[str] = []
+        for raw_field, condition in conditions:
+            if _normalized_column_key(raw_field) not in {
+                "OPER",
+                "OPERNUM",
+                "OPERNAME",
+                "OPERNM",
+            }:
+                continue
+            values = _merge_strings(values, _condition_scalar_values(condition))
+        if not values:
+            continue
+
+        normalized_scope = {value.casefold() for value in values}
+        if normalized_scope not in normalized_scopes:
+            normalized_scopes.append(normalized_scope)
+        job_process_scopes.append(
+            {
+                "source_alias": str(
+                    item.get("source_alias") or item.get("dataset_key") or ""
+                ).strip(),
+                "values": values,
+            }
+        )
+    return {
+        "distinct_scope_count": len(normalized_scopes),
+        "has_disjoint_scopes": any(
+            left.isdisjoint(right)
+            for index, left in enumerate(normalized_scopes)
+            for right in normalized_scopes[index + 1 :]
+        ),
+        "job_process_scopes": job_process_scopes,
     }
 
 
@@ -1178,6 +1279,67 @@ def _align_requested_process_condition(
 
 
 # 함수 설명: dict/list filter 조건에서 비교 가능한 scalar 값 목록을 추출합니다.
+def _expand_requested_process_groups_within_condition(
+    condition: Any,
+    contracts: list[dict[str, Any]],
+    mentioned_group_indexes: set[int],
+) -> Any:
+    """Expand only the process groups that belong to the current source condition."""
+    if not mentioned_group_indexes or not isinstance(condition, dict):
+        return deepcopy(condition)
+    operator = str(condition.get("operator") or condition.get("op") or "eq").strip().lower()
+    if operator not in {"eq", "in", "=", "=="}:
+        return deepcopy(condition)
+    values = _condition_scalar_values(condition)
+    if not values:
+        return deepcopy(condition)
+
+    expanded_values = list(values)
+    changed = False
+    for index, contract in enumerate(contracts):
+        if index not in mentioned_group_indexes:
+            continue
+        group_processes = {
+            str(value).strip().casefold()
+            for value in contract.get("process_values", [])
+            if str(value or "").strip()
+        }
+        group_aliases = {
+            str(value).strip().casefold()
+            for value in contract.get("aliases", [])
+            if str(value or "").strip()
+        }
+        if not group_processes:
+            continue
+        current_values = {value.casefold() for value in expanded_values}
+        if not current_values.intersection(group_processes | group_aliases):
+            continue
+        retained_values = [
+            value
+            for value in expanded_values
+            if value.casefold() not in group_processes | group_aliases
+        ]
+        expanded_values = _merge_strings(
+            retained_values,
+            _string_list(contract.get("process_values")),
+        )
+        changed = True
+
+    if not changed or expanded_values == values:
+        return deepcopy(condition)
+    expanded = deepcopy(condition)
+    expanded["operator"] = "eq" if len(expanded_values) == 1 else "in"
+    expanded.pop("op", None)
+    if "values" in expanded:
+        expanded["values"] = expanded_values
+        expanded.pop("value", None)
+    else:
+        expanded["value"] = (
+            expanded_values[0] if len(expanded_values) == 1 else expanded_values
+        )
+    return expanded
+
+
 def _condition_scalar_values(condition: Any) -> list[str]:
     raw_values = (
         condition.get("values", condition.get("value", []))

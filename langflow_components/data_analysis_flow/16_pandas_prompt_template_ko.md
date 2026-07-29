@@ -63,6 +63,10 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - `multi_match_policy=collect_unique`이면 같은 제품 key에 여러 장비 등 여러 우측 값이 있을 때 첫 행 하나를 `drop_duplicates`로 남기지 않는다. `right_value_columns`별 중복 없는 값을 모아 한 제품 행에 보존한다.
 - `multi_match_policy=preserve_rows`이면 유효한 우측 매칭 행을 모두 유지하고, `first`일 때만 metadata 계약에 따라 첫 행을 사용할 수 있다.
 - `resolved_join_plan`이 있는데 일부 key가 source schema에 없으면 임의의 대체 key를 추측하지 않는다. 사용 가능한 metadata key pair만 사용하고, 하나도 없으면 빈 결과 또는 명시적 오류가 되도록 처리한다.
+- `pandas_execution_plan.operation=compare_presence`이면 `left_source_alias`는 존재 기준, `right_source_alias`는 부재 확인 대상이다. 각 source는 해당 retrieval job의 서로 다른 filter가 이미 적용된 상태이므로 공정 값을 다시 합치거나 양쪽에 같은 조건을 추가하지 않는다.
+- `presence_rule=left_positive_right_missing_or_zero`이면 각 source를 resolved grain/join key로 먼저 집계한다. `left_metric_column` 합계가 0보다 큰 왼쪽 대상만 유지하고, `right_metric_column` 합계가 0보다 큰 오른쪽 대상은 존재 대상으로 본다. 양수 오른쪽 key와 left anti-join하여 오른쪽 행이 없거나 합계가 0인 왼쪽 대상만 결과에 남긴다.
+- presence 비교를 단순 `left merge` 후 전체 결과 반환으로 끝내지 않는다. 오른쪽 null을 0으로 표시하는 것과 오른쪽이 없거나 0인 대상만 선택하는 것은 별도 단계이며, 질문이 부재 대상을 요구하면 반드시 후자의 filter까지 수행한다.
+- `compare_presence`에서도 집계용 제품 grain과 join key를 혼동하지 않는다. `resolved_grain_plan`과 `resolved_join_plan`의 실제 물리 key를 사용하고, 왼쪽 source의 요청 metric과 제품 행을 기준으로 결과를 유지한다.
 - `pandas_execution_plan.operation=compare_group_attributes`이면 계획의 `group_by`만 기준키로, `comparison_columns`만 값 차이 판정 대상으로 사용한다. `resolved_grain_plan.grain_columns` 전체로 두 목록을 대체하거나 두 목록을 합쳐 groupby하지 않는다.
 - 기준 컬럼으로 `groupby(..., dropna=False)`한 뒤 비교 컬럼의 `nunique(dropna=False)`를 계산한다. `comparison_rule=any`이면 `(counts > 1).any(axis=1)`, `all`이면 `(counts > 1).all(axis=1)`인 기준키만 원본과 `merge`한다. 비교 컬럼별 조건을 Python `or`/`and`로 연결하거나 SQL 문법을 pandas 코드에 섞지 않는다.
 - 비교 counts는 반드시 `counts = df.groupby(group_cols, dropna=False)[comp_cols].nunique(dropna=False)`처럼 그룹 key index를 가진 집계표로 만든다. `grouped.groups.keys()`로 별도 index를 만들고 원본 행 index의 `transform()` 결과를 대입하지 않는다. 두 index가 어긋나면 실제 일치 그룹이 있어도 모두 0건처럼 보일 수 있다.

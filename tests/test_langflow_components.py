@@ -2820,6 +2820,402 @@ def test_v5_process_group_field_corrects_equipment_oper_filter_before_pandas_exe
     assert "_filter_col_2_1 = 'OPER' if 'OPER'" not in preamble
 
 
+def test_v5_process_scope_alignment_preserves_distinct_multi_source_filters():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    da_processes = ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
+    payload = {
+        "request": {
+            "question": "오늘 현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘"
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "DA",
+                    "payload": {
+                        "display_name": "D/A",
+                        "aliases": ["DA", "D/A"],
+                        "field": "OPER_NAME",
+                        "processes": da_processes,
+                    },
+                }
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "input_exists_without_da_wip",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production_today",
+                    "source_alias": "input_actual",
+                    "required_params": {"DATE": "20260729"},
+                    "filters": {
+                        "OPER_NAME": {"operator": "eq", "value": "INPUT"}
+                    },
+                },
+                {
+                    "dataset_key": "wip_today",
+                    "source_alias": "da_wip",
+                    "required_params": {"DATE": "20260729"},
+                    "filters": {
+                        "OPER_NAME": {"operator": "in", "value": da_processes}
+                    },
+                },
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "compare_presence",
+                    "left_source_alias": "input_actual",
+                    "right_source_alias": "da_wip",
+                    "left_metric_column": "PRODUCTION",
+                    "right_metric_column": "WIP",
+                    "presence_rule": "left_positive_right_missing_or_zero",
+                }
+            ],
+        }
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        llm_response,
+        metadata_candidates,
+    )
+
+    jobs = normalized["intent_plan"]["retrieval_jobs"]
+    assert jobs[0]["filters"]["OPER_NAME"] == {
+        "operator": "eq",
+        "value": "INPUT",
+    }
+    assert jobs[1]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": da_processes,
+    }
+    assert normalized["intent_plan"]["pandas_execution_plan"][0]["operation"] == "compare_presence"
+    guard = normalized["trace"]["inspection"]["intent"]["process_group_field_guard"]
+    assert guard["value_alignment_mode"] == "preserve_distinct_job_scopes"
+    assert guard["job_process_scopes"] == [
+        {"source_alias": "input_actual", "values": ["INPUT"]},
+        {"source_alias": "da_wip", "values": da_processes},
+    ]
+
+
+def test_v5_process_scope_alignment_expands_group_only_within_its_source():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    fcb_processes = ["FCB1", "FCB2", "FCB/H"]
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "FCB",
+                    "payload": {
+                        "display_name": "FCB",
+                        "aliases": ["FCB"],
+                        "field": "OPER_NAME",
+                        "processes": fcb_processes,
+                    },
+                },
+                {
+                    "section": "process_groups",
+                    "key": "WB",
+                    "payload": {
+                        "display_name": "W/B",
+                        "aliases": ["WB", "W/B"],
+                        "field": "OPER_NAME",
+                        "processes": ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"],
+                    },
+                },
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "fcb_production_without_wb2_wip",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production_today",
+                    "source_alias": "production_source",
+                    "filters": {
+                        "OPER_NAME": {"operator": "eq", "value": "FCB"}
+                    },
+                },
+                {
+                    "dataset_key": "wip_today",
+                    "source_alias": "wip_source",
+                    "filters": {
+                        "OPER_NAME": {"operator": "eq", "value": "W/B2"}
+                    },
+                },
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "compare_presence",
+                    "left_source_alias": "production_source",
+                    "right_source_alias": "wip_source",
+                    "left_metric_column": "PRODUCTION",
+                    "right_metric_column": "WIP",
+                    "presence_rule": "left_positive_right_missing_or_zero",
+                }
+            ],
+        }
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "오늘 FCB공정 생산실적은 있으나 W/B2공정 WIP가 없는 제품을 알려줘"
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        llm_response,
+        metadata_candidates,
+    )
+
+    jobs = normalized["intent_plan"]["retrieval_jobs"]
+    assert jobs[0]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": fcb_processes,
+    }
+    assert jobs[1]["filters"]["OPER_NAME"] == {
+        "operator": "eq",
+        "value": "W/B2",
+    }
+    guard = normalized["trace"]["inspection"]["intent"]["process_group_field_guard"]
+    assert guard["value_alignment_mode"] == "preserve_distinct_job_scopes"
+    assert guard["corrections"] == [
+        {
+            "source_alias": "production_source",
+            "field": "OPER_NAME",
+            "correction_type": "source_process_group_expansion",
+            "from_values": ["FCB"],
+            "to_values": fcb_processes,
+        }
+    ]
+
+    llm_response["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"]["value"] = "FCB1"
+    normalized_detail_value = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "오늘 FCB공정 생산실적은 있으나 W/B2공정 WIP가 없는 제품을 알려줘"
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        llm_response,
+        metadata_candidates,
+    )
+    assert normalized_detail_value["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": fcb_processes,
+    }
+
+
+def test_v5_process_scope_alignment_keeps_shared_multi_source_group_expansion():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    da_processes = ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "DA",
+                    "payload": {
+                        "aliases": ["DA", "D/A"],
+                        "field": "OPER_NAME",
+                        "processes": da_processes,
+                    },
+                }
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "da_production_and_wip",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production_today",
+                    "source_alias": "production",
+                    "filters": {
+                        "OPER_NAME": {"operator": "eq", "value": "D/A1"}
+                    },
+                },
+                {
+                    "dataset_key": "wip_today",
+                    "source_alias": "wip",
+                    "filters": {
+                        "OPER_NAME": {"operator": "in", "value": da_processes}
+                    },
+                },
+            ],
+            "pandas_execution_plan": [],
+        }
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "D/A공정의 생산량과 WIP를 알려줘"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        llm_response,
+        metadata_candidates,
+    )
+
+    assert [
+        job["filters"]["OPER_NAME"]["value"]
+        for job in normalized["intent_plan"]["retrieval_jobs"]
+    ] == [da_processes, da_processes]
+    guard = normalized["trace"]["inspection"]["intent"]["process_group_field_guard"]
+    assert guard["value_alignment_mode"] == "question_scope_alignment"
+
+
+@pytest.mark.parametrize(
+    ("question", "initial_values", "expected_values"),
+    [
+        (
+            "DA, WB공정 HOLD LOT 알려줘",
+            ["W/B1"],
+            [
+                "D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6",
+                "W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6",
+            ],
+        ),
+        (
+            "DA공정, WB공정 HOLD LOT 알려줘",
+            ["D/A1"],
+            [
+                "D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6",
+                "W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6",
+            ],
+        ),
+        (
+            "D/S1 & DA 공정 HOLD LOT LIST 알려줘",
+            ["D/A1"],
+            ["D/S1", "D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"],
+        ),
+        (
+            "D/S1&D/A 공정 HOLD LOT 알려줘",
+            ["D/A1"],
+            ["D/S1", "D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"],
+        ),
+        (
+            "FCB1,FCB2,FCB/H 공정 현재 실적 알려줘",
+            ["FCB1"],
+            ["FCB1", "FCB2", "FCB/H"],
+        ),
+    ],
+)
+def test_v5_single_source_process_lists_keep_all_requested_processes(
+    question,
+    initial_values,
+    expected_values,
+):
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "DA",
+                    "payload": {
+                        "aliases": ["DA", "D/A"],
+                        "field": "OPER_NAME",
+                        "processes": ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"],
+                    },
+                },
+                {
+                    "section": "process_groups",
+                    "key": "WB",
+                    "payload": {
+                        "aliases": ["WB", "W/B"],
+                        "field": "OPER_NAME",
+                        "processes": ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"],
+                    },
+                },
+                {
+                    "section": "process_groups",
+                    "key": "DS",
+                    "payload": {
+                        "aliases": ["DS", "D/S"],
+                        "field": "OPER_NAME",
+                        "processes": ["D/S1", "D/S2"],
+                    },
+                },
+                {
+                    "section": "process_groups",
+                    "key": "FCB",
+                    "payload": {
+                        "aliases": ["FCB"],
+                        "field": "OPER_NAME",
+                        "processes": ["FCB1", "FCB2", "FCB/H"],
+                    },
+                },
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    llm_response = {
+        "intent_plan": {
+            "analysis_kind": "single_source_process_scope",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "single_source",
+                    "source_alias": "source_data",
+                    "filters": {
+                        "OPER_NAME": {
+                            "operator": "eq" if len(initial_values) == 1 else "in",
+                            "value": initial_values[0] if len(initial_values) == 1 else initial_values,
+                        }
+                    },
+                }
+            ],
+            "pandas_execution_plan": [],
+        }
+    }
+
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {"question": question},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        llm_response,
+        metadata_candidates,
+    )
+
+    condition = normalized["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"]
+    assert condition == {
+        "operator": "in" if len(expected_values) > 1 else "eq",
+        "value": expected_values,
+    }
+    guard = normalized["trace"]["inspection"]["intent"]["process_group_field_guard"]
+    assert guard["value_alignment_mode"] == "question_scope_alignment"
+
+
 def test_intent_normalizer_accepts_llm_json_with_literal_sql_newlines():
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
     payload = {"request": {"question": "어제 DA공정 차수별 생산량 알려줘"}, "trace": {"warnings": [], "errors": [], "inspection": {}}}
@@ -7581,6 +7977,20 @@ def test_langflow_prompt_templates_keep_domain_specific_examples_out_of_generic_
     assert "DEVICE만 단독으로 보여주지 않는다" in specialized_prompt
 
 
+def test_v5_specialized_prompt_routes_current_hold_lists_away_from_hold_history():
+    specialized_prompt = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "specialized_prompt_input_example_ko.md"
+    ).read_text(encoding="utf-8")
+
+    assert "특정 LOT_ID 없이 `현재 HOLD LOT`" in specialized_prompt
+    assert "lot_status를 선택하고 HOLD_STAT=OnHold 조건을 적용한다." in specialized_prompt
+    assert "required_params.LOT_ID를 빈 문자열로 만든 채 선택하지 않는다." in specialized_prompt
+    assert "특정 LOT의 최근 HOLD 코드" in specialized_prompt
+
+
 def test_pandas_prompt_templates_do_not_repeat_executor_filter_preamble():
     generation_prompt = (
         ROOT
@@ -7622,6 +8032,19 @@ def test_intent_prompt_requires_specific_current_analysis_kind():
     assert "production dataset" in prompt
     assert "`OPER_NAME=INPUT`" in prompt
     assert "추가하지 않는다" in prompt
+    assert "한 절의 공정 값을 다른 job으로 복사" in prompt
+    assert "`X 조건의 A metric은 있으나 Y 조건의 B metric은 없는 대상`" in prompt
+    assert "`operation=compare_presence`" in prompt
+    assert "`presence_rule=left_positive_right_missing_or_zero`" in prompt
+
+    specialized = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "specialized_prompt_input_example_ko.md"
+    ).read_text(encoding="utf-8")
+    assert "공정 목록 합집합 규칙은 하나의 metric/source 범위를 나열한 경우에만 적용" in specialized
+    assert "production_today에는 `OPER_NAME=INPUT`" in specialized
 
 
 def test_pandas_prompt_templates_preserve_yyyymmdd_date_columns():
@@ -13600,6 +14023,10 @@ def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
     assert "`series.dtype == object`" in pandas_prompt
     assert "`KeyError: '__import__'`" in repair_prompt
     assert "같은 `str(...dtype)` 호출을 retry code에 남기지 않는다" in repair_prompt
+    assert "`pandas_execution_plan.operation=compare_presence`" in pandas_prompt
+    assert "left anti-join" in pandas_prompt
+    assert "`operation=compare_presence`" in repair_prompt
+    assert "source별 retrieval filter가 이미 독립적으로 적용" in repair_prompt
 
 
 def test_v5_catalog_hydrator_propagates_only_safe_column_contract():

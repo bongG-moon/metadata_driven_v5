@@ -55,6 +55,9 @@
 - join key 정규화에서는 dtype을 문자열로 검사하지 않는다. `replace("", pd.NA).fillna("")`처럼 결과가 동일한 불필요한 결측값 왕복도 제거한다.
 - join key 오류를 고칠 때도 source 전체 column을 순회하며 일괄 문자열 변환하지 말고, 계약의 실제 좌우 join key copy만 정규화한다.
 - `multi_match_policy=collect_unique`인데 실패 코드가 `drop_duplicates(subset=join_keys)`로 장비 등 여러 우측 값을 하나만 남겼다면, `right_value_columns`별 중복 없는 값을 집계해 보존하도록 수정한다.
+- `operation=compare_presence`인데 실패 코드가 단순 left join 후 전체 행을 반환했다면, source별 기존 filter는 건드리지 말고 presence 비교만 복구한다. `left_metric_column` 합계가 0보다 큰 왼쪽 대상과 `right_metric_column` 합계가 0보다 큰 오른쪽 대상을 각각 만든 뒤, resolved join key로 left anti-join하여 오른쪽이 없거나 합계 0인 왼쪽 대상만 남긴다.
+- `presence_rule=left_positive_right_missing_or_zero`에서 오른쪽 null을 0으로 채우는 것만으로 끝내지 않는다. 오른쪽 양수 대상은 결과에서 제외하고 왼쪽 metric이 0인 대상도 제외한다.
+- 서로 다른 source의 공정 filter를 repair 코드에서 합치거나 양쪽에 다시 쓰지 않는다. `sources["alias"]`는 source별 retrieval filter가 이미 독립적으로 적용된 상태다.
 - `operation=compare_group_attributes` 코드가 실패했다면 계획의 `group_by`만 기준키로, `comparison_columns`만 비교 대상으로 사용한다. 기준 컬럼 `groupby(..., dropna=False)` → 비교 컬럼 `nunique(dropna=False)` → `comparison_rule`에 따른 `any/all` 기준키 선택 → 원본 `merge` 순서로 단순하게 다시 작성하고, 최종 고유 속성 조합은 `group_by + comparison_columns`로 `drop_duplicates()`한다.
 - 비교 counts는 `counts = df.groupby(group_cols, dropna=False)[comp_cols].nunique(dropna=False)` 형태로 만들고, `grouped.groups.keys()` index에 원본 행 index의 `transform()` 결과를 대입한 코드는 제거한다. `valid_keys = counts[mask].reset_index()[group_cols]`를 원본과 merge한다.
 - 비교 결과가 0건이어도 `pd.DataFrame(columns=group_cols + comp_cols)`처럼 계획의 물리 컬럼 schema를 유지하고, 컬럼 없는 빈 DataFrame 때문에 output contract 오류가 반복되지 않게 한다.

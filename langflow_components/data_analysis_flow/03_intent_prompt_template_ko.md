@@ -73,7 +73,7 @@
 - `required_params`의 key는 table catalog가 선언한 필수 파라미터 이름을 정확히 사용한다. `filter_mappings`나 `standard_column_aliases`의 물리 컬럼명은 pandas filter용이며, `DATE` 대신 `WORK_DT`·`WORK_DATE`·`date`를 필수 파라미터 key로 쓰지 않는다.
 - `source_type`, `source_config`, `db_key`, query/endpoint는 작성하지 않는다. 다음 deterministic component가 `dataset_key`를 active table catalog와 대조해 신뢰 가능한 설정을 주입한다.
 - `required_params`에는 table catalog/source_config가 필수로 요구하는 파라미터만 넣는다. 필수 파라미터는 데이터 조회 시 SQL/API/template에 적용된다.
-- `filters`에는 사용자가 말한 공정, 제품, 상태, 장비, LOT 등 분석 조건을 넣는다. `filters`는 데이터 조회기가 아니라 pandas 전처리 단계에서 적용된다.
+- `filters`에는 사용자가 말한 공정, 제품, 상태, 장비, LOT 등 분석 조건을 넣는다. `filters`는 데이터 조회기가 아니라 pandas 전처리 단계에서 적용되며, 각 retrieval job의 조건은 해당 `source_alias`가 담당하는 metric/dataset 절에만 속한다.
 - 사용자가 임의의 컬럼 집합을 직접 열거하며 `A, B는 같지만 C 또는 D가 다른 행`, `특정 컬럼 조합의 중복`, `컬럼 값 조합 비교`를 요청하면 열거된 이름은 schema column 식별자다. column 이름 자체를 같은 field의 `eq`/`in` filter 값으로 넣지 않는다.
 - `A, B는 같지만 C 또는 D가 다른 행`처럼 기준 컬럼과 비교 컬럼이 분리된 요청은 `operation=compare_group_attributes`, `group_by=[A,B]`, `comparison_columns=[C,D]`, `comparison_rule=any`로 작성한다. `그리고/모두`처럼 비교 컬럼 전부가 달라야 한다고 명시한 경우에만 `comparison_rule=all`을 사용한다.
 - 이 비교 계획의 `group_by`에는 질문에서 같다고 지정한 기준 컬럼만, `comparison_columns`에는 다르다고 지정한 비교 컬럼만 넣는다. 제품 grain metadata 전체를 두 목록에 복사하거나 합쳐서 단순 전체 컬럼 groupby로 바꾸지 않는다. `grain_plan`은 entity의 표준 컬럼 계약이고 질문에서 지정한 비교 기준을 대체하지 않는다.
@@ -88,14 +88,17 @@
 - 사용자가 요청한 dimension 또는 표시 컬럼이 이미 하나의 dataset에 모두 있으면, 해당 컬럼명이 다른 join recipe에도 등장한다는 이유만으로 보조 dataset을 추가하지 않는다.
 - 예를 들어 집계 재공수량과 LOT별 상태/수량은 서로 다른 grain이다. 사용자가 LOT·랏·로트·LOT_ID·LOT 상태·LOT 건수·HOLD LOT·TAT·wafer/die/unit 같은 LOT 단위 근거를 명시하지 않았다면 일반 `재공`, `재공수량`, `WIP` 요청을 LOT 상세 dataset으로 바꾸지 않는다.
 - 여러 metric이 서로 다른 dataset을 요구하면 metric별 retrieval job을 각각 작성한다. 한 dataset에 다른 metric을 억지로 계산시키거나, 한 job의 조회 실패를 0으로 간주하지 않는다.
-- 질문을 metric/dataset별 절로 먼저 나누고, 각 절에 붙은 날짜·공장·FAB·조·기타 조건을 해당 catalog 계약에 따라 분류한다. catalog가 필수 조회 파라미터로 선언한 조건만 해당 retrieval job의 `required_params`에 넣고, 그 외 조건은 `filters`에 넣는다. 한 job의 값을 다른 job의 값으로 추정하지 않는다.
+- 질문을 metric/dataset별 절로 먼저 나누고, 각 절에 붙은 날짜·공정·공장·FAB·조·제품·상태 조건을 해당 retrieval job에만 바인딩한다. catalog가 필수 조회 파라미터로 선언한 조건만 해당 retrieval job의 `required_params`에 넣고, 그 외 조건은 그 job의 `filters`에 넣는다. 한 절의 공정 값을 다른 job으로 복사하거나 여러 절의 공정 값을 합집합으로 만들어 모든 job에 넣지 않는다.
+- `X 조건의 A metric은 있으나 Y 조건의 B metric은 없는 대상`처럼 서로 다른 조건을 비교하면 A source에는 X 조건만, B source에는 Y 조건만 적용하며 두 조건 목록을 합치지 않는다.
 - 질문의 하나의 조건이 여러 retrieval job 전체에 공통 적용되고 각 catalog가 같은 필수 파라미터를 요구하면, 같은 확정값을 해당하는 모든 job의 `required_params`에 각각 반복해서 작성한다.
+- 공정 filter도 문장 전체에 공통으로 걸린 것이 분명할 때만 여러 job에 반복한다. `X공정의 A metric과 B metric`은 양쪽 source에 같은 X 조건을 적용할 수 있지만, `X공정 A metric과 Y공정 B metric`은 서로 다른 source 조건이다.
 - 같은 파라미터라도 대상별 값이 다르면 각 job에 서로 다른 값을 작성한다. 예를 들어 `어제 재공과 오늘 생산량`은 재공 job의 DATE와 생산 job의 DATE를 서로 다르게 작성한다.
 - DATE뿐 아니라 PLANT, FAB, SHIFT 등 모든 필수 파라미터에 동일한 scope 원칙을 적용한다. `A FAB 장비와 B FAB UPH`처럼 대상별 값이 다르면 각 job에 별도로 넣는다.
 - 날짜 조건값은 입력 표기가 `YYYYMMDD`, `YYYY-MM-DD`, `YYYY/M/D`, 한국어 날짜, ISO timestamp 중 무엇이든 retrieval job에서는 `YYYYMMDD`로 작성한다. 실제 원본 컬럼의 날짜 표기 차이는 deterministic pandas 필터가 비교할 때만 정규화하며 원본 컬럼값은 변경하지 않는다.
 - 예를 들어 `target` 생산계획처럼 catalog의 `required_params`가 비어 있고 `DATE`가 filter mapping으로 등록된 데이터셋은 `required_params`를 빈 객체로 두고 `filters.DATE.operator="eq"`, `filters.DATE.value="YYYYMMDD"`로 작성한다. 반대로 catalog가 DATE를 필수로 선언한 Oracle 데이터셋은 `required_params.DATE="YYYYMMDD"`로 작성하고 같은 DATE를 `filters`에 중복하지 않는다.
 - 상대 날짜의 확정값은 날짜가 하나일 때 `state_summary.followup_hint.changed_conditions_hint.date.resolved_value`를 사용할 수 있다. `date.mentions`가 있으면 전역 날짜로 복사하지 말고 각 표현이 수식하는 metric/dataset job에 바인딩한다.
 - pandas 분석 계획에는 `filters`를 먼저 적용한 뒤 집계, 정렬, top/bottom, join 등을 수행한다는 순서를 드러낸다.
+- `A가 있으나 B가 없는`, `A에는 존재하지만 B에는 없는` 대상을 찾는 질문은 단순 left join으로 끝내지 않는다. `operation=compare_presence`, `left_source_alias`, `right_source_alias`, `left_metric_column`, `right_metric_column`, `presence_rule=left_positive_right_missing_or_zero`를 기록한다. 왼쪽 metric이 0인 대상은 제외하고 오른쪽 metric이 없거나 합계 0인 대상을 남긴다.
 - 사용자가 제품별·제품 기준 집계를 요청하면 후보 Domain의 `product_key_columns` 또는 제품 grain을 정의한 `analysis_recipes`를 선택하고 `intent_plan.grain_plan.metadata_ref`에 그 `section`과 `key`만 기록한다. 실제 제품 키 컬럼 목록을 모델이 추측하거나 고정하지 않는다.
 - 여러 dataset을 제품 기준으로 결합하면 후보 Domain의 제품 키 또는 join recipe를 선택하고 각 결합을 `intent_plan.join_plan`에 기록한다. `metadata_ref`, 좌우 `source_alias`, `join_type`, 사용자가 요청한 우측 결과 컬럼과 다중 일치 정책만 작성하며 실제 좌우 join column은 다음 정규화기가 metadata와 table catalog mapping으로 해석한다.
 - 두 dataset을 결합할 때 pandas 단계에 임의의 `filter_and_join`과 `source_alias`/`reference_source_alias` 조합만 남기지 않는다. 반드시 `intent_plan.join_plan`에 `left_source_alias`와 `right_source_alias`를 기록하고 pandas 단계도 같은 좌우 alias를 사용한다.
@@ -104,11 +107,12 @@
 - 질문 표현이 후보 Domain의 key/display_name/aliases와 일치하고 해당 `payload.condition` 또는 `payload.conditions`가 있으면, alias 문자열을 filter 값으로 새로 만들지 않는다. 등록된 canonical 필드·operator·값을 그대로 각 관련 retrieval job의 `filters`에 사용한다. 예를 들어 별칭이 문자형이어도 condition 값이 숫자 문자열이면 그 숫자 문자열을 유지한다.
 - null·빈 문자열·공백·문자열 null/none/nan/nat/<NA>/empty를 모두 제외하는 조건의 canonical operator는 `not_blank`다. `is_not_null_or_empty`, `is_not_null_and_not_empty`처럼 새 operator 이름을 만들지 말고 `{{"operator":"not_blank"}}`로 작성하며 value는 생략한다.
 - filter operator는 output schema에 열거된 canonical 값만 사용한다. Domain 후보에 legacy operator가 보이더라도 의미가 같은 canonical 값으로만 옮기고, 지원 여부를 알 수 없는 operator를 추측해서 만들지 않는다.
-- 질문 표현이 선택된 `process_groups` metadata의 key/display_name/aliases와 일치하면 그룹 이름 자체를 filter 값으로 사용하지 않는다. 해당 item의 `payload.field`를 canonical filter field로, `payload.processes`를 실제 `in [...]` 값으로 그대로 펼친다. 예를 들어 `field=OPER_NAME`이면 모든 관련 retrieval job에 `OPER_NAME in [...]`을 사용하고 dataset의 물리 컬럼 `OPER`/`OPER_NM`을 filter key로 직접 쓰지 않는다.
+- 질문 표현이 선택된 `process_groups` metadata의 key/display_name/aliases와 일치하면 그룹 이름 자체를 filter 값으로 사용하지 않는다. 해당 item의 `payload.field`를 canonical filter field로, `payload.processes`를 실제 `in [...]` 값으로 그대로 펼친다. 예를 들어 `field=OPER_NAME`이면 그 공정 표현이 수식하는 metric/dataset 절의 retrieval job에만 `OPER_NAME in [...]`을 사용하고 dataset의 물리 컬럼 `OPER`/`OPER_NM`을 filter key로 직접 쓰지 않는다.
 - 여러 `process_groups` alias가 `,`, `&`, `와/과`, `및`으로 바로 연결되고 마지막 alias에만 `공정`이라는 공통 scope 명사가 붙으면, 그 `공정` 의미를 연결된 metadata alias 전체에 적용한다. 연결 구간에 숫자·제품 token·미등록 표현이 끼면 앞 alias까지 확장하지 않으며, 질문 어디에도 `공정`이 없으면 이 공유 접미사 규칙으로 기존 판단을 제한하거나 clarification을 만들지 않는다.
 - 사용자가 숫자 등이 붙은 세부 공정을 하나 이상 명시하면 공정 그룹 전체가 아니라 질문에 명시된 세부 공정 전체를 보존한다. 한 개이면 `eq`, 두 개 이상이면 빠짐없는 `in [...]` 조건을 사용한다. 쉼표나 `와/과`, `및`으로 연결되거나 마지막 공정명에 `공정`, `에서`, `의` 같은 한글 표현이 붙어도 첫 번째 값만 남기지 않는다. 반대로 세부 차수 없이 공정 그룹 별칭만 말하면 등록된 전체 `payload.processes`를 사용한다.
-- 세부 공정과 공정 그룹을 `&`, `와/과`, `및`으로 함께 요청하면 요청 의미상 두 범위를 모두 포함한다. 실행할 때는 세부 공정 값과 그룹의 등록된 `payload.processes`를 합친 하나의 canonical field `in [...]` 조건을 사용한다. 같은 컬럼에 서로 동시에 참일 수 없는 두 개의 `AND` filter를 만들지 않는다.
+- 같은 metric/dataset 절 안에서 세부 공정과 공정 그룹을 `&`, `와/과`, `및`으로 함께 요청하면 요청 의미상 두 범위를 모두 포함한다. 실행할 때는 세부 공정 값과 그룹의 등록된 `payload.processes`를 합친 하나의 canonical field `in [...]` 조건을 사용한다. 같은 컬럼에 서로 동시에 참일 수 없는 두 개의 `AND` filter를 만들지 않는다.
 - 같은 source의 retrieval filter와 pandas 실행 계획에 공정 조건을 모두 기록한다면 동일한 세부 공정 집합을 사용한다. 서로 다른 집합의 공정 filter를 앞뒤에 중복 적용하지 않는다.
+- 최종 JSON을 반환하기 전에 retrieval job별로 `source_alias → 담당 metric → required_params → filters`를 한 번씩 대조한다. 서로 다른 metric 절의 공정 조건이 합쳐졌다면 source별 조건으로 다시 분리한다. `trace.decision_reason`에 적은 source별 조건과 실제 `retrieval_jobs[].filters`가 다르면 설명이 아니라 구조화 filters를 바로잡는다.
 - 시작 공정과 끝 공정 사이의 순서 구간을 요청하고 metadata/특화 지시에 ordered-range helper가 정의되어 있으면, 양 끝 공정을 단순 `OPER_NAME in` filter로 만들지 않는다. 해당 helper 선택과 실행 단계를 `pandas_function_cases` 및 `pandas_execution_plan`에 기록한다.
 - metadata와 공정/현장 특화 추가 지시에 function case 선택 규칙이 있을 때만 `intent_plan.pandas_function_cases` 배열을 사용한다.
 - `metadata_candidates.runtime_function_helpers`에 있고 `selectable_for_intent=true`인 helper만 `intent_plan.pandas_function_cases`에 선택할 수 있다.

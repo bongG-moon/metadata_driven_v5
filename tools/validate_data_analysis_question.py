@@ -500,27 +500,59 @@ def _process_group_expansion_errors(
             for process in processes
             if _alias_in_question(process, question_upper)
         ]
+        job_scopes = [
+            {
+                "job": job,
+                "actual_values": _condition_values(
+                    (
+                        job.get("filters")
+                        if isinstance(job.get("filters"), dict)
+                        else {}
+                    ).get("OPER_NAME")
+                ),
+            }
+            for job in jobs
+        ]
+        expected_group = {_normalized_text(process) for process in processes}
+        scoped_jobs = [
+            scope
+            for scope in job_scopes
+            if {
+                _normalized_text(value)
+                for value in scope["actual_values"]
+            }.intersection(expected_group)
+        ]
         if explicit_processes:
             expected_specific = {
                 _normalized_text(process)
                 for process in explicit_processes
             }
-            for job in jobs:
-                filters = job.get("filters") if isinstance(job.get("filters"), dict) else {}
-                condition = filters.get("OPER_NAME")
-                actual_values = _condition_values(condition)
-                actual = {_normalized_text(value) for value in actual_values}
-                if actual != expected_specific:
-                    errors.append(
+            matching_scope = next(
+                (
+                    scope
+                    for scope in scoped_jobs
+                    if expected_specific.issubset(
                         {
-                            "type": "specific_process_overexpanded",
-                            "message": "단일 세부 공정 질문이 공정 그룹 전체 조건으로 확장됐습니다.",
-                            "dataset_key": job.get("dataset_key"),
-                            "source_alias": job.get("source_alias"),
-                            "expected_oper_names": explicit_processes,
-                            "actual_oper_names": actual_values,
+                            _normalized_text(value)
+                            for value in scope["actual_values"]
                         }
                     )
+                ),
+                None,
+            )
+            if matching_scope is None:
+                representative = (scoped_jobs or job_scopes or [{"job": {}, "actual_values": []}])[0]
+                job = representative["job"]
+                errors.append(
+                    {
+                        "type": "specific_process_overexpanded",
+                        "message": "명시된 세부 공정이 해당 source의 공정 조건에 정확히 보존되지 않았습니다.",
+                        "dataset_key": job.get("dataset_key"),
+                        "source_alias": job.get("source_alias"),
+                        "expected_oper_names": explicit_processes,
+                        "actual_oper_names": representative["actual_values"],
+                    }
+                )
             continue
         metadata_identity = ("process_groups", str(item.get("key") or "").strip())
         metadata_key = f"{metadata_identity[0]}:{metadata_identity[1]}"
@@ -536,26 +568,35 @@ def _process_group_expansion_errors(
                     "metadata_key": metadata_key,
                 }
             )
-        expected = {_normalized_text(process) for process in processes}
-        for job in jobs:
-            filters = job.get("filters") if isinstance(job.get("filters"), dict) else {}
-            condition = filters.get("OPER_NAME")
-            actual_values = _condition_values(condition)
-            actual = {_normalized_text(value) for value in actual_values}
-            if not actual or not expected.issubset(actual):
-                errors.append(
+        matching_scope = next(
+            (
+                scope
+                for scope in scoped_jobs
+                if expected_group.issubset(
                     {
-                        "type": "unexpanded_process_group",
-                        "message": (
-                            f"{matched_alias} 공정 그룹이 등록된 세부 공정으로 펼쳐지지 않았습니다."
-                        ),
-                        "dataset_key": job.get("dataset_key"),
-                        "source_alias": job.get("source_alias"),
-                        "expected_oper_names": processes,
-                        "actual_oper_names": actual_values,
-                        "metadata_key": metadata_key,
+                        _normalized_text(value)
+                        for value in scope["actual_values"]
                     }
                 )
+            ),
+            None,
+        )
+        if matching_scope is None:
+            representative = (scoped_jobs or job_scopes or [{"job": {}, "actual_values": []}])[0]
+            job = representative["job"]
+            errors.append(
+                {
+                    "type": "unexpanded_process_group",
+                    "message": (
+                        f"{matched_alias} 공정 그룹이 해당 source의 등록된 세부 공정으로 펼쳐지지 않았습니다."
+                    ),
+                    "dataset_key": job.get("dataset_key"),
+                    "source_alias": job.get("source_alias"),
+                    "expected_oper_names": processes,
+                    "actual_oper_names": representative["actual_values"],
+                    "metadata_key": metadata_key,
+                }
+            )
     return errors
 
 

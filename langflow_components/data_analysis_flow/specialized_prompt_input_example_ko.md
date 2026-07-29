@@ -16,11 +16,12 @@ lead/ball suffix가 붙은 숫자 표현은 LEAD 제품 속성 token이다. 예:
 사용자가 DEVICE, 디바이스, device code처럼 DEVICE 컬럼을 직접 지칭하지 않는 한, 이 패턴의 제품 식별 token을 DEVICE filter로 만들지 않는다.
 단, domain metadata에 등록된 제품군/제품 조건 alias는 product_token_match가 아니라 해당 domain 조건으로 처리한다. 예를 들어 POP제품, MOBILE/모바일 제품, HBM제품처럼 등록된 제품군을 부르는 경우에는 제품 token helper를 선택하지 않는다.
 DA공정, D/A공정, WB공정, W/B공정, FCB공정, BG공정처럼 공정명 또는 공정 그룹만 말한 경우는 제품 token 매칭이 아니다.
-공정 조건은 match_product_tokens에 넣지 말고 retrieval job의 filters 또는 pandas 전처리 조건으로 OPER_NAME에 적용한다.
+공정 조건은 match_product_tokens에 넣지 말고 retrieval job의 filters 또는 pandas 전처리 조건으로 OPER_NAME에 적용한다. 여러 source를 비교하는 질문에서는 공정 조건을 질문 전체 목록으로 합치지 말고, 각 metric 표현이 수식하는 source_alias에만 적용한다.
 예를 들어 `D/A1, D/A2공정`처럼 여러 세부 공정을 명시하면 `OPER_NAME in ["D/A1", "D/A2"]`로 전체 목록을 보존한다. 마지막 값에 `공정`, `에서`, `의` 같은 한글 표현이 붙어도 그 값을 누락하거나 첫 번째 공정만 남기지 않는다.
-`D/S1 & D/A 공정`처럼 세부 공정 하나와 공정 그룹을 함께 요청하면 AND로 함께 요청한 두 범위를 모두 포함한다. 행 filter는 같은 OPER_NAME 컬럼에 서로 배타적인 AND 조건 두 개를 걸지 말고 `OPER_NAME in ["D/S1", "D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]`처럼 합친다.
-`DA, WB공정`, `WB & DA 공정`, `DA와 WB공정`처럼 연결된 공정 그룹 별칭의 마지막에만 `공정`이 붙으면 연결된 모든 등록 그룹을 포함한다. 각각 `DA공정, WB공정`이라고 쓴 것과 같은 범위다.
+같은 source 절에서 `D/S1 & D/A 공정`처럼 세부 공정 하나와 공정 그룹을 함께 요청하면 AND로 함께 요청한 두 범위를 모두 포함한다. 행 filter는 같은 OPER_NAME 컬럼에 서로 배타적인 AND 조건 두 개를 걸지 말고 `OPER_NAME in ["D/S1", "D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]`처럼 합친다.
+같은 source 절에서 `DA, WB공정`, `WB & DA 공정`, `DA와 WB공정`처럼 연결된 공정 그룹 별칭의 마지막에만 `공정`이 붙으면 연결된 모든 등록 그룹을 포함한다. 각각 `DA공정, WB공정`이라고 쓴 것과 같은 범위다.
 반대로 `DA 16G, WB공정`처럼 별칭 사이에 제품 속성 token이 끼면 DA까지 공정 그룹으로 확장하지 않는다. `DA, WB HOLD LOT`처럼 질문 어디에도 `공정`이 없는 표현도 이 공유 접미사 규칙으로 차단하거나 clarification으로 바꾸지 않고 기존 intent 판단을 유지한다.
+공정 목록 합집합 규칙은 하나의 metric/source 범위를 나열한 경우에만 적용한다. `INPUT 실적은 있으나 D/A공정 WIP가 없는 제품`처럼 metric마다 공정 역할이 다르면 production_today에는 `OPER_NAME=INPUT`, wip_today에는 D/A1~D/A6만 적용하고 INPUT과 D/A 목록을 양쪽 source에 합치지 않는다.
 
 두 세부 공정을 `~`, `∼`, `～`, `부터 ... 까지`, `사이`, `구간`, `범위`로 이은 질문은 양 끝 공정만 고르는 조건이 아니라 순서 구간인지 먼저 확인한다.
 예: `D/S1~D/A5`는 질문에 적힌 순서와 무관하게 두 label의 숫자 OPER_SEQ 최소값과 최대값 사이를 양 끝 포함해 조회하는 ordered range다.
@@ -35,6 +36,11 @@ ordered process range와 HOLD, 상태, LOT, 제품 같은 일반 row filter가 �
 helper보다 뒤에 적용해야 하는 일반 조건은 해당 retrieval job의 filters에 넣지 않는다. retrieval_jobs의 filters에 넣으면 Executor가 helper보다 먼저 적용해 endpoint 공정 행을 제거할 수 있다.
 대신 pandas_execution_plan에서 operation=apply_pandas_function_case인 filter_ordered_range 단계를 먼저 기록하고, 바로 다음 operation=apply_filters 단계에 같은 source_alias와 후속 조건의 field, operator, value를 기록한다.
 예를 들어 `D/S1~D/A4 공정 Hold 된 Lot ID` 질문은 HOLD_STAT=OnHold를 retrieval_jobs의 filters에 넣지 않는다. 먼저 filter_ordered_range를 실행하고, 그 결과에 HOLD_STAT=OnHold를 적용한 뒤 LOT_ID를 선택한다.
+
+특정 LOT_ID 없이 `현재 HOLD LOT`, `HOLD된 LOT 목록`, `공정별 HOLD LOT ID`처럼 현재 HOLD 대상의 목록이나 현황을 요청하면 lot_status를 선택하고 HOLD_STAT=OnHold 조건을 적용한다.
+hold_history는 LOT_ID가 필수인 이력 dataset이므로 특정 LOT_ID가 질문이나 선행 결과에 없을 때 required_params.LOT_ID를 빈 문자열로 만든 채 선택하지 않는다.
+특정 LOT의 최근 HOLD 코드, HOLD 시각, 상세 사유 또는 HOLD 이력을 요청한 경우에만 해당 LOT_ID를 required_params로 전달하여 hold_history를 선택한다.
+현재 HOLD LOT들을 먼저 찾은 뒤 각 LOT의 이력을 요청하면 lot_status에서 LOT_ID를 먼저 조회하고 그 결과의 LOT_ID들을 후속 hold_history 조회에 전달한다.
 
 질문에 제품별과 DEVICE/디바이스/device가 함께 나오면 DEVICE만 단독으로 보여주지 않는다.
 이 경우 결과 groupby/display 기준에는 DEVICE와 함께 제품 식별 속성도 포함한다.
@@ -71,6 +77,7 @@ sample_passthrough_helper는 실제 분석용 helper가 아니며, 여러 functi
 PKG OUT, OUT실적, output 실적은 생산량 metric 표현이다.
 metadata에 실제 OPER_NAME="PKG OUT" 공정이 없는 한 공정 필터로 만들지 말고 PRODUCTION 합계로 계산한다.
 INPUT, 투입, 투입 실적만 PKG INPUT 공정으로 보며 이때는 OPER_NAME="INPUT" 필터를 사용한다.
+`INPUT 실적은 있으나 D/A공정 WIP가 없는 제품`은 INPUT 실적을 제품별로 양수 집계한 결과를 left 기준으로 두고, D/A WIP를 제품별로 집계해 양수인 제품을 제외하는 presence 비교다. 단순 left join 후 모든 행을 반환하지 말고 D/A WIP가 없거나 합계가 0인 제품만 남긴다.
 
 질문에 날짜가 없고 생산량, 생산실적, 투입, 재공수량을 현재 기준으로 묻는 경우 table catalog에 당일용 dataset이 있으면 production_today 또는 wip_today를 우선 사용한다.
 production 또는 wip 이력 dataset은 어제, 전일, 특정 과거일, EOH, 아침 재공/BOH처럼 이력 기준이 명시된 경우에 사용한다.

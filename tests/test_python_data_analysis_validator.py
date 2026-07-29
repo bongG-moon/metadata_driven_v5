@@ -200,6 +200,50 @@ def test_semantic_check_accepts_expanded_group_and_device_free_product_grain():
     assert errors == []
 
 
+def test_semantic_check_accepts_source_scoped_input_and_da_filters():
+    validator = load_module(ROOT / "tools" / "validate_data_analysis_question.py")
+    da_processes = ["D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]
+    domain = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "payload": {
+                    "display_name": "D/A",
+                    "aliases": ["DA", "D/A"],
+                    "processes": da_processes,
+                },
+            }
+        ]
+    }
+
+    errors = validator._semantic_plan_errors(
+        "오늘 현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘",
+        {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production_today",
+                    "source_alias": "input_actual",
+                    "filters": {
+                        "OPER_NAME": {"operator": "eq", "value": "INPUT"}
+                    },
+                },
+                {
+                    "dataset_key": "wip_today",
+                    "source_alias": "da_wip",
+                    "filters": {
+                        "OPER_NAME": {"operator": "in", "value": da_processes}
+                    },
+                },
+            ]
+        },
+        domain,
+        domain,
+    )
+
+    assert errors == []
+
+
 def test_semantic_check_rejects_device_in_implicit_product_ranking_grain():
     validator = load_module(ROOT / "tools" / "validate_data_analysis_question.py")
     errors = validator._semantic_plan_errors(
