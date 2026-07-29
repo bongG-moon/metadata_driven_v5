@@ -638,6 +638,18 @@ def _guard_code(code: str) -> str:
             return "import 문은 허용하지 않습니다."
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_NAMES:
             return f"{node.func.id} 호출은 허용하지 않습니다."
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "str"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Attribute)
+            and node.args[0].attr == "dtype"
+        ):
+            return (
+                "str(series.dtype)는 제한 실행 환경에서 KeyError: '__import__'를 유발할 수 있습니다. "
+                "dtype 확인이 필요하면 series.dtype == object를 사용하거나 join key의 dtype 분기를 제거하세요."
+            )
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             return "dunder attribute 접근은 허용하지 않습니다."
         if isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_IO_ATTRIBUTES:

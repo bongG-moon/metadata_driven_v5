@@ -29,6 +29,7 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - 질문에 `대비`, `비율`, `효율`, `rate` 같은 표현이 있고 pandas 계획에서 비율/파생 지표를 만들면, 사용자가 절대 수량 기준을 명시하지 않는 한 해당 파생 지표를 우선 정렬 기준으로 사용한다.
 - 일반 import, open, eval, exec, 파일 접근, 네트워크 접근은 사용하지 않는다.
 - executor가 제공하는 안전 builtin은 `Exception`, `all`, `any`, `bool`, `dict`, `enumerate`, `float`, `hasattr`, `int`, `isinstance`, `len`, `list`, `max`, `min`, `object`, `range`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`이다. `df[col].dtype == object`와 `dict(zip(keys, values))` 같은 일반 pandas 표현을 사용할 수 있지만 이 목록 밖 builtin은 가정하지 않는다.
+- 제한 실행 환경에서는 `str(series.dtype)` 또는 `str(df[col].dtype)`를 사용하지 않는다. pandas/NumPy dtype 문자열 변환이 내부 import를 시도해 `KeyError: '__import__'`를 일으킬 수 있다. dtype 확인이 꼭 필요하면 `series.dtype == object`를 사용하고, join key 문자열 정규화에는 dtype 분기를 만들지 않는다.
 - `pd`는 executor가 이미 제공한다. DataFrame을 새로 만들어야 할 때도 가능하면 `import pandas as pd`를 쓰지 말고 바로 `pd.DataFrame(...)`을 사용한다.
 - 호환성을 위해 정확한 단독 구문 `import pandas as pd`와 `import numpy as np`만 executor가 실행 전에 제거하고 신뢰 namespace를 주입한다. 다른 alias, 혼합 import, `from ... import ...`는 허용하지 않는다.
 - `np`는 정확한 `import numpy as np`가 있을 때만 `where`, `select`, `nan`, `inf`, `isnan`, `isfinite`, `maximum`, `minimum` 등 제한된 계산 호환 기능으로 제공된다. 파일 I/O나 module loading API는 제공하지 않는다.
@@ -57,6 +58,7 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - 좌우 실제 key 목록이 완전히 같을 때만 `merge(..., on=keys)`를 사용할 수 있다. 하나라도 다르면 반드시 같은 순서의 `left_on`/`right_on`을 사용하고, 각 실제 key Series를 자기 DataFrame에서 독립적으로 정규화한다.
 - 조인 뒤 실제 key를 canonical 표시 컬럼으로 정리할 때도 대상 컬럼이 이미 있으면 `rename`하지 않는다. 예를 들어 결과에 `OPER_NM`과 `OPER_NAME`이 모두 있으면 `result["OPER_NAME"] = result["OPER_NM"]; result = result.drop(columns=["OPER_NM"])`로 정리한다. OPER_NM을 OPER_NAME으로 rename하는 코드는 금지한다. 대상 컬럼이 없을 때만 rename할 수 있으며, 최종 `result.columns`에는 중복 label이 없어야 한다.
 - join key 정규화는 원본 DataFrame을 변경하지 않은 copy에서 수행한다. `null_key_policy=normalize_blank`이면 좌우 key를 문자열로 맞추고 null·빈 문자열·공백을 동일한 빈 문자열로 정규화하며, 숫자형 식별값 끝의 `.0` 표기 차이는 제거한다. 날짜 컬럼은 기존 날짜 보존 규칙을 우선한다.
+- join key는 dtype을 문자열로 검사하지 말고 `series.fillna("").astype(str).str.strip().str.replace(r"\.0$", "", regex=True)`처럼 동일한 pandas 문자열 정규화를 좌우 key에 직접 적용한다. `replace("", pd.NA).fillna("")`처럼 빈 문자열을 결측값으로 바꾼 직후 다시 빈 문자열로 복원하는 불필요한 왕복은 만들지 않는다.
 - join 정규화가 필요해도 두 source의 모든 column을 순회하며 일괄 문자열 변환하지 않는다. `resolved_join_plan`의 실제 좌우 join key copy만 정규화하고, 요청하지 않은 날짜·수량·표시 컬럼 dtype은 보존한다.
 - `multi_match_policy=collect_unique`이면 같은 제품 key에 여러 장비 등 여러 우측 값이 있을 때 첫 행 하나를 `drop_duplicates`로 남기지 않는다. `right_value_columns`별 중복 없는 값을 모아 한 제품 행에 보존한다.
 - `multi_match_policy=preserve_rows`이면 유효한 우측 매칭 행을 모두 유지하고, `first`일 때만 metadata 계약에 따라 첫 행을 사용할 수 있다.

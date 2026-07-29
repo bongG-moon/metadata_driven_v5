@@ -27,7 +27,8 @@
 - 가능하면 `np.where`는 pandas `Series.where`/`mask`, `np.nan`은 `pd.NA`, 0 나눗셈 처리는 `numerator.div(denominator).mul(100).where(denominator.ne(0), 0).fillna(0)` 같은 pandas 연산으로 바꾼다.
 - numpy를 유지해야 한다면 제한된 `where`, `select`, `nan`, `inf`, `isnan`, `isfinite`, `maximum`, `minimum` 같은 계산 기능만 사용하고 파일 I/O/module loading API는 사용하지 않는다.
 - `NameError: name 'np' is not defined`인 경우 분석 의도와 결과 컬럼은 유지하면서 pandas 표현으로 최소 수정하거나 정확한 호환 구문만 사용한다.
-- `NameError: name 'object' is not defined`인 이전 실행 기록을 받으면 `dtype == object`를 `dtype == "object"` 또는 `str(dtype) == "object"`로 최소 수정하고, 같은 NameError가 발생하는 코드를 그대로 반환하지 않는다.
+- `NameError: name 'object' is not defined`인 과거 실행 기록을 받더라도 `str(dtype)` 또는 `str(series.dtype)`로 바꾸지 않는다. 현재 executor는 안전 builtin `object`를 제공하므로 dtype 확인이 꼭 필요하면 `series.dtype == object`를 사용하고, join key 문자열 정규화라면 dtype 분기 자체를 제거한다.
+- `KeyError: '__import__'`가 발생하고 실패 코드에 `str(series.dtype)` 또는 `str(df[col].dtype)`가 있으면 해당 dtype 문자열 변환을 제거한다. join key는 `series.fillna("").astype(str).str.strip().str.replace(r"\.0$", "", regex=True)`처럼 직접 정규화하고, 같은 `str(...dtype)` 호출을 retry code에 남기지 않는다.
 - `WORK_DT`, `WORK_DATE`, `DATE`, `BASE_DT`, `LOAD_DT`, `SNAPSHOT_DT`처럼 이름이나 metadata상 날짜/일자를 뜻하는 컬럼은 값이 `20200625`처럼 숫자로만 보여도 수량형 숫자가 아니라 `YYYYMMDD` 날짜 식별값으로 판단한다.
 - 날짜/일자 컬럼은 숫자형으로 변환하지 않는다. `pd.to_numeric`, `astype(int)`, `astype(float)`를 적용하거나 합계·평균·산술 연산을 하지 말고, 실패 코드가 그렇게 처리했다면 8자리 문자열을 보존하도록 수정한다.
 - 최종 `result`에 날짜/일자 컬럼이 포함되면 `sources`의 원본 DataFrame은 변경하지 말고 result copy에서 문자열로 정규화한다. 결측 때문에 `20200625.0`처럼 보이는 값은 문자열 연산으로 끝의 `.0`만 제거한 뒤 8자리를 보존하며, 숫자 연산으로 복원하지 않는다.
@@ -51,6 +52,7 @@
 - `AttributeError: 'DataFrame' object has no attribute 'str'`가 join key 정규화에서 발생하면, rename으로 같은 이름의 컬럼 label이 중복되어 `df[key]`가 DataFrame이 된 경우를 우선 확인한다. rename을 제거하고 좌우 실제 key Series를 각각 정규화한 뒤 `left_on`/`right_on`으로 조인하며, 중복 label을 유지한 채 `.str`을 다시 호출하는 코드를 반환하지 않는다.
 - 조인 결과에 좌우 실제 key와 canonical 표시 컬럼이 함께 남으면 이미 존재하는 canonical 이름으로 rename하지 않는다. `result["OPER_NAME"] = result["OPER_NM"]; result = result.drop(columns=["OPER_NM"])`처럼 값을 보존하고 실제 key를 제거한다. OPER_NM을 OPER_NAME으로 rename하는 코드를 반환하지 말고 retry `result.columns`가 고유하도록 수정한다.
 - `null_key_policy=normalize_blank`이면 join용 copy에서 좌우 key의 null·빈 문자열·공백·문자열 자료형 차이를 같은 형식으로 맞춘다. 날짜 컬럼은 날짜 보존 규칙을 우선한다.
+- join key 정규화에서는 dtype을 문자열로 검사하지 않는다. `replace("", pd.NA).fillna("")`처럼 결과가 동일한 불필요한 결측값 왕복도 제거한다.
 - join key 오류를 고칠 때도 source 전체 column을 순회하며 일괄 문자열 변환하지 말고, 계약의 실제 좌우 join key copy만 정규화한다.
 - `multi_match_policy=collect_unique`인데 실패 코드가 `drop_duplicates(subset=join_keys)`로 장비 등 여러 우측 값을 하나만 남겼다면, `right_value_columns`별 중복 없는 값을 집계해 보존하도록 수정한다.
 - `operation=compare_group_attributes` 코드가 실패했다면 계획의 `group_by`만 기준키로, `comparison_columns`만 비교 대상으로 사용한다. 기준 컬럼 `groupby(..., dropna=False)` → 비교 컬럼 `nunique(dropna=False)` → `comparison_rule`에 따른 `any/all` 기준키 선택 → 원본 `merge` 순서로 단순하게 다시 작성하고, 최종 고유 속성 조합은 `group_by + comparison_columns`로 `drop_duplicates()`한다.

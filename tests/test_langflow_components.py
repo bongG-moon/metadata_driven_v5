@@ -5828,6 +5828,56 @@ def test_integrated_pandas_repair_receives_non_whitelisted_import_error():
     assert repair["selected"] == "retry"
 
 
+def test_integrated_pandas_repair_replaces_dtype_stringification_that_requires_import_builtin():
+    pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    repair_template = (ROOT / "langflow_components" / "data_analysis_flow" / "17b_pandas_repair_prompt_template_ko.md").read_text(encoding="utf-8")
+    prompts: list[str] = []
+    payload = {
+        "intent_plan": {"retrieval_jobs": [], "pandas_execution_plan": []},
+        "runtime_sources": {"data": [{"KEY": "A"}, {"KEY": None}]},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    failing_code = (
+        "df = sources['data'].copy()\n"
+        "if str(df['KEY'].dtype) == 'object':\n"
+        "    df['KEY'] = df['KEY'].fillna('').astype(str)\n"
+        "result = df"
+    )
+
+    blocked = pandas_executor.execute_pandas_code(payload, {"code": failing_code})
+    assert blocked["analysis"]["status"] == "error"
+    assert blocked["analysis"]["error"]["type"] == "unsafe_code"
+    assert "str(series.dtype)" in blocked["analysis"]["error"]["message"]
+    assert "KeyError: '__import__'" in blocked["analysis"]["error"]["message"]
+
+    def repair_once(prompt: str):
+        prompts.append(prompt)
+        return {
+            "code": (
+                "df = sources['data'].copy()\n"
+                "df['KEY'] = df['KEY'].fillna('').astype(str).str.strip()\n"
+                "result = df"
+            )
+        }
+
+    result = pandas_executor.execute_pandas_with_repair(
+        payload,
+        {"code": failing_code},
+        repair_invoker=repair_once,
+        repair_prompt_template=repair_template,
+    )
+
+    repair = result["trace"]["inspection"]["pandas_repair"]
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["rows"] == [{"KEY": "A"}, {"KEY": ""}]
+    assert len(prompts) == 1
+    assert "str(df['KEY'].dtype)" in prompts[0]
+    assert "KeyError: '__import__'" in prompts[0]
+    assert repair["attempted"] is True
+    assert repair["llm_called"] is True
+    assert repair["selected"] == "retry"
+
+
 def test_integrated_pandas_repair_passes_failed_code_and_error_then_selects_clean_retry():
     pandas_executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
     repair_template = (ROOT / "langflow_components" / "data_analysis_flow" / "17b_pandas_repair_prompt_template_ko.md").read_text(encoding="utf-8")
@@ -13546,6 +13596,10 @@ def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
     assert "multi_match_policy=collect_unique" in pandas_prompt
     assert "resolved_grain_plan.strict=true" in repair_prompt
     assert "`drop_duplicates(subset=join_keys)`" in repair_prompt
+    assert "`str(series.dtype)` 또는 `str(df[col].dtype)`를 사용하지 않는다" in pandas_prompt
+    assert "`series.dtype == object`" in pandas_prompt
+    assert "`KeyError: '__import__'`" in repair_prompt
+    assert "같은 `str(...dtype)` 호출을 retry code에 남기지 않는다" in repair_prompt
 
 
 def test_v5_catalog_hydrator_propagates_only_safe_column_contract():
