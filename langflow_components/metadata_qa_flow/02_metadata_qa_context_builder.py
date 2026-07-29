@@ -53,6 +53,7 @@ NO_DOMAIN_CANDIDATE_MODES = {
 }
 DEFAULT_MAX_ITEMS = 50
 DEFAULT_MAX_BYTES = 65536
+REGISTRATION_TEXT_LIMIT = 2000
 DETERMINISTIC_ANSWER_MODES = {
     "available_sources",
     "available_domains",
@@ -87,7 +88,7 @@ def build_metadata_qa_context(
     domain_items, domain_load = _extract_items(domain_items_value, "domain_items")
     table_items, table_load = _extract_items(table_catalog_items_value, "table_catalog_items")
     filter_items, filter_load = _extract_items(main_flow_filters_value, "main_flow_filters")
-    domain_items = [_sanitize(item) for item in domain_items]
+    domain_items = [_sanitize_domain_item(item) for item in domain_items]
     table_items = [_sanitize(item) for item in table_items]
     filter_items = [_sanitize(item) for item in filter_items]
 
@@ -299,6 +300,12 @@ def _looks_like_product_domain_question(lowered: str) -> bool:
         "설명",
     )
     if any(token in lowered for token in product_group_tokens) and any(token in lowered for token in metadata_detail_tokens):
+        return True
+    if (
+        any(token in lowered for token in ("제품", "product"))
+        and any(token in lowered for token in ("조건", "필터", "구분"))
+        and any(token in lowered for token in metadata_detail_tokens + ("어떻게", "기준"))
+    ):
         return True
     return "pop" in lowered and any(token in lowered for token in ("도메인", "정의", "무엇", "뭐야", "설명"))
 
@@ -680,10 +687,16 @@ def _select_domain_items(question: str, answer_mode: str, items: list[dict[str, 
         product_items = [item for item in items if str(item.get("section") or "") in PRODUCT_DOMAIN_SECTIONS]
         if _looks_like_product_domain_inventory(question.lower()):
             return product_items[:limit]
+        exact_items = _explicit_named_items(question, product_items)
+        if exact_items:
+            return exact_items[:limit]
         ranked = _ranked(question + " product_terms 제품군 제품 조건", product_items, limit)
         return ranked if ranked else product_items[:limit]
     if answer_mode == "product_condition":
         product_items = [item for item in items if str(item.get("section") or "") in PRODUCT_DOMAIN_SECTIONS]
+        exact_items = _explicit_named_items(question, product_items)
+        if exact_items:
+            return exact_items[:limit]
         ranked = _ranked(question + " product_terms 제품군 제품 조건", product_items, limit)
         return ranked if ranked else product_items[:limit]
     if answer_mode == "product_token_rule":
@@ -862,6 +875,10 @@ def _name_in_question(name: Any, question: str) -> bool:
     lowered = str(question or "").lower()
     if not text or not lowered:
         return False
+    # 영문으로 등록된 일반 제품명도 자연스러운 한글 음역 질문에서 같은 명시 이름으로 취급합니다.
+    name_equivalents = {"mobile": ("모바일",)}
+    if any(alias in lowered for alias in name_equivalents.get(text, ())):
+        return True
     starts_with_ascii_token = bool(re.match(r"[a-z0-9_]", text))
     ends_with_ascii_token = bool(re.search(r"[a-z0-9_]$", text))
     if starts_with_ascii_token or ends_with_ascii_token:
@@ -1044,7 +1061,13 @@ def _score(tokens: set[str], item: dict[str, Any]) -> int:
 def _tokens(text: str) -> set[str]:
     lowered = str(text or "").lower()
     raw = re.findall(r"[0-9a-zA-Z가-힣_/.-]+", lowered)
-    aliases = {"생산량": {"production", "output", "실적"}, "재공": {"wip"}, "투입": {"input"}, "쿼리": {"query", "sql"}}
+    aliases = {
+        "생산량": {"production", "output", "실적"},
+        "재공": {"wip"},
+        "투입": {"input"},
+        "쿼리": {"query", "sql"},
+        "모바일": {"mobile"},
+    }
     result = {token.strip() for token in raw if len(token.strip()) >= 2}
     for token in list(result):
         result.update(aliases.get(token, set()))
@@ -1139,6 +1162,7 @@ def _project_domain_item(item: dict[str, Any], answer_mode: str) -> dict[str, An
             "key": item.get("key"),
             "status": item.get("status"),
             "payload": _project_dict(payload, keys),
+            "registration_text": item.get("registration_text") if answer_mode != "available_domains" else "",
         }
     )
 
@@ -1381,6 +1405,7 @@ def _domain_row(item: dict[str, Any], include_section: bool = False) -> dict[str
             "step_plan_template": payload.get("step_plan_template"),
             "question_cues": payload.get("question_cues") or payload.get("required_question_cues"),
             "description": payload.get("description") or payload.get("usage_rule"),
+            "registration_text": item.get("registration_text"),
         }
     )
 
@@ -1429,6 +1454,35 @@ def _source_refs(domain_items: list[dict[str, Any]], table_items: list[dict[str,
 def _sanitize(item: dict[str, Any]) -> dict[str, Any]:
     value = _sanitize_value(item)
     return value if isinstance(value, dict) else {}
+
+
+# 함수 설명: 도메인 문서의 내부 registration trace는 제거하되, 비밀값을 마스킹한 등록 원문만 별도 표시 필드로 보존합니다.
+def _sanitize_domain_item(item: dict[str, Any]) -> dict[str, Any]:
+    sanitized = _sanitize(item)
+    registration_trace = _dict(item.get("registration_trace"))
+    registration_text = _sanitize_registration_text(registration_trace.get("raw_text"))
+    if registration_text:
+        sanitized["registration_text"] = registration_text
+    return sanitized
+
+
+# 함수 설명: 과거 문서에 마스킹되지 않은 credential이 있더라도 QA 응답으로 노출되지 않도록 등록 원문을 재마스킹합니다.
+def _sanitize_registration_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    pattern = re.compile(
+        r"(?i)(password|passwd|token|secret|api[_-]?key|authorization|credential|mongo[_-]?uri)"
+        r"([\"']?\s*[:=]\s*[\"']?)([^\s,;\"'}]+)"
+    )
+    text = pattern.sub(r"\1\2***", text)
+    text = re.sub(r"(?i)\b(bearer)\s+[^\s,;\"'}]+", r"\1 ***", text)
+    text = re.sub(
+        r"(?i)([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@",
+        r"\1***:***@",
+        text,
+    )
+    return text[:REGISTRATION_TEXT_LIMIT]
 
 
 # 함수 설명: `_sanitize_value()`는 LLM 문맥에서 trace·credential·내부 필드를 제거하고 비밀값을 마스킹합니다.

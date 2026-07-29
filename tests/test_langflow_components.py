@@ -9221,7 +9221,14 @@ def test_metadata_qa_snapshot_loader_uses_one_client_and_short_process_cache(mon
     store = install_fake_pymongo(monkeypatch)
     store["datagov"] = {
         "agent_v4_domain_items": {
-            "domain:process_groups:DA": {"_id": "domain:process_groups:DA", "section": "process_groups", "key": "DA", "status": "active", "payload": {"processes": ["D/A1"]}},
+            "domain:process_groups:DA": {
+                "_id": "domain:process_groups:DA",
+                "section": "process_groups",
+                "key": "DA",
+                "status": "active",
+                "payload": {"processes": ["D/A1"]},
+                "registration_trace": {"raw_text": "DA 공정 그룹을 등록해줘."},
+            },
         },
         "agent_v4_table_catalog_items": {
             "table_catalog:production_today": {"_id": "table_catalog:production_today", "dataset_key": "production_today", "status": "active", "payload": {"source_type": "oracle"}},
@@ -9246,6 +9253,7 @@ def test_metadata_qa_snapshot_loader_uses_one_client_and_short_process_cache(mon
     refreshed = loader.load_metadata_snapshot(request, "mongodb://fake", "datagov", cache_ttl_seconds="0")
 
     assert first["metadata_snapshot"]["count"] == 3
+    assert first["domain_items"][0]["registration_trace"]["raw_text"] == "DA 공정 그룹을 등록해줘."
     assert first["metadata_snapshot"]["cache_hit"] is False
     assert first_client_count == 1
     assert sys.modules["pymongo"].metrics["client_count"] == 2
@@ -9374,15 +9382,30 @@ def test_metadata_qa_product_group_details_use_only_registered_product_terms():
     normalizer = load_module(
         ROOT / "langflow_components" / "metadata_qa_flow" / "04_metadata_qa_response_normalizer.py"
     )
+    message_adapter = load_module(
+        ROOT / "langflow_components" / "metadata_qa_flow" / "05_metadata_qa_message_adapter.py"
+    )
     domain_items = {
         "domain_items": [
             {
                 "section": "product_terms",
                 "key": "MOBILE",
+                "registration_trace": {
+                    "raw_text": (
+                        "MOBILE 제품 조건을 등록해줘. "
+                        "MODE는 LP로 시작하고 API_KEY=top-secret 값을 사용하지 마."
+                    )
+                },
                 "payload": {
                     "display_name": "MOBILE",
-                    "aliases": ["MOBILE", "모바일"],
-                    "condition": {"Mode": ["LPDDR4", "LPDDR5"]},
+                    "aliases": ["MOBILE"],
+                    "condition": {
+                        "operator": "and",
+                        "operands": [
+                            {"field": "MODE", "operator": "startsWith", "value": "LP"},
+                            {"field": "MCP_NO", "operator": "isEmpty"},
+                        ],
+                    },
                     "condition_by_family": {
                         "production": {"MODE": ["LPDDR4", "LPDDR5"]},
                         "wip": {"Mode": ["LPDDR4", "LPDDR5"]},
@@ -9393,6 +9416,16 @@ def test_metadata_qa_product_group_details_use_only_registered_product_terms():
                 },
             },
             {
+                "section": "product_terms",
+                "key": "POP",
+                "registration_trace": {"raw_text": "POP 제품 조건을 등록해줘."},
+                "payload": {
+                    "display_name": "POP 제품",
+                    "aliases": ["POP"],
+                    "condition": {"MCP_NO": {"operator": "is_not_null_and_not_empty"}},
+                },
+            },
+            {
                 "section": "process_groups",
                 "key": "WB",
                 "payload": {"display_name": "W/B", "processes": ["W/B1"]},
@@ -9400,7 +9433,7 @@ def test_metadata_qa_product_group_details_use_only_registered_product_terms():
         ]
     }
     payload = {
-        "request": {"question": "제품 그룹 관련 등록된 도메인 정보를 알려줘"},
+        "request": {"question": "모바일 제품은 조건이 어떻게 등록되어있어?"},
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
@@ -9410,6 +9443,7 @@ def test_metadata_qa_product_group_details_use_only_registered_product_terms():
         context_payload,
         '{"answer_message":"등록값과 다른 임의 답변"}',
     )
+    message = message_adapter.build_message(answer)
 
     assert context_payload["metadata_route"]["answer_mode"] == "product_domain_info"
     assert context["query_scope"]["subject"] == "product_terms"
@@ -9418,12 +9452,28 @@ def test_metadata_qa_product_group_details_use_only_registered_product_terms():
     assert [(row["section"], row["key"]) for row in context["candidate_rows"]] == [
         ("product_terms", "MOBILE")
     ]
+    assert context["candidate_rows"][0]["condition"] == {
+        "operator": "and",
+        "operands": [
+            {"field": "MODE", "operator": "startsWith", "value": "LP"},
+            {"field": "MCP_NO", "operator": "isEmpty"},
+        ],
+    }
+    assert "top-secret" not in context["candidate_rows"][0]["registration_text"]
+    assert "API_KEY=***" in context["candidate_rows"][0]["registration_text"]
     assert answer["trace"]["inspection"]["metadata_qa_response"]["used_llm_response"] is False
     assert answer["data"]["rows"][0]["제품 그룹"] == "MOBILE"
-    assert answer["data"]["rows"][0]["데이터 계열별 조건"] == {
-        "production": {"MODE": ["LPDDR4", "LPDDR5"]},
-        "wip": {"Mode": ["LPDDR4", "LPDDR5"]},
-    }
+    assert answer["data"]["rows"][0]["기본 조건"] == "(MODE 시작값 LP AND MCP_NO = 빈칸)"
+    assert (
+        answer["data"]["rows"][0]["데이터 계열별 조건"]
+        == "production.MODE = LPDDR4, LPDDR5; wip.Mode = LPDDR4, LPDDR5"
+    )
+    assert answer["data"]["rows"][0]["등록 원문"].startswith("MOBILE 제품 조건을 등록해줘.")
+    assert "top-secret" not in answer["data"]["rows"][0]["등록 원문"]
+    assert "기본 조건" in message
+    assert "MODE 시작값 LP" in message
+    assert "등록 원문" in message
+    assert "MOBILE 제품 조건을 등록해줘." in message
 
 
 def test_metadata_qa_product_aggregation_explains_keys_and_grain_without_llm():

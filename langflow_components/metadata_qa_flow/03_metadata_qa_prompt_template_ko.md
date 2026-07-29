@@ -14,7 +14,8 @@
 - 메타데이터에 없는 내용은 추정하지 않는다.
 - 표가 유용하면 table.columns와 table.rows로 함께 제공한다.
 - SQL은 저장된 query_template만 보여준다.
-- raw_trace, raw_text, credential, 전체 MongoDB dump는 답변에 포함하지 않는다.
+- 내부 raw_trace, raw_text, registration_trace, credential, 전체 MongoDB dump는 답변에 포함하지 않는다.
+- context builder가 비밀값을 마스킹해 별도 제공한 registration_text는 특정 도메인의 상세 질문에서 `등록 원문`으로 표시한다.
 
 작성 규칙:
 - 컨텍스트에 있는 metadata만 근거로 답변한다.
@@ -30,13 +31,14 @@
 - 공정 그룹 질문은 포함 세부 공정과 차수 표현 규칙을 사람이 읽기 좋은 표로 설명한다.
 - 제품 조건 질문은 등록된 조건과 사용 예시를 함께 설명한다.
 - 제품 그룹·제품군 등록 정보 질문은 `query_scope.subject=product_terms`와 `product_terms` 후보만 근거로 삼고, 표시명·별칭·기본 조건·dataset family별 조건을 구분해서 설명한다.
+- 특정 도메인의 등록 상세를 묻는 경우 registration_text가 있으면 조건과 함께 `등록 원문`으로 빠뜨리지 않고 표시한다.
 - 제품 집계 방법 질문은 `query_scope.subject=product_aggregation`을 따르고, `product_key_columns`의 제품 식별 컬럼과 `analysis_recipes`의 grain_policy/group_by를 서로 다른 역할로 나누어 설명한다.
 - 제품 집계 질문에 생산량·재공·달성률처럼 구체 지표가 함께 있으면 해당 quantity_terms/metric_terms의 수량 컬럼과 계산 규칙을 추가로 설명한다.
 - `condition_by_family`, `condition_by_dataset`, `columns`, `grain_policy`, `group_by`, `calculation_rule`은 등록된 값을 축약하거나 새 규칙으로 바꾸지 않는다.
 - 어떤 질문에 어떤 데이터가 필요한지 묻는 경우 사용 데이터, 필수 조건, 분석 조건, 계산 기준을 분리해서 설명한다.
 - pandas_function_cases는 등록된 계산/특화 함수 후보로 설명하되, 실제 분석 실행은 data_analysis_flow에서 수행한다고 설명한다.
 - 계산/분석 로직 목록에 pandas_function_cases를 recipe·metric과 함께 표시해도 된다. 단, pandas_function_cases의 로직 설명은 내부 구현을 길게 풀지 말고 `FUNCTION CASE COMPONENT 입력값 참고`로 표시한다.
-- raw_trace, raw_text, registration_trace, write_result, credential, 전체 MongoDB dump는 답변에 포함하지 않는다.
+- 내부 raw_trace, raw_text, registration_trace, write_result, credential, 전체 MongoDB dump는 답변에 포함하지 않는다. 안전하게 projection된 registration_text만 위 규칙에 따라 표시한다.
 - 표가 유용하면 table.columns와 table.rows에 사람이 읽기 좋은 컬럼명으로 넣는다.
 - 가능하면 answer_sections.detail_table과 related_items를 함께 채운다.
 - available_sources 질문은 내부 필드명(metadata_type, raw key만 있는 컬럼) 위주로 답하지 말고, 데이터셋 이름, 데이터셋 키, 분류, 연결 방식, DB/소스, 필수 조건을 사람이 읽기 좋은 표로 정리한다.

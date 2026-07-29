@@ -485,7 +485,7 @@ def _service_table(answer_type: str, table: dict[str, Any]) -> dict[str, Any]:
         }
     if answer_type in {"product_domain_info", "product_condition"}:
         return {
-            "columns": ["제품 그룹", "메타데이터 키", "별칭", "기본 조건", "데이터 계열별 조건", "데이터셋별 조건", "설명"],
+            "columns": ["제품 그룹", "메타데이터 키", "별칭", "기본 조건", "데이터 계열별 조건", "데이터셋별 조건", "설명", "등록 원문"],
             "rows": [_product_domain_row(row) for row in rows],
         }
     if answer_type == "calculation_logic_list":
@@ -495,7 +495,7 @@ def _service_table(answer_type: str, table: dict[str, Any]) -> dict[str, Any]:
         }
     if answer_type == "process_group":
         process_rows = [_process_group_row(row) for row in rows]
-        preferred_columns = ["공정 그룹", "메타데이터 키", "별칭", "포함 공정", "설명"]
+        preferred_columns = ["공정 그룹", "메타데이터 키", "별칭", "포함 공정", "설명", "등록 원문"]
         return {
             "columns": [
                 column
@@ -515,6 +515,7 @@ def _service_table(answer_type: str, table: dict[str, Any]) -> dict[str, Any]:
             "데이터 계열별 조건",
             "데이터셋별 조건",
             "설명",
+            "등록 원문",
         ]
         return {
             # 모든 행에서 비어 있는 선택 컬럼은 표에서 제외해 넓고 빈 표가 되는 것을 방지합니다.
@@ -537,6 +538,7 @@ def _process_group_row(row: dict[str, Any]) -> dict[str, Any]:
             "별칭": row.get("aliases"),
             "포함 공정": row.get("processes"),
             "설명": row.get("description") or row.get("usage_rule"),
+            "등록 원문": row.get("registration_text"),
         }
     )
 
@@ -553,6 +555,7 @@ def _term_definition_row(row: dict[str, Any]) -> dict[str, Any]:
             "데이터 계열별 조건": _condition_text(row.get("condition_by_family")),
             "데이터셋별 조건": _condition_text(row.get("condition_by_dataset")),
             "설명": row.get("description") or row.get("usage_rule"),
+            "등록 원문": row.get("registration_text"),
         }
     )
 
@@ -563,6 +566,30 @@ def _condition_text(value: Any, prefix: str = "") -> str:
         return ""
     if isinstance(value, dict):
         operator = str(value.get("operator") or "").strip()
+        normalized_operator = operator.replace("-", "_").lower()
+        operands = value.get("operands")
+        if normalized_operator in {"and", "or"} and isinstance(operands, list):
+            joiner = " AND " if normalized_operator == "and" else " OR "
+            rendered_operands = [_condition_text(item) for item in operands]
+            expression = joiner.join(item for item in rendered_operands if item)
+            if not expression:
+                return ""
+            rendered = f"({expression})" if len(rendered_operands) > 1 else expression
+            return f"{prefix.rstrip('.')}: {rendered}" if prefix else rendered
+        field = str(value.get("field") or value.get("column") or "").strip()
+        if operator and field:
+            condition_value = value.get("value") if "value" in value else value.get("values")
+            label = f"{prefix.rstrip('.')}.{field}" if prefix else field
+            operator_label = _operator_label(operator)
+            if normalized_operator in {"isnull", "is_null"}:
+                return f"{label} IS NULL"
+            if normalized_operator in {"isempty", "is_empty"}:
+                return f"{label} = 빈칸"
+            if normalized_operator in {"isnotnull", "is_not_null"}:
+                return f"{label} IS NOT NULL"
+            if normalized_operator in {"is_not_null_and_not_empty", "isnotnullandnotempty"}:
+                return f"{label} 값 존재"
+            return f"{label} {operator_label} {_display_condition_value(condition_value)}".strip()
         if operator and any(key in value for key in ("value", "values")):
             condition_value = value.get("value") if "value" in value else value.get("values")
             label = prefix.rstrip(".") or "값"
@@ -574,6 +601,14 @@ def _condition_text(value: Any, prefix: str = "") -> str:
             if rendered:
                 parts.append(rendered)
         return "; ".join(parts)
+    if isinstance(value, (list, tuple, set)):
+        if any(isinstance(item, dict) for item in value):
+            rendered_items = [_condition_text(item) for item in value]
+            expression = " AND ".join(item for item in rendered_items if item)
+            return f"{prefix.rstrip('.')}: {expression}" if prefix and expression else expression
+        rendered_value = _display_condition_value(value)
+        label = prefix.rstrip(".")
+        return f"{label} = {rendered_value}" if label else rendered_value
     label = prefix.rstrip(".")
     rendered_value = _display_condition_value(value)
     return f"{label} = {rendered_value}" if label else rendered_value
@@ -587,6 +622,7 @@ def _operator_label(value: str) -> str:
         "in": "IN",
         "contains": "포함",
         "starts_with": "시작값",
+        "startswith": "시작값",
         "between": "범위",
     }.get(str(value or "").strip().lower(), str(value or "").strip())
 
@@ -607,10 +643,11 @@ def _product_domain_row(row: dict[str, Any]) -> dict[str, Any]:
             "제품 그룹": row.get("display_name") or row.get("key"),
             "메타데이터 키": row.get("key"),
             "별칭": row.get("aliases"),
-            "기본 조건": row.get("condition") or row.get("filters"),
-            "데이터 계열별 조건": row.get("condition_by_family"),
-            "데이터셋별 조건": row.get("condition_by_dataset"),
+            "기본 조건": _condition_text(row.get("condition") or row.get("filters")),
+            "데이터 계열별 조건": _condition_text(row.get("condition_by_family")),
+            "데이터셋별 조건": _condition_text(row.get("condition_by_dataset")),
             "설명": row.get("description"),
+            "등록 원문": row.get("registration_text"),
         }
     )
 
@@ -635,6 +672,7 @@ def _calculation_rule_row(row: dict[str, Any]) -> dict[str, Any]:
             "집계 방식": row.get("aggregation") or row.get("aggregation_method") or row.get("calculation_rule"),
             "계산식": row.get("formula"),
             "설명": description,
+            "등록 원문": row.get("registration_text"),
         }
     )
 

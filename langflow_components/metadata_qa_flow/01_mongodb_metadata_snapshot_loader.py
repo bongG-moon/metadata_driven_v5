@@ -86,7 +86,11 @@ def _load_metadata_snapshot_unlocked(
     }
     loads: dict[str, dict[str, Any]] = {}
     specs = (
-        ("domain_items", config["domain_collection_name"], {"_id": 0, "section": 1, "key": 1, "status": 1, "payload": 1}),
+        (
+            "domain_items",
+            config["domain_collection_name"],
+            {"_id": 0, "section": 1, "key": 1, "status": 1, "payload": 1, "registration_trace": 1},
+        ),
         # v4 초기 문서는 dataset_key 대신 top-level key만 가진 경우가 있어 두 필드를 함께 읽습니다.
         ("table_catalog_items", config["table_collection_name"], {"_id": 0, "dataset_key": 1, "key": 1, "status": 1, "payload": 1}),
         ("main_flow_filters", config["filter_collection_name"], {"_id": 0, "filter_key": 1, "status": 1, "payload": 1}),
