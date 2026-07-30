@@ -100,6 +100,23 @@ def _validation_failures(payload: dict[str, Any]) -> list[dict[str, Any]]:
     validation = retrieval.get("job_validation") if isinstance(retrieval.get("job_validation"), dict) else {}
     hydration = inspection.get("catalog_hydration") if isinstance(inspection.get("catalog_hydration"), dict) else {}
     failures: list[dict[str, Any]] = []
+    duplicate_result_errors = [
+        deepcopy(item)
+        for item in trace.get("errors", [])
+        if isinstance(item, dict)
+        and item.get("type") == "duplicate_source_alias_result"
+    ] if isinstance(trace.get("errors"), list) else []
+    for item in duplicate_result_errors:
+        failures.append(
+            {
+                "type": "duplicate_source_alias_result",
+                "message": str(
+                    item.get("message")
+                    or "동일 source_alias의 조회 결과가 중복되었습니다."
+                ),
+                "source_aliases": deepcopy(item.get("source_aliases") or []),
+            }
+        )
     if _positive_int(validation.get("error_count")):
         validation_errors = [
             deepcopy(item)

@@ -45,6 +45,7 @@ STRUCTURED_SEARCH_KEYS = {
     "metrics",
     "metric_columns",
     "metric_semantics",
+    "temporal_semantics",
     "quantity_columns",
     "join_keys",
     "required_params",
@@ -59,6 +60,7 @@ CANONICAL_MAPPING_KEYS = {
     "processes",
     "process_groups",
     "members",
+    "temporal_semantics",
 }
 DOMAIN_FILTER_CONTAINER_KEYS = {
     "condition",
@@ -901,12 +903,25 @@ def _tokens(value: str) -> list[str]:
     for token in _separator_normalized_tokens(value):
         if len(token) >= 2 and token not in result:
             result.append(token)
+    for token in _compact_korean_phrase_tokens(value):
+        if len(token) >= 2 and token not in result:
+            result.append(token)
     for raw_token in re.findall(r"[0-9A-Za-z가-힣_]+", str(value or "").lower()):
         for token in _token_variants(raw_token):
             if len(token) < 2 or token in stop or token in result:
                 continue
             result.append(token)
     return result[:60]
+
+
+# 함수 설명: 공백이 있는 한국어 복합 alias를 붙여 쓴 질문과도 동일하게 비교할 compact 변형으로 만듭니다.
+def _compact_korean_phrase_tokens(value: str) -> list[str]:
+    result: list[str] = []
+    for match in re.finditer(r"[가-힣]+(?:\s+[가-힣]+)+", str(value or "").lower()):
+        compact = re.sub(r"\s+", "", match.group(0))
+        if 2 <= len(compact) <= 20 and compact not in result:
+            result.append(compact)
+    return result
 
 
 # 함수 설명: 숫자 세부 공정 뒤에 공정 접미사가 붙은 표현에서 metadata 공정 그룹을 찾을 stem을 추출합니다.

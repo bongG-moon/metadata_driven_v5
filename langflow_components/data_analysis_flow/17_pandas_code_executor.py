@@ -167,9 +167,13 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
         return _blocked_execution_payload(payload)
     llm_code, response_parse = _parse_pandas_llm_response(llm_response)
     normalized_llm_code, safe_imports = _normalize_safe_imports(llm_code)
+    deterministic_execution = _deterministic_execution_contract(payload)
+    execution_mode = str(
+        deterministic_execution.get("operation") or "llm_generated_code"
+    )
     code = normalized_llm_code
     next_payload = payload
-    if not normalized_llm_code.strip():
+    if not normalized_llm_code.strip() and not deterministic_execution:
         return _analysis_error(
             next_payload,
             "missing_code",
@@ -202,11 +206,14 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             row_match_preamble,
             response_parse,
         )
-    code = _with_pandas_execution_preambles(
-        code,
-        row_match_preamble,
-        filter_preamble,
-    )
+    if deterministic_execution:
+        code = filter_preamble
+    else:
+        code = _with_pandas_execution_preambles(
+            code,
+            row_match_preamble,
+            filter_preamble,
+        )
     helper_trace = _runtime_helper_trace(code)
     guard_error = _guard_code(code)
     if guard_error:
@@ -224,7 +231,11 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             row_match_preamble,
             response_parse,
         )
-    metric_semantics_error = _metric_semantics_contract_error(next_payload, code)
+    metric_semantics_error = (
+        ""
+        if deterministic_execution
+        else _metric_semantics_contract_error(next_payload, code)
+    )
     if metric_semantics_error:
         return _analysis_error(
             next_payload,
@@ -301,17 +312,37 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
         }
         if safe_imports.get("numpy_requested") is True:
             exec_ns["np"] = _safe_numpy_namespace()
-        exec(compile(code, "<pandas_code>", "exec"), exec_ns, exec_ns)
-        row_match_execution_value = exec_ns.get("_row_match_execution", [])
-        row_match_execution = (
-            deepcopy(row_match_execution_value)
-            if isinstance(row_match_execution_value, list)
-            else []
-        )
-        result = exec_ns.get("result")
-        if result is None:
-            result = exec_ns.get("result_df")
+        if deterministic_execution:
+            if code.strip():
+                exec(compile(code, "<pandas_filter_preamble>", "exec"), exec_ns, exec_ns)
+                sources = (
+                    exec_ns.get("sources")
+                    if isinstance(exec_ns.get("sources"), dict)
+                    else sources
+                )
+            result = _execute_deterministic_contract(
+                deterministic_execution,
+                sources,
+                pd,
+            )
+            row_match_execution = []
+        else:
+            exec(compile(code, "<pandas_code>", "exec"), exec_ns, exec_ns)
+            row_match_execution_value = exec_ns.get("_row_match_execution", [])
+            row_match_execution = (
+                deepcopy(row_match_execution_value)
+                if isinstance(row_match_execution_value, list)
+                else []
+            )
+            result = exec_ns.get("result")
+            if result is None:
+                result = exec_ns.get("result_df")
         rows, columns = _result_to_rows(result, next_payload)
+        rows, columns = _apply_strict_result_columns(
+            rows,
+            columns,
+            next_payload,
+        )
         rows = _normalize_blank_dimension_values(rows, next_payload)
         rows = _normalize_missing_metric_values(rows, next_payload)
         missing_columns = _missing_required_output_columns(next_payload, columns)
@@ -332,12 +363,16 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             "used_helpers": helper_trace["used_helpers"],
             "step_outputs": step_outputs,
             "function_case_results": function_case_results,
+            "execution_mode": execution_mode,
         }
         next_payload["data"] = {"columns": columns, "rows": rows[:RESULT_PREVIEW_LIMIT], "row_count": len(rows), "data_ref": ""}
         next_payload.setdefault("trace", {}).setdefault("inspection", {})["pandas_execution"] = {
             "stage": "17_pandas_code_executor",
             "status": "ok",
             "generated_code": code,
+            "llm_generated_code": normalized_llm_code,
+            "execution_mode": execution_mode,
+            "llm_code_executed": not bool(deterministic_execution),
             "llm_response_parse": response_parse,
             "safe_import_normalization": _safe_import_trace(safe_imports),
             "used_helpers": helper_trace["used_helpers"],
@@ -380,6 +415,367 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             row_match_preamble,
             response_parse,
         )
+
+
+# 함수 설명: 정규화기가 만든 신뢰 가능한 다중 source 계약 중 실행할 하나를 선택합니다.
+def _deterministic_execution_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    for key in ("resolved_metric_merge_plan", "resolved_reference_join_plan"):
+        value = plan.get(key)
+        if isinstance(value, dict) and value.get("strict") is True:
+            return deepcopy(value)
+    return {}
+
+
+# 함수 설명: 다중 metric 병합 또는 직전 결과 enrich 계약을 pandas 코드 대신 내부 구현으로 실행합니다.
+def _execute_deterministic_contract(
+    contract: dict[str, Any],
+    sources: dict[str, Any],
+    pd: Any,
+) -> Any:
+    operation = str(contract.get("operation") or "").strip()
+    if operation == "merge_metric_sources":
+        return _execute_metric_source_merge(contract, sources, pd)
+    if operation == "enrich_previous_result":
+        return _execute_previous_result_enrichment(contract, sources, pd)
+    raise OutputContractError(f"지원하지 않는 deterministic 실행 계약입니다: {operation}")
+
+
+# 함수 설명: 서로 다른 source의 metric을 각자 집계하고 정규화 grain으로 outer merge합니다.
+def _execute_metric_source_merge(
+    contract: dict[str, Any],
+    sources: dict[str, Any],
+    pd: Any,
+) -> Any:
+    grain_mappings = [
+        item
+        for item in contract.get("grain_mappings", [])
+        if isinstance(item, dict)
+    ]
+    metrics = [
+        item for item in contract.get("metrics", []) if isinstance(item, dict)
+    ]
+    if not grain_mappings or len(metrics) < 2:
+        raise OutputContractError("다중 metric 병합 계약에 grain 또는 metric이 부족합니다.")
+    aggregated_frames: list[Any] = []
+    join_columns = [
+        str(item.get("output_column") or item.get("canonical_column") or "").strip()
+        for item in grain_mappings
+    ]
+    if any(not column for column in join_columns):
+        raise OutputContractError("다중 metric 병합 계약의 grain output column이 비어 있습니다.")
+
+    for metric in metrics:
+        alias = str(metric.get("source_alias") or "").strip()
+        frame = sources.get(alias)
+        if frame is None:
+            raise OutputContractError(f"metric source를 찾을 수 없습니다: {alias}")
+        working = frame.copy()
+        selected_columns: dict[str, str] = {}
+        for mapping, output_column in zip(grain_mappings, join_columns):
+            source_candidates = (
+                mapping.get("source_candidates", {}).get(alias, [])
+                if isinstance(mapping.get("source_candidates"), dict)
+                else []
+            )
+            source_column = _find_frame_column(working, source_candidates)
+            if not source_column:
+                raise OutputContractError(
+                    f"{alias} source에서 grain 컬럼을 찾을 수 없습니다: {output_column}"
+                )
+            selected_columns[output_column] = source_column
+        metric_column = _find_frame_column(
+            working,
+            _string_list(metric.get("source_candidates"))
+            or _string_list(metric.get("source_column")),
+        )
+        output_metric = str(metric.get("output_column") or "").strip()
+        aggregation = str(metric.get("aggregation") or "sum").strip().lower()
+        if not metric_column or not output_metric:
+            raise OutputContractError(
+                f"{alias} source의 metric 컬럼 또는 출력명이 유효하지 않습니다."
+            )
+        shaped = pd.DataFrame(index=working.index)
+        for output_column, source_column in selected_columns.items():
+            shaped[output_column] = working[source_column].map(
+                _normalize_deterministic_join_value
+            )
+        shaped["__metric_value__"] = working[metric_column]
+        grouped = _group_and_aggregate_frame(
+            shaped,
+            join_columns,
+            "__metric_value__",
+            output_metric,
+            aggregation,
+            pd,
+        )
+        aggregated_frames.append(grouped)
+
+    result = aggregated_frames[0]
+    for right in aggregated_frames[1:]:
+        result = result.merge(right, on=join_columns, how="outer")
+    if contract.get("fill_zero_on_success") is True:
+        for metric in metrics:
+            output_metric = str(metric.get("output_column") or "").strip()
+            if output_metric in result.columns:
+                result[output_metric] = result[output_metric].fillna(0)
+    return result
+
+
+# 함수 설명: 직전 결과를 left table로 고정하고 신규 source 집계를 실제 물리 key로 병합합니다.
+def _execute_previous_result_enrichment(
+    contract: dict[str, Any],
+    sources: dict[str, Any],
+    pd: Any,
+) -> Any:
+    left_alias = str(contract.get("left_source_alias") or "").strip()
+    right_alias = str(contract.get("right_source_alias") or "").strip()
+    left = sources.get(left_alias)
+    right = sources.get(right_alias)
+    if left is None or right is None:
+        missing = left_alias if left is None else right_alias
+        raise OutputContractError(f"후속 enrich source를 찾을 수 없습니다: {missing}")
+    left = left.copy()
+    right = right.copy()
+    key_mappings = [
+        item for item in contract.get("key_mappings", []) if isinstance(item, dict)
+    ]
+    aggregations = [
+        item for item in contract.get("aggregations", []) if isinstance(item, dict)
+    ]
+    if not key_mappings or not aggregations:
+        raise OutputContractError("후속 enrich 계약에 key 또는 aggregation이 부족합니다.")
+
+    temp_keys: list[str] = []
+    for index, mapping in enumerate(key_mappings, start=1):
+        left_column = str(mapping.get("left_column") or "").strip()
+        right_column = _find_frame_column(
+            right,
+            _string_list(mapping.get("right_candidates")),
+        )
+        if left_column not in left.columns or not right_column:
+            raise OutputContractError(
+                "후속 enrich key 컬럼을 찾을 수 없습니다: "
+                + str(mapping.get("canonical_key") or left_column)
+            )
+        temp_key = f"__join_key_{index}__"
+        temp_keys.append(temp_key)
+        left[temp_key] = left[left_column].map(_normalize_deterministic_join_value)
+        right[temp_key] = right[right_column].map(_normalize_deterministic_join_value)
+
+    named_aggregations: dict[str, Any] = {}
+    fill_defaults: dict[str, Any] = {}
+    for item in aggregations:
+        source_column = _find_frame_column(
+            right,
+            _string_list(item.get("source_candidates"))
+            or _string_list(item.get("source_column")),
+        )
+        output_column = str(item.get("output_column") or "").strip()
+        method = str(item.get("aggregation") or "sum").strip().lower()
+        if not source_column or not output_column:
+            raise OutputContractError("후속 enrich aggregation 컬럼 계약이 유효하지 않습니다.")
+        if output_column in left.columns:
+            left = left.drop(columns=[output_column])
+        if method == "collect_unique":
+            named_aggregations[output_column] = pd.NamedAgg(
+                column=source_column,
+                aggfunc=_collect_unique_display_values,
+            )
+            fill_defaults[output_column] = ""
+        else:
+            named_aggregations[output_column] = pd.NamedAgg(
+                column=source_column,
+                aggfunc=_pandas_aggregation_method(method),
+            )
+            fill_defaults[output_column] = (
+                0 if method in {"sum", "count", "nunique"} else None
+            )
+    if right.empty:
+        right_grouped = pd.DataFrame(columns=[*temp_keys, *named_aggregations])
+    else:
+        right_grouped = (
+            right.groupby(temp_keys, dropna=False)
+            .agg(**named_aggregations)
+            .reset_index()
+        )
+    result = left.merge(right_grouped, on=temp_keys, how="left")
+    result = result.drop(columns=temp_keys)
+    for output_column, default in fill_defaults.items():
+        if output_column in result.columns and default is not None:
+            result[output_column] = result[output_column].fillna(default)
+    return result
+
+
+# 함수 설명: 단일 metric 집계를 NamedAgg 호환 방식으로 실행하고 빈 source schema도 보존합니다.
+def _group_and_aggregate_frame(
+    frame: Any,
+    group_columns: list[str],
+    source_column: str,
+    output_column: str,
+    method: str,
+    pd: Any,
+) -> Any:
+    if frame.empty:
+        return pd.DataFrame(columns=[*group_columns, output_column])
+    aggregation = _pandas_aggregation_method(method)
+    return (
+        frame.groupby(group_columns, dropna=False)
+        .agg(
+            **{
+                output_column: pd.NamedAgg(
+                    column=source_column,
+                    aggfunc=aggregation,
+                )
+            }
+        )
+        .reset_index()
+    )
+
+
+# 함수 설명: 허용 집계명을 pandas NamedAgg에서 사용할 함수명으로 제한합니다.
+def _pandas_aggregation_method(method: str) -> Any:
+    normalized = str(method or "").strip().lower()
+    allowed = {
+        "sum",
+        "mean",
+        "min",
+        "max",
+        "count",
+        "nunique",
+        "median",
+        "first",
+        "last",
+    }
+    if normalized not in allowed:
+        raise OutputContractError(f"지원하지 않는 deterministic 집계 방식입니다: {method}")
+    return normalized
+
+
+# 함수 설명: collect_unique 계약에 따라 중복 없는 값을 원래 순서대로 쉼표 문자열로 만듭니다.
+def _collect_unique_display_values(values: Any) -> str:
+    result: list[str] = []
+    for value in values:
+        normalized = _normalize_deterministic_join_value(value)
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return ", ".join(result)
+
+
+# 함수 설명: join key의 null·공백·정수형 float 표현을 동일한 문자열로 정규화합니다.
+def _normalize_deterministic_join_value(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.casefold() in BLANK_MATCH_TEXTS:
+        return ""
+    signless = text[1:] if text.startswith("-") else text
+    parts = signless.split(".", 1)
+    if (
+        len(parts) == 2
+        and parts[0].isdigit()
+        and parts[1]
+        and set(parts[1]) == {"0"}
+    ):
+        return text.split(".", 1)[0]
+    return text
+
+
+# 함수 설명: DataFrame 실제 컬럼에서 후보와 대소문자 무시 일치하는 첫 값을 선택합니다.
+def _find_frame_column(frame: Any, candidates: list[str]) -> str:
+    available = {
+        str(column).strip().casefold(): str(column)
+        for column in getattr(frame, "columns", [])
+        if str(column).strip()
+    }
+    for candidate in candidates:
+        matched = available.get(str(candidate).strip().casefold())
+        if matched:
+            return matched
+    return ""
+
+
+# 함수 설명: strict result_columns 계약에 따라 alias를 하나로 rename하고 선언되지 않은 중복·추가 컬럼을 제거합니다.
+def _apply_strict_result_columns(
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = (
+        plan.get("output_contract")
+        if isinstance(plan.get("output_contract"), dict)
+        else {}
+    )
+    if contract.get("strict_result_columns") is not True:
+        return rows, columns
+    declared = _string_list(contract.get("result_columns"))
+    if not declared:
+        return rows, columns
+
+    selections: list[tuple[str, str]] = []
+    used_actual: dict[str, str] = {}
+    for target in declared:
+        equivalents = {
+            str(item).strip().casefold()
+            for item in _equivalent_column_names(target, payload)
+            if str(item).strip()
+        }
+        matches = [
+            column
+            for column in columns
+            if str(column).strip().casefold() in equivalents
+        ]
+        if not matches:
+            continue
+        exact = next(
+            (
+                column
+                for column in matches
+                if str(column).strip().casefold() == target.casefold()
+            ),
+            "",
+        )
+        selected = exact or matches[0]
+        _validate_equivalent_result_values(rows, target, matches)
+        marker = selected.casefold()
+        if marker in used_actual and used_actual[marker] != target:
+            raise OutputContractError(
+                "동일한 실제 컬럼이 여러 결과 컬럼으로 중복 선언되었습니다: "
+                f"{used_actual[marker]}, {target}"
+            )
+        used_actual[marker] = target
+        selections.append((target, selected))
+
+    projected_rows = [
+        {
+            target: row.get(actual)
+            for target, actual in selections
+            if actual in row
+        }
+        for row in rows
+    ]
+    return projected_rows, [target for target, _ in selections]
+
+
+# 함수 설명: canonical/physical 동의 컬럼이 동시에 존재할 때 값이 다르면 임의 선택하지 않고 계약 오류로 차단합니다.
+def _validate_equivalent_result_values(
+    rows: list[dict[str, Any]],
+    target: str,
+    matches: list[str],
+) -> None:
+    if len(matches) < 2:
+        return
+    for row in rows:
+        values = [
+            _normalize_deterministic_join_value(row.get(column))
+            for column in matches
+            if column in row
+        ]
+        if len(set(values)) > 1:
+            raise OutputContractError(
+                f"동일 의미 결과 컬럼의 값이 충돌합니다: {target} ({', '.join(matches)})"
+            )
 
 
 # 주요 함수: 최초 실행 실패 시 이전 코드와 오류를 전달해 최대 한 번 복구한 결과를 반환합니다.
@@ -683,6 +1079,9 @@ def _guard_code(code: str) -> str:
 
 # 함수 설명: trusted catalog의 비가산 metric 계약과 pandas 계획·코드의 집계 방식이 충돌하는지 검사합니다.
 def _metric_semantics_contract_error(payload: dict[str, Any], code: str) -> str:
+    lineage_error = _cross_metric_copy_contract_error(payload, code)
+    if lineage_error:
+        return lineage_error
     semantics = _non_additive_metric_semantics(payload)
     if not semantics:
         return ""
@@ -768,6 +1167,73 @@ def _metric_semantics_contract_error(payload: dict[str, Any], code: str) -> str:
         if has_groupby and not has_column_selection and active_metrics:
             metric = next(iter(active_metrics))
             return f"비가산 metric {metric}을 포함한 groupby 결과 전체에 sum을 사용할 수 없습니다."
+    return ""
+
+
+# 함수 설명: 서로 다른 source binding을 가진 metric 컬럼 간 직접 복사를 AST에서 찾아 차단합니다.
+def _cross_metric_copy_contract_error(payload: dict[str, Any], code: str) -> str:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = (
+        plan.get("output_contract")
+        if isinstance(plan.get("output_contract"), dict)
+        else {}
+    )
+    bindings = [
+        item for item in contract.get("metric_bindings", []) if isinstance(item, dict)
+    ]
+    if len(bindings) < 2:
+        return ""
+    identities: dict[str, tuple[str, str, str]] = {}
+    for item in bindings:
+        identity = (
+            str(item.get("source_alias") or "").casefold(),
+            str(item.get("dataset_key") or "").casefold(),
+            str(item.get("source_column") or "").casefold(),
+        )
+        for column in (
+            item.get("output_column"),
+            item.get("source_column"),
+        ):
+            text = str(column or "").strip()
+            if text:
+                identities[text.casefold()] = identity
+    try:
+        tree = ast.parse(code or "")
+    except SyntaxError:
+        return ""
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        value = node.value
+        source_column = _subscript_string_column(value)
+        if not source_column:
+            continue
+        source_identity = identities.get(source_column.casefold())
+        if not source_identity:
+            continue
+        for target in targets:
+            target_column = _subscript_string_column(target)
+            target_identity = identities.get(target_column.casefold())
+            if (
+                target_column
+                and target_identity
+                and target_identity != source_identity
+            ):
+                return (
+                    "서로 다른 조회 source의 metric을 직접 복사할 수 없습니다: "
+                    f"{target_column} = {source_column}"
+                )
+    return ""
+
+
+# 함수 설명: frame['COLUMN'] 형태 AST에서 문자열 컬럼명을 추출합니다.
+def _subscript_string_column(node: Any) -> str:
+    if not isinstance(node, ast.Subscript):
+        return ""
+    slice_value = node.slice
+    if isinstance(slice_value, ast.Constant) and isinstance(slice_value.value, str):
+        return str(slice_value.value).strip()
     return ""
 
 
@@ -1137,11 +1603,9 @@ def _available_source_columns(payload: dict[str, Any]) -> list[str]:
     return columns
 
 
-# 함수 설명: `_equivalent_column_names()`는 표준 컬럼과 카탈로그 alias를 같은 출력 컬럼으로 비교할 후보 집합으로 만듭니다.
+# 함수 설명: `_equivalent_column_names()`는 현재 컬럼과 retrieval job에 명시된 카탈로그 alias만 같은 출력 컬럼 후보로 묶습니다.
 def _equivalent_column_names(column: str, payload: dict[str, Any]) -> list[str]:
-    candidates = _field_candidates(column)
-    if column not in candidates:
-        candidates.insert(0, column)
+    candidates = [column] if str(column or "").strip() else []
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
     candidate_keys = {item.casefold() for item in candidates}
@@ -1830,7 +2294,17 @@ def _condition_code(
     mask_var = f"_filter_mask_{job_index}_{condition_index}"
     date_series_var = f"_filter_date_series_{job_index}_{condition_index}"
     candidates = _mapped_field_candidates(field, column_mappings)
-    lines = [f"    {col_var} = {_column_choice_expression(df_var, candidates)}", f"    {values_var} = {values!r}", f"    if {col_var}:"]
+    missing_message = (
+        "pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: "
+        f"{field} (candidates={candidates})"
+    )
+    lines = [
+        f"    {col_var} = {_column_choice_expression(df_var, candidates)}",
+        f"    {values_var} = {values!r}",
+        f"    if not {col_var}:",
+        f"        raise Exception({missing_message!r})",
+        f"    if {col_var}:",
+    ]
     if operator in {"eq", "in"}:
         if _is_date_filter_field(field):
             lines.append(f"        {values_var} = [_normalize_date_filter_value(value) for value in {values_var}]")
@@ -2127,37 +2601,23 @@ def _blank_aware_membership_expression(series: str, values: list[Any]) -> str:
     return " | ".join(f"({expression})" for expression in expressions) or "False"
 
 
-# 함수 설명: `_field_candidates()`는 표준 필터 field에 대응할 수 있는 실제 컬럼 alias 후보를 반환합니다.
-def _field_candidates(field: str) -> list[str]:
-    aliases = {
-        "DATE": ["DATE", "WORK_DATE", "WORK_DT", "LOAD_DT", "BASE_DT"],
-        "WORK_DATE": ["WORK_DATE", "WORK_DT", "DATE"],
-        "MODE": ["MODE", "Mode"],
-        "DEN": ["DEN", "DENSITY"],
-        "PKG_TYPE1": ["PKG_TYPE1", "PKG1"],
-        "PKG_TYPE2": ["PKG_TYPE2", "PKG2"],
-        "MCP_NO": ["MCP_NO", "MCP NO"],
-        "TSV_DIE_TYP": ["TSV_DIE_TYP", "TSV_DIE_TYPE"],
-        "OPER_NUM": ["OPER_NUM", "OPER"],
-        "OPER_NAME": ["OPER_NAME", "OPER_NM"],
-        "EQP_ID": ["EQP_ID", "EQUIP_ID"],
-        "EQP_MODEL": ["EQP_MODEL", "EQUIP_MODEL", "EQPIP_MODEL"],
-    }
-    return aliases.get(field, [field])
-
-
-# 함수 설명: `_mapped_field_candidates()`는 카탈로그의 표준→실제 컬럼 매핑을 hardcoded 호환 alias보다 우선 후보에 합칩니다.
+# 함수 설명: `_mapped_field_candidates()`는 Main Flow가 retrieval job에 주입한 카탈로그 매핑과 동일 이름만 실행 후보로 사용합니다.
 def _mapped_field_candidates(field: str, mappings: dict[str, Any] | None = None) -> list[str]:
     candidates: list[str] = []
     mapping = mappings if isinstance(mappings, dict) else {}
     for standard, aliases in mapping.items():
-        if str(standard).strip().casefold() != str(field).strip().casefold():
+        group = [str(standard or "").strip(), *_string_list(aliases)]
+        group_keys = {item.casefold() for item in group if item}
+        if str(field).strip().casefold() not in group_keys:
             continue
         candidates.extend(_string_list(aliases))
+        if str(standard or "").strip():
+            candidates.append(str(standard).strip())
         break
-    for candidate in _field_candidates(field):
-        if candidate.casefold() not in {item.casefold() for item in candidates}:
-            candidates.append(candidate)
+    if str(field or "").strip() and str(field).casefold() not in {
+        item.casefold() for item in candidates
+    }:
+        candidates.append(str(field).strip())
     return candidates
 
 

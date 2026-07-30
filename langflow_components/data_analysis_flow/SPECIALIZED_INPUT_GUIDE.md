@@ -24,7 +24,7 @@
 
 ```text
 W/B, WB, Wire Bond는 같은 공정 그룹으로 해석한다.
-아침재공/BOH는 별도 실시간 snapshot이 없으면 전일 WIP 데이터 기준으로 집계한다.
+질문 기준일과 실제 조회일이 다른 업무 용어는 해당 Domain의 `temporal_semantics`에 dataset, 날짜 파라미터와 일수 offset을 등록하고 공통 처리기가 이를 적용한다.
 PKG OUT은 제품별 생산실적 중 PKG 완료 조건을 우선 확인하고, metadata에 정의된 조건이 있으면 그 조건을 따른다.
 
 제품 단위 집계·순위 질문은 후보 Domain의

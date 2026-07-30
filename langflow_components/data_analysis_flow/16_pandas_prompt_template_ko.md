@@ -15,6 +15,9 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 
 - 코드는 `sources` dict에 들어 있는 DataFrame만 사용한다.
 - `sources["alias"]` 형태로 데이터를 읽는다.
+- `intent_plan.resolved_metric_merge_plan.strict=true` 또는 `intent_plan.resolved_reference_join_plan.strict=true`이면 해당 다중 source 병합은 executor가 내부 계약으로 직접 실행한다. LLM에서 별도의 `prev_map`/`ea_map`, canonical rename, merge, metric 복제 코드를 만들지 말고 `result = pd.DataFrame()`만 반환한다. 이 placeholder는 실제 결과 계산에 사용되지 않는다.
+- `output_contract.metric_bindings`가 있으면 각 output metric은 지정된 `source_alias`, `dataset_key`, `source_column`, `aggregation`에서만 계산한다. 서로 다른 binding의 metric을 `result["WIP_QTY"] = result["PRODUCTION_QTY"]`처럼 직접 복사하지 않는다.
+- `output_contract.strict_result_columns=true`이면 executor가 `result_columns` 순서로 alias를 하나만 선택하고 추가 컬럼을 제거한다. 같은 값을 질문용 이름과 일반 이름으로 중복 생성하지 않는다.
 - 입력으로 제공된 intent plan, source schema, output contract JSON 전체를 실행 코드 안의 dict로 다시 복사하지 않는다. 분석에 실제로 필요한 컬럼·조건·계약 값만 Python 변수로 작성한다.
 - 실행 코드에는 JSON 전용 literal `true`, `false`, `null`을 쓰지 않는다. 불리언·결측 상수가 실제로 필요하면 Python의 `True`, `False`, `None`을 사용한다.
 - `intent_plan.retrieval_jobs[].required_params`는 이미 데이터 조회 단계에서 적용된 값으로 본다.

@@ -1,16 +1,17 @@
 # Data Analysis Flow v5 대표 질문과 기대 결과
 
-갱신일: 2026-07-29
+갱신일: 2026-07-30
 결정적 검증 기준일: `20260701`
 기본 조회 모드: `04A.retrieval_mode=dummy`
 
 ## 구성 원칙
 
-- 대표 질문은 총 31개다.
+- 대표 질문은 총 30개다.
 - 기존 질문 1~10은 회귀 연속성을 위해 그대로 유지한다.
-- 11~31은 2026-07-29에 개선한 source별 필터 분리, 숫자 비교, 공정 범위, 공정 그룹 인식, 빈 값, 제품 비교, UPH 비가산 지표, HOLD 이력, 제품별 장비 매칭을 검증한다.
+- 11~30은 2026-07-29에 개선한 source별 필터 분리, 숫자 비교, 공정 범위, 공정 그룹 인식, 빈 값, 제품 비교, UPH 비가산 지표, 현재 HOLD, 제품별 장비 매칭을 검증한다.
 - 실행 계약과 상세 기대값의 기준은 `tools/validate_representative_questions.py`다.
-- 멀티턴 질문은 별도의 세션 기반 validator로 검증하며 이 31개 단일 실행 결과에 섞지 않는다.
+- 멀티턴 질문은 별도의 세션 기반 validator로 검증하며 이 30개 단일 실행 결과에 섞지 않는다.
+- `hold_history`는 `LOT_ID`가 필수이므로 독립 질문에서 제외하고, 선행 LOT 결과를 사용하는 멀티턴 검증에서만 확인한다.
 
 ## 기존 대표 질문 1~10
 
@@ -25,7 +26,7 @@
 9. `FCB 공정에서 SP 16G DDR5 2ND X4 78 FCBGA SDP 제품의 전일 생산량 알려줘`
 10. `6/24일 투입 실적 대비 D/S1, DA1공정에서 WIP 많은 제품 알려줘`
 
-## 개선 대표 질문 11~31
+## 개선 대표 질문 11~30
 
 | No. | 질문 요약 | 핵심 기대 결과 | 검증 목적 |
 | ---: | --- | --- | --- |
@@ -48,18 +49,17 @@
 | 27 | D/A1 할당 장비의 모델·Recipe | 1행, `EQP002`, `EQM-HBM`, `RCP-002` | UPH 미요청 시 equipment_assign만 사용 |
 | 28 | WB 현재 HOLD LOT와 사유 | 1행, `T1234567GEN1` | 현재 HOLD 조건과 사유 표시 |
 | 29 | 현재 HOLD LOT 상세 수량·TAT | 3행 | UNIT/Wafer 의미 매핑과 TAT 표시 |
-| 30 | 현재 HOLD LOT별 최신 이력 | 3행, 과거 H000 제외 | LOT별 최신 HOLD 이력 선택과 join |
-| 31 | DA 상위 3개 제품별 장비 대수·LIST | 3행, blank MCP 제품 장비 2대 | 제품 행 단위 매칭, blank/null 정규화, 제품별 집계 |
+| 30 | DA 상위 3개 제품별 장비 대수·LIST | 3행, blank MCP 제품 장비 2대 | 제품 행 단위 매칭, blank/null 정규화, 제품별 집계 |
 
 ## 대표 실행
 
 ```powershell
-.\.venv\Scripts\python.exe tools\validate_representative_questions.py --output validation_outputs\representative_questions_dummy_fixture_20260729.json
+.\.venv\Scripts\python.exe tools\validate_representative_questions.py --output validation_outputs\representative_questions_dummy_fixture_20260730.json
 ```
 
 합격 기준:
 
-- `31/31 passed`
+- `30/30 passed`
 - 모든 결과의 `analysis.status=ok`
 - Dummy 실행의 `data_mode=dummy`
 - 질문별 dataset, source별 filter, 결과 컬럼, 기대 행과 대조군 제외 조건을 모두 만족
@@ -67,4 +67,4 @@
 
 ## 별도 멀티턴 검증
 
-후속 질문은 [DATA_ANALYSIS_CURRENT_VALIDATION_QUESTION_SET_20260729.md](DATA_ANALYSIS_CURRENT_VALIDATION_QUESTION_SET_20260729.md)의 MT-1~MT-5를 동일 `session_id`로 실행한다. 대표 31문항이 통과해도 세션 저장, 이전 결과 참조, 조건 상속과 독립 질문 전환은 별도로 확인해야 한다.
+후속 질문은 [DATA_ANALYSIS_CURRENT_VALIDATION_QUESTION_SET_20260729.md](DATA_ANALYSIS_CURRENT_VALIDATION_QUESTION_SET_20260729.md)의 MT-1~MT-5를 동일 `session_id`로 실행한다. 대표 30문항이 통과해도 세션 저장, 이전 결과 참조, 조건 상속과 독립 질문 전환은 별도로 확인해야 한다. 특히 HOLD history는 MT-2처럼 선행 결과의 `LOT_ID`가 전달되는 경로로 검증한다.

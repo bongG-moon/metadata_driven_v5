@@ -41,6 +41,22 @@ def merge_source_retrieval_payloads(main_payload_value: Any, *retrieval_values: 
         source_results.extend([item for item in retrieval.get("source_results", []) if isinstance(item, dict)])
         errors.extend(retrieval.get("errors", []))
         warnings.extend(retrieval.get("warnings", []))
+    result_aliases = [_alias(item) for item in source_results if _alias(item)]
+    duplicate_result_aliases = sorted(
+        {
+            alias
+            for alias in result_aliases
+            if result_aliases.count(alias) > 1
+        }
+    )
+    if duplicate_result_aliases:
+        errors.append(
+            {
+                "type": "duplicate_source_alias_result",
+                "message": "여러 조회 분기에서 같은 source_alias 결과가 반환되었습니다.",
+                "source_aliases": duplicate_result_aliases,
+            }
+        )
     next_payload = payload
     compact_results = [_compact_source_result(item) for item in source_results]
     existing_results = [
@@ -78,6 +94,7 @@ def merge_source_retrieval_payloads(main_payload_value: Any, *retrieval_values: 
             "skipped_sources": skipped_sources,
             "preserved_existing_runtime_sources": bool(payload.get("runtime_sources")),
             "merged_source_aliases": [_alias(item) for item in merged_results if _alias(item)],
+            "duplicate_result_aliases": duplicate_result_aliases,
         }
     )
     inspection["data_retrieval"] = retrieval_inspection

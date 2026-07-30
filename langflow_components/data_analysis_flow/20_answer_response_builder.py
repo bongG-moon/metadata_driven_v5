@@ -1134,6 +1134,14 @@ def _compact_resolved_grain_plan(value: Any) -> dict[str, Any]:
             "dataset_key": plan.get("dataset_key"),
             "canonical_columns": _string_list(plan.get("canonical_columns")),
             "grain_columns": _string_list(plan.get("grain_columns")),
+            "column_mappings": [
+                {
+                    "canonical_key": item.get("canonical_key"),
+                    "source_candidates": _string_list(item.get("source_candidates")),
+                }
+                for item in _list(plan.get("column_mappings"))[:20]
+                if isinstance(item, dict)
+            ],
             "strict": plan.get("strict"),
         }
     )

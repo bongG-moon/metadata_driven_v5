@@ -41,7 +41,27 @@ def validate_retrieval_payload(payload_value: Any) -> dict[str, Any]:
     ] if isinstance(plan.get("validation_errors"), list) else []
     errors = intent_errors
     if not intent_errors:
-        for index, job in enumerate(jobs):
+        aliases = [
+            str(job.get("source_alias") or "").strip()
+            for job in jobs
+            if isinstance(job, dict)
+        ]
+        duplicate_aliases = sorted(
+            {
+                alias
+                for alias in aliases
+                if alias and aliases.count(alias) > 1
+            }
+        )
+        if duplicate_aliases:
+            errors.append(
+                _error(
+                    "duplicate_source_alias",
+                    "source_alias must be unique within retrieval_jobs",
+                    source_aliases=duplicate_aliases,
+                )
+            )
+        for index, job in enumerate(jobs if not duplicate_aliases else []):
             if not isinstance(job, dict):
                 errors.append(_error("invalid_retrieval_job", "retrieval job must be an object", index=index))
                 continue

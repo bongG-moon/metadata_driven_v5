@@ -179,7 +179,23 @@ def retrieve_dummy_data(payload_value: Any) -> dict[str, Any]:
         if not isinstance(job, dict):
             continue
         rows = _rows_for_dataset(str(job.get("dataset_key") or ""))
-        rows = _apply_params(rows, job.get("required_params"))
+        column_mappings = {
+            **(
+                job.get("standard_column_aliases")
+                if isinstance(job.get("standard_column_aliases"), dict)
+                else {}
+            ),
+            **(
+                job.get("filter_mappings")
+                if isinstance(job.get("filter_mappings"), dict)
+                else {}
+            ),
+        }
+        rows = _apply_params(
+            rows,
+            job.get("required_params"),
+            column_mappings=column_mappings,
+        )
         results.append(
             {
                 "source_alias": job.get("source_alias") or job.get("dataset_key"),
@@ -1461,20 +1477,35 @@ def _hold_row(base: dict[str, Any], lot_id: str, hold_cd: str, hold_desc: str) -
     }
 
 
-# 함수 설명: `_apply_params()`는 더미 행에 날짜·공정·제품 등 조회 파라미터 조건을 적용합니다.
-def _apply_params(rows: list[dict[str, Any]], params: Any) -> list[dict[str, Any]]:
+# 함수 설명: `_apply_params()`는 더미 행에 날짜·공정·제품 등 조회 파라미터 조건을 카탈로그 컬럼 매핑에 따라 적용합니다.
+def _apply_params(
+    rows: list[dict[str, Any]],
+    params: Any,
+    column_mappings: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     if not isinstance(params, dict):
         return rows
     filtered = rows
     for field, value in params.items():
         if value in (None, "", [], {}):
             continue
-        filtered = _filter_rows(filtered, str(field), [value], "eq", keep_if_missing=True)
+        filtered = _filter_rows(
+            filtered,
+            str(field),
+            [value],
+            "eq",
+            keep_if_missing=False,
+            column_mappings=column_mappings,
+        )
     return filtered
 
 
-# 함수 설명: `_apply_filters()`는 더미 행에 표준 field/operator/value 필터 조건을 순서대로 적용합니다.
-def _apply_filters(rows: list[dict[str, Any]], filters: Any) -> list[dict[str, Any]]:
+# 함수 설명: `_apply_filters()`는 더미 행에 표준 field/operator/value 필터 조건을 카탈로그 컬럼 매핑에 따라 적용합니다.
+def _apply_filters(
+    rows: list[dict[str, Any]],
+    filters: Any,
+    column_mappings: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     if isinstance(filters, list):
         items = [(condition.get("field"), condition) for condition in filters if isinstance(condition, dict)]
     elif isinstance(filters, dict):
@@ -1493,13 +1524,27 @@ def _apply_filters(rows: list[dict[str, Any]], filters: Any) -> list[dict[str, A
             operator = "eq"
         if not isinstance(values, list):
             values = [values]
-        filtered = _filter_rows(filtered, str(field), values, str(operator), keep_if_missing=True)
+        filtered = _filter_rows(
+            filtered,
+            str(field),
+            values,
+            str(operator),
+            keep_if_missing=True,
+            column_mappings=column_mappings,
+        )
     return filtered
 
 
-# 함수 설명: `_filter_rows()`는 조건과 우선순위에 맞는 행 목록만 골라 원래 순서를 유지해 반환합니다.
-def _filter_rows(rows: list[dict[str, Any]], field: str, values: list[Any], operator: str, keep_if_missing: bool) -> list[dict[str, Any]]:
-    candidates = _field_candidates(field)
+# 함수 설명: `_filter_rows()`는 명시적 카탈로그 매핑 또는 동일 이름 컬럼에만 조건을 적용합니다.
+def _filter_rows(
+    rows: list[dict[str, Any]],
+    field: str,
+    values: list[Any],
+    operator: str,
+    keep_if_missing: bool,
+    column_mappings: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    candidates = _mapped_field_candidates(field, column_mappings)
     if not any(any(candidate in row for candidate in candidates) for row in rows):
         return rows if keep_if_missing else []
     normalized_values = {_normalize(value) for value in values}
@@ -1512,23 +1557,38 @@ def _filter_rows(rows: list[dict[str, Any]], field: str, values: list[Any], oper
     return rows
 
 
-# 함수 설명: `_field_candidates()`는 표준 필터 field에 대응할 수 있는 실제 컬럼 alias 후보를 반환합니다.
-def _field_candidates(field: str) -> list[str]:
-    aliases = {
-        "DATE": ["DATE", "WORK_DATE", "WORK_DT", "LOAD_DT", "BASE_DT"],
-        "WORK_DATE": ["WORK_DATE", "WORK_DT", "DATE"],
-        "MODE": ["MODE", "Mode"],
-        "DEN": ["DEN", "DENSITY"],
-        "PKG_TYPE1": ["PKG_TYPE1", "PKG1"],
-        "PKG_TYPE2": ["PKG_TYPE2", "PKG2"],
-        "MCP_NO": ["MCP_NO", "MCP NO"],
-        "TSV_DIE_TYP": ["TSV_DIE_TYP", "TSV_DIE_TYPE"],
-        "OPER_NUM": ["OPER_NUM", "OPER"],
-        "OPER_NAME": ["OPER_NAME", "OPER_NM"],
-        "EQP_ID": ["EQP_ID", "EQUIP_ID"],
-        "EQP_MODEL": ["EQP_MODEL", "EQUIP_MODEL", "EQPIP_MODEL"],
-    }
-    return aliases.get(field, [field])
+# 함수 설명: `_mapped_field_candidates()`는 Main Flow가 주입한 카탈로그 매핑과 동일 이름만 더미 조회 후보로 사용합니다.
+def _mapped_field_candidates(
+    field: str,
+    mappings: dict[str, Any] | None = None,
+) -> list[str]:
+    candidates: list[str] = []
+    mapping = mappings if isinstance(mappings, dict) else {}
+    for standard, aliases in mapping.items():
+        group = [str(standard or "").strip(), *_string_list(aliases)]
+        group_keys = {item.casefold() for item in group if item}
+        if str(field).strip().casefold() not in group_keys:
+            continue
+        candidates.extend(_string_list(aliases))
+        if str(standard or "").strip():
+            candidates.append(str(standard).strip())
+        break
+    if str(field or "").strip() and str(field).casefold() not in {
+        item.casefold() for item in candidates
+    }:
+        candidates.append(str(field).strip())
+    return candidates
+
+
+# 함수 설명: `_string_list()`는 카탈로그 매핑의 단일 문자열과 목록 값을 순서가 유지되는 문자열 목록으로 통일합니다.
+def _string_list(value: Any) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 # 함수 설명: `_normalize()`는 normalize의 표기·자료형 차이를 비교와 저장에 사용할 표준 형태로 정규화합니다.

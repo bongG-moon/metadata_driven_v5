@@ -49,7 +49,7 @@ ANALYSIS_SUBJECT_CUES = (
     "재공", "wip", "생산량", "생산 실적", "실적", "production", "uph", "장비", "설비",
     "equipment", "eqp", "계획", "target", "hold", "홀드", "lot", "랏", "로트",
 )
-DATE_CUE_PATTERN = re.compile(r"(\b20\d{6}\b|\b\d{1,2}/\d{1,2}\b|\b\d{1,2}월\s*\d{1,2}일\b|오늘|금일|어제|전일|내일|현시간|현재)")
+DATE_CUE_PATTERN = re.compile(r"(\b20\d{6}\b|(?<!\d)\d{1,2}/\d{1,2}(?:일)?(?!\d)|(?<!\d)\d{1,2}월\s*\d{1,2}일(?!\d)|오늘|금일|어제|전일|내일|현시간|현재)")
 CONTEXT_DATE_CUE_PATTERN = re.compile(r"(이\s*일자|이\s*날짜|이\s*날|그\s*일자|그\s*날짜|그\s*날|해당\s*일자|같은\s*날|동일\s*일자)")
 
 
@@ -307,10 +307,12 @@ def _date_change_hint(question: str, reference_date: Any, state: dict[str, Any] 
         if value and value not in resolved_values:
             resolved_values.append(value)
     if len(resolved_values) <= 1:
+        first_mention = mentions[0] if mentions else {}
         return _omit_empty(
             {
-                "expression": str(mentions[0].get("expression") or "") if mentions else "",
+                "expression": str(first_mention.get("expression") or ""),
                 "resolved_value": resolved_values[0] if resolved_values else "",
+                "previous_value": str(first_mention.get("previous_value") or ""),
             }
         )
     return {"scope": "multiple", "mentions": mentions}
@@ -395,11 +397,21 @@ def _date_mentions(text: str, ref_date: datetime | None) -> list[dict[str, Any]]
                 {
                     "expression": expression,
                     "resolved_value": resolved_value,
+                    "previous_value": _previous_resolved_date(resolved_value),
                     "position": match.start(),
                 }
             )
         )
     return mentions
+
+
+# 함수 설명: 해석된 YYYYMMDD 기준일의 전일을 계산해 Domain 시간 계약이 사용할 날짜 힌트를 제공합니다.
+def _previous_resolved_date(value: Any) -> str:
+    text = str(value or "").strip()
+    try:
+        return (datetime.strptime(text, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
+    except ValueError:
+        return ""
 
 
 # 함수 설명: `_resolve_date_expression()`은 한 날짜 표현만 기준일에 대해 YYYYMMDD 또는 상대 토큰으로 변환합니다.
@@ -418,8 +430,8 @@ def _resolve_date_expression(expression: str, ref_date: datetime | None) -> str:
 
 # 함수 설명: `_explicit_date()`는 사용자 질문에 명시된 절대/상대 날짜 표현을 찾아 표준 날짜로 해석합니다.
 def _explicit_date(text: str, ref_date: datetime | None) -> str:
-    slash = re.search(r"\b(\d{1,2})/(\d{1,2})\b", text)
-    korean = re.search(r"\b(\d{1,2})월\s*(\d{1,2})일\b", text)
+    slash = re.search(r"(?<!\d)(\d{1,2})/(\d{1,2})(?:일)?(?!\d)", text)
+    korean = re.search(r"(?<!\d)(\d{1,2})월\s*(\d{1,2})일(?!\d)", text)
     match = slash or korean
     if not match:
         return ""

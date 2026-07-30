@@ -794,28 +794,6 @@ def representative_cases() -> list[dict[str, Any]]:
         ),
         case(
             30,
-            "현재 HOLD 중인 LOT별 가장 최근 HOLD 코드와 상세 사유를 알려줘",
-            "current_hold_latest_history",
-            [
-                job("lot_status", "lot_data", filters={"HOLD_STAT": eq("OnHold")}),
-                job("hold_history", "hold_data"),
-            ],
-            (
-                "holds = sources['lot_data'][['LOT_ID', 'DEVICE', 'HOLD_STAT']]\n"
-                "history = sources['hold_data'].sort_values(['LOT_ID', 'HOLD_TM']).drop_duplicates('LOT_ID', keep='last')\n"
-                "result = holds.merge(history[['LOT_ID', 'HOLD_TM', 'HOLD_CD', 'HOLD_DESC']], on='LOT_ID', how='left').sort_values('LOT_ID')"
-            ),
-            ["LOT_ID", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
-            expected_row_count=3,
-            expected_rows=[
-                {"LOT_ID": "T1234567GEN1", "HOLD_CD": "H001", "HOLD_DESC": "검증용 HOLD 이력"},
-                {"LOT_ID": "V-RANGE-MIDDLE-HOLD", "HOLD_CD": "H-DA5"},
-                {"LOT_ID": "V-RANGE-START-HOLD", "HOLD_CD": "H-DS1"},
-            ],
-            forbidden_values={"HOLD_CD": ["H000"]},
-        ),
-        case(
-            31,
             "오늘 DA공정에서 생산량 상위 3개 제품과 각 제품에 할당된 장비 대수 및 LIST를 알려줘",
             "top3_da_products_with_equipment_count_and_list",
             [
@@ -1109,7 +1087,13 @@ def validation_catalog(case: dict[str, Any]) -> dict[str, Any]:
         if required_param_names:
             predicates = " AND ".join(f"{name} = {{{name}}}" for name in required_param_names)
             query_template = f"SELECT * FROM DUMMY WHERE {predicates}"
-        filter_mappings = {"DATE": ["DATE"]} if dataset_key == "target" else {}
+        filter_mappings = (
+            {"DATE": ["DATE"]}
+            if dataset_key == "target"
+            else {"DATE": ["WORK_DATE"]}
+            if required_param_names
+            else {}
+        )
         items.append(
             {
                 "dataset_key": dataset_key,

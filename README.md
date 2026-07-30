@@ -111,8 +111,9 @@ uv pip install --python .langflow-venv\Scripts\python.exe `
 ## 검증 상태와 현재 제약
 
 - 이 작업 환경에서는 실제 Oracle/H-API/Datalake/Goodocs 자격증명과 원천 데이터가 없어 dummy 경로로 검증했습니다.
-- 자동 검증 대상 대표 질문 31개는 trusted catalog hydration, 선택 helper, pandas 실행, 답변/API adapter를 포함한 deterministic dummy 경로에서 31/31 통과했습니다. 기존 질문뿐 아니라 NULL 표시, W/BM·A조, OPER_SEQ 구간, DA 그룹, FC78 제품 token, UPH 기본 상세 컬럼도 포함합니다.
-- 대표 dummy 질문 31/31이 통과했습니다.
+- 자동 검증 대상 대표 질문 30개는 trusted catalog hydration, 선택 helper, pandas 실행, 답변/API adapter를 포함한 deterministic dummy 경로에서 30/30 통과했습니다. 기존 질문뿐 아니라 NULL 표시, W/BM·A조, OPER_SEQ 구간, DA 그룹, FC78 제품 token, UPH 기본 상세 컬럼도 포함합니다. `LOT_ID`가 필수인 HOLD history는 선행 LOT 결과가 있는 멀티턴 검증으로 분리했습니다.
+- 대표 dummy 질문 30/30이 통과했습니다.
+- Data Analysis의 복합 지표는 Domain payload에 등록된 `temporal_semantics`, source별 `metric_bindings`, strict `result_columns` 계약으로 검증합니다. Intent Normalizer는 업무 표현을 하드코딩하지 않고 선택된 Domain의 dataset·날짜 파라미터·offset을 공통 해석합니다. 생산실적+아침재공은 각 source를 독립 집계해 병합하고, 이전 제품 결과+장비 후속 질문은 Table Catalog와 이전 `resolved_grain_plan`이 확정한 physical key로 내부 left join하여 metric 복사·중복 alias·수동 컬럼 map 오류를 차단합니다. 정확한 Langflow 1.9.2 환경의 비웹 테스트는 505/505 통과했습니다.
 - 기준 런타임은 `langflow 1.9.2`, `langflow-base 0.9.2`, `lfx 0.4.2`입니다. 전체 커스텀 소스와 현재 11개 Flow의 node template을 이 조합에서 파싱하고, export/import JSON의 node·edge·source 동기화 계약을 함께 검증합니다.
 - Workflow Orchestrator의 `result_ref` 연계 호출은 `agent_v4_result_store`를 사용하므로 `MONGO_URL`과 같은 부모/자식 `session_id`가 필수입니다. 저장된 결과가 없거나 다른 세션의 ref이면 후속 조회를 fail-closed로 중단합니다.
 - 실제 문제 실행 기록에서는 기존 06 Router의 session fan-out 때문에 ChatInput/SmartRouter가 각각 2회 빌드되고 비선택 direct/clarification Chat Output이 질문을 두 번 저장한 사실을 확인했습니다. 수정 JSON은 Chat Input outgoing edge를 Smart Router 한 개로 제한하며, 운영 provider를 사용한 최종 화면 재검증은 새 06을 import한 뒤 수행합니다.

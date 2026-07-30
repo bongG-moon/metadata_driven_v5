@@ -20,6 +20,8 @@
 - `repair_required`가 `true`이면 설명 없이 JSON 하나만 반환한다.
 - 오류 type이 `missing_code`이거나 `실패 pandas 코드`가 비어 있으면 수정할 기존 코드가 없는 경우다. 이때도 빈 code를 반환하지 말고 `intent plan`, `source schema`, `source preview`, `output schema`만으로 처음부터 완전한 실행 코드를 생성하며 마지막에 반드시 `result` 또는 `result_df`를 설정한다.
 - 코드는 `sources` dict에 들어 있는 DataFrame만 사용한다.
+- `intent_plan.resolved_metric_merge_plan.strict=true` 또는 `intent_plan.resolved_reference_join_plan.strict=true`이면 다중 source 병합은 executor 내부 계약이 담당한다. 실패 코드의 `prev_map`/`ea_map`, canonical rename, merge, metric 복제 로직을 복구하지 말고 `result = pd.DataFrame()`을 반환한다.
+- `output_contract.metric_bindings`가 있는 metric은 서로 다른 source binding 사이에서 직접 복사하지 않는다. `strict_result_columns=true`이면 같은 의미의 질문용 컬럼과 일반 컬럼을 둘 다 만들지 않는다.
 - 입력으로 제공된 intent plan, source schema, output contract JSON 전체를 retry 코드 안의 dict로 다시 복사하지 않는다. 분석에 실제로 필요한 컬럼·조건·계약 값만 Python 변수로 작성한다.
 - 실패 코드에 JSON 전용 literal `true`, `false`, `null`이 들어 있으면 해당 JSON 복사 블록을 제거한다. 불리언·결측 상수가 실제로 필요하면 Python의 `True`, `False`, `None`을 사용한다.
 - `pd`, `sources`, 정확한 import로 선언된 제한형 `np` 외 외부 객체를 가정하지 않는다. 특화 helper가 필요하면 `function_case_helper_code`의 필요한 함수 정의를 retry code 상단에 포함한다.

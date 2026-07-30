@@ -72,6 +72,7 @@ EXPECTED_FINAL_KEYS = {
     "pandas_function_cases:product_token_match",
     "pandas_function_cases:sample_passthrough_demo",
     "product_key_columns:standard_product_keys",
+    "quantity_terms:wip_boh_quantity",
 }
 
 
@@ -98,6 +99,12 @@ def build_registration_requests(text: str) -> list[dict[str, Any]]:
         )
 
     specs = [
+        (
+            "wip_boh_quantity",
+            "BOH 재공과 아침 재공 기준일 규칙을 등록해줘.",
+            "계산 로직을 등록해줘.",
+            ["quantity_terms:wip_boh_quantity"],
+        ),
         (
             "standard_product_keys",
             "표준 제품 키를 등록해줘.",
@@ -253,6 +260,33 @@ def _semantic_errors(
                     "message": f"{key}의 display_name, aliases, field 또는 processes가 원문과 다릅니다.",
                 }
             )
+    elif name == "wip_boh_quantity":
+        payload = (
+            item_by_key.get("quantity_terms:wip_boh_quantity") or {}
+        ).get("payload", {})
+        expected_temporal = {
+            "business_timepoint": "BOH",
+            "dataset_family": "wip_history",
+            "dataset_key": "wip",
+            "date_param": "DATE",
+            "requested_date_offset_days": -1,
+            "disallowed_dataset_keys": ["wip_today"],
+            "inherit_filters": True,
+        }
+        expected_fields = {
+            "data_source": "wip",
+            "column": "WIP",
+            "aggregation_method": "sum",
+            "temporal_semantics": expected_temporal,
+        }
+        for field, expected_value in expected_fields.items():
+            if payload.get(field) != expected_value:
+                errors.append(
+                    {
+                        "type": "wip_boh_temporal_contract_mismatch",
+                        "message": f"BOH 재공 payload.{field}가 등록 원문과 다릅니다.",
+                    }
+                )
     elif name == "standard_product_keys":
         payload = (
             item_by_key.get("product_key_columns:standard_product_keys") or {}

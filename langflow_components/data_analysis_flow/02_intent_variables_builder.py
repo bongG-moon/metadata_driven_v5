@@ -50,11 +50,15 @@ def _state_summary(payload: dict[str, Any]) -> dict[str, Any]:
     # 독립 질문에는 직전 retrieval job·source alias·data_ref를 모델에 노출하지 않습니다.
     # 세션 상태는 실제 후속 후보일 때만 전달해 이전 데이터셋의 무의미한 재조회를 차단합니다.
     state_for_model = _compact_state(previous_state) if followup_hint.get("followup_candidate") is True else {}
+    request_context = {
+        "reference_date": request.get("reference_date", ""),
+        "previous_date": _previous_date(request.get("reference_date")),
+    }
+    date_mentions = _date_mentions_from_followup_hint(followup_hint)
+    if date_mentions:
+        request_context["date_mentions"] = date_mentions
     summary = {
-        "request_context": {
-            "reference_date": request.get("reference_date", ""),
-            "previous_date": _previous_date(request.get("reference_date")),
-        },
+        "request_context": request_context,
         "followup_hint": followup_hint,
         "state": state_for_model,
     }
@@ -73,6 +77,31 @@ def _previous_date(value: Any) -> str:
         )
     except ValueError:
         return ""
+
+
+# 함수 설명: 01E가 해석한 질문 날짜와 각 날짜의 전일을 의도 LLM에 구조화해 전역 previous_date 오사용을 막습니다.
+def _date_mentions_from_followup_hint(followup_hint: dict[str, Any]) -> list[dict[str, Any]]:
+    changed = (
+        followup_hint.get("changed_conditions_hint")
+        if isinstance(followup_hint.get("changed_conditions_hint"), dict)
+        else {}
+    )
+    date_hint = changed.get("date") if isinstance(changed.get("date"), dict) else {}
+    raw_mentions = date_hint.get("mentions") if isinstance(date_hint.get("mentions"), list) else []
+    if not raw_mentions and date_hint:
+        raw_mentions = [date_hint]
+    result: list[dict[str, Any]] = []
+    for item in raw_mentions:
+        if not isinstance(item, dict):
+            continue
+        mention = {
+            key: deepcopy(item.get(key))
+            for key in ("expression", "resolved_value", "previous_value", "position")
+            if item.get(key) not in (None, "")
+        }
+        if mention and mention not in result:
+            result.append(mention)
+    return result
 
 
 # 함수 설명: `_compact_orchestration()`은 상위 Tool 결과가 있다는 사실과 고정 alias만 의도 LLM에 짧게 알립니다.
@@ -115,6 +144,17 @@ def _schema() -> dict[str, Any]:
                     }
                 },
             },
+            "temporal_semantics": [
+                {
+                    "metric": "요청 지표",
+                    "business_timepoint": "선택된 Domain의 업무 시점",
+                    "requested_date": "YYYYMMDD",
+                    "query_date": "YYYYMMDD",
+                    "dataset_key": "선택된 Domain의 dataset_key",
+                    "date_param": "선택된 Domain의 날짜 파라미터",
+                    "requested_date_offset_days": "선택된 Domain의 정수 일수 offset",
+                }
+            ],
             "pandas_function_cases": [],
             "grain_plan": {
                 "metadata_ref": {"section": "string", "key": "string"},
@@ -177,6 +217,17 @@ def _schema() -> dict[str, Any]:
                 "required_columns": [],
                 "grain_columns": [],
                 "metric_columns": [],
+                "metric_bindings": [
+                    {
+                        "output_column": "결과 metric 컬럼",
+                        "source_alias": "retrieval source alias",
+                        "dataset_key": "catalog dataset_key",
+                        "source_column": "실제 source metric 컬럼",
+                        "aggregation": "sum|mean|nunique|count|min|max|collect_unique",
+                    }
+                ],
+                "result_columns": [],
+                "strict_result_columns": True,
                 "primary_metric": "답변과 정렬의 대표 metric 컬럼",
                 "ordering": {
                     "sort_by": "정렬할 결과 metric 컬럼",

@@ -282,6 +282,34 @@ def load_module(path: Path):
     return module
 
 
+def with_dummy_catalog_mappings(payload):
+    """Attach the explicit test catalog mapping that the real 04A hydrator injects."""
+    result = deepcopy(payload)
+    bundle = result.get("retrieval_job_bundle")
+    jobs = bundle.get("jobs") if isinstance(bundle, dict) else []
+    for job in jobs if isinstance(jobs, list) else []:
+        if not isinstance(job, dict):
+            continue
+        params = (
+            job.get("required_params")
+            if isinstance(job.get("required_params"), dict)
+            else {}
+        )
+        if "DATE" not in params:
+            continue
+        mappings = (
+            deepcopy(job.get("filter_mappings"))
+            if isinstance(job.get("filter_mappings"), dict)
+            else {}
+        )
+        mappings.setdefault(
+            "DATE",
+            ["DATE"] if job.get("dataset_key") == "target" else ["WORK_DATE"],
+        )
+        job["filter_mappings"] = mappings
+    return result
+
+
 def _component_outputs(module):
     component_classes = [
         value
@@ -381,6 +409,12 @@ def test_langflow_component_visible_labels_are_korean_first():
 
 
 def test_data_retriever_langflow_pipeline_dummy_path():
+    hydrator = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04a_trusted_retrieval_job_hydrator.py"
+    )
     validator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py")
     router = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "07_retrieval_job_router.py")
     dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
@@ -400,7 +434,30 @@ def test_data_retriever_langflow_pipeline_dummy_path():
         }
     }
 
-    validated = validator.validate_retrieval_payload(payload)
+    hydrated = hydrator.hydrate_retrieval_jobs(
+        payload,
+        {
+            "table_catalog_items": [
+                {
+                    "dataset_key": "wip_today",
+                    "payload": {
+                        "source_type": "oracle",
+                        "source_config": {
+                            "db_key": "DUMMY",
+                            "query_template": "SELECT * FROM DUMMY WHERE WORK_DATE = {DATE}",
+                        },
+                        "required_params": ["DATE"],
+                        "filter_mappings": {
+                            "DATE": ["WORK_DATE"],
+                            "OPER_NAME": ["OPER_NAME"],
+                        },
+                    },
+                }
+            ]
+        },
+        retrieval_mode="dummy",
+    )
+    validated = validator.validate_retrieval_payload(hydrated)
     dummy_bundle = router.route_retrieval_jobs(validated, "dummy")
     dummy_result = dummy.retrieve_dummy_data(dummy_bundle)
     merged = merger.merge_source_retrieval_payloads(validated, dummy_result)
@@ -1735,6 +1792,14 @@ def test_langflow_dummy_data_covers_data_catalog_shapes():
             "source_alias": dataset_key,
             "source_type": "dummy",
             "required_params": _dummy_shape_params(dataset_key),
+            "filter_mappings": (
+                {"DATE": ["DATE"]}
+                if dataset_key == "target"
+                else {"DATE": ["WORK_DATE"]}
+                if dataset_key
+                in {"production_today", "production", "wip_today", "wip"}
+                else {}
+            ),
         }
         for dataset_key in expected_columns
     ]
@@ -1753,7 +1818,9 @@ def _dummy_shape_params(dataset_key):
         return {"LOT_ID": "T1234567GEN1"}
     if dataset_key in {"production", "wip"}:
         return {"DATE": "20260630"}
-    return {"DATE": "20260701"}
+    if dataset_key in {"production_today", "wip_today", "target"}:
+        return {"DATE": "20260701"}
+    return {}
 
 
 def test_dummy_lot_status_and_history_share_a_wb_hold_entity():
@@ -1785,6 +1852,10 @@ def test_langflow_dummy_data_applies_required_params_and_preserves_pandas_filter
                         "source_type": "dummy",
                         "required_params": {"DATE": "20260701"},
                         "filters": {"PKG_TYPE1": {"operator": "eq", "value": "LFBGA"}},
+                        "filter_mappings": {
+                            "DATE": ["WORK_DATE"],
+                            "PKG_TYPE1": ["PKG1"],
+                        },
                     },
                     {
                         "dataset_key": "hold_history",
@@ -1808,6 +1879,12 @@ def test_langflow_dummy_data_applies_required_params_and_preserves_pandas_filter
 
 def test_langflow_dummy_data_covers_auto_korea_today_reference_date():
     request_loader = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "00_analysis_request_loader.py")
+    hydrator = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04a_trusted_retrieval_job_hydrator.py"
+    )
     validator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py")
     router = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "07_retrieval_job_router.py")
     dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
@@ -1829,7 +1906,27 @@ def test_langflow_dummy_data_covers_auto_korea_today_reference_date():
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
 
-    validated = validator.validate_retrieval_payload(payload)
+    hydrated = hydrator.hydrate_retrieval_jobs(
+        payload,
+        {
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production_today",
+                    "payload": {
+                        "source_type": "oracle",
+                        "source_config": {
+                            "db_key": "DUMMY",
+                            "query_template": "SELECT * FROM DUMMY WHERE WORK_DATE = {DATE}",
+                        },
+                        "required_params": ["DATE"],
+                        "filter_mappings": {"DATE": ["WORK_DATE"]},
+                    },
+                }
+            ]
+        },
+        retrieval_mode="dummy",
+    )
+    validated = validator.validate_retrieval_payload(hydrated)
     routed = router.route_retrieval_jobs(validated, "dummy")
     retrieved = dummy.retrieve_dummy_data(routed)
 
@@ -1878,7 +1975,7 @@ def test_representative_questions_have_answerable_dummy_data_coverage():
     assert results[1]["preview_rows"][0]["MCP_NO"].startswith("L-267")
     assert results[8]["preview_rows"][0]["DEVICE"] == "DEV-RG-DDR4"
     assert results[9]["preview_rows"][0]["DEVICE"] == "DEV-SP-DDR5"
-    assert set(results) == set(range(1, 32))
+    assert set(results) == set(range(1, 31))
     assert all(row["DA_WIP"] == 0 for row in results[11]["preview_rows"])
     jobs_12 = results[12]["intent_plan"]["retrieval_jobs"]
     assert jobs_12[0]["filters"]["OPER_NAME"]["value"] == ["FCB1", "FCB2", "FCB/H"]
@@ -1929,20 +2026,21 @@ def test_representative_questions_have_answerable_dummy_data_coverage():
     assert results[27]["preview_rows"][0]["EQP_ID"] == "EQP002"
     assert results[28]["preview_rows"][0]["LOT_ID"] == "T1234567GEN1"
     assert results[29]["row_count"] == 3
-    assert {row["HOLD_CD"] for row in results[30]["preview_rows"]} == {
-        "H001",
-        "H-DA5",
-        "H-DS1",
-    }
-    assert results[31]["preview_rows"][0]["MCP_NO"] == ""
-    assert results[31]["preview_rows"][0]["EQUIP_COUNT"] == 2
-    assert results[31]["preview_rows"][0]["EQUIP_LIST"] == "EQP-NULL-1, EQP-NULL-2"
+    assert results[30]["preview_rows"][0]["MCP_NO"] == ""
+    assert results[30]["preview_rows"][0]["EQUIP_COUNT"] == 2
+    assert results[30]["preview_rows"][0]["EQUIP_LIST"] == "EQP-NULL-1, EQP-NULL-2"
 
 
 def test_data_analysis_langflow_dummy_path_reaches_api_response():
     request_loader = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "00_analysis_request_loader.py")
     intent_variables = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "02_intent_variables_builder.py")
     intent_normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
+    hydrator = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04a_trusted_retrieval_job_hydrator.py"
+    )
     validator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py")
     router = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "07_retrieval_job_router.py")
     dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
@@ -1985,6 +2083,29 @@ def test_data_analysis_langflow_dummy_path_reaches_api_response():
     }
     payload = intent_normalizer.normalize_intent_plan(payload, intent_llm_response)
 
+    payload = hydrator.hydrate_retrieval_jobs(
+        payload,
+        {
+            "table_catalog_items": [
+                {
+                    "dataset_key": "wip_today",
+                    "payload": {
+                        "source_type": "oracle",
+                        "source_config": {
+                            "db_key": "DUMMY",
+                            "query_template": "SELECT * FROM DUMMY WHERE WORK_DATE = {DATE}",
+                        },
+                        "required_params": ["DATE"],
+                        "filter_mappings": {
+                            "DATE": ["WORK_DATE"],
+                            "OPER_NAME": ["OPER_NAME"],
+                        },
+                    },
+                }
+            ]
+        },
+        retrieval_mode="dummy",
+    )
     validated = validator.validate_retrieval_payload(payload)
     dummy_bundle = router.route_retrieval_jobs(validated, "dummy")
     dummy_result = dummy.retrieve_dummy_data(dummy_bundle)
@@ -3620,7 +3741,7 @@ def test_pandas_executor_parses_langflow_message_text_json():
 
     result = pandas_executor.execute_pandas_code(payload, llm_response)
 
-    assert result["analysis"]["status"] == "ok"
+    assert result["analysis"]["status"] == "ok", result
     assert result["data"]["rows"] == [{"MODE": "LPDDR5", "PRODUCTION": 1000}]
 
 
@@ -7352,12 +7473,13 @@ def test_pandas_filter_preamble_handles_compound_null_empty_filters_and_repair_s
     payload = {
         "intent_plan": {
             "retrieval_jobs": [
-                {
-                    "dataset_key": "production",
-                    "source_alias": "production",
-                    "filters": {
-                        "MODE": {"operator": "starts_with_any", "value": ["LP"]},
-                        "PKG_TYPE1": {"operator": "in", "value": ["LFBGA", "TFBGA", "UFBGA", "VFBGA", "WFBGA"]},
+                    {
+                        "dataset_key": "production",
+                        "source_alias": "production",
+                        "filter_mappings": {"PKG_TYPE1": ["PKG1"]},
+                        "filters": {
+                            "MODE": {"operator": "starts_with_any", "value": ["LP"]},
+                            "PKG_TYPE1": {"operator": "in", "value": ["LFBGA", "TFBGA", "UFBGA", "VFBGA", "WFBGA"]},
                         "MCP_NO": {"operator": "or", "value": [{"operator": "isNull"}, {"operator": "isEmpty"}]},
                     },
                 }
@@ -7395,6 +7517,241 @@ def test_pandas_filter_preamble_handles_compound_null_empty_filters_and_repair_s
     assert retry["data"]["rows"] == [{"DEVICE": "MOBILE-1", "PRODUCTION": 10}]
 
 
+def test_pandas_filter_alias_resolution_uses_only_catalog_mapping_or_exact_name():
+    pandas_executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    assert not hasattr(pandas_executor, "_field_candidates")
+    assert pandas_executor._mapped_field_candidates("DEN", {}) == ["DEN"]
+    assert pandas_executor._mapped_field_candidates(
+        "DEN",
+        {"DEN": ["DENSITY"]},
+    ) == ["DENSITY", "DEN"]
+
+    without_mapping = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "sample",
+                    "source_alias": "sample_data",
+                    "filters": {
+                        "DEN": {"operator": "eq", "value": "16G"},
+                    },
+                }
+            ],
+            "pandas_execution_plan": [],
+        },
+        "runtime_sources": {
+            "sample_data": [
+                {"DENSITY": "16G", "QTY": 10},
+                {"DENSITY": "8G", "QTY": 20},
+            ]
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    rejected = pandas_executor.execute_pandas_code(
+        without_mapping,
+        {"code": "result = sources['sample_data']"},
+    )
+    assert rejected["analysis"]["status"] == "error"
+    assert "카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: DEN" in rejected[
+        "analysis"
+    ]["error"]["message"]
+
+    with_mapping = deepcopy(without_mapping)
+    with_mapping["intent_plan"]["retrieval_jobs"][0]["filter_mappings"] = {
+        "DEN": ["DENSITY"]
+    }
+    accepted = pandas_executor.execute_pandas_code(
+        with_mapping,
+        {"code": "result = sources['sample_data']"},
+    )
+    assert accepted["analysis"]["status"] == "ok"
+    assert accepted["data"]["rows"] == [{"DENSITY": "16G", "QTY": 10}]
+
+
+def test_catalog_mapping_propagates_through_dummy_pipeline_to_pandas_filters():
+    hydrator = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    validator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py"
+    )
+    router = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "07_retrieval_job_router.py"
+    )
+    dummy = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py"
+    )
+    merger = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "13_source_retrieval_merger.py"
+    )
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production_today",
+                    "source_alias": "production_data",
+                    "required_params": {"DATE": "20260701"},
+                    "filters": {
+                        "DEN": {"operator": "eq", "value": "16G"},
+                        "PKG_TYPE1": {"operator": "eq", "value": "LFBGA"},
+                    },
+                }
+            ],
+            "pandas_execution_plan": [],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "source_type": "oracle",
+                    "source_config": {
+                        "db_key": "DUMMY",
+                        "query_template": "SELECT * FROM DUMMY WHERE WORK_DATE = {DATE}",
+                    },
+                    "required_params": ["DATE"],
+                    "filter_mappings": {
+                        "DATE": ["WORK_DATE"],
+                        "DEN": ["DENSITY"],
+                        "PKG_TYPE1": ["PKG1"],
+                    },
+                },
+            }
+        ]
+    }
+
+    hydrated = hydrator.hydrate_retrieval_jobs(
+        payload,
+        catalog,
+        retrieval_mode="dummy",
+    )
+    job = hydrated["intent_plan"]["retrieval_jobs"][0]
+    assert job["filter_mappings"]["DEN"] == ["DENSITY"]
+    assert job["filter_mappings"]["PKG_TYPE1"] == ["PKG1"]
+    validated = validator.validate_retrieval_payload(hydrated)
+    routed = router.route_retrieval_jobs(validated, "dummy")
+    retrieved = dummy.retrieve_dummy_data(routed)
+    merged = merger.merge_source_retrieval_payloads(validated, retrieved)
+    adapted = adapter.build_retrieval_payload(merged)
+    executed = executor.execute_pandas_code(
+        adapted,
+        {
+            "code": (
+                "result = sources['production_data']"
+                "[['DENSITY', 'PKG1', 'DEVICE', 'PRODUCTION']]"
+                ".reset_index(drop=True)"
+            )
+        },
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["row_count"] > 0
+    assert {
+        (row["DENSITY"], row["PKG1"])
+        for row in executed["data"]["rows"]
+    } == {("16G", "LFBGA")}
+    generated_code = executed["trace"]["inspection"]["pandas_execution"][
+        "generated_code"
+    ]
+    assert "_filter_col_1_1 = 'DENSITY' if 'DENSITY'" in generated_code
+    assert "_filter_col_1_2 = 'PKG1' if 'PKG1'" in generated_code
+
+
+def test_reference_join_does_not_infer_schema_alias_without_metadata_contract():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    assert not hasattr(normalizer, "_compat_column_candidates")
+    resolved = normalizer._resolve_reference_join_plan(
+        {
+            "state": {
+                "current_data": {
+                    "columns": ["DENSITY", "PRODUCTION_QTY"],
+                    "preview_rows": [
+                        {"DENSITY": "16G", "PRODUCTION_QTY": 10}
+                    ],
+                }
+            }
+        },
+        {
+            "table_catalog_items": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "payload": {
+                        "columns": ["DENSITY", "EQUIP_ID"],
+                    },
+                }
+            ]
+        },
+        [
+            {
+                "dataset_key": "equipment_assign",
+                "source_alias": "equipment_data",
+            }
+        ],
+        [
+            {
+                "operation": "apply_row_match_groups",
+                "source_alias": "equipment_data",
+                "reference_source_alias": "previous_result",
+                "match_columns": ["DEN"],
+            },
+            {
+                "operation": "groupby_and_aggregate",
+                "source_alias": "equipment_data",
+                "aggregations": [
+                    {
+                        "column": "EQP_ID",
+                        "method": "nunique",
+                        "output_column": "EQUIPMENT_COUNT",
+                    }
+                ],
+            },
+        ],
+        "previous_result_rows",
+    )
+    assert resolved == {}
+
+
+def test_dummy_filter_alias_resolution_uses_only_job_catalog_mapping_or_exact_name():
+    dummy = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py"
+    )
+    rows = [
+        {"DENSITY": "16G", "QTY": 10},
+        {"DENSITY": "8G", "QTY": 20},
+    ]
+    assert not hasattr(dummy, "_field_candidates")
+    assert dummy._filter_rows(
+        rows,
+        "DEN",
+        ["16G"],
+        "eq",
+        keep_if_missing=False,
+    ) == []
+    assert dummy._filter_rows(
+        rows,
+        "DEN",
+        ["16G"],
+        "eq",
+        keep_if_missing=False,
+        column_mappings={"DEN": ["DENSITY"]},
+    ) == [{"DENSITY": "16G", "QTY": 10}]
+
+
 def test_langflow_dummy_data_covers_representative_manufacturing_cases():
     dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
     payload = dummy.retrieve_dummy_data(
@@ -7402,10 +7759,30 @@ def test_langflow_dummy_data_covers_representative_manufacturing_cases():
             "retrieval_job_bundle": {
                 "source_type": "dummy",
                 "jobs": [
-                    {"dataset_key": "production_today", "source_alias": "production_today", "required_params": {"DATE": "20260701"}},
-                    {"dataset_key": "production", "source_alias": "production", "required_params": {"DATE": "20260630"}},
-                    {"dataset_key": "wip", "source_alias": "wip", "required_params": {"DATE": "20260630"}},
-                    {"dataset_key": "wip", "source_alias": "wip_boh_0627", "required_params": {"DATE": "20260626"}},
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "production_today",
+                        "required_params": {"DATE": "20260701"},
+                        "filter_mappings": {"DATE": ["WORK_DATE"]},
+                    },
+                    {
+                        "dataset_key": "production",
+                        "source_alias": "production",
+                        "required_params": {"DATE": "20260630"},
+                        "filter_mappings": {"DATE": ["WORK_DATE"]},
+                    },
+                    {
+                        "dataset_key": "wip",
+                        "source_alias": "wip",
+                        "required_params": {"DATE": "20260630"},
+                        "filter_mappings": {"DATE": ["WORK_DATE"]},
+                    },
+                    {
+                        "dataset_key": "wip",
+                        "source_alias": "wip_boh_0627",
+                        "required_params": {"DATE": "20260626"},
+                        "filter_mappings": {"DATE": ["WORK_DATE"]},
+                    },
                 ],
             }
         }
@@ -7432,18 +7809,20 @@ def test_langflow_dummy_data_covers_representative_manufacturing_cases():
 def test_langflow_dummy_production_fixture_has_discriminating_pkg_out_and_fcbh_rows():
     dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
     payload = dummy.retrieve_dummy_data(
-        {
-            "retrieval_job_bundle": {
-                "source_type": "dummy",
-                "jobs": [
-                    {
-                        "dataset_key": "production",
-                        "source_alias": "production",
-                        "required_params": {"DATE": "20260630"},
-                    }
-                ],
+        with_dummy_catalog_mappings(
+            {
+                "retrieval_job_bundle": {
+                    "source_type": "dummy",
+                    "jobs": [
+                        {
+                            "dataset_key": "production",
+                            "source_alias": "production",
+                            "required_params": {"DATE": "20260630"},
+                        }
+                    ],
+                }
             }
-        }
+        )
     )
     rows = payload["source_results"][0]["rows"]
 
@@ -7476,38 +7855,40 @@ def test_langflow_dummy_production_fixture_has_discriminating_pkg_out_and_fcbh_r
 def test_langflow_dummy_fixture_keeps_outer_join_and_product_match_negative_controls():
     dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
     payload = dummy.retrieve_dummy_data(
-        {
-            "retrieval_job_bundle": {
-                "source_type": "dummy",
-                "jobs": [
-                    {
-                        "dataset_key": "production",
-                        "source_alias": "production_0627",
-                        "required_params": {"DATE": "20260627"},
-                    },
-                    {
-                        "dataset_key": "wip",
-                        "source_alias": "wip_0626",
-                        "required_params": {"DATE": "20260626"},
-                    },
-                    {
-                        "dataset_key": "production",
-                        "source_alias": "production_0630",
-                        "required_params": {"DATE": "20260630"},
-                    },
-                    {
-                        "dataset_key": "production_today",
-                        "source_alias": "production_0701",
-                        "required_params": {"DATE": "20260701"},
-                    },
-                    {
-                        "dataset_key": "wip_today",
-                        "source_alias": "wip_0701",
-                        "required_params": {"DATE": "20260701"},
-                    },
-                ],
+        with_dummy_catalog_mappings(
+            {
+                "retrieval_job_bundle": {
+                    "source_type": "dummy",
+                    "jobs": [
+                        {
+                            "dataset_key": "production",
+                            "source_alias": "production_0627",
+                            "required_params": {"DATE": "20260627"},
+                        },
+                        {
+                            "dataset_key": "wip",
+                            "source_alias": "wip_0626",
+                            "required_params": {"DATE": "20260626"},
+                        },
+                        {
+                            "dataset_key": "production",
+                            "source_alias": "production_0630",
+                            "required_params": {"DATE": "20260630"},
+                        },
+                        {
+                            "dataset_key": "production_today",
+                            "source_alias": "production_0701",
+                            "required_params": {"DATE": "20260701"},
+                        },
+                        {
+                            "dataset_key": "wip_today",
+                            "source_alias": "wip_0701",
+                            "required_params": {"DATE": "20260701"},
+                        },
+                    ],
+                }
             }
-        }
+        )
     )
     results = {item["source_alias"]: item["rows"] for item in payload["source_results"]}
 
@@ -7556,28 +7937,30 @@ def test_langflow_dummy_fixture_keeps_outer_join_and_product_match_negative_cont
 def test_langflow_dummy_fixture_has_six_rank_products_and_two_snapshot_times():
     dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
     payload = dummy.retrieve_dummy_data(
-        {
-            "retrieval_job_bundle": {
-                "source_type": "dummy",
-                "jobs": [
-                    {
-                        "dataset_key": "production",
-                        "source_alias": "rank_input",
-                        "required_params": {"DATE": "20260624"},
-                    },
-                    {
-                        "dataset_key": "wip",
-                        "source_alias": "rank_wip",
-                        "required_params": {"DATE": "20260624"},
-                    },
-                    {
-                        "dataset_key": "wip",
-                        "source_alias": "snapshot_wip",
-                        "required_params": {"DATE": "20260630"},
-                    },
-                ],
+        with_dummy_catalog_mappings(
+            {
+                "retrieval_job_bundle": {
+                    "source_type": "dummy",
+                    "jobs": [
+                        {
+                            "dataset_key": "production",
+                            "source_alias": "rank_input",
+                            "required_params": {"DATE": "20260624"},
+                        },
+                        {
+                            "dataset_key": "wip",
+                            "source_alias": "rank_wip",
+                            "required_params": {"DATE": "20260624"},
+                        },
+                        {
+                            "dataset_key": "wip",
+                            "source_alias": "snapshot_wip",
+                            "required_params": {"DATE": "20260630"},
+                        },
+                    ],
+                }
             }
-        }
+        )
     )
     results = {item["source_alias"]: item["rows"] for item in payload["source_results"]}
 
@@ -7618,7 +8001,7 @@ def test_langflow_dummy_fixture_has_auxiliary_multirow_join_controls():
                     {
                         "dataset_key": "eqp_uph",
                         "source_alias": "eqp_uph",
-                        "required_params": {"DATE": "20260701"},
+                        "required_params": {},
                     },
                     {
                         "dataset_key": "lot_status",
@@ -7663,43 +8046,45 @@ def test_langflow_dummy_fixture_covers_current_validation_question_set():
     dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
     today = dummy._korea_today()
     payload = dummy.retrieve_dummy_data(
-        {
-            "retrieval_job_bundle": {
-                "source_type": "dummy",
-                "jobs": [
-                    {
-                        "dataset_key": "production_today",
-                        "source_alias": "production_today",
-                        "required_params": {"DATE": today},
-                    },
-                    {
-                        "dataset_key": "production",
-                        "source_alias": "production_0705",
-                        "required_params": {"DATE": "20260705"},
-                    },
-                    {
-                        "dataset_key": "wip_today",
-                        "source_alias": "wip_today",
-                        "required_params": {"DATE": today},
-                    },
-                    {
-                        "dataset_key": "equipment_assign",
-                        "source_alias": "equipment_assign",
-                        "required_params": {},
-                    },
-                    {
-                        "dataset_key": "eqp_uph",
-                        "source_alias": "eqp_uph",
-                        "required_params": {},
-                    },
-                    {
-                        "dataset_key": "lot_status",
-                        "source_alias": "lot_status",
-                        "required_params": {},
-                    },
-                ],
+        with_dummy_catalog_mappings(
+            {
+                "retrieval_job_bundle": {
+                    "source_type": "dummy",
+                    "jobs": [
+                        {
+                            "dataset_key": "production_today",
+                            "source_alias": "production_today",
+                            "required_params": {"DATE": today},
+                        },
+                        {
+                            "dataset_key": "production",
+                            "source_alias": "production_0705",
+                            "required_params": {"DATE": "20260705"},
+                        },
+                        {
+                            "dataset_key": "wip_today",
+                            "source_alias": "wip_today",
+                            "required_params": {"DATE": today},
+                        },
+                        {
+                            "dataset_key": "equipment_assign",
+                            "source_alias": "equipment_assign",
+                            "required_params": {},
+                        },
+                        {
+                            "dataset_key": "eqp_uph",
+                            "source_alias": "eqp_uph",
+                            "required_params": {},
+                        },
+                        {
+                            "dataset_key": "lot_status",
+                            "source_alias": "lot_status",
+                            "required_params": {},
+                        },
+                    ],
+                }
             }
-        }
+        )
     )
     results = {item["source_alias"]: item["rows"] for item in payload["source_results"]}
 
@@ -16677,6 +17062,9 @@ def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_c
     assert "`default_detail_columns는 A, B로 바꿔줘`" in saving_prompt
     assert "`payload.field`에 보존" in domain_saving_prompt
     assert '"field": "OPER_NAME"' in domain_saving_prompt
+    assert "`payload.temporal_semantics`에 구조화해 보존" in domain_saving_prompt
+    assert "`requested_date_offset_days`는 질문 기준일에 더할 정수 일수" in domain_saving_prompt
+    assert "payload.temporal_semantics에는 business_timepoint=BOH" in domain_text
     assert "Domain의 `analysis_recipes`에 등록" in saving_prompt
     assert "`source_datasets`, `join_type`, `join_keys`" in domain_saving_prompt
     assert "`left_key_mappings`, `right_key_mappings`, `preserve_left_rows`" in domain_saving_prompt
@@ -16783,3 +17171,807 @@ def test_runtime_cleanup_releases_shared_upstream_rows_and_preserves_final_respo
     assert response["status"] == "ok"
     assert response["message"] == "장비 현황입니다."
     assert response["data"]["row_count"] == 1
+
+
+def _production_and_boh_domain_items():
+    return [
+        {
+            "section": "quantity_terms",
+            "key": "production_quantity",
+            "payload": {
+                "display_name": "생산실적",
+                "aliases": ["생산량", "생산실적"],
+                "data_source": "production",
+                "column": "PRODUCTION",
+                "aggregation_method": "sum",
+            },
+        },
+        {
+            "section": "quantity_terms",
+            "key": "wip_boh_quantity",
+            "payload": {
+                "display_name": "BOH 재공",
+                "aliases": ["아침 재공", "BOH 재공", "BOH"],
+                "data_source": "wip",
+                "column": "WIP",
+                "aggregation_method": "sum",
+                "temporal_semantics": {
+                    "business_timepoint": "BOH",
+                    "dataset_family": "wip_history",
+                    "dataset_key": "wip",
+                    "date_param": "DATE",
+                    "requested_date_offset_days": -1,
+                    "disallowed_dataset_keys": ["wip_today"],
+                    "inherit_filters": True,
+                },
+            },
+        },
+    ]
+
+
+def test_boh_explicit_date_exposes_previous_value_and_builds_two_source_contract():
+    followup_hint = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    payload = followup_hint.build_followup_hint(
+        {
+            "request": {
+                "question": "6/27일 W/B공정에서 세부 공정별 생산실적과 아침재공 수량 알려줘",
+                "reference_date": "20260730",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        }
+    )
+    date_hint = payload["followup_hint"]["changed_conditions_hint"]["date"]
+    assert date_hint["resolved_value"] == "20260627"
+    assert date_hint["previous_value"] == "20260626"
+
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": _production_and_boh_domain_items(),
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production",
+                    "payload": {
+                        "columns": ["DATE", "OPER_NAME", "PRODUCTION"],
+                        "required_params": ["DATE"],
+                    },
+                },
+                {
+                    "dataset_key": "wip",
+                    "payload": {
+                        "columns": ["DATE", "OPER_NAME", "WIP"],
+                        "required_params": ["DATE"],
+                    },
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "production_and_boh_by_operation",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production",
+                        "source_alias": "production_data",
+                        "required_params": {"DATE": "20260627"},
+                    },
+                    {
+                        "dataset_key": "lot_status",
+                        "source_alias": "lot_data",
+                    },
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "production_data",
+                        "group_by": ["OPER_NAME"],
+                        "aggregations": [
+                            {
+                                "column": "PRODUCTION",
+                                "method": "sum",
+                                "output_column": "PRODUCTION_QTY",
+                            }
+                        ],
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["OPER_NAME"],
+                    "metric_columns": ["PRODUCTION_QTY", "WIP_QTY"],
+                    "required_columns": ["OPER_NAME", "PRODUCTION_QTY", "WIP_QTY"],
+                },
+            }
+        },
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+    jobs = {item["dataset_key"]: item for item in plan["retrieval_jobs"]}
+    assert set(jobs) == {"production", "wip", "lot_status"}
+    assert jobs["production"]["required_params"]["DATE"] == "20260627"
+    assert jobs["wip"]["required_params"]["DATE"] == "20260626"
+    assert all(item["dataset_key"] != "wip_today" for item in plan["retrieval_jobs"])
+    assert plan["resolved_metric_merge_plan"]["operation"] == "merge_metric_sources"
+    bindings = {
+        item["output_column"]: (
+            item["source_alias"],
+            item["dataset_key"],
+            item["source_column"],
+        )
+        for item in plan["output_contract"]["metric_bindings"]
+    }
+    assert bindings["PRODUCTION_QTY"] == (
+        "production_data",
+        "production",
+        "PRODUCTION",
+    )
+    assert bindings["WIP_QTY"][1:] == ("wip", "WIP")
+    assert "validation_errors" not in plan
+
+
+def test_boh_deterministic_executor_uses_each_metric_source_and_ignores_copy_code():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": _production_and_boh_domain_items(),
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production",
+                    "payload": {"columns": ["DATE", "OPER_NAME", "PRODUCTION"]},
+                },
+                {
+                    "dataset_key": "wip",
+                    "payload": {"columns": ["DATE", "OPER_NAME", "WIP"]},
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "6/27일 W/B공정에서 세부 공정별 생산실적과 아침재공 수량 알려줘",
+                "reference_date": "20260730",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "production_and_boh_by_operation",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {"dataset_key": "production", "source_alias": "production_data"}
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["OPER_NAME"],
+                    "metric_columns": ["PRODUCTION_QTY", "WIP_QTY"],
+                    "required_columns": ["OPER_NAME", "PRODUCTION_QTY", "WIP_QTY"],
+                },
+            }
+        },
+        candidates,
+    )
+    wip_alias = next(
+        item["source_alias"]
+        for item in normalized["intent_plan"]["resolved_metric_merge_plan"]["metrics"]
+        if item["dataset_key"] == "wip"
+    )
+    normalized["runtime_sources"] = {
+        "production_data": [
+            {"OPER_NAME": "DA", "PRODUCTION": 100},
+            {"OPER_NAME": "DA", "PRODUCTION": 50},
+            {"OPER_NAME": "WB", "PRODUCTION": 20},
+        ],
+        wip_alias: [
+            {"OPER_NAME": "DA", "WIP": 7},
+            {"OPER_NAME": "WB", "WIP": 3},
+        ],
+    }
+    result = executor.execute_pandas_code(
+        normalized,
+        {
+            "code": (
+                "df = sources['production_data']\n"
+                "grouped = df.groupby(['OPER_NAME'])['PRODUCTION'].sum().reset_index(name='PRODUCTION_QTY')\n"
+                "grouped['WIP_QTY'] = grouped['PRODUCTION_QTY']\n"
+                "result = grouped"
+            )
+        },
+    )
+    assert result["analysis"]["status"] == "ok", result
+    assert result["analysis"]["execution_mode"] == "merge_metric_sources"
+    assert result["trace"]["inspection"]["pandas_execution"]["llm_code_executed"] is False
+    rows = {item["OPER_NAME"]: item for item in result["data"]["rows"]}
+    assert rows == {
+        "DA": {"OPER_NAME": "DA", "PRODUCTION_QTY": 150, "WIP_QTY": 7},
+        "WB": {"OPER_NAME": "WB", "PRODUCTION_QTY": 20, "WIP_QTY": 3},
+    }
+
+
+def test_output_contract_suppresses_duplicate_generic_metric_column():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "오늘 현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘",
+                "reference_date": "20260730",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "input_positive_da_wip_zero",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "prod_today",
+                    },
+                    {
+                        "dataset_key": "wip_today",
+                        "source_alias": "wip_today",
+                    },
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "prod_today",
+                        "aggregations": [
+                            {
+                                "column": "PRODUCTION",
+                                "method": "sum",
+                                "output_column": "INPUT_PRODUCTION_SUM",
+                            }
+                        ],
+                    },
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "wip_today",
+                        "aggregations": [
+                            {
+                                "column": "WIP",
+                                "method": "sum",
+                                "output_column": "DA_WIP_SUM",
+                            }
+                        ],
+                    },
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "required_columns": [
+                        "TECH",
+                        "DENSITY",
+                        "INPUT_PRODUCTION_SUM",
+                        "DA_WIP_SUM",
+                        "WIP",
+                    ],
+                    "grain_columns": ["TECH", "DENSITY"],
+                    "metric_columns": [
+                        "INPUT_PRODUCTION_SUM",
+                        "DA_WIP_SUM",
+                        "WIP",
+                    ],
+                },
+            }
+        },
+    )
+    contract = normalized["intent_plan"]["output_contract"]
+    assert contract["result_columns"] == [
+        "TECH",
+        "DENSITY",
+        "INPUT_PRODUCTION_SUM",
+        "DA_WIP_SUM",
+    ]
+    assert "WIP" not in contract["metric_columns"]
+    normalized["runtime_sources"] = {}
+    executed = executor.execute_pandas_code(
+        normalized,
+        {
+            "code": (
+                "result = pd.DataFrame([{'TECH': '1Z', 'DENSITY': '16G', "
+                "'INPUT_PRODUCTION_SUM': 20, 'DA_WIP_SUM': 0, 'WIP': 0}])"
+            )
+        },
+    )
+    assert executed["data"]["columns"] == contract["result_columns"]
+    assert executed["data"]["rows"] == [
+        {
+            "TECH": "1Z",
+            "DENSITY": "16G",
+            "INPUT_PRODUCTION_SUM": 20,
+            "DA_WIP_SUM": 0,
+        }
+    ]
+
+
+def test_executor_rejects_direct_copy_between_different_metric_sources():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "required_columns": ["PRODUCTION_QTY", "WIP_QTY"],
+                "metric_columns": ["PRODUCTION_QTY", "WIP_QTY"],
+                "metric_bindings": [
+                    {
+                        "source_alias": "production_data",
+                        "dataset_key": "production",
+                        "source_column": "PRODUCTION",
+                        "aggregation": "sum",
+                        "output_column": "PRODUCTION_QTY",
+                    },
+                    {
+                        "source_alias": "wip_data",
+                        "dataset_key": "wip",
+                        "source_column": "WIP",
+                        "aggregation": "sum",
+                        "output_column": "WIP_QTY",
+                    },
+                ],
+            },
+        },
+        "runtime_sources": {},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    result = executor.execute_pandas_code(
+        payload,
+        {
+            "code": (
+                "result = pd.DataFrame([{'PRODUCTION_QTY': 10}])\n"
+                "result['WIP_QTY'] = result['PRODUCTION_QTY']"
+            )
+        },
+    )
+    assert result["analysis"]["status"] == "error"
+    assert result["analysis"]["error"]["type"] == "output_contract_violation"
+    assert (
+        "서로 다른 조회 source의 metric을 직접 복사할 수 없습니다"
+        in result["analysis"]["error"]["message"]
+    )
+
+
+def test_retrieval_validator_rejects_duplicate_source_aliases():
+    validator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py"
+    )
+    result = validator.validate_retrieval_payload(
+        {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production",
+                        "source_alias": "same_source",
+                        "source_type": "dummy",
+                    },
+                    {
+                        "dataset_key": "wip",
+                        "source_alias": "same_source",
+                        "source_type": "dummy",
+                    },
+                ]
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        }
+    )
+    validation = result["trace"]["inspection"]["data_retrieval"]["job_validation"]
+    assert validation["valid_job_count"] == 0
+    assert validation["errors"][0]["type"] == "duplicate_source_alias"
+
+
+def test_followup_equipment_join_resolves_physical_keys_and_preserves_previous_rows():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    canonical_keys = [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "ORG",
+        "LEAD",
+        "MCP_NO",
+    ]
+    physical_keys = [
+        "TECH",
+        "DENSITY",
+        "MODE",
+        "PKG1",
+        "PKG2",
+        "ORG",
+        "LEAD",
+        "MCP_NO",
+    ]
+    previous_rows = [
+        {
+            "TECH": "1Z",
+            "DENSITY": "16G",
+            "MODE": "LPDDR5",
+            "PKG1": "LFBGA",
+            "PKG2": "POP",
+            "ORG": "4",
+            "LEAD": "200",
+            "MCP_NO": "M-001",
+            "PRODUCTION_QTY": 30,
+        },
+        {
+            "TECH": "RG",
+            "DENSITY": "32G",
+            "MODE": "DDR4",
+            "PKG1": "FBGA",
+            "PKG2": "DDP",
+            "ORG": "16",
+            "LEAD": "96",
+            "MCP_NO": "",
+            "PRODUCTION_QTY": 20,
+        },
+        {
+            "TECH": "SP",
+            "DENSITY": "16G",
+            "MODE": "DDR5",
+            "PKG1": "FCBGA",
+            "PKG2": "SDP",
+            "ORG": "4",
+            "LEAD": "78",
+            "MCP_NO": "",
+            "PRODUCTION_QTY": 10,
+        },
+    ]
+    payload = {
+        "request": {
+            "question": "이 제품들에 할당된 현재 장비 대수와 장비 LIST를 제품별로 알려줘",
+            "reference_date": "20260730",
+        },
+        "state": {
+            "current_data": {
+                "columns": [*physical_keys, "PRODUCTION_QTY"],
+                "preview_rows": previous_rows,
+            },
+            "last_intent_plan": {
+                "resolved_grain_plan": {
+                    "canonical_columns": canonical_keys,
+                    "grain_columns": physical_keys,
+                    "column_mappings": [
+                        {
+                            "canonical_key": canonical,
+                            "source_candidates": [physical],
+                        }
+                        for canonical, physical in zip(canonical_keys, physical_keys)
+                    ],
+                }
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "payload": {
+                        "columns": [*physical_keys, "EQUIP_ID"],
+                        "standard_column_aliases": {
+                            "DEN": ["DENSITY"],
+                            "PKG_TYPE1": ["PKG1"],
+                            "PKG_TYPE2": ["PKG2"],
+                            "EQP_ID": ["EQUIP_ID"],
+                        },
+                    },
+                }
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_count_and_list_by_product",
+                "request_scope": "followup_requery",
+                "reference_mode": "previous_result_rows",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "equipment_assign",
+                        "source_alias": "equipment_data",
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "equipment_data",
+                        "aggregations": [
+                            {
+                                "column": "EQP_ID",
+                                "method": "nunique",
+                                "output_column": "EQUIPMENT_COUNT",
+                            },
+                            {
+                                "column": "EQP_ID",
+                                "method": "collect_unique",
+                                "output_column": "EQUIPMENT_LIST",
+                            },
+                        ],
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "required_columns": [
+                        *physical_keys,
+                        "PRODUCTION_QTY",
+                        "EQUIPMENT_COUNT",
+                        "EQUIPMENT_LIST",
+                    ],
+                    "grain_columns": physical_keys,
+                    "metric_columns": ["EQUIPMENT_COUNT"],
+                },
+            }
+        },
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+    join = plan["resolved_reference_join_plan"]
+    mappings = {
+        item["canonical_key"]: (
+            item["left_column"],
+            item["right_candidates"][0],
+        )
+        for item in join["key_mappings"]
+    }
+    assert mappings["DEN"] == ("DENSITY", "DENSITY")
+    assert mappings["PKG_TYPE1"] == ("PKG1", "PKG1")
+    assert mappings["PKG_TYPE2"] == ("PKG2", "PKG2")
+
+    normalized["runtime_sources"] = {
+        "previous_result": previous_rows,
+        "equipment_data": [
+            {
+                **{key: previous_rows[0][key] for key in physical_keys},
+                "EQUIP_ID": "EQ-01",
+            },
+            {
+                **{key: previous_rows[0][key] for key in physical_keys},
+                "EQUIP_ID": "EQ-02",
+            },
+            {
+                **{key: previous_rows[1][key] for key in physical_keys},
+                "EQUIP_ID": "EQ-03",
+            },
+        ],
+    }
+    executed = executor.execute_pandas_code(
+        normalized,
+        {
+            "code": (
+                "prev_map = {'DEN': 'DEN', 'PKG_TYPE1': 'PKG1'}\n"
+                "ea_map = {'DEN': 'DENSITY', 'PKG_TYPE1': 'PKG1'}\n"
+                "result = sources['equipment_data']"
+            )
+        },
+    )
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["analysis"]["execution_mode"] == "enrich_previous_result"
+    assert executed["data"]["row_count"] == 3
+    assert executed["data"]["columns"] == [
+        *physical_keys,
+        "PRODUCTION_QTY",
+        "EQUIPMENT_COUNT",
+        "EQUIPMENT_LIST",
+    ]
+    assert not any(
+        column.endswith(("_x", "_y")) for column in executed["data"]["columns"]
+    )
+    rows = executed["data"]["rows"]
+    assert rows[0]["EQUIPMENT_COUNT"] == 2
+    assert rows[0]["EQUIPMENT_LIST"] == "EQ-01, EQ-02"
+    assert rows[1]["EQUIPMENT_COUNT"] == 1
+    assert rows[2]["EQUIPMENT_COUNT"] == 0
+    assert rows[2]["EQUIPMENT_LIST"] == ""
+
+
+def test_metadata_candidates_match_compact_alias_and_preserve_registered_temporal_contract():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    result = builder.build_metadata_candidates(
+        {
+            "request": {
+                "question": "6/27일 생산실적과 아침재공 수량을 알려줘"
+            }
+        },
+        {
+            "domain_items": [
+                {
+                    "section": "quantity_terms",
+                    "key": "wip_boh_quantity",
+                    "payload": {
+                        "display_name": "아침 재공 수량",
+                        "aliases": ["아침 재공"],
+                        "data_source": "wip",
+                        "column": "WIP",
+                        "aggregation_method": "sum",
+                        "temporal_semantics": {
+                            "business_timepoint": "BOH",
+                            "dataset_family": "wip_history",
+                            "dataset_key": "wip",
+                            "date_param": "DATE",
+                            "requested_date_offset_days": -1,
+                            "disallowed_dataset_keys": ["wip_today"],
+                            "inherit_filters": True,
+                        },
+                    },
+                }
+            ]
+        },
+        {
+            "table_catalog_items": [
+                {"dataset_key": "production", "payload": {"display_name": "생산실적"}},
+                {"dataset_key": "wip", "payload": {"display_name": "재공 이력"}},
+            ]
+        },
+        {"main_flow_filters": []},
+        min_table_items=1,
+    )
+    selected = result["metadata_candidates"]["domain_items"]
+    boh_item = next(item for item in selected if item.get("key") == "wip_boh_quantity")
+    assert boh_item["payload"]["temporal_semantics"] == {
+        "business_timepoint": "BOH",
+        "dataset_family": "wip_history",
+        "dataset_key": "wip",
+        "date_param": "DATE",
+        "requested_date_offset_days": -1,
+        "disallowed_dataset_keys": ["wip_today"],
+        "inherit_filters": True,
+    }
+
+
+def test_metadata_candidates_do_not_inject_temporal_contract_from_domain_key_or_alias():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    item = builder._sanitize_metadata_item(
+        {
+            "section": "quantity_terms",
+            "key": "wip_boh_quantity",
+            "payload": {
+                "display_name": "아침 재공 수량",
+                "aliases": ["아침 재공"],
+            },
+        },
+        "domain",
+    )
+    assert "temporal_semantics" not in item["payload"]
+
+
+def test_temporal_contract_engine_uses_selected_domain_without_business_keyword_branch():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "7/1 기준 검수 예정 재고를 알려줘",
+                "reference_date": "20260730",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "scheduled_inventory",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "inventory_current",
+                        "source_alias": "inventory_data",
+                    }
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "metric_columns": ["SCHEDULED_QTY"],
+                    "required_columns": ["SCHEDULED_QTY"],
+                },
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [
+                    {
+                        "section": "quantity_terms",
+                        "key": "scheduled_inventory",
+                        "payload": {
+                            "display_name": "검수 예정 재고",
+                            "aliases": ["검수 예정 재고"],
+                            "data_source": "inventory_history",
+                            "column": "QTY",
+                            "aggregation_method": "sum",
+                            "temporal_semantics": {
+                                "business_timepoint": "SCHEDULED",
+                                "dataset_key": "inventory_history",
+                                "date_param": "BASE_DATE",
+                                "requested_date_offset_days": 2,
+                                "disallowed_dataset_keys": ["inventory_current"],
+                            },
+                        },
+                    }
+                ],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "inventory_history",
+                        "payload": {
+                            "columns": ["BASE_DATE", "QTY"],
+                            "required_params": ["BASE_DATE"],
+                        },
+                    }
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+    plan = result["intent_plan"]
+    assert plan["retrieval_jobs"] == [
+        {
+            "dataset_key": "inventory_history",
+            "source_alias": "inventory_data",
+            "required_params": {"BASE_DATE": "20260703"},
+            "filters": {},
+            "required": True,
+        }
+    ]
+    assert plan["temporal_semantics"][0]["business_timepoint"] == "SCHEDULED"
+    assert plan["temporal_semantics"][0]["query_date"] == "20260703"
+    assert "validation_errors" not in plan
+
+
+def test_runtime_temporal_logic_has_no_boh_question_or_domain_key_branch():
+    source_text = "\n".join(
+        (
+            ROOT
+            / "langflow_components"
+            / "data_analysis_flow"
+            / filename
+        ).read_text(encoding="utf-8")
+        for filename in (
+            "01d_metadata_candidates_builder.py",
+            "04_intent_plan_normalizer.py",
+        )
+    )
+    for blocked in (
+        "wip_boh_quantity",
+        "production_and_boh_by_operation",
+        "아침재공",
+        "아침 재공",
+        '"BOH"',
+        "_normalize_domain_temporal_contracts",
+    ):
+        assert blocked not in source_text

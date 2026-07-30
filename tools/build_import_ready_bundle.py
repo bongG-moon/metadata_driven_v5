@@ -230,10 +230,10 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "491/491 non-web tests passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
+            "pytest": "505/505 non-web tests passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
             "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 131/131 custom nodes to 90 real Python sources; 0 missing",
-            "korean_component_documentation": "91/91 Python sources and 1727/1727 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 393 embedded custom-code instances preserve 8109/8109 documented function instances; strict UTF-8/JSON checks passed",
-            "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
+            "korean_component_documentation": "91/91 Python sources and 1819/1819 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 393 embedded custom-code instances preserve 8385/8385 documented function instances; strict UTF-8/JSON checks passed",
+            "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
@@ -1483,10 +1483,10 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- Langflow/Flow 비웹 pytest: 491/491 passed (별도 Streamlit 웹 런타임 테스트는 제외)
+- Langflow/Flow 비웹 pytest: 505/505 passed (별도 Streamlit 웹 런타임 테스트는 제외)
 - 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 131/131 노드가 실제 Python 원본 90개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
-- 대표 Dummy 질문: 31/31 통과
+- 대표 Dummy 질문: 30/30 통과
 - Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
 - Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: manifest의 전체 노드 검증 통과

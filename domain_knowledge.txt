@@ -234,6 +234,10 @@ OUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터�
 
 BOH 재공과 아침 재공 기준일 규칙을 등록해줘.
 아침 재공, BOH 재공, BOH, 07시 기준 재공, 7시 기준 재공은 하루 시작 시점의 재공을 뜻해.
+section은 quantity_terms이고 key는 wip_boh_quantity이며 status는 active야.
+payload의 display_name은 BOH 재공, aliases는 아침 재공, BOH 재공, BOH, 07시 기준 재공, 7시 기준 재공이야.
+data_source는 wip, column은 WIP, aggregation_method는 sum이야.
+payload.temporal_semantics에는 business_timepoint=BOH, dataset_family=wip_history, dataset_key=wip, date_param=DATE, requested_date_offset_days=-1, disallowed_dataset_keys=[wip_today], inherit_filters=true를 저장해.
 재공 이력 테이블의 DATE는 해당 일자의 EOH, 즉 끝나는 시점 재공이야.
 그래서 특정 일자의 BOH 재공은 그 전일 DATE의 wip 이력 데이터를 조회해야 해.
 예를 들어 6/20 아침 재공, 6/20 BOH 재공, 6/20 07시 기준 재공은 wip 이력 데이터에 DATE=6/19를 넣어 조회한 결과가 6/20 BOH 값이야.

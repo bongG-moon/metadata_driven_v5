@@ -27,7 +27,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "c1b49e8fa25c47792cd67d2f71573159ea16b7950c5c33b795d88fb83857cce2",
+  "single_file_ui_import_sha256": "c9dc9c5bbb431d8e3ebce10bc04721b12b4578739a996e3e9d4bb1997580cb4b",
   "flows": [
     {
       "order": 1,
@@ -36,7 +36,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 46,
       "edges": 71,
-      "sha256": "90758313b31969ee0a05330253cdec2ae23fbdd99e96d022fff3a395c676a31d"
+      "sha256": "767b9a0bdbced01ebbce241a77b05baaa5d54fd59a087077b97f106bb4dae777"
     },
     {
       "order": 2,
@@ -45,7 +45,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
       "nodes": 14,
       "edges": 15,
-      "sha256": "c0acb63a66bd0b9b14d47e83ae1a697b75fc337b8700abc488da636007ce6b3c"
+      "sha256": "a7221bf77d7a228c89be0264435563809d0c610cdde428392a08971409d423d9"
     },
     {
       "order": 3,
@@ -143,10 +143,10 @@
     "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools"
   },
   "validation": {
-    "pytest": "491/491 non-web tests passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
+    "pytest": "505/505 non-web tests passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
     "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 131/131 custom nodes to 90 real Python sources; 0 missing",
-    "korean_component_documentation": "91/91 Python sources and 1727/1727 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 393 embedded custom-code instances preserve 8109/8109 documented function instances; strict UTF-8/JSON checks passed",
-    "representative_data_analysis_questions_dummy_retrieval": "31/31 passed",
+    "korean_component_documentation": "91/91 Python sources and 1819/1819 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 393 embedded custom-code instances preserve 8385/8385 documented function instances; strict UTF-8/JSON checks passed",
+    "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
     "langflow_frontend_edge_handles": "458/458 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
     "langflow_lfx_node_templates": "187/187 passed",
