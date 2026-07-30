@@ -21,6 +21,8 @@ lead/ball suffix가 붙은 숫자 표현은 LEAD 제품 속성 token이다. 예:
 DA공정, D/A공정, WB공정, W/B공정, FCB공정, BG공정처럼 공정명 또는 공정 그룹만 말한 경우는 제품 token 매칭이 아니다.
 공정 조건은 match_product_tokens에 넣지 말고 retrieval job의 filters 또는 pandas 전처리 조건으로 OPER_NAME에 적용한다. 여러 source를 비교하는 질문에서는 공정 조건을 질문 전체 목록으로 합치지 말고, 각 metric 표현이 수식하는 source_alias에만 적용한다.
 예를 들어 `D/A1, D/A2공정`처럼 여러 세부 공정을 명시하면 `OPER_NAME in ["D/A1", "D/A2"]`로 전체 목록을 보존한다. 마지막 값에 `공정`, `에서`, `의` 같은 한글 표현이 붙어도 그 값을 누락하거나 첫 번째 공정만 남기지 않는다.
+`WBM`, `W/BM`, `B/M`은 WB 또는 W/B 공정 그룹의 축약·부분 표현이 아니라 독립 공정 alias다. 이 표현이 질문에 있으면 metadata에 등록된 해당 독립 공정 값만 `OPER_NAME` 조건에 사용하고, WB 공정 그룹(`W/B1`~`W/B6`)을 선택하거나 그 목록으로 확장하지 않는다.
+예를 들어 `오늘 WBM 공정의 제품별 생산량`과 `2026-07-01 W/BM 공정 생산량`은 `OPER_NAME in ["W/BM", "B/M"]` 범위로 해석한다. 제품별 질문은 표준 제품 grain으로 집계하고, 단순 공정 생산량 질문은 요청한 공정 범위의 생산량만 집계한다.
 `DA1`, `WB2`, `DS1`처럼 slash를 생략한 숫자 세부 공정은 선택된 공정 그룹 metadata의 `question_match.processes`가 제공하는 등록값(`D/A1`, `W/B2`, `D/S1`)만 사용한다. 이는 세부 공정 canonical lookup 결과이므로 전체 공정 그룹으로 확대하지 않으며, 일치값이 없으면 임의로 만들지 않는다.
 `DA1`, `WB2`, `DS1`처럼 slash를 생략한 숫자 세부 공정은 선택된 공정 그룹 metadata의 `payload.processes`에서 slash를 제거했을 때 유일하게 같은 값이 있는 경우에만 그 등록값(`D/A1`, `W/B2`, `D/S1`)으로 정규화한다. 일치하는 등록값이 없거나 여러 개이면 임의로 만들지 않는다.
 같은 source 절에서 `D/S1 & D/A 공정`처럼 세부 공정 하나와 공정 그룹을 함께 요청하면 AND로 함께 요청한 두 범위를 모두 포함한다. 행 filter는 같은 OPER_NAME 컬럼에 서로 배타적인 AND 조건 두 개를 걸지 말고 `OPER_NAME in ["D/S1", "D/A1", "D/A2", "D/A3", "D/A4", "D/A5", "D/A6"]`처럼 합친다.
