@@ -340,8 +340,8 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
             name="flow_resolution_mode",
             display_name="Flow 해석 방식",
             info=(
-                "Flow ID 우선은 선택 ID를 사용하고 없을 때만 이름으로 찾습니다. "
-                "실제 환경에서 이름 조회를 완전히 피하려면 '선택한 Flow ID만'을 사용하세요."
+                "Flow ID 우선은 선택 ID의 현재 수정 시각을 확인하고, ID가 사라졌을 때 이름으로 복구합니다. "
+                "이름 복구를 금지하려면 '선택한 Flow ID만'을 사용하세요."
             ),
             options=FLOW_RESOLUTION_OPTIONS,
             value=FLOW_ID_PREFERRED,
@@ -357,7 +357,10 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         BoolInput(
             name="cache_flow",
             display_name="Flow 그래프 캐시",
-            info="하위 Flow 그래프 구성을 실제 Flow ID 기준으로 캐시합니다. 데이터와 답변은 캐시하지 않습니다.",
+            info=(
+                "하위 Flow 그래프 구성을 실제 Flow ID 기준으로 캐시하고, 현재 수정 시각이 바뀌면 "
+                "무효화합니다. 데이터와 답변은 캐시하지 않습니다."
+            ),
             value=True,
             advanced=True,
         ),
@@ -412,6 +415,17 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
             tool_mode=True,
         )
     ]
+
+    # 주요 메서드: 기본 Run Flow는 대상 Flow 선택 시 자식 Flow의 출력 포트를 현재 노드에 동적으로 노출합니다.
+    # 이 컴포넌트는 Agent Tool 전용이므로 선택·새로고침 이후에도 Tool 출력 계약 하나만 유지합니다.
+    async def update_outputs(
+        self,
+        frontend_node: dict[str, Any],
+        field_name: str,
+        field_value: Any,
+    ) -> dict[str, Any]:
+        frontend_node["outputs"] = [output.model_dump() for output in type(self).outputs]
+        return frontend_node
 
     # 주요 메서드: 기본 Run Flow와 같은 프로젝트의 Flow 목록·ID metadata를 드롭다운에 채웁니다.
     # Refresh 시 저장된 Flow ID로 현재 이름·수정 시각을 다시 맞추되, 동적 child 입력은 노출하지 않습니다.
@@ -533,18 +547,12 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
                 "대상 Flow 드롭다운을 새로고침한 뒤 다시 선택하세요."
             )
         if use_selected_id:
-            # 선택 ID와 dropdown metadata의 updated_at이 있으면 base graph cache를 먼저 확인합니다.
-            # 이전 구현은 캐시 확인 전에 get_flow()를 별도로 호출해 매 실행마다 불필요한 DB 조회가 발생했습니다.
             actual_id = requested_flow_id
             actual_name = flow_name
-            actual_updated_at = _as_iso_text(updated_at) or _as_iso_text(
-                self._attributes.get("flow_name_selected_updated_at")
-            )
             try:
-                graph = await super().get_graph(
-                    flow_name_selected=actual_name or None,
+                selected_flow = await super().get_flow(
+                    flow_name_selected=None,
                     flow_id_selected=actual_id,
-                    updated_at=actual_updated_at,
                 )
             except Exception as exc:  # noqa: BLE001
                 raise ValueError(
@@ -552,6 +560,39 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
                     f"flow_id={actual_id!r}, user_id={runtime_user_id!r}. "
                     "대상 Flow를 새로고침해 다시 선택하고 소유권을 확인하세요."
                 ) from exc
+            selected_flow_data = getattr(selected_flow, "data", None) or {}
+            selected_flow_exists = bool(str(selected_flow_data.get("id") or "").strip())
+            if selected_flow_exists:
+                actual_name = str(selected_flow_data.get("name") or actual_name).strip()
+                actual_updated_at = _as_iso_text(selected_flow_data.get("updated_at"))
+            elif resolution_mode == FLOW_ID_ONLY:
+                raise ValueError(
+                    "선택한 Flow ID가 현재 프로젝트에 없습니다. "
+                    f"flow_id={actual_id!r}. 대상 Flow를 새로고침해 다시 선택하세요."
+                )
+            else:
+                if not flow_name:
+                    raise ValueError(
+                        "선택한 Flow ID가 사라졌고 이름으로 복구할 대상 Flow 이름도 없습니다."
+                    )
+                fallback_flow = await super().get_flow(
+                    flow_name_selected=flow_name,
+                    flow_id_selected=None,
+                )
+                fallback_data = getattr(fallback_flow, "data", None) or {}
+                actual_id = str(fallback_data.get("id") or "").strip()
+                actual_name = str(fallback_data.get("name") or flow_name).strip()
+                actual_updated_at = _as_iso_text(fallback_data.get("updated_at"))
+                if not actual_id:
+                    raise ValueError(
+                        "선택한 Flow ID가 사라졌고 같은 이름의 Flow도 찾지 못했습니다. "
+                        f"Flow 이름={flow_name!r}, user_id={runtime_user_id!r}."
+                    )
+            graph = await super().get_graph(
+                flow_name_selected=actual_name or None,
+                flow_id_selected=actual_id,
+                updated_at=actual_updated_at,
+            )
         else:
             if not flow_name:
                 raise ValueError("이름으로 조회할 대상 Flow 이름이 없습니다.")

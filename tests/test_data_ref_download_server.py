@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import signal
+import subprocess
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer
@@ -390,3 +394,92 @@ def test_data_ref_download_server_does_not_stop_instance_with_wrong_control_toke
         httpd.shutdown()
         thread.join(timeout=5)
         httpd.server_close()
+
+
+def test_force_release_listener_port_uses_term_then_kill(monkeypatch) -> None:
+    signals: list[tuple[int, int]] = []
+    force_killed = set()
+    clock = [0.0]
+    kill_signal = 9
+
+    monkeypatch.setattr(server, "listener_process_ids", lambda port: {101, 102})
+    monkeypatch.setattr(server.signal, "SIGKILL", kill_signal, raising=False)
+    monkeypatch.setattr(
+        server,
+        "port_is_bindable",
+        lambda host, port: bool(force_killed),
+    )
+    monkeypatch.setattr(server, "process_is_running", lambda pid: True)
+
+    def fake_kill(pid: int, selected_signal: int) -> None:
+        signals.append((pid, selected_signal))
+        if selected_signal == kill_signal:
+            force_killed.add(pid)
+
+    def fake_monotonic() -> float:
+        clock[0] += 0.3
+        return clock[0]
+
+    monkeypatch.setattr(server.os, "kill", fake_kill)
+    monkeypatch.setattr(server.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(server.time, "sleep", lambda seconds: None)
+
+    terminated = server.force_release_listener_port(
+        "0.0.0.0",
+        8765,
+        timeout_seconds=0.5,
+    )
+
+    assert terminated == [101, 102]
+    assert signals[:2] == [(101, signal.SIGTERM), (102, signal.SIGTERM)]
+    assert signals[2:] == [
+        (101, kill_signal),
+        (102, kill_signal),
+    ]
+
+
+def test_force_release_listener_port_terminates_real_child_listener() -> None:
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import socket,time;"
+                "listener=socket.socket(socket.AF_INET,socket.SOCK_STREAM);"
+                "listener.bind(('127.0.0.1',0));"
+                "listener.listen();"
+                "print(listener.getsockname()[1],flush=True);"
+                "time.sleep(60)"
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        port = int(child.stdout.readline().strip())
+        assert not server.port_is_bindable("127.0.0.1", port)
+        assert server.listener_process_ids(port)
+
+        terminated = server.force_release_listener_port(
+            "127.0.0.1",
+            port,
+            timeout_seconds=2,
+        )
+
+        assert terminated
+        child.wait(timeout=5)
+        rebound = ThreadingHTTPServer(("127.0.0.1", port), server.make_handler(
+            server.ServerConfig(
+                mongo_uri="",
+                mongo_database="datagov",
+                result_collection="agent_v4_result_store",
+                preview_limit=10,
+            )
+        ))
+        rebound.server_close()
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)

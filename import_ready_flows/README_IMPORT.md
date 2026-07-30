@@ -33,7 +33,7 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 11개 Flow를 한 번에 impor
 - canvas edge 재연결: 필요 없음
 - Router Flow ID 치환: 필요 없음
 - Router URL 5개 개별 입력: 필요 없음
-- Agent Tool Router Flow ID 직접 입력: 필요 없음. 다만 import 후 각 Tool의 `대상 Flow`를 한 번씩 다시 선택하면 현재 ID가 저장되어 이름 조회 없이 graph cache를 사용할 수 있습니다.
+- Agent Tool Router Flow ID 직접 입력: 필요 없음. 다만 import 후 각 Tool의 `대상 Flow`를 한 번씩 다시 선택하면 현재 ID가 저장됩니다. 실행 시 현재 ID와 `updated_at`을 확인한 뒤 유효한 graph cache를 사용합니다.
 - Workflow Orchestrator Flow ID 재연결: 필요 없음
 
 Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다시 import하면 Langflow가 endpoint에 `-1`을 붙일 수 있으므로, 재import 시에는 기존 `metadata-driven-v5-complete-20260710-*` Flow를 먼저 정리합니다.
@@ -75,7 +75,8 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
 - pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
-- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router의 선택형 Cached Run Flow Tool 6개는 UI에서 저장한 현재 Flow ID를 우선 사용하고 ID가 비어 있을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. `cache_flow=true`, `return_direct=true`이며, 선택 ID 경로에서는 별도 Flow 조회 없이 graph cache를 바로 확인합니다. 실시간 생산 Report Tool은 `분석`과 지정된 실시간 분석 구문을 실행 직전에 다시 검증합니다.
+- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router의 선택형 Cached Run Flow Tool 6개는 UI에서 저장한 현재 Flow ID와 `updated_at`을 실행 시 확인하고, 선택 ID가 현재 프로젝트에서 사라졌을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. `cache_flow=true`, `return_direct=true`이며, Flow 수정 시 오래된 graph cache를 무효화합니다. 실시간 생산 Report Tool은 `분석`과 지정된 실시간 분석 구문을 실행 직전에 다시 검증합니다.
+- Agent Tool Router의 Cached Run Flow Tool은 대상 Flow 선택·새로고침 이후에도 `component_as_tool` 출력 하나만 유지합니다. 하위 Flow의 `message`, `gaia_response`는 Tool 내부 결과 선택에만 사용합니다.
 - Agent Tool Router는 `n_messages=5`, `max_iterations=1`로 현재 저장 메시지와 이전 2턴을 조회합니다. GaiA Input Adapter가 원본 Message ID를 보존하고 LFX Agent가 현재 입력과 ID가 같은 메시지를 history에서 제거하므로, 현재 질문 중복 없이 이전 사용자/응답 2턴만 남습니다. 하위 Flow의 표준 Chat Output Message를 `return_direct=true`로 반환하며, LFX 0.4.2가 Tool 결과를 Agent 단계 카드에만 기록한 경우 GaiA Output Adapter가 마지막 완료 Tool 출력에서 본문을 복원합니다. Message.data의 `gaia_response`도 보존합니다.
 - Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 표준 Chat Input ID로 내부 변환합니다.
 - Agent Tool Router는 `session_source` 포트와 edge 없이 실제 Tool 출력 메서드 안에서 부모 runtime/graph `session_id`를 자동 상속합니다. 따라서 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰어도 하위 Flow의 세션 저장/복원이 유지됩니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.

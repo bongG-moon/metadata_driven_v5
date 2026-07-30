@@ -178,7 +178,8 @@ def retrieve_dummy_data(payload_value: Any) -> dict[str, Any]:
     for job in jobs:
         if not isinstance(job, dict):
             continue
-        rows = _rows_for_dataset(str(job.get("dataset_key") or ""))
+        fixture_rows = _rows_for_dataset(str(job.get("dataset_key") or ""))
+        fixture_columns = sorted({column for row in fixture_rows for column in row})
         column_mappings = {
             **(
                 job.get("standard_column_aliases")
@@ -192,7 +193,7 @@ def retrieve_dummy_data(payload_value: Any) -> dict[str, Any]:
             ),
         }
         rows = _apply_params(
-            rows,
+            fixture_rows,
             job.get("required_params"),
             column_mappings=column_mappings,
         )
@@ -203,7 +204,9 @@ def retrieve_dummy_data(payload_value: Any) -> dict[str, Any]:
                 "source_type": job.get("source_type"),
                 "status": "ok",
                 "row_count": len(rows),
-                "columns": sorted({column for row in rows for column in row}),
+                # 실제 조회가 0행이어도 pandas가 필터 컬럼을 검증할 수 있도록
+                # 데이터셋 fixture의 선언 스키마는 그대로 유지합니다.
+                "columns": fixture_columns,
                 "preview_rows": rows[:PREVIEW_LIMIT],
                 "rows": rows,
                 "applied_params": job.get("required_params", {}),

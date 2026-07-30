@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import sys
 import tempfile
@@ -40,6 +41,7 @@ DEFAULT_PORT = 8765
 DEFAULT_PREVIEW_LIMIT = 100
 DEFAULT_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
 DEFAULT_RESTART_TIMEOUT_SECONDS = 5.0
+DEFAULT_FORCE_TERMINATE_TIMEOUT_SECONDS = 3.0
 SERVICE_NAME = "metadata-driven-data-ref-download-server"
 CONTROL_SHUTDOWN_PATH = "/__control/shutdown"
 DEFAULT_REPORT_STORAGE_DIR = ROOT / "report_api" / "storage"
@@ -139,17 +141,29 @@ def main() -> int:
         type=float,
         default=float(os.getenv("DATA_REF_DOWNLOAD_RESTART_TIMEOUT_SECONDS", str(DEFAULT_RESTART_TIMEOUT_SECONDS))),
     )
+    parser.add_argument(
+        "--force-replace-port",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("DATA_REF_DOWNLOAD_FORCE_REPLACE_PORT", True),
+        help=(
+            "If the selected port is still occupied after verified shutdown, terminate every listener "
+            "on that port and bind again (default: true)."
+        ),
+    )
+    parser.add_argument(
+        "--force-terminate-timeout-seconds",
+        type=float,
+        default=float(
+            os.getenv(
+                "DATA_REF_DOWNLOAD_FORCE_TERMINATE_TIMEOUT_SECONDS",
+                str(DEFAULT_FORCE_TERMINATE_TIMEOUT_SECONDS),
+            )
+        ),
+    )
     parser.add_argument("--state-file", default=os.getenv("DATA_REF_DOWNLOAD_STATE_FILE", ""))
     args = parser.parse_args()
 
     state_path = Path(args.state_file).expanduser() if str(args.state_file).strip() else server_state_path(args.port)
-    if args.replace_existing:
-        request_existing_server_shutdown(
-            args.host,
-            args.port,
-            state_path,
-            timeout_seconds=max(0.5, float(args.restart_timeout_seconds)),
-        )
     control_token = secrets.token_urlsafe(32)
     config = ServerConfig(
         mongo_uri=os.getenv("MONGODB_URI") or os.getenv("MONGO_URI") or "",
@@ -169,21 +183,64 @@ def main() -> int:
         use_report_access_token=args.report_access_token,
     )
     prepare_report_storage(config)
+    if args.replace_existing:
+        request_existing_server_shutdown(
+            args.host,
+            args.port,
+            state_path,
+            timeout_seconds=max(0.5, float(args.restart_timeout_seconds)),
+        )
     try:
         server = ThreadingHTTPServer((args.host, args.port), make_handler(config))
     except OSError as exc:
         if exc.errno != errno.EADDRINUSE:
             raise
-        print(
-            f"data_ref download server를 시작하지 못했습니다: {args.host}:{args.port} 포트를 다른 프로세스가 사용 중입니다.",
-            file=sys.stderr,
-        )
-        print(
-            "동일한 최신 data_ref 서버로 확인된 경우에만 자동 종료합니다. "
-            "구버전 서버는 최초 1회 직접 종료하거나 다른 --port를 사용하세요.",
-            file=sys.stderr,
-        )
-        return 2
+        if args.force_replace_port:
+            try:
+                terminated_pids = force_release_listener_port(
+                    args.host,
+                    args.port,
+                    timeout_seconds=max(
+                        0.5,
+                        float(args.force_terminate_timeout_seconds),
+                    ),
+                )
+            except RuntimeError as force_exc:
+                print(
+                    f"{args.host}:{args.port} 포트 강제 종료에 실패했습니다: {force_exc}",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                server = ThreadingHTTPServer((args.host, args.port), make_handler(config))
+            except OSError as retry_exc:
+                if retry_exc.errno != errno.EADDRINUSE:
+                    raise
+                print(
+                    f"포트 강제 종료 후에도 {args.host}:{args.port} bind에 실패했습니다. "
+                    "다른 프로세스가 즉시 포트를 다시 점유하는지 확인하세요.",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                state_path.unlink()
+            except FileNotFoundError:
+                pass
+            print(
+                f"{args.host}:{args.port} listener를 강제 종료하고 다시 시작합니다. "
+                f"terminated_pids={terminated_pids}"
+            )
+        else:
+            print(
+                f"data_ref download server를 시작하지 못했습니다: {args.host}:{args.port} 포트를 다른 프로세스가 사용 중입니다.",
+                file=sys.stderr,
+            )
+            print(
+                "동일한 data_ref 서버 자동 종료에 실패했습니다. "
+                "--force-replace-port로 지정 포트 listener를 강제 종료할 수 있습니다.",
+                file=sys.stderr,
+            )
+            return 2
     write_server_state(state_path, config)
     print(f"data_ref download server: http://{args.host}:{args.port}")
     print(f"same-service automatic restart: enabled (state: {state_path})")
@@ -371,6 +428,165 @@ def port_is_bindable(host: str, port: int) -> bool:
         return False
     finally:
         probe.close()
+
+
+# 주요 함수: psutil이 있는 환경에서 지정 TCP 포트를 LISTEN 중인 프로세스 ID를 조회합니다.
+def listener_process_ids_from_psutil(port: int) -> set[int]:
+    try:
+        import psutil
+    except ImportError:
+        return set()
+
+    pids: set[int] = set()
+    try:
+        connections = psutil.net_connections(kind="tcp")
+    except (OSError, psutil.Error):
+        return set()
+    for connection in connections:
+        address = getattr(connection, "laddr", None)
+        listener_port = getattr(address, "port", None)
+        if listener_port is None and isinstance(address, tuple) and len(address) >= 2:
+            listener_port = address[1]
+        if (
+            int_or_zero(listener_port) == int(port)
+            and str(getattr(connection, "status", "")).upper() == "LISTEN"
+            and getattr(connection, "pid", None)
+        ):
+            pids.add(int(connection.pid))
+    return pids
+
+
+# 주요 함수: psutil이 없는 Linux 환경에서 /proc의 LISTEN socket inode를 프로세스 ID로 역추적합니다.
+def listener_process_ids_from_linux_proc(port: int) -> set[int]:
+    proc_root = Path("/proc")
+    if not sys.platform.startswith("linux") or not proc_root.is_dir():
+        return set()
+
+    target_port = f"{int(port):04X}"
+    socket_inodes: set[str] = set()
+    for table_path in (proc_root / "net" / "tcp", proc_root / "net" / "tcp6"):
+        try:
+            lines = table_path.read_text(encoding="ascii").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) <= 9 or fields[3] != "0A":
+                continue
+            local_address = fields[1].rsplit(":", 1)
+            if len(local_address) == 2 and local_address[1].upper() == target_port:
+                socket_inodes.add(fields[9])
+    if not socket_inodes:
+        return set()
+
+    pids: set[int] = set()
+    for process_dir in proc_root.iterdir():
+        if not process_dir.name.isdigit():
+            continue
+        fd_dir = process_dir / "fd"
+        try:
+            file_descriptors = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for descriptor in file_descriptors:
+            try:
+                target = os.readlink(descriptor)
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target[8:-1] in socket_inodes:
+                pids.add(int(process_dir.name))
+                break
+    return pids
+
+
+# 주요 함수: 운영체제별 방법을 조합해 현재 지정 포트를 점유한 listener PID 집합을 반환합니다.
+def listener_process_ids(port: int) -> set[int]:
+    pids = listener_process_ids_from_psutil(port)
+    if not pids:
+        pids = listener_process_ids_from_linux_proc(port)
+    pids.discard(os.getpid())
+    return pids
+
+
+# 주요 함수: Windows는 psutil, POSIX는 신호 0으로 PID 실행 상태를 확인합니다.
+def process_is_running(pid: int) -> bool:
+    if os.name == "nt":
+        try:
+            import psutil
+        except ImportError:
+            return True
+        try:
+            return psutil.pid_exists(int(pid)) and psutil.Process(int(pid)).is_running()
+        except psutil.NoSuchProcess:
+            return False
+        except psutil.AccessDenied:
+            return True
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+# 주요 함수: 전용 포트의 모든 listener에 TERM 후 KILL을 보내고 실제 bind 가능 상태까지 기다립니다.
+def force_release_listener_port(
+    host: str,
+    port: int,
+    *,
+    timeout_seconds: float = DEFAULT_FORCE_TERMINATE_TIMEOUT_SECONDS,
+) -> list[int]:
+    target_pids = sorted(listener_process_ids(port))
+    if not target_pids:
+        raise RuntimeError(
+            f"{host}:{port} 포트를 점유한 listener PID를 찾지 못했습니다. "
+            "동일 사용자 권한으로 실행하거나 psutil을 설치하세요."
+        )
+
+    permission_errors: list[int] = []
+    for pid in target_pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            permission_errors.append(pid)
+    if permission_errors:
+        raise RuntimeError(
+            f"{host}:{port} listener 종료 권한이 없습니다. pids={permission_errors}"
+        )
+
+    deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        if port_is_bindable(host, port):
+            return target_pids
+        time.sleep(0.05)
+
+    kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+    for pid in target_pids:
+        if not process_is_running(pid):
+            continue
+        try:
+            os.kill(pid, kill_signal)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            permission_errors.append(pid)
+    if permission_errors:
+        raise RuntimeError(
+            f"{host}:{port} listener 강제 종료 권한이 없습니다. pids={sorted(set(permission_errors))}"
+        )
+
+    deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        if port_is_bindable(host, port):
+            return target_pids
+        time.sleep(0.05)
+    raise RuntimeError(
+        f"{host}:{port} listener를 강제 종료했지만 제한 시간 안에 포트가 해제되지 않았습니다. "
+        f"pids={target_pids}"
+    )
 
 
 def _env_bool(name: str, default: bool) -> bool:

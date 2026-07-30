@@ -27,7 +27,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "c9dc9c5bbb431d8e3ebce10bc04721b12b4578739a996e3e9d4bb1997580cb4b",
+  "single_file_ui_import_sha256": "c34efbebec3eacaedf8585bcaecf4dcebfa7237ae9f9267e3b685ec1e0c06e9c",
   "flows": [
     {
       "order": 1,
@@ -36,7 +36,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 46,
       "edges": 71,
-      "sha256": "767b9a0bdbced01ebbce241a77b05baaa5d54fd59a087077b97f106bb4dae777"
+      "sha256": "c3434535d11fb7d0ebc853b2814c0683e25ca6791c10f266c68f1e02ee5d29c9"
     },
     {
       "order": 2,
@@ -90,7 +90,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
       "nodes": 11,
       "edges": 10,
-      "sha256": "0d2689f6d4702cae32bca630a71cf4253a0e10c7485bde328acf417aa4065a51"
+      "sha256": "1ec726af5bf9ee5211d1ff0fd3de66445cf3ad839014d84b40440a269bbc2faa"
     },
     {
       "order": 8,
@@ -165,8 +165,9 @@
     "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
     "safe_pandas_builtins": "object dtype comparison and zip are provided by the sandbox and succeed without invoking repair",
     "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 6/6 prefer the current UI-selected Flow ID and use name fallback only while exported IDs are blank; Workflow Orchestrator 7/7 remains exact-name resolved; graph cache keys use actual IDs",
+    "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 6/6 validate the current UI-selected Flow ID and updated_at on every execution, use name fallback only when the selected ID is absent, and key graph caches by actual IDs; Workflow Orchestrator 7/7 remains exact-name resolved",
     "agent_tool_schema_policy": "6/6 tools expose one required stable question field and resolve the current native Chat Input ID internally; realtime report execution also validates its configured keywords before child graph resolution",
+    "agent_tool_output_policy": "6/6 tools keep one component_as_tool output after Flow selection or refresh; child message and gaia_response outputs stay internal",
     "agent_tool_direct_return": "6/6 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
     "agent_tool_history_contract": "Agent retrieves 5 stored messages; native current-message ID filtering leaves the previous 2 user/assistant turns without duplicating current input",
     "agent_tool_session_contract": "0 session-source ports/edges; all six tools resolve parent runtime/graph session_id inside the actual Tool output method",

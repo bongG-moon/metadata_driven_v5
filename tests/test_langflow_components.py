@@ -1877,6 +1877,53 @@ def test_langflow_dummy_data_applies_required_params_and_preserves_pandas_filter
     assert {row["LOT_ID"] for row in hold["rows"]} == {"T1234567GEN1"}
 
 
+def test_dummy_data_preserves_schema_when_required_params_return_no_rows():
+    dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
+    pandas_executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    job = {
+        "dataset_key": "wip",
+        "source_alias": "wip_source",
+        "source_type": "dummy",
+        "required_params": {"DATE": "19990101"},
+        "filters": {
+            "OPER_NAME": {
+                "operator": "in",
+                "value": ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"],
+            }
+        },
+        "filter_mappings": {
+            "DATE": ["WORK_DATE"],
+            "OPER_NAME": ["OPER_NAME"],
+        },
+        "standard_column_aliases": {"OPER_NAME": ["OPER_NAME"]},
+    }
+
+    retrieved = dummy.retrieve_dummy_data(
+        {"retrieval_job_bundle": {"source_type": "dummy", "jobs": [job]}}
+    )
+    source_result = retrieved["source_results"][0]
+
+    assert source_result["row_count"] == 0
+    assert source_result["rows"] == []
+    assert {"WORK_DATE", "OPER_NAME", "WIP"}.issubset(source_result["columns"])
+
+    executed = pandas_executor.execute_pandas_code(
+        {
+            "intent_plan": {"retrieval_jobs": [job]},
+            "source_results": [source_result],
+            "runtime_sources": {"wip_source": []},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {"code": 'result = sources["wip_source"].copy()'},
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["row_count"] == 0
+    assert {"WORK_DATE", "OPER_NAME", "WIP"}.issubset(executed["data"]["columns"])
+
+
 def test_langflow_dummy_data_covers_auto_korea_today_reference_date():
     request_loader = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "00_analysis_request_loader.py")
     hydrator = load_module(
@@ -12780,6 +12827,7 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
     assert 'name="lazy_flow_result"' in source
     assert "def _run_selected_flow" in source
     assert "def update_build_config" in source
+    assert "def update_outputs" in source
     assert "alist_flows_by_flow_folder" in source
     assert "FLOW_ID_ONLY" in source
     assert "get_new_fields_from_graph" not in source
@@ -12985,9 +13033,61 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         selected_id_instance.get_graph("stale-or-duplicate-name", current_flow_id, None)
     ) is graph
     assert graph_calls == [
-        ("build", "stale-or-duplicate-name", current_flow_id, None),
+        ("resolve", None, current_flow_id),
+        ("build", "Metadata QA", current_flow_id, "2026-07-12T10:00:00Z"),
     ]
-    assert selected_id_instance.flow_name_selected == "stale-or-duplicate-name"
+    assert selected_id_instance.flow_name_selected == "Metadata QA"
+    assert selected_id_instance._attributes["flow_name_selected_updated_at"] == "2026-07-12T10:00:00Z"
+
+    graph_calls.clear()
+
+    async def fake_get_flow_with_deleted_id(self, flow_name_selected=None, flow_id_selected=None):
+        graph_calls.append(("resolve", flow_name_selected, flow_id_selected))
+        if flow_id_selected == "22222222-2222-4222-8222-222222222222":
+            return types.SimpleNamespace(data={})
+        return types.SimpleNamespace(
+            data={
+                "id": current_flow_id,
+                "name": "Metadata QA",
+                "updated_at": "2026-07-12T10:00:00Z",
+            }
+        )
+
+    monkeypatch.setattr(base, "get_flow", fake_get_flow_with_deleted_id, raising=False)
+    fallback_instance = component.CachedNamedRunFlowTool()
+    fallback_instance._attributes = {}
+    fallback_instance._user_id = "parent-user"
+    fallback_instance.flow_resolution_mode = component.FLOW_ID_PREFERRED
+    assert asyncio.run(
+        fallback_instance.get_graph(
+            "Metadata QA",
+            "22222222-2222-4222-8222-222222222222",
+            "2026-07-11T10:00:00Z",
+        )
+    ) is graph
+    assert graph_calls == [
+        ("resolve", None, "22222222-2222-4222-8222-222222222222"),
+        ("resolve", "Metadata QA", None),
+        ("build", "Metadata QA", current_flow_id, "2026-07-12T10:00:00Z"),
+    ]
+    assert fallback_instance.flow_id_selected == current_flow_id
+
+    graph_calls.clear()
+    strict_missing_instance = component.CachedNamedRunFlowTool()
+    strict_missing_instance._attributes = {}
+    strict_missing_instance._user_id = "parent-user"
+    strict_missing_instance.flow_resolution_mode = component.FLOW_ID_ONLY
+    with pytest.raises(ValueError, match="현재 프로젝트에 없습니다"):
+        asyncio.run(
+            strict_missing_instance.get_graph(
+                "Metadata QA",
+                "22222222-2222-4222-8222-222222222222",
+                None,
+            )
+        )
+    assert graph_calls == [
+        ("resolve", None, "22222222-2222-4222-8222-222222222222"),
+    ]
 
     missing_id_instance = component.CachedNamedRunFlowTool()
     missing_id_instance._attributes = {}
@@ -13098,6 +13198,39 @@ def test_cached_named_run_flow_tool_has_compact_schema_cache_and_session_contrac
         ("run", "user-1", "any"),
         ("resolve_output", "ChatOutput-current", "gaia_response"),
     ]
+
+
+def test_cached_named_run_flow_tool_keeps_tool_output_when_flow_is_selected(monkeypatch):
+    path = ROOT / "langflow_components" / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
+    component = load_module(path)
+    tool_output = {
+        "name": "component_as_tool",
+        "display_name": "Agent Tool",
+        "method": "to_toolkit",
+        "types": ["Tool"],
+    }
+    output_model = types.SimpleNamespace(model_dump=lambda: deepcopy(tool_output))
+    monkeypatch.setattr(component.CachedNamedRunFlowTool, "outputs", [output_model])
+
+    instance = component.CachedNamedRunFlowTool()
+    instance.get_graph = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("출력 포트 갱신 중에는 하위 Flow를 조회하면 안 됩니다.")
+    )
+    frontend_node = {
+        "outputs": [
+            {"name": "message", "display_name": "GaiA Output"},
+            {"name": "gaia_response", "display_name": "GaiA Output"},
+        ]
+    }
+
+    updated = asyncio.run(
+        instance.update_outputs(
+            frontend_node,
+            "flow_name_selected",
+            "01. v5_data_analysis",
+        )
+    )
+    assert updated["outputs"] == [tool_output]
 
 
 def test_orchestrated_named_run_flow_tool_has_optional_ref_and_compact_result_contract():

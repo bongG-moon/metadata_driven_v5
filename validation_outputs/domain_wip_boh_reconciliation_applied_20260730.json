@@ -1,0 +1,91 @@
+{
+  "status": "applied",
+  "generated_at": "2026-07-30T13:06:16.809542+00:00",
+  "mode": "apply",
+  "database": "datagov",
+  "collection_name": "agent_v4_domain_items",
+  "llm": {
+    "provider": "Google Generative AI",
+    "model": "gemini-2.5-flash",
+    "temperature": 0.1,
+    "max_output_tokens": 8192
+  },
+  "request_count": 1,
+  "prepared_count": 1,
+  "dry_run_results": [
+    {
+      "name": "wip_boh_quantity",
+      "expected_keys": [
+        "quantity_terms:wip_boh_quantity"
+      ],
+      "generated_keys": [
+        "quantity_terms:wip_boh_quantity"
+      ],
+      "key_match": true,
+      "semantic_errors": [],
+      "success": true,
+      "response_source": "cached_google_response",
+      "dry_run_result": {
+        "success": true,
+        "ready_to_save": true,
+        "dry_run": true,
+        "saved_count": 0,
+        "would_save_count": 1,
+        "skipped_count": 0,
+        "operation_by_key": [
+          {
+            "key": "quantity_terms:wip_boh_quantity",
+            "operation": "replaced",
+            "target_key": "quantity_terms:wip_boh_quantity",
+            "target_id": "domain:quantity_terms:wip_boh_quantity"
+          }
+        ],
+        "message": "드라이런입니다. MongoDB에는 저장하지 않았습니다.",
+        "keys": [
+          "quantity_terms:wip_boh_quantity"
+        ],
+        "errors": []
+      },
+      "normalization_errors": [],
+      "llm_response": "{\n  \"items\": [\n    {\n      \"section\": \"quantity_terms\",\n      \"key\": \"wip_boh_quantity\",\n      \"status\": \"active\",\n      \"payload\": {\n        \"display_name\": \"BOH 재공\",\n        \"aliases\": [\n          \"아침 재공\",\n          \"BOH 재공\",\n          \"BOH\",\n          \"07시 기준 재공\",\n          \"7시 기준 재공\"\n        ],\n        \"data_source\": \"wip\",\n        \"column\": \"WIP\",\n        \"aggregation_method\": \"sum\",\n        \"temporal_semantics\": {\n          \"business_timepoint\": \"BOH\",\n          \"dataset_family\": \"wip_history\",\n          \"dataset_key\": \"wip\",\n          \"date_param\": \"DATE\",\n          \"requested_date_offset_days\": -1,\n          \"disallowed_dataset_keys\": [\n            \"wip_today\"\n          ],\n          \"inherit_filters\": true\n        }\n      }\n    }\n  ],\n  \"missing_information\": [],\n  \"assumptions\": []\n}"
+    }
+  ],
+  "apply_result": {
+    "success": true,
+    "mode": "selected_replace",
+    "writes": [
+      {
+        "name": "wip_boh_quantity",
+        "generated_keys": [
+          "quantity_terms:wip_boh_quantity"
+        ],
+        "success": true,
+        "write_result": {
+          "success": true,
+          "ready_to_save": true,
+          "status": "saved",
+          "saved_count": 1,
+          "skipped_count": 0,
+          "operation_by_key": [
+            {
+              "key": "quantity_terms:wip_boh_quantity",
+              "operation": "replaced",
+              "target_key": "quantity_terms:wip_boh_quantity",
+              "target_id": "domain:quantity_terms:wip_boh_quantity",
+              "match_type": "same_key"
+            }
+          ],
+          "database": "datagov",
+          "collection_name": "agent_v4_domain_items",
+          "message": "저장 처리를 완료했습니다.",
+          "errors": [],
+          "metadata_qa_snapshot_invalidated": true
+        },
+        "errors": []
+      }
+    ],
+    "verified_ids": [
+      "domain:quantity_terms:wip_boh_quantity"
+    ]
+  }
+}
