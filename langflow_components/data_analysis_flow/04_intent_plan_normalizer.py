@@ -133,6 +133,7 @@ def normalize_intent_plan(
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
     metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
     retrieval_jobs = _retrieval_jobs(plan)
+    metadata_refs = _metadata_refs(parsed, plan)
     question = str(
         (payload.get("request") if isinstance(payload.get("request"), dict) else {}).get("question")
         or ""
@@ -151,11 +152,19 @@ def normalize_intent_plan(
         retrieval_jobs,
         metadata_candidates,
     )
+    retrieval_jobs, optional_date_filter_guard = (
+        _apply_unrequested_optional_date_filter_guard(
+            payload,
+            retrieval_jobs,
+            metadata_candidates,
+        )
+    )
     retrieval_jobs, business_time_guard = _apply_business_time_contracts(
         payload,
         retrieval_jobs,
         metadata_candidates,
         question,
+        metadata_refs,
     )
     pandas_plan = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
     pandas_plan = _rewrite_process_group_plan_descriptions(
@@ -193,7 +202,6 @@ def normalize_intent_plan(
     if reuse_strategy == "previous_result":
         pandas_plan = _bind_previous_result_alias(pandas_plan, retrieval_jobs)
         function_cases = _bind_previous_result_alias(function_cases, retrieval_jobs)
-    metadata_refs = _metadata_refs(parsed, plan)
     resolved_grain_plan = _resolve_grain_plan(
         plan,
         metadata_refs,
@@ -226,6 +234,10 @@ def normalize_intent_plan(
         payload,
         metadata_candidates,
         retrieval_jobs,
+    )
+    condition_resolution = _strip_removed_optional_date_conditions(
+        condition_resolution,
+        optional_date_filter_guard,
     )
     (
         retrieval_jobs,
@@ -280,9 +292,19 @@ def normalize_intent_plan(
     if metric_source_errors:
         validation_errors.extend(metric_source_errors)
 
+    decision_reasons, decision_reason_normalization = _normalize_decision_reasons(
+        plan,
+        parsed,
+        business_time_guard,
+        optional_date_filter_guard,
+    )
     normalized_plan = deepcopy(plan)
     normalized_plan.pop("pandas_function_case", None)
     normalized_plan.pop("selected_function_cases", None)
+    if decision_reasons:
+        normalized_plan["decision_reason"] = decision_reasons
+    else:
+        normalized_plan.pop("decision_reason", None)
     normalized_plan["request_scope"] = request_scope
     normalized_plan["reference_mode"] = reference_mode
     normalized_plan["reuse_strategy"] = reuse_strategy
@@ -346,8 +368,10 @@ def normalize_intent_plan(
         "retrieval_job_count": len(retrieval_jobs),
         "pandas_step_count": len(pandas_plan),
         "previous_data_reuse": previous_data_reuse,
-        "decision_reason": parsed.get("trace", {}).get("decision_reason", []) if isinstance(parsed.get("trace"), dict) else [],
+        "decision_reason": decision_reasons,
+        "decision_reason_normalization": decision_reason_normalization,
         "context_date_guard": context_date_guard,
+        "optional_date_filter_guard": optional_date_filter_guard,
         "business_time_guard": business_time_guard,
         "process_group_field_guard": process_group_field_guard,
         "filter_operator_normalization": filter_operator_normalization,
@@ -706,14 +730,117 @@ def _apply_context_date_guard(
     return result, guard
 
 
+# 함수 설명: 질문이나 후속 문맥에 날짜 요청이 없을 때 catalog 필수가 아닌 LLM 임의 날짜 필터를 제거합니다.
+def _apply_unrequested_optional_date_filter_guard(
+    payload: dict[str, Any],
+    retrieval_jobs: list[Any],
+    metadata_candidates: dict[str, Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    question = str(request.get("question") or "").strip()
+    if _question_has_date_scope(question) or _context_date_hint(payload):
+        return retrieval_jobs, {"status": "not_needed", "removed_filters": []}
+
+    result: list[Any] = []
+    removed_filters: list[dict[str, Any]] = []
+    for item in retrieval_jobs:
+        if not isinstance(item, dict):
+            result.append(deepcopy(item))
+            continue
+        job = deepcopy(item)
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        source_alias = str(job.get("source_alias") or dataset_key).strip()
+        required_params = {
+            _normalized_column_key(value)
+            for value in _catalog_required_params(metadata_candidates, dataset_key)
+        }
+        has_filter_object = isinstance(job.get("filters"), dict)
+        filters = deepcopy(job.get("filters")) if has_filter_object else {}
+        for field in list(filters):
+            if (
+                _is_date_filter_field(field)
+                and _normalized_column_key(field) not in required_params
+            ):
+                removed_filters.append(
+                    {
+                        "dataset_key": dataset_key,
+                        "source_alias": source_alias,
+                        "field": str(field),
+                        "condition": deepcopy(filters.pop(field)),
+                    }
+                )
+        if has_filter_object:
+            job["filters"] = filters
+        result.append(job)
+    return result, {
+        "status": "applied" if removed_filters else "not_needed",
+        "removed_filters": removed_filters,
+    }
+
+
+# 함수 설명: 명시 날짜, 상대 날짜, 현재 시점 표현이 질문에 실제로 있는지 판별합니다.
+def _question_has_date_scope(question: Any) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+    patterns = (
+        r"(?<!\d)20\d{6}(?!\d)",
+        r"(?<!\d)20\d{2}\s*(?:[-/.]|년)\s*\d{1,2}\s*(?:[-/.]|월)\s*\d{1,2}",
+        r"(?<!\d)\d{1,2}\s*(?:/|월)\s*\d{1,2}\s*일?",
+        r"(?<![가-힣A-Za-z0-9])(오늘|금일|현재|현시간|어제|전일)(?![가-힣A-Za-z0-9])",
+        r"(이날|이 일자|그날|그 일자|해당 일자|같은 날)",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+# 함수 설명: metadata에 별도 역할 표기가 없어도 일반적인 날짜 컬럼 명명 규칙을 판별합니다.
+def _is_date_filter_field(value: Any) -> bool:
+    text = str(value or "").strip().upper()
+    normalized = _normalized_column_key(text)
+    if normalized in {"DATE", "기준일", "일자", "날짜"}:
+        return True
+    return bool(
+        "DATE" in text
+        or text.endswith("_DT")
+        or text.startswith("DT_")
+        or any(token in text for token in ("일자", "날짜", "기준일"))
+    )
+
+
+# 함수 설명: 제거된 임의 날짜 필터를 LLM condition_resolution 설명에서도 함께 제거합니다.
+def _strip_removed_optional_date_conditions(
+    condition_resolution: dict[str, Any],
+    guard: dict[str, Any],
+) -> dict[str, Any]:
+    removed_fields = {
+        _normalized_column_key(item.get("field"))
+        for item in guard.get("removed_filters", [])
+        if isinstance(item, dict)
+    }
+    if not removed_fields:
+        return condition_resolution
+    result = deepcopy(condition_resolution)
+    for scope_name in ("new", "changed", "inherited"):
+        scope = result.get(scope_name)
+        if not isinstance(scope, dict):
+            continue
+        for field in list(scope):
+            if _normalized_column_key(field) in removed_fields:
+                scope.pop(field, None)
+        if not scope:
+            result.pop(scope_name, None)
+    return result
+
+
 # 함수 설명: 선택된 Domain의 temporal_semantics를 공통 실행 계약으로 해석해 질문 기준일과 실제 조회일을 분리합니다.
 def _apply_business_time_contracts(
     payload: dict[str, Any],
     retrieval_jobs: list[Any],
     metadata_candidates: dict[str, Any],
     question: str,
+    metadata_refs: list[dict[str, str]],
 ) -> tuple[list[Any], dict[str, Any]]:
-    contracts = _selected_temporal_contracts(metadata_candidates)
+    contracts = _selected_temporal_contracts(metadata_candidates, metadata_refs)
     if not contracts:
         return retrieval_jobs, {"status": "not_needed"}
 
@@ -878,14 +1005,164 @@ def _apply_business_time_contracts(
     }
 
 
+# 함수 설명: LLM의 시간 설명을 실행에 확정된 Domain 시간 계약과 일치시키고 요청 기준일과 실제 조회일을 분리해 기록합니다.
+def _normalize_decision_reasons(
+    plan: dict[str, Any],
+    parsed: dict[str, Any],
+    business_time_guard: dict[str, Any],
+    optional_date_filter_guard: dict[str, Any],
+) -> tuple[list[str], dict[str, Any]]:
+    parsed_trace = parsed.get("trace") if isinstance(parsed.get("trace"), dict) else {}
+    raw_reasons = _string_list(parsed_trace.get("decision_reason"))
+    if not raw_reasons:
+        raw_reasons = _string_list(plan.get("decision_reason"))
+    removed_optional_date_reasons: list[str] = []
+    removed_date_fields = [
+        str(item.get("field") or "").strip()
+        for item in optional_date_filter_guard.get("removed_filters", [])
+        if isinstance(item, dict)
+    ]
+    if removed_date_fields:
+        retained_reasons: list[str] = []
+        for reason in raw_reasons:
+            reason_upper = reason.upper()
+            if any(field.upper() in reason_upper for field in removed_date_fields):
+                removed_optional_date_reasons.append(reason)
+            else:
+                retained_reasons.append(reason)
+        raw_reasons = retained_reasons
+
+    temporal_reasons = _business_time_decision_reasons(business_time_guard)
+    if not temporal_reasons:
+        return raw_reasons, {
+            "status": (
+                "normalized" if removed_optional_date_reasons else "not_needed"
+            ),
+            "removed_optional_date_reasons": removed_optional_date_reasons,
+            "removed_temporal_reasons": [],
+        }
+
+    retained: list[str] = []
+    removed: list[str] = []
+    semantics = (
+        business_time_guard.get("temporal_semantics")
+        if isinstance(business_time_guard.get("temporal_semantics"), list)
+        else []
+    )
+    for reason in raw_reasons:
+        if _looks_like_temporal_decision_reason(reason, semantics):
+            removed.append(reason)
+        else:
+            retained.append(reason)
+
+    insert_at = 1 if retained else 0
+    normalized = _merge_strings(
+        retained[:insert_at],
+        temporal_reasons,
+        retained[insert_at:],
+    )
+    return normalized, {
+        "status": "normalized",
+        "removed_optional_date_reasons": removed_optional_date_reasons,
+        "removed_temporal_reasons": removed,
+        "canonical_temporal_reasons": temporal_reasons,
+    }
+
+
+# 함수 설명: 실행에 확정된 requested_date, offset, query_date를 사람이 오해하지 않는 공통 시간 근거 문장으로 변환합니다.
+def _business_time_decision_reasons(
+    business_time_guard: dict[str, Any],
+) -> list[str]:
+    result: list[str] = []
+    semantics = (
+        business_time_guard.get("temporal_semantics")
+        if isinstance(business_time_guard.get("temporal_semantics"), list)
+        else []
+    )
+    for item in semantics:
+        if not isinstance(item, dict):
+            continue
+        requested_date = str(item.get("requested_date") or "").strip()
+        query_date = str(item.get("query_date") or "").strip()
+        date_param = str(item.get("date_param") or "DATE").strip() or "DATE"
+        try:
+            offset_days = int(item.get("requested_date_offset_days") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not requested_date or not query_date:
+            continue
+        domain_ref = item.get("domain_ref") if isinstance(item.get("domain_ref"), dict) else {}
+        domain_section = str(domain_ref.get("section") or "").strip()
+        domain_key = str(domain_ref.get("key") or "").strip()
+        domain_identity = ":".join(
+            value for value in (domain_section, domain_key) if value
+        )
+        domain_label = (
+            f"선택된 Domain({domain_identity})의 시간 계약"
+            if domain_identity
+            else "선택된 Domain의 시간 계약"
+        )
+        offset_label = f"{offset_days:+d}" if offset_days else "0"
+        result.append(
+            f"질문의 요청 기준일 {requested_date}에 {domain_label} "
+            f"offset({offset_label}일)을 적용하여 실제 {date_param} 조회일을 "
+            f"{query_date}로 설정했습니다."
+        )
+    return _merge_strings(result)
+
+
+# 함수 설명: 구조화된 시간 계약과 충돌할 수 있는 LLM 날짜·offset 설명만 판별해 다른 의도 근거는 보존합니다.
+def _looks_like_temporal_decision_reason(
+    reason: Any,
+    semantics: list[Any],
+) -> bool:
+    text = str(reason or "").strip()
+    if not text:
+        return False
+    lowered = text.casefold()
+    if "offset" in lowered or "requested_date_offset_days" in lowered:
+        return True
+    temporal_markers = ("기준일", "조회일", "조회 일자", "조회 날짜", "date 파라미터")
+    if not any(marker.casefold() in lowered for marker in temporal_markers):
+        return False
+    tokens: list[str] = []
+    for item in semantics:
+        if not isinstance(item, dict):
+            continue
+        tokens.extend(
+            str(item.get(key) or "").strip()
+            for key in ("requested_date", "query_date", "date_param")
+        )
+    return any(token and token.casefold() in lowered for token in tokens)
+
+
 # 함수 설명: 선택된 Domain 후보에 명시된 temporal_semantics만 실행 가능한 공통 시간 계약으로 정규화합니다.
 def _selected_temporal_contracts(
     metadata_candidates: dict[str, Any],
+    metadata_refs: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    selected_domain_refs = {
+        (
+            str(item.get("section") or "").strip(),
+            str(item.get("key") or "").strip(),
+        )
+        for item in metadata_refs
+        if isinstance(item, dict)
+        and str(item.get("section") or "").strip() != "table_catalog"
+        and str(item.get("key") or "").strip()
+    }
+    if not selected_domain_refs:
+        return result
     domain_items = metadata_candidates.get("domain_items")
     for item in domain_items if isinstance(domain_items, list) else []:
         if not isinstance(item, dict):
+            continue
+        identity = (
+            str(item.get("section") or "").strip(),
+            str(item.get("key") or "").strip(),
+        )
+        if identity not in selected_domain_refs:
             continue
         payload = _metadata_payload(item)
         raw_semantics = payload.get("temporal_semantics")
@@ -2409,7 +2686,11 @@ def _output_contract(
         contract["metric_bindings"] = metric_bindings
         if suppressed_metric_aliases:
             contract["suppressed_metric_aliases"] = suppressed_metric_aliases
-    ordering = _ordering_contract(raw, plan)
+    question = str(
+        (payload.get("request") if isinstance(payload.get("request"), dict) else {}).get("question")
+        or ""
+    ).strip()
+    ordering = _ordering_contract(raw, plan, question)
     primary_metric = str(raw.get("primary_metric") or "").strip()
     if not primary_metric and ordering:
         primary_metric = str(ordering.get("sort_by") or "").strip()
@@ -2723,19 +3004,27 @@ def _aggregation_output_contract(plan: dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
-# 함수 설명: 단일 정렬 요청을 output contract로 정규화하며, 명시 계약이 없으면 구조화 pandas 정렬 단계만 사용합니다.
-def _ordering_contract(raw: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+# 함수 설명: 단일 정렬 요청을 output contract로 정규화하며, 질문이나 pandas 단계에 정렬 근거가 없는 LLM 임의 계약은 제거합니다.
+def _ordering_contract(
+    raw: dict[str, Any],
+    plan: dict[str, Any],
+    question: str = "",
+) -> dict[str, Any]:
     value = raw.get("ordering") if isinstance(raw.get("ordering"), dict) else {}
+    steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+    ordering_step: dict[str, Any] = {}
+    for step in reversed(steps):
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or "").strip().lower()
+        if operation not in {"sort", "sort_and_top_n", "top_n", "bottom_n"} and not step.get("sort_by"):
+            continue
+        ordering_step = step
+        break
     if not value:
-        steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
-        for step in reversed(steps):
-            if not isinstance(step, dict):
-                continue
-            operation = str(step.get("operation") or "").strip().lower()
-            if operation not in {"sort", "sort_and_top_n", "top_n", "bottom_n"} and not step.get("sort_by"):
-                continue
-            value = step
-            break
+        value = ordering_step
+    elif not ordering_step and not _question_requests_ordering(question):
+        return {}
     sort_by = str(value.get("sort_by") or value.get("order_by") or value.get("rank_by") or "").strip()
     if not sort_by:
         return {}
@@ -2748,6 +3037,32 @@ def _ordering_contract(raw: dict[str, Any], plan: dict[str, Any]) -> dict[str, A
     if limit:
         result["limit"] = limit
     return result
+
+
+# 함수 설명: 사용자가 정렬·순위·극값을 실제로 요청했는지 한국어와 일반 영문 표현으로 판정합니다.
+def _question_requests_ordering(question: Any) -> bool:
+    text = str(question or "").strip().casefold()
+    if not text:
+        return False
+    markers = (
+        "상위",
+        "하위",
+        "가장",
+        "최대",
+        "최소",
+        "순위",
+        "랭킹",
+        "정렬",
+        "내림차순",
+        "오름차순",
+        "top ",
+        "bottom ",
+        "highest",
+        "lowest",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    return bool(re.search(r"(?<![가-힣])(많은|적은|높은|낮은)", text))
 
 
 # 함수 설명: LLM이 선언한 결과 컬럼 표시명 중 유효한 문자열 매핑만 보존합니다.

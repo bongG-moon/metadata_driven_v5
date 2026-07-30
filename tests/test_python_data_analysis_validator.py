@@ -244,6 +244,108 @@ def test_semantic_check_accepts_source_scoped_input_and_da_filters():
     assert errors == []
 
 
+def test_semantic_check_accepts_ordered_process_range_applied_after_retrieval():
+    validator = load_module(ROOT / "tools" / "validate_data_analysis_question.py")
+    domain = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "payload": {
+                    "aliases": ["DA", "D/A"],
+                    "processes": ["D/A1", "D/A2"],
+                },
+            },
+            {
+                "section": "process_groups",
+                "key": "WB",
+                "payload": {
+                    "aliases": ["WB", "W/B"],
+                    "processes": ["W/B5", "W/B6"],
+                },
+            },
+        ]
+    }
+    plan = {
+        "retrieval_jobs": [
+            {
+                "dataset_key": "production",
+                "source_alias": "production_data",
+                "filters": {},
+            }
+        ],
+        "pandas_function_cases": [
+            {
+                "key": "ordered_process_range",
+                "function_name": "filter_ordered_range",
+                "input_text": "D/A1~W/B6",
+                "source_alias": "production_data",
+            }
+        ],
+        "pandas_execution_plan": [
+            {
+                "operation": "apply_pandas_function_case",
+                "function_case_key": "ordered_process_range",
+                "function_name": "filter_ordered_range",
+                "input_text": "D/A1~W/B6",
+                "source_alias": "production_data",
+            }
+        ],
+    }
+
+    errors = validator._semantic_plan_errors(
+        "7월 1일 D/A1~W/B6 공정 구간의 공정별 생산량을 OPER_SEQ 순서로 알려줘",
+        plan,
+        domain,
+        domain,
+    )
+
+    assert errors == []
+
+
+def test_semantic_check_rejects_unbound_ordered_process_range_helper():
+    validator = load_module(ROOT / "tools" / "validate_data_analysis_question.py")
+    domain = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "payload": {
+                    "aliases": ["DA", "D/A"],
+                    "processes": ["D/A1", "D/A2"],
+                },
+            }
+        ]
+    }
+    plan = {
+        "retrieval_jobs": [
+            {
+                "dataset_key": "production",
+                "source_alias": "production_data",
+                "filters": {},
+            }
+        ],
+        "pandas_function_cases": [
+            {
+                "key": "ordered_process_range",
+                "function_name": "filter_ordered_range",
+                "input_text": "D/A1~W/B6",
+                "source_alias": "production_data",
+            }
+        ],
+        "pandas_execution_plan": [],
+    }
+
+    errors = validator._semantic_plan_errors(
+        "7월 1일 D/A1~W/B6 공정 구간의 공정별 생산량을 알려줘",
+        plan,
+        domain,
+        domain,
+    )
+
+    assert [item["type"] for item in errors] == ["specific_process_overexpanded"]
+
+
 def test_semantic_check_rejects_device_in_implicit_product_ranking_grain():
     validator = load_module(ROOT / "tools" / "validate_data_analysis_question.py")
     errors = validator._semantic_plan_errors(

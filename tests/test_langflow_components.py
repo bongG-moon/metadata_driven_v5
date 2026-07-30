@@ -2967,6 +2967,50 @@ def test_v5_output_contract_preserves_primary_metric_ordering_and_context_labels
     assert contract["column_labels"]["WIP"] == "D/S1·D/A1 공정 재공 수량"
 
 
+def test_presence_question_drops_unrequested_llm_ordering_contract():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = intent_normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "오늘 현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘"
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "input_actual_vs_wip_presence_analysis",
+                "retrieval_jobs": [
+                    {"dataset_key": "production_today", "source_alias": "prod_src"},
+                    {"dataset_key": "wip_today", "source_alias": "wip_src"},
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "compare_presence",
+                        "left_source_alias": "prod_src",
+                        "right_source_alias": "wip_src",
+                        "left_metric_column": "INPUT_QTY",
+                        "right_metric_column": "DA_WIP_QTY",
+                        "presence_rule": "left_positive_right_missing_or_zero",
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["TECH", "DENSITY"],
+                    "metric_columns": ["INPUT_QTY", "DA_WIP_QTY"],
+                    "primary_metric": "INPUT_QTY",
+                    "ordering": {"sort_by": "INPUT_QTY", "order": "desc"},
+                },
+            }
+        },
+    )
+
+    contract = normalized["intent_plan"]["output_contract"]
+    assert "ordering" not in contract
+    assert contract["primary_metric"] == "INPUT_QTY"
+
+
 def test_v5_pandas_executor_enforces_aggregate_grain_and_ordering_contract():
     executor = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
@@ -17422,7 +17466,11 @@ def test_boh_explicit_date_exposes_previous_value_and_builds_two_source_contract
                     "metric_columns": ["PRODUCTION_QTY", "WIP_QTY"],
                     "required_columns": ["OPER_NAME", "PRODUCTION_QTY", "WIP_QTY"],
                 },
-            }
+            },
+            "metadata_refs": [
+                {"section": "quantity_terms", "key": "production_quantity"},
+                {"section": "quantity_terms", "key": "wip_boh_quantity"},
+            ],
         },
         candidates,
     )
@@ -17448,6 +17496,308 @@ def test_boh_explicit_date_exposes_previous_value_and_builds_two_source_contract
     )
     assert bindings["WIP_QTY"][1:] == ("wip", "WIP")
     assert "validation_errors" not in plan
+
+
+def test_boh_yesterday_decision_reason_reports_offset_date_transition():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    message_adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "21_answer_message_adapter.py"
+    )
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "어제 wb공정 아침재공 수량",
+                "reference_date": "20260730",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "boh_wip_by_operation",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "wip",
+                        "source_alias": "wip_source",
+                        "required_params": {"DATE": "20260729"},
+                    }
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "metric_columns": ["WIP_QTY"],
+                    "required_columns": ["WIP_QTY"],
+                },
+            },
+            "metadata_refs": [
+                {"section": "quantity_terms", "key": "wip_boh_quantity"}
+            ],
+            "trace": {
+                "decision_reason": [
+                    "사용자 요청은 독립적인 신규 분석으로 판단합니다.",
+                    "wip_boh_quantity의 offset(-1)이 이미 반영된 20260729를 DATE 파라미터로 사용합니다.",
+                    "W/B 공정 조건을 적용합니다.",
+                ]
+            },
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": _production_and_boh_domain_items(),
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "wip",
+                        "payload": {
+                            "columns": ["DATE", "OPER_NAME", "WIP"],
+                            "required_params": ["DATE"],
+                        },
+                    }
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    job = next(
+        item
+        for item in result["intent_plan"]["retrieval_jobs"]
+        if item["dataset_key"] == "wip"
+    )
+    reasons = result["trace"]["inspection"]["intent"]["decision_reason"]
+    combined = " ".join(reasons)
+
+    assert job["required_params"]["DATE"] == "20260728"
+    assert "이미 반영된 20260729" not in combined
+    assert "요청 기준일 20260729" in combined
+    assert "offset(-1일)" in combined
+    assert "실제 DATE 조회일을 20260728" in combined
+    assert result["intent_plan"]["decision_reason"] == reasons
+    assert "W/B 공정 조건을 적용합니다." in reasons
+
+    result["answer_message"] = "아침재공 수량을 조회했습니다."
+    result["data"] = {"columns": [], "rows": [], "row_count": 0}
+    message = message_adapter.build_message(result, show_intent_analysis=True)
+
+    assert "이미 반영된 20260729" not in message
+    assert (
+        "질문의 요청 기준일 20260729에 선택된 Domain"
+        "(quantity_terms:wip_boh_quantity)의 시간 계약 offset(-1일)을 적용하여 "
+        "실제 DATE 조회일을 20260728로 설정했습니다."
+    ) in message
+
+
+def test_unselected_boh_temporal_contract_does_not_rewrite_current_wip():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    domain_items = [
+        *_production_and_boh_domain_items(),
+        {
+            "section": "quantity_terms",
+            "key": "wip_today_quantity",
+            "payload": {
+                "display_name": "현시간 재공",
+                "aliases": ["현시간 WIP", "현재 재공"],
+                "data_source": "wip_today",
+                "column": "WIP",
+                "aggregation_method": "sum",
+            },
+        },
+    ]
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "오늘 현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘",
+                "reference_date": "20260730",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "input_actual_vs_wip_presence_analysis",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "prod_src",
+                        "required_params": {"DATE": "20260730"},
+                    },
+                    {
+                        "dataset_key": "wip_today",
+                        "source_alias": "wip_src",
+                        "required_params": {"DATE": "20260730"},
+                    },
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "metric_columns": ["INPUT_QTY", "DA_WIP_QTY"],
+                    "required_columns": ["INPUT_QTY", "DA_WIP_QTY"],
+                },
+            },
+            "metadata_refs": [
+                {"section": "quantity_terms", "key": "input_quantity"},
+                {"section": "quantity_terms", "key": "wip_today_quantity"},
+            ],
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": domain_items,
+                "table_catalog_items": [],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    jobs = {
+        item["source_alias"]: item
+        for item in result["intent_plan"]["retrieval_jobs"]
+    }
+    assert jobs["wip_src"]["dataset_key"] == "wip_today"
+    assert jobs["wip_src"]["required_params"]["DATE"] == "20260730"
+    assert "temporal_semantics" not in result["intent_plan"]
+    assert (
+        result["trace"]["inspection"]["intent"]["business_time_guard"]["status"]
+        == "not_needed"
+    )
+
+
+def test_unrequested_optional_date_filter_is_removed_from_plan_and_reason():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "FCB2공정 제품별 UPH 알려줘",
+                "reference_date": "20260730",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "uph_by_product",
+                "condition_resolution": {
+                    "new": {
+                        "OPER_NAME": {"operator": "eq", "value": "FCB2"},
+                        "BASE_DT": {"operator": "eq", "value": "20260730"},
+                    }
+                },
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "eqp_uph",
+                        "source_alias": "eqp_uph_data",
+                        "filters": {
+                            "OPER_NAME": {"operator": "eq", "value": "FCB2"},
+                            "BASE_DT": {"operator": "eq", "value": "20260730"},
+                        },
+                    }
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "metric_columns": ["UPH"],
+                    "required_columns": ["UPH"],
+                },
+            },
+            "trace": {
+                "decision_reason": [
+                    "FCB2 공정의 제품별 UPH를 조회합니다.",
+                    "reference_date 20260730을 BASE_DT 필터로 적용합니다.",
+                ]
+            },
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "eqp_uph",
+                        "payload": {
+                            "columns": ["OPER_NAME", "BASE_DT", "UPH"],
+                            "required_params": [],
+                        },
+                    }
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    plan = result["intent_plan"]
+    assert plan["retrieval_jobs"][0]["filters"] == {
+        "OPER_NAME": {"operator": "eq", "value": "FCB2"}
+    }
+    assert plan["condition_resolution"]["new"] == {
+        "OPER_NAME": {"operator": "eq", "value": "FCB2"}
+    }
+    assert plan["decision_reason"] == ["FCB2 공정의 제품별 UPH를 조회합니다."]
+    guard = result["trace"]["inspection"]["intent"]["optional_date_filter_guard"]
+    assert guard["status"] == "applied"
+    assert guard["removed_filters"][0]["field"] == "BASE_DT"
+
+
+def test_explicit_date_keeps_optional_date_filter():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "7월 30일 FCB2공정 제품별 UPH 알려줘",
+                "reference_date": "20260730",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "uph_by_product",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "eqp_uph",
+                        "source_alias": "eqp_uph_data",
+                        "filters": {
+                            "OPER_NAME": {"operator": "eq", "value": "FCB2"},
+                            "BASE_DT": {"operator": "eq", "value": "20260730"},
+                        },
+                    }
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "metric_columns": ["UPH"],
+                    "required_columns": ["UPH"],
+                },
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "eqp_uph",
+                        "payload": {
+                            "columns": ["OPER_NAME", "BASE_DT", "UPH"],
+                            "required_params": [],
+                        },
+                    }
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    assert result["intent_plan"]["retrieval_jobs"][0]["filters"]["BASE_DT"] == {
+        "operator": "eq",
+        "value": "20260730",
+    }
+    assert (
+        result["trace"]["inspection"]["intent"]["optional_date_filter_guard"]["status"]
+        == "not_needed"
+    )
 
 
 def test_boh_deterministic_executor_uses_each_metric_source_and_ignores_copy_code():
@@ -17496,7 +17846,11 @@ def test_boh_deterministic_executor_uses_each_metric_source_and_ignores_copy_cod
                     "metric_columns": ["PRODUCTION_QTY", "WIP_QTY"],
                     "required_columns": ["OPER_NAME", "PRODUCTION_QTY", "WIP_QTY"],
                 },
-            }
+            },
+            "metadata_refs": [
+                {"section": "quantity_terms", "key": "production_quantity"},
+                {"section": "quantity_terms", "key": "wip_boh_quantity"},
+            ],
         },
         candidates,
     )
@@ -18034,7 +18388,10 @@ def test_temporal_contract_engine_uses_selected_domain_without_business_keyword_
                     "metric_columns": ["SCHEDULED_QTY"],
                     "required_columns": ["SCHEDULED_QTY"],
                 },
-            }
+            },
+            "metadata_refs": [
+                {"section": "quantity_terms", "key": "scheduled_inventory"}
+            ],
         },
         {
             "metadata_candidates": {

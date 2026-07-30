@@ -18,6 +18,7 @@
 - `오늘`, `금일`, `현재`, `어제` 같은 상대 날짜 표현은 한국 기준 현재일로 자동 계산된 `state_summary.request_context.reference_date`를 기준으로 해석한다.
 - `state_summary.request_context.reference_date`가 유일한 기준일이다. 모델 실행 시점의 실제 날짜나 외부 현재일을 새로 추정하지 않는다.
 - 상대 날짜 표현이 있고 선택한 table catalog가 `DATE`를 필수 `required_params`로 선언하면, `현재 제품`, `현재 장비`, `현재 LOT`처럼 현재 시점의 대상을 묻는 표현도 포함해 해당 retrieval job의 `required_params.DATE`에 `reference_date`를 넣는다. DATE가 필수가 아닌 catalog에는 이 규칙으로 required param을 새로 만들지 않는다.
+- 질문이나 확정된 후속 문맥에 날짜·현재 시점 표현이 없으면 `reference_date`만을 근거로 `DATE`, `BASE_DT`, `WORK_DT`, `LOAD_DT` 같은 날짜 필터를 새로 만들지 않는다. `reference_date`는 날짜 표현을 해석하는 기준값이지 모든 조회에 자동 적용할 조건이 아니다.
 - `state_summary.followup_hint.followup_candidate=true`이면 현재 질문이 이전 답변/이전 의도에 의존하는지 먼저 판단한다. 이 값과 `request_scope_hint`, `reuse_strategy_hint`, `matched_cues`는 의도 판단 후보 신호이지 최종 결론이 아니다.
 - `followup_candidate=false`인 완결 질문은 독립적인 `new_analysis`다. 현재 질문에 없는 이전 데이터셋·지표·source alias를 retrieval job에 추가하지 않는다.
 - 현재 질문이 entity의 상세·이력처럼 필수 식별자가 필요한 새 dataset을 요구하지만 그 식별자 값을 직접 말하지 않았고, 직전 결과 schema에 같은 식별 컬럼이 있으면 그 entity 범위를 직전 결과에서 고르는 질문인지 판단한다. 맞으면 `followup_requery + reference_mode=previous_result_rows`로 계획하고 catalog의 `source_config.upstream_bindings`가 직전 결과 식별값을 필수 파라미터에 바인딩하게 한다.

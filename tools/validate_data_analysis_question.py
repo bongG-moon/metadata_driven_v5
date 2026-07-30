@@ -527,6 +527,11 @@ def _process_group_expansion_errors(
                 _normalized_text(process)
                 for process in explicit_processes
             }
+            if _ordered_range_helper_preserves_processes(
+                plan,
+                explicit_processes,
+            ):
+                continue
             matching_scope = next(
                 (
                     scope
@@ -598,6 +603,47 @@ def _process_group_expansion_errors(
                 }
             )
     return errors
+
+
+def _ordered_range_helper_preserves_processes(
+    plan: dict[str, Any],
+    explicit_processes: list[str],
+) -> bool:
+    """조회 후 실행되는 검증된 공정 범위 helper가 명시 공정을 보존하는지 확인합니다."""
+
+    cases = [
+        item
+        for item in plan.get("pandas_function_cases", [])
+        if isinstance(item, dict)
+        and str(item.get("function_case_key") or item.get("key") or "").strip()
+        == "ordered_process_range"
+        and str(item.get("function_name") or "").strip() == "filter_ordered_range"
+    ]
+    steps = [
+        item
+        for item in plan.get("pandas_execution_plan", [])
+        if isinstance(item, dict)
+        and str(item.get("operation") or "").strip()
+        == "apply_pandas_function_case"
+        and str(item.get("function_case_key") or "").strip()
+        == "ordered_process_range"
+        and str(item.get("function_name") or "").strip() == "filter_ordered_range"
+    ]
+    for case in cases:
+        case_alias = str(case.get("source_alias") or "").strip()
+        input_text = str(case.get("input_text") or "").strip().upper()
+        if not input_text or not all(
+            _alias_in_question(process, input_text)
+            for process in explicit_processes
+        ):
+            continue
+        if any(
+            str(step.get("source_alias") or "").strip() == case_alias
+            and str(step.get("input_text") or "").strip().upper() == input_text
+            for step in steps
+        ):
+            return True
+    return False
 
 
 def _product_ranking_grain_error(
