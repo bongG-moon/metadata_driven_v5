@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import math
 import os
 import re
 from copy import deepcopy
@@ -133,6 +134,7 @@ def _metric_semantics_errors(value: Any, item_key: str) -> list[dict[str, Any]]:
         "default_rollup",
         "allowed_rollups",
         "source_already_aggregated",
+        "value_transform",
     }
     allowed_rollups = {"sum", "mean", "min", "max", "count", "nunique", "first", "last"}
     errors: list[dict[str, Any]] = []
@@ -181,6 +183,42 @@ def _metric_semantics_errors(value: Any, item_key: str) -> list[dict[str, Any]]:
                 "message": "additive=false metric에는 sum 집계를 허용할 수 없습니다.",
                 **location,
             })
+        transform = raw_contract.get("value_transform")
+        if transform not in (None, "", {}):
+            if not isinstance(transform, dict):
+                errors.append({
+                    "type": "invalid_metric_value_transform",
+                    "message": "metric_semantics.value_transform은 object여야 합니다.",
+                    **location,
+                })
+            else:
+                for field in transform:
+                    if str(field) not in {"coerce_numeric", "multiplier"}:
+                        errors.append({
+                            "type": "forbidden_metric_value_transform_key",
+                            "message": f"허용되지 않은 value_transform 필드입니다: {field}",
+                            "field": str(field),
+                            **location,
+                        })
+                if "coerce_numeric" in transform and not isinstance(transform.get("coerce_numeric"), bool):
+                    errors.append({
+                        "type": "invalid_metric_value_transform_coerce_numeric",
+                        "message": "value_transform.coerce_numeric은 boolean이어야 합니다.",
+                        **location,
+                    })
+                multiplier = transform.get("multiplier")
+                valid_multiplier = not isinstance(multiplier, bool)
+                if valid_multiplier:
+                    try:
+                        valid_multiplier = math.isfinite(float(multiplier))
+                    except (TypeError, ValueError, OverflowError):
+                        valid_multiplier = False
+                if not valid_multiplier:
+                    errors.append({
+                        "type": "invalid_metric_value_transform_multiplier",
+                        "message": "value_transform.multiplier는 유한한 숫자여야 합니다.",
+                        **location,
+                    })
     return errors
 
 

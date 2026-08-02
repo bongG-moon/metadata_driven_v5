@@ -56,6 +56,7 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - groupby, 정렬, 컬럼 선택에 사용할 column은 반드시 `source schema` 또는 실제 DataFrame의 `df.columns`에 있는지 확인한다.
 - `intent_plan.resolved_grain_plan.strict=true`이면 `grain_columns`는 선택된 Domain metadata에서 해석된 정확한 집계 차원이다. 제품별 질문이라고 해서 source schema의 `DEVICE`, `DEVICE_DESC` 또는 다른 dimension을 임의로 추가하지 않는다.
 - retrieval adapter가 Table Catalog 매핑을 적용해 `sources`, `source schema`, `source preview`의 차원 컬럼을 표준 컬럼명으로 단일화한 상태다. `pandas_execution_plan`의 groupby·비교·집계·정렬·선택 컬럼도 같은 표준 이름을 사용한다.
+- retrieval adapter는 Table Catalog의 `metric_semantics.value_transform`도 source 값에 이미 한 번 적용했다. source preview의 수량은 변환 완료된 실행 단위이므로 생성 코드에서 같은 배수 곱셈이나 문자열 숫자 변환을 다시 적용하지 않는다.
 - 실행 코드에서 사용할 수 있는 컬럼명은 현재 `source schema`와 표준 실행 계획에 실제로 보이는 이름뿐이다. 실패 이력이나 모델 지식으로 물리 컬럼 alias를 추측하거나 다시 생성하지 않는다.
 - `output_contract.required_columns`, `result_columns`, `grain_columns`는 동일한 표준 컬럼 계약이다. 물리 컬럼을 표준 컬럼으로 복사·rename하는 호환 코드를 만들지 않고, 표준 컬럼 하나만 집계와 최종 결과에 유지한다.
 - 동일 의미 컬럼을 이름만 바꿔 두 개 이상 만들지 않는다. source schema에 없는 과거 물리 alias를 빈 값으로 추가하거나 표준 컬럼 값을 복제하지 않는다.

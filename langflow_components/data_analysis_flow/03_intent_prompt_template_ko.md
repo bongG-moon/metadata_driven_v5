@@ -153,6 +153,7 @@
 - 각 집계 metric은 Table Catalog의 `columns`, `metric_semantics` 또는 컬럼 mapping에 해당 source column이 명시된 retrieval dataset에만 연결한다. alias나 표시 이름이 비슷하다는 이유로 metric과 dataset을 연결하지 않는다.
 - 같은 family에 동일 metric을 제공하는 dataset이 둘 이상이면, 현재일/이력 선택은 구조화된 `selection_criteria.time_scope`와 확정된 `DATE`가 `reference_date`와 같은지 여부로만 결정한다. dataset key의 접미사나 부분 문자열로 시간 범위를 추측하지 않는다.
 - 선택한 table catalog에 `metric_semantics`가 있으면 metric의 가산성과 허용 집계를 그대로 따른다. `additive=false`인 평균·rate·비율 지표에 `sum`을 사용하지 않고, 상세 요청은 원본 metric 값을 유지하며 명시적인 grouping 요청은 `default_rollup` 또는 `allowed_rollups`의 집계만 선택한다.
+- `metric_semantics.<metric>.value_transform`은 조회 후 pandas 이전에 실행기가 한 번 적용하는 source 단위 정규화 계약이다. 의도 계획에 동일한 곱셈·숫자 변환 단계를 다시 만들지 않고, 계획·실적 비교도 변환이 끝난 동일 실행 단위의 metric을 사용한다.
 - 결과에 metric이 둘 이상이면 질문의 비교·정렬·설명 기준이 되는 하나를 `output_contract.primary_metric`에 명시한다. 단순히 첫 번째 metric을 대표 지표로 간주하지 않는다.
 - 같은 `group_by`에서 하나의 source 컬럼으로 둘 이상의 결과 집계(예: 고유 개수와 고유 목록)를 요청하면 `groupby_and_aggregate` 단계의 `aggregations`에 각각 `column`, `method`, `output_column`을 기록한다. 원본 ID 컬럼 하나를 count와 list의 공용 결과명으로 재사용하지 않고, `output_contract.required_columns`와 `metric_columns`에도 서로 다른 결과 컬럼명을 넣는다.
 - 다중 집계의 모든 `output_column`은 최종 표에 남겨야 한다. 수치 집계(`sum`, `mean`, `nunique` 등)는 `metric_columns`에도 넣고, `collect_unique`처럼 목록을 반환하는 집계는 최소한 `required_columns`에 넣는다. count만 남기고 list를 누락하거나 반대로 list만 남기지 않는다.

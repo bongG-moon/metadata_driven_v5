@@ -6141,6 +6141,7 @@ def _consensus_lineage_column_alias_map(
     }
 
 
+# 함수 설명: pandas 실행 계획의 중첩 값에서 alias source 문맥에 맞는 표준 컬럼명만 재귀적으로 확정합니다.
 def _normalize_pandas_plan_value(
     value: Any,
     alias_maps: dict[str, dict[str, str]],

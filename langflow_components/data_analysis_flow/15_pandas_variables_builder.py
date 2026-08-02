@@ -58,13 +58,24 @@ def _prompt_intent_plan(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(job, dict):
             compact_jobs.append(job)
             continue
-        compact_jobs.append(
-            {
-                str(key): value
-                for key, value in job.items()
-                if str(key) not in PROMPT_INTERNAL_JOB_KEYS
+        compact_job = {
+            str(key): deepcopy(value)
+            for key, value in job.items()
+            if str(key) not in PROMPT_INTERNAL_JOB_KEYS
+        }
+        semantics = compact_job.get("metric_semantics")
+        if isinstance(semantics, dict):
+            compact_job["metric_semantics"] = {
+                str(metric): {
+                    str(key): deepcopy(item)
+                    for key, item in contract.items()
+                    if str(key) != "value_transform"
+                }
+                if isinstance(contract, dict)
+                else deepcopy(contract)
+                for metric, contract in semantics.items()
             }
-        )
+        compact_jobs.append(compact_job)
     if jobs:
         plan["retrieval_jobs"] = compact_jobs
     return _canonical_prompt_contract(plan)

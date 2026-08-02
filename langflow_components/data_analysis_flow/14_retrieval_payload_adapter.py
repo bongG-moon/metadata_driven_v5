@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
@@ -38,6 +39,7 @@ def build_retrieval_payload(payload_value: Any) -> dict[str, Any]:
         retrieved_sources = next_payload.pop("_runtime_rows_by_alias", {})
         next_payload["runtime_sources"] = _merge_sources_by_alias(existing_sources, retrieved_sources)
     _standardize_runtime_source_columns(next_payload)
+    _apply_metric_value_transforms(next_payload)
     return next_payload
 
 
@@ -184,6 +186,341 @@ def _standardize_runtime_source_columns(payload: dict[str, Any]) -> None:
                 "conflicts": total_conflicts[:20],
             }
         )
+
+
+# 함수 설명: Table Catalog의 metric_semantics.value_transform 계약을 pandas 실행 전에 한 번만 적용합니다.
+# 변환은 dataset/컬럼 이름을 하드코딩하지 않고 hydrated retrieval job에 선언된 계약만 사용합니다.
+def _apply_metric_value_transforms(payload: dict[str, Any]) -> None:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    jobs_by_alias = {
+        _source_alias(job): job
+        for job in jobs
+        if isinstance(job, dict) and _source_alias(job)
+    }
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    source_results = payload.get("source_results") if isinstance(payload.get("source_results"), list) else []
+    result_by_alias = {
+        _source_alias(item): item
+        for item in source_results
+        if isinstance(item, dict) and _source_alias(item)
+    }
+
+    reports: list[dict[str, Any]] = []
+    total_errors: list[dict[str, Any]] = []
+    for alias, rows in list(runtime_sources.items()):
+        alias_text = str(alias)
+        job = jobs_by_alias.get(alias_text)
+        if not isinstance(job, dict) or not isinstance(rows, list):
+            continue
+        source_result = result_by_alias.get(alias_text)
+        contracts, contract_errors = _metric_transform_contracts(job, rows, source_result)
+        report: dict[str, Any] = {
+            "source_alias": alias_text,
+            "dataset_key": str(job.get("dataset_key") or ""),
+            "status": "not_needed",
+            "transforms": [],
+            "error_count": len(contract_errors),
+        }
+        if contract_errors:
+            report["status"] = "error"
+            report["errors"] = contract_errors[:20]
+            total_errors.extend(
+                {"source_alias": alias_text, "dataset_key": str(job.get("dataset_key") or ""), **item}
+                for item in contract_errors
+            )
+            _mark_metric_transform_error(source_result, contract_errors)
+            reports.append(report)
+            continue
+        if not contracts:
+            reports.append(report)
+            continue
+
+        applied_state = _applied_metric_transform_state(source_result)
+        pending: list[dict[str, Any]] = []
+        state_errors: list[dict[str, Any]] = []
+        for contract in contracts:
+            column_key = _column_key(contract["column"])
+            previous = applied_state.get(column_key)
+            if previous is None:
+                pending.append(contract)
+                report["transforms"].append({**contract, "status": "pending"})
+                continue
+            if _metric_transform_signature(previous) == _metric_transform_signature(contract):
+                report["transforms"].append({**contract, "status": "already_applied"})
+                continue
+            state_errors.append(
+                {
+                    "type": "metric_value_transform_contract_changed",
+                    "column": contract["column"],
+                    "message": "Stored source rows were transformed with a different metric value contract.",
+                }
+            )
+
+        if state_errors:
+            report["status"] = "error"
+            report["error_count"] = len(state_errors)
+            report["errors"] = state_errors
+            total_errors.extend(
+                {"source_alias": alias_text, "dataset_key": str(job.get("dataset_key") or ""), **item}
+                for item in state_errors
+            )
+            _mark_metric_transform_error(source_result, state_errors)
+            reports.append(report)
+            continue
+
+        if not pending:
+            report["status"] = "already_applied"
+            reports.append(report)
+            continue
+
+        transformed_rows, row_stats, row_errors = _transform_metric_rows(rows, pending)
+        preview_rows = source_result.get("preview_rows") if isinstance(source_result, dict) else None
+        transformed_preview = preview_rows
+        preview_errors: list[dict[str, Any]] = []
+        if isinstance(preview_rows, list):
+            transformed_preview, _, preview_errors = _transform_metric_rows(preview_rows, pending)
+        combined_errors = _deduplicate_transform_errors([*row_errors, *preview_errors])
+        if combined_errors:
+            report["status"] = "error"
+            report["error_count"] = len(combined_errors)
+            report["errors"] = combined_errors[:20]
+            total_errors.extend(
+                {"source_alias": alias_text, "dataset_key": str(job.get("dataset_key") or ""), **item}
+                for item in combined_errors
+            )
+            _mark_metric_transform_error(source_result, combined_errors)
+            reports.append(report)
+            continue
+
+        runtime_sources[alias_text] = transformed_rows
+        if isinstance(source_result, dict):
+            if isinstance(transformed_preview, list):
+                source_result["preview_rows"] = transformed_preview
+            merged_state = {
+                **applied_state,
+                **{
+                    _column_key(contract["column"]): {
+                        "column": contract["column"],
+                        "coerce_numeric": contract["coerce_numeric"],
+                        "multiplier": contract["multiplier"],
+                    }
+                    for contract in pending
+                },
+            }
+            source_result["metric_value_transforms_applied"] = list(merged_state.values())
+        report["status"] = "applied"
+        report["transforms"] = [
+            {
+                **item,
+                "status": "applied" if _column_key(item["column"]) in {
+                    _column_key(contract["column"]) for contract in pending
+                } else item.get("status", "already_applied"),
+                "converted_value_count": row_stats.get(_column_key(item["column"]), 0),
+            }
+            for item in contracts
+        ]
+        reports.append(report)
+
+    trace = payload.setdefault("trace", {})
+    inspection = trace.setdefault("inspection", {})
+    inspection["metric_value_transformation"] = {
+        "stage": "14_retrieval_payload_adapter",
+        "status": "error" if total_errors else (
+            "applied" if any(item.get("status") == "applied" for item in reports) else (
+                "already_applied" if any(item.get("status") == "already_applied" for item in reports) else "not_needed"
+            )
+        ),
+        "policy": "table_catalog_metric_value_transform_once_before_pandas",
+        "sources": reports,
+        "error_count": len(total_errors),
+    }
+    if total_errors:
+        trace.setdefault("errors", []).append(
+            {
+                "type": "metric_value_transform_failed",
+                "message": "Table Catalog metric value transformation failed before pandas execution.",
+                "errors": total_errors[:20],
+            }
+        )
+
+
+# 함수 설명: retrieval job의 metric_semantics에서 검증된 source 값 변환 계약과 대상 컬럼을 추출합니다.
+def _metric_transform_contracts(
+    job: dict[str, Any],
+    rows: list[Any],
+    source_result: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    semantics = job.get("metric_semantics") if isinstance(job.get("metric_semantics"), dict) else {}
+    alias_contract = _canonical_alias_contract(job)
+    available_columns = _available_source_columns(rows, source_result)
+    contracts: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for raw_metric, raw_semantics in semantics.items():
+        if not isinstance(raw_semantics, dict) or not isinstance(raw_semantics.get("value_transform"), dict):
+            continue
+        transform = raw_semantics["value_transform"]
+        metric = str(raw_metric or "").strip()
+        canonical = alias_contract.get(_column_key(metric), metric)
+        column = next(
+            (item for item in available_columns if _column_key(item) == _column_key(canonical)),
+            canonical,
+        )
+        multiplier = transform.get("multiplier", 1)
+        coerce_numeric = transform.get("coerce_numeric", False)
+        if isinstance(multiplier, bool):
+            valid_multiplier = False
+        else:
+            try:
+                multiplier = float(multiplier)
+                valid_multiplier = math.isfinite(multiplier)
+            except (TypeError, ValueError, OverflowError):
+                valid_multiplier = False
+        if not valid_multiplier or not isinstance(coerce_numeric, bool):
+            errors.append(
+                {
+                    "type": "invalid_metric_value_transform_contract",
+                    "column": metric,
+                    "message": "value_transform requires a finite numeric multiplier and boolean coerce_numeric.",
+                }
+            )
+            continue
+        if rows and not any(_column_key(item) == _column_key(column) for item in available_columns):
+            errors.append(
+                {
+                    "type": "metric_value_transform_column_missing",
+                    "column": metric,
+                    "message": "The metric column declared by value_transform is missing from the retrieved source.",
+                }
+            )
+            continue
+        contracts.append(
+            {
+                "column": column,
+                "coerce_numeric": coerce_numeric,
+                "multiplier": _compact_number(multiplier),
+            }
+        )
+    return contracts, errors
+
+
+# 함수 설명: 한 source의 행 복사본에 숫자 변환과 배수를 트랜잭션처럼 적용하고 오류·변환 건수를 반환합니다.
+def _transform_metric_rows(
+    rows: list[Any],
+    contracts: list[dict[str, Any]],
+) -> tuple[list[Any], dict[str, int], list[dict[str, Any]]]:
+    transformed = deepcopy(rows)
+    stats = {_column_key(item["column"]): 0 for item in contracts}
+    errors: list[dict[str, Any]] = []
+    for row_index, row in enumerate(transformed):
+        if not isinstance(row, dict):
+            continue
+        for contract in contracts:
+            column = contract["column"]
+            actual_column = next(
+                (item for item in row if _column_key(item) == _column_key(column)),
+                None,
+            )
+            if actual_column is None or _conflict_value(row.get(actual_column)) is None:
+                continue
+            numeric = _numeric_metric_value(row.get(actual_column), contract["coerce_numeric"])
+            if numeric is None:
+                errors.append(
+                    {
+                        "type": "metric_value_transform_numeric_coercion_failed",
+                        "column": column,
+                        "row_index": row_index,
+                        "message": "A nonblank metric value could not be converted to a number.",
+                    }
+                )
+                continue
+            row[actual_column] = _compact_number(numeric * float(contract["multiplier"]))
+            stats[_column_key(column)] += 1
+    return transformed, stats, errors
+
+
+# 함수 설명: bool과 비유한값을 제외하고 쉼표가 포함된 문자열까지 계약에 따라 안전한 유한 숫자로 변환합니다.
+def _numeric_metric_value(value: Any, coerce_numeric: bool) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else None
+    if not coerce_numeric:
+        return None
+    text = str(value or "").strip().replace(",", "")
+    try:
+        numeric = float(text)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+# 함수 설명: 소수부가 없는 변환 결과는 int로 줄여 JSON과 pandas에서 불필요한 .0 표시를 방지합니다.
+def _compact_number(value: float) -> int | float:
+    return int(value) if float(value).is_integer() else float(value)
+
+
+# 함수 설명: source 결과 schema와 실제 앞부분 행을 합쳐 변환 대상 컬럼 후보를 순서 보존 목록으로 만듭니다.
+def _available_source_columns(rows: list[Any], source_result: dict[str, Any] | None) -> list[str]:
+    columns = _string_list(source_result.get("columns")) if isinstance(source_result, dict) else []
+    for row in rows[:20]:
+        if not isinstance(row, dict):
+            continue
+        for column in row:
+            text = str(column)
+            if text not in columns:
+                columns.append(text)
+    return columns
+
+
+# 함수 설명: 저장·복원되는 source result에서 이미 적용한 metric 변환 표식을 컬럼별로 복원합니다.
+def _applied_metric_transform_state(source_result: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(source_result, dict):
+        return {}
+    items = source_result.get("metric_value_transforms_applied")
+    if not isinstance(items, list):
+        return {}
+    return {
+        _column_key(item.get("column")): item
+        for item in items
+        if isinstance(item, dict) and _column_key(item.get("column"))
+    }
+
+
+# 함수 설명: 후속 source 재사용 시 같은 변환인지 비교할 수 있도록 숫자 변환 여부와 배수를 signature로 만듭니다.
+def _metric_transform_signature(value: dict[str, Any]) -> tuple[bool, float | None]:
+    try:
+        multiplier = float(value.get("multiplier"))
+    except (TypeError, ValueError, OverflowError):
+        multiplier = None
+    return value.get("coerce_numeric") is True, multiplier
+
+
+# 함수 설명: 부분 변환 데이터가 pandas로 진행되지 않도록 source result를 명시적인 조회 오류 상태로 전환합니다.
+def _mark_metric_transform_error(source_result: dict[str, Any] | None, errors: list[dict[str, Any]]) -> None:
+    if not isinstance(source_result, dict):
+        return
+    source_result["status"] = "error"
+    source_result.setdefault("errors", []).append(
+        {
+            "type": "metric_value_transform_failed",
+            "message": "Metric source values could not be normalized to the Table Catalog unit contract.",
+            "errors": deepcopy(errors[:20]),
+        }
+    )
+
+
+# 함수 설명: 전체 행과 preview에서 함께 발견된 동일 변환 오류를 유형·컬럼·행 기준으로 한 번만 남깁니다.
+def _deduplicate_transform_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for item in errors:
+        marker = (item.get("type"), item.get("column"), item.get("row_index"))
+        if marker not in seen:
+            seen.add(marker)
+            result.append(item)
+    return result
 
 
 # 함수 설명: filter_mappings와 안전한 standard_column_aliases를 실제 alias -> 표준 key 계약으로 역전합니다.

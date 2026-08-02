@@ -106,12 +106,13 @@ filter_mappings는 DATE -> WORK_DATE, MODE -> MODE, DEN -> DENSITY, TECH -> TECH
 Target2 Goodocs Plan
 
 text
-PKG 계획 데이터는 target으로 등록해줘.
+PKG 계획 데이터의 dataset_key는 반드시 target으로 등록해줘. 표시명이나 데이터 설명에서 다른 dataset_key를 새로 만들지 마.
 화면에 보일 이름은 PKG Target Goodocs Plan이면 돼.
 Goodocs PKG 계획 문서에서 일자와 제품 속성별 INPUT계획, OUT계획을 가져오는 데이터야.
 이 데이터는 Goodocs source이고 별도 필수 조회 파라미터는 없어.
 이게 중요한데 이 데이터에서 사용하는 DATE형식은 'YYYYMMDD'가 아니라 'YYYY-MM-DD'형식이라서 형식 변환이 필요해
 계획 수량은 'INPUT 계획'과 'OUT 계획' 두 컬럼에 있는 값을 모두 사용해. 두 컬럼 모두 분석 수량으로 쓰는 계획 수량 컬럼이야.
+두 계획 수량 컬럼의 원본 값은 K 단위로 1000이 생략되어 있어. metric_semantics의 'INPUT 계획'과 'OUT 계획'은 semantic_type=quantity, additive=true, default_rollup=sum, allowed_rollups=[sum]으로 등록하고, 각 value_transform은 coerce_numeric=true, multiplier=1000으로 등록해줘. 문자열 값도 숫자로 변환한 뒤 1000을 곱하고, 이 변환은 집계·join·계획 대비 실적 비교 전에 한 번만 적용해. 계획만 조회할 때도 변환된 실제 수량 단위로 보여줘.
 Goodocs 문서 ID는 1212121212121212121212 이야
 목표2 문서에는 DATE, Mode, DEN, TECH, PKG1, PKG2, LEAD, ORG, MCP NO, INPUT 계획, OUT 계획 컬럼이 있어.
 

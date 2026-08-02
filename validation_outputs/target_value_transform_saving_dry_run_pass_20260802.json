@@ -1,0 +1,44 @@
+{
+  "status": "dry_run_ok",
+  "generated_at": "2026-08-02T13:56:45.152088+00:00",
+  "mode": "dry_run",
+  "database": "datagov",
+  "collection_name": "agent_v4_table_catalog_items",
+  "llm": {
+    "provider": "Google Generative AI",
+    "model": "gemini-3.5-flash-lite"
+  },
+  "request_count": 1,
+  "prepared_count": 1,
+  "dry_run_results": [
+    {
+      "dataset_key": "target",
+      "success": true,
+      "semantic_errors": [],
+      "normalization_errors": [],
+      "dry_run_result": {
+        "success": true,
+        "ready_to_save": true,
+        "dry_run": true,
+        "saved_count": 0,
+        "would_save_count": 1,
+        "skipped_count": 0,
+        "operation_by_key": [
+          {
+            "key": "target",
+            "operation": "replaced"
+          }
+        ],
+        "message": "드라이런입니다. MongoDB에는 저장하지 않았습니다.",
+        "keys": [
+          "target"
+        ]
+      },
+      "generated_dataset_keys": [
+        "target"
+      ],
+      "llm_response_preview": "{\n  \"items\": [\n    {\n      \"dataset_key\": \"target\",\n      \"status\": \"active\",\n      \"payload\": {\n        \"display_name\": \"PKG Target Goodocs Plan\",\n        \"dataset_family\": \"plan\",\n        \"source_type\": \"goodocs\",\n        \"source_config\": {\n          \"source_type\": \"goodocs\",\n          \"doc_id\": \"12121212121212121212\",\n          \"query_template\": \"SELECT DATE, Mode, DEN, TECH, PKG1, PKG2, LEAD, ORG, MCP NO, INPUT 계획, OUT 계획 FROM Goodocs\"\n        },\n        \"required_params\": [],\n        \"required_param_mappings\": {},\n        \"filter_mappings\": {\n          \"DATE\": [\"DATE\"],\n          \"MODE\": [\"Mode\"],\n          \"DEN\": [\"DEN\"],\n          \"TECH\": [\"TECH\"],\n          \"ORG\": [\"ORG\"],\n          \"PKG_TYPE1\": [\"PKG1\"],\n          \"PKG_TYPE2\": [\"PKG2\"],\n          \"LEAD\": [\"LEAD\"],\n          \"MCP_NO\": [\"MCP NO\"]\n        },\n        \"standard_column_aliases\": {\n          \"INPUT_PLAN\": [\"INPUT 계획\", \"투입계획\"],\n          \"OUT_PLAN\": [\"OUT 계획\", \"TARGET\", \"생산목표\"]\n        },\n        \"columns\": [\n          \"DATE\",\n          \"Mode\",\n          \"DEN\",\n          \"TECH\",\n          \"PKG1\",\n          \"PKG2\",\n          \"LEAD\",\n          \"ORG\",\n          \"MCP NO\",\n          \"INPUT 계획\",\n          \"OUT 계획\"\n        ],\n        \"metric_semantics\": {\n          \"INPUT 계획\": {\n            \"semantic_type\": \"quantity\",\n            \"additive\": true,\n            \"default_rollup\": \"sum\",\n            \"allowed_rollups\": [\"sum\"],\n            \"source_already_aggregated\": false,\n            \"value_transform\": {\n              \"coerce_numeric\": true,\n              \"multiplier\": 1000\n            }\n          },\n          \"OUT 계획\": {\n            \"semantic_type\": \"quantity\",\n            \"additive\": true,\n            \"default_rollup\": \"sum\",\n            \"allowed_rollups\": [\"sum\"],\n            \"source_already_aggregated\": false,\n            \"value_transform\": {\n              \"coerce_numeric\": true,\n              \"multiplier\": 1000\n            }\n          }\n        }\n      }\n    }\n  ],\n  \"missing_information\": [],\n  \"assu"
+    }
+  ],
+  "apply_result": {}
+}

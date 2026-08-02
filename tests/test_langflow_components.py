@@ -8038,6 +8038,205 @@ def test_retrieval_adapter_blocks_nonblank_conflicts_between_equivalent_columns(
     assert blocked["analysis"]["error"]["type"] == "required_source_retrieval_failed"
 
 
+def test_retrieval_adapter_applies_catalog_metric_value_transform_once_before_pandas():
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    variables = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "15_pandas_variables_builder.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "plan_data",
+                    "source_alias": "plan_source",
+                    "metric_semantics": {
+                        "PLAN_INPUT": {
+                            "semantic_type": "quantity",
+                            "additive": True,
+                            "default_rollup": "sum",
+                            "allowed_rollups": ["sum"],
+                            "value_transform": {
+                                "coerce_numeric": True,
+                                "multiplier": 1000,
+                            },
+                        },
+                        "PLAN_OUTPUT": {
+                            "semantic_type": "quantity",
+                            "additive": True,
+                            "default_rollup": "sum",
+                            "allowed_rollups": ["sum"],
+                            "value_transform": {
+                                "coerce_numeric": True,
+                                "multiplier": 1000,
+                            },
+                        },
+                    },
+                }
+            ]
+        },
+        "runtime_sources": {
+            "plan_source": [
+                {"PRODUCT": "A", "PLAN_INPUT": "1.25", "PLAN_OUTPUT": "2,000"},
+                {"PRODUCT": "B", "PLAN_INPUT": None, "PLAN_OUTPUT": 3},
+            ]
+        },
+        "source_results": [
+            {
+                "dataset_key": "plan_data",
+                "source_alias": "plan_source",
+                "status": "ok",
+                "row_count": 2,
+                "columns": ["PRODUCT", "PLAN_INPUT", "PLAN_OUTPUT"],
+                "preview_rows": [
+                    {"PRODUCT": "A", "PLAN_INPUT": "1.25", "PLAN_OUTPUT": "2,000"}
+                ],
+            }
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    adapted = adapter.build_retrieval_payload(payload)
+
+    assert adapted["runtime_sources"]["plan_source"] == [
+        {"PRODUCT": "A", "PLAN_INPUT": 1250, "PLAN_OUTPUT": 2000000},
+        {"PRODUCT": "B", "PLAN_INPUT": None, "PLAN_OUTPUT": 3000},
+    ]
+    assert adapted["source_results"][0]["preview_rows"][0] == {
+        "PRODUCT": "A",
+        "PLAN_INPUT": 1250,
+        "PLAN_OUTPUT": 2000000,
+    }
+    assert adapted["trace"]["inspection"]["metric_value_transformation"]["status"] == "applied"
+    assert len(adapted["source_results"][0]["metric_value_transforms_applied"]) == 2
+
+    adapted_again = adapter.build_retrieval_payload(adapted)
+    assert adapted_again["runtime_sources"] == adapted["runtime_sources"]
+    assert adapted_again["trace"]["inspection"]["metric_value_transformation"]["status"] == "already_applied"
+
+    prompt_variables = variables.build_variables(adapted_again)
+    assert '"PLAN_INPUT": 1250' in prompt_variables["source_preview_json"]
+    assert "value_transform" not in prompt_variables["intent_plan_json"]
+    assert "multiplier" not in prompt_variables["intent_plan_json"]
+
+
+def test_retrieval_adapter_blocks_invalid_nonblank_metric_value_before_mixed_unit_analysis():
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    gate = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "plan_data",
+                    "source_alias": "plan_source",
+                    "required": True,
+                    "metric_semantics": {
+                        "PLAN_QTY": {
+                            "value_transform": {
+                                "coerce_numeric": True,
+                                "multiplier": 1000,
+                            }
+                        }
+                    },
+                }
+            ]
+        },
+        "runtime_sources": {"plan_source": [{"PLAN_QTY": "not-a-number"}]},
+        "source_results": [
+            {
+                "dataset_key": "plan_data",
+                "source_alias": "plan_source",
+                "status": "ok",
+                "row_count": 1,
+                "columns": ["PLAN_QTY"],
+            }
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    adapted = adapter.build_retrieval_payload(payload)
+    assert adapted["runtime_sources"]["plan_source"] == [{"PLAN_QTY": "not-a-number"}]
+    assert adapted["source_results"][0]["status"] == "error"
+    assert adapted["trace"]["inspection"]["metric_value_transformation"]["status"] == "error"
+    blocked = gate.apply_retrieval_execution_gate(adapted)
+    assert blocked["execution_gate"]["status"] == "blocked"
+    assert blocked["analysis"]["error"]["type"] == "required_source_retrieval_failed"
+
+
+def test_catalog_metric_value_transform_aligns_plan_and_actual_units_for_comparison():
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "plan_data",
+                    "source_alias": "plan_source",
+                    "metric_semantics": {
+                        "PLAN_QTY": {
+                            "value_transform": {"coerce_numeric": True, "multiplier": 1000}
+                        }
+                    },
+                },
+                {
+                    "dataset_key": "actual_data",
+                    "source_alias": "actual_source",
+                    "metric_semantics": {"ACTUAL_QTY": {"default_rollup": "sum"}},
+                },
+            ],
+            "pandas_execution_plan": [],
+        },
+        "runtime_sources": {
+            "plan_source": [{"PRODUCT": "A", "PLAN_QTY": "1.5"}],
+            "actual_source": [{"PRODUCT": "A", "ACTUAL_QTY": 1200}],
+        },
+        "source_results": [
+            {
+                "dataset_key": "plan_data",
+                "source_alias": "plan_source",
+                "status": "ok",
+                "row_count": 1,
+                "columns": ["PRODUCT", "PLAN_QTY"],
+            },
+            {
+                "dataset_key": "actual_data",
+                "source_alias": "actual_source",
+                "status": "ok",
+                "row_count": 1,
+                "columns": ["PRODUCT", "ACTUAL_QTY"],
+            },
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    adapted = adapter.build_retrieval_payload(payload)
+    executed = executor.execute_pandas_code(
+        adapted,
+        {
+            "code": (
+                "plan = sources['plan_source'].copy()\n"
+                "actual = sources['actual_source'].copy()\n"
+                "result = plan.merge(actual, on='PRODUCT', how='outer')\n"
+                "result['PLAN_MINUS_ACTUAL'] = result['PLAN_QTY'] - result['ACTUAL_QTY']"
+            )
+        },
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"PRODUCT": "A", "PLAN_QTY": 1500, "ACTUAL_QTY": 1200, "PLAN_MINUS_ACTUAL": 300}
+    ]
+
+
 def test_reference_join_does_not_infer_schema_alias_without_metadata_contract():
     normalizer = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
@@ -10070,6 +10269,9 @@ def test_table_catalog_saving_prompt_renders_metric_and_upstream_binding_example
     assert "dataset 원문" in rendered
     assert '"metric_semantics": {' in rendered
     assert '"source_alias": "previous_result"' in rendered
+    assert '"value_transform": {' in rendered
+    assert '"coerce_numeric": true' in rendered
+    assert '"multiplier": 1000' in rendered
 
 
 def test_metadata_saving_guide_uses_current_writer_ports():
@@ -11115,6 +11317,73 @@ def test_table_catalog_writer_rejects_sum_for_non_additive_metric():
     assert result["write_result"]["success"] is False
     error_types = {error["type"] for error in result["write_result"]["errors"]}
     assert "non_additive_metric_sum_forbidden" in error_types
+
+
+def test_table_catalog_writer_accepts_bounded_metric_value_transform_contract():
+    request_loader = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "00_table_catalog_saving_request_loader.py"
+    )
+    normalizer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "04_table_catalog_saving_result_normalizer.py"
+    )
+    writer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "07_table_catalog_review_writer.py"
+    )
+    payload = request_loader.build_request("plan quantity metadata", "replace", True)
+    payload = normalizer.normalize_authoring(
+        payload,
+        {
+            "items": [
+                {
+                    "dataset_key": "plan_data",
+                    "payload": {
+                        "source_type": "goodocs",
+                        "source_config": {"source_type": "goodocs", "doc_id": "doc"},
+                        "metric_semantics": {
+                            "PLAN_QTY": {
+                                "semantic_type": "quantity",
+                                "additive": True,
+                                "default_rollup": "sum",
+                                "allowed_rollups": ["sum"],
+                                "value_transform": {
+                                    "coerce_numeric": True,
+                                    "multiplier": 1000,
+                                },
+                            }
+                        },
+                    },
+                }
+            ]
+        },
+    )
+
+    result = writer.review_and_write(payload)
+
+    assert result["write_result"]["success"] is True
+    assert result["write_result"]["dry_run"] is True
+
+
+def test_table_catalog_writer_rejects_unbounded_metric_value_transform_shape():
+    writer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "07_table_catalog_review_writer.py"
+    )
+    errors = writer._metric_semantics_errors(
+        {
+            "PLAN_QTY": {
+                "value_transform": {
+                    "coerce_numeric": "yes",
+                    "multiplier": "not-a-number",
+                    "expression": "value * 1000",
+                }
+            }
+        },
+        "plan_data",
+    )
+
+    error_types = {item["type"] for item in errors}
+    assert "forbidden_metric_value_transform_key" in error_types
+    assert "invalid_metric_value_transform_coerce_numeric" in error_types
+    assert "invalid_metric_value_transform_multiplier" in error_types
 
 
 def test_domain_replace_resolves_unique_alias_to_existing_canonical_key(monkeypatch):

@@ -42,6 +42,11 @@ TARGET_SPECS = (
         "end": "<!-- single_wip_today:start -->",
     },
     {
+        "dataset_key": "target",
+        "start": "Target2 Goodocs Plan",
+        "end": "Equipment Status",
+    },
+    {
         "dataset_key": "equipment_assign",
         "start": "Equipment Status",
         "end": "Equipment Recipe UPH",
@@ -144,6 +149,26 @@ def _semantic_errors(dataset_key: str, items: list[Any]) -> list[dict[str, str]]
                 "type": "production_metric_column_missing",
                 "message": f"{dataset_key} must declare the PRODUCTION source column.",
             })
+    elif dataset_key == "target":
+        semantics = payload.get("metric_semantics")
+        semantics = semantics if isinstance(semantics, dict) else {}
+        for metric in ("INPUT 계획", "OUT 계획"):
+            contract = semantics.get(metric)
+            contract = contract if isinstance(contract, dict) else {}
+            transform = contract.get("value_transform")
+            transform = transform if isinstance(transform, dict) else {}
+            if (
+                contract.get("semantic_type") != "quantity"
+                or contract.get("additive") is not True
+                or contract.get("default_rollup") != "sum"
+                or contract.get("allowed_rollups") != ["sum"]
+                or transform.get("coerce_numeric") is not True
+                or transform.get("multiplier") != 1000
+            ):
+                errors.append({
+                    "type": "target_metric_value_transform_mismatch",
+                    "message": f"{metric} must declare the K-to-base-unit value transform.",
+                })
     elif dataset_key == "equipment_assign":
         filter_mappings = payload.get("filter_mappings")
         filter_mappings = filter_mappings if isinstance(filter_mappings, dict) else {}
@@ -294,6 +319,12 @@ def generate_and_validate(
             "semantic_errors": semantic_errors,
             "normalization_errors": deepcopy(payload.get("errors") or []),
             "dry_run_result": deepcopy(write_result),
+            "generated_dataset_keys": [
+                str(item.get("dataset_key") or "")
+                for item in payload.get("items", [])
+                if isinstance(item, dict)
+            ],
+            "llm_response_preview": str(llm_response or "")[:2000],
         })
         if success:
             prepared.append({

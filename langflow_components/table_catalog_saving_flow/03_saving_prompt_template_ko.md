@@ -4,7 +4,8 @@
 - 정제된 설명을 `dataset_key + payload` 구조의 table catalog item 후보로 변환한다.
 - `source_type`, `source_config`, `required_params`, `required_param_mappings`, `filter_mappings`, `standard_column_aliases`, `columns`를 원문 근거에 따라 작성한다.
 - 원문에 dataset 선택 시점이나 사용·제외 조건이 있으면 `selection_criteria`의 `time_scope`, `use_when`, `exclude_when`으로 그대로 보존한다. 원문에 없는 선택 조건은 추측하지 않는다.
-- 원문에 metric의 합산 가능 여부나 기본 집계 방식이 있으면 `metric_semantics`도 보존한다. metric 이름별로 `semantic_type`, `additive`, `default_rollup`, `allowed_rollups`, `source_already_aggregated`만 사용하며 원문에 없는 의미를 추측하지 않는다.
+- 원문에 metric의 합산 가능 여부나 기본 집계 방식이 있으면 `metric_semantics`도 보존한다. metric 이름별로 `semantic_type`, `additive`, `default_rollup`, `allowed_rollups`, `source_already_aggregated`를 사용하며 원문에 없는 의미를 추측하지 않는다.
+- 원문이 source 수량의 숫자 변환이나 단위 배수를 명시하면 해당 metric의 `value_transform`에 `coerce_numeric`과 `multiplier`를 그대로 기록한다. 이 계약은 source 값을 pandas 집계·join·비교 전에 한 번만 실행 단위로 정규화하는 용도이며, 원문에 없는 배수는 만들지 않는다.
 - `additive=false`인 rate/평균/비율 지표는 `default_rollup`과 `allowed_rollups`에 `mean` 같은 비가산 집계만 기록하고 `sum`을 허용하지 않는다.
 - 원문이 고유값 수, UNIQUE 수량, distinct count를 말하면 canonical rollup 이름은 `nunique`를 사용한다. `distinct_count`, `count_distinct` 같은 별칭을 만들지 않는다.
 - 원문에 있으면 `default_detail_columns`도 문자열 배열로 그대로 보존한다. 원문에 없는 컬럼은 추측해서 추가하지 않는다.
@@ -65,7 +66,11 @@
             "additive": false,
             "default_rollup": "mean",
             "allowed_rollups": ["mean"],
-            "source_already_aggregated": true
+            "source_already_aggregated": true,
+            "value_transform": {{
+              "coerce_numeric": true,
+              "multiplier": 1000
+            }}
           }}
         }}
       }}
