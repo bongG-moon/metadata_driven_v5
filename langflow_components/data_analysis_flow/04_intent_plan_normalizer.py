@@ -38,6 +38,10 @@ PANDAS_COLUMN_SCALAR_KEYS = {
     "aggregation_column",
     "value_column",
     "metric_column",
+    "lhs_metric_column",
+    "rhs_metric_column",
+    "comparison_metric_column",
+    "baseline_metric_column",
     "sort_by",
     "order_by",
     "rank_by",
@@ -138,6 +142,38 @@ def normalize_intent_plan(
         (payload.get("request") if isinstance(payload.get("request"), dict) else {}).get("question")
         or ""
     ).strip()
+    raw_pandas_plan = (
+        plan.get("pandas_execution_plan")
+        if isinstance(plan.get("pandas_execution_plan"), list)
+        else []
+    )
+    raw_pandas_plan, typed_input_binding = _bind_typed_external_source_aliases(
+        raw_pandas_plan
+    )
+    (
+        retrieval_jobs,
+        external_source_catalog_binding,
+    ) = _bind_missing_external_sources_from_catalog_contracts(
+        payload,
+        plan,
+        retrieval_jobs,
+        raw_pandas_plan,
+        metadata_candidates,
+    )
+    domain_selection = _resolve_execution_domain_selection(
+        question,
+        metadata_candidates,
+        metadata_refs,
+    )
+    metadata_refs = _merge_metadata_ref_lists(
+        metadata_refs,
+        domain_selection.get("locked_metadata_refs", []),
+    )
+    retrieval_jobs, domain_condition_guard = _apply_selected_domain_conditions(
+        retrieval_jobs,
+        metadata_candidates,
+        domain_selection.get("locked_metadata_refs", []),
+    )
     retrieval_jobs, process_group_field_guard = _apply_process_group_filter_fields(
         retrieval_jobs,
         metadata_candidates,
@@ -165,8 +201,36 @@ def normalize_intent_plan(
         metadata_candidates,
         question,
         metadata_refs,
+        raw_pandas_plan,
     )
-    pandas_plan = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+    if (
+        business_time_guard.get("status") == "applied"
+        and domain_selection.get("temporal_alias_lock") is True
+    ):
+        business_time_guard["selection_source"] = "metadata_alias_lock"
+    pandas_plan = raw_pandas_plan
+    retrieval_jobs, metric_dataset_selection = _reconcile_metric_dataset_selection(
+        payload,
+        retrieval_jobs,
+        pandas_plan,
+        metadata_candidates,
+    )
+    (
+        metadata_refs,
+        compatible_join_plan,
+        recipe_source_compatibility,
+    ) = _filter_incompatible_recipe_contracts(
+        metadata_refs,
+        plan.get("join_plan"),
+        retrieval_jobs,
+        metadata_candidates,
+    )
+    plan = deepcopy(plan)
+    plan["metadata_refs"] = deepcopy(metadata_refs)
+    if compatible_join_plan:
+        plan["join_plan"] = compatible_join_plan
+    else:
+        plan.pop("join_plan", None)
     pandas_plan = _rewrite_process_group_plan_descriptions(
         pandas_plan,
         process_group_field_guard,
@@ -222,6 +286,22 @@ def normalize_intent_plan(
         payload,
     )
     validation_errors = _reference_mode_validation_errors(reference_mode_guard)
+    if metric_dataset_selection.get("unresolved"):
+        validation_errors.append(
+            {
+                "type": "metric_dataset_selection_unresolved",
+                "message": "metric과 요청 시점에 맞는 Table Catalog dataset을 하나로 확정할 수 없습니다.",
+                "issues": deepcopy(metric_dataset_selection["unresolved"]),
+            }
+        )
+    if external_source_catalog_binding.get("unresolved"):
+        validation_errors.append(
+            {
+                "type": "external_source_catalog_binding_unresolved",
+                "message": "typed external source를 Table Catalog 계약으로 하나로 확정할 수 없습니다.",
+                "issues": deepcopy(external_source_catalog_binding["unresolved"]),
+            }
+        )
     resolved_join_plan = _resolve_join_plan(
         plan,
         metadata_refs,
@@ -233,6 +313,10 @@ def normalize_intent_plan(
         plan,
         payload,
         metadata_candidates,
+        retrieval_jobs,
+    )
+    condition_resolution = _synchronize_effective_filters_with_retrieval_jobs(
+        condition_resolution,
         retrieval_jobs,
     )
     condition_resolution = _strip_removed_optional_date_conditions(
@@ -257,6 +341,12 @@ def normalize_intent_plan(
         resolved_grain_plan,
         resolved_join_plan,
     )
+    resolved_output_grain_plan = _resolve_output_grain_plan(
+        pandas_plan,
+        resolved_grain_plan,
+        metadata_candidates,
+        retrieval_jobs,
+    )
     resolved_reference_join_plan = _resolve_reference_join_plan(
         payload,
         metadata_candidates,
@@ -269,8 +359,21 @@ def normalize_intent_plan(
         metadata_candidates,
         retrieval_jobs,
         pandas_plan,
-        resolved_grain_plan,
+        resolved_output_grain_plan or resolved_grain_plan,
         business_time_guard,
+        function_cases,
+    )
+    validation_errors.extend(
+        _function_case_metric_lineage_validation_errors(
+            function_cases,
+            resolved_metric_merge_plan,
+        )
+    )
+    resolved_execution_graph = _compile_execution_graph(
+        pandas_plan,
+        retrieval_jobs,
+        payload,
+        reuse_strategy,
     )
     contract_plan = deepcopy(plan)
     contract_plan["pandas_execution_plan"] = pandas_plan
@@ -279,16 +382,50 @@ def normalize_intent_plan(
         payload,
         retrieval_jobs,
         metadata_candidates,
-        resolved_grain_plan,
+        resolved_output_grain_plan or resolved_grain_plan,
         resolved_join_plan,
         resolved_reference_join_plan,
         resolved_metric_merge_plan,
     )
+    resolved_presence_comparison_plan = _resolve_presence_comparison_plan(
+        pandas_plan,
+        output_contract,
+        metadata_candidates,
+        retrieval_jobs,
+    )
+    resolved_metric_comparison_plan = _resolve_metric_comparison_plan(
+        pandas_plan,
+        output_contract,
+        resolved_metric_merge_plan,
+        question,
+    )
+    declared_metric_comparisons = [
+        item
+        for item in pandas_plan
+        if isinstance(item, dict)
+        and str(item.get("operation") or item.get("step") or "").strip().lower()
+        == "compare_metrics"
+    ]
+    if declared_metric_comparisons and not resolved_metric_comparison_plan:
+        validation_errors.append(
+            {
+                "type": "metric_comparison_contract_invalid",
+                "message": "수치 비교 단계의 metric·operator·병합 계약을 확정할 수 없습니다.",
+            }
+        )
+    if resolved_presence_comparison_plan:
+        output_contract = _presence_output_contract(
+            output_contract,
+            resolved_presence_comparison_plan,
+        )
     metric_source_errors = _metric_source_validation_errors(
         output_contract,
         retrieval_jobs,
         business_time_guard,
+        resolved_execution_graph,
+        metadata_candidates,
     )
+    validation_errors.extend(resolved_execution_graph.get("validation_errors", []))
     if metric_source_errors:
         validation_errors.extend(metric_source_errors)
 
@@ -329,6 +466,11 @@ def normalize_intent_plan(
         normalized_plan["resolved_grain_plan"] = resolved_grain_plan
     else:
         normalized_plan.pop("resolved_grain_plan", None)
+    if resolved_output_grain_plan:
+        normalized_plan["resolved_output_grain_plan"] = resolved_output_grain_plan
+    else:
+        normalized_plan.pop("resolved_output_grain_plan", None)
+    normalized_plan["resolved_execution_graph"] = resolved_execution_graph
     if resolved_join_plan:
         normalized_plan["resolved_join_plan"] = resolved_join_plan
     else:
@@ -341,6 +483,18 @@ def normalize_intent_plan(
         normalized_plan["resolved_metric_merge_plan"] = resolved_metric_merge_plan
     else:
         normalized_plan.pop("resolved_metric_merge_plan", None)
+    if resolved_presence_comparison_plan:
+        normalized_plan["resolved_presence_comparison_plan"] = (
+            resolved_presence_comparison_plan
+        )
+    else:
+        normalized_plan.pop("resolved_presence_comparison_plan", None)
+    if resolved_metric_comparison_plan:
+        normalized_plan["resolved_metric_comparison_plan"] = (
+            resolved_metric_comparison_plan
+        )
+    else:
+        normalized_plan.pop("resolved_metric_comparison_plan", None)
     if function_cases:
         normalized_plan["pandas_function_cases"] = function_cases
     else:
@@ -351,7 +505,10 @@ def normalize_intent_plan(
     next_payload["metadata_refs"] = _merge_output_metadata_refs(
         parsed,
         plan,
-        _plan_metadata_refs(normalized_plan),
+        _merge_metadata_ref_lists(
+            metadata_refs,
+            _plan_metadata_refs(normalized_plan),
+        ),
     )
     previous_data_reuse = _uses_previous_data_without_new_retrieval(normalized_plan)
     next_payload.setdefault("trace", {}).setdefault("inspection", {})["intent"] = {
@@ -373,6 +530,8 @@ def normalize_intent_plan(
         "context_date_guard": context_date_guard,
         "optional_date_filter_guard": optional_date_filter_guard,
         "business_time_guard": business_time_guard,
+        "domain_selection": domain_selection,
+        "domain_condition_guard": domain_condition_guard,
         "process_group_field_guard": process_group_field_guard,
         "filter_operator_normalization": filter_operator_normalization,
         "function_owned_filter_normalization": function_owned_filter_normalization,
@@ -381,10 +540,17 @@ def normalize_intent_plan(
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
         "pandas_column_normalization": pandas_column_normalization,
-        "resolved_grain_columns": resolved_grain_plan.get("grain_columns", []) if resolved_grain_plan else [],
+        "typed_input_binding": typed_input_binding,
+        "external_source_catalog_binding": external_source_catalog_binding,
+        "metric_dataset_selection": metric_dataset_selection,
+        "recipe_source_compatibility": recipe_source_compatibility,
+        "resolved_grain_columns": (resolved_output_grain_plan or resolved_grain_plan).get("grain_columns", []) if (resolved_output_grain_plan or resolved_grain_plan) else [],
+        "execution_graph_external_source_count": len(resolved_execution_graph.get("external_source_requirements", [])),
         "resolved_join_count": len(resolved_join_plan),
         "resolved_reference_join": bool(resolved_reference_join_plan),
         "resolved_metric_merge": bool(resolved_metric_merge_plan),
+        "resolved_presence_comparison": bool(resolved_presence_comparison_plan),
+        "resolved_metric_comparison": bool(resolved_metric_comparison_plan),
         "metric_source_validation_errors": metric_source_errors,
     }
     if not retrieval_jobs and not previous_data_reuse and not validation_errors:
@@ -833,12 +999,384 @@ def _strip_removed_optional_date_conditions(
 
 
 # 함수 설명: 선택된 Domain의 temporal_semantics를 공통 실행 계약으로 해석해 질문 기준일과 실제 조회일을 분리합니다.
+def _typed_external_input_alias(step: dict[str, Any]) -> str:
+    inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+    aliases = _string_list(
+        [
+            item.get("ref")
+            for item in inputs
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "external_source"
+        ]
+    )
+    return aliases[0] if len(aliases) == 1 else ""
+
+
+# 함수 설명: `_bind_typed_external_source_aliases()`는 04 의도 계획 정규화기 처리 중 typed·external·데이터 소스·aliases 관련 값을 계산·변환하는 내부
+#        helper입니다.
+def _bind_typed_external_source_aliases(
+    pandas_plan: list[Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    result: list[Any] = []
+    bindings: list[dict[str, Any]] = []
+    for index, raw in enumerate(pandas_plan):
+        if not isinstance(raw, dict):
+            result.append(deepcopy(raw))
+            continue
+        step = deepcopy(raw)
+        if not str(step.get("source_alias") or "").strip():
+            alias = _typed_external_input_alias(step)
+            if alias:
+                step["source_alias"] = alias
+                bindings.append(
+                    {
+                        "step_index": index,
+                        "node_id": str(step.get("node_id") or "").strip(),
+                        "source_alias": alias,
+                        "binding_source": "direct_external_input",
+                    }
+                )
+        result.append(step)
+    # A transform/aggregate node commonly consumes the output of a helper node
+    # rather than an external source directly. If its typed lineage resolves to
+    # exactly one external leaf, bind that alias before column normalization so
+    # the correct Table Catalog mapping is still applied.
+    for index, raw in enumerate(list(result)):
+        if not isinstance(raw, dict) or str(raw.get("source_alias") or "").strip():
+            continue
+        lineage_aliases = _step_external_source_aliases(raw, result)
+        if len(lineage_aliases) != 1:
+            continue
+        step = deepcopy(raw)
+        step["source_alias"] = lineage_aliases[0]
+        result[index] = step
+        bindings.append(
+            {
+                "step_index": index,
+                "node_id": str(step.get("node_id") or "").strip(),
+                "source_alias": lineage_aliases[0],
+                "binding_source": "single_external_leaf_lineage",
+            }
+        )
+    return result, {
+        "status": "applied" if bindings else "not_needed",
+        "bindings": bindings,
+    }
+
+
+# 함수 설명: `_pandas_plan_lineage()`는 PLAN·lineage 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
+def _pandas_plan_lineage(
+    pandas_plan: list[Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Index typed pandas nodes and their declared output aliases."""
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    output_aliases: dict[str, str] = {}
+    for index, raw in enumerate(pandas_plan):
+        if not isinstance(raw, dict):
+            continue
+        node_id = str(raw.get("node_id") or f"__step_{index + 1}").strip()
+        nodes_by_id[node_id] = raw
+        output_alias = str(
+            raw.get("output_alias") or raw.get("result_alias") or ""
+        ).strip()
+        if output_alias:
+            output_aliases[output_alias] = node_id
+    return nodes_by_id, output_aliases
+
+
+# 함수 설명: `_step_external_source_aliases()`는 04 의도 계획 정규화기 처리 중 external·데이터 소스·aliases 관련 값을 계산·변환하는 내부 helper입니다.
+def _step_external_source_aliases(
+    step: dict[str, Any],
+    pandas_plan: list[Any],
+    known_external_aliases: set[str] | None = None,
+) -> list[str]:
+    """Trace a pandas step through node_output inputs to external source leaves."""
+    nodes_by_id, output_aliases = _pandas_plan_lineage(pandas_plan)
+    known = set(known_external_aliases or set())
+
+    # 함수 설명: `visit()`는 04 의도 계획 정규화기 처리 중 visit 관련 값을 계산·변환하는 내부 helper입니다.
+    def visit(current: dict[str, Any], visited: set[str]) -> list[str]:
+        result: list[str] = []
+        inputs = current.get("inputs") if isinstance(current.get("inputs"), list) else []
+        for item in inputs:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "").strip()
+            ref = str(item.get("ref") or "").strip()
+            if not ref:
+                continue
+            if kind == "external_source":
+                if ref not in result:
+                    result.append(ref)
+                continue
+            if kind == "node_output" and ref in known:
+                if ref not in result:
+                    result.append(ref)
+                continue
+            if kind != "node_output" or ref in visited:
+                continue
+            parent_id = ref if ref in nodes_by_id else output_aliases.get(ref, "")
+            parent = nodes_by_id.get(parent_id)
+            if not isinstance(parent, dict):
+                continue
+            for alias in visit(parent, {*visited, ref, parent_id}):
+                if alias not in result:
+                    result.append(alias)
+        if result:
+            return result
+
+        raw_alias = str(current.get("source_alias") or "").strip()
+        if raw_alias in output_aliases:
+            parent_id = output_aliases[raw_alias]
+            if parent_id not in visited and parent_id in nodes_by_id:
+                return visit(nodes_by_id[parent_id], {*visited, parent_id})
+        if raw_alias and (not known or raw_alias in known):
+            return [raw_alias]
+        return []
+
+    return visit(step, set())
+
+
+# 함수 설명: `_explicit_catalog_column_contract()`는 04 의도 계획 정규화기 처리 중 catalog·컬럼·contract 관련 값을 계산·변환하는 내부 helper입니다.
+def _explicit_catalog_column_contract(
+    candidates: dict[str, Any],
+    dataset_key: str,
+    column: str,
+) -> bool:
+    """Require an explicit catalog column or alias declaration for recovery."""
+    item = _table_catalog_item(candidates, dataset_key)
+    if not item:
+        return False
+    payload = _metadata_payload(item)
+    has_schema = bool(_catalog_declared_columns(payload))
+    has_aliases = any(
+        isinstance(payload.get(name), dict) and bool(payload.get(name))
+        for name in ("filter_mappings", "standard_column_aliases")
+    )
+    return bool(has_schema or has_aliases) and _catalog_supports_domain_column(
+        candidates,
+        dataset_key,
+        column,
+    )
+
+
+# 함수 설명: `_bind_missing_external_sources_from_catalog_contracts()`는 04 의도 계획 정규화기 처리 중
+#        missing·external·sources·원본·catalog·contracts 관련 값을 계산·변환하는 내부 helper입니다.
+def _bind_missing_external_sources_from_catalog_contracts(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    retrieval_jobs: list[Any],
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Complete missing retrieval leaves only from unique schema/time contracts."""
+    jobs = [deepcopy(item) for item in retrieval_jobs]
+    request_scope = str(plan.get("request_scope") or "new_analysis").strip()
+    reference_mode = str(plan.get("reference_mode") or "none").strip()
+    if request_scope not in {"new_analysis", "followup_requery"} or reference_mode not in {
+        "",
+        "none",
+        "previous_filters",
+    }:
+        return jobs, {"status": "not_needed", "bindings": [], "unresolved": []}
+
+    existing_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in jobs
+        if isinstance(item, dict)
+    }
+    external_aliases: list[str] = []
+    metric_columns_by_alias: dict[str, list[str]] = {}
+    for step in pandas_plan:
+        if not isinstance(step, dict):
+            continue
+        inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        for item in inputs:
+            if (
+                isinstance(item, dict)
+                and str(item.get("kind") or "").strip() == "external_source"
+            ):
+                alias = str(item.get("ref") or "").strip()
+                if alias and alias not in external_aliases:
+                    external_aliases.append(alias)
+
+        aggregations = (
+            step.get("aggregations")
+            if isinstance(step.get("aggregations"), list)
+            else []
+        )
+        if not aggregations and (step.get("agg_column") or step.get("aggregate_column")):
+            aggregations = [
+                {"column": step.get("agg_column") or step.get("aggregate_column")}
+            ]
+        source_columns = _string_list(
+            [
+                item.get("source_column")
+                or item.get("column")
+                or item.get("agg_column")
+                for item in aggregations
+                if isinstance(item, dict)
+            ]
+        )
+        if not source_columns:
+            continue
+        lineage_aliases = _step_external_source_aliases(step, pandas_plan)
+        if len(lineage_aliases) != 1:
+            continue
+        alias = lineage_aliases[0]
+        metric_columns_by_alias[alias] = _merge_strings(
+            metric_columns_by_alias.get(alias, []),
+            source_columns,
+        )
+
+    missing_aliases = [alias for alias in external_aliases if alias not in existing_aliases]
+    if not missing_aliases:
+        return jobs, {"status": "not_needed", "bindings": [], "unresolved": []}
+
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    question = str(request.get("question") or "").strip()
+    reference_date = str(request.get("reference_date") or "").strip()
+    requested_date = _requested_question_date(question, reference_date)
+    desired_scope = (
+        "current_day"
+        if requested_date and requested_date == reference_date
+        else "history"
+        if requested_date
+        else ""
+    )
+    catalog_items = [
+        item
+        for item in candidates.get("table_catalog_items", [])
+        if isinstance(item, dict) and str(item.get("dataset_key") or "").strip()
+    ]
+    bindings: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    for alias in missing_aliases:
+        metric_columns = metric_columns_by_alias.get(alias, [])
+        eligible: list[dict[str, Any]] = []
+        for item in catalog_items:
+            dataset_key = str(item.get("dataset_key") or "").strip()
+            if not metric_columns or _catalog_time_scope(item) != desired_scope:
+                continue
+            if all(
+                _explicit_catalog_column_contract(candidates, dataset_key, column)
+                for column in metric_columns
+            ):
+                eligible.append(item)
+        if len(eligible) != 1:
+            unresolved.append(
+                {
+                    "source_alias": alias,
+                    "metric_columns": metric_columns,
+                    "requested_time_scope": desired_scope,
+                    "candidate_dataset_keys": [
+                        str(item.get("dataset_key") or "").strip()
+                        for item in eligible
+                    ],
+                    "issue": "external_source_catalog_contract_not_unique",
+                }
+            )
+            continue
+
+        selected = eligible[0]
+        dataset_key = str(selected.get("dataset_key") or "").strip()
+        required_param_names = _catalog_required_params(candidates, dataset_key)
+        unsupported_params = [
+            value
+            for value in required_param_names
+            if _normalized_column_key(value) != _normalized_column_key("DATE")
+        ]
+        if unsupported_params or (
+            any(
+                _normalized_column_key(value) == _normalized_column_key("DATE")
+                for value in required_param_names
+            )
+            and not requested_date
+        ):
+            unresolved.append(
+                {
+                    "source_alias": alias,
+                    "metric_columns": metric_columns,
+                    "dataset_key": dataset_key,
+                    "unresolved_required_params": unsupported_params
+                    or required_param_names,
+                    "issue": "external_source_required_params_unresolved",
+                }
+            )
+            continue
+        required_params = {
+            value: requested_date
+            for value in required_param_names
+            if _normalized_column_key(value) == _normalized_column_key("DATE")
+        }
+        job: dict[str, Any] = {
+            "dataset_key": dataset_key,
+            "source_alias": alias,
+        }
+        if required_params:
+            job["required_params"] = required_params
+        selected_payload = _metadata_payload(selected)
+        source_type = str(selected_payload.get("source_type") or "").strip()
+        if source_type:
+            job["source_type"] = source_type
+        jobs.append(job)
+        bindings.append(
+            {
+                "source_alias": alias,
+                "dataset_key": dataset_key,
+                "metric_columns": metric_columns,
+                "requested_time_scope": desired_scope,
+                "selection_source": "table_catalog.columns+selection_criteria",
+            }
+        )
+
+    return jobs, {
+        "status": "applied" if bindings else "unresolved",
+        "bindings": bindings,
+        "unresolved": unresolved,
+    }
+
+
+# 함수 설명: `_metric_source_alias_from_pandas_plan()`는 04 의도 계획 정규화기 처리 중 데이터 소스·alias·원본·pandas 실행·PLAN 관련 값을 계산·변환하는
+#        내부 helper입니다.
+def _metric_source_alias_from_pandas_plan(
+    pandas_plan: list[Any],
+    source_column: str,
+) -> str:
+    target = _normalized_column_key(source_column)
+    if not target:
+        return ""
+    aliases: list[str] = []
+    for raw in pandas_plan:
+        if not isinstance(raw, dict):
+            continue
+        aggregation_columns = _string_list(
+            [
+                item.get("column") or item.get("source_column")
+                for item in raw.get("aggregations", [])
+                if isinstance(item, dict)
+            ]
+        )
+        aggregation_columns = _merge_strings(
+            aggregation_columns,
+            _string_list(raw.get("agg_column") or raw.get("aggregate_column")),
+        )
+        if target not in {_normalized_column_key(value) for value in aggregation_columns}:
+            continue
+        alias = str(raw.get("source_alias") or "").strip() or _typed_external_input_alias(raw)
+        if alias and alias not in aliases:
+            aliases.append(alias)
+    return aliases[0] if len(aliases) == 1 else ""
+
+
+# 함수 설명: `_apply_business_time_contracts()`는 04 의도 계획 정규화기 처리 중 business·TIME·contracts 관련 값을 계산·변환하는 내부 helper입니다.
 def _apply_business_time_contracts(
     payload: dict[str, Any],
     retrieval_jobs: list[Any],
     metadata_candidates: dict[str, Any],
     question: str,
     metadata_refs: list[dict[str, str]],
+    pandas_plan: list[Any] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     contracts = _selected_temporal_contracts(metadata_candidates, metadata_refs)
     if not contracts:
@@ -885,6 +1423,11 @@ def _apply_business_time_contracts(
 
         disallowed = set(_string_list(contract.get("disallowed_dataset_keys")))
         source_alias_hint = str(contract.get("source_alias") or "").strip()
+        if not source_alias_hint:
+            source_alias_hint = _metric_source_alias_from_pandas_plan(
+                pandas_plan or [],
+                str(contract.get("source_column") or "").strip(),
+            )
         existing_index = next(
             (
                 index
@@ -938,15 +1481,6 @@ def _apply_business_time_contracts(
         selected_alias = str(job.get("source_alias") or "").strip()
         temporal_aliases.append(selected_alias)
 
-        conflict_keys = disallowed | {dataset_key}
-        jobs = [
-            item
-            for item in jobs
-            if (
-                str(item.get("source_alias") or "").strip() == selected_alias
-                or str(item.get("dataset_key") or "").strip() not in conflict_keys
-            )
-        ]
         resolved_semantics.append(
             {
                 **deepcopy(contract),
@@ -1137,6 +1671,455 @@ def _looks_like_temporal_decision_reason(
 
 
 # 함수 설명: 선택된 Domain 후보에 명시된 temporal_semantics만 실행 가능한 공통 시간 계약으로 정규화합니다.
+def _compact_domain_text(value: Any) -> str:
+    """Normalize metadata aliases for exact compact phrase matching."""
+    return re.sub(r"[^0-9A-Za-z가-힣]+", "", str(value or "")).casefold()
+
+
+# 함수 설명: `_domain_alias_matches()`는 alias·matches 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
+def _domain_alias_matches(question: str, alias: str) -> bool:
+    compact_alias = _compact_domain_text(alias)
+    if len(compact_alias) < 2:
+        return False
+    compact_question = _compact_domain_text(question)
+    if compact_alias not in compact_question:
+        return False
+    if re.fullmatch(r"[0-9A-Za-z _./&+-]+", str(alias or "")):
+        escaped = re.escape(str(alias).strip())
+        return bool(
+            re.search(
+                rf"(?<![0-9A-Za-z]){escaped}(?![0-9A-Za-z])",
+                question,
+                flags=re.IGNORECASE,
+            )
+        )
+    return True
+
+
+# 함수 설명: `_merge_metadata_ref_lists()`는 여러 메타데이터·참조·lists 값을 순서와 중복 정책을 지키며 하나의 결과로 합칩니다.
+def _merge_metadata_ref_lists(*values: Any) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for value in values:
+        items = value if isinstance(value, list) else []
+        for item in items:
+            ref = _metadata_ref(item)
+            if ref and ref not in result:
+                result.append(ref)
+    return result
+
+
+# 함수 설명: `_filter_incompatible_recipe_contracts()`는 조건과 우선순위에 맞는 incompatible·recipe·contracts만 골라 원래 순서를 유지해 반환합니다.
+def _filter_incompatible_recipe_contracts(
+    metadata_refs: list[dict[str, str]],
+    raw_join_plan: Any,
+    retrieval_jobs: list[Any],
+    candidates: dict[str, Any],
+) -> tuple[list[dict[str, str]], list[dict[str, Any]], dict[str, Any]]:
+    """Drop recipes whose declared source set is absent from the actual plan."""
+    selected_datasets = {
+        str(item.get("dataset_key") or "").strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict) and str(item.get("dataset_key") or "").strip()
+    }
+    join_items = (
+        raw_join_plan
+        if isinstance(raw_join_plan, list)
+        else [raw_join_plan]
+        if isinstance(raw_join_plan, dict)
+        else []
+    )
+    if not selected_datasets:
+        return deepcopy(metadata_refs), deepcopy(join_items), {
+            "status": "not_needed",
+            "removed_refs": [],
+        }
+
+    removed: list[dict[str, Any]] = []
+
+    # 함수 설명: `compatible()`는 04 의도 계획 정규화기 처리 중 compatible 관련 값을 계산·변환하는 내부 helper입니다.
+    def compatible(ref: dict[str, str]) -> bool:
+        if str(ref.get("section") or "").strip() != "analysis_recipes":
+            return True
+        item = _find_metadata_item(candidates, ref)
+        payload = _metadata_payload(item)
+        required_sources = set(_string_list(payload.get("source_datasets")))
+        if not required_sources or required_sources.issubset(selected_datasets):
+            return True
+        removed.append(
+            {
+                "metadata_ref": deepcopy(ref),
+                "required_source_datasets": sorted(required_sources),
+                "selected_dataset_keys": sorted(selected_datasets),
+                "issue": "recipe_source_datasets_not_satisfied",
+            }
+        )
+        return False
+
+    compatible_refs = [ref for ref in metadata_refs if compatible(ref)]
+    removed_identities = {
+        (
+            str(item.get("metadata_ref", {}).get("section") or "").strip(),
+            str(item.get("metadata_ref", {}).get("key") or "").strip(),
+        )
+        for item in removed
+    }
+    compatible_joins: list[dict[str, Any]] = []
+    for raw in join_items:
+        if not isinstance(raw, dict):
+            continue
+        ref = _metadata_ref(raw.get("metadata_ref"))
+        identity = (
+            str(ref.get("section") or "").strip(),
+            str(ref.get("key") or "").strip(),
+        )
+        if identity in removed_identities:
+            continue
+        compatible_joins.append(deepcopy(raw))
+    return compatible_refs, compatible_joins, {
+        "status": "applied" if removed else "not_needed",
+        "removed_refs": removed,
+    }
+
+
+# 함수 설명: `_resolve_execution_domain_selection()`는 여러 execution·도메인·selection 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
+def _resolve_execution_domain_selection(
+    question: str,
+    candidates: dict[str, Any],
+    metadata_refs: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Lock execution-bearing domain metadata when its registered alias is unique."""
+    selected = {
+        (str(item.get("section") or ""), str(item.get("key") or ""))
+        for item in metadata_refs
+        if isinstance(item, dict)
+    }
+    matches: list[dict[str, Any]] = []
+    for item in candidates.get("domain_items", []) if isinstance(candidates.get("domain_items"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        payload = _metadata_payload(item)
+        kinds: list[str] = []
+        if isinstance(payload.get("temporal_semantics"), (dict, list)):
+            kinds.append("temporal")
+        if isinstance(payload.get("conditions"), (dict, list)):
+            kinds.append("conditions")
+        if not kinds:
+            continue
+        aliases = _merge_strings(
+            _string_list(payload.get("aliases")),
+            _string_list(payload.get("display_name")),
+        )
+        matched_alias = next(
+            (alias for alias in aliases if _domain_alias_matches(question, alias)),
+            "",
+        )
+        if not matched_alias:
+            continue
+        ref = _metadata_ref(item)
+        if ref:
+            matches.append({"metadata_ref": ref, "alias": matched_alias, "kinds": kinds})
+
+    locked: list[dict[str, str]] = []
+    ambiguities: list[dict[str, Any]] = []
+    for kind in ("temporal", "conditions"):
+        kind_matches = [item for item in matches if kind in item.get("kinds", [])]
+        identities = {
+            (item["metadata_ref"]["section"], item["metadata_ref"]["key"])
+            for item in kind_matches
+        }
+        explicitly_selected = [
+            item for item in kind_matches
+            if (
+                item["metadata_ref"]["section"],
+                item["metadata_ref"]["key"],
+            ) in selected
+        ]
+        if explicitly_selected:
+            for item in explicitly_selected:
+                if item["metadata_ref"] not in locked:
+                    locked.append(item["metadata_ref"])
+        elif len(identities) == 1 and kind_matches:
+            ref = kind_matches[0]["metadata_ref"]
+            if ref not in locked:
+                locked.append(ref)
+        elif len(identities) > 1:
+            ambiguities.append(
+                {
+                    "kind": kind,
+                    "matches": deepcopy(kind_matches),
+                    "issue": "ambiguous_registered_domain_alias",
+                }
+            )
+    temporal_refs = {
+        (item["metadata_ref"]["section"], item["metadata_ref"]["key"])
+        for item in matches
+        if "temporal" in item.get("kinds", [])
+    }
+    return {
+        "status": "ambiguous" if ambiguities else ("locked" if locked else "not_needed"),
+        "selection_source": "metadata_alias_lock" if locked else "none",
+        "locked_metadata_refs": locked,
+        "matched_aliases": matches,
+        "ambiguities": ambiguities,
+        "temporal_alias_lock": any(
+            (ref.get("section"), ref.get("key")) in temporal_refs for ref in locked
+        ),
+    }
+
+
+# 함수 설명: `_catalog_supports_domain_column()`는 04 의도 계획 정규화기 처리 중 supports·도메인·컬럼 관련 값을 계산·변환하는 내부 helper입니다.
+def _catalog_supports_domain_column(
+    candidates: dict[str, Any],
+    dataset_key: str,
+    column: str,
+) -> bool:
+    item = _table_catalog_item(candidates, dataset_key)
+    if not item:
+        return True
+    payload = _metadata_payload(item)
+    declared = _catalog_declared_columns(payload)
+    mapped = _mapped_column_candidates(item, column)
+    declared_keys = {_normalized_column_key(value) for value in declared}
+    mapping_groups: list[tuple[str, list[str]]] = []
+    for mapping_name in ("filter_mappings", "standard_column_aliases"):
+        mapping = payload.get(mapping_name)
+        if not isinstance(mapping, dict):
+            continue
+        for key, value in mapping.items():
+            mapping_groups.append((str(key), _string_list(value)))
+    target = _normalized_column_key(column)
+    mapped_keys = {
+        _normalized_column_key(value)
+        for key, values in mapping_groups
+        for value in [key, *values]
+    }
+    if not declared_keys and not mapped_keys:
+        return True
+    return (
+        target in mapped_keys
+        or any(_normalized_column_key(value) in declared_keys for value in mapped)
+        or target in declared_keys
+    )
+
+
+# 함수 설명: `_catalog_time_scope()`는 04 의도 계획 정규화기 처리 중 TIME·분석 범위 관련 값을 계산·변환하는 내부 helper입니다.
+def _catalog_time_scope(item: dict[str, Any]) -> str:
+    payload = _metadata_payload(item)
+    criteria = (
+        payload.get("selection_criteria")
+        if isinstance(payload.get("selection_criteria"), dict)
+        else {}
+    )
+    raw = str(criteria.get("time_scope") or payload.get("time_scope") or "").strip().lower()
+    if raw in {"current", "current_day", "today", "realtime", "current_time"}:
+        return "current_day"
+    if raw in {"history", "historical", "past", "as_of_date"}:
+        return "history"
+    return raw
+
+
+# 함수 설명: `_job_requested_time_scope()`는 04 의도 계획 정규화기 처리 중 requested·TIME·분석 범위 관련 값을 계산·변환하는 내부 helper입니다.
+def _job_requested_time_scope(job: dict[str, Any], payload: dict[str, Any]) -> str:
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    reference_date = str(request.get("reference_date") or "").strip()
+    required_params = job.get("required_params") if isinstance(job.get("required_params"), dict) else {}
+    requested_date = next(
+        (
+            str(value or "").strip()
+            for key, value in required_params.items()
+            if _normalized_column_key(key) == _normalized_column_key("DATE")
+        ),
+        "",
+    )
+    if not re.fullmatch(r"20\d{6}", requested_date) or not re.fullmatch(r"20\d{6}", reference_date):
+        return ""
+    return "current_day" if requested_date == reference_date else "history"
+
+
+# 함수 설명: `_aggregation_source_columns_by_alias()`는 04 의도 계획 정규화기 처리 중 데이터 소스·컬럼·BY·alias 관련 값을 계산·변환하는 내부 helper입니다.
+def _aggregation_source_columns_by_alias(pandas_plan: list[Any]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for step in pandas_plan:
+        if not isinstance(step, dict):
+            continue
+        alias = str(step.get("source_alias") or "").strip()
+        if not alias:
+            continue
+        aggregations = step.get("aggregations") if isinstance(step.get("aggregations"), list) else []
+        if not aggregations and (step.get("agg_column") or step.get("aggregate_column")):
+            aggregations = [
+                {
+                    "column": step.get("agg_column") or step.get("aggregate_column")
+                }
+            ]
+        for aggregation in aggregations:
+            if not isinstance(aggregation, dict):
+                continue
+            column = str(
+                aggregation.get("source_column")
+                or aggregation.get("column")
+                or aggregation.get("agg_column")
+                or ""
+            ).strip()
+            if column and column not in result.setdefault(alias, []):
+                result[alias].append(column)
+    return result
+
+
+# 함수 설명: `_reconcile_metric_dataset_selection()`는 04 의도 계획 정규화기 처리 중 metric·데이터셋·selection 관련 값을 계산·변환하는 내부
+#        helper입니다.
+def _reconcile_metric_dataset_selection(
+    payload: dict[str, Any],
+    retrieval_jobs: list[Any],
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Select a dataset only from explicit catalog metric and time-scope contracts."""
+    jobs = [deepcopy(item) for item in retrieval_jobs]
+    source_columns = _aggregation_source_columns_by_alias(pandas_plan)
+    catalog_items = [
+        item
+        for item in candidates.get("table_catalog_items", [])
+        if isinstance(item, dict) and str(item.get("dataset_key") or "").strip()
+    ]
+    corrections: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        metric_columns = source_columns.get(alias, [])
+        desired_scope = _job_requested_time_scope(job, payload)
+        if not metric_columns or not desired_scope:
+            continue
+        current_key = str(job.get("dataset_key") or "").strip()
+        current_item = _table_catalog_item(candidates, current_key)
+        current_supports = all(
+            _catalog_supports_domain_column(candidates, current_key, column)
+            for column in metric_columns
+        )
+        current_scope = _catalog_time_scope(current_item)
+        if current_supports and current_scope == desired_scope:
+            continue
+
+        eligible: list[dict[str, Any]] = []
+        for item in catalog_items:
+            candidate_key = str(item.get("dataset_key") or "").strip()
+            if _catalog_time_scope(item) != desired_scope:
+                continue
+            if not all(
+                _catalog_supports_domain_column(candidates, candidate_key, column)
+                for column in metric_columns
+            ):
+                continue
+            eligible.append(item)
+        if len(eligible) != 1:
+            if not current_supports or (current_scope and current_scope != desired_scope):
+                unresolved.append(
+                    {
+                        "source_alias": alias,
+                        "dataset_key": current_key,
+                        "metric_columns": metric_columns,
+                        "requested_time_scope": desired_scope,
+                        "candidate_dataset_keys": [
+                            str(item.get("dataset_key") or "").strip() for item in eligible
+                        ],
+                        "issue": "metric_time_scope_dataset_not_unique",
+                    }
+                )
+            continue
+        selected = eligible[0]
+        selected_key = str(selected.get("dataset_key") or "").strip()
+        if selected_key == current_key:
+            continue
+        selected_payload = _metadata_payload(selected)
+        job["dataset_key"] = selected_key
+        source_type = str(selected_payload.get("source_type") or "").strip()
+        if source_type:
+            job["source_type"] = source_type
+        corrections.append(
+            {
+                "source_alias": alias,
+                "from_dataset_key": current_key,
+                "to_dataset_key": selected_key,
+                "metric_columns": metric_columns,
+                "requested_time_scope": desired_scope,
+                "selection_source": "table_catalog.selection_criteria",
+            }
+        )
+    return jobs, {
+        "status": "applied" if corrections else ("unresolved" if unresolved else "not_needed"),
+        "corrections": corrections,
+        "unresolved": unresolved,
+    }
+
+
+# 함수 설명: `_apply_selected_domain_conditions()`는 04 의도 계획 정규화기 처리 중 selected·도메인·conditions 관련 값을 계산·변환하는 내부
+#        helper입니다.
+def _apply_selected_domain_conditions(
+    retrieval_jobs: list[Any],
+    candidates: dict[str, Any],
+    locked_refs: list[dict[str, str]],
+) -> tuple[list[Any], dict[str, Any]]:
+    jobs = [deepcopy(item) for item in retrieval_jobs]
+    applied: list[dict[str, Any]] = []
+    for ref in locked_refs:
+        item = _find_metadata_item(candidates, ref)
+        payload = _metadata_payload(item)
+        raw_conditions = payload.get("conditions")
+        conditions = (
+            raw_conditions if isinstance(raw_conditions, list)
+            else [raw_conditions] if isinstance(raw_conditions, dict)
+            else []
+        )
+        for raw in conditions:
+            if not isinstance(raw, dict):
+                continue
+            column = str(raw.get("column") or raw.get("field") or "").strip()
+            if not column:
+                continue
+            operator = _canonical_filter_operator(
+                str(raw.get("operator") or raw.get("op") or "eq")
+            )
+            scoped_datasets = set(_string_list(raw.get("dataset_keys") or raw.get("dataset_key")))
+            scoped_aliases = set(_string_list(raw.get("source_aliases") or raw.get("source_alias")))
+            for job in jobs:
+                if not isinstance(job, dict):
+                    continue
+                dataset_key = str(job.get("dataset_key") or "").strip()
+                source_alias = str(job.get("source_alias") or dataset_key).strip()
+                if scoped_datasets and dataset_key not in scoped_datasets:
+                    continue
+                if scoped_aliases and source_alias not in scoped_aliases:
+                    continue
+                if not _catalog_supports_domain_column(candidates, dataset_key, column):
+                    continue
+                filters = deepcopy(job.get("filters")) if isinstance(job.get("filters"), dict) else {}
+                if any(_normalized_column_key(key) == _normalized_column_key(column) for key in filters):
+                    continue
+                condition: dict[str, Any] = {"operator": operator}
+                if "value" in raw:
+                    condition["value"] = deepcopy(raw.get("value"))
+                elif "values" in raw:
+                    condition["value"] = deepcopy(raw.get("values"))
+                filters[column] = condition
+                job["filters"] = filters
+                applied.append(
+                    {
+                        "metadata_ref": deepcopy(ref),
+                        "source_alias": source_alias,
+                        "dataset_key": dataset_key,
+                        "column": column,
+                        "operator": operator,
+                    }
+                )
+    return jobs, {
+        "status": "applied" if applied else "not_needed",
+        "applied_conditions": applied,
+    }
+
+
+# 함수 설명: `_selected_temporal_contracts()`는 04 의도 계획 정규화기 처리 중 temporal·contracts 관련 값을 계산·변환하는 내부 helper입니다.
 def _selected_temporal_contracts(
     metadata_candidates: dict[str, Any],
     metadata_refs: list[dict[str, str]],
@@ -1635,6 +2618,105 @@ def _condition_resolution(
     if effective_filters:
         result["effective_filters"] = effective_filters
     return result
+
+
+# 함수 설명: metadata/domain 정규화가 끝난 retrieval filter를 동일 source·field의 effective filter에도 반영합니다.
+# retrieval_jobs는 실제 조회 계약이고 effective_filters는 후속 분석용 보존 계약이므로, 같은 field가 양쪽에
+# 존재하면 정규화가 끝난 retrieval 조건을 우선해 원문 alias와 확장된 값이 pandas에서 중복 적용되지 않게 합니다.
+def _synchronize_effective_filters_with_retrieval_jobs(
+    condition_resolution: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    result = deepcopy(condition_resolution)
+    effective_by_alias = (
+        result.get("effective_filters")
+        if isinstance(result.get("effective_filters"), dict)
+        else {}
+    )
+    if not effective_by_alias:
+        return result
+
+    jobs_by_alias = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip(): item
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    for alias, effective_item in list(effective_by_alias.items()):
+        job = jobs_by_alias.get(str(alias or "").strip())
+        if not isinstance(effective_item, dict) or not isinstance(job, dict):
+            continue
+        effective_filters = effective_item.get("filters")
+        job_filters = job.get("filters")
+        synchronized = _replace_matching_filter_fields(effective_filters, job_filters)
+        if synchronized is not None:
+            effective_item["filters"] = synchronized
+            effective_by_alias[alias] = effective_item
+    result["effective_filters"] = effective_by_alias
+    return result
+
+
+# 함수 설명: 두 filter 표현(dict/list)에서 같은 canonical field만 authoritative 조건으로 교체합니다.
+def _replace_matching_filter_fields(effective_filters: Any, job_filters: Any) -> Any:
+    job_entries = _filter_field_entries(job_filters)
+    if not job_entries or not isinstance(effective_filters, (dict, list)):
+        return deepcopy(effective_filters)
+    replacements = {
+        _normalized_column_key(field): (field, deepcopy(condition))
+        for field, condition in job_entries
+        if _normalized_column_key(field)
+    }
+    if isinstance(effective_filters, dict):
+        result = deepcopy(effective_filters)
+        for field in list(result):
+            replacement = replacements.get(_normalized_column_key(field))
+            if replacement is None:
+                continue
+            replacement_field, replacement_condition = replacement
+            result.pop(field, None)
+            result[replacement_field] = replacement_condition
+        return result
+
+    result_list: list[Any] = []
+    for item in effective_filters:
+        if not isinstance(item, dict):
+            result_list.append(deepcopy(item))
+            continue
+        field = str(item.get("field") or item.get("column") or "").strip()
+        field_key = _normalized_column_key(field)
+        replacement = replacements.get(field_key)
+        if replacement is None:
+            result_list.append(deepcopy(item))
+            continue
+        replacement_field, replacement_condition = replacement
+        result_list.append(_filter_list_condition(replacement_field, replacement_condition))
+    return result_list
+
+
+# 함수 설명: dict/list filter 계약을 canonical field와 조건 쌍으로 읽습니다.
+def _filter_field_entries(filters: Any) -> list[tuple[str, Any]]:
+    if isinstance(filters, dict):
+        return [(str(field), condition) for field, condition in filters.items()]
+    if isinstance(filters, list):
+        result: list[tuple[str, Any]] = []
+        for item in filters:
+            if not isinstance(item, dict):
+                continue
+            field = str(item.get("field") or item.get("column") or "").strip()
+            if field:
+                result.append((field, item))
+        return result
+    return []
+
+
+# 함수 설명: dict형 field 조건을 list형 filter condition으로 안전하게 변환합니다.
+def _filter_list_condition(field: str, condition: Any) -> dict[str, Any]:
+    if isinstance(condition, dict):
+        result = deepcopy(condition)
+        result["field"] = str(result.get("field") or result.get("column") or field)
+        result.pop("column", None)
+        return result
+    return {"field": field, "operator": "eq", "value": deepcopy(condition)}
 
 
 # 함수 설명: LLM이 inherited/changed/new/dropped에 나눠 둔 previous_source 조건을 최종 실행 filter로 합칩니다.
@@ -2436,6 +3518,8 @@ def _metric_source_validation_errors(
     output_contract: dict[str, Any],
     retrieval_jobs: list[dict[str, Any]],
     business_time_guard: dict[str, Any],
+    resolved_execution_graph: dict[str, Any] | None = None,
+    metadata_candidates: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     aliases = [
@@ -2464,7 +3548,13 @@ def _metric_source_validation_errors(
         for item in retrieval_jobs
         if isinstance(item, dict)
     }
+    external_requirements = {
+        str(item.get("source_alias") or "").strip(): item
+        for item in (resolved_execution_graph or {}).get("external_source_requirements", [])
+        if isinstance(item, dict) and str(item.get("source_alias") or "").strip()
+    }
     binding_issues: list[dict[str, Any]] = []
+    metadata_candidates = metadata_candidates if isinstance(metadata_candidates, dict) else {}
     for binding in output_contract.get("metric_bindings", []):
         if not isinstance(binding, dict):
             continue
@@ -2473,6 +3563,43 @@ def _metric_source_validation_errors(
             continue
         job = jobs_by_alias.get(alias)
         if not isinstance(job, dict):
+            provider = external_requirements.get(alias)
+            if isinstance(provider, dict) and provider.get("provider") in {
+                "previous_source",
+                "previous_result",
+            }:
+                expected_dataset = str(binding.get("dataset_key") or "").strip()
+                provider_dataset = str(provider.get("dataset_key") or "").strip()
+                if expected_dataset and provider_dataset and expected_dataset != provider_dataset:
+                    binding_issues.append(
+                        {
+                            "output_column": binding.get("output_column"),
+                            "source_alias": alias,
+                            "issue": "dataset_key_mismatch",
+                            "expected_dataset_key": expected_dataset,
+                            "actual_dataset_key": provider_dataset,
+                        }
+                    )
+                source_column = str(binding.get("source_column") or "").strip()
+                if (
+                    provider_dataset
+                    and source_column
+                    and not _catalog_supports_domain_column(
+                        metadata_candidates,
+                        provider_dataset,
+                        source_column,
+                    )
+                ):
+                    binding_issues.append(
+                        {
+                            "output_column": binding.get("output_column"),
+                            "source_alias": alias,
+                            "issue": "source_column_not_in_table_catalog",
+                            "source_column": source_column,
+                            "actual_dataset_key": provider_dataset,
+                        }
+                    )
+                continue
             binding_issues.append(
                 {
                     "output_column": binding.get("output_column"),
@@ -2490,6 +3617,25 @@ def _metric_source_validation_errors(
                     "source_alias": alias,
                     "issue": "dataset_key_mismatch",
                     "expected_dataset_key": expected_dataset,
+                    "actual_dataset_key": actual_dataset,
+                }
+            )
+        source_column = str(binding.get("source_column") or "").strip()
+        if (
+            actual_dataset
+            and source_column
+            and not _catalog_supports_domain_column(
+                metadata_candidates,
+                actual_dataset,
+                source_column,
+            )
+        ):
+            binding_issues.append(
+                {
+                    "output_column": binding.get("output_column"),
+                    "source_alias": alias,
+                    "issue": "source_column_not_in_table_catalog",
+                    "source_column": source_column,
                     "actual_dataset_key": actual_dataset,
                 }
             )
@@ -2840,10 +3986,19 @@ def _metric_bindings(
         if isinstance(plan.get("pandas_execution_plan"), list)
         else []
     )
+    known_external_aliases = set(job_datasets)
     for step in steps:
         if not isinstance(step, dict):
             continue
         source_alias = str(step.get("source_alias") or "").strip()
+        if source_alias not in known_external_aliases:
+            lineage_aliases = _step_external_source_aliases(
+                step,
+                steps,
+                known_external_aliases,
+            )
+            if len(lineage_aliases) == 1:
+                source_alias = lineage_aliases[0]
         aggregations = (
             step.get("aggregations")
             if isinstance(step.get("aggregations"), list)
@@ -2921,6 +4076,13 @@ def _normalized_metric_binding(
         "source_column": source_column,
         "aggregation": aggregation,
         "output_column": output_column,
+        "semantic_scope": deepcopy(
+            value.get("semantic_scope")
+            or value.get("filter_scope")
+            or value.get("filters")
+            or value.get("temporal_scope")
+            or {}
+        ),
     }
 
 
@@ -2930,13 +4092,20 @@ def _deduplicate_metric_bindings(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     result: list[dict[str, Any]] = []
     suppressed: list[str] = []
-    seen: dict[tuple[str, str, str, str], str] = {}
+    seen: dict[tuple[str, str, str, str, str], str] = {}
     for item in bindings:
         marker = (
             str(item.get("source_alias") or "").casefold(),
             str(item.get("dataset_key") or "").casefold(),
             _normalized_column_key(item.get("source_column")),
             str(item.get("aggregation") or "").casefold(),
+            json.dumps(
+                item.get("semantic_scope") or {},
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+                separators=(",", ":"),
+            ),
         )
         output = str(item.get("output_column") or "").strip()
         existing = seen.get(marker)
@@ -3272,14 +4441,20 @@ def _resolve_grain_plan(
     mappings = [
         {
             "canonical_key": column,
-            "source_candidates": _mapped_column_candidates(table_item, column),
+            "source_candidates": _merge_strings(
+                [column],
+                _mapped_column_candidates(table_item, column),
+            ),
         }
         for column in canonical_columns
     ]
+    # Pandas receives catalog-normalized rows, so executable grain columns use
+    # the canonical product keys. Physical candidates remain available only as
+    # source-lineage metadata for retrieval and validation.
     grain_columns = [
-        mapping["source_candidates"][0]
+        mapping["canonical_key"]
         for mapping in mappings
-        if mapping.get("source_candidates")
+        if mapping.get("canonical_key") and mapping.get("source_candidates")
     ]
     if not source_alias or not grain_columns:
         return {}
@@ -3291,6 +4466,321 @@ def _resolve_grain_plan(
         "column_mappings": mappings,
         "grain_columns": grain_columns,
         "strict": True,
+    }
+
+
+# 함수 설명: `_resolve_output_grain_plan()`는 여러 output·grain·PLAN 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
+def _resolve_output_grain_plan(
+    pandas_plan: list[Any],
+    entity_grain_plan: dict[str, Any],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Combine validated breakdown dimensions with the entity identity grain."""
+    explicit_columns: list[str] = []
+    source_aliases: list[str] = []
+    for step in pandas_plan:
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation not in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}:
+            continue
+        alias = str(step.get("source_alias") or "").strip()
+        if alias and alias not in source_aliases:
+            source_aliases.append(alias)
+        explicit_columns = _merge_strings(
+            explicit_columns,
+            _string_list(
+                step.get("group_by")
+                or step.get("group_by_columns")
+                or step.get("group_columns")
+                or step.get("group_cols")
+            ),
+        )
+    entity_columns = _string_list(entity_grain_plan.get("grain_columns"))
+    aliases_to_check = source_aliases or _string_list(entity_grain_plan.get("source_alias"))
+    combined: list[str] = []
+    seen_identities: set[str] = set()
+    for column in [*explicit_columns, *entity_columns]:
+        identity = _grain_column_identity(
+            column,
+            aliases_to_check,
+            candidates,
+            retrieval_jobs,
+        )
+        if identity in seen_identities:
+            continue
+        seen_identities.add(identity)
+        combined.append(column)
+    if not combined:
+        return {}
+
+    validated: list[str] = []
+    rejected: list[dict[str, Any]] = []
+    for column in combined:
+        supported_aliases: list[str] = []
+        for alias in aliases_to_check:
+            dataset_key = _dataset_key_for_alias(alias, retrieval_jobs)
+            if _catalog_supports_domain_column(candidates, dataset_key, column):
+                supported_aliases.append(alias)
+        if supported_aliases or not aliases_to_check:
+            validated.append(column)
+        else:
+            rejected.append({"column": column, "source_aliases": aliases_to_check})
+    return {
+        "entity_grain_columns": entity_columns,
+        "breakdown_columns": [column for column in validated if column not in entity_columns],
+        "grain_columns": validated,
+        "source_aliases": aliases_to_check,
+        "rejected_columns": rejected,
+        "strict": True,
+    }
+
+
+# 함수 설명: `_grain_column_identity()`는 04 의도 계획 정규화기 처리 중 컬럼·식별자 관련 값을 계산·변환하는 내부 helper입니다.
+def _grain_column_identity(
+    column: str,
+    source_aliases: list[str],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> str:
+    target = _normalized_column_key(column)
+    canonical_matches: set[str] = set()
+    for alias in source_aliases:
+        dataset_key = _dataset_key_for_alias(alias, retrieval_jobs)
+        item = _table_catalog_item(candidates, dataset_key)
+        payload = _metadata_payload(item)
+        for mapping_name in ("filter_mappings", "standard_column_aliases"):
+            mapping = payload.get(mapping_name)
+            if not isinstance(mapping, dict):
+                continue
+            for canonical, raw_values in mapping.items():
+                values = _merge_strings(
+                    _string_list(canonical),
+                    _string_list(raw_values),
+                )
+                if target in {_normalized_column_key(value) for value in values}:
+                    canonical_matches.add(_normalized_column_key(canonical))
+    return next(iter(canonical_matches)) if len(canonical_matches) == 1 else target
+
+
+# 함수 설명: `_previous_source_refs()`는 04 의도 계획 정규화기 처리 중 데이터 소스·참조 관련 값을 계산·변환하는 내부 helper입니다.
+def _previous_source_refs(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    raw = state.get("runtime_source_refs") if isinstance(state.get("runtime_source_refs"), dict) else {}
+    return {
+        str(alias): deepcopy(value)
+        for alias, value in raw.items()
+        if str(alias).strip() and isinstance(value, dict)
+    }
+
+
+# 함수 설명: `_compile_execution_graph()`는 04 의도 계획 정규화기 처리 중 execution·graph 관련 값을 계산·변환하는 내부 helper입니다.
+def _compile_execution_graph(
+    pandas_plan: list[Any],
+    retrieval_jobs: list[dict[str, Any]],
+    payload: dict[str, Any],
+    reuse_strategy: str,
+) -> dict[str, Any]:
+    """Compile plan steps into typed leaf and node-output references."""
+    jobs = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip(): item
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    previous_refs = _previous_source_refs(payload)
+    requirements: list[dict[str, Any]] = []
+    requirement_aliases: set[str] = set()
+    nodes: list[dict[str, Any]] = []
+    output_aliases: dict[str, str] = {}
+    node_external_aliases: dict[str, set[str]] = {}
+    declared_node_ids = {
+        str(raw.get("node_id") or f"step_{index + 1}_{re.sub(r'[^0-9a-z]+', '_', str(raw.get('operation') or raw.get('step') or 'operation').strip().lower()).strip('_') or 'operation'}").strip()
+        for index, raw in enumerate(pandas_plan)
+        if isinstance(raw, dict)
+    }
+    validation_errors: list[dict[str, Any]] = []
+    unary_previous_operations = {
+        "sort_and_top_n",
+        "sort",
+        "top_n",
+        "bottom_n",
+        "filter_result",
+        "select_columns",
+        "rename_columns",
+    }
+
+    # 함수 설명: `leaf_ref()`는 04 의도 계획 정규화기 처리 중 참조 관련 값을 계산·변환하는 내부 helper입니다.
+    def leaf_ref(alias: str) -> dict[str, str] | None:
+        if alias in jobs:
+            job = jobs[alias]
+            if alias not in requirement_aliases:
+                requirements.append(
+                    {
+                        "source_alias": alias,
+                        "provider": "retrieval_job",
+                        "dataset_key": str(job.get("dataset_key") or "").strip(),
+                        "required": True,
+                    }
+                )
+                requirement_aliases.add(alias)
+            return {"kind": "external_source", "ref": alias}
+        if alias in previous_refs and reuse_strategy == "previous_source":
+            ref = previous_refs[alias]
+            if alias not in requirement_aliases:
+                requirements.append(
+                    {
+                        "source_alias": alias,
+                        "provider": "previous_source",
+                        "dataset_key": str(ref.get("dataset_key") or "").strip(),
+                        "required": True,
+                    }
+                )
+                requirement_aliases.add(alias)
+            return {"kind": "external_source", "ref": alias}
+        if alias in {PREVIOUS_RESULT_ALIAS, "upstream_result"}:
+            if alias not in requirement_aliases:
+                requirements.append(
+                    {
+                        "source_alias": alias,
+                        "provider": "previous_result",
+                        "dataset_key": "",
+                        "required": True,
+                    }
+                )
+                requirement_aliases.add(alias)
+            return {"kind": "external_source", "ref": alias}
+        if reuse_strategy == "previous_source":
+            ref = previous_refs.get(alias, {})
+            if alias not in requirement_aliases:
+                requirements.append(
+                    {
+                        "source_alias": alias,
+                        "provider": "previous_source",
+                        "dataset_key": str(ref.get("dataset_key") or "").strip(),
+                        "required": True,
+                    }
+                )
+                requirement_aliases.add(alias)
+            return {"kind": "external_source", "ref": alias}
+        return None
+
+    for index, raw in enumerate(pandas_plan):
+        if not isinstance(raw, dict):
+            continue
+        operation = str(raw.get("operation") or raw.get("step") or "operation").strip().lower()
+        safe_operation = re.sub(r"[^0-9a-z]+", "_", operation).strip("_") or "operation"
+        node_id = str(raw.get("node_id") or f"step_{index + 1}_{safe_operation}").strip()
+        inputs: list[dict[str, str]] = []
+        explicit_inputs = raw.get("inputs") if isinstance(raw.get("inputs"), list) else []
+        for value in explicit_inputs:
+            if isinstance(value, dict) and value.get("kind") in {"external_source", "node_output"} and value.get("ref"):
+                kind = str(value["kind"])
+                ref = str(value["ref"])
+                if kind == "external_source":
+                    resolved_leaf = leaf_ref(ref)
+                    if resolved_leaf:
+                        inputs.append(resolved_leaf)
+                    else:
+                        validation_errors.append(
+                            {
+                                "type": "unresolved_execution_input",
+                                "message": "typed external source provider could not be resolved.",
+                                "node_id": node_id,
+                                "source_alias": ref,
+                            }
+                        )
+                else:
+                    if ref in jobs or ref in previous_refs or ref in {
+                        PREVIOUS_RESULT_ALIAS,
+                        "upstream_result",
+                    }:
+                        upstream_node = next(
+                            (
+                                str(item.get("node_id") or "").strip()
+                                for item in reversed(nodes)
+                                if ref
+                                in node_external_aliases.get(
+                                    str(item.get("node_id") or "").strip(),
+                                    set(),
+                                )
+                            ),
+                            "",
+                        )
+                        if upstream_node:
+                            inputs.append({"kind": "node_output", "ref": upstream_node})
+                        else:
+                            resolved_leaf = leaf_ref(ref)
+                            if resolved_leaf:
+                                inputs.append(resolved_leaf)
+                        continue
+                    resolved_ref = ref if ref in declared_node_ids else output_aliases.get(ref, "")
+                    if resolved_ref:
+                        inputs.append({"kind": kind, "ref": resolved_ref})
+                    else:
+                        validation_errors.append(
+                            {
+                                "type": "unresolved_execution_input",
+                                "message": "typed node output provider could not be resolved.",
+                                "node_id": node_id,
+                                "node_output_ref": ref,
+                            }
+                        )
+        if not inputs:
+            aliases: list[str] = []
+            if operation in {"join", "merge", "outer_join", "left_join", "compare_presence"}:
+                aliases = _string_list(
+                    [
+                        raw.get("left_source_alias") or raw.get("source_alias"),
+                        raw.get("right_source_alias") or raw.get("reference_source_alias"),
+                    ]
+                )
+            else:
+                aliases = _string_list(raw.get("source_alias"))
+            for alias in aliases:
+                if alias in output_aliases:
+                    inputs.append({"kind": "node_output", "ref": output_aliases[alias]})
+                    continue
+                resolved_leaf = leaf_ref(alias)
+                if resolved_leaf:
+                    inputs.append(resolved_leaf)
+                    continue
+                if nodes and operation in unary_previous_operations:
+                    inputs.append({"kind": "node_output", "ref": nodes[-1]["node_id"]})
+                    continue
+                validation_errors.append(
+                    {
+                        "type": "unresolved_execution_input",
+                        "message": "pandas step input provider could not be resolved.",
+                        "node_id": node_id,
+                        "source_alias": alias,
+                    }
+                )
+        node = {
+            "node_id": node_id,
+            "operation": operation,
+            "inputs": inputs,
+        }
+        output_alias = str(raw.get("output_alias") or raw.get("result_alias") or "").strip()
+        if output_alias:
+            node["output_alias"] = output_alias
+            output_aliases[output_alias] = node_id
+        nodes.append(node)
+        leaf_aliases: set[str] = set()
+        for item in inputs:
+            if item.get("kind") == "external_source":
+                leaf_aliases.add(str(item.get("ref") or "").strip())
+            elif item.get("kind") == "node_output":
+                leaf_aliases.update(
+                    node_external_aliases.get(str(item.get("ref") or "").strip(), set())
+                )
+        node_external_aliases[node_id] = {value for value in leaf_aliases if value}
+    return {
+        "version": 1,
+        "nodes": nodes,
+        "external_source_requirements": requirements,
+        "validation_errors": validation_errors,
     }
 
 
@@ -3386,10 +4876,13 @@ def _resolve_join_plan(
             }
             for column in canonical_right_value_columns
         ]
+        # Retrieval rows are standardized before pandas execution. Executable
+        # join keys and selected value columns therefore stay on the canonical
+        # contract; physical candidates are lineage metadata only.
         right_value_columns = [
-            mapping["source_candidates"][0]
+            mapping["canonical_key"]
             for mapping in right_value_mappings
-            if mapping.get("source_candidates")
+            if mapping.get("canonical_key") and mapping.get("source_candidates")
         ]
         result.append(
             {
@@ -3401,8 +4894,8 @@ def _resolve_join_plan(
                 "join_type": join_type,
                 "canonical_keys": [item["canonical_key"] for item in key_mappings],
                 "key_mappings": key_mappings,
-                "left_keys": [item["left_candidates"][0] for item in key_mappings],
-                "right_keys": [item["right_candidates"][0] for item in key_mappings],
+                "left_keys": [item["canonical_key"] for item in key_mappings],
+                "right_keys": [item["canonical_key"] for item in key_mappings],
                 "canonical_right_value_columns": canonical_right_value_columns,
                 "right_value_mappings": right_value_mappings,
                 "right_value_columns": right_value_columns,
@@ -3468,8 +4961,8 @@ def _resolve_reference_join_plan(
         )
         left_column = _first_existing_column(previous_columns, left_candidates)
         right_candidates = _merge_strings(
-            _mapped_column_candidates(right_table, canonical_key),
             [canonical_key],
+            _mapped_column_candidates(right_table, canonical_key),
         )
         if not left_column or not right_candidates:
             continue
@@ -3514,6 +5007,382 @@ def _resolve_reference_join_plan(
 
 
 # 함수 설명: temporal 계약이 포함된 다중 metric 조회를 source별로 독립 집계한 뒤 공통 grain으로 병합할 계획을 확정합니다.
+def _resolve_presence_comparison_plan(
+    pandas_plan: list[Any],
+    output_contract: dict[str, Any],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve an explicit presence comparison into physical source contracts."""
+    compare_steps = [
+        item
+        for item in pandas_plan
+        if isinstance(item, dict)
+        and str(item.get("operation") or item.get("step") or "").strip().lower()
+        == "compare_presence"
+    ]
+    if len(compare_steps) != 1:
+        return {}
+    step = compare_steps[0]
+    bindings = [
+        item for item in output_contract.get("metric_bindings", []) if isinstance(item, dict)
+    ]
+    jobs_by_alias = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip(): item
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+    }
+    nodes_by_id = {
+        str(item.get("node_id") or "").strip(): item
+        for item in pandas_plan
+        if isinstance(item, dict) and str(item.get("node_id") or "").strip()
+    }
+    compare_inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+
+    # 함수 설명: `source_step_for_side()`는 STEP·대상·SIDE 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
+    def source_step_for_side(index: int) -> dict[str, Any]:
+        if index >= len(compare_inputs) or not isinstance(compare_inputs[index], dict):
+            return {}
+        item = compare_inputs[index]
+        if str(item.get("kind") or "").strip() == "node_output":
+            return nodes_by_id.get(str(item.get("ref") or "").strip(), {})
+        return {}
+
+    # 함수 설명: `external_alias_for_side()`는 04 의도 계획 정규화기 처리 중 alias·대상·SIDE 관련 값을 계산·변환하는 내부 helper입니다.
+    def external_alias_for_side(index: int, raw_alias: str) -> str:
+        if raw_alias in jobs_by_alias:
+            return raw_alias
+        source_step = source_step_for_side(index)
+        alias = str(source_step.get("source_alias") or "").strip()
+        if alias in jobs_by_alias:
+            return alias
+        typed_alias = _typed_external_input_alias(source_step)
+        if typed_alias in jobs_by_alias:
+            return typed_alias
+        if index < len(compare_inputs) and isinstance(compare_inputs[index], dict):
+            item = compare_inputs[index]
+            if str(item.get("kind") or "").strip() == "external_source":
+                alias = str(item.get("ref") or "").strip()
+                if alias in jobs_by_alias:
+                    return alias
+        return ""
+
+    raw_left_alias = str(step.get("left_source_alias") or step.get("source_alias") or "").strip()
+    raw_right_alias = str(
+        step.get("right_source_alias") or step.get("reference_source_alias") or ""
+    ).strip()
+    left_alias = external_alias_for_side(0, raw_left_alias)
+    right_alias = external_alias_for_side(1, raw_right_alias)
+    binding_aliases = _string_list([item.get("source_alias") for item in bindings])
+    if not left_alias and binding_aliases:
+        left_alias = binding_aliases[0]
+    if not right_alias:
+        right_alias = next((alias for alias in binding_aliases if alias != left_alias), "")
+    if not left_alias or not right_alias or left_alias == right_alias:
+        return {}
+
+    # 함수 설명: `select_binding()`는 조건과 우선순위에 맞는 binding만 골라 원래 순서를 유지해 반환합니다.
+    def select_binding(alias: str, side: str, index: int) -> dict[str, Any]:
+        explicit_output = str(step.get(f"{side}_metric_column") or "").strip()
+        for binding in bindings:
+            if str(binding.get("source_alias") or "").strip() != alias:
+                continue
+            if explicit_output and explicit_output not in {
+                str(binding.get("output_column") or "").strip(),
+                str(binding.get("source_column") or "").strip(),
+            }:
+                continue
+            return binding
+        source_step = source_step_for_side(index)
+        aggregations = (
+            source_step.get("aggregations")
+            if isinstance(source_step.get("aggregations"), list)
+            else []
+        )
+        candidates_for_binding = [item for item in aggregations if isinstance(item, dict)]
+        if not candidates_for_binding and (
+            source_step.get("agg_column") or source_step.get("aggregate_column")
+        ):
+            candidates_for_binding = [
+                {
+                    "column": source_step.get("agg_column")
+                    or source_step.get("aggregate_column"),
+                    "method": source_step.get("agg_method")
+                    or source_step.get("aggregation")
+                    or "sum",
+                    "output_column": explicit_output,
+                }
+            ]
+        for raw in candidates_for_binding:
+            source_column = str(raw.get("column") or raw.get("source_column") or "").strip()
+            output_column = str(raw.get("output_column") or explicit_output or source_column).strip()
+            if explicit_output and explicit_output not in {source_column, output_column}:
+                continue
+            if source_column and output_column:
+                return {
+                    "source_alias": alias,
+                    "dataset_key": str(jobs_by_alias.get(alias, {}).get("dataset_key") or "").strip(),
+                    "source_column": source_column,
+                    "aggregation": str(raw.get("method") or raw.get("aggregation") or "sum").strip().lower(),
+                    "output_column": output_column,
+                }
+        return {}
+
+    left_binding = select_binding(left_alias, "left", 0)
+    right_binding = select_binding(right_alias, "right", 1)
+    if not left_binding or not right_binding:
+        return {}
+    grain_columns = _string_list(output_contract.get("grain_columns"))
+    if not grain_columns:
+        grain_columns = _string_list(
+            step.get("group_by") or step.get("group_by_columns") or step.get("join_keys")
+        )
+    if not grain_columns:
+        return {}
+    grain_mappings: list[dict[str, Any]] = []
+    for column in grain_columns:
+        source_candidates: dict[str, list[str]] = {}
+        for alias in (left_alias, right_alias):
+            dataset_key = str(jobs_by_alias.get(alias, {}).get("dataset_key") or "").strip()
+            table_item = _table_catalog_item(candidates, dataset_key)
+            source_candidates[alias] = _merge_strings(
+                _mapped_column_candidates(table_item, column),
+                [column],
+            )
+        grain_mappings.append(
+            {
+                "canonical_column": column,
+                "output_column": column,
+                "source_candidates": source_candidates,
+            }
+        )
+
+    # 함수 설명: `metric_contract()`는 04 의도 계획 정규화기 처리 중 contract 관련 값을 계산·변환하는 내부 helper입니다.
+    def metric_contract(binding: dict[str, Any]) -> dict[str, Any]:
+        alias = str(binding.get("source_alias") or "").strip()
+        dataset_key = str(jobs_by_alias.get(alias, {}).get("dataset_key") or "").strip()
+        source_column = str(binding.get("source_column") or "").strip()
+        table_item = _table_catalog_item(candidates, dataset_key)
+        return {
+            "source_alias": alias,
+            "dataset_key": dataset_key,
+            "source_column": source_column,
+            "source_candidates": _merge_strings(
+                _mapped_column_candidates(table_item, source_column),
+                [source_column],
+            ),
+            "aggregation": str(binding.get("aggregation") or "sum").strip().lower(),
+            "output_column": str(binding.get("output_column") or "").strip(),
+        }
+
+    rule = str(
+        step.get("presence_rule") or "left_positive_right_missing_or_zero"
+    ).strip()
+    if rule != "left_positive_right_missing_or_zero":
+        return {}
+    return {
+        "operation": "compare_presence",
+        "presence_rule": rule,
+        "grain_mappings": grain_mappings,
+        "left_metric": metric_contract(left_binding),
+        "right_metric": metric_contract(right_binding),
+        "strict": True,
+    }
+
+
+# 함수 설명: 두 source에서 병합된 수치 metric 사이의 명시적 비교 조건을 결정론적 실행 계약으로 확정합니다.
+def _resolve_metric_comparison_plan(
+    pandas_plan: list[Any],
+    output_contract: dict[str, Any],
+    metric_merge_plan: dict[str, Any],
+    question: str = "",
+) -> dict[str, Any]:
+    compare_steps = [
+        item
+        for item in pandas_plan
+        if isinstance(item, dict)
+        and str(item.get("operation") or item.get("step") or "").strip().lower()
+        == "compare_metrics"
+    ]
+    if len(compare_steps) > 1 or not isinstance(metric_merge_plan, dict):
+        return {}
+    if metric_merge_plan.get("strict") is not True:
+        return {}
+
+    selection_source = "typed_compare_metrics_step"
+    if compare_steps:
+        step = compare_steps[0]
+    else:
+        step = _question_metric_comparison_contract(question, output_contract)
+        selection_source = "question_metric_comparison_guard"
+        if not step:
+            return {}
+    lhs_raw = str(
+        step.get("lhs_metric_column")
+        or step.get("comparison_metric_column")
+        or step.get("left_metric_column")
+        or ""
+    ).strip()
+    rhs_raw = str(
+        step.get("rhs_metric_column")
+        or step.get("baseline_metric_column")
+        or step.get("right_metric_column")
+        or ""
+    ).strip()
+    operator = _canonical_filter_operator(
+        step.get("operator") or step.get("comparison_operator") or ""
+    )
+    if not lhs_raw or not rhs_raw or operator not in {"gt", "ge", "lt", "le", "eq", "ne"}:
+        return {}
+
+    available_metrics = _merge_strings(
+        _string_list(output_contract.get("metric_columns")),
+        _string_list(
+            [
+                item.get("output_column")
+                for item in output_contract.get("metric_bindings", [])
+                if isinstance(item, dict)
+            ]
+        ),
+    )
+    metric_index: dict[str, list[str]] = {}
+    for column in available_metrics:
+        metric_index.setdefault(_normalized_column_key(column), []).append(column)
+
+    # 함수 설명: `resolve_metric()`은 비교 단계의 metric 표기를 output contract의 유일한 실제 결과 컬럼으로 확정합니다.
+    def resolve_metric(value: str) -> str:
+        matches = metric_index.get(_normalized_column_key(value), [])
+        return matches[0] if len(matches) == 1 else ""
+
+    lhs_column = resolve_metric(lhs_raw)
+    rhs_column = resolve_metric(rhs_raw)
+    if not lhs_column or not rhs_column or lhs_column == rhs_column:
+        return {}
+
+    comparison_merge_plan = deepcopy(metric_merge_plan)
+    comparison_merge_plan["join_type"] = "inner"
+    comparison_merge_plan["fill_zero_on_success"] = False
+    return {
+        "operation": "compare_metrics",
+        "merge_plan": comparison_merge_plan,
+        "source_transforms": deepcopy(metric_merge_plan.get("source_transforms", [])),
+        "lhs_metric_column": lhs_column,
+        "rhs_metric_column": rhs_column,
+        "operator": operator,
+        "null_numeric_policy": "exclude_missing_operand",
+        "selection_source": selection_source,
+        "strict": True,
+    }
+
+
+# 함수 설명: 두 metric의 `대비/보다` 비교 표현을 primary metric 기준의 typed 수치 비교 계약으로 보완합니다.
+# 특정 dataset·공정·metric 이름은 사용하지 않으며, 명시적 순위/정렬 요청은 비교 조건으로 바꾸지 않습니다.
+def _question_metric_comparison_contract(
+    question: str,
+    output_contract: dict[str, Any],
+) -> dict[str, Any]:
+    text = str(question or "").strip().casefold()
+    if not text:
+        return {}
+    connectors = ("대비", "보다", "compared to", "versus", " vs ")
+    if not any(marker in text for marker in connectors):
+        return {}
+    ranking_markers = (
+        "순으로",
+        "순서",
+        "상위",
+        "하위",
+        "내림차순",
+        "오름차순",
+        "랭킹",
+        "ranking",
+        "top ",
+        "bottom ",
+    )
+    if any(marker in text for marker in ranking_markers):
+        return {}
+    positive_markers = ("많은", "크거나", "큰", "높은", "초과", "greater", "higher", "more than")
+    negative_markers = ("적은", "작거나", "작은", "낮은", "미만", "less", "lower", "fewer than")
+    has_positive = any(marker in text for marker in positive_markers)
+    has_negative = any(marker in text for marker in negative_markers)
+    if has_positive == has_negative:
+        return {}
+
+    metrics = _string_list(output_contract.get("metric_columns"))
+    if len(metrics) != 2:
+        return {}
+    primary_metric = str(output_contract.get("primary_metric") or "").strip()
+    primary_matches = [
+        metric
+        for metric in metrics
+        if _normalized_column_key(metric) == _normalized_column_key(primary_metric)
+    ]
+    if len(primary_matches) != 1:
+        return {}
+    lhs_metric = primary_matches[0]
+    rhs_metrics = [metric for metric in metrics if metric != lhs_metric]
+    if len(rhs_metrics) != 1:
+        return {}
+    return {
+        "operation": "compare_metrics",
+        "lhs_metric_column": lhs_metric,
+        "operator": "gt" if has_positive else "lt",
+        "rhs_metric_column": rhs_metrics[0],
+    }
+
+
+# 함수 설명: `_presence_output_contract()`는 04 의도 계획 정규화기 처리 중 output·contract 관련 값을 계산·변환하는 내부 helper입니다.
+def _presence_output_contract(
+    output_contract: dict[str, Any],
+    presence_plan: dict[str, Any],
+) -> dict[str, Any]:
+    contract = deepcopy(output_contract)
+    grain_columns = _string_list(
+        [
+            item.get("output_column")
+            for item in presence_plan.get("grain_mappings", [])
+            if isinstance(item, dict)
+        ]
+    )
+    metric_columns = _string_list(
+        [
+            presence_plan.get("left_metric", {}).get("output_column"),
+            presence_plan.get("right_metric", {}).get("output_column"),
+        ]
+    )
+    result_columns = _merge_strings(grain_columns, metric_columns)
+    contract["result_mode"] = "aggregate"
+    contract["grain_columns"] = grain_columns
+    contract["metric_columns"] = metric_columns
+    contract["metric_bindings"] = [
+        {
+            "source_alias": str(item.get("source_alias") or "").strip(),
+            "dataset_key": str(item.get("dataset_key") or "").strip(),
+            "source_column": str(item.get("source_column") or "").strip(),
+            "aggregation": str(item.get("aggregation") or "sum").strip(),
+            "output_column": str(item.get("output_column") or "").strip(),
+        }
+        for item in (
+            presence_plan.get("left_metric", {}),
+            presence_plan.get("right_metric", {}),
+        )
+        if isinstance(item, dict)
+    ]
+    contract["required_columns"] = result_columns
+    contract["result_columns"] = result_columns
+    contract["strict_result_columns"] = True
+    labels = contract.get("column_labels") if isinstance(contract.get("column_labels"), dict) else {}
+    allowed = {_normalized_column_key(value) for value in result_columns}
+    if labels:
+        contract["column_labels"] = {
+            key: value
+            for key, value in labels.items()
+            if _normalized_column_key(key) in allowed
+        }
+    return contract
+
+
+# 함수 설명: `_resolve_metric_merge_plan()`는 여러 metric·merge·PLAN 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
 def _resolve_metric_merge_plan(
     plan: dict[str, Any],
     candidates: dict[str, Any],
@@ -3521,9 +5390,8 @@ def _resolve_metric_merge_plan(
     pandas_plan: list[Any],
     resolved_grain_plan: dict[str, Any],
     business_time_guard: dict[str, Any],
+    function_cases: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    if business_time_guard.get("status") != "applied":
-        return {}
     jobs_by_alias = {
         str(item.get("source_alias") or item.get("dataset_key") or "").strip(): item
         for item in retrieval_jobs
@@ -3562,12 +5430,65 @@ def _resolve_metric_merge_plan(
     temporal_aliases = set(
         _string_list(business_time_guard.get("temporal_source_aliases"))
     )
-    if len(metrics) < 2 or len(metric_aliases) < 2 or not metric_aliases.intersection(
-        temporal_aliases
-    ):
+    if len(metrics) < 2 or len(metric_aliases) < 2:
         return {}
 
-    canonical_grain = _string_list(resolved_grain_plan.get("canonical_columns"))
+    temporal_merge = bool(
+        business_time_guard.get("status") == "applied"
+        and metric_aliases.intersection(temporal_aliases)
+    )
+    typed_join_aliases: set[str] = set()
+    typed_join_nodes: list[str] = []
+    typed_population_policies: list[str] = []
+    for index, step in enumerate(pandas_plan):
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation not in {"join", "merge", "outer_join", "left_join"}:
+            continue
+        inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        side_aliases: list[str] = []
+        for item in inputs[:2]:
+            if not isinstance(item, dict):
+                continue
+            aliases = _step_external_source_aliases(
+                {"inputs": [item]},
+                pandas_plan,
+                set(jobs_by_alias),
+            )
+            if len(aliases) == 1:
+                side_aliases.append(aliases[0])
+        if len(side_aliases) != 2 or side_aliases[0] == side_aliases[1]:
+            continue
+        if not set(side_aliases).issubset(metric_aliases):
+            continue
+        typed_join_aliases.update(side_aliases)
+        typed_join_nodes.append(
+            str(step.get("node_id") or f"__step_{index + 1}").strip()
+        )
+        population_policy = str(step.get("population_policy") or "").strip().lower()
+        if population_policy:
+            typed_population_policies.append(population_policy)
+    if not temporal_merge and len(typed_join_aliases) < 2:
+        return {}
+    if typed_join_aliases:
+        metrics = [
+            item
+            for item in metrics
+            if str(item.get("source_alias") or "").strip() in typed_join_aliases
+        ]
+        metric_aliases = {
+            str(item.get("source_alias") or "").strip()
+            for item in metrics
+            if str(item.get("source_alias") or "").strip()
+        }
+        if len(metrics) < 2 or len(metric_aliases) < 2:
+            return {}
+
+    canonical_grain = _string_list(
+        resolved_grain_plan.get("canonical_columns")
+        or resolved_grain_plan.get("grain_columns")
+    )
     if not canonical_grain:
         canonical_grain = _string_list(raw_output.get("grain_columns"))
     if not canonical_grain:
@@ -3590,14 +5511,218 @@ def _resolve_metric_merge_plan(
                 "source_candidates": source_candidates,
             }
         )
+    use_left_population = bool(
+        typed_population_policies
+        and set(typed_population_policies) == {"left_source_only"}
+    )
+    source_transforms = _metric_merge_source_transforms(
+        pandas_plan,
+        metric_aliases,
+        typed_join_nodes,
+        function_cases,
+    )
     return {
         "operation": "merge_metric_sources",
-        "join_type": "outer",
+        "join_type": "left" if use_left_population else "outer",
+        "population_policy": (
+            "left_source_only"
+            if use_left_population
+            else "preserve_all_metric_source_keys"
+        ),
+        "selection_source": (
+            "temporal_metric_contract"
+            if temporal_merge
+            else "typed_metric_join_lineage"
+        ),
+        "join_node_ids": typed_join_nodes,
+        "source_transforms": source_transforms,
         "grain_mappings": grain_mappings,
         "metrics": metrics,
         "fill_zero_on_success": True,
         "strict": True,
     }
+
+
+# 함수 설명: typed join의 실제 조상 node에 포함된 source별 Function Case만 결정론적 병합 전처리 계약으로 보존합니다.
+def _metric_merge_source_transforms(
+    pandas_plan: list[Any],
+    metric_aliases: set[str],
+    join_node_ids: list[str],
+    function_cases: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    nodes_by_id, output_aliases = _pandas_plan_lineage(pandas_plan)
+    ancestor_ids: set[str] = set()
+
+    # 함수 설명: node_output 참조를 역추적해 최종 join에 실제로 연결된 모든 조상 node ID를 수집합니다.
+    def visit(node_id: str, visited: set[str]) -> None:
+        if not node_id or node_id in visited:
+            return
+        node = nodes_by_id.get(node_id)
+        if not isinstance(node, dict):
+            return
+        ancestor_ids.add(node_id)
+        for item in node.get("inputs", []) if isinstance(node.get("inputs"), list) else []:
+            if not isinstance(item, dict) or str(item.get("kind") or "") != "node_output":
+                continue
+            ref = str(item.get("ref") or "").strip()
+            parent_id = ref if ref in nodes_by_id else output_aliases.get(ref, "")
+            visit(parent_id, {*visited, node_id})
+
+    for node_id in join_node_ids:
+        visit(node_id, set())
+
+    result: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(pandas_plan):
+        if not isinstance(raw_step, dict):
+            continue
+        if str(raw_step.get("operation") or "").strip() != "apply_pandas_function_case":
+            continue
+        node_id = str(raw_step.get("node_id") or f"__step_{index + 1}").strip()
+        if join_node_ids and node_id not in ancestor_ids:
+            continue
+        aliases = _step_external_source_aliases(
+            raw_step,
+            pandas_plan,
+            metric_aliases,
+        )
+        if len(aliases) != 1 or aliases[0] not in metric_aliases:
+            continue
+        transform = _function_case_source_transform(
+            raw_step,
+            aliases[0],
+            node_id,
+        )
+        if transform:
+            result.append(transform)
+
+    # pandas_function_cases is the normalized semantic selection contract. A
+    # model may emit a source-local Function Case separately from the typed DAG
+    # or leave the typed node as a structural stub. Deterministic execution must
+    # still preserve that selected transform instead of silently aggregating the
+    # unfiltered metric source.
+    represented = {_function_case_transform_marker(item) for item in result}
+    for index, case in enumerate(function_cases, start=1):
+        if not isinstance(case, dict):
+            continue
+        source_alias = str(case.get("source_alias") or "").strip()
+        if source_alias not in metric_aliases:
+            continue
+        transform = _function_case_source_transform(
+            case,
+            source_alias,
+            f"__selected_function_case_{index}",
+        )
+        if not transform:
+            continue
+        marker = _function_case_transform_marker(transform)
+        if marker in represented:
+            continue
+        represented.add(marker)
+        result.append(transform)
+    return result
+
+
+# 함수 설명: Function Case step 또는 선택 계약을 결정론적 source transform 공통 구조로 변환합니다.
+def _function_case_source_transform(
+    value: dict[str, Any],
+    source_alias: str,
+    node_id: str,
+) -> dict[str, Any]:
+    function_name = str(value.get("function_name") or "").strip()
+    if not source_alias or not function_name.isidentifier():
+        return {}
+    control_keys = {
+        "node_id",
+        "operation",
+        "step",
+        "inputs",
+        "output_alias",
+        "result_alias",
+        "source_alias",
+        "function_case_key",
+        "key",
+        "function_name",
+        "input_text",
+        "execution_contract",
+    }
+    arguments = (
+        deepcopy(value.get("arguments"))
+        if isinstance(value.get("arguments"), dict)
+        else {}
+    )
+    if isinstance(value.get("kwargs"), dict):
+        arguments.update(deepcopy(value["kwargs"]))
+    for key in PANDAS_COLUMN_SCALAR_KEYS | PANDAS_COLUMN_LIST_KEYS:
+        if key in control_keys or key not in value or key in arguments:
+            continue
+        arguments[key] = deepcopy(value[key])
+    return {
+        "node_id": node_id,
+        "source_alias": source_alias,
+        "function_case_key": str(
+            value.get("function_case_key") or value.get("key") or ""
+        ).strip(),
+        "function_name": function_name,
+        "input_text": str(value.get("input_text") or ""),
+        "arguments": arguments,
+    }
+
+
+# 함수 설명: 동일한 source Function Case 계약을 typed DAG와 선택 목록 사이에서 중복 판정할 안정 키로 만듭니다.
+def _function_case_transform_marker(value: dict[str, Any]) -> tuple[str, str, str, str]:
+    arguments = value.get("arguments") if isinstance(value.get("arguments"), dict) else {}
+    return (
+        str(value.get("source_alias") or "").strip(),
+        str(value.get("function_name") or "").strip(),
+        str(value.get("input_text") or ""),
+        json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str),
+    )
+
+
+# 함수 설명: 결정론적 metric merge에서 선택된 Function Case가 source transform으로 보존되지 않으면 조회 전에 차단합니다.
+def _function_case_metric_lineage_validation_errors(
+    function_cases: list[dict[str, Any]],
+    metric_merge_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if not function_cases or not metric_merge_plan:
+        return []
+    metric_aliases = {
+        str(item.get("source_alias") or "").strip()
+        for item in metric_merge_plan.get("metrics", [])
+        if isinstance(item, dict) and str(item.get("source_alias") or "").strip()
+    }
+    represented = {
+        _function_case_transform_marker(item)
+        for item in metric_merge_plan.get("source_transforms", [])
+        if isinstance(item, dict)
+    }
+    issues: list[dict[str, Any]] = []
+    for case in function_cases:
+        if not isinstance(case, dict):
+            continue
+        source_alias = str(case.get("source_alias") or "").strip()
+        if source_alias not in metric_aliases:
+            continue
+        transform = _function_case_source_transform(case, source_alias, "")
+        if transform and _function_case_transform_marker(transform) in represented:
+            continue
+        issues.append(
+            {
+                "source_alias": source_alias,
+                "function_case_key": str(case.get("key") or "").strip(),
+                "function_name": str(case.get("function_name") or "").strip(),
+                "issue": "selected_function_case_not_bound_to_metric_source",
+            }
+        )
+    if not issues:
+        return []
+    return [
+        {
+            "type": "function_case_metric_lineage_unresolved",
+            "message": "선택된 Function Case를 결정론적 metric source 실행 계약에 연결할 수 없습니다.",
+            "issues": issues,
+        }
+    ]
 
 
 # 함수 설명: pandas 계획, 선택 Domain metric, temporal 계약, Table Catalog 순으로 source별 metric 계약을 공통 해석합니다.
@@ -3616,7 +5741,7 @@ def _resolved_metric_specs(
     }
     used_outputs: set[str] = set()
     result: list[dict[str, Any]] = []
-    seen_sources: set[tuple[str, str]] = set()
+    seen_sources: set[tuple[str, str, str, str]] = set()
     for alias, job in jobs_by_alias.items():
         dataset_key = str(job.get("dataset_key") or "").strip()
         table_item = _table_catalog_item(candidates, dataset_key)
@@ -3646,9 +5771,7 @@ def _resolved_metric_specs(
             source_column = str(contract.get("source_column") or "").strip()
             if not source_column:
                 continue
-            marker = (alias.casefold(), _normalized_column_key(source_column))
-            if marker in seen_sources:
-                continue
+            aggregation = str(contract.get("aggregation") or "sum").strip().lower()
             output_column = _metric_output_column(
                 source_column,
                 raw_metrics,
@@ -3658,6 +5781,14 @@ def _resolved_metric_specs(
             )
             if not output_column:
                 continue
+            marker = (
+                alias.casefold(),
+                _normalized_column_key(source_column),
+                aggregation,
+                _normalized_column_key(output_column),
+            )
+            if marker in seen_sources:
+                continue
             seen_sources.add(marker)
             used_outputs.add(_normalized_column_key(output_column))
             result.append(
@@ -3665,10 +5796,9 @@ def _resolved_metric_specs(
                     "source_alias": alias,
                     "dataset_key": dataset_key,
                     "source_column": source_column,
-                    "aggregation": str(
-                        contract.get("aggregation") or "sum"
-                    ).strip().lower(),
+                    "aggregation": aggregation,
                     "output_column": output_column,
+                    "fill_value": "" if aggregation == "collect_unique" else 0,
                     "source_candidates": _merge_strings(
                         _mapped_column_candidates(table_item, source_column),
                         [source_column],
@@ -3793,11 +5923,17 @@ def _aggregation_contracts_for_alias(
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for step in pandas_plan:
-        if (
-            not isinstance(step, dict)
-            or str(step.get("source_alias") or "").strip() != source_alias
-        ):
+        if not isinstance(step, dict):
             continue
+        direct_alias = str(step.get("source_alias") or "").strip()
+        if direct_alias != source_alias:
+            lineage_aliases = _step_external_source_aliases(
+                step,
+                pandas_plan,
+                {source_alias},
+            )
+            if lineage_aliases != [source_alias]:
+                continue
         aggregations = (
             step.get("aggregations")
             if isinstance(step.get("aggregations"), list)
@@ -3939,15 +6075,35 @@ def _normalize_pandas_plan_columns(
     )
     changes: list[dict[str, Any]] = []
     normalized: list[Any] = []
+    known_source_aliases = set(alias_maps)
     for index, raw_step in enumerate(pandas_plan):
         if not isinstance(raw_step, dict):
             normalized.append(deepcopy(raw_step))
             continue
+        lineage_aliases = _step_external_source_aliases(
+            raw_step,
+            pandas_plan,
+            known_source_aliases,
+        )
+        step_alias_maps = alias_maps
+        inherited_context: dict[str, str] = {}
+        if len(lineage_aliases) == 1:
+            inherited_context = {"source_alias": lineage_aliases[0]}
+        elif len(lineage_aliases) > 1:
+            consensus_mapping = _consensus_lineage_column_alias_map(
+                alias_maps,
+                lineage_aliases,
+            )
+            if consensus_mapping:
+                lineage_context_alias = "__lineage__:" + "|".join(lineage_aliases)
+                step_alias_maps = dict(alias_maps)
+                step_alias_maps[lineage_context_alias] = consensus_mapping
+                inherited_context = {"source_alias": lineage_context_alias}
         normalized.append(
             _normalize_pandas_plan_value(
                 raw_step,
-                alias_maps,
-                {},
+                step_alias_maps,
+                inherited_context,
                 f"pandas_execution_plan[{index}]",
                 changes,
             )
@@ -3960,6 +6116,31 @@ def _normalize_pandas_plan_columns(
 
 
 # 함수 설명: 중첩된 pandas 단계에서 source alias 문맥을 유지하며 명시적인 컬럼 필드만 실제 컬럼명으로 바꿉니다.
+def _consensus_lineage_column_alias_map(
+    alias_maps: dict[str, dict[str, str]],
+    lineage_aliases: list[str],
+) -> dict[str, str]:
+    """Keep only physical-to-standard mappings that do not conflict across lineage."""
+    targets_by_column: dict[str, set[str]] = {}
+    display_targets: dict[str, str] = {}
+    for alias in lineage_aliases:
+        mapping = alias_maps.get(alias, {})
+        for normalized_column, target in mapping.items():
+            target_text = str(target or "").strip()
+            if not normalized_column or not target_text:
+                continue
+            target_key = _normalized_column_key(target_text)
+            if not target_key:
+                continue
+            targets_by_column.setdefault(normalized_column, set()).add(target_key)
+            display_targets.setdefault(target_key, target_text)
+    return {
+        normalized_column: display_targets[next(iter(targets))]
+        for normalized_column, targets in targets_by_column.items()
+        if len(targets) == 1
+    }
+
+
 def _normalize_pandas_plan_value(
     value: Any,
     alias_maps: dict[str, dict[str, str]],
@@ -3985,6 +6166,12 @@ def _normalize_pandas_plan_value(
     for context_key in ("source_alias", "left_source_alias", "right_source_alias"):
         text = str(value.get(context_key) or "").strip()
         if text:
+            if (
+                context_key == "source_alias"
+                and text not in alias_maps
+                and context.get("source_alias") in alias_maps
+            ):
+                continue
             context[context_key] = text
     source_mapping = alias_maps.get(context.get("source_alias", ""), {})
     left_mapping = alias_maps.get(context.get("left_source_alias", ""), {})
@@ -4107,7 +6294,7 @@ def _pandas_column_alias_maps(
             canonical = str(item.get("canonical_key") or "").strip()
             physical = _string_list(item.get("source_candidates"))
             if canonical and physical:
-                groups_by_alias.setdefault(grain_alias, []).append((physical[0], [canonical, *physical]))
+                groups_by_alias.setdefault(grain_alias, []).append((canonical, [canonical, *physical]))
 
     for join in resolved_join_plan:
         if not isinstance(join, dict):
@@ -4122,11 +6309,11 @@ def _pandas_column_alias_maps(
             right_candidates = _string_list(item.get("right_candidates"))
             if left_alias and canonical and left_candidates:
                 groups_by_alias.setdefault(left_alias, []).append(
-                    (left_candidates[0], [canonical, *left_candidates])
+                    (canonical, [canonical, *left_candidates])
                 )
             if right_alias and canonical and right_candidates:
                 groups_by_alias.setdefault(right_alias, []).append(
-                    (right_candidates[0], [canonical, *right_candidates])
+                    (canonical, [canonical, *right_candidates])
                 )
 
     return {
@@ -4145,6 +6332,34 @@ def _table_column_alias_groups(item: dict[str, Any]) -> list[tuple[str, list[str
         for column in declared_columns
     }
     result: list[tuple[str, list[str]]] = []
+    metric_source_keys = {
+        _normalized_column_key(column)
+        for column in (
+            payload.get("metric_semantics", {})
+            if isinstance(payload.get("metric_semantics"), dict)
+            else {}
+        )
+        if str(column or "").strip()
+    }
+    # filter_mappings is the catalog's executable standard-key contract. A
+    # lower-priority display alias must not turn its physical column back into
+    # a separate execution key.
+    filter_targets: dict[str, str] = {}
+    filter_mapping = payload.get("filter_mappings")
+    if isinstance(filter_mapping, dict):
+        for raw_standard, raw_aliases in filter_mapping.items():
+            standard_name = str(raw_standard or "").strip()
+            if not standard_name:
+                continue
+            for alias in [standard_name, *_string_list(raw_aliases)]:
+                alias_key = _normalized_column_key(alias)
+                existing = filter_targets.get(alias_key)
+                if alias_key and (
+                    not existing
+                    or _normalized_column_key(existing)
+                    == _normalized_column_key(standard_name)
+                ):
+                    filter_targets[alias_key] = standard_name
     for mapping_name in ("filter_mappings", "standard_column_aliases"):
         mapping = payload.get(mapping_name)
         if not isinstance(mapping, dict):
@@ -4154,6 +6369,27 @@ def _table_column_alias_groups(item: dict[str, Any]) -> list[tuple[str, list[str
             aliases = _string_list(raw_aliases)
             if not standard_name or not aliases:
                 continue
+            if mapping_name == "standard_column_aliases":
+                aliases = [
+                    alias
+                    for alias in aliases
+                    if not filter_targets.get(_normalized_column_key(alias))
+                    or _normalized_column_key(
+                        filter_targets[_normalized_column_key(alias)]
+                    )
+                    == _normalized_column_key(standard_name)
+                ]
+                if not aliases:
+                    continue
+            # metric_semantics keys are authoritative physical measure columns.
+            # A display/semantic alias must not rename the source measure used by
+            # aggregation and value-transform contracts.
+            if mapping_name == "standard_column_aliases" and any(
+                _normalized_column_key(alias) in metric_source_keys
+                and _normalized_column_key(alias) != _normalized_column_key(standard_name)
+                for alias in aliases
+            ):
+                continue
             physical = next(
                 (
                     declared_index[_normalized_column_key(alias)]
@@ -4162,7 +6398,7 @@ def _table_column_alias_groups(item: dict[str, Any]) -> list[tuple[str, list[str
                 ),
                 declared_index.get(_normalized_column_key(standard_name), aliases[0]),
             )
-            result.append((physical, [standard_name, *aliases]))
+            result.append((standard_name, [standard_name, physical, *aliases]))
     return result
 
 
@@ -4176,7 +6412,12 @@ def _catalog_declared_columns(payload: dict[str, Any]) -> list[str]:
     result: list[str] = []
     for item in raw:
         if isinstance(item, dict):
-            item = item.get("name") or item.get("column") or item.get("key")
+            item = (
+                item.get("column_name")
+                or item.get("name")
+                or item.get("column")
+                or item.get("key")
+            )
         text = str(item or "").strip()
         if text and text not in result:
             result.append(text)
@@ -4359,7 +6600,18 @@ def _mapped_column_candidates(item: dict[str, Any], canonical_key: str) -> list[
         for key, value in mapping.items():
             if _normalized_column_key(key) != normalized_key:
                 continue
-            result = _merge_strings(result, _string_list(value))
+            raw_values = value if isinstance(value, (list, tuple, set)) else [value]
+            mapped_values: list[str] = []
+            for raw_value in raw_values:
+                if isinstance(raw_value, dict):
+                    raw_value = (
+                        raw_value.get("column_name")
+                        or raw_value.get("name")
+                        or raw_value.get("column")
+                        or raw_value.get("key")
+                    )
+                mapped_values = _merge_strings(mapped_values, _string_list(raw_value))
+            result = _merge_strings(result, mapped_values)
     if not result:
         result.append(str(canonical_key).strip())
     return result
@@ -4674,9 +6926,62 @@ def _dedupe_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _ensure_function_case_steps(function_cases: list[dict[str, Any]], pandas_plan: list[Any], retrieval_jobs: list[dict[str, Any]]) -> list[Any]:
     if not function_cases:
         return pandas_plan
-    existing_steps = [step for step in pandas_plan if isinstance(step, dict) and str(step.get("operation") or "") == "apply_pandas_function_case"]
+    normalized_plan = deepcopy(pandas_plan)
+    existing_steps = [step for step in normalized_plan if isinstance(step, dict) and str(step.get("operation") or "") == "apply_pandas_function_case"]
+    used_case_indexes: set[int] = set()
+    case_aliases = {
+        str(case.get("source_alias") or "").strip()
+        for case in function_cases
+        if isinstance(case, dict) and str(case.get("source_alias") or "").strip()
+    }
+    for step in existing_steps:
+        step_function = str(step.get("function_name") or "").strip()
+        step_key = str(step.get("function_case_key") or step.get("key") or "").strip()
+        step_input = str(step.get("input_text") or "")
+        step_alias = str(step.get("source_alias") or "").strip()
+        if step_alias not in case_aliases:
+            external_aliases = _string_list(
+                [
+                    item.get("ref")
+                    for item in step.get("inputs", [])
+                    if isinstance(item, dict)
+                    and str(item.get("kind") or "").strip() == "external_source"
+                    and str(item.get("ref") or "").strip() in case_aliases
+                ]
+            )
+            if len(external_aliases) == 1:
+                step_alias = external_aliases[0]
+        candidates: list[tuple[int, dict[str, Any]]] = []
+        for index, case in enumerate(function_cases):
+            if index in used_case_indexes or not isinstance(case, dict):
+                continue
+            case_function = str(case.get("function_name") or "").strip()
+            case_key = str(case.get("key") or "").strip()
+            case_input = str(case.get("input_text") or "")
+            case_alias = str(case.get("source_alias") or "").strip()
+            if step_function and case_function != step_function:
+                continue
+            if step_key and case_key != step_key:
+                continue
+            if step_input and case_input != step_input:
+                continue
+            if step_alias and case_alias != step_alias:
+                continue
+            candidates.append((index, case))
+        if len(candidates) != 1:
+            continue
+        case_index, case = candidates[0]
+        used_case_indexes.add(case_index)
+        for key, value in case.items():
+            target_key = "function_case_key" if key == "key" else key
+            if step.get(target_key) not in (None, "", [], {}):
+                continue
+            step[target_key] = deepcopy(value)
+        if step_alias and not str(step.get("source_alias") or "").strip():
+            step["source_alias"] = step_alias
+
     steps_to_add = []
-    for case in function_cases:
+    for index, case in enumerate(function_cases):
         function_name = str(case.get("function_name") or "").strip()
         case_key = str(case.get("key") or "").strip()
         if not function_name and not case_key:
@@ -4697,7 +7002,7 @@ def _ensure_function_case_steps(function_cases: list[dict[str, Any]], pandas_pla
                 "source_alias": source_alias,
             }
         )
-    return [*steps_to_add, *pandas_plan]
+    return [*steps_to_add, *normalized_plan]
 
 
 # 함수 설명: Domain Function Case가 선언한 공통 실행 순서에 따라 source filter를 helper 뒤 단계로 이동합니다.

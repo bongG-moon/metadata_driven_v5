@@ -1,0 +1,1426 @@
+{
+  "status": "ok",
+  "mode": "full_pipeline",
+  "environment": {
+    "repository": "C:\\Users\\qkekt\\Desktop\\metadata_driven_v5",
+    "reference_date": "20260731",
+    "retrieval_mode": "dummy",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-3.5-flash-lite",
+    "llm_temperature": 0.0,
+    "llm_timeout_seconds": 60,
+    "secrets": {
+      "mongodb_uri_configured": true,
+      "google_api_key_configured": true
+    },
+    "mongodb": {
+      "database": "datagov",
+      "collections": {
+        "domain": "agent_v4_domain_items",
+        "table_catalog": "agent_v4_table_catalog_items",
+        "main_flow_filter": "agent_v4_main_flow_filters"
+      },
+      "loaded_counts": {
+        "domain": 58,
+        "table_catalog": 9,
+        "main_flow_filter": 17
+      }
+    },
+    "prompt_sources": {
+      "intent": {
+        "path": "langflow_components\\data_analysis_flow\\03_intent_prompt_template_ko.md",
+        "chars": 25432,
+        "sha256": "44af3f26ffb49489703775e268511e64900fd6edc0e84eb38552a683a5ff3936"
+      },
+      "specialized_intent": {
+        "path": "langflow_components\\data_analysis_flow\\specialized_prompt_input_example_ko.md",
+        "chars": 12464,
+        "sha256": "801c5ebb1e7753399feb341ad2e4dd0523d785bfb3a2101aca2f0a76a3bccfb2"
+      },
+      "pandas": {
+        "path": "langflow_components\\data_analysis_flow\\16_pandas_prompt_template_ko.md",
+        "chars": 17830,
+        "sha256": "0aee69ba43836968345000831993b1996846ac8840887388ffac37d954a06b17"
+      },
+      "pandas_repair": {
+        "path": "langflow_components\\data_analysis_flow\\17b_pandas_repair_prompt_template_ko.md",
+        "chars": 11683,
+        "sha256": "1a2a3ac458638ef1b85bed3e795810858a02da82642f7b8b980814d9bd3b4926"
+      },
+      "answer": {
+        "path": "langflow_components\\data_analysis_flow\\19_answer_prompt_template_ko.md",
+        "chars": 3141,
+        "sha256": "c61ee0960d5ec740b4ced2e996ca6c8308a508ffec33749dd7f4b91316611d28"
+      }
+    }
+  },
+  "results": [
+    {
+      "question": "7월 1일 D/A1~W/B6 공정 구간의 공정별 생산량을 OPER_SEQ 순서로 알려줘",
+      "status": "ok",
+      "elapsed_seconds": 11.253,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 5,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "status_terms:SHIFT_A",
+          "status_terms:SHIFT_B",
+          "status_terms:SHIFT_C",
+          "process_groups:DA",
+          "process_groups:WB",
+          "quantity_terms:pkg_out_quantity",
+          "pandas_function_cases:ordered_process_range",
+          "quantity_terms:production_quantity",
+          "analysis_recipes:group_by_oper_name_for_detailed_process",
+          "analysis_recipes:production_achievement_rate_analysis"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "production",
+          "wip_today",
+          "wip",
+          "equipment_assign"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 57123,
+        "analysis_kind": "production_by_ordered_process_range",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "production_by_ordered_process_range",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {},
+          "pandas_function_cases": [
+            {
+              "key": "ordered_process_range",
+              "function_name": "filter_ordered_range",
+              "input_text": "D/A1~W/B6",
+              "source_alias": "production_source",
+              "execution_contract": {
+                "source_filter_order": "after_helper"
+              }
+            }
+          ],
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "analysis_recipes",
+              "key": "group_by_oper_name_for_detailed_process"
+            },
+            "source_alias": "production_source"
+          },
+          "retrieval_jobs": [
+            {
+              "dataset_key": "production",
+              "source_alias": "production_source",
+              "required_params": {
+                "DATE": "20260701"
+              },
+              "filters": {},
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ, PRODUCTION \nFROM PROD_TABLE2\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:production",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "metric_semantics": {
+                "PRODUCTION": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum",
+                    "mean",
+                    "min",
+                    "max",
+                    "count"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_1"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "step": "특화 함수 적용",
+              "operation": "apply_pandas_function_case",
+              "function_case_key": "ordered_process_range",
+              "function_name": "filter_ordered_range",
+              "input_text": "D/A1~W/B6",
+              "source_alias": "production_source"
+            },
+            {
+              "node_id": "step_1",
+              "operation": "apply_pandas_function_case",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "production_source"
+                }
+              ],
+              "output_alias": "filtered_range",
+              "source_alias": "production_source"
+            },
+            {
+              "node_id": "step_2",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "step_1"
+                }
+              ],
+              "output_alias": "grouped_production",
+              "source_alias": "filtered_range",
+              "group_by": [
+                "OPER_SEQ",
+                "OPER_NAME"
+              ],
+              "aggregations": [
+                {
+                  "column": "PRODUCTION",
+                  "method": "sum",
+                  "output_column": "PRODUCTION_SUM"
+                }
+              ],
+              "sort_by": "OPER_SEQ",
+              "order": "asc"
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "OPER_SEQ",
+              "OPER_NAME",
+              "PRODUCTION_SUM"
+            ],
+            "grain_columns": [
+              "OPER_SEQ",
+              "OPER_NAME"
+            ],
+            "metric_columns": [
+              "PRODUCTION_SUM"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "metric_bindings": [
+              {
+                "source_alias": "production_source",
+                "dataset_key": "production",
+                "source_column": "PRODUCTION",
+                "aggregation": "sum",
+                "output_column": "PRODUCTION_SUM",
+                "semantic_scope": {}
+              }
+            ],
+            "primary_metric": "PRODUCTION_SUM",
+            "ordering": {
+              "sort_by": "OPER_SEQ",
+              "order": "asc"
+            },
+            "column_labels": {
+              "OPER_SEQ": "공정 순서",
+              "OPER_NAME": "공정명",
+              "PRODUCTION_SUM": "생산량"
+            },
+            "result_columns": [
+              "OPER_SEQ",
+              "OPER_NAME",
+              "PRODUCTION_SUM"
+            ],
+            "strict_result_columns": true
+          },
+          "metadata_refs": [
+            {
+              "section": "pandas_function_cases",
+              "key": "ordered_process_range"
+            },
+            {
+              "section": "quantity_terms",
+              "key": "production_quantity"
+            },
+            {
+              "section": "analysis_recipes",
+              "key": "group_by_oper_name_for_detailed_process"
+            }
+          ],
+          "trace": {
+            "decision_reason": [
+              "7월 1일 기준 D/A1부터 W/B6까지의 공정 구간 생산량을 OPER_SEQ 순서로 조회하기 위해 production 이력 데이터셋을 선택했습니다.",
+              "D/A1~W/B6 구간은 공정 순서(OPER_SEQ) 기반의 ordered range 필터(filter_ordered_range)를 적용하여 처리합니다.",
+              "세부 공정별 결과를 보여주기 위해 OPER_NAME과 OPER_SEQ 기준으로 그룹화 및 집계를 수행합니다."
+            ]
+          },
+          "reuse_strategy": "none",
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [],
+            "breakdown_columns": [
+              "OPER_SEQ",
+              "OPER_NAME"
+            ],
+            "grain_columns": [
+              "OPER_SEQ",
+              "OPER_NAME"
+            ],
+            "source_aliases": [
+              "filtered_range"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "step_1_apply_pandas_function_case",
+                "operation": "apply_pandas_function_case",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "production_source"
+                  }
+                ]
+              },
+              {
+                "node_id": "step_1",
+                "operation": "apply_pandas_function_case",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "production_source"
+                  }
+                ],
+                "output_alias": "filtered_range"
+              },
+              {
+                "node_id": "step_2",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "step_1"
+                  }
+                ],
+                "output_alias": "grouped_production"
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "production_source",
+                "provider": "retrieval_job",
+                "dataset_key": "production",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "pandas_function_cases",
+            "key": "ordered_process_range"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "production_quantity"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "group_by_oper_name_for_detailed_process"
+          },
+          {
+            "type": "table_catalog",
+            "key": "production"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "production",
+            "source_alias": "production_source",
+            "status": "ok",
+            "row_count": 80,
+            "applied_params": {
+              "DATE": "20260701"
+            },
+            "pandas_filters": {}
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 31865,
+        "status": "ok",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "generated_code": "def filter_ordered_range(input_text, frame, label_column='OPER_NAME', order_column='OPER_SEQ'):\n    result = frame.copy()\n    empty_result = result.iloc[0:0].copy()\n    def _finish(value, description):\n        try:\n            record_function_case_result('filter_ordered_range', input_text, value, description)\n        except Exception:\n            pass\n        return value\n    if result.empty:\n        return _finish(result, '순서 구간 원본이 비어 있음')\n    if label_column not in result.columns or order_column not in result.columns:\n        return _finish(empty_result, '순서 구간 필수 label/order column 누락')\n    def _norm_label(value):\n        text = str('' if value is None else value).strip().upper()\n        return ''.join(ch for ch in text if ch.isalnum())\n    normalized_labels = result[label_column].map(_norm_label)\n    numeric_orders = pd.to_numeric(result[order_column], errors='coerce')\n    valid_lookup_rows = normalized_labels.ne('') & numeric_orders.notna()\n    if not bool(valid_lookup_rows.any()):\n        return _finish(empty_result, '순서 구간 label/order lookup 값 없음')\n    orders_by_label = {}\n    for label_key in normalized_labels[valid_lookup_rows].drop_duplicates().tolist():\n        label_orders = (\n            numeric_orders[valid_lookup_rows & normalized_labels.eq(label_key)]\n            .dropna()\n            .drop_duplicates()\n            .tolist()\n        )\n        orders_by_label[label_key] = label_orders\n    normalized_input = _norm_label(input_text)\n    if not normalized_input:\n        return _finish(empty_result, '순서 구간 끝점 입력 없음')\n    candidate_matches = []\n    for label_key in sorted(orders_by_label, key=lambda value: (-len(value), value)):\n        search_from = 0\n        while search_from < len(normalized_input):\n            position = normalized_input.find(label_key, search_from)\n            if position < 0:\n                break\n            candidate_matches.append((position, position + len(label_key), label_key))\n            search_from = position + 1\n    candidate_matches.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2]))\n    selected_matches = []\n    selected_spans = []\n    for start, end, label_key in candidate_matches:\n        overlaps = any(start < used_end and end > used_start for used_start, used_end in selected_spans)\n        if overlaps:\n            continue\n        selected_matches.append((start, end, label_key))\n        selected_spans.append((start, end))\n    selected_matches.sort(key=lambda item: (item[0], item[1], item[2]))\n    if len(selected_matches) != 2:\n        return _finish(empty_result, '순서 구간 끝점 누락 또는 모호함')\n    endpoint_orders = []\n    for _, _, label_key in selected_matches:\n        resolved_orders = orders_by_label.get(label_key, [])\n        if len(resolved_orders) != 1:\n            return _finish(empty_result, '순서 구간 끝점 order가 모호함')\n        endpoint_orders.append(resolved_orders[0])\n    lower_order = min(endpoint_orders)\n    upper_order = max(endpoint_orders)\n    range_mask = numeric_orders.between(lower_order, upper_order, inclusive='both').fillna(False)\n    filtered = result[range_mask].copy()\n    return _finish(filtered, '두 label 끝점의 숫자 order 포함 범위 결과')\n\nbase_df = sources[\"production_source\"]\nfiltered_range = filter_ordered_range(\"D/A1~W/B6\", base_df, label_column='OPER_NAME', order_column='OPER_SEQ')\n\ngroup_cols = [\"OPER_SEQ\", \"OPER_NAME\"]\nif not filtered_range.empty:\n    grouped = filtered_range.groupby(group_cols, dropna=False).agg({\n        \"PRODUCTION\": \"sum\"\n    }).reset_index().rename(columns={\"PRODUCTION\": \"PRODUCTION_SUM\"})\nelse:\n    grouped = pd.DataFrame(columns=[\"OPER_SEQ\", \"OPER_NAME\", \"PRODUCTION_SUM\"])\n\nfor col in group_cols:\n    if col in grouped.columns:\n        grouped[col] = grouped[col].fillna(\"\").astype(str).str.replace(r\"^\\s*$\", \"\", regex=True)\n\nif \"PRODUCTION_SUM\" in grouped.columns:\n    grouped[\"PRODUCTION_SUM\"] = pd.to_numeric(grouped[\"PRODUCTION_SUM\"], errors=\"coerce\").fillna(0)\n\nif \"OPER_SEQ\" in grouped.columns:\n    grouped = grouped.sort_values(by=\"OPER_SEQ\", ascending=True)\n\nresult_cols = [\"OPER_SEQ\", \"OPER_NAME\", \"PRODUCTION_SUM\"]\nfinal_cols = [c for c in result_cols if c in grouped.columns]\nresult = grouped[final_cols].copy()",
+        "used_helpers": [
+          "filter_ordered_range"
+        ],
+        "row_count": 13,
+        "columns": [
+          "OPER_SEQ",
+          "OPER_NAME",
+          "PRODUCTION_SUM"
+        ],
+        "preview_rows": [
+          {
+            "OPER_SEQ": "100",
+            "OPER_NAME": "D/A1",
+            "PRODUCTION_SUM": 11212.0
+          },
+          {
+            "OPER_SEQ": "110",
+            "OPER_NAME": "D/A2",
+            "PRODUCTION_SUM": 480.0
+          },
+          {
+            "OPER_SEQ": "120",
+            "OPER_NAME": "D/A3",
+            "PRODUCTION_SUM": 502.0
+          },
+          {
+            "OPER_SEQ": "130",
+            "OPER_NAME": "D/A4",
+            "PRODUCTION_SUM": 524.0
+          },
+          {
+            "OPER_SEQ": "140",
+            "OPER_NAME": "D/A5",
+            "PRODUCTION_SUM": 546.0
+          },
+          {
+            "OPER_SEQ": "150",
+            "OPER_NAME": "D/A6",
+            "PRODUCTION_SUM": 568.0
+          },
+          {
+            "OPER_SEQ": "160",
+            "OPER_NAME": "D/S1",
+            "PRODUCTION_SUM": 590.0
+          },
+          {
+            "OPER_SEQ": "200",
+            "OPER_NAME": "W/B1",
+            "PRODUCTION_SUM": 918.0
+          },
+          {
+            "OPER_SEQ": "210",
+            "OPER_NAME": "W/B2",
+            "PRODUCTION_SUM": 951.0
+          },
+          {
+            "OPER_SEQ": "220",
+            "OPER_NAME": "W/B3",
+            "PRODUCTION_SUM": 984.0
+          },
+          {
+            "OPER_SEQ": "230",
+            "OPER_NAME": "W/B4",
+            "PRODUCTION_SUM": 1017.0
+          },
+          {
+            "OPER_SEQ": "240",
+            "OPER_NAME": "W/B5",
+            "PRODUCTION_SUM": 1050.0
+          },
+          {
+            "OPER_SEQ": "250",
+            "OPER_NAME": "W/B6",
+            "PRODUCTION_SUM": 1083.0
+          }
+        ]
+      },
+      "answer": {
+        "prompt_chars": 13169,
+        "message": "### 답변\n조건에 맞는 순위 결과는 총 13건입니다.\n\n이 중 공정 순서이 가장 적은 대상은 100 D/A1이며, 공정 순서은 100입니다.\n\n나머지 대상별 상세 결과는 아래 결과 표에서 확인할 수 있습니다.\n\n### 결과 테이블\n| 공정 순서 | 공정 | 생산량 |\n| --- | --- | --- |\n| 100 | D/A1 | 11.2K |\n| 110 | D/A2 | 480 |\n| 120 | D/A3 | 502 |\n| 130 | D/A4 | 524 |\n| 140 | D/A5 | 546 |\n| 150 | D/A6 | 568 |\n| 160 | D/S1 | 590 |\n| 200 | W/B1 | 918 |\n| 210 | W/B2 | 951 |\n| 220 | W/B3 | 984 |\n\n총 13건 중 10건을 표시했습니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=production, source_alias=production_source, source_type=oracle\n- dataset_key=production, source_alias=production_source, source_type=oracle, row_count=80\n**조회 필수 조건**\n- production_source: DATE=20260701\n**그룹 기준**\n- OPER_SEQ\n- OPER_NAME\n**계산 지표**\n- PRODUCTION_SUM\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n- LLM 답변의 수치가 실제 결과 행과 일치하지 않아 결과 행 기준 문장으로 교정했습니다.\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [
+        {
+          "type": "answer_value_grounded",
+          "message": "LLM 답변의 수치가 실제 결과 행과 일치하지 않아 결과 행 기준 문장으로 교정했습니다."
+        }
+      ],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    },
+    {
+      "question": "7월 1일 D/A1~W/B6 공정 구간의 공정별 생산량을 OPER_SEQ 순서로 알려줘",
+      "status": "ok",
+      "elapsed_seconds": 11.098,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 5,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "status_terms:SHIFT_A",
+          "status_terms:SHIFT_B",
+          "status_terms:SHIFT_C",
+          "process_groups:DA",
+          "process_groups:WB",
+          "quantity_terms:pkg_out_quantity",
+          "pandas_function_cases:ordered_process_range",
+          "quantity_terms:production_quantity",
+          "analysis_recipes:group_by_oper_name_for_detailed_process",
+          "analysis_recipes:production_achievement_rate_analysis"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "production",
+          "wip_today",
+          "wip",
+          "equipment_assign"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 57123,
+        "analysis_kind": "production_quantity_by_process_ordered_range",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "production_quantity_by_process_ordered_range",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {
+            "new": {
+              "date": {
+                "operator": "eq",
+                "value": "20260701"
+              },
+              "process_range": {
+                "start": "D/A1",
+                "end": "W/B6"
+              }
+            }
+          },
+          "pandas_function_cases": [
+            {
+              "key": "ordered_process_range",
+              "function_name": "filter_ordered_range",
+              "input_text": "D/A1~W/B6",
+              "source_alias": "production_source",
+              "execution_contract": {
+                "source_filter_order": "after_helper"
+              }
+            }
+          ],
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "process_groups",
+              "key": "DA"
+            },
+            "source_alias": "production_source"
+          },
+          "retrieval_jobs": [
+            {
+              "dataset_key": "production",
+              "source_alias": "production_source",
+              "required_params": {
+                "DATE": "20260701"
+              },
+              "filters": {},
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ, PRODUCTION \nFROM PROD_TABLE2\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:production",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "metric_semantics": {
+                "PRODUCTION": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum",
+                    "mean",
+                    "min",
+                    "max",
+                    "count"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_1"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "step": "특화 함수 적용",
+              "operation": "apply_pandas_function_case",
+              "function_case_key": "ordered_process_range",
+              "function_name": "filter_ordered_range",
+              "input_text": "D/A1~W/B6",
+              "source_alias": "production_source"
+            },
+            {
+              "step": "Function Case 이후 필터 적용",
+              "operation": "apply_filters",
+              "source_alias": "production_source",
+              "field": "WORK_DATE",
+              "operator": "eq",
+              "value": "20260701"
+            },
+            {
+              "node_id": "step_1_filter_range",
+              "operation": "apply_pandas_function_case",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "production_source"
+                }
+              ],
+              "output_alias": "filtered_process_range",
+              "source_alias": "production_source"
+            },
+            {
+              "node_id": "step_2_groupby",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "step_1_filter_range"
+                }
+              ],
+              "output_alias": "aggregated_production",
+              "source_alias": "filtered_process_range",
+              "group_by": [
+                "OPER_SEQ",
+                "OPER_NAME"
+              ],
+              "aggregations": [
+                {
+                  "column": "PRODUCTION",
+                  "method": "sum",
+                  "output_column": "PRODUCTION_SUM"
+                }
+              ],
+              "sort_by": "OPER_SEQ",
+              "order": "asc"
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "OPER_SEQ",
+              "OPER_NAME",
+              "PRODUCTION_SUM"
+            ],
+            "grain_columns": [
+              "OPER_SEQ",
+              "OPER_NAME"
+            ],
+            "metric_columns": [
+              "PRODUCTION_SUM"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "metric_bindings": [
+              {
+                "source_alias": "production_source",
+                "dataset_key": "production",
+                "source_column": "PRODUCTION",
+                "aggregation": "sum",
+                "output_column": "PRODUCTION_SUM",
+                "semantic_scope": {}
+              }
+            ],
+            "primary_metric": "PRODUCTION_SUM",
+            "ordering": {
+              "sort_by": "OPER_SEQ",
+              "order": "asc"
+            },
+            "column_labels": {
+              "OPER_SEQ": "공정 순서",
+              "OPER_NAME": "공정명",
+              "PRODUCTION_SUM": "생산량"
+            },
+            "result_columns": [
+              "OPER_SEQ",
+              "OPER_NAME",
+              "PRODUCTION_SUM"
+            ],
+            "strict_result_columns": true
+          },
+          "metadata_refs": [
+            {
+              "section": "quantity_terms",
+              "key": "production_quantity"
+            },
+            {
+              "section": "pandas_function_cases",
+              "key": "ordered_process_range"
+            },
+            {
+              "section": "analysis_recipes",
+              "key": "group_by_oper_name_for_detailed_process"
+            }
+          ],
+          "trace": {
+            "decision_reason": [
+              "7월 1일 과거 날짜 생산량 조회이므로 production dataset을 선택하고 required_params.DATE에 20260701을 지정함.",
+              "D/A1~W/B6 구간 지정에 대해 filter_ordered_range 헬퍼를 적용하여 OPER_SEQ 및 OPER_NAME 순서 범위 내 공정만 필터링함.",
+              "OPER_SEQ 순서대로 공정별 생산량 합계를 집계하도록 groupby_and_aggregate 단계를 구성함."
+            ]
+          },
+          "reuse_strategy": "none",
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [],
+            "breakdown_columns": [
+              "OPER_SEQ",
+              "OPER_NAME"
+            ],
+            "grain_columns": [
+              "OPER_SEQ",
+              "OPER_NAME"
+            ],
+            "source_aliases": [
+              "filtered_process_range"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "step_1_apply_pandas_function_case",
+                "operation": "apply_pandas_function_case",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "production_source"
+                  }
+                ]
+              },
+              {
+                "node_id": "step_2_apply_filters",
+                "operation": "apply_filters",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "production_source"
+                  }
+                ]
+              },
+              {
+                "node_id": "step_1_filter_range",
+                "operation": "apply_pandas_function_case",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "production_source"
+                  }
+                ],
+                "output_alias": "filtered_process_range"
+              },
+              {
+                "node_id": "step_2_groupby",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "step_1_filter_range"
+                  }
+                ],
+                "output_alias": "aggregated_production"
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "production_source",
+                "provider": "retrieval_job",
+                "dataset_key": "production",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "quantity_terms",
+            "key": "production_quantity"
+          },
+          {
+            "section": "pandas_function_cases",
+            "key": "ordered_process_range"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "group_by_oper_name_for_detailed_process"
+          },
+          {
+            "section": "process_groups",
+            "key": "DA"
+          },
+          {
+            "type": "table_catalog",
+            "key": "production"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "production",
+            "source_alias": "production_source",
+            "status": "ok",
+            "row_count": 80,
+            "applied_params": {
+              "DATE": "20260701"
+            },
+            "pandas_filters": {}
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 32588,
+        "status": "ok",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "generated_code": "def filter_ordered_range(input_text, frame, label_column='OPER_NAME', order_column='OPER_SEQ'):\n    result = frame.copy()\n    empty_result = result.iloc[0:0].copy()\n    def _finish(value, description):\n        try:\n            record_function_case_result('filter_ordered_range', input_text, value, description)\n        except Exception:\n            pass\n        return value\n    if result.empty:\n        return _finish(result, '순서 구간 원본이 비어 있음')\n    if label_column not in result.columns or order_column not in result.columns:\n        return _finish(empty_result, '순서 구간 필수 label/order column 누락')\n    def _norm_label(value):\n        text = str('' if value is None else value).strip().upper()\n        return ''.join(ch for ch in text if ch.isalnum())\n    normalized_labels = result[label_column].map(_norm_label)\n    numeric_orders = pd.to_numeric(result[order_column], errors='coerce')\n    valid_lookup_rows = normalized_labels.ne('') & numeric_orders.notna()\n    if not bool(valid_lookup_rows.any()):\n        return _finish(empty_result, '순서 구간 label/order lookup 값 없음')\n    orders_by_label = {}\n    for label_key in normalized_labels[valid_lookup_rows].drop_duplicates().tolist():\n        label_orders = (\n            numeric_orders[valid_lookup_rows & normalized_labels.eq(label_key)]\n            .dropna()\n            .drop_duplicates()\n            .tolist()\n        )\n        orders_by_label[label_key] = label_orders\n    normalized_input = _norm_label(input_text)\n    if not normalized_input:\n        return _finish(empty_result, '순서 구간 끝점 입력 없음')\n    candidate_matches = []\n    for label_key in sorted(orders_by_label, key=lambda value: (-len(value), value)):\n        search_from = 0\n        while search_from < len(normalized_input):\n            position = normalized_input.find(label_key, search_from)\n            if position < 0:\n                break\n            candidate_matches.append((position, position + len(label_key), label_key))\n            search_from = position + 1\n    candidate_matches.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2]))\n    selected_matches = []\n    selected_spans = []\n    for start, end, label_key in candidate_matches:\n        overlaps = any(start < used_end and end > used_start for used_start, used_end in selected_spans)\n        if overlaps:\n            continue\n        selected_matches.append((start, end, label_key))\n        selected_spans.append((start, end))\n    selected_matches.sort(key=lambda item: (item[0], item[1], item[2]))\n    if len(selected_matches) != 2:\n        return _finish(empty_result, '순서 구간 끝점 누락 또는 모호함')\n    endpoint_orders = []\n    for _, _, label_key in selected_matches:\n        resolved_orders = orders_by_label.get(label_key, [])\n        if len(resolved_orders) != 1:\n            return _finish(empty_result, '순서 구간 끝점 order가 모호함')\n        endpoint_orders.append(resolved_orders[0])\n    lower_order = min(endpoint_orders)\n    upper_order = max(endpoint_orders)\n    range_mask = numeric_orders.between(lower_order, upper_order, inclusive='both').fillna(False)\n    filtered = result[range_mask].copy()\n    return _finish(filtered, '두 label 끝점의 숫자 order 포함 범위 결과')\n\nbase_df = sources[\"production_source\"]\nfiltered_df = filter_ordered_range(\"D/A1~W/B6\", base_df, label_column='OPER_NAME', order_column='OPER_SEQ')\n\nif not filtered_df.empty and \"WORK_DATE\" in filtered_df.columns:\n    filtered_df = filtered_df[filtered_df[\"WORK_DATE\"].astype(str).eq(\"20260701\")]\n\ngroup_cols = [c for c in [\"OPER_SEQ\", \"OPER_NAME\"] if c in filtered_df.columns]\nif not filtered_df.empty and group_cols:\n    agg_df = filtered_df.groupby(group_cols, dropna=False).agg({\"PRODUCTION\": \"sum\"}).reset_index()\n    agg_df = agg_df.rename(columns={\"PRODUCTION\": \"PRODUCTION_SUM\"})\n    if \"OPER_SEQ\" in agg_df.columns:\n        agg_df = agg_df.sort_values(by=\"OPER_SEQ\", ascending=True)\n    result = agg_df\nelse:\n    result = pd.DataFrame(columns=[\"OPER_SEQ\", \"OPER_NAME\", \"PRODUCTION_SUM\"])",
+        "used_helpers": [
+          "filter_ordered_range"
+        ],
+        "row_count": 13,
+        "columns": [
+          "OPER_SEQ",
+          "OPER_NAME",
+          "PRODUCTION_SUM"
+        ],
+        "preview_rows": [
+          {
+            "OPER_SEQ": "100",
+            "OPER_NAME": "D/A1",
+            "PRODUCTION_SUM": 11212.0
+          },
+          {
+            "OPER_SEQ": "110",
+            "OPER_NAME": "D/A2",
+            "PRODUCTION_SUM": 480.0
+          },
+          {
+            "OPER_SEQ": "120",
+            "OPER_NAME": "D/A3",
+            "PRODUCTION_SUM": 502.0
+          },
+          {
+            "OPER_SEQ": "130",
+            "OPER_NAME": "D/A4",
+            "PRODUCTION_SUM": 524.0
+          },
+          {
+            "OPER_SEQ": "140",
+            "OPER_NAME": "D/A5",
+            "PRODUCTION_SUM": 546.0
+          },
+          {
+            "OPER_SEQ": "150",
+            "OPER_NAME": "D/A6",
+            "PRODUCTION_SUM": 568.0
+          },
+          {
+            "OPER_SEQ": "160",
+            "OPER_NAME": "D/S1",
+            "PRODUCTION_SUM": 590.0
+          },
+          {
+            "OPER_SEQ": "200",
+            "OPER_NAME": "W/B1",
+            "PRODUCTION_SUM": 918.0
+          },
+          {
+            "OPER_SEQ": "210",
+            "OPER_NAME": "W/B2",
+            "PRODUCTION_SUM": 951.0
+          },
+          {
+            "OPER_SEQ": "220",
+            "OPER_NAME": "W/B3",
+            "PRODUCTION_SUM": 984.0
+          },
+          {
+            "OPER_SEQ": "230",
+            "OPER_NAME": "W/B4",
+            "PRODUCTION_SUM": 1017.0
+          },
+          {
+            "OPER_SEQ": "240",
+            "OPER_NAME": "W/B5",
+            "PRODUCTION_SUM": 1050.0
+          },
+          {
+            "OPER_SEQ": "250",
+            "OPER_NAME": "W/B6",
+            "PRODUCTION_SUM": 1083.0
+          }
+        ]
+      },
+      "answer": {
+        "prompt_chars": 13201,
+        "message": "### 답변\n조건에 맞는 순위 결과는 총 13건입니다.\n\n이 중 공정 순서이 가장 적은 대상은 100 D/A1이며, 공정 순서은 100입니다.\n\n나머지 대상별 상세 결과는 아래 결과 표에서 확인할 수 있습니다.\n\n### 결과 테이블\n| 공정 순서 | 공정명 | 생산량 |\n| --- | --- | --- |\n| 100 | D/A1 | 11.2K |\n| 110 | D/A2 | 480 |\n| 120 | D/A3 | 502 |\n| 130 | D/A4 | 524 |\n| 140 | D/A5 | 546 |\n| 150 | D/A6 | 568 |\n| 160 | D/S1 | 590 |\n| 200 | W/B1 | 918 |\n| 210 | W/B2 | 951 |\n| 220 | W/B3 | 984 |\n\n총 13건 중 10건을 표시했습니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=production, source_alias=production_source, source_type=oracle\n- dataset_key=production, source_alias=production_source, source_type=oracle, row_count=80\n**조회 필수 조건**\n- production_source: DATE=20260701\n**그룹 기준**\n- OPER_SEQ\n- OPER_NAME\n**계산 지표**\n- PRODUCTION_SUM\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n- LLM 답변의 수치가 실제 결과 행과 일치하지 않아 결과 행 기준 문장으로 교정했습니다.\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [
+        {
+          "type": "answer_value_grounded",
+          "message": "LLM 답변의 수치가 실제 결과 행과 일치하지 않아 결과 행 기준 문장으로 교정했습니다."
+        }
+      ],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    },
+    {
+      "question": "7월 1일 D/A1~W/B6 공정 구간의 공정별 생산량을 OPER_SEQ 순서로 알려줘",
+      "status": "ok",
+      "elapsed_seconds": 10.587,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 5,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "status_terms:SHIFT_A",
+          "status_terms:SHIFT_B",
+          "status_terms:SHIFT_C",
+          "process_groups:DA",
+          "process_groups:WB",
+          "quantity_terms:pkg_out_quantity",
+          "pandas_function_cases:ordered_process_range",
+          "quantity_terms:production_quantity",
+          "analysis_recipes:group_by_oper_name_for_detailed_process",
+          "analysis_recipes:production_achievement_rate_analysis"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "production",
+          "wip_today",
+          "wip",
+          "equipment_assign"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 57123,
+        "analysis_kind": "production_quantity_by_detailed_process_range",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "production_quantity_by_detailed_process_range",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {
+            "new": {
+              "DATE": {
+                "operator": "eq",
+                "value": "20260701"
+              }
+            }
+          },
+          "pandas_function_cases": [
+            {
+              "key": "ordered_process_range",
+              "function_name": "filter_ordered_range",
+              "input_text": "D/A1~W/B6",
+              "source_alias": "production_source",
+              "execution_contract": {
+                "source_filter_order": "after_helper"
+              }
+            }
+          ],
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "analysis_recipes",
+              "key": "group_by_oper_name_for_detailed_process"
+            },
+            "source_alias": "production_source"
+          },
+          "retrieval_jobs": [
+            {
+              "dataset_key": "production",
+              "source_alias": "production_source",
+              "required_params": {
+                "DATE": "20260701"
+              },
+              "filters": {},
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ, PRODUCTION \nFROM PROD_TABLE2\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:production",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "metric_semantics": {
+                "PRODUCTION": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum",
+                    "mean",
+                    "min",
+                    "max",
+                    "count"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_1"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "node_id": "step_1",
+              "operation": "apply_pandas_function_case",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "production_source"
+                }
+              ],
+              "output_alias": "filtered_range_df",
+              "source_alias": "production_source",
+              "function_case_key": "ordered_process_range",
+              "function_name": "filter_ordered_range",
+              "input_text": "D/A1~W/B6"
+            },
+            {
+              "node_id": "step_2",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "step_1"
+                }
+              ],
+              "output_alias": "aggregated_df",
+              "source_alias": "filtered_range_df",
+              "group_by": [
+                "OPER_SEQ",
+                "OPER_NAME"
+              ],
+              "aggregations": [
+                {
+                  "column": "PRODUCTION",
+                  "method": "sum",
+                  "output_column": "PRODUCTION"
+                }
+              ],
+              "sort_by": "OPER_SEQ",
+              "order": "asc"
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "OPER_SEQ",
+              "OPER_NAME",
+              "PRODUCTION"
+            ],
+            "grain_columns": [
+              "OPER_SEQ",
+              "OPER_NAME"
+            ],
+            "metric_columns": [
+              "PRODUCTION"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "metric_bindings": [
+              {
+                "source_alias": "production_source",
+                "dataset_key": "production",
+                "source_column": "PRODUCTION",
+                "aggregation": "sum",
+                "output_column": "PRODUCTION",
+                "semantic_scope": {}
+              }
+            ],
+            "primary_metric": "PRODUCTION",
+            "ordering": {
+              "sort_by": "OPER_SEQ",
+              "order": "asc"
+            },
+            "column_labels": {
+              "OPER_SEQ": "공정 순서",
+              "OPER_NAME": "공정명",
+              "PRODUCTION": "생산량"
+            },
+            "result_columns": [
+              "OPER_SEQ",
+              "OPER_NAME",
+              "PRODUCTION"
+            ],
+            "strict_result_columns": true
+          },
+          "metadata_refs": [
+            {
+              "section": "pandas_function_cases",
+              "key": "ordered_process_range"
+            },
+            {
+              "section": "quantity_terms",
+              "key": "production_quantity"
+            },
+            {
+              "section": "analysis_recipes",
+              "key": "group_by_oper_name_for_detailed_process"
+            }
+          ],
+          "trace": {
+            "decision_reason": [
+              "7월 1일 과거 날짜의 생산량 조회를 위해 production dataset을 선택했습니다.",
+              "D/A1~W/B6 공정 구간 요청을 처리하기 위해 filter_ordered_range helper를 적용했습니다.",
+              "OPER_SEQ 순서로 정렬된 세부 공정별 생산량 집계를 위해 OPER_SEQ와 OPER_NAME을 기준 삼아 sum 집계를 수행합니다."
+            ]
+          },
+          "reuse_strategy": "none",
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [],
+            "breakdown_columns": [
+              "OPER_SEQ",
+              "OPER_NAME"
+            ],
+            "grain_columns": [
+              "OPER_SEQ",
+              "OPER_NAME"
+            ],
+            "source_aliases": [
+              "filtered_range_df"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "step_1",
+                "operation": "apply_pandas_function_case",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "production_source"
+                  }
+                ],
+                "output_alias": "filtered_range_df"
+              },
+              {
+                "node_id": "step_2",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "step_1"
+                  }
+                ],
+                "output_alias": "aggregated_df"
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "production_source",
+                "provider": "retrieval_job",
+                "dataset_key": "production",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "pandas_function_cases",
+            "key": "ordered_process_range"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "production_quantity"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "group_by_oper_name_for_detailed_process"
+          },
+          {
+            "type": "table_catalog",
+            "key": "production"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "production",
+            "source_alias": "production_source",
+            "status": "ok",
+            "row_count": 80,
+            "applied_params": {
+              "DATE": "20260701"
+            },
+            "pandas_filters": {}
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 31276,
+        "status": "ok",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "generated_code": "def filter_ordered_range(input_text, frame, label_column='OPER_NAME', order_column='OPER_SEQ'):\n    result = frame.copy()\n    empty_result = result.iloc[0:0].copy()\n\n    def _finish(value, description):\n        try:\n            record_function_case_result('filter_ordered_range', input_text, value, description)\n        except Exception:\n            pass\n        return value\n\n    if result.empty:\n        return _finish(result, '순서 구간 원본이 비어 있음')\n    if label_column not in result.columns or order_column not in result.columns:\n        return _finish(empty_result, '순서 구간 필수 label/order column 누락')\n\n    def _norm_label(value):\n        text = str('' if value is None else value).strip().upper()\n        return ''.join(ch for ch in text if ch.isalnum())\n\n    normalized_labels = result[label_column].map(_norm_label)\n    numeric_orders = pd.to_numeric(result[order_column], errors='coerce')\n    valid_lookup_rows = normalized_labels.ne('') & numeric_orders.notna()\n    if not bool(valid_lookup_rows.any()):\n        return _finish(empty_result, '순서 구간 label/order lookup 값 없음')\n\n    orders_by_label = {}\n    for label_key in normalized_labels[valid_lookup_rows].drop_duplicates().tolist():\n        label_orders = (\n            numeric_orders[valid_lookup_rows & normalized_labels.eq(label_key)]\n            .dropna()\n            .drop_duplicates()\n            .tolist()\n        )\n        orders_by_label[label_key] = label_orders\n\n    normalized_input = _norm_label(input_text)\n    if not normalized_input:\n        return _finish(empty_result, '순서 구간 끝점 입력 없음')\n\n    candidate_matches = []\n    for label_key in sorted(orders_by_label, key=lambda value: (-len(value), value)):\n        search_from = 0\n        while search_from < len(normalized_input):\n            position = normalized_input.find(label_key, search_from)\n            if position < 0:\n                break\n            candidate_matches.append((position, position + len(label_key), label_key))\n            search_from = position + 1\n    candidate_matches.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2]))\n\n    selected_matches = []\n    selected_spans = []\n    for start, end, label_key in candidate_matches:\n        overlaps = any(start < used_end and end > used_start for used_start, used_end in selected_spans)\n        if overlaps:\n            continue\n        selected_matches.append((start, end, label_key))\n        selected_spans.append((start, end))\n    selected_matches.sort(key=lambda item: (item[0], item[1], item[2]))\n\n    if len(selected_matches) != 2:\n        return _finish(empty_result, '순서 구간 끝점 누락 또는 모호함')\n\n    endpoint_orders = []\n    for _, _, label_key in selected_matches:\n        resolved_orders = orders_by_label.get(label_key, [])\n        if len(resolved_orders) != 1:\n            return _finish(empty_result, '순서 구간 끝점 order가 모호함')\n        endpoint_orders.append(resolved_orders[0])\n\n    lower_order = min(endpoint_orders)\n    upper_order = max(endpoint_orders)\n    range_mask = numeric_orders.between(lower_order, upper_order, inclusive='both').fillna(False)\n    filtered = result[range_mask].copy()\n    return _finish(filtered, '두 label 끝점의 숫자 order 포함 범위 결과')\n\nprod_df = sources['production_source']\nfiltered_range_df = filter_ordered_range('D/A1~W/B6', prod_df, label_column='OPER_NAME', order_column='OPER_SEQ')\n\ngroup_cols = ['OPER_SEQ', 'OPER_NAME']\nexisting_group_cols = [c for c in group_cols if c in filtered_range_df.columns]\n\nif not filtered_range_df.empty and existing_group_cols:\n    agg_dict = {'PRODUCTION': 'sum'}\n    if 'PRODUCTION' in filtered_range_df.columns:\n        aggregated_df = filtered_range_df.groupby(existing_group_cols, dropna=False).agg(agg_dict).reset_index()\n    else:\n        aggregated_df = filtered_range_df.groupby(existing_group_cols, dropna=False).size().reset_index(name='PRODUCTION')\n    \n    if 'OPER_SEQ' in aggregated_df.columns:\n        aggregated_df = aggregated_df.sort_values(by='OPER_SEQ', ascending=True)\n    \n    for col in existing_group_cols:\n        aggregated_df[col] = aggregated_df[col].fillna('').astype(str).str.replace(r'^\\s*$', '', regex=True)\n    if 'PRODUCTION' in aggregated_df.columns:\n        aggregated_df['PRODUCTION'] = pd.to_numeric(aggregated_df['PRODUCTION'], errors='coerce').fillna(0)\n    \n    final_cols = [c for c in ['OPER_SEQ', 'OPER_NAME', 'PRODUCTION'] if c in aggregated_df.columns]\n    result = aggregated_df[final_cols].copy()\nelse:\n    result = pd.DataFrame(columns=['OPER_SEQ', 'OPER_NAME', 'PRODUCTION'])",
+        "used_helpers": [
+          "filter_ordered_range"
+        ],
+        "row_count": 13,
+        "columns": [
+          "OPER_SEQ",
+          "OPER_NAME",
+          "PRODUCTION"
+        ],
+        "preview_rows": [
+          {
+            "OPER_SEQ": "100",
+            "OPER_NAME": "D/A1",
+            "PRODUCTION": 11212.0
+          },
+          {
+            "OPER_SEQ": "110",
+            "OPER_NAME": "D/A2",
+            "PRODUCTION": 480.0
+          },
+          {
+            "OPER_SEQ": "120",
+            "OPER_NAME": "D/A3",
+            "PRODUCTION": 502.0
+          },
+          {
+            "OPER_SEQ": "130",
+            "OPER_NAME": "D/A4",
+            "PRODUCTION": 524.0
+          },
+          {
+            "OPER_SEQ": "140",
+            "OPER_NAME": "D/A5",
+            "PRODUCTION": 546.0
+          },
+          {
+            "OPER_SEQ": "150",
+            "OPER_NAME": "D/A6",
+            "PRODUCTION": 568.0
+          },
+          {
+            "OPER_SEQ": "160",
+            "OPER_NAME": "D/S1",
+            "PRODUCTION": 590.0
+          },
+          {
+            "OPER_SEQ": "200",
+            "OPER_NAME": "W/B1",
+            "PRODUCTION": 918.0
+          },
+          {
+            "OPER_SEQ": "210",
+            "OPER_NAME": "W/B2",
+            "PRODUCTION": 951.0
+          },
+          {
+            "OPER_SEQ": "220",
+            "OPER_NAME": "W/B3",
+            "PRODUCTION": 984.0
+          },
+          {
+            "OPER_SEQ": "230",
+            "OPER_NAME": "W/B4",
+            "PRODUCTION": 1017.0
+          },
+          {
+            "OPER_SEQ": "240",
+            "OPER_NAME": "W/B5",
+            "PRODUCTION": 1050.0
+          },
+          {
+            "OPER_SEQ": "250",
+            "OPER_NAME": "W/B6",
+            "PRODUCTION": 1083.0
+          }
+        ]
+      },
+      "answer": {
+        "prompt_chars": 13067,
+        "message": "### 답변\n조건에 맞는 순위 결과는 총 13건입니다.\n\n이 중 공정 순서이 가장 적은 대상은 100 D/A1이며, 공정 순서은 100입니다.\n\n나머지 대상별 상세 결과는 아래 결과 표에서 확인할 수 있습니다.\n\n### 결과 테이블\n| 공정 순서 | 공정명 | 생산량 |\n| --- | --- | --- |\n| 100 | D/A1 | 11.2K |\n| 110 | D/A2 | 480 |\n| 120 | D/A3 | 502 |\n| 130 | D/A4 | 524 |\n| 140 | D/A5 | 546 |\n| 150 | D/A6 | 568 |\n| 160 | D/S1 | 590 |\n| 200 | W/B1 | 918 |\n| 210 | W/B2 | 951 |\n| 220 | W/B3 | 984 |\n\n총 13건 중 10건을 표시했습니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=production, source_alias=production_source, source_type=oracle\n- dataset_key=production, source_alias=production_source, source_type=oracle, row_count=80\n**조회 필수 조건**\n- production_source: DATE=20260701\n**그룹 기준**\n- OPER_SEQ\n- OPER_NAME\n**계산 지표**\n- PRODUCTION\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n- LLM 답변의 수치가 실제 결과 행과 일치하지 않아 결과 행 기준 문장으로 교정했습니다.\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [
+        {
+          "type": "answer_value_grounded",
+          "message": "LLM 답변의 수치가 실제 결과 행과 일치하지 않아 결과 행 기준 문장으로 교정했습니다."
+        }
+      ],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    }
+  ],
+  "errors": []
+}

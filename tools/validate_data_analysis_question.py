@@ -362,6 +362,12 @@ def validate_question(
             "repair_attempted": bool(pandas_repair_inspection.get("attempted")),
             "repair_selected": pandas_repair_inspection.get("selected", ""),
             "generated_code": pandas_inspection.get("generated_code", ""),
+            "llm_generated_code": pandas_inspection.get("llm_generated_code", ""),
+            "execution_mode": payload.get("analysis", {}).get("execution_mode", ""),
+            "semantic_execution_certificate": payload.get("analysis", {}).get(
+                "semantic_execution_certificate",
+                {},
+            ),
             "used_helpers": pandas_inspection.get("used_helpers", []),
             "row_count": payload.get("analysis", {}).get("row_count", 0),
             "columns": payload.get("analysis", {}).get("columns", []),
@@ -785,10 +791,12 @@ def _alias_in_question(alias: str, question_upper: str) -> bool:
     alias_upper = str(alias or "").strip().upper()
     if not alias_upper:
         return False
-    if re.fullmatch(r"[A-Z0-9]+", alias_upper):
-        pattern = rf"(?<![A-Z0-9]){re.escape(alias_upper)}(?![A-Z0-9])"
-        return re.search(pattern, question_upper) is not None
-    return alias_upper in question_upper
+    left_boundary = r"(?<![A-Z0-9])" if re.match(r"[A-Z0-9]", alias_upper) else ""
+    # 공정 그룹 뒤의 숫자는 세부 공정 차수(D/A1, W/B6)일 수 있으므로 허용합니다.
+    # 반면 영문자가 바로 이어지면 WBM 안의 WB처럼 더 긴 별칭의 일부이므로 차단합니다.
+    right_boundary = r"(?![A-Z])" if re.search(r"[A-Z0-9]$", alias_upper) else ""
+    pattern = f"{left_boundary}{re.escape(alias_upper)}{right_boundary}"
+    return re.search(pattern, question_upper) is not None
 
 
 def _candidate_keys(

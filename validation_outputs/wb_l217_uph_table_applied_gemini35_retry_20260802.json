@@ -1,0 +1,94 @@
+{
+  "status": "applied",
+  "generated_at": "2026-08-02T13:28:01.487602+00:00",
+  "mode": "apply",
+  "database": "datagov",
+  "collection_name": "agent_v4_table_catalog_items",
+  "llm": {
+    "provider": "Google Generative AI",
+    "model": "gemini-3.5-flash-lite"
+  },
+  "request_count": 2,
+  "prepared_count": 2,
+  "dry_run_results": [
+    {
+      "dataset_key": "equipment_assign",
+      "success": true,
+      "semantic_errors": [],
+      "normalization_errors": [],
+      "dry_run_result": {
+        "success": true,
+        "ready_to_save": true,
+        "dry_run": true,
+        "saved_count": 0,
+        "would_save_count": 1,
+        "skipped_count": 0,
+        "operation_by_key": [
+          {
+            "key": "equipment_assign",
+            "operation": "replaced"
+          }
+        ],
+        "message": "드라이런입니다. MongoDB에는 저장하지 않았습니다.",
+        "keys": [
+          "equipment_assign"
+        ]
+      }
+    },
+    {
+      "dataset_key": "eqp_uph",
+      "success": true,
+      "semantic_errors": [],
+      "normalization_errors": [],
+      "dry_run_result": {
+        "success": true,
+        "ready_to_save": true,
+        "dry_run": true,
+        "saved_count": 0,
+        "would_save_count": 1,
+        "skipped_count": 0,
+        "operation_by_key": [
+          {
+            "key": "eqp_uph",
+            "operation": "replaced"
+          }
+        ],
+        "message": "드라이런입니다. MongoDB에는 저장하지 않았습니다.",
+        "keys": [
+          "eqp_uph"
+        ]
+      }
+    }
+  ],
+  "apply_result": {
+    "success": true,
+    "writes": [
+      {
+        "dataset_key": "equipment_assign",
+        "success": true,
+        "operation_by_key": [
+          {
+            "key": "equipment_assign",
+            "operation": "replaced"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "dataset_key": "eqp_uph",
+        "success": true,
+        "operation_by_key": [
+          {
+            "key": "eqp_uph",
+            "operation": "replaced"
+          }
+        ],
+        "errors": []
+      }
+    ],
+    "verified_dataset_keys": [
+      "eqp_uph",
+      "equipment_assign"
+    ]
+  }
+}

@@ -3088,7 +3088,13 @@ def test_v5_answer_grounding_uses_presence_semantics_product_grain_and_context_l
                 },
             },
         },
-        "analysis": {"status": "ok"},
+        "analysis": {
+            "status": "ok",
+            "semantic_execution_certificate": {
+                "operation": "compare_presence",
+                "postcondition_validation": "passed",
+            },
+        },
         "data": {
             "columns": ["TECH", "DEN", "PRODUCTION", "WIP"],
             "rows": [
@@ -3277,6 +3283,93 @@ def test_v5_process_group_field_corrects_equipment_oper_filter_before_pandas_exe
 
     assert "_filter_col_2_1 = 'OPER_NM' if 'OPER_NM'" in preamble
     assert "_filter_col_2_1 = 'OPER' if 'OPER'" not in preamble
+
+
+def test_v5_effective_filter_uses_normalized_retrieval_condition_for_same_field():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    pandas_executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    processes = ["B/G1", "B/G2"]
+    payload = {
+        "request": {"question": "오늘 BG공정 생산량과 재공수량"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "process_groups",
+                    "key": "BG",
+                    "payload": {
+                        "display_name": "B/G",
+                        "aliases": ["BG", "B/G"],
+                        "field": "OPER_NAME",
+                        "processes": processes,
+                    },
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production_today",
+                    "payload": {"filter_mappings": {"OPER_NAME": ["OPER_NAME"]}},
+                }
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "production_by_process",
+                "metadata_refs": [{"section": "process_groups", "key": "BG"}],
+                "condition_resolution": {
+                    "effective_filters": {
+                        "prod": {
+                            "dataset_key": "production_today",
+                            "filters": {
+                                "DATE": {"operator": "eq", "value": "20260802"},
+                                "OPER_NAME": {"operator": "eq", "value": "BG"},
+                            },
+                        }
+                    }
+                },
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "prod",
+                        "required_params": {"DATE": "20260802"},
+                        "filters": {
+                            "OPER_NAME": {"operator": "eq", "value": "BG"}
+                        },
+                    }
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {"result_mode": "detail"},
+            }
+        },
+        metadata_candidates,
+    )
+
+    plan = normalized["intent_plan"]
+    expected_process_filter = {"operator": "in", "value": processes}
+    assert plan["retrieval_jobs"][0]["filters"]["OPER_NAME"] == expected_process_filter
+    assert (
+        plan["condition_resolution"]["effective_filters"]["prod"]["filters"]["OPER_NAME"]
+        == expected_process_filter
+    )
+    filter_plan = pandas_executor._pandas_filter_plan(normalized)
+    process_conditions = [
+        condition
+        for condition in filter_plan[0]["conditions"]
+        if condition["field"] == "OPER_NAME"
+    ]
+    assert process_conditions == [
+        {"field": "OPER_NAME", "operator": "in", "values": processes}
+    ]
 
 
 def test_v5_process_scope_alignment_preserves_distinct_multi_source_filters():
@@ -5312,7 +5405,7 @@ def test_followup_hint_recognizes_common_this_result_references():
         assert result["followup_hint"]["reuse_strategy_hint"] == "previous_result"
 
 
-def test_intent_normalizer_maps_pandas_plan_columns_to_catalog_physical_names():
+def test_intent_normalizer_keeps_pandas_plan_on_catalog_standard_names():
     intent_normalizer = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
     )
@@ -5358,6 +5451,11 @@ def test_intent_normalizer_maps_pandas_plan_columns_to_catalog_physical_names():
                             "PRODUCTION",
                         ],
                         "standard_column_aliases": {
+                            "DENSITY": ["DENSITY"],
+                            "PKG1": ["PKG1"],
+                            "PKG2": ["PKG2"],
+                        },
+                        "filter_mappings": {
                             "DEN": ["DENSITY"],
                             "PKG_TYPE1": ["PKG1"],
                             "PKG_TYPE2": ["PKG2"],
@@ -5426,27 +5524,68 @@ def test_intent_normalizer_maps_pandas_plan_columns_to_catalog_physical_names():
     )
 
     step = normalized["intent_plan"]["pandas_execution_plan"][0]
-    assert step["group_by"] == ["TECH", "DENSITY", "PKG2", "MCP_NO"]
-    assert step["comparison_columns"] == ["MODE", "PKG1", "LEAD"]
-    assert step["conditions"][0]["field"] == "DENSITY"
+    assert step["group_by"] == ["TECH", "DEN", "PKG_TYPE2", "MCP_NO"]
+    assert step["comparison_columns"] == ["MODE", "PKG_TYPE1", "LEAD"]
+    assert step["conditions"][0]["field"] == "DEN"
     assert step["match_columns"] == product_keys
     assert normalized["intent_plan"]["resolved_grain_plan"]["grain_columns"] == [
         "TECH",
-        "DENSITY",
+        "DEN",
         "MODE",
-        "PKG1",
-        "PKG2",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
         "LEAD",
         "MCP_NO",
     ]
     trace = normalized["trace"]["inspection"]["intent"]["pandas_column_normalization"]
     assert trace["status"] == "applied"
-    assert trace["change_count"] >= 4
+    assert trace["change_count"] >= 2
 
     prompt_plan = json.loads(pandas_variables.build_variables(normalized)["intent_plan_json"])
     prompt_step = prompt_plan["pandas_execution_plan"][0]
-    assert prompt_step["group_by"] == ["TECH", "DENSITY", "PKG2", "MCP_NO"]
-    assert prompt_step["comparison_columns"] == ["MODE", "PKG1", "LEAD"]
+    assert prompt_step["group_by"] == ["TECH", "DEN", "PKG_TYPE2", "MCP_NO"]
+    assert prompt_step["comparison_columns"] == ["MODE", "PKG_TYPE1", "LEAD"]
+    assert "column_mappings" not in prompt_plan["resolved_grain_plan"]
+    assert "source_candidates" not in json.dumps(prompt_plan, ensure_ascii=False)
+
+
+def test_pandas_repair_prompt_hides_physical_column_lineage_and_keeps_standard_contract():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    prompt_plan = executor._repair_prompt_contract(
+        {
+            "resolved_grain_plan": {
+                "grain_columns": ["STANDARD_DIM"],
+                "column_mappings": [
+                    {
+                        "canonical_key": "STANDARD_DIM",
+                        "source_candidates": ["RAW_DIM", "STANDARD_DIM"],
+                    }
+                ],
+            },
+            "resolved_join_plan": [
+                {
+                    "left_keys": ["STANDARD_DIM"],
+                    "right_keys": ["STANDARD_DIM"],
+                    "key_mappings": [
+                        {
+                            "canonical_key": "STANDARD_DIM",
+                            "left_candidates": ["RAW_LEFT"],
+                            "right_candidates": ["RAW_RIGHT"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    serialized = json.dumps(prompt_plan, ensure_ascii=False)
+    assert prompt_plan["resolved_grain_plan"]["grain_columns"] == ["STANDARD_DIM"]
+    assert prompt_plan["resolved_join_plan"][0]["left_keys"] == ["STANDARD_DIM"]
+    assert "RAW_DIM" not in serialized
+    assert "RAW_LEFT" not in serialized
+    assert "RAW_RIGHT" not in serialized
 
 
 def test_intent_normalizer_populates_current_date_only_for_catalog_required_param():
@@ -5567,8 +5706,8 @@ def test_intent_normalizer_applies_catalog_aliases_beyond_product_columns():
     )
 
     step = normalized["intent_plan"]["pandas_execution_plan"][0]
-    assert step["group_by"] == ["EQUIP_MODEL", "RECIPE_ID", "OPER_NM"]
-    assert step["agg_column"] == "EQUIP_ID"
+    assert step["group_by"] == ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"]
+    assert step["agg_column"] == "EQP_ID"
 
 
 def test_intent_normalizer_does_not_guess_when_catalog_aliases_conflict():
@@ -7740,25 +7879,163 @@ def test_catalog_mapping_propagates_through_dummy_pipeline_to_pandas_filters():
     executed = executor.execute_pandas_code(
         adapted,
         {
-            "code": (
-                "result = sources['production_data']"
-                "[['DENSITY', 'PKG1', 'DEVICE', 'PRODUCTION']]"
-                ".reset_index(drop=True)"
-            )
+                "code": (
+                    "result = sources['production_data']"
+                    "[['DEN', 'PKG_TYPE1', 'DEVICE', 'PRODUCTION']]"
+                    ".reset_index(drop=True)"
+                )
         },
     )
 
     assert executed["analysis"]["status"] == "ok"
     assert executed["data"]["row_count"] > 0
     assert {
-        (row["DENSITY"], row["PKG1"])
+        (row["DEN"], row["PKG_TYPE1"])
         for row in executed["data"]["rows"]
     } == {("16G", "LFBGA")}
     generated_code = executed["trace"]["inspection"]["pandas_execution"][
         "generated_code"
     ]
-    assert "_filter_col_1_1 = 'DENSITY' if 'DENSITY'" in generated_code
-    assert "_filter_col_1_2 = 'PKG1' if 'PKG1'" in generated_code
+    assert "_filter_col_1_1 = 'DEN' if 'DEN'" in generated_code
+    assert "_filter_col_1_2 = 'PKG_TYPE1' if 'PKG_TYPE1'" in generated_code
+    assert "DENSITY" not in generated_code
+    assert "PKG1" not in generated_code
+
+
+def test_retrieval_adapter_standardizes_alias_columns_before_pandas_and_coalesces_blank_duplicates():
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    variables = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "15_pandas_variables_builder.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "sample",
+                    "source_alias": "sample_source",
+                    "filter_mappings": {
+                        "STANDARD_SIZE": ["RAW_SIZE"],
+                        "STANDARD_PACKAGE": ["RAW_PACKAGE"],
+                    },
+                    "standard_column_aliases": {
+                        "RAW_SIZE": ["RAW_SIZE"],
+                        "RAW_PACKAGE": ["RAW_PACKAGE"],
+                        "QUANTITY_LABEL": ["RAW_QTY"],
+                    },
+                    "metric_semantics": {
+                        "RAW_QTY": {
+                            "semantic_type": "quantity",
+                            "default_rollup": "sum",
+                        }
+                    },
+                }
+            ]
+        },
+        "runtime_sources": {
+            "sample_source": [
+                {
+                    "STANDARD_SIZE": "",
+                    "RAW_SIZE": "16G",
+                    "RAW_PACKAGE": "BGA",
+                    "RAW_QTY": 12,
+                }
+            ]
+        },
+        "source_results": [
+            {
+                "dataset_key": "sample",
+                "source_alias": "sample_source",
+                "status": "ok",
+                "row_count": 1,
+                "columns": ["STANDARD_SIZE", "RAW_SIZE", "RAW_PACKAGE", "RAW_QTY"],
+                "preview_rows": [
+                    {
+                        "STANDARD_SIZE": "",
+                        "RAW_SIZE": "16G",
+                        "RAW_PACKAGE": "BGA",
+                        "RAW_QTY": 12,
+                    }
+                ],
+            }
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    standardized = adapter.build_retrieval_payload(payload)
+
+    assert standardized["runtime_sources"]["sample_source"] == [
+        {
+            "STANDARD_SIZE": "16G",
+            "STANDARD_PACKAGE": "BGA",
+            "RAW_QTY": 12,
+        }
+    ]
+    assert standardized["source_results"][0]["columns"] == [
+        "STANDARD_SIZE",
+        "STANDARD_PACKAGE",
+        "RAW_QTY",
+    ]
+    trace = standardized["trace"]["inspection"]["source_column_standardization"]
+    assert trace["status"] == "applied"
+    assert trace["sources"][0]["rename_map"] == {
+        "RAW_SIZE": "STANDARD_SIZE",
+        "RAW_PACKAGE": "STANDARD_PACKAGE",
+    }
+    prompt = variables.build_variables(standardized)
+    assert "RAW_SIZE" not in prompt["source_schema_json"]
+    assert "RAW_PACKAGE" not in prompt["source_schema_json"]
+    assert "STANDARD_SIZE" in prompt["source_schema_json"]
+    assert "STANDARD_PACKAGE" in prompt["source_schema_json"]
+    assert "RAW_QTY" in prompt["source_schema_json"]
+
+
+def test_retrieval_adapter_blocks_nonblank_conflicts_between_equivalent_columns():
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    gate = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "sample",
+                    "source_alias": "sample_source",
+                    "required": True,
+                    "filter_mappings": {"STANDARD_SIZE": ["RAW_SIZE"]},
+                }
+            ]
+        },
+        "runtime_sources": {
+            "sample_source": [
+                {"STANDARD_SIZE": "16G", "RAW_SIZE": "24G", "QTY": 1}
+            ]
+        },
+        "source_results": [
+            {
+                "dataset_key": "sample",
+                "source_alias": "sample_source",
+                "status": "ok",
+                "row_count": 1,
+                "columns": ["STANDARD_SIZE", "RAW_SIZE", "QTY"],
+            }
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    standardized = adapter.build_retrieval_payload(payload)
+    assert standardized["source_results"][0]["status"] == "error"
+    assert (
+        standardized["trace"]["inspection"]["source_column_standardization"]["status"]
+        == "error"
+    )
+
+    blocked = gate.apply_retrieval_execution_gate(standardized)
+    assert blocked["execution_gate"]["status"] == "blocked"
+    assert blocked["analysis"]["error"]["type"] == "required_source_retrieval_failed"
 
 
 def test_reference_join_does_not_infer_schema_alias_without_metadata_contract():
@@ -9172,6 +9449,116 @@ def test_upstream_entity_binder_leaves_previous_result_row_match_job_without_par
     assert job.get("upstream_binding_applied") is not True
     assert result["orchestration"]["binding_status"] == "ok"
     assert result["trace"]["errors"] == []
+
+
+def test_empty_previous_result_short_circuits_followup_to_deterministic_empty_result():
+    binder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "05a_upstream_entity_parameter_binder.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "runtime_sources": {"previous_result": []},
+        "source_results": [
+            {
+                "dataset_key": "previous_result",
+                "source_alias": "previous_result",
+                "source_type": "mongodb_result_store",
+                "status": "ok",
+                "success": True,
+                "row_count": 0,
+            }
+        ],
+        "intent_plan": {
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "equipment_assign",
+                    "source_type": "oracle",
+                    "trusted_catalog": True,
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "join_previous",
+                    "operation": "join",
+                    "inputs": [
+                        {"kind": "external_source", "ref": "previous_result"},
+                        {"kind": "external_source", "ref": "equipment_assign"},
+                    ],
+                }
+            ],
+            "output_contract": {
+                "required_columns": ["TECH", "EQUIP_COUNT", "EQUIP_LIST"],
+                "result_columns": ["TECH", "EQUIP_COUNT", "EQUIP_LIST"],
+                "strict_result_columns": True,
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    bound = binder.bind_upstream_entity_parameters(payload)
+    plan = bound["intent_plan"]
+    assert plan["retrieval_jobs"] == []
+    assert plan["pandas_execution_plan"] == []
+    assert plan["resolved_empty_result_plan"]["reason"] == "upstream_entity_set_empty"
+    assert bound["orchestration"]["binding_status"] == "empty"
+    assert bound["source_results"][0]["source_alias"] == "previous_result"
+
+    executed = executor.execute_pandas_code(
+        bound,
+        {"code": "raise Exception('LLM code must not run')"},
+    )
+    assert executed["analysis"]["status"] == "ok", executed
+    assert executed["analysis"]["execution_mode"] == "empty_result"
+    assert executed["data"] == {
+        "columns": ["TECH", "EQUIP_COUNT", "EQUIP_LIST"],
+        "rows": [],
+        "row_count": 0,
+        "data_ref": "",
+    }
+
+
+def test_empty_previous_result_transform_without_retrieval_short_circuits_deterministically():
+    binder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "05a_upstream_entity_parameter_binder.py"
+    )
+    payload = {
+        "runtime_sources": {"previous_result": []},
+        "intent_plan": {
+            "request_scope": "followup_transform",
+            "reference_mode": "previous_result_transform",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "rank_previous",
+                    "operation": "sort_and_top_n",
+                    "inputs": [{"kind": "external_source", "ref": "previous_result"}],
+                }
+            ],
+            "output_contract": {
+                "required_columns": ["TECH", "EQUIP_COUNT"],
+                "result_columns": ["TECH", "EQUIP_COUNT"],
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = binder.bind_upstream_entity_parameters(payload)
+
+    assert result["intent_plan"]["retrieval_jobs"] == []
+    assert result["intent_plan"]["pandas_execution_plan"] == []
+    assert result["intent_plan"]["resolved_empty_result_plan"]["columns"] == [
+        "TECH",
+        "EQUIP_COUNT",
+    ]
+    assert result["orchestration"]["binding_status"] == "empty"
+    inspection = result["trace"]["inspection"]["upstream_parameter_binding"]
+    assert inspection["status"] == "empty"
+    assert inspection["reason"] == "upstream_entity_set_empty"
 
 
 def test_data_analysis_mongodb_result_store_has_ttl_input():
@@ -11966,7 +12353,7 @@ def test_metadata_qa_dataset_comparison_pins_all_named_datasets_and_default_colu
                 "payload": {
                     "display_name": "Equipment UPH",
                     "description": "장비 모델·Recipe·공정별 UPH",
-                    "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "default_detail_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
                 },
             },
         ]
@@ -11995,7 +12382,7 @@ def test_metadata_qa_dataset_comparison_pins_all_named_datasets_and_default_colu
     )
     uph_rows = uph_detail["metadata_qa_context"]["candidate_rows"]
     assert [row["key"] for row in uph_rows] == ["eqp_uph"]
-    assert uph_rows[0]["default_detail_columns"] == "EQUIP_MODEL, RECIPE_ID, OPER_NAME"
+    assert uph_rows[0]["default_detail_columns"] == "EQP_MODEL, RECIPE_ID, OPER_NAME"
 
 
 def test_metadata_qa_available_sources_keeps_complete_context_table():
@@ -15420,7 +15807,7 @@ def test_v5_trusted_catalog_hydrator_restores_metric_semantics_and_default_detai
                         "db_key": "GMS_DB",
                         "query_template": "SELECT EQUIP_MODEL, RECIPE_ID, OPER_NAME, UPH FROM UPH",
                     },
-                    "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "default_detail_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
                     "metric_semantics": {
                         "UPH": {
                             "semantic_type": "average",
@@ -15442,7 +15829,7 @@ def test_v5_trusted_catalog_hydrator_restores_metric_semantics_and_default_detai
     assert job["metric_semantics"]["UPH"]["allowed_rollups"] == ["mean"]
     assert result["intent_plan"]["output_contract"]["required_columns"] == [
         "UPH",
-        "EQUIP_MODEL",
+        "EQP_MODEL",
         "RECIPE_ID",
         "OPER_NAME",
     ]
@@ -15965,9 +16352,9 @@ def test_v5_intent_output_contract_adds_catalog_columns_only_for_detail_results(
                 {
                     "dataset_key": "eqp_uph",
                     "payload": {
-                        "row_identity_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
-                        "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
-                        "context_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                        "row_identity_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                        "default_detail_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                        "context_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
                     },
                 }
             ]
@@ -15980,8 +16367,8 @@ def test_v5_intent_output_contract_adds_catalog_columns_only_for_detail_results(
             {
                 "dataset_key": "eqp_uph",
                 "source_alias": "uph",
-                "row_identity_columns": ["EQUIP_MODEL"],
-                "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                "row_identity_columns": ["EQP_MODEL"],
+                "default_detail_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
                 "context_columns": ["RECIPE_ID", "OPER_NAME"],
             }
         ],
@@ -15994,7 +16381,7 @@ def test_v5_intent_output_contract_adds_catalog_columns_only_for_detail_results(
     detail_contract = detailed["intent_plan"]["output_contract"]
     assert detail_contract["required_columns"] == [
         "UPH",
-        "EQUIP_MODEL",
+        "EQP_MODEL",
         "RECIPE_ID",
         "OPER_NAME",
     ]
@@ -16004,7 +16391,7 @@ def test_v5_intent_output_contract_adds_catalog_columns_only_for_detail_results(
         {
             "dataset_key": "eqp_uph",
             "source_alias": "uph",
-            "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            "default_detail_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
         }
     ]
     assert detail_contract["null_group_policy"] == "preserve_as_blank"
@@ -16214,10 +16601,10 @@ def test_v5_intent_normalizer_resolves_metadata_driven_grain_and_join_without_de
 
     assert plan["resolved_grain_plan"]["grain_columns"] == [
         "TECH",
-        "DENSITY",
+        "DEN",
         "MODE",
-        "PKG1",
-        "PKG2",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
         "LEAD",
         "MCP_NO",
     ]
@@ -16226,29 +16613,29 @@ def test_v5_intent_normalizer_resolves_metadata_driven_grain_and_join_without_de
     join_plan = plan["resolved_join_plan"][0]
     assert join_plan["left_keys"] == [
         "TECH",
-        "DENSITY",
+        "DEN",
         "MODE",
-        "PKG1",
-        "PKG2",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
         "LEAD",
         "MCP_NO",
     ]
     assert join_plan["right_keys"] == join_plan["left_keys"]
     assert join_plan["canonical_right_value_columns"] == ["EQP_ID"]
-    assert join_plan["right_value_columns"] == ["EQUIP_ID"]
+    assert join_plan["right_value_columns"] == ["EQP_ID"]
     assert join_plan["multi_match_policy"] == "collect_unique"
     assert join_plan["null_key_policy"] == "normalize_blank"
     assert "DEVICE" not in join_plan["canonical_keys"]
     assert plan["output_contract"]["required_columns"] == [
         "TECH",
-        "DENSITY",
+        "DEN",
         "MODE",
-        "PKG1",
-        "PKG2",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
         "LEAD",
         "MCP_NO",
         "WIP",
-        "EQUIP_ID",
+        "EQP_ID",
     ]
 
 
@@ -16264,10 +16651,9 @@ def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
     ).read_text(encoding="utf-8")
 
     assert "resolved_grain_plan.strict=true" in pandas_prompt
-    assert "실제 물리 컬럼명으로 정규화한 값" in pandas_prompt
-    assert "canonical alias로 다시 rename하지 않는다" in pandas_prompt
-    assert "`result[canonical] = result[physical]`" in pandas_prompt
-    assert "실행용 물리 컬럼과 구분한다" in pandas_prompt
+    assert "차원 컬럼을 표준 컬럼명으로 단일화한 상태" in pandas_prompt
+    assert "물리 컬럼 alias를 추측하거나 다시 생성하지 않는다" in pandas_prompt
+    assert "표준 컬럼 하나만 집계와 최종 결과에 유지" in pandas_prompt
     assert "`pandas_execution_plan.operation=compare_group_attributes`" in pandas_prompt
     assert "`comparison_rule=any`" in pandas_prompt
     assert "`pandas_execution_plan.operation=find_duplicate_groups`" in pandas_prompt
@@ -16277,15 +16663,15 @@ def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
     assert "`valid_keys = counts[mask].reset_index()[group_cols]`" in pandas_prompt
     assert "`group_cols`는 반드시 해당 단계의 `group_by`" in pandas_prompt
     assert "`cannot insert ..., already exists`" in pandas_prompt
-    assert "canonical alias로 다시 rename하지 않는다" in repair_prompt
-    assert "`result[canonical] = result[physical]`" in repair_prompt
+    assert "차원 컬럼을 표준 컬럼명으로 단일화한 상태" in repair_prompt
+    assert "물리 컬럼명을 추측해 다시 만들지 않는다" in repair_prompt
     assert "`operation=compare_group_attributes` 코드가 실패했다면" in repair_prompt
     assert "`group_by + comparison_columns`로 `drop_duplicates()`" in repair_prompt
     assert "`pd.DataFrame(columns=group_cols + comp_cols)`" in repair_prompt
     assert "`grouped.groups.keys()` index에 원본 행 index의 `transform()`" in repair_prompt
     assert "`resolved_grain_plan.grain_columns` 전체를 group_cols로 사용하지 않으며" in repair_prompt
     assert "`ValueError: cannot insert ..., already exists`" in repair_prompt
-    assert "집계용 `group_cols` 전체를 join key로 재사용하지 않는다" in pandas_prompt
+    assert "집계용 `group_cols` 전체를 join key로 재사용하거나 물리 alias 후보를 추측하지 않는다" in pandas_prompt
     assert "multi_match_policy=collect_unique" in pandas_prompt
     assert "resolved_grain_plan.strict=true" in repair_prompt
     assert "`drop_duplicates(subset=join_keys)`" in repair_prompt
@@ -16342,9 +16728,9 @@ def test_v5_catalog_hydrator_propagates_only_safe_column_contract():
                     "source_config": {"db_key": "GMS_DB", "password": "secret"},
                     "filter_mappings": {"EQP_MODEL": ["EQUIP_MODEL"]},
                     "standard_column_aliases": {"EQP_MODEL": ["EQUIP_MODEL"]},
-                    "row_identity_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
-                    "default_detail_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
-                    "context_columns": ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "row_identity_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "default_detail_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "context_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
                 },
             }
         ]
@@ -16355,14 +16741,14 @@ def test_v5_catalog_hydrator_propagates_only_safe_column_contract():
     ][0]
 
     assert job["filter_mappings"] == {"EQP_MODEL": ["EQUIP_MODEL"]}
-    assert job["default_detail_columns"] == ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"]
+    assert job["default_detail_columns"] == ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"]
     assert "row_identity_columns" not in job
     assert "context_columns" not in job
     assert payload["intent_plan"]["output_contract"]["required_columns"] == ["UPH"]
     hydrated = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
     assert hydrated["intent_plan"]["output_contract"]["required_columns"] == [
         "UPH",
-        "EQUIP_MODEL",
+        "EQP_MODEL",
         "RECIPE_ID",
         "OPER_NAME",
     ]
@@ -17152,7 +17538,7 @@ def test_v5_equipment_uph_join_recipe_is_selected_as_domain_metadata():
                 "key": "equipment_assignment_uph_join",
                 "payload": {
                     "display_name": "장비 배정-Recipe UPH 결합 규칙",
-                    "aliases": ["장비별 UPH", "배정 장비 UPH", "장비와 Recipe UPH"],
+                    "aliases": ["배정 장비 UPH", "장비와 Recipe UPH", "배정된 장비와 UPH"],
                     "source_datasets": ["equipment_assign", "eqp_uph"],
                     "join_type": "left",
                     "join_keys": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
@@ -17231,7 +17617,11 @@ def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_c
     assert '"default_detail_columns는 A, B로 바꿔줘"' in catalog_text
     assert "join 기준과 실행 순서는 Table Catalog에 넣지 말고 Domain의 analysis_recipes에 등록" in catalog_text
     assert "default_detail_columns는 EQUIP_ID로 저장" in catalog_text
-    assert "다른조건이 없을 때 기본적으로 보여줄 컬럼은 EQUIP_MODEL, RECIPE_ID, OPER_NAME이야" in catalog_text
+    assert "다른조건이 없을 때 기본적으로 보여줄 표준 컬럼은 EQP_MODEL, RECIPE_ID, OPER_NAME이야" in catalog_text
+    assert "pandas 계획과 결과 계약에서는 EQP_MODEL만 사용" in catalog_text
+    assert "배정 장비의 목록이나 대수를 요청하지 않은 일반 UPH 분석에는 이 recipe를 사용하지 않고 eqp_uph 하나를 사용" in domain_text
+    assert "`analysis_recipes`의 선택 조건, 제외 조건, 집계·표시 정책" in domain_saving_prompt
+    assert "실제 source column은 `columns`, `query_template`, mapping의 오른쪽에만 보존" in saving_prompt
     assert "UPH는 사용자가 UPH를 물었을 때 metric 컬럼으로 추가" in catalog_text
     assert "PRESS_CNT와 MCP_NO는 사용자가 질문에서 요구할 때만" in catalog_text
     assert "default_detail_columns는 LOT_ID, OPER_NAME, PROD_QTY, WF_QTY, IN_TAT, CUM_TAT, HOLD_STAT, HOLD_REASON, LOT_STAT" in catalog_text
@@ -18234,9 +18624,9 @@ def test_followup_equipment_join_resolves_physical_keys_and_preserves_previous_r
         )
         for item in join["key_mappings"]
     }
-    assert mappings["DEN"] == ("DENSITY", "DENSITY")
-    assert mappings["PKG_TYPE1"] == ("PKG1", "PKG1")
-    assert mappings["PKG_TYPE2"] == ("PKG2", "PKG2")
+    assert mappings["DEN"] == ("DENSITY", "DEN")
+    assert mappings["PKG_TYPE1"] == ("PKG1", "PKG_TYPE1")
+    assert mappings["PKG_TYPE2"] == ("PKG2", "PKG_TYPE2")
 
     normalized["runtime_sources"] = {
         "previous_result": previous_rows,
@@ -18465,3 +18855,1990 @@ def test_runtime_temporal_logic_has_no_boh_question_or_domain_key_branch():
         "_normalize_domain_temporal_contracts",
     ):
         assert blocked not in source_text
+
+
+def test_execution_graph_separates_external_sources_from_derived_results():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "compare two metrics and sort the joined result"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "two_source_metric_comparison",
+                "retrieval_jobs": [
+                    {"dataset_key": "production", "source_alias": "prod_input"},
+                    {"dataset_key": "wip", "source_alias": "wip_scope"},
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "prod_input",
+                        "group_by": ["PRODUCT"],
+                        "aggregations": [
+                            {"column": "PRODUCTION", "method": "sum", "output_column": "INPUT_QTY"}
+                        ],
+                    },
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "wip_scope",
+                        "group_by": ["PRODUCT"],
+                        "aggregations": [
+                            {"column": "WIP", "method": "sum", "output_column": "WIP_QTY"}
+                        ],
+                    },
+                    {
+                        "operation": "join",
+                        "left_source_alias": "prod_input",
+                        "right_source_alias": "wip_scope",
+                        "join_type": "left",
+                    },
+                    {
+                        "operation": "sort_and_top_n",
+                        "source_alias": "joined_input_wip",
+                        "sort_by": "WIP_QTY",
+                        "order": "desc",
+                    },
+                ],
+            }
+        },
+    )
+
+    graph = normalized["intent_plan"]["resolved_execution_graph"]
+    assert [
+        item["source_alias"] for item in graph["external_source_requirements"]
+    ] == ["prod_input", "wip_scope"]
+    assert graph["nodes"][-1]["inputs"] == [
+        {"kind": "node_output", "ref": graph["nodes"][-2]["node_id"]}
+    ]
+
+
+def test_previous_source_metric_binding_is_not_rejected_as_missing_retrieval_job():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "show the changed product scope"},
+            "state": {
+                "current_data": {"source_aliases": ["prod_pkg_out"]},
+                "runtime_source_refs": {
+                    "prod_pkg_out": {
+                        "ref_id": "result:s1:source",
+                        "role": "source_rows",
+                        "dataset_key": "production",
+                    }
+                },
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "product_scope_transform",
+                "request_scope": "followup_transform",
+                "reference_mode": "previous_source",
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "prod_pkg_out",
+                        "group_by": ["PRODUCT"],
+                        "aggregations": [
+                            {"column": "PRODUCTION", "method": "sum", "output_column": "PKG_OUT_QTY"}
+                        ],
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["PRODUCT"],
+                    "metric_columns": ["PKG_OUT_QTY"],
+                },
+            }
+        },
+    )
+
+    plan = normalized["intent_plan"]
+    assert "validation_errors" not in plan
+    assert plan["resolved_execution_graph"]["external_source_requirements"] == [
+        {
+            "source_alias": "prod_pkg_out",
+            "provider": "previous_source",
+            "dataset_key": "production",
+            "required": True,
+        }
+    ]
+
+
+def test_output_contract_preserves_validated_breakdown_with_entity_grain():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    product_ref = {"section": "product_key_columns", "key": "standard_product_keys"}
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    **product_ref,
+                    "payload": {"columns": ["TECH", "DENSITY", "MODE"]},
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "wip",
+                    "payload": {
+                        "columns": ["OPER_NAME", "TECH", "DENSITY", "MODE", "WIP"],
+                        "standard_column_aliases": {
+                            "OPER_NAME": "OPER_NAME",
+                            "TECH": "TECH",
+                            "DENSITY": "DENSITY",
+                            "MODE": "MODE",
+                            "WIP": "WIP",
+                        },
+                    },
+                }
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "show inventory by operation and product"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "metadata_refs": [product_ref],
+            "intent_plan": {
+                "analysis_kind": "inventory_by_operation_product",
+                "retrieval_jobs": [{"dataset_key": "wip", "source_alias": "wip_source"}],
+                "grain_plan": {"metadata_ref": product_ref, "source_alias": "wip_source"},
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "wip_source",
+                        "group_by": ["OPER_NAME", "TECH", "DENSITY", "MODE"],
+                        "aggregations": [
+                            {"column": "WIP", "method": "sum", "output_column": "WIP_QTY"}
+                        ],
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["TECH", "DENSITY", "MODE"],
+                    "metric_columns": ["WIP_QTY"],
+                },
+            },
+        },
+        candidates,
+    )
+
+    contract = normalized["intent_plan"]["output_contract"]
+    assert contract["grain_columns"] == ["OPER_NAME", "TECH", "DENSITY", "MODE"]
+    assert contract["result_columns"] == [
+        "OPER_NAME",
+        "TECH",
+        "DENSITY",
+        "MODE",
+        "WIP_QTY",
+    ]
+
+
+def test_unique_metadata_alias_locks_temporal_contract_without_llm_metadata_ref():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    temporal_ref = {"section": "quantity_terms", "key": "inventory_opening_balance"}
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    **temporal_ref,
+                    "payload": {
+                        "display_name": "Opening inventory",
+                        "aliases": ["opening inventory", "morning inventory"],
+                        "metric_column": "WIP",
+                        "temporal_semantics": {
+                            "business_timepoint": "OPENING",
+                            "dataset_key": "inventory_history",
+                            "date_param": "DATE",
+                            "requested_date_offset_days": -1,
+                            "disallowed_dataset_keys": ["inventory_current"],
+                        },
+                    },
+                }
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "today morning inventory by product",
+                "reference_date": "20260731",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "opening_inventory_by_product",
+                "retrieval_jobs": [
+                    {"dataset_key": "inventory_current", "source_alias": "inventory_source"}
+                ],
+                "pandas_execution_plan": [],
+            }
+        },
+        candidates,
+    )
+
+    plan = normalized["intent_plan"]
+    assert plan["retrieval_jobs"][0]["dataset_key"] == "inventory_history"
+    assert plan["retrieval_jobs"][0]["required_params"] == {"DATE": "20260730"}
+    assert temporal_ref in normalized["metadata_refs"]
+    guard = normalized["trace"]["inspection"]["intent"]["business_time_guard"]
+    assert guard["selection_source"] == "metadata_alias_lock"
+
+
+def test_unique_metadata_alias_applies_registered_domain_condition_without_keyword_branch():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    product_ref = {"section": "product_terms", "key": "STACKED_PRODUCT"}
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    **product_ref,
+                    "payload": {
+                        "display_name": "Stacked product",
+                        "aliases": ["stacked product"],
+                        "conditions": [
+                            {"column": "STACK_TYPE", "operator": "is_not_null_or_empty"}
+                        ],
+                    },
+                }
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "stacked product inventory by product"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "stacked_product_inventory",
+                "retrieval_jobs": [
+                    {"dataset_key": "inventory_current", "source_alias": "inventory_source"}
+                ],
+                "pandas_execution_plan": [],
+            }
+        },
+        candidates,
+    )
+
+    filters = normalized["intent_plan"]["retrieval_jobs"][0]["filters"]
+    assert filters["STACK_TYPE"] == {"operator": "not_blank"}
+    assert product_ref in normalized["metadata_refs"]
+
+
+def test_presence_contract_ignores_incorrect_llm_left_join_and_emits_certificate():
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "left_metrics", "source_alias": "left_source"},
+                {"dataset_key": "right_metrics", "source_alias": "right_source"},
+            ],
+            "resolved_presence_comparison_plan": {
+                "operation": "compare_presence",
+                "presence_rule": "left_positive_right_missing_or_zero",
+                "grain_mappings": [
+                    {
+                        "canonical_column": "PRODUCT",
+                        "output_column": "PRODUCT",
+                        "source_candidates": {
+                            "left_source": ["PRODUCT"],
+                            "right_source": ["PRODUCT"],
+                        },
+                    }
+                ],
+                "left_metric": {
+                    "source_alias": "left_source",
+                    "source_candidates": ["LEFT_QTY"],
+                    "aggregation": "sum",
+                    "output_column": "LEFT_QTY",
+                },
+                "right_metric": {
+                    "source_alias": "right_source",
+                    "source_candidates": ["RIGHT_QTY"],
+                    "aggregation": "sum",
+                    "output_column": "RIGHT_QTY",
+                },
+                "strict": True,
+            },
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["PRODUCT"],
+                "metric_columns": ["LEFT_QTY", "RIGHT_QTY"],
+                "result_columns": ["PRODUCT", "LEFT_QTY", "RIGHT_QTY"],
+                "strict_result_columns": True,
+            },
+        },
+        "runtime_sources": {
+            "left_source": [
+                {"PRODUCT": "A", "LEFT_QTY": 10},
+                {"PRODUCT": "B", "LEFT_QTY": 7},
+                {"PRODUCT": "C", "LEFT_QTY": 0},
+            ],
+            "right_source": [
+                {"PRODUCT": "A", "RIGHT_QTY": 5},
+                {"PRODUCT": "B", "RIGHT_QTY": 0},
+            ],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    wrong_llm_code = {
+        "code": (
+            "result = sources['left_source'].merge("
+            "sources['right_source'], on='PRODUCT', how='left').fillna(0)"
+        )
+    }
+    result = executor.execute_pandas_code(payload, wrong_llm_code)
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["analysis"]["execution_mode"] == "compare_presence"
+    assert result["data"]["rows"] == [
+        {"PRODUCT": "B", "LEFT_QTY": 7, "RIGHT_QTY": 0}
+    ]
+    certificate = result["analysis"]["semantic_execution_certificate"]
+    assert certificate["operation"] == "compare_presence"
+    assert certificate["postcondition_validation"] == "passed"
+    assert certificate["excluded_right_positive_key_count"] == 1
+    generated_code = result["trace"]["inspection"]["pandas_execution"]["generated_code"]
+    assert "# operation: compare_presence" in generated_code
+    assert "# predicate: LEFT_QTY > 0 and RIGHT_QTY <= 0" in generated_code
+
+
+def test_metric_comparison_contract_filters_joined_metrics_and_emits_certificate():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    answer_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py"
+    )
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "baseline_metrics",
+                    "payload": {
+                        "columns": ["PRODUCT", "BASE_VALUE"],
+                        "standard_column_aliases": {
+                            "PRODUCT": "PRODUCT",
+                            "BASE_VALUE": "BASE_VALUE",
+                        },
+                    },
+                },
+                {
+                    "dataset_key": "comparison_metrics",
+                    "payload": {
+                        "columns": ["PRODUCT", "COMPARE_VALUE"],
+                        "standard_column_aliases": {
+                            "PRODUCT": "PRODUCT",
+                            "COMPARE_VALUE": "COMPARE_VALUE",
+                        },
+                    },
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "show products whose comparison metric is greater than baseline"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "metric_comparison",
+                "retrieval_jobs": [
+                    {"dataset_key": "baseline_metrics", "source_alias": "baseline_source"},
+                    {"dataset_key": "comparison_metrics", "source_alias": "comparison_source"},
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "baseline_agg",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "external_source", "ref": "baseline_source"}],
+                        "group_by": ["PRODUCT"],
+                        "aggregations": [
+                            {"column": "BASE_VALUE", "method": "sum", "output_column": "BASE_SUM"}
+                        ],
+                    },
+                    {
+                        "node_id": "comparison_agg",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "external_source", "ref": "comparison_source"}],
+                        "group_by": ["PRODUCT"],
+                        "aggregations": [
+                            {"column": "COMPARE_VALUE", "method": "sum", "output_column": "COMPARE_SUM"}
+                        ],
+                    },
+                    {
+                        "node_id": "metric_join",
+                        "operation": "join",
+                        "inputs": [
+                            {"kind": "node_output", "ref": "baseline_agg"},
+                            {"kind": "node_output", "ref": "comparison_agg"},
+                        ],
+                        "join_type": "left",
+                        "population_policy": "left_source_only",
+                    },
+                    {
+                        "node_id": "metric_compare",
+                        "operation": "compare_metrics",
+                        "inputs": [{"kind": "node_output", "ref": "metric_join"}],
+                        "lhs_metric_column": "COMPARE_SUM",
+                        "operator": "gt",
+                        "rhs_metric_column": "BASE_SUM",
+                    },
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["PRODUCT"],
+                    "metric_columns": ["BASE_SUM", "COMPARE_SUM"],
+                    "required_columns": ["PRODUCT", "BASE_SUM", "COMPARE_SUM"],
+                    "result_columns": ["PRODUCT", "BASE_SUM", "COMPARE_SUM"],
+                    "strict_result_columns": True,
+                    "ordering": {"sort_by": "COMPARE_SUM", "order": "desc"},
+                },
+            }
+        },
+        candidates,
+    )
+
+    plan = normalized["intent_plan"]
+    assert "validation_errors" not in plan
+    contract = plan["resolved_metric_comparison_plan"]
+    assert contract["operation"] == "compare_metrics"
+    assert contract["lhs_metric_column"] == "COMPARE_SUM"
+    assert contract["operator"] == "gt"
+    assert contract["rhs_metric_column"] == "BASE_SUM"
+
+    normalized["runtime_sources"] = {
+        "baseline_source": [
+            {"PRODUCT": "A", "BASE_VALUE": 100},
+            {"PRODUCT": "B", "BASE_VALUE": 300},
+            {"PRODUCT": "C", "BASE_VALUE": 100},
+        ],
+        "comparison_source": [
+            {"PRODUCT": "A", "COMPARE_VALUE": 1200},
+            {"PRODUCT": "B", "COMPARE_VALUE": 200},
+            {"PRODUCT": "C", "COMPARE_VALUE": 400},
+        ],
+    }
+    executed = executor.execute_pandas_code(
+        normalized,
+        {"code": "result = sources['baseline_source'].copy()"},
+    )
+
+    assert executed["analysis"]["status"] == "ok", executed
+    assert executed["analysis"]["execution_mode"] == "compare_metrics"
+    assert executed["data"]["rows"] == [
+        {"PRODUCT": "A", "BASE_SUM": 100, "COMPARE_SUM": 1200},
+        {"PRODUCT": "C", "BASE_SUM": 100, "COMPARE_SUM": 400},
+    ]
+    certificate = executed["analysis"]["semantic_execution_certificate"]
+    assert certificate == {
+        "operation": "compare_metrics",
+        "lhs_metric_column": "COMPARE_SUM",
+        "operator": "gt",
+        "rhs_metric_column": "BASE_SUM",
+        "null_numeric_policy": "exclude_missing_operand",
+        "postcondition_validation": "passed",
+        "input_row_count": 3,
+        "missing_operand_row_count": 0,
+        "excluded_row_count": 1,
+        "result_row_count": 2,
+    }
+    generated_code = executed["trace"]["inspection"]["pandas_execution"]["generated_code"]
+    assert "# operation: compare_metrics" in generated_code
+    assert "# predicate: COMPARE_SUM > BASE_SUM" in generated_code
+    answered = answer_builder.build_answer_response(
+        executed,
+        "The joined table contains three products.",
+    )
+    assert "COMPARE_SUM > BASE_SUM 조건을 통과한 결과만" in answered["answer_message"]
+
+
+def test_question_metric_comparison_guard_is_generic_and_excludes_explicit_ranking():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    output_contract = {
+        "metric_columns": ["BASE_METRIC", "TARGET_METRIC"],
+        "primary_metric": "TARGET_METRIC",
+    }
+
+    assert normalizer._question_metric_comparison_contract(
+        "기준 수치 대비 대상 수치가 많은 항목을 보여줘",
+        output_contract,
+    ) == {
+        "operation": "compare_metrics",
+        "lhs_metric_column": "TARGET_METRIC",
+        "operator": "gt",
+        "rhs_metric_column": "BASE_METRIC",
+    }
+    assert normalizer._question_metric_comparison_contract(
+        "기준 수치 대비 대상 수치를 많은 순으로 보여줘",
+        output_contract,
+    ) == {}
+
+
+def test_presence_answer_requires_verified_semantic_execution_certificate():
+    answer_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "20_answer_response_builder.py"
+    )
+    payload = {
+        "request": {"question": "show left present and right absent products"},
+        "intent_plan": {
+            "pandas_execution_plan": [{"operation": "compare_presence"}],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["PRODUCT"],
+                "metric_columns": ["LEFT_QTY", "RIGHT_QTY"],
+            },
+        },
+        "analysis": {"status": "ok"},
+        "data": {
+            "columns": ["PRODUCT", "LEFT_QTY", "RIGHT_QTY"],
+            "rows": [{"PRODUCT": "B", "LEFT_QTY": 7, "RIGHT_QTY": 0}],
+            "row_count": 1,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    unverified = answer_builder.build_answer_response(
+        deepcopy(payload),
+        "The requested result contains one product.",
+    )
+    assert "존재·부재 조건을 만족한" not in unverified["answer_message"]
+
+    verified_payload = deepcopy(payload)
+    verified_payload["analysis"]["semantic_execution_certificate"] = {
+        "operation": "compare_presence",
+        "postcondition_validation": "passed",
+    }
+    verified = answer_builder.build_answer_response(
+        verified_payload,
+        "The requested result contains one product.",
+    )
+    assert "존재·부재 조건을 만족한" in verified["answer_message"]
+
+
+def test_previous_source_loader_uses_typed_graph_leaf_requirements_only():
+    loader = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "05_mongodb_result_loader.py"
+    )
+    payload = {
+        "intent_plan": {
+            "resolved_execution_graph": {
+                "external_source_requirements": [
+                    {
+                        "source_alias": "prod_pkg_out",
+                        "provider": "previous_source",
+                        "dataset_key": "production",
+                    }
+                ]
+            },
+            "pandas_execution_plan": [
+                {"operation": "sort_and_top_n", "source_alias": "derived_result"}
+            ],
+        }
+    }
+    assert loader._requested_source_aliases(payload) == ["prod_pkg_out"]
+
+
+def test_retrieval_gate_requires_restored_previous_source_from_typed_graph():
+    gate = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [],
+            "resolved_execution_graph": {
+                "external_source_requirements": [
+                    {
+                        "source_alias": "prod_pkg_out",
+                        "provider": "previous_source",
+                        "dataset_key": "production",
+                        "required": True,
+                    }
+                ]
+            },
+        },
+        "runtime_sources": {},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    blocked = gate.apply_retrieval_execution_gate(deepcopy(payload))
+    assert blocked["execution_gate"]["status"] == "blocked"
+    assert blocked["execution_gate"]["critical_failures"][0]["provider"] == "previous_source"
+
+    payload["runtime_sources"] = {"prod_pkg_out": []}
+    allowed = gate.apply_retrieval_execution_gate(payload)
+    assert allowed["execution_gate"]["status"] == "continue"
+
+
+def test_normalizer_compiles_explicit_presence_step_to_deterministic_contract():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "left_metrics",
+                    "payload": {
+                        "columns": ["PRODUCT", "LEFT_QTY"],
+                        "standard_column_aliases": {
+                            "PRODUCT": "PRODUCT",
+                            "LEFT_QTY": "LEFT_QTY",
+                        },
+                    },
+                },
+                {
+                    "dataset_key": "right_metrics",
+                    "payload": {
+                        "columns": ["PRODUCT", "RIGHT_QTY"],
+                        "standard_column_aliases": {
+                            "PRODUCT": "PRODUCT",
+                            "RIGHT_QTY": "RIGHT_QTY",
+                        },
+                    },
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "left positive right absent"}, "trace": {"warnings": [], "errors": [], "inspection": {}}},
+        {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {"dataset_key": "left_metrics", "source_alias": "left_source"},
+                    {"dataset_key": "right_metrics", "source_alias": "right_source"},
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "left_source",
+                        "group_by": ["PRODUCT"],
+                        "aggregations": [{"column": "LEFT_QTY", "method": "sum", "output_column": "LEFT_QTY"}],
+                    },
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "right_source",
+                        "group_by": ["PRODUCT"],
+                        "aggregations": [{"column": "RIGHT_QTY", "method": "sum", "output_column": "RIGHT_QTY"}],
+                    },
+                    {
+                        "operation": "compare_presence",
+                        "left_source_alias": "left_source",
+                        "right_source_alias": "right_source",
+                        "presence_rule": "left_positive_right_missing_or_zero",
+                    },
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["PRODUCT"],
+                    "metric_columns": ["LEFT_QTY", "RIGHT_QTY"],
+                },
+            }
+        },
+        candidates,
+    )
+    contract = normalized["intent_plan"]["resolved_presence_comparison_plan"]
+    assert contract["operation"] == "compare_presence"
+    assert contract["left_metric"]["source_alias"] == "left_source"
+    assert contract["right_metric"]["source_alias"] == "right_source"
+
+
+def test_download_manifest_is_source_type_neutral_for_all_retrievers():
+    store = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py"
+    )
+    source_types = ["oracle", "h_api", "datalake", "goodocs", "dummy"]
+    payload = {
+        "data": {"columns": ["VALUE"], "row_count": 1},
+        "runtime_sources": {
+            f"source_{index}": [{"VALUE": index}]
+            for index, _ in enumerate(source_types, start=1)
+        },
+        "source_results": [
+            {
+                "source_alias": f"source_{index}",
+                "dataset_key": f"dataset_{index}",
+                "source_type": source_type,
+                "row_count": 1,
+            }
+            for index, source_type in enumerate(source_types, start=1)
+        ],
+        "intent_plan": {
+            "resolved_execution_graph": {
+                "external_source_requirements": [
+                    {"source_alias": f"source_{index}", "provider": "retrieval_job"}
+                    for index, _ in enumerate(source_types, start=1)
+                ]
+            }
+        },
+    }
+    refs = store._build_data_refs(payload, "result:s1:test", "db", "collection")
+    linked, warning = store._attach_download_links(
+        refs,
+        "http://127.0.0.1:8765",
+        datetime.now(timezone.utc),
+        1,
+    )
+    manifest = store._download_manifest(linked)
+    assert warning == ""
+    assert {item.get("source_type") for item in manifest if item["role"] == "source_rows"} == set(source_types)
+    assert all(item["download_url"].startswith("http://127.0.0.1:8765/download.csv?") for item in manifest)
+
+
+def test_api_response_exposes_common_download_manifest():
+    api = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py"
+    )
+    payload = {
+        "answer_message": "ok",
+        "analysis": {"status": "ok"},
+        "download_manifest": [
+            {
+                "role": "source_rows",
+                "source_type": "goodocs",
+                "download_url": "http://127.0.0.1:8765/download.csv?download_ref=x",
+            }
+        ],
+    }
+    response = api.build_api_response(payload)
+    assert response["download_manifest"] == payload["download_manifest"]
+
+
+def test_temporal_contract_replaces_only_bound_metric_source_in_mixed_query():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    temporal_ref = {"section": "quantity_terms", "key": "opening_metric"}
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    **temporal_ref,
+                    "payload": {
+                        "aliases": ["opening inventory"],
+                        "column": "RIGHT_QTY",
+                        "temporal_semantics": {
+                            "dataset_key": "right_history",
+                            "date_param": "DATE",
+                            "requested_date_offset_days": -1,
+                            "disallowed_dataset_keys": ["right_today"],
+                        },
+                    },
+                }
+            ],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "2026-07-31 left metric and opening inventory", "reference_date": "20260731"}, "trace": {"warnings": [], "errors": [], "inspection": {}}},
+        {
+            "metadata_refs": [temporal_ref],
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {"dataset_key": "left_history", "source_alias": "left_source", "required_params": {"DATE": "20260731"}},
+                    {"dataset_key": "right_today", "source_alias": "right_source", "required_params": {"DATE": "20260731"}},
+                ],
+                "pandas_execution_plan": [
+                    {"node_id": "left", "operation": "groupby_and_aggregate", "inputs": [{"kind": "external_source", "ref": "left_source"}], "group_by": ["KEY"], "aggregations": [{"column": "LEFT_QTY", "method": "sum", "output_column": "LEFT_QTY"}]},
+                    {"node_id": "right", "operation": "groupby_and_aggregate", "inputs": [{"kind": "external_source", "ref": "right_source"}], "group_by": ["KEY"], "aggregations": [{"column": "RIGHT_QTY", "method": "sum", "output_column": "RIGHT_QTY"}]},
+                ],
+            },
+        },
+        candidates,
+    )
+    jobs = {item["source_alias"]: item for item in normalized["intent_plan"]["retrieval_jobs"]}
+    assert set(jobs) == {"left_source", "right_source"}
+    assert jobs["left_source"]["dataset_key"] == "left_history"
+    assert jobs["left_source"]["required_params"] == {"DATE": "20260731"}
+    assert jobs["right_source"]["dataset_key"] == "right_history"
+    assert jobs["right_source"]["required_params"] == {"DATE": "20260730"}
+
+
+def test_typed_external_input_binds_lineage_dedupes_grain_and_registers_leaf():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    product_ref = {"section": "product_key_columns", "key": "product_keys"}
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [{**product_ref, "payload": {"columns": ["TECH", "DEN", "MODE"]}}],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "metrics",
+                    "payload": {
+                        "columns": ["TECH", "DENSITY", "MODE", "QTY"],
+                        "filter_mappings": {"TECH": ["TECH"], "DEN": ["DENSITY"], "MODE": ["MODE"]},
+                    },
+                }
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "by product"}, "trace": {"warnings": [], "errors": [], "inspection": {}}},
+        {
+            "metadata_refs": [product_ref],
+            "intent_plan": {
+                "grain_plan": {"metadata_ref": product_ref, "source_alias": "metric_source"},
+                "retrieval_jobs": [{"dataset_key": "metrics", "source_alias": "metric_source"}],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "aggregate",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "external_source", "ref": "metric_source"}],
+                        "group_by": ["TECH", "DEN", "MODE"],
+                        "aggregations": [{"column": "QTY", "method": "sum", "output_column": "QTY"}],
+                    }
+                ],
+                "output_contract": {"result_mode": "aggregate", "grain_columns": ["TECH", "DEN", "MODE"], "metric_columns": ["QTY"]},
+            },
+        },
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+    assert plan["pandas_execution_plan"][0]["source_alias"] == "metric_source"
+    assert plan["output_contract"]["grain_columns"] == ["TECH", "DEN", "MODE"]
+    assert plan["resolved_execution_graph"]["external_source_requirements"] == [
+        {"source_alias": "metric_source", "provider": "retrieval_job", "dataset_key": "metrics", "required": True}
+    ]
+
+
+def test_derived_single_source_step_inherits_catalog_alias_for_column_normalization():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "by product"}, "trace": {"warnings": [], "errors": [], "inspection": {}}},
+        {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {"dataset_key": "metrics", "source_alias": "metric_source"}
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "helper",
+                        "operation": "apply_pandas_function_case",
+                        "inputs": [{"kind": "external_source", "ref": "metric_source"}],
+                        "function_name": "helper",
+                    },
+                    {
+                        "node_id": "aggregate",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "helper"}],
+                        "group_by": ["DENSITY", "PKG1"],
+                        "aggregations": [
+                            {"column": "QTY", "method": "sum", "output_column": "QTY"}
+                        ],
+                    },
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["DENSITY", "PKG1"],
+                    "metric_columns": ["QTY"],
+                },
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "metrics",
+                        "payload": {
+                            "columns": ["DENSITY", "PKG1", "QTY"],
+                            "filter_mappings": {
+                                "DEN": ["DENSITY"],
+                                "PKG_TYPE1": ["PKG1"],
+                            },
+                            "standard_column_aliases": {
+                                "DENSITY": ["DENSITY"],
+                                "PKG1": ["PKG1"],
+                            },
+                        },
+                    }
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    steps = normalized["intent_plan"]["pandas_execution_plan"]
+    aggregate = next(step for step in steps if step.get("node_id") == "aggregate")
+    assert aggregate["source_alias"] == "metric_source"
+    assert aggregate["group_by"] == ["DEN", "PKG_TYPE1"]
+    assert normalized["intent_plan"]["output_contract"]["grain_columns"] == [
+        "DEN",
+        "PKG_TYPE1",
+    ]
+
+
+def test_derived_multi_source_step_uses_only_consensus_catalog_aliases():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    retrieval_jobs = [
+        {"dataset_key": "left_data", "source_alias": "left_source"},
+        {"dataset_key": "right_data", "source_alias": "right_source"},
+    ]
+    pandas_plan = [
+        {
+            "node_id": "left_agg",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "left_source"}],
+            "group_by": ["RAW_MODEL"],
+        },
+        {
+            "node_id": "right_agg",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "right_source"}],
+            "group_by": ["RAW_MODEL"],
+        },
+        {
+            "node_id": "join",
+            "operation": "join",
+            "inputs": [
+                {"kind": "node_output", "ref": "left_agg"},
+                {"kind": "node_output", "ref": "right_agg"},
+            ],
+        },
+        {
+            "node_id": "post_join_agg",
+            "operation": "groupby_and_aggregate",
+            "source_alias": "joined_result",
+            "inputs": [{"kind": "node_output", "ref": "join"}],
+            "group_by": ["RAW_MODEL"],
+        },
+    ]
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": dataset_key,
+                "payload": {
+                    "columns": ["RAW_MODEL"],
+                    "filter_mappings": {"MODEL_KEY": ["RAW_MODEL"]},
+                },
+            }
+            for dataset_key in ("left_data", "right_data")
+        ]
+    }
+
+    normalized, trace = normalizer._normalize_pandas_plan_columns(
+        pandas_plan,
+        candidates,
+        retrieval_jobs,
+    )
+
+    assert normalized[-1]["source_alias"] == "joined_result"
+    assert normalized[-1]["group_by"] == ["MODEL_KEY"]
+    assert any(
+        item["from"] == "RAW_MODEL"
+        and item["to"] == "MODEL_KEY"
+        and item["source_alias"].startswith("__lineage__:")
+        for item in trace["changes"]
+    )
+
+
+def test_derived_multi_source_step_does_not_guess_conflicting_catalog_aliases():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    retrieval_jobs = [
+        {"dataset_key": "left_data", "source_alias": "left_source"},
+        {"dataset_key": "right_data", "source_alias": "right_source"},
+    ]
+    pandas_plan = [
+        {
+            "node_id": "join",
+            "operation": "join",
+            "inputs": [
+                {"kind": "external_source", "ref": "left_source"},
+                {"kind": "external_source", "ref": "right_source"},
+            ],
+        },
+        {
+            "node_id": "post_join_agg",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "node_output", "ref": "join"}],
+            "group_by": ["RAW_MODEL"],
+        },
+    ]
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "left_data",
+                "payload": {"filter_mappings": {"LEFT_MODEL": ["RAW_MODEL"]}},
+            },
+            {
+                "dataset_key": "right_data",
+                "payload": {"filter_mappings": {"RIGHT_MODEL": ["RAW_MODEL"]}},
+            },
+        ]
+    }
+
+    normalized, _ = normalizer._normalize_pandas_plan_columns(
+        pandas_plan,
+        candidates,
+        retrieval_jobs,
+    )
+
+    assert normalized[-1]["group_by"] == ["RAW_MODEL"]
+
+
+def test_metric_merge_uses_resolved_output_grain_standard_columns():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    table_items = [
+        {
+            "dataset_key": dataset,
+            "payload": {
+                "columns": ["DENSITY", metric],
+                "filter_mappings": {"DEN": ["DENSITY"]},
+                "standard_column_aliases": {"DENSITY": ["DENSITY"]},
+            },
+        }
+        for dataset, metric in (("left_data", "LEFT_QTY"), ("right_data", "RIGHT_QTY"))
+    ]
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "compare metrics"}, "trace": {"warnings": [], "errors": [], "inspection": {}}},
+        {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {"dataset_key": "left_data", "source_alias": "left_source"},
+                    {"dataset_key": "right_data", "source_alias": "right_source"},
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "left_helper",
+                        "operation": "apply_pandas_function_case",
+                        "inputs": [{"kind": "external_source", "ref": "left_source"}],
+                        "function_name": "helper",
+                    },
+                    {
+                        "node_id": "left_agg",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "left_helper"}],
+                        "group_by": ["DENSITY"],
+                        "aggregations": [
+                            {"column": "LEFT_QTY", "method": "sum", "output_column": "LEFT_QTY"}
+                        ],
+                    },
+                    {
+                        "node_id": "right_helper",
+                        "operation": "apply_pandas_function_case",
+                        "inputs": [{"kind": "external_source", "ref": "right_source"}],
+                        "function_name": "helper",
+                    },
+                    {
+                        "node_id": "right_agg",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "right_helper"}],
+                        "group_by": ["DENSITY"],
+                        "aggregations": [
+                            {"column": "RIGHT_QTY", "method": "sum", "output_column": "RIGHT_QTY"}
+                        ],
+                    },
+                    {
+                        "node_id": "join",
+                        "operation": "join",
+                        "inputs": [
+                            {"kind": "node_output", "ref": "left_agg"},
+                            {"kind": "node_output", "ref": "right_agg"},
+                        ],
+                    },
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["DENSITY"],
+                    "metric_columns": ["LEFT_QTY", "RIGHT_QTY"],
+                },
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "table_catalog_items": table_items,
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    plan = normalized["intent_plan"]
+    assert plan["resolved_output_grain_plan"]["grain_columns"] == ["DEN"]
+    assert plan["resolved_metric_merge_plan"]["grain_mappings"][0][
+        "canonical_column"
+    ] == "DEN"
+    assert plan["output_contract"]["grain_columns"] == ["DEN"]
+
+
+def test_presence_lineage_resolves_derived_node_aliases_and_enforces_two_metrics():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [
+                {"dataset_key": "left_metrics", "payload": {"columns": ["PRODUCT", "LEFT_QTY"], "filter_mappings": {"PRODUCT": ["PRODUCT"], "LEFT_QTY": ["LEFT_QTY"]}}},
+                {"dataset_key": "right_metrics", "payload": {"columns": ["PRODUCT", "RIGHT_QTY"], "filter_mappings": {"PRODUCT": ["PRODUCT"], "RIGHT_QTY": ["RIGHT_QTY"]}}},
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "left exists right absent"}, "trace": {"warnings": [], "errors": [], "inspection": {}}},
+        {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {"dataset_key": "left_metrics", "source_alias": "left_source"},
+                    {"dataset_key": "right_metrics", "source_alias": "right_source"},
+                ],
+                "pandas_execution_plan": [
+                    {"node_id": "agg_left", "operation": "groupby_and_aggregate", "inputs": [{"kind": "external_source", "ref": "left_source"}], "group_by": ["PRODUCT"], "agg_column": "LEFT_QTY", "agg_method": "sum"},
+                    {"node_id": "agg_right", "operation": "groupby_and_aggregate", "inputs": [{"kind": "external_source", "ref": "right_source"}], "group_by": ["PRODUCT"], "agg_column": "RIGHT_QTY", "agg_method": "sum"},
+                    {"node_id": "compare", "operation": "compare_presence", "inputs": [{"kind": "node_output", "ref": "agg_left"}, {"kind": "node_output", "ref": "agg_right"}], "left_source_alias": "derived_left", "right_source_alias": "derived_right", "left_metric_column": "LEFT_QTY", "right_metric_column": "RIGHT_QTY", "presence_rule": "left_positive_right_missing_or_zero"},
+                ],
+                "output_contract": {"result_mode": "detail", "grain_columns": ["PRODUCT"], "metric_columns": ["LEFT_QTY"]},
+            }
+        },
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+    assert plan["resolved_presence_comparison_plan"]["left_metric"]["source_alias"] == "left_source"
+    assert plan["resolved_presence_comparison_plan"]["right_metric"]["source_alias"] == "right_source"
+    assert plan["output_contract"]["metric_columns"] == ["LEFT_QTY", "RIGHT_QTY"]
+    assert plan["output_contract"]["result_mode"] == "aggregate"
+
+
+def test_metric_source_contract_rejects_dataset_without_bound_metric_column():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production_history",
+                        "payload": {
+                            "dataset_family": "production",
+                            "columns": ["KEY", "PRODUCTION"],
+                        },
+                },
+                {
+                    "dataset_key": "wip_current",
+                    "payload": {
+                        "dataset_family": "wip",
+                        "columns": ["KEY", "WIP"],
+                        "selection_criteria": {"time_scope": "current_day"},
+                    },
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "2026-06-27 production and inventory",
+                "reference_date": "20260731",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "wip_current",
+                        "source_alias": "production_source",
+                        "required_params": {"DATE": "20260627"},
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "production_source",
+                        "group_by": ["KEY"],
+                        "aggregations": [
+                            {
+                                "column": "PRODUCTION",
+                                "method": "sum",
+                                "output_column": "PRODUCTION_QTY",
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+        candidates,
+    )
+    errors = normalized["intent_plan"]["validation_errors"]
+    issue = next(
+        item
+        for error in errors
+        if error["type"] == "invalid_metric_source_contract"
+        for item in error["issues"]
+    )
+    assert issue["issue"] == "source_column_not_in_table_catalog"
+    assert issue["source_column"] == "PRODUCTION"
+    assert issue["actual_dataset_key"] == "wip_current"
+
+
+def test_metric_dataset_selection_uses_structured_time_scope_not_dataset_name():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "alpha",
+                    "payload": {
+                        "dataset_family": "production",
+                        "source_type": "oracle",
+                        "columns": ["KEY", "PRODUCTION"],
+                        "selection_criteria": {"time_scope": "current_day"},
+                    },
+                },
+                {
+                    "dataset_key": "beta",
+                    "payload": {
+                        "dataset_family": "production",
+                        "source_type": "oracle",
+                        "columns": ["KEY", "PRODUCTION"],
+                        "selection_criteria": {"time_scope": "history"},
+                    },
+                },
+                {
+                    "dataset_key": "gamma",
+                    "payload": {
+                        "dataset_family": "wip",
+                        "source_type": "oracle",
+                        "columns": ["KEY", "WIP"],
+                        "selection_criteria": {"time_scope": "history"},
+                    },
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "2026-06-27 production",
+                "reference_date": "20260731",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "alpha",
+                        "source_alias": "metric_source",
+                        "required_params": {"DATE": "20260627"},
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "metric_source",
+                        "group_by": ["KEY"],
+                        "aggregations": [
+                            {
+                                "column": "PRODUCTION",
+                                "method": "sum",
+                                "output_column": "PRODUCTION_QTY",
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+    assert plan["retrieval_jobs"][0]["dataset_key"] == "beta"
+    selection = normalized["trace"]["inspection"]["intent"]["metric_dataset_selection"]
+    assert selection["status"] == "applied"
+    assert selection["corrections"][0]["selection_source"] == "table_catalog.selection_criteria"
+
+
+def test_candidate_builder_preserves_structured_temporal_family_companions():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    tables = [
+        {
+            "dataset_key": "alpha",
+            "payload": {
+                "display_name": "production metric",
+                "dataset_family": "family_one",
+                "columns": ["QTY"],
+                "selection_criteria": {"time_scope": "current_day"},
+            },
+        },
+        {
+            "dataset_key": "beta",
+            "payload": {
+                "display_name": "archive",
+                "dataset_family": "family_one",
+                "columns": ["QTY"],
+                "selection_criteria": {"time_scope": "history"},
+            },
+        },
+        {
+            "dataset_key": "unrelated_one",
+            "payload": {"display_name": "other one", "dataset_family": "other"},
+        },
+        {
+            "dataset_key": "unrelated_two",
+            "payload": {"display_name": "other two", "dataset_family": "other"},
+        },
+    ]
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "production metric"}},
+        {"domain_items": []},
+        {"table_catalog_items": tables},
+        {"main_flow_filters": []},
+        min_table_items=1,
+        max_table_items=2,
+        max_bytes=64 * 1024,
+    )
+    keys = {
+        item["dataset_key"]
+        for item in result["metadata_candidates"]["table_catalog_items"]
+    }
+    assert keys == {"alpha", "beta"}
+    trace = result["metadata_load"]["temporal_family_companions"]
+    assert trace["status"] == "expanded"
+    assert trace["expanded_families"] == ["family_one"]
+
+
+def test_candidate_builder_closes_domain_dataset_dependencies_before_ranking():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    domains = [
+        {
+            "section": "quantity_terms",
+            "key": "requested_metric",
+            "payload": {
+                "display_name": "requested metric",
+                "aliases": ["requested metric"],
+                "data_source": "opaque_history",
+                "column": "QTY",
+            },
+        }
+    ]
+    tables = [
+        {
+            "dataset_key": "opaque_current",
+            "payload": {
+                "display_name": "unrelated current label",
+                "dataset_family": "opaque_family",
+                "selection_criteria": {"time_scope": "current_day"},
+                "columns": ["QTY"],
+            },
+        },
+        {
+            "dataset_key": "opaque_history",
+            "payload": {
+                "display_name": "unrelated archive label",
+                "dataset_family": "opaque_family",
+                "selection_criteria": {"time_scope": "history"},
+                "columns": ["QTY"],
+            },
+        },
+        {"dataset_key": "ranked_noise", "payload": {"display_name": "requested metric noise"}},
+    ]
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "requested metric"}},
+        {"domain_items": domains},
+        {"table_catalog_items": tables},
+        {"main_flow_filters": []},
+        min_table_items=1,
+        max_table_items=2,
+        max_bytes=64 * 1024,
+    )
+    keys = {
+        item["dataset_key"]
+        for item in result["metadata_candidates"]["table_catalog_items"]
+    }
+    assert keys == {"opaque_current", "opaque_history"}
+    dependency = result["metadata_load"]["domain_dataset_dependencies"]
+    assert dependency["dataset_keys"] == ["opaque_history"]
+
+
+def test_typed_metric_lineage_recovers_unique_catalog_leaves_and_executes_outer_merge():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "main_flow_filters": [],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "opaque_alpha",
+                    "payload": {
+                        "source_type": "dummy",
+                        "required_params": ["DATE"],
+                        "selection_criteria": {"time_scope": "current_day"},
+                        "columns": ["KEY", "ALPHA_VALUE"],
+                    },
+                },
+                {
+                    "dataset_key": "opaque_beta",
+                    "payload": {
+                        "source_type": "dummy",
+                        "required_params": ["DATE"],
+                        "selection_criteria": {"time_scope": "current_day"},
+                        "columns": ["KEY", "BETA_VALUE"],
+                    },
+                },
+            ],
+        }
+    }
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                    "question": "현재 두 지표를 KEY별로 비교하고 BETA_SUM 많은 순으로 보여줘",
+                "reference_date": "20260802",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "two_metric_comparison",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "alpha_filter",
+                        "operation": "apply_filters",
+                        "inputs": [{"kind": "external_source", "ref": "left_leaf"}],
+                        "output_alias": "alpha_filtered",
+                    },
+                    {
+                        "node_id": "alpha_agg",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "alpha_filter"}],
+                        "source_alias": "alpha_filtered",
+                        "output_alias": "alpha_summary",
+                        "group_by": ["KEY"],
+                        "aggregations": [
+                            {
+                                "column": "ALPHA_VALUE",
+                                "method": "sum",
+                                "output_column": "ALPHA_SUM",
+                            }
+                        ],
+                    },
+                    {
+                        "node_id": "beta_agg",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "external_source", "ref": "right_leaf"}],
+                        "source_alias": "right_leaf",
+                        "output_alias": "beta_summary",
+                        "group_by": ["KEY"],
+                        "aggregations": [
+                            {
+                                "column": "BETA_VALUE",
+                                "method": "sum",
+                                "output_column": "BETA_SUM",
+                            },
+                            {
+                                "column": "BETA_VALUE",
+                                "method": "collect_unique",
+                                "output_column": "BETA_LIST",
+                            }
+                        ],
+                    },
+                    {
+                        "node_id": "comparison",
+                        "operation": "join",
+                        "inputs": [
+                            {"kind": "node_output", "ref": "alpha_summary"},
+                            {"kind": "node_output", "ref": "beta_summary"},
+                        ],
+                        "join_type": "left",
+                    },
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["KEY"],
+                    "metric_columns": ["ALPHA_SUM", "BETA_SUM"],
+                    "required_columns": ["KEY", "ALPHA_SUM", "BETA_SUM", "BETA_LIST"],
+                    "ordering": {"sort_by": "BETA_SUM", "order": "desc"},
+                },
+            }
+        },
+        candidates,
+    )
+    plan = result["intent_plan"]
+    jobs = {item["source_alias"]: item for item in plan["retrieval_jobs"]}
+    assert jobs["left_leaf"]["dataset_key"] == "opaque_alpha"
+    assert jobs["right_leaf"]["dataset_key"] == "opaque_beta"
+    assert jobs["left_leaf"]["required_params"] == {"DATE": "20260802"}
+    assert "validation_errors" not in plan
+    bindings = {
+        item["output_column"]: item["source_alias"]
+        for item in plan["output_contract"]["metric_bindings"]
+    }
+    assert bindings == {
+        "ALPHA_SUM": "left_leaf",
+        "BETA_SUM": "right_leaf",
+        "BETA_LIST": "right_leaf",
+    }
+    merge_contract = plan["resolved_metric_merge_plan"]
+    assert merge_contract["join_type"] == "outer"
+    assert merge_contract["selection_source"] == "typed_metric_join_lineage"
+
+    result["runtime_sources"] = {
+        "left_leaf": [{"KEY": "A", "ALPHA_VALUE": 3}],
+        "right_leaf": [{"KEY": "B", "BETA_VALUE": 5}],
+    }
+    executed = executor.execute_pandas_code(
+        result,
+        {"code": "result = sources['left_leaf'].copy()"},
+    )
+    assert executed["analysis"]["status"] == "ok", executed
+    assert executed["analysis"]["execution_mode"] == "merge_metric_sources"
+    assert executed["data"]["rows"] == [
+        {"KEY": "B", "ALPHA_SUM": 0, "BETA_SUM": 5, "BETA_LIST": "5"},
+        {"KEY": "A", "ALPHA_SUM": 3, "BETA_SUM": 0, "BETA_LIST": ""},
+    ]
+
+
+def test_deterministic_metric_merge_executes_typed_function_case_ancestors_per_source():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "token_selector",
+                    "payload": {
+                        "function_name": "select_token",
+                        "aliases": ["token selector"],
+                    },
+                }
+            ],
+            "main_flow_filters": [],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "opaque_alpha",
+                    "payload": {
+                        "columns": ["RAW_KEY", "TOKEN", "ALPHA_VALUE"],
+                        "filter_mappings": {"ENTITY_KEY": ["RAW_KEY"]},
+                    },
+                },
+                {
+                    "dataset_key": "opaque_beta",
+                    "payload": {
+                        "columns": ["RAW_KEY", "TOKEN", "BETA_VALUE"],
+                        "filter_mappings": {"ENTITY_KEY": ["RAW_KEY"]},
+                    },
+                },
+            ],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "선택 token의 두 지표를 KEY별로 비교", "reference_date": "20260802"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "two_metric_token_comparison",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {"dataset_key": "opaque_alpha", "source_alias": "left_leaf"},
+                    {"dataset_key": "opaque_beta", "source_alias": "right_leaf"},
+                ],
+                "pandas_function_cases": [
+                    {
+                        "key": "token_selector",
+                        "function_name": "select_token",
+                        "input_text": "TARGET",
+                        "source_alias": "left_leaf",
+                    },
+                    {
+                        "key": "token_selector",
+                        "function_name": "select_token",
+                        "input_text": "TARGET",
+                        "source_alias": "right_leaf",
+                    },
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "left_match",
+                        "operation": "apply_pandas_function_case",
+                        "inputs": [{"kind": "external_source", "ref": "left_leaf"}],
+                        "output_alias": "left_matched",
+                        "source_alias": "left_leaf",
+                    },
+                    {
+                        "node_id": "left_agg",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "left_match"}],
+                        "source_alias": "left_matched",
+                        "group_by": ["RAW_KEY"],
+                        "aggregations": [
+                            {"column": "ALPHA_VALUE", "method": "sum", "output_column": "ALPHA_SUM"}
+                        ],
+                    },
+                    {
+                        "node_id": "right_match",
+                        "operation": "apply_pandas_function_case",
+                        "inputs": [{"kind": "external_source", "ref": "right_leaf"}],
+                        "output_alias": "right_matched",
+                        "source_alias": "right_leaf",
+                    },
+                    {
+                        "node_id": "right_agg",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "right_match"}],
+                        "source_alias": "right_matched",
+                        "group_by": ["RAW_KEY"],
+                        "aggregations": [
+                            {"column": "BETA_VALUE", "method": "sum", "output_column": "BETA_SUM"}
+                        ],
+                    },
+                    {
+                        "node_id": "comparison",
+                        "operation": "join",
+                        "inputs": [
+                            {"kind": "node_output", "ref": "left_agg"},
+                            {"kind": "node_output", "ref": "right_agg"},
+                        ],
+                        "join_type": "outer",
+                    },
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": ["RAW_KEY"],
+                    "metric_columns": ["ALPHA_SUM", "BETA_SUM"],
+                    "required_columns": ["RAW_KEY", "ALPHA_SUM", "BETA_SUM"],
+                },
+            }
+        },
+        candidates,
+    )
+    function_steps = [
+        item
+        for item in normalized["intent_plan"]["pandas_execution_plan"]
+        if item.get("operation") == "apply_pandas_function_case"
+    ]
+    assert len(function_steps) == 2
+    assert [item["node_id"] for item in function_steps] == [
+        "left_match",
+        "right_match",
+    ]
+    assert [item["function_case_key"] for item in function_steps] == [
+        "token_selector",
+        "token_selector",
+    ]
+    assert [item["function_name"] for item in function_steps] == [
+        "select_token",
+        "select_token",
+    ]
+    assert [item["input_text"] for item in function_steps] == [
+        "TARGET",
+        "TARGET",
+    ]
+    aggregate_steps = [
+        item
+        for item in normalized["intent_plan"]["pandas_execution_plan"]
+        if item.get("operation") == "groupby_and_aggregate"
+    ]
+    assert [item["group_by"] for item in aggregate_steps] == [
+        ["ENTITY_KEY"],
+        ["ENTITY_KEY"],
+    ]
+    merge_contract = normalized["intent_plan"]["resolved_metric_merge_plan"]
+    assert [item["source_alias"] for item in merge_contract["source_transforms"]] == [
+        "left_leaf",
+        "right_leaf",
+    ]
+    normalized["runtime_sources"] = {
+        "left_leaf": [
+            {"ENTITY_KEY": "A", "TOKEN": "TARGET", "ALPHA_VALUE": 3},
+            {"ENTITY_KEY": "B", "TOKEN": "OTHER", "ALPHA_VALUE": 99},
+        ],
+        "right_leaf": [
+            {"ENTITY_KEY": "A", "TOKEN": "TARGET", "BETA_VALUE": 5},
+            {"ENTITY_KEY": "C", "TOKEN": "OTHER", "BETA_VALUE": 77},
+        ],
+    }
+    helper_code = """
+def select_token(input_text, frame):
+    filtered = frame[frame['TOKEN'] == input_text].copy()
+    record_function_case_result('select_token', input_text, filtered, 'test token selection')
+    return filtered
+"""
+    executed = executor.execute_pandas_with_repair(
+        normalized,
+        {"code": "result = sources['left_leaf'].copy()"},
+        function_case_helper_code=helper_code,
+        max_repair_attempts=0,
+    )
+    assert executed["analysis"]["status"] == "ok", executed
+    assert executed["analysis"]["execution_mode"] == "merge_metric_sources"
+    assert executed["analysis"]["used_helpers"] == ["select_token"]
+    assert len(executed["analysis"]["function_case_results"]) == 2
+    assert executed["data"]["rows"] == [
+        {"ENTITY_KEY": "A", "ALPHA_SUM": 3, "BETA_SUM": 5}
+    ]
+    transform_trace = executed["trace"]["inspection"]["pandas_execution"][
+        "deterministic_source_transforms"
+    ]
+    assert [(item["source_alias"], item["input_row_count"], item["output_row_count"]) for item in transform_trace] == [
+        ("left_leaf", 2, 1),
+        ("right_leaf", 2, 1),
+    ]
+
+    missing_helper = executor.execute_pandas_code(
+        normalized,
+        {"code": "result = sources['left_leaf'].copy()"},
+    )
+    assert missing_helper["analysis"]["status"] == "error"
+    assert missing_helper["analysis"]["error"]["type"] == "output_contract_violation"
+    assert "helper 코드가 없습니다" in missing_helper["analysis"]["error"]["message"]
+
+
+def test_missing_external_source_binding_fails_closed_when_catalog_is_ambiguous():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    table_items = [
+        {
+            "dataset_key": key,
+            "payload": {
+                "required_params": ["DATE"],
+                "selection_criteria": {"time_scope": "current_day"},
+                "columns": ["KEY", "VALUE"],
+            },
+        }
+        for key in ("opaque_one", "opaque_two")
+    ]
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "현재 VALUE 합계", "reference_date": "20260802"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "ambiguous_metric",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "aggregate",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "external_source", "ref": "metric_leaf"}],
+                        "group_by": ["KEY"],
+                        "aggregations": [
+                            {"column": "VALUE", "method": "sum", "output_column": "VALUE_SUM"}
+                        ],
+                    }
+                ],
+                "output_contract": {
+                    "grain_columns": ["KEY"],
+                    "metric_columns": ["VALUE_SUM"],
+                    "required_columns": ["KEY", "VALUE_SUM"],
+                },
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "main_flow_filters": [],
+                "table_catalog_items": table_items,
+            }
+        },
+    )
+    plan = result["intent_plan"]
+    assert plan["retrieval_jobs"] == []
+    assert any(
+        item.get("type") == "external_source_catalog_binding_unresolved"
+        for item in plan["validation_errors"]
+    )
+
+
+def test_recipe_with_declared_source_set_is_removed_when_sources_are_not_selected():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "두 source를 결합해줘", "reference_date": "20260802"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "source_comparison",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "metadata_refs": [
+                    {"section": "analysis_recipes", "key": "requires_other_source"}
+                ],
+                "join_plan": [
+                    {
+                        "metadata_ref": {
+                            "section": "analysis_recipes",
+                            "key": "requires_other_source",
+                        },
+                        "left_source_alias": "left",
+                        "right_source_alias": "right",
+                    }
+                ],
+                "retrieval_jobs": [
+                    {"dataset_key": "selected_left", "source_alias": "left"},
+                    {"dataset_key": "selected_right", "source_alias": "right"},
+                ],
+                "pandas_execution_plan": [],
+                "output_contract": {"required_columns": ["KEY"]},
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [
+                    {
+                        "section": "analysis_recipes",
+                        "key": "requires_other_source",
+                        "payload": {
+                            "source_datasets": ["selected_right", "missing_source"]
+                        },
+                    }
+                ],
+                "table_catalog_items": [],
+                "main_flow_filters": [],
+            }
+        },
+    )
+    plan = result["intent_plan"]
+    assert plan.get("join_plan") in (None, [])
+    assert {
+        (item.get("section"), item.get("key"))
+        for item in plan.get("metadata_refs", [])
+    } == set()
+    guard = result["trace"]["inspection"]["intent"]["recipe_source_compatibility"]
+    assert guard["status"] == "applied"
+
+
+def test_typed_node_output_ref_to_external_alias_chains_to_latest_prior_node():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "현재 VALUE 상위 3개", "reference_date": "20260802"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "rank_values",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {"dataset_key": "opaque_source", "source_alias": "source_leaf"}
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "filter_node",
+                        "operation": "apply_filters",
+                        "inputs": [{"kind": "external_source", "ref": "source_leaf"}],
+                    },
+                    {
+                        "node_id": "aggregate_node",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "source_leaf"}],
+                        "group_by": ["KEY"],
+                        "aggregations": [
+                            {"column": "VALUE", "method": "sum", "output_column": "VALUE_SUM"}
+                        ],
+                    },
+                    {
+                        "node_id": "rank_node",
+                        "operation": "sort_and_top_n",
+                        "inputs": [{"kind": "node_output", "ref": "source_leaf"}],
+                        "sort_by": "VALUE_SUM",
+                        "order": "desc",
+                        "limit": 3,
+                    },
+                ],
+                "output_contract": {
+                    "grain_columns": ["KEY"],
+                    "metric_columns": ["VALUE_SUM"],
+                    "required_columns": ["KEY", "VALUE_SUM"],
+                    "ordering": {"sort_by": "VALUE_SUM", "order": "desc", "limit": 3},
+                },
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "main_flow_filters": [],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "opaque_source",
+                        "payload": {"columns": ["KEY", "VALUE"]},
+                    }
+                ],
+            }
+        },
+    )
+    graph = result["intent_plan"]["resolved_execution_graph"]
+    assert graph["validation_errors"] == []
+    assert graph["nodes"][1]["inputs"] == [
+        {"kind": "node_output", "ref": "filter_node"}
+    ]
+    assert graph["nodes"][2]["inputs"] == [
+        {"kind": "node_output", "ref": "aggregate_node"}
+    ]

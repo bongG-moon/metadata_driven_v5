@@ -232,6 +232,13 @@ OUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터�
 
 장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.
 
+PKG OUT 실적 metric을 등록해줘.
+section은 quantity_terms이고 key는 pkg_out_quantity이며 status는 active야.
+payload의 display_name은 PKG OUT 실적이고 aliases는 PKG OUT실적, PKG OUT 실적, PKG OUT 생산량이야.
+data_source는 production, column은 PRODUCTION, aggregation_method는 sum이야.
+conditions에는 production 계열 dataset의 OPER_NAME 값이 'PKG OUT'인 행만 선택하도록 column=OPER_NAME, operator=eq, value=PKG OUT을 저장해.
+이 조건은 별도 pandas fallback이 아니라 선택된 domain의 실행 조건으로 적용해.
+
 BOH 재공과 아침 재공 기준일 규칙을 등록해줘.
 아침 재공, BOH 재공, BOH, 07시 기준 재공, 7시 기준 재공은 하루 시작 시점의 재공을 뜻해.
 section은 quantity_terms이고 key는 wip_boh_quantity이며 status는 active야.
@@ -280,22 +287,23 @@ payload에는 위 DEVICE/DEVICE_DESC 제외 규칙과 product_token_match 선택
 장비 배정과 Recipe UPH 결합 규칙을 등록해줘.
 section은 analysis_recipes이고 key는 equipment_assignment_uph_join이며 status는 active야.
 display_name은 장비 배정-Recipe UPH 결합 규칙이야.
-aliases와 선택 단서는 장비별 UPH, 배정 장비 UPH, 장비와 Recipe UPH, 배정된 장비와 UPH야.
+aliases와 선택 단서는 배정 장비 UPH, 장비와 Recipe UPH, 배정된 장비와 UPH, 배정 장비 모델별 UPH야.
 source_datasets는 equipment_assign, eqp_uph이고 join_type은 left야.
 표준 join_keys는 EQP_MODEL, RECIPE_ID, OPER_NAME이야.
 equipment_assign의 left_key_mappings는 EQP_MODEL -> EQUIP_MODEL, RECIPE_ID -> RECIPE_ID, OPER_NAME -> OPER_NM이야.
 eqp_uph의 right_key_mappings는 EQP_MODEL -> EQUIP_MODEL, RECIPE_ID -> RECIPE_ID, OPER_NAME -> OPER_NAME이야.
 장비 배정 결과를 보존하도록 preserve_left_rows는 true야.
-사용자가 공정에 배정된 장비와 해당 장비 모델 또는 Recipe의 UPH를 함께 요청할 때 이 recipe를 사용해.
+selection_criteria에는 사용자가 공정에 배정된 현재 장비의 목록 또는 대수와 해당 장비 모델 또는 Recipe의 UPH를 함께 요청할 때만 이 recipe를 사용한다는 문장을 저장해.
+selection_criteria에는 차수별 UPH, 장비 기종별 UPH, 장비 모델별 UPH처럼 배정 장비의 목록이나 대수를 요청하지 않은 일반 UPH 분석에는 이 recipe를 사용하지 않고 eqp_uph 하나를 사용한다는 문장도 저장해.
 
 UPH 결과 해석 규칙을 등록해줘.
 section은 analysis_recipes이고 key는 uph_result_policy이며 status는 active야.
 display_name은 UPH 비가산 집계 및 표시 규칙이야.
 aliases와 선택 단서는 UPH, 시간당 생산량, 장비 기종별 UPH, 장비 모델별 UPH, 차수별 UPH야.
-UPH는 평균형 비가산 metric이므로 합산하지 않아.
-사용자가 별도 grouping 없이 제품별 UPH를 요청하면 장비 모델, Recipe, 공정별 개별 UPH 문맥을 유지해.
-사용자가 차수별, 장비 기종별, 장비 모델별처럼 grouping을 명시하면 해당 그룹별 UPH 평균을 사용해.
-장비 기종, 기종, 장비 모델은 EQUIP_MODEL을 뜻하고 Recipe, 레시피는 RECIPE_ID를 뜻해.
+selection_criteria에는 UPH는 평균형 비가산 metric이므로 합산하지 않는다는 문장을 저장해.
+selection_criteria에는 사용자가 별도 grouping 없이 제품별 UPH를 요청하면 장비 모델, Recipe, 공정별 개별 UPH 문맥을 유지한다는 문장을 저장해.
+selection_criteria에는 사용자가 차수별, 장비 기종별, 장비 모델별처럼 grouping을 명시하면 해당 그룹별 UPH 평균을 사용한다는 문장을 저장해.
+selection_criteria에는 장비 기종, 기종, 장비 모델은 표준 컬럼 EQP_MODEL을 뜻하고 Recipe, 레시피는 표준 컬럼 RECIPE_ID를 뜻한다는 문장을 저장해.
 
 
 원본 상세 데이터 표시 규칙을 등록해줘.

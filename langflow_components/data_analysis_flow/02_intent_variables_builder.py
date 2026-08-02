@@ -165,7 +165,8 @@ def _schema() -> dict[str, Any]:
                     "metadata_ref": {"section": "string", "key": "string"},
                     "left_source_alias": "string",
                     "right_source_alias": "string",
-                    "join_type": "left|inner",
+                    "join_type": "outer|left|inner",
+                    "population_policy": "preserve_all_metric_source_keys|left_source_only",
                     "right_value_columns": [],
                     "multi_match_policy": "collect_unique|preserve_rows|first",
                 }
@@ -185,12 +186,22 @@ def _schema() -> dict[str, Any]:
             ],
             "pandas_execution_plan": [
                 {
+                    "node_id": "선택적 고유 pandas 단계 ID",
                     "operation": "apply_filters|groupby_and_aggregate|sort_and_top_n|join|compare_presence|compare_group_attributes|find_duplicate_groups|apply_row_match_groups|apply_pandas_function_case",
+                    "inputs": [
+                        {
+                            "kind": "external_source|node_output",
+                            "ref": "retrieval source_alias 또는 선행 node_id",
+                        }
+                    ],
+                    "output_alias": "선택적 파생 결과 alias",
                     "source_alias": "분석할 DataFrame alias",
                     "left_source_alias": "존재 기준 또는 join 왼쪽 DataFrame alias",
                     "right_source_alias": "부재 확인 또는 join 오른쪽 DataFrame alias",
                     "left_metric_column": "왼쪽 source의 존재 여부를 판단할 수량 컬럼",
                     "right_metric_column": "오른쪽 source의 존재 여부를 판단할 수량 컬럼",
+                    "join_type": "outer|left|inner",
+                    "population_policy": "preserve_all_metric_source_keys|left_source_only",
                     "presence_rule": "left_positive_right_missing_or_zero",
                     "group_by": ["같아야 하는 기준 컬럼 또는 중복을 판단할 컬럼"],
                     "comparison_columns": ["기준 그룹 안에서 값 차이를 확인할 컬럼"],

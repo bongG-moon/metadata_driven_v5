@@ -67,7 +67,29 @@ def _prompt_intent_plan(payload: dict[str, Any]) -> dict[str, Any]:
         )
     if jobs:
         plan["retrieval_jobs"] = compact_jobs
-    return plan
+    return _canonical_prompt_contract(plan)
+
+
+# 함수 설명: pandas LLM에는 표준 실행 컬럼만 노출하고 물리 컬럼 후보는
+# retrieval/validation lineage 내부에만 남깁니다.
+def _canonical_prompt_contract(value: Any) -> Any:
+    physical_lineage_keys = {
+        "source_candidates",
+        "left_candidates",
+        "right_candidates",
+        "column_mappings",
+        "key_mappings",
+        "right_value_mappings",
+    }
+    if isinstance(value, list):
+        return [_canonical_prompt_contract(item) for item in value]
+    if not isinstance(value, dict):
+        return deepcopy(value)
+    return {
+        str(key): _canonical_prompt_contract(item)
+        for key, item in value.items()
+        if str(key) not in physical_lineage_keys
+    }
 
 
 # 함수 설명: `_prompt_output_contract()`는 폐기된 상세 계약 key를 제거한 canonical 출력 계약만 pandas prompt에 전달합니다.

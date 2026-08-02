@@ -147,7 +147,7 @@ def _equipment_assign_rows() -> list[dict[str, Any]]:
                 "RECIPE_ID": f"RCP-{index + 1:03d}",
                 "EQP_ID": f"EQP{index + 1:03d}",
                 "EQP_MODEL": model,
-                "EQPIP_MODEL": model,
+                "EQUIP_MODEL": model,
                 "DEN": product["DENSITY"],
                 "PKG_TYPE1": product["PKG1"],
                 "PKG_TYPE2": product["PKG2"],

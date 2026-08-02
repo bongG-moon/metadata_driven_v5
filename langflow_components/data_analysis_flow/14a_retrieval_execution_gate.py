@@ -47,6 +47,38 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
         else:
             optional_failures.append(failure)
 
+    runtime_sources = (
+        payload.get("runtime_sources")
+        if isinstance(payload.get("runtime_sources"), dict)
+        else {}
+    )
+    graph = (
+        plan.get("resolved_execution_graph")
+        if isinstance(plan.get("resolved_execution_graph"), dict)
+        else {}
+    )
+    job_aliases = {_alias(job) for job in jobs}
+    for requirement in graph.get("external_source_requirements", []):
+        if not isinstance(requirement, dict):
+            continue
+        alias = str(requirement.get("source_alias") or "").strip()
+        provider = str(requirement.get("provider") or "").strip()
+        if not alias or alias in job_aliases or provider == "retrieval_job":
+            continue
+        if alias in runtime_sources:
+            continue
+        failure = {
+            "type": "required_source_result_missing",
+            "message": f"{provider} provider가 복원해야 할 source 결과가 없습니다: {alias}",
+            "source_alias": alias,
+            "dataset_key": str(requirement.get("dataset_key") or "").strip(),
+            "provider": provider,
+        }
+        if requirement.get("required", True) is False:
+            optional_failures.append(failure)
+        else:
+            critical_failures.append(failure)
+
     blocked = bool(critical_failures)
     gate = {
         "stage": "14a_retrieval_execution_gate",

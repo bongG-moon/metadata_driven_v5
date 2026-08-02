@@ -1,0 +1,1901 @@
+{
+  "status": "ok",
+  "mode": "full_pipeline",
+  "environment": {
+    "repository": "C:\\Users\\qkekt\\Desktop\\metadata_driven_v5",
+    "reference_date": "20260731",
+    "retrieval_mode": "dummy",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-3.5-flash-lite",
+    "llm_temperature": 0.0,
+    "llm_timeout_seconds": 60,
+    "secrets": {
+      "mongodb_uri_configured": true,
+      "google_api_key_configured": true
+    },
+    "mongodb": {
+      "database": "datagov",
+      "collections": {
+        "domain": "agent_v4_domain_items",
+        "table_catalog": "agent_v4_table_catalog_items",
+        "main_flow_filter": "agent_v4_main_flow_filters"
+      },
+      "loaded_counts": {
+        "domain": 57,
+        "table_catalog": 9,
+        "main_flow_filter": 17
+      }
+    },
+    "prompt_sources": {
+      "intent": {
+        "path": "langflow_components\\data_analysis_flow\\03_intent_prompt_template_ko.md",
+        "chars": 25075,
+        "sha256": "a5dec2d698ef2f023c589767646514fefcc36263181ac490810edda28862cc0b"
+      },
+      "specialized_intent": {
+        "path": "langflow_components\\data_analysis_flow\\specialized_prompt_input_example_ko.md",
+        "chars": 11431,
+        "sha256": "05861183ec66b577329bcef6337db55c51f700229038fa1747cf56f40bf3db91"
+      },
+      "pandas": {
+        "path": "langflow_components\\data_analysis_flow\\16_pandas_prompt_template_ko.md",
+        "chars": 17830,
+        "sha256": "0aee69ba43836968345000831993b1996846ac8840887388ffac37d954a06b17"
+      },
+      "pandas_repair": {
+        "path": "langflow_components\\data_analysis_flow\\17b_pandas_repair_prompt_template_ko.md",
+        "chars": 11683,
+        "sha256": "1a2a3ac458638ef1b85bed3e795810858a02da82642f7b8b980814d9bd3b4926"
+      },
+      "answer": {
+        "path": "langflow_components\\data_analysis_flow\\19_answer_prompt_template_ko.md",
+        "chars": 3141,
+        "sha256": "c61ee0960d5ec740b4ced2e996ca6c8308a508ffec33749dd7f4b91316611d28"
+      }
+    }
+  },
+  "results": [
+    {
+      "question": "HBM제품의 아침재공을 제품별로 알려줘",
+      "status": "ok",
+      "elapsed_seconds": 7.556,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 5,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "product_terms:HBM_3DS_TSV_PRODUCT",
+          "quantity_terms:wip_boh_quantity",
+          "analysis_recipes:product_grain_and_join_policy",
+          "product_key_columns:standard_product_keys",
+          "pandas_function_cases:product_token_match",
+          "product_terms:2HI_PRODUCT",
+          "product_terms:4HI_PRODUCT",
+          "product_terms:8HI_PRODUCT",
+          "product_terms:AUTO_PRODUCT",
+          "product_terms:MOBILE_PRODUCT"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "production",
+          "wip_today",
+          "wip",
+          "eqp_uph"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 56601,
+        "analysis_kind": "wip_boh_by_product",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "wip_boh_by_product",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {
+            "new": {
+              "TSV_DIE_TYP": {
+                "operator": "not_blank"
+              },
+              "DATE": {
+                "operator": "eq",
+                "value": "20260730"
+              }
+            }
+          },
+          "temporal_semantics": [
+            {
+              "business_timepoint": "BOH",
+              "dataset_family": "wip_history",
+              "dataset_key": "wip",
+              "date_param": "DATE",
+              "requested_date_offset_days": -1,
+              "disallowed_dataset_keys": [
+                "wip_today"
+              ],
+              "inherit_filters": true,
+              "domain_ref": {
+                "section": "quantity_terms",
+                "key": "wip_boh_quantity"
+              },
+              "metric": "WIP",
+              "source_column": "WIP",
+              "aggregation": "sum",
+              "output_column": "",
+              "metric_aliases": [
+                "아침 재공",
+                "BOH 재공",
+                "BOH",
+                "07시 기준 재공",
+                "7시 기준 재공",
+                "wip_boh_quantity"
+              ],
+              "source_alias": "wip_src",
+              "requested_date": "20260731",
+              "query_date": "20260730"
+            }
+          ],
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            "source_alias": "wip_src"
+          },
+          "join_plan": [],
+          "retrieval_jobs": [
+            {
+              "dataset_key": "wip",
+              "source_alias": "wip_src",
+              "required_params": {
+                "DATE": "20260730"
+              },
+              "filters": {
+                "TSV_DIE_TYP": {
+                  "operator": "not_blank"
+                }
+              },
+              "required": true,
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ\n        , WIP\nFROM WIP_TABLE2\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:wip",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "metric_semantics": {
+                "WIP": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum",
+                    "mean"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_1"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "node_id": "filter_wip",
+              "operation": "apply_filters",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "wip_src"
+                }
+              ],
+              "source_alias": "wip_src"
+            },
+            {
+              "node_id": "agg_wip_product",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "filter_wip"
+                }
+              ],
+              "source_alias": "wip_src",
+              "group_by": [
+                "TECH",
+                "DENSITY",
+                "MODE",
+                "PKG1",
+                "PKG2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "agg_column": "WIP",
+              "agg_method": "sum"
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO",
+              "WIP"
+            ],
+            "grain_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "metric_columns": [
+              "WIP"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "primary_metric": "WIP",
+            "column_labels": {
+              "WIP": "아침 재공 수량"
+            },
+            "result_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO",
+              "WIP"
+            ],
+            "strict_result_columns": true
+          },
+          "decision_reason": [
+            "사용자가 HBM 제품의 아침 재공(BOH)을 제품별로 조회하도록 요청함.",
+            "질문의 요청 기준일 20260731에 선택된 Domain(quantity_terms:wip_boh_quantity)의 시간 계약 offset(-1일)을 적용하여 실제 DATE 조회일을 20260730로 설정했습니다.",
+            "HBM 제품 조건은 TSV_DIE_TYP not_blank 조건으로 반영함.",
+            "제품별 집계 요구에 따라 standard_product_keys 표준 제품 키 목록을 group_by 기준으로 사용함."
+          ],
+          "reuse_strategy": "none",
+          "resolved_grain_plan": {
+            "metadata_ref": {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            "source_alias": "wip_src",
+            "dataset_key": "wip",
+            "canonical_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "column_mappings": [
+              {
+                "canonical_key": "TECH",
+                "source_candidates": [
+                  "TECH"
+                ]
+              },
+              {
+                "canonical_key": "DEN",
+                "source_candidates": [
+                  "DENSITY"
+                ]
+              },
+              {
+                "canonical_key": "MODE",
+                "source_candidates": [
+                  "MODE"
+                ]
+              },
+              {
+                "canonical_key": "PKG_TYPE1",
+                "source_candidates": [
+                  "PKG1"
+                ]
+              },
+              {
+                "canonical_key": "PKG_TYPE2",
+                "source_candidates": [
+                  "PKG2"
+                ]
+              },
+              {
+                "canonical_key": "LEAD",
+                "source_candidates": [
+                  "LEAD"
+                ]
+              },
+              {
+                "canonical_key": "MCP_NO",
+                "source_candidates": [
+                  "MCP_NO"
+                ]
+              }
+            ],
+            "grain_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "strict": true
+          },
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "breakdown_columns": [],
+            "grain_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "source_aliases": [
+              "wip_src"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "filter_wip",
+                "operation": "apply_filters",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "wip_src"
+                  }
+                ]
+              },
+              {
+                "node_id": "agg_wip_product",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "filter_wip"
+                  }
+                ]
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "wip_src",
+                "provider": "retrieval_job",
+                "dataset_key": "wip",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "product_terms",
+            "key": "HBM_3DS_TSV_PRODUCT"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "wip_boh_quantity"
+          },
+          {
+            "section": "product_key_columns",
+            "key": "standard_product_keys"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "product_grain_and_join_policy"
+          },
+          {
+            "type": "table_catalog",
+            "key": "wip"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "wip",
+            "source_alias": "wip_src",
+            "status": "ok",
+            "row_count": 0,
+            "applied_params": {
+              "DATE": "20260730"
+            },
+            "pandas_filters": {
+              "TSV_DIE_TYP": {
+                "operator": "not_blank"
+              }
+            }
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 24274,
+        "status": "ok",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "generated_code": "_filtered_source_1_wip_src = sources.get('wip_src')\nif _filtered_source_1_wip_src is not None:\n    sources = dict(sources)\n    _filtered_source_1_wip_src = _filtered_source_1_wip_src.copy()\n    _filter_col_1_1 = 'TSV_DIE_TYP' if 'TSV_DIE_TYP' in _filtered_source_1_wip_src.columns else ('TSV_DIE_TYP' if 'TSV_DIE_TYP' in _filtered_source_1_wip_src.columns else (''))\n    _filter_values_1_1 = []\n    if not _filter_col_1_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: TSV_DIE_TYP (candidates=['TSV_DIE_TYP', 'TSV_DIE_TYP'])\")\n    if _filter_col_1_1:\n        _filter_mask_1_1 = (_filtered_source_1_wip_src[_filter_col_1_1].isna() | _filtered_source_1_wip_src[_filter_col_1_1].astype(str).str.strip().str.casefold().isin(['', '<na>', 'empty', 'nan', 'nat', 'none', 'null']))\n        _filtered_source_1_wip_src = _filtered_source_1_wip_src[~_filter_mask_1_1]\n    sources['wip_src'] = _filtered_source_1_wip_src\n\ndf = sources[\"wip_src\"]\ngroup_cols = [\"TECH\", \"DENSITY\", \"MODE\", \"PKG1\", \"PKG2\", \"LEAD\", \"MCP_NO\"]\nmetric_col = \"WIP\"\n\nexisting_group_cols = [c for c in group_cols if c in df.columns]\n\nif metric_col in df.columns and existing_group_cols:\n    agg_df = df.groupby(existing_group_cols, dropna=False)[metric_col].sum().reset_index()\nelse:\n    agg_df = df[existing_group_cols].drop_duplicates().copy()\n    agg_df[metric_col] = 0\n\nfor col in existing_group_cols:\n    agg_df[col] = agg_df[col].astype(str).replace({\"nan\": \"\", \"None\": \"\", \"<NA>\": \"\"}).str.strip()\n\nagg_df[metric_col] = pd.to_numeric(agg_df[metric_col], errors=\"coerce\").fillna(0)\n\nrequired_cols = [\"TECH\", \"DENSITY\", \"MODE\", \"PKG1\", \"PKG2\", \"LEAD\", \"MCP_NO\", \"WIP\"]\nfinal_cols = [c for c in required_cols if c in agg_df.columns]\n\nresult = agg_df[final_cols].copy()",
+        "used_helpers": [],
+        "row_count": 0,
+        "columns": [
+          "TECH",
+          "DENSITY",
+          "MODE",
+          "PKG1",
+          "PKG2",
+          "LEAD",
+          "MCP_NO",
+          "WIP"
+        ],
+        "preview_rows": []
+      },
+      "answer": {
+        "prompt_chars": 8031,
+        "message": "### 답변\n요청하신 HBM 제품의 아침 재공 조회 결과, 조건에 해당하는 데이터가 없어 조회된 건이 없습니다.\n\n기준일(20260730) 및 TSV_DIE_TYP 조건 등을 확인하여 다시 조회해 보시거나, 조건을 넓혀서 다시 조회할까요?\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n표시할 결과 행이 없습니다.\n\n- 컬럼: `TECH, DENSITY, MODE, PKG1, PKG2, LEAD, MCP_NO, WIP`\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=wip, source_alias=wip_src, source_type=oracle\n- dataset_key=wip, source_alias=wip_src, source_type=oracle, row_count=0\n**조회 필수 조건**\n- wip_src: DATE=20260730\n**분석 조건**\n- wip_src: TSV_DIE_TYP={\"operator\": \"not_blank\"}\n**그룹 기준**\n- TECH\n- DENSITY\n- MODE\n- PKG1\n- PKG2\n- LEAD\n- MCP_NO\n\n### 참고\n- 조건에 맞는 결과 행이 없습니다.\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 조건을 넓혀서 다시 조회할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    },
+    {
+      "question": "6/27일 W/B공정에서 세부 공정별 생산실적과 아침재공 수량 알려줘",
+      "status": "ok",
+      "elapsed_seconds": 11.242,
+      "metadata_candidates": {
+        "domain_count": 6,
+        "table_catalog_count": 5,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "process_groups:WB",
+          "quantity_terms:wip_boh_quantity",
+          "analysis_recipes:group_by_oper_name_for_detailed_process",
+          "process_groups:FCB",
+          "analysis_recipes:raw_data_display_policy",
+          "quantity_terms:production_quantity"
+        ],
+        "table_catalog_keys": [
+          "equipment_assign",
+          "wip_today",
+          "wip",
+          "eqp_uph",
+          "hold_history"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 53417,
+        "analysis_kind": "production_and_wip_by_operational_process",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "production_and_wip_by_operational_process",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {},
+          "temporal_semantics": [
+            {
+              "business_timepoint": "BOH",
+              "dataset_family": "wip_history",
+              "dataset_key": "wip",
+              "date_param": "DATE",
+              "requested_date_offset_days": -1,
+              "disallowed_dataset_keys": [
+                "wip_today"
+              ],
+              "inherit_filters": true,
+              "domain_ref": {
+                "section": "quantity_terms",
+                "key": "wip_boh_quantity"
+              },
+              "metric": "WIP",
+              "source_column": "WIP",
+              "aggregation": "sum",
+              "output_column": "",
+              "metric_aliases": [
+                "아침 재공",
+                "BOH 재공",
+                "BOH",
+                "07시 기준 재공",
+                "7시 기준 재공",
+                "wip_boh_quantity"
+              ],
+              "source_alias": "wip_source",
+              "requested_date": "20260627",
+              "query_date": "20260626"
+            }
+          ],
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "analysis_recipes",
+              "key": "group_by_oper_name_for_detailed_process"
+            },
+            "source_alias": "production_source"
+          },
+          "join_plan": [
+            {
+              "metadata_ref": {
+                "section": "analysis_recipes",
+                "key": "group_by_oper_name_for_detailed_process"
+              },
+              "left_source_alias": "production_source",
+              "right_source_alias": "wip_source",
+              "join_type": "inner",
+              "right_value_columns": [
+                "WIP"
+              ],
+              "multi_match_policy": "preserve_rows"
+            }
+          ],
+          "retrieval_jobs": [
+            {
+              "dataset_key": "wip_today",
+              "source_alias": "production_source",
+              "required_params": {
+                "DATE": "20260627"
+              },
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "in",
+                  "value": [
+                    "W/B1",
+                    "W/B2",
+                    "W/B3",
+                    "W/B4",
+                    "W/B5",
+                    "W/B6"
+                  ]
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ\n        , WIP\nFROM WIP_TABLE\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:wip_today",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "metric_semantics": {
+                "WIP": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum",
+                    "mean",
+                    "max",
+                    "min"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_1"
+            },
+            {
+              "dataset_key": "wip",
+              "source_alias": "wip_source",
+              "required_params": {
+                "DATE": "20260626"
+              },
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "in",
+                  "value": [
+                    "W/B1",
+                    "W/B2",
+                    "W/B3",
+                    "W/B4",
+                    "W/B5",
+                    "W/B6"
+                  ]
+                }
+              },
+              "required": true,
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ\n        , WIP\nFROM WIP_TABLE2\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:wip",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "metric_semantics": {
+                "WIP": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum",
+                    "mean"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_2"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "node_id": "prod_agg",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "production_source"
+                }
+              ],
+              "output_alias": "prod_grouped",
+              "group_by": [
+                "OPER_NAME"
+              ],
+              "aggregations": [
+                {
+                  "column": "PRODUCTION",
+                  "method": "sum",
+                  "output_column": "PRODUCTION"
+                }
+              ],
+              "source_alias": "production_source"
+            },
+            {
+              "node_id": "wip_agg",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "wip_source"
+                }
+              ],
+              "output_alias": "wip_grouped",
+              "group_by": [
+                "OPER_NAME"
+              ],
+              "aggregations": [
+                {
+                  "column": "WIP",
+                  "method": "sum",
+                  "output_column": "WIP"
+                }
+              ],
+              "source_alias": "wip_source"
+            },
+            {
+              "node_id": "joined_result",
+              "operation": "join",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "prod_agg"
+                },
+                {
+                  "kind": "node_output",
+                  "ref": "wip_agg"
+                }
+              ],
+              "output_alias": "final_result",
+              "left_source_alias": "prod_agg",
+              "right_source_alias": "wip_agg"
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "OPER_NAME",
+              "PRODUCTION",
+              "WIP"
+            ],
+            "grain_columns": [
+              "OPER_NAME"
+            ],
+            "metric_columns": [
+              "PRODUCTION",
+              "WIP"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "metric_bindings": [
+              {
+                "source_alias": "production_source",
+                "dataset_key": "wip_today",
+                "source_column": "PRODUCTION",
+                "aggregation": "sum",
+                "output_column": "PRODUCTION",
+                "semantic_scope": {}
+              },
+              {
+                "source_alias": "wip_source",
+                "dataset_key": "wip",
+                "source_column": "WIP",
+                "aggregation": "sum",
+                "output_column": "WIP",
+                "semantic_scope": {}
+              }
+            ],
+            "primary_metric": "PRODUCTION",
+            "column_labels": {
+              "OPER_NAME": "세부 공정",
+              "PRODUCTION": "생산실적",
+              "WIP": "아침재공 수량"
+            },
+            "result_columns": [
+              "OPER_NAME",
+              "PRODUCTION",
+              "WIP"
+            ],
+            "strict_result_columns": true
+          },
+          "metadata_refs": [
+            {
+              "section": "process_groups",
+              "key": "WB"
+            },
+            {
+              "section": "quantity_terms",
+              "key": "wip_boh_quantity"
+            },
+            {
+              "section": "quantity_terms",
+              "key": "production_quantity"
+            },
+            {
+              "section": "analysis_recipes",
+              "key": "group_by_oper_name_for_detailed_process"
+            }
+          ],
+          "decision_reason": [
+            "사용자가 6/27일 W/B공정의 세부 공정별 생산실적과 아침재공 수량을 요청하여 독립적인 새 분석(new_analysis)으로 처리합니다.",
+            "질문의 요청 기준일 20260627에 선택된 Domain(quantity_terms:wip_boh_quantity)의 시간 계약 offset(-1일)을 적용하여 실제 DATE 조회일을 20260626로 설정했습니다.",
+            "W/B공정 그룹은 W/B1~W/B6 세부 공정으로 확장하여 OPER_NAME 조건에 반영합니다.",
+            "생산실적은 당일(20260627) wip_today(또는 생산 데이터셋)를 사용하고, 아침재공(BOH)은 전일(20260626) wip history 데이터셋을 사용합니다.",
+            "세부 공정별 결과 표시 레시피에 따라 OPER_NAME 기준으로 집계 및 조인을 수행합니다."
+          ],
+          "reuse_strategy": "none",
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [],
+            "breakdown_columns": [
+              "OPER_NAME"
+            ],
+            "grain_columns": [
+              "OPER_NAME"
+            ],
+            "source_aliases": [
+              "production_source",
+              "wip_source"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "prod_agg",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "production_source"
+                  }
+                ],
+                "output_alias": "prod_grouped"
+              },
+              {
+                "node_id": "wip_agg",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "wip_source"
+                  }
+                ],
+                "output_alias": "wip_grouped"
+              },
+              {
+                "node_id": "joined_result",
+                "operation": "join",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "prod_agg"
+                  },
+                  {
+                    "kind": "node_output",
+                    "ref": "wip_agg"
+                  }
+                ],
+                "output_alias": "final_result"
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "production_source",
+                "provider": "retrieval_job",
+                "dataset_key": "wip_today",
+                "required": true
+              },
+              {
+                "source_alias": "wip_source",
+                "provider": "retrieval_job",
+                "dataset_key": "wip",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "process_groups",
+            "key": "WB"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "wip_boh_quantity"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "production_quantity"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "group_by_oper_name_for_detailed_process"
+          },
+          {
+            "type": "table_catalog",
+            "key": "wip_today"
+          },
+          {
+            "type": "table_catalog",
+            "key": "wip"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "wip_today",
+            "source_alias": "production_source",
+            "status": "ok",
+            "row_count": 0,
+            "applied_params": {
+              "DATE": "20260627"
+            },
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "in",
+                "value": [
+                  "W/B1",
+                  "W/B2",
+                  "W/B3",
+                  "W/B4",
+                  "W/B5",
+                  "W/B6"
+                ]
+              }
+            }
+          },
+          {
+            "dataset_key": "wip",
+            "source_alias": "wip_source",
+            "status": "ok",
+            "row_count": 46,
+            "applied_params": {
+              "DATE": "20260626"
+            },
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "in",
+                "value": [
+                  "W/B1",
+                  "W/B2",
+                  "W/B3",
+                  "W/B4",
+                  "W/B5",
+                  "W/B6"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 30563,
+        "status": "ok",
+        "repair_attempted": true,
+        "repair_selected": "retry",
+        "generated_code": "_filtered_source_1_production_source = sources.get('production_source')\nif _filtered_source_1_production_source is not None:\n    sources = dict(sources)\n    _filtered_source_1_production_source = _filtered_source_1_production_source.copy()\n    _filter_col_1_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_1_production_source.columns else ('OPER_NAME' if 'OPER_NAME' in _filtered_source_1_production_source.columns else (''))\n    _filter_values_1_1 = ['W/B1', 'W/B2', 'W/B3', 'W/B4', 'W/B5', 'W/B6']\n    if not _filter_col_1_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME', 'OPER_NAME'])\")\n    if _filter_col_1_1:\n        _filtered_source_1_production_source = _filtered_source_1_production_source[_filtered_source_1_production_source[_filter_col_1_1].isin(_filter_values_1_1)]\n    sources['production_source'] = _filtered_source_1_production_source\n_filtered_source_2_wip_source = sources.get('wip_source')\nif _filtered_source_2_wip_source is not None:\n    sources = dict(sources)\n    _filtered_source_2_wip_source = _filtered_source_2_wip_source.copy()\n    _filter_col_2_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_2_wip_source.columns else ('OPER_NAME' if 'OPER_NAME' in _filtered_source_2_wip_source.columns else (''))\n    _filter_values_2_1 = ['W/B1', 'W/B2', 'W/B3', 'W/B4', 'W/B5', 'W/B6']\n    if not _filter_col_2_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME', 'OPER_NAME'])\")\n    if _filter_col_2_1:\n        _filtered_source_2_wip_source = _filtered_source_2_wip_source[_filtered_source_2_wip_source[_filter_col_2_1].isin(_filter_values_2_1)]\n    sources['wip_source'] = _filtered_source_2_wip_source\n\nprod_df = sources[\"production_source\"].copy()\nwip_df = sources[\"wip_source\"].copy()\n\nprod_col = [c for c in [\"PRODUCTION\", \"DIE_ATTACH_QTY\", \"NETDIE_300_CNT\", \"WIP\"] if c in prod_df.columns]\nprod_metric = prod_col[0] if prod_col else None\n\nif prod_metric and prod_metric in prod_df.columns:\n    prod_grouped = prod_df.groupby([\"OPER_NAME\"], dropna=False)[prod_metric].sum().reset_index()\n    prod_grouped = prod_grouped.rename(columns={prod_metric: \"PRODUCTION\"})\nelse:\n    prod_grouped = pd.DataFrame(columns=[\"OPER_NAME\", \"PRODUCTION\"])\n\nwip_grouped = wip_df.groupby([\"OPER_NAME\"], dropna=False)[\"WIP\"].sum().reset_index()\n\nresult = pd.merge(prod_grouped, wip_grouped, on=\"OPER_NAME\", how=\"outer\")\n\nfor col in [\"PRODUCTION\", \"WIP\"]:\n    if col in result.columns:\n        result[col] = pd.to_numeric(result[col], errors=\"coerce\").fillna(0)\n\nfor col in [\"OPER_NAME\"]:\n    if col in result.columns:\n        result[col] = result[col].astype(str).str.strip().replace(r\"^\\s*$\", \"\", regex=True)\n\nreq_cols = [\"OPER_NAME\", \"PRODUCTION\", \"WIP\"]\nexisting_cols = [c for c in req_cols if c in result.columns]\nresult = result[existing_cols]",
+        "used_helpers": [],
+        "row_count": 5,
+        "columns": [
+          "OPER_NAME",
+          "PRODUCTION",
+          "WIP"
+        ],
+        "preview_rows": [
+          {
+            "OPER_NAME": "W/B1",
+            "PRODUCTION": 0.0,
+            "WIP": 558
+          },
+          {
+            "OPER_NAME": "W/B2",
+            "PRODUCTION": 0.0,
+            "WIP": 591
+          },
+          {
+            "OPER_NAME": "W/B3",
+            "PRODUCTION": 0.0,
+            "WIP": 624
+          },
+          {
+            "OPER_NAME": "W/B4",
+            "PRODUCTION": 0.0,
+            "WIP": 657
+          },
+          {
+            "OPER_NAME": "W/B5",
+            "PRODUCTION": 0.0,
+            "WIP": 690
+          }
+        ]
+      },
+      "answer": {
+        "prompt_chars": 11041,
+        "message": "### 답변\n6월 27일 W/B 공정의 세부 공정별 생산실적과 아침재공 수량 조회 결과입니다.\n\n조회된 세부 공정별 현황은 다음과 같습니다.\n- W/B1: 생산실적 0, 아침재공 558\n- W/B2: 생산실적 0, 아침재공 591\n- W/B3: 생산실적 0, 아침재공 624\n- W/B4: 생산실적 0, 아침재공 657\n- W/B5: 생산실적 0, 아침재공 690\n\n이번 분석은 W/B1\\~W/B6 공정을 대상으로 생산실적 데이터와 재공 수량 데이터를 조인하여 집계했습니다.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| 공정 | 생산량 | 재공수량 |\n| --- | --- | --- |\n| W/B1 | 0 | 558 |\n| W/B2 | 0 | 591 |\n| W/B3 | 0 | 624 |\n| W/B4 | 0 | 657 |\n| W/B5 | 0 | 690 |\n\n총 5건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=wip_today, source_alias=production_source, source_type=oracle\n- dataset_key=wip, source_alias=wip_source, source_type=oracle\n- dataset_key=wip_today, source_alias=production_source, source_type=oracle, row_count=0\n- dataset_key=wip, source_alias=wip_source, source_type=oracle, row_count=46\n**조회 필수 조건**\n- production_source: DATE=20260627\n- wip_source: DATE=20260626\n**분석 조건**\n- production_source: OPER_NAME={\"operator\": \"in\", \"value\": [\"W/B1\", \"W/B2\", \"W/B3\", \"W/B4\", \"W/B5\", \"W/B6\"]}\n- wip_source: OPER_NAME={\"operator\": \"in\", \"value\": [\"W/B1\", \"W/B2\", \"W/B3\", \"W/B4\", \"W/B5\", \"W/B6\"]}\n**그룹 기준**\n- OPER_NAME\n**계산 지표**\n- PRODUCTION\n- WIP\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    },
+    {
+      "question": "현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘",
+      "status": "ok",
+      "elapsed_seconds": 10.086,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 5,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "process_groups:DA",
+          "quantity_terms:input_quantity",
+          "quantity_terms:wip_today_quantity",
+          "quantity_terms:wip_boh_quantity",
+          "pandas_function_cases:product_token_match",
+          "product_terms:MOBILE_PRODUCT",
+          "analysis_recipes:product_grain_and_join_policy",
+          "analysis_recipes:production_achievement_rate_analysis",
+          "product_key_columns:standard_product_keys",
+          "product_terms:2HI_PRODUCT"
+        ],
+        "table_catalog_keys": [
+          "wip_today",
+          "production_today",
+          "wip",
+          "production",
+          "target"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 57632,
+        "analysis_kind": "input_actual_vs_da_wip_absence",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "input_actual_vs_da_wip_absence",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {
+            "new": {
+              "INPUT_PRODUCTION": {
+                "OPER_NAME": "INPUT"
+              },
+              "DA_WIP": {
+                "OPER_NAME": [
+                  "D/A1",
+                  "D/A2",
+                  "D/A3",
+                  "D/A4",
+                  "D/A5",
+                  "D/A6"
+                ]
+              },
+              "DATE": "20260731"
+            }
+          },
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            "source_alias": "prod_input"
+          },
+          "join_plan": [],
+          "retrieval_jobs": [
+            {
+              "dataset_key": "production_today",
+              "source_alias": "prod_input",
+              "required_params": {
+                "DATE": "20260731"
+              },
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "eq",
+                  "value": "INPUT"
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "--쿼리 작성\nSELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ, PRODUCTION \nFROM PROD_TABLE\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:production_today",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "standard_column_aliases": {
+                "QUANTITY": "PRODUCTION"
+              },
+              "job_id": "job_1"
+            },
+            {
+              "dataset_key": "wip_today",
+              "source_alias": "wip_da",
+              "required_params": {
+                "DATE": "20260731"
+              },
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "in",
+                  "value": [
+                    "D/A1",
+                    "D/A2",
+                    "D/A3",
+                    "D/A4",
+                    "D/A5",
+                    "D/A6"
+                  ]
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ\n        , WIP\nFROM WIP_TABLE\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:wip_today",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "metric_semantics": {
+                "WIP": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum",
+                    "mean",
+                    "max",
+                    "min"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_2"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "node_id": "agg_input",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "prod_input"
+                }
+              ],
+              "output_alias": "input_aggregated",
+              "group_by": [
+                "TECH",
+                "DENSITY",
+                "MODE",
+                "ORG",
+                "PKG1",
+                "PKG2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "aggregations": [
+                {
+                  "column": "PRODUCTION",
+                  "method": "sum",
+                  "output_column": "INPUT_QTY"
+                }
+              ],
+              "source_alias": "prod_input"
+            },
+            {
+              "node_id": "agg_da_wip",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "wip_da"
+                }
+              ],
+              "output_alias": "wip_da_aggregated",
+              "group_by": [
+                "TECH",
+                "DENSITY",
+                "MODE",
+                "ORG",
+                "PKG1",
+                "PKG2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "aggregations": [
+                {
+                  "column": "WIP",
+                  "method": "sum",
+                  "output_column": "DA_WIP_QTY"
+                }
+              ],
+              "source_alias": "wip_da"
+            },
+            {
+              "node_id": "compare_presence_result",
+              "operation": "compare_presence",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "agg_input"
+                },
+                {
+                  "kind": "node_output",
+                  "ref": "agg_da_wip"
+                }
+              ],
+              "left_source_alias": "input_aggregated",
+              "right_source_alias": "wip_da_aggregated",
+              "left_metric_column": "INPUT_QTY",
+              "right_metric_column": "DA_WIP_QTY",
+              "presence_rule": "left_positive_right_missing_or_zero",
+              "group_by": [
+                "TECH",
+                "DENSITY",
+                "MODE",
+                "ORG",
+                "PKG1",
+                "PKG2",
+                "LEAD",
+                "MCP_NO"
+              ]
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "ORG",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO",
+              "INPUT_QTY",
+              "DA_WIP_QTY"
+            ],
+            "grain_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "ORG",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "metric_columns": [
+              "INPUT_QTY",
+              "DA_WIP_QTY"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "metric_bindings": [
+              {
+                "source_alias": "prod_input",
+                "dataset_key": "production_today",
+                "source_column": "PRODUCTION",
+                "aggregation": "sum",
+                "output_column": "INPUT_QTY"
+              },
+              {
+                "source_alias": "wip_da",
+                "dataset_key": "wip_today",
+                "source_column": "WIP",
+                "aggregation": "sum",
+                "output_column": "DA_WIP_QTY"
+              }
+            ],
+            "primary_metric": "INPUT_QTY",
+            "column_labels": {
+              "INPUT_QTY": "INPUT 투입 실적"
+            },
+            "result_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "ORG",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO",
+              "INPUT_QTY",
+              "DA_WIP_QTY"
+            ],
+            "strict_result_columns": true
+          },
+          "decision_reason": [
+            "현시간 기준 INPUT 실적이 있으나 D/A 공정 WIP가 없는 제품을 확인하기 위해 production_today(OPER_NAME=INPUT)와 wip_today(OPER_NAME=D/A1~D/A6)를 각각 조회합니다.",
+            "기준일은 reference_date인 20260731을 적용합니다.",
+            "표준 제품 키 기준로 집계한 뒤 INPUT 실적은 존재하고 D/A WIP는 없거나 0인 제품을 추출하기 위해 compare_presence 연산을 수행합니다."
+          ],
+          "reuse_strategy": "none",
+          "resolved_grain_plan": {
+            "metadata_ref": {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            "source_alias": "prod_input",
+            "dataset_key": "production_today",
+            "canonical_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "column_mappings": [
+              {
+                "canonical_key": "TECH",
+                "source_candidates": [
+                  "TECH"
+                ]
+              },
+              {
+                "canonical_key": "DEN",
+                "source_candidates": [
+                  "DENSITY"
+                ]
+              },
+              {
+                "canonical_key": "MODE",
+                "source_candidates": [
+                  "MODE"
+                ]
+              },
+              {
+                "canonical_key": "PKG_TYPE1",
+                "source_candidates": [
+                  "PKG1"
+                ]
+              },
+              {
+                "canonical_key": "PKG_TYPE2",
+                "source_candidates": [
+                  "PKG2"
+                ]
+              },
+              {
+                "canonical_key": "LEAD",
+                "source_candidates": [
+                  "LEAD"
+                ]
+              },
+              {
+                "canonical_key": "MCP_NO",
+                "source_candidates": [
+                  "MCP_NO"
+                ]
+              }
+            ],
+            "grain_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "strict": true
+          },
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "breakdown_columns": [
+              "ORG"
+            ],
+            "grain_columns": [
+              "TECH",
+              "DENSITY",
+              "MODE",
+              "ORG",
+              "PKG1",
+              "PKG2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "source_aliases": [
+              "prod_input",
+              "wip_da"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "agg_input",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "prod_input"
+                  }
+                ],
+                "output_alias": "input_aggregated"
+              },
+              {
+                "node_id": "agg_da_wip",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "wip_da"
+                  }
+                ],
+                "output_alias": "wip_da_aggregated"
+              },
+              {
+                "node_id": "compare_presence_result",
+                "operation": "compare_presence",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "agg_input"
+                  },
+                  {
+                    "kind": "node_output",
+                    "ref": "agg_da_wip"
+                  }
+                ]
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "prod_input",
+                "provider": "retrieval_job",
+                "dataset_key": "production_today",
+                "required": true
+              },
+              {
+                "source_alias": "wip_da",
+                "provider": "retrieval_job",
+                "dataset_key": "wip_today",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          },
+          "resolved_presence_comparison_plan": {
+            "operation": "compare_presence",
+            "presence_rule": "left_positive_right_missing_or_zero",
+            "grain_mappings": [
+              {
+                "canonical_column": "TECH",
+                "output_column": "TECH",
+                "source_candidates": {
+                  "prod_input": [
+                    "TECH"
+                  ],
+                  "wip_da": [
+                    "TECH"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "DENSITY",
+                "output_column": "DENSITY",
+                "source_candidates": {
+                  "prod_input": [
+                    "DENSITY"
+                  ],
+                  "wip_da": [
+                    "DENSITY"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "MODE",
+                "output_column": "MODE",
+                "source_candidates": {
+                  "prod_input": [
+                    "MODE"
+                  ],
+                  "wip_da": [
+                    "MODE"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "ORG",
+                "output_column": "ORG",
+                "source_candidates": {
+                  "prod_input": [
+                    "ORG"
+                  ],
+                  "wip_da": [
+                    "ORG"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "PKG1",
+                "output_column": "PKG1",
+                "source_candidates": {
+                  "prod_input": [
+                    "PKG1"
+                  ],
+                  "wip_da": [
+                    "PKG1"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "PKG2",
+                "output_column": "PKG2",
+                "source_candidates": {
+                  "prod_input": [
+                    "PKG2"
+                  ],
+                  "wip_da": [
+                    "PKG2"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "LEAD",
+                "output_column": "LEAD",
+                "source_candidates": {
+                  "prod_input": [
+                    "LEAD"
+                  ],
+                  "wip_da": [
+                    "LEAD"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "MCP_NO",
+                "output_column": "MCP_NO",
+                "source_candidates": {
+                  "prod_input": [
+                    "MCP_NO"
+                  ],
+                  "wip_da": [
+                    "MCP_NO"
+                  ]
+                }
+              }
+            ],
+            "left_metric": {
+              "source_alias": "prod_input",
+              "dataset_key": "production_today",
+              "source_column": "PRODUCTION",
+              "source_candidates": [
+                "PRODUCTION"
+              ],
+              "aggregation": "sum",
+              "output_column": "INPUT_QTY"
+            },
+            "right_metric": {
+              "source_alias": "wip_da",
+              "dataset_key": "wip_today",
+              "source_column": "WIP",
+              "source_candidates": [
+                "WIP"
+              ],
+              "aggregation": "sum",
+              "output_column": "DA_WIP_QTY"
+            },
+            "strict": true
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "process_groups",
+            "key": "DA"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "input_quantity"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "wip_today_quantity"
+          },
+          {
+            "section": "product_key_columns",
+            "key": "standard_product_keys"
+          },
+          {
+            "type": "table_catalog",
+            "key": "production_today"
+          },
+          {
+            "type": "table_catalog",
+            "key": "wip_today"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "production_today",
+            "source_alias": "prod_input",
+            "status": "ok",
+            "row_count": 0,
+            "applied_params": {
+              "DATE": "20260731"
+            },
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "eq",
+                "value": "INPUT"
+              }
+            }
+          },
+          {
+            "dataset_key": "wip_today",
+            "source_alias": "wip_da",
+            "status": "ok",
+            "row_count": 0,
+            "applied_params": {
+              "DATE": "20260731"
+            },
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "in",
+                "value": [
+                  "D/A1",
+                  "D/A2",
+                  "D/A3",
+                  "D/A4",
+                  "D/A5",
+                  "D/A6"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 29544,
+        "status": "ok",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "generated_code": "_filtered_source_1_prod_input = sources.get('prod_input')\nif _filtered_source_1_prod_input is not None:\n    sources = dict(sources)\n    _filtered_source_1_prod_input = _filtered_source_1_prod_input.copy()\n    _filter_col_1_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_1_prod_input.columns else ('OPER_NAME' if 'OPER_NAME' in _filtered_source_1_prod_input.columns else (''))\n    _filter_values_1_1 = ['INPUT']\n    if not _filter_col_1_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME', 'OPER_NAME'])\")\n    if _filter_col_1_1:\n        _filtered_source_1_prod_input = _filtered_source_1_prod_input[_filtered_source_1_prod_input[_filter_col_1_1].isin(_filter_values_1_1)]\n    sources['prod_input'] = _filtered_source_1_prod_input\n_filtered_source_2_wip_da = sources.get('wip_da')\nif _filtered_source_2_wip_da is not None:\n    sources = dict(sources)\n    _filtered_source_2_wip_da = _filtered_source_2_wip_da.copy()\n    _filter_col_2_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_2_wip_da.columns else ('OPER_NAME' if 'OPER_NAME' in _filtered_source_2_wip_da.columns else (''))\n    _filter_values_2_1 = ['D/A1', 'D/A2', 'D/A3', 'D/A4', 'D/A5', 'D/A6']\n    if not _filter_col_2_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME', 'OPER_NAME'])\")\n    if _filter_col_2_1:\n        _filtered_source_2_wip_da = _filtered_source_2_wip_da[_filtered_source_2_wip_da[_filter_col_2_1].isin(_filter_values_2_1)]\n    sources['wip_da'] = _filtered_source_2_wip_da",
+        "used_helpers": [],
+        "row_count": 0,
+        "columns": [
+          "TECH",
+          "DENSITY",
+          "MODE",
+          "ORG",
+          "PKG1",
+          "PKG2",
+          "LEAD",
+          "MCP_NO",
+          "INPUT_QTY",
+          "DA_WIP_QTY"
+        ],
+        "preview_rows": []
+      },
+      "answer": {
+        "prompt_chars": 10708,
+        "message": "### 답변\n현시간 기준 INPUT 투입 실적은 있으나 D/A 공정 WIP이 없는 제품은 조회되지 않았습니다.\n\n요청하신 조건에 해당하는 대상이 없어 결과 건수는 0건입니다.\n\n적용 기준: 2026년 07월 31일 기준, INPUT 공정 투입 실적이 존재하면서 D/A1\\~D/A6 공정의 재공(WIP)이 없는 제품을 대상으로 비교하였습니다.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n표시할 결과 행이 없습니다.\n\n- 컬럼: `TECH, DENSITY, MODE, ORG, PKG1, PKG2, LEAD, MCP_NO, INPUT_QTY, DA_WIP_QTY`\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=production_today, source_alias=prod_input, source_type=oracle\n- dataset_key=wip_today, source_alias=wip_da, source_type=oracle\n- dataset_key=production_today, source_alias=prod_input, source_type=oracle, row_count=0\n- dataset_key=wip_today, source_alias=wip_da, source_type=oracle, row_count=0\n**조회 필수 조건**\n- prod_input: DATE=20260731\n- wip_da: DATE=20260731\n**분석 조건**\n- prod_input: OPER_NAME={\"operator\": \"eq\", \"value\": \"INPUT\"}\n- wip_da: OPER_NAME={\"operator\": \"in\", \"value\": [\"D/A1\", \"D/A2\", \"D/A3\", \"D/A4\", \"D/A5\", \"D/A6\"]}\n**그룹 기준**\n- TECH\n- DENSITY\n- MODE\n- ORG\n- PKG1\n- PKG2\n- LEAD\n- MCP_NO\n\n### 참고\n- 조건에 맞는 결과 행이 없습니다.\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 조건을 넓혀서 다시 조회할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    }
+  ],
+  "errors": []
+}

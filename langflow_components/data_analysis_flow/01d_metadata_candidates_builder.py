@@ -357,6 +357,12 @@ def build_metadata_candidates(
             },
             "selected_counts_before_bytes": selected_counts_before_bytes,
             "matched_counts": selection_stats["matched_counts"],
+            "temporal_family_companions": selection_stats.get(
+                "temporal_family_companions", {}
+            ),
+            "domain_dataset_dependencies": selection_stats.get(
+                "domain_dataset_dependencies", {}
+            ),
             "candidate_bytes_by_pool": {
                 key: _json_bytes(value)
                 for key, value in candidates.items()
@@ -439,16 +445,147 @@ def _select_candidates(
         max_table_items,
         max(min_table_items, min(table_related_count, max_table_items)),
     )
+    domain_dataset_refs = _domain_dataset_references(selected_domain)
+    required_tables = [
+        entry[4]
+        for entry in ranked["table_catalog_items"]
+        if str(entry[4].get("dataset_key") or "").strip() in domain_dataset_refs
+    ]
+    initial_tables: list[dict[str, Any]] = []
+    initial_table_ids: set[str] = set()
+    for item in [*required_tables, *[entry[4] for entry in ranked["table_catalog_items"][:table_target]]]:
+        identity = _stable_identity(item)
+        if identity in initial_table_ids:
+            continue
+        initial_tables.append(item)
+        initial_table_ids.add(identity)
+    selected_tables, temporal_companion_stats = _select_temporal_family_companions(
+        initial_tables,
+        [entry[4] for entry in ranked["table_catalog_items"]],
+        max_table_items,
+    )
     selected = {
         "domain_items": selected_domain,
-        "table_catalog_items": [entry[4] for entry in ranked["table_catalog_items"][:table_target]],
+        "table_catalog_items": selected_tables,
         "main_flow_filters": [entry[4] for entry in ranked["main_flow_filters"]],
     }
     return selected, {
         "matched_counts": {
             key: sum(1 for _, strong_hits, _, _, _ in values if strong_hits > 0)
             for key, values in ranked.items()
-        }
+        },
+        "temporal_family_companions": temporal_companion_stats,
+        "domain_dataset_dependencies": {
+            "dataset_keys": sorted(domain_dataset_refs),
+            "included_dataset_keys": sorted(
+                str(item.get("dataset_key") or "") for item in required_tables
+            ),
+        },
+    }
+
+
+# 함수 설명: `_domain_dataset_references()`는 데이터셋·references 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
+def _domain_dataset_references(items: list[dict[str, Any]]) -> set[str]:
+    reference_keys = {
+        "data_source",
+        "dataset_key",
+        "dataset_keys",
+        "dataset_ref",
+        "dataset_refs",
+        "source_dataset",
+        "target_dataset",
+    }
+    result: set[str] = set()
+
+    # 함수 설명: `visit()`는 01D 질문 기반 메타데이터 후보 생성기 처리 중 visit 관련 값을 계산·변환하는 내부 helper입니다.
+    def visit(value: Any, parent_key: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key_text = str(key)
+                if key_text in reference_keys:
+                    raw_values = item if isinstance(item, list) else [item]
+                    for raw in raw_values:
+                        if isinstance(raw, dict):
+                            raw = raw.get("dataset_key") or raw.get("key")
+                        text = str(raw or "").strip()
+                        if text:
+                            result.add(text)
+                elif isinstance(item, (dict, list)):
+                    visit(item, key_text)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, parent_key)
+
+    for item in items:
+        visit(_dict(item.get("payload")))
+    return result
+
+
+# 함수 설명: `_table_time_scope()`는 TIME·분석 범위을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
+def _table_time_scope(item: dict[str, Any]) -> str:
+    payload = _dict(item.get("payload"))
+    criteria = _dict(payload.get("selection_criteria"))
+    return str(criteria.get("time_scope") or payload.get("time_scope") or "").strip().lower()
+
+
+# 함수 설명: `_table_dataset_family()`는 데이터셋·데이터셋 분류을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
+def _table_dataset_family(item: dict[str, Any]) -> str:
+    return str(_dict(item.get("payload")).get("dataset_family") or "").strip()
+
+
+# 함수 설명: `_select_temporal_family_companions()`는 조건과 우선순위에 맞는 temporal·데이터셋 분류·companions만 골라 원래 순서를 유지해 반환합니다.
+def _select_temporal_family_companions(
+    initially_selected: list[dict[str, Any]],
+    ranked_items: list[dict[str, Any]],
+    max_items: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Keep every structured time-scope variant for a selected dataset family."""
+    members_by_family: dict[str, list[dict[str, Any]]] = {}
+    scopes_by_family: dict[str, set[str]] = {}
+    for item in ranked_items:
+        family = _table_dataset_family(item)
+        scope = _table_time_scope(item)
+        if not family or not scope:
+            continue
+        members_by_family.setdefault(family, []).append(item)
+        scopes_by_family.setdefault(family, set()).add(scope)
+    temporal_families = {
+        family for family, scopes in scopes_by_family.items() if len(scopes) >= 2
+    }
+    selected_families = {
+        _table_dataset_family(item) for item in initially_selected
+    }
+    expanded_families = temporal_families.intersection(selected_families)
+    required_ids = {
+        _stable_identity(item)
+        for family in expanded_families
+        for item in members_by_family.get(family, [])
+    }
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    for item in ranked_items:
+        identity = _stable_identity(item)
+        if identity not in required_ids or identity in selected_ids:
+            continue
+        selected.append(item)
+        selected_ids.add(identity)
+    for item in initially_selected:
+        identity = _stable_identity(item)
+        if identity in selected_ids or len(selected) >= max_items:
+            continue
+        selected.append(item)
+        selected_ids.add(identity)
+    added_ids = selected_ids.difference(
+        {_stable_identity(item) for item in initially_selected}
+    )
+    return selected[:max_items], {
+        "status": "expanded" if added_ids else "not_needed",
+        "expanded_families": sorted(expanded_families),
+        "added_dataset_keys": sorted(
+            str(item.get("dataset_key") or "")
+            for item in selected
+            if _stable_identity(item) in added_ids
+        ),
     }
 
 

@@ -80,6 +80,9 @@
 - row match의 null, None, NaN, NaT, 빈 문자열, 공백 문자열 및 문자열 `null`, `none`, `nan`, `nat`, `<NA>`, `empty`는 모두 동일한 빈 값 `""`으로 정규화한다. 빈 값 조건을 누락하거나 wildcard로 해석하지 않으며 `blank_policy=normalize_blank`를 사용한다.
 - `apply_row_match_groups`가 있는 target source에 reference 행에서 뽑은 값을 다시 컬럼별 `eq`/`in` 필터로 중복 작성하지 않는다. 날짜·공정처럼 reference 행 집합과 별개로 사용자가 직접 요구한 조건만 일반 filter로 유지한다.
 - 데이터 조회가 필요한 경우 `intent_plan.retrieval_jobs`를 반드시 작성한다.
+- `retrieval_jobs[].source_alias`는 외부 데이터 leaf만 나타낸다. join·집계·필터 뒤의 중간 결과를 retrieval job이나 외부 source로 만들지 않는다.
+- pandas 단계가 선행 단계의 파생 결과를 소비하면 가능하면 각 단계에 `node_id`를 주고 다음 단계의 `inputs=[{{"kind":"node_output","ref":"선행 node_id"}}]`로 연결한다. 외부 데이터는 `inputs=[{{"kind":"external_source","ref":"retrieval source_alias"}}]`로 표시한다.
+- `source_alias`나 `output_alias` 이름의 접두사로 외부 source와 파생 결과를 구분한다고 가정하지 않는다. 실행 순서는 typed `inputs` 계약으로 표현한다.
 - 각 retrieval job은 `dataset_key`, `source_alias`, `required_params`, `filters`만 포함한다.
 - 각 retrieval job의 `required_params`는 다른 job을 참조하지 않아도 바로 실행할 수 있는 완성된 값이어야 한다. plan 수준의 공통 파라미터나 다른 job의 값을 조회 단계에서 복사한다고 가정하지 않는다.
 - `required_params`의 key는 table catalog가 선언한 필수 파라미터 이름을 정확히 사용한다. `filter_mappings`나 `standard_column_aliases`의 물리 컬럼명은 pandas filter용이며, `DATE` 대신 `WORK_DT`·`WORK_DATE`·`date`를 필수 파라미터 key로 쓰지 않는다.
@@ -111,9 +114,13 @@
 - 상대 날짜의 확정값은 날짜가 하나일 때 `state_summary.followup_hint.changed_conditions_hint.date.resolved_value`를 사용할 수 있다. `date.mentions`가 있으면 전역 날짜로 복사하지 말고 각 표현이 수식하는 metric/dataset job에 바인딩한다.
 - pandas 분석 계획에는 `filters`를 먼저 적용한 뒤 집계, 정렬, top/bottom, join 등을 수행한다는 순서를 드러낸다.
 - `A가 있으나 B가 없는`, `A에는 존재하지만 B에는 없는` 대상을 찾는 질문은 단순 left join으로 끝내지 않는다. `operation=compare_presence`, `left_source_alias`, `right_source_alias`, `left_metric_column`, `right_metric_column`, `presence_rule=left_positive_right_missing_or_zero`를 기록한다. 왼쪽 metric이 0인 대상은 제외하고 오른쪽 metric이 없거나 합계 0인 대상을 남긴다.
-- `compare_presence`는 `있으나/있지만 ... 없는`, `미존재`, `0인 대상`처럼 존재와 부재를 명시적으로 대조한 경우에만 사용한다. 두 지표를 `대비`해 보여주면서 한 지표가 많은/적은 순서를 요청한 질문은 일반 join과 해당 지표 정렬이며 `compare_presence`가 아니다.
+- `compare_presence`는 `있으나/있지만 ... 없는`, `미존재`, `0인 대상`처럼 존재와 부재를 명시적으로 대조한 경우에만 사용한다.
+- `A 대비 B가 많은/적은 대상`, `A보다 B가 큰/작은 대상`처럼 두 수치 metric 사이의 행별 크기 조건을 요구하면 일반 join과 정렬로 끝내지 않는다. 두 source를 각 metric별로 집계·join한 다음 `operation=compare_metrics`, `lhs_metric_column=B 결과 컬럼`, `operator=gt 또는 lt`, `rhs_metric_column=A 결과 컬럼`을 typed 단계로 기록한다. `inputs`는 바로 앞 join node의 `node_output`을 가리켜야 한다.
+- `compare_metrics`의 좌변·우변은 문장 순서가 아니라 실제 부등식 방향으로 작성한다. 예를 들어 `A 대비 B가 많은`은 `B > A`이므로 `lhs_metric_column=B`, `operator=gt`, `rhs_metric_column=A`이다. `이상/이하/초과/미만/같음/다름`은 각각 `ge/le/gt/lt/eq/ne`를 사용한다.
+- `A 대비 B를 함께 보여주고 B가 많은 순으로`처럼 두 값을 단순 병렬 표시하고 순위만 요구한 경우에만 일반 join과 `sort_and_top_n`을 사용한다. `B가 A보다 많다/적다`라는 행별 조건이 포함되면 반드시 `compare_metrics`를 사용하고, 정렬은 그 비교를 통과한 결과에 후속 적용한다.
 - 사용자가 제품별·제품 기준 집계를 요청하면 후보 Domain의 `product_key_columns` 또는 제품 grain을 정의한 `analysis_recipes`를 선택하고 `intent_plan.grain_plan.metadata_ref`에 그 `section`과 `key`만 기록한다. 실제 제품 키 컬럼 목록을 모델이 추측하거나 고정하지 않는다.
 - 여러 dataset을 제품 기준으로 결합하면 후보 Domain의 제품 키 또는 join recipe를 선택하고 각 결합을 `intent_plan.join_plan`에 기록한다. `metadata_ref`, 좌우 `source_alias`, `join_type`, 사용자가 요청한 우측 결과 컬럼과 다중 일치 정책만 작성하며 실제 좌우 join column은 다음 정규화기가 metadata와 table catalog mapping으로 해석한다.
+- 두 source의 대상 집합을 동등하게 비교해 모두 보여 달라는 질문은 어느 한쪽에만 존재하는 대상도 보존하도록 `join_type=outer`를 사용한다. 특정 source를 기준으로 유지하라는 의미가 명시된 경우에만 `left`를 사용하고, 존재·부재 질문은 일반 join 대신 `compare_presence`를 사용한다.
 - 두 dataset을 결합할 때 pandas 단계에 임의의 `filter_and_join`과 `source_alias`/`reference_source_alias` 조합만 남기지 않는다. 반드시 `intent_plan.join_plan`에 `left_source_alias`와 `right_source_alias`를 기록하고 pandas 단계도 같은 좌우 alias를 사용한다.
 - `grain_plan` 또는 `join_plan`에 참조할 metadata가 후보에 없으면 source schema에서 보이는 컬럼을 임의의 표준 제품 키로 만들지 말고 clarification으로 보낸다.
 - 제품별 집계 컬럼과 dataset 결합 컬럼은 서로 다른 계약이다. 집계에 사용한 모든 `group_by` 컬럼을 그대로 join key로 재사용하지 않는다.
@@ -142,6 +149,9 @@
 - `intent_plan.output_contract.result_mode`는 결과 형태에 맞게 작성한다. 원본/상세 행 또는 장비·LOT·Recipe 같은 entity 목록이면 `detail` 또는 `entity_list`, groupby 집계이면 `aggregate`, 단일 지표이면 `scalar`, 설명만 요청하면 `explanation`을 사용한다.
 - `detail`/`entity_list`에서는 선택된 table catalog의 `default_detail_columns` 중 실제 source에 있는 컬럼을 `output_contract.required_columns`에 합친다. 사용자가 요청한 속성은 기본 컬럼보다 우선하며, 모델·Recipe를 설명할 결과라면 해당 원본 컬럼을 결과에도 포함한다.
 - `aggregate`/`scalar`에서는 `default_detail_columns`를 무조건 붙이지 않는다. 질문의 grouping·metric에 필요한 컬럼만 `grain_columns`, `metric_columns`, `required_columns`에 넣어 결과 자유도를 유지한다.
+- 사용자가 `공정별/제품별`, `차수별/장비 기종별`처럼 둘 이상의 breakdown을 함께 요청하면 모든 요청 차원을 각 관련 집계 단계의 `group_by`와 `output_contract.grain_columns`에 보존한다. 제품 identity metadata를 선택했다는 이유로 공정·차수·장비 같은 명시적 breakdown을 제거하지 않는다.
+- 각 집계 metric은 Table Catalog의 `columns`, `metric_semantics` 또는 컬럼 mapping에 해당 source column이 명시된 retrieval dataset에만 연결한다. alias나 표시 이름이 비슷하다는 이유로 metric과 dataset을 연결하지 않는다.
+- 같은 family에 동일 metric을 제공하는 dataset이 둘 이상이면, 현재일/이력 선택은 구조화된 `selection_criteria.time_scope`와 확정된 `DATE`가 `reference_date`와 같은지 여부로만 결정한다. dataset key의 접미사나 부분 문자열로 시간 범위를 추측하지 않는다.
 - 선택한 table catalog에 `metric_semantics`가 있으면 metric의 가산성과 허용 집계를 그대로 따른다. `additive=false`인 평균·rate·비율 지표에 `sum`을 사용하지 않고, 상세 요청은 원본 metric 값을 유지하며 명시적인 grouping 요청은 `default_rollup` 또는 `allowed_rollups`의 집계만 선택한다.
 - 결과에 metric이 둘 이상이면 질문의 비교·정렬·설명 기준이 되는 하나를 `output_contract.primary_metric`에 명시한다. 단순히 첫 번째 metric을 대표 지표로 간주하지 않는다.
 - 같은 `group_by`에서 하나의 source 컬럼으로 둘 이상의 결과 집계(예: 고유 개수와 고유 목록)를 요청하면 `groupby_and_aggregate` 단계의 `aggregations`에 각각 `column`, `method`, `output_column`을 기록한다. 원본 ID 컬럼 하나를 count와 list의 공용 결과명으로 재사용하지 않고, `output_contract.required_columns`와 `metric_columns`에도 서로 다른 결과 컬럼명을 넣는다.

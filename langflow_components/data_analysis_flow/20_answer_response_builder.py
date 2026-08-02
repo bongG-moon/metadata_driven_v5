@@ -84,6 +84,19 @@ def _ground_answer_message(payload: dict[str, Any], message: str) -> tuple[str, 
     if analysis.get("status") != "ok" or not rows or not message:
         return message, {}
 
+    for operation in ("compare_presence", "compare_metrics"):
+        certificate = _verified_semantic_execution_certificate(payload, operation)
+        if not certificate:
+            continue
+        grounded_message = _authoritative_result_message(payload)
+        if grounded_message:
+            return grounded_message, {
+                "stage": "20_answer_response_builder",
+                "status": "verified_semantic_contract",
+                "operation": operation,
+                "policy": "semantic_execution_certificate",
+            }
+
     unsupported = _unsupported_numeric_claims(payload, message)
     if not unsupported:
         return message, {}
@@ -97,6 +110,22 @@ def _ground_answer_message(payload: dict[str, Any], message: str) -> tuple[str, 
         "unsupported_numeric_claims": unsupported,
         "policy": "deterministic_data_rows",
     }
+
+
+# 함수 설명: `_verified_semantic_execution_certificate()`는 20 답변 응답 생성기 처리 중 semantic·execution·certificate 관련 값을
+#        계산·변환하는 내부 helper입니다.
+def _verified_semantic_execution_certificate(
+    payload: dict[str, Any],
+    operation: str,
+) -> dict[str, Any]:
+    analysis = _dict(payload.get("analysis"))
+    certificate = _dict(analysis.get("semantic_execution_certificate"))
+    if (
+        str(certificate.get("operation") or "").strip() == operation
+        and str(certificate.get("postcondition_validation") or "").strip() == "passed"
+    ):
+        return certificate
+    return {}
 
 
 # 함수 설명: `_unsupported_numeric_claims()`는 질문 조건이나 실제 결과에 없는 LLM 수치 주장만 선별합니다.
@@ -189,6 +218,15 @@ def _authoritative_result_message(payload: dict[str, Any]) -> str:
     presence_message = _presence_comparison_message(payload, row_count, columns, metric_column, question)
     if presence_message:
         return presence_message
+    metric_comparison_message = _metric_comparison_message(
+        payload,
+        row_count,
+        columns,
+        metric_column,
+        question,
+    )
+    if metric_comparison_message:
+        return metric_comparison_message
 
     if metric_column and metric_column in first_row:
         metric_label = _metric_label(payload, metric_column)
@@ -443,9 +481,7 @@ def _presence_comparison_message(
     metric_column: str,
     question: str,
 ) -> str:
-    plan = _dict(payload.get("intent_plan"))
-    steps = [item for item in _list(plan.get("pandas_execution_plan")) if isinstance(item, dict)]
-    if not any(str(item.get("operation") or "").strip() == "compare_presence" for item in steps):
+    if not _verified_semantic_execution_certificate(payload, "compare_presence"):
         return ""
     dimension_label = _comparison_dimension_label(payload, columns, metric_column, question)
     target = f"{dimension_label}은" if dimension_label != "대상" else "대상은"
@@ -453,6 +489,43 @@ def _presence_comparison_message(
         [
             f"요청한 존재·부재 조건을 만족한 {target} 총 {row_count:,}건입니다.",
             "왼쪽 기준에는 값이 존재하고 오른쪽 기준에는 값이 없거나 0인 결과만 아래 표에 표시했습니다.",
+        ]
+    )
+
+
+# 함수 설명: 검증된 수치 metric 비교 결과를 부등식 방향과 결과 건수 중심의 결정론적 문장으로 설명합니다.
+def _metric_comparison_message(
+    payload: dict[str, Any],
+    row_count: int,
+    columns: list[str],
+    metric_column: str,
+    question: str,
+) -> str:
+    certificate = _verified_semantic_execution_certificate(payload, "compare_metrics")
+    if not certificate:
+        return ""
+    lhs_column = str(certificate.get("lhs_metric_column") or "").strip()
+    rhs_column = str(certificate.get("rhs_metric_column") or "").strip()
+    operator = str(certificate.get("operator") or "").strip().lower()
+    if not lhs_column or not rhs_column:
+        return ""
+    symbols = {"gt": ">", "ge": ">=", "lt": "<", "le": "<=", "eq": "=", "ne": "!="}
+    symbol = symbols.get(operator)
+    if not symbol:
+        return ""
+    lhs_label = _metric_label(payload, lhs_column)
+    rhs_label = _metric_label(payload, rhs_column)
+    dimension_label = _comparison_dimension_label(
+        payload,
+        columns,
+        metric_column or lhs_column,
+        question,
+    )
+    target = f"{dimension_label}은" if dimension_label != "대상" else "대상은"
+    return "\n\n".join(
+        [
+            f"요청한 {rhs_label} 대비 {lhs_label} 비교 조건을 만족한 {target} 총 {row_count:,}건입니다.",
+            f"{lhs_label} {symbol} {rhs_label} 조건을 통과한 결과만 아래 표에 표시했습니다.",
         ]
     )
 

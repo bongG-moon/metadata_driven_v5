@@ -10,6 +10,8 @@ text
 화면에 보일 이름은 Production Today이면 돼.
 당일 생산 실적 질문에 사용하는 Oracle 데이터야.
 production_today는 production 계열의 당일용 생산 실적 source야.
+selection_criteria의 time_scope는 current_day로 저장해줘.
+selection_criteria의 use_when은 오늘 생산, 당일 생산, 현재 생산, 현시간 기준 생산이고 exclude_when은 어제 생산, 전일 생산, 특정 과거일 생산이야.
 조회할 때 DATE 값은 WORK_DT 컬럼에 넣어서 조회하고, DATE는 조회 필수 기준일이야.
 DATE는 YYYYMMDD 형식이야.
 수량은 PRODUCTION 컬럼을 사용하고, 이 값은 생산량이야.
@@ -34,6 +36,8 @@ text
 이력 생산 실적 데이터는 production으로 등록해줘.
 화면에 보일 이름은 Production History이면 돼.
 production은 production 계열의 이력 생산 실적 source야.
+selection_criteria의 time_scope는 history로 저장해줘.
+selection_criteria의 use_when은 어제 생산, 전일 생산, 특정 과거일 생산이고 exclude_when은 오늘 생산, 당일 생산, 현재 생산, 현시간 기준 생산이야.
 조회할 때 DATE 값은 WORK_DT 컬럼에 넣어서 조회하고, DATE는 조회 필수 기준일이야. DATE는 YYYYMMDD형식이야
 수량은 PRODUCTION 컬럼을 사용하고, 이 값은 생산량이야.
 source는 oracle이고 db_key는 PNT_RPT야.
@@ -154,6 +158,7 @@ WHERE 1=1
 
 filter_mappings는 EQP_ID -> EQUIP_ID, EQP_MODEL -> EQUIP_MODEL, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, ORG -> ORG, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC, OPER_NUM -> OPER, OPER_NAME -> OPER_NM, LOT_ID -> LOT_ID, RECIPE_ID -> RECIPE_ID 로 연결해줘.
 default_detail_columns는 EQUIP_ID로 저장해줘.
+조회 원본의 EQUIP_MODEL은 표준 컬럼 EQP_MODEL로 정규화하고, pandas 계획과 결과 계약에서는 EQP_MODEL만 사용해.
 
 
 Equipment Recipe UPH
@@ -190,8 +195,9 @@ FROM UPH
 WHERE 1=1
 
 filter_mappings는 EQP_MODEL -> EQUIP_MODEL, OPER_NAME -> OPER_NAME, OPER_NUM -> OPER, MODE -> MODE, TECH -> TECH, ORG -> ORG, DEN -> DENSITY, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, RECIPE_ID -> RECIPE_ID로 연결해줘.
-default_detail_columns는 EQUIP_MODEL, RECIPE_ID, OPER_NAME으로 저장해줘.
-다른조건이 없을 때 기본적으로 보여줄 컬럼은 EQUIP_MODEL, RECIPE_ID, OPER_NAME이야.
+조회 원본의 EQUIP_MODEL은 표준 컬럼 EQP_MODEL로 정규화하고, pandas 계획과 결과 계약에서는 EQP_MODEL만 사용해.
+default_detail_columns는 EQP_MODEL, RECIPE_ID, OPER_NAME으로 저장해줘.
+다른조건이 없을 때 기본적으로 보여줄 표준 컬럼은 EQP_MODEL, RECIPE_ID, OPER_NAME이야.
 UPH는 사용자가 UPH를 물었을 때 metric 컬럼으로 추가하고, PRESS_CNT와 MCP_NO는 사용자가 질문에서 요구할 때만 출력 컬럼으로 선택해.
 metric_semantics의 UPH는 semantic_type이 average이고 additive는 false야. source_already_aggregated는 true이고 default_rollup과 allowed_rollups는 mean만 사용해. 제품별 UPH처럼 추가 grouping이 없으면 장비 모델, Recipe, 공정별 원본 UPH를 유지하고, 사용자가 차수별·장비 기종별처럼 grouping을 명시한 경우에만 그 그룹별 평균을 계산해. UPH를 sum으로 합산하면 안 돼.
 

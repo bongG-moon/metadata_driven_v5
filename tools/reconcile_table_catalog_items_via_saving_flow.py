@@ -32,6 +32,21 @@ DEFAULT_COLLECTION = "agent_v4_table_catalog_items"
 
 TARGET_SPECS = (
     {
+        "dataset_key": "production_today",
+        "start": "당일용 생산 실적 데이터는 production_today로 등록해줘.",
+        "end": "Production History",
+    },
+    {
+        "dataset_key": "production",
+        "start": "Production History",
+        "end": "<!-- single_wip_today:start -->",
+    },
+    {
+        "dataset_key": "equipment_assign",
+        "start": "Equipment Status",
+        "end": "Equipment Recipe UPH",
+    },
+    {
         "dataset_key": "eqp_uph",
         "start": "Equipment Recipe UPH",
         "end": "LOT Status",
@@ -110,8 +125,46 @@ def _semantic_errors(dataset_key: str, items: list[Any]) -> list[dict[str, str]]
     source_config = payload.get("source_config")
     source_config = source_config if isinstance(source_config, dict) else {}
 
-    if dataset_key == "eqp_uph":
-        expected_details = ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"]
+    if dataset_key in {"production_today", "production"}:
+        criteria = payload.get("selection_criteria")
+        criteria = criteria if isinstance(criteria, dict) else {}
+        expected_scope = "current_day" if dataset_key == "production_today" else "history"
+        if criteria.get("time_scope") != expected_scope:
+            errors.append({
+                "type": "selection_time_scope_mismatch",
+                "message": f"{dataset_key} selection_criteria.time_scope must be {expected_scope}.",
+            })
+        columns = payload.get("columns") if isinstance(payload.get("columns"), list) else []
+        column_names = [
+            str(item.get("column_name") or "") if isinstance(item, dict) else str(item or "")
+            for item in columns
+        ]
+        if "PRODUCTION" not in column_names:
+            errors.append({
+                "type": "production_metric_column_missing",
+                "message": f"{dataset_key} must declare the PRODUCTION source column.",
+            })
+    elif dataset_key == "equipment_assign":
+        filter_mappings = payload.get("filter_mappings")
+        filter_mappings = filter_mappings if isinstance(filter_mappings, dict) else {}
+        model_candidates = filter_mappings.get("EQP_MODEL")
+        model_candidates = (
+            model_candidates
+            if isinstance(model_candidates, list)
+            else [model_candidates] if model_candidates else []
+        )
+        if "EQUIP_MODEL" not in model_candidates:
+            errors.append({
+                "type": "equipment_model_mapping_mismatch",
+                "message": "equipment_assign must map standard EQP_MODEL to source EQUIP_MODEL.",
+            })
+        if "EQPIP_MODEL" in json.dumps(payload, ensure_ascii=False):
+            errors.append({
+                "type": "equipment_model_typo_present",
+                "message": "equipment_assign contains the obsolete EQPIP_MODEL typo.",
+            })
+    elif dataset_key == "eqp_uph":
+        expected_details = ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"]
         if payload.get("default_detail_columns") != expected_details:
             errors.append({
                 "type": "default_detail_columns_mismatch",
@@ -311,6 +364,9 @@ def apply_replacement(
                 "_id": 1,
                 "dataset_key": 1,
                 "payload.default_detail_columns": 1,
+                "payload.filter_mappings": 1,
+                "payload.columns": 1,
+                "payload.selection_criteria": 1,
                 "payload.metric_semantics": 1,
                 "payload.required_params": 1,
                 "payload.source_config.upstream_bindings": 1,
@@ -361,6 +417,12 @@ def main() -> int:
         "--output",
         default="validation_outputs/table_catalog_reconciliation_20260729.json",
     )
+    parser.add_argument(
+        "--dataset-key",
+        action="append",
+        default=[],
+        help="Reconcile only selected dataset keys. Repeat this option for multiple datasets.",
+    )
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env")
@@ -375,6 +437,12 @@ def main() -> int:
     llm_config = resolve_llm_config()
     components = _load_components()
     requests = build_registration_requests(CATALOG_PATH.read_text(encoding="utf-8"))
+    if args.dataset_key:
+        selected = {str(value).strip() for value in args.dataset_key if str(value).strip()}
+        requests = [item for item in requests if item["dataset_key"] in selected]
+        missing = sorted(selected - {item["dataset_key"] for item in requests})
+        if missing:
+            raise RuntimeError(f"Unknown dataset keys: {', '.join(missing)}")
     prepared, dry_run_results = generate_and_validate(
         requests,
         components=components,

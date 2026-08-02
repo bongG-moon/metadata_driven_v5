@@ -138,6 +138,7 @@ def store_result(
         result_ref = data_refs[0] if data_refs else _data_ref_object(data_ref, mongo_database, collection_name, "payload.result_rows", "analysis_result", "분석 결과")
         next_payload.setdefault("data", {})["data_ref"] = result_ref
         next_payload["data_refs"] = data_refs
+        next_payload["download_manifest"] = _download_manifest(data_refs)
         next_payload.setdefault("trace", {}).setdefault("inspection", {})["result_store"] = {
             "stage": "23_mongodb_result_store",
             "status": "ok",
@@ -241,6 +242,27 @@ def _attach_download_links(
             item["download_format"] = "csv"
         enriched.append(item)
     return enriched, warning
+
+
+# 함수 설명: `_download_manifest()`는 manifest을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
+def _download_manifest(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Expose one source-type-neutral download entry for every stored row set."""
+    result: list[dict[str, Any]] = []
+    for ref in refs:
+        if not isinstance(ref, dict) or not str(ref.get("download_url") or "").strip():
+            continue
+        item = {
+            "role": str(ref.get("role") or "").strip(),
+            "label": str(ref.get("label") or "").strip(),
+            "download_url": str(ref.get("download_url") or "").strip(),
+            "download_format": str(ref.get("download_format") or "csv").strip(),
+            "expires_at": str(ref.get("expires_at") or "").strip(),
+        }
+        for key in ("source_alias", "dataset_key", "source_type", "row_count"):
+            if _has_value(ref.get(key)):
+                item[key] = deepcopy(ref.get(key))
+        result.append(item)
+    return result
 
 
 # 함수 설명: `_ensure_ttl_index()`는 TTL·index이 실행·저장 계약을 만족하는지 검사하고 위반 내용을 명시적으로 반환합니다.
@@ -518,6 +540,20 @@ def _runtime_source_aliases_for_store(
         return set()
 
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    graph = (
+        plan.get("resolved_execution_graph")
+        if isinstance(plan.get("resolved_execution_graph"), dict)
+        else {}
+    )
+    graph_aliases = {
+        str(item.get("source_alias") or "").strip()
+        for item in graph.get("external_source_requirements", [])
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or "").strip()
+    }
+    selected = graph_aliases & available
+    if selected:
+        return selected
     planned_aliases: set[str] = set()
     _collect_plan_source_aliases(plan.get("pandas_execution_plan"), planned_aliases)
     _collect_plan_source_aliases(plan.get("pandas_function_cases"), planned_aliases)
@@ -653,6 +689,7 @@ def _mark_execution_blocked(payload: dict[str, Any], database: str, collection_n
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     data.pop("data_ref", None)
     payload.pop("data_refs", None)
+    payload.pop("download_manifest", None)
     payload.setdefault("trace", {}).setdefault("inspection", {})["result_store"] = {
         "stage": "23_mongodb_result_store",
         "status": "skipped",
@@ -694,6 +731,7 @@ def _mark_followup_unavailable(
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     data.pop("data_ref", None)
     payload.pop("data_refs", None)
+    payload.pop("download_manifest", None)
     payload.setdefault("trace", {}).setdefault("warnings", []).append(warning)
     payload.setdefault("trace", {}).setdefault("inspection", {})["result_store"] = {
         "stage": "23_mongodb_result_store",

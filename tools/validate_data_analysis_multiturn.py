@@ -389,6 +389,7 @@ def _execute_turn(
         ],
         "pandas": {
             "status": analysis.get("status"),
+            "execution_mode": analysis.get("execution_mode", ""),
             "row_count": analysis.get("row_count", 0),
             "columns": deepcopy(analysis.get("columns") or []),
             "generated_code": pandas_trace.get("generated_code", ""),
@@ -448,6 +449,10 @@ def _turn_issues(
             issues.append({"type": issue_type, "turn": index, "message": message})
 
     default_profile = validation_profile == "default"
+    deterministic_empty = (
+        pandas.get("execution_mode") == "empty_result"
+        and turn.get("upstream_parameter_binding", {}).get("status") == "empty"
+    )
     expected = {
         1: ("new_analysis", "none", "none"),
         2: ("followup_requery", "previous_result_rows", "previous_result"),
@@ -484,7 +489,7 @@ def _turn_issues(
         )
     elif default_profile and index == 3:
         require(
-            row_count == 1,
+            row_count == 1 or (deterministic_empty and row_count == 0),
             "unexpected_transform_row_count",
             f"3턴 최다 장비 제품 결과는 1행이어야 하지만 {row_count}행입니다.",
         )
@@ -495,7 +500,7 @@ def _turn_issues(
             f"4턴 상위 5개 결과 행 수가 유효하지 않습니다: {row_count}",
         )
     require(
-        bool(str(pandas.get("generated_code") or "").strip()),
+        deterministic_empty or bool(str(pandas.get("generated_code") or "").strip()),
         "missing_generated_code",
         "Gemini가 실행 가능한 pandas 코드를 생성하지 않았습니다.",
     )
@@ -583,7 +588,8 @@ def _turn_issues(
             "세 번째 턴은 이전 결과 정렬만 해야 하지만 신규 조회가 있습니다.",
         )
         require(
-            int(pandas.get("row_count") or 0) == 1,
+            int(pandas.get("row_count") or 0) == 1
+            or (deterministic_empty and int(pandas.get("row_count") or 0) == 0),
             "top_transform_row_count",
             f"최대 장비 제품 결과가 1행이 아닙니다: {pandas.get('row_count')}",
         )

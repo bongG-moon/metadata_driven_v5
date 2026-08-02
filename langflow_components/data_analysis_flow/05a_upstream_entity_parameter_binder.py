@@ -43,18 +43,34 @@ def bind_upstream_entity_parameters(payload_value: Any) -> dict[str, Any]:
     allowed_source_aliases: set[str] = set()
     if upstream_ref:
         allowed_source_aliases.add(UPSTREAM_SOURCE_ALIAS)
-    if reference_mode == "previous_result_rows":
+    if reference_mode in {"previous_result_rows", "previous_result_transform"}:
         allowed_source_aliases.add(PREVIOUS_RESULT_SOURCE_ALIAS)
     if not allowed_source_aliases:
         # 기존 단일 분석과 previous_result_rows가 아닌 후속 분석은 변경하지 않습니다.
         return payload
 
     jobs = [item for item in plan.get("retrieval_jobs", []) if isinstance(item, dict)] if isinstance(plan.get("retrieval_jobs"), list) else []
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    empty_available_aliases = {
+        alias
+        for alias in allowed_source_aliases
+        if isinstance(runtime_sources.get(alias), list)
+        and not runtime_sources.get(alias)
+        and (
+            alias != UPSTREAM_SOURCE_ALIAS
+            or str(orchestration.get("status") or "").lower() == "ok"
+        )
+    }
+    if empty_available_aliases:
+        return _short_circuit_empty_upstream_result(
+            payload,
+            plan,
+            orchestration,
+            empty_available_aliases,
+        )
     if not jobs:
         _record_inspection(payload, "skipped", [], [], reason="no_retrieval_jobs")
         return payload
-
-    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
     source_rows_by_alias: dict[str, list[Any]] = {}
     errors: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
@@ -116,6 +132,73 @@ def bind_upstream_entity_parameters(payload_value: Any) -> dict[str, Any]:
     orchestration["binding_status"] = status
     orchestration["bound_job_count"] = len(bound_jobs) if not errors else 0
     payload["orchestration"] = orchestration
+    return payload
+
+
+# 함수 설명: `_short_circuit_empty_upstream_result()`는 05A 상위 결과 파라미터 바인더 처리 중 circuit·empty·upstream·결과 관련 값을 계산·변환하는
+#        내부 helper입니다.
+def _short_circuit_empty_upstream_result(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    orchestration: dict[str, Any],
+    empty_aliases: set[str],
+) -> dict[str, Any]:
+    """Turn a valid zero-row parent result into a deterministic zero-row child result."""
+    output_contract = (
+        plan.get("output_contract")
+        if isinstance(plan.get("output_contract"), dict)
+        else {}
+    )
+    raw_columns = (
+        output_contract.get("result_columns")
+        or output_contract.get("required_columns")
+        or []
+    )
+    columns: list[str] = []
+    for value in raw_columns if isinstance(raw_columns, list) else [raw_columns]:
+        text = str(value or "").strip()
+        if text and text not in columns:
+            columns.append(text)
+    plan["retrieval_jobs"] = []
+    plan["pandas_execution_plan"] = []
+    plan["resolved_execution_graph"] = {
+        "version": 1,
+        "nodes": [],
+        "external_source_requirements": [],
+        "validation_errors": [],
+    }
+    for key in (
+        "resolved_presence_comparison_plan",
+        "resolved_metric_merge_plan",
+        "resolved_reference_join_plan",
+    ):
+        plan.pop(key, None)
+    plan["resolved_empty_result_plan"] = {
+        "operation": "empty_result",
+        "columns": columns,
+        "reason": "upstream_entity_set_empty",
+        "strict": True,
+    }
+    payload["intent_plan"] = plan
+    orchestration["binding_status"] = "empty"
+    orchestration["bound_job_count"] = 0
+    orchestration["upstream_empty_result"] = True
+    orchestration["empty_source_aliases"] = sorted(empty_aliases)
+    payload["orchestration"] = orchestration
+    _record_inspection(
+        payload,
+        "empty",
+        [
+            {
+                "source_alias": alias,
+                "row_count": 0,
+                "resolution": "deterministic_empty_result",
+            }
+            for alias in sorted(empty_aliases)
+        ],
+        [],
+        reason="upstream_entity_set_empty",
+    )
     return payload
 
 

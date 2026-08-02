@@ -142,6 +142,21 @@ def _reuse_strategy(payload: dict[str, Any]) -> str:
 # 함수 설명: `_requested_source_aliases()`는 현재 pandas 계획에서 실제 참조한 이전 source alias만 추출합니다.
 def _requested_source_aliases(payload: dict[str, Any]) -> list[str]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    graph = (
+        plan.get("resolved_execution_graph")
+        if isinstance(plan.get("resolved_execution_graph"), dict)
+        else {}
+    )
+    graph_aliases = [
+        str(item.get("source_alias") or "").strip()
+        for item in graph.get("external_source_requirements", [])
+        if isinstance(item, dict)
+        and str(item.get("provider") or "").strip() == "previous_source"
+        and str(item.get("source_alias") or "").strip()
+        and SAFE_SOURCE_ALIAS_PATTERN.fullmatch(str(item.get("source_alias") or "").strip())
+    ]
+    if graph_aliases:
+        return list(dict.fromkeys(graph_aliases))
     aliases: list[str] = []
 
     # 함수 설명: `append()`는 MongoDB field path로 사용 가능한 안전한 alias만 중복 없이 추가합니다.

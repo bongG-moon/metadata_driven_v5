@@ -12,6 +12,7 @@
 - `process_groups.payload.processes`는 `payload.field`에 적용할 값 목록이다. field를 누락하거나 processes 값만 보고 다른 컬럼을 추측하지 않는다.
 - 원문에 없는 `_PROCESS_GROUP`, `_TERM`, `_DOMAIN` 같은 설명형 suffix를 key에 임의로 붙이지 않는다.
 - `analysis_recipes`에 dataset 결합 규칙이 명시되면 `source_datasets`, `join_type`, `join_keys`, `left_key_mappings`, `right_key_mappings`, `preserve_left_rows`를 원문에 있는 범위에서 구조화해 보존한다. `context_columns`는 만들지 않는다.
+- `analysis_recipes`의 선택 조건, 제외 조건, 집계·표시 정책처럼 위 구조화 필드에 해당하지 않는 원문 규칙은 `selection_criteria` 문자열 배열에 문장 단위로 그대로 보존한다. 임의의 `policy`, `matching_rules` 같은 중첩 객체를 만들거나 `missing_information`으로 빼지 않는다.
 - 물리 컬럼명이 서로 다른 join은 표준 `join_keys`와 좌우 mapping을 분리해 기록한다. 원문에 없는 join key나 실행 순서를 추측하지 않는다.
 - 질문 기준일과 실제 조회일의 차이가 명시된 domain은 `payload.temporal_semantics`에 구조화해 보존한다. 허용 필드는 `business_timepoint`, `dataset_family`, `dataset_key`, `source_alias`, `date_param`, `requested_date_offset_days`, `disallowed_dataset_keys`, `inherit_filters`, `metric`, `source_column`, `aggregation`, `output_column`, `metric_aliases`다.
 - `requested_date_offset_days`는 질문 기준일에 더할 정수 일수다. 전일은 `-1`, 동일 일자는 `0`, 다음 날은 `1`로 저장한다. 원문에 없는 offset, dataset 또는 금지 dataset을 추측하지 않는다.

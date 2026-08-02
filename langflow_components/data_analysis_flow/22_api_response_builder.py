@@ -36,6 +36,7 @@ def build_api_response(payload_value: Any, display_message_value: Any = "") -> d
         "analysis": payload.get("analysis", {}),
         "data": payload.get("data", {}),
         "data_refs": payload.get("data_refs", []),
+        "download_manifest": payload.get("download_manifest", []),
         "state": payload.get("state", {}),
         "trace": payload.get("trace", {}),
     }

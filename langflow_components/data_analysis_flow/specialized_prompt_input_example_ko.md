@@ -1,3 +1,12 @@
+실행 계획 공통 완전성 규칙:
+- 최종 응답은 반드시 `intent_plan` 객체를 가진 단일 JSON이어야 한다. `{}`, 설명문만 있는 응답, `intent_plan`이 없는 JSON은 반환하지 않는다.
+- 현재 질문이 데이터 조회와 pandas 분석을 요구하면 `retrieval_jobs`와 `pandas_execution_plan`을 빈 배열로 반환하지 않는다.
+- 최종 출력 직전에 무결성 게이트를 수행한다. 신규 데이터 분석인데 `retrieval_jobs=[]`이거나, pandas 분석이 필요한데 `pandas_execution_plan=[]`이면 아직 응답하지 말고 선택된 Domain·Table Catalog 계약으로 두 배열을 완성한 다음 JSON을 반환한다.
+- 메타데이터만으로 실행 source 또는 필수 파라미터를 유일하게 확정할 수 없는 경우에도 빈 계획으로 성공한 것처럼 반환하지 않는다. `clarification_needed=true`, `clarification_reason`, 확인이 필요한 후보를 구조화해 반환한다.
+- 최종 JSON 직전에 각 지표 집계 node에서 typed `node_output` 입력을 역추적해 하나의 `external_source` leaf에 도달하는지, 그 leaf와 같은 `source_alias`를 가진 retrieval job이 있는지 확인한다.
+- 둘 이상의 source 지표를 비교하면 source별 retrieval job과 집계 node를 각각 만들고, 집계 node 둘을 입력으로 받는 typed join node를 만든다. 중간 `output_alias`를 retrieval job alias로 선언하지 않는다.
+- 두 지표 집합을 동등 비교하면 `join_type=outer`, `population_policy=preserve_all_metric_source_keys`를 사용한다. 사용자가 특정 왼쪽 집합만 보존하라고 명시한 경우에만 `join_type=left`, `population_policy=left_source_only`를 함께 사용한다.
+
 제품 속성 token 질문은 일반 제품군 조건이나 단순 pandas filter로 과도하게 분해하지 말고 pandas_function_cases의 product_token_match 케이스를 우선 검토한다.
 사용자가 `제품별`, `제품 기준`, `상위 N개 제품`, `하위 N개 제품`, `가장 많은 제품`, `가장 적은 제품`처럼 제품 단위 집계나 순위를 요청하면 후보 Domain에서 `section=product_key_columns`, `key=standard_product_keys` 항목을 필수로 선택한다.
 선택한 `standard_product_keys`는 `metadata_refs`와 `intent_plan.grain_plan.metadata_ref`에 기록하고, 실제 제품 집계 컬럼은 해당 metadata의 columns와 table catalog mapping으로 해석한다.
@@ -58,18 +67,18 @@ LLM 답변 JSON에 answer_sections.result_table.display_columns를 넣을 수 �
 
 장비 배정 정보와 UPH를 함께 요청하면 equipment_assign과 eqp_uph의 실제 공통 모델·공정·Recipe 문맥으로 결합한다.
 장비 배정과 Recipe를 함께 언급했다는 이유만으로 UPH 조회를 추가하지 않는다. Recipe, RECIPE_ID, 장비 모델은 equipment_assign 안에서도 조회할 수 있는 장비 배정의 조합·표시 속성이며, 그 표현만으로는 UPH 지표를 요청한 것이 아니다.
-현재 질문에 UPH, 시간당 생산량처럼 UPH 지표를 직접 요구하는 표현이 있을 때만 analysis_recipes의 equipment_assignment_uph_join을 선택하고 equipment_assign과 eqp_uph를 함께 조회한다.
+현재 질문이 배정된 현재 장비의 목록 또는 대수와 UPH 지표를 함께 요구할 때만 analysis_recipes의 equipment_assignment_uph_join을 선택하고 equipment_assign과 eqp_uph를 함께 조회한다. 차수별·장비 기종별·장비 모델별 UPH처럼 배정 장비 목록이나 대수를 요구하지 않은 일반 UPH 분석은 equipment_assignment_uph_join을 선택하지 않고 eqp_uph 하나에서 답한다.
 UPH 지표를 요청하지 않고 배정 장비, 장비 모델, Recipe 또는 그 조합·대수·목록만 요청하면 equipment_assignment_uph_join을 선택하지 않고 equipment_assign 하나에서 답한다.
 직전 제품 결과를 가리키며 `이 제품들`, `위 제품들`, `해당 제품들`의 장비 대수나 목록을 묻고 실제로 이전 제품 행별 대응 장비를 찾는 의도이면 `reference_mode=previous_result_rows`로 판단한다. 이때 이전 결과의 grain을 새로 추측하지 않고 `previous_result`의 모든 제품 행을 left 기준으로 유지하며, row-match된 equipment_assign을 정규화된 `match_columns`별로 집계한 뒤 결합한다.
 장비 대수는 equipment_assign 전체의 단일 장비 수를 모든 제품에 붙이지 말고 `match_columns`별 `EQUIP_ID` 또는 실제 장비 ID 컬럼의 `nunique`로 계산한다. 장비가 없는 이전 제품도 결과에서 제거하지 않고 장비 대수 0으로 표시한다.
 장비 LIST도 함께 요청하면 같은 제품 grain별로 장비 ID의 중복 없는 목록을 집계한다. 장비 대수와 LIST를 동시에 요청하면 한 `groupby_and_aggregate` 단계의 `aggregations`에 `EQUIP_ID/nunique/EQUIP_COUNT`와 `EQUIP_ID/collect_unique/EQUIP_LIST`를 함께 기록하고 두 결과 컬럼을 모두 반환한다. 장비 모델이나 Recipe는 사용자가 표시를 요청한 경우에만 결과 속성으로 사용하고 이전 제품을 찾는 매칭 key에는 추가하지 않는다.
 lot단위 조건 없이 장비 목록이나 작업 장비에 대한 질문은 equipment_assign을 사용한다.
 lot_status에 eqp_id가 있다는 이유만으로 장비 목록 질문을 lot_status로 처리하지 않는다.
-UPH 상세 결과에는 source에 있는 장비 모델(EQUIP_MODEL), Recipe(RECIPE_ID), 공정(OPER_NAME 또는 OPER_NM)을 공통 필수 문맥으로 유지하고, UPH를 요청한 경우 UPH를 지표 컬럼으로 포함한다.
+UPH 상세 결과에는 표준 장비 모델(EQP_MODEL), Recipe(RECIPE_ID), 공정(OPER_NAME)을 공통 필수 문맥으로 유지하고, UPH를 요청한 경우 UPH를 지표 컬럼으로 포함한다. source의 물리 컬럼명은 Table Catalog의 filter_mappings로 표준화하며 pandas 계획과 결과 계약에는 표준 컬럼만 사용한다.
 장비 목록도 요청한 경우에만 장비 ID(EQUIP_ID 또는 EQP_ID)를 포함한다. PRESS_CNT, MCP_NO 등 나머지 속성은 사용자가 직접 요청했거나 해당 분석에 실제로 필요한 경우에만 선택하며 기본 출력으로 강제하지 않는다.
 UPH가 장비 모델 또는 Recipe에 따라 다르다고 설명할 예정이면 해당 모델·Recipe·공정 원본 컬럼을 결과에서 제거하지 않는다.
 UPH는 평균형 비가산 지표다. 사용자가 grouping 없이 `제품별 UPH`만 요청하면 catalog의 기본 상세 문맥인 장비 모델·Recipe·공정별 개별 UPH를 유지하고, 차수별·장비 기종별처럼 grouping을 명시하면 그 그룹별 UPH 평균을 계산한다. UPH를 합산하지 않는다.
-`장비 기종`, `기종`, `장비 모델`은 eqp_uph의 EQUIP_MODEL 차원을 뜻한다. `Recipe`, `레시피`는 RECIPE_ID 차원을 뜻한다.
+`장비 기종`, `기종`, `장비 모델`은 eqp_uph의 표준 EQP_MODEL 차원을 뜻한다. `Recipe`, `레시피`는 RECIPE_ID 차원을 뜻한다.
 
 제품 token 매칭이 필요하면 intent_plan.pandas_function_cases 배열에 아래 형식으로 선택 정보를 남긴다.
 function_name은 match_product_tokens를 사용한다.

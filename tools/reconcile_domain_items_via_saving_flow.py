@@ -73,6 +73,7 @@ EXPECTED_FINAL_KEYS = {
     "pandas_function_cases:sample_passthrough_demo",
     "product_key_columns:standard_product_keys",
     "quantity_terms:wip_boh_quantity",
+    "quantity_terms:pkg_out_quantity",
 }
 
 
@@ -99,6 +100,12 @@ def build_registration_requests(text: str) -> list[dict[str, Any]]:
         )
 
     specs = [
+        (
+            "pkg_out_quantity",
+            "PKG OUT 실적 metric을 등록해줘.",
+            "BOH 재공과 아침 재공 기준일 규칙을 등록해줘.",
+            ["quantity_terms:pkg_out_quantity"],
+        ),
         (
             "wip_boh_quantity",
             "BOH 재공과 아침 재공 기준일 규칙을 등록해줘.",
@@ -287,6 +294,37 @@ def _semantic_errors(
                         "message": f"BOH 재공 payload.{field}가 등록 원문과 다릅니다.",
                     }
                 )
+    elif name == "pkg_out_quantity":
+        payload = (
+            item_by_key.get("quantity_terms:pkg_out_quantity") or {}
+        ).get("payload", {})
+        expected_fields = {
+            "data_source": "production",
+            "column": "PRODUCTION",
+            "aggregation_method": "sum",
+        }
+        for field, expected_value in expected_fields.items():
+            if payload.get(field) != expected_value:
+                errors.append(
+                    {
+                        "type": "pkg_out_metric_contract_mismatch",
+                        "message": f"PKG OUT payload.{field}가 등록 원문과 다릅니다.",
+                    }
+                )
+        conditions = payload.get("conditions")
+        conditions = conditions if isinstance(conditions, list) else [conditions]
+        expected_condition = {
+            "column": "OPER_NAME",
+            "operator": "eq",
+            "value": "PKG OUT",
+        }
+        if expected_condition not in conditions:
+            errors.append(
+                {
+                    "type": "pkg_out_process_condition_missing",
+                    "message": "PKG OUT metric의 OPER_NAME 실행 조건이 누락되었습니다.",
+                }
+            )
     elif name == "standard_product_keys":
         payload = (
             item_by_key.get("product_key_columns:standard_product_keys") or {}
@@ -361,12 +399,29 @@ def _semantic_errors(
                         "message": f"장비-UPH 결합 정책의 {field} 값이 원문과 다릅니다.",
                     }
                 )
+        aliases = payload.get("aliases") if isinstance(payload.get("aliases"), list) else []
+        if "장비별 UPH" in aliases:
+            errors.append(
+                {
+                    "type": "equipment_join_alias_too_broad",
+                    "message": "배정 장비를 요구하지 않는 일반 장비별 UPH를 결합 recipe alias로 사용하면 안 됩니다.",
+                }
+            )
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        for token in ("목록", "대수", "eqp_uph"):
+            if token not in payload_text:
+                errors.append(
+                    {
+                        "type": "equipment_join_selection_scope_missing",
+                        "message": f"장비-UPH 결합 정책에 선택 범위 단서 {token}가 누락되었습니다.",
+                    }
+                )
     elif name == "uph_result_policy":
         payload = (
             item_by_key.get("analysis_recipes:uph_result_policy") or {}
         ).get("payload", {})
         payload_text = json.dumps(payload, ensure_ascii=False)
-        for token in ("UPH", "평균", "EQUIP_MODEL", "RECIPE_ID"):
+        for token in ("UPH", "평균", "EQP_MODEL", "RECIPE_ID"):
             if token not in payload_text:
                 errors.append(
                     {

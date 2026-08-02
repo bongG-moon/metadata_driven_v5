@@ -409,6 +409,15 @@ def test_process_group_alias_does_not_match_inside_product_token():
     assert validator._alias_in_question("BG", "BG공정 생산량") is True
 
 
+def test_process_group_alias_with_suffix_does_not_match_inside_longer_ascii_token():
+    validator = load_module(ROOT / "tools" / "validate_data_analysis_question.py")
+
+    assert validator._alias_in_question("BM 공정", "오늘 WBM 공정 생산량") is False
+    assert validator._alias_in_question("BM 공정", "오늘 BM 공정 생산량") is True
+    assert validator._alias_in_question("W/B", "오늘 W/BM 공정 생산량") is False
+    assert validator._alias_in_question("W/B", "오늘 W/B 공정 생산량") is True
+
+
 def test_preferred_process_group_items_drop_legacy_suffix_duplicate():
     validator = load_module(ROOT / "tools" / "validate_data_analysis_question.py")
     items = validator._preferred_process_group_items(

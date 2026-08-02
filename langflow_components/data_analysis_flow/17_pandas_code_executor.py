@@ -161,7 +161,11 @@ class OutputContractError(ValueError):
 
 # 주요 함수: 안전성 검사를 통과한 pandas 코드를 제한된 namespace에서 한 번 실행합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
-def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]:
+def execute_pandas_code(
+    payload_value: Any,
+    llm_response: Any,
+    function_case_helper_code: Any = "",
+) -> dict[str, Any]:
     payload = _payload(payload_value)
     if _execution_blocked(payload):
         return _blocked_execution_payload(payload)
@@ -206,8 +210,23 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             row_match_preamble,
             response_parse,
         )
+    deterministic_transform_error = ""
     if deterministic_execution:
-        code = filter_preamble
+        deterministic_transform_preamble, deterministic_transform_error = (
+            _deterministic_function_case_preamble(
+                deterministic_execution,
+                function_case_helper_code,
+            )
+        )
+        code = "\n\n".join(
+            item
+            for item in (
+                filter_preamble.strip(),
+                deterministic_transform_preamble.strip(),
+                _deterministic_contract_display_code(deterministic_execution).strip(),
+            )
+            if item
+        )
     else:
         code = _with_pandas_execution_preambles(
             code,
@@ -215,6 +234,21 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             filter_preamble,
         )
     helper_trace = _runtime_helper_trace(code)
+    if deterministic_transform_error:
+        return _analysis_error(
+            next_payload,
+            "output_contract_violation",
+            deterministic_transform_error,
+            code,
+            "",
+            llm_code,
+            filter_preamble,
+            filter_plan,
+            safe_imports,
+            row_match_plan,
+            row_match_preamble,
+            response_parse,
+        )
     guard_error = _guard_code(code)
     if guard_error:
         return _analysis_error(
@@ -320,10 +354,34 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
                     if isinstance(exec_ns.get("sources"), dict)
                     else sources
                 )
-            result = _execute_deterministic_contract(
+            deterministic_transform_execution_value = exec_ns.get(
+                "_deterministic_function_case_execution",
+                [],
+            )
+            deterministic_transform_execution = (
+                deepcopy(deterministic_transform_execution_value)
+                if isinstance(deterministic_transform_execution_value, list)
+                else []
+            )
+            helper_trace["helper_sources"] = deepcopy(
+                deterministic_transform_execution
+            )
+            deterministic_result = _execute_deterministic_contract(
                 deterministic_execution,
                 sources,
                 pd,
+            )
+            if (
+                isinstance(deterministic_result, tuple)
+                and len(deterministic_result) == 2
+            ):
+                result, semantic_execution_certificate = deterministic_result
+            else:
+                result = deterministic_result
+                semantic_execution_certificate = {}
+            result = _apply_deterministic_result_ordering(
+                result,
+                next_payload,
             )
             row_match_execution = []
         else:
@@ -337,6 +395,8 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             result = exec_ns.get("result")
             if result is None:
                 result = exec_ns.get("result_df")
+            semantic_execution_certificate = {}
+            deterministic_transform_execution = []
         rows, columns = _result_to_rows(result, next_payload)
         rows, columns = _apply_strict_result_columns(
             rows,
@@ -365,6 +425,10 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             "function_case_results": function_case_results,
             "execution_mode": execution_mode,
         }
+        if semantic_execution_certificate:
+            next_payload["analysis"]["semantic_execution_certificate"] = deepcopy(
+                semantic_execution_certificate
+            )
         next_payload["data"] = {"columns": columns, "rows": rows[:RESULT_PREVIEW_LIMIT], "row_count": len(rows), "data_ref": ""}
         next_payload.setdefault("trace", {}).setdefault("inspection", {})["pandas_execution"] = {
             "stage": "17_pandas_code_executor",
@@ -381,7 +445,9 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
             "row_match_preamble": row_match_preamble,
             "row_match_plan": row_match_plan,
             "row_match_execution": row_match_execution,
+            "deterministic_source_transforms": deterministic_transform_execution,
             "execution_result": {"row_count": len(rows), "columns": columns, "preview_rows": rows[:TRACE_PREVIEW_LIMIT]},
+            "semantic_execution_certificate": deepcopy(semantic_execution_certificate),
             "error": None,
         }
         return next_payload
@@ -420,11 +486,151 @@ def execute_pandas_code(payload_value: Any, llm_response: Any) -> dict[str, Any]
 # 함수 설명: 정규화기가 만든 신뢰 가능한 다중 source 계약 중 실행할 하나를 선택합니다.
 def _deterministic_execution_contract(payload: dict[str, Any]) -> dict[str, Any]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
-    for key in ("resolved_metric_merge_plan", "resolved_reference_join_plan"):
+    for key in (
+        "resolved_empty_result_plan",
+        "resolved_presence_comparison_plan",
+        "resolved_metric_comparison_plan",
+        "resolved_metric_merge_plan",
+        "resolved_reference_join_plan",
+    ):
         value = plan.get(key)
         if isinstance(value, dict) and value.get("strict") is True:
             return deepcopy(value)
     return {}
+
+
+# 함수 설명: 내부 결정론적 executor가 실제 적용하는 join 이후 조건을 생성 코드 영역의 안전한 주석으로 표시합니다.
+def _deterministic_contract_display_code(contract: dict[str, Any]) -> str:
+    operation = str(contract.get("operation") or "").strip()
+    if not operation:
+        return ""
+    lines = [
+        "# --- deterministic execution contract (executed internally) ---",
+        f"# operation: {_single_line_comment_value(operation)}",
+    ]
+    if operation == "compare_presence":
+        left_metric = contract.get("left_metric") if isinstance(contract.get("left_metric"), dict) else {}
+        right_metric = contract.get("right_metric") if isinstance(contract.get("right_metric"), dict) else {}
+        left_column = str(left_metric.get("output_column") or "").strip()
+        right_column = str(right_metric.get("output_column") or "").strip()
+        lines.extend(
+            [
+                "# predicate: "
+                f"{_single_line_comment_value(left_column)} > 0 and "
+                f"{_single_line_comment_value(right_column)} <= 0 (missing right metric -> 0)",
+                "# postcondition: every returned row must satisfy the predicate",
+            ]
+        )
+    elif operation == "compare_metrics":
+        lhs_column = str(contract.get("lhs_metric_column") or "").strip()
+        rhs_column = str(contract.get("rhs_metric_column") or "").strip()
+        operator = str(contract.get("operator") or "").strip()
+        symbols = {"gt": ">", "ge": ">=", "lt": "<", "le": "<=", "eq": "==", "ne": "!="}
+        lines.extend(
+            [
+                "# predicate: "
+                f"{_single_line_comment_value(lhs_column)} {symbols.get(operator, operator)} "
+                f"{_single_line_comment_value(rhs_column)}",
+                "# postcondition: every returned row must satisfy the predicate",
+            ]
+        )
+    elif operation == "merge_metric_sources":
+        lines.append("# action: aggregate each metric source and merge on the resolved grain")
+    return "\n".join(lines)
+
+
+# 함수 설명: trace/display 주석 값에서 줄바꿈과 주석 제어 문자를 제거합니다.
+def _single_line_comment_value(value: Any) -> str:
+    return str(value or "").replace("\r", " ").replace("\n", " ").replace("#", "").strip()
+
+
+# 함수 설명: 결정론적 다중 source 계약의 typed Function Case 단계를 제한된 실행 preamble로 변환합니다.
+def _deterministic_function_case_preamble(
+    contract: dict[str, Any],
+    helper_code_value: Any,
+) -> tuple[str, str]:
+    transforms = [
+        item
+        for item in contract.get("source_transforms", [])
+        if isinstance(item, dict)
+    ]
+    if not transforms:
+        return "", ""
+    helper_code = _text_value(helper_code_value).strip()
+    if not helper_code:
+        return "", "결정론적 source transform에 필요한 Function Case helper 코드가 없습니다."
+    try:
+        tree = ast.parse(helper_code)
+    except SyntaxError as exc:
+        return "", f"Function Case helper 코드 구문이 유효하지 않습니다: {exc}"
+    defined_names = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    if any(not isinstance(node, ast.FunctionDef) for node in tree.body):
+        return "", "결정론적 source transform helper에는 최상위 함수 정의만 허용됩니다."
+    guard_error = _guard_code(helper_code)
+    if guard_error:
+        return "", f"Function Case helper 안전성 검증에 실패했습니다: {guard_error}"
+
+    lines = [helper_code, "_deterministic_function_case_execution = []"]
+    for index, transform in enumerate(transforms, start=1):
+        function_name = str(transform.get("function_name") or "").strip()
+        source_alias = str(transform.get("source_alias") or "").strip()
+        node_id = str(transform.get("node_id") or f"transform_{index}").strip()
+        input_text = str(transform.get("input_text") or "")
+        if not function_name.isidentifier() or function_name not in defined_names:
+            return "", f"선택된 Function Case helper 정의를 찾을 수 없습니다: {function_name}"
+        if not source_alias:
+            return "", f"Function Case source alias가 비어 있습니다: {node_id}"
+        arguments = (
+            transform.get("arguments")
+            if isinstance(transform.get("arguments"), dict)
+            else {}
+        )
+        rendered_arguments: list[str] = []
+        for key, value in arguments.items():
+            name = str(key or "").strip()
+            if not name.isidentifier():
+                return "", f"Function Case argument 이름이 유효하지 않습니다: {name}"
+            rendered, error = _python_literal(value)
+            if error:
+                return "", f"Function Case argument를 안전한 literal로 만들 수 없습니다: {name}"
+            rendered_arguments.append(f"{name}={rendered}")
+        call_suffix = (", " + ", ".join(rendered_arguments)) if rendered_arguments else ""
+        source_var = f"_function_case_source_{index}"
+        result_var = f"_function_case_result_{index}"
+        lines.extend(
+            [
+                f"{source_var} = sources.get({source_alias!r})",
+                f"if {source_var} is None:",
+                f"    raise Exception({('Function Case source를 찾을 수 없습니다: ' + source_alias)!r})",
+                f"{result_var} = {function_name}({input_text!r}, {source_var}{call_suffix})",
+                f"if not hasattr({result_var}, 'columns'):",
+                f"    raise Exception({('Function Case 결과가 DataFrame이 아닙니다: ' + function_name)!r})",
+                f"sources[{source_alias!r}] = {result_var}",
+                "_deterministic_function_case_execution.append({",
+                f"    'node_id': {node_id!r},",
+                f"    'source_alias': {source_alias!r},",
+                f"    'function_name': {function_name!r},",
+                f"    'input_text': {input_text!r},",
+                f"    'input_row_count': len({source_var}),",
+                f"    'output_row_count': len({result_var}),",
+                "})",
+            ]
+        )
+    return "\n".join(lines), ""
+
+
+# 함수 설명: Function Case 구조화 인자를 코드 주입 없이 재현 가능한 Python literal로 제한합니다.
+def _python_literal(value: Any) -> tuple[str, str]:
+    rendered = repr(value)
+    try:
+        ast.literal_eval(rendered)
+    except Exception as exc:
+        return "", f"{type(exc).__name__}: {exc}"
+    return rendered, ""
 
 
 # 함수 설명: 다중 metric 병합 또는 직전 결과 enrich 계약을 pandas 코드 대신 내부 구현으로 실행합니다.
@@ -434,11 +640,214 @@ def _execute_deterministic_contract(
     pd: Any,
 ) -> Any:
     operation = str(contract.get("operation") or "").strip()
+    if operation == "empty_result":
+        columns = [
+            str(item).strip()
+            for item in contract.get("columns", [])
+            if str(item or "").strip()
+        ]
+        return pd.DataFrame(columns=columns)
     if operation == "merge_metric_sources":
         return _execute_metric_source_merge(contract, sources, pd)
     if operation == "enrich_previous_result":
         return _execute_previous_result_enrichment(contract, sources, pd)
+    if operation == "compare_presence":
+        return _execute_presence_comparison(contract, sources, pd)
+    if operation == "compare_metrics":
+        return _execute_metric_comparison(contract, sources, pd)
     raise OutputContractError(f"지원하지 않는 deterministic 실행 계약입니다: {operation}")
+
+
+# 함수 설명: `_apply_deterministic_result_ordering()`는 17 pandas 실행/1회 복구기 처리 중 deterministic·결과·ordering 관련 값을 계산·변환하는
+#        내부 helper입니다.
+def _apply_deterministic_result_ordering(
+    result: Any,
+    payload: dict[str, Any],
+) -> Any:
+    """Apply the normalized ordering contract after deterministic execution."""
+    if not hasattr(result, "columns"):
+        return result
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    output_contract = (
+        plan.get("output_contract")
+        if isinstance(plan.get("output_contract"), dict)
+        else {}
+    )
+    ordering = (
+        output_contract.get("ordering")
+        if isinstance(output_contract.get("ordering"), dict)
+        else {}
+    )
+    sort_by = str(ordering.get("sort_by") or "").strip()
+    if not sort_by:
+        return result
+    actual_sort_column = _find_frame_column(result, [sort_by])
+    if not actual_sort_column:
+        return result
+    order = str(ordering.get("order") or "desc").strip().lower()
+    ordered = result.sort_values(
+        by=actual_sort_column,
+        ascending=order == "asc",
+        na_position="last",
+        kind="mergesort",
+    )
+    try:
+        limit = max(0, int(ordering.get("limit") or 0))
+    except (TypeError, ValueError):
+        limit = 0
+    if limit:
+        ordered = ordered.head(limit)
+    return ordered.reset_index(drop=True)
+
+
+# 함수 설명: `_execute_presence_comparison()`는 presence·comparison 실행 경계를 담당하고 성공 결과와 오류를 공통 계약으로 반환합니다.
+def _execute_presence_comparison(
+    contract: dict[str, Any],
+    sources: dict[str, Any],
+    pd: Any,
+) -> tuple[Any, dict[str, Any]]:
+    """Execute a left-positive/right-missing-or-zero contract and verify its postcondition."""
+    if str(contract.get("presence_rule") or "").strip() != "left_positive_right_missing_or_zero":
+        raise OutputContractError("지원하지 않는 존재·부재 비교 규칙입니다.")
+    grain_mappings = [
+        item for item in contract.get("grain_mappings", []) if isinstance(item, dict)
+    ]
+    left_metric = contract.get("left_metric") if isinstance(contract.get("left_metric"), dict) else {}
+    right_metric = contract.get("right_metric") if isinstance(contract.get("right_metric"), dict) else {}
+    if not grain_mappings or not left_metric or not right_metric:
+        raise OutputContractError("존재·부재 비교 계약에 grain 또는 metric이 부족합니다.")
+
+    join_columns = [
+        str(item.get("output_column") or item.get("canonical_column") or "").strip()
+        for item in grain_mappings
+    ]
+    if any(not column for column in join_columns):
+        raise OutputContractError("존재·부재 비교 grain output column이 비어 있습니다.")
+
+    # 함수 설명: `aggregate_metric()`는 17 pandas 실행/1회 복구기 처리 중 metric 관련 값을 계산·변환하는 내부 helper입니다.
+    def aggregate_metric(metric: dict[str, Any]) -> Any:
+        alias = str(metric.get("source_alias") or "").strip()
+        frame = sources.get(alias)
+        if frame is None:
+            raise OutputContractError(f"존재·부재 비교 source를 찾을 수 없습니다: {alias}")
+        working = frame.copy()
+        shaped = pd.DataFrame(index=working.index)
+        for mapping, output_column in zip(grain_mappings, join_columns):
+            source_candidates = (
+                mapping.get("source_candidates", {}).get(alias, [])
+                if isinstance(mapping.get("source_candidates"), dict)
+                else []
+            )
+            source_column = _find_frame_column(working, _string_list(source_candidates))
+            if not source_column:
+                raise OutputContractError(
+                    f"{alias} source에서 존재·부재 grain 컬럼을 찾을 수 없습니다: {output_column}"
+                )
+            shaped[output_column] = working[source_column].map(
+                _normalize_deterministic_join_value
+            )
+        metric_column = _find_frame_column(
+            working,
+            _string_list(metric.get("source_candidates"))
+            or _string_list(metric.get("source_column")),
+        )
+        output_column = str(metric.get("output_column") or "").strip()
+        if not metric_column or not output_column:
+            raise OutputContractError(f"{alias} source의 존재·부재 metric 계약이 유효하지 않습니다.")
+        shaped["__metric_value__"] = pd.to_numeric(
+            working[metric_column], errors="coerce"
+        ).fillna(0)
+        return _group_and_aggregate_frame(
+            shaped,
+            join_columns,
+            "__metric_value__",
+            output_column,
+            str(metric.get("aggregation") or "sum").strip().lower(),
+            pd,
+        )
+
+    left_grouped = aggregate_metric(left_metric)
+    right_grouped = aggregate_metric(right_metric)
+    left_output = str(left_metric.get("output_column") or "").strip()
+    right_output = str(right_metric.get("output_column") or "").strip()
+    left_positive = left_grouped[left_grouped[left_output].fillna(0) > 0].copy()
+    merged = left_positive.merge(right_grouped, on=join_columns, how="left")
+    merged[right_output] = pd.to_numeric(
+        merged[right_output], errors="coerce"
+    ).fillna(0)
+    right_positive_mask = merged[right_output] > 0
+    result = merged[~right_positive_mask].copy().reset_index(drop=True)
+    postcondition_passed = bool(
+        (result[left_output].fillna(0) > 0).all()
+        and (result[right_output].fillna(0) <= 0).all()
+    )
+    if not postcondition_passed:
+        raise OutputContractError("존재·부재 비교 결과가 실행 후 조건 검증을 통과하지 못했습니다.")
+    certificate = {
+        "operation": "compare_presence",
+        "presence_rule": "left_positive_right_missing_or_zero",
+        "postcondition_validation": "passed",
+        "left_positive_key_count": int(len(left_positive)),
+        "excluded_right_positive_key_count": int(right_positive_mask.sum()),
+        "result_key_count": int(len(result)),
+        "left_metric_column": left_output,
+        "right_metric_column": right_output,
+        "grain_columns": join_columns,
+    }
+    return result, certificate
+
+
+# 함수 설명: 병합된 두 수치 metric에 typed 비교 연산을 적용하고 모든 결과 행의 조건 충족 여부를 검증합니다.
+def _execute_metric_comparison(
+    contract: dict[str, Any],
+    sources: dict[str, Any],
+    pd: Any,
+) -> tuple[Any, dict[str, Any]]:
+    merge_plan = contract.get("merge_plan") if isinstance(contract.get("merge_plan"), dict) else {}
+    if merge_plan.get("strict") is not True:
+        raise OutputContractError("수치 비교의 선행 metric 병합 계약이 유효하지 않습니다.")
+    merged = _execute_metric_source_merge(merge_plan, sources, pd)
+    lhs_name = str(contract.get("lhs_metric_column") or "").strip()
+    rhs_name = str(contract.get("rhs_metric_column") or "").strip()
+    operator = str(contract.get("operator") or "").strip().lower()
+    lhs_column = _find_frame_column(merged, [lhs_name])
+    rhs_column = _find_frame_column(merged, [rhs_name])
+    if not lhs_column or not rhs_column or lhs_column == rhs_column:
+        raise OutputContractError("수치 비교 결과에서 양쪽 metric 컬럼을 확정할 수 없습니다.")
+    comparisons: dict[str, Callable[[Any, Any], Any]] = {
+        "gt": lambda lhs, rhs: lhs > rhs,
+        "ge": lambda lhs, rhs: lhs >= rhs,
+        "lt": lambda lhs, rhs: lhs < rhs,
+        "le": lambda lhs, rhs: lhs <= rhs,
+        "eq": lambda lhs, rhs: lhs == rhs,
+        "ne": lambda lhs, rhs: lhs != rhs,
+    }
+    comparison = comparisons.get(operator)
+    if comparison is None:
+        raise OutputContractError(f"지원하지 않는 수치 metric 비교 연산자입니다: {operator}")
+
+    working = merged.copy()
+    working[lhs_column] = pd.to_numeric(working[lhs_column], errors="coerce")
+    working[rhs_column] = pd.to_numeric(working[rhs_column], errors="coerce")
+    valid_operands = working[lhs_column].notna() & working[rhs_column].notna()
+    mask = valid_operands & comparison(working[lhs_column], working[rhs_column]).fillna(False)
+    result = working[mask].copy().reset_index(drop=True)
+    postcondition_mask = comparison(result[lhs_column], result[rhs_column]).fillna(False)
+    if not bool(postcondition_mask.all()):
+        raise OutputContractError("수치 metric 비교 결과가 실행 후 조건 검증을 통과하지 못했습니다.")
+    certificate = {
+        "operation": "compare_metrics",
+        "lhs_metric_column": lhs_name,
+        "operator": operator,
+        "rhs_metric_column": rhs_name,
+        "null_numeric_policy": "exclude_missing_operand",
+        "postcondition_validation": "passed",
+        "input_row_count": int(len(working)),
+        "missing_operand_row_count": int((~valid_operands).sum()),
+        "excluded_row_count": int((~mask).sum()),
+        "result_row_count": int(len(result)),
+    }
+    return result, certificate
 
 
 # 함수 설명: 서로 다른 source의 metric을 각자 집계하고 정규화 grain으로 outer merge합니다.
@@ -512,13 +921,17 @@ def _execute_metric_source_merge(
         aggregated_frames.append(grouped)
 
     result = aggregated_frames[0]
+    join_type = str(contract.get("join_type") or "outer").strip().lower()
+    merge_how = join_type if join_type in {"left", "inner", "outer"} else "outer"
     for right in aggregated_frames[1:]:
-        result = result.merge(right, on=join_columns, how="outer")
+        result = result.merge(right, on=join_columns, how=merge_how)
     if contract.get("fill_zero_on_success") is True:
         for metric in metrics:
             output_metric = str(metric.get("output_column") or "").strip()
             if output_metric in result.columns:
-                result[output_metric] = result[output_metric].fillna(0)
+                result[output_metric] = result[output_metric].fillna(
+                    metric.get("fill_value", 0)
+                )
     return result
 
 
@@ -636,6 +1049,8 @@ def _group_and_aggregate_frame(
 # 함수 설명: 허용 집계명을 pandas NamedAgg에서 사용할 함수명으로 제한합니다.
 def _pandas_aggregation_method(method: str) -> Any:
     normalized = str(method or "").strip().lower()
+    if normalized == "collect_unique":
+        return _collect_unique_display_values
     allowed = {
         "sum",
         "mean",
@@ -793,7 +1208,11 @@ def execute_pandas_with_repair(
     original_payload = _payload(payload_value)
     if _execution_blocked(original_payload):
         return _blocked_execution_payload(original_payload)
-    initial = execute_pandas_code(original_payload, llm_response)
+    initial = execute_pandas_code(
+        original_payload,
+        llm_response,
+        function_case_helper_code=function_case_helper_code,
+    )
     initial_status = _analysis_status(initial)
     current_attempt = _nonnegative_int(original_payload.get("pandas_retry_attempt"), 0)
     max_attempts = min(DEFAULT_MAX_REPAIR_ATTEMPTS, _nonnegative_int(max_repair_attempts, DEFAULT_MAX_REPAIR_ATTEMPTS))
@@ -840,7 +1259,11 @@ def execute_pandas_with_repair(
         base_trace["repair_error"] = {"type": "repair_llm_error", "message": f"{type(exc).__name__}: {exc}"}
         return _with_repair_trace(initial, base_trace)
 
-    retry = execute_pandas_code(original_payload, repair_response)
+    retry = execute_pandas_code(
+        original_payload,
+        repair_response,
+        function_case_helper_code=function_case_helper_code,
+    )
     retry["pandas_retry_attempt"] = attempt
     retry_status = _analysis_status(retry)
     base_trace["retry_status"] = retry_status or "missing"
@@ -878,11 +1301,12 @@ def build_pandas_repair_prompt(payload_value: Any, template: Any, function_case_
         source_schema[str(alias)] = row_columns or source_columns.get(str(alias), [])
         source_preview[str(alias)] = [deepcopy(row) for row in rows[:TRACE_PREVIEW_LIMIT] if isinstance(row, dict)]
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    prompt_plan = _repair_prompt_contract(plan)
     pandas_trace = _pandas_execution_trace(payload)
     analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
     values = {
         "repair_required": "true",
-        "intent_plan_json": json.dumps(plan, ensure_ascii=False, indent=2),
+        "intent_plan_json": json.dumps(prompt_plan, ensure_ascii=False, indent=2),
         "source_schema_json": json.dumps(source_schema, ensure_ascii=False, indent=2),
         "source_preview_json": json.dumps(source_preview, ensure_ascii=False, indent=2),
         "failed_code": _initial_failed_code(payload),
@@ -902,7 +1326,7 @@ def build_pandas_repair_prompt(payload_value: Any, template: Any, function_case_
             ensure_ascii=False,
             indent=2,
         ),
-        "function_case_selection_json": json.dumps(_repair_function_case_selection(plan), ensure_ascii=False, indent=2),
+        "function_case_selection_json": json.dumps(_repair_function_case_selection(prompt_plan), ensure_ascii=False, indent=2),
         "function_case_helper_code": _text_value(function_case_helper_code),
         "output_schema": json.dumps({"code": "수정된 pandas code. 반드시 result 또는 result_df를 설정한다."}, ensure_ascii=False, indent=2),
     }
@@ -910,6 +1334,31 @@ def build_pandas_repair_prompt(payload_value: Any, template: Any, function_case_
         return prompt_template.format(**values)
     except KeyError as exc:
         raise ValueError(f"unknown repair prompt variable: {exc.args[0]}") from exc
+
+
+# 함수 설명: repair LLM도 최초 생성기와 같은 표준 컬럼 계약만 보도록
+# 물리 컬럼 후보용 lineage 필드를 제거합니다. 실패 코드는 오류 분석을 위해
+# 별도 필드로 그대로 제공됩니다.
+def _repair_prompt_contract(value: Any) -> Any:
+    physical_lineage_keys = {
+        "source_candidates",
+        "left_candidates",
+        "right_candidates",
+        "column_mappings",
+        "key_mappings",
+        "right_value_mappings",
+        "filter_mappings",
+        "standard_column_aliases",
+    }
+    if isinstance(value, list):
+        return [_repair_prompt_contract(item) for item in value]
+    if not isinstance(value, dict):
+        return deepcopy(value)
+    return {
+        str(key): _repair_prompt_contract(item)
+        for key, item in value.items()
+        if str(key) not in physical_lineage_keys
+    }
 
 
 # 함수 설명: `_repair_function_case_selection()`는 복구 프롬프트에 전달할 선택 Function Case와 실행 단계만 작은 구조로 복사합니다.
@@ -1921,10 +2370,30 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
+# 함수 설명: 14번 노드에서 표준 컬럼 단일화가 완료된 source alias를 trace에서 확인합니다.
+def _standardized_source_aliases(payload: dict[str, Any]) -> set[str]:
+    """Return source aliases normalized to canonical columns by node 14."""
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    inspection = trace.get("inspection") if isinstance(trace.get("inspection"), dict) else {}
+    standardization = (
+        inspection.get("source_column_standardization")
+        if isinstance(inspection.get("source_column_standardization"), dict)
+        else {}
+    )
+    return {
+        str(item.get("source_alias") or "").strip()
+        for item in standardization.get("sources", [])
+        if isinstance(item, dict)
+        and str(item.get("status") or "").strip().lower() in {"applied", "not_needed"}
+        and str(item.get("source_alias") or "").strip()
+    }
+
+
 # 함수 설명: `_pandas_filter_plan()`는 조회 작업의 filter를 source alias별 결정론적 pandas 필터 계획으로 바꿉니다.
 def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    standardized_aliases = _standardized_source_aliases(payload)
     filter_plan_by_alias: dict[str, dict[str, Any]] = {}
     for job in jobs:
         if not isinstance(job, dict):
@@ -1938,11 +2407,13 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "source_alias": alias,
                 "dataset_key": job.get("dataset_key", ""),
                 "conditions": conditions,
+                "columns_standardized": alias in standardized_aliases,
             }
-            for mapping_key in ("filter_mappings", "standard_column_aliases"):
-                mapping = job.get(mapping_key)
-                if isinstance(mapping, dict) and mapping:
-                    item[mapping_key] = deepcopy(mapping)
+            if alias not in standardized_aliases:
+                for mapping_key in ("filter_mappings", "standard_column_aliases"):
+                    mapping = job.get(mapping_key)
+                    if isinstance(mapping, dict) and mapping:
+                        item[mapping_key] = deepcopy(mapping)
             filter_plan_by_alias[alias] = item
     condition_resolution = plan.get("condition_resolution") if isinstance(plan.get("condition_resolution"), dict) else {}
     effective_filters = (
@@ -1963,6 +2434,7 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "source_alias": alias,
                 "dataset_key": raw_item.get("dataset_key", ""),
                 "conditions": [],
+                "columns_standardized": alias in standardized_aliases,
             },
         )
         existing = {
@@ -1975,10 +2447,11 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
             if marker not in existing:
                 item.setdefault("conditions", []).append(condition)
                 existing.add(marker)
-        for mapping_key in ("filter_mappings", "standard_column_aliases"):
-            mapping = raw_item.get(mapping_key)
-            if isinstance(mapping, dict) and mapping:
-                item[mapping_key] = deepcopy(mapping)
+        if alias not in standardized_aliases:
+            for mapping_key in ("filter_mappings", "standard_column_aliases"):
+                mapping = raw_item.get(mapping_key)
+                if isinstance(mapping, dict) and mapping:
+                    item[mapping_key] = deepcopy(mapping)
     return list(filter_plan_by_alias.values())
 
 
@@ -1987,6 +2460,7 @@ def _pandas_row_match_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
     jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    standardized_aliases = _standardized_source_aliases(payload)
     mappings_by_alias: dict[str, dict[str, Any]] = {}
     for job in jobs:
         if not isinstance(job, dict):
@@ -1994,7 +2468,7 @@ def _pandas_row_match_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
         alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
         if not alias:
             continue
-        mappings_by_alias[alias] = {
+        mappings_by_alias[alias] = {} if alias in standardized_aliases else {
             **(job.get("standard_column_aliases") if isinstance(job.get("standard_column_aliases"), dict) else {}),
             **(job.get("filter_mappings") if isinstance(job.get("filter_mappings"), dict) else {}),
         }
@@ -2259,7 +2733,7 @@ def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
     for job_index, item in enumerate(filter_plan, start=1):
         alias = str(item.get("source_alias") or "").strip()
         conditions = item.get("conditions") if isinstance(item.get("conditions"), list) else []
-        column_mappings = {
+        column_mappings = {} if item.get("columns_standardized") is True else {
             **(item.get("standard_column_aliases") if isinstance(item.get("standard_column_aliases"), dict) else {}),
             **(item.get("filter_mappings") if isinstance(item.get("filter_mappings"), dict) else {}),
         }
