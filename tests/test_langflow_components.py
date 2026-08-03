@@ -7902,6 +7902,115 @@ def test_catalog_mapping_propagates_through_dummy_pipeline_to_pandas_filters():
     assert "PKG1" not in generated_code
 
 
+def test_physical_date_filter_is_canonicalized_before_standardized_pandas_preamble():
+    hydrator = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production",
+                    "source_alias": "production_history",
+                    "required_params": {"DATE": "20260705"},
+                    "filters": {
+                        "WORK_DATE": {"operator": "eq", "value": "20260705"},
+                        "OPER_NAME": {
+                            "operator": "in",
+                            "value": ["FCB/H", "FCB1", "FCB2"],
+                        },
+                    },
+                }
+            ],
+            "pandas_execution_plan": [],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "production",
+                "payload": {
+                    "source_type": "oracle",
+                    "source_config": {
+                        "db_key": "PNT_RPT",
+                        "query_template": "SELECT * FROM PROD WHERE WORK_DATE = {DATE}",
+                    },
+                    "required_params": ["DATE"],
+                    "filter_mappings": {
+                        "DATE": ["WORK_DATE"],
+                        "OPER_NAME": ["OPER_NAME"],
+                    },
+                },
+            }
+        ]
+    }
+
+    hydrated = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
+    hydrated_job = hydrated["intent_plan"]["retrieval_jobs"][0]
+    assert "WORK_DATE" not in hydrated_job["filters"]
+    assert hydrated_job["filters"]["DATE"] == {
+        "operator": "eq",
+        "value": "20260705",
+    }
+
+    hydrated["runtime_sources"] = {
+        "production_history": [
+            {"WORK_DATE": "20260705", "OPER_NAME": "FCB1", "PRODUCTION": 100},
+            {"WORK_DATE": "20260705", "OPER_NAME": "OTHER", "PRODUCTION": 999},
+        ]
+    }
+    hydrated["source_results"] = [
+        {
+            "dataset_key": "production",
+            "source_alias": "production_history",
+            "status": "ok",
+            "row_count": 2,
+            "columns": ["WORK_DATE", "OPER_NAME", "PRODUCTION"],
+        }
+    ]
+    adapted = adapter.build_retrieval_payload(hydrated)
+    assert set(adapted["runtime_sources"]["production_history"][0]) == {
+        "DATE",
+        "OPER_NAME",
+        "PRODUCTION",
+    }
+
+    executed = executor.execute_pandas_code(
+        adapted,
+        {
+            "code": (
+                "df = sources['production_history'].copy()\n"
+                "result = df.groupby(['OPER_NAME'], dropna=False)['PRODUCTION'].sum().reset_index()"
+            )
+        },
+    )
+
+    assert executed["analysis"]["status"] == "ok", executed["analysis"].get("error")
+    assert executed["data"]["rows"] == [{"OPER_NAME": "FCB1", "PRODUCTION": 100}]
+    pandas_filter_plan = executed["trace"]["inspection"]["pandas_execution"][
+        "pandas_filter_plan"
+    ]
+    assert [item["field"] for item in pandas_filter_plan[0]["conditions"]] == [
+        "DATE",
+        "OPER_NAME",
+    ]
+    generated_code = executed["trace"]["inspection"]["pandas_execution"][
+        "generated_code"
+    ]
+    assert "_filter_col_1_1 = 'DATE' if 'DATE'" in generated_code
+    assert "candidates=['WORK_DATE']" not in generated_code
+
+
 def test_retrieval_adapter_standardizes_alias_columns_before_pandas_and_coalesces_blank_duplicates():
     adapter = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"

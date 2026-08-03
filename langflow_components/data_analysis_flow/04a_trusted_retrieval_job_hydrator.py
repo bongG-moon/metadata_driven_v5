@@ -189,12 +189,23 @@ def hydrate_retrieval_jobs(
             or reconciled["moved_to_filters"]
             or reconciled["dropped_params"]
             or reconciled["normalized_date_fields"]
+            or reconciled["canonicalized_filter_fields"]
+            or reconciled["filter_field_conflicts"]
             or replaced_by_previous_result_binding
         ):
             reconciled["replaced_by_previous_result_binding"] = (
                 replaced_by_previous_result_binding
             )
             condition_reconciliation.append(reconciled)
+        for conflict in reconciled["filter_field_conflicts"]:
+            warnings.append(
+                _issue(
+                    "conflicting_filter_alias_conditions",
+                    "동일한 표준 filter field로 연결되는 조건 값이 서로 다릅니다.",
+                    dataset_key=dataset_key,
+                    **conflict,
+                )
+            )
         for dropped_name in reconciled["dropped_params"]:
             warnings.append(
                 _issue(
@@ -305,6 +316,11 @@ def _reconcile_job_conditions(
     dropped_params: list[str] = []
     normalized_date_fields: list[str] = []
     filters = _normalize_date_filters(job.get("filters"), normalized_date_fields)
+    filter_field_normalization = _canonicalize_trusted_filter_fields(
+        filters,
+        filter_index,
+    )
+    filters = filter_field_normalization["filters"]
 
     for raw_name, raw_value in supplied.items():
         name = str(raw_name or "").strip()
@@ -337,6 +353,8 @@ def _reconcile_job_conditions(
         "moved_to_filters": moved_to_filters,
         "dropped_params": dropped_params,
         "normalized_date_fields": normalized_date_fields,
+        "canonicalized_filter_fields": filter_field_normalization["renamed"],
+        "filter_field_conflicts": filter_field_normalization["conflicts"],
     }
 
 
@@ -393,7 +411,70 @@ def _trusted_filter_field_index(
     return result
 
 
-# 함수 설명: `_catalog_column_names()`는 다양한 catalog schema 표현에서 명시된 컬럼명만 추출합니다.
+# 함수 설명: Table Catalog의 표준->물리 mapping을 역으로 적용해 LLM filter field를 표준 key로 확정합니다.
+# source row가 pandas 직전에 표준화되므로 실행 filter도 같은 표준 namespace를 사용해야 합니다.
+def _canonicalize_trusted_filter_fields(
+    filters: Any,
+    filter_index: dict[str, str],
+) -> dict[str, Any]:
+    renamed: list[dict[str, str]] = []
+    conflicts: list[dict[str, Any]] = []
+    if isinstance(filters, list):
+        result_list: list[Any] = []
+        for raw in filters:
+            if not isinstance(raw, dict):
+                result_list.append(deepcopy(raw))
+                continue
+            item = deepcopy(raw)
+            raw_field = str(item.get("field") or item.get("column") or "").strip()
+            canonical = filter_index.get(_contract_key(raw_field), raw_field)
+            if canonical and raw_field and canonical != raw_field:
+                renamed.append({"from": raw_field, "to": canonical})
+            if canonical:
+                item["field"] = canonical
+                item.pop("column", None)
+            result_list.append(item)
+        return {"filters": result_list, "renamed": renamed, "conflicts": conflicts}
+
+    if not isinstance(filters, dict):
+        return {"filters": {}, "renamed": renamed, "conflicts": conflicts}
+
+    result: dict[str, Any] = {}
+    source_fields: dict[str, str] = {}
+    for raw_field, condition in filters.items():
+        field = str(raw_field or "").strip()
+        if not field:
+            continue
+        canonical = filter_index.get(_contract_key(field), field)
+        canonical_key = _contract_key(canonical)
+        if canonical != field:
+            renamed.append({"from": field, "to": canonical})
+        existing_name = next(
+            (name for name in result if _contract_key(name) == canonical_key),
+            "",
+        )
+        if not existing_name:
+            result[canonical] = deepcopy(condition)
+            source_fields[canonical_key] = field
+            continue
+        if result[existing_name] == condition:
+            continue
+        existing_source = source_fields.get(canonical_key, existing_name)
+        current_is_exact = _contract_key(field) == canonical_key
+        existing_is_exact = _contract_key(existing_source) == canonical_key
+        if current_is_exact and not existing_is_exact:
+            result[existing_name] = deepcopy(condition)
+            source_fields[canonical_key] = field
+        conflicts.append(
+            {
+                "canonical_field": canonical,
+                "source_fields": [existing_source, field],
+            }
+        )
+    return {"filters": result, "renamed": renamed, "conflicts": conflicts}
+
+
+# 함수 설명: 카탈로그의 여러 스키마 표현에서 실제 컬럼 이름 목록을 중복 없이 추출합니다.
 def _catalog_column_names(value: dict[str, Any]) -> list[str]:
     raw = value.get("columns") or value.get("schema") or value.get("column_names") or []
     if isinstance(raw, dict):

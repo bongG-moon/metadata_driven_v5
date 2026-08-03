@@ -2394,6 +2394,12 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
     standardized_aliases = _standardized_source_aliases(payload)
+    jobs_by_alias = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip(): job
+        for job in jobs
+        if isinstance(job, dict)
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+    }
     filter_plan_by_alias: dict[str, dict[str, Any]] = {}
     for job in jobs:
         if not isinstance(job, dict):
@@ -2402,6 +2408,8 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not alias:
             continue
         conditions = _filter_conditions(job.get("filters"))
+        if alias in standardized_aliases:
+            conditions = _canonicalize_filter_condition_fields(conditions, job)
         if conditions:
             item = {
                 "source_alias": alias,
@@ -2426,6 +2434,12 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not alias or not isinstance(raw_item, dict):
             continue
         conditions = _filter_conditions(raw_item.get("filters"))
+        if alias in standardized_aliases:
+            conditions = _canonicalize_filter_condition_fields(
+                conditions,
+                jobs_by_alias.get(alias),
+                raw_item,
+            )
         if not conditions:
             continue
         item = filter_plan_by_alias.setdefault(
@@ -2453,6 +2467,59 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 if isinstance(mapping, dict) and mapping:
                     item[mapping_key] = deepcopy(mapping)
     return list(filter_plan_by_alias.values())
+
+
+# 함수 설명: 표준화된 runtime source에 적용할 filter field를 hydrated catalog의 canonical key로 통일합니다.
+def _canonicalize_filter_condition_fields(
+    conditions: list[dict[str, Any]],
+    *contracts: Any,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in conditions:
+        if not isinstance(raw, dict):
+            continue
+        condition = deepcopy(raw)
+        field = str(condition.get("field") or "").strip()
+        if field:
+            condition["field"] = _canonical_filter_field(field, *contracts)
+        marker = json.dumps(condition, ensure_ascii=False, sort_keys=True, default=str)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(condition)
+    return result
+
+
+# 함수 설명: filter_mappings를 우선하고 standard_column_aliases를 보조로 사용해 물리 field의 유일한 표준 key를 찾습니다.
+def _canonical_filter_field(field: str, *contracts: Any) -> str:
+    target = str(field or "").strip()
+    if not target:
+        return ""
+    target_key = target.casefold()
+    for mapping_name in ("filter_mappings", "standard_column_aliases"):
+        matches: list[str] = []
+        exact: list[str] = []
+        for contract in contracts:
+            if not isinstance(contract, dict):
+                continue
+            mapping = contract.get(mapping_name)
+            if not isinstance(mapping, dict):
+                continue
+            for raw_standard, raw_aliases in mapping.items():
+                standard = str(raw_standard or "").strip()
+                group = [standard, *_string_list(raw_aliases)]
+                if target_key not in {item.casefold() for item in group if item}:
+                    continue
+                if standard and standard.casefold() == target_key and standard not in exact:
+                    exact.append(standard)
+                if standard and standard not in matches:
+                    matches.append(standard)
+        if len({item.casefold() for item in exact}) == 1:
+            return exact[0]
+        if len({item.casefold() for item in matches}) == 1:
+            return matches[0]
+    return target
 
 
 # 함수 설명: `_pandas_row_match_plan()`은 pandas 실행 계획의 reference 행 단위 조건을 source alias별 결정론적 매칭 계획으로 바꿉니다.
