@@ -138,6 +138,10 @@ def normalize_intent_plan(
     metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
     retrieval_jobs = _retrieval_jobs(plan)
     metadata_refs = _metadata_refs(parsed, plan)
+    metadata_refs, metadata_ref_guard = _known_metadata_refs(
+        metadata_refs,
+        metadata_candidates,
+    )
     question = str(
         (payload.get("request") if isinstance(payload.get("request"), dict) else {}).get("question")
         or ""
@@ -164,6 +168,14 @@ def normalize_intent_plan(
         question,
         metadata_candidates,
         metadata_refs,
+    )
+    metadata_refs, removed_unmatched_execution_refs = _execution_compatible_metadata_refs(
+        metadata_refs,
+        metadata_candidates,
+        domain_selection.get("locked_metadata_refs", []),
+    )
+    metadata_ref_guard["removed_unmatched_execution_refs"] = (
+        removed_unmatched_execution_refs
     )
     metadata_refs = _merge_metadata_ref_lists(
         metadata_refs,
@@ -200,7 +212,7 @@ def normalize_intent_plan(
         retrieval_jobs,
         metadata_candidates,
         question,
-        metadata_refs,
+        domain_selection.get("locked_metadata_refs", []),
         raw_pandas_plan,
     )
     if (
@@ -208,6 +220,14 @@ def normalize_intent_plan(
         and domain_selection.get("temporal_alias_lock") is True
     ):
         business_time_guard["selection_source"] = "metadata_alias_lock"
+    raw_pandas_plan, temporal_metric_alignment = _align_temporal_metric_columns(
+        raw_pandas_plan,
+        business_time_guard,
+    )
+    external_source_catalog_binding = _resolve_late_external_source_bindings(
+        external_source_catalog_binding,
+        retrieval_jobs,
+    )
     pandas_plan = raw_pandas_plan
     retrieval_jobs, metric_dataset_selection = _reconcile_metric_dataset_selection(
         payload,
@@ -500,11 +520,19 @@ def normalize_intent_plan(
     else:
         normalized_plan.pop("pandas_function_cases", None)
 
+    metadata_output_parsed = (
+        parsed if metadata_ref_guard.get("status") == "not_available" else {}
+    )
+    metadata_output_plan = (
+        plan
+        if metadata_ref_guard.get("status") == "not_available"
+        else {"metadata_refs": metadata_refs}
+    )
     next_payload = payload
     next_payload["intent_plan"] = normalized_plan
     next_payload["metadata_refs"] = _merge_output_metadata_refs(
-        parsed,
-        plan,
+        metadata_output_parsed,
+        metadata_output_plan,
         _merge_metadata_ref_lists(
             metadata_refs,
             _plan_metadata_refs(normalized_plan),
@@ -530,6 +558,7 @@ def normalize_intent_plan(
         "context_date_guard": context_date_guard,
         "optional_date_filter_guard": optional_date_filter_guard,
         "business_time_guard": business_time_guard,
+        "metadata_ref_guard": metadata_ref_guard,
         "domain_selection": domain_selection,
         "domain_condition_guard": domain_condition_guard,
         "process_group_field_guard": process_group_field_guard,
@@ -542,6 +571,7 @@ def normalize_intent_plan(
         "pandas_column_normalization": pandas_column_normalization,
         "typed_input_binding": typed_input_binding,
         "external_source_catalog_binding": external_source_catalog_binding,
+        "temporal_metric_alignment": temporal_metric_alignment,
         "metric_dataset_selection": metric_dataset_selection,
         "recipe_source_compatibility": recipe_source_compatibility,
         "resolved_grain_columns": (resolved_output_grain_plan or resolved_grain_plan).get("grain_columns", []) if (resolved_output_grain_plan or resolved_grain_plan) else [],
@@ -1342,9 +1372,17 @@ def _bind_missing_external_sources_from_catalog_contracts(
 def _metric_source_alias_from_pandas_plan(
     pandas_plan: list[Any],
     source_column: str,
+    metric_aliases: Any = None,
 ) -> str:
-    target = _normalized_column_key(source_column)
-    if not target:
+    targets = {
+        _normalized_column_key(value)
+        for value in _merge_strings(
+            [source_column],
+            _string_list(metric_aliases),
+        )
+        if _normalized_column_key(value)
+    }
+    if not targets:
         return ""
     aliases: list[str] = []
     for raw in pandas_plan:
@@ -1361,12 +1399,163 @@ def _metric_source_alias_from_pandas_plan(
             aggregation_columns,
             _string_list(raw.get("agg_column") or raw.get("aggregate_column")),
         )
-        if target not in {_normalized_column_key(value) for value in aggregation_columns}:
+        if not targets.intersection(
+            {_normalized_column_key(value) for value in aggregation_columns}
+        ):
             continue
-        alias = str(raw.get("source_alias") or "").strip() or _typed_external_input_alias(raw)
+        lineage_aliases = _step_external_source_aliases(raw, pandas_plan)
+        alias = (
+            lineage_aliases[0]
+            if len(lineage_aliases) == 1
+            else str(raw.get("source_alias") or "").strip()
+            or _typed_external_input_alias(raw)
+        )
         if alias and alias not in aliases:
             aliases.append(alias)
     return aliases[0] if len(aliases) == 1 else ""
+
+
+# 함수 설명: 시간 Domain이 뒤늦게 외부 source를 복원한 경우 초기 catalog binding의 미해결 항목을 실제 job 기준으로 정리합니다.
+def _resolve_late_external_source_bindings(
+    resolution: dict[str, Any],
+    retrieval_jobs: list[Any],
+) -> dict[str, Any]:
+    result = deepcopy(resolution) if isinstance(resolution, dict) else {}
+    aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    unresolved = [
+        deepcopy(item)
+        for item in result.get("unresolved", [])
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or "").strip() not in aliases
+    ]
+    resolved_late = [
+        deepcopy(item)
+        for item in result.get("unresolved", [])
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or "").strip() in aliases
+    ]
+    result["unresolved"] = unresolved
+    if resolved_late:
+        result["resolved_late"] = resolved_late
+    if unresolved:
+        result["status"] = "unresolved"
+    elif result.get("bindings") or resolved_late:
+        result["status"] = "applied"
+    else:
+        result["status"] = "not_needed"
+    return result
+
+
+# 함수 설명: 선택된 시간 Domain의 metric alias를 원본 source column으로 바꿔 business label이 pandas 컬럼으로 실행되지 않게 합니다.
+def _align_temporal_metric_columns(
+    pandas_plan: list[Any],
+    business_time_guard: dict[str, Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    semantics = [
+        item
+        for item in business_time_guard.get("temporal_semantics", [])
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or "").strip()
+        and str(item.get("source_column") or "").strip()
+    ]
+    if not semantics:
+        return [deepcopy(item) for item in pandas_plan], {
+            "status": "not_needed",
+            "corrections": [],
+        }
+
+    result = [deepcopy(item) for item in pandas_plan]
+    corrections: list[dict[str, Any]] = []
+    for index, step in enumerate(result):
+        if not isinstance(step, dict):
+            continue
+        lineage_aliases = _step_external_source_aliases(step, result)
+        for semantic in semantics:
+            source_alias = str(semantic.get("source_alias") or "").strip()
+            if source_alias not in lineage_aliases:
+                continue
+            source_column = str(semantic.get("source_column") or "").strip()
+            registered_aliases = {
+                _normalized_column_key(value)
+                for value in _merge_strings(
+                    [
+                        source_column,
+                        semantic.get("metric"),
+                        semantic.get("output_column"),
+                        semantic.get("business_timepoint"),
+                    ],
+                    _string_list(semantic.get("metric_aliases")),
+                )
+                if _normalized_column_key(value)
+            }
+            aggregations = (
+                step.get("aggregations")
+                if isinstance(step.get("aggregations"), list)
+                else []
+            )
+            for aggregation_index, raw in enumerate(aggregations):
+                if not isinstance(raw, dict):
+                    continue
+                raw_column = str(
+                    raw.get("source_column")
+                    or raw.get("column")
+                    or raw.get("agg_column")
+                    or ""
+                ).strip()
+                if (
+                    not raw_column
+                    or _normalized_column_key(raw_column) not in registered_aliases
+                    or _normalized_column_key(raw_column)
+                    == _normalized_column_key(source_column)
+                ):
+                    continue
+                aggregation = deepcopy(raw)
+                field_name = (
+                    "source_column"
+                    if "source_column" in aggregation
+                    else "column"
+                    if "column" in aggregation
+                    else "agg_column"
+                )
+                aggregation[field_name] = source_column
+                aggregations[aggregation_index] = aggregation
+                corrections.append(
+                    {
+                        "step_index": index,
+                        "source_alias": source_alias,
+                        "from_column": raw_column,
+                        "to_column": source_column,
+                    }
+                )
+            if aggregations:
+                step["aggregations"] = aggregations
+            for field_name in ("agg_column", "aggregate_column"):
+                raw_column = str(step.get(field_name) or "").strip()
+                if (
+                    raw_column
+                    and _normalized_column_key(raw_column) in registered_aliases
+                    and _normalized_column_key(raw_column)
+                    != _normalized_column_key(source_column)
+                ):
+                    step[field_name] = source_column
+                    corrections.append(
+                        {
+                            "step_index": index,
+                            "source_alias": source_alias,
+                            "from_column": raw_column,
+                            "to_column": source_column,
+                        }
+                    )
+            result[index] = step
+    return result, {
+        "status": "applied" if corrections else "not_needed",
+        "corrections": corrections,
+    }
 
 
 # 함수 설명: `_apply_business_time_contracts()`는 04 의도 계획 정규화기 처리 중 business·TIME·contracts 관련 값을 계산·변환하는 내부 helper입니다.
@@ -1427,6 +1616,14 @@ def _apply_business_time_contracts(
             source_alias_hint = _metric_source_alias_from_pandas_plan(
                 pandas_plan or [],
                 str(contract.get("source_column") or "").strip(),
+                _merge_strings(
+                    _string_list(contract.get("metric_aliases")),
+                    [
+                        contract.get("metric"),
+                        contract.get("output_column"),
+                        contract.get("business_timepoint"),
+                    ],
+                ),
             )
         existing_index = next(
             (
@@ -2648,6 +2845,9 @@ def _synchronize_effective_filters_with_retrieval_jobs(
             continue
         effective_filters = effective_item.get("filters")
         job_filters = job.get("filters")
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        if dataset_key:
+            effective_item["dataset_key"] = dataset_key
         synchronized = _replace_matching_filter_fields(effective_filters, job_filters)
         if synchronized is not None:
             effective_item["filters"] = synchronized
@@ -4335,6 +4535,73 @@ def _metadata_candidates(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
         return candidate_payload
     existing = payload.get("metadata_candidates")
     return deepcopy(existing) if isinstance(existing, dict) else {}
+
+
+# 함수 설명: LLM metadata_refs 중 현재 후보에 실제 존재하는 참조만 실행 가능한 신뢰 목록으로 보존합니다.
+def _known_metadata_refs(
+    refs: list[dict[str, str]],
+    candidates: dict[str, Any],
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    candidate_items = [
+        item
+        for key in ("domain_items", "table_catalog_items", "main_flow_filters")
+        for item in (
+            candidates.get(key) if isinstance(candidates.get(key), list) else []
+        )
+        if isinstance(item, dict)
+    ]
+    if not candidate_items:
+        return deepcopy(refs), {
+            "status": "not_available",
+            "removed_unknown_refs": [],
+        }
+    known: list[dict[str, str]] = []
+    removed: list[dict[str, str]] = []
+    for raw in refs:
+        ref = _metadata_ref(raw)
+        if not ref:
+            continue
+        if _find_metadata_item(candidates, ref):
+            if ref not in known:
+                known.append(ref)
+        elif ref not in removed:
+            removed.append(ref)
+    return known, {
+        "status": "filtered" if removed else "not_needed",
+        "removed_unknown_refs": removed,
+    }
+
+
+# 함수 설명: 시간·조건처럼 실행에 영향을 주는 Domain은 질문 alias로 잠긴 참조만 남겨 모델의 과잉 선택을 차단합니다.
+def _execution_compatible_metadata_refs(
+    refs: list[dict[str, str]],
+    candidates: dict[str, Any],
+    locked_refs: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    locked = {
+        (str(item.get("section") or "").strip(), str(item.get("key") or "").strip())
+        for item in locked_refs
+        if isinstance(item, dict)
+    }
+    result: list[dict[str, str]] = []
+    removed: list[dict[str, str]] = []
+    for raw in refs:
+        ref = _metadata_ref(raw)
+        if not ref:
+            continue
+        item = _find_metadata_item(candidates, ref)
+        payload = _metadata_payload(item)
+        execution_bearing = isinstance(payload.get("temporal_semantics"), (dict, list)) or isinstance(
+            payload.get("conditions"), (dict, list)
+        )
+        marker = (ref.get("section", ""), ref.get("key", ""))
+        if execution_bearing and marker not in locked:
+            if ref not in removed:
+                removed.append(ref)
+            continue
+        if ref not in result:
+            result.append(ref)
+    return result, removed
 
 
 # 함수 설명: LLM이 선택한 메타데이터 참조 목록을 section/key 계약으로만 정리합니다.

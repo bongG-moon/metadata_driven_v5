@@ -18433,6 +18433,245 @@ def test_unselected_boh_temporal_contract_does_not_rewrite_current_wip():
     )
 
 
+def test_boh_contract_repairs_hallucinated_family_dataset_and_missing_retrieval_job():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "오늘 da공정 아침재공 수량 알려줘",
+                "reference_date": "20260803",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "boh_wip_by_process",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "condition_resolution": {
+                    "effective_filters": {
+                        "wip": {
+                            "dataset_key": "wip_history",
+                            "filters": {
+                                "OPER_NAME": {
+                                    "operator": "in",
+                                    "value": [
+                                        "D/A1",
+                                        "D/A2",
+                                        "D/A3",
+                                        "D/A4",
+                                        "D/A5",
+                                        "D/A6",
+                                    ],
+                                }
+                            },
+                        }
+                    }
+                },
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "filter_wip_da",
+                        "operation": "apply_filters",
+                        "inputs": [{"kind": "external_source", "ref": "wip"}],
+                        "output_alias": "wip_da_filtered",
+                        "source_alias": "wip",
+                    },
+                    {
+                        "node_id": "aggregate_boh_wip",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "filter_wip_da"}],
+                        "output_alias": "boh_wip_result",
+                        "source_alias": "wip_da_filtered",
+                        "group_by": ["OPER_NAME"],
+                        "aggregations": [
+                            {
+                                "column": "BOH",
+                                "method": "sum",
+                                "output_column": "BOH_WIP_SUM",
+                            }
+                        ],
+                    },
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "required_columns": ["OPER_NAME", "BOH_WIP_SUM"],
+                    "grain_columns": ["OPER_NAME"],
+                    "metric_columns": ["BOH_WIP_SUM"],
+                    "result_columns": ["OPER_NAME", "BOH_WIP_SUM"],
+                },
+            },
+            "metadata_refs": [
+                {"section": "process_groups", "key": "DA"},
+                {"section": "analysis_recipes", "key": "오늘 BOH 재공 조회"},
+                {"section": "product_terms", "key": "BOH 재공"},
+            ],
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [
+                    *_production_and_boh_domain_items(),
+                    {
+                        "section": "process_groups",
+                        "key": "DA",
+                        "payload": {
+                            "display_name": "DA 공정",
+                            "aliases": ["DA공정", "D/A공정"],
+                            "processes": [
+                                "D/A1",
+                                "D/A2",
+                                "D/A3",
+                                "D/A4",
+                                "D/A5",
+                                "D/A6",
+                            ],
+                        },
+                    },
+                ],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "wip",
+                        "payload": {
+                            "dataset_family": "wip",
+                            "selection_criteria": {"time_scope": "history"},
+                            "columns": ["DATE", "OPER_NAME", "WIP"],
+                            "required_params": ["DATE"],
+                        },
+                    },
+                    {
+                        "dataset_key": "wip_today",
+                        "payload": {
+                            "dataset_family": "wip",
+                            "selection_criteria": {"time_scope": "current_day"},
+                            "columns": ["DATE", "OPER_NAME", "WIP"],
+                            "required_params": ["DATE"],
+                        },
+                    },
+                    {
+                        "dataset_key": "lot_status",
+                        "payload": {
+                            "dataset_family": "lot",
+                            "columns": ["LOT_ID", "OPER_NAME", "PROD_QTY"],
+                        },
+                    },
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    plan = result["intent_plan"]
+    assert plan["retrieval_jobs"] == [
+        {
+            "dataset_key": "wip",
+            "source_alias": "wip",
+            "required_params": {"DATE": "20260802"},
+            "filters": {},
+            "required": True,
+        }
+    ]
+    assert plan["condition_resolution"]["effective_filters"]["wip"]["dataset_key"] == "wip"
+    aggregation = plan["pandas_execution_plan"][1]["aggregations"][0]
+    assert aggregation["column"] == "WIP"
+    assert aggregation["output_column"] == "BOH_WIP_SUM"
+    binding = plan["output_contract"]["metric_bindings"][0]
+    assert binding["dataset_key"] == "wip"
+    assert binding["source_column"] == "WIP"
+    assert plan["resolved_execution_graph"]["external_source_requirements"] == [
+        {
+            "source_alias": "wip",
+            "provider": "retrieval_job",
+            "dataset_key": "wip",
+            "required": True,
+        }
+    ]
+    assert "validation_errors" not in plan
+    refs = {(item.get("section"), item.get("key")) for item in result["metadata_refs"]}
+    assert ("quantity_terms", "wip_boh_quantity") in refs
+    assert ("analysis_recipes", "오늘 BOH 재공 조회") not in refs
+    assert ("product_terms", "BOH 재공") not in refs
+
+
+def test_yesterday_wip_does_not_apply_boh_contract_from_false_model_reference():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "어제 DA공정 재공수량 알려줘",
+                "reference_date": "20260803",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "wip_by_process",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "wip",
+                        "source_alias": "wip",
+                        "required_params": {"DATE": "20260802"},
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "external_source", "ref": "wip"}],
+                        "source_alias": "wip",
+                        "group_by": ["OPER_NAME"],
+                        "aggregations": [
+                            {
+                                "column": "WIP",
+                                "method": "sum",
+                                "output_column": "WIP_SUM",
+                            }
+                        ],
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "required_columns": ["OPER_NAME", "WIP_SUM"],
+                    "grain_columns": ["OPER_NAME"],
+                    "metric_columns": ["WIP_SUM"],
+                },
+            },
+            "metadata_refs": [
+                {"section": "quantity_terms", "key": "wip_boh_quantity"}
+            ],
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": _production_and_boh_domain_items(),
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "wip",
+                        "payload": {
+                            "dataset_family": "wip",
+                            "selection_criteria": {"time_scope": "history"},
+                            "columns": ["DATE", "OPER_NAME", "WIP"],
+                            "required_params": ["DATE"],
+                        },
+                    }
+                ],
+                "main_flow_filters": [],
+            }
+        },
+    )
+
+    plan = result["intent_plan"]
+    assert plan["retrieval_jobs"][0]["dataset_key"] == "wip"
+    assert plan["retrieval_jobs"][0]["required_params"]["DATE"] == "20260802"
+    assert "temporal_semantics" not in plan
+    refs = {(item.get("section"), item.get("key")) for item in result["metadata_refs"]}
+    assert ("quantity_terms", "wip_boh_quantity") not in refs
+    assert "validation_errors" not in plan
+
+
 def test_unrequested_optional_date_filter_is_removed_from_plan_and_reason():
     normalizer = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"

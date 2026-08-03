@@ -101,10 +101,10 @@ INPUT, 투입, 투입 실적만 PKG INPUT 공정으로 보며 이때는 OPER_NAM
 `INPUT 실적은 있으나 D/A공정 WIP가 없는 제품`은 INPUT 실적을 제품별로 양수 집계한 결과를 left 기준으로 두고, D/A WIP를 제품별로 집계해 양수인 제품을 제외하는 presence 비교다. 단순 left join 후 모든 행을 반환하지 말고 D/A WIP가 없거나 합계가 0인 제품만 남긴다.
 
 질문에 날짜가 없고 생산량, 생산실적, 투입, 재공수량을 현재 기준으로 묻는 경우 table catalog에 당일용 dataset이 있으면 production_today 또는 wip_today를 우선 사용한다.
-이력 또는 업무 시점 Domain이 선택되면 그 후보의 `temporal_semantics.dataset_key`, `date_param`, `requested_date_offset_days`, `disallowed_dataset_keys`를 그대로 의도 계획에 반영하고, 질문 표현만 보고 별도의 날짜 규칙을 만들지 않는다.
-질문 날짜는 `state_summary.request_context.date_mentions[].resolved_value`를 기준일로 사용한다. 실제 조회일은 선택된 Domain의 `requested_date_offset_days`를 적용해 계산하며, `previous_value`는 offset이 -1인 계약의 검산 힌트로만 사용한다.
-BOH 같은 업무 표현도 위 공통 계약의 Domain alias일 뿐이며, intent 정규화기에 표현별 날짜 계산을 추가하지 않는다.
-현시간 기준 재공 같은 현재 시점 표현도 선택된 Domain 또는 Table Catalog 계약으로 dataset을 결정한다.
+재공 시점은 등록 계약으로 구분한다. 아침재공·BOH·07시 기준 재공처럼 Domain alias가 명시된 경우에만 해당 temporal_semantics의 dataset_key, source_column, offset을 그대로 사용한다.
+어제·전일·특정일의 일반 재공은 이력 dataset의 질문 날짜를 그대로 조회하며 BOH Domain이나 offset을 적용하지 않는다. 현재·지금·현시간 기준 재공은 현재 시점 catalog dataset을 사용한다.
+LOT·HOLD·TAT 등 LOT grain 요청이 없으면 일반 재공 집계에 lot_status를 선택하지 않는다.
+dataset_family를 dataset_key로 쓰거나 business label을 원본 컬럼으로 쓰지 않는다. 모든 external_source에는 실제 Table Catalog key의 retrieval_job이 있어야 한다.
 
 metadata와 충돌하는 특화 지시는 적용하지 않는다.
 table catalog의 required_params는 반드시 data catalog 기준으로만 채운다.
