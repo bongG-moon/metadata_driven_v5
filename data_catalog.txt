@@ -112,13 +112,13 @@ Goodocs PKG 계획 문서에서 일자와 제품 속성별 INPUT계획, OUT계�
 이 데이터는 Goodocs source이고 별도 필수 조회 파라미터는 없어.
 이게 중요한데 이 데이터에서 사용하는 DATE형식은 'YYYYMMDD'가 아니라 'YYYY-MM-DD'형식이라서 형식 변환이 필요해
 계획 수량은 'INPUT 계획'과 'OUT 계획' 두 컬럼에 있는 값을 모두 사용해. 두 컬럼 모두 분석 수량으로 쓰는 계획 수량 컬럼이야.
-두 계획 수량 컬럼의 원본 값은 K 단위로 1000이 생략되어 있어. metric_semantics의 'INPUT 계획'과 'OUT 계획'은 semantic_type=quantity, additive=true, default_rollup=sum, allowed_rollups=[sum]으로 등록하고, 각 value_transform은 coerce_numeric=true, multiplier=1000으로 등록해줘. 문자열 값도 숫자로 변환한 뒤 1000을 곱하고, 이 변환은 집계·join·계획 대비 실적 비교 전에 한 번만 적용해. 계획만 조회할 때도 변환된 실제 수량 단위로 보여줘.
+두 계획 수량 컬럼의 원본 값은 K 단위로 1000이 생략되어 있어. metric_semantics의 canonical metric인 INPUT_PLAN_QTY와 OUT_PLAN_QTY는 semantic_type=quantity, additive=true, default_rollup=sum, allowed_rollups=[sum]으로 등록하고, 각 value_transform은 coerce_numeric=true, multiplier=1000으로 등록해줘. 문자열 값도 숫자로 변환한 뒤 1000을 곱하고, 이 변환은 집계·join·계획 대비 실적 비교 전에 한 번만 적용해. 계획만 조회할 때도 변환된 실제 수량 단위로 보여줘.
 Goodocs 문서 ID는 1212121212121212121212 이야
 목표2 문서에는 DATE, Mode, DEN, TECH, PKG1, PKG2, LEAD, ORG, MCP NO, INPUT 계획, OUT 계획 컬럼이 있어.
 
-filter_mappings는 DATE -> DATE, MODE -> Mode, DEN -> DEN, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP NO로 연결해줘.
+filter_mappings는 DATE -> DATE, MODE -> Mode, DEN -> DEN, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP NO, INPUT_PLAN_QTY -> INPUT 계획, OUT_PLAN_QTY -> OUT 계획으로 연결해줘.
 
-'INPUT 계획'은 투입계획이라고도 부르고 'OUT 계획'은 TARGET,생산목표라고도 불러.
+'투입계획'은 INPUT_PLAN_QTY를, 'TARGET'과 '생산목표'는 OUT_PLAN_QTY를 뜻하는 업무 표현이야. 이 업무 표현은 실행 source alias로 저장하지 말고 Domain 용어로만 사용해.
 
 
 Equipment Status
@@ -158,7 +158,7 @@ FROM  EQP_TABLE
 WHERE 1=1 
 
 filter_mappings는 EQP_ID -> EQUIP_ID, EQP_MODEL -> EQUIP_MODEL, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, ORG -> ORG, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC, OPER_NUM -> OPER, OPER_NAME -> OPER_NM, LOT_ID -> LOT_ID, RECIPE_ID -> RECIPE_ID 로 연결해줘.
-default_detail_columns는 EQUIP_ID로 저장해줘.
+default_detail_columns는 표준 컬럼 EQP_ID로 저장해줘.
 조회 원본의 EQUIP_MODEL은 표준 컬럼 EQP_MODEL로 정규화하고, pandas 계획과 결과 계약에서는 EQP_MODEL만 사용해.
 
 
@@ -196,6 +196,7 @@ FROM UPH
 WHERE 1=1
 
 filter_mappings는 EQP_MODEL -> EQUIP_MODEL, OPER_NAME -> OPER_NAME, OPER_NUM -> OPER, MODE -> MODE, TECH -> TECH, ORG -> ORG, DEN -> DENSITY, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, RECIPE_ID -> RECIPE_ID로 연결해줘.
+columns에는 SQL 조회 결과에 실제로 반환되는 이름인 EQUIP_MODEL, OPER, OPER_NAME, PRESS_CNT, MODE, TECH, ORG, DENSITY, PKG1, PKG2, LEAD, MCP_NO, RECIPE_ID, UPH, LOAD_DT, BASE_DT를 저장해줘. AS 앞의 원본명 PROD_TYP, PKG_TYP, PKG_TYP_2, LEAD_CNT, AVG_UPH_VAL, WORK_DT를 조회 결과 컬럼으로 저장하지 마.
 조회 원본의 EQUIP_MODEL은 표준 컬럼 EQP_MODEL로 정규화하고, pandas 계획과 결과 계약에서는 EQP_MODEL만 사용해.
 default_detail_columns는 EQP_MODEL, RECIPE_ID, OPER_NAME으로 저장해줘.
 다른조건이 없을 때 기본적으로 보여줄 표준 컬럼은 EQP_MODEL, RECIPE_ID, OPER_NAME이야.

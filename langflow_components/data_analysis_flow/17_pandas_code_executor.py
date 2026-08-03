@@ -1229,6 +1229,10 @@ def execute_pandas_with_repair(
     if initial_status in {"ok", "success"}:
         base_trace["reason"] = "초기 pandas 실행이 성공하여 repair LLM을 호출하지 않았습니다."
         return _with_repair_trace(initial, base_trace)
+    if not _repairable_execution_failure(initial):
+        base_trace["reason"] = "조회·스키마·결과 계약 오류는 pandas 코드 재생성으로 해결할 수 없어 repair LLM을 호출하지 않았습니다."
+        base_trace["selected"] = "blocked_contract_error"
+        return _with_repair_trace(initial, base_trace)
     if max_attempts == 0 or current_attempt >= max_attempts:
         base_trace["reason"] = "pandas repair가 비활성화되었거나 최대 1회 시도 한도에 도달했습니다."
         return _with_repair_trace(initial, base_trace)
@@ -1281,6 +1285,13 @@ def execute_pandas_with_repair(
         base_trace["retry_code_sha256"] = hashlib.sha256(retry_code.encode("utf-8")).hexdigest()
         base_trace["retry_code_preview"] = retry_code[:REPAIR_CODE_PREVIEW_LIMIT]
     return _with_repair_trace(retry, base_trace)
+
+
+# 함수 설명: 실제 생성 코드의 실행 오류만 repair 대상으로 허용하고 구조 계약 오류의 동일 재시도를 막습니다.
+def _repairable_execution_failure(payload: dict[str, Any]) -> bool:
+    error = _analysis_error_value(payload)
+    error_type = str(error.get("type") or "").strip().lower() if isinstance(error, dict) else ""
+    return error_type in {"pandas_execution_error", "unsafe_code"}
 
 
 # 주요 함수: 복구 LLM이 원인과 기존 코드를 함께 볼 수 있도록 수정 프롬프트를 조립합니다.

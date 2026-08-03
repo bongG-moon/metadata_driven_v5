@@ -1,0 +1,300 @@
+{
+  "status": "applied",
+  "database": "datagov",
+  "table_dataset_keys": [
+    "eqp_uph",
+    "equipment_assign",
+    "target"
+  ],
+  "domain_ids": [
+    "domain:analysis_recipes:equipment_assignment_uph_join",
+    "domain:quantity_terms:target_data"
+  ],
+  "validation_errors": [],
+  "before_after": {
+    "target": {
+      "before_columns": [
+        "DATE",
+        "Mode",
+        "DEN",
+        "TECH",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "ORG",
+        "MCP NO",
+        "INPUT 계획",
+        "OUT 계획"
+      ],
+      "after_columns": [
+        "DATE",
+        "Mode",
+        "DEN",
+        "TECH",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "ORG",
+        "MCP NO",
+        "INPUT 계획",
+        "OUT 계획"
+      ],
+      "after_filter_mappings": {
+        "DATE": [
+          "DATE"
+        ],
+        "MODE": [
+          "Mode"
+        ],
+        "DEN": [
+          "DEN"
+        ],
+        "TECH": [
+          "TECH"
+        ],
+        "ORG": [
+          "ORG"
+        ],
+        "PKG_TYPE1": [
+          "PKG1"
+        ],
+        "PKG_TYPE2": [
+          "PKG2"
+        ],
+        "LEAD": [
+          "LEAD"
+        ],
+        "MCP_NO": [
+          "MCP NO"
+        ],
+        "INPUT_PLAN_QTY": [
+          "INPUT 계획"
+        ],
+        "OUT_PLAN_QTY": [
+          "OUT 계획"
+        ]
+      },
+      "after_metric_semantics": {
+        "INPUT_PLAN_QTY": {
+          "semantic_type": "quantity",
+          "additive": true,
+          "default_rollup": "sum",
+          "allowed_rollups": [
+            "sum"
+          ],
+          "value_transform": {
+            "coerce_numeric": true,
+            "multiplier": 1000
+          }
+        },
+        "OUT_PLAN_QTY": {
+          "semantic_type": "quantity",
+          "additive": true,
+          "default_rollup": "sum",
+          "allowed_rollups": [
+            "sum"
+          ],
+          "value_transform": {
+            "coerce_numeric": true,
+            "multiplier": 1000
+          }
+        }
+      }
+    },
+    "equipment_assign": {
+      "before_columns": [
+        "BAY_ID",
+        "EQUIP_ID",
+        "EQUIP_MODEL",
+        "PRESS_CNT",
+        "OPER",
+        "OPER_NM",
+        "MODE",
+        "DENSITY",
+        "TECH",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "ORG",
+        "PKGSIZE",
+        "MCP_NO",
+        "DEVICE",
+        "DEVICE_DESC",
+        "LOT_ID",
+        "RECIPE_ID"
+      ],
+      "after_columns": [
+        "BAY_ID",
+        "EQUIP_ID",
+        "EQUIP_MODEL",
+        "PRESS_CNT",
+        "OPER",
+        "OPER_NM",
+        "MODE",
+        "DENSITY",
+        "TECH",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "ORG",
+        "PKGSIZE",
+        "MCP_NO",
+        "DEVICE",
+        "DEVICE_DESC",
+        "LOT_ID",
+        "RECIPE_ID"
+      ],
+      "after_filter_mappings": {
+        "EQP_ID": [
+          "EQUIP_ID"
+        ],
+        "EQP_MODEL": [
+          "EQUIP_MODEL"
+        ],
+        "MODE": [
+          "MODE"
+        ],
+        "DEN": [
+          "DENSITY"
+        ],
+        "TECH": [
+          "TECH"
+        ],
+        "PKG_TYPE1": [
+          "PKG1"
+        ],
+        "PKG_TYPE2": [
+          "PKG2"
+        ],
+        "LEAD": [
+          "LEAD"
+        ],
+        "MCP_NO": [
+          "MCP_NO"
+        ],
+        "ORG": [
+          "ORG"
+        ],
+        "DEVICE": [
+          "DEVICE"
+        ],
+        "DEVICE_DESC": [
+          "DEVICE_DESC"
+        ],
+        "OPER_NUM": [
+          "OPER"
+        ],
+        "OPER_NAME": [
+          "OPER_NM"
+        ],
+        "LOT_ID": [
+          "LOT_ID"
+        ],
+        "RECIPE_ID": [
+          "RECIPE_ID"
+        ]
+      },
+      "after_metric_semantics": {
+        "EQP_ID": {
+          "semantic_type": "count",
+          "additive": false,
+          "default_rollup": "nunique",
+          "allowed_rollups": [
+            "nunique"
+          ],
+          "source_already_aggregated": false
+        }
+      }
+    },
+    "eqp_uph": {
+      "before_columns": [
+        "EQUIP_MODEL",
+        "OPER",
+        "OPER_NAME",
+        "PRESS_CNT",
+        "PROD_TYP",
+        "TECH",
+        "ORG",
+        "DENSITY",
+        "PKG_TYP",
+        "PKG_TYP_2",
+        "LEAD_CNT",
+        "MCP_NO",
+        "RECIPE_ID",
+        "AVG_UPH_VAL",
+        "WORK_DT",
+        "BASE_DT"
+      ],
+      "after_columns": [
+        "EQUIP_MODEL",
+        "OPER",
+        "OPER_NAME",
+        "PRESS_CNT",
+        "MODE",
+        "TECH",
+        "ORG",
+        "DENSITY",
+        "PKG1",
+        "PKG2",
+        "LEAD",
+        "MCP_NO",
+        "RECIPE_ID",
+        "UPH",
+        "LOAD_DT",
+        "BASE_DT"
+      ],
+      "after_filter_mappings": {
+        "EQP_MODEL": [
+          "EQUIP_MODEL"
+        ],
+        "OPER_NAME": [
+          "OPER_NAME"
+        ],
+        "OPER_NUM": [
+          "OPER"
+        ],
+        "MODE": [
+          "MODE"
+        ],
+        "TECH": [
+          "TECH"
+        ],
+        "ORG": [
+          "ORG"
+        ],
+        "DEN": [
+          "DENSITY"
+        ],
+        "PKG_TYPE1": [
+          "PKG1"
+        ],
+        "PKG_TYPE2": [
+          "PKG2"
+        ],
+        "LEAD": [
+          "LEAD"
+        ],
+        "MCP_NO": [
+          "MCP_NO"
+        ],
+        "RECIPE_ID": [
+          "RECIPE_ID"
+        ],
+        "UPH": [
+          "UPH"
+        ]
+      },
+      "after_metric_semantics": {
+        "UPH": {
+          "semantic_type": "average",
+          "additive": false,
+          "default_rollup": "mean",
+          "allowed_rollups": [
+            "mean"
+          ],
+          "source_already_aggregated": true
+        }
+      }
+    }
+  }
+}

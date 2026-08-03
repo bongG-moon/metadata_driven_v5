@@ -230,6 +230,16 @@ OUTPUT, OUT, Out Put, output 실적, out 실적은 production 계열 데이터�
 계획, 스케쥴, 스케줄, SCHD, 투입계획, 일별 투입계획, 생산계획은 target 계열 데이터를 의미해.
 계획이나 스케쥴 문자가 질문에 포함되지 않으면 target 계열 데이터는 사용하지 않아.
 
+생산 계획 metric 계약을 등록해줘.
+section은 quantity_terms이고 key는 target_data이며 status는 active야.
+display_name은 계획이고 aliases는 계획, 스케쥴, 스케줄, SCHD, 투입계획, 일별 투입계획, 생산계획이야.
+data_source는 target이야.
+metric_columns는 INPUT_PLAN_QTY와 OUT_PLAN_QTY야.
+사용자가 INPUT 또는 OUT을 한정하지 않고 생산계획이나 계획정보를 요청하면 두 metric을 각각 집계해 함께 보여줘. 포괄 이름인 PLAN_QTY 같은 실행 컬럼은 만들지 마.
+사용자가 투입계획을 명시하면 INPUT_PLAN_QTY를, OUT계획·TARGET·생산목표를 명시하면 OUT_PLAN_QTY를 사용해.
+이 항목에는 물리 source 컬럼명을 저장하지 않고 Table Catalog가 canonical 실행 컬럼으로 정규화한 뒤 적용해.
+usage_condition은 질문에 계획 또는 스케쥴 의미가 포함된 경우에만 사용이야.
+
 장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.
 
 PKG OUT 실적 metric을 등록해줘.
@@ -290,8 +300,7 @@ display_name은 장비 배정-Recipe UPH 결합 규칙이야.
 aliases와 선택 단서는 배정 장비 UPH, 장비와 Recipe UPH, 배정된 장비와 UPH, 배정 장비 모델별 UPH야.
 source_datasets는 equipment_assign, eqp_uph이고 join_type은 left야.
 표준 join_keys는 EQP_MODEL, RECIPE_ID, OPER_NAME이야.
-equipment_assign의 left_key_mappings는 EQP_MODEL -> EQUIP_MODEL, RECIPE_ID -> RECIPE_ID, OPER_NAME -> OPER_NM이야.
-eqp_uph의 right_key_mappings는 EQP_MODEL -> EQUIP_MODEL, RECIPE_ID -> RECIPE_ID, OPER_NAME -> OPER_NAME이야.
+두 source의 물리 컬럼은 각 Table Catalog가 pandas 전에 표준 join_keys로 정규화해. Domain에는 left_key_mappings와 right_key_mappings 같은 물리 컬럼 매핑을 저장하지 마.
 장비 배정 결과를 보존하도록 preserve_left_rows는 true야.
 selection_criteria에는 사용자가 공정에 배정된 현재 장비의 목록 또는 대수와 해당 장비 모델 또는 Recipe의 UPH를 함께 요청할 때만 이 recipe를 사용한다는 문장을 저장해.
 selection_criteria에는 차수별 UPH, 장비 기종별 UPH, 장비 모델별 UPH처럼 배정 장비의 목록이나 대수를 요청하지 않은 일반 UPH 분석에는 이 recipe를 사용하지 않고 eqp_uph 하나를 사용한다는 문장도 저장해.

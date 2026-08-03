@@ -74,6 +74,7 @@ EXPECTED_FINAL_KEYS = {
     "product_key_columns:standard_product_keys",
     "quantity_terms:wip_boh_quantity",
     "quantity_terms:pkg_out_quantity",
+    "quantity_terms:target_data",
 }
 
 
@@ -100,6 +101,12 @@ def build_registration_requests(text: str) -> list[dict[str, Any]]:
         )
 
     specs = [
+        (
+            "target_data",
+            "생산 계획 metric 계약을 등록해줘.",
+            "장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는",
+            ["quantity_terms:target_data"],
+        ),
         (
             "pkg_out_quantity",
             "PKG OUT 실적 metric을 등록해줘.",
@@ -267,6 +274,26 @@ def _semantic_errors(
                     "message": f"{key}의 display_name, aliases, field 또는 processes가 원문과 다릅니다.",
                 }
             )
+    elif name == "target_data":
+        payload = (
+            item_by_key.get("quantity_terms:target_data") or {}
+        ).get("payload", {})
+        if payload.get("data_source") != "target":
+            errors.append({
+                "type": "target_data_source_mismatch",
+                "message": "계획 metric의 data_source는 target이어야 합니다.",
+            })
+        if payload.get("metric_columns") != ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"]:
+            errors.append({
+                "type": "target_metric_columns_mismatch",
+                "message": "계획 metric은 canonical INPUT_PLAN_QTY와 OUT_PLAN_QTY를 순서대로 사용해야 합니다.",
+            })
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        if "PLAN_QTY" in payload_text.replace("INPUT_PLAN_QTY", "").replace("OUT_PLAN_QTY", ""):
+            errors.append({
+                "type": "invented_generic_plan_metric",
+                "message": "등록되지 않은 포괄 PLAN_QTY metric을 만들면 안 됩니다.",
+            })
     elif name == "wip_boh_quantity":
         payload = (
             item_by_key.get("quantity_terms:wip_boh_quantity") or {}
@@ -379,16 +406,6 @@ def _semantic_errors(
             "source_datasets": ["equipment_assign", "eqp_uph"],
             "join_type": "left",
             "join_keys": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
-            "left_key_mappings": {
-                "EQP_MODEL": "EQUIP_MODEL",
-                "RECIPE_ID": "RECIPE_ID",
-                "OPER_NAME": "OPER_NM",
-            },
-            "right_key_mappings": {
-                "EQP_MODEL": "EQUIP_MODEL",
-                "RECIPE_ID": "RECIPE_ID",
-                "OPER_NAME": "OPER_NAME",
-            },
             "preserve_left_rows": True,
         }
         for field, expected_value in expected.items():
@@ -397,6 +414,14 @@ def _semantic_errors(
                     {
                         "type": "equipment_join_policy_mismatch",
                         "message": f"장비-UPH 결합 정책의 {field} 값이 원문과 다릅니다.",
+                    }
+                )
+        for field in ("left_key_mappings", "right_key_mappings"):
+            if field in payload:
+                errors.append(
+                    {
+                        "type": "physical_join_mapping_in_domain",
+                        "message": f"장비-UPH Domain에는 Table Catalog 소유 물리 매핑 {field}를 저장하지 않습니다.",
                     }
                 )
         aliases = payload.get("aliases") if isinstance(payload.get("aliases"), list) else []

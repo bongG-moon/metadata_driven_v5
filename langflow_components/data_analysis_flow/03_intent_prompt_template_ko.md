@@ -151,6 +151,8 @@
 - `aggregate`/`scalar`에서는 `default_detail_columns`를 무조건 붙이지 않는다. 질문의 grouping·metric에 필요한 컬럼만 `grain_columns`, `metric_columns`, `required_columns`에 넣어 결과 자유도를 유지한다.
 - 사용자가 `공정별/제품별`, `차수별/장비 기종별`처럼 둘 이상의 breakdown을 함께 요청하면 모든 요청 차원을 각 관련 집계 단계의 `group_by`와 `output_contract.grain_columns`에 보존한다. 제품 identity metadata를 선택했다는 이유로 공정·차수·장비 같은 명시적 breakdown을 제거하지 않는다.
 - 각 집계 metric은 Table Catalog의 `columns`, `metric_semantics` 또는 컬럼 mapping에 해당 source column이 명시된 retrieval dataset에만 연결한다. alias나 표시 이름이 비슷하다는 이유로 metric과 dataset을 연결하지 않는다.
+- pandas 단계와 output contract의 실행 컬럼은 Table Catalog `filter_mappings`의 canonical key를 사용한다. 실제 source 컬럼명은 조회 직후 canonical key로 표준화되므로, `columns`·`filter_mappings`·`metric_semantics`에 없는 `PLAN_QTY` 같은 포괄 컬럼을 새로 만들지 않는다.
+- 사용자가 여러 실제 metric을 포괄하는 업무 표현을 사용하면 임의의 단일 컬럼으로 합치지 않는다. 선택된 catalog/domain에 등록된 해당 metric들을 각각 집계하고 서로 다른 output column으로 유지한다.
 - 같은 family에 동일 metric을 제공하는 dataset이 둘 이상이면, 현재일/이력 선택은 구조화된 `selection_criteria.time_scope`와 확정된 `DATE`가 `reference_date`와 같은지 여부로만 결정한다. dataset key의 접미사나 부분 문자열로 시간 범위를 추측하지 않는다.
 - 선택한 table catalog에 `metric_semantics`가 있으면 metric의 가산성과 허용 집계를 그대로 따른다. `additive=false`인 평균·rate·비율 지표에 `sum`을 사용하지 않고, 상세 요청은 원본 metric 값을 유지하며 명시적인 grouping 요청은 `default_rollup` 또는 `allowed_rollups`의 집계만 선택한다.
 - `metric_semantics.<metric>.value_transform`은 조회 후 pandas 이전에 실행기가 한 번 적용하는 source 단위 정규화 계약이다. 의도 계획에 동일한 곱셈·숫자 변환 단계를 다시 만들지 않고, 계획·실적 비교도 변환이 끝난 동일 실행 단위의 metric을 사용한다.

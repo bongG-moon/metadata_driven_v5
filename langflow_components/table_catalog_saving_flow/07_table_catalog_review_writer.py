@@ -113,9 +113,121 @@ def _deterministic_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 errors.append({"type": "forbidden_source_config_key", "message": f"허용되지 않은 source_config 필드입니다: {field}", "key": item_key, "field": str(field)})
         errors.extend(_upstream_binding_errors(sc.get("upstream_bindings"), item_key))
         errors.extend(_metric_semantics_errors(p.get("metric_semantics"), item_key))
+        errors.extend(_execution_column_contract_errors(p, item_key))
         for path in _secret_paths(item):
             errors.append({"type": "credential_field_forbidden", "message": f"credential/secret 필드는 저장할 수 없습니다: {path}", "key": item_key, "field": path})
     return _unique_errors(errors)
+
+
+# 함수 설명: 실행 컬럼 계약은 filter_mappings의 canonical→실제 source 방향 하나로만 선언되도록 검증합니다.
+def _execution_column_contract_errors(payload: dict[str, Any], item_key: str) -> list[dict[str, Any]]:
+    declared_columns = _catalog_column_names(payload.get("columns"))
+    declared_keys = {_column_key(column) for column in declared_columns}
+    mappings = payload.get("filter_mappings")
+    mappings = mappings if isinstance(mappings, dict) else {}
+    errors: list[dict[str, Any]] = []
+    alias_owners: dict[str, str] = {}
+    canonical_keys = {
+        _column_key(canonical)
+        for canonical in mappings
+        if str(canonical or "").strip()
+    }
+    for raw_canonical, raw_aliases in mappings.items():
+        canonical = str(raw_canonical or "").strip()
+        aliases = _string_list(raw_aliases)
+        if not canonical or not aliases:
+            errors.append({
+                "type": "invalid_filter_mapping",
+                "message": "filter_mappings는 canonical key와 하나 이상의 실제 source column을 가져야 합니다.",
+                "key": item_key,
+                "canonical_column": canonical,
+            })
+            continue
+        for alias in aliases:
+            alias_key = _column_key(alias)
+            if declared_keys and alias_key not in declared_keys:
+                errors.append({
+                    "type": "filter_mapping_source_column_missing",
+                    "message": f"filter_mappings 오른쪽 컬럼이 실제 조회 columns에 없습니다: {canonical} -> {alias}",
+                    "key": item_key,
+                    "canonical_column": canonical,
+                    "source_column": alias,
+                })
+            owner = alias_owners.get(alias_key)
+            if owner and _column_key(owner) != _column_key(canonical):
+                errors.append({
+                    "type": "ambiguous_execution_column_mapping",
+                    "message": f"같은 실제 컬럼이 여러 canonical key에 연결되었습니다: {owner}, {canonical} -> {alias}",
+                    "key": item_key,
+                    "source_column": alias,
+                })
+            alias_owners.setdefault(alias_key, canonical)
+
+    standard_aliases = payload.get("standard_column_aliases")
+    if isinstance(standard_aliases, dict):
+        for raw_business_key, raw_aliases in standard_aliases.items():
+            business_key = str(raw_business_key or "").strip()
+            for alias in _string_list(raw_aliases):
+                owner = alias_owners.get(_column_key(alias))
+                if owner and _column_key(owner) != _column_key(business_key):
+                    errors.append({
+                        "type": "business_alias_redefines_execution_column",
+                        "message": f"standard_column_aliases가 실행 매핑을 다른 key로 재정의합니다: {business_key} -> {alias}, canonical={owner}",
+                        "key": item_key,
+                        "source_column": alias,
+                    })
+
+    semantics = payload.get("metric_semantics")
+    if isinstance(semantics, dict):
+        for metric in semantics:
+            metric_key = _column_key(metric)
+            if declared_keys and metric_key not in declared_keys and metric_key not in canonical_keys:
+                errors.append({
+                    "type": "metric_column_not_in_execution_schema",
+                    "message": f"metric_semantics 컬럼이 실제 columns 또는 canonical filter_mappings에 없습니다: {metric}",
+                    "key": item_key,
+                    "metric": str(metric),
+                })
+
+    for column in _string_list(payload.get("default_detail_columns")):
+        column_key = _column_key(column)
+        if declared_keys and column_key not in declared_keys and column_key not in canonical_keys:
+            errors.append({
+                "type": "default_detail_column_not_in_execution_schema",
+                "message": f"default_detail_columns 컬럼이 실제 columns 또는 canonical filter_mappings에 없습니다: {column}",
+                "key": item_key,
+                "column": column,
+            })
+    return errors
+
+
+# 함수 설명: 다양한 columns 스키마에서 실제 조회 결과 컬럼명을 순서대로 추출합니다.
+def _catalog_column_names(value: Any) -> list[str]:
+    values = value if isinstance(value, list) else list(value) if isinstance(value, dict) else []
+    result: list[str] = []
+    for item in values:
+        if isinstance(item, dict):
+            item = item.get("column_name") or item.get("name") or item.get("column") or item.get("key")
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+# 함수 설명: 단일 값 또는 배열을 공백 없는 중복 제거 문자열 목록으로 정규화합니다.
+def _string_list(value: Any) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+# 함수 설명: 대소문자와 구분문자 차이를 제거한 컬럼 비교 key를 생성합니다.
+def _column_key(value: Any) -> str:
+    return "".join(character for character in str(value or "").upper() if character.isalnum())
 
 
 # 함수 설명: metric별 가산성·기본 집계 계약을 작은 허용 스키마로 검증합니다.

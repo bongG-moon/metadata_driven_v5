@@ -2069,7 +2069,7 @@ def test_representative_questions_have_answerable_dummy_data_coverage():
     assert {row["UPH"] for row in results[24]["preview_rows"]} == {123.4, 97.5}
     assert results[25]["used_helpers"] == ["match_product_tokens"]
     assert results[25]["preview_rows"] == [{"OPER_NAME": "W/B1", "UPH": 112.0}]
-    assert results[26]["columns"] == ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]
+    assert results[26]["columns"] == ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]
     assert results[27]["preview_rows"][0]["EQP_ID"] == "EQP002"
     assert results[28]["preview_rows"][0]["LOT_ID"] == "T1234567GEN1"
     assert results[29]["row_count"] == 3
@@ -5766,7 +5766,7 @@ def test_intent_normalizer_does_not_guess_when_catalog_aliases_conflict():
     assert trace["changes"] == []
 
 
-def test_intent_normalizer_keeps_declared_canonical_column_when_physical_alias_is_absent():
+def test_intent_normalizer_does_not_use_business_aliases_as_execution_mapping():
     intent_normalizer = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
     )
@@ -5815,11 +5815,10 @@ def test_intent_normalizer_keeps_declared_canonical_column_when_physical_alias_i
     )
 
     step = normalized["intent_plan"]["pandas_execution_plan"][0]
-    assert step["group_by"] == ["DEN"]
+    assert step["group_by"] == ["DEN", "DENSITY"]
     trace = normalized["trace"]["inspection"]["intent"]["pandas_column_normalization"]
-    assert trace["status"] == "applied"
-    assert trace["changes"][0]["from"] == "DENSITY"
-    assert trace["changes"][0]["to"] == "DEN"
+    assert trace["status"] == "not_needed"
+    assert trace["changes"] == []
 
 
 def test_previous_product_result_reuses_stored_grain_and_ignores_new_equipment_keys():
@@ -17994,7 +17993,7 @@ def test_v5_authoring_text_contains_canonical_da_shift_wbm_range_and_equipment_c
     assert "default_detail_columns는 사용자가 출력 컬럼을 따로 말하지 않은 detail 또는 entity_list 질문" in catalog_text
     assert '"default_detail_columns는 A, B로 바꿔줘"' in catalog_text
     assert "join 기준과 실행 순서는 Table Catalog에 넣지 말고 Domain의 analysis_recipes에 등록" in catalog_text
-    assert "default_detail_columns는 EQUIP_ID로 저장" in catalog_text
+    assert "default_detail_columns는 표준 컬럼 EQP_ID로 저장" in catalog_text
     assert "다른조건이 없을 때 기본적으로 보여줄 표준 컬럼은 EQP_MODEL, RECIPE_ID, OPER_NAME이야" in catalog_text
     assert "pandas 계획과 결과 계약에서는 EQP_MODEL만 사용" in catalog_text
     assert "배정 장비의 목록이나 대수를 요청하지 않은 일반 UPH 분석에는 이 recipe를 사용하지 않고 eqp_uph 하나를 사용" in domain_text
@@ -21671,3 +21670,198 @@ def test_typed_node_output_ref_to_external_alias_chains_to_latest_prior_node():
     assert graph["nodes"][2]["inputs"] == [
         {"kind": "node_output", "ref": "aggregate_node"}
     ]
+
+
+def test_output_contract_columns_are_canonicalized_and_deduplicated_before_execution():
+    normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
+    executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "현재 D/A1 공정의 장비 모델과 UPH를 보여줘", "reference_date": "20260803"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "equipment_model_uph",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {"source_alias": "eqp_uph", "dataset_key": "eqp_uph", "source_type": "dummy"}
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "eqp_uph",
+                        "group_by": ["EQUIP_MODEL", "OPER_NAME"],
+                        "aggregations": [{"column": "UPH", "method": "mean", "output_column": "UPH"}],
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "required_columns": ["EQP_MODEL", "EQUIP_MODEL", "OPER_NAME", "UPH"],
+                    "grain_columns": ["EQP_MODEL", "EQUIP_MODEL", "OPER_NAME"],
+                    "metric_columns": ["UPH"],
+                },
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "main_flow_filters": [],
+                "table_catalog_items": [
+                    {
+                        "dataset_key": "eqp_uph",
+                        "payload": {
+                            "source_type": "dummy",
+                            "columns": ["EQUIP_MODEL", "OPER_NAME", "UPH"],
+                            "filter_mappings": {"EQP_MODEL": ["EQUIP_MODEL"], "OPER_NAME": ["OPER_NAME"], "UPH": ["UPH"]},
+                            "metric_semantics": {"UPH": {"additive": False, "default_rollup": "mean", "allowed_rollups": ["mean"]}},
+                        },
+                    }
+                ],
+            }
+        },
+    )
+    contract = result["intent_plan"]["output_contract"]
+    assert contract["result_columns"] == ["EQP_MODEL", "OPER_NAME", "UPH"]
+    result["runtime_sources"] = {"eqp_uph": [{"EQP_MODEL": "DA-X", "OPER_NAME": "D/A1", "UPH": 101.0}]}
+    executed = executor.execute_pandas_code(result, {"code": "result = sources['eqp_uph'].copy()"})
+    assert executed["analysis"]["status"] == "ok", executed
+    assert executed["data"]["columns"] == ["EQP_MODEL", "OPER_NAME", "UPH"]
+
+
+def test_join_output_metric_lineage_binds_equipment_metrics_to_unique_external_catalog_leaf():
+    normalizer = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py")
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "생산량 상위 제품과 장비 대수 및 목록", "reference_date": "20260803"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "top_products_with_equipment",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {"source_alias": "prod", "dataset_key": "production_today", "source_type": "dummy"},
+                    {"source_alias": "eqp", "dataset_key": "equipment_assign", "source_type": "dummy"},
+                ],
+                "pandas_execution_plan": [
+                    {"node_id": "prod_top", "operation": "groupby_and_aggregate", "inputs": [{"kind": "external_source", "ref": "prod"}], "output_alias": "prod_top", "group_by": ["TECH"], "aggregations": [{"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION_SUM"}]},
+                    {"node_id": "join_eqp", "operation": "join", "inputs": [{"kind": "node_output", "ref": "prod_top"}, {"kind": "external_source", "ref": "eqp"}], "output_alias": "joined"},
+                    {"node_id": "eqp_summary", "operation": "groupby_and_aggregate", "inputs": [{"kind": "node_output", "ref": "join_eqp"}], "source_alias": "joined", "group_by": ["TECH", "PRODUCTION_SUM"], "aggregations": [{"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"}, {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQP_LIST"}]},
+                ],
+                "output_contract": {"result_mode": "aggregate", "required_columns": ["TECH", "PRODUCTION_SUM", "EQP_COUNT", "EQP_LIST"], "grain_columns": ["TECH"], "metric_columns": ["PRODUCTION_SUM", "EQP_COUNT"]},
+            }
+        },
+        {
+            "metadata_candidates": {
+                "domain_items": [],
+                "main_flow_filters": [],
+                "table_catalog_items": [
+                    {"dataset_key": "production_today", "payload": {"source_type": "dummy", "columns": ["TECH", "PRODUCTION"], "filter_mappings": {"TECH": ["TECH"], "PRODUCTION": ["PRODUCTION"]}}},
+                    {"dataset_key": "equipment_assign", "payload": {"source_type": "dummy", "columns": ["TECH", "EQUIP_ID"], "filter_mappings": {"TECH": ["TECH"], "EQP_ID": ["EQUIP_ID"]}}},
+                ],
+            }
+        },
+    )
+    plan = result["intent_plan"]
+    assert "validation_errors" not in plan, plan.get("validation_errors")
+    bindings = {item["output_column"]: item["source_alias"] for item in plan["output_contract"]["metric_bindings"]}
+    assert bindings["EQP_COUNT"] == "eqp"
+    assert bindings["EQP_LIST"] == "eqp"
+
+
+def test_retrieval_standardization_uses_filter_mappings_not_business_aliases():
+    adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py")
+    result = adapter.build_retrieval_payload(
+        {
+            "intent_plan": {
+                "retrieval_jobs": [{
+                    "source_alias": "target",
+                    "dataset_key": "target",
+                    "filter_mappings": {"DEN": ["DEN"]},
+                    "standard_column_aliases": {"DENSITY": ["DEN"]},
+                }]
+            },
+            "runtime_sources": {"target": [{"DEN": "32G"}]},
+            "source_results": [{"source_alias": "target", "columns": ["DEN"], "preview_rows": [{"DEN": "32G"}]}],
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        }
+    )
+    assert result["runtime_sources"]["target"] == [{"DEN": "32G"}]
+    assert result["source_results"][0]["columns"] == ["DEN"]
+
+
+def test_table_catalog_writer_rejects_reversed_or_conflicting_execution_mapping():
+    writer = load_module(ROOT / "langflow_components" / "table_catalog_saving_flow" / "07_table_catalog_review_writer.py")
+    payload = {
+        "items": [{
+            "dataset_key": "eqp_uph",
+            "payload": {
+                "source_type": "oracle",
+                "source_config": {"source_type": "oracle", "query_template": "SELECT DENSITY FROM T"},
+                "columns": ["DENSITY"],
+                "filter_mappings": {"DENSITY": ["DEN"]},
+                "standard_column_aliases": {"DEN": ["DEN"]},
+            },
+        }]
+    }
+    errors = writer._deterministic_errors(payload)
+    types = {item["type"] for item in errors}
+    assert "filter_mapping_source_column_missing" in types
+
+
+def test_integrated_repair_skips_output_contract_errors():
+    executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    calls: list[str] = []
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{"source_alias": "eqp", "dataset_key": "eqp", "filter_mappings": {"EQP_MODEL": ["EQUIP_MODEL"]}}],
+            "pandas_execution_plan": [],
+            "output_contract": {"strict_result_columns": True, "result_columns": ["EQP_MODEL", "EQUIP_MODEL"]},
+        },
+        "runtime_sources": {"eqp": [{"EQP_MODEL": "M1"}]},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    result = executor.execute_pandas_with_repair(
+        payload,
+        {"code": "result = sources['eqp'].copy()"},
+        repair_invoker=lambda prompt: calls.append(prompt) or {"code": "result = sources['eqp'].copy()"},
+        repair_prompt_template="{failed_code}",
+    )
+    assert result["analysis"]["error"]["type"] == "output_contract_violation"
+    assert calls == []
+    assert result["trace"]["inspection"]["pandas_repair"]["selected"] == "blocked_contract_error"
+
+
+def test_target_physical_plan_metrics_are_standardized_and_scaled_before_analysis():
+    adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py")
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{
+                "source_alias": "target",
+                "dataset_key": "target",
+                "filter_mappings": {
+                    "INPUT_PLAN_QTY": ["INPUT 계획"],
+                    "OUT_PLAN_QTY": ["OUT 계획"],
+                },
+                "metric_semantics": {
+                    "INPUT_PLAN_QTY": {"value_transform": {"coerce_numeric": True, "multiplier": 1000}},
+                    "OUT_PLAN_QTY": {"value_transform": {"coerce_numeric": True, "multiplier": 1000}},
+                },
+            }]
+        },
+        "runtime_sources": {"target": [{"INPUT 계획": "1.5", "OUT 계획": "2"}]},
+        "source_results": [{
+            "source_alias": "target",
+            "dataset_key": "target",
+            "status": "ok",
+            "columns": ["INPUT 계획", "OUT 계획"],
+            "preview_rows": [{"INPUT 계획": "1.5", "OUT 계획": "2"}],
+        }],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    result = adapter.build_retrieval_payload(payload)
+    assert result["runtime_sources"]["target"] == [{"INPUT_PLAN_QTY": 1500, "OUT_PLAN_QTY": 2000}]
+    assert result["source_results"][0]["columns"] == ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"]

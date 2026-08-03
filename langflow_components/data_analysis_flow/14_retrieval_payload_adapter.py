@@ -99,6 +99,34 @@ def _standardize_runtime_source_columns(payload: dict[str, Any]) -> None:
             )
             continue
 
+        observed_columns = _string_list(
+            (result_by_alias.get(str(alias)) or {}).get("columns")
+            if isinstance(result_by_alias.get(str(alias)), dict)
+            else []
+        )
+        if not observed_columns:
+            observed_columns = [
+                str(column)
+                for row in rows[:20]
+                if isinstance(row, dict)
+                for column in row
+            ]
+        needs_standardization = any(
+            alias_contract.get(_column_key(column), str(column)) != str(column)
+            for column in observed_columns
+        )
+        if not needs_standardization:
+            reports.append(
+                {
+                    "source_alias": str(alias),
+                    "dataset_key": str(job.get("dataset_key") or ""),
+                    "status": "not_needed",
+                    "rename_map": {},
+                    "conflict_count": 0,
+                }
+            )
+            continue
+
         standardized_rows: list[Any] = []
         conflicts: list[dict[str, Any]] = []
         applied_map: dict[str, str] = {}
@@ -523,55 +551,34 @@ def _deduplicate_transform_errors(errors: list[dict[str, Any]]) -> list[dict[str
     return result
 
 
-# 함수 설명: filter_mappings와 안전한 standard_column_aliases를 실제 alias -> 표준 key 계약으로 역전합니다.
+# 함수 설명: filter_mappings만 실제 source alias -> 표준 실행 key 계약으로 역전합니다.
 def _canonical_alias_contract(job: dict[str, Any]) -> dict[str, str]:
-    metric_source_keys = {
-        _column_key(column)
-        for column in (
-            job.get("metric_semantics", {})
-            if isinstance(job.get("metric_semantics"), dict)
-            else {}
-        )
-        if str(column or "").strip()
-    }
-    candidates: dict[str, list[tuple[int, str]]] = {}
-    for priority, mapping_name in enumerate(("filter_mappings", "standard_column_aliases")):
-        mapping = job.get(mapping_name)
-        if not isinstance(mapping, dict):
+    mapping = job.get("filter_mappings")
+    if not isinstance(mapping, dict):
+        return {}
+    candidates: dict[str, list[str]] = {}
+    for raw_canonical, raw_aliases in mapping.items():
+        canonical = str(raw_canonical or "").strip()
+        aliases = _string_list(raw_aliases)
+        if not canonical or not aliases:
             continue
-        for raw_canonical, raw_aliases in mapping.items():
-            canonical = str(raw_canonical or "").strip()
-            aliases = _string_list(raw_aliases)
-            if not canonical or not aliases:
-                continue
-            if mapping_name == "standard_column_aliases" and any(
-                _column_key(alias) in metric_source_keys
-                and _column_key(alias) != _column_key(canonical)
-                for alias in aliases
-            ):
-                continue
-            for alias in [canonical, *aliases]:
-                alias_key = _column_key(alias)
-                if not alias_key:
-                    continue
-                item = (priority, canonical)
-                if item not in candidates.setdefault(alias_key, []):
-                    candidates[alias_key].append(item)
+        for alias in [canonical, *aliases]:
+            alias_key = _column_key(alias)
+            if alias_key and canonical not in candidates.setdefault(alias_key, []):
+                candidates[alias_key].append(canonical)
 
     contract: dict[str, str] = {}
     for alias_key, choices in candidates.items():
-        best_priority = min(priority for priority, _ in choices)
-        best = [canonical for priority, canonical in choices if priority == best_priority]
         exact = [
             canonical
-            for canonical in best
+            for canonical in choices
             if _column_key(canonical) == alias_key
         ]
         if len({_column_key(item) for item in exact}) == 1:
             contract[alias_key] = exact[0]
             continue
-        if len({_column_key(item) for item in best}) == 1:
-            contract[alias_key] = best[0]
+        if len({_column_key(item) for item in choices}) == 1:
+            contract[alias_key] = choices[0]
     return contract
 
 

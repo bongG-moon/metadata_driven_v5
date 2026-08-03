@@ -50,6 +50,8 @@ PANDAS_COLUMN_SCALAR_KEYS = {
     "order_column",
     "date_column",
     "id_column",
+    "primary_metric",
+    "segment_column",
 }
 PANDAS_COLUMN_LIST_KEYS = {
     "columns",
@@ -70,6 +72,8 @@ PANDAS_COLUMN_LIST_KEYS = {
     "sort_columns",
     "order_columns",
     "partition_by",
+    "grain_columns",
+    "result_columns",
 }
 PANDAS_LEFT_COLUMN_KEYS = {
     "left_key",
@@ -398,6 +402,17 @@ def normalize_intent_plan(
     )
     contract_plan = deepcopy(plan)
     contract_plan["pandas_execution_plan"] = pandas_plan
+    normalized_raw_contract, output_contract_column_normalization = (
+        _normalize_raw_output_contract_columns(
+            contract_plan.get("output_contract"),
+            metadata_candidates,
+            retrieval_jobs,
+            resolved_grain_plan,
+            resolved_join_plan,
+        )
+    )
+    if normalized_raw_contract:
+        contract_plan["output_contract"] = normalized_raw_contract
     output_contract = _output_contract(
         contract_plan,
         payload,
@@ -570,6 +585,7 @@ def normalize_intent_plan(
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
         "pandas_column_normalization": pandas_column_normalization,
+        "output_contract_column_normalization": output_contract_column_normalization,
         "typed_input_binding": typed_input_binding,
         "external_source_catalog_binding": external_source_catalog_binding,
         "temporal_metric_alignment": temporal_metric_alignment,
@@ -4008,6 +4024,7 @@ def _output_contract(
         retrieval_jobs,
         resolved_reference_join_plan or {},
         resolved_metric_merge_plan or {},
+        metadata_candidates or {},
     )
     metric_bindings, suppressed_metric_aliases = _deduplicate_metric_bindings(
         metric_bindings
@@ -4203,6 +4220,7 @@ def _metric_bindings(
     retrieval_jobs: list[dict[str, Any]],
     resolved_reference_join_plan: dict[str, Any],
     resolved_metric_merge_plan: dict[str, Any],
+    metadata_candidates: dict[str, Any],
 ) -> list[dict[str, Any]]:
     job_datasets = {
         str(item.get("source_alias") or item.get("dataset_key") or "").strip(): str(
@@ -4280,12 +4298,36 @@ def _metric_bindings(
         for raw in aggregations:
             if not isinstance(raw, dict):
                 continue
+            source_column = str(
+                raw.get("source_column")
+                or raw.get("column")
+                or raw.get("agg_column")
+                or raw.get("aggregate_column")
+                or ""
+            ).strip()
+            binding_source_alias = str(raw.get("source_alias") or source_alias).strip()
+            if binding_source_alias not in known_external_aliases:
+                lineage_aliases = _step_external_source_aliases(
+                    step,
+                    steps,
+                    known_external_aliases,
+                )
+                compatible_aliases = [
+                    alias
+                    for alias in lineage_aliases
+                    if job_datasets.get(alias)
+                    and _catalog_supports_domain_column(
+                        metadata_candidates,
+                        job_datasets[alias],
+                        source_column,
+                    )
+                ]
+                if len(compatible_aliases) == 1:
+                    binding_source_alias = compatible_aliases[0]
             binding = _normalized_metric_binding(
                 {
                     **raw,
-                    "source_alias": (
-                        raw.get("source_alias") or source_alias
-                    ),
+                    "source_alias": binding_source_alias,
                 },
                 job_datasets,
             )
@@ -6378,6 +6420,73 @@ def _first_existing_column(
     return ""
 
 
+# 함수 설명: LLM이 작성한 출력 계약도 pandas 계획과 같은 Table Catalog 실행 컬럼 계약으로 정규화합니다.
+def _normalize_raw_output_contract_columns(
+    raw_contract: Any,
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    resolved_grain_plan: dict[str, Any] | None = None,
+    resolved_join_plan: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(raw_contract, dict):
+        return {}, {"status": "not_needed", "change_count": 0, "changes": []}
+    alias_maps = _pandas_column_alias_maps(
+        candidates,
+        retrieval_jobs,
+        resolved_grain_plan or {},
+        resolved_join_plan or [],
+    )
+    lineage_aliases = [
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in retrieval_jobs
+        if isinstance(job, dict)
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+    ]
+    if len(lineage_aliases) == 1:
+        mapping = alias_maps.get(lineage_aliases[0], {})
+        source_alias = lineage_aliases[0]
+    else:
+        mapping = _consensus_lineage_column_alias_map(alias_maps, lineage_aliases)
+        source_alias = "__output_contract__"
+    changes: list[dict[str, Any]] = []
+    normalized = _normalize_pandas_plan_value(
+        raw_contract,
+        {source_alias: mapping},
+        {"source_alias": source_alias},
+        "output_contract",
+        changes,
+    )
+    labels = normalized.get("column_labels")
+    if isinstance(labels, dict):
+        normalized_labels: dict[str, Any] = {}
+        for raw_column, label in labels.items():
+            column = _normalize_column_field_value(
+                str(raw_column),
+                mapping,
+                source_alias,
+                f"output_contract.column_labels.{raw_column}",
+                changes,
+            )
+            normalized_labels.setdefault(str(column), label)
+        normalized["column_labels"] = normalized_labels
+    ordering = normalized.get("ordering")
+    if isinstance(ordering, dict):
+        for key in ("sort_by", "rank_by", "rank_column"):
+            if key in ordering:
+                ordering[key] = _normalize_column_field_value(
+                    ordering[key],
+                    mapping,
+                    source_alias,
+                    f"output_contract.ordering.{key}",
+                    changes,
+                )
+    return normalized, {
+        "status": "applied" if changes else "not_needed",
+        "change_count": len(changes),
+        "changes": changes,
+    }
+
+
 # 함수 설명: pandas 실행 계획의 컬럼 참조를 source별 metadata 계약에 등록된 실제 물리 컬럼명으로 정규화합니다.
 def _normalize_pandas_plan_columns(
     pandas_plan: list[Any],
@@ -6643,7 +6752,7 @@ def _pandas_column_alias_maps(
     }
 
 
-# 함수 설명: Table Catalog의 표준 alias 그룹에서 선언된 source column을 우선해 물리 컬럼 대상을 결정합니다.
+# 함수 설명: Table Catalog의 filter_mappings만 실행용 canonical→source 컬럼 계약으로 사용합니다.
 def _table_column_alias_groups(item: dict[str, Any]) -> list[tuple[str, list[str]]]:
     payload = _metadata_payload(item)
     declared_columns = _catalog_declared_columns(payload)
@@ -6652,73 +6761,23 @@ def _table_column_alias_groups(item: dict[str, Any]) -> list[tuple[str, list[str
         for column in declared_columns
     }
     result: list[tuple[str, list[str]]] = []
-    metric_source_keys = {
-        _normalized_column_key(column)
-        for column in (
-            payload.get("metric_semantics", {})
-            if isinstance(payload.get("metric_semantics"), dict)
-            else {}
-        )
-        if str(column or "").strip()
-    }
-    # filter_mappings is the catalog's executable standard-key contract. A
-    # lower-priority display alias must not turn its physical column back into
-    # a separate execution key.
-    filter_targets: dict[str, str] = {}
     filter_mapping = payload.get("filter_mappings")
-    if isinstance(filter_mapping, dict):
-        for raw_standard, raw_aliases in filter_mapping.items():
-            standard_name = str(raw_standard or "").strip()
-            if not standard_name:
-                continue
-            for alias in [standard_name, *_string_list(raw_aliases)]:
-                alias_key = _normalized_column_key(alias)
-                existing = filter_targets.get(alias_key)
-                if alias_key and (
-                    not existing
-                    or _normalized_column_key(existing)
-                    == _normalized_column_key(standard_name)
-                ):
-                    filter_targets[alias_key] = standard_name
-    for mapping_name in ("filter_mappings", "standard_column_aliases"):
-        mapping = payload.get(mapping_name)
-        if not isinstance(mapping, dict):
+    if not isinstance(filter_mapping, dict):
+        return result
+    for standard, raw_aliases in filter_mapping.items():
+        standard_name = str(standard or "").strip()
+        aliases = _string_list(raw_aliases)
+        if not standard_name or not aliases:
             continue
-        for standard, raw_aliases in mapping.items():
-            standard_name = str(standard or "").strip()
-            aliases = _string_list(raw_aliases)
-            if not standard_name or not aliases:
-                continue
-            if mapping_name == "standard_column_aliases":
-                aliases = [
-                    alias
-                    for alias in aliases
-                    if not filter_targets.get(_normalized_column_key(alias))
-                    or _normalized_column_key(
-                        filter_targets[_normalized_column_key(alias)]
-                    )
-                    == _normalized_column_key(standard_name)
-                ]
-                if not aliases:
-                    continue
-            # metric_semantics keys are authoritative physical measure columns.
-            # A display/semantic alias must not rename the source measure used by
-            # aggregation and value-transform contracts.
-            if mapping_name == "standard_column_aliases" and any(
-                _normalized_column_key(alias) in metric_source_keys
-                and _normalized_column_key(alias) != _normalized_column_key(standard_name)
+        physical = next(
+            (
+                declared_index[_normalized_column_key(alias)]
                 for alias in aliases
-            ):
-                continue
-            physical = next(
-                (
-                    declared_index[_normalized_column_key(alias)]
-                    for alias in aliases
-                    if _normalized_column_key(alias) in declared_index
-                ),
-                declared_index.get(_normalized_column_key(standard_name), aliases[0]),
-            )
-            result.append((standard_name, [standard_name, physical, *aliases]))
+                if _normalized_column_key(alias) in declared_index
+            ),
+            declared_index.get(_normalized_column_key(standard_name), aliases[0]),
+        )
+        result.append((standard_name, [standard_name, physical, *aliases]))
     return result
 
 

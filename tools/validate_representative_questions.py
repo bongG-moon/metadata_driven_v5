@@ -697,10 +697,10 @@ def representative_cases() -> list[dict[str, Any]]:
             [job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("FCB2")})],
             (
                 "df = sources['uph_data'].copy()\n"
-                "group_cols = ['TECH', 'DEN', 'MODE', 'PKG_TYPE1', 'PKG_TYPE2', 'LEAD', 'MCP_NO', 'EQUIP_MODEL', 'RECIPE_ID', 'OPER_NAME']\n"
+                "group_cols = ['TECH', 'DEN', 'MODE', 'PKG_TYPE1', 'PKG_TYPE2', 'LEAD', 'MCP_NO', 'EQP_MODEL', 'RECIPE_ID', 'OPER_NAME']\n"
                 "result = df.groupby(group_cols, dropna=False, as_index=False)['UPH'].mean().sort_values(['UPH', 'RECIPE_ID'], ascending=[False, True])"
             ),
-            ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
             expected_row_count=2,
             expected_first_row={"RECIPE_ID": "RCP-FCB2-B", "UPH": 173.4},
             expected_rows=[{"RECIPE_ID": "RCP-FCB2-A", "UPH": 140.0}],
@@ -713,13 +713,13 @@ def representative_cases() -> list[dict[str, Any]]:
             [job("eqp_uph", "uph_data", filters={"OPER_NAME": in_values(WB_PROCESSES)})],
             (
                 "df = match_product_tokens('L-217', sources['uph_data'])\n"
-                "result = df.groupby(['OPER_NAME', 'EQUIP_MODEL'], dropna=False, as_index=False)['UPH'].mean().round({'UPH': 2}).sort_values(['OPER_NAME', 'EQUIP_MODEL'])"
+                "result = df.groupby(['OPER_NAME', 'EQP_MODEL'], dropna=False, as_index=False)['UPH'].mean().round({'UPH': 2}).sort_values(['OPER_NAME', 'EQP_MODEL'])"
             ),
-            ["OPER_NAME", "EQUIP_MODEL", "UPH"],
+            ["OPER_NAME", "EQP_MODEL", "UPH"],
             expected_row_count=2,
             expected_rows=[
-                {"OPER_NAME": "W/B1", "EQUIP_MODEL": "EQM-A", "UPH": 123.4},
-                {"OPER_NAME": "W/B2", "EQUIP_MODEL": "EQM-BG", "UPH": 97.5},
+                {"OPER_NAME": "W/B1", "EQP_MODEL": "EQM-A", "UPH": 123.4},
+                {"OPER_NAME": "W/B2", "EQP_MODEL": "EQM-BG", "UPH": 97.5},
             ],
         ),
         product_case(
@@ -743,11 +743,11 @@ def representative_cases() -> list[dict[str, Any]]:
             [job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("D/A1")})],
             (
                 "df = sources['uph_data'].copy()\n"
-                "result = df[['EQUIP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']].sort_values(['EQUIP_MODEL', 'RECIPE_ID'])"
+                "result = df[['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'UPH']].sort_values(['EQP_MODEL', 'RECIPE_ID'])"
             ),
-            ["EQUIP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
             expected_row_count=1,
-            expected_first_row={"EQUIP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1", "UPH": 88.2},
+            expected_first_row={"EQP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1", "UPH": 88.2},
         ),
         case(
             27,
@@ -756,11 +756,11 @@ def representative_cases() -> list[dict[str, Any]]:
             [job("equipment_assign", "equipment_data", filters={"OPER_NAME": eq("D/A1")})],
             (
                 "df = sources['equipment_data'].copy()\n"
-                "result = df[['EQP_ID', 'EQUIP_MODEL', 'RECIPE_ID', 'OPER_NAME']].drop_duplicates().sort_values(['EQUIP_MODEL', 'RECIPE_ID', 'EQP_ID'])"
+                "result = df[['EQP_ID', 'EQP_MODEL', 'RECIPE_ID', 'OPER_NAME']].drop_duplicates().sort_values(['EQP_MODEL', 'RECIPE_ID', 'EQP_ID'])"
             ),
-            ["EQP_ID", "EQUIP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            ["EQP_ID", "EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
             expected_row_count=1,
-            expected_first_row={"EQP_ID": "EQP002", "EQUIP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1"},
+            expected_first_row={"EQP_ID": "EQP002", "EQP_MODEL": "EQM-HBM", "RECIPE_ID": "RCP-002", "OPER_NAME": "D/A1"},
         ),
         case(
             28,
@@ -1087,13 +1087,16 @@ def validation_catalog(case: dict[str, Any]) -> dict[str, Any]:
         if required_param_names:
             predicates = " AND ".join(f"{name} = {{{name}}}" for name in required_param_names)
             query_template = f"SELECT * FROM DUMMY WHERE {predicates}"
-        filter_mappings = (
-            {"DATE": ["DATE"]}
-            if dataset_key == "target"
-            else {"DATE": ["WORK_DATE"]}
-            if required_param_names
-            else {}
-        )
+        if dataset_key == "target":
+            filter_mappings = {"DATE": ["DATE"], "INPUT_PLAN_QTY": ["INPUT 계획"], "OUT_PLAN_QTY": ["OUT 계획"]}
+        elif dataset_key == "eqp_uph":
+            filter_mappings = {"EQP_MODEL": ["EQUIP_MODEL"], "OPER_NAME": ["OPER_NAME"], "UPH": ["UPH"]}
+        elif dataset_key == "equipment_assign":
+            filter_mappings = {"EQP_ID": ["EQUIP_ID"], "EQP_MODEL": ["EQUIP_MODEL"], "OPER_NAME": ["OPER_NM"], "RECIPE_ID": ["RECIPE_ID"]}
+        elif required_param_names:
+            filter_mappings = {"DATE": ["WORK_DATE"]}
+        else:
+            filter_mappings = {}
         items.append(
             {
                 "dataset_key": dataset_key,

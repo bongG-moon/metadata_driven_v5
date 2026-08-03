@@ -152,13 +152,22 @@ def _semantic_errors(dataset_key: str, items: list[Any]) -> list[dict[str, str]]
     elif dataset_key == "target":
         semantics = payload.get("metric_semantics")
         semantics = semantics if isinstance(semantics, dict) else {}
-        for metric in ("INPUT 계획", "OUT 계획"):
+        mappings = payload.get("filter_mappings")
+        mappings = mappings if isinstance(mappings, dict) else {}
+        expected_sources = {
+            "INPUT_PLAN_QTY": "INPUT 계획",
+            "OUT_PLAN_QTY": "OUT 계획",
+        }
+        for metric, source_column in expected_sources.items():
             contract = semantics.get(metric)
             contract = contract if isinstance(contract, dict) else {}
             transform = contract.get("value_transform")
             transform = transform if isinstance(transform, dict) else {}
+            mapped = mappings.get(metric)
+            mapped = mapped if isinstance(mapped, list) else [mapped] if mapped else []
             if (
-                contract.get("semantic_type") != "quantity"
+                source_column not in mapped
+                or contract.get("semantic_type") != "quantity"
                 or contract.get("additive") is not True
                 or contract.get("default_rollup") != "sum"
                 or contract.get("allowed_rollups") != ["sum"]
@@ -188,6 +197,11 @@ def _semantic_errors(dataset_key: str, items: list[Any]) -> list[dict[str, str]]
                 "type": "equipment_model_typo_present",
                 "message": "equipment_assign contains the obsolete EQPIP_MODEL typo.",
             })
+        if payload.get("default_detail_columns") != ["EQP_ID"]:
+            errors.append({
+                "type": "equipment_default_detail_mismatch",
+                "message": "equipment_assign default detail column must use canonical EQP_ID.",
+            })
     elif dataset_key == "eqp_uph":
         expected_details = ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"]
         if payload.get("default_detail_columns") != expected_details:
@@ -210,6 +224,34 @@ def _semantic_errors(dataset_key: str, items: list[Any]) -> list[dict[str, str]]
                 "type": "uph_metric_semantics_mismatch",
                 "message": "UPH 비가산 평균 계약이 원문과 다릅니다.",
             })
+        mappings = payload.get("filter_mappings")
+        mappings = mappings if isinstance(mappings, dict) else {}
+        expected_mappings = {
+            "EQP_MODEL": "EQUIP_MODEL",
+            "OPER_NUM": "OPER",
+            "DEN": "DENSITY",
+            "PKG_TYPE1": "PKG1",
+            "PKG_TYPE2": "PKG2",
+        }
+        for canonical, source_column in expected_mappings.items():
+            mapped = mappings.get(canonical)
+            mapped = mapped if isinstance(mapped, list) else [mapped] if mapped else []
+            if source_column not in mapped:
+                errors.append({
+                    "type": "eqp_uph_mapping_mismatch",
+                    "message": f"eqp_uph must map {canonical} to {source_column}.",
+                })
+        columns = payload.get("columns") if isinstance(payload.get("columns"), list) else []
+        column_names = [
+            str(item.get("column_name") or "") if isinstance(item, dict) else str(item or "")
+            for item in columns
+        ]
+        for runtime_column in ("MODE", "PKG1", "PKG2", "LEAD", "UPH", "LOAD_DT"):
+            if runtime_column not in column_names:
+                errors.append({
+                    "type": "eqp_uph_runtime_column_missing",
+                    "message": f"eqp_uph must declare query result column {runtime_column}.",
+                })
     elif dataset_key == "lot_status":
         expected_details = [
             "LOT_ID",

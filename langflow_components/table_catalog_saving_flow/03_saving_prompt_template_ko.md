@@ -13,7 +13,10 @@
 - metric 컬럼이나 선택 속성은 `default_detail_columns`에 자동 추가하지 않고, 사용자 질문 또는 metric/output contract가 요구할 때 선택한다.
 - 사용자가 `default_detail_columns는 A, B로 바꿔줘`처럼 전체 목록을 명시하면 그 값을 정확한 문자열 배열로 작성한다. 이 필드는 선택 사항이므로 원문에 없다는 이유만으로 `missing_information`이나 보충 요청을 만들지 않는다.
 - dataset 간 join 기준과 실행 순서는 Table Catalog payload에 만들지 않고 Domain의 `analysis_recipes`에 등록한다.
-- `filter_mappings`의 왼쪽은 표준 filter key이고 오른쪽은 실제 source column이다.
+- `filter_mappings`는 filter뿐 아니라 pandas 실행 전체에서 사용하는 유일한 컬럼 계약이다. 왼쪽은 canonical 실행 key, 오른쪽은 조회 결과에 실제 존재하는 source column이다.
+- `columns`에는 DB 원본 테이블명이 아니라 query/API/문서 조회가 반환하는 최종 컬럼명을 기록한다. SQL `AS`가 있으면 alias 이후 이름을 사용한다.
+- metric도 물리명이 canonical key와 다르면 `filter_mappings`에 함께 선언한다. `metric_semantics`와 `default_detail_columns`는 canonical key를 사용한다.
+- `standard_column_aliases`는 사용자 업무 표현을 canonical key로 연결하는 설명용 alias다. 실제 source column 변환이나 실행 key 재정의에 사용하지 않으며, `filter_mappings`와 같은 source column을 다른 key에 연결하지 않는다.
 - `filter_mappings`에 표준 key와 실제 source column의 대응이 있으면 `default_detail_columns`에는 표준 key를 사용한다. 실제 source column은 `columns`, `query_template`, mapping의 오른쪽에만 보존하고 pandas 계획 또는 결과 계약용 기본 컬럼으로 다시 사용하지 않는다.
 - SQL query_template은 원문 그대로 보존하고 축약하지 않는다.
 - Flow 간 연계 조회 규칙은 사용자가 source/target 식별자를 명시한 경우에만 `source_config.upstream_bindings`에 기록한다. 추측해서 만들지 않는다.
