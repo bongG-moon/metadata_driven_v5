@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools import validate_representative_questions as flow_validator  # noqa: E402
+from tools import data_analysis_semantic_validator as semantic_validator  # noqa: E402
 
 
 def main() -> int:
@@ -283,12 +284,19 @@ def validate_question(
         metadata_candidates,
         metadata_context.get("domain"),
     )
+    contract_checks = semantic_validator.validate_semantic_payload(
+        payload,
+        question=question,
+        pandas_variables=pandas_variables,
+    )
+    semantic_errors.extend(contract_checks.get("errors", []))
     errors = _pipeline_errors(payload) + semantic_errors
     warnings = [
         item
         for item in payload.get("trace", {}).get("warnings", [])
         if isinstance(item, dict)
     ]
+    warnings.extend(contract_checks.get("warnings", []))
     trace_inspection = payload.get("trace", {}).get("inspection", {})
     pandas_inspection = trace_inspection.get("pandas_execution", {})
     pandas_repair_inspection = trace_inspection.get("pandas_repair", {})
@@ -383,6 +391,7 @@ def validate_question(
         "semantic_checks": {
             "status": "ok" if not semantic_errors else "error",
             "errors": semantic_errors,
+            "warnings": contract_checks.get("warnings", []),
         },
     }
     if include_raw_responses:

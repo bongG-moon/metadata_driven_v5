@@ -17,6 +17,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 FLOW = ROOT / "langflow_components" / "data_analysis_flow"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import data_analysis_semantic_validator as semantic_validator  # noqa: E402
 
 PRODUCT_KEYS = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"]
 TARGET_PRODUCT_KEYS = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
@@ -35,6 +39,12 @@ def main() -> int:
     parser.add_argument("--ids", default="", help="Comma-separated case ids to validate, for example: 3,8,13.")
     parser.add_argument("--reference-date", default="", help="Override request.reference_date for this validation run. Defaults to VALIDATION_REFERENCE_DATE or 20260701.")
     parser.add_argument("--output", default="", help="Write the full UTF-8 JSON validation report to this path.")
+    parser.add_argument(
+        "--validation-profile",
+        choices=["auto", semantic_validator.FIXTURE_EXACT, semantic_validator.SEMANTIC_LIVE],
+        default="auto",
+        help="Use exact fixture comparison or semantic live validation. auto selects semantic_live with --use-llm.",
+    )
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env")
@@ -47,15 +57,41 @@ def main() -> int:
         cases = [item for item in cases if int(item["id"]) in selected_ids]
     if args.limit and args.limit > 0:
         cases = cases[: args.limit]
+    validation_profile = semantic_validator.resolve_validation_profile(
+        args.validation_profile,
+        use_llm=bool(args.use_llm),
+    )
     if args.use_llm:
         metadata_context = load_metadata_context(modules)
         llm_config = resolve_llm_config()
-        results = [run_llm_case(case, modules, metadata_context, llm_config, reference_date) for case in cases]
+        results = [
+            run_llm_case(
+                case,
+                modules,
+                metadata_context,
+                llm_config,
+                reference_date,
+                validation_profile=validation_profile,
+            )
+            for case in cases
+        ]
     else:
-        results = [run_case(case, modules, reference_date) for case in cases]
+        results = [
+            run_case(
+                case,
+                modules,
+                reference_date,
+                validation_profile=validation_profile,
+            )
+            for case in cases
+        ]
     failed = [item for item in results if item["status"] != "ok"]
 
-    report = {"status": "ok" if not failed else "error", "results": results}
+    report = {
+        "status": "ok" if not failed else "error",
+        "validation_profile": validation_profile,
+        "results": results,
+    }
     if args.output:
         output_path = Path(args.output)
         if not output_path.is_absolute():
@@ -75,12 +111,22 @@ def main() -> int:
             print(f"  columns={', '.join(item['columns'])}")
             if item.get("errors"):
                 print(f"  errors={item['errors']}")
+            if item.get("warnings"):
+                print(f"  warnings={item['warnings']}")
         print(f"\nsummary: {len(results) - len(failed)}/{len(results)} passed")
 
     return 1 if failed else 0
 
 
-def run_llm_case(case: dict[str, Any], modules: dict[str, Any], metadata_context: dict[str, Any], llm_config: dict[str, Any], reference_date: str) -> dict[str, Any]:
+def run_llm_case(
+    case: dict[str, Any],
+    modules: dict[str, Any],
+    metadata_context: dict[str, Any],
+    llm_config: dict[str, Any],
+    reference_date: str,
+    *,
+    validation_profile: str = semantic_validator.SEMANTIC_LIVE,
+) -> dict[str, Any]:
     payload = build_validation_request(case["question"], modules, reference_date)
     candidates_payload = modules["candidates"].build_metadata_candidates(
         payload,
@@ -124,10 +170,22 @@ def run_llm_case(case: dict[str, Any], modules: dict[str, Any], metadata_context
     selected_payload = modules["answer_builder"].build_answer_response(selected_payload, answer_response)
     display_message = modules["message_adapter"].build_message(selected_payload)
     api_response = modules["api_builder"].build_api_response(selected_payload, display_message)
-    return summarize_validation_result(case, selected_payload, pandas_vars, strict_columns=False, api_response=api_response)
+    return summarize_validation_result(
+        case,
+        selected_payload,
+        pandas_vars,
+        validation_profile=validation_profile,
+        api_response=api_response,
+    )
 
 
-def run_case(case: dict[str, Any], modules: dict[str, Any], reference_date: str) -> dict[str, Any]:
+def run_case(
+    case: dict[str, Any],
+    modules: dict[str, Any],
+    reference_date: str,
+    *,
+    validation_profile: str = semantic_validator.FIXTURE_EXACT,
+) -> dict[str, Any]:
     payload = build_validation_request(case["question"], modules, reference_date)
     payload = modules["intent"].normalize_intent_plan(payload, case["intent_response"])
     payload = modules["hydrator"].hydrate_retrieval_jobs(payload, validation_catalog(case), retrieval_mode="dummy")
@@ -151,7 +209,13 @@ def run_case(case: dict[str, Any], modules: dict[str, Any], reference_date: str)
     )
     display_message = modules["message_adapter"].build_message(payload)
     api_response = modules["api_builder"].build_api_response(payload, display_message)
-    return summarize_validation_result(case, payload, pandas_vars, strict_columns=True, api_response=api_response)
+    return summarize_validation_result(
+        case,
+        payload,
+        pandas_vars,
+        validation_profile=validation_profile,
+        api_response=api_response,
+    )
 
 
 def with_selected_helper_code(modules: dict[str, Any], pandas_vars: dict[str, Any]) -> dict[str, Any]:
@@ -203,11 +267,13 @@ def summarize_validation_result(
     case: dict[str, Any],
     payload: dict[str, Any],
     pandas_vars: dict[str, Any],
-    strict_columns: bool,
+    validation_profile: str,
     api_response: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    errors = []
-    warnings = []
+    profile = semantic_validator.resolve_validation_profile(validation_profile)
+    errors: list[str] = []
+    warnings: list[str] = []
+    diagnostics: list[str] = []
     if payload.get("analysis", {}).get("status") != "ok":
         errors.append(payload.get("analysis", {}).get("error", {}).get("message", "pandas execution failed"))
     if not payload.get("intent_plan", {}).get("retrieval_jobs"):
@@ -215,29 +281,11 @@ def summarize_validation_result(
     if payload.get("analysis", {}).get("row_count", 0) < case.get("min_rows", 1):
         errors.append(f"row_count < {case.get('min_rows', 1)}")
     actual_rows = payload.get("data", {}).get("rows", [])
-    expected_row_count = case.get("expected_row_count")
-    if expected_row_count is not None and len(actual_rows) != int(expected_row_count):
-        errors.append(f"row_count != {expected_row_count}")
-    expected_first_row = case.get("expected_first_row")
-    if isinstance(expected_first_row, dict):
-        if not actual_rows:
-            errors.append("missing expected first row")
-        else:
-            for key, expected_value in expected_first_row.items():
-                if actual_rows[0].get(key) != expected_value:
-                    errors.append(f"first row {key} != {expected_value!r}")
-    expected_rows = case.get("expected_rows")
-    if isinstance(expected_rows, list):
-        for expected_index, expected_row in enumerate(expected_rows, start=1):
-            if not isinstance(expected_row, dict):
-                continue
-            matched = any(
-                all(actual_row.get(key) == expected_value for key, expected_value in expected_row.items())
-                for actual_row in actual_rows
-                if isinstance(actual_row, dict)
-            )
-            if not matched:
-                errors.append(f"missing expected row #{expected_index}: {expected_row!r}")
+    exact_differences = semantic_validator.fixture_differences(case, payload)
+    if profile == semantic_validator.FIXTURE_EXACT:
+        errors.extend(exact_differences)
+    else:
+        diagnostics.extend(exact_differences)
     forbidden_values = case.get("forbidden_values")
     if isinstance(forbidden_values, dict):
         for column, values in forbidden_values.items():
@@ -245,12 +293,6 @@ def summarize_validation_result(
             found = [row.get(column) for row in actual_rows if isinstance(row, dict) and row.get(column) in blocked_values]
             if found:
                 errors.append(f"forbidden {column} values present: {found!r}")
-    for column in case.get("required_columns", []):
-        if column not in payload.get("analysis", {}).get("columns", []):
-            if strict_columns:
-                errors.append(f"missing column: {column}")
-            else:
-                warnings.append(f"missing expected fixture column: {column}")
     function_case_text = json.dumps(
         {
             "selection": pandas_vars.get("function_case_selection_json", ""),
@@ -260,19 +302,39 @@ def summarize_validation_result(
     )
     helper_function = str(case.get("helper_function") or "match_product_tokens")
     if case.get("requires_helper") and helper_function not in function_case_text:
-        errors.append(f"missing {helper_function} function case context")
-    actual_kind = payload.get("intent_plan", {}).get("analysis_kind", "")
-    expected_kind = case.get("intent_response", {}).get("intent_plan", {}).get("analysis_kind", "")
-    if actual_kind != expected_kind:
-        errors.append(f"analysis_kind != {expected_kind!r}")
+        message = f"missing {helper_function} function case context"
+        if profile == semantic_validator.FIXTURE_EXACT:
+            errors.append(message)
+        else:
+            warnings.append(message)
     if (api_response or {}).get("data_mode") != "dummy":
         errors.append("data_mode != 'dummy'")
+
+    semantic_checks = semantic_validator.validate_semantic_payload(
+        payload,
+        question=str(case.get("question") or ""),
+        pandas_variables=pandas_vars,
+    )
+    expectation_errors = (
+        semantic_validator.validate_case_expectation(case, payload)
+        if profile == semantic_validator.SEMANTIC_LIVE
+        else []
+    )
+    errors.extend(
+        f"{item.get('type')}: {item.get('message')}"
+        for item in [*semantic_checks.get("errors", []), *expectation_errors]
+    )
+    warnings.extend(
+        f"{item.get('type')}: {item.get('message')}"
+        for item in semantic_checks.get("warnings", [])
+    )
 
     pandas_trace = payload.get("trace", {}).get("inspection", {}).get("pandas_execution", {})
     result = {
         "id": case["id"],
         "question": case["question"],
         "status": "ok" if not errors else "error",
+        "validation_profile": profile,
         "analysis_kind": payload.get("intent_plan", {}).get("analysis_kind", ""),
         "retrieval_job_count": len(payload.get("intent_plan", {}).get("retrieval_jobs", [])),
         "row_count": payload.get("analysis", {}).get("row_count", 0),
@@ -297,6 +359,8 @@ def summarize_validation_result(
         "data_mode": (api_response or {}).get("data_mode", ""),
         "errors": errors,
         "warnings": warnings,
+        "fixture_differences": diagnostics,
+        "semantic_checks": semantic_checks,
     }
     return json_safe(result)
 

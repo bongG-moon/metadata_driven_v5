@@ -8,6 +8,7 @@ __pycache__/
 .pytest_v6*/
 .tmp/
 validation_outputs/pytest_tmp*/
+validation_outputs/*.json
 .coverage
 coverage.xml
 htmlcov/
