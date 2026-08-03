@@ -362,7 +362,7 @@ def _has_compact_value(value: Any) -> bool:
 
 # 함수 설명: `_json_dumps()`는 datetime·Decimal 같은 값까지 JSON-safe 형태로 바꾼 뒤 문자열로 직렬화합니다.
 def _json_dumps(value: Any) -> str:
-    return json.dumps(_json_ready(value), ensure_ascii=False, indent=2)
+    return json.dumps(_json_ready(value), ensure_ascii=False, separators=(",", ":"))
 
 
 # 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.

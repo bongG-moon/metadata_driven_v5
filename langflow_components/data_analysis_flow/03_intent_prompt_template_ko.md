@@ -21,7 +21,7 @@
 - 질문이나 확정된 후속 문맥에 날짜·현재 시점 표현이 없으면 `reference_date`만을 근거로 `DATE`, `BASE_DT`, `WORK_DT`, `LOAD_DT` 같은 날짜 필터를 새로 만들지 않는다. `reference_date`는 날짜 표현을 해석하는 기준값이지 모든 조회에 자동 적용할 조건이 아니다.
 - `state_summary.followup_hint.followup_candidate=true`이면 현재 질문이 이전 답변/이전 의도에 의존하는지 먼저 판단한다. 이 값과 `request_scope_hint`, `reuse_strategy_hint`, `matched_cues`는 의도 판단 후보 신호이지 최종 결론이 아니다.
 - `followup_candidate=false`인 완결 질문은 독립적인 `new_analysis`다. 현재 질문에 없는 이전 데이터셋·지표·source alias를 retrieval job에 추가하지 않는다.
-- 현재 질문이 entity의 상세·이력처럼 필수 식별자가 필요한 새 dataset을 요구하지만 그 식별자 값을 직접 말하지 않았고, 직전 결과 schema에 같은 식별 컬럼이 있으면 그 entity 범위를 직전 결과에서 고르는 질문인지 판단한다. 맞으면 `followup_requery + reference_mode=previous_result_rows`로 계획하고 catalog의 `source_config.upstream_bindings`가 직전 결과 식별값을 필수 파라미터에 바인딩하게 한다.
+- 현재 질문이 entity의 상세·이력처럼 필수 식별자가 필요한 새 dataset을 요구하지만 그 식별자 값을 직접 말하지 않았고, 직전 결과 schema에 같은 식별 컬럼이 있으면 그 entity 범위를 직전 결과에서 고르는 질문인지 판단한다. 맞으면 `followup_requery + reference_mode=previous_result_rows`로 계획하고 catalog의 `upstream_bindings`가 직전 결과 식별값을 필수 파라미터에 바인딩하게 한다.
 - 위 판단은 `followup_hint.matched_cues.previous_entity_identifiers`가 있어도 자동 확정하지 않는다. 현재 질문에 식별자 값이 직접 있거나, 현재 질문만의 공정·상태·기간 조건으로 독립적인 대상 집합이 완성되면 `new_analysis`를 유지한다.
 - 직전 결과에서 선택한 entity의 이력을 새 dataset으로 조회하는 계획에서는 `DYNAMIC_*`, `PREVIOUS_*` 같은 가상 필수 파라미터 값을 만들지 않는다. 해당 catalog가 같은 식별자에 대한 `upstream_bindings`를 선언했으면 그 required param은 binder가 채우도록 비워 둔다.
 - `오늘 재공 알려줘`, `현재 재공 조회해줘`처럼 날짜·분석 대상·요청 동사가 모두 있는 질문은 이전 state가 존재해도 독립 질문으로 처리한다.
@@ -85,7 +85,7 @@
 - `source_alias`나 `output_alias` 이름의 접두사로 외부 source와 파생 결과를 구분한다고 가정하지 않는다. 실행 순서는 typed `inputs` 계약으로 표현한다.
 - 각 retrieval job은 `dataset_key`, `source_alias`, `required_params`, `filters`만 포함한다.
 - 각 retrieval job의 `required_params`는 다른 job을 참조하지 않아도 바로 실행할 수 있는 완성된 값이어야 한다. plan 수준의 공통 파라미터나 다른 job의 값을 조회 단계에서 복사한다고 가정하지 않는다.
-- `required_params`의 key는 table catalog가 선언한 필수 파라미터 이름을 정확히 사용한다. `filter_mappings`나 `standard_column_aliases`의 물리 컬럼명은 pandas filter용이며, `DATE` 대신 `WORK_DT`·`WORK_DATE`·`date`를 필수 파라미터 key로 쓰지 않는다.
+- `required_params`의 key는 table catalog가 선언한 필수 파라미터 이름을 정확히 사용한다. `canonical_columns`는 조회 직후 표준화되는 실행 컬럼 목록이며, 물리 컬럼명을 추측해 `DATE` 대신 `WORK_DT`·`WORK_DATE`·`date`를 필수 파라미터 key로 쓰지 않는다.
 - `source_type`, `source_config`, `db_key`, query/endpoint는 작성하지 않는다. 다음 deterministic component가 `dataset_key`를 active table catalog와 대조해 신뢰 가능한 설정을 주입한다.
 - `required_params`에는 table catalog/source_config가 필수로 요구하는 파라미터만 넣는다. 필수 파라미터는 데이터 조회 시 SQL/API/template에 적용된다.
 - `filters`에는 사용자가 말한 공정, 제품, 상태, 장비, LOT 등 분석 조건을 넣는다. `filters`는 데이터 조회기가 아니라 pandas 전처리 단계에서 적용되며, 각 retrieval job의 조건은 해당 `source_alias`가 담당하는 metric/dataset 절에만 속한다.
@@ -150,8 +150,8 @@
 - `detail`/`entity_list`에서는 선택된 table catalog의 `default_detail_columns` 중 실제 source에 있는 컬럼을 `output_contract.required_columns`에 합친다. 사용자가 요청한 속성은 기본 컬럼보다 우선하며, 모델·Recipe를 설명할 결과라면 해당 원본 컬럼을 결과에도 포함한다.
 - `aggregate`/`scalar`에서는 `default_detail_columns`를 무조건 붙이지 않는다. 질문의 grouping·metric에 필요한 컬럼만 `grain_columns`, `metric_columns`, `required_columns`에 넣어 결과 자유도를 유지한다.
 - 사용자가 `공정별/제품별`, `차수별/장비 기종별`처럼 둘 이상의 breakdown을 함께 요청하면 모든 요청 차원을 각 관련 집계 단계의 `group_by`와 `output_contract.grain_columns`에 보존한다. 제품 identity metadata를 선택했다는 이유로 공정·차수·장비 같은 명시적 breakdown을 제거하지 않는다.
-- 각 집계 metric은 Table Catalog의 `columns`, `metric_semantics` 또는 컬럼 mapping에 해당 source column이 명시된 retrieval dataset에만 연결한다. alias나 표시 이름이 비슷하다는 이유로 metric과 dataset을 연결하지 않는다.
-- pandas 단계와 output contract의 실행 컬럼은 Table Catalog `filter_mappings`의 canonical key를 사용한다. 실제 source 컬럼명은 조회 직후 canonical key로 표준화되므로, `columns`·`filter_mappings`·`metric_semantics`에 없는 `PLAN_QTY` 같은 포괄 컬럼을 새로 만들지 않는다.
+- 각 집계 metric은 Table Catalog의 `canonical_columns` 또는 `metric_semantics`에 해당 source column이 명시된 retrieval dataset에만 연결한다. alias나 표시 이름이 비슷하다는 이유로 metric과 dataset을 연결하지 않는다.
+- pandas 단계와 output contract의 실행 컬럼은 Table Catalog `canonical_columns`와 `metric_semantics`에 선언된 이름만 사용한다. 실제 source 컬럼명은 조회 직후 canonical key로 표준화되므로, 선언되지 않은 `PLAN_QTY` 같은 포괄 컬럼을 새로 만들지 않는다.
 - 사용자가 여러 실제 metric을 포괄하는 업무 표현을 사용하면 임의의 단일 컬럼으로 합치지 않는다. 선택된 catalog/domain에 등록된 해당 metric들을 각각 집계하고 서로 다른 output column으로 유지한다.
 - 같은 family에 동일 metric을 제공하는 dataset이 둘 이상이면, 현재일/이력 선택은 구조화된 `selection_criteria.time_scope`와 확정된 `DATE`가 `reference_date`와 같은지 여부로만 결정한다. dataset key의 접미사나 부분 문자열로 시간 범위를 추측하지 않는다.
 - 선택한 table catalog에 `metric_semantics`가 있으면 metric의 가산성과 허용 집계를 그대로 따른다. `additive=false`인 평균·rate·비율 지표에 `sum`을 사용하지 않고, 상세 요청은 원본 metric 값을 유지하며 명시적인 grouping 요청은 `default_rollup` 또는 `allowed_rollups`의 집계만 선택한다.

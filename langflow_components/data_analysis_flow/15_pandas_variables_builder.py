@@ -40,12 +40,17 @@ def build_variables(payload_value: Any) -> dict[str, Any]:
     schemas = _source_schemas(payload)
     previews = {alias: rows[:5] for alias, rows in payload.get("runtime_sources", {}).items() if isinstance(rows, list)}
     return {
-        "intent_plan_json": json.dumps(_prompt_intent_plan(payload), ensure_ascii=False, indent=2),
-        "source_schema_json": json.dumps(schemas, ensure_ascii=False, indent=2),
-        "source_preview_json": json.dumps(previews, ensure_ascii=False, indent=2),
-        "function_case_selection_json": json.dumps(_function_case_selection(payload), ensure_ascii=False, indent=2),
-        "output_contract_json": json.dumps(_prompt_output_contract(payload), ensure_ascii=False, indent=2),
+        "intent_plan_json": _compact_json(_prompt_intent_plan(payload)),
+        "source_schema_json": _compact_json(schemas),
+        "source_preview_json": _compact_json(previews),
+        "function_case_selection_json": _compact_json(_function_case_selection(payload)),
+        "output_contract_json": _compact_json(_prompt_output_contract(payload)),
     }
+
+
+# 함수 설명: `_compact_json()`은 prompt 의미는 유지하면서 들여쓰기와 구분자 공백을 제거해 입력 token을 줄입니다.
+def _compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 # 함수 설명: `_prompt_intent_plan()`은 executor 전용 카탈로그 설정과 별도 출력 계약을 제거해 pandas LLM 입력 token 중복을 줄입니다.

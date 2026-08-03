@@ -1066,6 +1066,14 @@ def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
                         "dataset_key": "wip_today",
                         "payload": {
                             "default_detail_columns": ["DEVICE", "OPER_NAME", "WIP"],
+                            "columns": ["DEVICE", "OPER_NM", "WIP_QTY"],
+                            "filter_mappings": {"OPER_NAME": ["OPER_NM"]},
+                            "standard_column_aliases": {"WIP": ["WIP_QTY"]},
+                            "source_config": {
+                                "query_template": "SELECT * FROM SECRET_TABLE",
+                                "required_params": ["DATE"],
+                                "upstream_bindings": [{"required_param": "DEVICE", "source_column": "DEVICE"}],
+                            },
                             "row_identity_columns": ["DEVICE"],
                             "context_columns": ["OPER_NAME"],
                         },
@@ -1095,10 +1103,23 @@ def test_intent_variables_builder_compacts_metadata_candidate_wrapper():
         "table_catalog_items": [
             {
                 "dataset_key": "wip_today",
-                "payload": {"default_detail_columns": ["DEVICE", "OPER_NAME", "WIP"]},
+                "payload": {
+                    "default_detail_columns": ["DEVICE", "OPER_NAME", "WIP"],
+                    "canonical_columns": ["OPER_NAME", "WIP", "DEVICE"],
+                    "required_params": ["DATE"],
+                    "upstream_bindings": [{"required_param": "DEVICE", "source_column": "DEVICE"}],
+                },
             }
         ],
     }
+    catalog_payload = candidates["table_catalog_items"][0]["payload"]
+    assert "columns" not in catalog_payload
+    assert "filter_mappings" not in catalog_payload
+    assert "standard_column_aliases" not in catalog_payload
+    assert "source_config" not in catalog_payload
+    assert "OPER_NM" not in variables["metadata_candidates"]
+    assert "WIP_QTY" not in variables["metadata_candidates"]
+    assert "SECRET_TABLE" not in variables["metadata_candidates"]
     assert "metadata_candidates" not in candidates
     assert "metadata_load" not in candidates
     assert "pandas_function_case" not in schema["intent_plan"]
@@ -8224,7 +8245,7 @@ def test_retrieval_adapter_applies_catalog_metric_value_transform_once_before_pa
     assert adapted_again["trace"]["inspection"]["metric_value_transformation"]["status"] == "already_applied"
 
     prompt_variables = variables.build_variables(adapted_again)
-    assert '"PLAN_INPUT": 1250' in prompt_variables["source_preview_json"]
+    assert json.loads(prompt_variables["source_preview_json"])["plan_source"][0]["PLAN_INPUT"] == 1250
     assert "value_transform" not in prompt_variables["intent_plan_json"]
     assert "multiplier" not in prompt_variables["intent_plan_json"]
 

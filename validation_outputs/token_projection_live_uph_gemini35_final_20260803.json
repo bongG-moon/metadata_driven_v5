@@ -1,0 +1,486 @@
+{
+  "status": "error",
+  "results": [
+    {
+      "id": 23,
+      "question": "FCB2공정 제품별 UPH 알려줘",
+      "status": "error",
+      "analysis_kind": "uph_by_product_for_process",
+      "retrieval_job_count": 1,
+      "row_count": 2,
+      "columns": [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "LEAD",
+        "MCP_NO",
+        "EQP_MODEL",
+        "RECIPE_ID",
+        "OPER_NAME",
+        "UPH"
+      ],
+      "preview_rows": [
+        {
+          "TECH": "SP",
+          "DEN": "16G",
+          "MODE": "DDR5",
+          "PKG_TYPE1": "FCBGA",
+          "PKG_TYPE2": "SDP",
+          "LEAD": "78",
+          "MCP_NO": "",
+          "EQP_MODEL": "EQM-MOBILE",
+          "RECIPE_ID": "RCP-FCB2-A",
+          "OPER_NAME": "FCB2",
+          "UPH": 140.0
+        },
+        {
+          "TECH": "SP",
+          "DEN": "16G",
+          "MODE": "DDR5",
+          "PKG_TYPE1": "FCBGA",
+          "PKG_TYPE2": "SDP",
+          "LEAD": "78",
+          "MCP_NO": "",
+          "EQP_MODEL": "EQM-MOBILE",
+          "RECIPE_ID": "RCP-FCB2-B",
+          "OPER_NAME": "FCB2",
+          "UPH": 173.4
+        }
+      ],
+      "intent_plan": {
+        "analysis_kind": "uph_by_product_for_process",
+        "request_scope": "new_analysis",
+        "reference_mode": "none",
+        "condition_resolution": {
+          "new": {
+            "OPER_NAME": {
+              "operator": "in",
+              "value": [
+                "FCB2"
+              ]
+            }
+          },
+          "effective_filters": {
+            "eqp_uph_source": {
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "eq",
+                  "value": "FCB2"
+                }
+              },
+              "dataset_key": "eqp_uph",
+              "filter_mappings": {
+                "EQP_MODEL": [
+                  "EQUIP_MODEL"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "RECIPE_ID": [
+                  "RECIPE_ID"
+                ],
+                "UPH": [
+                  "UPH"
+                ]
+              }
+            }
+          }
+        },
+        "grain_plan": {
+          "metadata_ref": {
+            "section": "product_key_columns",
+            "key": "standard_product_keys"
+          },
+          "source_alias": "eqp_uph_source"
+        },
+        "retrieval_jobs": [
+          {
+            "dataset_key": "eqp_uph",
+            "source_alias": "eqp_uph_source",
+            "required_params": {},
+            "filters": {
+              "OPER_NAME": {
+                "operator": "eq",
+                "value": "FCB2"
+              }
+            },
+            "source_type": "oracle",
+            "source_config": {
+              "source_type": "oracle",
+              "db_key": "GMS_DB",
+              "query_template": "SELECT \n\n  EQUIP_MODEL\n  ,OPER\n  ,OPER_NAME\n  ,PRESS_CNT\n  ,PROD_TYP AS \"MODE\"\n  ,TECH\n  ,ORG\n  ,DENSITY\n  ,PKG_TYP AS PKG1\n  ,PKG_TYP_2 AS PKG2\n  ,LEAD_CNT AS LEAD\n  ,MCP_NO\n  ,RECIPE_ID \n  ,round(AVG_UPH_VAL,2) AS UPH\n  ,WORK_DT AS LOAD_DT\n  ,BASE_DT\nFROM UPH\nWHERE 1=1"
+            },
+            "required_param_names": [],
+            "trusted_catalog": true,
+            "catalog_ref": "table_catalog:eqp_uph",
+            "filter_mappings": {
+              "EQP_MODEL": [
+                "EQUIP_MODEL"
+              ],
+              "OPER_NAME": [
+                "OPER_NAME"
+              ],
+              "OPER_NUM": [
+                "OPER"
+              ],
+              "MODE": [
+                "MODE"
+              ],
+              "TECH": [
+                "TECH"
+              ],
+              "ORG": [
+                "ORG"
+              ],
+              "DEN": [
+                "DENSITY"
+              ],
+              "PKG_TYPE1": [
+                "PKG1"
+              ],
+              "PKG_TYPE2": [
+                "PKG2"
+              ],
+              "LEAD": [
+                "LEAD"
+              ],
+              "MCP_NO": [
+                "MCP_NO"
+              ],
+              "RECIPE_ID": [
+                "RECIPE_ID"
+              ],
+              "UPH": [
+                "UPH"
+              ]
+            },
+            "default_detail_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME"
+            ],
+            "metric_semantics": {
+              "UPH": {
+                "semantic_type": "average",
+                "additive": false,
+                "default_rollup": "mean",
+                "allowed_rollups": [
+                  "mean"
+                ],
+                "source_already_aggregated": true
+              }
+            },
+            "job_id": "job_1"
+          }
+        ],
+        "pandas_execution_plan": [
+          {
+            "node_id": "filter_step",
+            "operation": "apply_filters",
+            "inputs": [
+              {
+                "kind": "external_source",
+                "ref": "eqp_uph_source"
+              }
+            ],
+            "output_alias": "filtered_uph",
+            "source_alias": "eqp_uph_source"
+          },
+          {
+            "node_id": "groupby_step",
+            "operation": "groupby_and_aggregate",
+            "inputs": [
+              {
+                "kind": "node_output",
+                "ref": "filter_step"
+              }
+            ],
+            "output_alias": "grouped_uph",
+            "source_alias": "filtered_uph",
+            "group_by": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME"
+            ],
+            "agg_column": "UPH",
+            "agg_method": "mean"
+          }
+        ],
+        "output_contract": {
+          "result_mode": "detail",
+          "required_columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO",
+            "EQP_MODEL",
+            "RECIPE_ID",
+            "OPER_NAME",
+            "UPH"
+          ],
+          "grain_columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO"
+          ],
+          "metric_columns": [
+            "UPH"
+          ],
+          "null_group_policy": "preserve_as_blank",
+          "metric_null_policy": "display_zero",
+          "primary_metric": "UPH",
+          "column_labels": {
+            "UPH": "UPH 평균"
+          },
+          "result_columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO",
+            "EQP_MODEL",
+            "RECIPE_ID",
+            "OPER_NAME",
+            "UPH"
+          ],
+          "strict_result_columns": true
+        },
+        "metadata_refs": [
+          {
+            "section": "process_groups",
+            "key": "FCB"
+          },
+          {
+            "section": "product_key_columns",
+            "key": "standard_product_keys"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "uph_result_policy"
+          }
+        ],
+        "trace": {
+          "decision_reason": [
+            "사용자가 FCB2공정의 제품별 UPH 조회를 요청하여 eqp_uph dataset을 선택했습니다.",
+            "UPH는 비가산 집계 metric이므로 제품별 UPH 요청에 따라 표준 제품 키와 장비 모델, Recipe, 공정별 상세 문맥을 유지합니다.",
+            "표준 제품 키와 공정 조건을 반영하여 데이터 조회 및 평균 집계 계획을 수립했습니다."
+          ]
+        },
+        "reuse_strategy": "none",
+        "resolved_grain_plan": {
+          "metadata_ref": {
+            "section": "product_key_columns",
+            "key": "standard_product_keys"
+          },
+          "source_alias": "eqp_uph_source",
+          "dataset_key": "eqp_uph",
+          "canonical_columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO"
+          ],
+          "column_mappings": [
+            {
+              "canonical_key": "TECH",
+              "source_candidates": [
+                "TECH"
+              ]
+            },
+            {
+              "canonical_key": "DEN",
+              "source_candidates": [
+                "DEN",
+                "DENSITY"
+              ]
+            },
+            {
+              "canonical_key": "MODE",
+              "source_candidates": [
+                "MODE"
+              ]
+            },
+            {
+              "canonical_key": "PKG_TYPE1",
+              "source_candidates": [
+                "PKG_TYPE1",
+                "PKG1"
+              ]
+            },
+            {
+              "canonical_key": "PKG_TYPE2",
+              "source_candidates": [
+                "PKG_TYPE2",
+                "PKG2"
+              ]
+            },
+            {
+              "canonical_key": "LEAD",
+              "source_candidates": [
+                "LEAD"
+              ]
+            },
+            {
+              "canonical_key": "MCP_NO",
+              "source_candidates": [
+                "MCP_NO"
+              ]
+            }
+          ],
+          "grain_columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO"
+          ],
+          "strict": true
+        },
+        "resolved_output_grain_plan": {
+          "entity_grain_columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO"
+          ],
+          "breakdown_columns": [
+            "EQP_MODEL",
+            "RECIPE_ID",
+            "OPER_NAME"
+          ],
+          "grain_columns": [
+            "TECH",
+            "DEN",
+            "MODE",
+            "PKG_TYPE1",
+            "PKG_TYPE2",
+            "LEAD",
+            "MCP_NO",
+            "EQP_MODEL",
+            "RECIPE_ID",
+            "OPER_NAME"
+          ],
+          "source_aliases": [
+            "filtered_uph"
+          ],
+          "rejected_columns": [],
+          "strict": true
+        },
+        "resolved_execution_graph": {
+          "version": 1,
+          "nodes": [
+            {
+              "node_id": "filter_step",
+              "operation": "apply_filters",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "eqp_uph_source"
+                }
+              ],
+              "output_alias": "filtered_uph"
+            },
+            {
+              "node_id": "groupby_step",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "filter_step"
+                }
+              ],
+              "output_alias": "grouped_uph"
+            }
+          ],
+          "external_source_requirements": [
+            {
+              "source_alias": "eqp_uph_source",
+              "provider": "retrieval_job",
+              "dataset_key": "eqp_uph",
+              "required": true
+            }
+          ],
+          "validation_errors": []
+        }
+      },
+      "source_results": [
+        {
+          "source_alias": "eqp_uph_source",
+          "dataset_key": "eqp_uph",
+          "row_count": 19,
+          "applied_params": {},
+          "pandas_filters": {
+            "OPER_NAME": {
+              "operator": "eq",
+              "value": "FCB2"
+            }
+          }
+        }
+      ],
+      "generated_code": "_filtered_source_1_eqp_uph_source = sources.get('eqp_uph_source')\nif _filtered_source_1_eqp_uph_source is not None:\n    sources = dict(sources)\n    _filtered_source_1_eqp_uph_source = _filtered_source_1_eqp_uph_source.copy()\n    _filter_col_1_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_1_eqp_uph_source.columns else ('')\n    _filter_values_1_1 = ['FCB2']\n    if not _filter_col_1_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME'])\")\n    if _filter_col_1_1:\n        _filtered_source_1_eqp_uph_source = _filtered_source_1_eqp_uph_source[_filtered_source_1_eqp_uph_source[_filter_col_1_1].isin(_filter_values_1_1)]\n    sources['eqp_uph_source'] = _filtered_source_1_eqp_uph_source\n\ndf = sources[\"eqp_uph_source\"].copy()\n\ngroup_cols = [\"TECH\", \"DEN\", \"MODE\", \"PKG_TYPE1\", \"PKG_TYPE2\", \"LEAD\", \"MCP_NO\", \"EQP_MODEL\", \"RECIPE_ID\", \"OPER_NAME\"]\nagg_col = \"UPH\"\n\nexisting_group_cols = [c for c in group_cols if c in df.columns]\n\nif agg_col in df.columns and existing_group_cols:\n    result = df.groupby(existing_group_cols, dropna=False)[agg_col].mean().reset_index()\nelse:\n    result = pd.DataFrame(columns=group_cols + [agg_col])\n\nif \"UPH\" in result.columns:\n    result[\"UPH\"] = pd.to_numeric(result[\"UPH\"], errors=\"coerce\").fillna(0)\n\nfor col in [\"TECH\", \"DEN\", \"MODE\", \"PKG_TYPE1\", \"PKG_TYPE2\", \"LEAD\", \"MCP_NO\"]:\n    if col in result.columns:\n        result[col] = result[col].fillna(\"\").astype(str).str.replace(r\"\\.0$\", \"\", regex=True)\n\nrequired_cols = [\"TECH\", \"DEN\", \"MODE\", \"PKG_TYPE1\", \"PKG_TYPE2\", \"LEAD\", \"MCP_NO\", \"EQP_MODEL\", \"RECIPE_ID\", \"OPER_NAME\", \"UPH\"]\nfinal_cols = [c for c in required_cols if c in result.columns]\nresult = result[final_cols]",
+      "effective_code_with_helpers": "",
+      "used_helpers": [],
+      "message": "### 답변\nFCB2 공정의 제품별 UPH 조회 결과, 총 2건의 레시피 및 장비 모델별 UPH가 확인되었습니다.\n\n- SP 16G DDR5 FCBGA SDP (EQM-MOBILE / RCP-FCB2-A): 140 UPH\n- SP 16G DDR5 FCBGA SDP (EQM-MOBILE / RCP-FCB2-B): 173.4 UPH\n\nFCB2 공정 조건을 기준으로 조회된 결과이며, UPH는 적용된 장비 모델과 Recipe에 따라 차이가 있습니다.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| 공정 | TECH | DEN | MODE | PKG_TYPE1 | PKG_TYPE2 | LEAD | MCP_NO | EQP_MODEL | Recipe | UPH 평균 |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| FCB2 | SP | 16G | DDR5 | FCBGA | SDP | 78 |  | EQM-MOBILE | RCP-FCB2-A | 140 |\n| FCB2 | SP | 16G | DDR5 | FCBGA | SDP | 78 |  | EQM-MOBILE | RCP-FCB2-B | 173.4 |\n\n총 2건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=eqp_uph, source_alias=eqp_uph_source, source_type=oracle\n- dataset_key=eqp_uph, source_alias=eqp_uph_source, source_type=oracle, row_count=19\n**분석 조건**\n- eqp_uph_source: OPER_NAME={\"operator\": \"eq\", \"value\": \"FCB2\"}\n**그룹 기준**\n- TECH\n- DEN\n- MODE\n- PKG_TYPE1\n- PKG_TYPE2\n- LEAD\n- MCP_NO\n- EQP_MODEL\n- RECIPE_ID\n- OPER_NAME\n**계산 지표**\n- UPH\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+      "data_mode": "dummy",
+      "errors": [
+        "first row RECIPE_ID != 'RCP-FCB2-B'",
+        "first row UPH != 173.4",
+        "analysis_kind != 'fcb2_product_uph_detail'"
+      ],
+      "warnings": []
+    }
+  ]
+}

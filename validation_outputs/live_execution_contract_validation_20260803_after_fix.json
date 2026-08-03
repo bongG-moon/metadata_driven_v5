@@ -1,0 +1,1770 @@
+{
+  "status": "error",
+  "mode": "full_pipeline",
+  "environment": {
+    "repository": "C:\\Users\\qkekt\\Desktop\\metadata_driven_v5",
+    "reference_date": "20260803",
+    "retrieval_mode": "dummy",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-3.5-flash-lite",
+    "llm_temperature": 0.0,
+    "llm_timeout_seconds": 60,
+    "secrets": {
+      "mongodb_uri_configured": true,
+      "google_api_key_configured": true
+    },
+    "mongodb": {
+      "database": "datagov",
+      "collections": {
+        "domain": "agent_v4_domain_items",
+        "table_catalog": "agent_v4_table_catalog_items",
+        "main_flow_filter": "agent_v4_main_flow_filters"
+      },
+      "loaded_counts": {
+        "domain": 58,
+        "table_catalog": 9,
+        "main_flow_filter": 17
+      }
+    },
+    "prompt_sources": {
+      "intent": {
+        "path": "langflow_components\\data_analysis_flow\\03_intent_prompt_template_ko.md",
+        "chars": 26550,
+        "sha256": "e41e6f4d18b3a477f0db478dedd5995ca678b7130474919bcf6564defb062ae0"
+      },
+      "specialized_intent": {
+        "path": "langflow_components\\data_analysis_flow\\specialized_prompt_input_example_ko.md",
+        "chars": 12576,
+        "sha256": "04a3e8033ed73af223044889665a034fee32e6a6af070c7e9de68fc659adff46"
+      },
+      "pandas": {
+        "path": "langflow_components\\data_analysis_flow\\16_pandas_prompt_template_ko.md",
+        "chars": 17340,
+        "sha256": "ede337cd7b1d1bdb0681c1dd6e0f04ff2f7f2157546bb606431a1bebfcf147b8"
+      },
+      "pandas_repair": {
+        "path": "langflow_components\\data_analysis_flow\\17b_pandas_repair_prompt_template_ko.md",
+        "chars": 11281,
+        "sha256": "e71e1599926623e0fe6fec3860bd02e5acd8d28373dc53b225f4e8abd632f9c0"
+      },
+      "answer": {
+        "path": "langflow_components\\data_analysis_flow\\19_answer_prompt_template_ko.md",
+        "chars": 3141,
+        "sha256": "c61ee0960d5ec740b4ced2e996ca6c8308a508ffec33749dd7f4b91316611d28"
+      }
+    }
+  },
+  "results": [
+    {
+      "question": "현재 D/A1 공정의 장비 모델, Recipe, 공정, UPH를 보여줘",
+      "status": "ok",
+      "elapsed_seconds": 9.407,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 7,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "process_groups:DA",
+          "analysis_recipes:equipment_assignment_uph_join",
+          "quantity_terms:equipment_count",
+          "analysis_recipes:uph_result_policy",
+          "analysis_recipes:group_by_oper_name_for_detailed_process",
+          "analysis_recipes:group_by_oper_name_for_process_sequence",
+          "analysis_recipes:product_grain_and_join_policy",
+          "analysis_recipes:production_achievement_rate_analysis",
+          "analysis_recipes:raw_data_display_policy",
+          "analysis_recipes:select_device_column_for_device_code_query"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "wip_today",
+          "production",
+          "wip",
+          "eqp_uph",
+          "equipment_assign",
+          "lot_status"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 61124,
+        "analysis_kind": "equipment_assignment_uph_by_process",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "equipment_assignment_uph_by_process",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {
+            "new": {
+              "OPER_NAME": {
+                "operator": "eq",
+                "value": "D/A1"
+              }
+            }
+          },
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "analysis_recipes",
+              "key": "equipment_assignment_uph_join"
+            },
+            "source_alias": "equipment_assign_1"
+          },
+          "join_plan": [
+            {
+              "metadata_ref": {
+                "section": "analysis_recipes",
+                "key": "equipment_assignment_uph_join"
+              },
+              "left_source_alias": "equipment_assign_1",
+              "right_source_alias": "eqp_uph_1",
+              "join_type": "left",
+              "population_policy": "preserve_all_metric_source_keys",
+              "right_value_columns": [
+                "UPH"
+              ],
+              "multi_match_policy": "first"
+            }
+          ],
+          "retrieval_jobs": [
+            {
+              "dataset_key": "equipment_assign",
+              "source_alias": "equipment_assign_1",
+              "required_params": {},
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "eq",
+                  "value": "D/A1"
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT \n  BAY_ID, \n  EQUIP_ID, \n  EQUIP_MODEL, \n  PRESS_CNT,\n  OPER,\n  OPER_NM,\n  MODE, \n  DENSITY, \n  TECH, \n  PKG1, \n  PKG2, \n  LEAD, \n  ORG,\n  PKGSIZE,  \n  MCP_NO,\n  DEVICE,\n  DEVICE_DESC,\n  LOT_ID,\n  RECIPE_ID\nFROM  EQP_TABLE\nWHERE 1=1 "
+              },
+              "required_param_names": [],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:equipment_assign",
+              "filter_mappings": {
+                "EQP_ID": [
+                  "EQUIP_ID"
+                ],
+                "EQP_MODEL": [
+                  "EQUIP_MODEL"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NM"
+                ],
+                "LOT_ID": [
+                  "LOT_ID"
+                ],
+                "RECIPE_ID": [
+                  "RECIPE_ID"
+                ]
+              },
+              "default_detail_columns": [
+                "EQP_ID"
+              ],
+              "metric_semantics": {
+                "EQP_ID": {
+                  "semantic_type": "count",
+                  "additive": false,
+                  "default_rollup": "nunique",
+                  "allowed_rollups": [
+                    "nunique"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_1"
+            },
+            {
+              "dataset_key": "eqp_uph",
+              "source_alias": "eqp_uph_1",
+              "required_params": {},
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "eq",
+                  "value": "D/A1"
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "GMS_DB",
+                "query_template": "SELECT \n\n  EQUIP_MODEL\n  ,OPER\n  ,OPER_NAME\n  ,PRESS_CNT\n  ,PROD_TYP AS \"MODE\"\n  ,TECH\n  ,ORG\n  ,DENSITY\n  ,PKG_TYP AS PKG1\n  ,PKG_TYP_2 AS PKG2\n  ,LEAD_CNT AS LEAD\n  ,MCP_NO\n  ,RECIPE_ID \n  ,round(AVG_UPH_VAL,2) AS UPH\n  ,WORK_DT AS LOAD_DT\n  ,BASE_DT\nFROM UPH\nWHERE 1=1"
+              },
+              "required_param_names": [],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:eqp_uph",
+              "filter_mappings": {
+                "EQP_MODEL": [
+                  "EQUIP_MODEL"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "RECIPE_ID": [
+                  "RECIPE_ID"
+                ],
+                "UPH": [
+                  "UPH"
+                ]
+              },
+              "default_detail_columns": [
+                "EQP_MODEL",
+                "RECIPE_ID",
+                "OPER_NAME"
+              ],
+              "metric_semantics": {
+                "UPH": {
+                  "semantic_type": "average",
+                  "additive": false,
+                  "default_rollup": "mean",
+                  "allowed_rollups": [
+                    "mean"
+                  ],
+                  "source_already_aggregated": true
+                }
+              },
+              "job_id": "job_2"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "node_id": "join_eqp_uph",
+              "operation": "join",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "equipment_assign_1"
+                },
+                {
+                  "kind": "external_source",
+                  "ref": "eqp_uph_1"
+                }
+              ],
+              "output_alias": "assigned_uph_result",
+              "left_source_alias": "equipment_assign_1",
+              "right_source_alias": "eqp_uph_1",
+              "join_type": "left",
+              "population_policy": "preserve_all_metric_source_keys"
+            }
+          ],
+          "output_contract": {
+            "result_mode": "detail",
+            "required_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME",
+              "UPH",
+              "EQP_ID"
+            ],
+            "metric_columns": [
+              "UPH"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "primary_metric": "UPH",
+            "column_labels": {
+              "EQP_MODEL": "장비 모델",
+              "RECIPE_ID": "Recipe",
+              "OPER_NAME": "공정",
+              "UPH": "UPH"
+            },
+            "result_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME",
+              "UPH",
+              "EQP_ID"
+            ],
+            "strict_result_columns": true
+          },
+          "metadata_refs": [
+            {
+              "section": "process_groups",
+              "key": "DA"
+            },
+            {
+              "section": "analysis_recipes",
+              "key": "equipment_assignment_uph_join"
+            },
+            {
+              "section": "analysis_recipes",
+              "key": "uph_result_policy"
+            }
+          ],
+          "trace": {
+            "decision_reason": [
+              "사용자가 D/A1 공정의 장비 모델, Recipe, 공정, UPH를 함께 요청하였으므로 equipment_assign과 eqp_uph를 결합하는 equipment_assignment_uph_join 레시피를 선택합니다.",
+              "공정 조건은 OPER_NAME=D/A1으로 필터링합니다.",
+              "UPH는 평균형 비가산 지표이므로 개별 UPH 문맥을 유지합니다."
+            ]
+          },
+          "reuse_strategy": "none",
+          "resolved_grain_plan": {
+            "metadata_ref": {
+              "section": "analysis_recipes",
+              "key": "equipment_assignment_uph_join"
+            },
+            "source_alias": "equipment_assign_1",
+            "dataset_key": "equipment_assign",
+            "canonical_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME"
+            ],
+            "column_mappings": [
+              {
+                "canonical_key": "EQP_MODEL",
+                "source_candidates": [
+                  "EQP_MODEL",
+                  "EQUIP_MODEL"
+                ]
+              },
+              {
+                "canonical_key": "RECIPE_ID",
+                "source_candidates": [
+                  "RECIPE_ID"
+                ]
+              },
+              {
+                "canonical_key": "OPER_NAME",
+                "source_candidates": [
+                  "OPER_NAME",
+                  "OPER_NM"
+                ]
+              }
+            ],
+            "grain_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME"
+            ],
+            "strict": true
+          },
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME"
+            ],
+            "breakdown_columns": [],
+            "grain_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME"
+            ],
+            "source_aliases": [
+              "equipment_assign_1"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "join_eqp_uph",
+                "operation": "join",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "equipment_assign_1"
+                  },
+                  {
+                    "kind": "external_source",
+                    "ref": "eqp_uph_1"
+                  }
+                ],
+                "output_alias": "assigned_uph_result"
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "equipment_assign_1",
+                "provider": "retrieval_job",
+                "dataset_key": "equipment_assign",
+                "required": true
+              },
+              {
+                "source_alias": "eqp_uph_1",
+                "provider": "retrieval_job",
+                "dataset_key": "eqp_uph",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          },
+          "resolved_join_plan": [
+            {
+              "metadata_ref": {
+                "section": "analysis_recipes",
+                "key": "equipment_assignment_uph_join"
+              },
+              "left_source_alias": "equipment_assign_1",
+              "right_source_alias": "eqp_uph_1",
+              "left_dataset_key": "equipment_assign",
+              "right_dataset_key": "eqp_uph",
+              "join_type": "left",
+              "canonical_keys": [
+                "EQP_MODEL",
+                "RECIPE_ID",
+                "OPER_NAME"
+              ],
+              "key_mappings": [
+                {
+                  "canonical_key": "EQP_MODEL",
+                  "left_candidates": [
+                    "EQUIP_MODEL"
+                  ],
+                  "right_candidates": [
+                    "EQUIP_MODEL"
+                  ]
+                },
+                {
+                  "canonical_key": "RECIPE_ID",
+                  "left_candidates": [
+                    "RECIPE_ID"
+                  ],
+                  "right_candidates": [
+                    "RECIPE_ID"
+                  ]
+                },
+                {
+                  "canonical_key": "OPER_NAME",
+                  "left_candidates": [
+                    "OPER_NM"
+                  ],
+                  "right_candidates": [
+                    "OPER_NAME"
+                  ]
+                }
+              ],
+              "left_keys": [
+                "EQP_MODEL",
+                "RECIPE_ID",
+                "OPER_NAME"
+              ],
+              "right_keys": [
+                "EQP_MODEL",
+                "RECIPE_ID",
+                "OPER_NAME"
+              ],
+              "canonical_right_value_columns": [
+                "UPH"
+              ],
+              "right_value_mappings": [
+                {
+                  "canonical_key": "UPH",
+                  "source_candidates": [
+                    "UPH"
+                  ]
+                }
+              ],
+              "right_value_columns": [
+                "UPH"
+              ],
+              "null_key_policy": "normalize_blank",
+              "multi_match_policy": "first",
+              "strict": true
+            }
+          ]
+        },
+        "metadata_refs": [
+          {
+            "section": "process_groups",
+            "key": "DA"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "equipment_assignment_uph_join"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "uph_result_policy"
+          },
+          {
+            "type": "table_catalog",
+            "key": "equipment_assign"
+          },
+          {
+            "type": "table_catalog",
+            "key": "eqp_uph"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "equipment_assign",
+            "source_alias": "equipment_assign_1",
+            "status": "ok",
+            "row_count": 14,
+            "applied_params": {},
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "eq",
+                "value": "D/A1"
+              }
+            }
+          },
+          {
+            "dataset_key": "eqp_uph",
+            "source_alias": "eqp_uph_1",
+            "status": "ok",
+            "row_count": 19,
+            "applied_params": {},
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "eq",
+                "value": "D/A1"
+              }
+            }
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 28583,
+        "status": "ok",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "generated_code": "_filtered_source_1_equipment_assign_1 = sources.get('equipment_assign_1')\nif _filtered_source_1_equipment_assign_1 is not None:\n    sources = dict(sources)\n    _filtered_source_1_equipment_assign_1 = _filtered_source_1_equipment_assign_1.copy()\n    _filter_col_1_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_1_equipment_assign_1.columns else ('')\n    _filter_values_1_1 = ['D/A1']\n    if not _filter_col_1_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME'])\")\n    if _filter_col_1_1:\n        _filtered_source_1_equipment_assign_1 = _filtered_source_1_equipment_assign_1[_filtered_source_1_equipment_assign_1[_filter_col_1_1].isin(_filter_values_1_1)]\n    sources['equipment_assign_1'] = _filtered_source_1_equipment_assign_1\n_filtered_source_2_eqp_uph_1 = sources.get('eqp_uph_1')\nif _filtered_source_2_eqp_uph_1 is not None:\n    sources = dict(sources)\n    _filtered_source_2_eqp_uph_1 = _filtered_source_2_eqp_uph_1.copy()\n    _filter_col_2_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_2_eqp_uph_1.columns else ('')\n    _filter_values_2_1 = ['D/A1']\n    if not _filter_col_2_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME'])\")\n    if _filter_col_2_1:\n        _filtered_source_2_eqp_uph_1 = _filtered_source_2_eqp_uph_1[_filtered_source_2_eqp_uph_1[_filter_col_2_1].isin(_filter_values_2_1)]\n    sources['eqp_uph_1'] = _filtered_source_2_eqp_uph_1\n\nequipment_assign_df = sources[\"equipment_assign_1\"]\neqp_uph_df = sources[\"eqp_uph_1\"]\n\nequipment_assign_keys = [\n    \"EQP_MODEL\",\n    \"RECIPE_ID\",\n    \"OPER_NAME\"\n]\neqp_uph_keys = [\n    \"EQP_MODEL\",\n    \"RECIPE_ID\",\n    \"OPER_NAME\"\n]\n\nleft_df = equipment_assign_df.copy()\nright_df = eqp_uph_df.copy()\n\nfor col in equipment_assign_keys:\n    left_df[col] = left_df[col].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n\nfor col in eqp_uph_keys:\n    right_df[col] = right_df[col].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n\nright_agg = right_df.groupby(eqp_uph_keys, dropna=False).agg({\n    \"UPH\": \"mean\"\n}).reset_index()\n\nmerged_df = left_df.merge(\n    right_agg,\n    left_on=equipment_assign_keys,\n    right_on=eqp_uph_keys,\n    how=\"left\"\n)\n\nif \"UPH\" not in merged_df.columns:\n    merged_df[\"UPH\"] = 0\nelse:\n    merged_df[\"UPH\"] = pd.to_numeric(merged_df[\"UPH\"], errors=\"coerce\").fillna(0)\n\nrequired_cols = [\n    \"EQP_MODEL\",\n    \"RECIPE_ID\",\n    \"OPER_NAME\",\n    \"UPH\",\n    \"EQP_ID\"\n]\n\nexisting_cols = [c for c in required_cols if c in merged_df.columns]\nresult = merged_df[existing_cols].copy()",
+        "llm_generated_code": "equipment_assign_df = sources[\"equipment_assign_1\"]\neqp_uph_df = sources[\"eqp_uph_1\"]\n\nequipment_assign_keys = [\n    \"EQP_MODEL\",\n    \"RECIPE_ID\",\n    \"OPER_NAME\"\n]\neqp_uph_keys = [\n    \"EQP_MODEL\",\n    \"RECIPE_ID\",\n    \"OPER_NAME\"\n]\n\nleft_df = equipment_assign_df.copy()\nright_df = eqp_uph_df.copy()\n\nfor col in equipment_assign_keys:\n    left_df[col] = left_df[col].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n\nfor col in eqp_uph_keys:\n    right_df[col] = right_df[col].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n\nright_agg = right_df.groupby(eqp_uph_keys, dropna=False).agg({\n    \"UPH\": \"mean\"\n}).reset_index()\n\nmerged_df = left_df.merge(\n    right_agg,\n    left_on=equipment_assign_keys,\n    right_on=eqp_uph_keys,\n    how=\"left\"\n)\n\nif \"UPH\" not in merged_df.columns:\n    merged_df[\"UPH\"] = 0\nelse:\n    merged_df[\"UPH\"] = pd.to_numeric(merged_df[\"UPH\"], errors=\"coerce\").fillna(0)\n\nrequired_cols = [\n    \"EQP_MODEL\",\n    \"RECIPE_ID\",\n    \"OPER_NAME\",\n    \"UPH\",\n    \"EQP_ID\"\n]\n\nexisting_cols = [c for c in required_cols if c in merged_df.columns]\nresult = merged_df[existing_cols].copy()",
+        "execution_mode": "llm_generated_code",
+        "semantic_execution_certificate": {},
+        "used_helpers": [],
+        "row_count": 1,
+        "columns": [
+          "EQP_MODEL",
+          "RECIPE_ID",
+          "OPER_NAME",
+          "UPH",
+          "EQP_ID"
+        ],
+        "preview_rows": [
+          {
+            "EQP_MODEL": "EQM-HBM",
+            "RECIPE_ID": "RCP-002",
+            "OPER_NAME": "D/A1",
+            "UPH": 88.2,
+            "EQP_ID": "EQP002"
+          }
+        ]
+      },
+      "answer": {
+        "prompt_chars": 8257,
+        "message": "### 답변\n현재 D/A1 공정의 장비 모델, Recipe, UPH 현황을 조회한 결과는 다음과 같습니다.\n\n- D/A1 공정에는 장비 모델 EQM-HBM(장비 ID: EQP002)과 Recipe RCP-002가 적용되어 있으며, UPH는 88.2입니다.\n\n본 결과는 D/A1 공정의 장비 및 UPH 데이터를 기준으로 조회되었습니다.\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| 공정 | 장비 ID | 장비 모델 | Recipe | UPH |\n| --- | --- | --- | --- | --- |\n| D/A1 | EQP002 | EQM-HBM | RCP-002 | 88.2 |\n\n총 1건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=equipment_assign, source_alias=equipment_assign_1, source_type=oracle\n- dataset_key=eqp_uph, source_alias=eqp_uph_1, source_type=oracle\n- dataset_key=equipment_assign, source_alias=equipment_assign_1, source_type=oracle, row_count=14\n- dataset_key=eqp_uph, source_alias=eqp_uph_1, source_type=oracle, row_count=19\n**분석 조건**\n- equipment_assign_1: OPER_NAME={\"operator\": \"eq\", \"value\": \"D/A1\"}\n- eqp_uph_1: OPER_NAME={\"operator\": \"eq\", \"value\": \"D/A1\"}\n**계산 지표**\n- UPH\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    },
+    {
+      "question": "오늘 DA공정에서 생산량 상위 3개 제품과 각 제품에 할당된 장비 대수 및 LIST를 알려줘",
+      "status": "error",
+      "elapsed_seconds": 12.913,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 7,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "quantity_terms:equipment_count",
+          "quantity_terms:production_quantity",
+          "process_groups:DA",
+          "quantity_terms:pkg_out_quantity",
+          "analysis_recipes:equipment_assignment_uph_join",
+          "analysis_recipes:production_achievement_rate_analysis",
+          "metric_terms:production_achievement_rate",
+          "analysis_recipes:product_grain_and_join_policy",
+          "product_terms:MOBILE_PRODUCT",
+          "pandas_function_cases:product_token_match"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "production",
+          "wip_today",
+          "wip",
+          "eqp_uph",
+          "equipment_assign",
+          "lot_status"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 62851,
+        "analysis_kind": "top_products_by_production_with_equipment_count_and_list",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "top_products_by_production_with_equipment_count_and_list",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {
+            "new": {
+              "WORK_DATE": "20260803",
+              "OPER_NAME": [
+                "D/A1",
+                "D/A2",
+                "D/A3",
+                "D/A4",
+                "D/A5",
+                "D/A6"
+              ]
+            }
+          },
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            "source_alias": "prod_today"
+          },
+          "retrieval_jobs": [
+            {
+              "dataset_key": "production_today",
+              "source_alias": "prod_today",
+              "required_params": {
+                "DATE": "20260803"
+              },
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "in",
+                  "value": [
+                    "D/A1",
+                    "D/A2",
+                    "D/A3",
+                    "D/A4",
+                    "D/A5",
+                    "D/A6"
+                  ]
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "--쿼리 작성\nSELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ, PRODUCTION \nFROM PROD_TABLE\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:production_today",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "metric_semantics": {
+                "PRODUCTION": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum",
+                    "mean",
+                    "min",
+                    "max",
+                    "count"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_1"
+            },
+            {
+              "dataset_key": "equipment_assign",
+              "source_alias": "eqp_assign",
+              "required_params": {},
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "in",
+                  "value": [
+                    "D/A1",
+                    "D/A2",
+                    "D/A3",
+                    "D/A4",
+                    "D/A5",
+                    "D/A6"
+                  ]
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT \n  BAY_ID, \n  EQUIP_ID, \n  EQUIP_MODEL, \n  PRESS_CNT,\n  OPER,\n  OPER_NM,\n  MODE, \n  DENSITY, \n  TECH, \n  PKG1, \n  PKG2, \n  LEAD, \n  ORG,\n  PKGSIZE,  \n  MCP_NO,\n  DEVICE,\n  DEVICE_DESC,\n  LOT_ID,\n  RECIPE_ID\nFROM  EQP_TABLE\nWHERE 1=1 "
+              },
+              "required_param_names": [],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:equipment_assign",
+              "filter_mappings": {
+                "EQP_ID": [
+                  "EQUIP_ID"
+                ],
+                "EQP_MODEL": [
+                  "EQUIP_MODEL"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NM"
+                ],
+                "LOT_ID": [
+                  "LOT_ID"
+                ],
+                "RECIPE_ID": [
+                  "RECIPE_ID"
+                ]
+              },
+              "default_detail_columns": [
+                "EQP_ID"
+              ],
+              "metric_semantics": {
+                "EQP_ID": {
+                  "semantic_type": "count",
+                  "additive": false,
+                  "default_rollup": "nunique",
+                  "allowed_rollups": [
+                    "nunique"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_2"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "node_id": "step_1_agg_prod",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "prod_today"
+                }
+              ],
+              "output_alias": "agg_prod_result",
+              "group_by": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "ORG",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "aggregations": [
+                {
+                  "column": "PRODUCTION",
+                  "method": "sum",
+                  "output_column": "PRODUCTION"
+                }
+              ],
+              "source_alias": "prod_today"
+            },
+            {
+              "node_id": "step_2_top3_sort",
+              "operation": "sort_and_top_n",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "step_1_agg_prod"
+                }
+              ],
+              "output_alias": "top3_products",
+              "sort_by": "PRODUCTION",
+              "order": "desc",
+              "limit": 3,
+              "source_alias": "prod_today"
+            },
+            {
+              "node_id": "step_3_join_eqp",
+              "operation": "join",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "top3_products"
+                },
+                {
+                  "kind": "external_source",
+                  "ref": "eqp_assign"
+                }
+              ],
+              "output_alias": "joined_eqp",
+              "left_source_alias": "top3_products",
+              "right_source_alias": "eqp_assign",
+              "join_type": "left",
+              "population_policy": "left_source_only",
+              "source_alias": "eqp_assign"
+            },
+            {
+              "node_id": "step_4_agg_eqp",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "joined_eqp"
+                }
+              ],
+              "output_alias": "final_result",
+              "group_by": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "ORG",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO",
+                "PRODUCTION"
+              ],
+              "aggregations": [
+                {
+                  "column": "EQP_ID",
+                  "method": "nunique",
+                  "output_column": "EQUIPMENT_COUNT"
+                },
+                {
+                  "column": "EQP_ID",
+                  "method": "collect_unique",
+                  "output_column": "EQUIPMENT_LIST"
+                }
+              ],
+              "sort_by": "PRODUCTION",
+              "order": "desc",
+              "limit": 3
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "ORG",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "PRODUCTION",
+              "EQUIPMENT_COUNT",
+              "EQUIPMENT_LIST"
+            ],
+            "grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "ORG",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "PRODUCTION"
+            ],
+            "metric_columns": [
+              "PRODUCTION",
+              "EQUIPMENT_COUNT"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "metric_bindings": [
+              {
+                "source_alias": "prod_today",
+                "dataset_key": "production_today",
+                "source_column": "PRODUCTION",
+                "aggregation": "sum",
+                "output_column": "PRODUCTION",
+                "semantic_scope": {}
+              },
+              {
+                "source_alias": "eqp_assign",
+                "dataset_key": "equipment_assign",
+                "source_column": "EQP_ID",
+                "aggregation": "nunique",
+                "output_column": "EQUIPMENT_COUNT",
+                "semantic_scope": {}
+              },
+              {
+                "source_alias": "eqp_assign",
+                "dataset_key": "equipment_assign",
+                "source_column": "EQP_ID",
+                "aggregation": "collect_unique",
+                "output_column": "EQUIPMENT_LIST",
+                "semantic_scope": {}
+              }
+            ],
+            "primary_metric": "PRODUCTION",
+            "ordering": {
+              "sort_by": "PRODUCTION",
+              "order": "desc",
+              "limit": 3
+            },
+            "column_labels": {
+              "PRODUCTION": "생산량",
+              "EQUIPMENT_COUNT": "장비 대수",
+              "EQUIPMENT_LIST": "장비 LIST"
+            },
+            "result_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "ORG",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "PRODUCTION",
+              "EQUIPMENT_COUNT",
+              "EQUIPMENT_LIST"
+            ],
+            "strict_result_columns": true
+          },
+          "metadata_refs": [
+            {
+              "section": "quantity_terms",
+              "key": "production_quantity"
+            },
+            {
+              "section": "quantity_terms",
+              "key": "equipment_count"
+            },
+            {
+              "section": "process_groups",
+              "key": "DA"
+            }
+          ],
+          "decision_reason": [
+            "오늘 DA공정 기준 당일 생산량 데이터를 조회하기 위해 production_today를 선택하고 D/A1~D/A6 공정 필터를 적용함.",
+            "생산량 상위 3개 제품을 표준 제품 키 기준으로 집계 및 정렬하기 위해 standard_product_keys grain을 사용함.",
+            "각 제품별 할당된 장비 대수와 LIST를 구하기 위해 equipment_assign 데이터를 좌측 기준(left join)으로 결합하여 unique 장비 수와 장비 목록을 각각 계산함."
+          ],
+          "reuse_strategy": "none",
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [],
+            "breakdown_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "ORG",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "PRODUCTION"
+            ],
+            "grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "ORG",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "PRODUCTION"
+            ],
+            "source_aliases": [
+              "prod_today"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "step_1_agg_prod",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "prod_today"
+                  }
+                ],
+                "output_alias": "agg_prod_result"
+              },
+              {
+                "node_id": "step_2_top3_sort",
+                "operation": "sort_and_top_n",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "step_1_agg_prod"
+                  }
+                ],
+                "output_alias": "top3_products"
+              },
+              {
+                "node_id": "step_3_join_eqp",
+                "operation": "join",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "step_2_top3_sort"
+                  },
+                  {
+                    "kind": "external_source",
+                    "ref": "eqp_assign"
+                  }
+                ],
+                "output_alias": "joined_eqp"
+              },
+              {
+                "node_id": "step_4_agg_eqp",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "step_3_join_eqp"
+                  }
+                ],
+                "output_alias": "final_result"
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "prod_today",
+                "provider": "retrieval_job",
+                "dataset_key": "production_today",
+                "required": true
+              },
+              {
+                "source_alias": "eqp_assign",
+                "provider": "retrieval_job",
+                "dataset_key": "equipment_assign",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "quantity_terms",
+            "key": "production_quantity"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "equipment_count"
+          },
+          {
+            "section": "process_groups",
+            "key": "DA"
+          },
+          {
+            "section": "product_key_columns",
+            "key": "standard_product_keys"
+          },
+          {
+            "type": "table_catalog",
+            "key": "production_today"
+          },
+          {
+            "type": "table_catalog",
+            "key": "equipment_assign"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "production_today",
+            "source_alias": "prod_today",
+            "status": "ok",
+            "row_count": 75,
+            "applied_params": {
+              "DATE": "20260803"
+            },
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "in",
+                "value": [
+                  "D/A1",
+                  "D/A2",
+                  "D/A3",
+                  "D/A4",
+                  "D/A5",
+                  "D/A6"
+                ]
+              }
+            }
+          },
+          {
+            "dataset_key": "equipment_assign",
+            "source_alias": "eqp_assign",
+            "status": "ok",
+            "row_count": 14,
+            "applied_params": {},
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "in",
+                "value": [
+                  "D/A1",
+                  "D/A2",
+                  "D/A3",
+                  "D/A4",
+                  "D/A5",
+                  "D/A6"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 32503,
+        "status": "error",
+        "repair_attempted": false,
+        "repair_selected": "blocked_contract_error",
+        "generated_code": "_filtered_source_1_prod_today = sources.get('prod_today')\nif _filtered_source_1_prod_today is not None:\n    sources = dict(sources)\n    _filtered_source_1_prod_today = _filtered_source_1_prod_today.copy()\n    _filter_col_1_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_1_prod_today.columns else ('')\n    _filter_values_1_1 = ['D/A1', 'D/A2', 'D/A3', 'D/A4', 'D/A5', 'D/A6']\n    if not _filter_col_1_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME'])\")\n    if _filter_col_1_1:\n        _filtered_source_1_prod_today = _filtered_source_1_prod_today[_filtered_source_1_prod_today[_filter_col_1_1].isin(_filter_values_1_1)]\n    sources['prod_today'] = _filtered_source_1_prod_today\n_filtered_source_2_eqp_assign = sources.get('eqp_assign')\nif _filtered_source_2_eqp_assign is not None:\n    sources = dict(sources)\n    _filtered_source_2_eqp_assign = _filtered_source_2_eqp_assign.copy()\n    _filter_col_2_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_2_eqp_assign.columns else ('')\n    _filter_values_2_1 = ['D/A1', 'D/A2', 'D/A3', 'D/A4', 'D/A5', 'D/A6']\n    if not _filter_col_2_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME'])\")\n    if _filter_col_2_1:\n        _filtered_source_2_eqp_assign = _filtered_source_2_eqp_assign[_filtered_source_2_eqp_assign[_filter_col_2_1].isin(_filter_values_2_1)]\n    sources['eqp_assign'] = _filtered_source_2_eqp_assign\n\nprod_today = sources[\"prod_today\"].copy()\neqp_assign = sources[\"eqp_assign\"].copy()\n\nstep_1_cols = [\n    \"TECH\",\n    \"DEN\",\n    \"MODE\",\n    \"ORG\",\n    \"PKG_TYPE1\",\n    \"PKG_TYPE2\",\n    \"LEAD\",\n    \"MCP_NO\"\n]\navail_step_1_cols = [c for c in step_1_cols if c in prod_today.columns]\n\nif avail_step_1_cols and \"PRODUCTION\" in prod_today.columns:\n    agg_prod_result = prod_today.groupby(avail_step_1_cols, dropna=False)[\"PRODUCTION\"].sum().reset_index()\nelse:\n    agg_prod_result = prod_today.copy()\n\nif \"PRODUCTION\" in agg_prod_result.columns:\n    top3_products = agg_prod_result.sort_values(by=\"PRODUCTION\", ascending=False).head(3)\nelse:\n    top3_products = agg_prod_result.head(3)\n\njoin_keys = [c for c in avail_step_1_cols if c in eqp_assign.columns]\n\nif join_keys:\n    top3_norm = top3_products.copy()\n    eqp_norm = eqp_assign.copy()\n    for k in join_keys:\n        top3_norm[k] = top3_norm[k].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n        eqp_norm[k] = eqp_norm[k].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n    joined_eqp = pd.merge(top3_norm, eqp_norm, on=join_keys, how=\"left\")\nelse:\n    joined_eqp = top3_products.copy()\n\nfinal_group_cols = avail_step_1_cols + ([ \"PRODUCTION\"] if \"PRODUCTION\" in joined_eqp.columns else [])\n\nif final_group_cols and \"EQP_ID\" in joined_eqp.columns:\n    eqp_counted = joined_eqp.groupby(final_group_cols, dropna=False)[\"EQP_ID\"].nunique().reset_index(name=\"EQUIPMENT_COUNT\")\n    eqp_listed = joined_eqp.groupby(final_group_cols, dropna=False)[\"EQP_ID\"].agg(lambda x: \", \".join(sorted(set([str(v) for v in x if pd.notna(v) and str(v).strip() != \"\"])) )).reset_index(name=\"EQUIPMENT_LIST\")\n    final_result = pd.merge(eqp_counted, eqp_listed, on=final_group_cols, how=\"left\")\nelse:\n    final_result = joined_eqp.copy()\n    if \"EQUIPMENT_COUNT\" not in final_result.columns:\n        final_result[\"EQUIPMENT_COUNT\"] = 0\n    if \"EQUIPMENT_LIST\" not in final_result.columns:\n        final_result[\"EQUIPMENT_LIST\"] = \"\"\n\nif \"PRODUCTION\" in final_result.columns:\n    final_result = final_result.sort_values(by=\"PRODUCTION\", ascending=False).head(3)\n\nfor col in avail_step_1_cols:\n    if col in final_result.columns:\n        final_result[col] = final_result[col].fillna(\"\").astype(str).str.replace(r\"\\.0$\", \"\", regex=True)\n\nif \"PRODUCTION\" in final_result.columns:\n    final_result[\"PRODUCTION\"] = pd.to_numeric(final_result[\"PRODUCTION\"], errors=\"coerce\").fillna(0)\nif \"EQUIPMENT_COUNT\" in final_result.columns:\n    final_result[\"EQUIPMENT_COUNT\"] = pd.to_numeric(final_result[\"EQUIPMENT_COUNT\"], errors=\"coerce\").fillna(0)\nif \"EQUIPMENT_LIST\" in final_result.columns:\n    final_result[\"EQUIPMENT_LIST\"] = final_result[\"EQUIPMENT_LIST\"].fillna(\"\").astype(str)\n\nrequired_cols = [\n    \"TECH\",\n    \"DEN\",\n    \"MODE\",\n    \"ORG\",\n    \"PKG_TYPE1\",\n    \"PKG_TYPE2\",\n    \"LEAD\",\n    \"MCP_NO\",\n    \"PRODUCTION\",\n    \"EQUIPMENT_COUNT\",\n    \"EQUIPMENT_LIST\"\n]\n\nselect_cols = [c for c in required_cols if c in final_result.columns]\nresult = final_result[select_cols].copy()",
+        "llm_generated_code": "prod_today = sources[\"prod_today\"].copy()\neqp_assign = sources[\"eqp_assign\"].copy()\n\nstep_1_cols = [\n    \"TECH\",\n    \"DEN\",\n    \"MODE\",\n    \"ORG\",\n    \"PKG_TYPE1\",\n    \"PKG_TYPE2\",\n    \"LEAD\",\n    \"MCP_NO\"\n]\navail_step_1_cols = [c for c in step_1_cols if c in prod_today.columns]\n\nif avail_step_1_cols and \"PRODUCTION\" in prod_today.columns:\n    agg_prod_result = prod_today.groupby(avail_step_1_cols, dropna=False)[\"PRODUCTION\"].sum().reset_index()\nelse:\n    agg_prod_result = prod_today.copy()\n\nif \"PRODUCTION\" in agg_prod_result.columns:\n    top3_products = agg_prod_result.sort_values(by=\"PRODUCTION\", ascending=False).head(3)\nelse:\n    top3_products = agg_prod_result.head(3)\n\njoin_keys = [c for c in avail_step_1_cols if c in eqp_assign.columns]\n\nif join_keys:\n    top3_norm = top3_products.copy()\n    eqp_norm = eqp_assign.copy()\n    for k in join_keys:\n        top3_norm[k] = top3_norm[k].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n        eqp_norm[k] = eqp_norm[k].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n    joined_eqp = pd.merge(top3_norm, eqp_norm, on=join_keys, how=\"left\")\nelse:\n    joined_eqp = top3_products.copy()\n\nfinal_group_cols = avail_step_1_cols + ([ \"PRODUCTION\"] if \"PRODUCTION\" in joined_eqp.columns else [])\n\nif final_group_cols and \"EQP_ID\" in joined_eqp.columns:\n    eqp_counted = joined_eqp.groupby(final_group_cols, dropna=False)[\"EQP_ID\"].nunique().reset_index(name=\"EQUIPMENT_COUNT\")\n    eqp_listed = joined_eqp.groupby(final_group_cols, dropna=False)[\"EQP_ID\"].agg(lambda x: \", \".join(sorted(set([str(v) for v in x if pd.notna(v) and str(v).strip() != \"\"])) )).reset_index(name=\"EQUIPMENT_LIST\")\n    final_result = pd.merge(eqp_counted, eqp_listed, on=final_group_cols, how=\"left\")\nelse:\n    final_result = joined_eqp.copy()\n    if \"EQUIPMENT_COUNT\" not in final_result.columns:\n        final_result[\"EQUIPMENT_COUNT\"] = 0\n    if \"EQUIPMENT_LIST\" not in final_result.columns:\n        final_result[\"EQUIPMENT_LIST\"] = \"\"\n\nif \"PRODUCTION\" in final_result.columns:\n    final_result = final_result.sort_values(by=\"PRODUCTION\", ascending=False).head(3)\n\nfor col in avail_step_1_cols:\n    if col in final_result.columns:\n        final_result[col] = final_result[col].fillna(\"\").astype(str).str.replace(r\"\\.0$\", \"\", regex=True)\n\nif \"PRODUCTION\" in final_result.columns:\n    final_result[\"PRODUCTION\"] = pd.to_numeric(final_result[\"PRODUCTION\"], errors=\"coerce\").fillna(0)\nif \"EQUIPMENT_COUNT\" in final_result.columns:\n    final_result[\"EQUIPMENT_COUNT\"] = pd.to_numeric(final_result[\"EQUIPMENT_COUNT\"], errors=\"coerce\").fillna(0)\nif \"EQUIPMENT_LIST\" in final_result.columns:\n    final_result[\"EQUIPMENT_LIST\"] = final_result[\"EQUIPMENT_LIST\"].fillna(\"\").astype(str)\n\nrequired_cols = [\n    \"TECH\",\n    \"DEN\",\n    \"MODE\",\n    \"ORG\",\n    \"PKG_TYPE1\",\n    \"PKG_TYPE2\",\n    \"LEAD\",\n    \"MCP_NO\",\n    \"PRODUCTION\",\n    \"EQUIPMENT_COUNT\",\n    \"EQUIPMENT_LIST\"\n]\n\nselect_cols = [c for c in required_cols if c in final_result.columns]\nresult = final_result[select_cols].copy()\n",
+        "execution_mode": "",
+        "semantic_execution_certificate": {},
+        "used_helpers": [],
+        "row_count": 0,
+        "columns": [],
+        "preview_rows": []
+      },
+      "answer": {
+        "prompt_chars": 9063,
+        "message": "### 답변\n오늘 DA공정의 생산량 상위 3개 제품과 장비 대수 및 리스트를 조회하는 과정에서 오류가 발생했습니다.\n\n비가산 metric인 장비 ID(EQP_ID)에 대해 허용되지 않는 집계 방식(collect_unique)이 사용되어 분석이 실패했습니다. 조건과 집계 방식을 다시 확인한 후 재조회해 주세요.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=production_today, source_alias=prod_today, source_type=oracle\n- dataset_key=equipment_assign, source_alias=eqp_assign, source_type=oracle\n- dataset_key=production_today, source_alias=prod_today, source_type=oracle, row_count=75\n- dataset_key=equipment_assign, source_alias=eqp_assign, source_type=oracle, row_count=14\n**조회 필수 조건**\n- prod_today: DATE=20260803\n**분석 조건**\n- prod_today: OPER_NAME={\"operator\": \"in\", \"value\": [\"D/A1\", \"D/A2\", \"D/A3\", \"D/A4\", \"D/A5\", \"D/A6\"]}\n- eqp_assign: OPER_NAME={\"operator\": \"in\", \"value\": [\"D/A1\", \"D/A2\", \"D/A3\", \"D/A4\", \"D/A5\", \"D/A6\"]}\n**그룹 기준**\n- TECH\n- DEN\n- MODE\n- ORG\n- PKG_TYPE1\n- PKG_TYPE2\n- LEAD\n- MCP_NO\n- PRODUCTION\n\n### 참고\n- 조건에 맞는 결과 행이 없습니다.\n- 현재 결과는 더미 데이터 기준입니다.\n- 비가산 metric EQP_ID에는 collect_unique 집계를 사용할 수 없습니다.\n\n### 다음에 볼 만한 질문\n- 조건을 넓혀서 다시 조회할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [
+        {
+          "type": "output_contract_violation",
+          "message": "비가산 metric EQP_ID에는 collect_unique 집계를 사용할 수 없습니다."
+        }
+      ],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    },
+    {
+      "question": "7/6 제품별 생산계획과 실적정보 알려줘",
+      "status": "ok",
+      "elapsed_seconds": 8.907,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 6,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "quantity_terms:target_data",
+          "quantity_terms:production_quantity",
+          "analysis_recipes:product_grain_and_join_policy",
+          "product_key_columns:standard_product_keys",
+          "pandas_function_cases:product_token_match",
+          "product_terms:2HI_PRODUCT",
+          "product_terms:4HI_PRODUCT",
+          "product_terms:8HI_PRODUCT",
+          "product_terms:AUTO_PRODUCT",
+          "product_terms:HBM_3DS_TSV_PRODUCT"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "production",
+          "target",
+          "eqp_uph",
+          "equipment_assign",
+          "hold_history"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 59695,
+        "analysis_kind": "target_plan_by_product",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "target_plan_by_product",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {},
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            "source_alias": "target_source"
+          },
+          "retrieval_jobs": [
+            {
+              "dataset_key": "target",
+              "source_alias": "target_source",
+              "required_params": {},
+              "filters": {
+                "DATE": {
+                  "operator": "eq",
+                  "value": "20260706"
+                }
+              },
+              "source_type": "goodocs",
+              "source_config": {
+                "source_type": "goodocs",
+                "doc_id": "1212121212121212121212"
+              },
+              "required_param_names": [],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:target",
+              "filter_mappings": {
+                "DATE": [
+                  "DATE"
+                ],
+                "MODE": [
+                  "Mode"
+                ],
+                "DEN": [
+                  "DEN"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP NO"
+                ],
+                "INPUT_PLAN_QTY": [
+                  "INPUT 계획"
+                ],
+                "OUT_PLAN_QTY": [
+                  "OUT 계획"
+                ]
+              },
+              "metric_semantics": {
+                "INPUT_PLAN_QTY": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum"
+                  ],
+                  "value_transform": {
+                    "coerce_numeric": true,
+                    "multiplier": 1000
+                  }
+                },
+                "OUT_PLAN_QTY": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum"
+                  ],
+                  "value_transform": {
+                    "coerce_numeric": true,
+                    "multiplier": 1000
+                  }
+                }
+              },
+              "job_id": "job_1"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "node_id": "p1",
+              "operation": "apply_filters",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "target_source"
+                }
+              ],
+              "output_alias": "filtered_target",
+              "source_alias": "target_source"
+            },
+            {
+              "node_id": "p2",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "p1"
+                }
+              ],
+              "output_alias": "aggregated_target",
+              "source_alias": "filtered_target",
+              "group_by": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "aggregations": [
+                {
+                  "column": "INPUT_PLAN_QTY",
+                  "method": "sum",
+                  "output_column": "INPUT_PLAN_QTY"
+                },
+                {
+                  "column": "OUT_PLAN_QTY",
+                  "method": "sum",
+                  "output_column": "OUT_PLAN_QTY"
+                }
+              ]
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "INPUT_PLAN_QTY",
+              "OUT_PLAN_QTY"
+            ],
+            "grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "metric_columns": [
+              "INPUT_PLAN_QTY",
+              "OUT_PLAN_QTY"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "metric_bindings": [
+              {
+                "source_alias": "target_source",
+                "dataset_key": "target",
+                "source_column": "INPUT_PLAN_QTY",
+                "aggregation": "sum",
+                "output_column": "INPUT_PLAN_QTY",
+                "semantic_scope": {}
+              },
+              {
+                "source_alias": "target_source",
+                "dataset_key": "target",
+                "source_column": "OUT_PLAN_QTY",
+                "aggregation": "sum",
+                "output_column": "OUT_PLAN_QTY",
+                "semantic_scope": {}
+              }
+            ],
+            "primary_metric": "OUT_PLAN_QTY",
+            "column_labels": {
+              "INPUT_PLAN_QTY": "투입계획",
+              "OUT_PLAN_QTY": "생산계획"
+            },
+            "result_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "INPUT_PLAN_QTY",
+              "OUT_PLAN_QTY"
+            ],
+            "strict_result_columns": true
+          },
+          "metadata_refs": [
+            {
+              "section": "quantity_terms",
+              "key": "target_data"
+            },
+            {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            {
+              "section": "analysis_recipes",
+              "key": "product_grain_and_join_policy"
+            },
+            {
+              "section": "quantity_terms",
+              "key": "production_quantity"
+            }
+          ],
+          "trace": {
+            "decision_reason": [
+              "사용자가 7월 6일 제품별 생산계획과 실적(계획)정보를 요구하였으므로 target dataset을 사용한다.",
+              "생산계획 관련 요청이므로 INPUT_PLAN_QTY와 OUT_PLAN_QTY를 표준 제품 키 기준으로 각각 집계한다.",
+              "독립적인 신규 분석이므로 new_analysis로 설정한다."
+            ]
+          },
+          "reuse_strategy": "none",
+          "resolved_grain_plan": {
+            "metadata_ref": {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            "source_alias": "target_source",
+            "dataset_key": "target",
+            "canonical_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "column_mappings": [
+              {
+                "canonical_key": "TECH",
+                "source_candidates": [
+                  "TECH"
+                ]
+              },
+              {
+                "canonical_key": "DEN",
+                "source_candidates": [
+                  "DEN"
+                ]
+              },
+              {
+                "canonical_key": "MODE",
+                "source_candidates": [
+                  "MODE",
+                  "Mode"
+                ]
+              },
+              {
+                "canonical_key": "PKG_TYPE1",
+                "source_candidates": [
+                  "PKG_TYPE1",
+                  "PKG1"
+                ]
+              },
+              {
+                "canonical_key": "PKG_TYPE2",
+                "source_candidates": [
+                  "PKG_TYPE2",
+                  "PKG2"
+                ]
+              },
+              {
+                "canonical_key": "LEAD",
+                "source_candidates": [
+                  "LEAD"
+                ]
+              },
+              {
+                "canonical_key": "MCP_NO",
+                "source_candidates": [
+                  "MCP_NO",
+                  "MCP NO"
+                ]
+              }
+            ],
+            "grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "strict": true
+          },
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "breakdown_columns": [],
+            "grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "source_aliases": [
+              "filtered_target"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "p1",
+                "operation": "apply_filters",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "target_source"
+                  }
+                ],
+                "output_alias": "filtered_target"
+              },
+              {
+                "node_id": "p2",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "p1"
+                  }
+                ],
+                "output_alias": "aggregated_target"
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "target_source",
+                "provider": "retrieval_job",
+                "dataset_key": "target",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "quantity_terms",
+            "key": "target_data"
+          },
+          {
+            "section": "product_key_columns",
+            "key": "standard_product_keys"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "product_grain_and_join_policy"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "production_quantity"
+          },
+          {
+            "type": "table_catalog",
+            "key": "target"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "target",
+            "source_alias": "target_source",
+            "status": "ok",
+            "row_count": 8,
+            "applied_params": {},
+            "pandas_filters": {
+              "DATE": {
+                "operator": "eq",
+                "value": "20260706"
+              }
+            }
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 25139,
+        "status": "ok",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "generated_code": "def _normalize_date_filter_value(value):\n    text = str(value if value is not None else '').strip()\n    if text.casefold() in ('', 'null', 'none', 'nan', 'nat', '<na>', 'empty'):\n        return ''\n    if len(text) >= 8 and text[:8].isdigit():\n        return text[:8]\n    normalized = text.replace('년', '-').replace('월', '-').replace('일', '')\n    normalized = normalized.replace('/', '-').replace('.', '-')\n    parts = [part.strip() for part in normalized.split('-') if part.strip()]\n    if len(parts) >= 3 and len(parts[0]) == 4:\n        try:\n            return f'{int(parts[0]):04d}{int(parts[1]):02d}{int(parts[2][:2]):02d}'\n        except Exception:\n            return text\n    return text\n\n_filtered_source_1_target_source = sources.get('target_source')\nif _filtered_source_1_target_source is not None:\n    sources = dict(sources)\n    _filtered_source_1_target_source = _filtered_source_1_target_source.copy()\n    _filter_col_1_1 = 'DATE' if 'DATE' in _filtered_source_1_target_source.columns else ('')\n    _filter_values_1_1 = ['20260706']\n    if not _filter_col_1_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: DATE (candidates=['DATE'])\")\n    if _filter_col_1_1:\n        _filter_values_1_1 = [_normalize_date_filter_value(value) for value in _filter_values_1_1]\n        _filter_date_series_1_1 = _filtered_source_1_target_source[_filter_col_1_1].map(_normalize_date_filter_value)\n        _filtered_source_1_target_source = _filtered_source_1_target_source[_filter_date_series_1_1.isin(_filter_values_1_1)]\n    sources['target_source'] = _filtered_source_1_target_source\n\ndf = sources[\"target_source\"].copy()\ngrain_cols = [\n    \"TECH\",\n    \"DEN\",\n    \"MODE\",\n    \"PKG_TYPE1\",\n    \"PKG_TYPE2\",\n    \"LEAD\",\n    \"MCP_NO\"\n]\nmetric_cols = [\n    \"INPUT_PLAN_QTY\",\n    \"OUT_PLAN_QTY\"\n]\n\nfor col in grain_cols:\n    if col in df.columns:\n        df[col] = df[col].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n\nfor col in metric_cols:\n    if col in df.columns:\n        df[col] = pd.to_numeric(df[col], errors=\"coerce\").fillna(0)\n\nexisting_grain = [c for c in grain_cols if c in df.columns]\nexisting_metrics = [c for c in metric_cols if c in df.columns]\n\nagg_dict = {m: \"sum\" for m in existing_metrics}\n\nif existing_grain:\n    result = df.groupby(existing_grain, dropna=False).agg(agg_dict).reset_index()\nelse:\n    result = pd.DataFrame([agg_dict])\n\nfor col in existing_grain:\n    result[col] = result[col].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n\nfor m in existing_metrics:\n    result[m] = pd.to_numeric(result[m], errors=\"coerce\").fillna(0)\n\nfinal_cols = existing_grain + existing_metrics\nresult = result[[c for c in final_cols if c in result.columns]]",
+        "llm_generated_code": "df = sources[\"target_source\"].copy()\ngrain_cols = [\n    \"TECH\",\n    \"DEN\",\n    \"MODE\",\n    \"PKG_TYPE1\",\n    \"PKG_TYPE2\",\n    \"LEAD\",\n    \"MCP_NO\"\n]\nmetric_cols = [\n    \"INPUT_PLAN_QTY\",\n    \"OUT_PLAN_QTY\"\n]\n\nfor col in grain_cols:\n    if col in df.columns:\n        df[col] = df[col].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n\nfor col in metric_cols:\n    if col in df.columns:\n        df[col] = pd.to_numeric(df[col], errors=\"coerce\").fillna(0)\n\nexisting_grain = [c for c in grain_cols if c in df.columns]\nexisting_metrics = [c for c in metric_cols if c in df.columns]\n\nagg_dict = {m: \"sum\" for m in existing_metrics}\n\nif existing_grain:\n    result = df.groupby(existing_grain, dropna=False).agg(agg_dict).reset_index()\nelse:\n    result = pd.DataFrame([agg_dict])\n\nfor col in existing_grain:\n    result[col] = result[col].fillna(\"\").astype(str).str.strip().str.replace(r\"\\.0$\", \"\", regex=True)\n\nfor m in existing_metrics:\n    result[m] = pd.to_numeric(result[m], errors=\"coerce\").fillna(0)\n\nfinal_cols = existing_grain + existing_metrics\nresult = result[[c for c in final_cols if c in result.columns]]",
+        "execution_mode": "llm_generated_code",
+        "semantic_execution_certificate": {},
+        "used_helpers": [],
+        "row_count": 0,
+        "columns": [
+          "TECH",
+          "DEN",
+          "MODE",
+          "PKG_TYPE1",
+          "PKG_TYPE2",
+          "LEAD",
+          "MCP_NO",
+          "INPUT_PLAN_QTY",
+          "OUT_PLAN_QTY"
+        ],
+        "preview_rows": []
+      },
+      "answer": {
+        "prompt_chars": 7393,
+        "message": "### 답변\n7월 6일 제품별 생산계획과 실적 정보를 조회한 결과, 조건에 해당하는 데이터가 존재하지 않습니다.\n\n다른 일자나 조건을 넓혀서 다시 조회해 보세요.\n\n[조회 기준]\n- 기준일: 2026년 7월 6일\n- 대상 데이터: 제품별 생산계획 및 실적 정보\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n표시할 결과 행이 없습니다.\n\n- 컬럼: `TECH, DEN, MODE, PKG_TYPE1, PKG_TYPE2, LEAD, MCP_NO, INPUT_PLAN_QTY, OUT_PLAN_QTY`\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=target, source_alias=target_source, source_type=goodocs\n- dataset_key=target, source_alias=target_source, source_type=goodocs, row_count=8\n**분석 조건**\n- target_source: DATE={\"operator\": \"eq\", \"value\": \"20260706\"}\n**그룹 기준**\n- TECH\n- DEN\n- MODE\n- PKG_TYPE1\n- PKG_TYPE2\n- LEAD\n- MCP_NO\n\n### 참고\n- 조건에 맞는 결과 행이 없습니다.\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 조건을 넓혀서 다시 조회할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    }
+  ],
+  "errors": []
+}

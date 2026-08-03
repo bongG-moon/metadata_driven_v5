@@ -21,13 +21,29 @@ from lfx.io import DataInput, Output
 from lfx.schema.message import Message
 
 RETIRED_DETAIL_CONTRACT_KEYS = {"row_identity_columns", "context_columns"}
+MODEL_INTERNAL_CATALOG_KEYS = {
+    "columns",
+    "filter_mappings",
+    "required_param_mappings",
+    "standard_column_aliases",
+    "source_config",
+}
+MODEL_INTERNAL_ITEM_KEYS = {
+    "_id",
+    "created_at",
+    "registration_trace",
+    "status",
+    "updated_at",
+}
 
 # 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_variables(payload_value: Any, metadata_candidates_value: Any = None) -> dict[str, Any]:
     payload = _payload(payload_value)
-    metadata_candidates = _without_retired_table_catalog_contract(
-        _compact_metadata_candidates(_payload(metadata_candidates_value) or {})
+    metadata_candidates = _metadata_candidates_for_model(
+        _without_retired_table_catalog_contract(
+            _compact_metadata_candidates(_payload(metadata_candidates_value) or {})
+        )
     )
     return {
         "question": payload.get("request", {}).get("question", ""),
@@ -298,6 +314,154 @@ def _without_retired_table_catalog_contract(value: dict[str, Any]) -> dict[str, 
         if isinstance(payload, dict):
             for key in RETIRED_DETAIL_CONTRACT_KEYS:
                 payload.pop(key, None)
+    return result
+
+
+# 함수 설명: `_metadata_candidates_for_model()`은 실행 단계가 받는 원본 메타데이터를 건드리지 않고 LLM에 필요한 의미 계약만 투영합니다.
+def _metadata_candidates_for_model(value: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(value)
+    table_items = result.get("table_catalog_items")
+    if isinstance(table_items, list):
+        result["table_catalog_items"] = [
+            _table_catalog_item_for_model(item) if isinstance(item, dict) else deepcopy(item)
+            for item in table_items
+        ]
+    main_filters = result.get("main_flow_filters")
+    if isinstance(main_filters, list):
+        result["main_flow_filters"] = [
+            _main_filter_item_for_model(item) if isinstance(item, dict) else deepcopy(item)
+            for item in main_filters
+        ]
+    domain_items = result.get("domain_items")
+    if isinstance(domain_items, list):
+        result["domain_items"] = [
+            _without_internal_item_keys(item) if isinstance(item, dict) else deepcopy(item)
+            for item in domain_items
+        ]
+    return result
+
+
+# 함수 설명: `_table_catalog_item_for_model()`은 물리 컬럼 매핑의 반복을 canonical 컬럼 목록으로 접고 업무·시간·단위 계약은 보존합니다.
+def _table_catalog_item_for_model(item: dict[str, Any]) -> dict[str, Any]:
+    projected = _without_internal_item_keys(item)
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    source_config = payload.get("source_config") if isinstance(payload.get("source_config"), dict) else {}
+    projected_payload = {
+        str(key): deepcopy(raw_value)
+        for key, raw_value in payload.items()
+        if str(key) not in MODEL_INTERNAL_CATALOG_KEYS
+    }
+
+    canonical_columns = _catalog_model_columns(payload)
+    if canonical_columns:
+        projected_payload["canonical_columns"] = canonical_columns
+
+    required_params = _merge_strings(
+        _string_list(payload.get("required_params")),
+        _string_list(source_config.get("required_params")),
+    )
+    if required_params:
+        projected_payload["required_params"] = required_params
+
+    upstream_bindings = payload.get("upstream_bindings")
+    if upstream_bindings in (None, "", [], {}):
+        upstream_bindings = source_config.get("upstream_bindings")
+    if upstream_bindings not in (None, "", [], {}):
+        projected_payload["upstream_bindings"] = deepcopy(upstream_bindings)
+
+    if projected_payload:
+        projected["payload"] = projected_payload
+    else:
+        projected.pop("payload", None)
+    return projected
+
+
+# 함수 설명: `_catalog_model_columns()`은 카탈로그 매핑의 canonical key와 매핑되지 않은 선언 컬럼을 중복 없이 모델용 목록으로 만듭니다.
+def _catalog_model_columns(payload: dict[str, Any]) -> list[str]:
+    filter_mappings = payload.get("filter_mappings") if isinstance(payload.get("filter_mappings"), dict) else {}
+    standard_aliases = (
+        payload.get("standard_column_aliases")
+        if isinstance(payload.get("standard_column_aliases"), dict)
+        else {}
+    )
+    metric_semantics = payload.get("metric_semantics") if isinstance(payload.get("metric_semantics"), dict) else {}
+    canonical = _merge_strings(
+        list(filter_mappings.keys()),
+        list(standard_aliases.keys()),
+        list(metric_semantics.keys()),
+    )
+    mapped_physical = {
+        _column_signature(name)
+        for mapping in (filter_mappings, standard_aliases)
+        for raw_value in mapping.values()
+        for name in _string_list(raw_value)
+        if _column_signature(name)
+    }
+    unmapped_columns = [
+        name
+        for name in _declared_column_names(payload.get("columns"))
+        if _column_signature(name) not in mapped_physical
+    ]
+    return _merge_strings(canonical, unmapped_columns)
+
+
+# 함수 설명: `_declared_column_names()`는 문자열 또는 object 형태의 catalog columns에서 표시 가능한 컬럼명을 읽습니다.
+def _declared_column_names(value: Any) -> list[str]:
+    result: list[str] = []
+    for item in value if isinstance(value, (list, tuple, set)) else [value]:
+        if isinstance(item, dict):
+            name = next(
+                (
+                    item.get(key)
+                    for key in ("canonical_key", "standard_name", "column_name", "name")
+                    if str(item.get(key) or "").strip()
+                ),
+                "",
+            )
+        else:
+            name = item
+        text = str(name or "").strip()
+        if text:
+            result = _merge_strings(result, [text])
+    return result
+
+
+# 함수 설명: `_main_filter_item_for_model()`은 실행용 물리 컬럼 후보만 제외하고 사용자 용어·연산자 의미는 유지합니다.
+def _main_filter_item_for_model(item: dict[str, Any]) -> dict[str, Any]:
+    projected = _without_internal_item_keys(item)
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    if payload:
+        projected["payload"] = {
+            str(key): deepcopy(raw_value)
+            for key, raw_value in payload.items()
+            if str(key) != "column_candidates"
+        }
+    return projected
+
+
+# 함수 설명: `_without_internal_item_keys()`는 후보 선택 과정의 내부 상태만 모델 입력에서 제거합니다.
+def _without_internal_item_keys(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): deepcopy(raw_value)
+        for key, raw_value in item.items()
+        if str(key) not in MODEL_INTERNAL_ITEM_KEYS
+    }
+
+
+# 함수 설명: `_column_signature()`는 물리 컬럼 중복 판별에만 쓰는 대소문자·공백 무시 signature를 만듭니다.
+def _column_signature(value: Any) -> str:
+    return "".join(str(value or "").strip().casefold().split())
+
+
+# 함수 설명: `_merge_strings()`는 여러 문자열 목록을 최초 등장 순서대로 합칩니다.
+def _merge_strings(*values: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in _string_list(value):
+            if item not in seen:
+                seen.add(item)
+                result.append(item)
     return result
 
 

@@ -74,10 +74,11 @@ UPH 지표를 요청하지 않고 배정 장비, 장비 모델, Recipe 또는 �
 장비 LIST도 함께 요청하면 같은 제품 grain별로 장비 ID의 중복 없는 목록을 집계한다. 장비 대수와 LIST를 동시에 요청하면 한 `groupby_and_aggregate` 단계의 `aggregations`에 `EQUIP_ID/nunique/EQUIP_COUNT`와 `EQUIP_ID/collect_unique/EQUIP_LIST`를 함께 기록하고 두 결과 컬럼을 모두 반환한다. 장비 모델이나 Recipe는 사용자가 표시를 요청한 경우에만 결과 속성으로 사용하고 이전 제품을 찾는 매칭 key에는 추가하지 않는다.
 lot단위 조건 없이 장비 목록이나 작업 장비에 대한 질문은 equipment_assign을 사용한다.
 lot_status에 eqp_id가 있다는 이유만으로 장비 목록 질문을 lot_status로 처리하지 않는다.
-UPH 상세 결과에는 표준 장비 모델(EQP_MODEL), Recipe(RECIPE_ID), 공정(OPER_NAME)을 공통 필수 문맥으로 유지하고, UPH를 요청한 경우 UPH를 지표 컬럼으로 포함한다. source의 물리 컬럼명은 Table Catalog의 filter_mappings로 표준화하며 pandas 계획과 결과 계약에는 표준 컬럼만 사용한다.
+UPH 상세 결과에는 표준 장비 모델(EQP_MODEL), Recipe(RECIPE_ID), 공정(OPER_NAME)을 공통 필수 문맥으로 유지하고, UPH를 요청한 경우 UPH를 지표 컬럼으로 포함한다. source의 물리 컬럼명은 후속 실행 단계가 Table Catalog 계약으로 표준화하므로 pandas 계획과 결과 계약에는 `canonical_columns`의 표준 컬럼만 사용한다.
 장비 목록도 요청한 경우에만 장비 ID(EQUIP_ID 또는 EQP_ID)를 포함한다. PRESS_CNT, MCP_NO 등 나머지 속성은 사용자가 직접 요청했거나 해당 분석에 실제로 필요한 경우에만 선택하며 기본 출력으로 강제하지 않는다.
 UPH가 장비 모델 또는 Recipe에 따라 다르다고 설명할 예정이면 해당 모델·Recipe·공정 원본 컬럼을 결과에서 제거하지 않는다.
 UPH는 평균형 비가산 지표다. 사용자가 grouping 없이 `제품별 UPH`만 요청하면 catalog의 기본 상세 문맥인 장비 모델·Recipe·공정별 개별 UPH를 유지하고, 차수별·장비 기종별처럼 grouping을 명시하면 그 그룹별 UPH 평균을 계산한다. UPH를 합산하지 않는다.
+`제품별 UPH`는 제품 grain만으로 평균을 내는 aggregate 요청이 아니다. `result_mode=detail`로 계획하고 제품 grain과 catalog의 `default_detail_columns`를 함께 결과와 pandas grouping에 유지하여 서로 다른 장비 모델·Recipe·공정의 UPH를 한 행으로 합치지 않는다.
 `장비 기종`, `기종`, `장비 모델`은 eqp_uph의 표준 EQP_MODEL 차원을 뜻한다. `Recipe`, `레시피`는 RECIPE_ID 차원을 뜻한다.
 
 제품 token 매칭이 필요하면 intent_plan.pandas_function_cases 배열에 아래 형식으로 선택 정보를 남긴다.
