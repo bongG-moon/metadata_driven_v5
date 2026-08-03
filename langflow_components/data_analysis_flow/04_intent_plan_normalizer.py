@@ -223,6 +223,7 @@ def normalize_intent_plan(
     raw_pandas_plan, temporal_metric_alignment = _align_temporal_metric_columns(
         raw_pandas_plan,
         business_time_guard,
+        metadata_candidates,
     )
     external_source_catalog_binding = _resolve_late_external_source_bindings(
         external_source_catalog_binding,
@@ -1455,6 +1456,7 @@ def _resolve_late_external_source_bindings(
 def _align_temporal_metric_columns(
     pandas_plan: list[Any],
     business_time_guard: dict[str, Any],
+    metadata_candidates: dict[str, Any] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     semantics = [
         item
@@ -1480,6 +1482,7 @@ def _align_temporal_metric_columns(
             if source_alias not in lineage_aliases:
                 continue
             source_column = str(semantic.get("source_column") or "").strip()
+            dataset_key = str(semantic.get("dataset_key") or "").strip()
             registered_aliases = {
                 _normalized_column_key(value)
                 for value in _merge_strings(
@@ -1493,6 +1496,41 @@ def _align_temporal_metric_columns(
                 )
                 if _normalized_column_key(value)
             }
+
+            # LLM은 표시용 output 이름을 source column으로 재사용할 수 있습니다.
+            # 등록된 temporal source column과 이름상 관련되지만 Table Catalog에
+            # 존재하지 않는 값만 교정해, 실제로 선언된 다른 metric은 보존합니다.
+            # 함수 설명: temporal Domain 원본 컬럼과 LLM 집계 컬럼의 정합성을 Table Catalog 선언 기준으로 판정합니다.
+            def should_align(raw_column: str) -> bool:
+                raw_key = _normalized_column_key(raw_column)
+                source_key = _normalized_column_key(source_column)
+                if not raw_key or raw_key == source_key:
+                    return False
+                exact_alias = raw_key in registered_aliases
+                related_alias = any(
+                    len(alias_key) >= 3
+                    and (alias_key in raw_key or raw_key in alias_key)
+                    for alias_key in registered_aliases
+                )
+                if not exact_alias and not related_alias:
+                    return False
+                if exact_alias:
+                    return True
+                candidates = (
+                    metadata_candidates
+                    if isinstance(metadata_candidates, dict)
+                    else {}
+                )
+                return bool(
+                    dataset_key
+                    and candidates
+                    and not _catalog_supports_domain_column(
+                        candidates,
+                        dataset_key,
+                        raw_column,
+                    )
+                )
+
             aggregations = (
                 step.get("aggregations")
                 if isinstance(step.get("aggregations"), list)
@@ -1509,9 +1547,7 @@ def _align_temporal_metric_columns(
                 ).strip()
                 if (
                     not raw_column
-                    or _normalized_column_key(raw_column) not in registered_aliases
-                    or _normalized_column_key(raw_column)
-                    == _normalized_column_key(source_column)
+                    or not should_align(raw_column)
                 ):
                     continue
                 aggregation = deepcopy(raw)
@@ -1530,18 +1566,14 @@ def _align_temporal_metric_columns(
                         "source_alias": source_alias,
                         "from_column": raw_column,
                         "to_column": source_column,
+                        "reason": "temporal_source_column_contract",
                     }
                 )
             if aggregations:
                 step["aggregations"] = aggregations
             for field_name in ("agg_column", "aggregate_column"):
                 raw_column = str(step.get(field_name) or "").strip()
-                if (
-                    raw_column
-                    and _normalized_column_key(raw_column) in registered_aliases
-                    and _normalized_column_key(raw_column)
-                    != _normalized_column_key(source_column)
-                ):
+                if raw_column and should_align(raw_column):
                     step[field_name] = source_column
                     corrections.append(
                         {
@@ -1549,6 +1581,7 @@ def _align_temporal_metric_columns(
                             "source_alias": source_alias,
                             "from_column": raw_column,
                             "to_column": source_column,
+                            "reason": "temporal_source_column_contract",
                         }
                     )
             result[index] = step
@@ -2134,12 +2167,23 @@ def _job_requested_time_scope(job: dict[str, Any], payload: dict[str, Any]) -> s
 
 
 # 함수 설명: `_aggregation_source_columns_by_alias()`는 04 의도 계획 정규화기 처리 중 데이터 소스·컬럼·BY·alias 관련 값을 계산·변환하는 내부 helper입니다.
-def _aggregation_source_columns_by_alias(pandas_plan: list[Any]) -> dict[str, list[str]]:
+def _aggregation_source_columns_by_alias(
+    pandas_plan: list[Any],
+    known_external_aliases: set[str] | None = None,
+) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
+    known = set(known_external_aliases or set())
     for step in pandas_plan:
         if not isinstance(step, dict):
             continue
         alias = str(step.get("source_alias") or "").strip()
+        if known and alias not in known:
+            lineage_aliases = _step_external_source_aliases(
+                step,
+                pandas_plan,
+                known,
+            )
+            alias = lineage_aliases[0] if len(lineage_aliases) == 1 else ""
         if not alias:
             continue
         aggregations = step.get("aggregations") if isinstance(step.get("aggregations"), list) else []
@@ -2173,7 +2217,15 @@ def _reconcile_metric_dataset_selection(
 ) -> tuple[list[Any], dict[str, Any]]:
     """Select a dataset only from explicit catalog metric and time-scope contracts."""
     jobs = [deepcopy(item) for item in retrieval_jobs]
-    source_columns = _aggregation_source_columns_by_alias(pandas_plan)
+    source_columns = _aggregation_source_columns_by_alias(
+        pandas_plan,
+        {
+            str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+            for item in jobs
+            if isinstance(item, dict)
+            and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        },
+    )
     catalog_items = [
         item
         for item in candidates.get("table_catalog_items", [])

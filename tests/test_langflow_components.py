@@ -18266,6 +18266,218 @@ def test_boh_explicit_date_exposes_previous_value_and_builds_two_source_contract
     assert "validation_errors" not in plan
 
 
+def test_boh_multi_source_recovers_registered_contract_from_wrong_model_metric_and_datasets():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    executor = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py"
+    )
+    processes = ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"]
+    process_filter = {"OPER_NAME": {"operator": "in", "value": processes}}
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": _production_and_boh_domain_items(),
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production_today",
+                    "payload": {
+                        "columns": ["WORK_DATE", "OPER_NAME", "PRODUCTION"],
+                        "required_params": ["DATE"],
+                        "selection_criteria": {"time_scope": "current_day"},
+                    },
+                },
+                {
+                    "dataset_key": "production",
+                    "payload": {
+                        "columns": ["WORK_DATE", "OPER_NAME", "PRODUCTION"],
+                        "required_params": ["DATE"],
+                        "selection_criteria": {"time_scope": "history"},
+                    },
+                },
+                {
+                    "dataset_key": "wip_today",
+                    "payload": {
+                        "columns": ["WORK_DATE", "OPER_NAME", "WIP"],
+                        "required_params": ["DATE"],
+                        "selection_criteria": {"time_scope": "current_day"},
+                    },
+                },
+                {
+                    "dataset_key": "wip",
+                    "payload": {
+                        "columns": ["WORK_DATE", "OPER_NAME", "WIP"],
+                        "required_params": ["DATE"],
+                        "selection_criteria": {"time_scope": "history"},
+                    },
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    result = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "6/27일 W/B공정에서 세부 공정별 생산실적과 아침재공 수량 알려줘",
+                "reference_date": "20260803",
+            },
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "wb_process_detail_production_and_boh_wip",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "source_alias": "wb_production",
+                        "required_params": {"DATE": "20260627"},
+                        "filters": deepcopy(process_filter),
+                    },
+                    {
+                        "dataset_key": "wip_today",
+                        "source_alias": "wb_wip",
+                        "required_params": {"DATE": "20260627"},
+                        "filters": deepcopy(process_filter),
+                    },
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "filter_wb_production",
+                        "operation": "apply_filters",
+                        "inputs": [{"kind": "external_source", "ref": "wb_production"}],
+                        "output_alias": "wb_production_filtered",
+                        "source_alias": "wb_production",
+                    },
+                    {
+                        "node_id": "agg_wb_production",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "filter_wb_production"}],
+                        "output_alias": "wb_production_agg",
+                        "source_alias": "wb_production_filtered",
+                        "group_by": ["OPER_NAME"],
+                        "agg_column": "PRODUCTION",
+                        "agg_method": "sum",
+                        "aggregations": [
+                            {
+                                "column": "PRODUCTION",
+                                "method": "sum",
+                                "output_column": "PRODUCTION_QTY",
+                            }
+                        ],
+                    },
+                    {
+                        "node_id": "filter_wb_wip",
+                        "operation": "apply_filters",
+                        "inputs": [{"kind": "external_source", "ref": "wb_wip"}],
+                        "output_alias": "wb_wip_filtered",
+                        "source_alias": "wb_wip",
+                    },
+                    {
+                        "node_id": "agg_wb_wip",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "node_output", "ref": "filter_wb_wip"}],
+                        "output_alias": "wb_wip_agg",
+                        "source_alias": "wb_wip_filtered",
+                        "group_by": ["OPER_NAME"],
+                        "agg_column": "WIP_QTY",
+                        "agg_method": "sum",
+                        "aggregations": [
+                            {
+                                "column": "WIP_QTY",
+                                "method": "sum",
+                                "output_column": "BOH_WIP_QTY",
+                            }
+                        ],
+                    },
+                    {
+                        "node_id": "join_production_wip",
+                        "operation": "join",
+                        "inputs": [
+                            {"kind": "node_output", "ref": "agg_wb_production"},
+                            {"kind": "node_output", "ref": "agg_wb_wip"},
+                        ],
+                        "output_alias": "wb_production_wip_joined",
+                        "left_source_alias": "wb_production_agg",
+                        "right_source_alias": "wb_wip_agg",
+                        "join_type": "outer",
+                        "population_policy": "preserve_all_metric_source_keys",
+                    },
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "required_columns": ["OPER_NAME", "PRODUCTION_QTY", "BOH_WIP_QTY"],
+                    "grain_columns": ["OPER_NAME"],
+                    "metric_columns": ["PRODUCTION_QTY", "BOH_WIP_QTY"],
+                    "primary_metric": "PRODUCTION_QTY",
+                    "result_columns": ["OPER_NAME", "PRODUCTION_QTY", "BOH_WIP_QTY"],
+                    "strict_result_columns": True,
+                },
+                "metadata_refs": [
+                    {"section": "quantity_terms", "key": "production_quantity"},
+                    {"section": "product_terms", "key": "BOH 재공"},
+                ],
+            },
+            "metadata_refs": [
+                {"section": "quantity_terms", "key": "production_quantity"},
+                {"section": "product_terms", "key": "BOH 재공"},
+            ],
+        },
+        candidates,
+    )
+
+    plan = result["intent_plan"]
+    jobs = {item["source_alias"]: item for item in plan["retrieval_jobs"]}
+    assert jobs["wb_production"]["dataset_key"] == "production"
+    assert jobs["wb_production"]["required_params"]["DATE"] == "20260627"
+    assert jobs["wb_wip"]["dataset_key"] == "wip"
+    assert jobs["wb_wip"]["required_params"]["DATE"] == "20260626"
+
+    refs = {(item["section"], item["key"]) for item in plan["metadata_refs"]}
+    assert ("quantity_terms", "wip_boh_quantity") in refs
+    assert ("product_terms", "BOH 재공") not in refs
+    wip_step = next(
+        item
+        for item in plan["pandas_execution_plan"]
+        if item.get("node_id") == "agg_wb_wip"
+    )
+    assert wip_step["agg_column"] == "WIP"
+    assert wip_step["aggregations"] == [
+        {"column": "WIP", "method": "sum", "output_column": "BOH_WIP_QTY"}
+    ]
+    bindings = {
+        item["output_column"]: item for item in plan["output_contract"]["metric_bindings"]
+    }
+    assert bindings["PRODUCTION_QTY"]["source_column"] == "PRODUCTION"
+    assert bindings["PRODUCTION_QTY"]["dataset_key"] == "production"
+    assert bindings["BOH_WIP_QTY"]["source_column"] == "WIP"
+    assert bindings["BOH_WIP_QTY"]["dataset_key"] == "wip"
+    assert "validation_errors" not in plan
+
+    result["runtime_sources"] = {
+        "wb_production": [
+            {"OPER_NAME": "W/B1", "PRODUCTION": 10},
+            {"OPER_NAME": "W/B2", "PRODUCTION": 20},
+        ],
+        "wb_wip": [
+            {"OPER_NAME": "W/B1", "WIP": 3},
+            {"OPER_NAME": "W/B3", "WIP": 7},
+        ],
+    }
+    executed = executor.execute_pandas_code(
+        result,
+        {"code": "result = sources['wb_production'].copy()"},
+    )
+    assert executed["analysis"]["status"] == "ok", executed
+    assert executed["analysis"]["execution_mode"] == "merge_metric_sources"
+    assert executed["data"]["rows"] == [
+        {"OPER_NAME": "W/B1", "PRODUCTION_QTY": 10, "BOH_WIP_QTY": 3},
+        {"OPER_NAME": "W/B2", "PRODUCTION_QTY": 20, "BOH_WIP_QTY": 0},
+        {"OPER_NAME": "W/B3", "PRODUCTION_QTY": 0, "BOH_WIP_QTY": 7},
+    ]
+
+
 def test_boh_yesterday_decision_reason_reports_offset_date_transition():
     normalizer = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
