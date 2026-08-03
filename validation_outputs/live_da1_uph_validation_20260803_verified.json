@@ -1,0 +1,352 @@
+{
+  "status": "ok",
+  "mode": "full_pipeline",
+  "environment": {
+    "repository": "C:\\Users\\qkekt\\Desktop\\metadata_driven_v5",
+    "reference_date": "20260803",
+    "retrieval_mode": "dummy",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-3.5-flash-lite",
+    "llm_temperature": 0.0,
+    "llm_timeout_seconds": 60,
+    "secrets": {
+      "mongodb_uri_configured": true,
+      "google_api_key_configured": true
+    },
+    "mongodb": {
+      "database": "datagov",
+      "collections": {
+        "domain": "agent_v4_domain_items",
+        "table_catalog": "agent_v4_table_catalog_items",
+        "main_flow_filter": "agent_v4_main_flow_filters"
+      },
+      "loaded_counts": {
+        "domain": 58,
+        "table_catalog": 9,
+        "main_flow_filter": 17
+      }
+    },
+    "prompt_sources": {
+      "intent": {
+        "path": "langflow_components\\data_analysis_flow\\03_intent_prompt_template_ko.md",
+        "chars": 26550,
+        "sha256": "e41e6f4d18b3a477f0db478dedd5995ca678b7130474919bcf6564defb062ae0"
+      },
+      "specialized_intent": {
+        "path": "langflow_components\\data_analysis_flow\\specialized_prompt_input_example_ko.md",
+        "chars": 12576,
+        "sha256": "04a3e8033ed73af223044889665a034fee32e6a6af070c7e9de68fc659adff46"
+      },
+      "pandas": {
+        "path": "langflow_components\\data_analysis_flow\\16_pandas_prompt_template_ko.md",
+        "chars": 17340,
+        "sha256": "ede337cd7b1d1bdb0681c1dd6e0f04ff2f7f2157546bb606431a1bebfcf147b8"
+      },
+      "pandas_repair": {
+        "path": "langflow_components\\data_analysis_flow\\17b_pandas_repair_prompt_template_ko.md",
+        "chars": 11281,
+        "sha256": "e71e1599926623e0fe6fec3860bd02e5acd8d28373dc53b225f4e8abd632f9c0"
+      },
+      "answer": {
+        "path": "langflow_components\\data_analysis_flow\\19_answer_prompt_template_ko.md",
+        "chars": 3141,
+        "sha256": "c61ee0960d5ec740b4ced2e996ca6c8308a508ffec33749dd7f4b91316611d28"
+      }
+    }
+  },
+  "results": [
+    {
+      "question": "현재 D/A1 공정의 장비 모델, Recipe, 공정, UPH를 보여줘",
+      "status": "ok",
+      "elapsed_seconds": 6.452,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 7,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "process_groups:DA",
+          "analysis_recipes:equipment_assignment_uph_join",
+          "quantity_terms:equipment_count",
+          "analysis_recipes:uph_result_policy",
+          "analysis_recipes:group_by_oper_name_for_detailed_process",
+          "analysis_recipes:group_by_oper_name_for_process_sequence",
+          "analysis_recipes:product_grain_and_join_policy",
+          "analysis_recipes:production_achievement_rate_analysis",
+          "analysis_recipes:raw_data_display_policy",
+          "analysis_recipes:select_device_column_for_device_code_query"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "wip_today",
+          "production",
+          "wip",
+          "eqp_uph",
+          "equipment_assign",
+          "lot_status"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 61124,
+        "analysis_kind": "equipment_model_recipe_oper_uph_by_process",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "equipment_model_recipe_oper_uph_by_process",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {},
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "process_groups",
+              "key": "DA"
+            },
+            "source_alias": "eqp_uph_src"
+          },
+          "retrieval_jobs": [
+            {
+              "dataset_key": "eqp_uph",
+              "source_alias": "eqp_uph_src",
+              "required_params": {},
+              "filters": {
+                "OPER_NAME": {
+                  "operator": "eq",
+                  "value": "D/A1"
+                }
+              },
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "GMS_DB",
+                "query_template": "SELECT \n\n  EQUIP_MODEL\n  ,OPER\n  ,OPER_NAME\n  ,PRESS_CNT\n  ,PROD_TYP AS \"MODE\"\n  ,TECH\n  ,ORG\n  ,DENSITY\n  ,PKG_TYP AS PKG1\n  ,PKG_TYP_2 AS PKG2\n  ,LEAD_CNT AS LEAD\n  ,MCP_NO\n  ,RECIPE_ID \n  ,round(AVG_UPH_VAL,2) AS UPH\n  ,WORK_DT AS LOAD_DT\n  ,BASE_DT\nFROM UPH\nWHERE 1=1"
+              },
+              "required_param_names": [],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:eqp_uph",
+              "filter_mappings": {
+                "EQP_MODEL": [
+                  "EQUIP_MODEL"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "RECIPE_ID": [
+                  "RECIPE_ID"
+                ],
+                "UPH": [
+                  "UPH"
+                ]
+              },
+              "default_detail_columns": [
+                "EQP_MODEL",
+                "RECIPE_ID",
+                "OPER_NAME"
+              ],
+              "metric_semantics": {
+                "UPH": {
+                  "semantic_type": "average",
+                  "additive": false,
+                  "default_rollup": "mean",
+                  "allowed_rollups": [
+                    "mean"
+                  ],
+                  "source_already_aggregated": true
+                }
+              },
+              "job_id": "job_1"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "node_id": "step_1",
+              "operation": "apply_filters",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "eqp_uph_src"
+                }
+              ],
+              "source_alias": "eqp_uph_src",
+              "agg_column": "",
+              "agg_method": "",
+              "aggregations": [],
+              "sort_by": "",
+              "order": "",
+              "limit": 0
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME",
+              "UPH"
+            ],
+            "grain_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME"
+            ],
+            "metric_columns": [
+              "UPH"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "primary_metric": "UPH",
+            "column_labels": {
+              "EQP_MODEL": "장비 모델",
+              "RECIPE_ID": "Recipe",
+              "OPER_NAME": "공정",
+              "UPH": "UPH"
+            },
+            "result_columns": [
+              "EQP_MODEL",
+              "RECIPE_ID",
+              "OPER_NAME",
+              "UPH"
+            ],
+            "strict_result_columns": true
+          },
+          "metadata_refs": [
+            {
+              "section": "process_groups",
+              "key": "DA"
+            },
+            {
+              "section": "analysis_recipes",
+              "key": "uph_result_policy"
+            }
+          ],
+          "trace": {
+            "decision_reason": [
+              "사용자가 현재 D/A1 공정의 장비 모델, Recipe, 공정, UPH 조회를 요청하였으므로 eqp_uph 데이터셋을 선택하고 OPER_NAME 필터에 D/A1을 적용합니다. UPH는 평균형 비가산 지표이므로 개별 UPH 문맥을 유지합니다."
+            ]
+          },
+          "reuse_strategy": "none",
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "step_1",
+                "operation": "apply_filters",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "eqp_uph_src"
+                  }
+                ]
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "eqp_uph_src",
+                "provider": "retrieval_job",
+                "dataset_key": "eqp_uph",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "process_groups",
+            "key": "DA"
+          },
+          {
+            "section": "analysis_recipes",
+            "key": "uph_result_policy"
+          },
+          {
+            "type": "table_catalog",
+            "key": "eqp_uph"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "eqp_uph",
+            "source_alias": "eqp_uph_src",
+            "status": "ok",
+            "row_count": 19,
+            "applied_params": {},
+            "pandas_filters": {
+              "OPER_NAME": {
+                "operator": "eq",
+                "value": "D/A1"
+              }
+            }
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 22356,
+        "status": "ok",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "generated_code": "_filtered_source_1_eqp_uph_src = sources.get('eqp_uph_src')\nif _filtered_source_1_eqp_uph_src is not None:\n    sources = dict(sources)\n    _filtered_source_1_eqp_uph_src = _filtered_source_1_eqp_uph_src.copy()\n    _filter_col_1_1 = 'OPER_NAME' if 'OPER_NAME' in _filtered_source_1_eqp_uph_src.columns else ('')\n    _filter_values_1_1 = ['D/A1']\n    if not _filter_col_1_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: OPER_NAME (candidates=['OPER_NAME'])\")\n    if _filter_col_1_1:\n        _filtered_source_1_eqp_uph_src = _filtered_source_1_eqp_uph_src[_filtered_source_1_eqp_uph_src[_filter_col_1_1].isin(_filter_values_1_1)]\n    sources['eqp_uph_src'] = _filtered_source_1_eqp_uph_src\n\ndf = sources[\"eqp_uph_src\"]\ngroup_cols = [\"EQP_MODEL\", \"RECIPE_ID\", \"OPER_NAME\"]\nmetric_cols = [\"UPH\"]\n\nexisting_group_cols = [c for c in group_cols if c in df.columns]\nexisting_metric_cols = [c for c in metric_cols if c in df.columns]\n\nif existing_group_cols and existing_metric_cols:\n    result = df.groupby(existing_group_cols, dropna=False)[existing_metric_cols].mean().reset_index()\n    for col in existing_group_cols:\n        result[col] = result[col].fillna(\"\").astype(str).str.replace(r\"^\\s*$\", \"\", regex=True)\n    for col in existing_metric_cols:\n        result[col] = pd.to_numeric(result[col], errors=\"coerce\").fillna(0)\nelse:\n    result = pd.DataFrame(columns=group_cols + metric_cols)\n\nfinal_columns = [c for c in [\"EQP_MODEL\", \"RECIPE_ID\", \"OPER_NAME\", \"UPH\"] if c in result.columns]\nresult = result[final_columns]",
+        "llm_generated_code": "df = sources[\"eqp_uph_src\"]\ngroup_cols = [\"EQP_MODEL\", \"RECIPE_ID\", \"OPER_NAME\"]\nmetric_cols = [\"UPH\"]\n\nexisting_group_cols = [c for c in group_cols if c in df.columns]\nexisting_metric_cols = [c for c in metric_cols if c in df.columns]\n\nif existing_group_cols and existing_metric_cols:\n    result = df.groupby(existing_group_cols, dropna=False)[existing_metric_cols].mean().reset_index()\n    for col in existing_group_cols:\n        result[col] = result[col].fillna(\"\").astype(str).str.replace(r\"^\\s*$\", \"\", regex=True)\n    for col in existing_metric_cols:\n        result[col] = pd.to_numeric(result[col], errors=\"coerce\").fillna(0)\nelse:\n    result = pd.DataFrame(columns=group_cols + metric_cols)\n\nfinal_columns = [c for c in [\"EQP_MODEL\", \"RECIPE_ID\", \"OPER_NAME\", \"UPH\"] if c in result.columns]\nresult = result[final_columns]",
+        "execution_mode": "llm_generated_code",
+        "semantic_execution_certificate": {},
+        "used_helpers": [],
+        "row_count": 1,
+        "columns": [
+          "EQP_MODEL",
+          "RECIPE_ID",
+          "OPER_NAME",
+          "UPH"
+        ],
+        "preview_rows": [
+          {
+            "EQP_MODEL": "EQM-HBM",
+            "RECIPE_ID": "RCP-002",
+            "OPER_NAME": "D/A1",
+            "UPH": 88.2
+          }
+        ]
+      },
+      "answer": {
+        "prompt_chars": 7164,
+        "message": "### 답변\n현재 D/A1 공정의 장비 모델, Recipe, UPH 현황을 조회한 결과, EQM-HBM 장비 모델과 RCP-002 Recipe 기준 UPH는 88.2입니다.\n\n요청하신 조건에 따라 D/A1 공정의 장비 구성 및 생산성 정보를 확인했습니다.\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n| 공정 | 장비 모델 | Recipe | UPH |\n| --- | --- | --- | --- |\n| D/A1 | EQM-HBM | RCP-002 | 88.2 |\n\n총 1건입니다.\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=eqp_uph, source_alias=eqp_uph_src, source_type=oracle\n- dataset_key=eqp_uph, source_alias=eqp_uph_src, source_type=oracle, row_count=19\n**분석 조건**\n- eqp_uph_src: OPER_NAME={\"operator\": \"eq\", \"value\": \"D/A1\"}\n**계산 지표**\n- UPH\n\n### 참고\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 이 결과를 제품별 또는 공정별로 더 나눠볼까요?\n- 원본 데이터를 내려받아 상세 Lot/Device를 확인할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    }
+  ],
+  "errors": []
+}

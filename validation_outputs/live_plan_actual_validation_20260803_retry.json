@@ -1,0 +1,954 @@
+{
+  "status": "ok",
+  "mode": "full_pipeline",
+  "environment": {
+    "repository": "C:\\Users\\qkekt\\Desktop\\metadata_driven_v5",
+    "reference_date": "20260803",
+    "retrieval_mode": "dummy",
+    "llm_provider": "gemini",
+    "llm_model": "gemini-3.5-flash-lite",
+    "llm_temperature": 0.0,
+    "llm_timeout_seconds": 60,
+    "secrets": {
+      "mongodb_uri_configured": true,
+      "google_api_key_configured": true
+    },
+    "mongodb": {
+      "database": "datagov",
+      "collections": {
+        "domain": "agent_v4_domain_items",
+        "table_catalog": "agent_v4_table_catalog_items",
+        "main_flow_filter": "agent_v4_main_flow_filters"
+      },
+      "loaded_counts": {
+        "domain": 58,
+        "table_catalog": 9,
+        "main_flow_filter": 17
+      }
+    },
+    "prompt_sources": {
+      "intent": {
+        "path": "langflow_components\\data_analysis_flow\\03_intent_prompt_template_ko.md",
+        "chars": 26550,
+        "sha256": "e41e6f4d18b3a477f0db478dedd5995ca678b7130474919bcf6564defb062ae0"
+      },
+      "specialized_intent": {
+        "path": "langflow_components\\data_analysis_flow\\specialized_prompt_input_example_ko.md",
+        "chars": 12576,
+        "sha256": "04a3e8033ed73af223044889665a034fee32e6a6af070c7e9de68fc659adff46"
+      },
+      "pandas": {
+        "path": "langflow_components\\data_analysis_flow\\16_pandas_prompt_template_ko.md",
+        "chars": 17340,
+        "sha256": "ede337cd7b1d1bdb0681c1dd6e0f04ff2f7f2157546bb606431a1bebfcf147b8"
+      },
+      "pandas_repair": {
+        "path": "langflow_components\\data_analysis_flow\\17b_pandas_repair_prompt_template_ko.md",
+        "chars": 11281,
+        "sha256": "e71e1599926623e0fe6fec3860bd02e5acd8d28373dc53b225f4e8abd632f9c0"
+      },
+      "answer": {
+        "path": "langflow_components\\data_analysis_flow\\19_answer_prompt_template_ko.md",
+        "chars": 3141,
+        "sha256": "c61ee0960d5ec740b4ced2e996ca6c8308a508ffec33749dd7f4b91316611d28"
+      }
+    }
+  },
+  "results": [
+    {
+      "question": "7/6 제품별 생산계획과 실적정보 알려줘",
+      "status": "ok",
+      "elapsed_seconds": 8.223,
+      "metadata_candidates": {
+        "domain_count": 10,
+        "table_catalog_count": 6,
+        "main_flow_filter_count": 17,
+        "domain_keys": [
+          "quantity_terms:target_data",
+          "quantity_terms:production_quantity",
+          "analysis_recipes:product_grain_and_join_policy",
+          "product_key_columns:standard_product_keys",
+          "pandas_function_cases:product_token_match",
+          "product_terms:2HI_PRODUCT",
+          "product_terms:4HI_PRODUCT",
+          "product_terms:8HI_PRODUCT",
+          "product_terms:AUTO_PRODUCT",
+          "product_terms:HBM_3DS_TSV_PRODUCT"
+        ],
+        "table_catalog_keys": [
+          "production_today",
+          "production",
+          "target",
+          "eqp_uph",
+          "equipment_assign",
+          "hold_history"
+        ],
+        "main_flow_filter_keys": []
+      },
+      "intent": {
+        "prompt_chars": 59695,
+        "analysis_kind": "target_plan_by_product",
+        "request_scope": "new_analysis",
+        "reuse_strategy": "none",
+        "plan": {
+          "analysis_kind": "target_plan_by_product",
+          "request_scope": "new_analysis",
+          "reference_mode": "none",
+          "condition_resolution": {
+            "new": {
+              "DATE": {
+                "operator": "eq",
+                "value": "20260706"
+              }
+            }
+          },
+          "grain_plan": {
+            "metadata_ref": {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            "source_alias": "target_source"
+          },
+          "retrieval_jobs": [
+            {
+              "dataset_key": "target",
+              "source_alias": "target_source",
+              "required_params": {},
+              "filters": {
+                "DATE": {
+                  "operator": "eq",
+                  "value": "20260706"
+                }
+              },
+              "source_type": "goodocs",
+              "source_config": {
+                "source_type": "goodocs",
+                "doc_id": "1212121212121212121212"
+              },
+              "required_param_names": [],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:target",
+              "filter_mappings": {
+                "DATE": [
+                  "DATE"
+                ],
+                "MODE": [
+                  "Mode"
+                ],
+                "DEN": [
+                  "DEN"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP NO"
+                ],
+                "INPUT_PLAN_QTY": [
+                  "INPUT 계획"
+                ],
+                "OUT_PLAN_QTY": [
+                  "OUT 계획"
+                ]
+              },
+              "metric_semantics": {
+                "INPUT_PLAN_QTY": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum"
+                  ],
+                  "value_transform": {
+                    "coerce_numeric": true,
+                    "multiplier": 1000
+                  }
+                },
+                "OUT_PLAN_QTY": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum"
+                  ],
+                  "value_transform": {
+                    "coerce_numeric": true,
+                    "multiplier": 1000
+                  }
+                }
+              },
+              "job_id": "job_1"
+            },
+            {
+              "dataset_key": "production",
+              "source_alias": "production",
+              "required_params": {
+                "DATE": "20260706"
+              },
+              "filters": {},
+              "source_type": "oracle",
+              "source_config": {
+                "source_type": "oracle",
+                "db_key": "PNT_RPT",
+                "query_template": "SELECT WORK_DATE, SHIFT, FACTORY, FAB, FAMILY, MODE, DENSITY, TECH, ORG, PKG1\n        , PKG2, LEAD, MCP_NO, TSV_DIE_TYP, DEVICE, DEVICE_DESC, DIE_ATTACH_QTY, NETDIE_300_CNT, OPER\n        , OPER_NAME, OPER_SEQ, PRODUCTION \nFROM PROD_TABLE2\nWHERE 1=1\nAND WORK_DATE = {DATE}"
+              },
+              "required_param_names": [
+                "DATE"
+              ],
+              "trusted_catalog": true,
+              "catalog_ref": "table_catalog:production",
+              "filter_mappings": {
+                "DATE": [
+                  "WORK_DATE"
+                ],
+                "MODE": [
+                  "MODE"
+                ],
+                "DEN": [
+                  "DENSITY"
+                ],
+                "TECH": [
+                  "TECH"
+                ],
+                "ORG": [
+                  "ORG"
+                ],
+                "PKG_TYPE1": [
+                  "PKG1"
+                ],
+                "PKG_TYPE2": [
+                  "PKG2"
+                ],
+                "LEAD": [
+                  "LEAD"
+                ],
+                "MCP_NO": [
+                  "MCP_NO"
+                ],
+                "TSV_DIE_TYP": [
+                  "TSV_DIE_TYP"
+                ],
+                "DEVICE": [
+                  "DEVICE"
+                ],
+                "DEVICE_DESC": [
+                  "DEVICE_DESC"
+                ],
+                "OPER_NUM": [
+                  "OPER"
+                ],
+                "OPER_NAME": [
+                  "OPER_NAME"
+                ]
+              },
+              "metric_semantics": {
+                "PRODUCTION": {
+                  "semantic_type": "quantity",
+                  "additive": true,
+                  "default_rollup": "sum",
+                  "allowed_rollups": [
+                    "sum",
+                    "mean",
+                    "min",
+                    "max",
+                    "count"
+                  ],
+                  "source_already_aggregated": false
+                }
+              },
+              "job_id": "job_2"
+            }
+          ],
+          "pandas_execution_plan": [
+            {
+              "node_id": "step_agg",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "target_source"
+                }
+              ],
+              "group_by": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "aggregations": [
+                {
+                  "column": "INPUT_PLAN_QTY",
+                  "method": "sum",
+                  "output_column": "INPUT_PLAN_QTY"
+                },
+                {
+                  "column": "OUT_PLAN_QTY",
+                  "method": "sum",
+                  "output_column": "OUT_PLAN_QTY"
+                }
+              ],
+              "source_alias": "target_source"
+            },
+            {
+              "node_id": "metadata_metric_1",
+              "operation": "groupby_and_aggregate",
+              "inputs": [
+                {
+                  "kind": "external_source",
+                  "ref": "production"
+                }
+              ],
+              "output_alias": "production_by_grain",
+              "source_alias": "production",
+              "group_by": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "aggregations": [
+                {
+                  "column": "PRODUCTION",
+                  "method": "sum",
+                  "output_column": "PRODUCTION"
+                }
+              ]
+            },
+            {
+              "node_id": "metadata_metric_join_1",
+              "operation": "join",
+              "inputs": [
+                {
+                  "kind": "node_output",
+                  "ref": "step_agg"
+                },
+                {
+                  "kind": "node_output",
+                  "ref": "metadata_metric_1"
+                }
+              ],
+              "output_alias": "metric_join_1",
+              "left_source_alias": "step_agg",
+              "right_source_alias": "production_by_grain",
+              "join_type": "outer",
+              "population_policy": "preserve_all_metric_source_keys"
+            }
+          ],
+          "output_contract": {
+            "result_mode": "aggregate",
+            "required_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "INPUT_PLAN_QTY",
+              "OUT_PLAN_QTY",
+              "PRODUCTION"
+            ],
+            "grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "metric_columns": [
+              "INPUT_PLAN_QTY",
+              "OUT_PLAN_QTY",
+              "PRODUCTION"
+            ],
+            "null_group_policy": "preserve_as_blank",
+            "metric_null_policy": "display_zero",
+            "metric_bindings": [
+              {
+                "source_alias": "target_source",
+                "dataset_key": "target",
+                "source_column": "INPUT_PLAN_QTY",
+                "aggregation": "sum",
+                "output_column": "INPUT_PLAN_QTY",
+                "semantic_scope": {}
+              },
+              {
+                "source_alias": "target_source",
+                "dataset_key": "target",
+                "source_column": "OUT_PLAN_QTY",
+                "aggregation": "sum",
+                "output_column": "OUT_PLAN_QTY",
+                "semantic_scope": {}
+              },
+              {
+                "source_alias": "production",
+                "dataset_key": "production",
+                "source_column": "PRODUCTION",
+                "aggregation": "sum",
+                "output_column": "PRODUCTION",
+                "semantic_scope": {}
+              }
+            ],
+            "primary_metric": "INPUT_PLAN_QTY",
+            "column_labels": {
+              "INPUT_PLAN_QTY": "투입 계획",
+              "OUT_PLAN_QTY": "OUT 계획"
+            },
+            "result_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO",
+              "INPUT_PLAN_QTY",
+              "OUT_PLAN_QTY",
+              "PRODUCTION"
+            ],
+            "strict_result_columns": true
+          },
+          "metadata_refs": [
+            {
+              "section": "quantity_terms",
+              "key": "target_data"
+            },
+            {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            {
+              "section": "quantity_terms",
+              "key": "production_quantity"
+            }
+          ],
+          "trace": {
+            "decision_reason": [
+              "사용자가 7/6 제품별 생산계획(투입계획 및 OUT계획) 정보를 요구하므로 target 데이터셋을 사용한다.",
+              "생산계획 또는 계획정보처럼 INPUT/OUT을 한정하지 않았으므로 두 metric을 각각 집계하여 표준 제품 기준으로 함께 표시한다.",
+              "날짜는 2026년 7월 6일(20260706)로 설정한다."
+            ]
+          },
+          "reuse_strategy": "none",
+          "resolved_grain_plan": {
+            "metadata_ref": {
+              "section": "product_key_columns",
+              "key": "standard_product_keys"
+            },
+            "source_alias": "target_source",
+            "dataset_key": "target",
+            "canonical_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "column_mappings": [
+              {
+                "canonical_key": "TECH",
+                "source_candidates": [
+                  "TECH"
+                ]
+              },
+              {
+                "canonical_key": "DEN",
+                "source_candidates": [
+                  "DEN"
+                ]
+              },
+              {
+                "canonical_key": "MODE",
+                "source_candidates": [
+                  "MODE",
+                  "Mode"
+                ]
+              },
+              {
+                "canonical_key": "PKG_TYPE1",
+                "source_candidates": [
+                  "PKG_TYPE1",
+                  "PKG1"
+                ]
+              },
+              {
+                "canonical_key": "PKG_TYPE2",
+                "source_candidates": [
+                  "PKG_TYPE2",
+                  "PKG2"
+                ]
+              },
+              {
+                "canonical_key": "LEAD",
+                "source_candidates": [
+                  "LEAD"
+                ]
+              },
+              {
+                "canonical_key": "MCP_NO",
+                "source_candidates": [
+                  "MCP_NO",
+                  "MCP NO"
+                ]
+              }
+            ],
+            "grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "strict": true
+          },
+          "resolved_output_grain_plan": {
+            "entity_grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "breakdown_columns": [],
+            "grain_columns": [
+              "TECH",
+              "DEN",
+              "MODE",
+              "PKG_TYPE1",
+              "PKG_TYPE2",
+              "LEAD",
+              "MCP_NO"
+            ],
+            "source_aliases": [
+              "target_source",
+              "production"
+            ],
+            "rejected_columns": [],
+            "strict": true
+          },
+          "resolved_execution_graph": {
+            "version": 1,
+            "nodes": [
+              {
+                "node_id": "step_agg",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "target_source"
+                  }
+                ]
+              },
+              {
+                "node_id": "metadata_metric_1",
+                "operation": "groupby_and_aggregate",
+                "inputs": [
+                  {
+                    "kind": "external_source",
+                    "ref": "production"
+                  }
+                ],
+                "output_alias": "production_by_grain"
+              },
+              {
+                "node_id": "metadata_metric_join_1",
+                "operation": "join",
+                "inputs": [
+                  {
+                    "kind": "node_output",
+                    "ref": "step_agg"
+                  },
+                  {
+                    "kind": "node_output",
+                    "ref": "metadata_metric_1"
+                  }
+                ],
+                "output_alias": "metric_join_1"
+              }
+            ],
+            "external_source_requirements": [
+              {
+                "source_alias": "target_source",
+                "provider": "retrieval_job",
+                "dataset_key": "target",
+                "required": true
+              },
+              {
+                "source_alias": "production",
+                "provider": "retrieval_job",
+                "dataset_key": "production",
+                "required": true
+              }
+            ],
+            "validation_errors": []
+          },
+          "resolved_join_plan": [
+            {
+              "metadata_ref": {
+                "section": "product_key_columns",
+                "key": "standard_product_keys"
+              },
+              "left_source_alias": "step_agg",
+              "right_source_alias": "production_by_grain",
+              "left_dataset_key": "",
+              "right_dataset_key": "",
+              "join_type": "left",
+              "canonical_keys": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "key_mappings": [
+                {
+                  "canonical_key": "TECH",
+                  "left_candidates": [
+                    "TECH"
+                  ],
+                  "right_candidates": [
+                    "TECH"
+                  ]
+                },
+                {
+                  "canonical_key": "DEN",
+                  "left_candidates": [
+                    "DEN"
+                  ],
+                  "right_candidates": [
+                    "DEN"
+                  ]
+                },
+                {
+                  "canonical_key": "MODE",
+                  "left_candidates": [
+                    "MODE"
+                  ],
+                  "right_candidates": [
+                    "MODE"
+                  ]
+                },
+                {
+                  "canonical_key": "PKG_TYPE1",
+                  "left_candidates": [
+                    "PKG_TYPE1"
+                  ],
+                  "right_candidates": [
+                    "PKG_TYPE1"
+                  ]
+                },
+                {
+                  "canonical_key": "PKG_TYPE2",
+                  "left_candidates": [
+                    "PKG_TYPE2"
+                  ],
+                  "right_candidates": [
+                    "PKG_TYPE2"
+                  ]
+                },
+                {
+                  "canonical_key": "LEAD",
+                  "left_candidates": [
+                    "LEAD"
+                  ],
+                  "right_candidates": [
+                    "LEAD"
+                  ]
+                },
+                {
+                  "canonical_key": "MCP_NO",
+                  "left_candidates": [
+                    "MCP_NO"
+                  ],
+                  "right_candidates": [
+                    "MCP_NO"
+                  ]
+                }
+              ],
+              "left_keys": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "right_keys": [
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "MCP_NO"
+              ],
+              "canonical_right_value_columns": [],
+              "right_value_mappings": [],
+              "right_value_columns": [],
+              "null_key_policy": "normalize_blank",
+              "multi_match_policy": "preserve_rows",
+              "strict": true
+            }
+          ],
+          "resolved_metric_merge_plan": {
+            "operation": "merge_metric_sources",
+            "join_type": "outer",
+            "population_policy": "preserve_all_metric_source_keys",
+            "selection_source": "typed_metric_join_lineage",
+            "join_node_ids": [
+              "metadata_metric_join_1"
+            ],
+            "source_transforms": [],
+            "grain_mappings": [
+              {
+                "canonical_column": "TECH",
+                "output_column": "TECH",
+                "source_candidates": {
+                  "production": [
+                    "TECH"
+                  ],
+                  "target_source": [
+                    "TECH"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "DEN",
+                "output_column": "DEN",
+                "source_candidates": {
+                  "production": [
+                    "DENSITY",
+                    "DEN"
+                  ],
+                  "target_source": [
+                    "DEN"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "MODE",
+                "output_column": "MODE",
+                "source_candidates": {
+                  "production": [
+                    "MODE"
+                  ],
+                  "target_source": [
+                    "Mode",
+                    "MODE"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "PKG_TYPE1",
+                "output_column": "PKG_TYPE1",
+                "source_candidates": {
+                  "production": [
+                    "PKG1",
+                    "PKG_TYPE1"
+                  ],
+                  "target_source": [
+                    "PKG1",
+                    "PKG_TYPE1"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "PKG_TYPE2",
+                "output_column": "PKG_TYPE2",
+                "source_candidates": {
+                  "production": [
+                    "PKG2",
+                    "PKG_TYPE2"
+                  ],
+                  "target_source": [
+                    "PKG2",
+                    "PKG_TYPE2"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "LEAD",
+                "output_column": "LEAD",
+                "source_candidates": {
+                  "production": [
+                    "LEAD"
+                  ],
+                  "target_source": [
+                    "LEAD"
+                  ]
+                }
+              },
+              {
+                "canonical_column": "MCP_NO",
+                "output_column": "MCP_NO",
+                "source_candidates": {
+                  "production": [
+                    "MCP_NO"
+                  ],
+                  "target_source": [
+                    "MCP NO",
+                    "MCP_NO"
+                  ]
+                }
+              }
+            ],
+            "metrics": [
+              {
+                "source_alias": "target_source",
+                "dataset_key": "target",
+                "source_column": "INPUT_PLAN_QTY",
+                "aggregation": "sum",
+                "output_column": "INPUT_PLAN_QTY",
+                "fill_value": 0,
+                "source_candidates": [
+                  "INPUT 계획",
+                  "INPUT_PLAN_QTY"
+                ]
+              },
+              {
+                "source_alias": "target_source",
+                "dataset_key": "target",
+                "source_column": "OUT_PLAN_QTY",
+                "aggregation": "sum",
+                "output_column": "OUT_PLAN_QTY",
+                "fill_value": 0,
+                "source_candidates": [
+                  "OUT 계획",
+                  "OUT_PLAN_QTY"
+                ]
+              },
+              {
+                "source_alias": "production",
+                "dataset_key": "production",
+                "source_column": "PRODUCTION",
+                "aggregation": "sum",
+                "output_column": "PRODUCTION",
+                "fill_value": 0,
+                "source_candidates": [
+                  "PRODUCTION"
+                ]
+              }
+            ],
+            "fill_zero_on_success": true,
+            "strict": true
+          }
+        },
+        "metadata_refs": [
+          {
+            "section": "quantity_terms",
+            "key": "target_data"
+          },
+          {
+            "section": "product_key_columns",
+            "key": "standard_product_keys"
+          },
+          {
+            "section": "quantity_terms",
+            "key": "production_quantity"
+          },
+          {
+            "type": "table_catalog",
+            "key": "target"
+          },
+          {
+            "type": "table_catalog",
+            "key": "production"
+          }
+        ]
+      },
+      "retrieval": {
+        "mode": "dummy",
+        "source_results": [
+          {
+            "dataset_key": "target",
+            "source_alias": "target_source",
+            "status": "ok",
+            "row_count": 8,
+            "applied_params": {},
+            "pandas_filters": {
+              "DATE": {
+                "operator": "eq",
+                "value": "20260706"
+              }
+            }
+          },
+          {
+            "dataset_key": "production",
+            "source_alias": "production",
+            "status": "ok",
+            "row_count": 0,
+            "applied_params": {
+              "DATE": "20260706"
+            },
+            "pandas_filters": {}
+          }
+        ]
+      },
+      "pandas": {
+        "prompt_chars": 30453,
+        "status": "ok",
+        "repair_attempted": false,
+        "repair_selected": "initial",
+        "generated_code": "def _normalize_date_filter_value(value):\n    text = str(value if value is not None else '').strip()\n    if text.casefold() in ('', 'null', 'none', 'nan', 'nat', '<na>', 'empty'):\n        return ''\n    if len(text) >= 8 and text[:8].isdigit():\n        return text[:8]\n    normalized = text.replace('년', '-').replace('월', '-').replace('일', '')\n    normalized = normalized.replace('/', '-').replace('.', '-')\n    parts = [part.strip() for part in normalized.split('-') if part.strip()]\n    if len(parts) >= 3 and len(parts[0]) == 4:\n        try:\n            return f'{int(parts[0]):04d}{int(parts[1]):02d}{int(parts[2][:2]):02d}'\n        except Exception:\n            return text\n    return text\n\n_filtered_source_1_target_source = sources.get('target_source')\nif _filtered_source_1_target_source is not None:\n    sources = dict(sources)\n    _filtered_source_1_target_source = _filtered_source_1_target_source.copy()\n    _filter_col_1_1 = 'DATE' if 'DATE' in _filtered_source_1_target_source.columns else ('')\n    _filter_values_1_1 = ['20260706']\n    if not _filter_col_1_1:\n        raise Exception(\"pandas filter 컬럼을 카탈로그 매핑 또는 동일 이름으로 찾을 수 없습니다: DATE (candidates=['DATE'])\")\n    if _filter_col_1_1:\n        _filter_values_1_1 = [_normalize_date_filter_value(value) for value in _filter_values_1_1]\n        _filter_date_series_1_1 = _filtered_source_1_target_source[_filter_col_1_1].map(_normalize_date_filter_value)\n        _filtered_source_1_target_source = _filtered_source_1_target_source[_filter_date_series_1_1.isin(_filter_values_1_1)]\n    sources['target_source'] = _filtered_source_1_target_source\n\n# --- deterministic execution contract (executed internally) ---\n# operation: merge_metric_sources\n# action: aggregate each metric source and merge on the resolved grain",
+        "llm_generated_code": "target_df = sources[\"target_source\"].copy()\nproduction_df = sources[\"production\"].copy()\n\ngrain_cols = [\n    \"TECH\",\n    \"DEN\",\n    \"MODE\",\n    \"PKG_TYPE1\",\n    \"PKG_TYPE2\",\n    \"LEAD\",\n    \"MCP_NO\"\n]\n\nfor col in grain_cols:\n    if col not in target_df.columns:\n        target_df[col] = \"\"\n    if col not in production_df.columns:\n        production_df[col] = \"\"\n\nfor col in grain_cols:\n    target_df[col] = target_df[col].fillna(\"\").astype(str).str.strip()\n    production_df[col] = production_df[col].fillna(\"\").astype(str).str.strip()\n\ntarget_agg = target_df.groupby(grain_cols, dropna=False).agg({\n    \"INPUT_PLAN_QTY\": \"sum\",\n    \"OUT_PLAN_QTY\": \"sum\"\n}).reset_index()\n\nproduction_agg = production_df.groupby(grain_cols, dropna=False).agg({\n    \"PRODUCTION\": \"sum\"\n}).reset_index()\n\nmerged = pd.merge(\n    target_agg,\n    production_agg,\n    on=grain_cols,\n    how=\"outer\"\n)\n\nfor col in [\"INPUT_PLAN_QTY\", \"OUT_PLAN_QTY\", \"PRODUCTION\"]:\n    if col in merged.columns:\n        merged[col] = pd.to_numeric(merged[col], errors=\"coerce\").fillna(0)\n    else:\n        merged[col] = 0\n\nfor col in grain_cols:\n    merged[col] = merged[col].fillna(\"\").astype(str)\n    merged[col] = merged[col].str.replace(r\"\\.0$\", \"\", regex=True)\n    merged[col] = merged[col].replace({\"nan\": \"\", \"None\": \"\", \"<NA>\": \"\"})\n\nresult_cols = grain_cols + [\n    \"INPUT_PLAN_QTY\",\n    \"OUT_PLAN_QTY\",\n    \"PRODUCTION\"\n]\n\nresult = merged[[c for c in result_cols if c in merged.columns]].copy()",
+        "execution_mode": "merge_metric_sources",
+        "semantic_execution_certificate": {},
+        "used_helpers": [],
+        "row_count": 0,
+        "columns": [
+          "TECH",
+          "DEN",
+          "MODE",
+          "PKG_TYPE1",
+          "PKG_TYPE2",
+          "LEAD",
+          "MCP_NO",
+          "INPUT_PLAN_QTY",
+          "OUT_PLAN_QTY",
+          "PRODUCTION"
+        ],
+        "preview_rows": []
+      },
+      "answer": {
+        "prompt_chars": 8076,
+        "message": "### 답변\n7월 6일 제품별 생산계획 및 실적 정보 조회 결과, 조건에 해당하는 데이터가 존재하지 않습니다.\n\n요청하신 날짜의 투입 계획 및 OUT 계획 데이터를 찾을 수 없어, 입력하신 조건에 맞는 결과가 없습니다.\n\n적용 기준: 조회일자 2026년 7월 6일\n\n참고로 현재 결과는 더미 데이터 기준입니다.\n\n### 결과 테이블\n표시할 결과 행이 없습니다.\n\n- 컬럼: `TECH, DEN, MODE, PKG_TYPE1, PKG_TYPE2, LEAD, MCP_NO, INPUT_PLAN_QTY, OUT_PLAN_QTY, PRODUCTION`\n\n### 적용 기준\n**사용 데이터**\n- dataset_key=target, source_alias=target_source, source_type=goodocs\n- dataset_key=production, source_alias=production, source_type=oracle\n- dataset_key=target, source_alias=target_source, source_type=goodocs, row_count=8\n- dataset_key=production, source_alias=production, source_type=oracle, row_count=0\n**조회 필수 조건**\n- production: DATE=20260706\n**분석 조건**\n- target_source: DATE={\"operator\": \"eq\", \"value\": \"20260706\"}\n**그룹 기준**\n- TECH\n- DEN\n- MODE\n- PKG_TYPE1\n- PKG_TYPE2\n- LEAD\n- MCP_NO\n\n### 참고\n- 조건에 맞는 결과 행이 없습니다.\n- 현재 결과는 더미 데이터 기준입니다.\n\n### 다음에 볼 만한 질문\n- 조건을 넓혀서 다시 조회할까요?",
+        "data_mode": "dummy"
+      },
+      "errors": [],
+      "warnings": [],
+      "semantic_checks": {
+        "status": "ok",
+        "errors": []
+      }
+    }
+  ],
+  "errors": []
+}

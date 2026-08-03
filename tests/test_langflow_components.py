@@ -16166,16 +16166,40 @@ def test_v5_trusted_catalog_hydrator_restores_metric_semantics_and_default_detai
     )
     payload = {
         "intent_plan": {
-            "retrieval_jobs": [{"dataset_key": "eqp_uph", "source_alias": "uph"}],
+            "retrieval_jobs": [
+                {"dataset_key": "equipment_assign", "source_alias": "assign"},
+                {"dataset_key": "eqp_uph", "source_alias": "uph"},
+            ],
             "output_contract": {
                 "result_mode": "entity_list",
                 "required_columns": ["UPH"],
+                "metric_columns": ["UPH"],
+                "primary_metric": "UPH",
             },
         },
         "trace": {"warnings": [], "errors": [], "inspection": {}},
     }
     catalog = {
         "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {
+                    "source_type": "oracle",
+                    "source_config": {
+                        "db_key": "GMS_DB",
+                        "query_template": "SELECT EQUIP_ID FROM ASSIGN",
+                    },
+                    "default_detail_columns": ["EQP_ID"],
+                    "metric_semantics": {
+                        "EQP_ID": {
+                            "semantic_type": "identifier",
+                            "additive": False,
+                            "default_rollup": "nunique",
+                            "allowed_rollups": ["nunique", "collect_unique"],
+                        }
+                    },
+                },
+            },
             {
                 "dataset_key": "eqp_uph",
                 "payload": {
@@ -16200,7 +16224,7 @@ def test_v5_trusted_catalog_hydrator_restores_metric_semantics_and_default_detai
     }
 
     result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
-    job = result["intent_plan"]["retrieval_jobs"][0]
+    job = result["intent_plan"]["retrieval_jobs"][1]
 
     assert job["metric_semantics"]["UPH"]["additive"] is False
     assert job["metric_semantics"]["UPH"]["allowed_rollups"] == ["mean"]
@@ -16732,6 +16756,24 @@ def test_v5_intent_output_contract_adds_catalog_columns_only_for_detail_results(
                         "row_identity_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
                         "default_detail_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
                         "context_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                        "metric_semantics": {
+                            "UPH": {
+                                "semantic_type": "average",
+                                "default_rollup": "mean",
+                            }
+                        },
+                    },
+                },
+                {
+                    "dataset_key": "equipment_assign",
+                    "payload": {
+                        "default_detail_columns": ["EQP_ID"],
+                        "metric_semantics": {
+                            "EQP_ID": {
+                                "semantic_type": "identifier",
+                                "default_rollup": "nunique",
+                            }
+                        },
                     },
                 }
             ]
@@ -16773,6 +16815,26 @@ def test_v5_intent_output_contract_adds_catalog_columns_only_for_detail_results(
     ]
     assert detail_contract["null_group_policy"] == "preserve_as_blank"
     assert detail_contract["metric_null_policy"] == "display_zero"
+
+    multi_source_plan = deepcopy(detail_plan)
+    multi_source_plan["retrieval_jobs"].insert(
+        0,
+        {
+            "dataset_key": "equipment_assign",
+            "source_alias": "assign",
+            "default_detail_columns": ["EQP_ID"],
+        },
+    )
+    multi_source_plan["output_contract"].update(
+        {"metric_columns": ["UPH"], "primary_metric": "UPH"}
+    )
+    multi_source = normalizer.normalize_intent_plan(payload, multi_source_plan)
+    assert multi_source["intent_plan"]["output_contract"]["required_columns"] == [
+        "EQP_MODEL",
+        "RECIPE_ID",
+        "OPER_NAME",
+        "UPH",
+    ]
 
     aggregate_plan = deepcopy(base_plan)
     aggregate_plan["output_contract"] = {
@@ -19391,6 +19453,14 @@ def test_followup_equipment_join_resolves_physical_keys_and_preserves_previous_r
                             "PKG_TYPE2": ["PKG2"],
                             "EQP_ID": ["EQUIP_ID"],
                         },
+                        "metric_semantics": {
+                            "EQP_ID": {
+                                "semantic_type": "count",
+                                "additive": False,
+                                "default_rollup": "nunique",
+                                "allowed_rollups": ["nunique"],
+                            }
+                        },
                     },
                 }
             ],
@@ -21865,3 +21935,278 @@ def test_target_physical_plan_metrics_are_standardized_and_scaled_before_analysi
     result = adapter.build_retrieval_payload(payload)
     assert result["runtime_sources"]["target"] == [{"INPUT_PLAN_QTY": 1500, "OUT_PLAN_QTY": 2000}]
     assert result["source_results"][0]["columns"] == ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"]
+def test_metadata_candidates_pin_exact_dataset_domain_and_catalog_before_quota():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    distracting = [
+        {
+            "section": "product_terms",
+            "key": f"product_{index}",
+            "payload": {
+                "display_name": f"제품 속성 {index}",
+                "aliases": ["제품별", "제품"],
+                "condition": {"FIELD": {"operator": "eq", "value": index}},
+            },
+        }
+        for index in range(12)
+    ]
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "7/6 제품별 생산계획과 실적정보 알려줘"}},
+        {
+            "domain_items": distracting
+            + [
+                {
+                    "section": "quantity_terms",
+                    "key": "target_data",
+                    "payload": {
+                        "display_name": "생산 계획",
+                        "aliases": ["계획", "생산계획"],
+                        "data_source": "target",
+                        "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                    },
+                },
+                {
+                    "section": "quantity_terms",
+                    "key": "production_quantity",
+                    "payload": {
+                        "display_name": "생산 실적",
+                        "aliases": ["실적", "생산실적"],
+                        "data_source": "production",
+                        "column": "PRODUCTION",
+                    },
+                },
+            ]
+        },
+        {
+            "table_catalog_items": [
+                {"dataset_key": "target", "payload": {"columns": ["INPUT 계획", "OUT 계획"]}},
+                {"dataset_key": "production", "payload": {"columns": ["PRODUCTION"]}},
+                {"dataset_key": "unrelated", "payload": {"columns": ["VALUE"]}},
+            ]
+        },
+        {"main_flow_filters": []},
+        max_domain_items=2,
+        min_table_items=2,
+        max_table_items=2,
+    )
+
+    selected_domain_keys = {
+        item["key"] for item in result["metadata_candidates"]["domain_items"]
+    }
+    selected_dataset_keys = {
+        item["dataset_key"]
+        for item in result["metadata_candidates"]["table_catalog_items"]
+    }
+    assert selected_domain_keys == {"target_data", "production_quantity"}
+    assert selected_dataset_keys == {"target", "production"}
+    assert set(
+        result["metadata_load"]["domain_dataset_dependencies"]["matched_domain_keys"]
+    ) == {
+        "quantity_terms:production_quantity",
+        "quantity_terms:target_data",
+    }
+
+
+def test_intent_normalizer_repairs_unknown_metric_and_grain_from_selected_metadata_contracts():
+    normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    canonical_grain = [
+        "TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "ORG", "LEAD", "MCP_NO"
+    ]
+    target_mappings = {
+        "DATE": ["DATE"],
+        "TECH": ["TECH"],
+        "DEN": ["DEN"],
+        "MODE": ["Mode"],
+        "PKG_TYPE1": ["PKG1"],
+        "PKG_TYPE2": ["PKG2"],
+        "ORG": ["ORG"],
+        "LEAD": ["LEAD"],
+        "MCP_NO": ["MCP NO"],
+        "INPUT_PLAN_QTY": ["INPUT 계획"],
+        "OUT_PLAN_QTY": ["OUT 계획"],
+    }
+    production_mappings = {column: [column] for column in canonical_grain}
+    production_mappings["PRODUCTION"] = ["PRODUCTION"]
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "quantity_terms",
+                    "key": "target_data",
+                    "payload": {
+                        "display_name": "생산 계획",
+                        "aliases": ["계획", "생산계획"],
+                        "data_source": "target",
+                        "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                        "aggregation_method": "sum",
+                    },
+                },
+                {
+                    "section": "quantity_terms",
+                    "key": "production_quantity",
+                    "payload": {
+                        "display_name": "생산 실적",
+                        "aliases": ["실적", "생산실적"],
+                        "data_source": "production",
+                        "column": "PRODUCTION",
+                        "aggregation_method": "sum",
+                    },
+                },
+                {
+                    "section": "product_key_columns",
+                    "key": "standard_product_keys",
+                    "payload": {"columns": canonical_grain},
+                },
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "target",
+                    "payload": {
+                        "columns": [
+                            "DATE", "TECH", "DEN", "Mode", "PKG1", "PKG2", "ORG",
+                            "LEAD", "MCP NO", "INPUT 계획", "OUT 계획",
+                        ],
+                        "filter_mappings": target_mappings,
+                        "metric_semantics": {
+                            "INPUT_PLAN_QTY": {"default_rollup": "sum"},
+                            "OUT_PLAN_QTY": {"default_rollup": "sum"},
+                        },
+                    },
+                },
+                {
+                    "dataset_key": "production",
+                    "payload": {
+                        "columns": [*canonical_grain, "PRODUCTION"],
+                        "filter_mappings": production_mappings,
+                        "selection_criteria": {"time_scope": "history"},
+                        "required_params": ["DATE"],
+                    },
+                },
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    llm_plan = {
+        "intent_plan": {
+            "analysis_kind": "product_plan_vs_actual_comparison",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "grain_plan": {
+                "metadata_ref": {
+                    "section": "product_key_columns",
+                    "key": "standard_product_keys",
+                },
+                "source_alias": "production",
+            },
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "production"},
+                {"dataset_key": "target", "source_alias": "target_src"},
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "actual",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "external_source", "ref": "production"}],
+                    "output_alias": "actual_by_product",
+                    "source_alias": "production",
+                    "group_by": canonical_grain,
+                    "aggregations": [
+                        {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION_SUM"}
+                    ],
+                },
+                {
+                    "node_id": "plan",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "external_source", "ref": "target_src"}],
+                    "output_alias": "plan_by_product",
+                    "source_alias": "target_src",
+                    "group_by": ["TECH", "DENSITY", "MODE", "PKG1", "PKG2", "LEAD", "MCP_NO"],
+                    "aggregations": [
+                        {"column": "PLAN_QTY", "method": "sum", "output_column": "PLAN_QTY_SUM"}
+                    ],
+                },
+                {
+                    "node_id": "joined",
+                    "operation": "join",
+                    "inputs": [
+                        {"kind": "node_output", "ref": "actual"},
+                        {"kind": "node_output", "ref": "plan"},
+                    ],
+                    "output_alias": "joined",
+                    "left_source_alias": "actual_by_product",
+                    "right_source_alias": "plan_by_product",
+                    "join_type": "outer",
+                },
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["TECH", "DENSITY", "MODE", "PKG1", "PKG2", "LEAD", "MCP_NO"],
+                "metric_columns": ["PRODUCTION_SUM", "PLAN_QTY_SUM"],
+                "required_columns": [
+                    "TECH", "DENSITY", "MODE", "PKG1", "PKG2", "LEAD", "MCP_NO",
+                    "PRODUCTION_SUM", "PLAN_QTY_SUM",
+                ],
+            },
+        },
+        "metadata_refs": [
+            {"section": "product_key_columns", "key": "standard_product_keys"}
+        ],
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "7/6 제품별 생산계획과 실적정보 알려줘"}},
+        llm_plan,
+        candidates,
+    )["intent_plan"]
+
+    target_step = next(
+        step for step in normalized["pandas_execution_plan"] if step.get("node_id") == "plan"
+    )
+    assert target_step["group_by"] == canonical_grain
+    assert target_step["aggregations"] == [
+        {"column": "INPUT_PLAN_QTY", "method": "sum", "output_column": "INPUT_PLAN_QTY"},
+        {"column": "OUT_PLAN_QTY", "method": "sum", "output_column": "OUT_PLAN_QTY"},
+    ]
+    assert normalized["output_contract"]["grain_columns"] == canonical_grain
+    assert normalized["output_contract"]["metric_columns"] == [
+        "PRODUCTION_SUM", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"
+    ]
+    assert "PLAN_QTY_SUM" not in normalized["output_contract"]["result_columns"]
+    assert "validation_errors" not in normalized
+
+    target_only_plan = deepcopy(llm_plan)
+    target_only_intent = target_only_plan["intent_plan"]
+    target_only_intent["retrieval_jobs"] = [
+        {"dataset_key": "target", "source_alias": "target_src"}
+    ]
+    target_only_intent["pandas_execution_plan"] = [
+        deepcopy(llm_plan["intent_plan"]["pandas_execution_plan"][1])
+    ]
+    target_only_intent["output_contract"] = {
+        "result_mode": "aggregate",
+        "grain_columns": canonical_grain,
+        "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+        "required_columns": [
+            *canonical_grain,
+            "INPUT_PLAN_QTY",
+            "OUT_PLAN_QTY",
+        ],
+    }
+    target_only_normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "7/6 제품별 생산계획과 실적정보 알려줘", "reference_date": "20260803"}},
+        target_only_plan,
+        candidates,
+    )["intent_plan"]
+    assert {job["dataset_key"] for job in target_only_normalized["retrieval_jobs"]} == {
+        "target",
+        "production",
+    }
+    assert any(
+        step.get("operation") == "join"
+        and step.get("join_type") == "outer"
+        for step in target_only_normalized["pandas_execution_plan"]
+    )
+    assert "PRODUCTION" in target_only_normalized["output_contract"]["metric_columns"]
+    assert "validation_errors" not in target_only_normalized

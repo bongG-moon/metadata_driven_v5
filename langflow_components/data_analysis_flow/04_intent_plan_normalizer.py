@@ -185,6 +185,17 @@ def normalize_intent_plan(
         metadata_refs,
         domain_selection.get("locked_metadata_refs", []),
     )
+    (
+        retrieval_jobs,
+        raw_pandas_plan,
+        domain_metric_source_guard,
+    ) = _ensure_selected_metric_sources(
+        payload,
+        retrieval_jobs,
+        raw_pandas_plan,
+        metadata_candidates,
+        domain_selection.get("locked_metadata_refs", []),
+    )
     retrieval_jobs, domain_condition_guard = _apply_selected_domain_conditions(
         retrieval_jobs,
         metadata_candidates,
@@ -366,6 +377,20 @@ def normalize_intent_plan(
         resolved_grain_plan,
         resolved_join_plan,
     )
+    pandas_plan, domain_execution_contracts = _apply_selected_domain_execution_contracts(
+        pandas_plan,
+        metadata_candidates,
+        retrieval_jobs,
+        resolved_grain_plan,
+        domain_selection.get("locked_metadata_refs", []),
+    )
+    validation_errors.extend(
+        _pandas_catalog_column_validation_errors(
+            pandas_plan,
+            metadata_candidates,
+            retrieval_jobs,
+        )
+    )
     resolved_output_grain_plan = _resolve_output_grain_plan(
         pandas_plan,
         resolved_grain_plan,
@@ -413,6 +438,12 @@ def normalize_intent_plan(
     )
     if normalized_raw_contract:
         contract_plan["output_contract"] = normalized_raw_contract
+    if domain_execution_contracts.get("status") == "applied":
+        contract_plan["output_contract"] = _reconcile_aggregate_output_contract(
+            contract_plan.get("output_contract"),
+            pandas_plan,
+            resolved_output_grain_plan or resolved_grain_plan,
+        )
     output_contract = _output_contract(
         contract_plan,
         payload,
@@ -576,6 +607,7 @@ def normalize_intent_plan(
         "business_time_guard": business_time_guard,
         "metadata_ref_guard": metadata_ref_guard,
         "domain_selection": domain_selection,
+        "domain_metric_source_guard": domain_metric_source_guard,
         "domain_condition_guard": domain_condition_guard,
         "process_group_field_guard": process_group_field_guard,
         "filter_operator_normalization": filter_operator_normalization,
@@ -585,6 +617,7 @@ def normalize_intent_plan(
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
         "pandas_column_normalization": pandas_column_normalization,
+        "domain_execution_contracts": domain_execution_contracts,
         "output_contract_column_normalization": output_contract_column_normalization,
         "typed_input_binding": typed_input_binding,
         "external_source_catalog_binding": external_source_catalog_binding,
@@ -2028,6 +2061,253 @@ def _filter_incompatible_recipe_contracts(
 
 
 # 함수 설명: `_resolve_execution_domain_selection()`는 여러 execution·도메인·selection 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
+# 함수 설명: `_ensure_selected_metric_sources()`는 질문에 직접 선택된 수량 Domain의 metric source가 누락되면 Catalog 시간·컬럼 계약으로 조회와 집계를 보완합니다.
+def _ensure_selected_metric_sources(
+    payload: dict[str, Any],
+    retrieval_jobs: list[Any],
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    locked_metadata_refs: list[dict[str, str]],
+) -> tuple[list[Any], list[Any], dict[str, Any]]:
+    jobs = [deepcopy(item) for item in retrieval_jobs]
+    steps = [deepcopy(item) for item in pandas_plan]
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    question = str(request.get("question") or "").strip()
+    reference_date = str(request.get("reference_date") or "").strip()
+    requested_date = _requested_question_date(question, reference_date)
+    desired_scope = (
+        "current_day"
+        if requested_date and requested_date == reference_date
+        else "history"
+        if requested_date
+        else ""
+    )
+
+    contracts: list[dict[str, Any]] = []
+    for reference in locked_metadata_refs:
+        item = _find_metadata_item(candidates, reference)
+        payload_value = _metadata_payload(item)
+        # Temporal metric domains own dataset/date selection through the
+        # business-time contract. Do not pre-empt that resolver with the
+        # generic missing-metric source completion path.
+        if isinstance(payload_value.get("temporal_semantics"), (dict, list)):
+            continue
+        metrics = _string_list(payload_value.get("metric_columns"))
+        if not metrics:
+            metrics = _string_list(payload_value.get("column"))
+        if not metrics and str(item.get("section") or "") == "quantity_terms":
+            metrics = _string_list(payload_value.get("columns"))
+        if not metrics:
+            continue
+        contracts.append(
+            {
+                "metadata_ref": deepcopy(reference),
+                "dataset_hint": str(
+                    payload_value.get("data_source")
+                    or payload_value.get("dataset_key")
+                    or ""
+                ).strip(),
+                "metrics": metrics,
+                "aggregation_method": str(
+                    payload_value.get("aggregation_method") or "sum"
+                ).strip(),
+            }
+        )
+
+    catalog_items = [
+        item
+        for item in candidates.get("table_catalog_items", [])
+        if isinstance(item, dict) and str(item.get("dataset_key") or "").strip()
+    ]
+    additions: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    for contract in contracts:
+        metrics = contract["metrics"]
+        if any(
+            all(
+                _catalog_supports_domain_column(
+                    candidates,
+                    str(job.get("dataset_key") or "").strip(),
+                    metric,
+                )
+                for metric in metrics
+            )
+            for job in jobs
+            if isinstance(job, dict)
+        ):
+            continue
+
+        eligible = [
+            item
+            for item in catalog_items
+            if all(
+                _explicit_catalog_column_contract(
+                    candidates,
+                    str(item.get("dataset_key") or "").strip(),
+                    metric,
+                )
+                for metric in metrics
+            )
+            and (
+                not desired_scope
+                or _catalog_time_scope(item) == desired_scope
+            )
+        ]
+        if len(eligible) != 1:
+            unresolved.append(
+                {
+                    "metadata_ref": contract["metadata_ref"],
+                    "metrics": metrics,
+                    "requested_time_scope": desired_scope,
+                    "candidate_dataset_keys": [
+                        str(item.get("dataset_key") or "").strip()
+                        for item in eligible
+                    ],
+                    "issue": "metric_source_catalog_contract_not_unique",
+                }
+            )
+            continue
+        selected = eligible[0]
+        dataset_key = str(selected.get("dataset_key") or "").strip()
+        required_names = _catalog_required_params(candidates, dataset_key)
+        if any(
+            _normalized_column_key(name) != _normalized_column_key("DATE")
+            for name in required_names
+        ) or (
+            any(
+                _normalized_column_key(name) == _normalized_column_key("DATE")
+                for name in required_names
+            )
+            and not requested_date
+        ):
+            unresolved.append(
+                {
+                    "metadata_ref": contract["metadata_ref"],
+                    "metrics": metrics,
+                    "dataset_key": dataset_key,
+                    "issue": "metric_source_required_params_unresolved",
+                }
+            )
+            continue
+
+        used_aliases = {
+            str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+            for job in jobs
+            if isinstance(job, dict)
+        }
+        source_alias = dataset_key
+        suffix = 2
+        while source_alias in used_aliases:
+            source_alias = f"{dataset_key}_{suffix}"
+            suffix += 1
+        job: dict[str, Any] = {
+            "dataset_key": dataset_key,
+            "source_alias": source_alias,
+        }
+        required_params = {
+            name: requested_date
+            for name in required_names
+            if _normalized_column_key(name) == _normalized_column_key("DATE")
+        }
+        if required_params:
+            job["required_params"] = required_params
+        jobs.append(job)
+
+        existing_terminal = next(
+            (
+                str(step.get("node_id") or step.get("output_alias") or "").strip()
+                for step in reversed(steps)
+                if isinstance(step, dict)
+                and str(step.get("node_id") or step.get("output_alias") or "").strip()
+            ),
+            "",
+        )
+        existing_grain = next(
+            (
+                _string_list(
+                    step.get("group_by")
+                    or step.get("group_by_columns")
+                    or step.get("group_columns")
+                    or step.get("group_cols")
+                )
+                for step in reversed(steps)
+                if isinstance(step, dict)
+                and str(step.get("operation") or step.get("step") or "").strip().lower()
+                in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}
+                and _string_list(
+                    step.get("group_by")
+                    or step.get("group_by_columns")
+                    or step.get("group_columns")
+                    or step.get("group_cols")
+                )
+            ),
+            [],
+        )
+        aggregate_node_id = f"metadata_metric_{len(additions) + 1}"
+        catalog_payload = _metadata_payload(selected)
+        semantics = (
+            catalog_payload.get("metric_semantics")
+            if isinstance(catalog_payload.get("metric_semantics"), dict)
+            else {}
+        )
+        aggregations = []
+        for metric in metrics:
+            semantic = semantics.get(metric) if isinstance(semantics.get(metric), dict) else {}
+            aggregations.append(
+                {
+                    "column": metric,
+                    "method": str(
+                        semantic.get("default_rollup")
+                        or contract["aggregation_method"]
+                        or "sum"
+                    ).strip(),
+                    "output_column": metric,
+                }
+            )
+        steps.append(
+            {
+                "node_id": aggregate_node_id,
+                "operation": "groupby_and_aggregate",
+                "inputs": [{"kind": "external_source", "ref": source_alias}],
+                "output_alias": f"{source_alias}_by_grain",
+                "source_alias": source_alias,
+                "group_by": existing_grain,
+                "aggregations": aggregations,
+            }
+        )
+        if existing_terminal:
+            steps.append(
+                {
+                    "node_id": f"metadata_metric_join_{len(additions) + 1}",
+                    "operation": "join",
+                    "inputs": [
+                        {"kind": "node_output", "ref": existing_terminal},
+                        {"kind": "node_output", "ref": aggregate_node_id},
+                    ],
+                    "output_alias": f"metric_join_{len(additions) + 1}",
+                    "left_source_alias": existing_terminal,
+                    "right_source_alias": f"{source_alias}_by_grain",
+                    "join_type": "outer",
+                    "population_policy": "preserve_all_metric_source_keys",
+                }
+            )
+        additions.append(
+            {
+                "metadata_ref": contract["metadata_ref"],
+                "dataset_key": dataset_key,
+                "source_alias": source_alias,
+                "metrics": metrics,
+                "requested_time_scope": desired_scope,
+            }
+        )
+    return jobs, steps, {
+        "status": "applied" if additions else ("unresolved" if unresolved else "not_needed"),
+        "additions": additions,
+        "unresolved": unresolved,
+    }
+
+
+# 함수 설명: `_resolve_execution_domain_selection()`는 질문과 등록 alias가 일치하는 실행 Domain을 잠그고 모호성을 기록합니다.
 def _resolve_execution_domain_selection(
     question: str,
     candidates: dict[str, Any],
@@ -2049,6 +2329,10 @@ def _resolve_execution_domain_selection(
             kinds.append("temporal")
         if isinstance(payload.get("conditions"), (dict, list)):
             kinds.append("conditions")
+        if _string_list(payload.get("metric_columns")) or str(
+            payload.get("column") or ""
+        ).strip():
+            kinds.append("metrics")
         if not kinds:
             continue
         aliases = _merge_strings(
@@ -2067,7 +2351,7 @@ def _resolve_execution_domain_selection(
 
     locked: list[dict[str, str]] = []
     ambiguities: list[dict[str, Any]] = []
-    for kind in ("temporal", "conditions"):
+    for kind in ("temporal", "conditions", "metrics"):
         kind_matches = [item for item in matches if kind in item.get("kinds", [])]
         identities = {
             (item["metadata_ref"]["section"], item["metadata_ref"]["key"])
@@ -2080,7 +2364,14 @@ def _resolve_execution_domain_selection(
                 item["metadata_ref"]["key"],
             ) in selected
         ]
-        if explicitly_selected:
+        if kind == "metrics":
+            # A question may legitimately request several registered metrics
+            # (for example plan and actual). Lock every exact alias match;
+            # this is not the exclusive choice used for temporal contracts.
+            for item in kind_matches:
+                if item["metadata_ref"] not in locked:
+                    locked.append(item["metadata_ref"])
+        elif explicitly_selected:
             for item in explicitly_selected:
                 if item["metadata_ref"] not in locked:
                     locked.append(item["metadata_ref"])
@@ -4137,14 +4428,39 @@ def _output_contract(
     # 상세/entity 목록에만 table catalog의 기본 상세 컬럼을 사용합니다.
     # 집계 결과에 LOT_ID 같은 row key가 강제로 추가되지 않도록 result_mode로 범위를 제한합니다.
     if result_mode in {"detail", "entity_list"}:
-        contract["required_columns"] = _merge_strings(
-            contract["required_columns"],
-            _catalog_default_detail_columns(
-                payload,
-                retrieval_jobs,
-                metadata_candidates,
-            ),
+        requested_metrics = _merge_strings(
+            contract["metric_columns"],
+            _string_list(contract.get("primary_metric")),
         )
+        default_detail_columns = _catalog_default_detail_columns(
+            payload,
+            retrieval_jobs,
+            metadata_candidates,
+            requested_metrics,
+        )
+        if requested_metrics and default_detail_columns:
+            # When a detail question requests a concrete metric, the selected
+            # metric provider and resolved grain are the trusted output shape.
+            # Keep extra model-proposed columns only when the question names
+            # their canonical key or display label explicitly.
+            explicit_columns = _explicitly_requested_contract_columns(
+                question,
+                contract["required_columns"],
+                column_labels,
+            )
+            contract["required_columns"] = _merge_strings(
+                _string_list(resolved_grain_plan.get("grain_columns"))
+                if isinstance(resolved_grain_plan, dict)
+                else [],
+                default_detail_columns,
+                requested_metrics,
+                explicit_columns,
+            )
+        else:
+            contract["required_columns"] = _merge_strings(
+                contract["required_columns"],
+                default_detail_columns,
+            )
     elif result_mode == "aggregate" and resolved_grain_plan:
         # 제품별 집계처럼 metadata grain이 선택된 경우 LLM이 DEVICE 같은 추가 차원을
         # source schema에서 임의로 끼워 넣지 못하도록 정확한 물리 컬럼 목록을 계약에 고정합니다.
@@ -4541,6 +4857,22 @@ def _column_labels(value: Any) -> dict[str, str]:
     return result
 
 
+# 함수 설명: 질문에 canonical 컬럼명 또는 표시 라벨이 직접 등장한 결과 컬럼만 반환합니다.
+def _explicitly_requested_contract_columns(
+    question: str,
+    columns: list[str],
+    labels: dict[str, str],
+) -> list[str]:
+    result: list[str] = []
+    for column in _string_list(columns):
+        label = str(labels.get(column) or "").strip()
+        if _domain_alias_matches(question, column) or (
+            label and _domain_alias_matches(question, label)
+        ):
+            result.append(column)
+    return result
+
+
 # 함수 설명: 서로 다른 조건 결과를 한 표에 합칠 때 사용할 구간 표시 계약을 안전한 작은 구조로 정규화합니다.
 def _result_segments(value: Any) -> list[dict[str, Any]]:
     items = value if isinstance(value, list) else []
@@ -4586,6 +4918,7 @@ def _catalog_default_detail_columns(
     payload: dict[str, Any],
     retrieval_jobs: list[dict[str, Any]],
     metadata_candidates: dict[str, Any] | None = None,
+    requested_metrics: list[str] | None = None,
 ) -> list[str]:
     candidates = metadata_candidates if isinstance(metadata_candidates, dict) else {}
     if not candidates:
@@ -4599,6 +4932,10 @@ def _catalog_default_detail_columns(
     if not selected_keys:
         return []
     result: list[str] = []
+    requested_metric_keys = {
+        _normalized_column_key(value)
+        for value in _string_list(requested_metrics)
+    }
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -4611,6 +4948,20 @@ def _catalog_default_detail_columns(
             or ""
         ).strip()
         if dataset_key not in selected_keys:
+            continue
+        semantics = (
+            metadata.get("metric_semantics")
+            if isinstance(metadata.get("metric_semantics"), dict)
+            else {}
+        )
+        semantic_keys = {
+            _normalized_column_key(value) for value in semantics
+        }
+        if (
+            requested_metric_keys
+            and semantic_keys
+            and not requested_metric_keys.intersection(semantic_keys)
+        ):
             continue
         result = _merge_strings(result, _string_list(metadata.get("default_detail_columns")))
     return result
@@ -6488,6 +6839,342 @@ def _normalize_raw_output_contract_columns(
 
 
 # 함수 설명: pandas 실행 계획의 컬럼 참조를 source별 metadata 계약에 등록된 실제 물리 컬럼명으로 정규화합니다.
+# 함수 설명: `_apply_selected_domain_execution_contracts()`는 모델이 만든 미등록 metric과 grain을 선택된 Domain과 Table Catalog 계약으로 교정합니다.
+def _apply_selected_domain_execution_contracts(
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    resolved_grain_plan: dict[str, Any],
+    locked_metadata_refs: list[dict[str, str]],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Repair unsupported model columns only from selected Domain/Catalog contracts."""
+    contracts_by_dataset: dict[str, list[dict[str, Any]]] = {}
+    for reference in locked_metadata_refs:
+        item = _find_metadata_item(candidates, reference)
+        payload = _metadata_payload(item)
+        metrics = _string_list(payload.get("metric_columns"))
+        if not metrics:
+            metrics = _string_list(payload.get("column"))
+        datasets = _merge_strings(
+            _string_list(payload.get("data_source")),
+            _string_list(payload.get("dataset_key")),
+        )
+        if not metrics or not datasets:
+            continue
+        for dataset_key in datasets:
+            contracts_by_dataset.setdefault(dataset_key, []).append(
+                {
+                    "metadata_ref": deepcopy(reference),
+                    "metrics": metrics,
+                    "aggregation_method": str(
+                        payload.get("aggregation_method") or ""
+                    ).strip(),
+                }
+            )
+
+    normalized = deepcopy(pandas_plan)
+    changes: list[dict[str, Any]] = []
+    known_aliases = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in retrieval_jobs
+        if isinstance(job, dict)
+    }
+    entity_columns = _string_list(resolved_grain_plan.get("grain_columns"))
+    for index, step in enumerate(normalized):
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation not in {
+            "groupby_and_aggregate",
+            "group_by_and_aggregate",
+            "aggregate",
+        }:
+            continue
+        if not _step_uses_raw_catalog_columns(step, normalized, known_aliases):
+            continue
+        lineage = _step_external_source_aliases(step, normalized, known_aliases)
+        if len(lineage) != 1:
+            continue
+        source_alias = lineage[0]
+        dataset_key = _dataset_key_for_alias(source_alias, retrieval_jobs)
+        if not dataset_key:
+            continue
+
+        group_key = next(
+            (
+                key
+                for key in ("group_by", "group_by_columns", "group_columns", "group_cols")
+                if key in step
+            ),
+            "",
+        )
+        current_group = _string_list(step.get(group_key)) if group_key else []
+        unsupported_group = [
+            column
+            for column in current_group
+            if not _catalog_supports_domain_column(candidates, dataset_key, column)
+        ]
+        if (
+            group_key
+            and len(current_group) >= 2
+            and unsupported_group
+            and entity_columns
+            and all(
+                _catalog_supports_domain_column(candidates, dataset_key, column)
+                for column in entity_columns
+            )
+        ):
+            step[group_key] = deepcopy(entity_columns)
+            changes.append(
+                {
+                    "step_index": index,
+                    "source_alias": source_alias,
+                    "kind": "grain",
+                    "removed_columns": unsupported_group,
+                    "replacement_columns": deepcopy(entity_columns),
+                }
+            )
+
+        aggregations = step.get("aggregations")
+        if not isinstance(aggregations, list):
+            continue
+        unsupported = [
+            aggregation
+            for aggregation in aggregations
+            if isinstance(aggregation, dict)
+            and str(aggregation.get("column") or aggregation.get("agg_column") or "").strip()
+            and not _catalog_supports_domain_column(
+                candidates,
+                dataset_key,
+                str(aggregation.get("column") or aggregation.get("agg_column") or "").strip(),
+            )
+        ]
+        contracts = contracts_by_dataset.get(dataset_key, [])
+        if not unsupported or not contracts:
+            continue
+        registered_metrics = _merge_strings(
+            *[contract.get("metrics", []) for contract in contracts]
+        )
+        if not registered_metrics or not all(
+            _catalog_supports_domain_column(candidates, dataset_key, metric)
+            for metric in registered_metrics
+        ):
+            continue
+        retained = [aggregation for aggregation in aggregations if aggregation not in unsupported]
+        existing_outputs = {
+            _normalized_column_key(
+                str(item.get("output_column") or item.get("result_column") or "")
+            )
+            for item in retained
+            if isinstance(item, dict)
+        }
+        catalog_payload = _metadata_payload(_table_catalog_item(candidates, dataset_key))
+        semantics = (
+            catalog_payload.get("metric_semantics")
+            if isinstance(catalog_payload.get("metric_semantics"), dict)
+            else {}
+        )
+        fallback_method = next(
+            (
+                str(contract.get("aggregation_method") or "").strip()
+                for contract in contracts
+                if str(contract.get("aggregation_method") or "").strip()
+            ),
+            "sum",
+        )
+        replacements: list[dict[str, Any]] = []
+        for metric in registered_metrics:
+            if _normalized_column_key(metric) in existing_outputs:
+                continue
+            semantic = semantics.get(metric) if isinstance(semantics.get(metric), dict) else {}
+            method = str(semantic.get("default_rollup") or fallback_method or "sum").strip()
+            replacements.append(
+                {
+                    "column": metric,
+                    "method": method,
+                    "output_column": metric,
+                }
+            )
+        step["aggregations"] = [*retained, *replacements]
+        changes.append(
+            {
+                "step_index": index,
+                "source_alias": source_alias,
+                "kind": "metrics",
+                "removed_columns": [
+                    str(item.get("column") or item.get("agg_column") or "")
+                    for item in unsupported
+                ],
+                "replacement_columns": registered_metrics,
+                "metadata_refs": [contract.get("metadata_ref") for contract in contracts],
+            }
+        )
+    return normalized, {
+        "status": "applied" if changes else "not_needed",
+        "changes": changes,
+    }
+
+
+# 함수 설명: `_pandas_catalog_column_validation_errors()`는 집계 계획에 남은 미등록 source 컬럼을 실행 전에 검증 오류로 변환합니다.
+def _pandas_catalog_column_validation_errors(
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Reject remaining aggregate inputs that no selected Catalog can provide."""
+    known_aliases = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in retrieval_jobs
+        if isinstance(job, dict)
+    }
+    issues: list[dict[str, Any]] = []
+    for index, step in enumerate(pandas_plan):
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation not in {
+            "groupby_and_aggregate",
+            "group_by_and_aggregate",
+            "aggregate",
+        }:
+            continue
+        if not _step_uses_raw_catalog_columns(step, pandas_plan, known_aliases):
+            continue
+        lineage = _step_external_source_aliases(step, pandas_plan, known_aliases)
+        if len(lineage) != 1:
+            continue
+        source_alias = lineage[0]
+        dataset_key = _dataset_key_for_alias(source_alias, retrieval_jobs)
+        if not dataset_key:
+            continue
+        columns = _merge_strings(
+            _string_list(
+                step.get("group_by")
+                or step.get("group_by_columns")
+                or step.get("group_columns")
+                or step.get("group_cols")
+            ),
+            [
+                str(item.get("column") or item.get("agg_column") or "").strip()
+                for item in step.get("aggregations", [])
+                if isinstance(item, dict)
+            ],
+        )
+        unsupported = [
+            column
+            for column in columns
+            if column and not _catalog_supports_domain_column(candidates, dataset_key, column)
+        ]
+        if unsupported:
+            issues.append(
+                {
+                    "step_index": index,
+                    "source_alias": source_alias,
+                    "dataset_key": dataset_key,
+                    "columns": unsupported,
+                }
+            )
+    if not issues:
+        return []
+    return [
+        {
+            "type": "pandas_plan_column_not_in_catalog",
+            "message": "pandas execution plan references columns absent from the selected Table Catalog.",
+            "issues": issues,
+        }
+    ]
+
+
+# 함수 설명: `_step_uses_raw_catalog_columns()`는 집계 입력이 filter만 거친 원본 source인지 파생 결과인지 구분합니다.
+def _step_uses_raw_catalog_columns(
+    step: dict[str, Any],
+    pandas_plan: list[Any],
+    known_aliases: set[str],
+    visited: set[str] | None = None,
+) -> bool:
+    """Allow Catalog checks through filters, but not through derived table nodes."""
+    inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+    if not inputs:
+        return str(step.get("source_alias") or "").strip() in known_aliases
+    allowed_passthrough = {
+        "apply_filters",
+        "filter",
+        "filter_rows",
+        "apply_pandas_function_case",
+        "apply_function_case",
+    }
+    seen = set(visited or set())
+    by_reference: dict[str, dict[str, Any]] = {}
+    for candidate in pandas_plan:
+        if not isinstance(candidate, dict):
+            continue
+        for raw_reference in (
+            candidate.get("node_id"),
+            candidate.get("output_alias"),
+        ):
+            reference = str(raw_reference or "").strip()
+            if reference:
+                by_reference[reference] = candidate
+    for item in inputs:
+        if not isinstance(item, dict):
+            return False
+        kind = str(item.get("kind") or "").strip().lower()
+        reference = str(item.get("ref") or "").strip()
+        if kind == "external_source":
+            if reference not in known_aliases:
+                return False
+            continue
+        if kind != "node_output" or not reference or reference in seen:
+            return False
+        parent = by_reference.get(reference)
+        if not isinstance(parent, dict):
+            return False
+        parent_operation = str(
+            parent.get("operation") or parent.get("step") or ""
+        ).strip().lower()
+        if parent_operation not in allowed_passthrough:
+            return False
+        if not _step_uses_raw_catalog_columns(
+            parent,
+            pandas_plan,
+            known_aliases,
+            {*seen, reference},
+        ):
+            return False
+    return True
+
+
+# 함수 설명: `_reconcile_aggregate_output_contract()`는 교정된 grain과 metric에 맞춰 strict 결과 컬럼 계약을 다시 구성합니다.
+def _reconcile_aggregate_output_contract(
+    raw_contract: Any,
+    pandas_plan: list[Any],
+    resolved_grain_plan: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep strict aggregate output columns aligned with the repaired plan."""
+    contract = deepcopy(raw_contract) if isinstance(raw_contract, dict) else {}
+    metrics = _aggregation_output_contract(
+        {"pandas_execution_plan": pandas_plan}
+    ).get("all", [])
+    grains = _string_list(resolved_grain_plan.get("grain_columns"))
+    if not metrics:
+        return contract
+    result_columns = _merge_strings(grains, metrics)
+    contract["result_mode"] = "aggregate"
+    contract["grain_columns"] = grains
+    contract["metric_columns"] = metrics
+    contract["required_columns"] = result_columns
+    contract["result_columns"] = result_columns
+    contract["primary_metric"] = metrics[0]
+    contract["strict_result_columns"] = True
+    labels = contract.get("column_labels")
+    if isinstance(labels, dict):
+        contract["column_labels"] = {
+            key: value for key, value in labels.items() if key in result_columns
+        }
+    return contract
+
+
+# 함수 설명: `_normalize_pandas_plan_columns()`는 pandas 실행 계획의 컬럼을 source별 canonical 컬럼으로 정규화합니다.
 def _normalize_pandas_plan_columns(
     pandas_plan: list[Any],
     candidates: dict[str, Any],

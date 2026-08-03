@@ -628,7 +628,28 @@ def _output_contract_with_default_detail(value: Any, jobs: list[dict[str, Any]])
         return contract
 
     required_columns = _string_list(contract.get("required_columns") or contract.get("columns"))
+    requested_metric_keys = {
+        str(value).strip().casefold()
+        for value in _merge_strings(
+            _string_list(contract.get("metric_columns") or contract.get("metrics")),
+            _string_list(contract.get("primary_metric")),
+        )
+    }
     for job in jobs:
+        semantics = (
+            job.get("metric_semantics")
+            if isinstance(job.get("metric_semantics"), dict)
+            else {}
+        )
+        semantic_keys = {
+            str(value).strip().casefold() for value in semantics
+        }
+        if (
+            requested_metric_keys
+            and semantic_keys
+            and not requested_metric_keys.intersection(semantic_keys)
+        ):
+            continue
         required_columns = _merge_strings(
             required_columns,
             _string_list(job.get("default_detail_columns")),

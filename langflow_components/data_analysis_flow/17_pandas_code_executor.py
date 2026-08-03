@@ -1575,6 +1575,12 @@ def _metric_semantics_contract_error(payload: dict[str, Any], code: str) -> str:
             metric = str(spec.get("column") or "").strip()
             method = str(spec.get("method") or "").strip().lower()
             contract = semantics.get(metric.casefold())
+            # collect_unique produces an identifier/list projection, not a
+            # numeric rollup of the source metric. Its validity is governed by
+            # the aggregation/output contract and must not be rejected by a
+            # non-additive numeric metric policy such as EQP_ID/nunique.
+            if method == "collect_unique":
+                continue
             if contract and method and method not in contract["allowed_rollups"]:
                 return f"비가산 metric {metric}에는 {method} 집계를 사용할 수 없습니다."
     try:

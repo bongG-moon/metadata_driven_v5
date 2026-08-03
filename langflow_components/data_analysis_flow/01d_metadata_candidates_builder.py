@@ -409,9 +409,26 @@ def _select_candidates(
     selected_domain: list[dict[str, Any]] = []
     selected_domain_ids: set[str] = set()
     non_runtime_function_cases = 0
+    dependency_matches = _question_matched_dataset_domains(
+        search_text,
+        domain_items,
+    )
+    # A domain that explicitly names its backing dataset is an execution
+    # dependency, not merely prompt context. Keep exact registered alias
+    # matches ahead of the relevance quota.
+    for item in dependency_matches:
+        identity = _stable_identity(item)
+        if identity in selected_domain_ids:
+            continue
+        selected_domain.append(item)
+        selected_domain_ids.add(identity)
+        if len(selected_domain) >= max_domain_items:
+            break
     # canonical condition/process mapping과 직접 alias가 함께 일치한 후보를 먼저 보존합니다.
     # 이후 일반 점수 후보로 남은 자리를 채우므로 max_domain_items를 늘리지 않아도 실행 조건이 유실되지 않습니다.
     for _, _, _, _, item in ranked["domain_items"]:
+        if len(selected_domain) >= max_domain_items:
+            break
         if _canonical_alias_match_count(item, tokens) < 1:
             continue
         identity = _stable_identity(item)
@@ -480,11 +497,64 @@ def _select_candidates(
             "included_dataset_keys": sorted(
                 str(item.get("dataset_key") or "") for item in required_tables
             ),
+            "matched_domain_keys": [
+                f"{item.get('section')}:{item.get('key')}"
+                for item in dependency_matches
+            ],
         },
     }
 
 
 # 함수 설명: `_domain_dataset_references()`는 데이터셋·references 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
+# 함수 설명: `_question_matched_dataset_domains()`는 질문에 직접 언급된 등록 alias 중 dataset 의존성이 있는 Domain을 우선 선택합니다.
+def _question_matched_dataset_domains(
+    question: str,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return exact registered domain aliases that carry dataset dependencies."""
+    matches: list[tuple[int, str, dict[str, Any]]] = []
+    for item in items:
+        if not _domain_dataset_references([item]):
+            continue
+        payload = _dict(item.get("payload"))
+        phrases = _list(payload.get("aliases"))
+        phrases.extend(
+            value
+            for value in (
+                payload.get("display_name"),
+                item.get("display_name"),
+                item.get("key"),
+            )
+            if value not in (None, "")
+        )
+        matched_lengths = [
+            len(_normalized_match_text(phrase))
+            for phrase in phrases
+            if _registered_phrase_matches(question, str(phrase or ""))
+        ]
+        if matched_lengths:
+            matches.append((max(matched_lengths), _stable_identity(item), item))
+    matches.sort(key=lambda value: (-value[0], value[1]))
+    return [item for _, _, item in matches]
+
+
+# 함수 설명: `_registered_phrase_matches()`는 등록된 표현이 질문에 경계를 지켜 포함되는지 판정합니다.
+def _registered_phrase_matches(question: str, phrase: str) -> bool:
+    target = _normalized_match_text(phrase)
+    source = _normalized_match_text(question)
+    if not target or not source:
+        return False
+    if target.isascii() and target.replace("_", "").isalnum() and len(target) <= 3:
+        return target in re.findall(r"[a-z0-9_]+", source)
+    return target in source
+
+
+# 함수 설명: `_normalized_match_text()`는 공백과 구분자 차이를 제거해 등록 표현 비교용 문자열을 만듭니다.
+def _normalized_match_text(value: Any) -> str:
+    return re.sub(r"[\s/\\._-]+", "", str(value or "").casefold())
+
+
+# 함수 설명: `_domain_dataset_references()`는 Domain payload에 선언된 dataset 의존성 키를 재귀적으로 수집합니다.
 def _domain_dataset_references(items: list[dict[str, Any]]) -> set[str]:
     reference_keys = {
         "data_source",
@@ -493,6 +563,7 @@ def _domain_dataset_references(items: list[dict[str, Any]]) -> set[str]:
         "dataset_ref",
         "dataset_refs",
         "source_dataset",
+        "source_datasets",
         "target_dataset",
     }
     result: set[str] = set()
