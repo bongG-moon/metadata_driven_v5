@@ -676,6 +676,220 @@ def test_v2_message_adapter_shows_route_and_fixed_fast_logic():
     assert "_fast_aggregate" in message
 
 
+def test_v2_normalizer_aligns_aggregate_group_by_with_metadata_grain_before_fast_execution():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    product_ref = {"section": "product_key_columns", "key": "standard_product_keys"}
+    canonical_grain = [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "ORG",
+        "LEAD",
+        "MCP_NO",
+    ]
+    candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    **product_ref,
+                    "payload": {"columns": canonical_grain},
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production",
+                    "payload": {
+                        "columns": [*canonical_grain, "PRODUCTION"],
+                        "filter_mappings": {
+                            column: [column] for column in [*canonical_grain, "PRODUCTION"]
+                        },
+                    },
+                }
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "선택된 제품군의 실적을 제품별로 알려줘"},
+            "trace": {"warnings": [], "errors": [], "inspection": {}},
+        },
+        {
+            "metadata_refs": [product_ref],
+            "intent_plan": {
+                "analysis_kind": "production_by_product",
+                "request_scope": "new_analysis",
+                "reference_mode": "none",
+                "grain_plan": {
+                    "metadata_ref": product_ref,
+                    "source_alias": "production",
+                },
+                "retrieval_jobs": [
+                    {"dataset_key": "production", "source_alias": "production"}
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "aggregate_by_product",
+                        "operation": "groupby_and_aggregate",
+                        "inputs": [{"kind": "external_source", "ref": "production"}],
+                        "output_alias": "production_by_product",
+                        "source_alias": "production",
+                        "group_by": [
+                            "TECH",
+                            "DEN",
+                            "MODE",
+                            "PKG_TYPE1",
+                            "PKG_TYPE2",
+                            "LEAD",
+                            "MCP_NO",
+                        ],
+                        "aggregations": [
+                            {
+                                "column": "PRODUCTION",
+                                "method": "sum",
+                                "output_column": "PRODUCTION_SUM",
+                            }
+                        ],
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "grain_columns": [
+                        "TECH",
+                        "DEN",
+                        "MODE",
+                        "PKG_TYPE1",
+                        "PKG_TYPE2",
+                        "LEAD",
+                        "MCP_NO",
+                    ],
+                    "metric_columns": ["PRODUCTION_SUM"],
+                },
+            },
+        },
+        candidates,
+    )
+
+    plan = normalized["intent_plan"]
+    aggregate_step = plan["pandas_execution_plan"][0]
+    assert aggregate_step["group_by"] == canonical_grain
+    assert plan["output_contract"]["grain_columns"] == canonical_grain
+    assert plan["output_contract"]["result_columns"] == [
+        *canonical_grain,
+        "PRODUCTION_SUM",
+    ]
+    alignment = normalized["trace"]["inspection"]["intent"][
+        "aggregate_grain_alignment"
+    ]
+    assert alignment["status"] == "applied"
+    assert alignment["changes"][0]["added_columns"] == ["ORG"]
+
+    normalized["runtime_sources"] = {
+        "production": [
+            {
+                "TECH": "T1",
+                "DEN": "D1",
+                "MODE": "M1",
+                "PKG_TYPE1": "P1",
+                "PKG_TYPE2": "P2",
+                "ORG": "O1",
+                "LEAD": "L1",
+                "MCP_NO": "N1",
+                "PRODUCTION": 7,
+            }
+        ]
+    }
+    normalized["source_results"] = [
+        {
+            "source_alias": "production",
+            "dataset_key": "production",
+            "status": "ok",
+            "row_count": 1,
+            "columns": [*canonical_grain, "PRODUCTION"],
+        }
+    ]
+    resolved, executed, model_calls = _resolve_and_execute(normalized)
+    assert resolved["simple_analysis_contract"]["route"] == "fast"
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["columns"] == [*canonical_grain, "PRODUCTION_SUM"]
+    assert model_calls == []
+
+
+def test_v2_resolver_rejects_result_columns_not_produced_by_aggregate_contract():
+    resolver, _, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"GROUP": "A", "ORG": "O1", "QTY": 10}],
+        steps=[
+            {
+                "operation": "groupby_and_aggregate",
+                "source_alias": "source_1",
+                "group_by": ["GROUP"],
+                "aggregations": [
+                    {"column": "QTY", "method": "sum", "output_column": "QTY_SUM"}
+                ],
+            }
+        ],
+        output_contract={
+            "result_mode": "aggregate",
+            "grain_columns": ["GROUP", "ORG"],
+            "metric_columns": ["QTY_SUM"],
+            "result_columns": ["GROUP", "ORG", "QTY_SUM"],
+        },
+    )
+
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    contract = resolved["simple_analysis_contract"]
+    assert contract["route"] == "complex"
+    assert contract["eligibility"]["reason_codes"] == ["fast_contract_incomplete"]
+    assert {
+        "type": "unproduced_result_column",
+        "column": "ORG",
+    } in contract["validation_errors"]
+
+
+def test_v2_message_adapter_omits_llm_parse_diagnostics_for_fast_errors():
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    payload = {
+        "intent_plan": {"pandas_execution_plan": []},
+        "analysis": {
+            "status": "error",
+            "execution_route": "fast",
+            "error": {"type": "output_contract_violation", "message": "missing column"},
+        },
+        "trace": {
+            "inspection": {
+                "pandas_execution": {
+                    "status": "error",
+                    "execution_mode": "fast_deterministic",
+                    "error": {
+                        "type": "output_contract_violation",
+                        "message": "missing column",
+                    },
+                    "llm_response_parse": {
+                        "mode": "invalid",
+                        "error": "empty response",
+                    },
+                }
+            }
+        },
+    }
+
+    message = adapter.build_message(
+        payload,
+        show_result_table=False,
+        show_download_links=False,
+        show_notices=False,
+        show_applied_criteria=False,
+        show_next_questions=False,
+        show_intent_analysis=False,
+        show_data_retrieval=False,
+        show_pandas_code=True,
+    )
+    assert "LLM 응답 해석" not in message
+
+
 def test_advanced_fast_recipes_execute_deterministically():
     _, executor, _ = _modules()
     rows = [

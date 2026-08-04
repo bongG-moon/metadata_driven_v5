@@ -43,6 +43,20 @@ ADVANCED_RECIPES = {
     "pivot_summary",
 }
 SUPPORTED_RECIPES = BASIC_RECIPES | ADVANCED_RECIPES
+AGGREGATE_RESULT_RECIPES = {
+    "scalar_summary",
+    "group_summary",
+    "ranked_summary",
+    "list_summary",
+    "percent_of_total",
+    "rank_within_group",
+    "threshold_after_aggregate",
+    "time_bucket_summary",
+    "period_change",
+    "running_total",
+    "moving_aggregate",
+    "percentile_summary",
+}
 SUPPORTED_AGGREGATIONS = {
     "sum",
     "mean",
@@ -345,11 +359,30 @@ def _validate_contract_parts(
             ]
         )
     }
-    allowed_result_columns = available | metric_outputs | calculation_outputs
+    produced_group_columns = {column.casefold() for column in group_by}
+    if recipe == "time_bucket_summary":
+        time_column = str(calculation.get("time_column") or "").strip().casefold()
+        bucket_column = str(calculation.get("time_bucket_column") or "").strip().casefold()
+        if time_column and bucket_column and time_column != bucket_column:
+            produced_group_columns.discard(time_column)
+            produced_group_columns.add(bucket_column)
+    produced_result_columns = (
+        produced_group_columns | metric_outputs | calculation_outputs
+    )
+    allowed_result_columns = (
+        produced_result_columns
+        if recipe in AGGREGATE_RESULT_RECIPES
+        else available | metric_outputs | calculation_outputs
+    )
     if recipe != "pivot_summary":
         for column in result_columns:
             if column.casefold() not in allowed_result_columns:
-                errors.append({"type": "unresolved_result_column", "column": column})
+                error_type = (
+                    "unproduced_result_column"
+                    if recipe in AGGREGATE_RESULT_RECIPES
+                    else "unresolved_result_column"
+                )
+                errors.append({"type": error_type, "column": column})
     for item in ordering:
         column = str(item.get("column") or "").strip()
         if column and column.casefold() not in allowed_result_columns:

@@ -872,7 +872,12 @@ def _pandas_section(payload: dict[str, Any]) -> str:
     if error not in (None, "", [], {}):
         lines.append(f"- 실행 오류: `{_display_value(error)}`")
         response_parse = pandas_trace.get("llm_response_parse")
-        if isinstance(response_parse, dict):
+        fast_deterministic = (
+            execution_route == "fast"
+            or str(pandas_trace.get("execution_mode") or "").strip().lower()
+            == "fast_deterministic"
+        )
+        if isinstance(response_parse, dict) and not fast_deterministic:
             if response_parse.get("mode"):
                 lines.append(f"- LLM 응답 해석: `{_display_value(response_parse.get('mode'))}`")
             if response_parse.get("error"):

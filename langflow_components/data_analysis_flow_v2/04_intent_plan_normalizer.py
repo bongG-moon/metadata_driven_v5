@@ -410,6 +410,14 @@ def normalize_intent_plan(
         resolved_grain_plan,
         domain_selection.get("locked_metadata_refs", []),
     )
+    pandas_plan, aggregate_grain_alignment = (
+        _align_aggregate_steps_with_resolved_grain(
+            pandas_plan,
+            metadata_candidates,
+            retrieval_jobs,
+            resolved_grain_plan,
+        )
+    )
     validation_errors.extend(
         _pandas_catalog_column_validation_errors(
             pandas_plan,
@@ -648,6 +656,7 @@ def normalize_intent_plan(
         "row_match_guard": row_match_guard,
         "pandas_column_normalization": pandas_column_normalization,
         "domain_execution_contracts": domain_execution_contracts,
+        "aggregate_grain_alignment": aggregate_grain_alignment,
         "output_contract_column_normalization": output_contract_column_normalization,
         "typed_input_binding": typed_input_binding,
         "external_source_catalog_binding": external_source_catalog_binding,
@@ -7103,6 +7112,143 @@ def _apply_selected_domain_execution_contracts(
     return normalized, {
         "status": "applied" if changes else "not_needed",
         "changes": changes,
+    }
+
+
+# 함수 설명: metadata가 확정한 entity grain과 실제 원본 source 집계의 group_by를 실행 전에 일치시킵니다.
+def _align_aggregate_steps_with_resolved_grain(
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    resolved_grain_plan: dict[str, Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Complete partially emitted entity grains only from explicit Catalog contracts."""
+    normalized = deepcopy(pandas_plan)
+    entity_columns = _string_list(resolved_grain_plan.get("grain_columns"))
+    if not entity_columns:
+        return normalized, {"status": "not_needed", "changes": [], "unresolved": []}
+
+    known_aliases = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in retrieval_jobs
+        if isinstance(job, dict)
+    }
+    changes: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    for index, step in enumerate(normalized):
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation not in {
+            "groupby_and_aggregate",
+            "group_by_and_aggregate",
+            "aggregate",
+        }:
+            continue
+        group_key = next(
+            (
+                key
+                for key in ("group_by", "group_by_columns", "group_columns", "group_cols")
+                if key in step
+            ),
+            "",
+        )
+        current_group = _string_list(step.get(group_key)) if group_key else []
+        if not group_key or not current_group:
+            continue
+        if not _step_uses_raw_catalog_columns(step, normalized, known_aliases):
+            continue
+        lineage = _step_external_source_aliases(step, normalized, known_aliases)
+        if len(lineage) != 1:
+            continue
+        source_alias = lineage[0]
+        dataset_key = _dataset_key_for_alias(source_alias, retrieval_jobs)
+        if not dataset_key:
+            continue
+
+        entity_identities = {
+            _grain_column_identity(
+                column,
+                [source_alias],
+                candidates,
+                retrieval_jobs,
+            )
+            for column in entity_columns
+        }
+        current_identities = {
+            _grain_column_identity(
+                column,
+                [source_alias],
+                candidates,
+                retrieval_jobs,
+            )
+            for column in current_group
+        }
+        # A selected entity contract is authoritative only when this aggregate
+        # already groups by at least one of its keys. This avoids expanding an
+        # unrelated process-only or scalar aggregation.
+        if not entity_identities.intersection(current_identities):
+            continue
+        missing_columns = [
+            column
+            for column in entity_columns
+            if _grain_column_identity(
+                column,
+                [source_alias],
+                candidates,
+                retrieval_jobs,
+            )
+            not in current_identities
+        ]
+        if not missing_columns:
+            continue
+        unsupported = [
+            column
+            for column in missing_columns
+            if not _explicit_catalog_column_contract(candidates, dataset_key, column)
+        ]
+        if unsupported:
+            unresolved.append(
+                {
+                    "step_index": index,
+                    "node_id": str(step.get("node_id") or "").strip(),
+                    "source_alias": source_alias,
+                    "dataset_key": dataset_key,
+                    "missing_columns": missing_columns,
+                    "unsupported_columns": unsupported,
+                }
+            )
+            continue
+
+        breakdown_columns = [
+            column
+            for column in current_group
+            if _grain_column_identity(
+                column,
+                [source_alias],
+                candidates,
+                retrieval_jobs,
+            )
+            not in entity_identities
+        ]
+        step[group_key] = _merge_strings(breakdown_columns, entity_columns)
+        changes.append(
+            {
+                "step_index": index,
+                "node_id": str(step.get("node_id") or "").strip(),
+                "source_alias": source_alias,
+                "dataset_key": dataset_key,
+                "added_columns": missing_columns,
+                "group_by": deepcopy(step[group_key]),
+                "selection_source": "resolved_grain_plan+table_catalog",
+            }
+        )
+
+    status = "applied" if changes else "unresolved" if unresolved else "not_needed"
+    return normalized, {
+        "status": status,
+        "changes": changes,
+        "unresolved": unresolved,
     }
 
 
