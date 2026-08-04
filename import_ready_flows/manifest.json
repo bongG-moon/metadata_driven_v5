@@ -27,16 +27,16 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "8b1d3c43872a9adc412510d196d54a46623196a72f861edcb273f64dde109cf7",
+  "single_file_ui_import_sha256": "2d3c263f93defbf494655d3ff84ff4c89f8afe335d90f210ce9c8d4a8c564d8a",
   "flows": [
     {
       "order": 1,
       "file": "01_data_analysis_flow_v5_standalone.json",
       "name": "01. v5_data_analysis",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
-      "nodes": 46,
+      "nodes": 53,
       "edges": 71,
-      "sha256": "1816296e4d9249f5b205edf62707f8ef29a9d4f3f2e413e160a871b0eddaf87c"
+      "sha256": "3b1500474b2fa81488469c32d8fc6d8adec10eec609ee3fdf05381ab08180e3a"
     },
     {
       "order": 2,
@@ -133,9 +133,9 @@
       "file": "12_data_analysis_flow_v2_standalone.json",
       "name": "12. data_analysis_flow_v2",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis-v2",
-      "nodes": 45,
-      "edges": 70,
-      "sha256": "2dee196f7b11f3932d9aba138f9c3fb8c9f4cdcd37f0d68c1bf6bd0809867d38"
+      "nodes": 54,
+      "edges": 61,
+      "sha256": "14a15eb13a68de4463f6468578d6d697befc72546ceff55f3ef024a809e8e62d"
     }
   ],
   "router_configuration": {
@@ -153,10 +153,10 @@
   },
   "validation": {
     "pytest": "full non-web test suite passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
-    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 166/166 custom nodes to 96 real Python sources; 0 missing",
-    "korean_component_documentation": "97/97 Python sources and 2492/2492 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 463 embedded custom-code instances preserve 11068/11068 documented function instances; strict UTF-8/JSON checks passed",
+    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 167/167 custom nodes to 99 real Python sources; 0 missing",
+    "korean_component_documentation": "100/100 Python sources and 2563/2563 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 465 embedded custom-code instances preserve 11122/11122 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
-    "langflow_frontend_edge_handles": "598/598 parsed and matched edge.data",
+    "langflow_frontend_edge_handles": "580/580 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
     "langflow_lfx_node_templates": "232/232 passed in Langflow 1.9.2 / LFX 0.4.2",
     "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",

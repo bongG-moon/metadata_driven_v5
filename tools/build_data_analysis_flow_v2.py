@@ -33,6 +33,7 @@ from tools.build_v5_data_analysis_flow import (  # noqa: E402
     _output_template,
     _refresh_component_node,
     _refresh_edge_source_types,
+    apply_data_analysis_canvas,
 )
 
 
@@ -40,6 +41,7 @@ DEFAULT_SOURCE = ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json"
 DEFAULT_TARGET = ROOT / "flow_exports" / "data_analysis_flow_v2_standalone.json"
 DEFAULT_IMPORT_TARGET = ROOT / "import_ready_flows" / "12_data_analysis_flow_v2_standalone.json"
 V2_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow_v2"
+COMMON_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow"
 
 RESOLVER_NODE_ID = "CustomComponent-v2FastResolver"
 INTENT_VARIABLES_NODE_ID = "CustomComponent-B1hbh"
@@ -61,6 +63,10 @@ def _component_path(filename: str) -> Path:
     return V2_COMPONENT_ROOT / filename
 
 
+def _common_component_path(filename: str) -> Path:
+    return COMMON_COMPONENT_ROOT / filename
+
+
 def _apply_extended_component_spec(
     node: dict[str, Any],
     inputs: list[tuple[str, str, str, bool, Any]],
@@ -69,7 +75,7 @@ def _apply_extended_component_spec(
 ) -> None:
     """Apply a component spec including BoolInput and IntInput templates."""
 
-    supported = {"data", "message", "multiline", "dropdown"}
+    supported = {"data", "message", "dropdown"}
     if all(kind in supported for kind, *_ in inputs):
         _apply_component_spec(node, inputs, outputs, node_index)
         return
@@ -89,6 +95,18 @@ def _apply_extended_component_spec(
                     "display_name": display_name,
                     "required": required,
                     "value": "" if value is None else value,
+                }
+            )
+        elif kind == "multiline":
+            field = deepcopy(node_index["TextInput-v5RepairPrompt"]["data"]["node"]["template"]["input_value"])
+            field.update(
+                {
+                    "name": name,
+                    "display_name": display_name,
+                    "required": required,
+                    "value": "" if value is None else value,
+                    "advanced": True,
+                    "show": True,
                 }
             )
         elif kind in supported:
@@ -199,6 +217,92 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     nodes.append(resolver)
     node_index[RESOLVER_NODE_ID] = resolver
 
+    # V2 keeps helper selection small and renders the full pandas prompt only
+    # after the resolver has selected Complex. The former Prompt Template node
+    # becomes a standalone route-aware materializer so Fast never serializes
+    # plan/schema/preview prompt variables.
+    _set_embedded_source(
+        node_index[PANDAS_VARIABLES_NODE_ID],
+        _component_path("15_function_case_selection_builder.py"),
+    )
+    _apply_extended_component_spec(
+        node_index[PANDAS_VARIABLES_NODE_ID],
+        [("data", "payload", "조회 페이로드", True, None)],
+        [("Message", "function_case_selection_json", "Function Case 선택 정보 JSON", "build_selection")],
+        node_index,
+    )
+    node_index[PANDAS_VARIABLES_NODE_ID]["data"]["node"].update(
+        {
+            "display_name": "15 V2 Function Case 선택 정보 생성기",
+            "description": "Fast/Complex 공통 helper 선택에 필요한 작은 계약만 생성합니다.",
+        }
+    )
+
+    old_pandas_prompt = node_index[PANDAS_PROMPT_NODE_ID]
+    lazy_pandas_prompt = deepcopy(node_index[INTENT_NORMALIZER_NODE_ID])
+    lazy_pandas_prompt["id"] = PANDAS_PROMPT_NODE_ID
+    lazy_pandas_prompt["data"]["id"] = PANDAS_PROMPT_NODE_ID
+    lazy_pandas_prompt["position"] = deepcopy(old_pandas_prompt.get("position", {}))
+    lazy_pandas_prompt["selected"] = False
+    _set_embedded_source(
+        lazy_pandas_prompt,
+        _component_path("16_route_aware_pandas_prompt_builder.py"),
+    )
+    _apply_extended_component_spec(
+        lazy_pandas_prompt,
+        [
+            ("data", "payload", "경로 결정 페이로드", True, None),
+            (
+                "multiline",
+                "prompt_template",
+                "pandas Prompt Template",
+                True,
+                _common_component_path("16_pandas_prompt_template_ko.md").read_text(encoding="utf-8"),
+            ),
+            ("message", "function_case_helper_code", "선택 Function Case Helper", False, ""),
+        ],
+        [("Message", "pandas_prompt", "경로 인식 pandas Prompt", "build_prompt")],
+        node_index,
+    )
+    lazy_pandas_prompt["data"]["node"].update(
+        {
+            "display_name": "16 V2 경로 인식 pandas Prompt 생성기",
+            "description": "Complex일 때만 pandas prompt 변수를 직렬화하고 Fast/Blocked에서는 빈 prompt를 반환합니다.",
+        }
+    )
+    prompt_index = nodes.index(old_pandas_prompt)
+    nodes[prompt_index] = lazy_pandas_prompt
+    node_index[PANDAS_PROMPT_NODE_ID] = lazy_pandas_prompt
+
+    # The answer-variable node likewise owns lazy rendering. Its V2 context
+    # keeps result shape in result_summary and criteria in applied_scope only.
+    _set_embedded_source(
+        node_index[ANSWER_VARIABLES_NODE_ID],
+        _component_path("18_route_aware_answer_prompt_builder.py"),
+    )
+    _apply_extended_component_spec(
+        node_index[ANSWER_VARIABLES_NODE_ID],
+        [
+            ("data", "payload", "분석 결과 페이로드", True, None),
+            (
+                "multiline",
+                "prompt_template",
+                "Answer Prompt Template",
+                True,
+                _common_component_path("19_answer_prompt_template_ko.md").read_text(encoding="utf-8"),
+            ),
+            ("message", "domain_answer_guidance", "도메인 특화 답변 지침", False, ""),
+        ],
+        [("Message", "answer_prompt", "경로 인식 Answer Prompt", "build_prompt")],
+        node_index,
+    )
+    node_index[ANSWER_VARIABLES_NODE_ID]["data"]["node"].update(
+        {
+            "display_name": "18 V2 경로 인식 Answer Prompt 생성기",
+            "description": "Complex일 때만 중복 제거된 답변 context와 prompt를 생성합니다.",
+        }
+    )
+
     # Preserve the provider selections from the current model nodes while
     # moving them into the lazy hybrid components.
     pandas_model_template = deepcopy(
@@ -252,28 +356,41 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         _component_path("21_v2_answer_message_adapter.py"),
     )
 
-    # Remove the two always-on model nodes and every edge incident to them.
-    nodes[:] = [node for node in nodes if node["id"] not in REMOVED_MODEL_NODE_IDS]
-    for node_id in REMOVED_MODEL_NODE_IDS:
+    # Remove the two always-on model nodes and the now-redundant answer Prompt
+    # Template node. The pandas Prompt node ID is retained by the lazy custom
+    # component above so existing canvas references remain stable.
+    removed_node_ids = {*REMOVED_MODEL_NODE_IDS, ANSWER_PROMPT_NODE_ID}
+    nodes[:] = [node for node in nodes if node["id"] not in removed_node_ids]
+    for node_id in removed_node_ids:
         node_index.pop(node_id, None)
     edges[:] = [
         edge
         for edge in edges
-        if edge["source"] not in REMOVED_MODEL_NODE_IDS and edge["target"] not in REMOVED_MODEL_NODE_IDS
+        if edge["source"] not in removed_node_ids and edge["target"] not in removed_node_ids
     ]
 
     removals = {
         (EXECUTION_GATE_NODE_ID, "payload_out", PANDAS_VARIABLES_NODE_ID, "payload"),
         (EXECUTION_GATE_NODE_ID, "payload_out", HYBRID_EXECUTOR_NODE_ID, "payload"),
+        (PANDAS_VARIABLES_NODE_ID, "intent_plan_json", PANDAS_PROMPT_NODE_ID, "intent_plan_json"),
+        (PANDAS_VARIABLES_NODE_ID, "source_schema_json", PANDAS_PROMPT_NODE_ID, "source_schema_json"),
+        (PANDAS_VARIABLES_NODE_ID, "source_preview_json", PANDAS_PROMPT_NODE_ID, "source_preview_json"),
+        (PANDAS_VARIABLES_NODE_ID, "output_contract_json", PANDAS_PROMPT_NODE_ID, "output_contract_json"),
+        (PANDAS_VARIABLES_NODE_ID, "function_case_selection_json", PANDAS_PROMPT_NODE_ID, "function_case_selection_json"),
+        ("CustomComponent-v5Helper", "selected_helper_code", PANDAS_PROMPT_NODE_ID, "function_case_helper_code"),
+        (PANDAS_PROMPT_NODE_ID, "prompt", HYBRID_EXECUTOR_NODE_ID, "pandas_prompt"),
     }
     edges[:] = [edge for edge in edges if _edge_key(edge) not in removals]
 
     additions = [
         (EXECUTION_GATE_NODE_ID, "payload_out", RESOLVER_NODE_ID, "payload"),
         (RESOLVER_NODE_ID, "payload_out", PANDAS_VARIABLES_NODE_ID, "payload"),
+        (RESOLVER_NODE_ID, "payload_out", PANDAS_PROMPT_NODE_ID, "payload"),
         (RESOLVER_NODE_ID, "payload_out", HYBRID_EXECUTOR_NODE_ID, "payload"),
-        (PANDAS_PROMPT_NODE_ID, "prompt", HYBRID_EXECUTOR_NODE_ID, "pandas_prompt"),
-        (ANSWER_PROMPT_NODE_ID, "prompt", HYBRID_ANSWER_NODE_ID, "answer_prompt"),
+        ("CustomComponent-v5Helper", "selected_helper_code", PANDAS_PROMPT_NODE_ID, "function_case_helper_code"),
+        (PANDAS_PROMPT_NODE_ID, "pandas_prompt", HYBRID_EXECUTOR_NODE_ID, "pandas_prompt"),
+        ("TextInput-VFbHh", "text", ANSWER_VARIABLES_NODE_ID, "domain_answer_guidance"),
+        (ANSWER_VARIABLES_NODE_ID, "answer_prompt", HYBRID_ANSWER_NODE_ID, "answer_prompt"),
     ]
     existing = {_edge_key(edge) for edge in edges}
     for source_id, source_name, target_id, target_name in additions:
@@ -301,6 +418,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         component = node.get("data", {}).get("node")
         if isinstance(component, dict):
             component["lf_version"] = TARGET_LANGFLOW_VERSION
+    apply_data_analysis_canvas(flow, "v2")
     return flow
 
 

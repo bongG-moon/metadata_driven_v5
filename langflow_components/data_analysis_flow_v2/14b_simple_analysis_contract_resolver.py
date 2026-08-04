@@ -277,8 +277,6 @@ def resolve_simple_analysis_contract(
             "reason_codes": ["single_source", "supported_recipe", "schema_resolved", "filters_resolved"],
         },
     }
-    plan["resolved_fast_path_plan"] = deepcopy(contract)
-    next_payload["intent_plan"] = plan
     return _attach_contract(next_payload, contract, trace, started)
 
 

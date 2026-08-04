@@ -8,6 +8,7 @@ from pathlib import Path
 from tools.build_import_ready_bundle import FLOW_DISPLAY_NAMES, FLOW_SPECS
 from tools.build_v5_data_analysis_flow import (
     COMPONENT_FILES,
+    DATA_ANALYSIS_NOTE_PREFIX,
     DEFAULT_SOURCE,
     LANGUAGE_MODEL_NODE_IDS,
     NEW_COMPONENTS,
@@ -145,7 +146,7 @@ def test_v5_flow_export_is_reproducible_and_acyclic():
     checked_in = json.loads(EXPORT_PATH.read_text(encoding="utf-8"))
 
     assert built == checked_in
-    assert len(built["data"]["nodes"]) == 46
+    assert len(built["data"]["nodes"]) == 53
     assert len(built["data"]["edges"]) == 71
     assert _is_acyclic(built)
 
@@ -246,7 +247,7 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     edges = _edge_keys(flow)
     nodes = {node["id"]: node for node in flow["data"]["nodes"]}
 
-    assert len(nodes) == 46
+    assert len(nodes) == 53
     assert len(flow["data"]["edges"]) == 71
     assert _is_acyclic(flow)
     assert ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload") in edges
@@ -367,6 +368,40 @@ def test_v5_flow_export_has_one_pandas_execution_and_one_finalization_chain():
     cleanup_template = nodes["CustomComponent-v5RuntimeCleanup"]["data"]["node"]["template"]
     assert cleanup_template["gc_mode"]["value"] == "generation_0"
     assert cleanup_template["gc_mode"]["options"] == ["disabled", "generation_0", "full"]
+
+
+def test_v5_canvas_has_documentation_notes_and_no_visual_overlap():
+    flow = build_flow(DEFAULT_SOURCE)
+    assert flow["data"]["viewport"] == {"x": 330.0, "y": 250.0, "zoom": 0.12}
+    notes = [node for node in flow["data"]["nodes"] if node["type"] == "noteNode"]
+    assert len(notes) == 7
+    assert all(node["id"].startswith(DATA_ANALYSIS_NOTE_PREFIX) for node in notes)
+    assert all(node["data"]["node"]["lf_version"] == "1.9.2" for node in notes)
+    assert all(node["data"]["node"]["template"]["backgroundColor"] in {"blue", "amber"} for node in notes)
+    note_ids = {node["id"] for node in notes}
+    assert not any(edge["source"] in note_ids or edge["target"] in note_ids for edge in flow["data"]["edges"])
+
+    boxes = []
+    for node in flow["data"]["nodes"]:
+        position = node["position"]
+        boxes.append(
+            (
+                node["id"],
+                position["x"],
+                position["y"],
+                node.get("width") or 360,
+                node.get("height") or 360,
+            )
+        )
+    for index, left in enumerate(boxes):
+        for right in boxes[index + 1 :]:
+            overlaps = (
+                left[1] < right[1] + right[3]
+                and left[1] + left[3] > right[1]
+                and left[2] < right[2] + right[4]
+                and left[2] + left[4] > right[2]
+            )
+            assert not overlaps, f"canvas overlap: {left[0]} / {right[0]}"
 
 
 def test_v5_flow_export_routes_catalog_and_helpers_through_compaction_nodes():

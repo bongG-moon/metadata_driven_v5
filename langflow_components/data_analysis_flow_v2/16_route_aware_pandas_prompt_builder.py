@@ -274,48 +274,33 @@ def _dedupe_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
-class PandasVariablesBuilder(Component):
-    display_name = "15 pandas 변수 생성기"
-    description = "Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 pandas 코드 생성 변수를 제공합니다. function case 선택 정보는 16번 Prompt Template에 연결하고, 실제 함수 코드는 별도 입력으로 넣습니다."
-    inputs = [DataInput(name="payload", display_name="페이로드", required=True)]
+
+# Langflow 컴포넌트 클래스: V2 경로 결정 뒤 pandas 프롬프트를 지연 생성합니다.
+class RouteAwarePandasPromptBuilder(Component):
+    display_name = "16 V2 경로 인식 pandas Prompt 생성기"
+    description = "Complex 경로에서만 pandas prompt 변수를 직렬화하고 Fast/Blocked에서는 빈 prompt를 반환합니다."
+    inputs = [
+        DataInput(name="payload", display_name="경로 결정 페이로드", required=True),
+        MultilineInput(name="prompt_template", display_name="pandas 프롬프트 템플릿", required=True),
+        MessageTextInput(
+            name="function_case_helper_code",
+            display_name="선택 Function Case Helper",
+            required=False,
+            advanced=True,
+        ),
+    ]
     outputs = [
-        Output(name="intent_plan_json", display_name="의도 계획 JSON", method="build_intent_plan_json", types=["Message"], group_outputs=True),
-        Output(name="source_schema_json", display_name="소스 스키마 JSON", method="build_source_schema_json", types=["Message"], group_outputs=True),
-        Output(name="source_preview_json", display_name="소스 미리보기 JSON", method="build_source_preview_json", types=["Message"], group_outputs=True),
-        Output(name="function_case_selection_json", display_name="Function Case 선택 정보 JSON", method="build_function_case_selection_json", types=["Message"], group_outputs=True),
-        Output(name="output_contract_json", display_name="출력 계약 JSON", method="build_output_contract_json", types=["Message"], group_outputs=True),
+        Output(name="pandas_prompt", display_name="경로 인식 pandas Prompt", method="build_prompt", types=["Message"])
     ]
 
-    # 함수 설명: `_variables_once()`는 다섯 Prompt 변수가 같은 runtime source를 반복 deepcopy·JSON 변환하지 않도록 한 번만 계산합니다.
-    def _variables_once(self) -> dict[str, Any]:
-        payload = getattr(self, "payload", None)
-        cache_key = id(payload)
-        if getattr(self, "_variables_cache_key", None) != cache_key:
-            self._variables_cache_key = cache_key
-            self._variables_cache = build_variables(payload)
-        return self._variables_cache
+    # 함수 설명: Complex 경로에서만 전체 pandas 생성 프롬프트를 실제 문자열로 만듭니다.
+    def build_prompt(self) -> Message:
+        """Materialize the full prompt only after the resolver selected Complex."""
 
-    # Langflow 출력 함수: '의도 계획 JSON (intent_plan_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_intent_plan_json(self) -> Message:
-        return Message(text=self._variables_once()["intent_plan_json"])
-
-    # Langflow 출력 함수: '소스 스키마 JSON (source_schema_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_source_schema_json(self) -> Message:
-        return Message(text=self._variables_once()["source_schema_json"])
-
-    # Langflow 출력 함수: '소스 미리보기 JSON (source_preview_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_source_preview_json(self) -> Message:
-        return Message(text=self._variables_once()["source_preview_json"])
-
-    # Langflow 출력 함수: 'Function Case 선택 정보 JSON (function_case_selection_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_function_case_selection_json(self) -> Message:
-        return Message(text=self._variables_once()["function_case_selection_json"])
-
-    # Langflow 출력 함수: '출력 계약 JSON (output_contract_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_output_contract_json(self) -> Message:
-        return Message(text=self._variables_once()["output_contract_json"])
+        return Message(
+            text=build_route_aware_pandas_prompt(
+                getattr(self, "payload", None),
+                getattr(self, "prompt_template", ""),
+                getattr(self, "function_case_helper_code", ""),
+            )
+        )

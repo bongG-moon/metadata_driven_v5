@@ -3,14 +3,17 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pathlib import Path
+import re
 
 import pandas as pd
 
 from test_langflow_components import ROOT, load_module
 from tools.build_data_analysis_flow_v2 import build_flow
+from tools.build_v2_lazy_prompt_components import render_sources
 
 
 V2_ROOT = ROOT / "langflow_components" / "data_analysis_flow_v2"
+V2_VALIDATION_QUESTIONS = ROOT / "validation_questions_v2.txt"
 
 
 def _modules():
@@ -18,6 +21,19 @@ def _modules():
     executor = load_module(V2_ROOT / "17_hybrid_analysis_executor.py")
     answer = load_module(V2_ROOT / "20_hybrid_answer_builder.py")
     return resolver, executor, answer
+
+
+def _prompt_modules():
+    common_root = ROOT / "langflow_components" / "data_analysis_flow"
+    return (
+        load_module(common_root / "15_pandas_variables_builder.py"),
+        load_module(common_root / "18_answer_variables_builder.py"),
+    )
+
+
+def test_v2_lazy_prompt_component_sources_are_generated_and_in_sync():
+    for path, expected in render_sources().items():
+        assert path.read_text(encoding="utf-8") == expected
 
 
 def _single_source_payload(
@@ -95,6 +111,7 @@ def test_v2_flow_is_isolated_and_removes_always_on_pandas_and_answer_models():
     assert donor["endpoint_name"] != flow["endpoint_name"]
     assert flow["name"] == "12. data_analysis_flow_v2"
     assert flow["last_tested_version"] == "1.9.2"
+    assert len(flow["data"]["nodes"]) == 54
 
     node_ids = {node["id"] for node in flow["data"]["nodes"]}
     node_index = {node["id"]: node for node in flow["data"]["nodes"]}
@@ -102,6 +119,7 @@ def test_v2_flow_is_isolated_and_removes_always_on_pandas_and_answer_models():
     assert "LanguageModel-intent" in node_ids
     assert "LanguageModel-pandas" not in node_ids
     assert "LanguageModel-answer" not in node_ids
+    assert "Prompt Template-ELVKc" not in node_ids
     assert all(node["data"]["node"].get("lf_version") == "1.9.2" for node in flow["data"]["nodes"])
     assert node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]["code"]["value"] == (
         V2_ROOT / "21_v2_answer_message_adapter.py"
@@ -117,8 +135,176 @@ def test_v2_flow_is_isolated_and_removes_always_on_pandas_and_answer_models():
         for edge in flow["data"]["edges"]
     }
     assert ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-v2FastResolver", "payload") in edge_keys
-    assert ("Prompt Template-xtzD5", "prompt", "CustomComponent-s3mf1", "pandas_prompt") in edge_keys
-    assert ("Prompt Template-ELVKc", "prompt", "CustomComponent-BVItv", "answer_prompt") in edge_keys
+    assert ("CustomComponent-v2FastResolver", "payload_out", "Prompt Template-xtzD5", "payload") in edge_keys
+    assert ("CustomComponent-v5Helper", "selected_helper_code", "Prompt Template-xtzD5", "function_case_helper_code") in edge_keys
+    assert ("Prompt Template-xtzD5", "pandas_prompt", "CustomComponent-s3mf1", "pandas_prompt") in edge_keys
+    assert ("TextInput-VFbHh", "text", "CustomComponent-aKrkH", "domain_answer_guidance") in edge_keys
+    assert ("CustomComponent-aKrkH", "answer_prompt", "CustomComponent-BVItv", "answer_prompt") in edge_keys
+    assert node_index["Prompt Template-xtzD5"]["data"]["node"]["display_name"] == "16 V2 경로 인식 pandas Prompt 생성기"
+    assert node_index["CustomComponent-aKrkH"]["data"]["node"]["display_name"] == "18 V2 경로 인식 Answer Prompt 생성기"
+
+
+def test_fast_route_skips_full_pandas_prompt_serialization(monkeypatch):
+    pandas_prompt, _ = _prompt_modules()
+    payload = {"simple_analysis_contract": {"route": "fast"}}
+
+    def fail_if_called(_payload):
+        raise AssertionError("Fast route must not build pandas prompt variables")
+
+    monkeypatch.setattr(pandas_prompt, "build_variables", fail_if_called)
+    assert pandas_prompt.build_route_aware_pandas_prompt(payload, "{intent_plan_json}", "helper") == ""
+
+
+def test_complex_route_preserves_existing_pandas_prompt_content():
+    pandas_prompt, _ = _prompt_modules()
+    template = (ROOT / "langflow_components" / "data_analysis_flow" / "16_pandas_prompt_template_ko.md").read_text(encoding="utf-8")
+    payload = _single_source_payload(
+        rows=[{"GROUP": "A", "QTY": 10}],
+        steps=[{"operation": "custom_complex_operation", "source_alias": "source_1"}],
+        output_contract={"result_mode": "detail", "result_columns": ["GROUP", "QTY"]},
+    )
+    payload["simple_analysis_contract"] = {"route": "complex"}
+    variables = pandas_prompt.build_variables(payload)
+    expected = template.format(**variables, function_case_helper_code="helper-code")
+    actual = pandas_prompt.build_route_aware_pandas_prompt(payload, template, "helper-code")
+    assert actual == expected
+
+
+def test_fast_route_skips_answer_context_and_complex_context_has_single_owners(monkeypatch):
+    _, answer_prompt = _prompt_modules()
+    fast_payload = {
+        "simple_analysis_contract": {"route": "fast"},
+        "analysis": {"execution_route": "fast"},
+    }
+
+    original_builder = answer_prompt.build_v2_variables
+
+    def fail_if_called(_payload):
+        raise AssertionError("Fast route must not build answer prompt variables")
+
+    monkeypatch.setattr(answer_prompt, "build_v2_variables", fail_if_called)
+    assert answer_prompt.build_route_aware_answer_prompt(fast_payload, "{answer_context_json}") == ""
+    monkeypatch.setattr(answer_prompt, "build_v2_variables", original_builder)
+
+    complex_payload = {
+        "request": {"question": "그룹별 수량을 알려줘"},
+        "simple_analysis_contract": {"route": "complex"},
+        "intent_plan": {
+            "analysis_kind": "group_quantity",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "sample",
+                    "source_alias": "sample_source",
+                    "required_params": {"DATE": "20260803"},
+                    "filters": {"GROUP": {"operator": "eq", "value": "A"}},
+                }
+            ],
+            "pandas_execution_plan": [
+                {"operation": "groupby_and_aggregate", "group_by": ["GROUP"]}
+            ],
+            "output_contract": {
+                "primary_metric": "QTY_SUM",
+                "column_labels": {"GROUP": "그룹", "QTY_SUM": "수량"},
+            },
+        },
+        "source_results": [
+            {"dataset_key": "sample", "source_alias": "sample_source", "status": "ok", "row_count": 1}
+        ],
+        "analysis": {
+            "status": "ok",
+            "execution_route": "complex",
+            "row_count": 1,
+            "columns": ["GROUP", "QTY_SUM"],
+        },
+        "data": {
+            "columns": ["GROUP", "QTY_SUM"],
+            "rows": [{"GROUP": "A", "QTY_SUM": 10}],
+            "row_count": 1,
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {"pandas_execution": {"status": "ok", "row_count": 1, "columns": ["GROUP", "QTY_SUM"]}}},
+    }
+    variables = answer_prompt.build_v2_variables(complex_payload)
+    applied_scope = json.loads(variables["applied_scope_json"])
+    answer_context = json.loads(variables["answer_context_json"])
+    assert applied_scope["criteria"]["required_params"]["sample_source"] == {"DATE": "20260803"}
+    assert "row_count" not in applied_scope["pandas_execution"]
+    assert "columns" not in applied_scope["pandas_execution"]
+    assert "result_shape" not in answer_context
+    assert "applied_criteria" not in answer_context
+
+    template = (ROOT / "langflow_components" / "data_analysis_flow" / "19_answer_prompt_template_ko.md").read_text(encoding="utf-8")
+    rendered = answer_prompt.build_route_aware_answer_prompt(complex_payload, template, "guidance")
+    assert "applied_scope_json.criteria" in rendered
+    assert "result_summary_json.columns" in rendered
+    assert "answer_context_json.applied_criteria" not in rendered
+    assert "answer_context_json.result_shape.columns" not in rendered
+
+
+def test_v2_canvas_documents_all_fast_recipes_without_execution_edges():
+    flow = build_flow()
+    assert flow["data"]["viewport"] == {"x": 330.0, "y": 250.0, "zoom": 0.12}
+    notes = [node for node in flow["data"]["nodes"] if node["type"] == "noteNode"]
+    assert len(notes) == 10
+    note_text = "\n".join(node["data"]["node"]["description"] for node in notes)
+    recipes = {
+        "detail_query",
+        "scalar_summary",
+        "group_summary",
+        "ranked_summary",
+        "frequency_summary",
+        "distinct_summary",
+        "list_summary",
+        "existence_summary",
+        "quality_summary",
+        "latest_earliest",
+        "percent_of_total",
+        "rank_within_group",
+        "threshold_after_aggregate",
+        "time_bucket_summary",
+        "period_change",
+        "running_total",
+        "moving_aggregate",
+        "percentile_summary",
+        "pivot_summary",
+    }
+    assert all(recipe in note_text for recipe in recipes)
+    note_ids = {node["id"] for node in notes}
+    assert not any(edge["source"] in note_ids or edge["target"] in note_ids for edge in flow["data"]["edges"])
+
+    boxes = []
+    for node in flow["data"]["nodes"]:
+        position = node["position"]
+        boxes.append(
+            (
+                node["id"],
+                position["x"],
+                position["y"],
+                node.get("width") or 360,
+                node.get("height") or 360,
+            )
+        )
+    for index, left in enumerate(boxes):
+        for right in boxes[index + 1 :]:
+            overlaps = (
+                left[1] < right[1] + right[3]
+                and left[1] + left[3] > right[1]
+                and left[2] < right[2] + right[4]
+                and left[2] + left[4] > right[2]
+            )
+            assert not overlaps, f"canvas overlap: {left[0]} / {right[0]}"
+
+
+def test_v2_validation_question_set_covers_routes_recipes_and_followups():
+    text = V2_VALIDATION_QUESTIONS.read_text(encoding="utf-8")
+    representative_routes = re.findall(r"^\d+\. \[(FAST|COMPLEX) \|", text, flags=re.MULTILINE)
+    assert len(representative_routes) == 31
+    assert set(representative_routes) == {"FAST", "COMPLEX"}
+
+    resolver = load_module(V2_ROOT / "14b_simple_analysis_contract_resolver.py")
+    assert all(recipe in text for recipe in resolver.SUPPORTED_RECIPES)
+    assert "후속 질문 판정과 이전 상태 복원은 Fast/Complex 분기보다 먼저 수행된다." in text
+    assert "후속 질문도 매 turn의 최종 실행 계약에 따라 FAST 또는 COMPLEX가 될 수 있다." in text
+    assert "BLOCKED는 정상 분류가 아니다." in text
 
 
 def test_ranked_summary_uses_catalog_mapping_and_calls_no_analysis_model():
@@ -162,7 +348,8 @@ def test_ranked_summary_uses_catalog_mapping_and_calls_no_analysis_model():
     assert executed["analysis"]["status"] == "ok"
     assert executed["analysis"]["execution_route"] == "fast"
     assert executed["analysis"]["code_generation_type"] == "deterministic_function"
-    assert executed["analysis"]["deterministic_function"]["dispatcher"] == "_execute_fast_path_recipe"
+    assert "deterministic_function" not in executed["analysis"]
+    assert "resolved_fast_path_plan" not in resolved["intent_plan"]
     pandas_trace = executed["trace"]["inspection"]["pandas_execution"]
     assert pandas_trace["llm_generated_code"] == ""
     assert "_apply_fast_filters" in pandas_trace["deterministic_function"]["handlers"]
@@ -300,6 +487,120 @@ def test_multiple_external_sources_route_to_complex_and_invoke_model_once():
     assert resolved["intent_plan"]["route_resolution"]["final_route"] == "complex"
     assert len(calls) == 1
     assert executed["analysis"]["execution_route"] == "complex"
+
+
+def test_multiturn_scope_is_preserved_while_each_turn_resolves_its_own_route():
+    resolver, executor, _ = _modules()
+    turn1 = _single_source_payload(
+        rows=[{"PRODUCT": "A", "QTY": 30}, {"PRODUCT": "B", "QTY": 10}],
+        steps=[
+            {
+                "operation": "groupby_and_aggregate",
+                "source_alias": "source_1",
+                "group_by": ["PRODUCT"],
+                "aggregations": [{"column": "QTY", "method": "sum", "output_column": "QTY_SUM"}],
+            },
+            {"operation": "sort_and_top_n", "sort_by": "QTY_SUM", "order": "desc", "limit": 1},
+        ],
+        output_contract={
+            "result_mode": "aggregate",
+            "grain_columns": ["PRODUCT"],
+            "metric_columns": ["QTY_SUM"],
+            "result_columns": ["PRODUCT", "QTY_SUM"],
+        },
+    )
+    turn1["intent_plan"].update(
+        {"request_scope": "new_analysis", "reference_mode": "none", "reuse_strategy": "none"}
+    )
+    resolved1 = resolver.resolve_simple_analysis_contract(turn1)
+    assert resolved1["simple_analysis_contract"]["route"] == "fast"
+    assert resolved1["intent_plan"]["request_scope"] == "new_analysis"
+
+    turn2 = deepcopy(turn1)
+    turn2["intent_plan"].update(
+        {
+            "request_scope": "followup_analysis",
+            "reference_mode": "previous_result",
+            "reuse_strategy": "previous_result_plus_requery",
+        }
+    )
+    turn2["intent_plan"]["retrieval_jobs"].append(
+        {"source_alias": "source_2", "dataset_key": "dataset_2", "filters": {}}
+    )
+    turn2["intent_plan"]["resolved_execution_graph"]["external_source_requirements"].append(
+        {
+            "source_alias": "source_2",
+            "dataset_key": "dataset_2",
+            "provider": "retrieval_job",
+            "required": True,
+        }
+    )
+    turn2["runtime_sources"]["source_2"] = [{"PRODUCT": "A", "EQP_ID": "E1"}]
+    turn2["source_results"].append(
+        {
+            "source_alias": "source_2",
+            "dataset_key": "dataset_2",
+            "status": "ok",
+            "row_count": 1,
+            "columns": ["PRODUCT", "EQP_ID"],
+        }
+    )
+    turn2["intent_plan"]["pandas_execution_plan"].append(
+        {
+            "operation": "join",
+            "left_source_alias": "source_1",
+            "right_source_alias": "source_2",
+            "join_type": "left",
+        }
+    )
+    resolved2 = resolver.resolve_simple_analysis_contract(turn2)
+    assert resolved2["simple_analysis_contract"]["route"] == "complex"
+    assert resolved2["intent_plan"]["request_scope"] == "followup_analysis"
+    assert resolved2["intent_plan"]["reference_mode"] == "previous_result"
+    assert resolved2["intent_plan"]["reuse_strategy"] == "previous_result_plus_requery"
+
+    turn3 = _single_source_payload(
+        rows=[{"PRODUCT": "A", "EQP_COUNT": 4}, {"PRODUCT": "B", "EQP_COUNT": 2}],
+        steps=[
+            {
+                "operation": "groupby_and_aggregate",
+                "source_alias": "previous_result",
+                "group_by": ["PRODUCT"],
+                "aggregations": [
+                    {"column": "EQP_COUNT", "method": "max", "output_column": "EQP_COUNT"}
+                ],
+            },
+            {"operation": "sort_and_top_n", "sort_by": "EQP_COUNT", "order": "desc", "limit": 1}
+        ],
+        output_contract={
+            "result_mode": "detail",
+            "fast_path_recipe": "ranked_summary",
+            "grain_columns": ["PRODUCT"],
+            "metric_columns": ["EQP_COUNT"],
+            "result_columns": ["PRODUCT", "EQP_COUNT"],
+        },
+        source_alias="previous_result",
+        dataset_key="previous_result",
+    )
+    turn3["intent_plan"].update(
+        {
+            "request_scope": "followup_transform",
+            "reference_mode": "previous_result",
+            "reuse_strategy": "reuse_previous_result",
+        }
+    )
+    resolved3 = resolver.resolve_simple_analysis_contract(turn3)
+    calls: list[str] = []
+    executed3 = executor.execute_hybrid_analysis(
+        resolved3,
+        "unused",
+        model_invoker=lambda prompt: calls.append(prompt),
+        repair_prompt_template="repair",
+    )
+    assert resolved3["simple_analysis_contract"]["route"] == "fast"
+    assert executed3["analysis"]["execution_route"] == "fast"
+    assert executed3["intent_plan"]["request_scope"] == "followup_transform"
+    assert calls == []
 
 
 def test_fast_answer_builder_does_not_invoke_answer_model():

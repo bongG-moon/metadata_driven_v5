@@ -13238,8 +13238,8 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 96
-    assert result["all_component_python_files"] == 97
+    assert result["active_unique_source_files"] == 99
+    assert result["all_component_python_files"] == 100
     assert result["support_source_files"] == [
         "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
     ]
@@ -13248,9 +13248,9 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
         (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
         for report in result["reports"]
     } == {
-        ("flow_exports", 12, 166, 96),
-        ("import_ready_individual", 12, 166, 96),
-        ("import_ready_bundle", 12, 166, 96),
+            ("flow_exports", 12, 167, 99),
+            ("import_ready_individual", 12, 167, 99),
+            ("import_ready_bundle", 12, 167, 99),
     }
 
 

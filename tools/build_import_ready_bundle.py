@@ -234,8 +234,8 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
         },
         "validation": {
             "pytest": "full non-web test suite passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 166/166 custom nodes to 96 real Python sources; 0 missing",
-            "korean_component_documentation": "97/97 Python sources and 2492/2492 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 463 embedded custom-code instances preserve 11068/11068 documented function instances; strict UTF-8/JSON checks passed",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 167/167 custom nodes to 99 real Python sources; 0 missing",
+            "korean_component_documentation": "100/100 Python sources and 2563/2563 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 465 embedded custom-code instances preserve 11122/11122 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
@@ -1490,7 +1490,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 ## 검증 결과
 
 - Langflow/Flow 비웹 pytest: 전체 suite passed (별도 Streamlit 웹 런타임 테스트는 제외)
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 166/166 노드가 실제 Python 원본 96개에 매핑, 누락 0
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 167/167 노드가 실제 Python 원본 99개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 30/30 통과
 - Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치

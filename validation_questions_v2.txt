@@ -1,0 +1,154 @@
+Data Analysis Flow V2 검증 질문셋
+
+분류 기준
+
+- FAST: 최종 Resolver 기준 단일 external source, 지원 recipe, canonical filter/schema, 고정 또는 제한된 결과 계약을 모두 만족하는 질문이다.
+- COMPLEX: 다중 source, join/비교, Function Case, 그룹 속성 비교처럼 자유 pandas 분석이 필요한 질문이다.
+- BLOCKED는 정상 분류가 아니다. 필수 조회·schema·filter 계약 오류이므로 검증 실패로 처리한다.
+- 아래 경로는 의도 LLM의 희망 경로가 아니라 `intent_plan.route_resolution.final_route`의 기대값이다.
+- FAST 질문이라도 실제 metadata 계약이 불완전하면 Resolver가 COMPLEX로 안전 전환할 수 있다. 이 경우 `final_reason`을 확인해 metadata 또는 의도 계획 문제인지 판단한다.
+
+대표 자동 회귀 질문 (1~31)
+
+1. [FAST | group_summary] 오늘 투입된 제품중 MCP NO가 L-267로 시작하는 제품의 INPUT 수량 알려줘
+   - 단일 production source, starts_with filter, 제품 grain 합계
+2. [FAST | group_summary] 어제 DA공정 차수별 생산량 알려줘
+   - 단일 production history source, DA filter, 차수별 합계
+3. [FAST | group_summary] 어제 Mobile제품의 PKG OUT실적을 제품별로 알려줘
+   - 단일 production source, 제품·공정 filter, 제품별 합계
+4. [FAST | group_summary] HBM제품의 아침재공을 제품별로 알려줘
+   - 단일 wip source, BOH 시간 계약과 HBM filter, 제품별 합계
+5. [COMPLEX | multiple_external_sources+join] 6/27일 W/B공정에서 세부 공정별 생산실적과 아침재공 수량 알려줘
+   - production과 wip을 공정 기준으로 결합
+6. [FAST | group_summary] HBM제품 FCB공정에서 오늘 아침재공 제품별로 알려줘
+   - 단일 wip source, BOH 시간 계약과 공정·제품 filter
+7. [FAST | distinct_summary] 6월 30일 FCB/H 공정 실적이 있는 Device 알려줘
+   - 단일 production source에서 실적 존재 조건 적용 후 Device 고유값
+8. [COMPLEX | multiple_external_sources+apply_pandas_function_case] RG 32G DDR4 FBGA 96 DDP 제품 BG공정에서 생산량과 재공수량 알려줘
+   - product token match 후 production과 wip 결합
+9. [COMPLEX | apply_pandas_function_case] FCB 공정에서 SP 24G GDDR7 X32 226 FCBGA DDP 제품의 전일 생산량 알려줘
+   - 단일 source이지만 다중 product token match가 필요
+10. [COMPLEX | multiple_external_sources+compare_metrics] 6/24일 투입 실적 대비 D/S1, D/A1공정에서 WIP 많은 제품 알려줘
+    - production과 wip 집계값 비교 및 조건 적용
+11. [COMPLEX | multiple_external_sources+compare_presence] 현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘
+    - production 존재·wip 부재 비교
+12. [COMPLEX | multiple_external_sources+outer_join] FCB 공정 생산 실적과 W/B2 공정 재공수량을 제품별로 비교해줘
+    - production과 wip의 전체 모집단 보존 결합
+13. [FAST | detail_query] W/B공정 IN TAT 10시간이상 된 LOT 알려줘
+    - 단일 lot_status source의 공정·TAT filter와 상세 목록
+14. [FAST | detail_query] D/S1~D/A4 공정 Hold 된 Lot ID 알려줘
+    - 단일 lot_status source의 공정 구간·HOLD filter
+15. [FAST | group_summary] 7월 1일 D/A1~W/B6 공정 구간의 공정별 생산량을 OPER_SEQ 순서로 알려줘
+    - 단일 production source의 공정별 합계와 정렬
+16. [FAST | detail_query] DA, WB공정 HOLD LOT 알려줘
+    - 단일 lot_status source의 process group·HOLD filter
+17. [FAST | list_summary] WB & DA 공정 Hold Lot LIST알려줘
+    - 단일 lot_status source의 HOLD LOT 고유 목록
+18. [FAST | list_summary] D/S1&D/A 공정 Hold Lot LIST알려줘
+    - 단일 lot_status source의 HOLD LOT 고유 목록
+19. [FAST | group_summary] 7월 5일 FCB1,FCB2,FCB/H 공정 실적 알려줘
+    - 단일 production source의 공정별 합계
+20. [FAST | group_summary] 7/9 D/A1, D/A2공정에서 생산 실적 알려줘
+    - 단일 production source의 공정별 합계
+21. [FAST | group_summary] 오늘 WBM 공정의 제품별 생산량을 알려줘. 제품 정보가 비어 있는 행도 제외하지 말고, 비어 있는 제품 정보는 빈칸으로, 생산량이 비어 있으면 0으로 보여줘.
+    - 단일 production source, 제품 grain 합계와 null 표시 정책
+22. [COMPLEX | compare_group_attributes] 현재 제품 중 TECH, DEN, PKG_TYPE2, MCP_NO는 같지만 MODE, PKG_TYPE1 또는 LEAD가 다른 제품들을 찾아서 보여줘.
+    - 동일 그룹 내부 속성 차이를 비교하는 복합 연산
+23. [FAST | group_summary] FCB2공정 제품별 UPH 알려줘
+    - 단일 eqp_uph source의 제품별 기본 rollup
+24. [FAST | group_summary] WB공정 L-217제품 차수별, 장비 기종별 UPH 알려줘
+    - Main Flow Filter가 L-217 조건을 canonical filter로 확정한다는 전제의 단일 eqp_uph 집계
+25. [COMPLEX | apply_pandas_function_case] F315 L-116로 시작하는 제품 WB 공정 차수별 UPH 알려줘
+    - 복합 product token과 prefix 조합을 Function Case로 매칭
+26. [FAST | group_summary] 현재 D/A1 공정의 장비 모델, Recipe, 공정, UPH를 보여줘
+    - 단일 eqp_uph source의 모델·Recipe·공정 grain 집계
+27. [FAST | list_summary] 현재 D/A1 공정에 배정된 장비를 장비 모델과 Recipe 조합별로 보여줘
+    - 단일 equipment_assign source의 조합별 장비 LIST
+28. [FAST | detail_query] W/B공정 현재 HOLD LOT와 HOLD사유 알려줘
+    - 단일 lot_status source의 HOLD 상세 목록
+29. [FAST | detail_query] 현재 HOLD 중인 LOT 목록과 LOT별 UNIT 수량, Wafer 수량, 현재·누적 TAT를 보여줘
+    - 단일 lot_status source의 HOLD 상세 컬럼 조회
+30. [COMPLEX | multiple_external_sources+join] 오늘 DA공정에서 생산량 상위 3개 제품과 각 제품에 할당된 장비 대수 및 LIST를 알려줘
+    - production 상위 제품과 equipment_assign 결합
+31. [FAST | detail_query] 7/6 생산 계획 데이터 알려줘
+    - 단일 target source의 날짜 filter와 계획 상세 조회
+
+멀티턴 검증
+
+멀티턴 공통 확인 항목
+
+- 후속 질문 판정과 이전 상태 복원은 Fast/Complex 분기보다 먼저 수행된다.
+- 따라서 후속 질문도 매 turn의 최종 실행 계약에 따라 FAST 또는 COMPLEX가 될 수 있다.
+- 이전 source 하나를 재사용해 projection·filter·집계만 바꾸면 FAST가 가능하다.
+- 이전 결과와 새 source를 결합하거나 두 source를 계속 비교하면 COMPLEX다.
+- 이전 질문의 경로를 후속 질문이 그대로 상속한다고 가정하지 않는다.
+
+시나리오 A
+
+- A1. [FAST | distinct_summary] 6월 30일 FCB/H 공정 실적이 있는 Device 알려줘
+- A2. [FAST | detail_query | followup_transform] 위 결과를 제품 컬럼들도 같이 보여줘
+  - 이전 production source 하나를 유지하고 projection만 확장
+
+시나리오 B
+
+- B1. [FAST | ranked_summary] 오늘 DA공정에서 생산량 상위 3개 제품을 알려줘.
+- B2. [COMPLEX | followup_requery+join] 이 제품들에 할당된 현재 장비 대수와 장비 LIST를 제품별로 알려줘.
+  - 이전 상위 제품과 새 equipment_assign source 결합
+- B3. [FAST | ranked_summary | followup_transform] 그중 장비 대수가 가장 많은 제품만 보여줘.
+  - 직전 결과 source 하나에서 정렬 후 상위 1건
+- B4. [FAST | ranked_summary | new_analysis] 오늘 WB공정에서 생산량 상위 5개 제품을 알려줘.
+  - 완결된 새 질문이므로 이전 DA·장비 조건을 상속하지 않음
+
+시나리오 C
+
+- C1. [FAST | detail_query] W/B공정 현재 HOLD LOT와 HOLD사유 알려줘
+- C2. [FAST | detail_query | followup_requery] HOLD 시간이 가장 오래된 LOT의 이력을 보여줘
+  - 이전 결과에서 LOT을 결정해 단일 hold_history source의 조회 파라미터로 바인딩
+
+시나리오 D
+
+- D1. [COMPLEX | multiple_external_sources+join] W/B공정 차수별 생산량과 재공수량 알려줘
+- D2. [COMPLEX | followup_transform+multiple_external_sources] 위 결과를 제품별로 보여줘, 공정 조건도 유지해줘
+  - production과 wip 두 source 및 기존 공정 조건 유지
+
+시나리오 E
+
+- E1. [FAST | group_summary] 어제 Mobile제품의 PKG OUT실적을 제품별로 알려줘
+- E2. [FAST | group_summary | followup_requery] pop제품은어땠어?
+  - 동일 production dataset에서 제품 조건만 Mobile에서 POP으로 교체
+
+날짜 계약 검증
+
+- [FAST | ranked_summary] 2026-07-01 제품별 INPUT 계획과 OUT 계획을 OUT 계획이 큰 순서로 알려줘
+- [FAST | group_summary] 2026/7/1 제품별 OUT 계획을 알려줘
+- [FAST | group_summary] 2026년 7월 1일 제품별 INPUT 계획을 알려줘
+- [FAST | scalar_summary] 2026-07-01 W/BM 공정 생산량을 알려줘
+- [COMPLEX | multiple_external_sources+calculation] 2026/7/1 제품별 INPUT 계획 대비 실제 INPUT 실적과 달성률을 알려줘
+- [FAST | group_summary] 2026-07-01T00:00:00+09:00 기준 제품별 OUT 계획을 알려줘
+
+Fast Recipe 단위 추가 검증
+
+- [FAST | scalar_summary] 현재 HOLD 중인 LOT은 총 몇 개인지 알려줘
+- [FAST | frequency_summary] 현재 HOLD 사유별 LOT 건수를 알려줘
+- [FAST | existence_summary] 현재 D/A1 공정에 HOLD LOT이 있는지 알려줘
+- [FAST | quality_summary] 오늘 생산실적 데이터에서 제품 정보가 비어 있는 행 수를 알려줘
+- [FAST | latest_earliest] 현재 HOLD LOT 중 IN 시각이 가장 오래된 LOT 1건을 알려줘
+- [FAST | percent_of_total] 오늘 DA공정의 세부 공정별 생산량과 전체 대비 구성비를 알려줘
+- [FAST | rank_within_group] 오늘 DA공정에서 세부 공정별로 제품 생산량 순위를 알려줘
+- [FAST | threshold_after_aggregate] 오늘 DA공정에서 제품별 생산량 합계가 100 이상인 제품을 알려줘
+- [FAST | time_bucket_summary] 최근 생산실적을 일자별 생산량으로 알려줘
+- [FAST | period_change] 최근 일자별 생산량과 전일 대비 증감률을 알려줘
+- [FAST | running_total] 최근 일자별 생산량과 누적 생산량을 알려줘
+- [FAST | moving_aggregate] 최근 일자별 생산량과 3일 이동평균을 알려줘
+- [FAST | percentile_summary] 현재 D/A1 공정 UPH의 90백분위수를 알려줘
+- [FAST | pivot_summary] 오늘 DA공정 생산량을 공정별·차수별 pivot 형태로 알려줘
+
+검증 결과 기록 항목
+
+- `request_scope`, `reference_mode`, `reuse_strategy`
+- `route_resolution.intent_candidate`, `route_resolution.final_route`, `route_resolution.final_recipe`, `route_resolution.final_reason`
+- `simple_analysis_contract.recipe`, `source_alias`, `dataset_key`, `filters`, `result_columns`
+- `execution_route`, `fast_path_recipe`, `model_call_count`
+- FAST 기대 질문: pandas 생성 0회, repair 0회, 답변 LLM 0회
+- COMPLEX 기대 질문: 기존 pandas 생성·필요 시 1회 repair·답변 LLM 경로 유지
+- 공통: 조회 실패와 0건 결과를 구분하고, 최종 결과 컬럼과 적용 조건이 답변 문구와 일치해야 함

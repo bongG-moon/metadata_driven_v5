@@ -274,48 +274,23 @@ def _dedupe_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
-class PandasVariablesBuilder(Component):
-    display_name = "15 pandas 변수 생성기"
-    description = "Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 pandas 코드 생성 변수를 제공합니다. function case 선택 정보는 16번 Prompt Template에 연결하고, 실제 함수 코드는 별도 입력으로 넣습니다."
-    inputs = [DataInput(name="payload", display_name="페이로드", required=True)]
+
+# Langflow 컴포넌트 클래스: V2 helper 선택 계약을 독립 실행 가능한 노드로 노출합니다.
+class FunctionCaseSelectionBuilder(Component):
+    display_name = "15 V2 Function Case 선택 정보 생성기"
+    description = "Fast/Complex 공통 helper 선택에 필요한 작은 계약만 생성합니다."
+    inputs = [DataInput(name="payload", display_name="경로 결정 페이로드", required=True)]
     outputs = [
-        Output(name="intent_plan_json", display_name="의도 계획 JSON", method="build_intent_plan_json", types=["Message"], group_outputs=True),
-        Output(name="source_schema_json", display_name="소스 스키마 JSON", method="build_source_schema_json", types=["Message"], group_outputs=True),
-        Output(name="source_preview_json", display_name="소스 미리보기 JSON", method="build_source_preview_json", types=["Message"], group_outputs=True),
-        Output(name="function_case_selection_json", display_name="Function Case 선택 정보 JSON", method="build_function_case_selection_json", types=["Message"], group_outputs=True),
-        Output(name="output_contract_json", display_name="출력 계약 JSON", method="build_output_contract_json", types=["Message"], group_outputs=True),
+        Output(
+            name="function_case_selection_json",
+            display_name="Function Case 선택 정보 JSON",
+            method="build_selection",
+            types=["Message"],
+        )
     ]
 
-    # 함수 설명: `_variables_once()`는 다섯 Prompt 변수가 같은 runtime source를 반복 deepcopy·JSON 변환하지 않도록 한 번만 계산합니다.
-    def _variables_once(self) -> dict[str, Any]:
-        payload = getattr(self, "payload", None)
-        cache_key = id(payload)
-        if getattr(self, "_variables_cache_key", None) != cache_key:
-            self._variables_cache_key = cache_key
-            self._variables_cache = build_variables(payload)
-        return self._variables_cache
+    # 함수 설명: 전체 pandas context 없이 Function Case 선택 정보만 반환합니다.
+    def build_selection(self) -> Message:
+        """Return only helper-selection metadata, never the full pandas prompt context."""
 
-    # Langflow 출력 함수: '의도 계획 JSON (intent_plan_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_intent_plan_json(self) -> Message:
-        return Message(text=self._variables_once()["intent_plan_json"])
-
-    # Langflow 출력 함수: '소스 스키마 JSON (source_schema_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_source_schema_json(self) -> Message:
-        return Message(text=self._variables_once()["source_schema_json"])
-
-    # Langflow 출력 함수: '소스 미리보기 JSON (source_preview_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_source_preview_json(self) -> Message:
-        return Message(text=self._variables_once()["source_preview_json"])
-
-    # Langflow 출력 함수: 'Function Case 선택 정보 JSON (function_case_selection_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_function_case_selection_json(self) -> Message:
-        return Message(text=self._variables_once()["function_case_selection_json"])
-
-    # Langflow 출력 함수: '출력 계약 JSON (output_contract_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_output_contract_json(self) -> Message:
-        return Message(text=self._variables_once()["output_contract_json"])
+        return Message(text=build_function_case_selection_only(getattr(self, "payload", None)))

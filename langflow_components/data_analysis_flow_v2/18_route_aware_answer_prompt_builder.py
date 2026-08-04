@@ -470,48 +470,33 @@ def _json_ready(value: Any) -> Any:
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
-class AnswerVariablesBuilder(Component):
-    display_name = "18 답변 생성 변수 생성기"
-    description = "Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 답변 생성 변수를 제공합니다."
-    inputs = [DataInput(name="payload", display_name="페이로드", required=True)]
+
+# Langflow 컴포넌트 클래스: V2 Complex 답변용 context와 프롬프트를 지연 생성합니다.
+class RouteAwareAnswerPromptBuilder(Component):
+    display_name = "18 V2 경로 인식 Answer Prompt 생성기"
+    description = "Complex 경로에서만 중복을 제거한 답변 context와 prompt를 생성합니다."
+    inputs = [
+        DataInput(name="payload", display_name="분석 결과 페이로드", required=True),
+        MultilineInput(name="prompt_template", display_name="답변 프롬프트 템플릿", required=True),
+        MessageTextInput(
+            name="domain_answer_guidance",
+            display_name="도메인 특화 응답 지침",
+            required=False,
+            advanced=True,
+        ),
+    ]
     outputs = [
-        Output(name="question", display_name="사용자 질문", method="build_question", types=["Message"], group_outputs=True),
-        Output(name="result_summary_json", display_name="결과 요약 JSON", method="build_result_summary", types=["Message"], group_outputs=True),
-        Output(name="applied_scope_json", display_name="적용 범위 JSON", method="build_applied_scope", types=["Message"], group_outputs=True),
-        Output(name="answer_context_json", display_name="답변 컨텍스트 JSON", method="build_answer_context", types=["Message"], group_outputs=True),
-        Output(name="warnings_errors_json", display_name="경고/오류 JSON", method="build_warnings_errors", types=["Message"], group_outputs=True),
+        Output(name="answer_prompt", display_name="경로 인식 Answer Prompt", method="build_prompt", types=["Message"])
     ]
 
-    # 함수 설명: `_variables_once()`는 결과 요약·적용 범위·경고 변수를 동일 payload에서 한 번만 계산해 대용량 행 복사를 줄입니다.
-    def _variables_once(self) -> dict[str, Any]:
-        payload = getattr(self, "payload", None)
-        cache_key = id(payload)
-        if getattr(self, "_variables_cache_key", None) != cache_key:
-            self._variables_cache_key = cache_key
-            self._variables_cache = build_variables(payload)
-        return self._variables_cache
+    # 함수 설명: Fast와 Blocked를 건너뛰고 Complex 답변 프롬프트만 반환합니다.
+    def build_prompt(self) -> Message:
+        """Skip answer context serialization for Fast and Blocked routes."""
 
-    # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_question(self) -> Message:
-        return Message(text=self._variables_once()["question"])
-
-    # Langflow 출력 함수: '결과 요약 JSON (result_summary_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_result_summary(self) -> Message:
-        return Message(text=self._variables_once()["result_summary_json"])
-
-    # Langflow 출력 함수: '적용 범위 JSON (applied_scope_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_applied_scope(self) -> Message:
-        return Message(text=self._variables_once()["applied_scope_json"])
-
-    # Langflow 출력 함수: '답변 컨텍스트 JSON (answer_context_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_answer_context(self) -> Message:
-        return Message(text=self._variables_once()["answer_context_json"])
-
-    # Langflow 출력 함수: '경고/오류 JSON (warnings_errors_json)' 포트가 요청될 때 실행됩니다.
-    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
-    def build_warnings_errors(self) -> Message:
-        return Message(text=self._variables_once()["warnings_errors_json"])
+        return Message(
+            text=build_route_aware_answer_prompt(
+                getattr(self, "payload", None),
+                getattr(self, "prompt_template", ""),
+                getattr(self, "domain_answer_guidance", ""),
+            )
+        )

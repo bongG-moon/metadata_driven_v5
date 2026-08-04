@@ -31,6 +31,80 @@ LANGUAGE_MODEL_SYSTEM_MESSAGES = {
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
 TARGET_LANGFLOW_VERSION = "1.9.2"
 TARGET_LANGUAGE_MODEL_SOURCE = ROOT / "tools" / "assets" / "langflow_1_9_2_language_model.py"
+DATA_ANALYSIS_NOTE_PREFIX = "note-data-analysis-"
+
+# The canvas uses the same native component dimensions as Langflow 1.9.2.
+# A 450 px horizontal step and a 500 px branch step leave enough room for
+# expanded component cards without baking presentation concerns into runtime
+# component code.
+DATA_ANALYSIS_V5_LAYOUT = {
+    "ChatInput-Xs7uo": (-2400.0, 100.0),
+    "GaiAInputAdapter-data-analysis": (-1950.0, 100.0),
+    "CustomComponent-Fti0r": (-1500.0, -350.0),
+    "CustomComponent-xpbhS": (-1500.0, 550.0),
+    "CustomComponent-HFsYn": (-1050.0, 100.0),
+    "CustomComponent-i0jbh": (-1050.0, 800.0),
+    "MongoDBDomainMetadataLoader-OM3Hg": (-1050.0, 1300.0),
+    "CustomComponent-kzlcF": (-1050.0, 1800.0),
+    "CustomComponent-DXrpf": (-600.0, 1100.0),
+    "CustomComponent-B1hbh": (-600.0, 100.0),
+    "TextInput-GRnAm": (-600.0, 600.0),
+    "Prompt Template-AUpQz": (-150.0, 100.0),
+    "LanguageModel-intent": (300.0, 100.0),
+    "CustomComponent-5o0CN": (750.0, 100.0),
+    "CustomComponent-v5Hydrate": (1200.0, 100.0),
+    "CustomComponent-O8vfz": (1650.0, 100.0),
+    "CustomComponent-v5UpstreamBinder": (2100.0, 100.0),
+    "CustomComponent-vVkhs": (2550.0, 100.0),
+    "CustomComponent-x6NXu": (3000.0, 100.0),
+    "CustomComponent-Pp7d0": (3450.0, -650.0),
+    "CustomComponent-v5Oracle": (3450.0, -150.0),
+    "CustomComponent-v5HApi": (3450.0, 350.0),
+    "CustomComponent-v5Datalake": (3450.0, 850.0),
+    "CustomComponent-v5Goodocs": (3450.0, 1350.0),
+    "MongoDBDomainMetadataLoader-geCh1": (3900.0, 100.0),
+    "CustomComponent-bhiAG": (4350.0, 100.0),
+    "CustomComponent-v5ExecutionGate": (4800.0, 100.0),
+    "CustomComponent-fc0Vb": (5250.0, 100.0),
+    "Prompt Template-xtzD5": (5700.0, 100.0),
+    "CustomComponent-v5Helper": (5700.0, 650.0),
+    "TextInput-AXG9a": (5250.0, 1100.0),
+    "LanguageModel-pandas": (6150.0, 100.0),
+    "TextInput-v5RepairPrompt": (6150.0, 700.0),
+    "CustomComponent-s3mf1": (6600.0, 100.0),
+    "CustomComponent-AUrFb": (7050.0, 100.0),
+    "CustomComponent-aKrkH": (7500.0, 100.0),
+    "TextInput-VFbHh": (7500.0, 700.0),
+    "Prompt Template-ELVKc": (7950.0, 100.0),
+    "LanguageModel-answer": (8400.0, 100.0),
+    "CustomComponent-BVItv": (8850.0, 100.0),
+    "CustomComponent-fXdS4": (9300.0, 100.0),
+    "CustomComponent-v5RuntimeCleanup": (9750.0, 100.0),
+    "CustomComponent-A5y0b": (10200.0, 100.0),
+    "GaiAOutputAdapter-data-analysis": (10650.0, 100.0),
+    "ChatOutput-rwbTs": (11100.0, 100.0),
+    "CustomComponent-3eVde": (10650.0, 700.0),
+}
+
+DATA_ANALYSIS_V2_LAYOUT_OVERRIDES = {
+    "CustomComponent-v2FastResolver": (5250.0, 100.0),
+    "CustomComponent-fc0Vb": (5700.0, 100.0),
+    "Prompt Template-xtzD5": (6150.0, 100.0),
+    "CustomComponent-v5Helper": (6150.0, 650.0),
+    "TextInput-AXG9a": (5700.0, 1100.0),
+    "TextInput-v5RepairPrompt": (6600.0, 700.0),
+    "CustomComponent-s3mf1": (6600.0, 100.0),
+    "CustomComponent-AUrFb": (7050.0, 100.0),
+    "CustomComponent-aKrkH": (7500.0, 100.0),
+    "TextInput-VFbHh": (7500.0, 700.0),
+    "CustomComponent-BVItv": (7950.0, 100.0),
+    "CustomComponent-fXdS4": (8400.0, 100.0),
+    "CustomComponent-v5RuntimeCleanup": (8850.0, 100.0),
+    "CustomComponent-A5y0b": (9300.0, 100.0),
+    "GaiAOutputAdapter-data-analysis": (9750.0, 100.0),
+    "ChatOutput-rwbTs": (10200.0, 100.0),
+    "CustomComponent-3eVde": (9750.0, 700.0),
+}
 
 COMPONENT_FILES = {
     "CustomComponent-xpbhS": "data_analysis_flow/00_analysis_request_loader.py",
@@ -166,6 +240,269 @@ NEW_COMPONENTS = {
         "outputs": [("Data", "payload_out", "정리된 페이로드", "build_payload")],
     },
 }
+
+
+def _sticky_note_node(
+    note_id: str,
+    description: str,
+    *,
+    x: float,
+    y: float,
+    width: int,
+    height: int,
+    color: str,
+) -> dict[str, Any]:
+    """Build a Langflow 1.9.2 noteNode without execution handles or edges."""
+
+    return {
+        "data": {
+            "id": note_id,
+            "node": {
+                "description": description,
+                "display_name": "",
+                "documentation": "",
+                "template": {"backgroundColor": color},
+                "lf_version": TARGET_LANGFLOW_VERSION,
+            },
+            "type": "note",
+        },
+        "dragging": False,
+        "height": height,
+        "id": note_id,
+        "position": {"x": x, "y": y},
+        "resizing": False,
+        "selected": False,
+        "type": "noteNode",
+        "width": width,
+        "positionAbsolute": {"x": x, "y": y},
+        "style": {"height": height, "width": width},
+    }
+
+
+def _stage_note_specs(variant: str) -> list[dict[str, Any]]:
+    is_v2 = variant == "v2"
+    analysis_description = (
+        "## ⑤ V2 Hybrid 분석\n\n"
+        "- **14A 실행 게이트**: 필수 source 조회 성공 여부를 확인합니다.\n"
+        "- **14B Fast 경로 판정기**: 단일 source와 완전한 canonical 계약이면 Fast, 그 외에는 Complex로 확정합니다.\n"
+        "- **15 Helper 계약 / 16 지연 Prompt**: helper 선택은 공통 수행하고, 전체 pandas Prompt는 Complex에서만 생성합니다.\n"
+        "- **17 V2 Hybrid 실행기**: Fast는 고정 함수를 실행하고, Complex만 pandas 생성 모델과 1회 복구를 사용합니다.\n"
+        "- **23 결과 저장소**: 결과와 원본 참조를 MongoDB에 저장하고 다운로드 정보를 만듭니다.\n\n"
+        "Fast 판정 실패는 오류가 아니라 안전한 Complex 전환입니다."
+        if is_v2
+        else
+        "## ⑤ pandas 분석\n\n"
+        "- **14A 실행 게이트**: 필수 source 조회 성공 여부를 확인합니다.\n"
+        "- **15 pandas 변수 생성기**: 조회 결과와 실행 계약을 프롬프트 변수로 만듭니다.\n"
+        "- **15A Helper 선택기**: 의도 계획에 선언된 Function Case만 코드에 포함합니다.\n"
+        "- **pandas Prompt + Language Model**: 계약에 맞는 분석 코드를 생성합니다.\n"
+        "- **17 실행/복구기**: 코드를 제한된 환경에서 실행하고 실패 시 최대 1회 복구합니다.\n"
+        "- **23 결과 저장소**: 결과와 원본 참조를 MongoDB에 저장합니다."
+    )
+    answer_description = (
+        "## ⑥ 답변 구성\n\n"
+        "- **18 지연 Answer Prompt**: Complex에서만 중복 제거된 답변 context와 Prompt를 생성합니다.\n"
+        "- **20 V2 Hybrid 답변 생성기**: Fast는 고정 형식으로 즉시 답변하고 Complex만 답변 모델을 호출합니다.\n"
+        "- **답변 도메인 가이드**: 메타데이터 기반 표현 규칙을 Prompt에 제공합니다.\n"
+        "- **세션 상태 저장기**: 후속 질문에 필요한 압축 상태를 기록합니다."
+        if is_v2
+        else
+        "## ⑥ 답변 구성\n\n"
+        "- **18 답변 변수 생성기**: 질문·조건·결과·진단을 답변 입력으로 정리합니다.\n"
+        "- **Answer Prompt + Language Model**: 자연어 답변 초안을 생성합니다.\n"
+        "- **20 답변 응답 생성기**: 결과 표·오류·다운로드 정보를 최종 payload에 결합합니다.\n"
+        "- **답변 도메인 가이드**: 메타데이터 기반 표현 규칙을 Prompt에 제공합니다.\n"
+        "- **세션 상태 저장기**: 후속 질문에 필요한 압축 상태를 기록합니다."
+    )
+    return [
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}01-entry-state",
+            "description": (
+                "## ① 요청·세션 입력\n\n"
+                "- **Chat Input**: Playground 질문을 받습니다.\n"
+                "- **GaiA Input Adapter**: Chat/GaiA 입력을 하나의 요청 형식으로 맞춥니다.\n"
+                "- **00 세션 상태 로더**: 같은 session의 이전 분석 상태를 읽습니다.\n"
+                "- **00 분석 요청 로더**: 질문·상위 결과 참조·이전 상태를 payload로 만듭니다.\n"
+                "- **01E 후속 질문 힌트**: 새 분석인지 후속 분석인지 판단할 최소 문맥을 준비합니다."
+            ),
+            "x": -2400.0,
+            "width": 1300,
+            "height": 500,
+            "color": "blue",
+        },
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}02-metadata-intent",
+            "description": (
+                "## ② 메타데이터 기반 의도 분석\n\n"
+                "- **01A/01B/01C 로더**: 도메인·테이블 카탈로그·Main Flow Filter를 읽습니다.\n"
+                "- **01D 후보 생성기**: 질문과 관련된 항목만 제한된 크기로 고릅니다.\n"
+                "- **02 의도 변수 생성기**: 질문·상태·후보·출력 schema를 Prompt 변수로 만듭니다.\n"
+                "- **특화 Prompt 입력**: 메타데이터를 해석하는 공통 지침을 제공합니다.\n"
+                "- **Intent Prompt + Language Model**: 조회·분석·출력 계약 초안을 만듭니다.\n"
+                "- **04 정규화기**: 모델별 표현 차이를 canonical intent_plan으로 정리합니다."
+            ),
+            "x": -1000.0,
+            "width": 1800,
+            "height": 560,
+            "color": "blue",
+        },
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}03-contract-history",
+            "description": (
+                "## ③ 신뢰 계약·후속 결과 복원\n\n"
+                "- **04A 카탈로그 Hydrator**: 선택된 dataset의 실제 조회 설정과 컬럼 계약을 보강합니다.\n"
+                "- **05 이전 결과 로더**: 후속 분석에 필요한 저장 결과를 복원합니다.\n"
+                "- **05A 상위 결과 바인더**: 이전 결과의 entity 값을 다음 조회 파라미터에 연결합니다.\n"
+                "- **06 조회 작업 검증기**: source·metric·필수 파라미터 계약을 조회 전에 확인합니다.\n\n"
+                "실행 컬럼과 조건은 하드코딩하지 않고 선택된 메타데이터 계약을 따릅니다."
+            ),
+            "x": 900.0,
+            "width": 1700,
+            "height": 500,
+            "color": "amber",
+        },
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}04-retrieval",
+            "description": (
+                "## ④ 데이터 조회·병합\n\n"
+                "- **07 라우터**: retrieval job을 source_type별로 분배합니다.\n"
+                "- **08 Dummy / 09 Oracle / 10 H-API / 11 Datalake / 12 Goodocs**: 각 공급자에서 원본 데이터를 조회합니다.\n"
+                "- **13 결과 병합기**: 공급자별 결과를 source_alias 기준으로 한 payload에 모읍니다.\n"
+                "- **14 조회 어댑터**: 공통 runtime_sources/source_results 형식으로 정리합니다.\n\n"
+                "분기 노드는 서로 병렬이며, Sticky Note는 실행 연결을 갖지 않습니다."
+            ),
+            "x": 2700.0,
+            "width": 1700,
+            "height": 520,
+            "color": "blue",
+        },
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}05-analysis",
+            "description": analysis_description,
+            "x": 4500.0,
+            "width": 2100,
+            "height": 570,
+            "color": "amber" if is_v2 else "blue",
+        },
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}06-answer",
+            "description": answer_description,
+            "x": 6700.0,
+            "width": 2100 if not is_v2 else 1700,
+            "height": 500,
+            "color": "blue",
+        },
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}07-output",
+            "description": (
+                "## ⑦ 상태 정리·최종 출력\n\n"
+                "- **24 런타임 정리기**: 큰 임시 row buffer를 제거해 최종 payload를 가볍게 만듭니다.\n"
+                "- **21 메시지 어댑터**: Chat/GaiA에서 표시할 Markdown 답변을 만듭니다.\n"
+                "- **22 API 응답 생성기**: 웹/API용 구조화 응답을 제공합니다.\n"
+                "- **GaiA Output Adapter**: GaiA 출력 형식으로 변환합니다.\n"
+                "- **Chat Output**: Playground에 최종 답변을 표시합니다."
+            ),
+            "x": 9000.0 if not is_v2 else 8500.0,
+            "width": 2100,
+            "height": 500,
+            "color": "amber",
+        },
+    ]
+
+
+def _v2_recipe_note_specs() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}08-v2-route",
+            "description": (
+                "## V2 Fast / Complex 판정 기준\n\n"
+                "**Fast**: 단일 external source, 지원 operation, canonical 컬럼 확정, 고정 결과 schema, bounded 실행 조건을 모두 만족할 때만 선택합니다.\n\n"
+                "**Complex**: join·다중 source·사용자 함수·불완전 계약·동적 계산은 기존 LLM pandas 경로로 보냅니다.\n\n"
+                "판정 결과는 `analysis_route`, `fast_path_candidate`, `fast_path_recipe`로 payload와 실행 정보에 남습니다."
+            ),
+            "x": 4800.0,
+            "width": 700,
+            "height": 520,
+            "color": "amber",
+        },
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}09-v2-fast-basic",
+            "description": (
+                "## V2 Fast Recipe · 기본 10종\n\n"
+                "- **detail_query**: 필터 후 선택 컬럼 상세 목록\n"
+                "- **scalar_summary**: 전체 sum·mean·min·max·count 등 단일 요약\n"
+                "- **group_summary**: 그룹별 집계\n"
+                "- **ranked_summary**: 상위·하위 N 정렬 결과\n"
+                "- **frequency_summary**: 값별 빈도·건수\n"
+                "- **distinct_summary**: 고유값 목록\n"
+                "- **list_summary**: 그룹별 고유 항목 LIST\n"
+                "- **existence_summary**: 조건 데이터 존재 여부\n"
+                "- **quality_summary**: null·blank·중복 품질 요약\n"
+                "- **latest_earliest**: 정렬 기준 최신·최초 행"
+            ),
+            "x": 5550.0,
+            "width": 800,
+            "height": 700,
+            "color": "blue",
+        },
+        {
+            "id": f"{DATA_ANALYSIS_NOTE_PREFIX}10-v2-fast-advanced",
+            "description": (
+                "## V2 Fast Recipe · 고급 9종\n\n"
+                "- **percent_of_total**: 전체·partition 대비 구성비\n"
+                "- **rank_within_group**: 그룹 내부 순위\n"
+                "- **threshold_after_aggregate**: 집계 후 임계값 필터\n"
+                "- **time_bucket_summary**: 일·주·월·분기·연도 버킷 집계\n"
+                "- **period_change**: 전기 대비 증감량·증감률\n"
+                "- **running_total**: 시간 순 누적값\n"
+                "- **moving_aggregate**: 이동합·이동평균\n"
+                "- **percentile_summary**: 연속·이산 백분위수\n"
+                "- **pivot_summary**: 제한된 열 수의 pivot/crosstab\n\n"
+                "각 recipe는 필요한 calculation 계약이 완전할 때만 Fast로 실행됩니다."
+            ),
+            "x": 6400.0,
+            "width": 850,
+            "height": 700,
+            "color": "amber",
+        },
+    ]
+
+
+def apply_data_analysis_canvas(flow: dict[str, Any], variant: str = "v5") -> None:
+    """Apply a non-overlapping flow layout and informational Sticky Notes."""
+
+    if variant not in {"v5", "v2"}:
+        raise ValueError(f"unsupported data analysis canvas variant: {variant}")
+    nodes = flow.get("data", {}).get("nodes", [])
+    nodes[:] = [node for node in nodes if not str(node.get("id") or "").startswith(DATA_ANALYSIS_NOTE_PREFIX)]
+    flow["data"]["viewport"] = {"x": 330.0, "y": 250.0, "zoom": 0.12}
+
+    layout = dict(DATA_ANALYSIS_V5_LAYOUT)
+    if variant == "v2":
+        layout.update(DATA_ANALYSIS_V2_LAYOUT_OVERRIDES)
+    for node in nodes:
+        position = layout.get(str(node.get("id") or ""))
+        if position is None:
+            continue
+        node["position"] = {"x": position[0], "y": position[1]}
+        if isinstance(node.get("positionAbsolute"), dict):
+            node["positionAbsolute"] = {"x": position[0], "y": position[1]}
+
+    specs = _stage_note_specs(variant)
+    if variant == "v2":
+        specs.extend(_v2_recipe_note_specs())
+    for index, spec in enumerate(specs):
+        nodes.append(
+            _sticky_note_node(
+                spec["id"],
+                spec["description"],
+                x=spec["x"],
+                y=-1600.0 if index < 7 else 2100.0,
+                width=spec["width"],
+                height=spec["height"],
+                color=spec["color"],
+            )
+        )
 
 
 def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
@@ -436,6 +773,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         component = node.get("data", {}).get("node")
         if isinstance(component, dict):
             component["lf_version"] = TARGET_LANGFLOW_VERSION
+    apply_data_analysis_canvas(flow, "v5")
     return flow
 
 

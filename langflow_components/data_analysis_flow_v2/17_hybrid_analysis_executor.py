@@ -467,7 +467,6 @@ def execute_pandas_code(
         }
         if fast_execution:
             next_payload["analysis"]["code_generation_type"] = "deterministic_function"
-            next_payload["analysis"]["deterministic_function"] = deepcopy(deterministic_function)
         if semantic_execution_certificate:
             next_payload["analysis"]["semantic_execution_certificate"] = deepcopy(
                 semantic_execution_certificate
@@ -532,7 +531,7 @@ def execute_pandas_code(
 # 함수 설명: 정규화기가 만든 신뢰 가능한 다중 source 계약 중 실행할 하나를 선택합니다.
 def _deterministic_execution_contract(payload: dict[str, Any]) -> dict[str, Any]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
-    fast_plan = plan.get("resolved_fast_path_plan")
+    fast_plan = payload.get("simple_analysis_contract")
     if (
         isinstance(fast_plan, dict)
         and fast_plan.get("strict") is True
@@ -1459,7 +1458,7 @@ def _fast_output_column(calculation: dict[str, Any], result_columns: list[str], 
 def _apply_fast_result_contract(payload: dict[str, Any], result: Any, certificate: dict[str, Any]) -> dict[str, Any]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     output_contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
-    fast_plan = plan.get("resolved_fast_path_plan") if isinstance(plan.get("resolved_fast_path_plan"), dict) else {}
+    fast_plan = payload.get("simple_analysis_contract") if isinstance(payload.get("simple_analysis_contract"), dict) else {}
     if str(fast_plan.get("result_schema_mode") or "") == "derived_bounded" and hasattr(result, "columns"):
         columns = [str(column) for column in result.columns]
         output_contract["result_columns"] = columns

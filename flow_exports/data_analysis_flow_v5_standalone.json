@@ -2160,8 +2160,8 @@
           "width": 320
         },
         "position": {
-          "x": -865.1647748808209,
-          "y": -40.691660426998816
+          "x": -1500.0,
+          "y": 550.0
         },
         "selected": false,
         "type": "genericNode"
@@ -2450,8 +2450,8 @@
           "width": 320
         },
         "position": {
-          "x": 746.3053562362481,
-          "y": 411.7787279236633
+          "x": -150.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -2648,8 +2648,8 @@
           "width": 320
         },
         "position": {
-          "x": 329.90920616398785,
-          "y": 237.84391523361984
+          "x": -600.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -2818,8 +2818,8 @@
           "width": 320
         },
         "position": {
-          "x": 1539.7400850520455,
-          "y": 189.7620741012281
+          "x": 750.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -3042,8 +3042,8 @@
           "width": 320
         },
         "position": {
-          "x": -590.9971929641379,
-          "y": 315.5325407353644
+          "x": -1050.0,
+          "y": 800.0
         },
         "selected": false,
         "type": "genericNode"
@@ -3266,8 +3266,8 @@
           "width": 320
         },
         "position": {
-          "x": -598.5476688420008,
-          "y": 466.42226737739594
+          "x": -1050.0,
+          "y": 1300.0
         },
         "selected": false,
         "type": "genericNode"
@@ -3490,8 +3490,8 @@
           "width": 320
         },
         "position": {
-          "x": -583.0298163654847,
-          "y": 671.1454228241784
+          "x": -1050.0,
+          "y": 1800.0
         },
         "selected": false,
         "type": "genericNode"
@@ -3788,8 +3788,8 @@
           "width": 320
         },
         "position": {
-          "x": -168.93510815067415,
-          "y": 458.7705438778182
+          "x": -600.0,
+          "y": 1100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -4185,8 +4185,8 @@
           "width": 320
         },
         "position": {
-          "x": 1138.3691315904232,
-          "y": 286.414624233857
+          "x": 300.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -4382,8 +4382,8 @@
           "width": 320
         },
         "position": {
-          "x": -652.348769760348,
-          "y": 1252.5240892262457
+          "x": 1650.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -4501,8 +4501,8 @@
           "width": 320
         },
         "position": {
-          "x": -300.1395987895857,
-          "y": 1274.1589975251595
+          "x": 2550.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -4692,8 +4692,8 @@
           "width": 320
         },
         "position": {
-          "x": 76.3655975773267,
-          "y": 1330.9033380676062
+          "x": 3000.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -4811,8 +4811,8 @@
           "width": 320
         },
         "position": {
-          "x": 466.9566915018229,
-          "y": 1355.2469393444494
+          "x": 3450.0,
+          "y": -650.0
         },
         "selected": false,
         "type": "genericNode"
@@ -5055,8 +5055,8 @@
           "width": 320
         },
         "position": {
-          "x": 888.9441083368533,
-          "y": 1327.2691763588577
+          "x": 3900.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -5174,8 +5174,8 @@
           "width": 320
         },
         "position": {
-          "x": 1335.1426135577267,
-          "y": 1353.923291686738
+          "x": 4350.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -5201,7 +5201,7 @@
             "legacy": false,
             "lf_version": "1.9.2",
             "metadata": {
-              "code_hash": "357a3e1f170b",
+              "code_hash": "84106ecc6903",
               "dependencies": {
                 "dependencies": [
                   {
@@ -5326,7 +5326,7 @@
                 "show": true,
                 "title_case": false,
                 "type": "code",
-                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 15 pandas 변수 생성기\n# 역할: Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 pandas 코드 생성 변수를 제공합니다. function case 선택 정보는 16번 Prompt Template에 연결하고, 실제 함수\n#     코드는 별도 입력으로 넣습니다.\n# 주요 입력: 페이로드 (payload) · 필수\n# 주요 출력: 의도 계획 JSON (intent_plan_json), 소스 스키마 JSON (source_schema_json), 소스 미리보기 JSON (source_preview_json),\n#        Function Case 선택 정보 JSON (function_case_selection_json), 출력 계약 JSON (output_contract_json)\n# 처리 흐름: pandas 코드 LLM에 전달할 의도 계획, source schema/preview, 선택 helper와 출력 계약을 분리해 만듭니다.\n# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport json\nfrom copy import deepcopy\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, Output\nfrom lfx.schema.message import Message\n\nPROMPT_INTERNAL_JOB_KEYS = {\n    \"source_config\",\n    \"filter_mappings\",\n    \"standard_column_aliases\",\n    \"row_identity_columns\",\n    \"default_detail_columns\",\n    \"context_columns\",\n    \"required_param_names\",\n    \"trusted_catalog\",\n    \"catalog_ref\",\n}\nRETIRED_OUTPUT_CONTRACT_KEYS = {\"row_identity_columns\", \"context_columns\", \"default_detail_columns\"}\n\n# 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.\n# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.\ndef build_variables(payload_value: Any) -> dict[str, Any]:\n    payload = _payload(payload_value)\n    schemas = _source_schemas(payload)\n    previews = {alias: rows[:5] for alias, rows in payload.get(\"runtime_sources\", {}).items() if isinstance(rows, list)}\n    return {\n        \"intent_plan_json\": _compact_json(_prompt_intent_plan(payload)),\n        \"source_schema_json\": _compact_json(schemas),\n        \"source_preview_json\": _compact_json(previews),\n        \"function_case_selection_json\": _compact_json(_function_case_selection(payload)),\n        \"output_contract_json\": _compact_json(_prompt_output_contract(payload)),\n    }\n\n\n# 함수 설명: `_compact_json()`은 prompt 의미는 유지하면서 들여쓰기와 구분자 공백을 제거해 입력 token을 줄입니다.\ndef _compact_json(value: Any) -> str:\n    return json.dumps(value, ensure_ascii=False, separators=(\",\", \":\"))\n\n\n# 함수 설명: `_prompt_intent_plan()`은 executor 전용 카탈로그 설정과 별도 출력 계약을 제거해 pandas LLM 입력 token 중복을 줄입니다.\ndef _prompt_intent_plan(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = deepcopy(payload.get(\"intent_plan\")) if isinstance(payload.get(\"intent_plan\"), dict) else {}\n    plan.pop(\"output_contract\", None)\n    jobs = plan.get(\"retrieval_jobs\") if isinstance(plan.get(\"retrieval_jobs\"), list) else []\n    compact_jobs: list[Any] = []\n    for job in jobs:\n        if not isinstance(job, dict):\n            compact_jobs.append(job)\n            continue\n        compact_job = {\n            str(key): deepcopy(value)\n            for key, value in job.items()\n            if str(key) not in PROMPT_INTERNAL_JOB_KEYS\n        }\n        semantics = compact_job.get(\"metric_semantics\")\n        if isinstance(semantics, dict):\n            compact_job[\"metric_semantics\"] = {\n                str(metric): {\n                    str(key): deepcopy(item)\n                    for key, item in contract.items()\n                    if str(key) != \"value_transform\"\n                }\n                if isinstance(contract, dict)\n                else deepcopy(contract)\n                for metric, contract in semantics.items()\n            }\n        compact_jobs.append(compact_job)\n    if jobs:\n        plan[\"retrieval_jobs\"] = compact_jobs\n    return _canonical_prompt_contract(plan)\n\n\n# 함수 설명: pandas LLM에는 표준 실행 컬럼만 노출하고 물리 컬럼 후보는\n# retrieval/validation lineage 내부에만 남깁니다.\ndef _canonical_prompt_contract(value: Any) -> Any:\n    physical_lineage_keys = {\n        \"source_candidates\",\n        \"left_candidates\",\n        \"right_candidates\",\n        \"column_mappings\",\n        \"key_mappings\",\n        \"right_value_mappings\",\n    }\n    if isinstance(value, list):\n        return [_canonical_prompt_contract(item) for item in value]\n    if not isinstance(value, dict):\n        return deepcopy(value)\n    return {\n        str(key): _canonical_prompt_contract(item)\n        for key, item in value.items()\n        if str(key) not in physical_lineage_keys\n    }\n\n\n# 함수 설명: `_prompt_output_contract()`는 폐기된 상세 계약 key를 제거한 canonical 출력 계약만 pandas prompt에 전달합니다.\ndef _prompt_output_contract(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = payload.get(\"intent_plan\") if isinstance(payload.get(\"intent_plan\"), dict) else {}\n    contract = plan.get(\"output_contract\") if isinstance(plan.get(\"output_contract\"), dict) else {}\n    return {\n        str(key): deepcopy(value)\n        for key, value in contract.items()\n        if str(key) not in RETIRED_OUTPUT_CONTRACT_KEYS\n    }\n\n\n# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.\ndef _payload(value: Any) -> dict[str, Any]:\n    data = getattr(value, \"data\", value)\n    return data if isinstance(data, dict) else {}\n\n\n# 함수 설명: `_source_schemas()`는 schemas 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.\ndef _source_schemas(payload: dict[str, Any]) -> dict[str, list[str]]:\n    schemas: dict[str, list[str]] = {}\n    for source in payload.get(\"source_results\", []) if isinstance(payload.get(\"source_results\"), list) else []:\n        if not isinstance(source, dict):\n            continue\n        alias = str(source.get(\"source_alias\") or source.get(\"dataset_key\") or \"\").strip()\n        columns = _string_list(source.get(\"columns\"))\n        if alias and columns:\n            schemas[alias] = columns\n    for alias, rows in payload.get(\"runtime_sources\", {}).items() if isinstance(payload.get(\"runtime_sources\"), dict) else []:\n        if not isinstance(rows, list):\n            continue\n        row_columns = sorted({str(column) for row in rows[:20] if isinstance(row, dict) for column in row})\n        if row_columns:\n            schemas[str(alias)] = row_columns\n        else:\n            schemas.setdefault(str(alias), [])\n    return schemas\n\n\n# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.\ndef _string_list(value: Any) -> list[str]:\n    return [str(item) for item in value if str(item or \"\").strip()] if isinstance(value, list) else []\n\n\n# 함수 설명: `_function_case_selection()`는 Function Case·selection 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.\ndef _function_case_selection(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = payload.get(\"intent_plan\") if isinstance(payload.get(\"intent_plan\"), dict) else {}\n    steps = plan.get(\"pandas_execution_plan\") if isinstance(plan.get(\"pandas_execution_plan\"), list) else []\n    selected_steps = [\n        deepcopy(step)\n        for step in steps\n        if isinstance(step, dict)\n        and str(step.get(\"operation\") or \"\").strip() == \"apply_pandas_function_case\"\n    ]\n    selected_cases = _selected_function_cases(plan, selected_steps)\n    return {\n        \"selected_cases\": selected_cases,\n        \"selected_steps\": selected_steps,\n        \"available_helpers\": _helpers_from_selected_cases(selected_cases),\n    }\n\n\n# 함수 설명: `_helpers_from_selected_cases()`는 선택 Function Case 항목에서 pandas 프롬프트에 제공할 helper 이름만 추출합니다.\ndef _helpers_from_selected_cases(selected_cases: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    helpers = []\n    for item in selected_cases:\n        if not isinstance(item, dict):\n            continue\n        name = str(item.get(\"function_name\") or \"\").strip()\n        if not name or any(helper.get(\"function_name\") == name for helper in helpers):\n            continue\n        helper = {\"function_name\": name}\n        for key in (\n            \"signature\",\n            \"description\",\n            \"usage_rule\",\n            \"default_token_columns\",\n        ):\n            if item.get(key) not in (None, \"\", [], {}):\n                helper[key] = deepcopy(item.get(key))\n        helpers.append(helper)\n    return helpers\n\n\n# 함수 설명: `_selected_function_cases()`는 의도 계획에서 실제 pandas 실행에 선택된 Function Case 항목만 정리합니다.\ndef _selected_function_cases(plan: dict[str, Any], selected_steps: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    cases = []\n    single = plan.get(\"pandas_function_case\")\n    if isinstance(single, dict) and single:\n        cases.append(deepcopy(single))\n    for item in plan.get(\"pandas_function_cases\", []) if isinstance(plan.get(\"pandas_function_cases\"), list) else []:\n        if isinstance(item, dict) and item not in cases:\n            cases.append(deepcopy(item))\n    for step in selected_steps:\n        item = {\n            \"key\": step.get(\"function_case_key\", \"\"),\n            \"function_name\": step.get(\"function_name\", \"\"),\n            \"input_text\": step.get(\"input_text\", \"\"),\n            \"source_alias\": step.get(\"source_alias\", \"\"),\n        }\n        if item not in cases:\n            cases.append(item)\n    return _dedupe_cases(cases)\n\n\n# 함수 설명: `_dedupe_cases()`는 cases의 중복을 제거하고 최초 등장 순서를 유지합니다.\ndef _dedupe_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    deduped: list[dict[str, Any]] = []\n    seen: set[tuple[str, str, str, str]] = set()\n    for item in cases:\n        marker = (\n            str(item.get(\"function_name\") or \"\"),\n            str(item.get(\"key\") or item.get(\"function_case_key\") or \"\"),\n            str(item.get(\"input_text\") or \"\"),\n            str(item.get(\"source_alias\") or \"\"),\n        )\n        if marker in seen:\n            continue\n        seen.add(marker)\n        deduped.append(deepcopy(item))\n    return deduped\n\n\n# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.\n# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.\nclass PandasVariablesBuilder(Component):\n    display_name = \"15 pandas 변수 생성기\"\n    description = \"Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 pandas 코드 생성 변수를 제공합니다. function case 선택 정보는 16번 Prompt Template에 연결하고, 실제 함수 코드는 별도 입력으로 넣습니다.\"\n    inputs = [DataInput(name=\"payload\", display_name=\"페이로드\", required=True)]\n    outputs = [\n        Output(name=\"intent_plan_json\", display_name=\"의도 계획 JSON\", method=\"build_intent_plan_json\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"source_schema_json\", display_name=\"소스 스키마 JSON\", method=\"build_source_schema_json\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"source_preview_json\", display_name=\"소스 미리보기 JSON\", method=\"build_source_preview_json\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"function_case_selection_json\", display_name=\"Function Case 선택 정보 JSON\", method=\"build_function_case_selection_json\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"output_contract_json\", display_name=\"출력 계약 JSON\", method=\"build_output_contract_json\", types=[\"Message\"], group_outputs=True),\n    ]\n\n    # 함수 설명: `_variables_once()`는 다섯 Prompt 변수가 같은 runtime source를 반복 deepcopy·JSON 변환하지 않도록 한 번만 계산합니다.\n    def _variables_once(self) -> dict[str, Any]:\n        payload = getattr(self, \"payload\", None)\n        cache_key = id(payload)\n        if getattr(self, \"_variables_cache_key\", None) != cache_key:\n            self._variables_cache_key = cache_key\n            self._variables_cache = build_variables(payload)\n        return self._variables_cache\n\n    # Langflow 출력 함수: '의도 계획 JSON (intent_plan_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_intent_plan_json(self) -> Message:\n        return Message(text=self._variables_once()[\"intent_plan_json\"])\n\n    # Langflow 출력 함수: '소스 스키마 JSON (source_schema_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_source_schema_json(self) -> Message:\n        return Message(text=self._variables_once()[\"source_schema_json\"])\n\n    # Langflow 출력 함수: '소스 미리보기 JSON (source_preview_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_source_preview_json(self) -> Message:\n        return Message(text=self._variables_once()[\"source_preview_json\"])\n\n    # Langflow 출력 함수: 'Function Case 선택 정보 JSON (function_case_selection_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_function_case_selection_json(self) -> Message:\n        return Message(text=self._variables_once()[\"function_case_selection_json\"])\n\n    # Langflow 출력 함수: '출력 계약 JSON (output_contract_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_output_contract_json(self) -> Message:\n        return Message(text=self._variables_once()[\"output_contract_json\"])\n"
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 15 pandas 변수 생성기\n# 역할: Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 pandas 코드 생성 변수를 제공합니다. function case 선택 정보는 16번 Prompt Template에 연결하고, 실제 함수\n#     코드는 별도 입력으로 넣습니다.\n# 주요 입력: 페이로드 (payload) · 필수\n# 주요 출력: 의도 계획 JSON (intent_plan_json), 소스 스키마 JSON (source_schema_json), 소스 미리보기 JSON (source_preview_json),\n#        Function Case 선택 정보 JSON (function_case_selection_json), 출력 계약 JSON (output_contract_json)\n# 처리 흐름: pandas 코드 LLM에 전달할 의도 계획, source schema/preview, 선택 helper와 출력 계약을 분리해 만듭니다.\n# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport json\nfrom copy import deepcopy\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, MessageTextInput, MultilineInput, Output\nfrom lfx.schema.message import Message\n\nPROMPT_INTERNAL_JOB_KEYS = {\n    \"source_config\",\n    \"filter_mappings\",\n    \"standard_column_aliases\",\n    \"row_identity_columns\",\n    \"default_detail_columns\",\n    \"context_columns\",\n    \"required_param_names\",\n    \"trusted_catalog\",\n    \"catalog_ref\",\n}\nRETIRED_OUTPUT_CONTRACT_KEYS = {\"row_identity_columns\", \"context_columns\", \"default_detail_columns\"}\n\n# 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.\n# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.\ndef build_variables(payload_value: Any) -> dict[str, Any]:\n    payload = _payload(payload_value)\n    schemas = _source_schemas(payload)\n    previews = {alias: rows[:5] for alias, rows in payload.get(\"runtime_sources\", {}).items() if isinstance(rows, list)}\n    return {\n        \"intent_plan_json\": _compact_json(_prompt_intent_plan(payload)),\n        \"source_schema_json\": _compact_json(schemas),\n        \"source_preview_json\": _compact_json(previews),\n        \"function_case_selection_json\": _compact_json(_function_case_selection(payload)),\n        \"output_contract_json\": _compact_json(_prompt_output_contract(payload)),\n    }\n\n\n# 함수 설명: Fast/Complex 공통 helper 선택에 필요한 작은 계약만 직렬화합니다.\ndef build_function_case_selection_only(payload_value: Any) -> str:\n    \"\"\"Build only the small helper-selection contract needed before prompt routing.\"\"\"\n\n    payload = _payload(payload_value)\n    return _compact_json(_function_case_selection(payload))\n\n\n# 함수 설명: V2 경로가 Complex일 때만 전체 pandas 생성 프롬프트를 조립합니다.\ndef build_route_aware_pandas_prompt(\n    payload_value: Any,\n    prompt_template: Any,\n    function_case_helper_code: Any = \"\",\n) -> str:\n    \"\"\"Render the pandas prompt only after the V2 resolver selected Complex.\"\"\"\n\n    payload = _payload(payload_value)\n    contract = payload.get(\"simple_analysis_contract\") if isinstance(payload.get(\"simple_analysis_contract\"), dict) else {}\n    if str(contract.get(\"route\") or \"complex\").strip().lower() != \"complex\":\n        return \"\"\n    variables = build_variables(payload)\n    variables[\"function_case_helper_code\"] = _text(function_case_helper_code)\n    return _render_prompt_template(prompt_template, variables)\n\n\n# 함수 설명: pandas 프롬프트 템플릿과 확정된 변수 계약을 안전하게 결합합니다.\ndef _render_prompt_template(template_value: Any, variables: dict[str, Any]) -> str:\n    template = _text(template_value)\n    if not template:\n        return \"\"\n    try:\n        return template.format(**{str(key): str(value) for key, value in variables.items()})\n    except (KeyError, IndexError, ValueError) as exc:\n        raise ValueError(f\"pandas prompt template rendering failed: {exc}\") from exc\n\n\n# 함수 설명: Langflow Message 또는 일반 값을 프롬프트용 문자열로 정규화합니다.\ndef _text(value: Any) -> str:\n    text = getattr(value, \"text\", value)\n    return \"\" if text is None else str(text)\n\n\n# 함수 설명: `_compact_json()`은 prompt 의미는 유지하면서 들여쓰기와 구분자 공백을 제거해 입력 token을 줄입니다.\ndef _compact_json(value: Any) -> str:\n    return json.dumps(value, ensure_ascii=False, separators=(\",\", \":\"))\n\n\n# 함수 설명: `_prompt_intent_plan()`은 executor 전용 카탈로그 설정과 별도 출력 계약을 제거해 pandas LLM 입력 token 중복을 줄입니다.\ndef _prompt_intent_plan(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = deepcopy(payload.get(\"intent_plan\")) if isinstance(payload.get(\"intent_plan\"), dict) else {}\n    plan.pop(\"output_contract\", None)\n    jobs = plan.get(\"retrieval_jobs\") if isinstance(plan.get(\"retrieval_jobs\"), list) else []\n    compact_jobs: list[Any] = []\n    for job in jobs:\n        if not isinstance(job, dict):\n            compact_jobs.append(job)\n            continue\n        compact_job = {\n            str(key): deepcopy(value)\n            for key, value in job.items()\n            if str(key) not in PROMPT_INTERNAL_JOB_KEYS\n        }\n        semantics = compact_job.get(\"metric_semantics\")\n        if isinstance(semantics, dict):\n            compact_job[\"metric_semantics\"] = {\n                str(metric): {\n                    str(key): deepcopy(item)\n                    for key, item in contract.items()\n                    if str(key) != \"value_transform\"\n                }\n                if isinstance(contract, dict)\n                else deepcopy(contract)\n                for metric, contract in semantics.items()\n            }\n        compact_jobs.append(compact_job)\n    if jobs:\n        plan[\"retrieval_jobs\"] = compact_jobs\n    return _canonical_prompt_contract(plan)\n\n\n# 함수 설명: pandas LLM에는 표준 실행 컬럼만 노출하고 물리 컬럼 후보는\n# retrieval/validation lineage 내부에만 남깁니다.\ndef _canonical_prompt_contract(value: Any) -> Any:\n    physical_lineage_keys = {\n        \"source_candidates\",\n        \"left_candidates\",\n        \"right_candidates\",\n        \"column_mappings\",\n        \"key_mappings\",\n        \"right_value_mappings\",\n    }\n    if isinstance(value, list):\n        return [_canonical_prompt_contract(item) for item in value]\n    if not isinstance(value, dict):\n        return deepcopy(value)\n    return {\n        str(key): _canonical_prompt_contract(item)\n        for key, item in value.items()\n        if str(key) not in physical_lineage_keys\n    }\n\n\n# 함수 설명: `_prompt_output_contract()`는 폐기된 상세 계약 key를 제거한 canonical 출력 계약만 pandas prompt에 전달합니다.\ndef _prompt_output_contract(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = payload.get(\"intent_plan\") if isinstance(payload.get(\"intent_plan\"), dict) else {}\n    contract = plan.get(\"output_contract\") if isinstance(plan.get(\"output_contract\"), dict) else {}\n    return {\n        str(key): deepcopy(value)\n        for key, value in contract.items()\n        if str(key) not in RETIRED_OUTPUT_CONTRACT_KEYS\n    }\n\n\n# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.\ndef _payload(value: Any) -> dict[str, Any]:\n    data = getattr(value, \"data\", value)\n    return data if isinstance(data, dict) else {}\n\n\n# 함수 설명: `_source_schemas()`는 schemas 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.\ndef _source_schemas(payload: dict[str, Any]) -> dict[str, list[str]]:\n    schemas: dict[str, list[str]] = {}\n    for source in payload.get(\"source_results\", []) if isinstance(payload.get(\"source_results\"), list) else []:\n        if not isinstance(source, dict):\n            continue\n        alias = str(source.get(\"source_alias\") or source.get(\"dataset_key\") or \"\").strip()\n        columns = _string_list(source.get(\"columns\"))\n        if alias and columns:\n            schemas[alias] = columns\n    for alias, rows in payload.get(\"runtime_sources\", {}).items() if isinstance(payload.get(\"runtime_sources\"), dict) else []:\n        if not isinstance(rows, list):\n            continue\n        row_columns = sorted({str(column) for row in rows[:20] if isinstance(row, dict) for column in row})\n        if row_columns:\n            schemas[str(alias)] = row_columns\n        else:\n            schemas.setdefault(str(alias), [])\n    return schemas\n\n\n# 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.\ndef _string_list(value: Any) -> list[str]:\n    return [str(item) for item in value if str(item or \"\").strip()] if isinstance(value, list) else []\n\n\n# 함수 설명: `_function_case_selection()`는 Function Case·selection 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.\ndef _function_case_selection(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = payload.get(\"intent_plan\") if isinstance(payload.get(\"intent_plan\"), dict) else {}\n    steps = plan.get(\"pandas_execution_plan\") if isinstance(plan.get(\"pandas_execution_plan\"), list) else []\n    selected_steps = [\n        deepcopy(step)\n        for step in steps\n        if isinstance(step, dict)\n        and str(step.get(\"operation\") or \"\").strip() == \"apply_pandas_function_case\"\n    ]\n    selected_cases = _selected_function_cases(plan, selected_steps)\n    return {\n        \"selected_cases\": selected_cases,\n        \"selected_steps\": selected_steps,\n        \"available_helpers\": _helpers_from_selected_cases(selected_cases),\n    }\n\n\n# 함수 설명: `_helpers_from_selected_cases()`는 선택 Function Case 항목에서 pandas 프롬프트에 제공할 helper 이름만 추출합니다.\ndef _helpers_from_selected_cases(selected_cases: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    helpers = []\n    for item in selected_cases:\n        if not isinstance(item, dict):\n            continue\n        name = str(item.get(\"function_name\") or \"\").strip()\n        if not name or any(helper.get(\"function_name\") == name for helper in helpers):\n            continue\n        helper = {\"function_name\": name}\n        for key in (\n            \"signature\",\n            \"description\",\n            \"usage_rule\",\n            \"default_token_columns\",\n        ):\n            if item.get(key) not in (None, \"\", [], {}):\n                helper[key] = deepcopy(item.get(key))\n        helpers.append(helper)\n    return helpers\n\n\n# 함수 설명: `_selected_function_cases()`는 의도 계획에서 실제 pandas 실행에 선택된 Function Case 항목만 정리합니다.\ndef _selected_function_cases(plan: dict[str, Any], selected_steps: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    cases = []\n    single = plan.get(\"pandas_function_case\")\n    if isinstance(single, dict) and single:\n        cases.append(deepcopy(single))\n    for item in plan.get(\"pandas_function_cases\", []) if isinstance(plan.get(\"pandas_function_cases\"), list) else []:\n        if isinstance(item, dict) and item not in cases:\n            cases.append(deepcopy(item))\n    for step in selected_steps:\n        item = {\n            \"key\": step.get(\"function_case_key\", \"\"),\n            \"function_name\": step.get(\"function_name\", \"\"),\n            \"input_text\": step.get(\"input_text\", \"\"),\n            \"source_alias\": step.get(\"source_alias\", \"\"),\n        }\n        if item not in cases:\n            cases.append(item)\n    return _dedupe_cases(cases)\n\n\n# 함수 설명: `_dedupe_cases()`는 cases의 중복을 제거하고 최초 등장 순서를 유지합니다.\ndef _dedupe_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    deduped: list[dict[str, Any]] = []\n    seen: set[tuple[str, str, str, str]] = set()\n    for item in cases:\n        marker = (\n            str(item.get(\"function_name\") or \"\"),\n            str(item.get(\"key\") or item.get(\"function_case_key\") or \"\"),\n            str(item.get(\"input_text\") or \"\"),\n            str(item.get(\"source_alias\") or \"\"),\n        )\n        if marker in seen:\n            continue\n        seen.add(marker)\n        deduped.append(deepcopy(item))\n    return deduped\n\n\n# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.\n# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.\nclass PandasVariablesBuilder(Component):\n    display_name = \"15 pandas 변수 생성기\"\n    description = \"Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 pandas 코드 생성 변수를 제공합니다. function case 선택 정보는 16번 Prompt Template에 연결하고, 실제 함수 코드는 별도 입력으로 넣습니다.\"\n    inputs = [DataInput(name=\"payload\", display_name=\"페이로드\", required=True)]\n    outputs = [\n        Output(name=\"intent_plan_json\", display_name=\"의도 계획 JSON\", method=\"build_intent_plan_json\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"source_schema_json\", display_name=\"소스 스키마 JSON\", method=\"build_source_schema_json\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"source_preview_json\", display_name=\"소스 미리보기 JSON\", method=\"build_source_preview_json\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"function_case_selection_json\", display_name=\"Function Case 선택 정보 JSON\", method=\"build_function_case_selection_json\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"output_contract_json\", display_name=\"출력 계약 JSON\", method=\"build_output_contract_json\", types=[\"Message\"], group_outputs=True),\n    ]\n\n    # 함수 설명: `_variables_once()`는 다섯 Prompt 변수가 같은 runtime source를 반복 deepcopy·JSON 변환하지 않도록 한 번만 계산합니다.\n    def _variables_once(self) -> dict[str, Any]:\n        payload = getattr(self, \"payload\", None)\n        cache_key = id(payload)\n        if getattr(self, \"_variables_cache_key\", None) != cache_key:\n            self._variables_cache_key = cache_key\n            self._variables_cache = build_variables(payload)\n        return self._variables_cache\n\n    # Langflow 출력 함수: '의도 계획 JSON (intent_plan_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_intent_plan_json(self) -> Message:\n        return Message(text=self._variables_once()[\"intent_plan_json\"])\n\n    # Langflow 출력 함수: '소스 스키마 JSON (source_schema_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_source_schema_json(self) -> Message:\n        return Message(text=self._variables_once()[\"source_schema_json\"])\n\n    # Langflow 출력 함수: '소스 미리보기 JSON (source_preview_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_source_preview_json(self) -> Message:\n        return Message(text=self._variables_once()[\"source_preview_json\"])\n\n    # Langflow 출력 함수: 'Function Case 선택 정보 JSON (function_case_selection_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_function_case_selection_json(self) -> Message:\n        return Message(text=self._variables_once()[\"function_case_selection_json\"])\n\n    # Langflow 출력 함수: '출력 계약 JSON (output_contract_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_output_contract_json(self) -> Message:\n        return Message(text=self._variables_once()[\"output_contract_json\"])\n"
               },
               "payload": {
                 "_input_type": "DataInput",
@@ -5365,8 +5365,8 @@
           "width": 320
         },
         "position": {
-          "x": -1508.05417157021,
-          "y": 1994.0111516849245
+          "x": 5250.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -5773,8 +5773,8 @@
           "width": 320
         },
         "position": {
-          "x": -309.2487565904073,
-          "y": 2062.192731356879
+          "x": 6600.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -6086,8 +6086,8 @@
           "width": 320
         },
         "position": {
-          "x": -1034.494482335021,
-          "y": 2020.1831352233803
+          "x": 5700.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -6483,8 +6483,8 @@
           "width": 320
         },
         "position": {
-          "x": -661.080633167457,
-          "y": 1901.0345334530664
+          "x": 6150.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -6510,7 +6510,7 @@
             "legacy": false,
             "lf_version": "1.9.2",
             "metadata": {
-              "code_hash": "ec5cf8cd1e86",
+              "code_hash": "10e61cb2c9bf",
               "dependencies": {
                 "dependencies": [
                   {
@@ -6635,7 +6635,7 @@
                 "show": true,
                 "title_case": false,
                 "type": "code",
-                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 18 답변 생성 변수 생성기\n# 역할: Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 답변 생성 변수를 제공합니다.\n# 주요 입력: 페이로드 (payload) · 필수\n# 주요 출력: 사용자 질문 (question), 결과 요약 JSON (result_summary_json), 적용 범위 JSON (applied_scope_json), 답변 컨텍스트 JSON\n#        (answer_context_json), 경고/오류 JSON (warnings_errors_json)\n# 처리 흐름: 최종 답변 LLM에 필요한 질문·결과 요약·적용 조건·근거·경고만 안전한 크기로 압축합니다.\n# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport json\nfrom copy import deepcopy\nfrom datetime import date, datetime\nfrom decimal import Decimal\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, Output\nfrom lfx.schema.message import Message\n\n# 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.\n# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.\ndef build_variables(payload_value: Any) -> dict[str, Any]:\n    payload = _payload(payload_value)\n    return {\n        \"question\": payload.get(\"request\", {}).get(\"question\", \"\"),\n        \"result_summary_json\": _json_dumps(payload.get(\"data\", {})),\n        \"applied_scope_json\": _json_dumps(_compact_applied_scope(payload)),\n        \"answer_context_json\": _json_dumps(_answer_context(payload)),\n        \"warnings_errors_json\": _json_dumps({\"warnings\": payload.get(\"trace\", {}).get(\"warnings\", []), \"errors\": payload.get(\"trace\", {}).get(\"errors\", [])}),\n    }\n\n\n# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.\ndef _payload(value: Any) -> dict[str, Any]:\n    data = getattr(value, \"data\", value)\n    return data if isinstance(data, dict) else {}\n\n\n# 함수 설명: `_compact_applied_scope()`는 적용 조건·분석 범위에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_applied_scope(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = payload.get(\"intent_plan\") if isinstance(payload.get(\"intent_plan\"), dict) else {}\n    inspection = payload.get(\"trace\", {}).get(\"inspection\", {}) if isinstance(payload.get(\"trace\"), dict) else {}\n    if not isinstance(inspection, dict):\n        inspection = {}\n\n    retrieval_jobs = plan.get(\"retrieval_jobs\") if isinstance(plan.get(\"retrieval_jobs\"), list) else []\n    pandas_plan = plan.get(\"pandas_execution_plan\") if isinstance(plan.get(\"pandas_execution_plan\"), list) else []\n    result: dict[str, Any] = {\n        \"intent\": _omit_empty(\n            {\n                \"analysis_kind\": plan.get(\"analysis_kind\") or _dict(inspection.get(\"intent\")).get(\"analysis_kind\"),\n                \"retrieval_job_count\": len(retrieval_jobs),\n                \"pandas_step_count\": len(pandas_plan),\n                \"metadata_ref_count\": len(payload.get(\"metadata_refs\", [])) if isinstance(payload.get(\"metadata_refs\"), list) else 0,\n            }\n        ),\n        \"retrieval\": [_compact_source_result(item) for item in _list(payload.get(\"source_results\"))],\n        \"pandas_execution\": _compact_pandas_execution(payload, _dict(inspection.get(\"pandas_execution\"))),\n    }\n    result_store = _compact_result_store(_dict(inspection.get(\"result_store\")))\n    if result_store:\n        result[\"result_store\"] = result_store\n    return result\n\n\n# 함수 설명: `_compact_source_result()`는 데이터 소스·결과에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_source_result(value: Any) -> dict[str, Any]:\n    source = _dict(value)\n    source_execution = _dict(source.get(\"source_execution\"))\n    return _omit_empty(\n        {\n            \"source_alias\": source.get(\"source_alias\"),\n            \"dataset_key\": source.get(\"dataset_key\"),\n            \"source_type\": source.get(\"source_type\"),\n            \"status\": source.get(\"status\"),\n            \"row_count\": source.get(\"row_count\"),\n            \"applied_params\": source.get(\"applied_params\"),\n            \"pandas_filters\": source.get(\"pandas_filters\"),\n            \"used_dummy_data\": source_execution.get(\"used_dummy_data\"),\n            \"adapter\": source_execution.get(\"adapter\"),\n            \"params_applied_in_retriever\": source_execution.get(\"params_applied_in_retriever\"),\n            \"filters_applied_in_retriever\": source_execution.get(\"filters_applied_in_retriever\"),\n        }\n    )\n\n\n# 함수 설명: `_compact_pandas_execution()`는 pandas 실행·execution에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_pandas_execution(payload: dict[str, Any], pandas_execution: dict[str, Any]) -> dict[str, Any]:\n    analysis = payload.get(\"analysis\") if isinstance(payload.get(\"analysis\"), dict) else {}\n    execution_result = _dict(pandas_execution.get(\"execution_result\"))\n    return _omit_empty(\n        {\n            \"stage\": pandas_execution.get(\"stage\"),\n            \"status\": pandas_execution.get(\"status\") or analysis.get(\"status\"),\n            \"row_count\": execution_result.get(\"row_count\", analysis.get(\"row_count\")),\n            \"columns\": execution_result.get(\"columns\", analysis.get(\"columns\")),\n            \"used_helpers\": pandas_execution.get(\"used_helpers\", analysis.get(\"used_helpers\")),\n            \"pandas_filter_plan\": pandas_execution.get(\"pandas_filter_plan\"),\n            \"error\": _compact_error(pandas_execution.get(\"error\") or analysis.get(\"error\")),\n        }\n    )\n\n\n# 함수 설명: `_compact_error()`는 오류에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_error(value: Any) -> Any:\n    error = _dict(value)\n    if not error:\n        return None\n    return _omit_empty({\"type\": error.get(\"type\"), \"message\": error.get(\"message\")})\n\n\n# 함수 설명: `_compact_result_store()`는 결과·store에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_result_store(result_store: dict[str, Any]) -> dict[str, Any]:\n    return _omit_empty(\n        {\n            \"status\": result_store.get(\"status\"),\n            \"data_ref\": result_store.get(\"data_ref\"),\n            \"ttl_hours\": result_store.get(\"ttl_hours\"),\n            \"expires_at\": result_store.get(\"expires_at\"),\n        }\n    )\n\n\n# 함수 설명: `_answer_context()`는 문맥에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.\ndef _answer_context(payload: dict[str, Any]) -> dict[str, Any]:\n    analysis = payload.get(\"analysis\") if isinstance(payload.get(\"analysis\"), dict) else {}\n    output_contract = _dict(_dict(payload.get(\"intent_plan\")).get(\"output_contract\"))\n    pandas_execution = _dict(_dict(payload.get(\"trace\")).get(\"inspection\")).get(\"pandas_execution\")\n    pandas_execution = _dict(pandas_execution)\n    data = payload.get(\"data\") if isinstance(payload.get(\"data\"), dict) else {}\n    step_outputs = _list(analysis.get(\"step_outputs\")) or _list(pandas_execution.get(\"step_outputs\"))\n    function_case_results = _list(analysis.get(\"function_case_results\")) or _list(pandas_execution.get(\"function_case_results\"))\n    rows = _list(data.get(\"rows\"))\n    columns = _list(data.get(\"columns\")) or _columns_from_rows(rows)\n    metric_columns = _metric_columns(columns, rows)\n    return {\n        \"number_display_policy\": {\n            \"under_10000\": \"comma_full_number\",\n            \"gte_10000\": \"k_unit\",\n            \"display_only\": True,\n        },\n        \"result_shape\": _omit_empty(\n            {\n                \"row_count\": data.get(\"row_count\", analysis.get(\"row_count\")),\n                \"columns\": columns or analysis.get(\"columns\"),\n            }\n        ),\n        \"applied_criteria\": _applied_criteria(payload),\n        \"result_interpretation_hints\": _omit_empty(\n            {\n                \"is_empty_result\": _int(data.get(\"row_count\"), len(rows)) == 0 and not rows,\n                \"has_zero_values\": _has_zero_values(rows),\n                \"primary_metric_columns\": metric_columns,\n                \"primary_dimension_columns\": _dimension_columns(columns, metric_columns),\n                \"primary_metric\": output_contract.get(\"primary_metric\"),\n                \"ordering\": deepcopy(_dict(output_contract.get(\"ordering\"))),\n                \"column_labels\": deepcopy(_dict(output_contract.get(\"column_labels\"))),\n                \"operations\": [\n                    str(item.get(\"operation\") or \"\").strip()\n                    for item in _list(_dict(payload.get(\"intent_plan\")).get(\"pandas_execution_plan\"))\n                    if isinstance(item, dict) and str(item.get(\"operation\") or \"\").strip()\n                ],\n                \"result_segments\": deepcopy(_list(output_contract.get(\"result_segments\"))),\n                \"segment_column\": output_contract.get(\"segment_column\"),\n                \"rank_column\": output_contract.get(\"rank_column\"),\n            }\n        ),\n        \"step_outputs\": deepcopy(step_outputs),\n        \"function_case_results\": deepcopy(function_case_results),\n        \"next_question_candidates\": _next_question_candidates(data),\n    }\n\n\n# 함수 설명: `_applied_criteria()`는 조회 작업과 pandas 계획에서 실제 적용된 날짜·제품·공정·지표 조건을 구성합니다.\ndef _applied_criteria(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = _dict(payload.get(\"intent_plan\"))\n    required_params: dict[str, Any] = {}\n    analysis_filters: dict[str, Any] = {}\n    datasets: list[dict[str, Any]] = []\n    for job in _list(plan.get(\"retrieval_jobs\")):\n        if not isinstance(job, dict):\n            continue\n        alias = str(job.get(\"source_alias\") or job.get(\"dataset_key\") or \"\").strip()\n        dataset_key = str(job.get(\"dataset_key\") or \"\").strip()\n        if dataset_key or alias:\n            datasets.append(_omit_empty({\"dataset_key\": dataset_key, \"source_alias\": alias, \"source_type\": job.get(\"source_type\")}))\n        params = _dict(job.get(\"required_params\"))\n        if params:\n            required_params[alias or dataset_key or f\"job_{len(required_params) + 1}\"] = deepcopy(params)\n        filters = _dict(job.get(\"filters\"))\n        if filters:\n            analysis_filters[alias or dataset_key or f\"job_{len(analysis_filters) + 1}\"] = deepcopy(filters)\n    for source in _list(payload.get(\"source_results\")):\n        if not isinstance(source, dict):\n            continue\n        alias = str(source.get(\"source_alias\") or source.get(\"dataset_key\") or \"\").strip()\n        dataset_key = str(source.get(\"dataset_key\") or \"\").strip()\n        params = _dict(source.get(\"applied_params\"))\n        if params:\n            required_params[alias or dataset_key or f\"source_{len(required_params) + 1}\"] = deepcopy(params)\n        filters = _dict(source.get(\"pandas_filters\")) or _dict(source.get(\"applied_filters\"))\n        if filters:\n            analysis_filters[alias or dataset_key or f\"source_{len(analysis_filters) + 1}\"] = deepcopy(filters)\n    effective_filters = _dict(_dict(plan.get(\"condition_resolution\")).get(\"effective_filters\"))\n    for alias, item in effective_filters.items():\n        if not isinstance(item, dict):\n            continue\n        filters = item.get(\"filters\")\n        if filters not in (None, \"\", [], {}):\n            analysis_filters[str(alias)] = deepcopy(filters)\n    return _omit_empty(\n        {\n            \"required_params\": required_params,\n            \"analysis_filters\": analysis_filters,\n            \"datasets\": _dedupe_dicts(datasets),\n            \"group_by\": _group_by_columns(_list(plan.get(\"pandas_execution_plan\"))),\n        }\n    )\n\n\n# 함수 설명: `_columns_from_rows()`는 행 목록의 key 등장 순서를 유지하면서 결과 테이블의 컬럼 목록을 계산합니다.\ndef _columns_from_rows(rows: list[Any]) -> list[str]:\n    columns: list[str] = []\n    for row in rows:\n        if not isinstance(row, dict):\n            continue\n        for key in row:\n            text = str(key)\n            if text not in columns:\n                columns.append(text)\n    return columns\n\n\n# 함수 설명: `_has_zero_values()`는 입력값이 ZERO·값 조건에 해당하는지 부작용 없이 bool로 판정합니다.\ndef _has_zero_values(rows: list[Any]) -> bool:\n    for row in rows:\n        if not isinstance(row, dict):\n            continue\n        for value in row.values():\n            if isinstance(value, bool):\n                continue\n            try:\n                if float(value) == 0:\n                    return True\n            except Exception:\n                continue\n    return False\n\n\n# 함수 설명: `_metric_columns()`는 결과 컬럼 중 수량·실적·비율처럼 답변 지표로 사용할 컬럼을 선별합니다.\ndef _metric_columns(columns: list[Any], rows: list[Any]) -> list[str]:\n    result: list[str] = []\n    for column in columns:\n        text = str(column)\n        if _column_has_numeric_value(rows, text):\n            result.append(text)\n    return result\n\n\n# 함수 설명: `_dimension_columns()`는 결과 컬럼 중 제품·공정·장비처럼 그룹 기준으로 사용할 컬럼을 선별합니다.\ndef _dimension_columns(columns: list[Any], metric_columns: list[str]) -> list[str]:\n    metric_set = set(metric_columns)\n    return [str(column) for column in columns if str(column) not in metric_set]\n\n\n# 함수 설명: `_column_has_numeric_value()`는 HAS·numeric·값 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.\ndef _column_has_numeric_value(rows: list[Any], column: str) -> bool:\n    for row in rows:\n        if not isinstance(row, dict):\n            continue\n        value = row.get(column)\n        if value is None or isinstance(value, bool):\n            continue\n        if isinstance(value, str):\n            continue\n        try:\n            number = float(value)\n        except Exception:\n            continue\n        if number != number:\n            continue\n        return True\n    return False\n\n\n# 함수 설명: `_group_by_columns()`는 의도 계획의 pandas 단계에서 실제 그룹 기준 컬럼을 추출합니다.\ndef _group_by_columns(pandas_plan: list[Any]) -> list[str]:\n    columns: list[str] = []\n    for step in pandas_plan:\n        if not isinstance(step, dict):\n            continue\n        for key in (\"groupby_columns\", \"group_by\", \"group_by_columns\", \"group_columns\"):\n            value = step.get(key)\n            if isinstance(value, list):\n                for item in value:\n                    text = str(item or \"\").strip()\n                    if text and text not in columns:\n                        columns.append(text)\n            elif isinstance(value, str) and value.strip() and value.strip() not in columns:\n                columns.append(value.strip())\n    return columns\n\n\n# 함수 설명: `_next_question_candidates()`는 question·후보 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.\ndef _next_question_candidates(data: dict[str, Any]) -> list[str]:\n    row_count = _int(data.get(\"row_count\"), len(_list(data.get(\"rows\"))))\n    if row_count <= 0:\n        return [\"조건을 넓혀서 다시 조회할까요?\"]\n    return [\"이 결과를 제품별 또는 공정별로 더 나눠볼까요?\", \"원본 데이터 기준으로 상세 행을 확인할까요?\"]\n\n\n# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.\ndef _dict(value: Any) -> dict[str, Any]:\n    return value if isinstance(value, dict) else {}\n\n\n# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.\ndef _list(value: Any) -> list[Any]:\n    return value if isinstance(value, list) else []\n\n\n# 함수 설명: `_int()`는 문자열이나 숫자 입력을 정수로 변환하고 실패하면 안전한 기본값을 사용합니다.\ndef _int(value: Any, default: int = 0) -> int:\n    try:\n        return int(value)\n    except Exception:\n        return default\n\n\n# 함수 설명: `_omit_empty()`는 dict에서 빈 문자열·빈 목록·None 항목을 제거해 전달 payload를 작게 유지합니다.\ndef _omit_empty(value: dict[str, Any]) -> dict[str, Any]:\n    return {key: item for key, item in value.items() if _has_compact_value(item)}\n\n\n# 함수 설명: `_dedupe_dicts()`는 dicts의 중복을 제거하고 최초 등장 순서를 유지합니다.\ndef _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    seen: set[str] = set()\n    result: list[dict[str, Any]] = []\n    for item in items:\n        signature = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)\n        if signature in seen:\n            continue\n        seen.add(signature)\n        result.append(item)\n    return result\n\n\n# 함수 설명: `_has_compact_value()`는 입력값이 compact·값 조건에 해당하는지 부작용 없이 bool로 판정합니다.\ndef _has_compact_value(value: Any) -> bool:\n    if value is None:\n        return False\n    if isinstance(value, str):\n        return bool(value)\n    if isinstance(value, (list, tuple, set, dict)):\n        return bool(value)\n    return True\n\n\n# 함수 설명: `_json_dumps()`는 datetime·Decimal 같은 값까지 JSON-safe 형태로 바꾼 뒤 문자열로 직렬화합니다.\ndef _json_dumps(value: Any) -> str:\n    return json.dumps(_json_ready(value), ensure_ascii=False, separators=(\",\", \":\"))\n\n\n# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.\ndef _json_ready(value: Any) -> Any:\n    if value is None or type(value) in (str, int, bool):\n        return value\n    if type(value) is float:\n        return None if value != value or value in (float(\"inf\"), -float(\"inf\")) else value\n    if isinstance(value, (datetime, date)):\n        return value.isoformat()\n    if isinstance(value, Decimal):\n        return float(value)\n    item = getattr(value, \"item\", None)\n    if callable(item):\n        try:\n            return _json_ready(item())\n        except Exception:\n            pass\n    if isinstance(value, dict):\n        return {str(key): _json_ready(item_value) for key, item_value in value.items()}\n    if isinstance(value, (list, tuple, set)):\n        return [_json_ready(item_value) for item_value in value]\n    try:\n        if value != value:\n            return None\n    except Exception:\n        pass\n    return str(value)\n\n\n# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.\n# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.\nclass AnswerVariablesBuilder(Component):\n    display_name = \"18 답변 생성 변수 생성기\"\n    description = \"Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 답변 생성 변수를 제공합니다.\"\n    inputs = [DataInput(name=\"payload\", display_name=\"페이로드\", required=True)]\n    outputs = [\n        Output(name=\"question\", display_name=\"사용자 질문\", method=\"build_question\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"result_summary_json\", display_name=\"결과 요약 JSON\", method=\"build_result_summary\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"applied_scope_json\", display_name=\"적용 범위 JSON\", method=\"build_applied_scope\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"answer_context_json\", display_name=\"답변 컨텍스트 JSON\", method=\"build_answer_context\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"warnings_errors_json\", display_name=\"경고/오류 JSON\", method=\"build_warnings_errors\", types=[\"Message\"], group_outputs=True),\n    ]\n\n    # 함수 설명: `_variables_once()`는 결과 요약·적용 범위·경고 변수를 동일 payload에서 한 번만 계산해 대용량 행 복사를 줄입니다.\n    def _variables_once(self) -> dict[str, Any]:\n        payload = getattr(self, \"payload\", None)\n        cache_key = id(payload)\n        if getattr(self, \"_variables_cache_key\", None) != cache_key:\n            self._variables_cache_key = cache_key\n            self._variables_cache = build_variables(payload)\n        return self._variables_cache\n\n    # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_question(self) -> Message:\n        return Message(text=self._variables_once()[\"question\"])\n\n    # Langflow 출력 함수: '결과 요약 JSON (result_summary_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_result_summary(self) -> Message:\n        return Message(text=self._variables_once()[\"result_summary_json\"])\n\n    # Langflow 출력 함수: '적용 범위 JSON (applied_scope_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_applied_scope(self) -> Message:\n        return Message(text=self._variables_once()[\"applied_scope_json\"])\n\n    # Langflow 출력 함수: '답변 컨텍스트 JSON (answer_context_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_answer_context(self) -> Message:\n        return Message(text=self._variables_once()[\"answer_context_json\"])\n\n    # Langflow 출력 함수: '경고/오류 JSON (warnings_errors_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_warnings_errors(self) -> Message:\n        return Message(text=self._variables_once()[\"warnings_errors_json\"])\n"
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 18 답변 생성 변수 생성기\n# 역할: Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 답변 생성 변수를 제공합니다.\n# 주요 입력: 페이로드 (payload) · 필수\n# 주요 출력: 사용자 질문 (question), 결과 요약 JSON (result_summary_json), 적용 범위 JSON (applied_scope_json), 답변 컨텍스트 JSON\n#        (answer_context_json), 경고/오류 JSON (warnings_errors_json)\n# 처리 흐름: 최종 답변 LLM에 필요한 질문·결과 요약·적용 조건·근거·경고만 안전한 크기로 압축합니다.\n# 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport json\nfrom copy import deepcopy\nfrom datetime import date, datetime\nfrom decimal import Decimal\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, MessageTextInput, MultilineInput, Output\nfrom lfx.schema.message import Message\n\n# 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.\n# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.\ndef build_variables(payload_value: Any) -> dict[str, Any]:\n    payload = _payload(payload_value)\n    return {\n        \"question\": payload.get(\"request\", {}).get(\"question\", \"\"),\n        \"result_summary_json\": _json_dumps(payload.get(\"data\", {})),\n        \"applied_scope_json\": _json_dumps(_compact_applied_scope(payload)),\n        \"answer_context_json\": _json_dumps(_answer_context(payload)),\n        \"warnings_errors_json\": _json_dumps({\"warnings\": payload.get(\"trace\", {}).get(\"warnings\", []), \"errors\": payload.get(\"trace\", {}).get(\"errors\", [])}),\n    }\n\n\nV2_ANSWER_PROMPT_REFERENCE_REWRITES = {\n    \"answer_context_json.applied_criteria\": \"applied_scope_json.criteria\",\n    \"answer_context_json.result_shape.columns\": \"result_summary_json.columns\",\n}\n\n\n# 함수 설명: V2 Complex 답변에서 각 정보가 한 영역에만 존재하도록 context 변수를 구성합니다.\ndef build_v2_variables(payload_value: Any) -> dict[str, Any]:\n    \"\"\"Build the V2 Complex answer context with one owner per repeated field.\"\"\"\n\n    payload = _payload(payload_value)\n    applied_scope = _compact_applied_scope(payload)\n    criteria = _applied_criteria(payload)\n    if criteria:\n        applied_scope[\"criteria\"] = criteria\n    pandas_execution = applied_scope.get(\"pandas_execution\")\n    if isinstance(pandas_execution, dict):\n        pandas_execution.pop(\"row_count\", None)\n        pandas_execution.pop(\"columns\", None)\n\n    answer_context = _answer_context(payload)\n    answer_context.pop(\"result_shape\", None)\n    answer_context.pop(\"applied_criteria\", None)\n    return {\n        \"question\": payload.get(\"request\", {}).get(\"question\", \"\"),\n        \"result_summary_json\": _json_dumps(payload.get(\"data\", {})),\n        \"applied_scope_json\": _json_dumps(applied_scope),\n        \"answer_context_json\": _json_dumps(answer_context),\n        \"warnings_errors_json\": _json_dumps(\n            {\n                \"warnings\": payload.get(\"trace\", {}).get(\"warnings\", []),\n                \"errors\": payload.get(\"trace\", {}).get(\"errors\", []),\n            }\n        ),\n    }\n\n\n# 함수 설명: V2 Complex 경로에서만 중복 제거된 답변 프롬프트를 생성합니다.\ndef build_route_aware_answer_prompt(\n    payload_value: Any,\n    prompt_template: Any,\n    domain_answer_guidance: Any = \"\",\n) -> str:\n    \"\"\"Render the answer prompt only for a successfully selected Complex route.\"\"\"\n\n    payload = _payload(payload_value)\n    contract = payload.get(\"simple_analysis_contract\") if isinstance(payload.get(\"simple_analysis_contract\"), dict) else {}\n    analysis = payload.get(\"analysis\") if isinstance(payload.get(\"analysis\"), dict) else {}\n    route = str(analysis.get(\"execution_route\") or contract.get(\"route\") or \"complex\").strip().lower()\n    if route != \"complex\":\n        return \"\"\n    variables = build_v2_variables(payload)\n    variables[\"domain_answer_guidance\"] = _text(domain_answer_guidance)\n    return _render_answer_prompt_template(prompt_template, variables)\n\n\n# 함수 설명: 이전 템플릿 참조를 단일 소유 영역으로 치환한 뒤 답변 프롬프트를 조립합니다.\ndef _render_answer_prompt_template(template_value: Any, variables: dict[str, Any]) -> str:\n    template = _text(template_value)\n    if not template:\n        return \"\"\n    for previous, current in V2_ANSWER_PROMPT_REFERENCE_REWRITES.items():\n        template = template.replace(previous, current)\n    try:\n        return template.format(**{str(key): str(value) for key, value in variables.items()})\n    except (KeyError, IndexError, ValueError) as exc:\n        raise ValueError(f\"answer prompt template rendering failed: {exc}\") from exc\n\n\n# 함수 설명: Langflow Message 또는 일반 값을 답변 프롬프트용 문자열로 정규화합니다.\ndef _text(value: Any) -> str:\n    text = getattr(value, \"text\", value)\n    return \"\" if text is None else str(text)\n\n\n# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.\ndef _payload(value: Any) -> dict[str, Any]:\n    data = getattr(value, \"data\", value)\n    return data if isinstance(data, dict) else {}\n\n\n# 함수 설명: `_compact_applied_scope()`는 적용 조건·분석 범위에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_applied_scope(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = payload.get(\"intent_plan\") if isinstance(payload.get(\"intent_plan\"), dict) else {}\n    inspection = payload.get(\"trace\", {}).get(\"inspection\", {}) if isinstance(payload.get(\"trace\"), dict) else {}\n    if not isinstance(inspection, dict):\n        inspection = {}\n\n    retrieval_jobs = plan.get(\"retrieval_jobs\") if isinstance(plan.get(\"retrieval_jobs\"), list) else []\n    pandas_plan = plan.get(\"pandas_execution_plan\") if isinstance(plan.get(\"pandas_execution_plan\"), list) else []\n    result: dict[str, Any] = {\n        \"intent\": _omit_empty(\n            {\n                \"analysis_kind\": plan.get(\"analysis_kind\") or _dict(inspection.get(\"intent\")).get(\"analysis_kind\"),\n                \"retrieval_job_count\": len(retrieval_jobs),\n                \"pandas_step_count\": len(pandas_plan),\n                \"metadata_ref_count\": len(payload.get(\"metadata_refs\", [])) if isinstance(payload.get(\"metadata_refs\"), list) else 0,\n            }\n        ),\n        \"retrieval\": [_compact_source_result(item) for item in _list(payload.get(\"source_results\"))],\n        \"pandas_execution\": _compact_pandas_execution(payload, _dict(inspection.get(\"pandas_execution\"))),\n    }\n    result_store = _compact_result_store(_dict(inspection.get(\"result_store\")))\n    if result_store:\n        result[\"result_store\"] = result_store\n    return result\n\n\n# 함수 설명: `_compact_source_result()`는 데이터 소스·결과에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_source_result(value: Any) -> dict[str, Any]:\n    source = _dict(value)\n    source_execution = _dict(source.get(\"source_execution\"))\n    return _omit_empty(\n        {\n            \"source_alias\": source.get(\"source_alias\"),\n            \"dataset_key\": source.get(\"dataset_key\"),\n            \"source_type\": source.get(\"source_type\"),\n            \"status\": source.get(\"status\"),\n            \"row_count\": source.get(\"row_count\"),\n            \"applied_params\": source.get(\"applied_params\"),\n            \"pandas_filters\": source.get(\"pandas_filters\"),\n            \"used_dummy_data\": source_execution.get(\"used_dummy_data\"),\n            \"adapter\": source_execution.get(\"adapter\"),\n            \"params_applied_in_retriever\": source_execution.get(\"params_applied_in_retriever\"),\n            \"filters_applied_in_retriever\": source_execution.get(\"filters_applied_in_retriever\"),\n        }\n    )\n\n\n# 함수 설명: `_compact_pandas_execution()`는 pandas 실행·execution에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_pandas_execution(payload: dict[str, Any], pandas_execution: dict[str, Any]) -> dict[str, Any]:\n    analysis = payload.get(\"analysis\") if isinstance(payload.get(\"analysis\"), dict) else {}\n    execution_result = _dict(pandas_execution.get(\"execution_result\"))\n    return _omit_empty(\n        {\n            \"stage\": pandas_execution.get(\"stage\"),\n            \"status\": pandas_execution.get(\"status\") or analysis.get(\"status\"),\n            \"row_count\": execution_result.get(\"row_count\", analysis.get(\"row_count\")),\n            \"columns\": execution_result.get(\"columns\", analysis.get(\"columns\")),\n            \"used_helpers\": pandas_execution.get(\"used_helpers\", analysis.get(\"used_helpers\")),\n            \"pandas_filter_plan\": pandas_execution.get(\"pandas_filter_plan\"),\n            \"error\": _compact_error(pandas_execution.get(\"error\") or analysis.get(\"error\")),\n        }\n    )\n\n\n# 함수 설명: `_compact_error()`는 오류에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_error(value: Any) -> Any:\n    error = _dict(value)\n    if not error:\n        return None\n    return _omit_empty({\"type\": error.get(\"type\"), \"message\": error.get(\"message\")})\n\n\n# 함수 설명: `_compact_result_store()`는 결과·store에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.\ndef _compact_result_store(result_store: dict[str, Any]) -> dict[str, Any]:\n    return _omit_empty(\n        {\n            \"status\": result_store.get(\"status\"),\n            \"data_ref\": result_store.get(\"data_ref\"),\n            \"ttl_hours\": result_store.get(\"ttl_hours\"),\n            \"expires_at\": result_store.get(\"expires_at\"),\n        }\n    )\n\n\n# 함수 설명: `_answer_context()`는 문맥에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.\ndef _answer_context(payload: dict[str, Any]) -> dict[str, Any]:\n    analysis = payload.get(\"analysis\") if isinstance(payload.get(\"analysis\"), dict) else {}\n    output_contract = _dict(_dict(payload.get(\"intent_plan\")).get(\"output_contract\"))\n    pandas_execution = _dict(_dict(payload.get(\"trace\")).get(\"inspection\")).get(\"pandas_execution\")\n    pandas_execution = _dict(pandas_execution)\n    data = payload.get(\"data\") if isinstance(payload.get(\"data\"), dict) else {}\n    step_outputs = _list(analysis.get(\"step_outputs\")) or _list(pandas_execution.get(\"step_outputs\"))\n    function_case_results = _list(analysis.get(\"function_case_results\")) or _list(pandas_execution.get(\"function_case_results\"))\n    rows = _list(data.get(\"rows\"))\n    columns = _list(data.get(\"columns\")) or _columns_from_rows(rows)\n    metric_columns = _metric_columns(columns, rows)\n    return {\n        \"number_display_policy\": {\n            \"under_10000\": \"comma_full_number\",\n            \"gte_10000\": \"k_unit\",\n            \"display_only\": True,\n        },\n        \"result_shape\": _omit_empty(\n            {\n                \"row_count\": data.get(\"row_count\", analysis.get(\"row_count\")),\n                \"columns\": columns or analysis.get(\"columns\"),\n            }\n        ),\n        \"applied_criteria\": _applied_criteria(payload),\n        \"result_interpretation_hints\": _omit_empty(\n            {\n                \"is_empty_result\": _int(data.get(\"row_count\"), len(rows)) == 0 and not rows,\n                \"has_zero_values\": _has_zero_values(rows),\n                \"primary_metric_columns\": metric_columns,\n                \"primary_dimension_columns\": _dimension_columns(columns, metric_columns),\n                \"primary_metric\": output_contract.get(\"primary_metric\"),\n                \"ordering\": deepcopy(_dict(output_contract.get(\"ordering\"))),\n                \"column_labels\": deepcopy(_dict(output_contract.get(\"column_labels\"))),\n                \"operations\": [\n                    str(item.get(\"operation\") or \"\").strip()\n                    for item in _list(_dict(payload.get(\"intent_plan\")).get(\"pandas_execution_plan\"))\n                    if isinstance(item, dict) and str(item.get(\"operation\") or \"\").strip()\n                ],\n                \"result_segments\": deepcopy(_list(output_contract.get(\"result_segments\"))),\n                \"segment_column\": output_contract.get(\"segment_column\"),\n                \"rank_column\": output_contract.get(\"rank_column\"),\n            }\n        ),\n        \"step_outputs\": deepcopy(step_outputs),\n        \"function_case_results\": deepcopy(function_case_results),\n        \"next_question_candidates\": _next_question_candidates(data),\n    }\n\n\n# 함수 설명: `_applied_criteria()`는 조회 작업과 pandas 계획에서 실제 적용된 날짜·제품·공정·지표 조건을 구성합니다.\ndef _applied_criteria(payload: dict[str, Any]) -> dict[str, Any]:\n    plan = _dict(payload.get(\"intent_plan\"))\n    required_params: dict[str, Any] = {}\n    analysis_filters: dict[str, Any] = {}\n    datasets: list[dict[str, Any]] = []\n    for job in _list(plan.get(\"retrieval_jobs\")):\n        if not isinstance(job, dict):\n            continue\n        alias = str(job.get(\"source_alias\") or job.get(\"dataset_key\") or \"\").strip()\n        dataset_key = str(job.get(\"dataset_key\") or \"\").strip()\n        if dataset_key or alias:\n            datasets.append(_omit_empty({\"dataset_key\": dataset_key, \"source_alias\": alias, \"source_type\": job.get(\"source_type\")}))\n        params = _dict(job.get(\"required_params\"))\n        if params:\n            required_params[alias or dataset_key or f\"job_{len(required_params) + 1}\"] = deepcopy(params)\n        filters = _dict(job.get(\"filters\"))\n        if filters:\n            analysis_filters[alias or dataset_key or f\"job_{len(analysis_filters) + 1}\"] = deepcopy(filters)\n    for source in _list(payload.get(\"source_results\")):\n        if not isinstance(source, dict):\n            continue\n        alias = str(source.get(\"source_alias\") or source.get(\"dataset_key\") or \"\").strip()\n        dataset_key = str(source.get(\"dataset_key\") or \"\").strip()\n        params = _dict(source.get(\"applied_params\"))\n        if params:\n            required_params[alias or dataset_key or f\"source_{len(required_params) + 1}\"] = deepcopy(params)\n        filters = _dict(source.get(\"pandas_filters\")) or _dict(source.get(\"applied_filters\"))\n        if filters:\n            analysis_filters[alias or dataset_key or f\"source_{len(analysis_filters) + 1}\"] = deepcopy(filters)\n    effective_filters = _dict(_dict(plan.get(\"condition_resolution\")).get(\"effective_filters\"))\n    for alias, item in effective_filters.items():\n        if not isinstance(item, dict):\n            continue\n        filters = item.get(\"filters\")\n        if filters not in (None, \"\", [], {}):\n            analysis_filters[str(alias)] = deepcopy(filters)\n    return _omit_empty(\n        {\n            \"required_params\": required_params,\n            \"analysis_filters\": analysis_filters,\n            \"datasets\": _dedupe_dicts(datasets),\n            \"group_by\": _group_by_columns(_list(plan.get(\"pandas_execution_plan\"))),\n        }\n    )\n\n\n# 함수 설명: `_columns_from_rows()`는 행 목록의 key 등장 순서를 유지하면서 결과 테이블의 컬럼 목록을 계산합니다.\ndef _columns_from_rows(rows: list[Any]) -> list[str]:\n    columns: list[str] = []\n    for row in rows:\n        if not isinstance(row, dict):\n            continue\n        for key in row:\n            text = str(key)\n            if text not in columns:\n                columns.append(text)\n    return columns\n\n\n# 함수 설명: `_has_zero_values()`는 입력값이 ZERO·값 조건에 해당하는지 부작용 없이 bool로 판정합니다.\ndef _has_zero_values(rows: list[Any]) -> bool:\n    for row in rows:\n        if not isinstance(row, dict):\n            continue\n        for value in row.values():\n            if isinstance(value, bool):\n                continue\n            try:\n                if float(value) == 0:\n                    return True\n            except Exception:\n                continue\n    return False\n\n\n# 함수 설명: `_metric_columns()`는 결과 컬럼 중 수량·실적·비율처럼 답변 지표로 사용할 컬럼을 선별합니다.\ndef _metric_columns(columns: list[Any], rows: list[Any]) -> list[str]:\n    result: list[str] = []\n    for column in columns:\n        text = str(column)\n        if _column_has_numeric_value(rows, text):\n            result.append(text)\n    return result\n\n\n# 함수 설명: `_dimension_columns()`는 결과 컬럼 중 제품·공정·장비처럼 그룹 기준으로 사용할 컬럼을 선별합니다.\ndef _dimension_columns(columns: list[Any], metric_columns: list[str]) -> list[str]:\n    metric_set = set(metric_columns)\n    return [str(column) for column in columns if str(column) not in metric_set]\n\n\n# 함수 설명: `_column_has_numeric_value()`는 HAS·numeric·값 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.\ndef _column_has_numeric_value(rows: list[Any], column: str) -> bool:\n    for row in rows:\n        if not isinstance(row, dict):\n            continue\n        value = row.get(column)\n        if value is None or isinstance(value, bool):\n            continue\n        if isinstance(value, str):\n            continue\n        try:\n            number = float(value)\n        except Exception:\n            continue\n        if number != number:\n            continue\n        return True\n    return False\n\n\n# 함수 설명: `_group_by_columns()`는 의도 계획의 pandas 단계에서 실제 그룹 기준 컬럼을 추출합니다.\ndef _group_by_columns(pandas_plan: list[Any]) -> list[str]:\n    columns: list[str] = []\n    for step in pandas_plan:\n        if not isinstance(step, dict):\n            continue\n        for key in (\"groupby_columns\", \"group_by\", \"group_by_columns\", \"group_columns\"):\n            value = step.get(key)\n            if isinstance(value, list):\n                for item in value:\n                    text = str(item or \"\").strip()\n                    if text and text not in columns:\n                        columns.append(text)\n            elif isinstance(value, str) and value.strip() and value.strip() not in columns:\n                columns.append(value.strip())\n    return columns\n\n\n# 함수 설명: `_next_question_candidates()`는 question·후보 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.\ndef _next_question_candidates(data: dict[str, Any]) -> list[str]:\n    row_count = _int(data.get(\"row_count\"), len(_list(data.get(\"rows\"))))\n    if row_count <= 0:\n        return [\"조건을 넓혀서 다시 조회할까요?\"]\n    return [\"이 결과를 제품별 또는 공정별로 더 나눠볼까요?\", \"원본 데이터 기준으로 상세 행을 확인할까요?\"]\n\n\n# 함수 설명: `_dict()`는 입력값이 dict인지 확인하고 아니면 빈 dict를 반환해 후속 key 접근 오류를 막습니다.\ndef _dict(value: Any) -> dict[str, Any]:\n    return value if isinstance(value, dict) else {}\n\n\n# 함수 설명: `_list()`는 입력값을 list로 정규화하고 목록이 아닌 값은 안전한 기본 목록으로 바꿉니다.\ndef _list(value: Any) -> list[Any]:\n    return value if isinstance(value, list) else []\n\n\n# 함수 설명: `_int()`는 문자열이나 숫자 입력을 정수로 변환하고 실패하면 안전한 기본값을 사용합니다.\ndef _int(value: Any, default: int = 0) -> int:\n    try:\n        return int(value)\n    except Exception:\n        return default\n\n\n# 함수 설명: `_omit_empty()`는 dict에서 빈 문자열·빈 목록·None 항목을 제거해 전달 payload를 작게 유지합니다.\ndef _omit_empty(value: dict[str, Any]) -> dict[str, Any]:\n    return {key: item for key, item in value.items() if _has_compact_value(item)}\n\n\n# 함수 설명: `_dedupe_dicts()`는 dicts의 중복을 제거하고 최초 등장 순서를 유지합니다.\ndef _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    seen: set[str] = set()\n    result: list[dict[str, Any]] = []\n    for item in items:\n        signature = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)\n        if signature in seen:\n            continue\n        seen.add(signature)\n        result.append(item)\n    return result\n\n\n# 함수 설명: `_has_compact_value()`는 입력값이 compact·값 조건에 해당하는지 부작용 없이 bool로 판정합니다.\ndef _has_compact_value(value: Any) -> bool:\n    if value is None:\n        return False\n    if isinstance(value, str):\n        return bool(value)\n    if isinstance(value, (list, tuple, set, dict)):\n        return bool(value)\n    return True\n\n\n# 함수 설명: `_json_dumps()`는 datetime·Decimal 같은 값까지 JSON-safe 형태로 바꾼 뒤 문자열로 직렬화합니다.\ndef _json_dumps(value: Any) -> str:\n    return json.dumps(_json_ready(value), ensure_ascii=False, separators=(\",\", \":\"))\n\n\n# 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.\ndef _json_ready(value: Any) -> Any:\n    if value is None or type(value) in (str, int, bool):\n        return value\n    if type(value) is float:\n        return None if value != value or value in (float(\"inf\"), -float(\"inf\")) else value\n    if isinstance(value, (datetime, date)):\n        return value.isoformat()\n    if isinstance(value, Decimal):\n        return float(value)\n    item = getattr(value, \"item\", None)\n    if callable(item):\n        try:\n            return _json_ready(item())\n        except Exception:\n            pass\n    if isinstance(value, dict):\n        return {str(key): _json_ready(item_value) for key, item_value in value.items()}\n    if isinstance(value, (list, tuple, set)):\n        return [_json_ready(item_value) for item_value in value]\n    try:\n        if value != value:\n            return None\n    except Exception:\n        pass\n    return str(value)\n\n\n# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.\n# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.\nclass AnswerVariablesBuilder(Component):\n    display_name = \"18 답변 생성 변수 생성기\"\n    description = \"Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 답변 생성 변수를 제공합니다.\"\n    inputs = [DataInput(name=\"payload\", display_name=\"페이로드\", required=True)]\n    outputs = [\n        Output(name=\"question\", display_name=\"사용자 질문\", method=\"build_question\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"result_summary_json\", display_name=\"결과 요약 JSON\", method=\"build_result_summary\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"applied_scope_json\", display_name=\"적용 범위 JSON\", method=\"build_applied_scope\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"answer_context_json\", display_name=\"답변 컨텍스트 JSON\", method=\"build_answer_context\", types=[\"Message\"], group_outputs=True),\n        Output(name=\"warnings_errors_json\", display_name=\"경고/오류 JSON\", method=\"build_warnings_errors\", types=[\"Message\"], group_outputs=True),\n    ]\n\n    # 함수 설명: `_variables_once()`는 결과 요약·적용 범위·경고 변수를 동일 payload에서 한 번만 계산해 대용량 행 복사를 줄입니다.\n    def _variables_once(self) -> dict[str, Any]:\n        payload = getattr(self, \"payload\", None)\n        cache_key = id(payload)\n        if getattr(self, \"_variables_cache_key\", None) != cache_key:\n            self._variables_cache_key = cache_key\n            self._variables_cache = build_variables(payload)\n        return self._variables_cache\n\n    # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_question(self) -> Message:\n        return Message(text=self._variables_once()[\"question\"])\n\n    # Langflow 출력 함수: '결과 요약 JSON (result_summary_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_result_summary(self) -> Message:\n        return Message(text=self._variables_once()[\"result_summary_json\"])\n\n    # Langflow 출력 함수: '적용 범위 JSON (applied_scope_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_applied_scope(self) -> Message:\n        return Message(text=self._variables_once()[\"applied_scope_json\"])\n\n    # Langflow 출력 함수: '답변 컨텍스트 JSON (answer_context_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_answer_context(self) -> Message:\n        return Message(text=self._variables_once()[\"answer_context_json\"])\n\n    # Langflow 출력 함수: '경고/오류 JSON (warnings_errors_json)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_warnings_errors(self) -> Message:\n        return Message(text=self._variables_once()[\"warnings_errors_json\"])\n"
               },
               "payload": {
                 "_input_type": "DataInput",
@@ -6674,8 +6674,8 @@
           "width": 320
         },
         "position": {
-          "x": 1241.2110622667874,
-          "y": 2134.9287559308323
+          "x": 7500.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -6819,8 +6819,8 @@
           "width": 320
         },
         "position": {
-          "x": 2337.699840390166,
-          "y": 2161.004073910137
+          "x": 8850.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -7132,8 +7132,8 @@
           "width": 320
         },
         "position": {
-          "x": 1617.209178570417,
-          "y": 1566.5619421265224
+          "x": 7950.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -7529,8 +7529,8 @@
           "width": 320
         },
         "position": {
-          "x": 1968.8952302695982,
-          "y": 2127.1733394104735
+          "x": 8400.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -7887,8 +7887,8 @@
           "width": 320
         },
         "position": {
-          "x": 2726.890323891683,
-          "y": 2135.111408907871
+          "x": 10200.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -8033,8 +8033,8 @@
           "width": 320
         },
         "position": {
-          "x": 2966.0755000072977,
-          "y": 2376.1849247936484
+          "x": 10650.0,
+          "y": 700.0
         },
         "selected": false,
         "type": "genericNode"
@@ -8360,8 +8360,8 @@
           "width": 320
         },
         "position": {
-          "x": 883.9385535299201,
-          "y": 2338.355466084361
+          "x": 7050.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -8658,8 +8658,8 @@
           "width": 192
         },
         "position": {
-          "x": 3466.4989986258433,
-          "y": 2228.2789982210093
+          "x": 11100.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -8801,8 +8801,8 @@
           "width": 320
         },
         "position": {
-          "x": 325.4791406523089,
-          "y": -143.56767959018435
+          "x": -600.0,
+          "y": 600.0
         },
         "selected": false,
         "type": "genericNode"
@@ -8944,8 +8944,8 @@
           "width": 320
         },
         "position": {
-          "x": -1504.121261825688,
-          "y": 2461.453423589099
+          "x": 5250.0,
+          "y": 1100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -9087,8 +9087,8 @@
           "width": 320
         },
         "position": {
-          "x": 1182.9336639448206,
-          "y": 1796.3157374053121
+          "x": 7500.0,
+          "y": 700.0
         },
         "selected": false,
         "type": "genericNode"
@@ -9381,8 +9381,8 @@
           "width": 192
         },
         "position": {
-          "x": -1975.0176040084395,
-          "y": -10.75497091856105
+          "x": -2400.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -9500,8 +9500,8 @@
           "width": 320
         },
         "position": {
-          "x": -369.5979612861028,
-          "y": -36.89562411907548
+          "x": -1050.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -9778,8 +9778,8 @@
           "width": 320
         },
         "position": {
-          "x": -1257.2938166514598,
-          "y": 134.29911122726074
+          "x": -1500.0,
+          "y": -350.0
         },
         "selected": false,
         "type": "genericNode"
@@ -10056,8 +10056,8 @@
           "width": 320
         },
         "position": {
-          "x": 2673.756958619126,
-          "y": 2579.4508882207133
+          "x": 9300.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -10226,8 +10226,8 @@
           "width": 192
         },
         "position": {
-          "x": -1615.0176040084395,
-          "y": -10.75497091856105
+          "x": -1950.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -10485,8 +10485,8 @@
           "width": 192
         },
         "position": {
-          "x": 3106.4989986258433,
-          "y": 2228.2789982210093
+          "x": 10650.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -10657,8 +10657,8 @@
           "width": 320
         },
         "position": {
-          "x": 1900.0,
-          "y": 720.0
+          "x": 1200.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -10776,8 +10776,8 @@
           "width": 320
         },
         "position": {
-          "x": 2290.0,
-          "y": 720.0
+          "x": 2100.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -10922,8 +10922,8 @@
           "width": 320
         },
         "position": {
-          "x": -1420.0,
-          "y": 2290.0
+          "x": 5700.0,
+          "y": 650.0
         },
         "selected": false,
         "type": "genericNode"
@@ -11041,8 +11041,8 @@
           "width": 320
         },
         "position": {
-          "x": 1690.0,
-          "y": 1510.0
+          "x": 4800.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -11212,8 +11212,8 @@
           "width": 320
         },
         "position": {
-          "x": 470.0,
-          "y": 1510.0
+          "x": 3450.0,
+          "y": -150.0
         },
         "selected": false,
         "type": "genericNode"
@@ -11409,8 +11409,8 @@
           "width": 320
         },
         "position": {
-          "x": 470.0,
-          "y": 1690.0
+          "x": 3450.0,
+          "y": 350.0
         },
         "selected": false,
         "type": "genericNode"
@@ -11710,8 +11710,8 @@
           "width": 320
         },
         "position": {
-          "x": 860.0,
-          "y": 1640.0
+          "x": 3450.0,
+          "y": 850.0
         },
         "selected": false,
         "type": "genericNode"
@@ -11933,8 +11933,8 @@
           "width": 320
         },
         "position": {
-          "x": 860.0,
-          "y": 1840.0
+          "x": 3450.0,
+          "y": 1350.0
         },
         "selected": false,
         "type": "genericNode"
@@ -12081,8 +12081,8 @@
           "width": 320
         },
         "position": {
-          "x": 3070.0,
-          "y": 2580.0
+          "x": 9750.0,
+          "y": 100.0
         },
         "selected": false,
         "type": "genericNode"
@@ -12224,17 +12224,255 @@
           "width": 320
         },
         "position": {
-          "x": -680.0,
-          "y": 2440.0
+          "x": 6150.0,
+          "y": 700.0
         },
         "selected": false,
         "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "note-data-analysis-01-entry-state",
+          "node": {
+            "description": "## ① 요청·세션 입력\n\n- **Chat Input**: Playground 질문을 받습니다.\n- **GaiA Input Adapter**: Chat/GaiA 입력을 하나의 요청 형식으로 맞춥니다.\n- **00 세션 상태 로더**: 같은 session의 이전 분석 상태를 읽습니다.\n- **00 분석 요청 로더**: 질문·상위 결과 참조·이전 상태를 payload로 만듭니다.\n- **01E 후속 질문 힌트**: 새 분석인지 후속 분석인지 판단할 최소 문맥을 준비합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.9.2"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 500,
+        "id": "note-data-analysis-01-entry-state",
+        "position": {
+          "x": -2400.0,
+          "y": -1600.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1300,
+        "positionAbsolute": {
+          "x": -2400.0,
+          "y": -1600.0
+        },
+        "style": {
+          "height": 500,
+          "width": 1300
+        }
+      },
+      {
+        "data": {
+          "id": "note-data-analysis-02-metadata-intent",
+          "node": {
+            "description": "## ② 메타데이터 기반 의도 분석\n\n- **01A/01B/01C 로더**: 도메인·테이블 카탈로그·Main Flow Filter를 읽습니다.\n- **01D 후보 생성기**: 질문과 관련된 항목만 제한된 크기로 고릅니다.\n- **02 의도 변수 생성기**: 질문·상태·후보·출력 schema를 Prompt 변수로 만듭니다.\n- **특화 Prompt 입력**: 메타데이터를 해석하는 공통 지침을 제공합니다.\n- **Intent Prompt + Language Model**: 조회·분석·출력 계약 초안을 만듭니다.\n- **04 정규화기**: 모델별 표현 차이를 canonical intent_plan으로 정리합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.9.2"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 560,
+        "id": "note-data-analysis-02-metadata-intent",
+        "position": {
+          "x": -1000.0,
+          "y": -1600.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1800,
+        "positionAbsolute": {
+          "x": -1000.0,
+          "y": -1600.0
+        },
+        "style": {
+          "height": 560,
+          "width": 1800
+        }
+      },
+      {
+        "data": {
+          "id": "note-data-analysis-03-contract-history",
+          "node": {
+            "description": "## ③ 신뢰 계약·후속 결과 복원\n\n- **04A 카탈로그 Hydrator**: 선택된 dataset의 실제 조회 설정과 컬럼 계약을 보강합니다.\n- **05 이전 결과 로더**: 후속 분석에 필요한 저장 결과를 복원합니다.\n- **05A 상위 결과 바인더**: 이전 결과의 entity 값을 다음 조회 파라미터에 연결합니다.\n- **06 조회 작업 검증기**: source·metric·필수 파라미터 계약을 조회 전에 확인합니다.\n\n실행 컬럼과 조건은 하드코딩하지 않고 선택된 메타데이터 계약을 따릅니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.9.2"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 500,
+        "id": "note-data-analysis-03-contract-history",
+        "position": {
+          "x": 900.0,
+          "y": -1600.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1700,
+        "positionAbsolute": {
+          "x": 900.0,
+          "y": -1600.0
+        },
+        "style": {
+          "height": 500,
+          "width": 1700
+        }
+      },
+      {
+        "data": {
+          "id": "note-data-analysis-04-retrieval",
+          "node": {
+            "description": "## ④ 데이터 조회·병합\n\n- **07 라우터**: retrieval job을 source_type별로 분배합니다.\n- **08 Dummy / 09 Oracle / 10 H-API / 11 Datalake / 12 Goodocs**: 각 공급자에서 원본 데이터를 조회합니다.\n- **13 결과 병합기**: 공급자별 결과를 source_alias 기준으로 한 payload에 모읍니다.\n- **14 조회 어댑터**: 공통 runtime_sources/source_results 형식으로 정리합니다.\n\n분기 노드는 서로 병렬이며, Sticky Note는 실행 연결을 갖지 않습니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.9.2"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 520,
+        "id": "note-data-analysis-04-retrieval",
+        "position": {
+          "x": 2700.0,
+          "y": -1600.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1700,
+        "positionAbsolute": {
+          "x": 2700.0,
+          "y": -1600.0
+        },
+        "style": {
+          "height": 520,
+          "width": 1700
+        }
+      },
+      {
+        "data": {
+          "id": "note-data-analysis-05-analysis",
+          "node": {
+            "description": "## ⑤ pandas 분석\n\n- **14A 실행 게이트**: 필수 source 조회 성공 여부를 확인합니다.\n- **15 pandas 변수 생성기**: 조회 결과와 실행 계약을 프롬프트 변수로 만듭니다.\n- **15A Helper 선택기**: 의도 계획에 선언된 Function Case만 코드에 포함합니다.\n- **pandas Prompt + Language Model**: 계약에 맞는 분석 코드를 생성합니다.\n- **17 실행/복구기**: 코드를 제한된 환경에서 실행하고 실패 시 최대 1회 복구합니다.\n- **23 결과 저장소**: 결과와 원본 참조를 MongoDB에 저장합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.9.2"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 570,
+        "id": "note-data-analysis-05-analysis",
+        "position": {
+          "x": 4500.0,
+          "y": -1600.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 2100,
+        "positionAbsolute": {
+          "x": 4500.0,
+          "y": -1600.0
+        },
+        "style": {
+          "height": 570,
+          "width": 2100
+        }
+      },
+      {
+        "data": {
+          "id": "note-data-analysis-06-answer",
+          "node": {
+            "description": "## ⑥ 답변 구성\n\n- **18 답변 변수 생성기**: 질문·조건·결과·진단을 답변 입력으로 정리합니다.\n- **Answer Prompt + Language Model**: 자연어 답변 초안을 생성합니다.\n- **20 답변 응답 생성기**: 결과 표·오류·다운로드 정보를 최종 payload에 결합합니다.\n- **답변 도메인 가이드**: 메타데이터 기반 표현 규칙을 Prompt에 제공합니다.\n- **세션 상태 저장기**: 후속 질문에 필요한 압축 상태를 기록합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.9.2"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 500,
+        "id": "note-data-analysis-06-answer",
+        "position": {
+          "x": 6700.0,
+          "y": -1600.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 2100,
+        "positionAbsolute": {
+          "x": 6700.0,
+          "y": -1600.0
+        },
+        "style": {
+          "height": 500,
+          "width": 2100
+        }
+      },
+      {
+        "data": {
+          "id": "note-data-analysis-07-output",
+          "node": {
+            "description": "## ⑦ 상태 정리·최종 출력\n\n- **24 런타임 정리기**: 큰 임시 row buffer를 제거해 최종 payload를 가볍게 만듭니다.\n- **21 메시지 어댑터**: Chat/GaiA에서 표시할 Markdown 답변을 만듭니다.\n- **22 API 응답 생성기**: 웹/API용 구조화 응답을 제공합니다.\n- **GaiA Output Adapter**: GaiA 출력 형식으로 변환합니다.\n- **Chat Output**: Playground에 최종 답변을 표시합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.9.2"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 500,
+        "id": "note-data-analysis-07-output",
+        "position": {
+          "x": 9000.0,
+          "y": -1600.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 2100,
+        "positionAbsolute": {
+          "x": 9000.0,
+          "y": -1600.0
+        },
+        "style": {
+          "height": 500,
+          "width": 2100
+        }
       }
     ],
     "viewport": {
-      "x": 479.76005189538887,
-      "y": 93.33946856700737,
-      "zoom": 0.25
+      "x": 330.0,
+      "y": 250.0,
+      "zoom": 0.12
     }
   },
   "description": "v5 standalone flow (dummy default, live retrievers included): bounded metadata candidates, trusted catalog hydration, explicit same-session upstream result restoration, metadata-declared entity binding, thin retrieval branches, selected helper code, visible raw Repair Prompt, failure-only one-attempt pandas repair, native tool-free Language Model stages, deterministic required-source execution gating, shared runtime row buffers, deterministic final buffer release with lightweight GC, one finalization path, and compact API payload with explicit repair audit details.",
