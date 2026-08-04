@@ -169,14 +169,14 @@ def execute_pandas_code(
     payload = _payload(payload_value)
     if _execution_blocked(payload):
         return _blocked_execution_payload(payload)
+    next_payload = _canonicalize_standardized_output_contract(payload)
     llm_code, response_parse = _parse_pandas_llm_response(llm_response)
     normalized_llm_code, safe_imports = _normalize_safe_imports(llm_code)
-    deterministic_execution = _deterministic_execution_contract(payload)
+    deterministic_execution = _deterministic_execution_contract(next_payload)
     execution_mode = str(
         deterministic_execution.get("operation") or "llm_generated_code"
     )
     code = normalized_llm_code
-    next_payload = payload
     if not normalized_llm_code.strip() and not deterministic_execution:
         return _analysis_error(
             next_payload,
@@ -255,6 +255,31 @@ def execute_pandas_code(
             next_payload,
             "unsafe_code",
             guard_error,
+            code,
+            "",
+            llm_code,
+            filter_preamble,
+            filter_plan,
+            safe_imports,
+            row_match_plan,
+            row_match_preamble,
+            response_parse,
+        )
+    physical_alias_issues = (
+        []
+        if deterministic_execution
+        else _generated_code_physical_alias_issues(next_payload, normalized_llm_code)
+    )
+    if physical_alias_issues:
+        transitions = ", ".join(
+            f"{item['physical_column']}→{item['canonical_column']}"
+            for item in physical_alias_issues[:8]
+        )
+        return _analysis_error(
+            next_payload,
+            "generated_code_uses_physical_alias",
+            "표준화된 source에서 제거된 물리 컬럼 alias를 pandas 코드가 다시 참조했습니다: "
+            + transitions,
             code,
             "",
             llm_code,
@@ -496,7 +521,116 @@ def _deterministic_execution_contract(payload: dict[str, Any]) -> dict[str, Any]
         value = plan.get(key)
         if isinstance(value, dict) and value.get("strict") is True:
             return deepcopy(value)
-    return {}
+    return _single_source_execution_contract(payload)
+
+
+# 함수 설명: pandas 단계가 비어 있는 단일 source 조회는 표준 output contract와 hydrated job만으로 projection/aggregate 계약을 구성합니다.
+def _single_source_execution_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+    if steps:
+        return {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    result_mode = str(contract.get("result_mode") or "").strip().lower()
+    result_columns = _string_list(contract.get("result_columns"))
+    if (
+        contract.get("strict_result_columns") is not True
+        or result_mode not in {"aggregate", "detail", "entity_list"}
+        or not result_columns
+    ):
+        return {}
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    standardized_aliases = _standardized_source_aliases(payload)
+    jobs = [
+        job
+        for job in plan.get("retrieval_jobs", [])
+        if isinstance(job, dict)
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        in runtime_sources
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        in standardized_aliases
+    ]
+    aliases = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in jobs
+    }
+    if len(aliases) != 1:
+        return {}
+    source_alias = next(iter(aliases))
+    available = {
+        column.casefold(): column
+        for column in _runtime_source_columns_by_alias(payload).get(source_alias, [])
+    }
+    if not available:
+        return {}
+
+    if result_mode in {"detail", "entity_list"}:
+        if any(column.casefold() not in available for column in result_columns):
+            return {}
+        return {
+            "strict": True,
+            "operation": "project_single_source",
+            "source_alias": source_alias,
+            "result_columns": result_columns,
+        }
+
+    grain_columns = _string_list(contract.get("grain_columns"))
+    if any(column.casefold() not in available for column in grain_columns):
+        return {}
+    metric_columns = _string_list(contract.get("metric_columns"))
+    if not metric_columns:
+        return {}
+    bindings = [
+        item
+        for item in contract.get("metric_bindings", [])
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or "").strip() in {"", source_alias}
+    ]
+    job = jobs[0]
+    semantics = job.get("metric_semantics") if isinstance(job.get("metric_semantics"), dict) else {}
+    metrics: list[dict[str, str]] = []
+    for output_column in metric_columns:
+        binding = next(
+            (
+                item
+                for item in bindings
+                if str(item.get("output_column") or "").strip().casefold()
+                == output_column.casefold()
+            ),
+            {},
+        )
+        source_column = str(binding.get("source_column") or output_column).strip()
+        actual_source = available.get(source_column.casefold())
+        if not actual_source:
+            return {}
+        semantic = semantics.get(output_column) if isinstance(semantics.get(output_column), dict) else {}
+        aggregation = str(
+            binding.get("aggregation")
+            or semantic.get("default_rollup")
+        ).strip().lower()
+        if not aggregation:
+            return {}
+        if aggregation in {"avg", "average"}:
+            aggregation = "mean"
+        if aggregation not in {
+            "sum", "mean", "min", "max", "count",
+            "nunique", "median", "first", "last", "collect_unique",
+        }:
+            return {}
+        metrics.append(
+            {
+                "source_column": actual_source,
+                "output_column": output_column,
+                "aggregation": aggregation,
+            }
+        )
+    return {
+        "strict": True,
+        "operation": "aggregate_single_source",
+        "source_alias": source_alias,
+        "grain_columns": grain_columns,
+        "metrics": metrics,
+    }
 
 
 # 함수 설명: 내부 결정론적 executor가 실제 적용하는 join 이후 조건을 생성 코드 영역의 안전한 주석으로 표시합니다.
@@ -536,6 +670,10 @@ def _deterministic_contract_display_code(contract: dict[str, Any]) -> str:
         )
     elif operation == "merge_metric_sources":
         lines.append("# action: aggregate each metric source and merge on the resolved grain")
+    elif operation == "aggregate_single_source":
+        lines.append("# action: aggregate one standardized source from the output contract")
+    elif operation == "project_single_source":
+        lines.append("# action: project canonical result columns from one standardized source")
     return "\n".join(lines)
 
 
@@ -655,7 +793,65 @@ def _execute_deterministic_contract(
         return _execute_presence_comparison(contract, sources, pd)
     if operation == "compare_metrics":
         return _execute_metric_comparison(contract, sources, pd)
+    if operation in {"aggregate_single_source", "project_single_source"}:
+        return _execute_single_source_contract(contract, sources, pd)
     raise OutputContractError(f"지원하지 않는 deterministic 실행 계약입니다: {operation}")
+
+
+# 함수 설명: 단일 표준 source의 projection 또는 집계를 LLM 코드 없이 strict output contract대로 실행합니다.
+def _execute_single_source_contract(
+    contract: dict[str, Any],
+    sources: dict[str, Any],
+    pd: Any,
+) -> Any:
+    source_alias = str(contract.get("source_alias") or "").strip()
+    source = sources.get(source_alias)
+    if source is None:
+        raise OutputContractError(f"단일 source 실행 계약의 source를 찾을 수 없습니다: {source_alias}")
+    working = source.copy()
+    operation = str(contract.get("operation") or "").strip()
+    if operation == "project_single_source":
+        result_columns = _string_list(contract.get("result_columns"))
+        missing = [column for column in result_columns if column not in working.columns]
+        if missing:
+            raise OutputContractError(
+                "단일 source projection에 필요한 표준 컬럼이 없습니다: " + ", ".join(missing)
+            )
+        return working[result_columns].copy()
+
+    grain_columns = _string_list(contract.get("grain_columns"))
+    metrics = [item for item in contract.get("metrics", []) if isinstance(item, dict)]
+    if not metrics:
+        raise OutputContractError("단일 source 집계 계약에 metric이 없습니다.")
+    missing_grain = [column for column in grain_columns if column not in working.columns]
+    if missing_grain:
+        raise OutputContractError(
+            "단일 source 집계에 필요한 grain 컬럼이 없습니다: " + ", ".join(missing_grain)
+        )
+    named_aggregations: dict[str, Any] = {}
+    for metric in metrics:
+        source_column = str(metric.get("source_column") or "").strip()
+        output_column = str(metric.get("output_column") or "").strip()
+        if not source_column or source_column not in working.columns or not output_column:
+            raise OutputContractError("단일 source 집계 metric 컬럼 또는 출력명이 유효하지 않습니다.")
+        named_aggregations[output_column] = pd.NamedAgg(
+            column=source_column,
+            aggfunc=_pandas_aggregation_method(metric.get("aggregation") or "sum"),
+        )
+    output_columns = [*grain_columns, *named_aggregations]
+    if working.empty:
+        return pd.DataFrame(columns=output_columns)
+    if grain_columns:
+        return (
+            working.groupby(grain_columns, dropna=False)
+            .agg(**named_aggregations)
+            .reset_index()
+        )
+    row: dict[str, Any] = {}
+    for output_column, aggregation in named_aggregations.items():
+        source_column = str(aggregation.column)
+        row[output_column] = working[source_column].agg(aggregation.aggfunc)
+    return pd.DataFrame([row], columns=output_columns)
 
 
 # 함수 설명: `_apply_deterministic_result_ordering()`는 17 pandas 실행/1회 복구기 처리 중 deterministic·결과·ordering 관련 값을 계산·변환하는
@@ -1287,11 +1483,15 @@ def execute_pandas_with_repair(
     return _with_repair_trace(retry, base_trace)
 
 
-# 함수 설명: 실제 생성 코드의 실행 오류만 repair 대상으로 허용하고 구조 계약 오류의 동일 재시도를 막습니다.
+# 함수 설명: 실제 생성 코드 오류와 표준화 후 물리 alias 재사용만 repair 대상으로 허용하고 구조 계약 오류의 동일 재시도를 막습니다.
 def _repairable_execution_failure(payload: dict[str, Any]) -> bool:
     error = _analysis_error_value(payload)
     error_type = str(error.get("type") or "").strip().lower() if isinstance(error, dict) else ""
-    return error_type in {"pandas_execution_error", "unsafe_code"}
+    return error_type in {
+        "pandas_execution_error",
+        "unsafe_code",
+        "generated_code_uses_physical_alias",
+    }
 
 
 # 주요 함수: 복구 LLM이 원인과 기존 코드를 함께 볼 수 있도록 수정 프롬프트를 조립합니다.
@@ -2385,6 +2585,263 @@ def _as_list(value: Any) -> list[Any]:
     if value in (None, "", {}, []):
         return []
     return [value]
+
+
+# 함수 설명: 표준화가 끝난 source의 strict output contract를 Table Catalog filter_mappings의 canonical key로 한 번 더 단일화합니다.
+def _canonicalize_standardized_output_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    standardized_aliases = _standardized_source_aliases(payload)
+    if not contract or not standardized_aliases:
+        return payload
+    jobs = [
+        job
+        for job in plan.get("retrieval_jobs", [])
+        if isinstance(job, dict)
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        in standardized_aliases
+    ]
+    if not jobs:
+        return payload
+
+    changes: list[dict[str, str]] = []
+
+    # 함수 설명: 한 output contract field를 유일한 canonical 실행 컬럼으로 바꾸고 변경 근거를 기록합니다.
+    def canonicalize(value: Any, path: str, source_alias: str = "") -> str:
+        original = str(value or "").strip()
+        if not original:
+            return ""
+        canonical = _canonical_standardized_contract_field(
+            original,
+            payload,
+            jobs,
+            source_alias,
+        )
+        if canonical != original:
+            changes.append({"path": path, "from": original, "to": canonical})
+        return canonical
+
+    normalized = deepcopy(contract)
+    for key in ("required_columns", "grain_columns", "metric_columns", "result_columns"):
+        if key not in normalized:
+            continue
+        values: list[str] = []
+        seen: set[str] = set()
+        for index, value in enumerate(_string_list(normalized.get(key))):
+            column = canonicalize(value, f"output_contract.{key}[{index}]")
+            marker = column.casefold()
+            if not column or marker in seen:
+                continue
+            seen.add(marker)
+            values.append(column)
+        normalized[key] = values
+
+    if normalized.get("primary_metric"):
+        normalized["primary_metric"] = canonicalize(
+            normalized.get("primary_metric"),
+            "output_contract.primary_metric",
+        )
+    ordering = normalized.get("ordering") if isinstance(normalized.get("ordering"), dict) else {}
+    for key in ("sort_by", "rank_by", "rank_column"):
+        if ordering.get(key):
+            ordering[key] = canonicalize(
+                ordering.get(key),
+                f"output_contract.ordering.{key}",
+            )
+
+    labels = normalized.get("column_labels") if isinstance(normalized.get("column_labels"), dict) else {}
+    if labels:
+        normalized_labels: dict[str, Any] = {}
+        for raw_column, label in labels.items():
+            column = canonicalize(
+                raw_column,
+                f"output_contract.column_labels.{raw_column}",
+            )
+            normalized_labels.setdefault(column, label)
+        normalized["column_labels"] = normalized_labels
+
+    bindings = normalized.get("metric_bindings") if isinstance(normalized.get("metric_bindings"), list) else []
+    for index, binding in enumerate(bindings):
+        if not isinstance(binding, dict):
+            continue
+        alias = str(binding.get("source_alias") or "").strip()
+        for key in ("source_column", "output_column"):
+            if binding.get(key):
+                binding[key] = canonicalize(
+                    binding.get(key),
+                    f"output_contract.metric_bindings[{index}].{key}",
+                    alias,
+                )
+
+    if not changes:
+        return payload
+    plan["output_contract"] = normalized
+    payload.setdefault("trace", {}).setdefault("inspection", {})[
+        "runtime_output_contract_canonicalization"
+    ] = {
+        "stage": "17_pandas_code_executor",
+        "status": "applied",
+        "policy": "standardized_filter_mappings_canonical_only",
+        "changes": changes,
+    }
+    return payload
+
+
+# 함수 설명: 표준화된 source schema에 실제 존재하는 canonical key로 유일하게 매핑되는 output field만 변환합니다.
+def _canonical_standardized_contract_field(
+    field: str,
+    payload: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    source_alias: str = "",
+) -> str:
+    target = str(field or "").strip()
+    if not target:
+        return ""
+    target_key = target.casefold()
+    source_columns = _runtime_source_columns_by_alias(payload)
+    matches: dict[str, str] = {}
+    for job in jobs:
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if source_alias and alias != source_alias:
+            continue
+        available = {column.casefold() for column in source_columns.get(alias, [])}
+        mapping = job.get("filter_mappings") if isinstance(job.get("filter_mappings"), dict) else {}
+        for raw_canonical, raw_aliases in mapping.items():
+            canonical = str(raw_canonical or "").strip()
+            if not canonical or canonical.casefold() not in available:
+                continue
+            group = [canonical, *_string_list(raw_aliases)]
+            if target_key in {item.casefold() for item in group if item}:
+                matches.setdefault(canonical.casefold(), canonical)
+    return next(iter(matches.values())) if len(matches) == 1 else target
+
+
+# 함수 설명: runtime/source-result에서 source alias별 현재 실행 컬럼 목록을 수집합니다.
+def _runtime_source_columns_by_alias(payload: dict[str, Any]) -> dict[str, list[str]]:
+    result = _source_columns_by_alias(payload)
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    for alias, rows in runtime_sources.items():
+        if not isinstance(rows, list):
+            continue
+        columns = _string_list(
+            [
+                column
+                for row in rows[:20]
+                if isinstance(row, dict)
+                for column in row
+            ]
+        )
+        if columns:
+            result[str(alias)] = columns
+    return result
+
+
+# 함수 설명: 표준화 완료 source에서 사라진 물리 alias가 생성 코드의 컬럼 문맥에 다시 등장했는지 검사합니다.
+def _generated_code_physical_alias_issues(
+    payload: dict[str, Any],
+    code: str,
+) -> list[dict[str, str]]:
+    referenced = _code_column_reference_literals(code)
+    if not referenced:
+        return []
+    referenced_keys = {item.casefold() for item in referenced}
+    standardized_aliases = _standardized_source_aliases(payload)
+    source_columns = _runtime_source_columns_by_alias(payload)
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    issues: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for job in plan.get("retrieval_jobs", []) if isinstance(plan.get("retrieval_jobs"), list) else []:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if alias not in standardized_aliases:
+            continue
+        available = {column.casefold() for column in source_columns.get(alias, [])}
+        mapping = job.get("filter_mappings") if isinstance(job.get("filter_mappings"), dict) else {}
+        for raw_canonical, raw_aliases in mapping.items():
+            canonical = str(raw_canonical or "").strip()
+            if not canonical or canonical.casefold() not in available:
+                continue
+            for physical in _string_list(raw_aliases):
+                physical_key = physical.casefold()
+                if physical == canonical or physical_key in available or physical_key not in referenced_keys:
+                    continue
+                marker = (alias, canonical.casefold(), physical_key)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                issues.append(
+                    {
+                        "source_alias": alias,
+                        "canonical_column": canonical,
+                        "physical_column": physical,
+                    }
+                )
+    return issues
+
+
+# 함수 설명: AST에서 DataFrame 컬럼 선택·검사·group/sort/join 인자로 사용된 문자열만 수집합니다.
+def _code_column_reference_literals(code: str) -> set[str]:
+    try:
+        tree = ast.parse(str(code or ""))
+    except SyntaxError:
+        return set()
+    result: set[str] = set()
+
+    # 함수 설명: 선택한 AST 하위 트리에서 비어 있지 않은 문자열 literal만 컬럼 후보로 수집합니다.
+    def collect(node: Any) -> None:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                text = child.value.strip()
+                if text:
+                    result.add(text)
+
+    column_methods = {
+        "agg",
+        "aggregate",
+        "drop",
+        "drop_duplicates",
+        "filter",
+        "groupby",
+        "join",
+        "melt",
+        "merge",
+        "pivot",
+        "pivot_table",
+        "reindex",
+        "rename",
+        "set_index",
+        "sort_values",
+    }
+    column_keywords = {"by", "columns", "index", "left_on", "on", "right_on", "subset", "values"}
+    column_variable = re.compile(r"(?:^|_)(?:cols?|columns?|keys?|grain|metrics?|required|available)(?:_|$)", re.I)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript):
+            collect(node.slice)
+            continue
+        if isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
+            if any(
+                isinstance(item, ast.Attribute) and item.attr == "columns"
+                for item in operands
+            ):
+                collect(node)
+            continue
+        if isinstance(node, ast.Call):
+            method = node.func.attr if isinstance(node.func, ast.Attribute) else ""
+            if method in column_methods:
+                for argument in node.args:
+                    collect(argument)
+                for keyword in node.keywords:
+                    if keyword.arg in column_keywords or method == "rename":
+                        collect(keyword.value)
+            continue
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = [target.id for target in targets if isinstance(target, ast.Name)]
+            if any(column_variable.search(name) for name in names):
+                collect(node.value)
+    return result
 
 
 # 함수 설명: 14번 노드에서 표준 컬럼 단일화가 완료된 source alias를 trace에서 확인합니다.

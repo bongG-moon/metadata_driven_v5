@@ -21926,6 +21926,213 @@ def test_integrated_repair_skips_output_contract_errors():
     assert result["trace"]["inspection"]["pandas_repair"]["selected"] == "blocked_contract_error"
 
 
+def test_empty_single_source_plan_uses_canonical_projection_and_ignores_bad_alias_code():
+    executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{
+                "source_alias": "target",
+                "dataset_key": "target",
+                "filter_mappings": {
+                    "DATE": ["DATE"],
+                    "INPUT_PLAN_QTY": ["INPUT 계획"],
+                    "OUT_PLAN_QTY": ["OUT 계획"],
+                },
+            }],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "detail",
+                "required_columns": [
+                    "DATE", "INPUT_PLAN_QTY", "INPUT 계획", "OUT_PLAN_QTY", "OUT 계획"
+                ],
+                "metric_columns": [
+                    "INPUT_PLAN_QTY", "INPUT 계획", "OUT_PLAN_QTY", "OUT 계획"
+                ],
+                "result_columns": [
+                    "DATE", "INPUT_PLAN_QTY", "INPUT 계획", "OUT_PLAN_QTY", "OUT 계획"
+                ],
+                "strict_result_columns": True,
+            },
+        },
+        "runtime_sources": {
+            "target": [{"DATE": "20260706", "INPUT_PLAN_QTY": 800000, "OUT_PLAN_QTY": 1200000}]
+        },
+        "source_results": [{
+            "source_alias": "target",
+            "columns": ["DATE", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+        }],
+        "trace": {
+            "warnings": [],
+            "errors": [],
+            "inspection": {
+                "source_column_standardization": {
+                    "sources": [{"source_alias": "target", "status": "applied"}]
+                }
+            },
+        },
+    }
+    bad_code = """
+df = sources["target"]
+if "INPUT 계획" in df.columns:
+    df["INPUT_PLAN_QTY"] = pd.to_numeric(df["INPUT 계획"], errors="coerce")
+else:
+    df["INPUT_PLAN_QTY"] = pd.NA
+result = df
+"""
+    result = executor.execute_pandas_code(payload, {"code": bad_code})
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["analysis"]["execution_mode"] == "project_single_source"
+    assert result["data"]["columns"] == ["DATE", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"]
+    assert result["data"]["rows"] == [{
+        "DATE": "20260706",
+        "INPUT_PLAN_QTY": 800000,
+        "OUT_PLAN_QTY": 1200000,
+    }]
+    canonicalization = result["trace"]["inspection"]["runtime_output_contract_canonicalization"]
+    assert canonicalization["status"] == "applied"
+    assert any(item["from"] == "INPUT 계획" and item["to"] == "INPUT_PLAN_QTY" for item in canonicalization["changes"])
+
+
+def test_empty_single_source_plan_aggregates_canonical_plan_metrics_without_llm_code():
+    executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{
+                "source_alias": "target",
+                "dataset_key": "target",
+                "filter_mappings": {
+                    "TECH": ["TECH"],
+                    "INPUT_PLAN_QTY": ["INPUT 계획"],
+                    "OUT_PLAN_QTY": ["OUT 계획"],
+                },
+                "metric_semantics": {
+                    "INPUT_PLAN_QTY": {"default_rollup": "sum"},
+                    "OUT_PLAN_QTY": {"default_rollup": "sum"},
+                },
+            }],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "required_columns": ["TECH", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "grain_columns": ["TECH"],
+                "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "metric_bindings": [
+                    {
+                        "source_alias": "target",
+                        "source_column": "INPUT_PLAN_QTY",
+                        "aggregation": "sum",
+                        "output_column": "INPUT_PLAN_QTY",
+                    },
+                    {
+                        "source_alias": "target",
+                        "source_column": "OUT_PLAN_QTY",
+                        "aggregation": "sum",
+                        "output_column": "OUT_PLAN_QTY",
+                    },
+                ],
+                "result_columns": ["TECH", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "strict_result_columns": True,
+            },
+        },
+        "runtime_sources": {
+            "target": [
+                {"TECH": "HBM", "INPUT_PLAN_QTY": 800000, "OUT_PLAN_QTY": 1200000},
+                {"TECH": "HBM", "INPUT_PLAN_QTY": 200000, "OUT_PLAN_QTY": 300000},
+            ]
+        },
+        "source_results": [{
+            "source_alias": "target",
+            "columns": ["TECH", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+        }],
+        "trace": {
+            "warnings": [],
+            "errors": [],
+            "inspection": {
+                "source_column_standardization": {
+                    "sources": [{"source_alias": "target", "status": "applied"}]
+                }
+            },
+        },
+    }
+    result = executor.execute_pandas_code(payload, {"code": ""})
+
+    assert result["analysis"]["status"] == "ok"
+    assert result["analysis"]["execution_mode"] == "aggregate_single_source"
+    assert result["data"]["rows"] == [{
+        "TECH": "HBM",
+        "INPUT_PLAN_QTY": 1000000,
+        "OUT_PLAN_QTY": 1500000,
+    }]
+
+
+def test_physical_alias_code_error_is_repaired_with_canonical_source_schema():
+    executor = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "17_pandas_code_executor.py")
+    calls: list[str] = []
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{
+                "source_alias": "target",
+                "dataset_key": "target",
+                "filter_mappings": {
+                    "INPUT_PLAN_QTY": ["INPUT 계획"],
+                    "OUT_PLAN_QTY": ["OUT 계획"],
+                },
+            }],
+            "pandas_execution_plan": [{
+                "node_id": "select_target",
+                "operation": "select_columns",
+                "source_alias": "target",
+            }],
+            "output_contract": {
+                "result_mode": "detail",
+                "required_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "result_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "strict_result_columns": True,
+            },
+        },
+        "runtime_sources": {
+            "target": [{"INPUT_PLAN_QTY": 800000, "OUT_PLAN_QTY": 1200000}]
+        },
+        "source_results": [{
+            "source_alias": "target",
+            "columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+        }],
+        "trace": {
+            "warnings": [],
+            "errors": [],
+            "inspection": {
+                "source_column_standardization": {
+                    "sources": [{"source_alias": "target", "status": "applied"}]
+                }
+            },
+        },
+    }
+    bad_code = """
+df = sources["target"].copy()
+metric_cols = ["INPUT 계획", "OUT 계획"]
+result = df[metric_cols].copy()
+"""
+    repaired_code = "result = sources['target'][['INPUT_PLAN_QTY', 'OUT_PLAN_QTY']].copy()"
+    result = executor.execute_pandas_with_repair(
+        payload,
+        {"code": bad_code},
+        repair_invoker=lambda prompt: calls.append(prompt) or {"code": repaired_code},
+        repair_prompt_template="{failed_code}\n{source_schema_json}",
+    )
+
+    assert len(calls) == 1
+    assert result["analysis"]["status"] == "ok"
+    assert result["analysis"]["repair_applied"] is True
+    assert result["data"]["rows"][0]["INPUT_PLAN_QTY"] == 800000
+    repair = result["trace"]["inspection"]["pandas_repair"]
+    assert repair["selected"] == "retry"
+    assert repair["initial_error"]["type"] == "generated_code_uses_physical_alias"
+    assert "INPUT_PLAN_QTY" in calls[0]
+    assert "INPUT 계획" in calls[0]
+
+
 def test_target_physical_plan_metrics_are_standardized_and_scaled_before_analysis():
     adapter = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py")
     payload = {
