@@ -41,6 +41,7 @@ FLOW_SPECS = [
     ("workflow_skill_saving_flow_v5_standalone.json", "workflow-skill-saving", "workflow_skill_saving"),
     ("html_visualization_flow_v5_standalone.json", "html-visualization", "html_visualization"),
     ("realtime_production_report_flow_v5_standalone.json", "realtime-production-report", "realtime_production_report"),
+    ("data_analysis_flow_v2_standalone.json", "data-analysis-v2", "data_analysis_v2"),
 ]
 
 FLOW_DISPLAY_NAMES = {
@@ -55,6 +56,7 @@ FLOW_DISPLAY_NAMES = {
     "workflow_skill_saving": "09. v5_workflow_skill_saving",
     "html_visualization": "10. v5_html_visualization",
     "realtime_production_report": "11. v5_realtime_production_report",
+    "data_analysis_v2": "12. data_analysis_flow_v2",
 }
 EXPLICIT_STRUCTURED_TERMINALS = {
     "data_analysis": "CustomComponent-3eVde",
@@ -65,6 +67,7 @@ EXPLICIT_STRUCTURED_TERMINALS = {
     "workflow_skill_saving": "Api-workflow_skill",
     "html_visualization": "HtmlVisualizationApiTerminal-html-visualization",
     "realtime_production_report": "RealtimeProductionReportApiTerminal-realtime-production-report",
+    "data_analysis_v2": "CustomComponent-3eVde",
 }
 
 API_CHILD_ROUTE_NAMES = {
@@ -230,21 +233,22 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools",
         },
         "validation": {
-            "pytest": "505/505 non-web tests passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 131/131 custom nodes to 90 real Python sources; 0 missing",
-            "korean_component_documentation": "91/91 Python sources and 1819/1819 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 393 embedded custom-code instances preserve 8385/8385 documented function instances; strict UTF-8/JSON checks passed",
+            "pytest": "full non-web test suite passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 166/166 custom nodes to 96 real Python sources; 0 missing",
+            "korean_component_documentation": "97/97 Python sources and 2492/2492 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 463 embedded custom-code instances preserve 11068/11068 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "187/187 passed",
+            "langflow_lfx_node_templates": "232/232 passed in Langflow 1.9.2 / LFX 0.4.2",
             "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
             "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
             "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
-            "single_chat_output": "8/8 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
+            "single_chat_output": "9/9 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
+            "data_analysis_v2_hybrid_route": "Fast uses one intent model call and zero pandas/answer model calls; Complex preserves pandas generation, one-attempt repair, and answer synthesis",
             "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
             "data_analysis_runtime_cleanup": "large runtime row buffers are shared across deterministic stages, cleared after result and session persistence, and followed by one configurable generation-0 GC by default",
             "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
@@ -270,7 +274,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "workflow_orchestrator_terminal_contract": "one final Language Model synthesis passes through GaiA Output Adapter to native Chat Output, alongside one terminal api_response; invalid or empty plans still reach the final error response",
             "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
             "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-            "metadata_mongo_defaults": "17 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+            "metadata_mongo_defaults": "22 standard MongoDB nodes across the original flows and isolated Data Analysis V2, plus one QA snapshot node, bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
             "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
             "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
             "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes",
@@ -721,9 +725,9 @@ def _validate_bundle(
                     f"Edge {edge.get('id')} targets advanced input {edge.get('target')}.{target_field}; "
                     "Langflow removes connections to advanced component fields during template refresh."
                 )
-    if mongo_default_nodes != 17 or snapshot_default_nodes != 1:
+    if mongo_default_nodes != 22 or snapshot_default_nodes != 1:
         raise ValueError(
-            "Expected 17 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
+            "Expected 22 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
             f"found standard={mongo_default_nodes}, snapshot={snapshot_default_nodes}."
         )
     return validated_edge_handle_count
@@ -1435,6 +1439,7 @@ def _readme(flows: list[dict[str, Any]], validated_edge_handle_count: int) -> st
         f"| {item['order']} | `{item['file']}` | `{item['endpoint_name']}` | {item['nodes']} | {item['edges']} |"
         for item in flows
     )
+    flow_count = len(flows)
     return f"""# Metadata Driven v5 완전 연결 Langflow JSON
 
 이 폴더의 JSON은 Langflow 1.9.2 standalone 환경에 바로 import할 수 있도록 모든 canvas edge와 Router 하위 endpoint를 미리 연결한 묶음입니다.
@@ -1445,11 +1450,11 @@ Langflow의 Flow 화면에서 아래 파일 **하나만** 선택합니다.
 
 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
 
-Langflow UI가 최상위 `flows` 배열을 펼쳐 11개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{{\"flows\":[`입니다.
+Langflow UI가 최상위 `flows` 배열을 펼쳐 {flow_count}개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{{\"flows\":[`입니다.
 
 ## 개별 Import 방법
 
-파일명 앞 번호 순서대로 `01`부터 `10`까지 import합니다. `06`은 운영 기본 API Router, `07`은 단일 호출용 Agent + Tool Mode Router, `08`은 등록 또는 자연어 Workflow를 기본 Loop로 실행하는 Workflow Orchestrator, `09`는 Workflow Skill 등록·검토·저장 Flow, `10`은 Data Analysis 결과 참조를 HTML 차트로 만드는 Flow입니다.
+파일명 앞 번호 순서대로 `01`부터 `12`까지 import합니다. `06`은 운영 기본 API Router, `07`은 단일 호출용 Agent + Tool Mode Router, `08`은 등록 또는 자연어 Workflow를 기본 Loop로 실행하는 Workflow Orchestrator, `09`는 Workflow Skill 등록·검토·저장 Flow, `10`은 Data Analysis 결과 참조를 HTML 차트로 만드는 Flow, `12`는 기존 메타데이터를 그대로 사용하는 Fast/Complex Hybrid Data Analysis V2입니다.
 
 | 순서 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
@@ -1484,21 +1489,22 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 
 ## 검증 결과
 
-- Langflow/Flow 비웹 pytest: 505/505 passed (별도 Streamlit 웹 런타임 테스트는 제외)
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 131/131 노드가 실제 Python 원본 90개에 매핑, 누락 0
+- Langflow/Flow 비웹 pytest: 전체 suite passed (별도 Streamlit 웹 런타임 테스트는 제외)
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 166/166 노드가 실제 Python 원본 96개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 30/30 통과
 - Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: manifest의 전체 노드 검증 통과
+- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: 232/232 검증 통과
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: Smart Router -> GaiA Output Adapter -> 표준 Chat Output 2/2, FinalGate 0개
 - API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개
 - Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
 - 기존 8개 Flow의 격리 Langflow 서버 import는 검증 완료했으며, Workflow Orchestrator는 이번 bundle/node/edge 계약 검증 후 다음 live-server import 대상입니다.
-- 통합 `00` 단일 JSON은 11개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
-- 하위 Flow 8개, Route V2, Workflow Orchestrator: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
+- 통합 `00` 단일 JSON은 {flow_count}개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
+- 하위 Flow 9개, Route V2, Workflow Orchestrator: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
 - Data Analysis: executor node 1개, 초기 성공 시 Repair LLM 0회, 실행 오류 시 이전 코드·오류 문맥을 전달해 최대 1회 복구, 단일 최종화 체인 확인
+- Data Analysis V2: 단일 source의 완성된 계약은 Fast 실행하여 pandas 생성·답변 LLM 0회, 다중 source·join·Function Case는 기존 Complex 경로 사용
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
 - pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
 - pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음

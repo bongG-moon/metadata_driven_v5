@@ -42,6 +42,7 @@ EXPECTED_FLOW_DISPLAY_NAMES = [
     "09. v5_workflow_skill_saving",
     "10. v5_html_visualization",
     "11. v5_realtime_production_report",
+    "12. data_analysis_flow_v2",
 ]
 
 
@@ -209,6 +210,7 @@ def test_v5_bundle_flow_display_names_follow_import_order_without_changing_slugs
         "workflow_skill_saving",
         "html_visualization",
         "realtime_production_report",
+        "data_analysis_v2",
     ]
 
 
@@ -464,10 +466,10 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
     assert not raw.startswith(b"\xef\xbb\xbf")
     assert b"\r" not in raw
     payload = json.loads(raw.decode("utf-8"))
-    assert len(payload["flows"]) == 11
+    assert len(payload["flows"]) == 12
     assert all(isinstance(flow.get("data"), dict) and flow.get("name") for flow in payload["flows"])
     assert [flow["name"] for flow in payload["flows"]] == EXPECTED_FLOW_DISPLAY_NAMES
-    assert len({flow["endpoint_name"] for flow in payload["flows"]}) == 11
+    assert len({flow["endpoint_name"] for flow in payload["flows"]}) == 12
     assert all("-dummy-" not in flow["endpoint_name"] for flow in payload["flows"])
     assert not list(UI_BUNDLE_PATH.parent.glob("*_dummy_*_flow_v5_standalone.json"))
     router = next(flow for flow in payload["flows"] if flow["endpoint_name"].endswith("-api-router"))
@@ -561,14 +563,19 @@ def test_v5_single_file_ui_bundle_is_bomless_json_with_all_flows():
         for node in tools
     )
 
-    individual_flows = sorted(UI_BUNDLE_PATH.parent.glob("[0-9][0-9]_*_v5_standalone.json"))
-    assert [path.name[:2] for path in individual_flows] == [f"{index:02d}" for index in range(1, 12)]
-    assert individual_flows[-1].name == "11_realtime_production_report_flow_v5_standalone.json"
+    individual_flows = sorted(
+        {
+            *UI_BUNDLE_PATH.parent.glob("[0-9][0-9]_*_v5_standalone.json"),
+            *UI_BUNDLE_PATH.parent.glob("[0-9][0-9]_*_v2_standalone.json"),
+        }
+    )
+    assert [path.name[:2] for path in individual_flows] == [f"{index:02d}" for index in range(1, 13)]
+    assert individual_flows[-1].name == "12_data_analysis_flow_v2_standalone.json"
     manifest = json.loads((UI_BUNDLE_PATH.parent / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["flow_count"] == 11
-    assert [item["order"] for item in manifest["flows"]] == list(range(1, 12))
+    assert manifest["flow_count"] == 12
+    assert [item["order"] for item in manifest["flows"]] == list(range(1, 13))
     assert [item["name"] for item in manifest["flows"]] == EXPECTED_FLOW_DISPLAY_NAMES
-    assert manifest["flows"][-1]["file"] == "11_realtime_production_report_flow_v5_standalone.json"
+    assert manifest["flows"][-1]["file"] == "12_data_analysis_flow_v2_standalone.json"
 
 
 def test_v5_bundle_route_v4_uses_native_loop_exact_tools_and_one_terminal_answer():
@@ -936,7 +943,7 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
             ("-api-router", "-agent-tool-router", "-workflow-orchestrator")
         )
     ]
-    assert len(child_flows) == 8
+    assert len(child_flows) == 9
 
     child_models = []
     for flow in child_flows:
@@ -962,7 +969,7 @@ def test_v5_child_flows_support_direct_playground_and_native_language_models():
             if node["data"].get("type") == "LanguageModelComponent"
         )
 
-    assert len(child_models) == 9
+    assert len(child_models) == 10
     for node in child_models:
         template = node["data"]["node"]["template"]
         expected_max_tokens = (

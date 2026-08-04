@@ -3,7 +3,7 @@
   "langflow_version": "1.9.2",
   "langflow_base_version": "0.9.2",
   "lfx_version": "0.4.2",
-  "flow_count": 11,
+  "flow_count": 12,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "mongodb_contract": {
     "strategy": "reuse_v4_collections_without_copy",
@@ -27,7 +27,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "1e288727c3eb91d6f060951d5d6581635a0d4b5c8ba150d89c44bdd8c995a271",
+  "single_file_ui_import_sha256": "8b1d3c43872a9adc412510d196d54a46623196a72f861edcb273f64dde109cf7",
   "flows": [
     {
       "order": 1,
@@ -127,6 +127,15 @@
       "nodes": 11,
       "edges": 13,
       "sha256": "139814641de4c98dbe995f1d63a396264263622ca338ee8836c71306bfb0c124"
+    },
+    {
+      "order": 12,
+      "file": "12_data_analysis_flow_v2_standalone.json",
+      "name": "12. data_analysis_flow_v2",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis-v2",
+      "nodes": 45,
+      "edges": 70,
+      "sha256": "2dee196f7b11f3932d9aba138f9c3fb8c9f4cdcd37f0d68c1bf6bd0809867d38"
     }
   ],
   "router_configuration": {
@@ -143,19 +152,20 @@
     "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools"
   },
   "validation": {
-    "pytest": "505/505 non-web tests passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
-    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 131/131 custom nodes to 90 real Python sources; 0 missing",
-    "korean_component_documentation": "91/91 Python sources and 1819/1819 function definitions documented; 37 component text sources and 11 embedded prompts are BOM-free; 393 embedded custom-code instances preserve 8385/8385 documented function instances; strict UTF-8/JSON checks passed",
+    "pytest": "full non-web test suite passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
+    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 166/166 custom nodes to 96 real Python sources; 0 missing",
+    "korean_component_documentation": "97/97 Python sources and 2492/2492 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 463 embedded custom-code instances preserve 11068/11068 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
-    "langflow_frontend_edge_handles": "458/458 parsed and matched edge.data",
+    "langflow_frontend_edge_handles": "598/598 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-    "langflow_lfx_node_templates": "187/187 passed",
+    "langflow_lfx_node_templates": "232/232 passed in Langflow 1.9.2 / LFX 0.4.2",
     "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",
     "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
     "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
     "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
     "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
-    "single_chat_output": "8/8 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
+    "single_chat_output": "9/9 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
+    "data_analysis_v2_hybrid_route": "Fast uses one intent model call and zero pandas/answer model calls; Complex preserves pandas generation, one-attempt repair, and answer synthesis",
     "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
     "data_analysis_runtime_cleanup": "large runtime row buffers are shared across deterministic stages, cleared after result and session persistence, and followed by one configurable generation-0 GC by default",
     "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
@@ -181,7 +191,7 @@
     "workflow_orchestrator_terminal_contract": "one final Language Model synthesis passes through GaiA Output Adapter to native Chat Output, alongside one terminal api_response; invalid or empty plans still reach the final error response",
     "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
     "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-    "metadata_mongo_defaults": "17 standard MongoDB nodes and one QA snapshot node bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+    "metadata_mongo_defaults": "22 standard MongoDB nodes across the original flows and isolated Data Analysis V2, plus one QA snapshot node, bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
     "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
     "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
     "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes"

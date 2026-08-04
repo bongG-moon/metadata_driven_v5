@@ -14,7 +14,7 @@ FLOW_EXPORT_ROOT = ROOT / "flow_exports"
 IMPORT_READY_ROOT = ROOT / "import_ready_flows"
 COMBINED_IMPORT = IMPORT_READY_ROOT / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
 CUSTOM_MODULE_PREFIXES = ("custom_components.", "v5_auxiliary.")
-EXPECTED_FLOW_COUNT = 11
+EXPECTED_FLOW_COUNT = 12
 SUPPORT_SOURCE_FILES = {
     "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py",
 }
@@ -103,7 +103,12 @@ def _audit_flows(label: str, flows: list[dict[str, Any]], source_by_code: dict[s
 
 
 def _individual_import_flows() -> list[dict[str, Any]]:
-    paths = sorted(IMPORT_READY_ROOT.glob("[0-9][0-9]_*_v5_standalone.json"))
+    paths = sorted(
+        {
+            *IMPORT_READY_ROOT.glob("[0-9][0-9]_*_v5_standalone.json"),
+            *IMPORT_READY_ROOT.glob("[0-9][0-9]_*_v2_standalone.json"),
+        }
+    )
     return [_load_json(path) for path in paths]
 
 
@@ -116,7 +121,13 @@ def _combined_import_flows() -> list[dict[str, Any]]:
 
 
 def _flow_exports() -> list[dict[str, Any]]:
-    return [_load_json(path) for path in sorted(FLOW_EXPORT_ROOT.glob("*_v5_standalone.json"))]
+    paths = sorted(
+        {
+            *FLOW_EXPORT_ROOT.glob("*_v5_standalone.json"),
+            *FLOW_EXPORT_ROOT.glob("*_v2_standalone.json"),
+        }
+    )
+    return [_load_json(path) for path in paths]
 
 
 def audit_repository() -> dict[str, Any]:
