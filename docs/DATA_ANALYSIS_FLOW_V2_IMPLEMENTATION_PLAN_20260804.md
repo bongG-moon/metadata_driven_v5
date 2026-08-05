@@ -485,7 +485,7 @@ langflow_components/data_analysis_flow_v2/
 ```text
 tools/build_data_analysis_flow_v2.py
 flow_exports/data_analysis_flow_v2_standalone.json
-import_ready_flows/12_data_analysis_flow_v2_standalone.json
+import_ready_flows/13_data_analysis_flow_v2_standalone.json
 ```
 
 구현 시 다음 파일도 동기화한다.

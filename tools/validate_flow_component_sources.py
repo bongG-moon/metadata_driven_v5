@@ -14,7 +14,7 @@ FLOW_EXPORT_ROOT = ROOT / "flow_exports"
 IMPORT_READY_ROOT = ROOT / "import_ready_flows"
 COMBINED_IMPORT = IMPORT_READY_ROOT / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
 CUSTOM_MODULE_PREFIXES = ("custom_components.", "v5_auxiliary.")
-EXPECTED_FLOW_COUNT = 12
+EXPECTED_FLOW_COUNT = 13
 SUPPORT_SOURCE_FILES = {
     "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py",
 }

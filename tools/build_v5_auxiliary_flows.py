@@ -35,6 +35,7 @@ FLOW_DISPLAY_NAMES = {
     "workflow_skill_saving": "09. v5_workflow_skill_saving",
     "html_visualization": "10. v5_html_visualization",
     "realtime_production_report": "11. v5_realtime_production_report",
+    "cube_schedule_saving": "12. v5_cube_schedule_saving",
 }
 
 
@@ -1140,6 +1141,83 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     return wrap_gaia_boundaries(flow, proto)
 
 
+def build_cube_schedule_saving_flow(donor: dict[str, Any]) -> dict[str, Any]:
+    """외부 authoring MongoDB에 cube.schedule.v1 문서를 등록하는 12 Flow를 만듭니다."""
+
+    proto = prototypes(donor)
+    flow = empty_flow(
+        donor,
+        FLOW_DISPLAY_NAMES["cube_schedule_saving"],
+        "CUBE schedule authoring flow with one extraction Language Model, deterministic cube.schedule.v1 validation, visible dry-run and MongoDB inputs, versioned source upsert, and structured API output.",
+        "metadata-driven-v5-cube-schedule-saving",
+        ["v5", "standalone", "cube", "schedule-authoring", "mongodb", "dry-run"],
+    )
+    folder = COMPONENT_ROOT / "cube_schedule_saving_flow"
+    chat = native_node(proto["chat_input"], "ChatInput-cube-schedule-saving", 0, 0)
+    _set_message_storage(chat, True)
+    extraction_prompt = prompt_node(
+        proto["prompt"],
+        "Prompt-cube-schedule-saving",
+        (folder / "01_schedule_extraction_prompt_ko.md").read_text(encoding="utf-8"),
+        350,
+        -120,
+    )
+    extraction_model = language_model_node(
+        proto["language_model"],
+        "LanguageModel-cube-schedule-saving",
+        700,
+        -120,
+        "Extract one CUBE scheduled-query definition. Return exactly one JSON object, preserve the user question verbatim, and never guess missing employee or channel identifiers.",
+    )
+    _set_value(extraction_model["data"]["node"]["template"], "max_tokens", 1800)
+    normalizer = custom_node(
+        proto["custom"],
+        "Normalizer-cube-schedule-saving",
+        folder / "01_cube_schedule_normalizer.py",
+        1050,
+        -20,
+    )
+    writer = custom_node(
+        proto["custom"],
+        "Writer-cube-schedule-saving",
+        folder / "02_cube_schedule_mongodb_writer.py",
+        1400,
+        -20,
+    )
+    writer_template = writer["data"]["node"]["template"]
+    _set_value(writer_template, "mongo_database", "cube_authoring")
+    _set_value(writer_template, "collection_name", "cube_schedules")
+    _set_value(writer_template, "dry_run", True)
+    response = custom_node(
+        proto["custom"],
+        "Api-cube-schedule-saving",
+        folder / "03_cube_schedule_response_builder.py",
+        1750,
+        -180,
+    )
+    message_adapter = custom_node(
+        proto["custom"],
+        "Message-cube-schedule-saving",
+        folder / "04_cube_schedule_message_adapter.py",
+        1750,
+        160,
+    )
+    output = native_node(proto["chat_output"], "ChatOutput-cube-schedule-saving", 2110, -140)
+    _set_message_storage(output, True)
+    flow["data"]["nodes"].extend(
+        [chat, extraction_prompt, extraction_model, normalizer, writer, response, message_adapter, output]
+    )
+    add_edge(flow, chat, "message", extraction_prompt, "user_request")
+    add_edge(flow, extraction_prompt, "prompt", extraction_model, "input_value")
+    add_edge(flow, chat, "message", normalizer, "user_request")
+    add_edge(flow, extraction_model, "text_output", normalizer, "llm_response")
+    add_edge(flow, normalizer, "schedule_payload", writer, "schedule_payload")
+    add_edge(flow, writer, "write_result", response, "write_result")
+    add_edge(flow, writer, "write_result", message_adapter, "write_result")
+    add_edge(flow, message_adapter, "message", output, "input_value")
+    return wrap_gaia_boundaries(flow, proto)
+
+
 def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
     """계획 LLM과 기본 Loop로 최대 네 단계 Workflow를 결정론적으로 실행하는 08 Flow를 만듭니다."""
 
@@ -1377,6 +1455,18 @@ def write_flows() -> list[dict[str, Any]]:
             "edges": len(realtime_production_report["data"]["edges"]),
         }
     )
+    cube_schedule_saving = _stamp_flow_version(build_cube_schedule_saving_flow(donor))
+    cube_schedule_saving_path = EXPORT_ROOT / "cube_schedule_saving_flow_v5_standalone.json"
+    cube_schedule_saving_path.write_bytes(
+        (json.dumps(cube_schedule_saving, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    )
+    outputs.append(
+        {
+            "path": str(cube_schedule_saving_path),
+            "nodes": len(cube_schedule_saving["data"]["nodes"]),
+            "edges": len(cube_schedule_saving["data"]["edges"]),
+        }
+    )
     return outputs
 
 
@@ -1392,7 +1482,7 @@ def _stamp_flow_version(flow: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build optimized v5 standalone metadata, Workflow Skill authoring, routers, Workflow Orchestrator, HTML visualization, and realtime production report flows.")
+    parser = argparse.ArgumentParser(description="Build optimized v5 standalone metadata, Workflow Skill and CUBE schedule authoring, routers, Workflow Orchestrator, HTML visualization, and realtime production report flows.")
     parser.parse_args()
     print(json.dumps(write_flows(), ensure_ascii=False, indent=2))
 

@@ -3,7 +3,7 @@
   "langflow_version": "1.9.2",
   "langflow_base_version": "0.9.2",
   "lfx_version": "0.4.2",
-  "flow_count": 12,
+  "flow_count": 13,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "mongodb_contract": {
     "strategy": "reuse_v4_collections_without_copy",
@@ -17,6 +17,13 @@
     "session_state": "agent_v4_session_states",
     "workflow_skill": "agent_v4_workflow_skills"
   },
+  "cube_schedule_authoring_contract": {
+    "schema_version": "cube.schedule.v1",
+    "database": "cube_authoring",
+    "collection": "cube_schedules",
+    "flow_writes_source_only": true,
+    "runtime_state_stored_separately": true
+  },
   "retrieval_mode_contract": {
     "single_control": "04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode",
     "values": [
@@ -27,7 +34,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "e452e21370bc1a76b800d559091e49b150b09bfdc5113325acec720799ba744f",
+  "single_file_ui_import_sha256": "81b2a59bacf74e04c493a5ff4ed721fee4cf6f811c0d2d0d820f4aa072871452",
   "flows": [
     {
       "order": 1,
@@ -130,12 +137,21 @@
     },
     {
       "order": 12,
-      "file": "12_data_analysis_flow_v2_standalone.json",
-      "name": "12. data_analysis_flow_v2",
+      "file": "12_cube_schedule_saving_flow_v5_standalone.json",
+      "name": "12. v5_cube_schedule_saving",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-cube-schedule-saving",
+      "nodes": 10,
+      "edges": 10,
+      "sha256": "87adecef5930694ab017bb7b50967a0c8ae03fd90e8bdc095b1b7ca2d810ef39"
+    },
+    {
+      "order": 13,
+      "file": "13_data_analysis_flow_v2_standalone.json",
+      "name": "13. data_analysis_flow_v2",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis-v2",
       "nodes": 54,
       "edges": 61,
-      "sha256": "fd9255f7fb2da49fb1bb00172084ad2f6686ee961572d8d2727730df722fd8db"
+      "sha256": "7046bacc394bf1b7a260e682269479937a931baaff7e8ee8850c9d44f086ff47"
     }
   ],
   "router_configuration": {
@@ -153,23 +169,23 @@
   },
   "validation": {
     "pytest": "full non-web test suite passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
-    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 167/167 custom nodes to 99 real Python sources; 0 missing",
-    "korean_component_documentation": "100/100 Python sources and 2565/2565 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 465 embedded custom-code instances preserve 11126/11126 documented function instances; strict UTF-8/JSON checks passed",
+    "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 173/173 custom nodes to 103 real Python sources; 0 missing",
+    "korean_component_documentation": "104/104 Python sources and 2582/2582 function definitions documented; 41 component text sources and 11 embedded prompts are BOM-free; 483 embedded custom-code instances preserve 11276/11276 documented function instances; strict UTF-8/JSON checks passed",
     "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
-    "langflow_frontend_edge_handles": "580/580 parsed and matched edge.data",
+    "langflow_frontend_edge_handles": "600/600 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-    "langflow_lfx_node_templates": "232/232 passed in Langflow 1.9.2 / LFX 0.4.2",
+    "langflow_lfx_node_templates": "241/241 passed across 13 flows in Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2",
     "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",
     "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
     "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
     "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
     "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
-    "single_chat_output": "9/9 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
+    "single_chat_output": "10/10 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
     "data_analysis_v2_hybrid_route": "Fast uses one intent model call and zero pandas/answer model calls; Complex preserves pandas generation and one-attempt repair, while visible BoolInput use_llm_answer selects LLM synthesis (default) or deterministic synthesis",
     "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
     "data_analysis_runtime_cleanup": "large runtime row buffers are shared across deterministic stages, cleared after result and session persistence, and followed by one configurable generation-0 GC by default",
     "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
-    "unified_download_report_server_contract": "tools/data_ref_download_server.py serves data_ref CSV plus POST /reports, HTML view, download, TTL cleanup, CSP, storage limits, optional hashed access tokens, and masked query logs on the shared 8765 endpoint",
+    "unified_download_report_server_contract": "artifact_server provides the FastAPI operational endpoint for streaming data_ref CSV plus POST /reports, HTML view/download, TTL cleanup, CSP, storage limits, optional hashed access tokens, and masked query logs; tools/data_ref_download_server.py remains a compatibility launcher",
     "table_preview_limit_contract": "21 Answer Message Adapter owns one advanced table_preview_limit input; default 10; result storage and downloads are unaffected",
     "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
     "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
@@ -191,7 +207,7 @@
     "workflow_orchestrator_terminal_contract": "one final Language Model synthesis passes through GaiA Output Adapter to native Chat Output, alongside one terminal api_response; invalid or empty plans still reach the final error response",
     "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
     "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-    "metadata_mongo_defaults": "22 standard MongoDB nodes across the original flows and isolated Data Analysis V2, plus one QA snapshot node, bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+    "metadata_mongo_defaults": "22 standard MongoDB nodes across the original flows and isolated Data Analysis V2, plus one QA snapshot node, bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; the separate schedule-authoring writer exposes its own MongoDB URI and defaults to cube_authoring.cube_schedules",
     "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
     "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
     "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes"

@@ -41,6 +41,7 @@ FLOW_SPECS = [
     ("workflow_skill_saving_flow_v5_standalone.json", "workflow-skill-saving", "workflow_skill_saving"),
     ("html_visualization_flow_v5_standalone.json", "html-visualization", "html_visualization"),
     ("realtime_production_report_flow_v5_standalone.json", "realtime-production-report", "realtime_production_report"),
+    ("cube_schedule_saving_flow_v5_standalone.json", "cube-schedule-saving", "cube_schedule_saving"),
     ("data_analysis_flow_v2_standalone.json", "data-analysis-v2", "data_analysis_v2"),
 ]
 
@@ -56,7 +57,8 @@ FLOW_DISPLAY_NAMES = {
     "workflow_skill_saving": "09. v5_workflow_skill_saving",
     "html_visualization": "10. v5_html_visualization",
     "realtime_production_report": "11. v5_realtime_production_report",
-    "data_analysis_v2": "12. data_analysis_flow_v2",
+    "cube_schedule_saving": "12. v5_cube_schedule_saving",
+    "data_analysis_v2": "13. data_analysis_flow_v2",
 }
 EXPLICIT_STRUCTURED_TERMINALS = {
     "data_analysis": "CustomComponent-3eVde",
@@ -67,6 +69,7 @@ EXPLICIT_STRUCTURED_TERMINALS = {
     "workflow_skill_saving": "Api-workflow_skill",
     "html_visualization": "HtmlVisualizationApiTerminal-html-visualization",
     "realtime_production_report": "RealtimeProductionReportApiTerminal-realtime-production-report",
+    "cube_schedule_saving": "Api-cube-schedule-saving",
     "data_analysis_v2": "CustomComponent-3eVde",
 }
 
@@ -151,7 +154,10 @@ def sync_workflow_sources() -> None:
 
 def build_bundle(output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    for stale_path in output_dir.glob("[0-9][0-9]_*_v5_standalone.json"):
+    for stale_path in {
+        *output_dir.glob("[0-9][0-9]_*_v5_standalone.json"),
+        *output_dir.glob("[0-9][0-9]_*_v2_standalone.json"),
+    }:
         stale_path.unlink()
     endpoint_by_route = {
         route_name: f"{ENDPOINT_PREFIX}-{endpoint_suffix}"
@@ -213,6 +219,13 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "credential_global_variable": MONGO_GLOBAL_VARIABLE,
             **MONGODB_CONTRACT,
         },
+        "cube_schedule_authoring_contract": {
+            "schema_version": "cube.schedule.v1",
+            "database": "cube_authoring",
+            "collection": "cube_schedules",
+            "flow_writes_source_only": True,
+            "runtime_state_stored_separately": True,
+        },
         "retrieval_mode_contract": {
             "single_control": "04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode",
             "values": ["dummy", "live"],
@@ -234,25 +247,25 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
         },
         "validation": {
             "pytest": "full non-web test suite passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 167/167 custom nodes to 99 real Python sources; 0 missing",
-            "korean_component_documentation": "100/100 Python sources and 2565/2565 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 465 embedded custom-code instances preserve 11126/11126 documented function instances; strict UTF-8/JSON checks passed",
+            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 173/173 custom nodes to 103 real Python sources; 0 missing",
+            "korean_component_documentation": "104/104 Python sources and 2582/2582 function definitions documented; 41 component text sources and 11 embedded prompts are BOM-free; 483 embedded custom-code instances preserve 11276/11276 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "232/232 passed in Langflow 1.9.2 / LFX 0.4.2",
+            "langflow_lfx_node_templates": "241/241 passed across 13 flows in Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2",
             "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
             "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
             "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
-            "single_chat_output": "9/9 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
+            "single_chat_output": "10/10 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
             "data_analysis_v2_hybrid_route": "Fast uses one intent model call and zero pandas/answer model calls; Complex preserves pandas generation and one-attempt repair, while visible BoolInput use_llm_answer selects LLM synthesis (default) or deterministic synthesis",
             "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
             "data_analysis_runtime_cleanup": "large runtime row buffers are shared across deterministic stages, cleared after result and session persistence, and followed by one configurable generation-0 GC by default",
             "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
-            "unified_download_report_server_contract": "tools/data_ref_download_server.py serves data_ref CSV plus POST /reports, HTML view, download, TTL cleanup, CSP, storage limits, optional hashed access tokens, and masked query logs on the shared 8765 endpoint",
+            "unified_download_report_server_contract": "artifact_server provides the FastAPI operational endpoint for streaming data_ref CSV plus POST /reports, HTML view/download, TTL cleanup, CSP, storage limits, optional hashed access tokens, and masked query logs; tools/data_ref_download_server.py remains a compatibility launcher",
             "table_preview_limit_contract": "21 Answer Message Adapter owns one advanced table_preview_limit input; default 10; result storage and downloads are unaffected",
             "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
             "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
@@ -274,7 +287,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "workflow_orchestrator_terminal_contract": "one final Language Model synthesis passes through GaiA Output Adapter to native Chat Output, alongside one terminal api_response; invalid or empty plans still reach the final error response",
             "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
             "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-            "metadata_mongo_defaults": "22 standard MongoDB nodes across the original flows and isolated Data Analysis V2, plus one QA snapshot node, bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; database/collection defaults use datagov and shared agent_v4 collections",
+            "metadata_mongo_defaults": "22 standard MongoDB nodes across the original flows and isolated Data Analysis V2, plus one QA snapshot node, bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; the separate schedule-authoring writer exposes its own MongoDB URI and defaults to cube_authoring.cube_schedules",
             "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
             "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
             "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes",
@@ -503,6 +516,13 @@ def _validate_bundle(
     )
     realtime_report = json.loads(realtime_report_file.read_text(encoding="utf-8"))
     _validate_realtime_production_report(realtime_report)
+    cube_schedule_file = output_dir / next(
+        item["file"]
+        for item in manifest_flows
+        if item["endpoint_name"].endswith("-cube-schedule-saving")
+    )
+    cube_schedule = json.loads(cube_schedule_file.read_text(encoding="utf-8"))
+    _validate_cube_schedule_saving(cube_schedule)
     all_flows_path = output_dir / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
     all_raw = all_flows_path.read_bytes()
     if all_raw.startswith(b"\xef\xbb\xbf") or not all_raw.startswith(b'{"flows":['):
@@ -679,6 +699,22 @@ def _validate_bundle(
                     )
                 continue
             if not isinstance(database_field, dict) or not isinstance(collection_field, dict):
+                continue
+            if route_name == "cube_schedule_saving" and node_id == "Writer-cube-schedule-saving":
+                database_value = str(database_field.get("value") or "").strip()
+                collection_value = str(collection_field.get("value") or "").strip()
+                uri_field = template.get("mongo_uri")
+                if database_value != "cube_authoring" or collection_value != "cube_schedules":
+                    raise ValueError("CUBE schedule Writer source database/collection defaults mismatch.")
+                if (
+                    database_field.get("load_from_db") is not False
+                    or collection_field.get("load_from_db") is not False
+                    or not isinstance(uri_field, dict)
+                    or str(uri_field.get("value") or "").strip() != MONGO_GLOBAL_VARIABLE
+                    or uri_field.get("load_from_db") is not True
+                    or uri_field.get("advanced") is not False
+                ):
+                    raise ValueError("CUBE schedule Writer must expose source settings and bind visible MONGO_URL.")
                 continue
             mongo_default_nodes += 1
             database_value = str(database_field.get("value") or "").strip()
@@ -1383,6 +1419,49 @@ def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
         raise ValueError("Realtime Production Report API adapter must remain terminal.")
 
 
+def _validate_cube_schedule_saving(flow: dict[str, Any]) -> None:
+    """CUBE 스케줄 authoring Flow의 standalone·dry-run·source-only 계약을 검증합니다."""
+
+    nodes = {str(node.get("id") or ""): node for node in flow.get("data", {}).get("nodes", [])}
+    edges = {
+        (
+            str(edge.get("source") or ""),
+            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
+            str(edge.get("target") or ""),
+            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
+        )
+        for edge in flow.get("data", {}).get("edges", [])
+    }
+    required_nodes = {
+        "ChatInput-cube-schedule-saving",
+        "Prompt-cube-schedule-saving",
+        "LanguageModel-cube-schedule-saving",
+        "Normalizer-cube-schedule-saving",
+        "Writer-cube-schedule-saving",
+        "Api-cube-schedule-saving",
+        "Message-cube-schedule-saving",
+        "ChatOutput-cube-schedule-saving",
+        "GaiAInputAdapter-cube-schedule-saving",
+        "GaiAOutputAdapter-cube-schedule-saving",
+    }
+    if set(nodes) != required_nodes or len(edges) != 10:
+        raise ValueError("CUBE schedule saving Flow node/edge contract mismatch.")
+    writer_template = nodes["Writer-cube-schedule-saving"]["data"]["node"]["template"]
+    if (
+        writer_template.get("dry_run", {}).get("value") is not True
+        or writer_template.get("mongo_uri", {}).get("load_from_db") is not True
+        or writer_template.get("mongo_uri", {}).get("advanced") is not False
+        or writer_template.get("mongo_database", {}).get("value") != "cube_authoring"
+        or writer_template.get("collection_name", {}).get("value") != "cube_schedules"
+    ):
+        raise ValueError("CUBE schedule Writer must expose MONGO_URL, source database/collection, and dry_run=true.")
+    terminal = nodes["Api-cube-schedule-saving"]["data"]["node"]
+    if terminal.get("is_output") is not True:
+        raise ValueError("CUBE schedule API response must be an explicit structured terminal.")
+    if any(source == "Api-cube-schedule-saving" for source, _handle, _target, _field in edges):
+        raise ValueError("CUBE schedule structured api_response must remain terminal.")
+
+
 def _validate_workflow_skill_saving(flow: dict[str, Any]) -> None:
     """Workflow Skill 저장 Flow의 dry-run·기존 항목·단일 출력 계약을 검증합니다."""
 
@@ -1490,12 +1569,12 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 ## 검증 결과
 
 - Langflow/Flow 비웹 pytest: 전체 suite passed (별도 Streamlit 웹 런타임 테스트는 제외)
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 167/167 노드가 실제 Python 원본 99개에 매핑, 누락 0
+- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 173/173 노드가 실제 Python 원본 103개에 매핑, 누락 0
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 30/30 통과
 - Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: 232/232 검증 통과
+- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: 13개 Flow 241/241 검증 통과
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: Smart Router -> GaiA Output Adapter -> 표준 Chat Output 2/2, FinalGate 0개
 - API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개

@@ -109,7 +109,7 @@ def test_v2_flow_is_isolated_and_removes_always_on_pandas_and_answer_models():
 
     assert donor["id"] != flow["id"]
     assert donor["endpoint_name"] != flow["endpoint_name"]
-    assert flow["name"] == "12. data_analysis_flow_v2"
+    assert flow["name"] == "13. data_analysis_flow_v2"
     assert flow["last_tested_version"] == "1.9.2"
     assert len(flow["data"]["nodes"]) == 54
 

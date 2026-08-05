@@ -39,7 +39,7 @@ from tools.build_v5_data_analysis_flow import (  # noqa: E402
 
 DEFAULT_SOURCE = ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json"
 DEFAULT_TARGET = ROOT / "flow_exports" / "data_analysis_flow_v2_standalone.json"
-DEFAULT_IMPORT_TARGET = ROOT / "import_ready_flows" / "12_data_analysis_flow_v2_standalone.json"
+DEFAULT_IMPORT_TARGET = ROOT / "import_ready_flows" / "13_data_analysis_flow_v2_standalone.json"
 V2_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow_v2"
 COMMON_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow"
 
@@ -408,7 +408,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
 
     endpoint_name = "metadata-driven-v5-data-analysis-v2"
     flow["id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, endpoint_name))
-    flow["name"] = "12. data_analysis_flow_v2"
+    flow["name"] = "13. data_analysis_flow_v2"
     flow["endpoint_name"] = endpoint_name
     flow["description"] = (
         "Standalone Data Analysis Flow V2: the existing metadata, trusted catalog, retrieval, state, download, "

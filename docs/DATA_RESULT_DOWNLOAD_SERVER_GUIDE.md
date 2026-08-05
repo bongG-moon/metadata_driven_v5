@@ -19,7 +19,7 @@ Data Analysis Flow의 `23 MongoDB 결과 저장소`가 발급한 `data_ref`를 C
   -> 21 답변 메시지 어댑터
   -> GaiA answer Markdown + metadata.urls
   -> 사용자 클릭
-  -> tools/data_ref_download_server.py
+  -> artifact_server (FastAPI)
   -> CSV 직접 다운로드
 ```
 
@@ -33,12 +33,10 @@ MongoDB TTL 인덱스는 `expires_at` 필드를 기준으로 문서를 정리합
 MONGODB_URI=mongodb://user:password@host:27017
 MONGODB_DATABASE=datagov
 MONGODB_RESULT_COLLECTION=agent_v4_result_store
-DATA_REF_DOWNLOAD_HOST=0.0.0.0
-DATA_REF_DOWNLOAD_PORT=8765
+ARTIFACT_LISTEN_HOST=0.0.0.0
+ARTIFACT_LISTEN_PORT=8765
+ARTIFACT_PUBLIC_BASE_URL=https://artifact.example.internal
 DATA_REF_DOWNLOAD_MAX_BYTES=67108864
-DATA_REF_DOWNLOAD_BASE_URL=http://127.0.0.1:8765
-DATA_REF_DOWNLOAD_FORCE_REPLACE_PORT=true
-DATA_REF_DOWNLOAD_FORCE_TERMINATE_TIMEOUT_SECONDS=3
 REPORT_STORAGE_DIR=C:\Users\<사용자명>\Desktop\metadata_driven_v5\report_api\storage
 REPORT_DEFAULT_TTL_HOURS=24
 REPORT_MAX_TTL_HOURS=168
@@ -51,7 +49,7 @@ PowerShell 실행 예시:
 
 ```powershell
 cd C:\Users\<사용자명>\Desktop\metadata_driven_v5
-python tools\data_ref_download_server.py --host 0.0.0.0 --port 8765
+python -m artifact_server
 ```
 
 상태 확인:
@@ -62,18 +60,17 @@ http://127.0.0.1:8765/health
 
 정상 응답의 `features`에는 `data_ref_csv=true`, `html_reports=true`가 함께 표시됩니다.
 
-### 같은 포트로 재실행
+### 개발용 기존 launcher
 
-업데이트된 `data_ref_download_server.py`를 같은 포트로 다시 실행하면 임시 상태 파일과 로컬 health 응답으로 기존 인스턴스의 정상 종료를 먼저 요청합니다. 포트가 계속 점유되어 있으면 지정 포트의 listener에 TERM을 보내고, 제한 시간 뒤에도 남아 있을 때 KILL로 종료한 다음 같은 포트에 다시 bind합니다. `fuser` 같은 운영체제 명령은 필요하지 않습니다.
+`tools/data_ref_download_server.py`는 기존 route 검증과 로컬 포트 교체가 필요한 개발 환경을 위해 유지합니다. 운영 프로세스는 FastAPI 앱을 supervisor/Kubernetes/Windows Service가 관리하도록 구성합니다.
 
 ```powershell
 python tools\data_ref_download_server.py --host 0.0.0.0 --port 8765
 ```
 
-- 기본값은 `--replace-existing --force-replace-port`입니다. 포트 listener 강제 종료를 막으려면 `--no-force-replace-port`를 사용합니다.
-- 강제 종료 대기 시간은 기본 3초이며 `--force-terminate-timeout-seconds` 또는 `DATA_REF_DOWNLOAD_FORCE_TERMINATE_TIMEOUT_SECONDS`로 바꿀 수 있습니다.
-- `--force-replace-port`는 지정 포트를 이 서비스만 사용한다는 운영 전제가 있을 때 사용해야 합니다. 같은 포트를 다른 서비스와 공유하는 환경에서는 반드시 끕니다.
-- 운영 서버에 복사해 둔 `/project/workSpace/report_api/data_download_server.py`를 실행한다면 이 저장소의 최신 `tools/data_ref_download_server.py` 내용으로 배포본을 갱신해야 자동 재시작 기능이 적용됩니다.
+- FastAPI 운영 앱에는 포트 listener 강제 종료 기능이 없습니다.
+- 같은 포트 재배치와 비정상 종료 복구는 process supervisor가 담당해야 합니다.
+- 기존 launcher의 `--force-replace-port`는 지정 포트를 이 서비스만 쓰는 로컬 개발 환경에서만 사용합니다.
 
 ## 4. Langflow 설정
 
