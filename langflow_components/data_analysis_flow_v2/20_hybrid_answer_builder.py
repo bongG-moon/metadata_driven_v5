@@ -2,7 +2,7 @@
 # =============================================================================
 # 컴포넌트 개요: 20 V2 Hybrid 답변 생성기
 # 역할: Fast 결과는 고정 문장으로 만들고 Complex 결과일 때만 답변 LLM을 지연 호출합니다.
-# 주요 입력: 페이로드, 답변 prompt, 답변 언어 모델
+# 주요 입력: 페이로드, Complex 답변 LLM 사용 여부, 답변 prompt, 답변 언어 모델
 # 주요 출력: 페이로드 출력 (payload_out)
 # 처리 흐름: LLM 답변과 결정론적 분석 결과를 합쳐 answer sections, evidence, 현재 상태와 후속 상태를 구성합니다.
 # 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
@@ -18,7 +18,7 @@ from time import perf_counter
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import DataInput, MessageTextInput, ModelInput, Output, SecretStrInput
+from lfx.io import BoolInput, DataInput, MessageTextInput, ModelInput, Output, SecretStrInput
 from lfx.schema.data import Data
 
 RUNTIME_BUFFER_KEYS = {
@@ -1354,6 +1354,15 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+# 함수 설명: BoolInput 또는 문자열 형태로 전달된 설정을 일관된 boolean 값으로 정규화합니다.
+def _bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
 # 함수 설명: `_clip_text()`는 문자열을 허용 길이 안으로 자르되 비어 있는 값과 말줄임 표시를 일관되게 처리합니다.
 def _clip_text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
@@ -1383,28 +1392,55 @@ def build_hybrid_answer_response(
     payload_value: Any,
     answer_prompt: Any = "",
     model_invoker: Any = None,
+    use_llm_answer: Any = True,
 ) -> dict[str, Any]:
-    """Use a deterministic Fast answer and invoke the answer model only for Complex."""
+    """Use deterministic answers for Fast and optionally for Complex."""
 
     started = perf_counter()
     payload = _payload(payload_value)
     contract = _dict(payload.get("simple_analysis_contract"))
     route = str(_dict(payload.get("analysis")).get("execution_route") or contract.get("route") or "complex").strip().lower()
+    llm_answer_enabled = _bool(use_llm_answer, True)
     fast_trace = payload.setdefault("trace", {}).setdefault("inspection", {}).setdefault("fast_path", {})
     llm_calls = fast_trace.setdefault(
         "llm_calls",
         {"intent": 1, "pandas_generation": 0, "repair": 0, "answer": 0},
     )
+    llm_calls["answer"] = 0
     if route == "fast":
         answer_text = _deterministic_fast_answer(payload, contract)
         result = build_answer_response(payload, answer_text)
         result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(
-            {"stage": "20_hybrid_answer_builder", "model_called": False, "policy": "deterministic_fast_answer"}
+            {
+                "stage": "20_hybrid_answer_builder",
+                "model_called": False,
+                "policy": "deterministic_fast_answer",
+                "llm_answer_enabled": llm_answer_enabled,
+            }
         )
     elif route == "blocked" or _execution_blocked(payload):
         result = build_answer_response(payload, "")
         result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(
-            {"stage": "20_hybrid_answer_builder", "model_called": False, "policy": "blocked_without_model"}
+            {
+                "stage": "20_hybrid_answer_builder",
+                "model_called": False,
+                "policy": "blocked_without_model",
+                "llm_answer_enabled": llm_answer_enabled,
+            }
+        )
+    elif not llm_answer_enabled:
+        answer_text = (
+            _authoritative_result_message(payload)
+            or _deterministic_fast_answer(payload, contract)
+        )
+        result = build_answer_response(payload, answer_text)
+        result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(
+            {
+                "stage": "20_hybrid_answer_builder",
+                "model_called": False,
+                "policy": "deterministic_complex_answer",
+                "llm_answer_enabled": False,
+            }
         )
     else:
         prompt = _answer_text(answer_prompt).strip()
@@ -1419,7 +1455,12 @@ def build_hybrid_answer_response(
                 )
         result = build_answer_response(payload, response)
         result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(
-            {"stage": "20_hybrid_answer_builder", "model_called": bool(prompt and model_invoker is not None)}
+            {
+                "stage": "20_hybrid_answer_builder",
+                "model_called": bool(prompt and model_invoker is not None),
+                "policy": "llm_complex_answer",
+                "llm_answer_enabled": True,
+            }
         )
     trace = result.setdefault("trace", {}).setdefault("inspection", {}).setdefault("fast_path", {})
     trace["llm_calls"] = deepcopy(llm_calls)
@@ -1524,9 +1565,17 @@ def _first_order_direction(contract: dict[str, Any]) -> str:
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class HybridAnswerBuilder(Component):
     display_name = "20 V2 Hybrid 답변 생성기"
-    description = "Fast 결과는 고정 답변으로 만들고 Complex 결과에서만 답변 모델을 호출합니다."
+    description = "Fast는 항상 고정 답변으로 만들고, Complex는 BoolInput 설정에 따라 답변 모델 또는 고정 답변을 사용합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
+        BoolInput(
+            name="use_llm_answer",
+            display_name="Complex 답변 LLM 사용",
+            info="활성화하면 Complex만 답변 LLM을 호출하고, 비활성화하면 Fast와 Complex 모두 고정 로직으로 답변합니다.",
+            value=True,
+            required=False,
+            advanced=False,
+        ),
         MessageTextInput(name="answer_prompt", display_name="답변 생성 프롬프트", required=False),
         ModelInput(name="model", display_name="답변 언어 모델", required=False, real_time_refresh=True),
         SecretStrInput(name="api_key", display_name="답변 모델 API 키", required=False, advanced=True, real_time_refresh=True),
@@ -1580,5 +1629,6 @@ class HybridAnswerBuilder(Component):
                 getattr(self, "payload", None),
                 getattr(self, "answer_prompt", ""),
                 self._invoke_model,
+                getattr(self, "use_llm_answer", True),
             )
         )

@@ -135,7 +135,7 @@ def _apply_extended_component_spec(
                     "display_name": display_name,
                     "required": required,
                     "value": bool(value),
-                    "advanced": name != "fast_path_enabled",
+                    "advanced": name not in {"fast_path_enabled", "use_llm_answer"},
                     "show": True,
                     "type": "bool",
                     "_input_type": "BoolInput",
@@ -339,6 +339,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         node_index[HYBRID_ANSWER_NODE_ID],
         [
             ("data", "payload", "페이로드", True, None),
+            ("bool", "use_llm_answer", "Complex 답변 LLM 사용", False, True),
             ("message", "answer_prompt", "답변 생성 프롬프트", False, ""),
             ("model", "model", "답변 언어 모델", False, None),
             ("secret", "api_key", "답변 모델 API 키", False, "GOOGLE_API_KEY"),
@@ -349,6 +350,9 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     node_index[HYBRID_ANSWER_NODE_ID]["data"]["node"]["template"]["model"] = answer_model_template
     node_index[HYBRID_ANSWER_NODE_ID]["data"]["node"]["template"]["model"].update(
         {"name": "model", "display_name": "답변 언어 모델", "required": False}
+    )
+    node_index[HYBRID_ANSWER_NODE_ID]["data"]["node"]["template"]["use_llm_answer"]["info"] = (
+        "활성화하면 Complex만 답변 LLM을 호출하고, 비활성화하면 Fast와 Complex 모두 고정 로직으로 답변합니다."
     )
 
     _set_embedded_source(
@@ -409,8 +413,8 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     flow["description"] = (
         "Standalone Data Analysis Flow V2: the existing metadata, trusted catalog, retrieval, state, download, "
         "and complex pandas path are preserved. Single-source analyses with complete canonical contracts use a "
-        "deterministic Fast Path with no pandas-generation or answer-model call; all other supported requests use "
-        "the existing safe pandas, one-attempt repair, and answer-model path."
+        "deterministic Fast Path with no pandas-generation or answer-model call; Complex requests preserve the "
+        "existing safe pandas and one-attempt repair path, with a visible option to disable answer-model synthesis."
     )
     flow["tags"] = sorted(set([*flow.get("tags", []), "v2-fast-path", "hybrid-analysis"]))
     flow["last_tested_version"] = TARGET_LANGFLOW_VERSION

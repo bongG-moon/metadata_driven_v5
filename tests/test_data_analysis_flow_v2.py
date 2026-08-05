@@ -638,6 +638,244 @@ def test_fast_answer_builder_does_not_invoke_answer_model():
     assert result["trace"]["inspection"]["fast_path"]["llm_calls"]["answer"] == 0
 
 
+def test_complex_answer_builder_bool_toggle_controls_answer_model_call():
+    _, _, answer = _modules()
+    payload = {
+        "request": {"question": "그룹별 수량을 알려줘"},
+        "simple_analysis_contract": {"route": "complex"},
+        "intent_plan": {
+            "output_contract": {
+                "column_labels": {"GROUP": "그룹", "QTY_SUM": "수량"},
+                "primary_metric": "QTY_SUM",
+                "result_columns": ["GROUP", "QTY_SUM"],
+            }
+        },
+        "analysis": {
+            "status": "ok",
+            "execution_route": "complex",
+            "row_count": 1,
+            "columns": ["GROUP", "QTY_SUM"],
+        },
+        "data": {
+            "columns": ["GROUP", "QTY_SUM"],
+            "rows": [{"GROUP": "A", "QTY_SUM": 10}],
+            "row_count": 1,
+        },
+        "trace": {
+            "inspection": {
+                "fast_path": {
+                    "llm_calls": {
+                        "intent": 1,
+                        "pandas_generation": 1,
+                        "repair": 0,
+                        "answer": 0,
+                    }
+                }
+            }
+        },
+    }
+    disabled_calls: list[str] = []
+
+    deterministic = answer.build_hybrid_answer_response(
+        deepcopy(payload),
+        "complex answer prompt",
+        model_invoker=lambda prompt: disabled_calls.append(prompt),
+        use_llm_answer=False,
+    )
+    assert disabled_calls == []
+    assert "수량" in deterministic["answer_message"]
+    assert "10" in deterministic["answer_message"]
+    disabled_trace = deterministic["trace"]["inspection"]
+    assert disabled_trace["fast_path"]["llm_calls"]["answer"] == 0
+    assert disabled_trace["answer_model_response"]["model_called"] is False
+    assert disabled_trace["answer_model_response"]["policy"] == "deterministic_complex_answer"
+    assert disabled_trace["answer_model_response"]["llm_answer_enabled"] is False
+
+    enabled_calls: list[str] = []
+
+    def invoke(prompt: str):
+        enabled_calls.append(prompt)
+        return "모델이 생성한 Complex 답변입니다."
+
+    llm_answer = answer.build_hybrid_answer_response(
+        deepcopy(payload),
+        "complex answer prompt",
+        model_invoker=invoke,
+        use_llm_answer=True,
+    )
+    assert enabled_calls == ["complex answer prompt"]
+    assert llm_answer["answer_message"] == "모델이 생성한 Complex 답변입니다."
+    enabled_trace = llm_answer["trace"]["inspection"]
+    assert enabled_trace["fast_path"]["llm_calls"]["answer"] == 1
+    assert enabled_trace["answer_model_response"]["model_called"] is True
+    assert enabled_trace["answer_model_response"]["policy"] == "llm_complex_answer"
+    assert enabled_trace["answer_model_response"]["llm_answer_enabled"] is True
+
+
+def test_v2_flow_exposes_visible_complex_answer_llm_bool_input():
+    flow = build_flow()
+    node = next(
+        item
+        for item in flow["data"]["nodes"]
+        if item["id"] == "CustomComponent-BVItv"
+    )
+    component = node["data"]["node"]
+    field = component["template"]["use_llm_answer"]
+
+    assert component["display_name"] == "20 V2 Hybrid 답변 생성기"
+    assert field["_input_type"] == "BoolInput"
+    assert field["display_name"] == "Complex 답변 LLM 사용"
+    assert field["value"] is True
+    assert field["advanced"] is False
+    assert field["show"] is True
+    assert "use_llm_answer" in component["field_order"]
+
+
+def test_complex_deterministic_answer_covers_comparisons_empty_and_error_results():
+    _, _, answer = _modules()
+
+    def payload(
+        *,
+        question: str,
+        rows: list[dict],
+        columns: list[str],
+        contract: dict,
+        certificate: dict | None = None,
+        status: str = "ok",
+    ) -> dict:
+        analysis = {
+            "status": status,
+            "execution_route": "complex",
+            "row_count": len(rows),
+            "columns": columns,
+        }
+        if certificate:
+            analysis["semantic_execution_certificate"] = certificate
+        return {
+            "request": {"question": question},
+            "simple_analysis_contract": {"route": "complex"},
+            "intent_plan": {"output_contract": contract},
+            "analysis": analysis,
+            "data": {"columns": columns, "rows": rows, "row_count": len(rows)},
+            "trace": {
+                "inspection": {
+                    "fast_path": {
+                        "llm_calls": {
+                            "intent": 1,
+                            "pandas_generation": 1,
+                            "repair": 0,
+                            "answer": 0,
+                        }
+                    }
+                }
+            },
+        }
+
+    cases = [
+        (
+            payload(
+                question="INPUT 실적은 있으나 D/A WIP 없는 제품 알려줘",
+                rows=[
+                    {"PRODUCT": "A", "INPUT_QTY": 10, "DA_WIP": 0},
+                    {"PRODUCT": "B", "INPUT_QTY": 5, "DA_WIP": 0},
+                ],
+                columns=["PRODUCT", "INPUT_QTY", "DA_WIP"],
+                contract={
+                    "grain_columns": ["PRODUCT"],
+                    "metric_columns": ["INPUT_QTY", "DA_WIP"],
+                    "column_labels": {
+                        "INPUT_QTY": "INPUT 실적",
+                        "DA_WIP": "D/A 재공",
+                    },
+                },
+                certificate={
+                    "operation": "compare_presence",
+                    "postcondition_validation": "passed",
+                },
+            ),
+            ("존재·부재", "2건"),
+        ),
+        (
+            payload(
+                question="투입 실적 대비 WIP 많은 제품 알려줘",
+                rows=[{"PRODUCT": "A", "INPUT_QTY": 10, "WIP_QTY": 20}],
+                columns=["PRODUCT", "INPUT_QTY", "WIP_QTY"],
+                contract={
+                    "grain_columns": ["PRODUCT"],
+                    "metric_columns": ["INPUT_QTY", "WIP_QTY"],
+                    "column_labels": {
+                        "INPUT_QTY": "투입 실적",
+                        "WIP_QTY": "재공 수량",
+                    },
+                },
+                certificate={
+                    "operation": "compare_metrics",
+                    "postcondition_validation": "passed",
+                    "lhs_metric_column": "WIP_QTY",
+                    "rhs_metric_column": "INPUT_QTY",
+                    "operator": "gt",
+                },
+            ),
+            ("재공 수량 > 투입 실적", "1건"),
+        ),
+        (
+            payload(
+                question="생산량 상위 3개 제품 알려줘",
+                rows=[
+                    {"PRODUCT": "A", "PRODUCTION_SUM": 30},
+                    {"PRODUCT": "B", "PRODUCTION_SUM": 20},
+                ],
+                columns=["PRODUCT", "PRODUCTION_SUM"],
+                contract={
+                    "grain_columns": ["PRODUCT"],
+                    "metric_columns": ["PRODUCTION_SUM"],
+                    "primary_metric": "PRODUCTION_SUM",
+                    "column_labels": {"PRODUCTION_SUM": "생산량"},
+                    "ordering": {
+                        "sort_by": "PRODUCTION_SUM",
+                        "order": "desc",
+                        "limit": 3,
+                    },
+                },
+            ),
+            ("상위 3개", "2건"),
+        ),
+        (
+            payload(
+                question="조건에 맞는 제품 알려줘",
+                rows=[],
+                columns=["PRODUCT", "QTY"],
+                contract={"primary_metric": "QTY"},
+            ),
+            ("조건을 만족하는 데이터가 없습니다",),
+        ),
+        (
+            payload(
+                question="분석해줘",
+                rows=[],
+                columns=[],
+                contract={},
+                status="error",
+            ),
+            ("분석을 완료하지 못했습니다",),
+        ),
+    ]
+
+    for source_payload, expected_fragments in cases:
+        calls: list[str] = []
+        result = answer.build_hybrid_answer_response(
+            source_payload,
+            "must not be invoked",
+            model_invoker=lambda prompt: calls.append(prompt),
+            use_llm_answer=False,
+        )
+        assert calls == []
+        assert all(fragment in result["answer_message"] for fragment in expected_fragments)
+        inspection = result["trace"]["inspection"]
+        assert inspection["fast_path"]["llm_calls"]["answer"] == 0
+        assert inspection["answer_model_response"]["policy"] == "deterministic_complex_answer"
+
+
 def test_v2_message_adapter_shows_route_and_fixed_fast_logic():
     adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
     payload = _single_source_payload(

@@ -235,7 +235,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
         "validation": {
             "pytest": "full non-web test suite passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
             "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 167/167 custom nodes to 99 real Python sources; 0 missing",
-            "korean_component_documentation": "100/100 Python sources and 2563/2563 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 465 embedded custom-code instances preserve 11122/11122 documented function instances; strict UTF-8/JSON checks passed",
+            "korean_component_documentation": "100/100 Python sources and 2565/2565 function definitions documented; 39 component text sources and 11 embedded prompts are BOM-free; 465 embedded custom-code instances preserve 11126/11126 documented function instances; strict UTF-8/JSON checks passed",
             "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
@@ -248,7 +248,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
             "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
             "single_chat_output": "9/9 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
-            "data_analysis_v2_hybrid_route": "Fast uses one intent model call and zero pandas/answer model calls; Complex preserves pandas generation, one-attempt repair, and answer synthesis",
+            "data_analysis_v2_hybrid_route": "Fast uses one intent model call and zero pandas/answer model calls; Complex preserves pandas generation and one-attempt repair, while visible BoolInput use_llm_answer selects LLM synthesis (default) or deterministic synthesis",
             "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
             "data_analysis_runtime_cleanup": "large runtime row buffers are shared across deterministic stages, cleared after result and session persistence, and followed by one configurable generation-0 GC by default",
             "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",

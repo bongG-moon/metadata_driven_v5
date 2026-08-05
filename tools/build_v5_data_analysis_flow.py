@@ -302,7 +302,7 @@ def _stage_note_specs(variant: str) -> list[dict[str, Any]]:
     answer_description = (
         "## ⑥ 답변 구성\n\n"
         "- **18 지연 Answer Prompt**: Complex에서만 중복 제거된 답변 context와 Prompt를 생성합니다.\n"
-        "- **20 V2 Hybrid 답변 생성기**: Fast는 고정 형식으로 즉시 답변하고 Complex만 답변 모델을 호출합니다.\n"
+        "- **20 V2 Hybrid 답변 생성기**: Fast는 항상 고정 형식으로 답변하며, Complex는 BoolInput 설정에 따라 LLM 또는 고정 답변을 사용합니다.\n"
         "- **답변 도메인 가이드**: 메타데이터 기반 표현 규칙을 Prompt에 제공합니다.\n"
         "- **세션 상태 저장기**: 후속 질문에 필요한 압축 상태를 기록합니다."
         if is_v2
