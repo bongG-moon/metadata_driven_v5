@@ -3520,6 +3520,23 @@ def _standardized_source_aliases(payload: dict[str, Any]) -> set[str]:
     """Return source aliases normalized to canonical columns by node 14."""
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     inspection = trace.get("inspection") if isinstance(trace.get("inspection"), dict) else {}
+    schema_resolution = (
+        inspection.get("source_schema_resolution")
+        if isinstance(inspection.get("source_schema_resolution"), dict)
+        else {}
+    )
+    schema_sources = [
+        item
+        for item in schema_resolution.get("sources", [])
+        if isinstance(item, dict)
+    ]
+    if schema_sources:
+        return {
+            str(item.get("source_alias") or "").strip()
+            for item in schema_sources
+            if str(item.get("status") or "").strip().lower() == "complete"
+            and str(item.get("source_alias") or "").strip()
+        }
     standardization = (
         inspection.get("source_column_standardization")
         if isinstance(inspection.get("source_column_standardization"), dict)

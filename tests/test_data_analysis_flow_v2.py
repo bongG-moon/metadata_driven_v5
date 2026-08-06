@@ -363,6 +363,83 @@ def test_ranked_summary_uses_catalog_mapping_and_calls_no_analysis_model():
     assert executed["trace"]["inspection"]["fast_path"]["llm_calls"]["pandas_generation"] == 0
 
 
+def test_target_detail_query_standardizes_physical_plan_columns_and_uses_fast_path():
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    payload = _single_source_payload(
+        rows=[
+            {
+                "DATE": "2026-08-06",
+                "Mode": "LPDDR5",
+                "INPUT 계획": "1.5",
+                "OUT 계획": "2",
+            }
+        ],
+        filters={"DATE": {"operator": "eq", "value": "20260806"}},
+        filter_mappings={
+            "DATE": ["DATE"],
+            "MODE": ["Mode"],
+            "INPUT_PLAN_QTY": ["INPUT 계획"],
+            "OUT_PLAN_QTY": ["OUT 계획"],
+        },
+        steps=[
+            {
+                "operation": "apply_filters",
+                "source_alias": "source_1",
+                "output_alias": "target_filtered",
+            },
+            {
+                "operation": "select_columns",
+                "source_alias": "target_filtered",
+                "output_alias": "target_result",
+            },
+        ],
+        output_contract={
+            "result_mode": "detail",
+            "required_columns": ["DATE", "MODE", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+            "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+            "result_columns": ["DATE", "MODE", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+            "strict_result_columns": True,
+        },
+        source_alias="source_1",
+        dataset_key="target",
+    )
+    payload["intent_plan"]["retrieval_jobs"][0]["metric_semantics"] = {
+        "INPUT_PLAN_QTY": {
+            "value_transform": {"coerce_numeric": True, "multiplier": 1000}
+        },
+        "OUT_PLAN_QTY": {
+            "value_transform": {"coerce_numeric": True, "multiplier": 1000}
+        },
+    }
+
+    adapted = adapter.build_retrieval_payload(payload)
+    resolved, executed, model_calls = _resolve_and_execute(adapted)
+
+    schema = adapted["trace"]["inspection"]["source_schema_resolution"]
+    assert schema["status"] == "complete"
+    assert schema["sources"][0]["runtime_columns"] == [
+        "DATE",
+        "MODE",
+        "INPUT_PLAN_QTY",
+        "OUT_PLAN_QTY",
+    ]
+    assert resolved["simple_analysis_contract"]["route"] == "fast"
+    assert resolved["simple_analysis_contract"]["recipe"] == "detail_query"
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["analysis"]["execution_route"] == "fast"
+    assert executed["data"]["rows"] == [
+        {
+            "DATE": "2026-08-06",
+            "MODE": "LPDDR5",
+            "INPUT_PLAN_QTY": 1500,
+            "OUT_PLAN_QTY": 2000,
+        }
+    ]
+    assert model_calls == []
+
+
 def test_retriever_pushdown_filter_is_not_applied_twice():
     payload = _single_source_payload(
         rows=[{"GROUP": "A", "QTY": 10}],

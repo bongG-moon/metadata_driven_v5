@@ -103,8 +103,12 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
 
     if blocked:
         message = _blocked_message(critical_failures)
+        schema_only = bool(critical_failures) and all(
+            str(item.get("type") or "") == "source_schema_contract_unresolved"
+            for item in critical_failures
+        )
         error = {
-            "type": "required_source_retrieval_failed",
+            "type": "source_schema_contract_unresolved" if schema_only else "required_source_retrieval_failed",
             "message": message,
             "failures": deepcopy(critical_failures),
         }
@@ -131,6 +135,11 @@ def _validation_failures(payload: dict[str, Any]) -> list[dict[str, Any]]:
     retrieval = inspection.get("data_retrieval") if isinstance(inspection.get("data_retrieval"), dict) else {}
     validation = retrieval.get("job_validation") if isinstance(retrieval.get("job_validation"), dict) else {}
     hydration = inspection.get("catalog_hydration") if isinstance(inspection.get("catalog_hydration"), dict) else {}
+    schema_resolution = (
+        inspection.get("source_schema_resolution")
+        if isinstance(inspection.get("source_schema_resolution"), dict)
+        else {}
+    )
     failures: list[dict[str, Any]] = []
     duplicate_result_errors = [
         deepcopy(item)
@@ -178,6 +187,28 @@ def _validation_failures(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "message": "신뢰 카탈로그에서 필수 조회 설정을 구성하지 못했습니다.",
             }
         )
+    if str(schema_resolution.get("status") or "").strip().lower() == "error":
+        unresolved_sources = [
+            {
+                "source_alias": str(item.get("source_alias") or ""),
+                "dataset_key": str(item.get("dataset_key") or ""),
+                "unresolved_required_columns": deepcopy(
+                    item.get("unresolved_required_columns") or []
+                ),
+                "observed_columns": deepcopy(item.get("observed_columns") or []),
+                "source_bindings": deepcopy(item.get("source_bindings") or {}),
+            }
+            for item in schema_resolution.get("sources", [])
+            if isinstance(item, dict)
+            and str(item.get("status") or "").strip().lower() in {"partial", "unresolved"}
+        ]
+        failures.append(
+            {
+                "type": "source_schema_contract_unresolved",
+                "message": "필수 표준 컬럼을 실제 조회 컬럼으로 확정하지 못했습니다.",
+                "sources": unresolved_sources,
+            }
+        )
     return failures
 
 
@@ -216,6 +247,21 @@ def _is_required(job: dict[str, Any]) -> bool:
 
 # 함수 설명: `_blocked_message()`는 사용자와 운영자가 실패 source를 바로 확인할 수 있는 결정론적 메시지를 만듭니다.
 def _blocked_message(failures: list[dict[str, Any]]) -> str:
+    if failures and all(
+        str(item.get("type") or "") == "source_schema_contract_unresolved"
+        for item in failures
+    ):
+        details: list[str] = []
+        for failure in failures:
+            for source in failure.get("sources", []) if isinstance(failure.get("sources"), list) else []:
+                if not isinstance(source, dict):
+                    continue
+                alias = str(source.get("source_alias") or source.get("dataset_key") or "").strip()
+                columns = [str(item) for item in source.get("unresolved_required_columns", [])]
+                if alias and columns:
+                    details.append(f"{alias}({', '.join(columns)})")
+        suffix = f" 미확정 컬럼: {'; '.join(details)}." if details else ""
+        return "필수 실행 컬럼 계약을 확정하지 못해 pandas 분석을 실행하지 않았습니다." + suffix
     aliases = []
     for item in failures:
         alias = str(item.get("source_alias") or item.get("dataset_key") or "").strip()

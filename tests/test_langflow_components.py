@@ -22148,7 +22148,14 @@ def test_target_physical_plan_metrics_are_standardized_and_scaled_before_analysi
                     "INPUT_PLAN_QTY": {"value_transform": {"coerce_numeric": True, "multiplier": 1000}},
                     "OUT_PLAN_QTY": {"value_transform": {"coerce_numeric": True, "multiplier": 1000}},
                 },
-            }]
+            }],
+            "output_contract": {
+                "result_mode": "detail",
+                "required_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "result_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "strict_result_columns": True,
+            },
         },
         "runtime_sources": {"target": [{"INPUT 계획": "1.5", "OUT 계획": "2"}]},
         "source_results": [{
@@ -22163,6 +22170,104 @@ def test_target_physical_plan_metrics_are_standardized_and_scaled_before_analysi
     result = adapter.build_retrieval_payload(payload)
     assert result["runtime_sources"]["target"] == [{"INPUT_PLAN_QTY": 1500, "OUT_PLAN_QTY": 2000}]
     assert result["source_results"][0]["columns"] == ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"]
+    schema = result["trace"]["inspection"]["source_schema_resolution"]
+    assert schema["status"] == "complete"
+    assert schema["sources"][0]["status"] == "complete"
+    assert schema["sources"][0]["source_bindings"] == {
+        "INPUT_PLAN_QTY": "INPUT 계획",
+        "OUT_PLAN_QTY": "OUT 계획",
+    }
+    assert schema["sources"][0]["runtime_columns"] == [
+        "INPUT_PLAN_QTY",
+        "OUT_PLAN_QTY",
+    ]
+
+
+def test_partial_source_standardization_is_blocked_before_pandas_generation():
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    gate = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "source_alias": "target",
+                    "dataset_key": "target",
+                    "required": True,
+                    "filter_mappings": {
+                        "DATE": ["DATE"],
+                        "MODE": ["Mode"],
+                    },
+                    "filters": {
+                        "DATE": {"operator": "eq", "value": "20260806"}
+                    },
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "apply_filters",
+                    "source_alias": "target",
+                    "output_alias": "target_filtered",
+                },
+                {
+                    "operation": "select_columns",
+                    "source_alias": "target_filtered",
+                    "output_alias": "target_result",
+                },
+            ],
+            "output_contract": {
+                "result_mode": "detail",
+                "required_columns": ["DATE", "MODE", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "result_columns": ["DATE", "MODE", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "strict_result_columns": True,
+            },
+        },
+        "runtime_sources": {
+            "target": [
+                {
+                    "DATE": "2026-08-06",
+                    "Mode": "LPDDR5",
+                    "INPUT 계획": "1.5",
+                    "OUT 계획": "2",
+                }
+            ]
+        },
+        "source_results": [
+            {
+                "source_alias": "target",
+                "dataset_key": "target",
+                "status": "ok",
+                "row_count": 1,
+                "columns": ["DATE", "Mode", "INPUT 계획", "OUT 계획"],
+            }
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    adapted = adapter.build_retrieval_payload(payload)
+    schema = adapted["trace"]["inspection"]["source_schema_resolution"]
+    assert schema["status"] == "error"
+    assert schema["sources"][0]["status"] == "partial"
+    assert schema["sources"][0]["runtime_columns"] == [
+        "DATE",
+        "MODE",
+        "INPUT 계획",
+        "OUT 계획",
+    ]
+    assert schema["sources"][0]["unresolved_required_columns"] == [
+        "INPUT_PLAN_QTY",
+        "OUT_PLAN_QTY",
+    ]
+
+    blocked = gate.apply_retrieval_execution_gate(adapted)
+    assert blocked["execution_gate"]["status"] == "blocked"
+    assert blocked["analysis"]["error"]["type"] == "source_schema_contract_unresolved"
+    assert "INPUT_PLAN_QTY" in blocked["analysis"]["error"]["message"]
+    assert "OUT_PLAN_QTY" in blocked["analysis"]["error"]["message"]
 def test_metadata_candidates_pin_exact_dataset_domain_and_catalog_before_quota():
     builder = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"

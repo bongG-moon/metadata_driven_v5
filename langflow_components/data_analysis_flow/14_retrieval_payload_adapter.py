@@ -24,6 +24,7 @@ RUNTIME_BUFFER_KEYS = {
     "_full_result_rows",
     "_runtime_result_rows",
 }
+SOURCE_SCHEMA_CONTRACT_VERSION = 1
 
 # 주요 함수: 조회 행과 LLM용 요약을 분리하는 pandas 실행 직전 페이로드를 만듭니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
@@ -40,6 +41,7 @@ def build_retrieval_payload(payload_value: Any) -> dict[str, Any]:
         next_payload["runtime_sources"] = _merge_sources_by_alias(existing_sources, retrieved_sources)
     _standardize_runtime_source_columns(next_payload)
     _apply_metric_value_transforms(next_payload)
+    _validate_runtime_source_schema(next_payload)
     return next_payload
 
 
@@ -88,11 +90,14 @@ def _standardize_runtime_source_columns(payload: dict[str, Any]) -> None:
             continue
         alias_contract = _canonical_alias_contract(job)
         if not alias_contract:
+            observed_columns = _source_columns(rows, result_by_alias.get(str(alias)))
             reports.append(
                 {
                     "source_alias": str(alias),
                     "dataset_key": str(job.get("dataset_key") or ""),
                     "status": "not_needed",
+                    "observed_columns": observed_columns,
+                    "runtime_columns": observed_columns,
                     "rename_map": {},
                     "conflict_count": 0,
                 }
@@ -121,6 +126,8 @@ def _standardize_runtime_source_columns(payload: dict[str, Any]) -> None:
                     "source_alias": str(alias),
                     "dataset_key": str(job.get("dataset_key") or ""),
                     "status": "not_needed",
+                    "observed_columns": observed_columns,
+                    "runtime_columns": observed_columns,
                     "rename_map": {},
                     "conflict_count": 0,
                 }
@@ -171,6 +178,11 @@ def _standardize_runtime_source_columns(payload: dict[str, Any]) -> None:
             "source_alias": str(alias),
             "dataset_key": str(job.get("dataset_key") or ""),
             "status": "error" if conflicts else ("applied" if applied_map else "not_needed"),
+            "observed_columns": observed_columns,
+            "runtime_columns": _source_columns(
+                runtime_sources.get(str(alias)),
+                result_by_alias.get(str(alias)),
+            ),
             "rename_map": applied_map,
             "conflict_count": len(conflicts),
         }
@@ -214,6 +226,269 @@ def _standardize_runtime_source_columns(payload: dict[str, Any]) -> None:
                 "conflicts": total_conflicts[:20],
             }
         )
+
+
+# 함수 설명: 실제 runtime source에 필수 표준 컬럼이 모두 만들어졌는지 source별로 검증합니다.
+# 매핑 선언의 존재가 아니라 변환 후 rows/columns를 기준으로 complete 여부를 결정합니다.
+def _validate_runtime_source_schema(payload: dict[str, Any]) -> None:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = [item for item in plan.get("retrieval_jobs", []) if isinstance(item, dict)] if isinstance(plan.get("retrieval_jobs"), list) else []
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    source_results = payload.get("source_results") if isinstance(payload.get("source_results"), list) else []
+    result_by_alias = {
+        _source_alias(item): item
+        for item in source_results
+        if isinstance(item, dict) and _source_alias(item)
+    }
+    standardization = (
+        payload.get("trace", {}).get("inspection", {}).get("source_column_standardization", {})
+        if isinstance(payload.get("trace"), dict)
+        and isinstance(payload.get("trace", {}).get("inspection"), dict)
+        else {}
+    )
+    standardization_by_alias = {
+        str(item.get("source_alias") or "").strip(): item
+        for item in standardization.get("sources", [])
+        if isinstance(item, dict) and str(item.get("source_alias") or "").strip()
+    }
+    required_by_alias = _required_runtime_columns_by_alias(plan, jobs)
+    reports: list[dict[str, Any]] = []
+    unresolved_sources: list[dict[str, Any]] = []
+
+    for job in jobs:
+        alias = _source_alias(job)
+        if not alias:
+            continue
+        source_result = result_by_alias.get(alias)
+        rows = runtime_sources.get(alias)
+        if rows is None and not isinstance(source_result, dict):
+            continue
+        standardization_report = standardization_by_alias.get(alias, {})
+        observed_columns = _string_list(standardization_report.get("observed_columns"))
+        if not observed_columns:
+            observed_columns = _source_columns(rows, source_result)
+        runtime_columns = _source_columns(rows, source_result)
+        required_columns = _string_list(required_by_alias.get(alias, []))
+        runtime_keys = {_column_key(column) for column in runtime_columns}
+        unresolved = [
+            column
+            for column in required_columns
+            if _column_key(column) not in runtime_keys
+        ]
+        resolved_count = len(required_columns) - len(unresolved)
+        if unresolved:
+            status = "partial" if resolved_count else "unresolved"
+        else:
+            status = "complete"
+        if str(standardization_report.get("status") or "").strip().lower() == "error":
+            status = "conflict"
+
+        report = {
+            "source_alias": alias,
+            "dataset_key": str(job.get("dataset_key") or ""),
+            "status": status,
+            "observed_columns": observed_columns,
+            "source_bindings": _source_bindings(job, required_columns, observed_columns),
+            "rename_map": deepcopy(standardization_report.get("rename_map") or {}),
+            "runtime_columns": runtime_columns,
+            "required_runtime_columns": required_columns,
+            "unresolved_required_columns": unresolved,
+        }
+        reports.append(report)
+        if isinstance(source_result, dict):
+            source_result["columns_standardized"] = status == "complete"
+            source_result["source_schema_contract"] = deepcopy(report)
+        if status in {"partial", "unresolved"}:
+            unresolved_sources.append(report)
+
+    trace = payload.setdefault("trace", {})
+    inspection = trace.setdefault("inspection", {})
+    inspection["source_schema_resolution"] = {
+        "stage": "14_retrieval_payload_adapter",
+        "version": SOURCE_SCHEMA_CONTRACT_VERSION,
+        "status": "error" if unresolved_sources else (
+            "complete" if reports else "not_needed"
+        ),
+        "policy": "validate_required_canonical_columns_after_standardization",
+        "sources": reports,
+        "unresolved_source_count": len(unresolved_sources),
+    }
+    if unresolved_sources:
+        trace.setdefault("errors", []).append(
+            {
+                "type": "source_schema_contract_unresolved",
+                "message": "Pandas 실행 전에 필수 표준 컬럼 계약을 완성하지 못했습니다.",
+                "sources": [
+                    {
+                        "source_alias": item["source_alias"],
+                        "dataset_key": item["dataset_key"],
+                        "unresolved_required_columns": item["unresolved_required_columns"],
+                        "observed_columns": item["observed_columns"],
+                        "source_bindings": item["source_bindings"],
+                    }
+                    for item in unresolved_sources
+                ],
+            }
+        )
+
+
+# 함수 설명: intent plan에서 source별로 pandas 실행 전에 존재해야 하는 직접 입력 컬럼을 수집합니다.
+# 질문·dataset 이름을 하드코딩하지 않고 filter, step, metric binding, detail output 계약만 사용합니다.
+def _required_runtime_columns_by_alias(
+    plan: dict[str, Any],
+    jobs: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    aliases = [_source_alias(job) for job in jobs if _source_alias(job)]
+    required: dict[str, list[str]] = {alias: [] for alias in aliases}
+    lineage: dict[str, set[str]] = {alias: {alias} for alias in aliases}
+
+    for job in jobs:
+        alias = _source_alias(job)
+        for field in _filter_fields(job.get("filters")):
+            _append_unique(required.setdefault(alias, []), field)
+
+    steps = [item for item in plan.get("pandas_execution_plan", []) if isinstance(item, dict)] if isinstance(plan.get("pandas_execution_plan"), list) else []
+    direct_operations = {
+        "apply_filters", "filter", "filter_rows", "select_columns",
+        "project_columns", "projection", "sort", "sort_and_top_n",
+        "top_n", "bottom_n",
+    }
+    for step in steps:
+        sources = _step_source_lineage(step, lineage)
+        if len(sources) == 1:
+            source_alias = next(iter(sources))
+            for column in _step_direct_source_columns(step):
+                _append_unique(required.setdefault(source_alias, []), column)
+        for ref in (step.get("node_id"), step.get("output_alias")):
+            text = str(ref or "").strip()
+            if text and sources:
+                lineage[text] = set(sources)
+
+    output_contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    for binding in output_contract.get("metric_bindings", []) if isinstance(output_contract.get("metric_bindings"), list) else []:
+        if not isinstance(binding, dict):
+            continue
+        alias = str(binding.get("source_alias") or "").strip()
+        column = str(binding.get("source_column") or "").strip()
+        if alias in required and column:
+            _append_unique(required[alias], column)
+
+    operations = {str(item.get("operation") or "").strip().lower() for item in steps}
+    is_direct_single_source = len(aliases) == 1 and (
+        not operations or operations.issubset(direct_operations)
+    )
+    result_mode = str(output_contract.get("result_mode") or "").strip().lower()
+    if is_direct_single_source and result_mode in {"detail", "entity_list", ""}:
+        alias = aliases[0]
+        direct_output_columns = _string_list(output_contract.get("required_columns"))
+        if not direct_output_columns and output_contract.get("strict_result_columns") is True:
+            direct_output_columns = _string_list(output_contract.get("result_columns"))
+        for column in direct_output_columns:
+            _append_unique(required[alias], column)
+        for column in _string_list(output_contract.get("metric_columns")):
+            _append_unique(required[alias], column)
+    return required
+
+
+# 함수 설명: 한 pandas step이 참조하는 외부 source 계보를 node/output alias까지 따라가 계산합니다.
+def _step_source_lineage(step: dict[str, Any], lineage: dict[str, set[str]]) -> set[str]:
+    refs: list[str] = []
+    for key in ("source_alias", "left_source_alias", "right_source_alias"):
+        text = str(step.get(key) or "").strip()
+        if text:
+            refs.append(text)
+    for item in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("ref") or item.get("source_alias") or "").strip()
+        if text:
+            refs.append(text)
+    sources: set[str] = set()
+    for ref in refs:
+        sources.update(lineage.get(ref, {ref} if ref in lineage else set()))
+    return sources
+
+
+# 함수 설명: source DataFrame에서 직접 읽어야 하는 group, metric, projection 컬럼을 step에서 추출합니다.
+def _step_direct_source_columns(step: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    for column in _string_list(step.get("group_by")):
+        _append_unique(result, column)
+    for column in _string_list(step.get("columns") or step.get("result_columns")):
+        _append_unique(result, column)
+    for aggregation in step.get("aggregations", []) if isinstance(step.get("aggregations"), list) else []:
+        if isinstance(aggregation, dict):
+            _append_unique(result, str(aggregation.get("column") or "").strip())
+    for key in ("agg_column", "source_column", "column"):
+        _append_unique(result, str(step.get(key) or "").strip())
+    return result
+
+
+# 함수 설명: dict/list 형태의 filter 계약에서 canonical field 이름만 중복 없이 추출합니다.
+def _filter_fields(value: Any) -> list[str]:
+    result: list[str] = []
+    if isinstance(value, dict):
+        items = value.items()
+        for field, condition in items:
+            if str(field or "").strip().lower() in {"and", "or", "any"} and isinstance(condition, list):
+                for nested in condition:
+                    for nested_field in _filter_fields(nested):
+                        _append_unique(result, nested_field)
+            else:
+                _append_unique(result, str(field or "").strip())
+    elif isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            field = str(item.get("field") or item.get("column") or "").strip()
+            if field:
+                _append_unique(result, field)
+            for nested_field in _filter_fields(item.get("values")):
+                _append_unique(result, nested_field)
+    return result
+
+
+# 함수 설명: canonical 필수 컬럼이 실제 조회 schema의 어느 물리 컬럼과 연결됐는지 표시용 계약을 만듭니다.
+def _source_bindings(
+    job: dict[str, Any],
+    required_columns: list[str],
+    observed_columns: list[str],
+) -> dict[str, str]:
+    mapping = job.get("filter_mappings") if isinstance(job.get("filter_mappings"), dict) else {}
+    observed_index = {_column_key(column): column for column in observed_columns}
+    result: dict[str, str] = {}
+    for canonical in required_columns:
+        candidates = [canonical, *_string_list(mapping.get(canonical))]
+        matched = next(
+            (
+                observed_index[_column_key(candidate)]
+                for candidate in candidates
+                if _column_key(candidate) in observed_index
+            ),
+            "",
+        )
+        if matched:
+            result[canonical] = matched
+    return result
+
+
+# 함수 설명: runtime rows와 source result schema를 합쳐 순서를 보존한 실제 컬럼 목록을 만듭니다.
+def _source_columns(rows: Any, source_result: Any) -> list[str]:
+    columns = _string_list(source_result.get("columns")) if isinstance(source_result, dict) else []
+    if isinstance(rows, list):
+        for row in rows[:20]:
+            if not isinstance(row, dict):
+                continue
+            for column in row:
+                _append_unique(columns, str(column))
+    return columns
+
+
+# 함수 설명: 비어 있지 않은 문자열을 기존 순서를 보존하며 목록에 한 번만 추가합니다.
+def _append_unique(values: list[str], value: Any) -> None:
+    text = str(value or "").strip()
+    if text and text not in values:
+        values.append(text)
 
 
 # 함수 설명: Table Catalog의 metric_semantics.value_transform 계약을 pandas 실행 전에 한 번만 적용합니다.

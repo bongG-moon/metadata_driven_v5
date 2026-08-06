@@ -250,6 +250,35 @@ def resolve_simple_analysis_contract(
         calculation,
         detail_row_limit,
     )
+    schema_error_types = {
+        "missing_source_column",
+        "missing_metric_source_column",
+        "unresolved_result_column",
+        "unresolved_ordering_column",
+    }
+    schema_errors = [
+        item
+        for item in validation_errors
+        if str(item.get("type") or "") in schema_error_types
+    ]
+    if schema_errors:
+        contract = _route_contract("blocked", "source_schema_contract_invalid")
+        contract.update(
+            {
+                "source_alias": source_alias,
+                "dataset_key": dataset_key,
+                "recipe": recipe,
+                "operations": operations,
+                "validation_errors": validation_errors,
+            }
+        )
+        _block_contract(
+            next_payload,
+            "필수 표준 컬럼이 실제 source schema에 없어 분석을 실행할 수 없습니다.",
+            source_alias,
+            schema_errors,
+        )
+        return _attach_contract(next_payload, contract, trace, started)
     if validation_errors:
         contract = _route_contract("complex", "fast_contract_incomplete")
         contract.update(
