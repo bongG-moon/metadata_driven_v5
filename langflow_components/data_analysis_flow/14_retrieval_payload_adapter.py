@@ -104,30 +104,39 @@ def _standardize_runtime_source_columns(payload: dict[str, Any]) -> None:
             )
             continue
 
-        observed_columns = _string_list(
+        # `source_results.columns` is a compact schema projection and may
+        # already contain canonical names even when the full runtime rows
+        # still use physical names (for example EQUIP_MODEL/OPER_NM).  The
+        # rows are the execution truth, so always inspect both sources and
+        # decide whether standardization is needed from runtime columns.
+        metadata_columns = _string_list(
             (result_by_alias.get(str(alias)) or {}).get("columns")
             if isinstance(result_by_alias.get(str(alias)), dict)
             else []
         )
-        if not observed_columns:
-            observed_columns = [
-                str(column)
-                for row in rows[:20]
-                if isinstance(row, dict)
-                for column in row
-            ]
+        runtime_columns = _runtime_columns(rows)
+        observed_columns = _merge_column_names(metadata_columns, runtime_columns)
         needs_standardization = any(
             alias_contract.get(_column_key(column), str(column)) != str(column)
-            for column in observed_columns
+            for column in runtime_columns
         )
         if not needs_standardization:
+            source_result = result_by_alias.get(str(alias))
+            if isinstance(source_result, dict):
+                source_result["columns"] = _standardize_columns(
+                    _merge_column_names(metadata_columns, runtime_columns),
+                    alias_contract,
+                )
             reports.append(
                 {
                     "source_alias": str(alias),
                     "dataset_key": str(job.get("dataset_key") or ""),
                     "status": "not_needed",
                     "observed_columns": observed_columns,
-                    "runtime_columns": observed_columns,
+                    "runtime_columns": runtime_columns or _standardize_columns(
+                        metadata_columns,
+                        alias_contract,
+                    ),
                     "rename_map": {},
                     "conflict_count": 0,
                 }
@@ -154,7 +163,7 @@ def _standardize_runtime_source_columns(payload: dict[str, Any]) -> None:
         source_result = result_by_alias.get(str(alias))
         if isinstance(source_result, dict):
             source_result["columns"] = _standardize_columns(
-                source_result.get("columns"),
+                _merge_column_names(metadata_columns, runtime_columns),
                 alias_contract,
             )
             if isinstance(source_result.get("preview_rows"), list):
@@ -179,10 +188,8 @@ def _standardize_runtime_source_columns(payload: dict[str, Any]) -> None:
             "dataset_key": str(job.get("dataset_key") or ""),
             "status": "error" if conflicts else ("applied" if applied_map else "not_needed"),
             "observed_columns": observed_columns,
-            "runtime_columns": _source_columns(
-                runtime_sources.get(str(alias)),
-                result_by_alias.get(str(alias)),
-            ),
+            "runtime_columns": _runtime_columns(runtime_sources.get(str(alias)))
+            or _standardize_columns(metadata_columns, alias_contract),
             "rename_map": applied_map,
             "conflict_count": len(conflicts),
         }
@@ -267,7 +274,13 @@ def _validate_runtime_source_schema(payload: dict[str, Any]) -> None:
         observed_columns = _string_list(standardization_report.get("observed_columns"))
         if not observed_columns:
             observed_columns = _source_columns(rows, source_result)
-        runtime_columns = _source_columns(rows, source_result)
+        # A non-empty runtime row set is authoritative for execution.  Do
+        # not let a canonical `source_results.columns` projection hide a
+        # physical runtime key; that would make the schema gate report
+        # "complete" while the pandas DataFrame is still missing the key.
+        runtime_columns = _runtime_columns(rows)
+        if not runtime_columns:
+            runtime_columns = _string_list(source_result.get("columns")) if isinstance(source_result, dict) else []
         required_columns = _string_list(required_by_alias.get(alias, []))
         runtime_keys = {_column_key(column) for column in runtime_columns}
         unresolved = [
@@ -475,13 +488,39 @@ def _source_bindings(
 # 함수 설명: runtime rows와 source result schema를 합쳐 순서를 보존한 실제 컬럼 목록을 만듭니다.
 def _source_columns(rows: Any, source_result: Any) -> list[str]:
     columns = _string_list(source_result.get("columns")) if isinstance(source_result, dict) else []
-    if isinstance(rows, list):
-        for row in rows[:20]:
-            if not isinstance(row, dict):
-                continue
-            for column in row:
-                _append_unique(columns, str(column))
+    for column in _runtime_columns(rows):
+        _append_unique(columns, column)
     return columns
+
+
+# 함수 설명: 실제 runtime rows에서만 실행 컬럼을 추출해 model-facing schema와 구분합니다.
+def _runtime_columns(rows: Any) -> list[str]:
+    """Return columns observed in runtime rows, preserving first-seen order.
+
+    `source_results.columns` is intentionally a compact, model-facing schema
+    and is not guaranteed to describe the keys used by the full row buffer.
+    Keeping this helper separate lets schema validation and standardization
+    distinguish the two contracts without guessing a physical alias.
+    """
+    columns: list[str] = []
+    if not isinstance(rows, list):
+        return columns
+    for row in rows[:20]:
+        if not isinstance(row, dict):
+            continue
+        for column in row:
+            _append_unique(columns, str(column))
+    return columns
+
+
+# 함수 설명: metadata schema와 runtime 컬럼을 순서 보존·중복 제거 방식으로 합칩니다.
+def _merge_column_names(*groups: Any) -> list[str]:
+    """Merge schema and runtime column lists without duplicate names."""
+    result: list[str] = []
+    for group in groups:
+        for column in _string_list(group):
+            _append_unique(result, column)
+    return result
 
 
 # 함수 설명: 비어 있지 않은 문자열을 기존 순서를 보존하며 목록에 한 번만 추가합니다.

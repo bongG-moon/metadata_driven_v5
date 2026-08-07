@@ -8262,6 +8262,85 @@ def test_retrieval_adapter_standardizes_alias_columns_before_pandas_and_coalesce
     assert "RAW_QTY" in prompt["source_schema_json"]
 
 
+def test_retrieval_adapter_uses_runtime_rows_when_source_result_schema_is_already_canonical():
+    """Canonical preview schemas must not mask physical keys in full rows."""
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "eqp_uph",
+                    "source_alias": "eqp_uph",
+                    "filter_mappings": {
+                        "EQP_MODEL": ["EQUIP_MODEL"],
+                        "OPER_NAME": ["OPER_NM"],
+                    },
+                }
+            ]
+        },
+        "runtime_sources": {
+            "eqp_uph": [
+                {
+                    "EQUIP_MODEL": "MODEL-A",
+                    "RECIPE_ID": "R0429A",
+                    "OPER_NM": "FCB1",
+                    "UPH": 100,
+                }
+            ]
+        },
+        "source_results": [
+            {
+                "dataset_key": "eqp_uph",
+                "source_alias": "eqp_uph",
+                "status": "ok",
+                # The retriever has already exposed canonical names here,
+                # while its full row buffer still contains physical keys.
+                "columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            }
+        ],
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    standardized = adapter.build_retrieval_payload(payload)
+
+    assert standardized["runtime_sources"]["eqp_uph"] == [
+        {
+            "EQP_MODEL": "MODEL-A",
+            "RECIPE_ID": "R0429A",
+            "OPER_NAME": "FCB1",
+            "UPH": 100,
+        }
+    ]
+    assert standardized["source_results"][0]["columns"] == [
+        "EQP_MODEL",
+        "RECIPE_ID",
+        "OPER_NAME",
+        "UPH",
+    ]
+    report = standardized["trace"]["inspection"]["source_column_standardization"]["sources"][0]
+    assert report["status"] == "applied"
+    assert report["observed_columns"] == [
+        "EQP_MODEL",
+        "RECIPE_ID",
+        "OPER_NAME",
+        "UPH",
+        "EQUIP_MODEL",
+        "OPER_NM",
+    ]
+    assert report["runtime_columns"] == [
+        "EQP_MODEL",
+        "RECIPE_ID",
+        "OPER_NAME",
+        "UPH",
+    ]
+    assert report["rename_map"] == {
+        "EQUIP_MODEL": "EQP_MODEL",
+        "OPER_NM": "OPER_NAME",
+    }
+
+
 def test_retrieval_adapter_blocks_nonblank_conflicts_between_equivalent_columns():
     adapter = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"

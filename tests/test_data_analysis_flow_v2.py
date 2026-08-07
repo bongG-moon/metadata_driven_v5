@@ -170,6 +170,69 @@ def test_complex_route_preserves_existing_pandas_prompt_content():
     assert actual == expected
 
 
+def test_v2_fast_detail_query_uses_standardized_runtime_rows_when_schema_is_canonical():
+    adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "14_retrieval_payload_adapter.py"
+    )
+    payload = _single_source_payload(
+        rows=[
+            {
+                "EQUIP_MODEL": "MODEL-A",
+                "RECIPE_ID": "R0429A",
+                "OPER_NM": "FCB1",
+                "UPH": 100,
+            }
+        ],
+        filters={
+            "RECIPE_ID": {"operator": "starts_with", "value": "R0429"},
+            "OPER_NAME": {"operator": "eq", "value": "FCB1"},
+        },
+        filter_mappings={
+            "EQP_MODEL": ["EQUIP_MODEL"],
+            "OPER_NAME": ["OPER_NM"],
+            "RECIPE_ID": ["RECIPE_ID"],
+            "UPH": ["UPH"],
+        },
+        steps=[
+            {"operation": "apply_filters", "source_alias": "eqp_uph"},
+            {"operation": "select_columns", "source_alias": "eqp_uph"},
+        ],
+        output_contract={
+            "result_mode": "detail",
+            "projection": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            "result_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            "required_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+            "strict_result_columns": True,
+        },
+        source_alias="eqp_uph",
+        dataset_key="eqp_uph",
+    )
+    # The retriever schema is canonical, but its unprojected runtime rows are
+    # still physical. This is the production failure shape.
+    payload["source_results"][0]["columns"] = [
+        "EQP_MODEL",
+        "RECIPE_ID",
+        "OPER_NAME",
+        "UPH",
+    ]
+
+    adapted = adapter.build_retrieval_payload(payload)
+    resolved, executed, model_calls = _resolve_and_execute(adapted)
+
+    assert resolved["simple_analysis_contract"]["route"] == "fast"
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["analysis"]["execution_route"] == "fast"
+    assert executed["data"]["rows"] == [
+        {
+            "EQP_MODEL": "MODEL-A",
+            "RECIPE_ID": "R0429A",
+            "OPER_NAME": "FCB1",
+            "UPH": 100,
+        }
+    ]
+    assert model_calls == []
+
+
 def test_fast_route_skips_answer_context_and_complex_context_has_single_owners(monkeypatch):
     _, answer_prompt = _prompt_modules()
     fast_payload = {
