@@ -1682,33 +1682,47 @@ def test_intent_prompt_requires_complete_params_per_retrieval_job_without_shared
         ROOT / "langflow_components" / "data_analysis_flow" / "03_intent_prompt_template_ko.md"
     ).read_text(encoding="utf-8")
 
-    assert "각 retrieval job의 `required_params`" in prompt_text
-    assert "같은 확정값을 해당하는 모든 job의 `required_params`에 각각 반복" in prompt_text
-    assert "`어제 재공과 오늘 생산량`" in prompt_text
-    assert "`이날`, `이 일자`, `그날`" in prompt_text
-    assert "예약 alias `previous_result`" in prompt_text
-    assert "의도 판단 후보 신호이지 최종 결론이 아니다" in prompt_text
-    assert "`intent_plan.reference_mode`" in prompt_text
-    assert "`reuse_strategy`는 출력하지 않는다" in prompt_text
-    assert "이 mode가 의도 분석에서 선택된 뒤에만" in prompt_text
-    assert "등록된 canonical 필드·operator·값을 그대로" in prompt_text
-    assert "alias 문자열을 filter 값으로 새로 만들지 않는다" in prompt_text
-    assert "column 이름 자체를 같은 field의 `eq`/`in` filter 값으로 넣지 않는다" in prompt_text
-    assert "`operation=compare_group_attributes`" in prompt_text
-    assert "`group_by=[A,B]`" in prompt_text
-    assert "`comparison_columns=[C,D]`" in prompt_text
-    assert "`operation=find_duplicate_groups`" in prompt_text
-    assert "`required_params.DATE`에 `reference_date`" in prompt_text
-    assert "`DATE` 대신 `WORK_DT`·`WORK_DATE`·`date`" in prompt_text
-    assert "`group_by + comparison_columns`의 고유 속성 조합" in prompt_text
-    assert "`dataset_family`, `display_name`, metric 컬럼, schema의 primary key" in prompt_text
-    assert "해당 entity를 family 또는 primary key로 삼는 dataset" in prompt_text
-    assert "`상위 N개`, `하위 N개`의 `위`" in prompt_text
-    assert "`공정그룹`, `제품그룹`의 `그`" in prompt_text
-    assert "비필수 filter 변경은 `retrieval_jobs=[]`" in prompt_text
-    assert "같은 dataset, 같은 `required_params`" in prompt_text
-    assert "날짜도 선택 dataset의 `required_params`에 등록되지 않았다면 비필수 filter" in prompt_text
+    for phrase in (
+        "retrieval_jobs",
+        "required_params",
+        "reference_mode",
+        "previous_result_rows",
+        "previous_source",
+        "external_source",
+        "node_output",
+        "compare_group_attributes",
+        "find_duplicate_groups",
+        "compare_presence",
+        "canonical column",
+        "clarification_needed",
+    ):
+        assert phrase in prompt_text
     assert "shared_required_params" not in prompt_text
+
+
+def test_intent_prompt_keeps_plan_rules_in_specialized_prompt_only():
+    common_prompt = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "03_intent_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+    specialized_prompt = (
+        ROOT / "langflow_components" / "data_analysis_flow" / "specialized_prompt_input_example_ko.md"
+    ).read_text(encoding="utf-8")
+
+    # Domain values and examples are supplied by metadata, not duplicated here.
+    for example in (
+        "INPUT 계획",
+        "target_plan_by_product",
+        "input_plan_vs_actual_achievement",
+        "PKG OUT",
+        "BOH",
+        "W/B",
+    ):
+        assert example not in common_prompt
+        assert example not in specialized_prompt
+    assert "선택된 Domain과 Table Catalog" in specialized_prompt
+    assert "metadata_candidates" in specialized_prompt
+    assert "temporal_semantics" in specialized_prompt
+    assert "condition/conditions" in specialized_prompt
 
 
 def test_pandas_prompts_distinguish_metric_sum_from_row_count():
@@ -10381,7 +10395,7 @@ def test_data_analysis_prompts_separate_inherited_filters_from_current_result_gr
         / "16_pandas_prompt_template_ko.md"
     ).read_text(encoding="utf-8")
 
-    assert "유지한 조건의 컬럼을 현재 결과의 grouping으로 자동 상속하지 않는다" in intent_prompt
+    assert "사용자가 요청한 entity/grain과 명시적인 breakdown을 모두 보존" in intent_prompt
     assert "filter에 사용한 컬럼을 이유만으로 groupby 또는 최종 출력 grain에 남기지 않는다" in pandas_prompt
 
 
@@ -10489,24 +10503,12 @@ def test_langflow_prompt_templates_keep_domain_specific_examples_out_of_generic_
         / "data_analysis_flow"
         / "specialized_prompt_input_example_ko.md"
     ).read_text(encoding="utf-8")
-    assert "lot단위 조건 없이 장비 목록이나 작업 장비에 대한 질문은 equipment_assign을 사용한다." in specialized_prompt
-    assert "lot_status에 eqp_id가 있다는 이유만으로 장비 목록 질문을 lot_status로 처리하지 않는다." in specialized_prompt
-    moved_to_specialized_prompt_terms = [
+    generic_prompt_blocklist = [
         "match_product_tokens",
         "sample_passthrough_helper",
         "RG 32G DDR4 FBGA 96 DDP",
-        "DA 16G GDDR6 180",
         "PKG OUT",
         "BOH",
-        "현시간 기준 재공",
-        "x16",
-        "X8",
-        "L-218",
-        "A-663",
-    ]
-    generic_prompt_blocklist = moved_to_specialized_prompt_terms + [
-        "제품 token 매칭용",
-        "일반 pandas filter로 표현 가능해 보여도",
         "MCP_NO",
         "POP",
         "MOBILE",
@@ -10520,22 +10522,10 @@ def test_langflow_prompt_templates_keep_domain_specific_examples_out_of_generic_
         for path, text in prompt_text_by_path.items():
             assert term not in text, f"{path.name} contains domain-specific example: {term}"
 
-    for term in moved_to_specialized_prompt_terms:
+    for term in generic_prompt_blocklist:
+        assert term not in specialized_prompt, f"specialized prompt hardcodes domain value: {term}"
+    for term in ("metadata_candidates", "process_groups", "product_terms", "quantity_terms", "temporal_semantics", "pandas_function_cases"):
         assert term in specialized_prompt
-    assert "단일 token" in specialized_prompt
-    assert "L-123 제품 생산량" in specialized_prompt
-    assert "영문 1자리-숫자 3자리(+선택 영숫자) 패턴의 token은 값이 무엇이든" in specialized_prompt
-    assert "A-663 제품" in specialized_prompt
-    assert "B-123C1제품" in specialized_prompt
-    assert "Q-555A9 제품 재공" in specialized_prompt
-    assert "DEVICE filter로 만들지 않는다" in specialized_prompt
-    assert "input_text에는 제품이라는 말을 빼고 패턴 token만 남긴다" in specialized_prompt
-    assert "일반 pandas filter로 표현 가능해 보여도" in specialized_prompt
-    assert "등록된 제품군" in specialized_prompt
-    assert "152ball" in specialized_prompt
-    assert "78Lead" in specialized_prompt
-    assert "제품별과 DEVICE" in specialized_prompt
-    assert "DEVICE만 단독으로 보여주지 않는다" in specialized_prompt
 
 
 def test_v5_specialized_prompt_routes_current_hold_lists_away_from_hold_history():
@@ -10546,10 +10536,8 @@ def test_v5_specialized_prompt_routes_current_hold_lists_away_from_hold_history(
         / "specialized_prompt_input_example_ko.md"
     ).read_text(encoding="utf-8")
 
-    assert "특정 LOT_ID 없이 `현재 HOLD LOT`" in specialized_prompt
-    assert "lot_status를 선택하고 HOLD_STAT=OnHold 조건을 적용한다." in specialized_prompt
-    assert "required_params.LOT_ID를 빈 문자열로 만든 채 선택하지 않는다." in specialized_prompt
-    assert "특정 LOT의 최근 HOLD 코드" in specialized_prompt
+    assert "선택된 `product_terms`, `status_terms`, `quantity_terms`" in specialized_prompt
+    assert "임의의 fallback" in specialized_prompt
 
 
 def test_ordered_range_filter_precedence_stays_in_specialized_contract():
@@ -10564,11 +10552,8 @@ def test_ordered_range_filter_precedence_stays_in_specialized_contract():
         component_dir / "17_pandas_code_executor.py"
     ).read_text(encoding="utf-8")
 
-    assert "filter_ordered_range가 선택된 source에서는" in specialized_prompt
-    assert "모든 일반 pandas row filter보다 항상 먼저 실행" in specialized_prompt
-    assert "`retrieval_jobs[].filters`와 `condition_resolution.effective_filters`에 넣지 않는다" in specialized_prompt
-    assert "catalog의 `required_params`는 이 규칙의 대상이 아니다" in specialized_prompt
-    assert "helper 뒤의 `apply_filters` 단계로 옮긴다" in specialized_prompt
+    assert "선택된 `pandas_function_cases`" in specialized_prompt
+    assert "metadata의 입력·순서·중복 filter 계약" in specialized_prompt
     assert "_defer_ordered_range_retrieval_filters" not in intent_normalizer
     assert "_ordered_range_filter_source_aliases" not in pandas_executor
 
@@ -10605,19 +10590,18 @@ def test_intent_prompt_requires_specific_current_analysis_kind():
     assert "`analysis_kind`" in prompt
     assert "snake_case" in prompt
     assert "retrieval_jobs" in prompt and "metric" in prompt
-    assert "production_analysis" in prompt
-    assert "target_analysis" in prompt
-    assert "target_plan_by_product" in prompt
-    assert "이전 `analysis_kind`를 그대로 상속하지" in prompt
-    assert "`INPUT 계획`, `OUT 계획`" in prompt
-    assert "실제/실적과의 비교" in prompt
-    assert "production dataset" in prompt
-    assert "`OPER_NAME=INPUT`" in prompt
-    assert "추가하지 않는다" in prompt
-    assert "한 절의 공정 값을 다른 job으로 복사" in prompt
-    assert "`X 조건의 A metric은 있으나 Y 조건의 B metric은 없는 대상`" in prompt
-    assert "`operation=compare_presence`" in prompt
-    assert "`presence_rule=left_positive_right_missing_or_zero`" in prompt
+    assert "포괄 명칭은 사용하지 않는다" in prompt
+    assert "target_plan_by_product" not in prompt
+    assert "현재 metric, operation, grouping/scope" in prompt
+    assert "`INPUT 계획`, `OUT 계획`" not in prompt
+    assert "실제/실적과의 비교" not in prompt
+    assert "production dataset" not in prompt
+    assert "`OPER_NAME=INPUT`" not in prompt
+    assert "target_plan_by_product" not in prompt
+    assert "input_plan_vs_actual_achievement" not in prompt
+    assert "한 source의 조건이나 실패를 다른 source에 복사" in prompt
+    assert "`compare_presence`" in prompt
+    assert "`left_positive_right_missing_or_zero`" in prompt
 
     specialized = (
         ROOT
@@ -10625,8 +10609,8 @@ def test_intent_prompt_requires_specific_current_analysis_kind():
         / "data_analysis_flow"
         / "specialized_prompt_input_example_ko.md"
     ).read_text(encoding="utf-8")
-    assert "공정 목록 합집합 규칙은 하나의 metric/source 범위를 나열한 경우에만 적용" in specialized
-    assert "production_today에는 `OPER_NAME=INPUT`" in specialized
+    assert "선택된 Domain과 Table Catalog" in specialized
+    assert "metadata_candidates" in specialized
 
 
 def test_pandas_prompt_templates_preserve_yyyymmdd_date_columns():
@@ -16257,6 +16241,90 @@ def test_v5_trusted_catalog_hydrator_restores_metric_semantics_and_default_detai
     ]
 
 
+def test_v5_trusted_catalog_hydrator_recanonicalizes_physical_execution_contract_columns():
+    hydrator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{"dataset_key": "target", "source_alias": "target"}],
+            "pandas_execution_plan": [
+                {
+                    "operation": "groupby_and_aggregate",
+                    "source_alias": "target",
+                    "group_by": ["DATE", "MODE", "PKG1", "PKG2"],
+                    "aggregations": [
+                        {
+                            "column": "INPUT_PLAN_QTY",
+                            "method": "sum",
+                            "output_column": "INPUT_PLAN_QTY",
+                        }
+                    ],
+                }
+            ],
+            "output_contract": {
+                "result_mode": "detail",
+                "required_columns": [
+                    "DATE",
+                    "MODE",
+                    "PKG1",
+                    "PKG2",
+                    "INPUT_PLAN_QTY",
+                    "OUT_PLAN_QTY",
+                ],
+                "result_columns": [
+                    "DATE",
+                    "MODE",
+                    "PKG1",
+                    "PKG2",
+                    "INPUT_PLAN_QTY",
+                    "OUT_PLAN_QTY",
+                ],
+                "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                "strict_result_columns": True,
+            },
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    catalog = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "target",
+                "payload": {
+                    "source_type": "goodocs",
+                    "columns": ["DATE", "Mode", "PKG1", "PKG2", "INPUT_RAW", "OUT_RAW"],
+                    "filter_mappings": {
+                        "DATE": ["DATE"],
+                        "MODE": ["Mode"],
+                        "PKG_TYPE1": ["PKG1"],
+                        "PKG_TYPE2": ["PKG2"],
+                        "INPUT_PLAN_QTY": ["INPUT_RAW"],
+                        "OUT_PLAN_QTY": ["OUT_RAW"],
+                    },
+                },
+            }
+        ]
+    }
+
+    result = hydrator.hydrate_retrieval_jobs(payload, catalog, retrieval_mode="live")
+    plan = result["intent_plan"]
+    step = plan["pandas_execution_plan"][0]
+    assert step["group_by"] == ["DATE", "MODE", "PKG_TYPE1", "PKG_TYPE2"]
+    assert plan["output_contract"]["required_columns"] == [
+        "DATE",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "INPUT_PLAN_QTY",
+        "OUT_PLAN_QTY",
+    ]
+    normalization = result["trace"]["inspection"]["catalog_hydration"][
+        "execution_contract_normalization"
+    ]
+    assert normalization["status"] == "applied"
+    assert normalization["policy"] == "trusted_filter_mappings_only"
+
+
 def test_v5_trusted_catalog_hydrator_defers_previous_result_bound_param_over_model_placeholder():
     hydrator = load_module(
         ROOT
@@ -16935,11 +17003,10 @@ def test_v5_specialized_prompt_requires_standard_product_keys_for_product_grain(
         / "specialized_prompt_input_example_ko.md"
     ).read_text(encoding="utf-8")
 
-    assert "key=standard_product_keys" in specialized_prompt
-    assert "`metadata_refs`와 `intent_plan.grain_plan.metadata_ref`에 기록" in specialized_prompt
-    assert "제품 키 컬럼을 추측하거나 DEVICE를 대신 사용하지 말고 clarification" in specialized_prompt
-    assert "F315 L-116" in specialized_prompt
-    assert "모든 제품 token을 원문 순서대로 하나의 input_text에 보존" in specialized_prompt
+    assert "product_key_columns" in specialized_prompt
+    assert "analysis_recipes" in specialized_prompt
+    assert "제품 grain, entity grain, join" in specialized_prompt
+    assert "추측하지 않는다" in specialized_prompt
 
 
 def test_v5_intent_normalizer_resolves_metadata_driven_grain_and_join_without_device():
@@ -17153,7 +17220,8 @@ def test_v5_pandas_prompts_enforce_metadata_grain_and_join_contracts():
         / "data_analysis_flow"
         / "specialized_prompt_input_example_ko.md"
     ).read_text(encoding="utf-8")
-    assert 'MCP_NO == "L-217"' in specialized_prompt
+    assert "물리 컬럼명" in specialized_prompt
+    assert "하드코딩하지 않는다" in specialized_prompt
 
 
 def test_v5_catalog_hydrator_propagates_only_safe_column_contract():

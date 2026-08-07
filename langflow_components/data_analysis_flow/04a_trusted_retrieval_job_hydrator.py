@@ -231,6 +231,10 @@ def hydrate_retrieval_jobs(
 
     plan["retrieval_jobs"] = hydrated
     plan["output_contract"] = _output_contract_with_default_detail(plan.get("output_contract"), hydrated)
+    plan, execution_contract_normalization = _normalize_hydrated_execution_contracts(
+        plan,
+        hydrated,
+    )
     next_payload["intent_plan"] = plan
     next_payload["metadata_refs"] = _merge_refs(_list(next_payload.get("metadata_refs")), used_refs)
     trace = next_payload.setdefault("trace", {})
@@ -247,6 +251,7 @@ def hydrate_retrieval_jobs(
         "dummy_only_dataset_keys": [job.get("dataset_key") for job in hydrated if job.get("dummy_only")],
         "deferred_upstream_params": deferred_upstream_params,
         "condition_reconciliation": condition_reconciliation,
+        "execution_contract_normalization": execution_contract_normalization,
     }
     return next_payload
 
@@ -268,6 +273,11 @@ def _catalog_items(value: Any) -> list[dict[str, Any]]:
 def _dataset_key(item: dict[str, Any]) -> str:
     payload = _dict(item.get("payload"))
     return str(item.get("dataset_key") or item.get("key") or payload.get("dataset_key") or payload.get("key") or "").strip()
+
+
+# 함수 설명: source alias가 없으면 dataset key를 실행 leaf alias로 사용합니다.
+def _source_alias(item: dict[str, Any]) -> str:
+    return str(item.get("source_alias") or item.get("dataset_key") or "").strip()
 
 
 # 함수 설명: `_required_param_names()`는 카탈로그 설정에서 실행 전에 반드시 있어야 하는 파라미터 이름을 추출합니다.
@@ -657,6 +667,232 @@ def _output_contract_with_default_detail(value: Any, jobs: list[dict[str, Any]])
     if required_columns:
         contract["required_columns"] = required_columns
     return contract
+
+
+# 함수 설명: 신뢰 카탈로그 복원 뒤 실행 계획과 결과 계약을 동일한 canonical 컬럼 namespace로 맞춥니다.
+# 04A에서 복원된 filter_mappings만 사용하며, 충돌하는 alias는 추측하지 않고 원문을 유지합니다.
+def _normalize_hydrated_execution_contracts(
+    plan: dict[str, Any],
+    jobs: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    source_maps: dict[str, dict[str, str]] = {}
+    conflicts: dict[str, list[str]] = {}
+    for job in jobs:
+        alias = _source_alias(job)
+        if not alias:
+            continue
+        mapping, mapping_conflicts = _trusted_column_map(job)
+        source_maps[alias] = mapping
+        if mapping_conflicts:
+            conflicts[alias] = mapping_conflicts
+
+    if not source_maps:
+        return plan, {"status": "not_needed", "policy": "trusted_filter_mappings_only"}
+
+    lineage: dict[str, set[str]] = {
+        alias: {alias}
+        for alias in source_maps
+    }
+    changes: list[dict[str, str]] = []
+    steps = plan.get("pandas_execution_plan")
+    if isinstance(steps, list):
+        normalized_steps: list[Any] = []
+        for index, raw_step in enumerate(steps):
+            if not isinstance(raw_step, dict):
+                normalized_steps.append(deepcopy(raw_step))
+                continue
+            step = deepcopy(raw_step)
+            step_sources = _execution_step_sources(step, lineage)
+            mapping = _consensus_column_map(source_maps, step_sources)
+            _normalize_execution_step_columns(
+                step,
+                mapping,
+                changes,
+                f"pandas_execution_plan[{index}]",
+            )
+            normalized_steps.append(step)
+            for reference in (step.get("node_id"), step.get("output_alias")):
+                name = str(reference or "").strip()
+                if name and step_sources:
+                    lineage[name] = set(step_sources)
+        plan["pandas_execution_plan"] = normalized_steps
+
+    output_mapping = _consensus_column_map(source_maps, set(source_maps))
+    contract = plan.get("output_contract")
+    if isinstance(contract, dict):
+        normalized_contract = _normalize_output_contract_columns(
+            contract,
+            output_mapping,
+            source_maps,
+            changes,
+        )
+        plan["output_contract"] = normalized_contract
+
+    return plan, {
+        "status": "applied" if changes else "not_needed",
+        "policy": "trusted_filter_mappings_only",
+        "sources": sorted(source_maps),
+        "changes": changes,
+        "conflicts": conflicts,
+    }
+
+
+# 함수 설명: Table Catalog의 canonical→physical mapping을 역전해 유일하게 확정되는 physical alias만 표준 key로 연결합니다.
+def _trusted_column_map(job: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+    raw_mapping = job.get("filter_mappings")
+    if not isinstance(raw_mapping, dict):
+        return {}, []
+    candidates: dict[str, set[str]] = {}
+    for raw_canonical, raw_aliases in raw_mapping.items():
+        canonical = str(raw_canonical or "").strip()
+        if not canonical:
+            continue
+        aliases = [canonical, *_string_list(raw_aliases)]
+        for alias in aliases:
+            key = _contract_key(alias)
+            if key:
+                candidates.setdefault(key, set()).add(canonical)
+    mapping: dict[str, str] = {}
+    conflicts: list[str] = []
+    for key, values in candidates.items():
+        if len(values) == 1:
+            mapping[key] = next(iter(values))
+        else:
+            conflicts.append(key)
+    return mapping, sorted(conflicts)
+
+
+# 함수 설명: typed pandas step가 참조하는 external source leaf를 lineage로 추적합니다.
+def _execution_step_sources(
+    step: dict[str, Any],
+    lineage: dict[str, set[str]],
+) -> set[str]:
+    references: list[str] = []
+    for key in ("source_alias", "left_source_alias", "right_source_alias"):
+        value = str(step.get(key) or "").strip()
+        if value:
+            references.append(value)
+    for item in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("ref") or item.get("source_alias") or "").strip()
+        if value:
+            references.append(value)
+    sources: set[str] = set()
+    for reference in references:
+        sources.update(lineage.get(reference, set()))
+    return sources
+
+
+# 함수 설명: 여러 source에서 같은 canonical key로 합의되는 컬럼만 output contract에 적용합니다.
+def _consensus_column_map(
+    source_maps: dict[str, dict[str, str]],
+    source_aliases: set[str],
+) -> dict[str, str]:
+    selected = [source_maps[alias] for alias in sorted(source_aliases) if alias in source_maps]
+    if not selected:
+        return {}
+    keys = set().union(*(mapping.keys() for mapping in selected))
+    result: dict[str, str] = {}
+    for key in keys:
+        values = {mapping[key] for mapping in selected if key in mapping}
+        if len(values) == 1:
+            result[key] = next(iter(values))
+    return result
+
+
+# 함수 설명: 실행 계획의 source column 역할을 가진 필드만 표준화하고 alias·node id·필터 값은 보존합니다.
+def _normalize_execution_step_columns(
+    step: dict[str, Any],
+    mapping: dict[str, str],
+    changes: list[dict[str, str]],
+    path: str,
+) -> None:
+    for key in (
+        "group_by", "group_by_columns", "group_columns", "group_cols",
+        "columns", "result_columns", "sort_by", "rank_by", "rank_column",
+        "source_column", "agg_column", "column", "label_column", "order_column",
+        "left_on", "right_on", "join_keys", "match_columns",
+    ):
+        if key in step:
+            step[key] = _normalize_column_value(step[key], mapping, changes, f"{path}.{key}")
+    aggregations = step.get("aggregations")
+    if isinstance(aggregations, list):
+        for index, aggregation in enumerate(aggregations):
+            if not isinstance(aggregation, dict):
+                continue
+            for key in ("column", "source_column", "output_column"):
+                if key in aggregation:
+                    aggregation[key] = _normalize_column_value(
+                        aggregation[key], mapping, changes, f"{path}.aggregations[{index}].{key}"
+                    )
+
+
+# 함수 설명: 결과 계약의 컬럼 목록·label·metric binding을 동일한 canonical key로 정리합니다.
+def _normalize_output_contract_columns(
+    contract: dict[str, Any],
+    output_mapping: dict[str, str],
+    source_maps: dict[str, dict[str, str]],
+    changes: list[dict[str, str]],
+) -> dict[str, Any]:
+    result = deepcopy(contract)
+    for key in ("required_columns", "result_columns", "grain_columns", "metric_columns"):
+        if key in result:
+            result[key] = _normalize_column_value(result[key], output_mapping, changes, f"output_contract.{key}", dedupe=True)
+    for key in ("primary_metric", "sort_by", "rank_by", "rank_column"):
+        if key in result:
+            result[key] = _normalize_column_value(result[key], output_mapping, changes, f"output_contract.{key}")
+    labels = result.get("column_labels")
+    if isinstance(labels, dict):
+        normalized_labels: dict[str, Any] = {}
+        for raw_key, label in labels.items():
+            key = _normalize_column_value(raw_key, output_mapping, changes, f"output_contract.column_labels.{raw_key}")
+            normalized_labels.setdefault(str(key), label)
+        result["column_labels"] = normalized_labels
+    bindings = result.get("metric_bindings")
+    if isinstance(bindings, list):
+        for index, binding in enumerate(bindings):
+            if not isinstance(binding, dict):
+                continue
+            alias = str(binding.get("source_alias") or "").strip()
+            mapping = source_maps.get(alias, output_mapping)
+            for key in ("source_column", "output_column"):
+                if key in binding:
+                    binding[key] = _normalize_column_value(
+                        binding[key], mapping, changes, f"output_contract.metric_bindings[{index}].{key}"
+                    )
+    return result
+
+
+# 함수 설명: 목록·문자열 컬럼을 mapping하고 canonical 동일 키는 첫 등장 순서로 하나만 남깁니다.
+def _normalize_column_value(
+    value: Any,
+    mapping: dict[str, str],
+    changes: list[dict[str, str]],
+    path: str,
+    dedupe: bool = False,
+) -> Any:
+    if isinstance(value, (list, tuple, set)):
+        result: list[str] = []
+        seen: set[str] = set()
+        for index, item in enumerate(value):
+            normalized = _normalize_column_value(item, mapping, changes, f"{path}[{index}]")
+            text = str(normalized or "").strip()
+            if not text:
+                continue
+            marker = _contract_key(text)
+            if dedupe and marker in seen:
+                continue
+            seen.add(marker)
+            result.append(text)
+        return result
+    text = str(value or "").strip()
+    if not text:
+        return value
+    normalized = mapping.get(_contract_key(text), text)
+    if normalized != text:
+        changes.append({"path": path, "from": text, "to": normalized})
+    return normalized
 
 
 # 함수 설명: `_string_list()`는 컬럼 입력을 순서가 유지되는 중복 없는 문자열 목록으로 정규화합니다.
