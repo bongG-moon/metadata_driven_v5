@@ -566,6 +566,54 @@ def test_multiple_external_sources_route_to_complex_and_invoke_model_once():
     assert executed["analysis"]["execution_route"] == "complex"
 
 
+def test_intent_ir_authoritatively_excludes_unused_retrieval_source_from_fast_route():
+    resolver, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"GROUP": "A", "QTY": 10}],
+        steps=[
+            {
+                "operation": "groupby_and_aggregate",
+                "group_by": ["GROUP"],
+                "aggregations": [{"column": "QTY", "method": "sum", "output_column": "QTY_SUM"}],
+            }
+        ],
+        output_contract={
+            "result_mode": "aggregate",
+            "grain_columns": ["GROUP"],
+            "metric_columns": ["QTY_SUM"],
+            "result_columns": ["GROUP", "QTY_SUM"],
+        },
+    )
+    payload["intent_plan"]["retrieval_jobs"].append(
+        {"source_alias": "optional_source", "dataset_key": "optional_dataset", "filters": {}, "required": False}
+    )
+    payload["intent_plan"]["resolved_execution_graph"]["external_source_requirements"].append(
+        {
+            "source_alias": "optional_source",
+            "dataset_key": "optional_dataset",
+            "provider": "retrieval_job",
+            "required": False,
+        }
+    )
+    payload["intent_plan"]["intent_ir"] = {
+        "version": 1,
+        "status": "complete",
+        "route_source_aliases": ["source_1"],
+        "operations": ["groupby_and_aggregate"],
+    }
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    assert resolved["simple_analysis_contract"]["route"] == "fast"
+    assert resolved["simple_analysis_contract"]["source_alias"] == "source_1"
+    assert resolved["intent_plan"]["route_resolution"]["candidate_source_aliases"] == ["source_1"]
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "unused",
+        model_invoker=lambda prompt: (_ for _ in ()).throw(AssertionError("Fast route called an LLM")),
+        repair_prompt_template="repair",
+    )
+    assert executed["analysis"]["execution_route"] == "fast"
+
+
 def test_multiturn_scope_is_preserved_while_each_turn_resolves_its_own_route():
     resolver, executor, _ = _modules()
     turn1 = _single_source_payload(
@@ -1544,3 +1592,115 @@ def test_v2_intent_normalizer_preserves_advanced_recipe_contract():
     resolved = resolver.resolve_simple_analysis_contract(normalized)
     assert resolved["simple_analysis_contract"]["route"] == "fast"
     assert resolved["simple_analysis_contract"]["recipe"] == "percent_of_total"
+
+
+def test_v2_metadata_filters_are_applied_for_selected_quantity_terms():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {
+            "question": "6/24일 투입 실적 대비 D/S1, D/A1공정에서 WIP 많은 제품",
+            "reference_date": "20260807",
+        },
+        "trace": {"inspection": {}, "warnings": [], "errors": []},
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "input_actual_vs_wip_by_product",
+            "request_scope": "new_analysis",
+            "metadata_refs": [
+                {"section": "quantity_terms", "key": "input_quantity"},
+                {"section": "quantity_terms", "key": "wip_quantity"},
+            ],
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "production", "filters": {}},
+                {
+                    "dataset_key": "wip",
+                    "source_alias": "wip",
+                    "filters": {"OPER_NAME": {"operator": "in", "value": ["D/S1", "D/A1"]}},
+                },
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "groupby_and_aggregate",
+                    "source_alias": "production",
+                    "group_by": ["TECH"],
+                    "aggregations": [{"column": "PRODUCTION", "method": "sum", "output_column": "INPUT_QTY"}],
+                },
+                {
+                    "operation": "groupby_and_aggregate",
+                    "source_alias": "wip",
+                    "group_by": ["TECH"],
+                    "aggregations": [{"column": "WIP", "method": "sum", "output_column": "WIP_QTY"}],
+                },
+            ],
+            "output_contract": {"required_columns": ["TECH", "INPUT_QTY", "WIP_QTY"]},
+        }
+    }
+    candidates = {
+        "domain_items": [
+            {
+                "section": "quantity_terms",
+                "key": "input_quantity",
+                "payload": {
+                    "aliases": ["투입 실적"],
+                    "data_source": "production",
+                    "column": "PRODUCTION",
+                    "filters": [
+                        {"column": "OPER_NAME", "operator": "eq", "value": "INPUT"}
+                    ],
+                },
+            },
+            {
+                "section": "quantity_terms",
+                "key": "wip_quantity",
+                "payload": {
+                    "aliases": ["WIP"],
+                    "data_source": "wip",
+                    "column": "WIP",
+                },
+            },
+        ],
+        "table_catalog_items": [
+            {"dataset_key": "production", "columns": ["TECH", "OPER_NAME", "PRODUCTION"]},
+            {"dataset_key": "wip", "columns": ["TECH", "OPER_NAME", "WIP"]},
+        ],
+        "main_flow_filters": [],
+    }
+    normalized = normalizer.normalize_intent_plan(payload, json.dumps(response), {"metadata_candidates": candidates})
+    jobs = {item["source_alias"]: item for item in normalized["intent_plan"]["retrieval_jobs"]}
+    assert jobs["production"]["filters"]["OPER_NAME"] == {
+        "operator": "eq",
+        "value": "INPUT",
+    }
+
+
+def test_v2_recipe_selection_criteria_are_metadata_driven():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    recipe = {
+        "selection_criteria": {
+            "required_any_aliases": ["배정 장비", "장비 대수"],
+        }
+    }
+    accepted, _ = normalizer._recipe_selection_criteria_match("현재 배정 장비 목록", recipe)
+    rejected, detail = normalizer._recipe_selection_criteria_match("D/A1 공정의 평균 UPH", recipe)
+    assert accepted is True
+    assert rejected is False
+    assert detail["reason"] == "required_any_aliases_not_matched"
+
+
+def test_v2_fast_aggregate_drops_metric_dimension_collision():
+    _, executor, _ = _modules()
+    frame = pd.DataFrame(
+        [
+            {"EQP_MODEL": "M1", "RECIPE_ID": "R1", "OPER_NAME": "D/A1", "UPH": 10},
+            {"EQP_MODEL": "M1", "RECIPE_ID": "R1", "OPER_NAME": "D/A1", "UPH": 20},
+        ]
+    )
+    result = executor._fast_aggregate(
+        frame,
+        ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+        [{"source_column": "UPH", "output_column": "UPH", "aggregation": "mean"}],
+        pd,
+    )
+    assert list(result.columns) == ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]
+    assert result.iloc[0]["UPH"] == 15

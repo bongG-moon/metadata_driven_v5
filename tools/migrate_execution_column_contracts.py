@@ -120,6 +120,18 @@ def _migrate_domain(doc: dict[str, Any]) -> dict[str, Any]:
         payload.pop("left_key_mappings", None)
         payload.pop("right_key_mappings", None)
         payload["join_keys"] = ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"]
+        payload["selection_criteria"] = {
+            "required_any_aliases": [
+                "배정 장비",
+                "할당 장비",
+                "배정된 장비",
+                "장비 대수",
+                "장비 목록",
+                "장비 LIST",
+                "현재 장비",
+            ],
+            "source_datasets": ["equipment_assign", "eqp_uph"],
+        }
     elif logical_key == "quantity_terms:target_data":
         payload["data_source"] = "target"
         payload["metric_columns"] = ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"]

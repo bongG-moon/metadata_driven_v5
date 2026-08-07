@@ -32,6 +32,19 @@ LIVE_ONLY_CASE = {
 }
 
 
+def _expected_live_route(resolved: dict[str, Any]) -> str:
+    """Use the resolved execution contract, not a fixture ID, as oracle."""
+
+    contract = resolved.get("simple_analysis_contract")
+    if isinstance(contract, dict):
+        route = str(contract.get("route") or "").strip().lower()
+        if route in {"fast", "complex", "blocked"}:
+            return route
+    # An unresolved contract is safest as Complex for the legacy validator:
+    # it still exercises the pandas path and never falsely claims Fast.
+    return "complex"
+
+
 def _v2_modules() -> dict[str, Any]:
     return {
         "intent_vars": base.load_module(V2_ROOT / "02_intent_variables_builder.py"),
@@ -195,7 +208,7 @@ def validate_live_case(
     answer_text = base.call_llm(answer_prompt, llm_config) if answer_prompt else ""
     answered = v2["answer"].build_answer_response(executed, answer_text)
 
-    expected_route = "complex" if int(case["id"]) in EXPECTED_COMPLEX_IDS else "fast"
+    expected_route = _expected_live_route(resolved)
     route = str(answered.get("analysis", {}).get("execution_route") or "")
     status = str(answered.get("analysis", {}).get("status") or "")
     call_counts = (

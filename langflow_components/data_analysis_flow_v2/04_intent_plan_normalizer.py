@@ -132,6 +132,14 @@ FILTER_OPERATOR_ALIASES = {
     "not_null_or_empty": "not_blank",
     "not_null_and_not_empty": "not_blank",
 }
+VALUELESS_FILTER_OPERATORS = {
+    "is_null",
+    "is_empty",
+    "null_or_empty",
+    "not_null",
+    "not_empty",
+    "not_blank",
+}
 V2_FAST_RECIPES = {
     "detail_query",
     "scalar_summary",
@@ -227,11 +235,28 @@ def normalize_intent_plan(
         metadata_candidates,
         domain_selection.get("locked_metadata_refs", []),
     )
+    retrieval_jobs, domain_filter_contract_guard = _enforce_selected_domain_filter_contracts(
+        retrieval_jobs,
+        metadata_candidates,
+        domain_selection.get("locked_metadata_refs", []),
+    )
     retrieval_jobs, process_group_field_guard = _apply_process_group_filter_fields(
         retrieval_jobs,
         metadata_candidates,
         question,
+        declared_processes=_declared_process_scope_from_plan(
+            plan, metadata_candidates
+        ),
         align_explicit_scope=not _has_ordered_process_range_case(plan),
+    )
+    process_scope_guard = _validate_process_scope_contract(
+        retrieval_jobs,
+        metadata_candidates,
+        question,
+        declared_processes=_declared_process_scope_from_plan(
+            plan, metadata_candidates
+        ),
+        skip=_has_ordered_process_range_case(plan),
     )
     retrieval_jobs, filter_operator_normalization = _normalize_retrieval_filter_operators(
         retrieval_jobs
@@ -255,6 +280,41 @@ def normalize_intent_plan(
         question,
         domain_selection.get("locked_metadata_refs", []),
         raw_pandas_plan,
+    )
+    retrieval_jobs, post_business_process_group_guard = _apply_process_group_filter_fields(
+        retrieval_jobs,
+        metadata_candidates,
+        question,
+        declared_processes=_declared_process_scope_from_plan(
+            plan, metadata_candidates
+        ),
+        align_explicit_scope=not _has_ordered_process_range_case(plan),
+    )
+    if post_business_process_group_guard.get("corrections"):
+        process_group_field_guard = {
+            **process_group_field_guard,
+            "status": "applied",
+            "corrections": [
+                *(process_group_field_guard.get("corrections") or []),
+                *(post_business_process_group_guard.get("corrections") or []),
+            ],
+            "value_alignment_mode": post_business_process_group_guard.get(
+                "value_alignment_mode",
+                process_group_field_guard.get("value_alignment_mode"),
+            ),
+            "job_process_scopes": post_business_process_group_guard.get(
+                "job_process_scopes",
+                process_group_field_guard.get("job_process_scopes", []),
+            ),
+        }
+    process_scope_guard = _validate_process_scope_contract(
+        retrieval_jobs,
+        metadata_candidates,
+        question,
+        declared_processes=_declared_process_scope_from_plan(
+            plan, metadata_candidates
+        ),
+        skip=_has_ordered_process_range_case(plan),
     )
     if (
         business_time_guard.get("status") == "applied"
@@ -286,6 +346,7 @@ def normalize_intent_plan(
         plan.get("join_plan"),
         retrieval_jobs,
         metadata_candidates,
+        question=question,
     )
     plan = deepcopy(plan)
     plan["metadata_refs"] = deepcopy(metadata_refs)
@@ -533,6 +594,21 @@ def normalize_intent_plan(
     validation_errors.extend(resolved_execution_graph.get("validation_errors", []))
     if metric_source_errors:
         validation_errors.extend(metric_source_errors)
+    validation_errors.extend(
+        domain_filter_contract_guard.get("validation_errors", [])
+    )
+    validation_errors.extend(process_scope_guard.get("validation_errors", []))
+
+    intent_ir = _build_intent_ir(
+        plan,
+        question,
+        retrieval_jobs,
+        pandas_plan,
+        output_contract,
+        resolved_output_grain_plan or resolved_grain_plan,
+        business_time_guard,
+        validation_errors,
+    )
 
     decision_reasons, decision_reason_normalization = _normalize_decision_reasons(
         plan,
@@ -558,6 +634,7 @@ def normalize_intent_plan(
         condition_resolution.pop("inherited", None)
         condition_resolution.pop("dropped", None)
     normalized_plan["condition_resolution"] = condition_resolution
+    normalized_plan["intent_ir"] = intent_ir
     normalized_plan["retrieval_jobs"] = retrieval_jobs
     normalized_plan["pandas_execution_plan"] = pandas_plan
     normalized_plan["output_contract"] = output_contract
@@ -647,7 +724,9 @@ def normalize_intent_plan(
         "domain_selection": domain_selection,
         "domain_metric_source_guard": domain_metric_source_guard,
         "domain_condition_guard": domain_condition_guard,
+        "domain_filter_contract_guard": domain_filter_contract_guard,
         "process_group_field_guard": process_group_field_guard,
+        "process_scope_guard": process_scope_guard,
         "filter_operator_normalization": filter_operator_normalization,
         "function_owned_filter_normalization": function_owned_filter_normalization,
         "function_case_execution_contracts": function_case_execution_contracts,
@@ -671,6 +750,7 @@ def normalize_intent_plan(
         "resolved_presence_comparison": bool(resolved_presence_comparison_plan),
         "resolved_metric_comparison": bool(resolved_metric_comparison_plan),
         "metric_source_validation_errors": metric_source_errors,
+        "intent_ir": deepcopy(intent_ir),
     }
     if not retrieval_jobs and not previous_data_reuse and not validation_errors:
         next_payload.setdefault("trace", {}).setdefault("warnings", []).append({"type": "missing_retrieval_jobs", "message": "intent_plan.retrieval_jobs가 비어 있습니다."})
@@ -2032,8 +2112,14 @@ def _filter_incompatible_recipe_contracts(
     raw_join_plan: Any,
     retrieval_jobs: list[Any],
     candidates: dict[str, Any],
+    question: str = "",
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]], dict[str, Any]]:
-    """Drop recipes whose declared source set is absent from the actual plan."""
+    """Drop recipes whose source or selection contract is not satisfied.
+
+    Recipe selection criteria are metadata-owned.  The normalizer only
+    evaluates the generic structured contract and never embeds a
+    question-specific phrase or dataset rule.
+    """
     selected_datasets = {
         str(item.get("dataset_key") or "").strip()
         for item in retrieval_jobs
@@ -2060,6 +2146,19 @@ def _filter_incompatible_recipe_contracts(
             return True
         item = _find_metadata_item(candidates, ref)
         payload = _metadata_payload(item)
+        selection_ok, selection_detail = _recipe_selection_criteria_match(
+            question,
+            payload,
+        )
+        if not selection_ok:
+            removed.append(
+                {
+                    "metadata_ref": deepcopy(ref),
+                    "issue": "recipe_selection_criteria_not_satisfied",
+                    "selection_detail": selection_detail,
+                }
+            )
+            return False
         required_sources = set(_string_list(payload.get("source_datasets")))
         if not required_sources or required_sources.issubset(selected_datasets):
             return True
@@ -2097,6 +2196,75 @@ def _filter_incompatible_recipe_contracts(
         "status": "applied" if removed else "not_needed",
         "removed_refs": removed,
     }
+
+
+def _recipe_selection_criteria_match(
+    question: str,
+    payload: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Evaluate a structured metadata recipe-selection contract.
+
+    Legacy prose/list criteria are intentionally left permissive.  New or
+    migrated metadata can use alias lists to make recipe applicability
+    deterministic across LLMs.
+    """
+
+    criteria = payload.get("selection_criteria")
+    if not isinstance(criteria, dict):
+        return True, {"status": "not_declared"}
+
+    def values(*keys: str) -> list[str]:
+        result: list[str] = []
+        for key in keys:
+            raw = criteria.get(key)
+            if isinstance(raw, dict):
+                raw = raw.get("aliases") or raw.get("terms") or raw.get("values")
+            for value in _string_list(raw):
+                if value not in result:
+                    result.append(value)
+        return result
+
+    required_any = values(
+        "required_any_aliases",
+        "required_terms_any",
+        "required_aliases_any",
+    )
+    required_all = values(
+        "required_all_aliases",
+        "required_terms_all",
+        "required_aliases_all",
+    )
+    excluded_any = values(
+        "excluded_any_aliases",
+        "excluded_terms_any",
+        "excluded_aliases_any",
+    )
+
+    matched_any = [alias for alias in required_any if _domain_alias_matches(question, alias)]
+    missing_all = [alias for alias in required_all if not _domain_alias_matches(question, alias)]
+    matched_excluded = [alias for alias in excluded_any if _domain_alias_matches(question, alias)]
+    detail = {
+        "status": "matched",
+        "required_any_aliases": required_any,
+        "matched_any_aliases": matched_any,
+        "required_all_aliases": required_all,
+        "missing_all_aliases": missing_all,
+        "excluded_any_aliases": excluded_any,
+        "matched_excluded_aliases": matched_excluded,
+    }
+    if required_any and not matched_any:
+        detail["status"] = "rejected"
+        detail["reason"] = "required_any_aliases_not_matched"
+        return False, detail
+    if missing_all:
+        detail["status"] = "rejected"
+        detail["reason"] = "required_all_aliases_not_matched"
+        return False, detail
+    if matched_excluded:
+        detail["status"] = "rejected"
+        detail["reason"] = "excluded_alias_matched"
+        return False, detail
+    return True, detail
 
 
 # 함수 설명: `_resolve_execution_domain_selection()`는 여러 execution·도메인·selection 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
@@ -2366,7 +2534,7 @@ def _resolve_execution_domain_selection(
         kinds: list[str] = []
         if isinstance(payload.get("temporal_semantics"), (dict, list)):
             kinds.append("temporal")
-        if isinstance(payload.get("conditions"), (dict, list)):
+        if _metadata_filter_contracts(payload):
             kinds.append("conditions")
         if _string_list(payload.get("metric_columns")) or str(
             payload.get("column") or ""
@@ -2651,6 +2819,47 @@ def _reconcile_metric_dataset_selection(
 
 # 함수 설명: `_apply_selected_domain_conditions()`는 04 의도 계획 정규화기 처리 중 selected·도메인·conditions 관련 값을 계산·변환하는 내부
 #        helper입니다.
+def _metadata_filter_contracts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize metadata-owned ``conditions`` or ``filters`` contracts.
+
+    Domain authors have historically used both shapes. Runtime execution
+    consumes one canonical list without embedding a business-specific rule.
+    """
+
+    raw_values: list[Any] = []
+    for field_name in ("conditions", "filters"):
+        raw = payload.get(field_name)
+        if raw is None:
+            continue
+        if isinstance(raw, list):
+            raw_values.extend(raw)
+        elif isinstance(raw, dict):
+            if any(key in raw for key in ("column", "field", "operator", "op")):
+                raw_values.append(raw)
+            else:
+                for column, condition in raw.items():
+                    if isinstance(condition, dict):
+                        item = deepcopy(condition)
+                    else:
+                        item = {"operator": "eq", "value": deepcopy(condition)}
+                    item.setdefault("column", str(column))
+                    raw_values.append(item)
+    result: list[dict[str, Any]] = []
+    for raw in raw_values:
+        if not isinstance(raw, dict):
+            continue
+        column = str(raw.get("column") or raw.get("field") or "").strip()
+        if not column:
+            continue
+        item = deepcopy(raw)
+        item["column"] = column
+        item["operator"] = _canonical_filter_operator(
+            raw.get("operator") or raw.get("op") or "eq"
+        )
+        result.append(item)
+    return result
+
+
 def _apply_selected_domain_conditions(
     retrieval_jobs: list[Any],
     candidates: dict[str, Any],
@@ -2661,12 +2870,7 @@ def _apply_selected_domain_conditions(
     for ref in locked_refs:
         item = _find_metadata_item(candidates, ref)
         payload = _metadata_payload(item)
-        raw_conditions = payload.get("conditions")
-        conditions = (
-            raw_conditions if isinstance(raw_conditions, list)
-            else [raw_conditions] if isinstance(raw_conditions, dict)
-            else []
-        )
+        conditions = _metadata_filter_contracts(payload)
         for raw in conditions:
             if not isinstance(raw, dict):
                 continue
@@ -2711,6 +2915,365 @@ def _apply_selected_domain_conditions(
     return jobs, {
         "status": "applied" if applied else "not_needed",
         "applied_conditions": applied,
+    }
+
+
+def _enforce_selected_domain_filter_contracts(
+    retrieval_jobs: list[Any],
+    candidates: dict[str, Any],
+    locked_refs: list[dict[str, str]],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Use selected Domain conditions to repair incomplete LLM filter specs."""
+
+    jobs = [deepcopy(item) for item in retrieval_jobs]
+    corrections: list[dict[str, Any]] = []
+    validation_errors: list[dict[str, Any]] = []
+    for ref in locked_refs:
+        item = _find_metadata_item(candidates, ref)
+        payload = _metadata_payload(item)
+        conditions = _metadata_filter_contracts(payload)
+        for raw in conditions:
+            if not isinstance(raw, dict):
+                continue
+            field = str(raw.get("column") or raw.get("field") or "").strip()
+            if not field:
+                continue
+            operator = _canonical_filter_operator(
+                raw.get("operator") or raw.get("op") or "eq"
+            )
+            domain_condition: dict[str, Any] = {"operator": operator}
+            if "value" in raw:
+                domain_condition["value"] = deepcopy(raw.get("value"))
+            elif "values" in raw:
+                domain_condition["value"] = deepcopy(raw.get("values"))
+            scoped_datasets = set(
+                _string_list(raw.get("dataset_keys") or raw.get("dataset_key"))
+            )
+            scoped_aliases = set(
+                _string_list(raw.get("source_aliases") or raw.get("source_alias"))
+            )
+            for job in jobs:
+                if not isinstance(job, dict):
+                    continue
+                dataset_key = str(job.get("dataset_key") or "").strip()
+                source_alias = str(job.get("source_alias") or dataset_key).strip()
+                if scoped_datasets and dataset_key not in scoped_datasets:
+                    continue
+                if scoped_aliases and source_alias not in scoped_aliases:
+                    continue
+                if not _catalog_supports_domain_column(candidates, dataset_key, field):
+                    continue
+                filters = (
+                    deepcopy(job.get("filters"))
+                    if isinstance(job.get("filters"), dict)
+                    else {}
+                )
+                existing_key = next(
+                    (
+                        key
+                        for key in filters
+                        if _normalized_column_key(key)
+                        == _normalized_column_key(field)
+                    ),
+                    "",
+                )
+                if not existing_key:
+                    filters[field] = deepcopy(domain_condition)
+                    job["filters"] = filters
+                    corrections.append(
+                        {
+                            "source_alias": source_alias,
+                            "dataset_key": dataset_key,
+                            "field": field,
+                            "action": "domain_condition_added",
+                            "operator": operator,
+                        }
+                    )
+                    continue
+                existing = filters.get(existing_key)
+                if not _filter_condition_is_incomplete(existing):
+                    continue
+                filters[existing_key] = deepcopy(domain_condition)
+                job["filters"] = filters
+                corrections.append(
+                    {
+                        "source_alias": source_alias,
+                        "dataset_key": dataset_key,
+                        "field": field,
+                        "action": "incomplete_llm_condition_replaced",
+                        "from": deepcopy(existing),
+                        "to": deepcopy(domain_condition),
+                    }
+                )
+                if _filter_condition_is_incomplete(filters[existing_key]):
+                    validation_errors.append(
+                        {
+                            "type": "domain_filter_contract_unresolved",
+                            "message": "선택된 Domain의 필터 조건을 실행 가능한 값으로 확정하지 못했습니다.",
+                            "source_alias": source_alias,
+                            "field": field,
+                        }
+                    )
+    return jobs, {
+        "status": "applied" if corrections else "not_needed",
+        "corrections": corrections,
+        "validation_errors": validation_errors,
+    }
+
+
+def _filter_condition_is_incomplete(condition: Any) -> bool:
+    if not isinstance(condition, dict):
+        return True
+    operator = _canonical_filter_operator(
+        condition.get("operator") or condition.get("op") or "eq"
+    )
+    if operator in VALUELESS_FILTER_OPERATORS:
+        return False
+    values = condition.get("values")
+    if not isinstance(values, list):
+        values = condition.get("value")
+        values = values if isinstance(values, list) else [values]
+    return not any(_filter_value_is_present(value) for value in values)
+
+
+def _filter_value_is_present(value: Any) -> bool:
+    """Treat numeric zero/False as valid filter values, not as blank text."""
+
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _declared_process_scope_from_plan(
+    plan: dict[str, Any],
+    metadata_candidates: dict[str, Any],
+) -> list[str]:
+    """Extract canonical process values declared by the normalized LLM IR inputs."""
+
+    contracts = _process_group_contracts(metadata_candidates)
+    process_fields = {
+        str(contract.get("field") or "OPER_NAME").strip().casefold()
+        for contract in contracts
+    }
+    canonical_by_key = {
+        str(process).strip().casefold(): str(process).strip()
+        for contract in contracts
+        for process in contract.get("process_values", [])
+        if str(process).strip()
+    }
+    declared: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            field = str(value.get("field") or value.get("column") or "").strip()
+            if field.casefold() in process_fields:
+                for raw in _condition_scalar_values(value):
+                    canonical = canonical_by_key.get(str(raw).strip().casefold())
+                    if canonical and canonical not in declared:
+                        declared.append(canonical)
+            for key, child in value.items():
+                if str(key).strip().casefold() in process_fields:
+                    for raw in _condition_scalar_values(child):
+                        canonical = canonical_by_key.get(str(raw).strip().casefold())
+                        if canonical and canonical not in declared:
+                            declared.append(canonical)
+                elif key not in {"field", "column", "value", "values"}:
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(plan.get("condition_resolution"))
+    return declared
+
+
+def _validate_process_scope_contract(
+    retrieval_jobs: list[Any],
+    candidates: dict[str, Any],
+    question: str,
+    *,
+    declared_processes: list[str] | None = None,
+    skip: bool = False,
+) -> dict[str, Any]:
+    """Reject partial process scopes instead of returning misleading subsets."""
+
+    if skip:
+        return {"status": "skipped", "validation_errors": []}
+    contracts = _process_group_contracts(candidates)
+    requested = _merge_strings(
+        _requested_process_scope(question, contracts),
+        declared_processes or [],
+    )
+    if not requested:
+        return {"status": "not_requested", "validation_errors": []}
+    alignment = _process_filter_alignment_scope(retrieval_jobs)
+    requested_keys = {str(value).strip().casefold() for value in requested}
+    covered: set[str] = set()
+    matched_filter = False
+    scoped_aliases: set[str] = set()
+    process_fields = {
+        str(contract.get("field") or "OPER_NAME").strip().casefold()
+        for contract in contracts
+    }
+    for job in retrieval_jobs:
+        if not isinstance(job, dict):
+            continue
+        for field, condition in _filter_field_entries(job.get("filters")):
+            if str(field).strip().casefold() not in process_fields:
+                continue
+            values = _condition_scalar_values(condition)
+            if not values:
+                continue
+            matched_filter = True
+            covered.update(value.casefold() for value in values)
+            scoped_aliases.add(
+                str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+            )
+    missing = sorted(requested_keys - covered)
+    unscoped_aliases = [
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in retrieval_jobs
+        if isinstance(job, dict)
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        not in scoped_aliases
+    ]
+    if unscoped_aliases:
+        error = {
+            "type": "process_scope_incomplete",
+            "message": "A requested process scope is missing from one or more source filters; execution is blocked.",
+            "requested_processes": requested,
+            "covered_processes": sorted(covered),
+            "missing_processes": missing,
+            "unscoped_sources": unscoped_aliases,
+        }
+        return {
+            "status": "error",
+            "requested_processes": requested,
+            "covered_processes": sorted(covered),
+            "missing_processes": missing,
+            "unscoped_sources": unscoped_aliases,
+            "validation_errors": [error],
+        }
+    if alignment.get("has_disjoint_scopes"):
+        return {
+            "status": "disjoint_scopes_allowed",
+            "requested_processes": requested,
+            "validation_errors": [],
+        }
+    if not missing:
+        return {
+            "status": "complete",
+            "requested_processes": requested,
+            "covered_processes": sorted(covered),
+            "validation_errors": [],
+        }
+    error = {
+        "type": "process_scope_incomplete",
+        "message": "질문에 명시된 공정 범위가 조회 필터에 모두 반영되지 않아 실행을 차단했습니다.",
+        "requested_processes": requested,
+        "covered_processes": sorted(covered),
+        "missing_processes": missing,
+    }
+    return {
+        "status": "error",
+        "requested_processes": requested,
+        "covered_processes": sorted(covered),
+        "missing_processes": missing,
+        "validation_errors": [error],
+    }
+
+
+def _build_intent_ir(
+    plan: dict[str, Any],
+    question: str,
+    retrieval_jobs: list[Any],
+    pandas_plan: list[Any],
+    output_contract: dict[str, Any],
+    resolved_grain_plan: dict[str, Any],
+    business_time_guard: dict[str, Any],
+    validation_errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compile the normalized plan into a compact, typed execution IR."""
+
+    jobs = [item for item in retrieval_jobs if isinstance(item, dict)]
+    aliases = [
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in jobs
+    ]
+    bindings = [
+        item
+        for item in output_contract.get("metric_bindings", [])
+        if isinstance(item, dict)
+    ]
+    binding_aliases = _merge_strings(
+        [str(item.get("source_alias") or "").strip() for item in bindings]
+    )
+    operations = _merge_strings(
+        [
+            str(item.get("operation") or item.get("step") or "").strip().lower()
+            for item in pandas_plan
+            if isinstance(item, dict)
+        ]
+    )
+    complex_operations = {
+        "join",
+        "merge",
+        "compare_presence",
+        "compare_metrics",
+        "compare_group_attributes",
+        "find_duplicate_groups",
+        "apply_row_match_groups",
+        "apply_pandas_function_case",
+    }
+    route_aliases = (
+        [alias for alias in binding_aliases if alias in aliases]
+        if binding_aliases and not any(op in complex_operations for op in operations)
+        else aliases
+    )
+    source_requirements = [
+        {
+            "source_alias": alias,
+            "dataset_key": str(job.get("dataset_key") or "").strip(),
+            "required": job.get("required") is not False,
+        }
+        for alias, job in zip(aliases, jobs)
+        if alias
+    ]
+    compact_filters = {
+        alias: deepcopy(job.get("filters"))
+        for alias, job in zip(aliases, jobs)
+        if alias and isinstance(job.get("filters"), (dict, list))
+    }
+    return {
+        "version": 1,
+        "status": "blocked" if validation_errors else "complete",
+        "analysis_kind": str(plan.get("analysis_kind") or "").strip(),
+        "question": str(question or "").strip(),
+        "request_scope": str(plan.get("request_scope") or "new_analysis").strip(),
+        "route_source_aliases": route_aliases,
+        "source_requirements": source_requirements,
+        "filters": compact_filters,
+        "operations": operations,
+        "metric_bindings": [
+            {
+                "source_alias": str(item.get("source_alias") or "").strip(),
+                "source_column": str(item.get("source_column") or "").strip(),
+                "aggregation": str(item.get("aggregation") or "").strip().lower(),
+                "output_column": str(item.get("output_column") or "").strip(),
+            }
+            for item in bindings
+        ],
+        "grain_columns": _string_list(
+            resolved_grain_plan.get("grain_columns")
+            or resolved_grain_plan.get("entity_grain_columns")
+        ),
+        "result_columns": _string_list(output_contract.get("result_columns")),
+        "temporal_semantics": deepcopy(
+            business_time_guard.get("temporal_semantics") or []
+        ),
+        "validation_errors": deepcopy(validation_errors),
     }
 
 
@@ -3573,12 +4136,20 @@ def _apply_process_group_filter_fields(
     retrieval_jobs: list[Any],
     metadata_candidates: dict[str, Any],
     question: str = "",
+    declared_processes: list[str] | None = None,
     align_explicit_scope: bool = True,
 ) -> tuple[list[Any], dict[str, Any]]:
     contracts = _process_group_contracts(metadata_candidates)
     if not contracts:
         return retrieval_jobs, {"status": "not_available", "corrections": []}
-    requested_processes = _requested_process_scope(question, contracts) if align_explicit_scope else []
+    requested_processes = (
+        _merge_strings(
+            _requested_process_scope(question, contracts),
+            declared_processes or [],
+        )
+        if align_explicit_scope
+        else []
+    )
     mentioned_group_indexes = (
         _mentioned_process_group_indexes(question, contracts)
         if align_explicit_scope
@@ -3586,6 +4157,31 @@ def _apply_process_group_filter_fields(
     )
     alignment_scope = _process_filter_alignment_scope(retrieval_jobs)
     preserve_distinct_job_scopes = alignment_scope["has_disjoint_scopes"]
+    job_count = sum(1 for item in retrieval_jobs if isinstance(item, dict))
+    process_fields = {
+        str(contract.get("field") or "OPER_NAME").strip().casefold()
+        for contract in contracts
+    }
+    scope_fields = {
+        str(contracts[index].get("field") or "OPER_NAME").strip()
+        for index in mentioned_group_indexes
+        if 0 <= index < len(contracts)
+    }
+    single_source_scope_field = (
+        next(iter(scope_fields)) if job_count == 1 and len(scope_fields) == 1 else ""
+    )
+    single_source_scope_condition = (
+        {
+            "operator": "eq" if len(requested_processes) == 1 else "in",
+            "value": (
+                requested_processes[0]
+                if len(requested_processes) == 1
+                else list(requested_processes)
+            ),
+        }
+        if single_source_scope_field and requested_processes
+        else None
+    )
 
     normalized_jobs: list[Any] = []
     corrections: list[dict[str, Any]] = []
@@ -3596,6 +4192,39 @@ def _apply_process_group_filter_fields(
         job = deepcopy(item)
         alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
         filters = job.get("filters")
+        has_process_filter = any(
+            str(field).strip().casefold() in process_fields
+            for field, _condition in _filter_field_entries(filters)
+        )
+        if single_source_scope_condition and not has_process_filter:
+            if isinstance(filters, dict):
+                normalized_filters = deepcopy(filters)
+                normalized_filters[single_source_scope_field] = deepcopy(
+                    single_source_scope_condition
+                )
+                job["filters"] = normalized_filters
+            elif isinstance(filters, list):
+                normalized_filters = deepcopy(filters)
+                normalized_filters.append(
+                    _filter_list_condition(
+                        single_source_scope_field,
+                        single_source_scope_condition,
+                    )
+                )
+                job["filters"] = normalized_filters
+            else:
+                job["filters"] = {
+                    single_source_scope_field: deepcopy(single_source_scope_condition)
+                }
+            corrections.append(
+                {
+                    "source_alias": alias,
+                    "field": single_source_scope_field,
+                    "correction_type": "single_source_process_scope_completion",
+                    "to_values": list(requested_processes),
+                }
+            )
+            filters = job["filters"]
         if isinstance(filters, dict):
             normalized_filters = deepcopy(filters)
             for raw_field, condition in filters.items():
@@ -4552,7 +5181,7 @@ def _output_contract(
                 _string_list(resolved_grain_plan.get("grain_columns"))
                 if isinstance(resolved_grain_plan, dict)
                 else [],
-                default_detail_columns,
+                default_detail_columns if len(retrieval_jobs) > 1 else [],
                 requested_metrics,
                 explicit_columns,
             )
@@ -5136,8 +5765,8 @@ def _execution_compatible_metadata_refs(
             continue
         item = _find_metadata_item(candidates, ref)
         payload = _metadata_payload(item)
-        execution_bearing = isinstance(payload.get("temporal_semantics"), (dict, list)) or isinstance(
-            payload.get("conditions"), (dict, list)
+        execution_bearing = isinstance(payload.get("temporal_semantics"), (dict, list)) or bool(
+            _metadata_filter_contracts(payload)
         )
         marker = (ref.get("section", ""), ref.get("key", ""))
         if execution_bearing and marker not in locked:

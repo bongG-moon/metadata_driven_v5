@@ -163,7 +163,10 @@ def resolve_simple_analysis_contract(
         contract = _route_contract("complex", "fast_path_disabled")
         return _attach_contract(next_payload, contract, trace, started)
 
-    source_aliases = _external_source_aliases(next_payload)
+    intent_ir = _dict(plan.get("intent_ir"))
+    source_aliases = _string_list(intent_ir.get("route_source_aliases"))
+    if not source_aliases:
+        source_aliases = _external_source_aliases(next_payload)
     if len(source_aliases) != 1:
         reason = "no_external_source" if not source_aliases else "multiple_external_sources"
         contract = _route_contract("complex", reason)
@@ -885,18 +888,26 @@ def _attach_contract(
 
 # 함수 설명: `_intent_route_candidate()`는 조회 전 실행 계약만으로 Fast 후보 또는 Complex 필요 여부를 결정하며 최종 판정을 대신하지 않습니다.
 def _intent_route_candidate(plan: dict[str, Any]) -> dict[str, Any]:
+    intent_ir = _dict(plan.get("intent_ir"))
     steps = [deepcopy(item) for item in _list(plan.get("pandas_execution_plan")) if isinstance(item, dict)]
-    operations = [_operation(item) for item in steps]
+    ir_operations = [
+        str(item).strip().lower()
+        for item in _string_list(intent_ir.get("operations"))
+        if str(item).strip()
+    ]
+    operations = ir_operations or [_operation(item) for item in steps]
     output_contract = _dict(plan.get("output_contract"))
     recipe = _recipe(steps, output_contract)
-    aliases = _dedupe(
-        [
-            str(item.get("source_alias") or item.get("dataset_key") or "").strip()
-            for item in _list(plan.get("retrieval_jobs"))
-            if isinstance(item, dict)
-            and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
-        ]
-    )
+    aliases = _string_list(intent_ir.get("route_source_aliases"))
+    if not aliases:
+        aliases = _dedupe(
+            [
+                str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+                for item in _list(plan.get("retrieval_jobs"))
+                if isinstance(item, dict)
+                and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+            ]
+        )
     graph = _dict(plan.get("resolved_execution_graph"))
     if not aliases:
         aliases = _dedupe(

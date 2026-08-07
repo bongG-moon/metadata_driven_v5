@@ -3496,6 +3496,134 @@ def test_v5_process_scope_alignment_preserves_distinct_multi_source_filters():
     ]
 
 
+def test_v5_intent_ir_repairs_incomplete_metadata_filter_from_domain_contract():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    payload = {
+        "request": {"question": "HBM제품의 아침재공을 제품별로 알려줘"},
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+    metadata_candidates = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "product_terms",
+                    "key": "HBM",
+                    "payload": {
+                        "aliases": ["HBM"],
+                        "conditions": [
+                            {"column": "TSV_DIE_TYP", "operator": "not_blank"}
+                        ],
+                    },
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "wip_history",
+                    "payload": {
+                        "filter_mappings": {
+                            "DATE": ["WORK_DATE"],
+                            "TSV_DIE_TYP": ["TSV_DIE_TYP"],
+                            "TECH": ["TECH"],
+                            "WIP": ["WIP"],
+                        },
+                        "metric_semantics": {
+                            "WIP": {"default_rollup": "sum"}
+                        },
+                    },
+                }
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    normalized = intent_normalizer.normalize_intent_plan(
+        payload,
+        {
+            "intent_plan": {
+                "analysis_kind": "boh_wip_by_product",
+                "metadata_refs": [{"section": "product_terms", "key": "HBM"}],
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "wip_history",
+                        "source_alias": "wip",
+                        "filters": {"TSV_DIE_TYP": {"operator": "eq"}},
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "operation": "groupby_and_aggregate",
+                        "source_alias": "wip",
+                        "group_by": ["TECH"],
+                        "aggregations": [
+                            {
+                                "column": "WIP",
+                                "method": "sum",
+                                "output_column": "BOH_WIP_QTY",
+                            }
+                        ],
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "aggregate",
+                    "result_columns": ["TECH", "BOH_WIP_QTY"],
+                    "metric_columns": ["BOH_WIP_QTY"],
+                    "metric_bindings": [
+                        {
+                            "source_alias": "wip",
+                            "source_column": "WIP",
+                            "aggregation": "sum",
+                            "output_column": "BOH_WIP_QTY",
+                        }
+                    ],
+                },
+            }
+        },
+        metadata_candidates,
+    )
+
+    plan = normalized["intent_plan"]
+    assert plan["retrieval_jobs"][0]["filters"]["TSV_DIE_TYP"] == {
+        "operator": "not_blank"
+    }
+    assert plan["intent_ir"]["status"] == "complete"
+    assert plan["intent_ir"]["route_source_aliases"] == ["wip"]
+    guard = normalized["trace"]["inspection"]["intent"][
+        "domain_filter_contract_guard"
+    ]
+    assert any(
+        item["action"] == "incomplete_llm_condition_replaced"
+        for item in guard["corrections"]
+    )
+
+
+def test_v5_intent_ir_blocks_explicit_process_group_without_scope_filter():
+    intent_normalizer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
+    )
+    candidates = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "BG",
+                "payload": {
+                    "aliases": ["BG"],
+                    "field": "OPER_NAME",
+                    "processes": ["B/G1", "B/G2"],
+                },
+            }
+        ]
+    }
+    guard = intent_normalizer._validate_process_scope_contract(
+        [],
+        candidates,
+        "BG\uacf5\uc815 production",
+    )
+    assert guard["status"] == "error"
+    assert guard["validation_errors"][0]["type"] == "process_scope_incomplete"
+    assert guard["missing_processes"] == ["b/g1", "b/g2"]
+
+
 def test_v5_process_scope_alignment_expands_registered_group_alias_value():
     intent_normalizer = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "04_intent_plan_normalizer.py"
@@ -18930,7 +19058,19 @@ def test_boh_contract_repairs_hallucinated_family_dataset_and_missing_retrieval_
             "dataset_key": "wip",
             "source_alias": "wip",
             "required_params": {"DATE": "20260802"},
-            "filters": {},
+            "filters": {
+                "OPER_NAME": {
+                    "operator": "in",
+                    "value": [
+                        "D/A1",
+                        "D/A2",
+                        "D/A3",
+                        "D/A4",
+                        "D/A5",
+                        "D/A6",
+                    ],
+                }
+            },
             "required": True,
         }
     ]

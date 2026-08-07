@@ -407,6 +407,18 @@ def _semantic_errors(
             "join_type": "left",
             "join_keys": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
             "preserve_left_rows": True,
+            "selection_criteria": {
+                "required_any_aliases": [
+                    "배정 장비",
+                    "할당 장비",
+                    "배정된 장비",
+                    "장비 대수",
+                    "장비 목록",
+                    "장비 LIST",
+                    "현재 장비",
+                ],
+                "source_datasets": ["equipment_assign", "eqp_uph"],
+            },
         }
         for field, expected_value in expected.items():
             if payload.get(field) != expected_value:

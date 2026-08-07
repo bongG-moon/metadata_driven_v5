@@ -1117,7 +1117,25 @@ def _fast_project(frame: Any, columns: list[str]) -> Any:
 
 # 함수 설명: `_fast_aggregate()`는 17 V2 Hybrid 분석 실행기 처리 중 aggregate 관련 값을 계산·변환하는 내부 helper입니다.
 def _fast_aggregate(frame: Any, group_by: list[str], metrics: list[dict[str, Any]], pd: Any) -> Any:
-    missing_group = [column for column in group_by if column not in frame.columns]
+    metric_columns = {
+        str(metric.get("source_column") or "").strip().casefold()
+        for metric in metrics
+        if isinstance(metric, dict)
+    } | {
+        str(metric.get("output_column") or "").strip().casefold()
+        for metric in metrics
+        if isinstance(metric, dict)
+    }
+    # A metric cannot also be a grouping key. LLM plans occasionally copy a
+    # requested detail column into grain_columns; keeping it would make
+    # pandas reset_index() create the same column twice. The metric contract
+    # is authoritative, so remove the conflicting dimension generically.
+    effective_group_by = [
+        column
+        for column in group_by
+        if str(column).strip().casefold() not in metric_columns
+    ]
+    missing_group = [column for column in effective_group_by if column not in frame.columns]
     if missing_group:
         raise OutputContractError("Fast Path grain canonical 컬럼이 없습니다: " + ", ".join(missing_group))
     if not metrics:
@@ -1133,11 +1151,11 @@ def _fast_aggregate(frame: Any, group_by: list[str], metrics: list[dict[str, Any
         if method in {"sum", "mean", "median", "min", "max"}:
             working[source_column] = pd.to_numeric(working[source_column], errors="coerce")
         named[output_column] = pd.NamedAgg(column=source_column, aggfunc=_pandas_aggregation_method(method))
-    output_columns = [*group_by, *named]
+    output_columns = [*effective_group_by, *named]
     if working.empty:
         return pd.DataFrame(columns=output_columns)
-    if group_by:
-        return working.groupby(group_by, dropna=False).agg(**named).reset_index()
+    if effective_group_by:
+        return working.groupby(effective_group_by, dropna=False).agg(**named).reset_index()
     row: dict[str, Any] = {}
     for output_column, aggregation in named.items():
         row[output_column] = working[str(aggregation.column)].agg(aggregation.aggfunc)
