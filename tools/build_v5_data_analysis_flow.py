@@ -31,6 +31,10 @@ LANGUAGE_MODEL_SYSTEM_MESSAGES = {
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
 TARGET_LANGFLOW_VERSION = "1.9.2"
 TARGET_LANGUAGE_MODEL_SOURCE = ROOT / "tools" / "assets" / "langflow_1_9_2_language_model.py"
+# Keep the default provider selection in one build-time contract.  Individual
+# flow exports may still expose the provider's other model choices, but every
+# generated LLM node starts with this model selected.
+DEFAULT_LANGUAGE_MODEL = "gemini-3.5-flash-lite"
 DATA_ANALYSIS_NOTE_PREFIX = "note-data-analysis-"
 
 # The canvas uses the same native component dimensions as Langflow 1.9.2.
@@ -550,9 +554,9 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
             ("data", "domain_items", "도메인 메타데이터", False, None),
             ("data", "table_catalog_items", "테이블 카탈로그", False, None),
             ("data", "main_flow_filters", "메인 변수", False, None),
-            ("message", "max_domain_items", "도메인 최대 후보 수", False, "10"),
+            ("message", "max_domain_items", "도메인 최대 후보 수", False, "20"),
             ("message", "min_table_items", "테이블 최소 후보 수", False, "5"),
-            ("message", "max_table_items", "테이블 최대 후보 수", False, "10"),
+            ("message", "max_table_items", "테이블 최대 후보 수", False, "5"),
             ("message", "max_bytes", "최대 후보 바이트", False, "32768"),
         ],
         [("Data", "metadata_candidates", "메타데이터 후보", "build_payload")],
@@ -1114,6 +1118,7 @@ def _apply_native_language_model(
         for attribute in ("value", "load_from_db", "advanced", "show"):
             if attribute in previous:
                 current[attribute] = deepcopy(previous[attribute])
+    _set_default_language_model(template)
     template["system_message"]["value"] = system_message
     template["stream"]["value"] = False
     template["temperature"]["value"] = 0.1
@@ -1147,6 +1152,10 @@ def _apply_standalone_defaults(nodes: list[dict[str, Any]]) -> None:
         template = node.get("data", {}).get("node", {}).get("template", {})
         if not isinstance(template, dict):
             continue
+        # Native LanguageModel nodes and the V2 hybrid executor/answer nodes
+        # both expose the same ModelInput.  Apply the default to either shape
+        # so the selected model cannot drift when a graph is rebuilt.
+        _set_default_language_model(template)
         if node_type == "LanguageModelComponent":
             # Tool이 없는 모델 실행은 기본 Language Model로 처리해 tools 필드를 전송하지 않습니다.
             for field_name, value in (
@@ -1178,6 +1187,43 @@ def _apply_standalone_defaults(nodes: list[dict[str, Any]]) -> None:
             value = field.get("value")
             if isinstance(value, str) and "agent_v5" in value:
                 field["value"] = value.replace("agent_v5", "agent_v4")
+
+
+def _set_default_language_model(template: dict[str, Any]) -> None:
+    """Select the supported default model while preserving provider metadata."""
+
+    model = template.get("model")
+    if not isinstance(model, dict) or model.get("type") != "model":
+        return
+    value = model.get("value")
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        selected = deepcopy(value[0])
+    elif isinstance(value, dict):
+        selected = deepcopy(value)
+    else:
+        selected = {
+            "icon": "GoogleGenerativeAI",
+            "metadata": {
+                "api_key_param": "google_api_key",
+                "context_length": 128000,
+                "max_tokens_field_name": "max_output_tokens",
+                "model_class": "ChatGoogleGenerativeAIFixed",
+                "model_name_param": "model",
+            },
+            "provider": "Google Generative AI",
+        }
+    selected["name"] = DEFAULT_LANGUAGE_MODEL
+    selected.setdefault("provider", "Google Generative AI")
+    selected.setdefault("icon", "GoogleGenerativeAI")
+    model["value"] = [selected]
+    options = model.get("options")
+    if isinstance(options, list) and not any(
+        isinstance(option, dict) and option.get("name") == DEFAULT_LANGUAGE_MODEL
+        for option in options
+    ):
+        option = deepcopy(selected)
+        option.setdefault("category", option.get("provider", "Google Generative AI"))
+        options.insert(0, option)
 
 
 def _refresh_component_node(node: dict[str, Any], path: Path) -> None:

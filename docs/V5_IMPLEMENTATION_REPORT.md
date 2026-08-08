@@ -27,7 +27,7 @@ v4의 큰 단계인 `의도 분석 -> 조회 -> pandas 분석 -> 답변`은 유�
 
 | 영역 | v4/제공 Flow | v5 구현 |
 | --- | --- | --- |
-| Metadata prompt 입력 | loader 결과를 폭넓게 결합 | 도메인 관련 항목 최대 10건, 테이블 관련 후보 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB |
+| Metadata prompt 입력 | loader 결과를 폭넓게 결합 | 도메인 관련 항목 최대 20건, 테이블 관련 후보 5건, 메인 필터 전체, compact JSON 32KB |
 | Source 설정 | intent job에 source 설정 포함 가능 | LLM 출력에서 제거 후 active catalog로 hydration |
 | 알 수 없는 dataset | downstream까지 전달 가능 | live는 차단, dummy만 명시적 fallback |
 | Retrieval branch | main payload가 source 수만큼 복제 | job bundle + session/date context만 전달 |
@@ -49,7 +49,7 @@ v4의 큰 단계인 `의도 분석 -> 조회 -> pandas 분석 -> 답변`은 유�
 
 ### 01D 질문 기반 메타데이터 후보 생성기
 
-현재 질문을 기준으로 metadata를 점수화하고, 실제 후속 질문으로 판정된 경우에만 직전 질문과 compact state를 검색어에 보탭니다. 도메인은 관련 항목만 최대 10건, 테이블은 관련 후보 최소 5건·최대 10건, 메인 필터는 전체를 선택합니다. 한국어 조사와 `UPH를` 같은 영문 약어+조사를 정규화하고, 동점은 metadata key 기준으로 정렬해 MongoDB 반환 순서에 의존하지 않습니다. authoring trace와 source query 설정을 제거한 뒤 실제 LLM 전달 compact JSON에 32KB 제한을 적용합니다.
+현재 질문을 기준으로 metadata를 점수화하고, 실제 후속 질문으로 판정된 경우에만 직전 질문과 compact state를 검색어에 보탭니다. 도메인은 관련 항목만 최대 20건, 테이블은 관련 후보 5건, 메인 필터는 전체를 선택합니다. 한국어 조사와 `UPH를` 같은 영문 약어+조사를 정규화하고, 동점은 metadata key 기준으로 정렬해 MongoDB 반환 순서에 의존하지 않습니다. authoring trace와 source query 설정을 제거한 뒤 실제 LLM 전달 compact JSON에 32KB 제한을 적용합니다.
 
 ### 04A 신뢰 카탈로그 조회 작업 구성기
 

@@ -289,8 +289,8 @@
           "width": 192
         },
         "position": {
-          "x": -360.0,
-          "y": 0.0
+          "x": 0,
+          "y": 0
         },
         "selected": false,
         "type": "genericNode"
@@ -759,7 +759,7 @@
                 "show": true,
                 "title_case": false,
                 "type": "str",
-                "value": ""
+                "value": "너는 제조 AI agent의 domain saving JSON 작성자다.\n\n목표:\n- 정제된 설명을 `section + key + payload` 구조의 domain item 후보로 변환한다.\n- 허용 section만 사용한다: `process_groups`, `product_terms`, `quantity_terms`, `metric_terms`, `analysis_recipes`, `status_terms`, `product_key_columns`, `pandas_function_cases`.\n- 원문에 없는 조건을 강화하거나 완화하지 않는다.\n- 제품/공정/상태 조건은 원문에 명시된 조건만 payload에 넣는다.\n- 조건의 operator는 `eq`, `in`, `ne`, `not_in`, `contains`, `like`, `starts_with`, `ends_with`, `is_null`, `is_empty`, `null_or_empty`, `not_null`, `not_empty`, `not_blank`, `or`, `any` 중 하나만 사용한다.\n- null·빈 문자열·공백·문자열 null/none/nan/nat/<NA>/empty를 모두 제외하는 조건은 `not_blank`로 저장하고 value는 만들지 않는다. `is_not_null_or_empty`, `is_not_null_and_not_empty` 같은 별도 operator를 만들지 않는다.\n- `process_groups`의 key는 원문에 명시된 대표 식별자를 그대로 사용한다. 예를 들어 `BG 또는 B/G 공정 그룹`이면 key는 `BG`, aliases는 `[\"BG\", \"B/G\"]`로 만든다.\n- `process_groups`는 원문에 명시된 표준 필터 field를 `payload.field`에 보존한다. `field=OPER_NAME`으로 명시된 공정 그룹을 물리 컬럼 `OPER`나 `OPER_NM`으로 바꾸지 않는다.\n- `process_groups.payload.processes`는 `payload.field`에 적용할 값 목록이다. field를 누락하거나 processes 값만 보고 다른 컬럼을 추측하지 않는다.\n- 원문에 없는 `_PROCESS_GROUP`, `_TERM`, `_DOMAIN` 같은 설명형 suffix를 key에 임의로 붙이지 않는다.\n- `analysis_recipes`에 dataset 결합 규칙이 명시되면 `source_datasets`, `join_type`, `join_keys`, `left_key_mappings`, `right_key_mappings`, `preserve_left_rows`를 원문에 있는 범위에서 구조화해 보존한다. `context_columns`는 만들지 않는다.\n- `analysis_recipes`의 선택 조건, 제외 조건, 집계·표시 정책처럼 위 구조화 필드에 해당하지 않는 원문 규칙은 `selection_criteria` 문자열 배열에 문장 단위로 그대로 보존한다. 임의의 `policy`, `matching_rules` 같은 중첩 객체를 만들거나 `missing_information`으로 빼지 않는다.\n- 물리 컬럼명이 서로 다른 join은 표준 `join_keys`와 좌우 mapping을 분리해 기록한다. 원문에 없는 join key나 실행 순서를 추측하지 않는다.\n- 질문 기준일과 실제 조회일의 차이가 명시된 domain은 `payload.temporal_semantics`에 구조화해 보존한다. 허용 필드는 `business_timepoint`, `dataset_family`, `dataset_key`, `source_alias`, `date_param`, `requested_date_offset_days`, `disallowed_dataset_keys`, `inherit_filters`, `metric`, `source_column`, `aggregation`, `output_column`, `metric_aliases`다.\n- `requested_date_offset_days`는 질문 기준일에 더할 정수 일수다. 전일은 `-1`, 동일 일자는 `0`, 다음 날은 `1`로 저장한다. 원문에 없는 offset, dataset 또는 금지 dataset을 추측하지 않는다.\n- 작업자가 HOLD LOT/현재 HOLD/LOT ID 목록 또는 HOLD 사유·코드·이력을 설명하면 `analysis_recipes:current_hold_lot_selection` 하나로 등록한다. 목록만 물으면 `lot_status`의 현재 HOLD만 선택하고, 사유·코드·최근 이력을 함께 물으면 먼저 LOT를 찾은 뒤 최신 HOLD 이력을 선택한다는 규칙을 `selection_criteria`에 저장한다. 최신 이력은 LOT별 HOLD 시간 내림차순 한 건이며 `HOLD_CD`, `HOLD_DESC`를 같은 행에서 보여준다는 내용을 보존한다.\n- 작업자가 RECIPE 번호와 시작/포함 규칙을 설명하면 `analysis_recipes:recipe_id_starts_with`로 등록한다. `RECIPE_ID`는 완전 일치가 아니라 `starts_with`로 조회하고, `eq`/`contains`로 바꾸지 않는다.\n- `pandas_function_cases`의 payload에는 원문에 명시된 `display_name`, `function_name`, `aliases`, `required_columns`, `selection_criteria`, `execution_contract`만 사용한다.\n- pandas function case에는 실제 helper 구현, 함수 시그니처, pandas 코드 예시, `pseudocode`, I/O contract를 저장하지 않는다.\n- helper 선택·적용 조건과 실행 시 `input_text`, `source_alias`에 전달할 규칙은 `selection_criteria`의 문장으로 보존한다. `matching_rules`, `token_priority` 같은 임의의 중첩 key를 새로 만들지 않는다.\n- 원문이 helper와 source filter의 실행 순서를 명시한 경우에만 `execution_contract.source_filter_order`를 저장한다. 값은 `before_helper` 또는 `after_helper`만 사용하며, 특정 함수 이름을 공통 실행 노드에 하드코딩하기 위한 다른 실행 key는 만들지 않는다.\n- SQL, source_config, credential은 절대 domain item에 넣지 않는다.\n\n중복 확인은 후보 생성 후 MongoDB의 동일 key와 같은 section의 identity를 대상으로 별도 수행한다. 기존 metadata를 추측하거나 임의로 덮어쓰지 않는다.\n\n반환 형식:\n```json\n{{\n  \"items\": [\n    {{\n      \"section\": \"process_groups\",\n      \"key\": \"PROCESS_GROUP_KEY\",\n      \"status\": \"active\",\n      \"payload\": {{\n        \"display_name\": \"공정 그룹명\",\n        \"aliases\": [\"사용자 표현\"],\n        \"field\": \"OPER_NAME\",\n        \"processes\": [\"실제 공정명\"]\n      }}\n    }}\n  ],\n  \"missing_information\": [],\n  \"assumptions\": []\n}}\n```\n\n등록 원문:\n```text\n{source_text}\n```\n"
               }
             },
             "tool_mode": false
@@ -1030,7 +1030,7 @@
                       "model_class": "ChatGoogleGenerativeAIFixed",
                       "model_name_param": "model"
                     },
-                    "name": "gemini-2.5-flash",
+                    "name": "gemini-3.5-flash-lite",
                     "provider": "Google Generative AI"
                   }
                 ]
@@ -1215,7 +1215,7 @@
                 "list": false,
                 "show": true,
                 "multiline": true,
-                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 04 도메인 등록 결과 정규화기\n# 역할: 도메인 등록 JSON 응답을 저장 후보 항목 목록으로 정규화합니다.\n# 주요 입력: 페이로드 (payload) · 필수, LLM 응답 (llm_response) · 필수\n# 주요 출력: 페이로드 출력 (payload_out)\n# 처리 흐름: Markdown code fence를 제거하고 LLM JSON의 호환 key를 도메인 저장 스키마로 정규화합니다.\n# 유지보수 포인트: LLM은 후보 작성에만 사용하고 key 충돌·필수 필드·비밀값·실제 저장 여부는 Python에서 결정론적으로 판정합니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport json\nimport re\nfrom copy import deepcopy\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, MessageTextInput, Output\nfrom lfx.schema.data import Data\n\nALLOWED_SECTIONS = {\"process_groups\", \"product_terms\", \"quantity_terms\", \"metric_terms\", \"analysis_recipes\", \"status_terms\", \"product_key_columns\", \"pandas_function_cases\"}\nFILTER_CONTAINER_KEYS = {\"condition\", \"conditions\", \"condition_by_family\", \"condition_by_dataset\"}\nFUNCTION_CASE_SOURCE_FILTER_ORDERS = {\"before_helper\", \"after_helper\"}\nSUPPORTED_FILTER_OPERATORS = {\n    \"eq\",\n    \"in\",\n    \"ne\",\n    \"not_in\",\n    \"gt\",\n    \"ge\",\n    \"lt\",\n    \"le\",\n    \"contains\",\n    \"like\",\n    \"starts_with\",\n    \"ends_with\",\n    \"is_null\",\n    \"is_empty\",\n    \"null_or_empty\",\n    \"not_null\",\n    \"not_empty\",\n    \"not_blank\",\n    \"or\",\n    \"any\",\n}\nFILTER_OPERATOR_ALIASES = {\n    \"=\": \"eq\",\n    \"==\": \"eq\",\n    \"!=\": \"ne\",\n    \">\": \"gt\",\n    \">=\": \"ge\",\n    \"gte\": \"ge\",\n    \"greater_than\": \"gt\",\n    \"greater_than_or_equal\": \"ge\",\n    \"<\": \"lt\",\n    \"<=\": \"le\",\n    \"lte\": \"le\",\n    \"less_than\": \"lt\",\n    \"less_than_or_equal\": \"le\",\n    \"notin\": \"not_in\",\n    \"not in\": \"not_in\",\n    \"startswith\": \"starts_with\",\n    \"prefix\": \"starts_with\",\n    \"endswith\": \"ends_with\",\n    \"suffix\": \"ends_with\",\n    \"isnull\": \"is_null\",\n    \"isempty\": \"is_empty\",\n    \"is_null_or_empty\": \"null_or_empty\",\n    \"notnull\": \"not_null\",\n    \"notempty\": \"not_empty\",\n    \"notblank\": \"not_blank\",\n    \"is_not_blank\": \"not_blank\",\n    # 이전 저장본과 LLM이 사용하던 두 표현은 모두 \"null 또는 empty가 아님\"을 뜻합니다.\n    \"is_not_null_or_empty\": \"not_blank\",\n    \"is_not_null_and_not_empty\": \"not_blank\",\n    \"not_null_or_empty\": \"not_blank\",\n    \"not_null_and_not_empty\": \"not_blank\",\n}\n\n\n# 주요 함수: LLM 등록 후보 JSON을 추출·검증해 저장 전 표준 items 배열로 정리합니다.\n# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.\ndef normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]:\n    payload = _payload(payload_value)\n    parsed = _json(llm_response)\n    raw_items = parsed.get(\"items\") if isinstance(parsed.get(\"items\"), list) else []\n    items = []\n    errors = []\n    if not parsed:\n        errors.append({\"type\": \"llm_response_parse_error\", \"message\": \"LLM 등록 응답을 JSON object로 해석하지 못했습니다.\"})\n    elif not isinstance(parsed.get(\"items\"), list):\n        errors.append({\"type\": \"invalid_items\", \"message\": \"LLM 등록 응답의 items는 배열이어야 합니다.\"})\n    for index, raw in enumerate(raw_items):\n        if not isinstance(raw, dict):\n            errors.append({\"type\": \"invalid_item\", \"message\": f\"items[{index}]가 object가 아닙니다.\"})\n            continue\n        item = deepcopy(raw)\n        if \"gbn\" in item and \"section\" not in item:\n            item[\"section\"] = item[\"gbn\"]\n        item.setdefault(\"status\", \"active\")\n        item[\"payload\"] = item.get(\"payload\") if isinstance(item.get(\"payload\"), dict) else {}\n        item[\"payload\"], operator_errors = _normalize_domain_filter_contracts(\n            item[\"payload\"],\n            f\"items[{index}].payload\",\n        )\n        errors.extend(operator_errors)\n        if item.get(\"section\") == \"pandas_function_cases\":\n            item[\"payload\"], execution_contract_errors = (\n                _normalize_function_case_execution_contract(\n                    item[\"payload\"],\n                    f\"items[{index}].payload.execution_contract\",\n                )\n            )\n            errors.extend(execution_contract_errors)\n        if item.get(\"section\") not in ALLOWED_SECTIONS:\n            errors.append({\"type\": \"unsupported_section\", \"message\": f\"지원하지 않는 domain section입니다: {item.get('section')}\", \"index\": index})\n        items.append(item)\n    next_payload = payload\n    next_payload[\"items\"] = items\n    next_payload[\"refinement\"] = _refinement(payload, parsed)\n    if not items and not next_payload[\"refinement\"][\"needs_more_input\"] and not errors:\n        errors.append({\"type\": \"no_valid_items\", \"message\": \"저장할 수 있는 도메인 후보가 생성되지 않았습니다.\"})\n    next_payload.setdefault(\"errors\", []).extend(errors)\n    next_payload.setdefault(\"trace\", {})[\"generated_items_preview\"] = [{\"key\": _key(item), \"payload_keys\": sorted(item.get(\"payload\", {}).keys())} for item in items]\n    return next_payload\n\n\n# 함수 설명: `_refinement()`는 LLM이 반환한 보완 필요 정보와 가정을 저장 전 검수 단계까지 보존합니다.\n# 함수 설명: Domain payload의 조건 컨테이너만 공통 filter operator 계약으로 정규화합니다.\ndef _normalize_domain_filter_contracts(\n    payload: dict[str, Any],\n    path: str,\n) -> tuple[dict[str, Any], list[dict[str, Any]]]:\n    \"\"\"Domain payload의 조건 컨테이너만 공통 filter operator 계약으로 정규화합니다.\"\"\"\n    normalized = deepcopy(payload)\n    errors: list[dict[str, Any]] = []\n    for key, value in list(normalized.items()):\n        if str(key) not in FILTER_CONTAINER_KEYS:\n            continue\n        normalized[key] = _normalize_filter_contract_value(\n            value,\n            f\"{path}.{key}\",\n            errors,\n        )\n    return normalized, errors\n\n\n# 함수 설명: Function Case 실행 순서 metadata를 공통 허용값으로 검증하고 표준화합니다.\ndef _normalize_function_case_execution_contract(\n    payload: dict[str, Any],\n    path: str,\n) -> tuple[dict[str, Any], list[dict[str, Any]]]:\n    normalized = deepcopy(payload)\n    raw_contract = normalized.get(\"execution_contract\")\n    if raw_contract in (None, \"\", {}):\n        normalized.pop(\"execution_contract\", None)\n        return normalized, []\n    if not isinstance(raw_contract, dict):\n        return normalized, [\n            {\n                \"type\": \"invalid_function_case_execution_contract\",\n                \"message\": \"pandas function case의 execution_contract는 object여야 합니다.\",\n                \"path\": path,\n            }\n        ]\n    source_filter_order = str(\n        raw_contract.get(\"source_filter_order\") or \"\"\n    ).strip()\n    if source_filter_order not in FUNCTION_CASE_SOURCE_FILTER_ORDERS:\n        return normalized, [\n            {\n                \"type\": \"invalid_function_case_source_filter_order\",\n                \"message\": (\n                    \"source_filter_order는 before_helper 또는 \"\n                    \"after_helper만 사용할 수 있습니다.\"\n                ),\n                \"path\": f\"{path}.source_filter_order\",\n            }\n        ]\n    normalized[\"execution_contract\"] = {\n        \"source_filter_order\": source_filter_order,\n    }\n    return normalized, []\n\n\n# 함수 설명: condition 내부 operator만 정규화하고 field/value 업무 조건은 보존합니다.\ndef _normalize_filter_contract_value(\n    value: Any,\n    path: str,\n    errors: list[dict[str, Any]],\n) -> Any:\n    \"\"\"condition 내부 operator만 정규화하고 field/value 업무 조건은 보존합니다.\"\"\"\n    if isinstance(value, list):\n        return [\n            _normalize_filter_contract_value(item, f\"{path}[{index}]\", errors)\n            for index, item in enumerate(value)\n        ]\n    if not isinstance(value, dict):\n        return deepcopy(value)\n\n    normalized = deepcopy(value)\n    operator_key = \"operator\" if \"operator\" in normalized else (\"op\" if \"op\" in normalized else \"\")\n    if operator_key:\n        raw_operator = normalized.get(operator_key)\n        canonical = _canonical_filter_operator(raw_operator)\n        if canonical not in SUPPORTED_FILTER_OPERATORS:\n            errors.append(\n                {\n                    \"type\": \"unsupported_filter_operator\",\n                    \"message\": f\"지원하지 않는 domain filter operator입니다: {raw_operator}\",\n                    \"path\": f\"{path}.{operator_key}\",\n                }\n            )\n        else:\n            normalized[\"operator\"] = canonical\n            normalized.pop(\"op\", None)\n            if canonical == \"not_blank\":\n                normalized.pop(\"value\", None)\n                normalized.pop(\"values\", None)\n\n    for key, item in list(normalized.items()):\n        if key in {\"operator\", \"op\", \"value\", \"values\"}:\n            continue\n        if isinstance(item, (dict, list)):\n            normalized[key] = _normalize_filter_contract_value(\n                item,\n                f\"{path}.{key}\",\n                errors,\n            )\n    return normalized\n\n\n# 함수 설명: 여러 filter operator 표기를 Data Analysis runtime의 canonical 이름으로 바꿉니다.\ndef _canonical_filter_operator(value: Any) -> str:\n    \"\"\"여러 filter operator 표기를 Data Analysis runtime의 canonical 이름으로 바꿉니다.\"\"\"\n    text = re.sub(r\"[\\s-]+\", \"_\", str(value or \"eq\").strip()).lower()\n    return FILTER_OPERATOR_ALIASES.get(text, text)\n\n\n# 함수 설명: LLM이 반환한 보완 필요 정보와 가정을 저장 전 검토 단계까지 보존합니다.\ndef _refinement(payload: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:\n    current = deepcopy(payload.get(\"refinement\")) if isinstance(payload.get(\"refinement\"), dict) else {}\n    parsed_refinement = parsed.get(\"refinement\") if isinstance(parsed.get(\"refinement\"), dict) else {}\n    missing = _string_list(parsed.get(\"missing_information\")) or _string_list(parsed_refinement.get(\"missing_information\"))\n    assumptions = _string_list(parsed.get(\"assumptions\")) or _string_list(parsed_refinement.get(\"assumptions\"))\n    current.update(\n        {\n            \"refined_text\": str(parsed_refinement.get(\"refined_text\") or current.get(\"refined_text\") or \"\"),\n            \"needs_more_input\": _truthy(parsed.get(\"needs_more_input\")) or _truthy(parsed_refinement.get(\"needs_more_input\")) or bool(missing),\n            \"missing_information\": missing,\n            \"assumptions\": assumptions,\n        }\n    )\n    return current\n\n\n# 함수 설명: `_string_list()`는 보완 질문과 가정을 빈 문자열 없이 표준 문자열 목록으로 정리합니다.\ndef _string_list(value: Any) -> list[str]:\n    return [str(item).strip() for item in value if str(item or \"\").strip()] if isinstance(value, list) else []\n\n\n# 함수 설명: `_truthy()`는 LLM의 bool 또는 문자열 값을 안전한 참/거짓 값으로 해석합니다.\ndef _truthy(value: Any) -> bool:\n    if isinstance(value, bool):\n        return value\n    return str(value or \"\").strip().lower() in {\"1\", \"true\", \"yes\", \"y\", \"on\"}\n\n\n# 함수 설명: `_key()`는 메타데이터 항목에서 비교·표시에 사용할 논리 key를 안전하게 꺼냅니다.\ndef _key(item: dict[str, Any]) -> str:\n    return f\"{item.get('section', '')}:{item.get('key', '')}\" if item.get(\"section\") else str(item.get(\"key\", \"\"))\n\n\n# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.\ndef _payload(value: Any) -> dict[str, Any]:\n    data = getattr(value, \"data\", value)\n    return deepcopy(data) if isinstance(data, dict) else {}\n\n\n# 함수 설명: `_json()`는 Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.\ndef _json(value: Any) -> dict[str, Any]:\n    if isinstance(value, dict):\n        return deepcopy(value)\n    text = str(value or \"\")\n    match = re.search(r\"```(?:json)?\\s*(\\{.*?\\})\\s*```\", text, re.DOTALL)\n    if match:\n        text = match.group(1)\n    try:\n        parsed = json.loads(text)\n    except Exception:\n        return {}\n    return parsed if isinstance(parsed, dict) else {}\n\n\n# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.\n# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.\nclass DomainSavingResultNormalizer(Component):\n    display_name = \"04 도메인 등록 결과 정규화기\"\n    description = \"도메인 등록 JSON 응답을 저장 후보 항목 목록으로 정규화합니다.\"\n    inputs = [DataInput(name=\"payload\", display_name=\"페이로드\", required=True), MessageTextInput(name=\"llm_response\", display_name=\"LLM 응답\", required=True)]\n    outputs = [Output(name=\"payload_out\", display_name=\"페이로드 출력\", method=\"build_payload\")]\n\n    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_payload(self) -> Data:\n        return Data(data=normalize_authoring(getattr(self, \"payload\", None), getattr(self, \"llm_response\", \"\")))\n",
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 04 도메인 등록 결과 정규화기\n# 역할: 도메인 등록 JSON 응답을 저장 후보 항목 목록으로 정규화합니다.\n# 주요 입력: 페이로드 (payload) · 필수, LLM 응답 (llm_response) · 필수\n# 주요 출력: 페이로드 출력 (payload_out)\n# 처리 흐름: Markdown code fence를 제거하고 LLM JSON의 호환 key를 도메인 저장 스키마로 정규화합니다.\n# 유지보수 포인트: LLM은 후보 작성에만 사용하고 key 충돌·필수 필드·비밀값·실제 저장 여부는 Python에서 결정론적으로 판정합니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport json\nimport re\nfrom copy import deepcopy\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, MessageTextInput, Output\nfrom lfx.schema.data import Data\n\nALLOWED_SECTIONS = {\"process_groups\", \"product_terms\", \"quantity_terms\", \"metric_terms\", \"analysis_recipes\", \"status_terms\", \"product_key_columns\", \"pandas_function_cases\"}\nFILTER_CONTAINER_KEYS = {\"condition\", \"conditions\", \"condition_by_family\", \"condition_by_dataset\"}\nFUNCTION_CASE_SOURCE_FILTER_ORDERS = {\"before_helper\", \"after_helper\"}\nSUPPORTED_FILTER_OPERATORS = {\n    \"eq\",\n    \"in\",\n    \"ne\",\n    \"not_in\",\n    \"gt\",\n    \"ge\",\n    \"lt\",\n    \"le\",\n    \"contains\",\n    \"like\",\n    \"starts_with\",\n    \"ends_with\",\n    \"is_null\",\n    \"is_empty\",\n    \"null_or_empty\",\n    \"not_null\",\n    \"not_empty\",\n    \"not_blank\",\n    \"or\",\n    \"any\",\n}\nFILTER_OPERATOR_ALIASES = {\n    \"=\": \"eq\",\n    \"==\": \"eq\",\n    \"!=\": \"ne\",\n    \">\": \"gt\",\n    \">=\": \"ge\",\n    \"gte\": \"ge\",\n    \"greater_than\": \"gt\",\n    \"greater_than_or_equal\": \"ge\",\n    \"<\": \"lt\",\n    \"<=\": \"le\",\n    \"lte\": \"le\",\n    \"less_than\": \"lt\",\n    \"less_than_or_equal\": \"le\",\n    \"notin\": \"not_in\",\n    \"not in\": \"not_in\",\n    \"startswith\": \"starts_with\",\n    \"prefix\": \"starts_with\",\n    \"endswith\": \"ends_with\",\n    \"suffix\": \"ends_with\",\n    \"isnull\": \"is_null\",\n    \"isempty\": \"is_empty\",\n    \"is_null_or_empty\": \"null_or_empty\",\n    \"notnull\": \"not_null\",\n    \"notempty\": \"not_empty\",\n    \"notblank\": \"not_blank\",\n    \"is_not_blank\": \"not_blank\",\n    # 이전 저장본과 LLM이 사용하던 두 표현은 모두 \"null 또는 empty가 아님\"을 뜻합니다.\n    \"is_not_null_or_empty\": \"not_blank\",\n    \"is_not_null_and_not_empty\": \"not_blank\",\n    \"not_null_or_empty\": \"not_blank\",\n    \"not_null_and_not_empty\": \"not_blank\",\n}\n\n\n# 주요 함수: LLM 등록 후보 JSON을 추출·검증해 저장 전 표준 items 배열로 정리합니다.\n# Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.\ndef normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]:\n    payload = _payload(payload_value)\n    parsed = _json(llm_response)\n    raw_items = parsed.get(\"items\") if isinstance(parsed.get(\"items\"), list) else []\n    items = []\n    errors = []\n    if not parsed:\n        errors.append({\"type\": \"llm_response_parse_error\", \"message\": \"LLM 등록 응답을 JSON object로 해석하지 못했습니다.\"})\n    elif not isinstance(parsed.get(\"items\"), list):\n        errors.append({\"type\": \"invalid_items\", \"message\": \"LLM 등록 응답의 items는 배열이어야 합니다.\"})\n    for index, raw in enumerate(raw_items):\n        if not isinstance(raw, dict):\n            errors.append({\"type\": \"invalid_item\", \"message\": f\"items[{index}]가 object가 아닙니다.\"})\n            continue\n        item = deepcopy(raw)\n        if \"gbn\" in item and \"section\" not in item:\n            item[\"section\"] = item[\"gbn\"]\n        item.setdefault(\"status\", \"active\")\n        item[\"payload\"] = item.get(\"payload\") if isinstance(item.get(\"payload\"), dict) else {}\n        item[\"payload\"], operator_errors = _normalize_domain_filter_contracts(\n            item[\"payload\"],\n            f\"items[{index}].payload\",\n        )\n        errors.extend(operator_errors)\n        if item.get(\"section\") == \"pandas_function_cases\":\n            item[\"payload\"], execution_contract_errors = (\n                _normalize_function_case_execution_contract(\n                    item[\"payload\"],\n                    f\"items[{index}].payload.execution_contract\",\n                )\n            )\n            errors.extend(execution_contract_errors)\n        if item.get(\"section\") not in ALLOWED_SECTIONS:\n            errors.append({\"type\": \"unsupported_section\", \"message\": f\"지원하지 않는 domain section입니다: {item.get('section')}\", \"index\": index})\n        items.append(item)\n    # Worker-facing rules are deliberately short natural language.  A weak\n    # authoring model may still classify them as status_terms,\n    # product_key_columns, or pandas_function_cases.  Repair only the two\n    # strongly identifiable rule families before similarity lookup or Mongo\n    # write; ordinary metadata items are left untouched.\n    items = _canonicalize_worker_rule_items(payload, items)\n    next_payload = payload\n    next_payload[\"items\"] = items\n    next_payload[\"refinement\"] = _refinement(payload, parsed)\n    if not items and not next_payload[\"refinement\"][\"needs_more_input\"] and not errors:\n        errors.append({\"type\": \"no_valid_items\", \"message\": \"저장할 수 있는 도메인 후보가 생성되지 않았습니다.\"})\n    next_payload.setdefault(\"errors\", []).extend(errors)\n    next_payload.setdefault(\"trace\", {})[\"generated_items_preview\"] = [{\"key\": _key(item), \"payload_keys\": sorted(item.get(\"payload\", {}).keys())} for item in items]\n    return next_payload\n\n\n# 함수 설명: `_refinement()`는 LLM이 반환한 보완 필요 정보와 가정을 저장 전 검수 단계까지 보존합니다.\n# 함수 설명: Domain payload의 조건 컨테이너만 공통 filter operator 계약으로 정규화합니다.\nRECIPE_RULE_KEY = \"recipe_id_starts_with\"\nHOLD_RULE_KEY = \"current_hold_lot_selection\"\n\n\n# 함수 설명: 작업자 자연어의 HOLD·RECIPE 강한 신호를 canonical analysis recipe 항목으로 정규화합니다.\ndef _canonicalize_worker_rule_items(payload: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    \"\"\"Map simple worker prose to canonical analysis-recipe identities.\n\n    A weak authoring model may classify HOLD prose as a status term or a\n    latest-history function case, and RECIPE prose as a product key.  Repair\n    only these strong signals before similarity lookup; ordinary metadata is\n    preserved unchanged.\n    \"\"\"\n    request = payload.get(\"request\") if isinstance(payload.get(\"request\"), dict) else {}\n    raw_text = str(request.get(\"raw_text\") or \"\").strip()\n    recipe_signal = _has_recipe_prefix_signal(raw_text)\n    hold_signal = _has_hold_selection_signal(raw_text)\n    if not raw_text or not (recipe_signal or hold_signal):\n        return items\n    output: list[dict[str, Any]] = []\n    recipe_sources: list[dict[str, Any]] = []\n    hold_sources: list[dict[str, Any]] = []\n    for item in items:\n        section = str(item.get(\"section\") or \"\").strip()\n        key = str(item.get(\"key\") or \"\").strip()\n        item_text = _item_text(item)\n        if recipe_signal and _is_recipe_rule_item(section, key, item_text):\n            recipe_sources.append(item)\n        elif hold_signal and _is_hold_rule_item(section, key, item_text):\n            hold_sources.append(item)\n        else:\n            output.append(item)\n    if recipe_signal:\n        output.append(_build_recipe_rule_item(raw_text, recipe_sources))\n    if hold_signal:\n        output.append(_build_hold_rule_item(raw_text, hold_sources))\n    return output\n\n\n# 함수 설명: RECIPE 번호와 시작·접두·포함 표현이 함께 있는지 확인합니다.\ndef _has_recipe_prefix_signal(text: str) -> bool:\n    has_recipe_word = \"recipe\" in text.casefold() or \"레시피\" in text\n    has_token = bool(re.search(r\"\\bR\\d{3,}[A-Za-z0-9_-]*\\b\", text, re.IGNORECASE))\n    has_prefix_word = any(token in text for token in (\"시작\", \"접두\", \"포함\", \"완전히\", \"번호\"))\n    return has_recipe_word and (has_token or has_prefix_word)\n\n\n# 함수 설명: HOLD와 LOT·사유·코드·이력 등 선택 기준 표현이 함께 있는지 확인합니다.\ndef _has_hold_selection_signal(text: str) -> bool:\n    lowered = text.casefold()\n    if \"hold\" not in lowered and \"홀드\" not in text:\n        return False\n    # A process-range function-case example may mention a \"Hold 된 Lot\" as a\n    # sample question.  That is not an authoring request for the HOLD recipe;\n    # keep the mapping scoped to the worker's HOLD selection rule block.\n    if \"function case\" in lowered or \"pandas_function_cases\" in lowered or \"ordered_process_range\" in lowered:\n        return False\n    return any(token in text for token in (\"lot\", \"LOT\", \"사유\", \"코드\", \"이력\", \"최근\", \"목록\", \"ID\"))\n\n\n# 함수 설명: Domain 항목의 section·key·별칭·payload를 identity 판정용 문자열로 합칩니다.\ndef _item_text(item: dict[str, Any]) -> str:\n    payload = item.get(\"payload\") if isinstance(item.get(\"payload\"), dict) else {}\n    values: list[Any] = [item.get(\"section\"), item.get(\"key\"), item.get(\"display_name\")]\n    values.extend(item.get(\"aliases\") if isinstance(item.get(\"aliases\"), list) else [])\n    values.append(payload)\n    return json.dumps(values, ensure_ascii=False, default=str).casefold()\n\n\n# 함수 설명: 기존 LLM 항목이 RECIPE prefix 규칙을 소유하는지 판정합니다.\ndef _is_recipe_rule_item(section: str, key: str, item_text: str) -> bool:\n    if section == \"analysis_recipes\" and key in {RECIPE_RULE_KEY, \"raw_data_display_policy\"}:\n        return True\n    if section == \"product_key_columns\" and key.casefold() in {\"recipe\", \"recipe_id\", RECIPE_RULE_KEY}:\n        return True\n    return \"recipe\" in item_text and any(token in item_text for token in (\"시작\", \"starts_with\", \"prefix\", \"완전히\"))\n\n\n# 함수 설명: 기존 LLM 항목이 HOLD 현재 상태·최신 이력 선택 규칙을 소유하는지 판정합니다.\ndef _is_hold_rule_item(section: str, key: str, item_text: str) -> bool:\n    if section == \"analysis_recipes\" and key == HOLD_RULE_KEY:\n        return True\n    if section == \"status_terms\" and (key.casefold() == \"hold\" or \"hold\" in item_text):\n        return True\n    if section == \"pandas_function_cases\":\n        # Older prompts sometimes put the latest-HOLD selection in a\n        # function-case item with a different key.  It still belongs to the\n        # HOLD analysis recipe when the item clearly mentions HOLD plus a\n        # LOT/history/reason/code concept; never keep a second function-case\n        # owner for the same rule.\n        return \"hold\" in item_text and any(\n            token in item_text\n            for token in (\n                \"latest_hold\",\n                \"latest hold\",\n                \"최근 hold\",\n                \"최신 hold\",\n                \"hold_history\",\n                \"lot\",\n                \"history\",\n                \"이력\",\n                \"사유\",\n                \"코드\",\n            )\n        )\n    return section == \"analysis_recipes\" and \"hold\" in item_text\n\n\n# 함수 설명: 작업자 RECIPE 설명을 starts_with 분석 recipe payload로 구성합니다.\ndef _build_recipe_rule_item(raw_text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:\n    payload: dict[str, Any] = {\n        \"display_name\": \"RECIPE 번호 시작값 조회 규칙\",\n        \"aliases\": [\"RECIPE\", \"레시피\", \"RECIPE 번호\", \"레시피 번호\"],\n        \"selection_criteria\": _rule_criteria(raw_text, sources, [\n            \"RECIPE_ID는 입력한 번호와 완전히 같은 값이 아니라 해당 번호로 시작하는 값을 조회한다.\",\n            \"예: R1234이면 R1234, R1234-A, R1234-01을 모두 포함한다.\",\n            \"조회 operator는 starts_with이며 eq 또는 contains로 완전 일치/부분 포함 조회를 하지 않는다.\",\n        ]),\n    }\n    _merge_rule_payload(payload, sources)\n    return {\"section\": \"analysis_recipes\", \"key\": RECIPE_RULE_KEY, \"status\": \"active\", \"payload\": payload}\n\n\n# 함수 설명: 작업자 HOLD 설명을 lot_status 선조회와 LOT별 최신 hold_history 기준을 가진 recipe로 구성합니다.\ndef _build_hold_rule_item(raw_text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:\n    payload: dict[str, Any] = {\n        \"display_name\": \"현재 HOLD LOT 및 최신 HOLD 이력 조회 규칙\",\n        \"aliases\": [\"현재 HOLD LOT\", \"HOLD LOT 목록\", \"HOLD 사유\", \"HOLD 코드\", \"HOLD 이력\"],\n        \"source_datasets\": [\"lot_status\", \"hold_history\"],\n        \"selection_criteria\": _rule_criteria(raw_text, sources, [\n            \"LOT 목록이나 LOT ID만 물으면 lot_status에서 현재 HOLD LOT만 조회하고 HOLD 이력은 조회하지 않는다.\",\n            \"현재 HOLD 사유·코드·상세 사유·최근 HOLD 이력을 물으면 lot_status에서 HOLD_STAT=OnHold인 LOT를 먼저 조회한다.\",\n            \"선행 결과의 LOT_ID를 hold_history.required_params.LOT_ID로 전달한다.\",\n            \"LOT_ID required_params가 빈 문자열인 상태에서 선행 결과의 result_ref와 LOT_ID를 전달해 후속 조회한다.\",\n            \"hold_history는 LOT별 HOLD_TM 내림차순으로 정렬하고 LOT별 최신 한 건만 선택한다.\",\n            \"결과는 LOT_ID, 공정, HOLD_TM, HOLD_CD, HOLD_DESC를 보여주며 이력이 없으면 이력 없음으로 표시한다.\",\n            \"HOLD라는 단어만으로 hold_history를 선택하지 않는다.\",\n        ]),\n        \"current_selection\": {\"dataset_key\": \"lot_status\", \"filter\": {\"HOLD_STAT\": {\"operator\": \"eq\", \"value\": \"OnHold\"}}},\n        \"history_selection\": {\n            \"dataset_key\": \"hold_history\", \"required_params\": {\"LOT_ID\": \"\"},\n            \"upstream_binding\": {\"source_alias\": \"previous_result\", \"source_column\": \"LOT_ID\", \"target_param\": \"LOT_ID\", \"operator\": \"in\"},\n            \"latest_per_group\": {\n                \"partition_by\": [\"LOT_ID\"], \"order_by\": [{\"column\": \"HOLD_TM\", \"direction\": \"desc\"}],\n                \"limit_per_group\": 1, \"tie_policy\": \"error\",\n            },\n            \"result_columns\": [\"LOT_ID\", \"OPER_NAME\", \"HOLD_TM\", \"HOLD_CD\", \"HOLD_DESC\"],\n        },\n    }\n    _merge_rule_payload(payload, sources)\n    return {\"section\": \"analysis_recipes\", \"key\": HOLD_RULE_KEY, \"status\": \"active\", \"payload\": payload}\n\n\n# 함수 설명: 원문과 기존 후보의 selection criteria를 중복 없이 canonical recipe에 합칩니다.\ndef _rule_criteria(raw_text: str, sources: list[dict[str, Any]], defaults: list[str]) -> list[str]:\n    values: list[Any] = []\n    for item in sources:\n        item_payload = item.get(\"payload\") if isinstance(item.get(\"payload\"), dict) else {}\n        if isinstance(item_payload.get(\"selection_criteria\"), list):\n            values.extend(item_payload[\"selection_criteria\"])\n    values.extend(line.strip(\" -•\\t\") for line in raw_text.splitlines() if line.strip())\n    values.extend(defaults)\n    return _unique_text(values)\n\n\n# 함수 설명: 기존 후보의 source dataset·별칭만 canonical rule payload에 안전하게 병합합니다.\ndef _merge_rule_payload(target: dict[str, Any], sources: list[dict[str, Any]]) -> None:\n    for item in sources:\n        source = item.get(\"payload\") if isinstance(item.get(\"payload\"), dict) else {}\n        for key in (\"source_datasets\", \"aliases\"):\n            values = source.get(key)\n            if isinstance(values, list):\n                target[key] = _unique_text(list(target.get(key) or []) + values)\n\n\n# 함수 설명: 빈 문자열과 중복을 제거한 순서 보존 문자열 목록을 만듭니다.\ndef _unique_text(values: list[Any]) -> list[str]:\n    result: list[str] = []\n    seen: set[str] = set()\n    for value in values:\n        text = str(value or \"\").strip()\n        if text and text not in seen:\n            seen.add(text)\n            result.append(text)\n    return result\n\n\n# 함수 설명: Domain payload 내부의 filter operator 표현을 실행 계약의 canonical 형태로 정규화합니다.\ndef _normalize_domain_filter_contracts(\n    payload: dict[str, Any],\n    path: str,\n) -> tuple[dict[str, Any], list[dict[str, Any]]]:\n    \"\"\"Domain payload의 조건 컨테이너만 공통 filter operator 계약으로 정규화합니다.\"\"\"\n    normalized = deepcopy(payload)\n    errors: list[dict[str, Any]] = []\n    for key, value in list(normalized.items()):\n        if str(key) not in FILTER_CONTAINER_KEYS:\n            continue\n        normalized[key] = _normalize_filter_contract_value(\n            value,\n            f\"{path}.{key}\",\n            errors,\n        )\n    return normalized, errors\n\n\n# 함수 설명: Function Case 실행 순서 metadata를 공통 허용값으로 검증하고 표준화합니다.\ndef _normalize_function_case_execution_contract(\n    payload: dict[str, Any],\n    path: str,\n) -> tuple[dict[str, Any], list[dict[str, Any]]]:\n    normalized = deepcopy(payload)\n    raw_contract = normalized.get(\"execution_contract\")\n    if raw_contract in (None, \"\", {}):\n        normalized.pop(\"execution_contract\", None)\n        return normalized, []\n    if not isinstance(raw_contract, dict):\n        return normalized, [\n            {\n                \"type\": \"invalid_function_case_execution_contract\",\n                \"message\": \"pandas function case의 execution_contract는 object여야 합니다.\",\n                \"path\": path,\n            }\n        ]\n    source_filter_order = str(\n        raw_contract.get(\"source_filter_order\") or \"\"\n    ).strip()\n    if source_filter_order not in FUNCTION_CASE_SOURCE_FILTER_ORDERS:\n        return normalized, [\n            {\n                \"type\": \"invalid_function_case_source_filter_order\",\n                \"message\": (\n                    \"source_filter_order는 before_helper 또는 \"\n                    \"after_helper만 사용할 수 있습니다.\"\n                ),\n                \"path\": f\"{path}.source_filter_order\",\n            }\n        ]\n    normalized[\"execution_contract\"] = {\n        \"source_filter_order\": source_filter_order,\n    }\n    return normalized, []\n\n\n# 함수 설명: condition 내부 operator만 정규화하고 field/value 업무 조건은 보존합니다.\ndef _normalize_filter_contract_value(\n    value: Any,\n    path: str,\n    errors: list[dict[str, Any]],\n) -> Any:\n    \"\"\"condition 내부 operator만 정규화하고 field/value 업무 조건은 보존합니다.\"\"\"\n    if isinstance(value, list):\n        return [\n            _normalize_filter_contract_value(item, f\"{path}[{index}]\", errors)\n            for index, item in enumerate(value)\n        ]\n    if not isinstance(value, dict):\n        return deepcopy(value)\n\n    normalized = deepcopy(value)\n    operator_key = \"operator\" if \"operator\" in normalized else (\"op\" if \"op\" in normalized else \"\")\n    if operator_key:\n        raw_operator = normalized.get(operator_key)\n        canonical = _canonical_filter_operator(raw_operator)\n        if canonical not in SUPPORTED_FILTER_OPERATORS:\n            errors.append(\n                {\n                    \"type\": \"unsupported_filter_operator\",\n                    \"message\": f\"지원하지 않는 domain filter operator입니다: {raw_operator}\",\n                    \"path\": f\"{path}.{operator_key}\",\n                }\n            )\n        else:\n            normalized[\"operator\"] = canonical\n            normalized.pop(\"op\", None)\n            if canonical == \"not_blank\":\n                normalized.pop(\"value\", None)\n                normalized.pop(\"values\", None)\n\n    for key, item in list(normalized.items()):\n        if key in {\"operator\", \"op\", \"value\", \"values\"}:\n            continue\n        if isinstance(item, (dict, list)):\n            normalized[key] = _normalize_filter_contract_value(\n                item,\n                f\"{path}.{key}\",\n                errors,\n            )\n    return normalized\n\n\n# 함수 설명: 여러 filter operator 표기를 Data Analysis runtime의 canonical 이름으로 바꿉니다.\ndef _canonical_filter_operator(value: Any) -> str:\n    \"\"\"여러 filter operator 표기를 Data Analysis runtime의 canonical 이름으로 바꿉니다.\"\"\"\n    text = re.sub(r\"[\\s-]+\", \"_\", str(value or \"eq\").strip()).lower()\n    return FILTER_OPERATOR_ALIASES.get(text, text)\n\n\n# 함수 설명: LLM이 반환한 보완 필요 정보와 가정을 저장 전 검토 단계까지 보존합니다.\ndef _refinement(payload: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:\n    current = deepcopy(payload.get(\"refinement\")) if isinstance(payload.get(\"refinement\"), dict) else {}\n    parsed_refinement = parsed.get(\"refinement\") if isinstance(parsed.get(\"refinement\"), dict) else {}\n    missing = _string_list(parsed.get(\"missing_information\")) or _string_list(parsed_refinement.get(\"missing_information\"))\n    assumptions = _string_list(parsed.get(\"assumptions\")) or _string_list(parsed_refinement.get(\"assumptions\"))\n    current.update(\n        {\n            \"refined_text\": str(parsed_refinement.get(\"refined_text\") or current.get(\"refined_text\") or \"\"),\n            \"needs_more_input\": _truthy(parsed.get(\"needs_more_input\")) or _truthy(parsed_refinement.get(\"needs_more_input\")) or bool(missing),\n            \"missing_information\": missing,\n            \"assumptions\": assumptions,\n        }\n    )\n    return current\n\n\n# 함수 설명: `_string_list()`는 보완 질문과 가정을 빈 문자열 없이 표준 문자열 목록으로 정리합니다.\ndef _string_list(value: Any) -> list[str]:\n    return [str(item).strip() for item in value if str(item or \"\").strip()] if isinstance(value, list) else []\n\n\n# 함수 설명: `_truthy()`는 LLM의 bool 또는 문자열 값을 안전한 참/거짓 값으로 해석합니다.\ndef _truthy(value: Any) -> bool:\n    if isinstance(value, bool):\n        return value\n    return str(value or \"\").strip().lower() in {\"1\", \"true\", \"yes\", \"y\", \"on\"}\n\n\n# 함수 설명: `_key()`는 메타데이터 항목에서 비교·표시에 사용할 논리 key를 안전하게 꺼냅니다.\ndef _key(item: dict[str, Any]) -> str:\n    return f\"{item.get('section', '')}:{item.get('key', '')}\" if item.get(\"section\") else str(item.get(\"key\", \"\"))\n\n\n# 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.\ndef _payload(value: Any) -> dict[str, Any]:\n    data = getattr(value, \"data\", value)\n    return deepcopy(data) if isinstance(data, dict) else {}\n\n\n# 함수 설명: `_json()`는 Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.\ndef _json(value: Any) -> dict[str, Any]:\n    if isinstance(value, dict):\n        return deepcopy(value)\n    text = str(value or \"\")\n    match = re.search(r\"```(?:json)?\\s*(\\{.*?\\})\\s*```\", text, re.DOTALL)\n    if match:\n        text = match.group(1)\n    try:\n        parsed = json.loads(text)\n    except Exception:\n        return {}\n    return parsed if isinstance(parsed, dict) else {}\n\n\n# Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.\n# 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.\nclass DomainSavingResultNormalizer(Component):\n    display_name = \"04 도메인 등록 결과 정규화기\"\n    description = \"도메인 등록 JSON 응답을 저장 후보 항목 목록으로 정규화합니다.\"\n    inputs = [DataInput(name=\"payload\", display_name=\"페이로드\", required=True), MessageTextInput(name=\"llm_response\", display_name=\"LLM 응답\", required=True)]\n    outputs = [Output(name=\"payload_out\", display_name=\"페이로드 출력\", method=\"build_payload\")]\n\n    # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.\n    # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.\n    def build_payload(self) -> Data:\n        return Data(data=normalize_authoring(getattr(self, \"payload\", None), getattr(self, \"llm_response\", \"\")))\n",
                 "fileTypes": [],
                 "file_path": "",
                 "password": false,
@@ -1289,7 +1289,7 @@
             "edited": false,
             "metadata": {
               "module": "v5_auxiliary.04_domain_saving_result_normalizer",
-              "code_hash": "f3b077833fd8",
+              "code_hash": "6b7c4ae573f9",
               "dependencies": {
                 "total_dependencies": 1,
                 "dependencies": [
@@ -2397,449 +2397,42 @@
           "width": 192
         },
         "position": {
-          "x": 3410.0,
-          "y": -180.0
-        },
-        "selected": false,
-        "type": "genericNode"
-      },
-      {
-        "data": {
-          "id": "GaiAInputAdapter-domain",
-          "node": {
-            "template": {
-              "_type": "Component",
-              "input_message": {
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": true,
-                "placeholder": "",
-                "show": true,
-                "name": "input_message",
-                "value": "",
-                "display_name": "Chat Input Message",
-                "advanced": false,
-                "input_types": [
-                  "Message"
-                ],
-                "dynamic": false,
-                "info": "표준 Chat Input에서 받은 사용자 Message입니다.",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "HandleInput"
-              },
-              "code": {
-                "type": "code",
-                "required": true,
-                "placeholder": "",
-                "list": false,
-                "show": true,
-                "multiline": true,
-                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: GaiA Input Adapter\n# 역할: 표준 Chat Input Message에 GaiA AgentBuilder의 A2A data와 metadata를 병합합니다.\n# 주요 입력: 표준 Chat Input Message, data JSON, metadata JSON\n# 주요 출력: GaiA 속성이 포함된 Message\n# 유지보수 포인트: 잘못된 JSON은 실행을 중단하지 않고 빈 객체로 정규화합니다.\n# =============================================================================\n\nimport json\nimport logging\nfrom typing import Any\n\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.inputs.inputs import HandleInput\nfrom lfx.io import MultilineInput, Output\nfrom lfx.schema.data import Data\nfrom lfx.schema.message import Message\n\nlogger = logging.getLogger(__name__)\n\n\n# Langflow 컴포넌트 클래스: 표준 Chat Input 뒤에서 GaiA 실행 문맥을 Message에 병합하는 어댑터입니다.\nclass GaiAInputAdapter(ChatComponent):\n    display_name = \"GaiA Input Adapter\"\n    description = (\n        \"표준 Chat Input이 생성한 Message에 GaiA A2A data와 metadata를 병합합니다. \"\n        \"Playground에서는 빈 JSON을 사용하고, 운영 호출에서는 tweak으로 부가 문맥을 전달합니다.\"\n    )\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"GaiAInputAdapter\"\n    minimized = True\n\n    inputs = [\n        HandleInput(\n            name=\"input_message\",\n            display_name=\"Chat Input Message\",\n            info=\"표준 Chat Input에서 받은 사용자 Message입니다.\",\n            input_types=[\"Message\"],\n            required=True,\n        ),\n        MultilineInput(\n            name=\"data\",\n            display_name=\"data\",\n            value=\"{}\",\n            info='GAIA A2A data JSON from tweaks[\"GaiA Input Adapter\"][\"data\"].',\n            advanced=False,\n        ),\n        MultilineInput(\n            name=\"metadata\",\n            display_name=\"metadata\",\n            value=\"{}\",\n            info='GAIA A2A metadata JSON from tweaks[\"GaiA Input Adapter\"][\"metadata\"].',\n            advanced=False,\n        ),\n    ]\n    outputs = [Output(display_name=\"message\", name=\"message\", method=\"message_response\", types=[\"Message\"])]\n\n    # 함수 설명: 문자열 JSON은 객체로 읽고, 비어 있거나 해석할 수 없는 값은 빈 객체로 처리합니다.\n    def _json_or_raw(self, value: Any) -> Any:\n        if not isinstance(value, str):\n            return value\n        text = value.strip()\n        if not text:\n            return {}\n        try:\n            return json.loads(text)\n        except Exception:\n            logger.warning(\"GAIA_DEBUG GaiA Input non-json value ignored type=%s\", type(value).__name__)\n            return {}\n\n    # 함수 설명: data 또는 metadata가 한 번 더 감싸진 형식도 단일 dict로 정규화합니다.\n    def _as_dict(self, value: Any, field_name: str) -> dict:\n        parsed = self._json_or_raw(value)\n        if isinstance(parsed, dict):\n            nested = parsed.get(field_name)\n            if isinstance(nested, dict) and len(parsed) == 1:\n                return nested\n            return parsed\n        logger.warning(\"GAIA_DEBUG GaiA Input %s is not object: %s\", field_name, type(parsed).__name__)\n        return {}\n\n    # 함수 설명: 디버그 상태를 한글이 보존되는 JSON 문자열로 안전하게 변환합니다.\n    def _json_for_log(self, value: Any) -> str:\n        try:\n            return json.dumps(value, ensure_ascii=False, default=str)\n        except Exception:\n            return str(value)\n\n    # 주요 메서드: 표준 Chat Input Message의 본문과 세션을 유지하면서 A2A 부가 정보를 병합합니다.\n    def message_response(self) -> Message:\n        source_message = getattr(self, \"input_message\", None)\n        message = source_message if isinstance(source_message, Message) else Message(text=str(source_message or \"\"))\n        explicit_data = self._as_dict(getattr(self, \"data\", \"{}\"), \"data\")\n        explicit_metadata = self._as_dict(getattr(self, \"metadata\", \"{}\"), \"metadata\")\n        current_data = getattr(message, \"data\", None)\n        current_metadata = getattr(message, \"metadata\", None)\n        data = {**(current_data if isinstance(current_data, dict) else {}), **explicit_data}\n        metadata = {**(current_metadata if isinstance(current_metadata, dict) else {}), **explicit_metadata}\n\n        message.data = data\n        message.a2a_data = data\n        message.metadata = metadata\n        message.framework2_metadata = metadata\n        message.a2a_metadata = metadata\n        if metadata.get(\"session_id\"):\n            message.session_id = str(metadata.get(\"session_id\"))\n\n        status_payload = {\n            \"component\": \"GaiA Input Adapter\",\n            \"text_length\": len(str(getattr(message, \"text\", \"\") or \"\")),\n            \"data_keys\": sorted(str(key) for key in data.keys()),\n            \"metadata_keys\": sorted(str(key) for key in metadata.keys()),\n        }\n        debug_text = self._json_for_log(status_payload)\n        logger.warning(\"GAIA_DEBUG GaiA Input Adapter payload=%s\", debug_text)\n        print(f\"GAIA_DEBUG GaiA Input Adapter payload={debug_text}\", flush=True)\n        self.status = Data(data=status_payload)\n        return message\n",
-                "fileTypes": [],
-                "file_path": "",
-                "password": false,
-                "name": "code",
-                "advanced": true,
-                "dynamic": true,
-                "info": "",
-                "load_from_db": false,
-                "title_case": false
-              },
-              "data": {
-                "tool_mode": false,
-                "trace_as_input": true,
-                "multiline": true,
-                "ai_enabled": false,
-                "trace_as_metadata": true,
-                "load_from_db": false,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": false,
-                "placeholder": "",
-                "show": true,
-                "name": "data",
-                "value": "{}",
-                "display_name": "data",
-                "advanced": false,
-                "input_types": [
-                  "Message"
-                ],
-                "dynamic": false,
-                "info": "GAIA A2A data JSON from tweaks[\"GaiA Input Adapter\"][\"data\"].",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "copy_field": false,
-                "password": false,
-                "type": "str",
-                "_input_type": "MultilineInput"
-              },
-              "metadata": {
-                "tool_mode": false,
-                "trace_as_input": true,
-                "multiline": true,
-                "ai_enabled": false,
-                "trace_as_metadata": true,
-                "load_from_db": false,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": false,
-                "placeholder": "",
-                "show": true,
-                "name": "metadata",
-                "value": "{}",
-                "display_name": "metadata",
-                "advanced": false,
-                "input_types": [
-                  "Message"
-                ],
-                "dynamic": false,
-                "info": "GAIA A2A metadata JSON from tweaks[\"GaiA Input Adapter\"][\"metadata\"].",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "copy_field": false,
-                "password": false,
-                "type": "str",
-                "_input_type": "MultilineInput"
-              }
-            },
-            "description": "표준 Chat Input이 생성한 Message에 GaiA A2A data와 metadata를 병합합니다. Playground에서는 빈 JSON을 사용하고, 운영 호출에서는 tweak으로 부가 문맥을 전달합니다.",
-            "icon": "MessagesSquare",
-            "base_classes": [
-              "Message"
-            ],
-            "display_name": "GaiA Input Adapter",
-            "documentation": "https://docs.langflow.org/chat-input-and-output",
-            "minimized": true,
-            "custom_fields": {},
-            "output_types": [],
-            "pinned": false,
-            "conditional_paths": [],
-            "frozen": false,
-            "outputs": [
-              {
-                "types": [
-                  "Message"
-                ],
-                "selected": "Message",
-                "name": "message",
-                "display_name": "message",
-                "method": "message_response",
-                "value": "__UNDEFINED__",
-                "cache": true,
-                "allows_loop": false,
-                "group_outputs": false,
-                "tool_mode": true
-              }
-            ],
-            "field_order": [
-              "input_message",
-              "data",
-              "metadata"
-            ],
-            "beta": false,
-            "legacy": false,
-            "edited": false,
-            "metadata": {
-              "module": "v5_auxiliary.00_gaia_input",
-              "code_hash": "1863aadecf5d",
-              "dependencies": {
-                "total_dependencies": 1,
-                "dependencies": [
-                  {
-                    "name": "lfx",
-                    "version": "0.4.2"
-                  }
-                ]
-              }
-            },
-            "tool_mode": false,
-            "lf_version": "1.9.2"
-          },
-          "showNode": true,
-          "type": "GaiAInputAdapter"
-        },
-        "dragging": false,
-        "id": "GaiAInputAdapter-domain",
-        "measured": {
-          "height": 267,
-          "width": 320
-        },
-        "position": {
-          "x": 0.0,
-          "y": 0.0
-        },
-        "selected": false,
-        "type": "genericNode"
-      },
-      {
-        "data": {
-          "id": "GaiAOutputAdapter-domain",
-          "node": {
-            "template": {
-              "_type": "Component",
-              "docs": {
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": false,
-                "placeholder": "",
-                "show": true,
-                "name": "docs",
-                "value": "",
-                "display_name": "docs",
-                "advanced": false,
-                "input_types": [
-                  "Data",
-                  "DataFrame"
-                ],
-                "dynamic": false,
-                "info": "",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "HandleInput"
-              },
-              "followup_questions": {
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": false,
-                "placeholder": "",
-                "show": true,
-                "name": "followup_questions",
-                "value": "",
-                "display_name": "followup_questions",
-                "advanced": false,
-                "input_types": [
-                  "Data",
-                  "DataFrame"
-                ],
-                "dynamic": false,
-                "info": "",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "HandleInput"
-              },
-              "images": {
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": false,
-                "placeholder": "",
-                "show": true,
-                "name": "images",
-                "value": "",
-                "display_name": "images",
-                "advanced": false,
-                "input_types": [
-                  "Data",
-                  "DataFrame"
-                ],
-                "dynamic": false,
-                "info": "",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "HandleInput"
-              },
-              "input_value": {
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": true,
-                "placeholder": "",
-                "show": true,
-                "name": "input_value",
-                "value": "",
-                "display_name": "answer",
-                "advanced": false,
-                "input_types": [
-                  "Data",
-                  "DataFrame",
-                  "Message"
-                ],
-                "dynamic": false,
-                "info": "",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "HandleInput"
-              },
-              "knowhows": {
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": false,
-                "placeholder": "",
-                "show": true,
-                "name": "knowhows",
-                "value": "",
-                "display_name": "knowhows",
-                "advanced": false,
-                "input_types": [
-                  "Data",
-                  "DataFrame"
-                ],
-                "dynamic": false,
-                "info": "",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "HandleInput"
-              },
-              "urls": {
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": false,
-                "placeholder": "",
-                "show": true,
-                "name": "urls",
-                "value": "",
-                "display_name": "urls",
-                "advanced": false,
-                "input_types": [
-                  "Data",
-                  "DataFrame"
-                ],
-                "dynamic": false,
-                "info": "",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "HandleInput"
-              },
-              "code": {
-                "type": "code",
-                "required": true,
-                "placeholder": "",
-                "list": false,
-                "show": true,
-                "multiline": true,
-                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: GaiA Output Adapter\n# 역할: 최종 답변과 참고자료를 GaiA 응답 계약으로 정규화해 표준 Chat Output으로 전달합니다.\n# 주요 입력: 답변 Message/Data/DataFrame, 문서·URL·이미지·노하우·후속 질문 참조\n# 주요 출력: Langflow Message, 구조화된 GaiA Response Data\n# 유지보수 포인트: 어댑터는 메시지를 저장하지 않고 표준 Chat Output이 한 번만 저장합니다.\n# =============================================================================\n\nimport json\nimport logging\nfrom typing import Any\n\nimport orjson\nfrom fastapi.encoders import jsonable_encoder\n\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.helpers.data import safe_convert\nfrom lfx.inputs.inputs import HandleInput\nfrom lfx.schema.data import Data\nfrom lfx.schema.dataframe import DataFrame\nfrom lfx.schema.message import Message\nfrom lfx.template.field.base import Output\nfrom lfx.utils.constants import MESSAGE_SENDER_AI\n\nlogger = logging.getLogger(__name__)\n\nREFERENCE_TYPES = {\n    \"docs\": \"doc\",\n    \"images\": \"image\",\n    \"knowhows\": \"knowhow\",\n    \"followup_questions\": \"followup_question\",\n    \"urls\": \"url\",\n}\nREFERENCE_KEYS = tuple(REFERENCE_TYPES.keys())\nOUTPUT_METADATA_KEYS = (*REFERENCE_KEYS, \"trace_id\", \"usage\")\n\nREFERENCE_ALLOWED_FIELDS = {\n    \"docs\": {\n        \"type\",\n        \"srcType\",\n        \"name\",\n        \"docId\",\n        \"extension\",\n        \"path\",\n        \"url\",\n        \"page\",\n        \"totalPage\",\n        \"startPage\",\n        \"chunkId\",\n        \"score\",\n        \"quote\",\n        \"sectionTitle\",\n    },\n    \"urls\": {\"type\", \"id\", \"name\", \"title\", \"url\", \"snippet\", \"publishedAt\", \"source\", \"rank\"},\n    \"images\": {\"type\", \"id\", \"value\"},\n    \"knowhows\": {\n        \"type\",\n        \"id\",\n        \"knowhow_id\",\n        \"knowhow_no\",\n        \"knowhow\",\n        \"tab_name\",\n        \"tab_id\",\n        \"user_id\",\n        \"user_name\",\n        \"user_department\",\n    },\n    \"followup_questions\": {\"type\", \"id\", \"value\"},\n}\nREFERENCE_REQUIRED_FIELDS = {\n    \"docs\": (\"srcType\", \"name\", \"docId\", \"startPage\"),\n    \"urls\": (),\n    \"images\": (\"id\", \"value\"),\n    \"knowhows\": (\"id\", \"knowhow_id\", \"knowhow\"),\n    \"followup_questions\": (\"value\",),\n}\nREFERENCE_NUMBER_FIELDS = {\n    \"docs\": {\"page\", \"totalPage\", \"startPage\"},\n    \"urls\": {\"rank\"},\n    \"images\": set(),\n    \"knowhows\": {\"knowhow_no\"},\n    \"followup_questions\": set(),\n}\n\n\n# Langflow 컴포넌트 클래스: 최종 답변과 참고자료를 GaiA answer/metadata에 담아 표준 Chat Output으로 전달하는 어댑터입니다.\nclass GaiAOutputAdapter(ChatComponent):\n    display_name = \"GaiA Output Adapter\"\n    description = (\n        \"최종 답변과 참고자료를 GaiA AgentBuilder가 이해하는 answer/metadata 형식으로 정리합니다. \"\n        \"변환된 Message는 뒤의 표준 Chat Output이 Playground와 실행 API에 출력합니다.\"\n    )\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"GaiAOutputAdapter\"\n    minimized = True\n\n    inputs = [\n        HandleInput(\n            name=\"input_value\",\n            display_name=\"answer\",\n            input_types=[\"Data\", \"DataFrame\", \"Message\"],\n            required=True,\n        ),\n        HandleInput(name=\"docs\", display_name=\"docs\", input_types=[\"Data\", \"DataFrame\"], required=False),\n        HandleInput(name=\"urls\", display_name=\"urls\", input_types=[\"Data\", \"DataFrame\"], required=False),\n        HandleInput(name=\"images\", display_name=\"images\", input_types=[\"Data\", \"DataFrame\"], required=False),\n        HandleInput(\n            name=\"knowhows\",\n            display_name=\"knowhows\",\n            input_types=[\"Data\", \"DataFrame\"],\n            required=False,\n        ),\n        HandleInput(\n            name=\"followup_questions\",\n            display_name=\"followup_questions\",\n            input_types=[\"Data\", \"DataFrame\"],\n            required=False,\n        ),\n    ]\n\n    outputs = [\n        Output(\n            display_name=\"message\",\n            name=\"message\",\n            method=\"message_response\",\n            types=[\"Message\"],\n            group_outputs=True,\n        ),\n        Output(\n            display_name=\"GaiA Response\",\n            name=\"gaia_response\",\n            method=\"gaia_response_output\",\n            types=[\"Data\"],\n            group_outputs=True,\n        ),\n    ]\n\n    # 함수 설명: None, NaN, 빈 문자열과 빈 컬렉션을 공통 빈 값으로 판정합니다.\n    def _is_empty(self, value: Any) -> bool:\n        if value is None:\n            return True\n        try:\n            if value != value:\n                return True\n        except Exception:\n            pass\n        if isinstance(value, str):\n            return not value.strip()\n        if isinstance(value, (list, tuple, set, dict)):\n            return len(value) == 0\n        return False\n\n    # 함수 설명: Langflow Data·DataFrame·Message와 JSON 문자열을 일반 Python 값으로 변환합니다.\n    def _plain_value(self, value: Any) -> Any:\n        if self._is_empty(value):\n            return {}\n        if isinstance(value, Data):\n            return jsonable_encoder(value.data)\n        if isinstance(value, DataFrame):\n            try:\n                return [jsonable_encoder(row.to_dict()) for _, row in value.iterrows()]\n            except Exception:\n                return jsonable_encoder(value)\n        if isinstance(value, Message):\n            data = getattr(value, \"data\", None) or getattr(value, \"a2a_data\", None)\n            if not self._is_empty(data):\n                return jsonable_encoder(data)\n            text = getattr(value, \"text\", \"\")\n            return {\"text\": text} if text else {}\n        if isinstance(value, str):\n            stripped = value.strip()\n            if not stripped:\n                return {}\n            try:\n                return jsonable_encoder(orjson.loads(stripped))\n            except Exception:\n                return stripped\n        return jsonable_encoder(value)\n\n    # 함수 설명: 입력 값을 구조화된 dict로 변환하며 그 외 형식은 빈 dict로 처리합니다.\n    def _as_dict(self, value: Any) -> dict:\n        plain_value = self._plain_value(value)\n        return plain_value if isinstance(plain_value, dict) else {}\n\n    # 함수 설명: Agent Message의 content_blocks에서 가장 최근에 완료된 Tool 출력 값을 찾습니다.\n    def _latest_tool_output(self, value: Any) -> Any:\n        content_blocks = getattr(value, \"content_blocks\", None)\n        if not isinstance(content_blocks, (list, tuple)):\n            return None\n        for block in reversed(content_blocks):\n            contents = block.get(\"contents\") if isinstance(block, dict) else getattr(block, \"contents\", None)\n            if not isinstance(contents, (list, tuple)):\n                continue\n            for content in reversed(contents):\n                output = content.get(\"output\") if isinstance(content, dict) else getattr(content, \"output\", None)\n                if not self._is_empty(output):\n                    return output\n        return None\n\n    # 함수 설명: return_direct ToolMessage·Message·Data·dict의 실제 답변 본문을 재귀적으로 추출합니다.\n    def _tool_output_text(self, value: Any, seen: set[int] | None = None) -> str:\n        if self._is_empty(value):\n            return \"\"\n        if seen is None:\n            seen = set()\n        marker = id(value)\n        if marker in seen:\n            return \"\"\n        seen.add(marker)\n\n        if isinstance(value, Message):\n            text = str(getattr(value, \"text\", \"\") or \"\").strip()\n            if text:\n                return text\n            return self._tool_output_text(self._latest_tool_output(value), seen)\n        if isinstance(value, Data):\n            return self._tool_output_text(getattr(value, \"data\", None), seen)\n        if isinstance(value, str):\n            return value.strip()\n        if isinstance(value, dict):\n            gaia_response = value.get(\"gaia_response\")\n            if isinstance(gaia_response, dict):\n                answer = self._tool_output_text(gaia_response.get(\"answer\"), seen)\n                if answer:\n                    return answer\n            for key in (\"content\", \"text\", \"message\", \"answer\"):\n                answer = self._tool_output_text(value.get(key), seen)\n                if answer:\n                    return answer\n            for key in (\"artifact\", \"data\", \"output\"):\n                answer = self._tool_output_text(value.get(key), seen)\n                if answer:\n                    return answer\n            return \"\"\n        if isinstance(value, (list, tuple)):\n            parts = [self._tool_output_text(item, seen) for item in value]\n            return \"\".join(part for part in parts if part).strip()\n        for attribute in (\"content\", \"text\", \"message\", \"answer\", \"artifact\", \"output\"):\n            answer = self._tool_output_text(getattr(value, attribute, None), seen)\n            if answer:\n                return answer\n        return \"\"\n\n    # 함수 설명: 최종 답변 본문을 Message/Data/일반 값에서 일관된 문자열로 꺼냅니다.\n    def _text_value(self, value: Any) -> str:\n        if isinstance(value, Message):\n            text = str(getattr(value, \"text\", \"\") or \"\").strip()\n            if text:\n                return text\n            # LFX 0.4.2 Agent는 return_direct Tool 결과를 content_blocks에는 기록하지만\n            # Agent Message.text로 승격하지 않는 경로가 있어 마지막 Tool 출력을 결정적으로 복원합니다.\n            return self._tool_output_text(self._latest_tool_output(value))\n        if isinstance(value, Data):\n            data = getattr(value, \"data\", None)\n            if isinstance(data, dict) and data.get(\"text\") not in (None, \"\"):\n                return str(data.get(\"text\"))\n        return safe_convert(value)\n\n    # 함수 설명: DataFrame의 열 중심 dict를 행 목록으로 바꿀 때 숫자 인덱스를 우선 정렬합니다.\n    def _index_sort_key(self, key: Any):\n        text = str(key)\n        return (0, int(text)) if text.isdigit() else (1, text)\n\n    # 함수 설명: 동일 길이의 열 중심 dict를 GaiA 참조자료 행 목록으로 변환합니다.\n    def _records_from_column_dict(self, value: Any):\n        if not isinstance(value, dict) or not value:\n            return None\n        columns = {}\n        lengths = set()\n        for key, column in value.items():\n            if isinstance(column, dict):\n                ordered = [column[item] for item in sorted(column.keys(), key=self._index_sort_key)]\n            elif isinstance(column, list):\n                ordered = column\n            else:\n                return None\n            columns[str(key)] = ordered\n            lengths.add(len(ordered))\n        if len(lengths) != 1:\n            return None\n        count = lengths.pop()\n        return [{key: columns[key][index] for key in columns} for index in range(count)]\n\n    # 함수 설명: docs={docs:[...]}처럼 한 번 더 감싼 참조자료 값을 풀어냅니다.\n    def _unwrap_reference_collection(self, field_name: str, value: Any) -> Any:\n        if isinstance(value, dict) and field_name in value:\n            return value.get(field_name)\n        return value\n\n    # 함수 설명: 필수 문자열 필드를 공백 제거한 값으로 정규화합니다.\n    def _string_value(self, value: Any) -> str:\n        if self._is_empty(value):\n            return \"\"\n        return str(value).strip()\n\n    # 함수 설명: 페이지와 순번 필드를 정수로 변환하며 변환 불가 값은 None으로 반환합니다.\n    def _integer_value(self, value: Any) -> int | None:\n        if self._is_empty(value):\n            return None\n        try:\n            return int(float(str(value).strip()))\n        except Exception:\n            return None\n\n    # 함수 설명: 검색 실패를 나타내는 placeholder 참조자료는 최종 응답에서 제외합니다.\n    def _is_placeholder_reference(self, item: Any) -> bool:\n        return isinstance(item, dict) and str(item.get(\"status\") or \"\").strip().lower() in {\n            \"not_found\",\n            \"no_result\",\n            \"empty\",\n        }\n\n    # 함수 설명: 참조자료의 숫자와 문자열 필드를 GaiA 계약 타입으로 맞춥니다.\n    def _coerce_reference_value(self, field_name: str, key: str, value: Any) -> Any:\n        if key in REFERENCE_NUMBER_FIELDS[field_name]:\n            number = self._integer_value(value)\n            return number if number is not None else value\n        if isinstance(value, str):\n            return value.strip()\n        return value\n\n    # 함수 설명: 참조자료 한 건의 허용 필드, type, 필수 값을 검증하고 정규화합니다.\n    def _validate_reference_item(self, field_name: str, item: dict) -> dict:\n        allowed = REFERENCE_ALLOWED_FIELDS[field_name]\n        canonical_type = REFERENCE_TYPES[field_name]\n        unknown_keys = sorted(\n            str(key) for key in item if str(key) not in allowed and not self._is_empty(item.get(key))\n        )\n        if unknown_keys:\n            raise ValueError(f\"{field_name} reference item has unsupported field(s): {', '.join(unknown_keys)}\")\n        item_type = item.get(\"type\")\n        if not self._is_empty(item_type) and self._string_value(item_type) != canonical_type:\n            raise ValueError(f\"{field_name} reference item requires type={canonical_type!r}\")\n        normalized = {}\n        for key in allowed:\n            if key in item and not self._is_empty(item.get(key)):\n                normalized[key] = self._coerce_reference_value(field_name, key, item.get(key))\n        for required_key in REFERENCE_REQUIRED_FIELDS[field_name]:\n            if self._is_empty(normalized.get(required_key)):\n                raise ValueError(f\"{field_name} reference item requires a non-empty {required_key}\")\n        if field_name == \"docs\" and self._string_value(normalized.get(\"srcType\")) != \"upload\":\n            raise ValueError('docs reference item requires srcType=\"upload\"')\n        if field_name == \"knowhows\" and self._string_value(normalized.get(\"id\")) != self._string_value(\n            normalized.get(\"knowhow_id\")\n        ):\n            raise ValueError(\"knowhows reference item requires id and knowhow_id to match\")\n        return normalized\n\n    # 함수 설명: 참조자료 한 건을 일반 dict로 변환한 뒤 필드 계약을 검증합니다.\n    def _normalize_reference_item(self, field_name: str, item: Any) -> dict:\n        plain_item = self._plain_value(item)\n        if not isinstance(plain_item, dict):\n            raise ValueError(f\"{field_name} reference item must be an object\")\n        return self._validate_reference_item(field_name, plain_item)\n\n    # 함수 설명: 여러 입력 표현을 GaiA 참조자료 객체 목록으로 통일합니다.\n    def _normalize_reference_collection(self, field_name: str, value: Any) -> list[dict]:\n        plain_value = self._unwrap_reference_collection(field_name, self._plain_value(value))\n        if self._is_empty(plain_value):\n            return []\n        records = self._records_from_column_dict(plain_value)\n        if records is not None:\n            items = records\n        elif isinstance(plain_value, (list, tuple)):\n            items = plain_value\n        else:\n            items = [plain_value]\n        normalized = []\n        for item in items:\n            if self._is_empty(item) or self._is_placeholder_reference(item):\n                continue\n            normalized.append(self._normalize_reference_item(field_name, item))\n        return normalized\n\n    # 함수 설명: 개별 입력 포트의 참조자료 중 실제 값이 있는 항목만 응답 payload에 구성합니다.\n    def _reference_payload_from_ports(self) -> dict:\n        payload: dict = {}\n        for field_name in REFERENCE_KEYS:\n            references = self._normalize_reference_collection(field_name, getattr(self, field_name, None))\n            if references:\n                payload[field_name] = references\n        return payload\n\n    # 함수 설명: 앞 단계 Message.data의 nested metadata 또는 top-level canonical key에서 참조자료를 읽습니다.\n    def _reference_payload_from_answer_data(self, answer_data: dict[str, Any]) -> dict:\n        metadata = answer_data.get(\"metadata\") if isinstance(answer_data.get(\"metadata\"), dict) else {}\n        payload: dict[str, list[dict[str, Any]]] = {}\n        for field_name in REFERENCE_KEYS:\n            value = metadata.get(field_name) if field_name in metadata else answer_data.get(field_name)\n            references = self._normalize_reference_collection(field_name, value)\n            if references:\n                payload[field_name] = references\n        return payload\n\n    # 함수 설명: Message와 개별 포트에서 들어온 참조자료를 순서대로 합치고 동일 항목을 한 번만 유지합니다.\n    def _merge_reference_payloads(self, *payloads: dict[str, Any]) -> dict:\n        merged: dict[str, list[dict[str, Any]]] = {}\n        for field_name in REFERENCE_KEYS:\n            items: list[dict[str, Any]] = []\n            seen: set[str] = set()\n            for payload in payloads:\n                for item in payload.get(field_name, []) if isinstance(payload, dict) else []:\n                    marker = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)\n                    if marker in seen:\n                        continue\n                    seen.add(marker)\n                    items.append(item)\n            if items:\n                merged[field_name] = items\n        return merged\n\n    # 함수 설명: 토큰 사용량 값을 오류 없이 정수로 변환합니다.\n    def _int_token(self, value: Any) -> int:\n        try:\n            return int(value or 0)\n        except Exception:\n            return 0\n\n    # 함수 설명: 모델 사용량 한 건을 prompt/completion/total 토큰 계약으로 정규화합니다.\n    def _normalize_usage_item(self, value: Any) -> dict:\n        safe_value = self._plain_value(value)\n        if not isinstance(safe_value, dict):\n            return {}\n        prompt_tokens = self._int_token(safe_value.get(\"prompt_tokens\"))\n        completion_tokens = self._int_token(safe_value.get(\"completion_tokens\"))\n        total_tokens = self._int_token(safe_value.get(\"total_tokens\")) or prompt_tokens + completion_tokens\n        if not (prompt_tokens or completion_tokens or total_tokens):\n            return {}\n        normalized = {\n            \"prompt_tokens\": prompt_tokens,\n            \"completion_tokens\": completion_tokens,\n            \"total_tokens\": total_tokens,\n        }\n        if safe_value.get(\"model\"):\n            normalized[\"model\"] = str(safe_value.get(\"model\"))\n        return normalized\n\n    # 함수 설명: 중첩된 usage 입력을 펼치고 중복 항목을 제거합니다.\n    def _normalize_usage_list(self, *values: Any) -> list[dict]:\n        usage_items = []\n        seen = set()\n        stack = list(values)\n        while stack:\n            value = self._plain_value(stack.pop(0))\n            if self._is_empty(value):\n                continue\n            if isinstance(value, list):\n                stack[0:0] = value\n                continue\n            item = self._normalize_usage_item(value)\n            if item:\n                marker = str(sorted(item.items()))\n                if marker not in seen:\n                    seen.add(marker)\n                    usage_items.append(item)\n        return usage_items\n\n    # 함수 설명: 누락된 참조자료도 빈 배열로 포함하는 고정 GaiA metadata envelope를 만듭니다.\n    def _response_metadata(self, port_references: dict, usage_items: list[dict], trace_id: Any = \"\") -> dict:\n        return {\n            \"docs\": port_references.get(\"docs\", []),\n            \"images\": port_references.get(\"images\", []),\n            \"knowhows\": port_references.get(\"knowhows\", []),\n            \"followup_questions\": port_references.get(\"followup_questions\", []),\n            \"urls\": port_references.get(\"urls\", []),\n            \"trace_id\": str(trace_id or \"\"),\n            \"usage\": usage_items,\n        }\n\n    # 함수 설명: 상태 payload를 한글이 보존되는 JSON 로그 문자열로 안전하게 변환합니다.\n    def _json_for_log(self, value: Any) -> str:\n        try:\n            return json.dumps(value, ensure_ascii=False, default=str)\n        except Exception:\n            return str(value)\n\n    # 함수 설명: 답변 본문과 참조자료 및 사용량을 최종 GaiA 응답 계약으로 조립합니다.\n    def _build_response_payload(self) -> dict:\n        input_value = getattr(self, \"input_value\", \"\")\n        text = self._text_value(input_value)\n        answer_data = self._as_dict(input_value)\n        answer_metadata = answer_data.get(\"metadata\") if isinstance(answer_data.get(\"metadata\"), dict) else {}\n        port_references = self._merge_reference_payloads(\n            self._reference_payload_from_answer_data(answer_data),\n            self._reference_payload_from_ports(),\n        )\n        output_metadata = self._response_metadata(\n            port_references,\n            self._normalize_usage_list(answer_metadata.get(\"usage\"), answer_data.get(\"usage\")),\n            answer_metadata.get(\"trace_id\") or answer_data.get(\"trace_id\"),\n        )\n        return {\"answer\": text, \"metadata\": output_metadata}\n\n    # 함수 설명: 운영 로그에는 원문 대신 답변 길이와 참조자료 개수 등 안전한 요약만 남깁니다.\n    def _status_from_payload(self, payload: dict) -> dict:\n        metadata_payload = payload.get(\"metadata\") or {}\n        return {\n            \"component\": \"GaiA Output Adapter\",\n            \"answer_length\": len(str(payload.get(\"answer\") or \"\")),\n            \"metadata_keys\": sorted(str(key) for key in metadata_payload.keys()),\n            \"reference_counts\": {\n                str(key): len(value)\n                for key, value in metadata_payload.items()\n                if key in REFERENCE_KEYS and isinstance(value, list)\n            },\n            \"usage_count\": len(metadata_payload.get(\"usage\") or []),\n        }\n\n    # 함수 설명: 최종 응답의 안전한 상태 요약을 서버 로그와 컴포넌트 상태에 기록합니다.\n    def _log_payload(self, payload: dict) -> None:\n        debug_text = self._json_for_log(self._status_from_payload(payload))\n        logger.warning(\"GAIA_DEBUG GaiA Output payload=%s\", debug_text)\n        print(f\"GAIA_DEBUG GaiA Output payload={debug_text}\", flush=True)\n\n    # 주요 메서드: GaiA payload를 Message에 담되 저장은 뒤의 표준 Chat Output에 위임합니다.\n    async def message_response(self) -> Message:\n        payload = self._build_response_payload()\n        input_value = getattr(self, \"input_value\", None)\n        message = input_value if isinstance(input_value, Message) else Message(text=payload[\"answer\"])\n        message.text = payload[\"answer\"]\n        message.sender = MESSAGE_SENDER_AI\n        message.sender_name = \"AI\"\n        if not getattr(message, \"session_id\", \"\"):\n            message.session_id = getattr(getattr(self, \"graph\", None), \"session_id\", \"\") or \"\"\n        if not isinstance(getattr(message, \"data\", None), dict):\n            message.data = {}\n        message.data[\"gaia_response\"] = payload\n        message.metadata = payload[\"metadata\"]\n        self.status = message\n        return message\n\n    # 주요 메서드: HTTP/Tool 호출이 중간 Message 저장 없이 사용할 구조화된 GaiA Response Data를 반환합니다.\n    async def gaia_response_output(self) -> Data:\n        payload = self._build_response_payload()\n        self._log_payload(payload)\n        result = Data(data=payload)\n        self.status = result\n        return result\n",
-                "fileTypes": [],
-                "file_path": "",
-                "password": false,
-                "name": "code",
-                "advanced": true,
-                "dynamic": true,
-                "info": "",
-                "load_from_db": false,
-                "title_case": false
-              }
-            },
-            "description": "최종 답변과 참고자료를 GaiA AgentBuilder가 이해하는 answer/metadata 형식으로 정리합니다. 변환된 Message는 뒤의 표준 Chat Output이 Playground와 실행 API에 출력합니다.",
-            "icon": "MessagesSquare",
-            "base_classes": [
-              "Data",
-              "JSON",
-              "Message"
-            ],
-            "display_name": "GaiA Output Adapter",
-            "documentation": "https://docs.langflow.org/chat-input-and-output",
-            "minimized": true,
-            "custom_fields": {},
-            "output_types": [],
-            "pinned": false,
-            "conditional_paths": [],
-            "frozen": false,
-            "outputs": [
-              {
-                "types": [
-                  "Message"
-                ],
-                "selected": "Message",
-                "name": "message",
-                "display_name": "message",
-                "method": "message_response",
-                "value": "__UNDEFINED__",
-                "cache": true,
-                "allows_loop": false,
-                "group_outputs": true,
-                "tool_mode": true
-              },
-              {
-                "types": [
-                  "Data",
-                  "JSON"
-                ],
-                "selected": "Data",
-                "name": "gaia_response",
-                "display_name": "GaiA Response",
-                "method": "gaia_response_output",
-                "value": "__UNDEFINED__",
-                "cache": true,
-                "allows_loop": false,
-                "group_outputs": true,
-                "tool_mode": true
-              }
-            ],
-            "field_order": [
-              "input_value",
-              "docs",
-              "urls",
-              "images",
-              "knowhows",
-              "followup_questions"
-            ],
-            "beta": false,
-            "legacy": false,
-            "edited": false,
-            "metadata": {
-              "module": "v5_auxiliary.01_gaia_output",
-              "code_hash": "75803a69ae11",
-              "dependencies": {
-                "total_dependencies": 3,
-                "dependencies": [
-                  {
-                    "name": "orjson",
-                    "version": "3.11.9"
-                  },
-                  {
-                    "name": "fastapi",
-                    "version": "0.140.0"
-                  },
-                  {
-                    "name": "lfx",
-                    "version": "0.4.2"
-                  }
-                ]
-              }
-            },
-            "tool_mode": false,
-            "lf_version": "1.9.2"
-          },
-          "showNode": true,
-          "type": "GaiAOutputAdapter"
-        },
-        "dragging": false,
-        "id": "GaiAOutputAdapter-domain",
-        "measured": {
-          "height": 267,
-          "width": 320
-        },
-        "position": {
-          "x": 3050.0,
-          "y": -180.0
+          "x": 3050,
+          "y": -180
         },
         "selected": false,
         "type": "genericNode"
       }
     ],
     "edges": [
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "ChatInput",
+            "id": "ChatInput-domain",
+            "name": "message",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "raw_text",
+            "id": "Request-domain",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "xy-edge__ChatInput-domain{œdataTypeœ:œChatInputœ,œidœ:œChatInput-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-Request-domain{œfieldNameœ:œraw_textœ,œidœ:œRequest-domainœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "ChatInput-domain",
+        "sourceHandle": "{œdataTypeœ:œChatInputœ,œidœ:œChatInput-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "Request-domain",
+        "targetHandle": "{œfieldNameœ:œraw_textœ,œidœ:œRequest-domainœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
       {
         "animated": false,
         "className": "",
@@ -3164,94 +2757,8 @@
         "className": "",
         "data": {
           "sourceHandle": {
-            "dataType": "ChatInput",
-            "id": "ChatInput-domain",
-            "name": "message",
-            "output_types": [
-              "Message"
-            ]
-          },
-          "targetHandle": {
-            "fieldName": "input_message",
-            "id": "GaiAInputAdapter-domain",
-            "inputTypes": [
-              "Message"
-            ],
-            "type": "other"
-          }
-        },
-        "id": "xy-edge__ChatInput-domain{œdataTypeœ:œChatInputœ,œidœ:œChatInput-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-GaiAInputAdapter-domain{œfieldNameœ:œinput_messageœ,œidœ:œGaiAInputAdapter-domainœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}",
-        "selected": false,
-        "source": "ChatInput-domain",
-        "sourceHandle": "{œdataTypeœ:œChatInputœ,œidœ:œChatInput-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
-        "target": "GaiAInputAdapter-domain",
-        "targetHandle": "{œfieldNameœ:œinput_messageœ,œidœ:œGaiAInputAdapter-domainœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}"
-      },
-      {
-        "animated": false,
-        "className": "",
-        "data": {
-          "sourceHandle": {
-            "dataType": "GaiAInputAdapter",
-            "id": "GaiAInputAdapter-domain",
-            "name": "message",
-            "output_types": [
-              "Message"
-            ]
-          },
-          "targetHandle": {
-            "fieldName": "raw_text",
-            "id": "Request-domain",
-            "inputTypes": [
-              "Message"
-            ],
-            "type": "str"
-          }
-        },
-        "id": "xy-edge__GaiAInputAdapter-domain{œdataTypeœ:œGaiAInputAdapterœ,œidœ:œGaiAInputAdapter-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-Request-domain{œfieldNameœ:œraw_textœ,œidœ:œRequest-domainœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
-        "selected": false,
-        "source": "GaiAInputAdapter-domain",
-        "sourceHandle": "{œdataTypeœ:œGaiAInputAdapterœ,œidœ:œGaiAInputAdapter-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
-        "target": "Request-domain",
-        "targetHandle": "{œfieldNameœ:œraw_textœ,œidœ:œRequest-domainœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
-      },
-      {
-        "animated": false,
-        "className": "",
-        "data": {
-          "sourceHandle": {
             "dataType": "DomainSavingMessageAdapter",
             "id": "Message-domain",
-            "name": "message",
-            "output_types": [
-              "Message"
-            ]
-          },
-          "targetHandle": {
-            "fieldName": "input_value",
-            "id": "GaiAOutputAdapter-domain",
-            "inputTypes": [
-              "Data",
-              "DataFrame",
-              "Message"
-            ],
-            "type": "other"
-          }
-        },
-        "id": "xy-edge__Message-domain{œdataTypeœ:œDomainSavingMessageAdapterœ,œidœ:œMessage-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-GaiAOutputAdapter-domain{œfieldNameœ:œinput_valueœ,œidœ:œGaiAOutputAdapter-domainœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}",
-        "selected": false,
-        "source": "Message-domain",
-        "sourceHandle": "{œdataTypeœ:œDomainSavingMessageAdapterœ,œidœ:œMessage-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
-        "target": "GaiAOutputAdapter-domain",
-        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œGaiAOutputAdapter-domainœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}"
-      },
-      {
-        "animated": false,
-        "className": "",
-        "data": {
-          "sourceHandle": {
-            "dataType": "GaiAOutputAdapter",
-            "id": "GaiAOutputAdapter-domain",
             "name": "message",
             "output_types": [
               "Message"
@@ -3268,10 +2775,10 @@
             "type": "other"
           }
         },
-        "id": "xy-edge__GaiAOutputAdapter-domain{œdataTypeœ:œGaiAOutputAdapterœ,œidœ:œGaiAOutputAdapter-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-domain{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-domainœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}",
+        "id": "xy-edge__Message-domain{œdataTypeœ:œDomainSavingMessageAdapterœ,œidœ:œMessage-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-domain{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-domainœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}",
         "selected": false,
-        "source": "GaiAOutputAdapter-domain",
-        "sourceHandle": "{œdataTypeœ:œGaiAOutputAdapterœ,œidœ:œGaiAOutputAdapter-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
+        "source": "Message-domain",
+        "sourceHandle": "{œdataTypeœ:œDomainSavingMessageAdapterœ,œidœ:œMessage-domainœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
         "target": "ChatOutput-domain",
         "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-domainœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}"
       }

@@ -101,6 +101,98 @@ def test_semantic_contract_accepts_output_alias_and_ignores_analysis_kind():
     assert result["errors"] == []
 
 
+def test_declared_result_grain_overrides_wider_resolved_source_grain():
+    validator = load_module(ROOT / "tools" / "data_analysis_semantic_validator.py")
+    payload = base_payload()
+    payload["intent_plan"]["resolved_output_grain_plan"] = {
+        "grain_columns": ["PRODUCT", "ORG", "MODE"]
+    }
+    payload["intent_plan"]["output_contract"]["grain_columns"] = ["PRODUCT"]
+
+    result = validator.validate_semantic_payload(payload)
+
+    assert result["status"] == "ok"
+    assert not any(
+        item.get("type") == "missing_result_grain_columns"
+        for item in result["errors"]
+    )
+
+
+def test_declared_scalar_empty_grain_does_not_inherit_source_grain():
+    validator = load_module(ROOT / "tools" / "data_analysis_semantic_validator.py")
+    payload = base_payload()
+    payload["intent_plan"]["resolved_output_grain_plan"] = {
+        "grain_columns": ["PRODUCT", "ORG", "MODE"]
+    }
+    payload["intent_plan"]["output_contract"].update(
+        {
+            "result_mode": "scalar",
+            "required_columns": ["TOTAL_PRODUCTION"],
+            "grain_columns": [],
+            "metric_columns": ["TOTAL_PRODUCTION"],
+        }
+    )
+    payload["analysis"]["columns"] = ["TOTAL_PRODUCTION"]
+    payload["analysis"]["row_count"] = 1
+    payload["data"]["rows"] = [{"TOTAL_PRODUCTION": 30}]
+
+    result = validator.validate_semantic_payload(payload)
+
+    assert result["status"] == "ok"
+    assert not any(
+        item.get("type") == "missing_result_grain_columns"
+        for item in result["errors"]
+    )
+
+
+def test_execution_graph_accepts_restored_previous_result_provider():
+    validator = load_module(ROOT / "tools" / "data_analysis_semantic_validator.py")
+    payload = base_payload()
+    payload["intent_plan"]["resolved_execution_graph"] = {
+        "validation_errors": [],
+        "external_source_requirements": [
+            {
+                "source_alias": "upstream_result",
+                "provider": "previous_result",
+                "required": True,
+            }
+        ],
+    }
+    payload["runtime_sources"] = {"upstream_result": [{"PRODUCT": "A"}]}
+
+    result = validator.validate_semantic_payload(payload)
+
+    assert result["status"] == "ok"
+    assert not any(
+        item.get("type") == "unresolved_external_source_requirement"
+        for item in result["errors"]
+    )
+
+
+def test_execution_graph_rejects_missing_previous_result_provider():
+    validator = load_module(ROOT / "tools" / "data_analysis_semantic_validator.py")
+    payload = base_payload()
+    payload["intent_plan"]["resolved_execution_graph"] = {
+        "validation_errors": [],
+        "external_source_requirements": [
+            {
+                "source_alias": "upstream_result",
+                "provider": "previous_result",
+                "required": True,
+            }
+        ],
+    }
+
+    result = validator.validate_semantic_payload(payload)
+
+    assert result["status"] == "error"
+    assert any(
+        item.get("type") == "unresolved_external_source_requirement"
+        and item.get("provider") == "previous_result"
+        for item in result["errors"]
+    )
+
+
 def test_unordered_fixture_rows_are_diagnostics_in_semantic_live_profile():
     representative = load_module(ROOT / "tools" / "validate_representative_questions.py")
     payload = base_payload()

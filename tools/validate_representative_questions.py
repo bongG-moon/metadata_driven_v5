@@ -1195,7 +1195,7 @@ def resolve_llm_config() -> dict[str, Any]:
         raise RuntimeError("LLM_API_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY is required for --use-llm")
     return {
         "api_key": api_key,
-        "model": os.getenv("LLM_MODEL_NAME", "gemini-2.5-flash").strip() or "gemini-2.5-flash",
+        "model": os.getenv("LLM_MODEL_NAME", "gemini-3.5-flash-lite").strip() or "gemini-3.5-flash-lite",
         "temperature": float(os.getenv("LLM_TEMPERATURE", "0") or 0),
         "timeout": int(float(os.getenv("LLM_TIMEOUT_SECONDS", "60") or 60)),
     }

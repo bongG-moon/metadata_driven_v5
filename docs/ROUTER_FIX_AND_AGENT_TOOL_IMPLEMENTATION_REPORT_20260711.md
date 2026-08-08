@@ -82,7 +82,7 @@ Langflow upload는 export JSON의 Flow ID를 그대로 보존하지 않고 새 D
 
 - 단일 7-Flow import: `import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
 - 수정된 API Router: `import_ready_flows/06_api_router_flow_v5_standalone.json`
-- 신규 Agent Tool Router: `import_ready_flows/07_agent_tool_router_flow_v5_standalone.json`
+- 신규 Agent Tool Router: `import_ready_flows/06_agent_tool_router_flow_v5_standalone.json`
 - 전체 ZIP: `import_ready_flows.zip`
 - 06 API Router source: `langflow_components/route_flow/01_flow_api_message_caller.py`
 - 07 Tool component: `langflow_components/route_flow_v2/01_cached_named_run_flow_tool.py`

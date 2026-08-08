@@ -507,12 +507,32 @@ def _dict_key_ci(value: dict[str, Any], key: str) -> str:
 
 # 함수 설명: `_same_value()`는 기존 파라미터와 binding 값이 의미상 같은 JSON 값인지 비교합니다.
 def _same_value(left: Any, right: Any) -> bool:
+    # A required parameter may be emitted as an empty placeholder by the
+    # intent model (for example ``LOT_ID: ""`` before a previous-result
+    # binding is applied).  Treat only the existing side as replaceable when
+    # it is blank; a non-blank value still has to match exactly.  This keeps
+    # trusted upstream binding deterministic without allowing a model to
+    # overwrite an explicit, non-empty user parameter.
+    if _is_blank_parameter_value(left):
+        return True
     return json.dumps(left, ensure_ascii=False, sort_keys=True, default=str) == json.dumps(
         right,
         ensure_ascii=False,
         sort_keys=True,
         default=str,
     )
+
+
+# 함수 설명: 비어 있는 required parameter를 아직 해석되지 않은 upstream binding placeholder로 판정합니다.
+def _is_blank_parameter_value(value: Any) -> bool:
+    """Return whether a required-param value is an unresolved placeholder."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
 
 
 # 함수 설명: `_record_inspection()`은 실제 식별자 값을 복제하지 않고 적용 건수와 오류만 trace에 기록합니다.

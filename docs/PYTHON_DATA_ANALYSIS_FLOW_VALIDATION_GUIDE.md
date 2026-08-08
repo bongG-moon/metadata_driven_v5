@@ -26,7 +26,7 @@ MONGODB_MAIN_FLOW_FILTER_COLLECTION=agent_v4_main_flow_filters
 
 LLM_PROVIDER=gemini
 GOOGLE_API_KEY=...
-# 선택 사항: 비어 있으면 gemini-2.5-flash
+# 선택 사항: 비어 있으면 gemini-3.5-flash-lite
 LLM_MODEL_NAME=
 LLM_TEMPERATURE=0
 LLM_TIMEOUT_SECONDS=60

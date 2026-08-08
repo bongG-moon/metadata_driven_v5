@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 # 컴포넌트 개요: 01D 질문 기반 메타데이터 후보 생성기
-# 역할: 도메인은 관련 항목 최대 10건, 테이블은 관련 후보 최소 5/최대 10건, 메인 필터는 전체를 32KB 안에서 선별합니다.
+# 역할: 도메인은 관련 항목 최대 20건, 테이블은 관련 후보 5건, 메인 필터는 전체를 32KB 안에서 선별합니다.
 # 주요 입력: 질문 페이로드 (payload) · 필수, 도메인 메타데이터 (domain_items), 테이블 카탈로그 (table_catalog_items), 메인 변수
 #        (main_flow_filters), 도메인 최대 후보 수 (max_domain_items), 테이블 최소 후보 수 (min_table_items), 테이블 최대 후보 수
 #        (max_table_items), 최대 후보 바이트 (max_bytes)
@@ -21,9 +21,9 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
-DEFAULT_MAX_DOMAIN_ITEMS = 10
+DEFAULT_MAX_DOMAIN_ITEMS = 20
 DEFAULT_MIN_TABLE_ITEMS = 5
-DEFAULT_MAX_TABLE_ITEMS = 10
+DEFAULT_MAX_TABLE_ITEMS = 5
 DEFAULT_MAX_BYTES = 32 * 1024
 DOMAIN_MIN_SCORE = 6
 NON_RUNTIME_FUNCTION_CASE_MIN_SCORE = 12
@@ -1323,15 +1323,15 @@ def _list(value: Any) -> list[Any]:
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class MetadataCandidatesBuilder(Component):
     display_name = "01D 질문 기반 메타데이터 후보 생성기"
-    description = "도메인은 관련 항목 최대 10건, 테이블은 관련 후보 최소 5/최대 10건, 메인 필터는 전체를 32KB 안에서 선별합니다."
+    description = "도메인은 관련 항목 최대 20건, 테이블은 관련 후보 5건, 메인 필터는 전체를 32KB 안에서 선별합니다."
     inputs = [
         DataInput(name="payload", display_name="질문 페이로드", required=True),
         DataInput(name="domain_items", display_name="도메인 메타데이터", required=False),
         DataInput(name="table_catalog_items", display_name="테이블 카탈로그", required=False),
         DataInput(name="main_flow_filters", display_name="메인 변수", required=False),
-        MessageTextInput(name="max_domain_items", display_name="도메인 최대 후보 수", value="10", advanced=True),
+        MessageTextInput(name="max_domain_items", display_name="도메인 최대 후보 수", value="20", advanced=True),
         MessageTextInput(name="min_table_items", display_name="테이블 최소 후보 수", value="5", advanced=True),
-        MessageTextInput(name="max_table_items", display_name="테이블 최대 후보 수", value="10", advanced=True),
+        MessageTextInput(name="max_table_items", display_name="테이블 최대 후보 수", value="5", advanced=True),
         MessageTextInput(name="max_bytes", display_name="최대 후보 바이트", value="32768", advanced=True),
     ]
     outputs = [Output(name="metadata_candidates", display_name="메타데이터 후보", method="build_payload")]

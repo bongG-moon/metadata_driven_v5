@@ -67,6 +67,8 @@ EXPECTED_FINAL_KEYS = {
     "analysis_recipes:equipment_assignment_uph_join",
     "analysis_recipes:product_grain_and_join_policy",
     "analysis_recipes:raw_data_display_policy",
+    "analysis_recipes:recipe_id_starts_with",
+    "analysis_recipes:current_hold_lot_selection",
     "analysis_recipes:uph_result_policy",
     "pandas_function_cases:ordered_process_range",
     "pandas_function_cases:product_token_match",
@@ -146,8 +148,20 @@ def build_registration_requests(text: str) -> list[dict[str, Any]]:
         (
             "raw_data_display_policy",
             "원본 상세 데이터 표시 규칙을 등록해줘.",
-            "pandas function case 등록 규칙을 등록해줘.",
+            "RECIPE 번호 조회 규칙을 등록해줘.",
             ["analysis_recipes:raw_data_display_policy"],
+        ),
+        (
+            "recipe_id_starts_with",
+            "RECIPE 번호 조회 규칙을 등록해줘.",
+            "HOLD LOT와 HOLD 이력 조회 규칙을 등록해줘.",
+            ["analysis_recipes:recipe_id_starts_with"],
+        ),
+        (
+            "current_hold_lot_selection",
+            "HOLD LOT와 HOLD 이력 조회 규칙을 등록해줘.",
+            "pandas function case 등록 규칙을 등록해줘.",
+            ["analysis_recipes:current_hold_lot_selection"],
         ),
         (
             "ordered_process_range",
@@ -193,7 +207,7 @@ def resolve_llm_config() -> dict[str, Any]:
         "api_key": api_key,
         "model": (
             os.getenv("DOMAIN_SAVING_LLM_MODEL", "").strip()
-            or "gemini-2.5-flash"
+            or "gemini-3.5-flash-lite"
         ).removeprefix("models/"),
         "temperature": 0.1,
         "max_output_tokens": 8192,
@@ -484,6 +498,48 @@ def _semantic_errors(
                     "message": "원본 상세 데이터 선택 표현이 원문과 다릅니다.",
                 }
             )
+    elif name == "recipe_id_starts_with":
+        payload = (
+            item_by_key.get("analysis_recipes:recipe_id_starts_with") or {}
+        ).get("payload", {})
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        for token in ("RECIPE_ID", "starts_with", "R1234", "eq", "contains"):
+            if token not in payload_text:
+                errors.append(
+                    {
+                        "type": "recipe_prefix_policy_mismatch",
+                        "message": f"RECIPE prefix 정책에 {token} 기준이 누락되었습니다.",
+                    }
+                )
+    elif name == "current_hold_lot_selection":
+        payload = (
+            item_by_key.get("analysis_recipes:current_hold_lot_selection") or {}
+        ).get("payload", {})
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        for token in (
+            "lot_status",
+            "hold_history",
+            "HOLD_STAT",
+            "OnHold",
+            "HOLD_CD",
+            "HOLD_TM",
+            "HOLD_DESC",
+            "LOT_ID",
+            "required_params",
+            "빈 문자열",
+            "선행 결과",
+            "previous_result",
+            "내림차순",
+            "가장 최근",
+            "result_ref",
+        ):
+            if token not in payload_text:
+                errors.append(
+                    {
+                        "type": "hold_dataset_selection_policy_mismatch",
+                        "message": f"HOLD dataset 선택 정책에 {token} 기준이 누락되었습니다.",
+                    }
+                )
     elif name == "ordered_process_range":
         payload = (
             item_by_key.get("pandas_function_cases:ordered_process_range") or {}

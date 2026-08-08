@@ -18,7 +18,7 @@ from time import perf_counter
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import BoolInput, DataInput, MessageTextInput, ModelInput, Output, SecretStrInput
+from lfx.io import BoolInput, DataInput, MessageTextInput, ModelInput, MultilineInput, Output, SecretStrInput
 from lfx.schema.data import Data
 
 RUNTIME_BUFFER_KEYS = {
@@ -26,6 +26,16 @@ RUNTIME_BUFFER_KEYS = {
     "_runtime_rows_by_alias",
     "_full_result_rows",
     "_runtime_result_rows",
+}
+
+ANSWER_EVIDENCE_ROW_LIMIT = 5
+ANSWER_EVIDENCE_COLUMN_LIMIT = 16
+ANSWER_EVIDENCE_CELL_LIMIT = 160
+ANSWER_EVIDENCE_ITEM_LIMIT = 4
+ANSWER_EVIDENCE_MESSAGE_LIMIT = 600
+ANSWER_PROMPT_REFERENCE_REWRITES = {
+    "answer_context_json.applied_criteria": "applied_scope_json.criteria",
+    "answer_context_json.result_shape.columns": "result_summary_json.columns",
 }
 
 
@@ -1387,12 +1397,250 @@ def _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+# 함수 설명: Complex 답변 모델에 전달할 결과·조건·근거만 최대 5행의 allowlist view로 구성합니다.
+def build_answer_evidence_variables(payload_value: Any) -> dict[str, str]:
+    payload = _payload(payload_value)
+    plan = _dict(payload.get("intent_plan"))
+    output_contract = _dict(plan.get("output_contract"))
+    analysis = _dict(payload.get("analysis"))
+    data = _dict(payload.get("data"))
+    rows = _list(data.get("rows"))
+    columns = _string_list(data.get("columns")) or _columns_from_rows(rows)
+    evidence_columns = _answer_evidence_columns(columns, output_contract)
+    pandas_execution = _dict(_dict(_dict(payload.get("trace")).get("inspection")).get("pandas_execution"))
+    step_outputs = _list(analysis.get("step_outputs")) or _list(pandas_execution.get("step_outputs"))
+    function_case_results = _list(analysis.get("function_case_results")) or _list(
+        pandas_execution.get("function_case_results")
+    )
+    metric_columns = _metric_columns(payload)
+    result_summary = _omit_empty(
+        {
+            "status": analysis.get("status"),
+            "row_count": data.get("row_count", analysis.get("row_count", len(rows))),
+            "columns": deepcopy(evidence_columns),
+            "rows": _answer_evidence_rows(rows, output_contract, evidence_columns),
+        }
+    )
+    applied_scope = _omit_empty(
+        {
+            "intent": _omit_empty({"analysis_kind": plan.get("analysis_kind")}),
+            "criteria": _applied_criteria(payload),
+            "retrieval": _compact_source_results(_list(payload.get("source_results"))),
+            "pandas_execution": _omit_empty(
+                {
+                    "status": pandas_execution.get("status") or analysis.get("status"),
+                    "execution_mode": analysis.get("execution_mode"),
+                    "error": _compact_answer_error(pandas_execution.get("error") or analysis.get("error")),
+                }
+            ),
+        }
+    )
+    answer_context = _omit_empty(
+        {
+            "number_display_policy": {
+                "under_10000": "comma_full_number",
+                "gte_10000": "k_unit",
+                "display_only": True,
+            },
+            "result_interpretation_hints": _omit_empty(
+                {
+                    "is_empty_result": _int(data.get("row_count"), len(rows)) == 0 and not rows,
+                    "has_zero_values": _answer_rows_have_zero(rows),
+                    "primary_metric_columns": metric_columns,
+                    "primary_dimension_columns": [column for column in evidence_columns if column not in set(metric_columns)],
+                    "primary_metric": output_contract.get("primary_metric"),
+                    "ordering": deepcopy(output_contract.get("ordering")),
+                    "column_labels": deepcopy(_dict(output_contract.get("column_labels"))),
+                    "operations": [
+                        str(item.get("operation") or "").strip()
+                        for item in _list(plan.get("pandas_execution_plan"))
+                        if isinstance(item, dict) and str(item.get("operation") or "").strip()
+                    ],
+                    "result_segments": deepcopy(_list(output_contract.get("result_segments"))),
+                    "segment_column": output_contract.get("segment_column"),
+                    "rank_column": output_contract.get("rank_column"),
+                }
+            ),
+            "step_outputs": _compact_answer_records(
+                step_outputs,
+                ("key", "description", "role", "row_count", "columns", "preview_rows"),
+            ),
+            "function_case_results": _compact_answer_records(
+                function_case_results,
+                ("function_name", "input_text", "description", "matched_count", "columns", "preview_rows"),
+            ),
+        }
+    )
+    trace = _dict(payload.get("trace"))
+    diagnostics = {
+        "warnings": _compact_answer_diagnostics(_list(trace.get("warnings"))),
+        "errors": _compact_answer_diagnostics(_list(trace.get("errors"))),
+    }
+    return {
+        "question": str(_dict(payload.get("request")).get("question") or ""),
+        "result_summary_json": json.dumps(result_summary, ensure_ascii=False, separators=(",", ":"), default=str),
+        "applied_scope_json": json.dumps(applied_scope, ensure_ascii=False, separators=(",", ":"), default=str),
+        "answer_context_json": json.dumps(answer_context, ensure_ascii=False, separators=(",", ":"), default=str),
+        "warnings_errors_json": json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"), default=str),
+    }
+
+
+# 함수 설명: BoolInput이 켜진 Complex 경로에서만 AnswerEvidence를 직렬화하고 최종 prompt를 렌더합니다.
+def build_lazy_llm_answer_prompt(
+    payload_value: Any,
+    prompt_template: Any,
+    domain_answer_guidance: Any = "",
+) -> str:
+    template = _message_text(prompt_template).strip()
+    if not template:
+        return ""
+    for previous, current in ANSWER_PROMPT_REFERENCE_REWRITES.items():
+        template = template.replace(previous, current)
+    variables = build_answer_evidence_variables(payload_value)
+    variables["domain_answer_guidance"] = _message_text(domain_answer_guidance).strip()
+    try:
+        return template.format(**variables)
+    except (KeyError, IndexError, ValueError) as exc:
+        raise ValueError(f"answer prompt template rendering failed: {exc}") from exc
+
+
+# 함수 설명: 구간형 결과는 각 구간 첫 행을 먼저 보존하고 모델용 결과 행은 최대 5개로 제한합니다.
+def _answer_evidence_rows(
+    rows: list[Any],
+    output_contract: dict[str, Any],
+    evidence_columns: list[str],
+) -> list[dict[str, Any]]:
+    candidates = [deepcopy(row) for row in rows if isinstance(row, dict)]
+    if not candidates:
+        return []
+    selected: list[dict[str, Any]] = []
+    selected_indexes: set[int] = set()
+    segment_column = str(output_contract.get("segment_column") or "").strip()
+    if segment_column:
+        seen_segments: set[str] = set()
+        for index, row in enumerate(candidates):
+            segment = str(row.get(segment_column) or "")
+            if segment in seen_segments:
+                continue
+            seen_segments.add(segment)
+            selected.append(row)
+            selected_indexes.add(index)
+            if len(selected) >= ANSWER_EVIDENCE_ROW_LIMIT:
+                return [_compact_answer_row(item, evidence_columns) for item in selected]
+    for index, row in enumerate(candidates):
+        if index in selected_indexes:
+            continue
+        selected.append(row)
+        if len(selected) >= ANSWER_EVIDENCE_ROW_LIMIT:
+            break
+    return [_compact_answer_row(item, evidence_columns) for item in selected]
+
+
+# 함수 설명: 계약의 segment/rank/grain/metric 순서를 우선해 모델 view 컬럼을 최대 16개로 제한합니다.
+def _answer_evidence_columns(columns: list[str], output_contract: dict[str, Any]) -> list[str]:
+    available = {str(column) for column in columns}
+    preferred: list[str] = []
+
+    # 함수 설명: `add()`는 여러 ADD 값을 순서와 중복 정책을 지키며 하나의 결과로 합칩니다.
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text in available and text not in preferred:
+            preferred.append(text)
+
+    add(output_contract.get("segment_column"))
+    add(output_contract.get("rank_column"))
+    for key in ("grain_columns", "entity_grain_columns"):
+        for column in _list(output_contract.get(key)):
+            add(column)
+    add(output_contract.get("primary_metric"))
+    for key in ("metric_columns", "result_columns", "required_columns"):
+        for column in _list(output_contract.get(key)):
+            add(column)
+    for column in columns:
+        add(column)
+    return preferred[:ANSWER_EVIDENCE_COLUMN_LIMIT]
+
+
+# 함수 설명: 모델 view 행은 선택된 컬럼만 투영하고 장문 문자열·목록·객체 셀을 160자로 제한합니다.
+def _compact_answer_row(row: dict[str, Any], evidence_columns: list[str]) -> dict[str, Any]:
+    return {
+        column: _compact_answer_cell(row.get(column))
+        for column in evidence_columns
+        if column in row
+    }
+
+
+# 함수 설명: 실행 결과 원본은 유지하면서 AnswerEvidence의 개별 셀만 안전한 길이로 축약합니다.
+def _compact_answer_cell(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= ANSWER_EVIDENCE_CELL_LIMIT else value[: ANSWER_EVIDENCE_CELL_LIMIT - 1] + "…"
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    return text if len(text) <= ANSWER_EVIDENCE_CELL_LIMIT else text[: ANSWER_EVIDENCE_CELL_LIMIT - 1] + "…"
+
+
+# 함수 설명: 단계형 분석 근거는 식별·설명·건수·최대 2행 preview만 유지합니다.
+def _compact_answer_records(items: list[Any], allowed_keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in items[:ANSWER_EVIDENCE_ITEM_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        record = {key: deepcopy(item.get(key)) for key in allowed_keys if item.get(key) not in (None, "", [], {})}
+        if isinstance(record.get("preview_rows"), list):
+            record["preview_rows"] = deepcopy(record["preview_rows"][:2])
+        if isinstance(record.get("columns"), list):
+            record["columns"] = [str(value) for value in record["columns"]]
+        compact.append(record)
+    return compact
+
+
+# 함수 설명: 답변 생성에 필요한 오류 종류와 짧은 메시지만 보존합니다.
+def _compact_answer_error(value: Any) -> dict[str, Any]:
+    error = _dict(value)
+    return _omit_empty(
+        {
+            "type": str(error.get("type") or ""),
+            "message": str(error.get("message") or "")[:ANSWER_EVIDENCE_MESSAGE_LIMIT],
+        }
+    )
+
+
+# 함수 설명: warning/error 목록을 제한하여 traceback과 중복 payload가 답변 모델로 전달되지 않게 합니다.
+def _compact_answer_diagnostics(items: list[Any]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for item in items[:ANSWER_EVIDENCE_ITEM_LIMIT]:
+        if isinstance(item, dict):
+            compact.append(_compact_answer_error(item))
+        elif item not in (None, ""):
+            compact.append({"message": str(item)[:ANSWER_EVIDENCE_MESSAGE_LIMIT]})
+    return [item for item in compact if item]
+
+
+# 함수 설명: 결과 행에 숫자 0이 있는지만 계산하여 전체 행을 별도 context에 복제하지 않습니다.
+def _answer_rows_have_zero(rows: list[Any]) -> bool:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for value in row.values():
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                if not isinstance(value, str) and float(value) == 0:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 # 함수 설명: `build_hybrid_answer_response()`는 hybrid·답변·응답 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def build_hybrid_answer_response(
     payload_value: Any,
     answer_prompt: Any = "",
     model_invoker: Any = None,
     use_llm_answer: Any = True,
+    answer_prompt_template: Any = "",
+    domain_answer_guidance: Any = "",
 ) -> dict[str, Any]:
     """Use deterministic answers for Fast and optionally for Complex."""
 
@@ -1443,7 +1691,12 @@ def build_hybrid_answer_response(
             }
         )
     else:
-        prompt = _answer_text(answer_prompt).strip()
+        template = _message_text(answer_prompt_template).strip()
+        prompt = (
+            build_lazy_llm_answer_prompt(payload, template, domain_answer_guidance)
+            if template
+            else _answer_text(answer_prompt).strip()
+        )
         response: Any = ""
         if prompt and model_invoker is not None:
             try:
@@ -1460,6 +1713,10 @@ def build_hybrid_answer_response(
                 "model_called": bool(prompt and model_invoker is not None),
                 "policy": "llm_complex_answer",
                 "llm_answer_enabled": True,
+                "prompt_chars": len(prompt),
+                "answer_evidence_row_limit": ANSWER_EVIDENCE_ROW_LIMIT,
+                "answer_evidence_column_limit": ANSWER_EVIDENCE_COLUMN_LIMIT,
+                "answer_evidence_cell_limit": ANSWER_EVIDENCE_CELL_LIMIT,
             }
         )
     trace = result.setdefault("trace", {}).setdefault("inspection", {}).setdefault("fast_path", {})
@@ -1576,7 +1833,18 @@ class HybridAnswerBuilder(Component):
             required=False,
             advanced=False,
         ),
-        MessageTextInput(name="answer_prompt", display_name="답변 생성 프롬프트", required=False),
+        MultilineInput(
+            name="answer_prompt_template",
+            display_name="답변 프롬프트 템플릿",
+            required=False,
+            advanced=True,
+        ),
+        MessageTextInput(
+            name="domain_answer_guidance",
+            display_name="도메인 특화 답변 지침",
+            required=False,
+            advanced=True,
+        ),
         ModelInput(name="model", display_name="답변 언어 모델", required=False, real_time_refresh=True),
         SecretStrInput(name="api_key", display_name="답변 모델 API 키", required=False, advanced=True, real_time_refresh=True),
     ]
@@ -1630,5 +1898,7 @@ class HybridAnswerBuilder(Component):
                 getattr(self, "answer_prompt", ""),
                 self._invoke_model,
                 getattr(self, "use_llm_answer", True),
+                getattr(self, "answer_prompt_template", ""),
+                getattr(self, "domain_answer_guidance", ""),
             )
         )

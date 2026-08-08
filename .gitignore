@@ -5,10 +5,17 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .pytest_tmp/
+.pytest_tmp*/
+.pytest-tmp*/
+.bundle_tmp_validation*/
+.bundle_tmp_validation*.zip
+.validation_live*.json
+.c01_intent_debug.json
 .pytest_v6*/
 .tmp/
 validation_outputs/pytest_tmp*/
 validation_outputs/*.json
+.validation_live_continuation*.json
 .coverage
 coverage.xml
 htmlcov/

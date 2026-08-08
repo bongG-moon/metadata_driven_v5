@@ -49,7 +49,7 @@ def validate_semantic_payload(
     warnings: list[dict[str, Any]] = []
 
     issues: list[dict[str, Any]] = []
-    issues.extend(_execution_graph_errors(plan))
+    issues.extend(_execution_graph_errors(plan, data))
     issues.extend(_metric_binding_errors(plan, columns))
     issues.extend(_result_shape_errors(plan, rows, columns))
     issues.extend(_ordering_errors(plan, rows, columns))
@@ -158,27 +158,43 @@ def fixture_differences(case: Any, payload: Any) -> list[str]:
     return differences
 
 
-def _execution_graph_errors(plan: dict[str, Any]) -> list[dict[str, Any]]:
+def _execution_graph_errors(
+    plan: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     graph = _dict(plan.get("resolved_execution_graph"))
     errors = [deepcopy(item) for item in _dict_items(graph.get("validation_errors"))]
     jobs = _dict_items(plan.get("retrieval_jobs"))
+    runtime_sources = _dict(_dict(payload).get("runtime_sources"))
+    source_results = _dict_items(_dict(payload).get("source_results"))
     for requirement in _dict_items(graph.get("external_source_requirements")):
         if not bool(requirement.get("required", True)):
             continue
         source_alias = str(requirement.get("source_alias") or "").strip()
         dataset_key = str(requirement.get("dataset_key") or "").strip()
-        matched = any(
-            (not source_alias or str(job.get("source_alias") or "").strip() == source_alias)
-            and (not dataset_key or str(job.get("dataset_key") or "").strip() == dataset_key)
-            for job in jobs
-        )
+        provider = str(requirement.get("provider") or "retrieval_job").strip()
+        if provider == "retrieval_job":
+            matched = any(
+                (not source_alias or str(job.get("source_alias") or "").strip() == source_alias)
+                and (not dataset_key or str(job.get("dataset_key") or "").strip() == dataset_key)
+                for job in jobs
+            )
+        elif provider in {"previous_result", "previous_source"}:
+            matched = source_alias in runtime_sources or any(
+                str(item.get("source_alias") or "").strip() == source_alias
+                and str(item.get("status") or "").strip().lower() in {"ok", "success"}
+                for item in source_results
+            )
+        else:
+            matched = False
         if not matched:
             errors.append(
                 {
                     "type": "unresolved_external_source_requirement",
                     "source_alias": source_alias,
                     "dataset_key": dataset_key,
-                    "message": "execution graph requirement has no retrieval job",
+                    "provider": provider,
+                    "message": "execution graph requirement has no matching source provider",
                 }
             )
     return errors
@@ -331,10 +347,18 @@ def _result_shape_errors(
         return []
     errors: list[dict[str, Any]] = []
     required = _unique_text(contract.get("required_columns"))
-    grain = _unique_text(
-        _dict(plan.get("resolved_output_grain_plan")).get("grain_columns")
-        or contract.get("grain_columns")
-    )
+    # The output contract describes the shape that the executor is required to
+    # return.  A resolved source grain can legitimately be wider than that
+    # shape (for example a scalar total, a DEVICE-only distinct list, or an
+    # EQP_ID entity list).  Treat the resolved grain as a fallback only when the
+    # output contract did not declare its own grain; otherwise valid projected
+    # results are reported as missing unrelated source dimensions.
+    if "grain_columns" in contract:
+        grain = _unique_text(contract.get("grain_columns"))
+    else:
+        grain = _unique_text(
+            _dict(plan.get("resolved_output_grain_plan")).get("grain_columns")
+        )
     if bool(contract.get("strict_result_columns")):
         missing = [column for column in required if column not in columns]
         if missing:

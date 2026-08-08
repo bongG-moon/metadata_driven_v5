@@ -40,8 +40,7 @@
 - 날짜 비교가 필요하면 원본 컬럼을 덮어쓰지 않는 문자열 임시 Series를 사용하고, 실제 날짜 연산이 꼭 필요한 경우에만 임시값에 `pd.to_datetime(..., format="%Y%m%d", errors="coerce")`를 적용한다.
 - 날짜/일자 컬럼과 수량 컬럼의 판단이 충돌하면 값의 겉보기 dtype보다 컬럼명과 metadata의 날짜 의미를 우선한다.
 - 실패한 코드의 의도는 유지하되 오류 원인만 최소 수정한다.
-- `{failed_code}`는 첫 LLM이 생성한 원본 pandas 코드다.
-- `error_context_json.executed_code_with_preamble`은 executor가 row-match preamble과 일반 filter preamble을 자동으로 붙인 뒤 실행한 전체 코드이며, 참고용이다.
+- `실패 pandas 코드` 입력은 첫 LLM이 생성한 원본 pandas 코드이며 프롬프트에서 한 번만 제공된다.
 - retry 응답의 `code`에는 executor preamble을 복사해서 넣지 않는다. retry executor가 `pandas_execution_plan.apply_row_match_groups`와 `intent_plan.retrieval_jobs[].filters` 기반 preamble을 다시 자동으로 붙인다.
 - `intent_plan.retrieval_jobs[].filters`는 executor가 pandas 전처리 조건으로 먼저 적용한다.
 - retry code에는 `intent_plan.retrieval_jobs[].filters`와 같은 필터를 다시 작성하지 않는다.

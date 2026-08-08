@@ -10,23 +10,14 @@ Langflow standalone 환경에서 실행하는 메타데이터 기반 제조 데�
 
 ## 바로 확인할 파일
 
-- 가져오기용 Flow: `flow_exports/data_analysis_flow_v5_standalone.json`
-- 전체 13개 Flow 단일 Import: `import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
-- 운영 기본 Router: `import_ready_flows/06_api_router_flow_v5_standalone.json`
-- 단일 호출 Agent + Tool Mode Router: `import_ready_flows/07_agent_tool_router_flow_v5_standalone.json`
-- 최대 4단계 문서 기반 순차 Workflow Router: `import_ready_flows/08_workflow_orchestrator_flow_v5_standalone.json`
-- Workflow Skill 등록·검수·저장 Flow: `import_ready_flows/09_workflow_skill_saving_flow_v5_standalone.json`
-- Data Analysis `result_ref` 기반 HTML 차트 Flow: `import_ready_flows/10_html_visualization_flow_v5_standalone.json`
-- 실시간 생산 판정 더미 데이터·HTML Report Flow: `import_ready_flows/11_realtime_production_report_flow_v5_standalone.json`
-- CUBE 예약 질의 MongoDB 등록 Flow: `import_ready_flows/12_cube_schedule_saving_flow_v5_standalone.json`
-- Data Analysis v2 참고 Flow: `import_ready_flows/13_data_analysis_flow_v2_standalone.json`
-- 06 커스텀 원본: `langflow_components/route_flow/`
-- 07 커스텀 원본: `langflow_components/route_flow_v2/`
-- 08 커스텀 원본: `langflow_components/route_flow_v4/`
-- 09 커스텀 원본과 입력 예시: `langflow_components/workflow_skill_saving_flow/`
-- 10 커스텀 원본: `langflow_components/visualization_flow/`
-- 11 커스텀 원본과 연결 가이드: `langflow_components/realtime_production_report_flow/`
-- Workflow Skill 복사·붙여넣기 입력 예시: `langflow_components/workflow_skill_saving_flow/INPUT_EXAMPLES.md`
+- 가져오기용 Flow: `flow_exports/data_analysis_flow_v2_standalone.json`
+- 전체 9개 Flow 단일 Import: `import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
+- 단일 호출 Agent + Tool Mode Router: `import_ready_flows/06_agent_tool_router_flow_v5_standalone.json`
+- 실시간 생산 판정 더미 데이터·HTML Report Flow: `import_ready_flows/07_realtime_production_report_flow_v5_standalone.json`
+- 최대 2단계 종속 조회 Data Analysis Flow: `import_ready_flows/08_data_analysis_flow_v2_continuation_standalone.json`
+- 종속 조회 전용 Agent + Tool Router: `import_ready_flows/09_agent_tool_router_continuation_flow_v5_standalone.json`
+- 06 커스텀 원본: `langflow_components/route_flow_v2/`
+- 07 커스텀 원본과 연결 가이드: `langflow_components/realtime_production_report_flow/`
 - Workflow Orchestrator 구현·운영 계약: `docs/ROUTE_V4_WORKFLOW_ORCHESTRATOR_IMPLEMENTATION.md`
 - Workflow 문서·registry 작성 예시: `docs/workflows/`
 - 전체 커스텀 원본 감사: `docs/CUSTOM_COMPONENT_SOURCE_AUDIT_20260712.md`
@@ -91,7 +82,7 @@ uv pip install --python .langflow-venv\Scripts\python.exe `
 
 ## v5에서 달라진 핵심
 
-1. 전체 메타데이터를 LLM에 넘기지 않습니다. 도메인은 관련 항목만 최대 10건, 테이블은 관련 후보 최소 5건·최대 10건, 메인 필터는 전체를 전달하며 최종 후보 JSON은 32KB로 제한합니다.
+1. 전체 메타데이터를 LLM에 넘기지 않습니다. 도메인은 관련 항목만 최대 20건, 테이블은 관련 후보 5건, 메인 필터는 전체를 전달하며 최종 후보 JSON은 32KB로 제한합니다.
 2. LLM은 `dataset_key`만 선택합니다. `source_type`, SQL, endpoint 같은 실행 설정은 active table catalog에서 deterministic하게 주입합니다.
 3. 조회 분기에는 전체 main payload가 아니라 선택된 job bundle과 최소 request context만 전달합니다.
 4. 전체 helper library 대신 실제 선택된 함수 정의만 pandas prompt에 전달합니다.
@@ -127,8 +118,8 @@ uv pip install --python .langflow-venv\Scripts\python.exe `
 - 이 작업 환경에서는 실제 Oracle/H-API/Datalake/Goodocs 자격증명과 원천 데이터가 없어 dummy 경로로 검증했습니다.
 - 자동 검증 대상 대표 질문 30개는 trusted catalog hydration, 선택 helper, pandas 실행, 답변/API adapter를 포함한 deterministic dummy 경로에서 30/30 통과했습니다. 기존 질문뿐 아니라 NULL 표시, W/BM·A조, OPER_SEQ 구간, DA 그룹, FC78 제품 token, UPH 기본 상세 컬럼도 포함합니다. `LOT_ID`가 필수인 HOLD history는 선행 LOT 결과가 있는 멀티턴 검증으로 분리했습니다.
 - 대표 dummy 질문 30/30이 통과했습니다.
-- Data Analysis의 복합 지표는 Domain payload에 등록된 `temporal_semantics`, source별 `metric_bindings`, strict `result_columns` 계약으로 검증합니다. Intent Normalizer는 업무 표현을 하드코딩하지 않고 선택된 Domain의 dataset·날짜 파라미터·offset을 공통 해석합니다. 생산실적+아침재공은 각 source를 독립 집계해 병합하고, 이전 제품 결과+장비 후속 질문은 Table Catalog와 이전 `resolved_grain_plan`이 확정한 physical key로 내부 left join하여 metric 복사·중복 alias·수동 컬럼 map 오류를 차단합니다. 정확한 Langflow 1.9.2 환경의 비웹 테스트는 505/505 통과했습니다.
-- 기준 런타임은 `langflow 1.9.2`, `langflow-base 0.9.2`, `lfx 0.4.2`입니다. 전체 커스텀 소스와 현재 13개 Flow의 node template을 이 조합에서 파싱하고, export/import JSON의 node·edge·source 동기화 계약을 함께 검증합니다.
+- Data Analysis의 복합 지표는 Domain payload에 등록된 `temporal_semantics`, source별 `metric_bindings`, strict `result_columns` 계약으로 검증합니다. Intent Normalizer는 업무 표현을 하드코딩하지 않고 선택된 Domain의 dataset·날짜 파라미터·offset을 공통 해석합니다. 생산실적+아침재공은 각 source를 독립 집계해 병합하고, 이전 제품 결과+장비 후속 질문은 Table Catalog와 이전 `resolved_grain_plan`이 확정한 physical key로 내부 left join하여 metric 복사·중복 alias·수동 컬럼 map 오류를 차단합니다. 이번 변경 범위의 continuation·router·bundle 회귀와 Typed IR route 테스트를 실행했고, 정확한 Langflow 1.9.2 환경의 Flow 08/09 component parse 및 15개 Flow source-sync를 별도로 검증했습니다.
+- 기준 런타임은 `langflow 1.9.2`, `langflow-base 0.9.2`, `lfx 0.4.2`입니다. 전체 커스텀 소스와 현재 15개 Flow의 code-bearing Component node template 298개를 이 조합에서 파싱하고, export/import JSON의 node·edge·source 동기화 계약을 함께 검증합니다.
 - Workflow Orchestrator의 `result_ref` 연계 호출은 `agent_v4_result_store`를 사용하므로 `MONGO_URL`과 같은 부모/자식 `session_id`가 필수입니다. 저장된 결과가 없거나 다른 세션의 ref이면 후속 조회를 fail-closed로 중단합니다.
 - 실제 문제 실행 기록에서는 기존 06 Router의 session fan-out 때문에 ChatInput/SmartRouter가 각각 2회 빌드되고 비선택 direct/clarification Chat Output이 질문을 두 번 저장한 사실을 확인했습니다. 수정 JSON은 Chat Input outgoing edge를 Smart Router 한 개로 제한하며, 운영 provider를 사용한 최종 화면 재검증은 새 06을 import한 뒤 수행합니다.
 - 격리 Langflow 서버에는 `GOOGLE_API_KEY` Global Variable이 없어 Agent/LLM을 포함한 전체 Flow 실행은 수행하지 않았습니다. 운영 인스턴스에서는 같은 이름의 Global Variable 또는 회사 표준 provider 설정이 필요합니다.

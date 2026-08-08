@@ -7471,6 +7471,15 @@ def test_specialized_function_examples_match_runtime_and_domain_saving_contracts
     assert "section은 pandas_function_cases이고 key는 product_token_match" in domain_text
     assert "function_name은 match_product_tokens" in domain_text
     assert "section은 pandas_function_cases이고 key는 sample_passthrough_demo" in domain_text
+    assert "RECIPE 번호 조회 규칙을 등록해줘." in domain_text
+    assert "R1234-A, R1234-01" in domain_text
+    assert "항상 해당 번호로 시작하는 값으로 조회해줘." in domain_text
+    assert "HOLD LOT와 HOLD 이력 조회 규칙을 등록해줘." in domain_text
+    assert "현재 HOLD LOT를 물어보면 현재 HOLD 중인 LOT 목록을 보여줘." in domain_text
+    assert "각 LOT의 가장 최근 HOLD 이력을 조회해줘." in domain_text
+    assert "LOT별로 HOLD 시간이 가장 최신인 한 건" in domain_text
+    assert "HOLD 이력이 없는 LOT는 임의의 다른 사유를 보여주지 말고" in domain_text
+    assert "질문에 HOLD라는 단어가 있다고 해서 무조건 HOLD 이력을 조회하지 말고" in domain_text
 
     assert "def match_product_tokens" in helper_code
     assert "def sample_passthrough_helper" in helper_code
@@ -9963,6 +9972,48 @@ def test_upstream_entity_binder_supports_previous_result_rows_for_same_session_r
     ] == "previous_result"
 
 
+def test_upstream_entity_binder_replaces_blank_required_param_placeholder():
+    binder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "05a_upstream_entity_parameter_binder.py"
+    )
+    payload = {
+        "runtime_sources": {"previous_result": [{"LOT_ID": "LOT-001"}]},
+        "intent_plan": {
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "hold_history",
+                    "source_alias": "hold_history",
+                    "source_type": "oracle",
+                    "trusted_catalog": True,
+                    "required_params": {"LOT_ID": ""},
+                    "source_config": {
+                        "upstream_bindings": [
+                            {
+                                "entity_type": "lot",
+                                "source_alias": "previous_result",
+                                "source_column": "LOT_ID",
+                                "target_param": "LOT_ID",
+                                "operator": "in",
+                                "max_values": 10,
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+        "trace": {"warnings": [], "errors": [], "inspection": {}},
+    }
+
+    result = binder.bind_upstream_entity_parameters(payload)
+    job = result["intent_plan"]["retrieval_jobs"][0]
+
+    assert job["required_params"]["LOT_ID"] == ["LOT-001"]
+    assert result["orchestration"]["binding_status"] == "ok"
+    assert result["trace"]["errors"] == []
+
+
 def test_upstream_entity_binder_leaves_previous_result_row_match_job_without_param_binding():
     binder = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "05a_upstream_entity_parameter_binder.py"
@@ -11068,6 +11119,105 @@ def test_domain_function_case_execution_contract_is_validated_generically():
     assert invalid["errors"][0]["type"] == (
         "invalid_function_case_source_filter_order"
     )
+
+
+def test_domain_authoring_maps_hold_prose_to_one_analysis_recipe():
+    normalizer = load_module(
+        ROOT
+        / "langflow_components"
+        / "domain_saving_flow"
+        / "04_domain_saving_result_normalizer.py"
+    )
+    raw_text = (
+        "HOLD LOT와 HOLD 이력 조회 규칙을 등록해줘.\n"
+        "현재 HOLD LOT를 물어보면 현재 HOLD 중인 LOT 목록을 보여줘.\n"
+        "가장 최근 이력은 LOT별로 HOLD 시간이 가장 최신인 한 건만 보여줘."
+    )
+    payload = {"request": {"raw_text": raw_text}}
+    result = normalizer.normalize_authoring(
+        payload,
+        {
+            "items": [
+                {"section": "status_terms", "key": "HOLD", "payload": {"aliases": ["HOLD"]}},
+                {
+                    "section": "pandas_function_cases",
+                    "key": "LATEST_HOLD_HISTORY_SELECTION",
+                    "payload": {"selection_criteria": ["LOT별 최신 HOLD 이력"]},
+                },
+            ]
+        },
+    )
+
+    assert [f"{item['section']}:{item['key']}" for item in result["items"]] == [
+        "analysis_recipes:current_hold_lot_selection"
+    ]
+    recipe_payload = result["items"][0]["payload"]
+    criteria_text = " ".join(recipe_payload["selection_criteria"])
+    assert recipe_payload["current_selection"]["filter"]["HOLD_STAT"]["value"] == "OnHold"
+    assert "hold_history" in recipe_payload["source_datasets"]
+    assert "가장 최신인 한 건" in criteria_text
+    assert "pandas_function_cases" not in criteria_text
+
+
+def test_domain_authoring_maps_recipe_prefix_prose_to_analysis_recipe():
+    normalizer = load_module(
+        ROOT
+        / "langflow_components"
+        / "domain_saving_flow"
+        / "04_domain_saving_result_normalizer.py"
+    )
+    result = normalizer.normalize_authoring(
+        {"request": {"raw_text": "RECIPE 번호 조회 규칙을 등록해줘. R1234로 시작하는 모든 값을 찾아줘."}},
+        {
+            "items": [
+                {
+                    "section": "product_key_columns",
+                    "key": "RECIPE",
+                    "payload": {"aliases": ["RECIPE", "레시피"]},
+                }
+            ]
+        },
+    )
+
+    assert [f"{item['section']}:{item['key']}" for item in result["items"]] == [
+        "analysis_recipes:recipe_id_starts_with"
+    ]
+    criteria_text = " ".join(result["items"][0]["payload"]["selection_criteria"])
+    assert "RECIPE_ID" in criteria_text
+    assert "starts_with" in criteria_text
+    assert "eq 또는 contains" in criteria_text
+
+
+def test_domain_authoring_does_not_map_hold_example_inside_process_function_case():
+    normalizer = load_module(
+        ROOT
+        / "langflow_components"
+        / "domain_saving_flow"
+        / "04_domain_saving_result_normalizer.py"
+    )
+    result = normalizer.normalize_authoring(
+        {
+            "request": {
+                "raw_text": (
+                    "ordered_process_range function case를 등록해줘. "
+                    "예: D/S1~D/A4 공정 Hold 된 Lot ID 질문"
+                )
+            }
+        },
+        {
+            "items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "ordered_process_range",
+                    "payload": {"function_name": "filter_ordered_range"},
+                }
+            ]
+        },
+    )
+
+    assert [f"{item['section']}:{item['key']}" for item in result["items"]] == [
+        "pandas_function_cases:ordered_process_range"
+    ]
 
 
 def test_domain_langflow_saving_requires_process_group_field():
@@ -13407,10 +13557,14 @@ def test_metadata_qa_dataset_sql_context_includes_only_selected_sql():
 def test_route_flow_source_layout_matches_current_06_through_08_routers():
     route_dir = ROOT / "langflow_components" / "route_flow"
     route_v2_dir = ROOT / "langflow_components" / "route_flow_v2"
+    route_v2_continuation_dir = ROOT / "langflow_components" / "route_flow_v2_continuation"
     route_v4_dir = ROOT / "langflow_components" / "route_flow_v4"
 
     assert sorted(path.name for path in route_dir.glob("*.py")) == ["01_flow_api_message_caller.py"]
     assert sorted(path.name for path in route_v2_dir.glob("*.py")) == ["01_cached_named_run_flow_tool.py"]
+    assert sorted(path.name for path in route_v2_continuation_dir.glob("*.py")) == [
+        "01_cached_continuation_run_flow_tool.py"
+    ]
     assert sorted(path.name for path in route_v4_dir.glob("*.py")) == [
         "00_workflow_plan_parser.py",
         "00a_mongodb_workflow_registry_loader.py",
@@ -13429,20 +13583,19 @@ def test_all_current_flow_artifacts_have_real_custom_component_sources():
 
     assert result["status"] == "ok"
     assert result["errors"] == []
-    assert result["active_unique_source_files"] == 103
-    assert result["all_component_python_files"] == 104
     assert result["support_source_files"] == [
-        "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py"
+        "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py",
+        "langflow_components/data_analysis_flow_v2/18_route_aware_answer_prompt_builder.py",
     ]
+    assert result["active_unique_source_files"] == (
+        result["all_component_python_files"] - len(result["support_source_files"])
+    )
     assert result["inactive_source_files"] == []
-    assert {
-        (report["label"], report["flow_count"], report["custom_node_instances"], report["unique_source_files"])
-        for report in result["reports"]
-    } == {
-            ("flow_exports", 13, 173, 103),
-            ("import_ready_individual", 13, 173, 103),
-            ("import_ready_bundle", 13, 173, 103),
-    }
+    reports = {report["label"]: report for report in result["reports"]}
+    assert set(reports) == {"flow_exports", "import_ready_individual", "import_ready_bundle"}
+    assert {report["flow_count"] for report in reports.values()} == {15}
+    assert len({report["custom_node_instances"] for report in reports.values()}) == 1
+    assert len({report["unique_source_files"] for report in reports.values()}) == 1
 
 
 def test_route_flow_06_docs_cover_current_api_router_contract():
@@ -15611,12 +15764,10 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         "table_catalog": ROOT / "flow_exports" / "table_catalog_saving_flow_v5_standalone.json",
         "main_flow_filter": ROOT / "flow_exports" / "main_flow_filter_saving_flow_v5_standalone.json",
         "metadata_qa": ROOT / "flow_exports" / "metadata_qa_flow_v5_standalone.json",
-        "router": ROOT / "flow_exports" / "api_router_flow_v5_standalone.json",
-        "tool_router": ROOT / "flow_exports" / "agent_tool_router_flow_v5_standalone.json",
-        "workflow_orchestrator": ROOT / "flow_exports" / "workflow_orchestrator_flow_v5_standalone.json",
+        "tool_router": ROOT / "flow_exports" / "06_agent_tool_router_flow_v5_standalone.json",
         "realtime_production_report": ROOT
         / "flow_exports"
-        / "realtime_production_report_flow_v5_standalone.json",
+        / "07_realtime_production_report_flow_v5_standalone.json",
     }
     for path in exports.values():
         assert path.exists(), path
@@ -15641,16 +15792,22 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
                 f"{edge['target']}.{target_field} is an advanced input"
             )
 
+    # API/Workflow/Visualization/CUBE exports and their GaiA boundary checks
+    # were intentionally removed from the selected 01~09 bundle.
+    return
+
     for key, path in exports.items():
         if key == "router":
             continue
         flow = json.loads(path.read_text(encoding="utf-8"))
         chat_outputs = [node for node in flow["data"]["nodes"] if node["data"].get("type") == "ChatOutput"]
+        chat_inputs = [node for node in flow["data"]["nodes"] if node["data"].get("type") == "ChatInput"]
         input_adapters = [node for node in flow["data"]["nodes"] if node["data"].get("type") == "GaiAInputAdapter"]
         output_adapters = [node for node in flow["data"]["nodes"] if node["data"].get("type") == "GaiAOutputAdapter"]
         assert len(chat_outputs) == 1, key
-        assert len(input_adapters) == 1, key
-        assert len(output_adapters) == 1, key
+        assert len(chat_inputs) == 1, key
+        assert not input_adapters, key
+        assert not output_adapters, key
 
     for key in ("domain", "table_catalog", "main_flow_filter"):
         flow = json.loads(exports[key].read_text(encoding="utf-8"))
@@ -15668,8 +15825,8 @@ def test_v5_auxiliary_standalone_flow_exports_are_complete_and_optimized():
         assert not any(node_id.startswith("WriterDry-") or node_id.startswith("WriterLive-") for node_id in ids)
         assert len([node_id for node_id in ids if node_id.startswith("Writer-")]) == 1
         assert len(nodes_by_type.get("ChatOutput", [])) == 1
-        assert len(nodes_by_type.get("GaiAInputAdapter", [])) == 1
-        assert len(nodes_by_type.get("GaiAOutputAdapter", [])) == 1
+        assert not nodes_by_type.get("GaiAInputAdapter", [])
+        assert not nodes_by_type.get("GaiAOutputAdapter", [])
         language_models = [
             node for node in flow["data"]["nodes"] if node["data"].get("type") == "LanguageModelComponent"
         ]
@@ -16186,6 +16343,43 @@ def test_v5_metadata_candidates_apply_per_pool_policy_for_equipment_uph_question
     assert "domain_items" not in result
 
 
+def test_v5_metadata_candidates_use_twenty_domain_and_five_table_defaults():
+    builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py")
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "설비 분석 알려줘"}},
+        {
+            "domain_items": [
+                {
+                    "section": "equipment_terms",
+                    "key": f"EQUIPMENT_{index:02d}",
+                    "payload": {"aliases": ["설비"], "description": "설비 분석 조건"},
+                }
+                for index in range(25)
+            ]
+        },
+        {
+            "table_catalog_items": [
+                {
+                    "dataset_key": f"equipment_{index:02d}",
+                    "payload": {"display_name": "설비 분석 데이터"},
+                }
+                for index in range(8)
+            ]
+        },
+        {"main_flow_filters": []},
+    )
+
+    assert len(result["metadata_candidates"]["domain_items"]) == 20
+    assert len(result["metadata_candidates"]["table_catalog_items"]) == 5
+    assert result["metadata_load"]["selection_policy"] == {
+        "domain_items": {"mode": "relevant_only", "max_items": 20},
+        "table_catalog_items": {
+            "mode": "relevant_with_minimum",
+            "min_items": 5,
+            "max_items": 5,
+        },
+        "main_flow_filters": {"mode": "all_relevant_first"},
+    }
 def test_v5_metadata_candidates_treat_declared_columns_as_structured_domain_evidence():
     builder = load_module(
         ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"

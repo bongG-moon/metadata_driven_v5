@@ -162,6 +162,30 @@ V2_FAST_RECIPES = {
     "pivot_summary",
 }
 
+# 제품 Function Case 입력 보정에 사용하는 범용 구조 토큰 패턴입니다.
+# 업무별 의미(TECH/LEAD/MCP_NO 등)는 Domain metadata가 소유하고, 여기서는
+# 질문에서 누락되기 쉬운 고신뢰 형태만 찾습니다. 공정·날짜·지표 단어는
+# 이 패턴에 매칭되지 않으므로 helper 입력에 자동으로 섞이지 않습니다.
+GENERIC_FUNCTION_TOKEN_PATTERNS = (
+    r"(?<![A-Za-z0-9])(?:FC|F|X)\d+(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])[A-Z]-\d+(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])\d+G(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])(?:DDR|GDDR|HBM)\d+[A-Z0-9-]*(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])[A-Z]{2,}\d+(?![A-Za-z0-9])",
+)
+FUNCTION_CASE_DETAIL_CUES = (
+    "이력",
+    "내역",
+    "상세",
+    "사유",
+    "원인",
+    "시각",
+    "시간",
+    "코드",
+    "history",
+    "detail",
+)
+
 
 # 주요 함수: LLM 의도 결과를 신뢰 가능한 실행 계획 계약으로 정규화합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
@@ -173,6 +197,7 @@ def normalize_intent_plan(
     payload = _payload(payload_value)
     parsed = _json(llm_response)
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
+    plan = deepcopy(plan) if isinstance(plan, dict) else {}
     metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
     retrieval_jobs = _retrieval_jobs(plan)
     metadata_refs = _metadata_refs(parsed, plan)
@@ -192,6 +217,23 @@ def normalize_intent_plan(
     raw_pandas_plan, typed_input_binding = _bind_typed_external_source_aliases(
         raw_pandas_plan
     )
+    (
+        plan,
+        retrieval_jobs,
+        raw_pandas_plan,
+        followup_contract_guard,
+    ) = _reconcile_followup_execution_contract(
+        payload,
+        plan,
+        retrieval_jobs,
+        raw_pandas_plan,
+        metadata_candidates,
+        question,
+    )
+    if followup_contract_guard.get("metadata_ref"):
+        followup_ref = _metadata_ref(followup_contract_guard["metadata_ref"])
+        if followup_ref and followup_ref not in metadata_refs:
+            metadata_refs.append(followup_ref)
     (
         retrieval_jobs,
         external_source_catalog_binding,
@@ -249,15 +291,6 @@ def normalize_intent_plan(
         ),
         align_explicit_scope=not _has_ordered_process_range_case(plan),
     )
-    process_scope_guard = _validate_process_scope_contract(
-        retrieval_jobs,
-        metadata_candidates,
-        question,
-        declared_processes=_declared_process_scope_from_plan(
-            plan, metadata_candidates
-        ),
-        skip=_has_ordered_process_range_case(plan),
-    )
     retrieval_jobs, filter_operator_normalization = _normalize_retrieval_filter_operators(
         retrieval_jobs
     )
@@ -307,15 +340,6 @@ def normalize_intent_plan(
                 process_group_field_guard.get("job_process_scopes", []),
             ),
         }
-    process_scope_guard = _validate_process_scope_contract(
-        retrieval_jobs,
-        metadata_candidates,
-        question,
-        declared_processes=_declared_process_scope_from_plan(
-            plan, metadata_candidates
-        ),
-        skip=_has_ordered_process_range_case(plan),
-    )
     if (
         business_time_guard.get("status") == "applied"
         and domain_selection.get("temporal_alias_lock") is True
@@ -363,6 +387,13 @@ def normalize_intent_plan(
         retrieval_jobs,
         metadata_candidates,
     )
+    function_cases, function_case_input_reconciliation = (
+        _reconcile_function_case_inputs(
+            function_cases,
+            question,
+            metadata_candidates,
+        )
+    )
     retrieval_jobs, function_owned_filter_normalization = (
         _remove_function_owned_retrieval_filters(
             retrieval_jobs,
@@ -401,6 +432,20 @@ def normalize_intent_plan(
         reference_mode,
         payload,
     )
+    # Validate process scope only after the normalizer has materialized the
+    # trusted previous/upstream row-match step. A dependent history source
+    # may inherit the parent's scope through those rows rather than repeat
+    # OPER_NAME filters, while ordinary unscoped sources remain blocked.
+    process_scope_guard = _validate_process_scope_contract(
+        retrieval_jobs,
+        metadata_candidates,
+        question,
+        pandas_plan=pandas_plan,
+        declared_processes=_declared_process_scope_from_plan(
+            plan, metadata_candidates
+        ),
+        skip=_has_ordered_process_range_case(plan),
+    )
     reference_mode_guard = _validate_reference_mode(
         reference_mode_resolution,
         request_scope,
@@ -409,6 +454,10 @@ def normalize_intent_plan(
         payload,
     )
     validation_errors = _reference_mode_validation_errors(reference_mode_guard)
+    validation_errors.extend(followup_contract_guard.get("validation_errors", []))
+    validation_errors.extend(
+        function_case_input_reconciliation.get("validation_errors", [])
+    )
     if metric_dataset_selection.get("unresolved"):
         validation_errors.append(
             {
@@ -626,6 +675,10 @@ def normalize_intent_plan(
     normalized_plan["request_scope"] = request_scope
     normalized_plan["reference_mode"] = reference_mode
     normalized_plan["reuse_strategy"] = reuse_strategy
+    if followup_contract_guard.get("reference_contract"):
+        normalized_plan["reference_contract"] = deepcopy(
+            followup_contract_guard["reference_contract"]
+        )
     if validation_errors:
         normalized_plan["validation_errors"] = validation_errors
     else:
@@ -729,6 +782,8 @@ def normalize_intent_plan(
         "process_scope_guard": process_scope_guard,
         "filter_operator_normalization": filter_operator_normalization,
         "function_owned_filter_normalization": function_owned_filter_normalization,
+        "followup_contract_guard": followup_contract_guard,
+        "function_case_input_reconciliation": function_case_input_reconciliation,
         "function_case_execution_contracts": function_case_execution_contracts,
         "reference_scope_normalization": reference_scope_normalization,
         "reference_mode_guard": reference_mode_guard,
@@ -777,6 +832,16 @@ def _normalize_reference_request_scope(
     )
     if (
         retrieval_jobs
+        and reference_mode == "previous_source"
+        and request_scope == "followup_expand_source"
+    ):
+        # 원본 source를 재사용해 새 grain을 계산하는 경로는 retrieval job이
+        # 남아 있어도 expand_source 의미를 보존합니다. 기존처럼 무조건
+        # requery로 바꾸면 previous_result와 source 재사용을 구분할 수 없습니다.
+        normalized = "followup_expand_source"
+        reason = "followup_reuses_previous_source_with_expansion"
+    elif (
+        retrieval_jobs
         and request_scope
         in {
             "followup_transform",
@@ -809,6 +874,599 @@ def _normalize_reference_request_scope(
         "retrieval_job_count": len(retrieval_jobs),
         "reason": reason,
     }
+
+
+# 함수 설명: 후속 질문을 LLM 출력 문자열이 아니라 이전 schema·source·Catalog 계약으로 보정합니다.
+def _reconcile_followup_execution_contract(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+    metadata_candidates: dict[str, Any],
+    question: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[Any], dict[str, Any]]:
+    next_plan = deepcopy(plan)
+    jobs = deepcopy(retrieval_jobs)
+    steps = deepcopy(pandas_plan)
+    hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    if hint.get("followup_candidate") is not True:
+        return next_plan, jobs, steps, {"status": "not_needed", "reason": "not_followup"}
+
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    previous_result_columns = _merge_strings(
+        _string_list(current_data.get("columns")),
+        _string_list(current_data.get("result_columns")),
+    )
+    source_columns_by_alias = (
+        current_data.get("source_columns_by_alias")
+        if isinstance(current_data.get("source_columns_by_alias"), dict)
+        else {}
+    )
+    reusable_aliases = set(
+        _string_list(hint.get("reusable_previous_source_aliases"))
+    )
+    if not reusable_aliases:
+        reusable_aliases = {
+            str(alias).strip()
+            for alias, columns in source_columns_by_alias.items()
+            if str(alias).strip() and _string_list(columns)
+        }
+
+    previous_ids = _followup_previous_identifier_columns(payload)
+    detail_requested = _followup_has_detail_cue(question, hint)
+
+    # 1) 이전 결과의 식별자로 연결할 수 있는 dependent Catalog가 하나뿐이면
+    #    history/detail 조회로 확정합니다. dataset 이름(HOLD 등)은 사용하지 않습니다.
+    dependent_matches = _find_dependent_catalog_matches(
+        question,
+        metadata_candidates,
+        previous_ids,
+        detail_requested,
+        {
+            str(job.get("dataset_key") or "").strip()
+            for job in jobs
+            if isinstance(job, dict)
+        },
+    )
+    dependent = dependent_matches[0] if len(dependent_matches) == 1 else {}
+    if dependent:
+        target_item = dependent["item"]
+        target_payload = _metadata_payload(target_item)
+        dataset_key = dependent["dataset_key"]
+        old_aliases = {
+            str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+            for job in jobs
+            if isinstance(job, dict)
+        }
+        target_job = _build_dependent_retrieval_job(
+            target_item,
+            metadata_candidates,
+            jobs,
+            dependent["binding"],
+        )
+        target_alias = str(target_job.get("source_alias") or dataset_key).strip()
+        steps = _rewrite_followup_source_steps(steps, old_aliases, target_alias)
+        detail_columns = _string_list(target_payload.get("default_detail_columns"))
+        if detail_columns:
+            next_plan["output_contract"] = _detail_output_contract(
+                detail_columns,
+                next_plan.get("output_contract"),
+            )
+        next_plan["retrieval_jobs"] = [target_job]
+        next_plan["pandas_execution_plan"] = steps
+        next_plan["request_scope"] = "followup_requery"
+        next_plan["reference_mode"] = "previous_result_rows"
+        next_plan["reuse_strategy"] = "previous_result"
+        next_plan["metadata_refs"] = _merge_metadata_ref_lists(
+            _metadata_refs({}, next_plan),
+            [{"section": "table_catalog", "key": dataset_key}],
+        )
+        reference_contract = {
+            "mode": "previous_result_rows",
+            "scope": "followup_requery",
+            "target_dataset": dataset_key,
+            "target_source_alias": target_alias,
+            "previous_columns": previous_ids,
+            "binding": deepcopy(dependent["binding"]),
+            "selection_source": "catalog_upstream_binding",
+        }
+        return next_plan, [target_job], steps, {
+            "status": "applied",
+            "kind": "dependent_retrieval",
+            "reason": "detail_request_with_catalog_upstream_binding",
+            "metadata_ref": {"section": "table_catalog", "key": dataset_key},
+            "reference_contract": reference_contract,
+            "llm_request_scope": str(plan.get("request_scope") or ""),
+            "llm_reference_mode": str(plan.get("reference_mode") or ""),
+        }
+
+    # 2) 제품별·공정별 등 새 grain이 이전 결과에 없으면 결과 재변환이 아닙니다.
+    requested_grain = _followup_requested_grain(plan, steps)
+    missing_from_result = [
+        column
+        for column in requested_grain
+        if _normalized_column_key(column)
+        not in {_normalized_column_key(value) for value in previous_result_columns}
+    ]
+    if missing_from_result and (requested_grain or detail_requested):
+        has_reusable_source = bool(
+            reusable_aliases.intersection(
+                {
+                    str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+                    for job in jobs
+                    if isinstance(job, dict)
+                }
+            )
+            or reusable_aliases
+        )
+        if jobs:
+            mode = "previous_source" if has_reusable_source else "previous_filters"
+            scope = "followup_expand_source" if has_reusable_source else "followup_requery"
+            next_plan["reference_mode"] = mode
+            next_plan["request_scope"] = scope
+            next_plan["reuse_strategy"] = _reuse_strategy(mode)
+            return next_plan, jobs, steps, {
+                "status": "applied",
+                "kind": "source_grain_expansion",
+                "reason": "requested_grain_missing_from_previous_result",
+                "missing_result_columns": missing_from_result,
+                "available_result_columns": previous_result_columns,
+                "source_aliases": sorted(reusable_aliases),
+                "reference_contract": {
+                    "mode": mode,
+                    "scope": scope,
+                    "requested_grain": requested_grain,
+                    "missing_from_previous_result": missing_from_result,
+                    "source_requery": True,
+                },
+                "llm_request_scope": str(plan.get("request_scope") or ""),
+                "llm_reference_mode": str(plan.get("reference_mode") or ""),
+            }
+        return next_plan, [], [], {
+            "status": "blocked",
+            "kind": "unavailable_grain",
+            "reason": "requested_grain_missing_from_result_and_source",
+            "missing_result_columns": missing_from_result,
+            "available_result_columns": previous_result_columns,
+            "validation_errors": [
+                {
+                    "type": "followup_result_grain_unavailable",
+                    "message": "이전 결과와 재사용 가능한 원본 source에 요청한 분석 기준 컬럼이 없습니다.",
+                    "missing_columns": missing_from_result,
+                }
+            ],
+        }
+
+    # A detail/history follow-up with an entity identifier requires a
+    # metadata-proven dependent source. If the catalog is absent or ambiguous,
+    # fail closed instead of reusing an unrelated aggregate/source.
+    if detail_requested and previous_ids and jobs and str(plan.get("reference_mode") or "").strip() == "none":
+        reason = "ambiguous" if len(dependent_matches) > 1 else "unavailable"
+        return next_plan, jobs, steps, {
+            "status": "blocked",
+            "kind": "dependent_catalog_unresolved",
+            "reason": f"dependent_catalog_{reason}",
+            "validation_errors": [
+                {
+                    "type": "followup_dependent_catalog_unresolved",
+                    "message": "후속 상세 조회에 필요한 dependent Catalog 계약을 하나로 확정하지 못했습니다.",
+                    "candidate_count": len(dependent_matches),
+                    "previous_identifier_columns": previous_ids,
+                }
+            ],
+        }
+
+    # A follow-up that really asks for a new retrieval must never retain the
+    # ambiguous ``reference_mode=none`` emitted by a weak intent model. The
+    # decision is source/capability based: reuse an explicitly available source
+    # when one exists; otherwise inherit only the previous filters. This keeps
+    # the rule generic and independent of a dataset or business term.
+    if jobs and str(plan.get("request_scope") or "").strip() == "followup_requery" and str(
+        plan.get("reference_mode") or ""
+    ).strip() == "none":
+        has_reusable_source = bool(reusable_aliases)
+        mode = "previous_source" if has_reusable_source else "previous_filters"
+        scope = "followup_expand_source" if has_reusable_source else "followup_requery"
+        next_plan["reference_mode"] = mode
+        next_plan["request_scope"] = scope
+        next_plan["reuse_strategy"] = _reuse_strategy(mode)
+        return next_plan, jobs, steps, {
+            "status": "applied",
+            "kind": "generic_followup_reference_completion",
+            "reason": "followup_requery_requires_explicit_previous_reference",
+            "reference_contract": {
+                "mode": mode,
+                "scope": scope,
+                "source_aliases": sorted(reusable_aliases),
+                "filter_inheritance": mode == "previous_filters",
+            },
+            "llm_request_scope": str(plan.get("request_scope") or ""),
+            "llm_reference_mode": str(plan.get("reference_mode") or ""),
+        }
+
+    return next_plan, jobs, steps, {
+        "status": "not_needed",
+        "reason": "no_catalog_proven_dependent_or_grain_conflict",
+    }
+
+
+# 함수 설명: 후속 상태에 남은 식별 컬럼 중 Catalog upstream binding과 연결 가능한 컬럼만 반환합니다.
+def _followup_previous_identifier_columns(payload: dict[str, Any]) -> list[str]:
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    current = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    columns = _merge_strings(
+        _string_list(current.get("columns")),
+        _string_list(current.get("result_columns")),
+    )
+    hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    matched = hint.get("matched_cues") if isinstance(hint.get("matched_cues"), dict) else {}
+    hinted = _string_list(matched.get("previous_entity_identifiers"))
+    result: list[str] = []
+    for column in [*hinted, *columns]:
+        upper = str(column).strip().upper()
+        if not upper.endswith(("_ID", "_NO")):
+            continue
+        if any(_normalized_column_key(column) == _normalized_column_key(item) for item in result):
+            continue
+        result.append(str(column).strip())
+    return result
+
+
+# 함수 설명: 이력·상세·사유 요청을 공통 cue와 followup hint로 판정합니다.
+def _followup_has_detail_cue(question: str, hint: dict[str, Any]) -> bool:
+    matched = hint.get("matched_cues") if isinstance(hint.get("matched_cues"), dict) else {}
+    if _string_list(matched.get("previous_entity_identifiers")):
+        return True
+    compact = str(question or "").casefold().replace(" ", "")
+    return any(str(cue).casefold() in compact for cue in FUNCTION_CASE_DETAIL_CUES)
+
+
+# 함수 설명: 이전 결과 식별자와 Catalog upstream binding을 모두 만족하는 dependent dataset을 하나만 선택합니다.
+def _find_dependent_catalog_matches(
+    question: str,
+    candidates: dict[str, Any],
+    previous_columns: list[str],
+    detail_requested: bool,
+    current_dataset_keys: set[str],
+) -> list[dict[str, Any]]:
+    if not detail_requested or not previous_columns:
+        return []
+    matches: list[dict[str, Any]] = []
+    for raw_item in candidates.get("table_catalog_items", []) if isinstance(candidates.get("table_catalog_items"), list) else []:
+        if not isinstance(raw_item, dict):
+            continue
+        item = _metadata_payload(raw_item)
+        dataset_key = str(raw_item.get("dataset_key") or item.get("dataset_key") or "").strip()
+        if not dataset_key or dataset_key in current_dataset_keys:
+            continue
+        bindings = _catalog_upstream_bindings(raw_item)
+        for binding in bindings:
+            source_column = str(
+                binding.get("source_column") or binding.get("source_column_name") or ""
+            ).strip()
+            target_param = str(
+                binding.get("target_param") or binding.get("required_param") or binding.get("param") or ""
+            ).strip()
+            source_alias = str(binding.get("source_alias") or binding.get("source") or "").strip()
+            if not source_column or not target_param:
+                continue
+            if source_alias and source_alias not in {"previous_result", "upstream_result", PREVIOUS_RESULT_ALIAS}:
+                continue
+            if not any(_normalized_column_key(source_column) == _normalized_column_key(column) for column in previous_columns):
+                continue
+            required = _catalog_required_params(candidates, dataset_key)
+            if required and not any(
+                _normalized_column_key(target_param) == _normalized_column_key(value)
+                for value in required
+            ):
+                continue
+            criteria = item.get("selection_criteria") if isinstance(item.get("selection_criteria"), dict) else {}
+            if criteria:
+                required_previous = _string_list(
+                    criteria.get("required_previous_columns")
+                    or criteria.get("required_upstream_columns")
+                )
+                if required_previous and not all(
+                    any(_normalized_column_key(value) == _normalized_column_key(column) for column in previous_columns)
+                    for value in required_previous
+                ):
+                    continue
+                required_aliases = _string_list(
+                    criteria.get("required_any_aliases")
+                    or criteria.get("required_terms_any")
+                )
+                if required_aliases and not any(_domain_alias_matches(question, alias) for alias in required_aliases):
+                    continue
+            matches.append(
+                {
+                    "item": raw_item,
+                    "dataset_key": dataset_key,
+                    "binding": deepcopy(binding),
+                }
+            )
+            break
+    return matches
+
+
+# 함수 설명: 후속 조회 질문과 이전 결과 컬럼에 맞는 dependent Catalog 후보를 찾습니다.
+def _find_dependent_catalog_candidate(
+    question: str,
+    candidates: dict[str, Any],
+    previous_columns: list[str],
+    detail_requested: bool,
+    current_dataset_keys: set[str],
+) -> dict[str, Any]:
+    """Backward-compatible single-candidate wrapper for existing callers."""
+    matches = _find_dependent_catalog_matches(
+        question,
+        candidates,
+        previous_columns,
+        detail_requested,
+        current_dataset_keys,
+    )
+    return matches[0] if len(matches) == 1 else {}
+
+
+# 함수 설명: Catalog의 upstream_bindings를 여러 저장 위치에서 읽어 실행용 단일 목록으로 만듭니다.
+def _catalog_upstream_bindings(item: dict[str, Any]) -> list[dict[str, Any]]:
+    payload = _metadata_payload(item)
+    source_config = payload.get("source_config") if isinstance(payload.get("source_config"), dict) else {}
+    raw = source_config.get("upstream_bindings") or payload.get("upstream_bindings") or item.get("upstream_bindings") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    return [deepcopy(value) for value in raw if isinstance(value, dict)] if isinstance(raw, list) else []
+
+
+# 함수 설명: dependent Catalog의 required parameter·source 설정을 blank placeholder와 binding으로 구성합니다.
+def _build_dependent_retrieval_job(
+    item: dict[str, Any],
+    candidates: dict[str, Any],
+    existing_jobs: list[dict[str, Any]],
+    binding: dict[str, Any],
+) -> dict[str, Any]:
+    payload = _metadata_payload(item)
+    dataset_key = str(item.get("dataset_key") or payload.get("dataset_key") or "").strip()
+    existing = next(
+        (
+            deepcopy(job)
+            for job in existing_jobs
+            if isinstance(job, dict) and str(job.get("dataset_key") or "").strip() == dataset_key
+        ),
+        {},
+    )
+    alias = str(existing.get("source_alias") or payload.get("source_alias") or f"{dataset_key}_src").strip()
+    job = existing or {}
+    job.update({"dataset_key": dataset_key, "source_alias": alias})
+    source_type = str(payload.get("source_type") or item.get("source_type") or "").strip()
+    if source_type:
+        job["source_type"] = source_type
+    required_params = job.get("required_params") if isinstance(job.get("required_params"), dict) else {}
+    if not required_params:
+        required_params = {
+            str(param): ""
+            for param in _catalog_required_params(candidates, dataset_key)
+        }
+    target_param = str(binding.get("target_param") or binding.get("required_param") or "").strip()
+    if target_param and not any(
+        _normalized_column_key(key) == _normalized_column_key(target_param)
+        for key in required_params
+    ):
+        required_params[target_param] = ""
+    if target_param:
+        for key in list(required_params):
+            if _normalized_column_key(key) == _normalized_column_key(target_param) and not str(required_params[key] or "").strip():
+                required_params[key] = ""
+    job["required_params"] = required_params
+    job.setdefault("filters", {})
+    source_config = payload.get("source_config") if isinstance(payload.get("source_config"), dict) else {}
+    if source_config:
+        job["source_config"] = deepcopy(source_config)
+    if _catalog_upstream_bindings(item):
+        job.setdefault("source_config", {})["upstream_bindings"] = _catalog_upstream_bindings(item)
+    return job
+
+
+# 함수 설명: 이전 parent source의 일반 필터를 dependent source에 복사하지 않고 typed source alias만 교체합니다.
+def _rewrite_followup_source_steps(
+    steps: list[Any],
+    old_aliases: set[str],
+    new_alias: str,
+) -> list[Any]:
+    result: list[Any] = []
+    dropped_node_ids: set[str] = set()
+    for raw in steps:
+        if not isinstance(raw, dict):
+            result.append(deepcopy(raw))
+            continue
+        operation = str(raw.get("operation") or raw.get("step") or "").strip().lower()
+        aliases = {
+            str(raw.get(key) or "").strip()
+            for key in ("source_alias", "left_source_alias", "right_source_alias")
+            if str(raw.get(key) or "").strip()
+        }
+        external_refs = {
+            str(item.get("ref") or "").strip()
+            for item in raw.get("inputs", [])
+            if isinstance(item, dict) and str(item.get("kind") or "") == "external_source"
+        } if isinstance(raw.get("inputs"), list) else set()
+        if old_aliases.intersection(aliases | external_refs) and operation in {"apply_filters", "filter", "where"}:
+            node_id = str(raw.get("node_id") or raw.get("output_alias") or "").strip()
+            if node_id:
+                dropped_node_ids.add(node_id)
+            continue
+        step = deepcopy(raw)
+        for key in ("source_alias", "left_source_alias", "right_source_alias"):
+            if str(step.get(key) or "").strip() in old_aliases:
+                step[key] = new_alias
+        if isinstance(step.get("inputs"), list):
+            for input_item in step["inputs"]:
+                if not isinstance(input_item, dict):
+                    continue
+                if str(input_item.get("kind") or "") == "external_source" and str(input_item.get("ref") or "").strip() in old_aliases:
+                    input_item["ref"] = new_alias
+                elif (
+                    str(input_item.get("kind") or "") == "node_output"
+                    and str(input_item.get("ref") or "").strip() in dropped_node_ids
+                ):
+                    input_item["kind"] = "external_source"
+                    input_item["ref"] = new_alias
+        result.append(step)
+    if not any(isinstance(item, dict) for item in result):
+        result.append(
+            {
+                "node_id": "select_followup_detail",
+                "operation": "select_columns",
+                "inputs": [{"kind": "external_source", "ref": new_alias}],
+                "output_alias": "followup_detail_result",
+                "source_alias": new_alias,
+            }
+        )
+    return result
+
+
+# 함수 설명: dependent Catalog의 default_detail_columns를 후속 detail 결과 계약으로 적용합니다.
+def _detail_output_contract(columns: list[str], existing: Any) -> dict[str, Any]:
+    contract = deepcopy(existing) if isinstance(existing, dict) else {}
+    contract.update(
+        {
+            "result_mode": "detail",
+            "required_columns": columns,
+            "result_columns": columns,
+            "strict_result_columns": True,
+            "grain_columns": [columns[0]] if columns else [],
+        }
+    )
+    metric_columns = [
+        column
+        for column in columns
+        if str(column).upper().endswith(("_QTY", "_TAT", "_COUNT", "_SUM"))
+    ]
+    if metric_columns:
+        contract["metric_columns"] = metric_columns
+    return contract
+
+
+# 함수 설명: 후속 질문의 group_by가 이전 결과에 존재하는지 확인해 transform/source 재조회 경로를 분리합니다.
+def _followup_requested_grain(plan: dict[str, Any], steps: list[Any]) -> list[str]:
+    output = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    result: list[str] = []
+    result = _merge_strings(
+        _string_list(output.get("grain_columns")),
+        _string_list(output.get("group_by")),
+    )
+    for raw in steps:
+        if not isinstance(raw, dict):
+            continue
+        operation = str(raw.get("operation") or "").strip().lower()
+        if operation in {"groupby_and_aggregate", "group_by", "aggregate"}:
+            result = _merge_strings(
+                result,
+                _string_list(raw.get("group_by") or raw.get("group_by_columns")),
+            )
+    return result
+
+
+# 함수 설명: metadata Function Case 입력 계약과 질문 원문을 비교해 LLM이 빠뜨린 구조 token을 보정합니다.
+def _reconcile_function_case_inputs(
+    function_cases: list[dict[str, Any]],
+    question: str,
+    metadata_candidates: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not function_cases:
+        return function_cases, {"status": "not_needed", "cases": []}
+    result: list[dict[str, Any]] = []
+    changes: list[dict[str, Any]] = []
+    validation_errors: list[dict[str, Any]] = []
+    for case in function_cases:
+        next_case = deepcopy(case)
+        function_name = str(next_case.get("function_name") or "").strip()
+        if function_name != "match_product_tokens":
+            result.append(next_case)
+            continue
+        original = str(next_case.get("input_text") or "").strip()
+        policy = _function_case_token_policy(next_case, metadata_candidates)
+        question_tokens = _extract_function_case_tokens(question, policy)
+        existing_tokens = {
+            _function_token(value)
+            for value in _extract_function_case_tokens(original, policy)
+        }
+        missing = [
+            value
+            for value in question_tokens
+            if _function_token(value) not in existing_tokens
+        ]
+        if missing:
+            canonical = " ".join([*missing, original]).strip() if original else " ".join(question_tokens)
+            next_case["input_text"] = canonical
+            changes.append(
+                {
+                    "function_case_key": str(next_case.get("key") or "").strip(),
+                    "function_name": function_name,
+                    "original_input_text": original,
+                    "canonical_input_text": canonical,
+                    "question_tokens": question_tokens,
+                    "missing_tokens": missing,
+                    "source": "question_metadata_reconciliation",
+                }
+            )
+        elif not original and not question_tokens:
+            validation_errors.append(
+                {
+                    "type": "function_case_input_unresolved",
+                    "message": "제품 token Function Case의 입력 token을 질문과 metadata에서 확정하지 못했습니다.",
+                    "function_case_key": str(next_case.get("key") or "").strip(),
+                }
+            )
+        result.append(next_case)
+    return result, {
+        "status": "blocked" if validation_errors else ("applied" if changes else "not_needed"),
+        "cases": changes,
+        "validation_errors": validation_errors,
+    }
+
+
+# 함수 설명: Domain Function Case에 선언된 token pattern을 우선 사용하고 없으면 고신뢰 공통 패턴을 적용합니다.
+def _function_case_token_policy(case: dict[str, Any], candidates: dict[str, Any]) -> dict[str, Any]:
+    case_key = str(case.get("key") or case.get("function_case_key") or "").strip()
+    function_name = str(case.get("function_name") or "").strip()
+    for item in candidates.get("domain_items", []) if isinstance(candidates.get("domain_items"), list) else []:
+        if not isinstance(item, dict) or str(item.get("section") or "") != "pandas_function_cases":
+            continue
+        payload = _metadata_payload(item)
+        if case_key and case_key != str(item.get("key") or payload.get("key") or "").strip() and function_name != str(item.get("function_name") or payload.get("function_name") or "").strip():
+            continue
+        policy = payload.get("token_policy")
+        if isinstance(policy, dict):
+            return deepcopy(policy)
+    return {}
+
+
+# 함수 설명: 질문 또는 Function Case 입력에서 metadata pattern과 공통 구조 token을 원문 순서대로 추출합니다.
+def _extract_function_case_tokens(value: Any, policy: dict[str, Any]) -> list[str]:
+    text = str(value or "")
+    patterns = list(GENERIC_FUNCTION_TOKEN_PATTERNS)
+    custom = policy.get("include_patterns") or policy.get("token_patterns") or []
+    for pattern in _string_list(custom):
+        if pattern not in patterns:
+            patterns.append(pattern)
+    matches: list[tuple[int, str]] = []
+    for pattern in patterns:
+        try:
+            matches.extend((match.start(), match.group(0)) for match in re.finditer(pattern, text))
+        except re.error:
+            continue
+    excluded = {
+        _function_token(value)
+        for value in _string_list(policy.get("exclude_tokens"))
+    }
+    ordered: list[str] = []
+    for _, token in sorted(matches, key=lambda item: item[0]):
+        if _function_token(token) in excluded:
+            continue
+        if _function_token(token) not in {_function_token(value) for value in ordered}:
+            ordered.append(token)
+    return ordered
 
 
 # 함수 설명: `_request_scope()`는 분석 범위에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
@@ -2198,6 +2856,7 @@ def _filter_incompatible_recipe_contracts(
     }
 
 
+# 함수 설명: `_recipe_selection_criteria_match()`는 04 의도 계획 정규화기 처리 중 selection·적용 기준·match 관련 값을 계산·변환하는 내부 helper입니다.
 def _recipe_selection_criteria_match(
     question: str,
     payload: dict[str, Any],
@@ -2213,6 +2872,7 @@ def _recipe_selection_criteria_match(
     if not isinstance(criteria, dict):
         return True, {"status": "not_declared"}
 
+    # 함수 설명: `values()`는 04 의도 계획 정규화기 처리 중 값 관련 값을 계산·변환하는 내부 helper입니다.
     def values(*keys: str) -> list[str]:
         result: list[str] = []
         for key in keys:
@@ -2860,6 +3520,8 @@ def _metadata_filter_contracts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+# 함수 설명: `_apply_selected_domain_conditions()`는 04 의도 계획 정규화기 처리 중 selected·도메인·conditions 관련 값을 계산·변환하는 내부
+#        helper입니다.
 def _apply_selected_domain_conditions(
     retrieval_jobs: list[Any],
     candidates: dict[str, Any],
@@ -2918,6 +3580,8 @@ def _apply_selected_domain_conditions(
     }
 
 
+# 함수 설명: `_enforce_selected_domain_filter_contracts()`는 04 의도 계획 정규화기 처리 중 selected·도메인·필터·contracts 관련 값을 계산·변환하는
+#        내부 helper입니다.
 def _enforce_selected_domain_filter_contracts(
     retrieval_jobs: list[Any],
     candidates: dict[str, Any],
@@ -3021,6 +3685,7 @@ def _enforce_selected_domain_filter_contracts(
     }
 
 
+# 함수 설명: `_filter_condition_is_incomplete()`는 조건과 우선순위에 맞는 조건·IS·incomplete만 골라 원래 순서를 유지해 반환합니다.
 def _filter_condition_is_incomplete(condition: Any) -> bool:
     if not isinstance(condition, dict):
         return True
@@ -3036,6 +3701,7 @@ def _filter_condition_is_incomplete(condition: Any) -> bool:
     return not any(_filter_value_is_present(value) for value in values)
 
 
+# 함수 설명: `_filter_value_is_present()`는 조건과 우선순위에 맞는 값·IS·present만 골라 원래 순서를 유지해 반환합니다.
 def _filter_value_is_present(value: Any) -> bool:
     """Treat numeric zero/False as valid filter values, not as blank text."""
 
@@ -3046,6 +3712,7 @@ def _filter_value_is_present(value: Any) -> bool:
     return True
 
 
+# 함수 설명: `_declared_process_scope_from_plan()`는 04 의도 계획 정규화기 처리 중 process·분석 범위·원본·PLAN 관련 값을 계산·변환하는 내부 helper입니다.
 def _declared_process_scope_from_plan(
     plan: dict[str, Any],
     metadata_candidates: dict[str, Any],
@@ -3065,6 +3732,7 @@ def _declared_process_scope_from_plan(
     }
     declared: list[str] = []
 
+    # 함수 설명: `visit()`는 04 의도 계획 정규화기 처리 중 visit 관련 값을 계산·변환하는 내부 helper입니다.
     def visit(value: Any) -> None:
         if isinstance(value, dict):
             field = str(value.get("field") or value.get("column") or "").strip()
@@ -3089,11 +3757,13 @@ def _declared_process_scope_from_plan(
     return declared
 
 
+# 함수 설명: `_validate_process_scope_contract()`는 process·분석 범위·contract이 실행·저장 계약을 만족하는지 검사하고 위반 내용을 명시적으로 반환합니다.
 def _validate_process_scope_contract(
     retrieval_jobs: list[Any],
     candidates: dict[str, Any],
     question: str,
     *,
+    pandas_plan: list[Any] | None = None,
     declared_processes: list[str] | None = None,
     skip: bool = False,
 ) -> dict[str, Any]:
@@ -3132,12 +3802,15 @@ def _validate_process_scope_contract(
                 str(job.get("source_alias") or job.get("dataset_key") or "").strip()
             )
     missing = sorted(requested_keys - covered)
+    dependent_scope_aliases = _dependent_process_scope_aliases(pandas_plan or [])
     unscoped_aliases = [
         str(job.get("source_alias") or job.get("dataset_key") or "").strip()
         for job in retrieval_jobs
         if isinstance(job, dict)
         and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
         not in scoped_aliases
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        not in dependent_scope_aliases
     ]
     if unscoped_aliases:
         error = {
@@ -3156,6 +3829,26 @@ def _validate_process_scope_contract(
             "unscoped_sources": unscoped_aliases,
             "validation_errors": [error],
         }
+    # A dependent history/detail source can be scoped by the previous result's
+    # trusted entity rows instead of repeating the parent's process filter.
+    # Do not treat that source as an unscoped broad query: the row-match step
+    # is executed before the history filter/aggregation and is the effective
+    # process boundary for this job.  Keep ordinary unscoped sources blocked.
+    if missing and dependent_scope_aliases:
+        job_aliases = {
+            str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+            for job in retrieval_jobs
+            if isinstance(job, dict)
+        }
+        if job_aliases and job_aliases.issubset(dependent_scope_aliases):
+            return {
+                "status": "dependent_scope_allowed",
+                "requested_processes": requested,
+                "covered_processes": sorted(covered),
+                "missing_processes": missing,
+                "dependent_scope_sources": sorted(dependent_scope_aliases & job_aliases),
+                "validation_errors": [],
+            }
     if alignment.get("has_disjoint_scopes"):
         return {
             "status": "disjoint_scopes_allowed",
@@ -3185,6 +3878,30 @@ def _validate_process_scope_contract(
     }
 
 
+# 함수 설명: `_dependent_process_scope_aliases()`는 이전 결과/상위 결과의
+# 식별 행으로 범위가 확정되는 source alias를 찾습니다. 이 source들은 부모
+# 질문의 공정 필터를 반복하지 않아도 되지만, 일반 무범위 source와 섞이면
+# 여전히 process scope 검증에서 차단됩니다.
+def _dependent_process_scope_aliases(pandas_plan: list[Any]) -> set[str]:
+    aliases: set[str] = set()
+    for step in pandas_plan:
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation != "apply_row_match_groups":
+            continue
+        source_alias = str(step.get("source_alias") or "").strip()
+        reference_alias = str(
+            step.get("reference_source_alias")
+            or step.get("reference_alias")
+            or ""
+        ).strip().casefold()
+        if source_alias and reference_alias in {"previous_result", "upstream_result"}:
+            aliases.add(source_alias)
+    return aliases
+
+
+# 함수 설명: `_build_intent_ir()`는 의도 계획·IR 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def _build_intent_ir(
     plan: dict[str, Any],
     question: str,

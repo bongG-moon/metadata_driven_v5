@@ -23,18 +23,21 @@ GAIA_OUTPUT_ADAPTER_SOURCE = COMPONENT_ROOT / "gaia_io" / "01_gaia_output.py"
 ROUTER_READ_TIMEOUT_SECONDS = "240"
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
 TARGET_LANGFLOW_VERSION = "1.9.2"
+DEFAULT_LANGUAGE_MODEL = "gemini-3.5-flash-lite"
 FLOW_DISPLAY_NAMES = {
+    # Stable external target. The import bundle binds this name to the V2
+    # hybrid graph; router Tool names and client contracts do not change.
     "data_analysis": "01. v5_data_analysis",
     "domain_saving": "02. v5_domain_saving",
     "table_catalog_saving": "03. v5_table_catalog_saving",
     "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
     "metadata_qa": "05. v5_metadata_qa",
     "api_router": "06. v5_api_router",
-    "agent_tool_router": "07. v5_agent_tool_router",
+    "agent_tool_router": "06. v5_agent_tool_router",
     "workflow_orchestrator": "08. v5_workflow_orchestrator",
     "workflow_skill_saving": "09. v5_workflow_skill_saving",
     "html_visualization": "10. v5_html_visualization",
-    "realtime_production_report": "11. v5_realtime_production_report",
+    "realtime_production_report": "07. v5_realtime_production_report",
     "cube_schedule_saving": "12. v5_cube_schedule_saving",
 }
 
@@ -114,7 +117,6 @@ SAVING_SPECS = [
     SavingSpec("domain", "도메인", "domain_saving_flow", None, "00_domain_saving_request_loader.py", "03_domain_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_domain_saving_result_normalizer.py", "05_domain_similarity_checker.py", "07_domain_review_writer.py", "08_domain_saving_response_builder.py", "09_domain_saving_message_adapter.py", "10_domain_saving_api_response_builder.py"),
     SavingSpec("table_catalog", "테이블 카탈로그", "table_catalog_saving_flow", None, "00_table_catalog_saving_request_loader.py", "03_table_catalog_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_table_catalog_saving_result_normalizer.py", "05_table_catalog_similarity_checker.py", "07_table_catalog_review_writer.py", "08_table_catalog_saving_response_builder.py", "09_table_catalog_saving_message_adapter.py", "10_table_catalog_saving_api_response_builder.py"),
     SavingSpec("main_flow_filter", "메인 플로우 필터", "main_flow_filters_saving_flow", None, "00_main_flow_filter_saving_request_loader.py", "03_main_flow_filter_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_main_flow_filter_saving_result_normalizer.py", "05_main_flow_filter_similarity_checker.py", "07_main_flow_filter_review_writer.py", "08_main_flow_filter_saving_response_builder.py", "09_main_flow_filter_saving_message_adapter.py", "10_main_flow_filter_saving_api_response_builder.py"),
-    SavingSpec("workflow_skill", "Workflow Skill", "workflow_skill_saving_flow", "00_workflow_skill_existing_items_loader.py", "00_workflow_skill_saving_request_loader.py", "03_workflow_skill_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_workflow_skill_saving_result_normalizer.py", "05_workflow_skill_similarity_checker.py", "07_workflow_skill_review_writer.py", "08_workflow_skill_saving_response_builder.py", "09_workflow_skill_saving_message_adapter.py", "10_workflow_skill_saving_api_response_builder.py"),
 ]
 
 
@@ -176,6 +178,7 @@ def _native_component_prototype(
         for attribute in ("value", "load_from_db", "advanced", "show"):
             if attribute in source_field:
                 target_field[attribute] = deepcopy(source_field[attribute])
+    _set_default_language_model(config.get("template", {}))
     node["data"]["type"] = node_type
     node["data"]["node"] = config
     return node
@@ -272,6 +275,7 @@ def language_model_node(
 
     node = _clone_node(proto, node_id, x, y)
     template = node["data"]["node"]["template"]
+    _set_default_language_model(template)
     _set_value(template, "api_key", "")
     _set_value(template, "system_message", system_message)
     _set_value(template, "stream", False)
@@ -303,6 +307,38 @@ def _clone_node(proto: dict[str, Any], node_id: str, x: float, y: float) -> dict
 def _set_value(template: dict[str, Any], field_name: str, value: Any) -> None:
     if isinstance(template.get(field_name), dict):
         template[field_name]["value"] = value
+
+
+def _set_default_language_model(template: dict[str, Any]) -> None:
+    """Set the selected model for native Language Model/Agent templates."""
+
+    model = template.get("model")
+    if not isinstance(model, dict) or model.get("type") != "model":
+        return
+    value = model.get("value")
+    selected = deepcopy(value[0]) if isinstance(value, list) and value and isinstance(value[0], dict) else {}
+    selected["name"] = DEFAULT_LANGUAGE_MODEL
+    selected.setdefault("icon", "GoogleGenerativeAI")
+    selected.setdefault("provider", "Google Generative AI")
+    selected.setdefault(
+        "metadata",
+        {
+            "api_key_param": "google_api_key",
+            "context_length": 128000,
+            "max_tokens_field_name": "max_output_tokens",
+            "model_class": "ChatGoogleGenerativeAIFixed",
+            "model_name_param": "model",
+        },
+    )
+    model["value"] = [selected]
+    options = model.get("options")
+    if isinstance(options, list) and not any(
+        isinstance(option, dict) and option.get("name") == DEFAULT_LANGUAGE_MODEL
+        for option in options
+    ):
+        option = deepcopy(selected)
+        option.setdefault("category", option.get("provider", "Google Generative AI"))
+        options.insert(0, option)
 
 
 def _prompt_variables(text: str) -> list[str]:
@@ -353,6 +389,10 @@ def _boundary_suffix(node_id: str, prefix: str) -> str:
 
 
 def wrap_gaia_boundaries(flow: dict[str, Any], proto: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    # GaiA boundary adapters are intentionally disabled.  All retained flows
+    # connect native Chat Input/Output directly.
+    return flow
+
     """표준 Chat I/O 사이에 GaiA 문맥/응답 어댑터를 삽입합니다.
 
     표준 Chat Input/Output은 Playground interface component로 유지하고, custom GaiA
@@ -1405,12 +1445,8 @@ def write_flows() -> list[dict[str, Any]]:
     qa_path = EXPORT_ROOT / "metadata_qa_flow_v5_standalone.json"
     qa_path.write_bytes((json.dumps(qa, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     outputs.append({"path": str(qa_path), "nodes": len(qa["data"]["nodes"]), "edges": len(qa["data"]["edges"])})
-    router = _stamp_flow_version(build_router_flow(donor))
-    router_path = EXPORT_ROOT / "api_router_flow_v5_standalone.json"
-    router_path.write_bytes((json.dumps(router, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-    outputs.append({"path": str(router_path), "nodes": len(router["data"]["nodes"]), "edges": len(router["data"]["edges"])})
     tool_router = _stamp_flow_version(build_agent_tool_router_flow(donor))
-    tool_router_path = EXPORT_ROOT / "agent_tool_router_flow_v5_standalone.json"
+    tool_router_path = EXPORT_ROOT / "06_agent_tool_router_flow_v5_standalone.json"
     tool_router_path.write_bytes((json.dumps(tool_router, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     outputs.append(
         {
@@ -1419,32 +1455,8 @@ def write_flows() -> list[dict[str, Any]]:
             "edges": len(tool_router["data"]["edges"]),
         }
     )
-    workflow_orchestrator = _stamp_flow_version(build_workflow_orchestrator_flow(donor))
-    workflow_orchestrator_path = EXPORT_ROOT / "workflow_orchestrator_flow_v5_standalone.json"
-    workflow_orchestrator_path.write_bytes(
-        (json.dumps(workflow_orchestrator, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    )
-    outputs.append(
-        {
-            "path": str(workflow_orchestrator_path),
-            "nodes": len(workflow_orchestrator["data"]["nodes"]),
-            "edges": len(workflow_orchestrator["data"]["edges"]),
-        }
-    )
-    html_visualization = _stamp_flow_version(build_html_visualization_flow(donor))
-    html_visualization_path = EXPORT_ROOT / "html_visualization_flow_v5_standalone.json"
-    html_visualization_path.write_bytes(
-        (json.dumps(html_visualization, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    )
-    outputs.append(
-        {
-            "path": str(html_visualization_path),
-            "nodes": len(html_visualization["data"]["nodes"]),
-            "edges": len(html_visualization["data"]["edges"]),
-        }
-    )
     realtime_production_report = _stamp_flow_version(build_realtime_production_report_flow(donor))
-    realtime_production_report_path = EXPORT_ROOT / "realtime_production_report_flow_v5_standalone.json"
+    realtime_production_report_path = EXPORT_ROOT / "07_realtime_production_report_flow_v5_standalone.json"
     realtime_production_report_path.write_bytes(
         (json.dumps(realtime_production_report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     )
@@ -1453,18 +1465,6 @@ def write_flows() -> list[dict[str, Any]]:
             "path": str(realtime_production_report_path),
             "nodes": len(realtime_production_report["data"]["nodes"]),
             "edges": len(realtime_production_report["data"]["edges"]),
-        }
-    )
-    cube_schedule_saving = _stamp_flow_version(build_cube_schedule_saving_flow(donor))
-    cube_schedule_saving_path = EXPORT_ROOT / "cube_schedule_saving_flow_v5_standalone.json"
-    cube_schedule_saving_path.write_bytes(
-        (json.dumps(cube_schedule_saving, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    )
-    outputs.append(
-        {
-            "path": str(cube_schedule_saving_path),
-            "nodes": len(cube_schedule_saving["data"]["nodes"]),
-            "edges": len(cube_schedule_saving["data"]["edges"]),
         }
     )
     return outputs

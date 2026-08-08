@@ -32,13 +32,50 @@ PROMPT_INTERNAL_JOB_KEYS = {
     "catalog_ref",
 }
 RETIRED_OUTPUT_CONTRACT_KEYS = {"row_identity_columns", "context_columns", "default_detail_columns"}
+PANDAS_PREVIEW_ROW_LIMIT = 2
+PANDAS_PREVIEW_COLUMN_LIMIT = 16
+PANDAS_PREVIEW_CELL_CHAR_LIMIT = 160
+PREVIEW_COLUMN_KEYS = {
+    "column",
+    "source_column",
+    "output_column",
+    "sort_by",
+    "primary_metric",
+    "lhs_metric_column",
+    "rhs_metric_column",
+    "left_column",
+    "right_column",
+}
+PREVIEW_COLUMN_LIST_KEYS = {
+    "columns",
+    "required_columns",
+    "result_columns",
+    "grain_columns",
+    "metric_columns",
+    "group_by",
+    "projection",
+    "join_keys",
+    "left_keys",
+    "right_keys",
+    "right_value_columns",
+    "default_token_columns",
+}
 
 # 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def build_variables(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     schemas = _source_schemas(payload)
-    previews = {alias: rows[:5] for alias, rows in payload.get("runtime_sources", {}).items() if isinstance(rows, list)}
+    if isinstance(payload.get("simple_analysis_contract"), dict):
+        previews = _source_previews(payload, schemas)
+    else:
+        # Preserve the V1 legacy model view exactly. V2 adds the typed routing
+        # contract before this builder and receives the bounded projection.
+        previews = {
+            str(alias): deepcopy(rows[:5])
+            for alias, rows in payload.get("runtime_sources", {}).items()
+            if isinstance(rows, list)
+        }
     return {
         "intent_plan_json": _compact_json(_prompt_intent_plan(payload)),
         "source_schema_json": _compact_json(schemas),
@@ -67,6 +104,8 @@ def build_route_aware_pandas_prompt(
     payload = _payload(payload_value)
     contract = payload.get("simple_analysis_contract") if isinstance(payload.get("simple_analysis_contract"), dict) else {}
     if str(contract.get("route") or "complex").strip().lower() != "complex":
+        return ""
+    if contract.get("requires_pandas_llm") is False:
         return ""
     variables = build_variables(payload)
     variables["function_case_helper_code"] = _text(function_case_helper_code)
@@ -186,6 +225,99 @@ def _source_schemas(payload: dict[str, Any]) -> dict[str, list[str]]:
         else:
             schemas.setdefault(str(alias), [])
     return schemas
+
+
+# 함수 설명: `_source_previews()`는 previews 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
+def _source_previews(
+    payload: dict[str, Any],
+    schemas: dict[str, list[str]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Build a bounded, execution-relevant model view without changing runtime rows."""
+
+    relevant = _relevant_preview_columns(payload)
+    previews: dict[str, list[dict[str, Any]]] = {}
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    for alias, rows in runtime_sources.items():
+        alias_text = str(alias)
+        if not isinstance(rows, list):
+            continue
+        schema = _string_list(schemas.get(alias_text))
+        selected = [column for column in relevant if column in schema]
+        if len(selected) < PANDAS_PREVIEW_COLUMN_LIMIT:
+            selected.extend(
+                column
+                for column in schema
+                if column not in selected
+            )
+        selected = selected[:PANDAS_PREVIEW_COLUMN_LIMIT]
+        previews[alias_text] = [
+            {
+                column: _bounded_preview_value(row.get(column))
+                for column in selected
+                if column in row
+            }
+            for row in rows[:PANDAS_PREVIEW_ROW_LIMIT]
+            if isinstance(row, dict)
+        ]
+    return previews
+
+
+# 함수 설명: `_relevant_preview_columns()`는 15 pandas 변수 생성기 처리 중 미리보기·컬럼 관련 값을 계산·변환하는 내부 helper입니다.
+def _relevant_preview_columns(payload: dict[str, Any]) -> list[str]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    columns: list[str] = []
+
+    # 함수 설명: `add()`는 여러 ADD 값을 순서와 중복 정책을 지키며 하나의 결과로 합칩니다.
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in columns:
+            columns.append(text)
+
+    # 함수 설명: `walk()`는 15 pandas 변수 생성기 처리 중 WALK 관련 값을 계산·변환하는 내부 helper입니다.
+    def walk(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+            return
+        if not isinstance(value, dict):
+            return
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in PREVIEW_COLUMN_KEYS:
+                add(item)
+            elif key_text in PREVIEW_COLUMN_LIST_KEYS and isinstance(item, list):
+                for column in item:
+                    add(column)
+            elif key_text == "filters" and isinstance(item, dict):
+                for column in item:
+                    add(column)
+            elif key_text == "metric_semantics" and isinstance(item, dict):
+                for column in item:
+                    add(column)
+            walk(item)
+
+    walk(plan.get("pandas_execution_plan"))
+    walk(plan.get("output_contract"))
+    walk(plan.get("retrieval_jobs"))
+    walk(plan.get("pandas_function_cases"))
+    return columns
+
+
+# 함수 설명: `_bounded_preview_value()`는 미리보기·값이 허용된 개수·길이·바이트 제한을 넘지 않도록 안전하게 줄입니다.
+def _bounded_preview_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        if len(value) <= PANDAS_PREVIEW_CELL_CHAR_LIMIT:
+            return value
+        return value[: PANDAS_PREVIEW_CELL_CHAR_LIMIT - 3] + "..."
+    try:
+        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        rendered = str(value)
+    if len(rendered) <= PANDAS_PREVIEW_CELL_CHAR_LIMIT:
+        return rendered
+    return rendered[: PANDAS_PREVIEW_CELL_CHAR_LIMIT - 3] + "..."
 
 
 # 함수 설명: `_string_list()`는 여러 형태의 입력에서 비어 있지 않은 문자열만 뽑아 중복 없는 목록으로 정리합니다.

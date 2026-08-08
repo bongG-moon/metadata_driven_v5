@@ -56,7 +56,7 @@ Chat Input
 
 Smart Router route output은 route별 API caller에 직접 연결합니다. 각 caller에는 bundle이 정한 고정 `endpoint_name`이 들어가며, `LANGFLOW_BASE_URL`과 필요 시 `LANGFLOW_API_KEY`를 사용합니다. Router는 API 방식으로 하위 Flow를 호출하므로 canvas edge나 Flow ID를 수동으로 다시 연결하지 않습니다.
 
-`direct_answer`와 `clarification`은 Smart Router에서 각 Chat Output으로 직접 연결합니다. 별도 terminal Gate는 Playground에 질문 JSON 카드를 추가할 수 있으므로 두지 않습니다. 운영 기본은 이 API Router이며, 자연어 Tool 선택 방식을 비교하려면 `07_agent_tool_router_flow_v5_standalone.json`을 사용합니다.
+`direct_answer`와 `clarification`은 Smart Router에서 각 Chat Output으로 직접 연결합니다. 별도 terminal Gate는 Playground에 질문 JSON 카드를 추가할 수 있으므로 두지 않습니다. 운영 기본은 이 API Router이며, 자연어 Tool 선택 방식을 비교하려면 `06_agent_tool_router_flow_v5_standalone.json`을 사용합니다.
 
 ## Data Analysis Flow
 

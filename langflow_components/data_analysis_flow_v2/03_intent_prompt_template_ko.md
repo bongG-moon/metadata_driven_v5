@@ -31,6 +31,7 @@
 - `followup_hint`는 후보 신호일 뿐 현재 질문, 직전 질문, 직전 결과 schema, 필요한 dataset을 함께 확인한다.
 - 독립 질문은 `new_analysis + none`, 후속은 실제 재사용 방식에 맞는 `request_scope`와 `reference_mode`를 함께 작성한다.
 - 이전 결과 행을 새 source에 매칭하면 `previous_result_rows`와 `apply_row_match_groups`, 이전 결과를 재분석하면 `previous_result_transform`, 저장 원본 재사용은 `previous_source`, 조건만 상속한 새 조회는 `previous_filters`를 사용한다.
+- 후속 질문의 대상 컬럼이나 상세 이력이 직전 결과에 없으면 직전 집계 결과를 억지로 재가공하지 않는다. Catalog의 required/upstream binding이 있으면 dependent retrieval job과 `previous_result_rows`를 만들고, 없으면 재사용 가능한 원본 source 또는 직전 filter를 명시한다. 후속 재조회에서 `reference_mode=none`을 남기지 않는다.
 - 유지·변경·삭제·추가 조건은 `condition_resolution`의 해당 영역에 구분한다. 저장 source 범위가 부족하거나 필수 파라미터가 바뀌면 새 retrieval job을 만든다.
 
 조회와 typed pandas 계획:
@@ -57,6 +58,7 @@ function case:
 - `metadata_candidates.runtime_function_helpers`에서 `selectable_for_intent=true`인 helper만 선택한다.
 - 선택 시 `pandas_function_cases`와 pandas 계획에 같은 `key`, `function_name`, `input_text`, `source_alias`를 기록하고 metadata의 실행 순서를 따른다.
 - helper 대상 표현만 `input_text`에 넣고 일반 조건·날짜·metric은 중복 전달하지 않는다.
+- 제품 식별 helper의 `input_text`는 질문에 명시된 식별 토큰을 모두 보존한다. 모델이 일부 토큰만 추출했더라도 metadata token policy와 질문 원문으로 누락 여부를 확인하고, 공정명·metric·일자 같은 일반 단어는 토큰으로 넣지 않는다.
 
 V2 실행 경로:
 

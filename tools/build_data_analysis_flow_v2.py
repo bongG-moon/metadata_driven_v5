@@ -37,9 +37,9 @@ from tools.build_v5_data_analysis_flow import (  # noqa: E402
 )
 
 
-DEFAULT_SOURCE = ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json"
+DEFAULT_SOURCE = ROOT / "tools" / "assets" / "data_analysis_flow_v2_donor.json"
 DEFAULT_TARGET = ROOT / "flow_exports" / "data_analysis_flow_v2_standalone.json"
-DEFAULT_IMPORT_TARGET = ROOT / "import_ready_flows" / "13_data_analysis_flow_v2_standalone.json"
+DEFAULT_IMPORT_TARGET = ROOT / "import_ready_flows" / "01_data_analysis_flow_v2_standalone.json"
 V2_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow_v2"
 COMMON_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow"
 
@@ -179,10 +179,73 @@ def _set_embedded_source(node: dict[str, Any], source_path: Path) -> None:
     ).hexdigest()[:12]
 
 
+def _edge_port(edge: dict[str, Any], side: str) -> str:
+    handle = edge.get("data", {}).get(f"{side}Handle", {})
+    key = "name" if side == "source" else "fieldName"
+    return str(handle.get(key) or "") if isinstance(handle, dict) else ""
+
+
+def _remove_gaia_adapters(flow: dict[str, Any]) -> None:
+    """Remove legacy GaiA boundary nodes and bridge their native edges.
+
+    The V2 donor was historically wrapped by GaiA Input/Output adapters.  The
+    standalone flow now uses Langflow's native Chat Input/Output directly, so
+    this migration is performed at build time and is idempotent.
+    """
+
+    nodes = flow["data"]["nodes"]
+    edges = flow["data"]["edges"]
+    node_index = {str(node["id"]): node for node in nodes}
+    adapter_ids = {
+        str(node["id"])
+        for node in nodes
+        if node.get("data", {}).get("type") in {"GaiAInputAdapter", "GaiAOutputAdapter"}
+    }
+    if not adapter_ids:
+        return
+
+    bridged: list[tuple[str, str, str, str]] = []
+    for adapter_id in adapter_ids:
+        incoming = [edge for edge in edges if str(edge.get("target") or "") == adapter_id]
+        outgoing = [edge for edge in edges if str(edge.get("source") or "") == adapter_id]
+        for in_edge in incoming:
+            source_id = str(in_edge.get("source") or "")
+            source_name = _edge_port(in_edge, "source")
+            if source_id not in node_index or not source_name:
+                continue
+            for out_edge in outgoing:
+                target_id = str(out_edge.get("target") or "")
+                target_name = _edge_port(out_edge, "target")
+                if target_id in node_index and target_id not in adapter_ids and target_name:
+                    bridged.append((source_id, source_name, target_id, target_name))
+
+    edges[:] = [
+        edge
+        for edge in edges
+        if str(edge.get("source") or "") not in adapter_ids
+        and str(edge.get("target") or "") not in adapter_ids
+    ]
+    nodes[:] = [node for node in nodes if str(node["id"]) not in adapter_ids]
+    node_index = {str(node["id"]): node for node in nodes}
+    existing = {_edge_key(edge) for edge in edges}
+    for source_id, source_name, target_id, target_name in bridged:
+        if source_id not in node_index or target_id not in node_index:
+            continue
+        edge = _make_edge(node_index, source_id, source_name, target_id, target_name)
+        key = _edge_key(edge)
+        if key not in existing:
+            edges.append(edge)
+            existing.add(key)
+
+
 def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     # The donor is the already-built, audited V5 standalone export. Re-running
     # the V5 builder against that export would apply its graph migration twice.
     flow = json.loads(source.read_text(encoding="utf-8-sig"))
+    nodes = flow["data"]["nodes"]
+    edges = flow["data"]["edges"]
+    node_index = {node["id"]: node for node in nodes}
+    _remove_gaia_adapters(flow)
     nodes = flow["data"]["nodes"]
     edges = flow["data"]["edges"]
     node_index = {node["id"]: node for node in nodes}
@@ -274,35 +337,6 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     nodes[prompt_index] = lazy_pandas_prompt
     node_index[PANDAS_PROMPT_NODE_ID] = lazy_pandas_prompt
 
-    # The answer-variable node likewise owns lazy rendering. Its V2 context
-    # keeps result shape in result_summary and criteria in applied_scope only.
-    _set_embedded_source(
-        node_index[ANSWER_VARIABLES_NODE_ID],
-        _component_path("18_route_aware_answer_prompt_builder.py"),
-    )
-    _apply_extended_component_spec(
-        node_index[ANSWER_VARIABLES_NODE_ID],
-        [
-            ("data", "payload", "분석 결과 페이로드", True, None),
-            (
-                "multiline",
-                "prompt_template",
-                "Answer Prompt Template",
-                True,
-                _common_component_path("19_answer_prompt_template_ko.md").read_text(encoding="utf-8"),
-            ),
-            ("message", "domain_answer_guidance", "도메인 특화 답변 지침", False, ""),
-        ],
-        [("Message", "answer_prompt", "경로 인식 Answer Prompt", "build_prompt")],
-        node_index,
-    )
-    node_index[ANSWER_VARIABLES_NODE_ID]["data"]["node"].update(
-        {
-            "display_name": "18 V2 경로 인식 Answer Prompt 생성기",
-            "description": "Complex일 때만 중복 제거된 답변 context와 prompt를 생성합니다.",
-        }
-    )
-
     # Preserve the provider selections from the current model nodes while
     # moving them into the lazy hybrid components.
     pandas_model_template = deepcopy(
@@ -340,7 +374,14 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         [
             ("data", "payload", "페이로드", True, None),
             ("bool", "use_llm_answer", "Complex 답변 LLM 사용", False, True),
-            ("message", "answer_prompt", "답변 생성 프롬프트", False, ""),
+            (
+                "multiline",
+                "answer_prompt_template",
+                "답변 프롬프트 템플릿",
+                False,
+                _common_component_path("19_answer_prompt_template_ko.md").read_text(encoding="utf-8"),
+            ),
+            ("message", "domain_answer_guidance", "도메인 특화 답변 지침", False, ""),
             ("model", "model", "답변 언어 모델", False, None),
             ("secret", "api_key", "답변 모델 API 키", False, "GOOGLE_API_KEY"),
         ],
@@ -360,10 +401,10 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         _component_path("21_v2_answer_message_adapter.py"),
     )
 
-    # Remove the two always-on model nodes and the now-redundant answer Prompt
-    # Template node. The pandas Prompt node ID is retained by the lazy custom
-    # component above so existing canvas references remain stable.
-    removed_node_ids = {*REMOVED_MODEL_NODE_IDS, ANSWER_PROMPT_NODE_ID}
+    # Node 20 owns AnswerEvidence and renders its prompt only after the visible
+    # BoolInput branch. Removing the upstream answer materializer guarantees
+    # that answer LLM OFF never serializes rows into a discarded prompt.
+    removed_node_ids = {*REMOVED_MODEL_NODE_IDS, ANSWER_PROMPT_NODE_ID, ANSWER_VARIABLES_NODE_ID}
     nodes[:] = [node for node in nodes if node["id"] not in removed_node_ids]
     for node_id in removed_node_ids:
         node_index.pop(node_id, None)
@@ -393,8 +434,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         (RESOLVER_NODE_ID, "payload_out", HYBRID_EXECUTOR_NODE_ID, "payload"),
         ("CustomComponent-v5Helper", "selected_helper_code", PANDAS_PROMPT_NODE_ID, "function_case_helper_code"),
         (PANDAS_PROMPT_NODE_ID, "pandas_prompt", HYBRID_EXECUTOR_NODE_ID, "pandas_prompt"),
-        ("TextInput-VFbHh", "text", ANSWER_VARIABLES_NODE_ID, "domain_answer_guidance"),
-        (ANSWER_VARIABLES_NODE_ID, "answer_prompt", HYBRID_ANSWER_NODE_ID, "answer_prompt"),
+        ("TextInput-VFbHh", "text", HYBRID_ANSWER_NODE_ID, "domain_answer_guidance"),
     ]
     existing = {_edge_key(edge) for edge in edges}
     for source_id, source_name, target_id, target_name in additions:
@@ -406,9 +446,9 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     _apply_standalone_defaults(nodes)
     _refresh_edge_source_types(edges, node_index)
 
-    endpoint_name = "metadata-driven-v5-data-analysis-v2"
+    endpoint_name = "metadata-driven-v5-data-analysis"
     flow["id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, endpoint_name))
-    flow["name"] = "13. data_analysis_flow_v2"
+    flow["name"] = "01. v5_data_analysis"
     flow["endpoint_name"] = endpoint_name
     flow["description"] = (
         "Standalone Data Analysis Flow V2: the existing metadata, trusted catalog, retrieval, state, download, "

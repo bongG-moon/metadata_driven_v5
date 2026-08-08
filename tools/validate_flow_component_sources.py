@@ -14,9 +14,21 @@ FLOW_EXPORT_ROOT = ROOT / "flow_exports"
 IMPORT_READY_ROOT = ROOT / "import_ready_flows"
 COMBINED_IMPORT = IMPORT_READY_ROOT / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
 CUSTOM_MODULE_PREFIXES = ("custom_components.", "v5_auxiliary.")
-EXPECTED_FLOW_COUNT = 13
+EXPECTED_FLOW_COUNT = 9
+CONTINUATION_EXPORTS = {
+    FLOW_EXPORT_ROOT / "08_data_analysis_flow_v2_continuation_standalone.json",
+    FLOW_EXPORT_ROOT / "09_agent_tool_router_continuation_flow_v5_standalone.json",
+}
+CONTINUATION_IMPORTS = {
+    IMPORT_READY_ROOT / "08_data_analysis_flow_v2_continuation_standalone.json",
+    IMPORT_READY_ROOT / "09_agent_tool_router_continuation_flow_v5_standalone.json",
+}
 SUPPORT_SOURCE_FILES = {
     "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py",
+    # V2 Node 20 now owns lazy AnswerEvidence rendering so this generated
+    # compatibility component remains importable but is intentionally not on
+    # the active graph.
+    "langflow_components/data_analysis_flow_v2/18_route_aware_answer_prompt_builder.py",
 }
 
 
@@ -49,7 +61,11 @@ def _audit_flows(label: str, flows: list[dict[str, Any]], source_by_code: dict[s
     errors: list[dict[str, Any]] = []
     source_paths: set[str] = set()
     node_count = 0
-    mapping: dict[str, dict[str, str]] = {}
+    # Keep one mapping entry per artifact.  Flow exports may intentionally
+    # share the same public endpoint/name (for example a canonical flow and
+    # its immutable donor), so a dict keyed by that public identity would
+    # silently discard one of them before parity comparison.
+    mapping: list[dict[str, str]] = []
 
     for flow in flows:
         flow_mapping: dict[str, str] = {}
@@ -87,7 +103,7 @@ def _audit_flows(label: str, flows: list[dict[str, Any]], source_by_code: dict[s
                         "actual": actual_hash,
                     }
                 )
-        mapping[_flow_key(flow)] = flow_mapping
+        mapping.append(flow_mapping)
 
     if len(flows) != EXPECTED_FLOW_COUNT:
         errors.append({"type": "flow_count_mismatch", "expected": EXPECTED_FLOW_COUNT, "actual": len(flows)})
@@ -107,6 +123,7 @@ def _individual_import_flows() -> list[dict[str, Any]]:
         {
             *IMPORT_READY_ROOT.glob("[0-9][0-9]_*_v5_standalone.json"),
             *IMPORT_READY_ROOT.glob("[0-9][0-9]_*_v2_standalone.json"),
+            *(path for path in CONTINUATION_IMPORTS if path.exists()),
         }
     )
     return [_load_json(path) for path in paths]
@@ -125,6 +142,7 @@ def _flow_exports() -> list[dict[str, Any]]:
         {
             *FLOW_EXPORT_ROOT.glob("*_v5_standalone.json"),
             *FLOW_EXPORT_ROOT.glob("*_v2_standalone.json"),
+            *(path for path in CONTINUATION_EXPORTS if path.exists()),
         }
     )
     return [_load_json(path) for path in paths]
@@ -139,9 +157,9 @@ def audit_repository() -> dict[str, Any]:
     ]
     baseline = reports[0]
     parity_errors: list[dict[str, Any]] = []
-    baseline_signatures = sorted(json.dumps(item, sort_keys=True) for item in baseline["mapping"].values())
+    baseline_signatures = sorted(json.dumps(item, sort_keys=True) for item in baseline["mapping"])
     for report in reports[1:]:
-        report_signatures = sorted(json.dumps(item, sort_keys=True) for item in report["mapping"].values())
+        report_signatures = sorted(json.dumps(item, sort_keys=True) for item in report["mapping"])
         if report_signatures != baseline_signatures:
             parity_errors.append({"type": "artifact_mapping_mismatch", "left": baseline["label"], "right": report["label"]})
 
@@ -150,14 +168,8 @@ def audit_repository() -> dict[str, Any]:
     support_sources = sorted(all_relative.intersection(SUPPORT_SOURCE_FILES))
     route_errors: list[dict[str, Any]] = []
     expected_route_sources = {
-        "langflow_components/route_flow/01_flow_api_message_caller.py",
         "langflow_components/route_flow_v2/01_cached_named_run_flow_tool.py",
-        "langflow_components/route_flow_v4/00_workflow_plan_parser.py",
-        "langflow_components/route_flow_v4/00a_mongodb_workflow_registry_loader.py",
-        "langflow_components/route_flow_v4/01_sequential_step_executor.py",
-        "langflow_components/route_flow_v4/02_final_context_builder.py",
-        "langflow_components/route_flow_v4/03_workflow_final_response_builder.py",
-        "langflow_components/route_flow_v4/04_workflow_named_run_flow_tool.py",
+        "langflow_components/route_flow_v2_continuation/01_cached_continuation_run_flow_tool.py",
     }
     for path in sorted(expected_route_sources):
         if path not in used:

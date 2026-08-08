@@ -175,11 +175,13 @@ def execute_pandas_code(
     normalized_llm_code, safe_imports = _normalize_safe_imports(llm_code)
     deterministic_execution = _deterministic_execution_contract(next_payload)
     fast_execution = str(deterministic_execution.get("operation") or "").strip() == "execute_fast_path_recipe"
-    deterministic_logic_code = (
-        _fast_deterministic_logic_display(deterministic_execution)
-        if fast_execution
-        else ""
-    )
+    deterministic_logic_code = ""
+    if deterministic_execution:
+        deterministic_logic_code = (
+            _fast_deterministic_logic_display(deterministic_execution)
+            if fast_execution
+            else _deterministic_contract_display_code(deterministic_execution)
+        )
     deterministic_function = (
         _fast_function_trace(deterministic_execution)
         if fast_execution
@@ -465,7 +467,7 @@ def execute_pandas_code(
             "function_case_results": function_case_results,
             "execution_mode": execution_mode,
         }
-        if fast_execution:
+        if deterministic_execution:
             next_payload["analysis"]["code_generation_type"] = "deterministic_function"
         if semantic_execution_certificate:
             next_payload["analysis"]["semantic_execution_certificate"] = deepcopy(
@@ -478,7 +480,7 @@ def execute_pandas_code(
             "generated_code": code,
             "llm_generated_code": normalized_llm_code,
             "deterministic_logic_code": deterministic_logic_code,
-            "code_generation_type": "deterministic_function" if fast_execution else "llm_generated",
+            "code_generation_type": "deterministic_function" if deterministic_execution else "llm_generated",
             "deterministic_function": deepcopy(deterministic_function),
             "execution_mode": execution_mode,
             "llm_code_executed": not bool(deterministic_execution),
@@ -2216,7 +2218,6 @@ def build_pandas_repair_prompt(payload_value: Any, template: Any, function_case_
                 "analysis_errors": deepcopy(analysis.get("errors", [])),
                 "repairable_errors": deepcopy(analysis.get("repairable_errors", [])),
                 "trace_error": deepcopy(pandas_trace.get("error", {})),
-                "executed_code_with_preamble": str(pandas_trace.get("generated_code") or analysis.get("analysis_code") or ""),
                 "row_match_preamble": str(pandas_trace.get("row_match_preamble") or ""),
                 "pandas_filter_preamble": str(pandas_trace.get("pandas_filter_preamble") or analysis.get("pandas_filter_preamble") or ""),
                 "pandas_filter_plan": deepcopy(pandas_trace.get("pandas_filter_plan", [])),
@@ -4541,6 +4542,7 @@ def execute_hybrid_analysis(
         "llm_calls",
         {"intent": 1, "pandas_generation": 0, "repair": 0, "answer": 0},
     )
+    fast_trace.setdefault("prompt_chars", {})["pandas_generation"] = 0
     if route == "blocked" or _execution_blocked(payload):
         result = execute_pandas_with_repair(
             payload,
@@ -4573,7 +4575,27 @@ def execute_hybrid_analysis(
         )
         route = "complex"
 
+    if route == "complex" and contract.get("requires_pandas_llm") is False:
+        deterministic_contract = _deterministic_execution_contract(payload)
+        if not deterministic_contract:
+            result = _hybrid_model_error(
+                payload,
+                "deterministic_contract_unavailable",
+                "Resolver가 결정론적 Complex 실행을 선택했지만 실행 계약을 확인할 수 없습니다.",
+            )
+            return _finalize_hybrid_trace(result, "complex", started, llm_calls)
+        result = execute_pandas_with_repair(
+            payload,
+            "",
+            repair_invoker=None,
+            repair_prompt_template=repair_prompt_template,
+            function_case_helper_code=function_case_helper_code,
+            max_repair_attempts=0,
+        )
+        return _finalize_hybrid_trace(result, "complex", started, llm_calls)
+
     prompt = _text_value(pandas_prompt).strip()
+    fast_trace.setdefault("prompt_chars", {})["pandas_generation"] = len(prompt)
     if not prompt or model_invoker is None:
         result = _hybrid_model_error(payload, "pandas_model_unavailable", "Complex 분석에 필요한 pandas 모델 또는 prompt가 없습니다.")
         return _finalize_hybrid_trace(result, "complex", started, llm_calls)
@@ -4623,10 +4645,16 @@ def _finalize_hybrid_trace(
     analysis = payload.setdefault("analysis", {})
     analysis["execution_route"] = route
     contract = payload.get("simple_analysis_contract") if isinstance(payload.get("simple_analysis_contract"), dict) else {}
+    analysis_execution_mode = str(contract.get("analysis_execution_mode") or "").strip()
+    if analysis_execution_mode:
+        analysis["analysis_execution_mode"] = analysis_execution_mode
     if contract.get("recipe"):
         analysis["fast_path_recipe"] = str(contract.get("recipe"))
     fast_trace = payload.setdefault("trace", {}).setdefault("inspection", {}).setdefault("fast_path", {})
     fast_trace["selected_route"] = route
+    if analysis_execution_mode:
+        fast_trace["analysis_execution_mode"] = analysis_execution_mode
+    fast_trace["requires_pandas_llm"] = bool(contract.get("requires_pandas_llm"))
     fast_trace["llm_calls"] = deepcopy(llm_calls)
     timing = fast_trace.setdefault("timing_ms", {})
     timing["analysis_execution"] = round((perf_counter() - started) * 1000, 3)

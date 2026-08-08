@@ -1,82 +1,59 @@
 # Data Analysis Flow V2 연결 가이드
 
-## 목적
+## 기본 경로
 
-`data_analysis_flow_v2`는 기존 Data Analysis Flow의 메타데이터 조회, 의도 정규화, trusted catalog hydration, source 조회, 결과 저장, 다운로드, 세션 상태 및 API 응답 계약을 그대로 사용합니다. 차이는 조회 이후 단일 source 분석을 결정론적 Fast Path로 실행할 수 있다는 점입니다.
+Data Analysis V2가 기본 `data_analysis` 경로입니다. 외부 계약은 기존과 같습니다.
 
-기존 `01. v5_data_analysis`는 수정하거나 대체하지 않습니다. V2는 `12. data_analysis_flow_v2`와 `metadata-driven-v5-complete-20260710-data-analysis-v2`라는 별도 Flow/endpoint로 import됩니다.
+- Flow 표시명: `01. v5_data_analysis`
+- endpoint: `metadata-driven-v5-data-analysis`
+- Tool 이름: `run_data_analysis`
+- import 파일: `01_data_analysis_flow_v2_standalone.json`
 
-## 핵심 연결
+기존 V1은 완전 묶음에서 `13. v5_data_analysis_legacy` 및 `data-analysis-legacy` endpoint로만 보존됩니다. 기존 Router가 `flow_id_selected`를 저장하고 있다면 새 묶음 import 후 V2 Flow를 다시 선택해야 합니다. 런타임 ID는 코드에서 임의로 초기화하지 않습니다.
+
+## 실행 흐름
 
 ```text
-14A 필수 조회 실행 게이트
-  → 14B V2 단순 분석 계약 결정기
-      → 15 pandas 변수 생성기
-      → 17 V2 Hybrid 분석 실행기
-
-15 pandas 변수 생성기 → pandas Prompt Template
-pandas Prompt Template → 17 V2 Hybrid 분석 실행기.pandas_prompt
-
-17 V2 Hybrid 분석 실행기 → 23 MongoDB 결과 저장소
-23 MongoDB 결과 저장소 → 18 답변 생성 변수 생성기 → 답변 Prompt Template
-답변 Prompt Template → 20 V2 Hybrid 답변 생성기.answer_prompt
-23 MongoDB 결과 저장소 → 20 V2 Hybrid 답변 생성기.payload
+Intent LLM
+  -> 조회 계약 정규화/검증
+  -> 데이터 조회 및 canonical 컬럼 표준화
+  -> 14B 경로/실행 모드 확정
+      -> Fast: 결정론적 Fast recipe
+      -> Complex + deterministic_contract: 결정론적 병합/비교 계약
+      -> Complex + llm_pandas: pandas LLM 및 오류 시 repair 1회
+  -> 결과 저장
+  -> 20 Hybrid Answer Builder
+      -> Fast: 결정론적 답변
+      -> Complex + 답변 LLM OFF: 결정론적 답변
+      -> Complex + 답변 LLM ON: Bool 분기 후 AnswerEvidence 생성 및 LLM 호출
+  -> 세션 저장 및 runtime payload 정리
 ```
 
-외부의 항상 실행되는 pandas/answer Language Model 노드는 없습니다. Hybrid 컴포넌트가 `simple_analysis_contract.route`를 읽고 `complex`일 때만 입력에 설정된 모델을 호출합니다.
+14B는 질문 문자열을 하드코딩하지 않습니다. 정규화된 Typed IR, 조회 source 수, 실제 canonical schema, 필터, grain, metric, join 및 출력 계약으로 경로를 결정합니다.
 
-## 운영 입력
+## 경로와 모델 호출
 
-### 14B V2 단순 분석 계약 결정기
+| 경로 | Intent | pandas 생성 | Repair | Answer |
+|---|---:|---:|---:|---:|
+| Fast | 1 | 0 | 0 | 0 |
+| Blocked | 1 | 0 | 0 | 0 |
+| Complex deterministic | 1 | 0 | 0 | ON일 때만 1 |
+| Complex LLM, Answer OFF | 1 | 1 | 실패 시 최대 1 | 0 |
+| Complex LLM, Answer ON | 1 | 1 | 실패 시 최대 1 | 1 |
 
-- `Fast Path 사용`: 기본 `true`
-- `상세 조회 최대 행`: 기본 `5000`
-- `Pivot 최대 컬럼`: 기본 `50`
-
-Fast 판정은 질문 문자열이 아니라 조회가 끝난 payload의 실행 graph, 실제 source schema, table catalog mapping, pandas plan과 output contract를 사용합니다.
-
-### 17 V2 Hybrid 분석 실행기
-
-- `pandas 생성/복구 언어 모델`: Complex 경로에서만 사용
-- `pandas 모델 API 키`: 기존과 같이 Global Variable 사용 가능
-- `최대 Repair 횟수`: `0` 또는 `1`
-- `Fast 내부 오류 시 Complex 재시도`: 기본 `false`
-
-Fast 내부 오류의 원인을 숨기지 않도록 초기 기본값은 `false`입니다. 운영 검증 후 명시적으로 켤 수 있습니다.
-
-### 20 V2 Hybrid 답변 생성기
-
-- `답변 언어 모델`: Complex 경로에서만 사용
-- `답변 모델 API 키`: 기존과 같이 Global Variable 사용 가능
-
-Fast 경로에서는 실제 결과 계약과 실행 certificate로 고정 답변을 생성합니다.
-
-## 메타데이터
-
-별도의 V2 메타데이터 collection이나 데이터 복사는 필요하지 않습니다. 기존 입력 노드의 다음 collection 설정을 그대로 사용합니다.
-
-- Domain: `agent_v4_domain_items`
-- Table Catalog: `agent_v4_table_catalog_items`
-- Main Flow Filter: `agent_v4_main_flow_filters`
-- Result Store: `agent_v4_result_store`
-- Session State: `agent_v4_session_states`
-
-공정, 제품, 시간 offset, 단위, dataset key, 물리 컬럼 alias는 V2 컴포넌트에 하드코딩하지 않습니다. 선택된 Domain, Active Table Catalog, Main Flow Filter와 output contract에서만 해석합니다.
-
-## 경로 확인
-
-실행 payload에서 다음 항목을 확인합니다.
+`analysis.execution_route`는 계속 `fast`, `complex`, `blocked` 중 하나입니다. Complex 내부 방식은 다음 필드로 확인합니다.
 
 ```json
 {
   "analysis": {
-    "execution_route": "fast",
-    "fast_path_recipe": "ranked_summary"
+    "execution_route": "complex",
+    "analysis_execution_mode": "deterministic_contract",
+    "execution_mode": "merge_metric_sources"
   },
   "trace": {
     "inspection": {
       "fast_path": {
-        "selected_route": "fast",
+        "requires_pandas_llm": false,
         "llm_calls": {
           "intent": 1,
           "pandas_generation": 0,
@@ -89,52 +66,47 @@ Fast 경로에서는 실제 결과 계약과 실행 certificate로 고정 답변
 }
 ```
 
-의도 분석 화면에는 조회 전 계약으로 판단한 `intent_candidate`와 실제 source schema를 확인한 뒤의 `final_route`가 함께 표시됩니다.
+## LLM 입력 축소 원칙
 
-```json
-{
-  "intent_plan": {
-    "route_resolution": {
-      "intent_candidate": "fast_candidate",
-      "final_route": "fast",
-      "final_recipe": "ranked_summary",
-      "final_reason_codes": [
-        "single_source",
-        "supported_recipe",
-        "schema_resolved",
-        "filters_resolved"
-      ]
-    }
-  }
-}
-```
+- 실행용 `runtime_sources`, 전체 결과, 다운로드 및 후속 질문용 reference는 저장 완료 전까지 유지합니다.
+- pandas LLM에는 관련 canonical 컬럼을 우선한 최대 2행, 16컬럼, 셀 160자의 model view만 전달합니다.
+- Answer LLM에는 최대 5행, 16컬럼, 셀 160자의 `AnswerEvidence`만 전달합니다.
+- `Complex 답변 LLM 사용`이 꺼져 있으면 Answer prompt도 생성하지 않습니다.
+- repair prompt에는 실패 코드를 한 번만 전달합니다.
+- 축소는 LLM view에만 적용하며 결과 테이블, CSV 다운로드, MongoDB Result Store 및 후속 질문 state 계약은 변경하지 않습니다.
 
-Fast 경로에는 LLM 생성 pandas 코드가 없으므로 `llm_generated_code`는 빈 값입니다. 대신 `deterministic_logic_code`에 실제 dispatcher, 선택 handler와 실행 계약 인자를 표시합니다.
+## 운영 입력
 
-```json
-{
-  "code_generation_type": "deterministic_function",
-  "deterministic_function": {
-    "dispatcher": "_execute_fast_path_recipe",
-    "handlers": ["_apply_fast_filters", "_fast_aggregate"],
-    "recipe": "group_summary"
-  }
-}
-```
+### 14B Simple Analysis Contract Resolver
 
-이 코드는 LLM이 생성한 코드가 아니라 17 V2 Hybrid 분석 실행기가 실제 사용한 고정 함수 호출을 사용자 진단용으로 표현한 것입니다.
+- `Fast Path 사용`: 기본 `true`
+- `상세 조회 최대 행`: 기본 `5000`
+- `Pivot 최대 컬럼`: 기본 `50`
 
-- 단일 source의 완성된 범용 계약: `fast`
-- join, 다중 source, function case, 불완전한 고급 계산 계약: `complex`
-- trusted catalog, 필수 조회 또는 canonical mapping 실패: `blocked`
+### 17 Hybrid Analysis Executor
+
+- pandas 모델: `llm_pandas` 모드에서만 사용
+- 최대 Repair 횟수: `0` 또는 `1`
+- Fast 내부 오류 시 Complex fallback: 기본 `false`
+
+### 20 Hybrid Answer Builder
+
+- `Complex 답변 LLM 사용`: BoolInput, 기본 `true`
+- `false`이면 Complex도 결정론적 답변 사용
+- `true`이면 결과 저장 이후 제한된 AnswerEvidence로만 답변 모델 호출
+
+## 메타데이터
+
+V2 전용 metadata 복사본은 필요하지 않습니다. 기존 Domain, Table Catalog, Main Flow Filter, Result Store 및 Session State 설정을 사용합니다. dataset, 공정, 제품, 시간, 단위 및 물리 컬럼 alias는 컴포넌트에 질문별로 하드코딩하지 않습니다.
 
 ## 생성과 검증
 
 ```powershell
 python tools/build_data_analysis_flow_v2.py
 python tools/build_import_ready_bundle.py
+python tools/validate_data_analysis_v2_routes.py
 python tools/validate_flow_component_sources.py
-python -m pytest tests/test_data_analysis_flow_v2.py -q
+python -m pytest tests/test_data_analysis_flow_v2.py tests/test_v5_flow_export.py -q
 ```
 
-정확한 import 검증은 Python 3.12, Langflow 1.9.2, langflow-base 0.9.2, LFX 0.4.2 조합에서 수행합니다.
+정확한 import/runtime 검증은 Python 3.12, Langflow 1.9.2, `langflow-base==0.9.2`, `lfx==0.4.2` 조합을 기준으로 합니다.

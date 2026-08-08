@@ -103,15 +103,13 @@ def _resolve_and_execute(payload: dict):
     return resolved, executed, model_calls
 
 
-def test_v2_flow_is_isolated_and_removes_always_on_pandas_and_answer_models():
-    donor = json.loads((ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json").read_text(encoding="utf-8"))
+def test_v2_flow_export_matches_current_native_graph():
     flow = build_flow()
 
-    assert donor["id"] != flow["id"]
-    assert donor["endpoint_name"] != flow["endpoint_name"]
-    assert flow["name"] == "13. data_analysis_flow_v2"
+    assert flow["endpoint_name"] == "metadata-driven-v5-data-analysis"
+    assert flow["name"] == "01. v5_data_analysis"
     assert flow["last_tested_version"] == "1.9.2"
-    assert len(flow["data"]["nodes"]) == 54
+    assert len(flow["data"]["nodes"]) == 51
 
     node_ids = {node["id"] for node in flow["data"]["nodes"]}
     node_index = {node["id"]: node for node in flow["data"]["nodes"]}
@@ -120,6 +118,7 @@ def test_v2_flow_is_isolated_and_removes_always_on_pandas_and_answer_models():
     assert "LanguageModel-pandas" not in node_ids
     assert "LanguageModel-answer" not in node_ids
     assert "Prompt Template-ELVKc" not in node_ids
+    assert "CustomComponent-aKrkH" not in node_ids
     assert all(node["data"]["node"].get("lf_version") == "1.9.2" for node in flow["data"]["nodes"])
     assert node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]["code"]["value"] == (
         V2_ROOT / "21_v2_answer_message_adapter.py"
@@ -138,10 +137,12 @@ def test_v2_flow_is_isolated_and_removes_always_on_pandas_and_answer_models():
     assert ("CustomComponent-v2FastResolver", "payload_out", "Prompt Template-xtzD5", "payload") in edge_keys
     assert ("CustomComponent-v5Helper", "selected_helper_code", "Prompt Template-xtzD5", "function_case_helper_code") in edge_keys
     assert ("Prompt Template-xtzD5", "pandas_prompt", "CustomComponent-s3mf1", "pandas_prompt") in edge_keys
-    assert ("TextInput-VFbHh", "text", "CustomComponent-aKrkH", "domain_answer_guidance") in edge_keys
-    assert ("CustomComponent-aKrkH", "answer_prompt", "CustomComponent-BVItv", "answer_prompt") in edge_keys
+    assert ("TextInput-VFbHh", "text", "CustomComponent-BVItv", "domain_answer_guidance") in edge_keys
     assert node_index["Prompt Template-xtzD5"]["data"]["node"]["display_name"] == "16 V2 경로 인식 pandas Prompt 생성기"
-    assert node_index["CustomComponent-aKrkH"]["data"]["node"]["display_name"] == "18 V2 경로 인식 Answer Prompt 생성기"
+    answer_template = node_index["CustomComponent-BVItv"]["data"]["node"]["template"]
+    assert answer_template["answer_prompt_template"]["value"]
+    assert "answer_prompt" not in answer_template
+    assert not any(target == "CustomComponent-BVItv" and field == "answer_prompt" for _, _, target, field in edge_keys)
 
 
 def test_fast_route_skips_full_pandas_prompt_serialization(monkeypatch):
@@ -153,6 +154,18 @@ def test_fast_route_skips_full_pandas_prompt_serialization(monkeypatch):
 
     monkeypatch.setattr(pandas_prompt, "build_variables", fail_if_called)
     assert pandas_prompt.build_route_aware_pandas_prompt(payload, "{intent_plan_json}", "helper") == ""
+
+
+def test_repair_prompt_contains_failed_code_only_once():
+    template = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "17b_pandas_repair_prompt_template_ko.md"
+    ).read_text(encoding="utf-8")
+
+    assert template.count("{failed_code}") == 1
+    assert "executed_code_with_preamble" not in template
 
 
 def test_complex_route_preserves_existing_pandas_prompt_content():
@@ -898,6 +911,108 @@ def test_complex_answer_builder_bool_toggle_controls_answer_model_call():
     assert enabled_trace["answer_model_response"]["model_called"] is True
     assert enabled_trace["answer_model_response"]["policy"] == "llm_complex_answer"
     assert enabled_trace["answer_model_response"]["llm_answer_enabled"] is True
+
+
+def test_complex_answer_llm_off_does_not_materialize_answer_prompt(monkeypatch):
+    _, _, answer = _modules()
+    payload = {
+        "request": {"question": "그룹별 수량을 알려줘"},
+        "simple_analysis_contract": {"route": "complex"},
+        "intent_plan": {
+            "output_contract": {
+                "primary_metric": "QTY_SUM",
+                "grain_columns": ["GROUP"],
+                "metric_columns": ["QTY_SUM"],
+            }
+        },
+        "analysis": {"status": "ok", "execution_route": "complex", "row_count": 1},
+        "data": {"columns": ["GROUP", "QTY_SUM"], "rows": [{"GROUP": "A", "QTY_SUM": 10}], "row_count": 1},
+        "trace": {"inspection": {"fast_path": {"llm_calls": {"intent": 1, "pandas_generation": 1, "repair": 0, "answer": 0}}}},
+    }
+
+    def fail_if_materialized(*_args, **_kwargs):
+        raise AssertionError("answer LLM OFF must not serialize AnswerEvidence or render a prompt")
+
+    monkeypatch.setattr(answer, "build_lazy_llm_answer_prompt", fail_if_materialized)
+    result = answer.build_hybrid_answer_response(
+        payload,
+        model_invoker=lambda _prompt: (_ for _ in ()).throw(AssertionError("model must not be called")),
+        use_llm_answer=False,
+        answer_prompt_template="{result_summary_json}",
+    )
+
+    assert result["trace"]["inspection"]["answer_model_response"]["policy"] == "deterministic_complex_answer"
+    assert result["trace"]["inspection"]["fast_path"]["llm_calls"]["answer"] == 0
+
+
+def test_complex_answer_evidence_is_bounded_without_changing_runtime_payload():
+    _, _, answer = _modules()
+    columns = [f"COL_{index:02d}" for index in range(20)]
+    rows = [
+        {column: ("x" * 400 if column == "COL_00" else f"{column}-{row_index}") for column in columns}
+        for row_index in range(12)
+    ]
+    payload = {
+        "request": {"question": "상세 결과를 알려줘"},
+        "simple_analysis_contract": {"route": "complex"},
+        "intent_plan": {
+            "analysis_kind": "generic_detail",
+            "pandas_execution_plan": [{"operation": "select_columns"}],
+            "output_contract": {
+                "grain_columns": columns[:10],
+                "metric_columns": columns[10:18],
+                "primary_metric": "COL_10",
+                "result_columns": columns,
+            },
+        },
+        "source_results": [{"dataset_key": "sample", "source_alias": "sample", "status": "ok", "row_count": 12}],
+        "analysis": {"status": "ok", "execution_route": "complex", "row_count": 12, "columns": columns},
+        "data": {
+            "columns": columns,
+            "rows": deepcopy(rows),
+            "row_count": 12,
+            "data_ref": {"ref_id": "result:keep", "download_url": "https://example.invalid/download"},
+        },
+        "_full_result_rows": deepcopy(rows),
+        "trace": {
+            "warnings": [{"type": "demo", "message": "w" * 900, "traceback_summary": "do-not-send"}],
+            "errors": [],
+            "inspection": {"fast_path": {"llm_calls": {"intent": 1, "pandas_generation": 1, "repair": 0, "answer": 0}}},
+        },
+    }
+    variables = answer.build_answer_evidence_variables(payload)
+    result_view = json.loads(variables["result_summary_json"])
+    diagnostics = json.loads(variables["warnings_errors_json"])
+
+    assert len(result_view["rows"]) == 5
+    assert len(result_view["columns"]) == 16
+    assert len(result_view["rows"][0]["COL_00"]) == 160
+    assert "data_ref" not in variables["result_summary_json"]
+    assert "download_url" not in variables["result_summary_json"]
+    assert "traceback_summary" not in variables["warnings_errors_json"]
+    assert len(diagnostics["warnings"][0]["message"]) == 600
+
+    prompts: list[str] = []
+    result = answer.build_hybrid_answer_response(
+        payload,
+        model_invoker=lambda prompt: prompts.append(prompt) or '{"answer_message":"요청한 결과를 확인했습니다."}',
+        use_llm_answer=True,
+        answer_prompt_template=(
+            "Q={question}\nR={result_summary_json}\nS={applied_scope_json}\n"
+            "C={answer_context_json}\nD={warnings_errors_json}\nG={domain_answer_guidance}"
+        ),
+        domain_answer_guidance="공통 지침",
+    )
+
+    assert len(prompts) == 1
+    assert "result:keep" not in prompts[0]
+    assert len(result["data"]["rows"]) == 12
+    assert result["data"]["data_ref"]["ref_id"] == "result:keep"
+    assert len(result["_full_result_rows"]) == 12
+    response_trace = result["trace"]["inspection"]["answer_model_response"]
+    assert response_trace["answer_evidence_row_limit"] == 5
+    assert response_trace["answer_evidence_column_limit"] == 16
+    assert response_trace["answer_evidence_cell_limit"] == 160
 
 
 def test_v2_flow_exposes_visible_complex_answer_llm_bool_input():
@@ -1767,3 +1882,349 @@ def test_v2_fast_aggregate_drops_metric_dimension_collision():
     )
     assert list(result.columns) == ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]
     assert result.iloc[0]["UPH"] == 15
+
+
+def _followup_catalog_candidates():
+    return {
+        "domain_items": [],
+        "table_catalog_items": [
+            {
+                "dataset_key": "lot_status",
+                "source_type": "oracle",
+                "payload": {
+                    "columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"],
+                    "default_detail_columns": [
+                        "LOT_ID",
+                        "OPER_NAME",
+                        "HOLD_STAT",
+                        "HOLD_REASON",
+                    ],
+                },
+            },
+            {
+                "dataset_key": "hold_history",
+                "source_type": "oracle",
+                "payload": {
+                    "columns": ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+                    "required_params": ["LOT_ID"],
+                    "default_detail_columns": [
+                        "LOT_ID",
+                        "OPER_NAME",
+                        "HOLD_TM",
+                        "HOLD_CD",
+                        "HOLD_DESC",
+                    ],
+                    "source_config": {
+                        "upstream_bindings": [
+                            {
+                                "entity_type": "lot",
+                                "source_alias": "previous_result",
+                                "source_column": "LOT_ID",
+                                "target_param": "LOT_ID",
+                                "operator": "in",
+                                "max_values": 200,
+                            }
+                        ]
+                    },
+                },
+            },
+        ],
+        "main_flow_filters": [],
+    }
+
+
+def test_v2_followup_contract_compiles_previous_lot_rows_to_dependent_history_catalog():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {"question": "지금 조회된 LOT의 HOLD이력을 알려줄래?"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_requery",
+            "reuse_strategy_hint": "previous_result",
+            "matched_cues": {"previous_entity_identifiers": ["LOT_ID"]},
+        },
+        "state": {
+            "current_data": {
+                "columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"],
+                "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"],
+                "source_aliases": ["lot_status_src"],
+                "source_columns_by_alias": {
+                    "lot_status_src": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"]
+                },
+            },
+            "last_intent_plan": {
+                "output_contract": {"grain_columns": ["LOT_ID"]},
+            },
+        },
+        "trace": {"inspection": {}},
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "current_hold_lot_history_status",
+            "request_scope": "followup_requery",
+            "reference_mode": "none",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "lot_status",
+                    "source_alias": "lot_status_src",
+                    "filters": {"HOLD_STAT": {"operator": "eq", "value": "OnHold"}},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "filter_old_status",
+                    "operation": "apply_filters",
+                    "inputs": [{"kind": "external_source", "ref": "lot_status_src"}],
+                    "source_alias": "lot_status_src",
+                },
+                {
+                    "node_id": "select_old_status",
+                    "operation": "select_columns",
+                    "inputs": [{"kind": "node_output", "ref": "filter_old_status"}],
+                    "source_alias": "lot_status_src",
+                    "output_alias": "old_result",
+                },
+            ],
+            "output_contract": {
+                "result_mode": "detail",
+                "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"],
+            },
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        json.dumps(response),
+        _followup_catalog_candidates(),
+    )
+    plan = normalized["intent_plan"]
+    assert plan["reference_mode"] == "previous_result_rows"
+    assert plan["request_scope"] == "followup_requery"
+    assert [job["dataset_key"] for job in plan["retrieval_jobs"]] == ["hold_history"]
+    assert plan["retrieval_jobs"][0]["required_params"] == {"LOT_ID": ""}
+    assert any(
+        step.get("operation") == "apply_row_match_groups"
+        and step.get("source_alias") == "hold_history_src"
+        for step in plan["pandas_execution_plan"]
+    )
+    assert plan["output_contract"]["result_columns"] == [
+        "LOT_ID",
+        "OPER_NAME",
+        "HOLD_TM",
+        "HOLD_CD",
+        "HOLD_DESC",
+    ]
+    assert not plan.get("validation_errors")
+
+
+def test_v2_followup_product_grain_uses_source_reuse_not_previous_aggregate_rows():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {"question": "위 결과를 제품별로 알려줘"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_transform",
+            "reuse_strategy_hint": "previous_result",
+            "matched_cues": {"reference": ["위 결과"], "transform": ["제품별"]},
+            "reusable_previous_source_aliases": ["prod_df", "wip_df"],
+        },
+        "state": {
+            "current_data": {
+                "columns": ["OPER_NAME", "PRODUCTION", "WIP"],
+                "result_columns": ["OPER_NAME", "PRODUCTION", "WIP"],
+                "source_aliases": ["prod_df", "wip_df"],
+                "source_columns_by_alias": {
+                    "prod_df": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "PRODUCTION"],
+                    "wip_df": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "WIP"],
+                },
+            },
+            "runtime_source_refs": {
+                "prod_df": {"ref_id": "result:prod", "role": "source_rows"},
+                "wip_df": {"ref_id": "result:wip", "role": "source_rows"},
+            },
+        },
+        "trace": {"inspection": {}},
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "process_production_and_wip_summary_by_product",
+            "request_scope": "followup_transform",
+            "reference_mode": "previous_result_transform",
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "prod_df", "filters": {}},
+                {"dataset_key": "wip", "source_alias": "wip_df", "filters": {}},
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "groupby_and_aggregate",
+                    "source_alias": "prod_df",
+                    "group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"],
+                    "aggregations": [{"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION"}],
+                },
+                {
+                    "operation": "groupby_and_aggregate",
+                    "source_alias": "wip_df",
+                    "group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"],
+                    "aggregations": [{"column": "WIP", "method": "sum", "output_column": "WIP"}],
+                },
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"],
+            },
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        json.dumps(response),
+        {"domain_items": [], "table_catalog_items": [], "main_flow_filters": []},
+    )
+    plan = normalized["intent_plan"]
+    assert plan["reference_mode"] == "previous_source"
+    assert plan["request_scope"] == "followup_expand_source"
+    assert normalized["trace"]["inspection"]["intent"]["followup_contract_guard"]["kind"] == "source_grain_expansion"
+    assert not any(
+        error.get("type") == "invalid_reference_mode_contract"
+        for error in plan.get("validation_errors", [])
+    )
+
+
+def test_v2_function_case_input_reconciles_missing_product_token_without_process_or_metric_words():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    cases, guard = normalizer._reconcile_function_case_inputs(
+        [
+            {
+                "key": "product_token_match",
+                "function_name": "match_product_tokens",
+                "source_alias": "production",
+                "input_text": "L-116",
+            }
+        ],
+        "F315 L-116제품 WB 공정 차수별 UPH 알려줘",
+        {"domain_items": [], "table_catalog_items": [], "main_flow_filters": []},
+    )
+    assert cases[0]["input_text"] == "F315 L-116"
+    assert guard["status"] == "applied"
+    assert guard["cases"][0]["missing_tokens"] == ["F315"]
+
+    unchanged, unchanged_guard = normalizer._reconcile_function_case_inputs(
+        [
+            {
+                "key": "product_token_match",
+                "function_name": "match_product_tokens",
+                "source_alias": "production",
+                "input_text": "L-116",
+            }
+        ],
+        "L-116제품 WB 공정 UPH 알려줘",
+        {"domain_items": [], "table_catalog_items": [], "main_flow_filters": []},
+    )
+    assert unchanged[0]["input_text"] == "L-116"
+    assert unchanged_guard["status"] == "not_needed"
+
+
+def test_v2_followup_requery_never_keeps_ambiguous_none_reference_mode():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {"question": "같은 원본으로 다시 조회해줘"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_requery",
+            "reusable_previous_source_aliases": ["prod_src"],
+        },
+        "state": {
+            "current_data": {
+                "columns": ["OPER_NAME", "PRODUCTION"],
+                "source_columns_by_alias": {
+                    "prod_src": ["OPER_NAME", "PRODUCTION"],
+                },
+            },
+        },
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "production_refresh",
+            "request_scope": "followup_requery",
+            "reference_mode": "none",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production",
+                    "source_alias": "prod_src",
+                    "filters": {"OPER_NAME": {"operator": "eq", "value": "INPUT"}},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "select_columns",
+                    "source_alias": "prod_src",
+                    "inputs": [{"kind": "external_source", "ref": "prod_src"}],
+                    "output_alias": "production_result",
+                }
+            ],
+            "output_contract": {
+                "result_mode": "detail",
+                "result_columns": ["OPER_NAME", "PRODUCTION"],
+            },
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        json.dumps(response),
+        {"domain_items": [], "table_catalog_items": [], "main_flow_filters": []},
+    )
+    plan = normalized["intent_plan"]
+    assert plan["reference_mode"] == "previous_source"
+    assert plan["request_scope"] == "followup_expand_source"
+    guard = normalized["trace"]["inspection"]["intent"]["followup_contract_guard"]
+    assert guard["kind"] == "generic_followup_reference_completion"
+    assert guard["reference_contract"]["source_aliases"] == ["prod_src"]
+    assert not any(
+        error.get("type") == "invalid_reference_mode_contract"
+        for error in plan.get("validation_errors", [])
+    )
+
+
+def test_v2_followup_detail_without_catalog_contract_fails_closed():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {"question": "조회된 LOT의 이력 상세를 알려줘"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_requery",
+            "matched_cues": {"previous_entity_identifiers": ["LOT_ID"]},
+        },
+        "state": {
+            "current_data": {
+                "columns": ["LOT_ID", "OPER_NAME"],
+                "source_columns_by_alias": {"lot_src": ["LOT_ID", "OPER_NAME"]},
+            }
+        },
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "lot_detail_followup",
+            "request_scope": "followup_requery",
+            "reference_mode": "none",
+            "retrieval_jobs": [{"dataset_key": "lot_status", "source_alias": "lot_src", "filters": {}}],
+            "pandas_execution_plan": [],
+            "output_contract": {"result_mode": "detail", "result_columns": ["LOT_ID", "OPER_NAME"]},
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        json.dumps(response),
+        {
+            "domain_items": [],
+            "table_catalog_items": [
+                {"dataset_key": "lot_status", "payload": {"columns": ["LOT_ID", "OPER_NAME"]}}
+            ],
+            "main_flow_filters": [],
+        },
+    )
+    plan = normalized["intent_plan"]
+    assert any(
+        error.get("type") == "followup_dependent_catalog_unresolved"
+        for error in plan.get("validation_errors", [])
+    )
+    guard = normalized["trace"]["inspection"]["intent"]["followup_contract_guard"]
+    assert guard["status"] == "blocked"
+    assert guard["reason"] == "dependent_catalog_unavailable"

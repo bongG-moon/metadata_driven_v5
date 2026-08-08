@@ -838,7 +838,7 @@ def publish_production_report(
             "view_request": "metadata_driven_v5 realtime production report",
             "available_datasets": [],
             "report_plan": {
-                "source_flow": "11. v5_realtime_production_report",
+                "source_flow": "07. v5_realtime_production_report",
                 "rules_version": RULES_VERSION,
                 "snapshot_id": _clip(analysis.get("scope", {}).get("snapshot_id"), 200),
                 "case_count": int(analysis.get("scope", {}).get("case_count") or 0),

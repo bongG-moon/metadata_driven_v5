@@ -26,7 +26,7 @@
 | `01D 질문 기반 메타데이터 후보 생성기.metadata_candidates` | `02 의도 분석 변수 생성기.metadata_candidates_in` |
 | `01E 후속 질문 힌트 생성기.payload_out` | `02 의도 분석 변수 생성기.payload` |
 
-`01D` 기본값은 `max_domain_items=10`, `min_table_items=5`, `max_table_items=10`, `max_bytes=32768`입니다. 도메인은 관련 항목만 제한하고, 테이블은 관련 후보를 우선하면서 최소 5건을 유지하며, 메인 필터는 전체를 관련도 순으로 전달합니다. 후보에는 SQL/query template, endpoint, header, credential을 포함하지 않습니다. 32KB를 넘으면 도메인 후순위부터 줄이고 테이블 최소치와 메인 필터 전체를 우선 보존합니다.
+`01D` 기본값은 `max_domain_items=20`, `min_table_items=5`, `max_table_items=5`, `max_bytes=32768`입니다. 도메인은 관련 항목만 제한하고, 테이블은 관련 후보를 우선해 5건을 유지하며, 메인 필터는 전체를 관련도 순으로 전달합니다. 후보에는 SQL/query template, endpoint, header, credential을 포함하지 않습니다. 32KB를 넘으면 도메인 후순위부터 줄이고 테이블 5건과 메인 필터 전체를 우선 보존합니다.
 
 ## 3. Intent Prompt와 trusted catalog hydration
 

@@ -116,6 +116,12 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
         if item.get("section") not in ALLOWED_SECTIONS:
             errors.append({"type": "unsupported_section", "message": f"지원하지 않는 domain section입니다: {item.get('section')}", "index": index})
         items.append(item)
+    # Worker-facing rules are deliberately short natural language.  A weak
+    # authoring model may still classify them as status_terms,
+    # product_key_columns, or pandas_function_cases.  Repair only the two
+    # strongly identifiable rule families before similarity lookup or Mongo
+    # write; ordinary metadata items are left untouched.
+    items = _canonicalize_worker_rule_items(payload, items)
     next_payload = payload
     next_payload["items"] = items
     next_payload["refinement"] = _refinement(payload, parsed)
@@ -128,6 +134,194 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
 
 # 함수 설명: `_refinement()`는 LLM이 반환한 보완 필요 정보와 가정을 저장 전 검수 단계까지 보존합니다.
 # 함수 설명: Domain payload의 조건 컨테이너만 공통 filter operator 계약으로 정규화합니다.
+RECIPE_RULE_KEY = "recipe_id_starts_with"
+HOLD_RULE_KEY = "current_hold_lot_selection"
+
+
+# 함수 설명: 작업자 자연어의 HOLD·RECIPE 강한 신호를 canonical analysis recipe 항목으로 정규화합니다.
+def _canonicalize_worker_rule_items(payload: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map simple worker prose to canonical analysis-recipe identities.
+
+    A weak authoring model may classify HOLD prose as a status term or a
+    latest-history function case, and RECIPE prose as a product key.  Repair
+    only these strong signals before similarity lookup; ordinary metadata is
+    preserved unchanged.
+    """
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    raw_text = str(request.get("raw_text") or "").strip()
+    recipe_signal = _has_recipe_prefix_signal(raw_text)
+    hold_signal = _has_hold_selection_signal(raw_text)
+    if not raw_text or not (recipe_signal or hold_signal):
+        return items
+    output: list[dict[str, Any]] = []
+    recipe_sources: list[dict[str, Any]] = []
+    hold_sources: list[dict[str, Any]] = []
+    for item in items:
+        section = str(item.get("section") or "").strip()
+        key = str(item.get("key") or "").strip()
+        item_text = _item_text(item)
+        if recipe_signal and _is_recipe_rule_item(section, key, item_text):
+            recipe_sources.append(item)
+        elif hold_signal and _is_hold_rule_item(section, key, item_text):
+            hold_sources.append(item)
+        else:
+            output.append(item)
+    if recipe_signal:
+        output.append(_build_recipe_rule_item(raw_text, recipe_sources))
+    if hold_signal:
+        output.append(_build_hold_rule_item(raw_text, hold_sources))
+    return output
+
+
+# 함수 설명: RECIPE 번호와 시작·접두·포함 표현이 함께 있는지 확인합니다.
+def _has_recipe_prefix_signal(text: str) -> bool:
+    has_recipe_word = "recipe" in text.casefold() or "레시피" in text
+    has_token = bool(re.search(r"\bR\d{3,}[A-Za-z0-9_-]*\b", text, re.IGNORECASE))
+    has_prefix_word = any(token in text for token in ("시작", "접두", "포함", "완전히", "번호"))
+    return has_recipe_word and (has_token or has_prefix_word)
+
+
+# 함수 설명: HOLD와 LOT·사유·코드·이력 등 선택 기준 표현이 함께 있는지 확인합니다.
+def _has_hold_selection_signal(text: str) -> bool:
+    lowered = text.casefold()
+    if "hold" not in lowered and "홀드" not in text:
+        return False
+    # A process-range function-case example may mention a "Hold 된 Lot" as a
+    # sample question.  That is not an authoring request for the HOLD recipe;
+    # keep the mapping scoped to the worker's HOLD selection rule block.
+    if "function case" in lowered or "pandas_function_cases" in lowered or "ordered_process_range" in lowered:
+        return False
+    return any(token in text for token in ("lot", "LOT", "사유", "코드", "이력", "최근", "목록", "ID"))
+
+
+# 함수 설명: Domain 항목의 section·key·별칭·payload를 identity 판정용 문자열로 합칩니다.
+def _item_text(item: dict[str, Any]) -> str:
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    values: list[Any] = [item.get("section"), item.get("key"), item.get("display_name")]
+    values.extend(item.get("aliases") if isinstance(item.get("aliases"), list) else [])
+    values.append(payload)
+    return json.dumps(values, ensure_ascii=False, default=str).casefold()
+
+
+# 함수 설명: 기존 LLM 항목이 RECIPE prefix 규칙을 소유하는지 판정합니다.
+def _is_recipe_rule_item(section: str, key: str, item_text: str) -> bool:
+    if section == "analysis_recipes" and key in {RECIPE_RULE_KEY, "raw_data_display_policy"}:
+        return True
+    if section == "product_key_columns" and key.casefold() in {"recipe", "recipe_id", RECIPE_RULE_KEY}:
+        return True
+    return "recipe" in item_text and any(token in item_text for token in ("시작", "starts_with", "prefix", "완전히"))
+
+
+# 함수 설명: 기존 LLM 항목이 HOLD 현재 상태·최신 이력 선택 규칙을 소유하는지 판정합니다.
+def _is_hold_rule_item(section: str, key: str, item_text: str) -> bool:
+    if section == "analysis_recipes" and key == HOLD_RULE_KEY:
+        return True
+    if section == "status_terms" and (key.casefold() == "hold" or "hold" in item_text):
+        return True
+    if section == "pandas_function_cases":
+        # Older prompts sometimes put the latest-HOLD selection in a
+        # function-case item with a different key.  It still belongs to the
+        # HOLD analysis recipe when the item clearly mentions HOLD plus a
+        # LOT/history/reason/code concept; never keep a second function-case
+        # owner for the same rule.
+        return "hold" in item_text and any(
+            token in item_text
+            for token in (
+                "latest_hold",
+                "latest hold",
+                "최근 hold",
+                "최신 hold",
+                "hold_history",
+                "lot",
+                "history",
+                "이력",
+                "사유",
+                "코드",
+            )
+        )
+    return section == "analysis_recipes" and "hold" in item_text
+
+
+# 함수 설명: 작업자 RECIPE 설명을 starts_with 분석 recipe payload로 구성합니다.
+def _build_recipe_rule_item(raw_text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "display_name": "RECIPE 번호 시작값 조회 규칙",
+        "aliases": ["RECIPE", "레시피", "RECIPE 번호", "레시피 번호"],
+        "selection_criteria": _rule_criteria(raw_text, sources, [
+            "RECIPE_ID는 입력한 번호와 완전히 같은 값이 아니라 해당 번호로 시작하는 값을 조회한다.",
+            "예: R1234이면 R1234, R1234-A, R1234-01을 모두 포함한다.",
+            "조회 operator는 starts_with이며 eq 또는 contains로 완전 일치/부분 포함 조회를 하지 않는다.",
+        ]),
+    }
+    _merge_rule_payload(payload, sources)
+    return {"section": "analysis_recipes", "key": RECIPE_RULE_KEY, "status": "active", "payload": payload}
+
+
+# 함수 설명: 작업자 HOLD 설명을 lot_status 선조회와 LOT별 최신 hold_history 기준을 가진 recipe로 구성합니다.
+def _build_hold_rule_item(raw_text: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "display_name": "현재 HOLD LOT 및 최신 HOLD 이력 조회 규칙",
+        "aliases": ["현재 HOLD LOT", "HOLD LOT 목록", "HOLD 사유", "HOLD 코드", "HOLD 이력"],
+        "source_datasets": ["lot_status", "hold_history"],
+        "selection_criteria": _rule_criteria(raw_text, sources, [
+            "LOT 목록이나 LOT ID만 물으면 lot_status에서 현재 HOLD LOT만 조회하고 HOLD 이력은 조회하지 않는다.",
+            "현재 HOLD 사유·코드·상세 사유·최근 HOLD 이력을 물으면 lot_status에서 HOLD_STAT=OnHold인 LOT를 먼저 조회한다.",
+            "선행 결과의 LOT_ID를 hold_history.required_params.LOT_ID로 전달한다.",
+            "LOT_ID required_params가 빈 문자열인 상태에서 선행 결과의 result_ref와 LOT_ID를 전달해 후속 조회한다.",
+            "hold_history는 LOT별 HOLD_TM 내림차순으로 정렬하고 LOT별 최신 한 건만 선택한다.",
+            "결과는 LOT_ID, 공정, HOLD_TM, HOLD_CD, HOLD_DESC를 보여주며 이력이 없으면 이력 없음으로 표시한다.",
+            "HOLD라는 단어만으로 hold_history를 선택하지 않는다.",
+        ]),
+        "current_selection": {"dataset_key": "lot_status", "filter": {"HOLD_STAT": {"operator": "eq", "value": "OnHold"}}},
+        "history_selection": {
+            "dataset_key": "hold_history", "required_params": {"LOT_ID": ""},
+            "upstream_binding": {"source_alias": "previous_result", "source_column": "LOT_ID", "target_param": "LOT_ID", "operator": "in"},
+            "latest_per_group": {
+                "partition_by": ["LOT_ID"], "order_by": [{"column": "HOLD_TM", "direction": "desc"}],
+                "limit_per_group": 1, "tie_policy": "error",
+            },
+            "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+        },
+    }
+    _merge_rule_payload(payload, sources)
+    return {"section": "analysis_recipes", "key": HOLD_RULE_KEY, "status": "active", "payload": payload}
+
+
+# 함수 설명: 원문과 기존 후보의 selection criteria를 중복 없이 canonical recipe에 합칩니다.
+def _rule_criteria(raw_text: str, sources: list[dict[str, Any]], defaults: list[str]) -> list[str]:
+    values: list[Any] = []
+    for item in sources:
+        item_payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        if isinstance(item_payload.get("selection_criteria"), list):
+            values.extend(item_payload["selection_criteria"])
+    values.extend(line.strip(" -•\t") for line in raw_text.splitlines() if line.strip())
+    values.extend(defaults)
+    return _unique_text(values)
+
+
+# 함수 설명: 기존 후보의 source dataset·별칭만 canonical rule payload에 안전하게 병합합니다.
+def _merge_rule_payload(target: dict[str, Any], sources: list[dict[str, Any]]) -> None:
+    for item in sources:
+        source = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        for key in ("source_datasets", "aliases"):
+            values = source.get(key)
+            if isinstance(values, list):
+                target[key] = _unique_text(list(target.get(key) or []) + values)
+
+
+# 함수 설명: 빈 문자열과 중복을 제거한 순서 보존 문자열 목록을 만듭니다.
+def _unique_text(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
+
+
+# 함수 설명: Domain payload 내부의 filter operator 표현을 실행 계약의 canonical 형태로 정규화합니다.
 def _normalize_domain_filter_contracts(
     payload: dict[str, Any],
     path: str,

@@ -23,7 +23,7 @@ LLM에는 다음만 전달합니다.
 - runtime helper 이름/선택 정책
 - 출력 schema
 
-Metadata 후보의 기본 정책은 도메인 관련 항목 최대 10건, 테이블 관련 후보 최소 5건·최대 10건, 메인 필터 전체이며 최종 compact JSON은 32KB 이내입니다. `query_template`, SQL, endpoint, header, token, password 같은 실행/비밀 설정은 제거합니다. 바이트 압박 시 관련도 낮은 도메인부터 줄이고 테이블 최소 후보와 메인 필터 전체를 우선 보존합니다.
+Metadata 후보의 기본 정책은 도메인 관련 항목 최대 20건, 테이블 관련 후보 5건, 메인 필터 전체이며 최종 compact JSON은 32KB 이내입니다. `query_template`, SQL, endpoint, header, token, password 같은 실행/비밀 설정은 제거합니다. 바이트 압박 시 관련도 낮은 도메인부터 줄이고 테이블 5건과 메인 필터 전체를 우선 보존합니다.
 
 ### Intent LLM 출력
 
@@ -114,6 +114,53 @@ state, 전체 intent plan, 이전 runtime rows는 분기로 복제하지 않습�
 ```
 
 `runtime_sources`, `_runtime_rows_by_alias`, `_full_result_rows`, `_runtime_result_rows`는 API envelope에서 제거합니다.
+
+### 종속 조회 continuation 공개 계약
+
+`08. v5_data_analysis_continuation`은 최대 2단계 종속 조회의 전체 Typed IR을 내부 payload와 Result Store에만 보존합니다. 공개 API의 `intent_plan.dependent_retrieval_plan`에는 `stages`, 단계별 조회 작업, pandas 계획을 넣지 않고 version, plan ID/hash, 현재·다음 단계와 실행 상태만 투영합니다.
+
+첫 단계가 정상 완료되고 다음 조회가 필요할 때만 top-level `continuation.status=pending`을 반환합니다. 공개 continuation 계약은 4 KiB 이하의 compact JSON이며 다음 형태를 사용합니다.
+
+```json
+{
+  "continuation": {
+    "status": "pending",
+    "version": "analysis.dependent_retrieval.v1",
+    "plan_id": "drp-...",
+    "plan_hash": "sha256...",
+    "stage_index": 1,
+    "current_stage_index": 0,
+    "max_stages": 2,
+    "current_stage_id": "current_hold_lots",
+    "next_stage_id": "latest_hold_history",
+    "row_count": 3,
+    "result_ref": "result:session-id:uuid",
+    "continuation_ref": "continuation:drp-...:sha256...",
+    "continuation_contract": {
+      "version": "analysis.dependent_retrieval.v1",
+      "plan_id": "drp-...",
+      "plan_hash": "sha256...",
+      "max_stages": 2,
+      "current_stage_index": 0,
+      "next_stage_index": 1,
+      "continuation_ref": "continuation:drp-...:sha256...",
+      "session_id": "session-id",
+      "input_bindings": []
+    }
+  }
+}
+```
+
+`09. v5_agent_tool_router_continuation`은 일반 응답이면 하위 Flow를 한 번만 호출합니다. `status=pending`일 때만 원 질문과 동일한 `session_id`로 두 번째 호출을 수행하고, 다음 네 입력을 runtime tweak로 전달합니다.
+
+- `upstream_result_ref`
+- `continuation_ref`
+- `continuation_contract`
+- `skip_intermediate_answer`
+
+Router는 두 번째 호출 전에 pending envelope, compact contract, 상속 session의 `plan_id`, `plan_hash`, `session_id`가 모두 일치하는지 확인합니다. result ref, binding, 필수 입력 포트, session 증거가 없거나 계약이 변조·중복·초과 길이이면 두 번째 호출 없이 compact blocked 결과를 반환합니다. 전체 child 호출은 최대 2회이며 두 번째 응답도 같은 plan/session과 최종 단계 계약을 만족해야 합니다.
+
+첫 단계가 `pending`이면 20번 답변 빌더는 중간 답변 LLM을 자동으로 생략합니다. continuation 재개 시에는 저장된 IR을 검증해 현재 단계를 투영하므로 Intent LLM도 다시 호출하지 않고 `intent_llm_skipped=true`를 남깁니다. 최종 Agent observation에는 최종 메시지와 작은 `continuation_execution`만 포함하며 원본 rows, trace, pandas code, 전체 dependent IR은 전달하지 않습니다.
 
 ## 4. 보안 경계
 

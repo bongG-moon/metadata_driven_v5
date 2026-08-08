@@ -1,5 +1,11 @@
 # Metadata Driven v5 완전 연결 Langflow JSON
 
+## Data Analysis canonical route
+
+- `run_data_analysis`, route `data_analysis`, display name `01. v5_data_analysis`, and endpoint suffix `data-analysis` now execute the V2 hybrid graph.
+- The former V1 graph is not included in this selected 01~09 bundle; the canonical route is the V2 graph above.
+- Existing Langflow router/tool nodes that already persisted `flow_id_selected` must be reselected after import so the saved ID points to the new canonical V2 Flow. The bundle never clears a runtime selection automatically.
+
 이 폴더의 JSON은 Langflow 1.9.2 standalone 환경에 바로 import할 수 있도록 모든 canvas edge와 Router 하위 endpoint를 미리 연결한 묶음입니다.
 
 ## 가장 간단한 Import 방법
@@ -8,27 +14,21 @@ Langflow의 Flow 화면에서 아래 파일 **하나만** 선택합니다.
 
 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
 
-Langflow UI가 최상위 `flows` 배열을 펼쳐 13개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{"flows":[`입니다.
+Langflow UI가 최상위 `flows` 배열을 펼쳐 9개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{"flows":[`입니다.
 
 ## 개별 Import 방법
 
-파일명 앞 번호 순서대로 `01`부터 `12`까지 import합니다. `06`은 운영 기본 API Router, `07`은 단일 호출용 Agent + Tool Mode Router, `08`은 등록 또는 자연어 Workflow를 기본 Loop로 실행하는 Workflow Orchestrator, `09`는 Workflow Skill 등록·검토·저장 Flow, `10`은 Data Analysis 결과 참조를 HTML 차트로 만드는 Flow, `12`는 기존 메타데이터를 그대로 사용하는 Fast/Complex Hybrid Data Analysis V2입니다.
+파일명 앞 번호 순서대로 `01`부터 `07`까지 import합니다. `01`은 운영 기본 Fast/Complex Hybrid Data Analysis V2, `02`~`05`는 메타데이터 저장·조회 Flow, `06`은 단일 호출용 Agent + Tool Mode Router, `07`은 실시간 생산 Report Flow입니다. 종속 조회용 `08`과 `09`는 continuation bundle이 추가합니다.
 
 | 순서 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
-| 1 | `01_data_analysis_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 53 | 71 |
-| 2 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 14 | 15 |
-| 3 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 14 | 15 |
-| 4 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 14 | 15 |
-| 5 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 13 | 19 |
-| 6 | `06_api_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-api-router` | 22 | 21 |
-| 7 | `07_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 11 | 10 |
-| 8 | `08_workflow_orchestrator_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-workflow-orchestrator` | 21 | 29 |
-| 9 | `09_workflow_skill_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-workflow-skill-saving` | 15 | 16 |
-| 10 | `10_html_visualization_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-html-visualization` | 6 | 5 |
-| 11 | `11_realtime_production_report_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report` | 11 | 13 |
-| 12 | `12_cube_schedule_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-cube-schedule-saving` | 10 | 10 |
-| 13 | `13_data_analysis_flow_v2_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis-v2` | 54 | 61 |
+| 1 | `01_data_analysis_flow_v2_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 51 | 57 |
+| 2 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 12 | 13 |
+| 3 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 12 | 13 |
+| 4 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 12 | 13 |
+| 5 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 11 | 17 |
+| 6 | `06_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 9 | 8 |
+| 7 | `07_realtime_production_report_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report` | 9 | 11 |
 
 ## 수동 연결 여부
 
@@ -36,7 +36,7 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 13개 Flow를 한 번에 impor
 - Router Flow ID 치환: 필요 없음
 - Router URL 5개 개별 입력: 필요 없음
 - Agent Tool Router Flow ID 직접 입력: 필요 없음. 다만 import 후 각 Tool의 `대상 Flow`를 한 번씩 다시 선택하면 현재 ID가 저장됩니다. 실행 시 현재 ID와 `updated_at`을 확인한 뒤 유효한 graph cache를 사용합니다.
-- Workflow Orchestrator Flow ID 재연결: 필요 없음
+- 종속 조회 continuation Flow ID 재연결: 필요 없음
 
 Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다시 import하면 Langflow가 endpoint에 `-1`을 붙일 수 있으므로, 재import 시에는 기존 `metadata-driven-v5-complete-20260710-*` Flow를 먼저 정리합니다.
 
@@ -60,19 +60,19 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 ## 검증 결과
 
 - Langflow/Flow 비웹 pytest: 전체 suite passed (별도 Streamlit 웹 런타임 테스트는 제외)
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 173/173 노드가 실제 Python 원본 103개에 매핑, 누락 0
+- 커스텀 원본 동기화: `tools/validate_flow_component_sources.py`가 모든 활성 custom node와 저장소 Python 원본의 일대일 매핑 및 누락 0건을 검증
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 30/30 통과
-- Langflow 1.9.2 frontend edge handle codec: 600/600 parse 및 `edge.data` 일치
+- Langflow 1.9.2 frontend edge handle codec: 410/410 parse 및 `edge.data` 일치
 - Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: 13개 Flow 241/241 검증 통과
+- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: 9개 Flow 160/160 검증 통과
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: Smart Router -> GaiA Output Adapter -> 표준 Chat Output 2/2, FinalGate 0개
 - API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개
 - Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
-- 기존 8개 Flow의 격리 Langflow 서버 import는 검증 완료했으며, Workflow Orchestrator는 이번 bundle/node/edge 계약 검증 후 다음 live-server import 대상입니다.
-- 통합 `00` 단일 JSON은 13개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
-- 하위 Flow 9개, Route V2, Workflow Orchestrator: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
+- 선택된 01~07 Flow의 격리 Langflow 서버 import 계약을 검증했으며, continuation bundle은 08~09를 추가합니다.
+- 통합 `00` 단일 JSON은 9개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
+- 선택된 하위 Flow와 Route V2: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
 - Data Analysis: executor node 1개, 초기 성공 시 Repair LLM 0회, 실행 오류 시 이전 코드·오류 문맥을 전달해 최대 1회 복구, 단일 최종화 체인 확인
 - Data Analysis V2: 단일 source의 완성된 계약은 Fast 실행하여 pandas 생성·답변 LLM 0회, 다중 source·join·Function Case는 기존 Complex 경로 사용
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
@@ -92,6 +92,15 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Realtime Production Report Flow는 Domain Metadata의 공정그룹을 전용 LLM으로 선택한 뒤 질문 원문과 허용목록으로 재검증합니다. 단일 그룹이 확정될 때만 해당 그룹의 판정 더미 Snapshot을 고정 Rule로 집계하고, 미지정·다중지정이면 HTML 없이 공정그룹을 다시 묻습니다.
 - Metadata 및 Workflow Skill 저장 Flow 4종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/GaiA Output Adapter/표준 Chat Output 사용
 - Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
-- Metadata 후보: 도메인 관련 항목 최대 10건, 테이블 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증
+- Metadata 후보: 도메인 관련 항목 최대 20건, 테이블 5건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증
 - Data Analysis 파라미터: 각 retrieval job이 독립 실행 가능한 `required_params`를 가지며, 공통 조건은 각 job에 반복하고 `어제 재공과 오늘 생산량`처럼 범위가 다르면 서로 다른 값을 유지
 - Metadata QA 제품 설명: 제품 그룹은 `product_terms`, 제품 집계는 `product_key_columns`와 관련 `analysis_recipes`만 근거로 결정론적 표를 만들고 추가 LLM 호출을 생략
+
+## Additive continuation flows
+
+기존 `01` 및 `06`은 그대로 유지됩니다. 종속 조회가 필요한 실험·검증은 아래 별도 Flow를 사용합니다.
+
+| 순서 | 파일 | endpoint_name |
+| ---: | --- | --- |
+| 8 | `08_data_analysis_flow_v2_continuation_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis-continuation` |
+| 9 | `09_agent_tool_router_continuation_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router-continuation` |

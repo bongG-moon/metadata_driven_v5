@@ -2159,6 +2159,7 @@ def _filter_incompatible_recipe_contracts(
     }
 
 
+# 함수 설명: `_recipe_selection_criteria_match()`는 04 의도 계획 정규화기 처리 중 selection·적용 기준·match 관련 값을 계산·변환하는 내부 helper입니다.
 def _recipe_selection_criteria_match(
     question: str,
     payload: dict[str, Any],
@@ -2169,6 +2170,7 @@ def _recipe_selection_criteria_match(
     if not isinstance(criteria, dict):
         return True, {"status": "not_declared"}
 
+    # 함수 설명: `values()`는 04 의도 계획 정규화기 처리 중 값 관련 값을 계산·변환하는 내부 helper입니다.
     def values(*keys: str) -> list[str]:
         result: list[str] = []
         for key in keys:
@@ -2811,6 +2813,8 @@ def _metadata_filter_contracts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+# 함수 설명: `_apply_selected_domain_conditions()`는 04 의도 계획 정규화기 처리 중 selected·도메인·conditions 관련 값을 계산·변환하는 내부
+#        helper입니다.
 def _apply_selected_domain_conditions(
     retrieval_jobs: list[Any],
     candidates: dict[str, Any],
@@ -2869,6 +2873,8 @@ def _apply_selected_domain_conditions(
     }
 
 
+# 함수 설명: `_enforce_selected_domain_filter_contracts()`는 04 의도 계획 정규화기 처리 중 selected·도메인·필터·contracts 관련 값을 계산·변환하는
+#        내부 helper입니다.
 def _enforce_selected_domain_filter_contracts(
     retrieval_jobs: list[Any],
     candidates: dict[str, Any],
@@ -2978,6 +2984,7 @@ def _enforce_selected_domain_filter_contracts(
     }
 
 
+# 함수 설명: `_filter_condition_is_incomplete()`는 조건과 우선순위에 맞는 조건·IS·incomplete만 골라 원래 순서를 유지해 반환합니다.
 def _filter_condition_is_incomplete(condition: Any) -> bool:
     if not isinstance(condition, dict):
         return True
@@ -2993,6 +3000,7 @@ def _filter_condition_is_incomplete(condition: Any) -> bool:
     return not any(_filter_value_is_present(value) for value in values)
 
 
+# 함수 설명: `_filter_value_is_present()`는 조건과 우선순위에 맞는 값·IS·present만 골라 원래 순서를 유지해 반환합니다.
 def _filter_value_is_present(value: Any) -> bool:
     """Treat numeric zero/False as valid filter values, not as blank text."""
 
@@ -3003,6 +3011,7 @@ def _filter_value_is_present(value: Any) -> bool:
     return True
 
 
+# 함수 설명: `_declared_process_scope_from_plan()`는 04 의도 계획 정규화기 처리 중 process·분석 범위·원본·PLAN 관련 값을 계산·변환하는 내부 helper입니다.
 def _declared_process_scope_from_plan(
     plan: dict[str, Any],
     metadata_candidates: dict[str, Any],
@@ -3022,6 +3031,7 @@ def _declared_process_scope_from_plan(
     }
     declared: list[str] = []
 
+    # 함수 설명: `visit()`는 04 의도 계획 정규화기 처리 중 visit 관련 값을 계산·변환하는 내부 helper입니다.
     def visit(value: Any) -> None:
         if isinstance(value, dict):
             field = str(value.get("field") or value.get("column") or "").strip()
@@ -3046,6 +3056,7 @@ def _declared_process_scope_from_plan(
     return declared
 
 
+# 함수 설명: `_validate_process_scope_contract()`는 process·분석 범위·contract이 실행·저장 계약을 만족하는지 검사하고 위반 내용을 명시적으로 반환합니다.
 def _validate_process_scope_contract(
     retrieval_jobs: list[Any],
     candidates: dict[str, Any],
@@ -3142,6 +3153,7 @@ def _validate_process_scope_contract(
     }
 
 
+# 함수 설명: `_build_intent_ir()`는 의도 계획·IR 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def _build_intent_ir(
     plan: dict[str, Any],
     question: str,

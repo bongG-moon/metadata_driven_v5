@@ -137,6 +137,20 @@ VALUELESS_FILTER_OPERATORS = {
     "not_empty",
     "not_blank",
 }
+DETERMINISTIC_PLAN_KEYS = (
+    "resolved_empty_result_plan",
+    "resolved_presence_comparison_plan",
+    "resolved_metric_comparison_plan",
+    "resolved_metric_merge_plan",
+    "resolved_reference_join_plan",
+)
+DETERMINISTIC_OPERATIONS = {
+    "empty_result",
+    "compare_presence",
+    "compare_metrics",
+    "merge_metric_sources",
+    "enrich_previous_result",
+}
 
 
 # 함수 설명: `resolve_simple_analysis_contract()`는 여러 simple·분석·contract 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
@@ -858,8 +872,10 @@ def _attach_contract(
     inspection: dict[str, Any],
     started: float,
 ) -> dict[str, Any]:
-    payload["simple_analysis_contract"] = deepcopy(contract)
     plan = _dict(payload.get("intent_plan"))
+    execution_profile = _analysis_execution_profile(plan, contract)
+    contract.update(execution_profile)
+    payload["simple_analysis_contract"] = deepcopy(contract)
     route_resolution = _dict(plan.get("route_resolution"))
     route_resolution.update(
         {
@@ -868,6 +884,8 @@ def _attach_contract(
             "final_reason_codes": deepcopy(
                 _dict(contract.get("eligibility")).get("reason_codes") or []
             ),
+            "analysis_execution_mode": str(contract.get("analysis_execution_mode") or ""),
+            "requires_pandas_llm": bool(contract.get("requires_pandas_llm")),
             "resolved_after_retrieval": True,
         }
     )
@@ -880,10 +898,48 @@ def _attach_contract(
         "recipe": str(contract.get("recipe") or ""),
         "reason_codes": deepcopy(_dict(contract.get("eligibility")).get("reason_codes") or []),
         "validation_errors": deepcopy(contract.get("validation_errors") or []),
+        "analysis_execution_mode": str(contract.get("analysis_execution_mode") or ""),
+        "requires_pandas_llm": bool(contract.get("requires_pandas_llm")),
+        "deterministic_contract_key": str(contract.get("deterministic_contract_key") or ""),
+        "deterministic_operation": str(contract.get("deterministic_operation") or ""),
         "llm_calls": {"intent": 1, "pandas_generation": 0, "repair": 0, "answer": 0},
         "timing_ms": {"route_resolution": round((perf_counter() - started) * 1000, 3)},
     }
     return payload
+
+
+# 함수 설명: `_analysis_execution_profile()`는 execution·profile에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
+def _analysis_execution_profile(
+    plan: dict[str, Any],
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve the internal execution submode without changing Fast/Complex routing."""
+
+    route = str(contract.get("route") or "complex").strip().lower()
+    if route == "blocked":
+        return {
+            "analysis_execution_mode": "blocked",
+            "requires_pandas_llm": False,
+        }
+    if route == "fast":
+        return {
+            "analysis_execution_mode": "deterministic_fast",
+            "requires_pandas_llm": False,
+        }
+    for key in DETERMINISTIC_PLAN_KEYS:
+        candidate = _dict(plan.get(key))
+        operation = str(candidate.get("operation") or "").strip()
+        if candidate.get("strict") is True and operation in DETERMINISTIC_OPERATIONS:
+            return {
+                "analysis_execution_mode": "deterministic_contract",
+                "requires_pandas_llm": False,
+                "deterministic_contract_key": key,
+                "deterministic_operation": operation,
+            }
+    return {
+        "analysis_execution_mode": "llm_pandas",
+        "requires_pandas_llm": True,
+    }
 
 
 # 함수 설명: `_intent_route_candidate()`는 조회 전 실행 계약만으로 Fast 후보 또는 Complex 필요 여부를 결정하며 최종 판정을 대신하지 않습니다.

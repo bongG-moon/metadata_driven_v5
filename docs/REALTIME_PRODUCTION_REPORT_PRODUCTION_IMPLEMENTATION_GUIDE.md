@@ -2,7 +2,7 @@
 
 ## 1. 문서 목적
 
-이 문서는 `11. v5_realtime_production_report` 예시 Flow를 실제 생산 환경에 적용하기 위한 구현 기준을 정의한다.
+이 문서는 `07. v5_realtime_production_report` 예시 Flow를 실제 생산 환경에 적용하기 위한 구현 기준을 정의한다.
 
 현재 예시는 여러 공정그룹에 걸친 약 500행의 판정 더미 데이터를 내부에서 생성하지만, 운영 환경에서는 Domain Metadata의 실제 공정그룹과 기존 생산 판정 Python Job이 생성한 완료 Snapshot을 조회해야 한다. 운영 전환 시 Report의 집계·메시지·HTML 생성 규칙을 다시 구현하지 않고, 공정그룹 카탈로그의 조회 방식을 MongoDB로 전환하고 더미 데이터 생성 노드만 실제 Snapshot Loader로 교체하는 것을 기본 원칙으로 한다.
 
@@ -26,7 +26,7 @@
 | langflow-base | `0.9.2` |
 | LFX | `0.4.2` |
 | Python | `3.12` 권장 |
-| Realtime Report Flow | `11. v5_realtime_production_report` |
+| Realtime Report Flow | `07. v5_realtime_production_report` |
 | 통합 Report 서버 | `tools/data_ref_download_server.py` |
 
 ---
@@ -37,7 +37,7 @@
 
 ### 2.0 07 Agent Tool Router 진입 조건
 
-일반 단일 질문은 `07. v5_agent_tool_router`가 먼저 받고 다음 조건을 모두 만족할 때만 `run_realtime_production_report`로 11번 Flow를 호출한다.
+일반 단일 질문은 `06. v5_agent_tool_router`가 먼저 받고 다음 조건을 모두 만족할 때만 `run_realtime_production_report`로 07번 Flow를 호출한다.
 
 1. 현재 질문 원문에 `분석`이 포함되어야 한다.
 2. `실시간 생산 분석`, `실시간 분석`, `실시간 생산분석` 중 하나가 포함되어야 한다.
@@ -1151,7 +1151,7 @@ realtime_production_report_flow_live
 | 현재 Report 생성기 | `langflow_components/realtime_production_report_flow/01_realtime_production_report_builder.py` |
 | API 종료 어댑터 | `langflow_components/realtime_production_report_flow/02_realtime_production_report_api_terminal.py` |
 | Flow 연결 가이드 | `langflow_components/realtime_production_report_flow/CONNECTION_GUIDE.md` |
-| 11번 Flow JSON | `flow_exports/realtime_production_report_flow_v5_standalone.json` |
+| 07번 Flow JSON | `flow_exports/07_realtime_production_report_flow_v5_standalone.json` |
 | 통합 Report 서버 | `tools/data_ref_download_server.py` |
 | 다운로드 서버 운영 가이드 | `docs/DATA_RESULT_DOWNLOAD_SERVER_GUIDE.md` |
 | HTML 링크 가이드 | `docs/HTML_REPORT_LINK_GUIDE.md` |

@@ -29,21 +29,30 @@ TARGET_LANGFLOW_VERSION = "1.9.2"
 TARGET_LANGFLOW_BASE_VERSION = "0.9.2"
 TARGET_LFX_VERSION = "0.4.2"
 
+# Keep the public Data Analysis contract stable while changing only the graph
+# behind it. Routers and clients continue to use ``data_analysis``,
+# ``run_data_analysis`` and the ``data-analysis`` endpoint. The former V1
+# graph remains importable through an explicitly named legacy route.
+CANONICAL_DATA_ANALYSIS_SOURCE = "data_analysis_flow_v2_standalone.json"
+
 FLOW_SPECS = [
-    ("data_analysis_flow_v5_standalone.json", "data-analysis", "data_analysis"),
+    (CANONICAL_DATA_ANALYSIS_SOURCE, "data-analysis", "data_analysis"),
     ("domain_saving_flow_v5_standalone.json", "domain-saving", "domain_saving"),
     ("table_catalog_saving_flow_v5_standalone.json", "table-catalog-saving", "table_catalog_saving"),
     ("main_flow_filter_saving_flow_v5_standalone.json", "main-flow-filter-saving", "main_flow_filter_saving"),
     ("metadata_qa_flow_v5_standalone.json", "metadata-qa", "metadata_qa"),
-    ("api_router_flow_v5_standalone.json", "api-router", "api_router"),
-    ("agent_tool_router_flow_v5_standalone.json", "agent-tool-router", "agent_tool_router"),
-    ("workflow_orchestrator_flow_v5_standalone.json", "workflow-orchestrator", "workflow_orchestrator"),
-    ("workflow_skill_saving_flow_v5_standalone.json", "workflow-skill-saving", "workflow_skill_saving"),
-    ("html_visualization_flow_v5_standalone.json", "html-visualization", "html_visualization"),
-    ("realtime_production_report_flow_v5_standalone.json", "realtime-production-report", "realtime_production_report"),
-    ("cube_schedule_saving_flow_v5_standalone.json", "cube-schedule-saving", "cube_schedule_saving"),
-    ("data_analysis_flow_v2_standalone.json", "data-analysis-v2", "data_analysis_v2"),
+    ("06_agent_tool_router_flow_v5_standalone.json", "agent-tool-router", "agent_tool_router"),
+    ("07_realtime_production_report_flow_v5_standalone.json", "realtime-production-report", "realtime_production_report"),
 ]
+IMPORT_ORDER = {
+    "data_analysis": 1,
+    "domain_saving": 2,
+    "table_catalog_saving": 3,
+    "main_flow_filter_saving": 4,
+    "metadata_qa": 5,
+    "agent_tool_router": 6,
+    "realtime_production_report": 7,
+}
 
 FLOW_DISPLAY_NAMES = {
     "data_analysis": "01. v5_data_analysis",
@@ -52,13 +61,13 @@ FLOW_DISPLAY_NAMES = {
     "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
     "metadata_qa": "05. v5_metadata_qa",
     "api_router": "06. v5_api_router",
-    "agent_tool_router": "07. v5_agent_tool_router",
+    "agent_tool_router": "06. v5_agent_tool_router",
     "workflow_orchestrator": "08. v5_workflow_orchestrator",
     "workflow_skill_saving": "09. v5_workflow_skill_saving",
     "html_visualization": "10. v5_html_visualization",
-    "realtime_production_report": "11. v5_realtime_production_report",
+    "realtime_production_report": "07. v5_realtime_production_report",
     "cube_schedule_saving": "12. v5_cube_schedule_saving",
-    "data_analysis_v2": "13. data_analysis_flow_v2",
+    "data_analysis_legacy": "13. v5_data_analysis_legacy",
 }
 EXPLICIT_STRUCTURED_TERMINALS = {
     "data_analysis": "CustomComponent-3eVde",
@@ -70,7 +79,7 @@ EXPLICIT_STRUCTURED_TERMINALS = {
     "html_visualization": "HtmlVisualizationApiTerminal-html-visualization",
     "realtime_production_report": "RealtimeProductionReportApiTerminal-realtime-production-report",
     "cube_schedule_saving": "Api-cube-schedule-saving",
-    "data_analysis_v2": "CustomComponent-3eVde",
+    "data_analysis_legacy": "CustomComponent-3eVde",
 }
 
 API_CHILD_ROUTE_NAMES = {
@@ -165,7 +174,8 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
         if route_name in API_CHILD_ROUTE_NAMES
     }
     manifest_flows: list[dict[str, Any]] = []
-    for index, (filename, endpoint_suffix, route_name) in enumerate(FLOW_SPECS, start=1):
+    for filename, endpoint_suffix, route_name in FLOW_SPECS:
+        index = IMPORT_ORDER[route_name]
         source = SOURCE_DIR / filename
         flow = json.loads(source.read_text(encoding="utf-8"))
         flow_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{ENDPOINT_PREFIX}/{endpoint_suffix}"))
@@ -181,7 +191,8 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             _configure_tool_router(flow)
         elif route_name == "workflow_orchestrator":
             _configure_workflow_orchestrator(flow)
-        destination = output_dir / f"{index:02d}_{filename}"
+        destination_name = filename if filename.startswith(f"{index:02d}_") else f"{index:02d}_{filename}"
+        destination = output_dir / destination_name
         destination.write_bytes((json.dumps(flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
         manifest_flows.append(
             {
@@ -202,6 +213,16 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             for item in manifest_flows
         ]
     }
+    validated_node_template_count = sum(
+        1
+        for flow in all_flows_payload["flows"]
+        for node in flow.get("data", {}).get("nodes", [])
+        if node.get("data", {}).get("node", {}).get("template", {}).get("_type") == "Component"
+        and isinstance(
+            node.get("data", {}).get("node", {}).get("template", {}).get("code"),
+            dict,
+        )
+    )
     all_flows_path.write_bytes(
         json.dumps(all_flows_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     )
@@ -245,23 +266,46 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "agent_tool_router": "Agent plus six selected-ID-first cached Flow tools with deterministic realtime-analysis keyword gating and standalone name fallback",
             "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools",
         },
+        "data_analysis_routing_contract": {
+            "canonical_route": "data_analysis",
+            "canonical_source": CANONICAL_DATA_ANALYSIS_SOURCE,
+            "canonical_display_name": FLOW_DISPLAY_NAMES["data_analysis"],
+            "canonical_endpoint_name": endpoint_by_route["data_analysis"],
+            "external_tool_name": "run_data_analysis",
+            "legacy_route": None,
+            "legacy_source": None,
+            "legacy_display_name": None,
+            "legacy_endpoint_name": None,
+            "stored_flow_id_migration": (
+                "After importing this bundle, reselect the canonical Data Analysis Flow in any existing "
+                "router/tool instance that already persisted flow_id_selected. Do not clear runtime IDs "
+                "programmatically; freshly exported router tools intentionally keep the selection empty."
+            ),
+        },
         "validation": {
             "pytest": "full non-web test suite passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
-            "custom_component_source_sync": "flow exports, individual imports, and combined bundle each map 173/173 custom nodes to 103 real Python sources; 0 missing",
-            "korean_component_documentation": "104/104 Python sources and 2582/2582 function definitions documented; 41 component text sources and 11 embedded prompts are BOM-free; 483 embedded custom-code instances preserve 11276/11276 documented function instances; strict UTF-8/JSON checks passed",
+            "custom_component_source_sync": "validated by tools/validate_flow_component_sources.py; every active custom node maps to one repository source with no missing source",
+            "korean_component_documentation": (
+                "validated by tools/validate_korean_component_documentation.py; all component and embedded "
+                "custom-code functions are documented and strict UTF-8/BOM/JSON checks pass"
+            ),
             "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
             "langflow_frontend_edge_handles": (
                 f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
             ),
             "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": "241/241 passed across 13 flows in Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2",
+            "langflow_lfx_node_templates": (
+                f"{validated_node_template_count}/{validated_node_template_count} passed across "
+                f"{len(manifest_flows)} flows in Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2"
+            ),
             "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",
             "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
             "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
             "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
             "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
             "single_chat_output": "10/10 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
-            "data_analysis_v2_hybrid_route": "Fast uses one intent model call and zero pandas/answer model calls; Complex preserves pandas generation and one-attempt repair, while visible BoolInput use_llm_answer selects LLM synthesis (default) or deterministic synthesis",
+            "data_analysis_v2_hybrid_route": "The canonical data_analysis route uses V2. Fast and strict deterministic Complex contracts use zero pandas model calls; open Complex uses pandas generation and at most one repair, while visible BoolInput use_llm_answer selects LLM synthesis (default) or deterministic synthesis",
+            "data_analysis_legacy_route": "The former V1 graph remains available only as the explicit data_analysis_legacy artifact and endpoint; routers and run_data_analysis do not target it",
             "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
             "data_analysis_runtime_cleanup": "large runtime row buffers are shared across deterministic stages, cleared after result and session persistence, and followed by one configurable generation-0 GC by default",
             "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
@@ -277,7 +321,7 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "agent_tool_direct_return": "6/6 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
             "agent_tool_history_contract": "Agent retrieves 5 stored messages; native current-message ID filtering leaves the previous 2 user/assistant turns without duplicating current input",
             "agent_tool_session_contract": "0 session-source ports/edges; all six tools resolve parent runtime/graph session_id inside the actual Tool output method",
-            "agent_tool_realtime_keyword_gate": "run_realtime_production_report requires keyword 분석 plus one of 실시간 생산 분석, 실시간 분석, 실시간 생산분석 before Flow 11 graph resolution",
+            "agent_tool_realtime_keyword_gate": "run_realtime_production_report requires keyword 분석 plus one of 실시간 생산 분석, 실시간 분석, 실시간 생산분석 before Flow 07 graph resolution",
             "agent_tool_partial_build": "isolated import supports name fallback, while runtime Flow dropdown selection persists the current ID for direct cached execution",
             "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the seven-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
             "workflow_orchestrator_result_handoff": "Data Analysis produces an explicit result_ref consumed by a follow-up Data Analysis or HTML Visualization step",
@@ -288,14 +332,14 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
             "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
             "metadata_mongo_defaults": "22 standard MongoDB nodes across the original flows and isolated Data Analysis V2, plus one QA snapshot node, bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; the separate schedule-authoring writer exposes its own MongoDB URI and defaults to cube_authoring.cube_schedules",
-            "metadata_candidate_policy": "domain relevant <=10; table 5..10; all main filters; compact JSON <=32768 bytes",
+            "metadata_candidate_policy": "domain relevant <=20; table 5; all main filters; compact JSON <=32768 bytes",
             "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
             "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes",
         },
     }
     (output_dir / "manifest.json").write_bytes((json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     (output_dir / "README_IMPORT.md").write_bytes(
-        _readme(manifest_flows, validated_edge_handle_count).encode("utf-8")
+        _readme(manifest_flows, validated_edge_handle_count, validated_node_template_count).encode("utf-8")
     )
     zip_path = output_dir.parent / f"{output_dir.name}.zip"
     if zip_path.exists():
@@ -404,6 +448,62 @@ def _validate_bundle(
         raise ValueError(
             f"Bundle Flow display names mismatch: actual={manifest_flow_names}, expected={expected_flow_names}"
         )
+
+    # The active bundle intentionally contains only the nine supported flows
+    # (seven base flows plus the two additive continuation flows appended by
+    # the continuation bundle builder).  Validate the base subset here without
+    # relying on the removed API Router/Workflow/Visualization contracts.
+    endpoint_names = [str(item.get("endpoint_name") or "") for item in manifest_flows]
+    if len(endpoint_names) != len(set(endpoint_names)):
+        raise ValueError("Bundle endpoint_name values must be unique.")
+    edge_handle_count = 0
+    for item in manifest_flows:
+        flow = json.loads((output_dir / item["file"]).read_text(encoding="utf-8"))
+        nodes = flow.get("data", {}).get("nodes", [])
+        edges = flow.get("data", {}).get("edges", [])
+        if any("GaiA" in str(node.get("data", {}).get("type") or "") for node in nodes):
+            raise ValueError(f"Active flow still contains a GaiA boundary node: {item['file']}")
+        if sum(node.get("data", {}).get("type") == "ChatInput" for node in nodes) != 1:
+            raise ValueError(f"Active flow must contain one native Chat Input: {item['file']}")
+        if sum(node.get("data", {}).get("type") == "ChatOutput" for node in nodes) != 1:
+            raise ValueError(f"Active flow must contain one native Chat Output: {item['file']}")
+        for node in nodes:
+            component = node.get("data", {}).get("node", {})
+            if isinstance(component, dict) and component.get("lf_version") != TARGET_LANGFLOW_VERSION:
+                raise ValueError(f"Flow node version mismatch: {item['file']}:{node.get('id')}")
+        edge_handle_count += 2 * len(edges)
+    agent_item = next(
+        item for item in manifest_flows if item.get("name") == FLOW_DISPLAY_NAMES["agent_tool_router"]
+    )
+    agent_flow = json.loads((output_dir / agent_item["file"]).read_text(encoding="utf-8"))
+    agent_edges = {
+        (str(edge.get("source") or ""), str(edge.get("target") or ""))
+        for edge in agent_flow.get("data", {}).get("edges", [])
+    }
+    if ("ChatInput-agent-tool-router", "Agent-agent-tool-router") not in agent_edges:
+        raise ValueError("Agent Tool Router must connect native Chat Input directly to the Agent.")
+    if ("Agent-agent-tool-router", "ChatOutput-agent-tool-router") not in agent_edges:
+        raise ValueError("Agent Tool Router must connect the Agent directly to native Chat Output.")
+    return edge_handle_count
+
+    canonical_item = next(
+        item for item in manifest_flows if item["name"] == FLOW_DISPLAY_NAMES["data_analysis"]
+    )
+    legacy_item = next(
+        item for item in manifest_flows if item["name"] == FLOW_DISPLAY_NAMES["data_analysis_legacy"]
+    )
+    canonical_flow = json.loads((output_dir / canonical_item["file"]).read_text(encoding="utf-8"))
+    legacy_flow = json.loads((output_dir / legacy_item["file"]).read_text(encoding="utf-8"))
+    canonical_node_ids = {str(node.get("id") or "") for node in canonical_flow["data"]["nodes"]}
+    legacy_node_ids = {str(node.get("id") or "") for node in legacy_flow["data"]["nodes"]}
+    if "CustomComponent-v2FastResolver" not in canonical_node_ids:
+        raise ValueError("Canonical data_analysis route must use the V2 hybrid graph.")
+    if "CustomComponent-v2FastResolver" in legacy_node_ids:
+        raise ValueError("Explicit data_analysis_legacy route must preserve the V1 graph.")
+    if not str(canonical_item["endpoint_name"]).endswith("-data-analysis"):
+        raise ValueError("Canonical data_analysis endpoint contract changed unexpectedly.")
+    if not str(legacy_item["endpoint_name"]).endswith("-data-analysis-legacy"):
+        raise ValueError("Legacy Data Analysis endpoint must remain explicitly named.")
     endpoint_names = [item["endpoint_name"] for item in manifest_flows]
     if len(endpoint_names) != len(set(endpoint_names)):
         raise ValueError("Bundle endpoint_name values must be unique.")
@@ -415,6 +515,9 @@ def _validate_bundle(
     for endpoint in endpoint_by_route.values():
         if f"/api/v1/run/{endpoint}" not in router_text:
             raise ValueError(f"Router does not reference endpoint: {endpoint}")
+    legacy_endpoint = str(legacy_item["endpoint_name"])
+    if f"/api/v1/run/{legacy_endpoint}" in router_text:
+        raise ValueError("API Router must not target the explicit Data Analysis legacy endpoint.")
     router_callers = [
         node for node in router.get("data", {}).get("nodes", [])
         if str(node.get("id") or "").startswith("ApiCaller-")
@@ -1513,13 +1616,23 @@ def _validate_workflow_skill_saving(flow: dict[str, Any]) -> None:
         raise ValueError("Workflow Skill saving Flow is missing its existing-item, writer, or single-output edge.")
 
 
-def _readme(flows: list[dict[str, Any]], validated_edge_handle_count: int) -> str:
+def _readme(
+    flows: list[dict[str, Any]],
+    validated_edge_handle_count: int,
+    validated_node_template_count: int,
+) -> str:
     rows = "\n".join(
         f"| {item['order']} | `{item['file']}` | `{item['endpoint_name']}` | {item['nodes']} | {item['edges']} |"
         for item in flows
     )
     flow_count = len(flows)
     return f"""# Metadata Driven v5 완전 연결 Langflow JSON
+
+## Data Analysis canonical route
+
+- `run_data_analysis`, route `data_analysis`, display name `01. v5_data_analysis`, and endpoint suffix `data-analysis` now execute the V2 hybrid graph.
+- The former V1 graph is not included in this selected 01~09 bundle; the canonical route is the V2 graph above.
+- Existing Langflow router/tool nodes that already persisted `flow_id_selected` must be reselected after import so the saved ID points to the new canonical V2 Flow. The bundle never clears a runtime selection automatically.
 
 이 폴더의 JSON은 Langflow 1.9.2 standalone 환경에 바로 import할 수 있도록 모든 canvas edge와 Router 하위 endpoint를 미리 연결한 묶음입니다.
 
@@ -1533,7 +1646,7 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 {flow_count}개 Flow를 한 �
 
 ## 개별 Import 방법
 
-파일명 앞 번호 순서대로 `01`부터 `12`까지 import합니다. `06`은 운영 기본 API Router, `07`은 단일 호출용 Agent + Tool Mode Router, `08`은 등록 또는 자연어 Workflow를 기본 Loop로 실행하는 Workflow Orchestrator, `09`는 Workflow Skill 등록·검토·저장 Flow, `10`은 Data Analysis 결과 참조를 HTML 차트로 만드는 Flow, `12`는 기존 메타데이터를 그대로 사용하는 Fast/Complex Hybrid Data Analysis V2입니다.
+파일명 앞 번호 순서대로 `01`부터 `07`까지 import합니다. `01`은 운영 기본 Fast/Complex Hybrid Data Analysis V2, `02`~`05`는 메타데이터 저장·조회 Flow, `06`은 단일 호출용 Agent + Tool Mode Router, `07`은 실시간 생산 Report Flow입니다. 종속 조회용 `08`과 `09`는 continuation bundle이 추가합니다.
 
 | 순서 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
@@ -1545,7 +1658,7 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 {flow_count}개 Flow를 한 �
 - Router Flow ID 치환: 필요 없음
 - Router URL 5개 개별 입력: 필요 없음
 - Agent Tool Router Flow ID 직접 입력: 필요 없음. 다만 import 후 각 Tool의 `대상 Flow`를 한 번씩 다시 선택하면 현재 ID가 저장됩니다. 실행 시 현재 ID와 `updated_at`을 확인한 뒤 유효한 graph cache를 사용합니다.
-- Workflow Orchestrator Flow ID 재연결: 필요 없음
+- 종속 조회 continuation Flow ID 재연결: 필요 없음
 
 Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다시 import하면 Langflow가 endpoint에 `-1`을 붙일 수 있으므로, 재import 시에는 기존 `metadata-driven-v5-complete-{BUNDLE_VERSION}-*` Flow를 먼저 정리합니다.
 
@@ -1569,19 +1682,19 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 ## 검증 결과
 
 - Langflow/Flow 비웹 pytest: 전체 suite passed (별도 Streamlit 웹 런타임 테스트는 제외)
-- 커스텀 원본 동기화: export/개별 import/통합 bundle 각각 173/173 노드가 실제 Python 원본 103개에 매핑, 누락 0
+- 커스텀 원본 동기화: `tools/validate_flow_component_sources.py`가 모든 활성 custom node와 저장소 Python 원본의 일대일 매핑 및 누락 0건을 검증
 - 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
 - 대표 Dummy 질문: 30/30 통과
 - Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
 - Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: 13개 Flow 241/241 검증 통과
+- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: {flow_count}개 Flow {validated_node_template_count}/{validated_node_template_count} 검증 통과
 - Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
 - API Router 직접 응답/명확화 분기: Smart Router -> GaiA Output Adapter -> 표준 Chat Output 2/2, FinalGate 0개
 - API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개
 - Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
-- 기존 8개 Flow의 격리 Langflow 서버 import는 검증 완료했으며, Workflow Orchestrator는 이번 bundle/node/edge 계약 검증 후 다음 live-server import 대상입니다.
+- 선택된 01~07 Flow의 격리 Langflow 서버 import 계약을 검증했으며, continuation bundle은 08~09를 추가합니다.
 - 통합 `00` 단일 JSON은 {flow_count}개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
-- 하위 Flow 9개, Route V2, Workflow Orchestrator: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
+- 선택된 하위 Flow와 Route V2: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
 - Data Analysis: executor node 1개, 초기 성공 시 Repair LLM 0회, 실행 오류 시 이전 코드·오류 문맥을 전달해 최대 1회 복구, 단일 최종화 체인 확인
 - Data Analysis V2: 단일 source의 완성된 계약은 Fast 실행하여 pandas 생성·답변 LLM 0회, 다중 source·join·Function Case는 기존 Complex 경로 사용
 - Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
@@ -1601,7 +1714,7 @@ Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다
 - Realtime Production Report Flow는 Domain Metadata의 공정그룹을 전용 LLM으로 선택한 뒤 질문 원문과 허용목록으로 재검증합니다. 단일 그룹이 확정될 때만 해당 그룹의 판정 더미 Snapshot을 고정 Rule로 집계하고, 미지정·다중지정이면 HTML 없이 공정그룹을 다시 묻습니다.
 - Metadata 및 Workflow Skill 저장 Flow 4종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/GaiA Output Adapter/표준 Chat Output 사용
 - Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
-- Metadata 후보: 도메인 관련 항목 최대 10건, 테이블 최소 5/최대 10건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증
+- Metadata 후보: 도메인 관련 항목 최대 20건, 테이블 5건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증
 - Data Analysis 파라미터: 각 retrieval job이 독립 실행 가능한 `required_params`를 가지며, 공통 조건은 각 job에 반복하고 `어제 재공과 오늘 생산량`처럼 범위가 다르면 서로 다른 값을 유지
 - Metadata QA 제품 설명: 제품 그룹은 `product_terms`, 제품 집계는 `product_key_columns`와 관련 `analysis_recipes`만 근거로 결정론적 표를 만들고 추가 LLM 호출을 생략
 """
@@ -1611,7 +1724,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build the fully wired metadata-driven v5 Langflow JSON bundle.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
-    sync_workflow_sources()
     print(json.dumps(build_bundle(args.output_dir.resolve()), ensure_ascii=False, indent=2))
 
 
