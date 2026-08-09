@@ -23,15 +23,39 @@ DEFAULT_MAX_TABLE_ITEMS = 5
 MAX_TABLE_ITEMS = 5
 
 DOMAIN_DATASET_REFERENCE_KEYS = {
-    "data_source",
-    "dataset_key",
-    "dataset_keys",
-    "dataset_ref",
-    "dataset_refs",
+    # Only explicit recipe/domain dependency declarations are protected.
+    # Generic metric ``data_source``/``dataset_key`` fields are relevance
+    # hints, not proof that a catalog must consume a slot in this bounded
+    # candidate list.
     "source_dataset",
     "source_datasets",
+    "source_dataset_key",
+    "source_dataset_keys",
     "target_dataset",
     "target_datasets",
+    "target_dataset_key",
+    "target_dataset_keys",
+    "dependency_dataset",
+    "dependency_dataset_key",
+    "dependency_dataset_keys",
+    "depends_on_dataset",
+    "depends_on_datasets",
+    "upstream_dataset",
+    "upstream_dataset_key",
+    "upstream_dataset_keys",
+}
+
+# Domain metrics often carry a lightweight ``data_source``/``dataset`` hint
+# instead of a full dependent-retrieval recipe.  These hints are not treated
+# as proof of a join, but a question-matched domain item may use them to keep
+# its executable catalog in the bounded candidate set.  The normalizer still
+# verifies the final schema and metric contract before execution.
+DOMAIN_DATASET_HINT_KEYS = {
+    "data_source",
+    "data_sources",
+    "dataset",
+    "dataset_key",
+    "dataset_keys",
 }
 
 CATALOG_DATASET_LINK_KEYS = {
@@ -113,9 +137,10 @@ def close_dependency_catalog_candidates(
     full_index = _catalog_index([*full_tables, *selected_tables])
     selected_index = _catalog_index(selected_tables)
 
-    domain_refs = _ordered_dataset_references(
+    domain_refs = _selected_domain_dataset_references(
         _items(candidates.get("domain_items")),
         DOMAIN_DATASET_REFERENCE_KEYS,
+        {_dataset_key(item) for item in selected_tables if _dataset_key(item)},
     )
     closure_refs = _catalog_dependency_closure(domain_refs, full_index)
     protected_refs = [key for key in closure_refs if key in full_index]
@@ -196,9 +221,45 @@ def _temporal_family_companion_refs(
     selected_tables: list[dict[str, Any]],
     full_tables: list[dict[str, Any]],
 ) -> list[str]:
+    """Return selected tables and useful temporal siblings in stable order.
+
+    A candidate list can contain several unrelated ``current_day`` datasets.
+    Appending every family sibling before the remaining selected tables can
+    evict the history/current pair that belongs to the same source schema.
+    Keep a sibling adjacent only when the catalog also proves that it exposes
+    the same executable schema; otherwise leave it for the final fill phase.
+    This keeps the closure metadata-driven and avoids dataset-name rules.
+    """
     full_index = _catalog_index(full_tables)
     ordered: list[str] = []
     seen: set[str] = set()
+    selected_keys = [_dataset_key(item) for item in selected_tables]
+    selected_keys = [key for key in selected_keys if key]
+
+    # 함수 설명: `append()`는 후보 dataset key를 중복 없이 안정적인 순서로 보관합니다.
+    def append(key: str) -> None:
+        if key and key not in seen:
+            ordered.append(key)
+            seen.add(key)
+
+    # 함수 설명: `schema_overlap()`은 두 Catalog가 공유하는 실행 컬럼 비율을 계산합니다.
+    def schema_overlap(left: dict[str, Any], right: dict[str, Any]) -> float:
+        left_columns = {
+            str(value).strip().casefold()
+            for value in _catalog_payload(left).get("columns", [])
+            if str(value).strip()
+        }
+        right_columns = {
+            str(value).strip().casefold()
+            for value in _catalog_payload(right).get("columns", [])
+            if str(value).strip()
+        }
+        if not left_columns or not right_columns:
+            return 0.0
+        return len(left_columns.intersection(right_columns)) / max(
+            1, len(left_columns.union(right_columns))
+        )
+
     for selected in selected_tables:
         dataset_key = _dataset_key(selected)
         payload = _catalog_payload(full_index.get(dataset_key) or selected)
@@ -206,11 +267,10 @@ def _temporal_family_companion_refs(
         scope = _catalog_time_scope(payload)
         if not dataset_key:
             continue
-        if dataset_key not in seen:
-            ordered.append(dataset_key)
-            seen.add(dataset_key)
+        append(dataset_key)
         if not family or not scope:
             continue
+        candidates: list[tuple[float, int, str]] = []
         for candidate in full_tables:
             candidate_key = _dataset_key(candidate)
             candidate_payload = _catalog_payload(candidate)
@@ -223,8 +283,20 @@ def _temporal_family_companion_refs(
                 or candidate_scope == scope
             ):
                 continue
-            ordered.append(candidate_key)
-            seen.add(candidate_key)
+            candidates.append(
+                (
+                    schema_overlap(payload, candidate_payload),
+                    selected_keys.index(candidate_key) if candidate_key in selected_keys else len(selected_keys),
+                    candidate_key,
+                )
+            )
+        # A temporal sibling with a matching executable schema is safe to
+        # retain beside the selected table.  Cross-family status tables often
+        # share a broad family label but do not provide the same product
+        # columns, so they are deferred until after the original candidates.
+        for overlap, _, candidate_key in sorted(candidates, key=lambda item: (-item[0], item[1], item[2])):
+            if overlap >= 0.5:
+                append(candidate_key)
     return ordered
 
 
@@ -304,6 +376,51 @@ def _ordered_dataset_references(
     for item in items:
         visit(item.get("payload") if isinstance(item.get("payload"), dict) else item)
     return result
+
+
+# 함수 설명: `_selected_domain_dataset_references()`는 선택된 후보와 연결된 Domain dataset 그룹만 보호합니다.
+def _selected_domain_dataset_references(
+    domain_items: list[dict[str, Any]],
+    reference_keys: set[str],
+    selected_keys: set[str],
+) -> list[str]:
+    """Keep explicit dependency groups that touch the selected candidates.
+
+    Domain metadata is global, so unrelated recipes may mention perfectly
+    valid datasets that are irrelevant to the current candidate set.  A
+    dependency group is protected when one of its datasets is already among
+    the selected tables; this preserves the whole declared group while
+    preventing unrelated HOLD/equipment recipes from consuming the bounded
+    slots for a production time-scope pair.
+    """
+    all_refs: list[str] = []
+    hinted_refs: list[str] = []
+    seen: set[str] = set()
+    hinted_seen: set[str] = set()
+    for item in domain_items:
+        refs = _ordered_dataset_references([item], reference_keys)
+        if selected_keys and selected_keys.intersection(refs):
+            for ref in refs:
+                if ref not in seen:
+                    seen.add(ref)
+                    all_refs.append(ref)
+
+        # ``data_source`` is a relevance hint, not a request to add every
+        # dataset mentioned anywhere in Domain.  Domain items have already
+        # been ranked against the current question by 01D, so retaining their
+        # ordered hints is safe and keeps a weak intent model from losing a
+        # required metric table before schema reconciliation.  Explicit
+        # dependency refs above always remain higher priority.
+        for ref in _ordered_dataset_references([item], DOMAIN_DATASET_HINT_KEYS):
+            if ref in seen or ref in hinted_seen:
+                continue
+            hinted_seen.add(ref)
+            hinted_refs.append(ref)
+    for ref in hinted_refs:
+        if ref not in seen:
+            seen.add(ref)
+            all_refs.append(ref)
+    return all_refs
 
 
 # 함수 설명: Catalog 목록을 dataset_key 기준으로 색인합니다.

@@ -1329,7 +1329,10 @@ def normalize_download_ref(ref: dict[str, Any], config: ServerConfig) -> tuple[d
         return normalized, "다운로드 서버 설정과 다른 MongoDB 데이터베이스 또는 컬렉션은 조회할 수 없습니다."
 
     path = str(normalized.get("path") or "").strip()
-    if not re.fullmatch(r"payload\.(?:result_rows|runtime_sources\.[A-Za-z0-9_-]+)", path):
+    if not re.fullmatch(
+        r"payload\.(?:result_rows|runtime_sources\.[A-Za-z0-9_-]+|intermediate_rows\.[A-Za-z0-9_-]+)",
+        path,
+    ):
         return normalized, "허용되지 않은 data_ref.path입니다."
 
     normalized["store"] = "mongodb"

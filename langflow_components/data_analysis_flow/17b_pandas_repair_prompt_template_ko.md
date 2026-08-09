@@ -24,7 +24,7 @@
 - `output_contract.metric_bindings`가 있는 metric은 서로 다른 source binding 사이에서 직접 복사하지 않는다. `strict_result_columns=true`이면 같은 의미의 질문용 컬럼과 일반 컬럼을 둘 다 만들지 않는다.
 - 입력으로 제공된 intent plan, source schema, output contract JSON 전체를 retry 코드 안의 dict로 다시 복사하지 않는다. 분석에 실제로 필요한 컬럼·조건·계약 값만 Python 변수로 작성한다.
 - 실패 코드에 JSON 전용 literal `true`, `false`, `null`이 들어 있으면 해당 JSON 복사 블록을 제거한다. 불리언·결측 상수가 실제로 필요하면 Python의 `True`, `False`, `None`을 사용한다.
-- `pd`, `sources`, 정확한 import로 선언된 제한형 `np` 외 외부 객체를 가정하지 않는다. 특화 helper가 필요하면 `function_case_helper_code`의 필요한 함수 정의를 retry code 상단에 포함한다.
+- `pd`, `sources`, 정확한 import로 선언된 제한형 `np` 외 외부 객체를 가정하지 않는다. 선택된 특화 helper는 executor가 안전성 검증 후 주입하므로 retry code에서 helper 정의를 다시 포함하거나 같은 이름을 재정의하지 않는다.
 - 일반 import, open, eval, exec, 파일 접근, 네트워크 접근은 사용하지 않는다.
 - executor가 제공하는 안전 builtin은 `Exception`, `all`, `any`, `bool`, `dict`, `enumerate`, `float`, `hasattr`, `int`, `isinstance`, `len`, `list`, `max`, `min`, `object`, `range`, `round`, `set`, `sorted`, `str`, `sum`, `tuple`, `zip`이다. 실패 코드의 `object` dtype 비교와 `zip`은 제거하지 않아도 되며 이 목록 밖 builtin은 새로 가정하지 않는다.
 - `pd`는 executor가 이미 제공한다. 정확한 단독 구문 `import pandas as pd`가 있으면 executor가 제거하므로 그대로 반환해도 실행 가능하지만, retry code에서는 불필요한 import를 제거하는 편을 우선한다.
@@ -84,8 +84,8 @@
 - 필수 집계 컬럼이 없거나 group column이 모두 없으면 오류를 반복하지 말고 빈 DataFrame을 `result`에 넣는다.
 - `function_case_selection_json`에는 의도 분석 LLM이 선택한 function case, `selected_steps`, `input_text`, `source_alias`가 들어 있다.
 - 실패한 코드와 `function_case_selection_json.selected_steps`에 실제로 필요한 helper만 사용한다.
-- `function_case_helper_code`에는 사용할 수 있는 helper 함수 정의 코드만 들어 있다.
-- helper가 선택된 조건을 일반 column filter로 임의 대체하지 않는다. helper 함수 정의를 포함하고 선택된 `input_text`, `source_alias`를 보존해 호출한다.
+- 선택된 Function Case helper 정의는 executor가 주입한다. retry code에서는 필요한 helper만 호출하고, helper 정의를 복사하거나 같은 이름을 재정의하지 않는다.
+- helper가 선택된 조건을 일반 column filter로 임의 대체하지 않는다. 선택된 `input_text`, `source_alias`를 보존해 호출한다.
 - function case가 처리한 `input_text`를 같은 source의 별도 일반 filter로 다시 적용한 실패 코드는 그 중복 filter를 제거한다.
 - 실패 코드가 `record_step` 또는 `record_function_case_result`를 사용했다면 retry 코드에서도 같은 목적의 기록을 유지한다.
 - 단계형 분석에서 답변 기준이 되는 중간 결과가 명확하다면 `record_step("key", dataframe_or_value, description="설명", role="basis")`로 compact하게 기록한다.

@@ -28,6 +28,11 @@ from lfx.io import BoolInput, DataInput, IntInput, Output
 from lfx.schema.message import Message
 
 DEFAULT_TABLE_PREVIEW_LIMIT = 10
+DEFAULT_INTERMEDIATE_PREVIEW_LIMIT = 3
+MAX_INTERMEDIATE_TABLE_COUNT = 8
+# 중간 결과는 실행 payload에 최대 5행만 보관합니다. 이 상한은 답변 모델과
+# 무관한 사용자 표시용 데이터가 과도하게 커지지 않도록 하는 안전 경계입니다.
+MAX_CAPTURED_INTERMEDIATE_PREVIEW_ROWS = 5
 CELL_TEXT_LIMIT = 120
 VALUE_TEXT_LIMIT = 900
 
@@ -65,6 +70,8 @@ def build_message(
     show_applied_criteria: Any = True,
     show_next_questions: Any = True,
     table_preview_limit: Any = DEFAULT_TABLE_PREVIEW_LIMIT,
+    show_intermediate_results: Any = False,
+    intermediate_preview_limit: Any = DEFAULT_INTERMEDIATE_PREVIEW_LIMIT,
 ) -> str:
     payload = _payload(payload_value)
     if not payload:
@@ -80,12 +87,20 @@ def build_message(
         show_pandas_code,
         show_applied_criteria,
         show_next_questions,
+        show_intermediate_results,
     )
     answer_sections = payload.get("answer_sections") if isinstance(payload.get("answer_sections"), dict) else {}
     preview_limit = _positive_int(table_preview_limit, DEFAULT_TABLE_PREVIEW_LIMIT)
+    intermediate_limit = _intermediate_preview_limit(intermediate_preview_limit)
 
     if answer_sections:
-        sections = _message_sections_from_answer_sections(payload, answer_sections, options, preview_limit)
+        sections = _message_sections_from_answer_sections(
+            payload,
+            answer_sections,
+            options,
+            preview_limit,
+            intermediate_limit,
+        )
         for section in _diagnostic_sections(payload, options):
             if section:
                 sections.append(section)
@@ -106,6 +121,8 @@ def build_message(
     optional_sections = []
     if options["analysis_evidence"]:
         optional_sections.extend([_step_outputs_section(payload), _function_case_results_section(payload)])
+    if options["intermediate_results"]:
+        optional_sections.append(_intermediate_results_section(payload, intermediate_limit))
     optional_sections.append(result_table_section)
     if options["download_links"]:
         optional_sections.append(_download_links_section(payload))
@@ -130,8 +147,9 @@ def _message_sections_from_answer_sections(
     answer_sections: dict[str, Any],
     options: dict[str, bool] | None = None,
     table_preview_limit: Any = DEFAULT_TABLE_PREVIEW_LIMIT,
+    intermediate_preview_limit: Any = DEFAULT_INTERMEDIATE_PREVIEW_LIMIT,
 ) -> list[str]:
-    options = options or _message_options(False, True, True, True, True, "", "", "", True, True)
+    options = options or _message_options(False, True, True, True, True, "", "", "", True, True, False)
     sections: list[str] = []
     summary = answer_sections.get("summary") if isinstance(answer_sections.get("summary"), dict) else {}
     answer = str(summary.get("headline") or payload.get("answer_message") or "").strip()
@@ -156,6 +174,8 @@ def _message_sections_from_answer_sections(
     optional_sections = []
     if options["analysis_evidence"]:
         optional_sections.extend([_step_outputs_section(payload), _function_case_results_section(payload)])
+    if options["intermediate_results"]:
+        optional_sections.append(_intermediate_results_section(payload, intermediate_preview_limit))
     if options["download_links"]:
         optional_sections.append(_download_links_section(payload))
     if options["notices"]:
@@ -498,6 +518,101 @@ def _step_outputs_section(payload: dict[str, Any]) -> str:
         if preview_rows:
             lines.append(_markdown_table(preview_rows[:3], _display_columns(columns, preview_rows, display_columns), column_labels))
     return "\n".join(lines)
+
+
+# 함수 설명: bounded 중간 결과 체크포인트를 독립된 Markdown 표로 렌더링합니다.
+def _intermediate_results_section(
+    payload: dict[str, Any],
+    preview_limit: Any = DEFAULT_INTERMEDIATE_PREVIEW_LIMIT,
+) -> str:
+    """Render bounded execution checkpoints without adding them to an LLM prompt."""
+    outputs = payload.get("intermediate_results") if isinstance(payload.get("intermediate_results"), list) else []
+    outputs = outputs or _analysis_items(payload, "intermediate_results")
+    outputs = _selected_intermediate_results(outputs, payload)
+    if not outputs:
+        return ""
+    resolved_limit = _intermediate_preview_limit(preview_limit)
+    lines = ["### 중간 결과"]
+    seen: set[str] = set()
+    displayed = 0
+    for item in outputs[:MAX_INTERMEDIATE_TABLE_COUNT]:
+        if not isinstance(item, dict):
+            continue
+        label = str(
+            item.get("description")
+            or item.get("key")
+            or item.get("role")
+            or "중간 결과"
+        ).strip()
+        row_count = item.get("row_count")
+        columns = item.get("columns") if isinstance(item.get("columns"), list) else []
+        preview_rows = item.get("preview_rows") if isinstance(item.get("preview_rows"), list) else []
+        dedupe_key = json.dumps(
+            {
+                "label": label,
+                "role": item.get("role"),
+                "row_count": row_count,
+                "columns": columns,
+                "preview_rows": preview_rows,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        displayed += 1
+        lines.extend(["", f"#### {_escape_markdown_tilde(label)}"])
+        if preview_rows:
+            display_columns = _display_columns(columns, preview_rows, _string_list(item.get("display_columns")))
+            visible_rows = preview_rows[:resolved_limit]
+            total_rows = _safe_int(row_count, len(preview_rows))
+            if total_rows > len(visible_rows):
+                lines.append(f"전체 {total_rows}건 중 {len(visible_rows)}건을 표시했습니다.")
+            else:
+                lines.append(f"총 {total_rows}건입니다.")
+            # A blank line before a Markdown table is required by the chat
+            # renderer; without it the header can be folded into a prior list.
+            lines.extend(
+                [
+                    "",
+                    _markdown_table(
+                        visible_rows,
+                        display_columns,
+                        _dict_value(item.get("column_labels")),
+                    ),
+                ]
+            )
+        else:
+            lines.append("표시할 행이 없습니다.")
+            if columns:
+                lines.append("컬럼: `" + ", ".join(str(column) for column in columns) + "`")
+    return "\n".join(lines) if displayed else ""
+
+
+# 함수 설명: `_selected_intermediate_results()`는 기존 다단계 trace도 안전하게 받아
+# 정상 완료면 계산 직전 결과를, 오류면 마지막 정상 결과를 하나만 화면에 선택합니다.
+def _selected_intermediate_results(outputs: Any, payload: dict[str, Any]) -> list[dict[str, Any]]:
+
+    items = [item for item in outputs if isinstance(item, dict)] if isinstance(outputs, list) else []
+    if not items:
+        return []
+    # New executors have already selected the bounded source-level and
+    # pre-contract checkpoints.  Preserve that explicit selection rather than
+    # collapsing a multi-source diagnostic back to one table.
+    published = [item for item in items if str(item.get("download_key") or "").strip()]
+    if published:
+        return published[:MAX_INTERMEDIATE_TABLE_COUNT]
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    if str(analysis.get("status") or "").strip().lower() == "ok":
+        computed = [item for item in items if str(item.get("role") or "") == "computed_result"]
+        if computed:
+            return [computed[-1]]
+    # Executors now project a single item before they reach this adapter.  The
+    # last item is also the safest fallback for older saved traces because it
+    # represents the latest completed execution stage.
+    return [items[-1]]
 
 
 # 함수 설명: `_function_case_results_section()`는 Function Case·결과·응답 section을 최종 Message에 넣을 독립 Markdown section으로
@@ -882,8 +997,14 @@ def _pandas_section(payload: dict[str, Any]) -> str:
                 lines.append(f"- LLM 응답 해석: `{_display_value(response_parse.get('mode'))}`")
             if response_parse.get("error"):
                 lines.append(f"- LLM 응답 해석 오류: `{_display_value(response_parse.get('error'))}`")
-            if response_parse.get("raw_response_preview"):
-                lines.append(f"- LLM 응답 미리보기: `{_display_value(response_parse.get('raw_response_preview'))}`")
+            raw_response_preview = str(response_parse.get("raw_response_preview") or "").strip()
+            if raw_response_preview:
+                # A malformed model response was never executed.  Render a bounded
+                # excerpt as a code block so operators can inspect the failure
+                # without confusing it with the final executable pandas code.
+                safe_preview = raw_response_preview.replace("```", "``\\`")
+                lines.append("- LLM 생성 시도 원문 (형식 오류로 실행하지 않음; 일부만 표시):")
+                lines.append(f"```text\n{safe_preview}\n```")
 
     safe_imports = pandas_trace.get("safe_import_normalization")
     if isinstance(safe_imports, dict) and safe_imports.get("removed_imports"):
@@ -1361,11 +1482,13 @@ def _message_options(
     show_pandas_code: Any,
     show_applied_criteria: Any,
     show_next_questions: Any,
+    show_intermediate_results: Any = False,
 ) -> dict[str, bool]:
     diagnostics_default = _truthy(include_diagnostics)
     return {
         "result_table": _option_enabled(show_result_table, True),
         "analysis_evidence": _option_enabled(show_analysis_evidence, True),
+        "intermediate_results": _option_enabled(show_intermediate_results, False),
         "download_links": _option_enabled(show_download_links, True),
         "notices": _option_enabled(show_notices, True),
         "applied_criteria": _option_enabled(show_applied_criteria, True),
@@ -1387,6 +1510,14 @@ def _option_enabled(value: Any, default: bool) -> bool:
 def _positive_int(value: Any, default: int) -> int:
     resolved = _safe_int(value, default)
     return resolved if resolved > 0 else default
+
+
+# 함수 설명: 중간 결과는 executor가 보관한 범위 안에서만 표시하므로, UI 값도 같은 상한으로 정규화합니다.
+def _intermediate_preview_limit(value: Any) -> int:
+    return min(
+        _positive_int(value, DEFAULT_INTERMEDIATE_PREVIEW_LIMIT),
+        MAX_CAPTURED_INTERMEDIATE_PREVIEW_ROWS,
+    )
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.
@@ -1422,6 +1553,22 @@ class AnswerMessageAdapter(Component):
             name="show_analysis_evidence",
             display_name="중간 산출물/helper 결과 표시",
             value=False,
+            required=False,
+            advanced=True,
+        ),
+        BoolInput(
+            name="show_intermediate_results",
+            display_name="중간 결과 표시",
+            info="조회 원본·필터 후·계산 전 결과의 제한된 미리보기를 표시합니다. 답변 LLM 프롬프트에는 포함하지 않습니다.",
+            value=False,
+            required=False,
+            advanced=True,
+        ),
+        IntInput(
+            name="intermediate_preview_limit",
+            display_name="중간 결과 미리보기 행 수",
+            info="단계별 표에 표시할 최대 행 수입니다. 1~5 범위로 적용되며, 답변 LLM 프롬프트에는 포함하지 않습니다.",
+            value=DEFAULT_INTERMEDIATE_PREVIEW_LIMIT,
             required=False,
             advanced=True,
         ),
@@ -1488,6 +1635,12 @@ class AnswerMessageAdapter(Component):
                 include_diagnostics=getattr(self, "include_diagnostics", False),
                 show_result_table=getattr(self, "show_result_table", True),
                 show_analysis_evidence=getattr(self, "show_analysis_evidence", False),
+                show_intermediate_results=getattr(self, "show_intermediate_results", False),
+                intermediate_preview_limit=getattr(
+                    self,
+                    "intermediate_preview_limit",
+                    DEFAULT_INTERMEDIATE_PREVIEW_LIMIT,
+                ),
                 show_download_links=getattr(self, "show_download_links", True),
                 show_notices=getattr(self, "show_notices", True),
                 show_intent_analysis=getattr(self, "show_intent_analysis", False),

@@ -171,7 +171,9 @@ GENERIC_FUNCTION_TOKEN_PATTERNS = (
     r"(?<![A-Za-z0-9])[A-Z]-\d+(?![A-Za-z0-9])",
     r"(?<![A-Za-z0-9])\d+G(?![A-Za-z0-9])",
     r"(?<![A-Za-z0-9])(?:DDR|GDDR|HBM)\d+[A-Z0-9-]*(?![A-Za-z0-9])",
-    r"(?<![A-Za-z0-9])[A-Z]{2,}\d+(?![A-Za-z0-9])",
+    # Do not match the numeric suffix of a canonical column such as
+    # ``PKG_TYPE2`` as a standalone product token.
+    r"(?<![A-Za-z0-9_])[A-Z]{2,}\d+(?![A-Za-z0-9_])",
 )
 FUNCTION_CASE_DETAIL_CUES = (
     "이력",
@@ -198,8 +200,21 @@ def normalize_intent_plan(
     parsed = _json(llm_response)
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
     plan = deepcopy(plan) if isinstance(plan, dict) else {}
+    metadata_envelope = _metadata_candidate_envelope(metadata_candidates_value, payload)
     metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
+    catalog_error = _catalog_metadata_error(metadata_envelope, metadata_candidates)
+    if not catalog_error:
+        catalog_error = _catalog_error_from_plan(plan)
+    if catalog_error:
+        return _blocked_catalog_metadata_payload(payload, catalog_error)
     retrieval_jobs = _retrieval_jobs(plan)
+    unknown_dataset_error = _unregistered_dataset_error(
+        retrieval_jobs,
+        metadata_envelope,
+        metadata_candidates,
+    )
+    if unknown_dataset_error:
+        return _blocked_catalog_metadata_payload(payload, unknown_dataset_error)
     metadata_refs = _metadata_refs(parsed, plan)
     metadata_refs, metadata_ref_guard = _known_metadata_refs(
         metadata_refs,
@@ -361,6 +376,27 @@ def normalize_intent_plan(
         pandas_plan,
         metadata_candidates,
     )
+    retrieval_jobs, source_dataset_selection = _reconcile_source_dataset_selection(
+        payload,
+        retrieval_jobs,
+        pandas_plan,
+        metadata_candidates,
+        domain_selection.get("locked_metadata_refs", []),
+        locked_source_aliases={
+            str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+            for item in retrieval_jobs
+            if isinstance(item, dict)
+            and plan.get("_continuation_stage_active") is True
+            and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        },
+    )
+    # Dataset replacement can change the late catalog binding even though the
+    # source alias remains stable.  Re-run the generic binding resolver after
+    # both time-scope and schema-fit reconciliation.
+    external_source_catalog_binding = _resolve_late_external_source_bindings(
+        external_source_catalog_binding,
+        retrieval_jobs,
+    )
     (
         metadata_refs,
         compatible_join_plan,
@@ -381,6 +417,12 @@ def normalize_intent_plan(
     pandas_plan = _rewrite_process_group_plan_descriptions(
         pandas_plan,
         process_group_field_guard,
+    )
+    plan, auto_function_case_selection = _auto_select_metadata_function_case(
+        plan,
+        retrieval_jobs,
+        metadata_candidates,
+        question,
     )
     function_cases = _function_case_items(
         plan,
@@ -735,14 +777,11 @@ def normalize_intent_plan(
     else:
         normalized_plan.pop("pandas_function_cases", None)
 
-    metadata_output_parsed = (
-        parsed if metadata_ref_guard.get("status") == "not_available" else {}
-    )
-    metadata_output_plan = (
-        plan
-        if metadata_ref_guard.get("status") == "not_available"
-        else {"metadata_refs": metadata_refs}
-    )
+    # References from an LLM response are evidence only after they match the
+    # current candidate set.  In particular, an empty/failed metadata load
+    # must never reintroduce an invented domain or table reference into trace.
+    metadata_output_parsed = {}
+    metadata_output_plan = {"metadata_refs": metadata_refs}
     next_payload = payload
     next_payload["intent_plan"] = normalized_plan
     next_payload["metadata_refs"] = _merge_output_metadata_refs(
@@ -784,6 +823,7 @@ def normalize_intent_plan(
         "function_owned_filter_normalization": function_owned_filter_normalization,
         "followup_contract_guard": followup_contract_guard,
         "function_case_input_reconciliation": function_case_input_reconciliation,
+        "auto_function_case_selection": auto_function_case_selection,
         "function_case_execution_contracts": function_case_execution_contracts,
         "reference_scope_normalization": reference_scope_normalization,
         "reference_mode_guard": reference_mode_guard,
@@ -796,6 +836,7 @@ def normalize_intent_plan(
         "external_source_catalog_binding": external_source_catalog_binding,
         "temporal_metric_alignment": temporal_metric_alignment,
         "metric_dataset_selection": metric_dataset_selection,
+        "source_dataset_selection": source_dataset_selection,
         "recipe_source_compatibility": recipe_source_compatibility,
         "resolved_grain_columns": (resolved_output_grain_plan or resolved_grain_plan).get("grain_columns", []) if (resolved_output_grain_plan or resolved_grain_plan) else [],
         "execution_graph_external_source_count": len(resolved_execution_graph.get("external_source_requirements", [])),
@@ -3323,6 +3364,20 @@ def _catalog_time_scope(item: dict[str, Any]) -> str:
 
 
 # 함수 설명: `_job_requested_time_scope()`는 04 의도 계획 정규화기 처리 중 requested·TIME·분석 범위 관련 값을 계산·변환하는 내부 helper입니다.
+def _catalog_dataset_family(item: dict[str, Any]) -> str:
+    """Return the catalog-declared dataset family for scope reconciliation."""
+    payload = _metadata_payload(item)
+    criteria = (
+        payload.get("selection_criteria")
+        if isinstance(payload.get("selection_criteria"), dict)
+        else {}
+    )
+    return str(
+        payload.get("dataset_family") or criteria.get("dataset_family") or ""
+    ).strip().casefold()
+
+
+# 함수 설명: `_job_requested_time_scope()`는 조회 기준일과 요청 기준일을 비교해 현재·이력 시간 범위를 계산합니다.
 def _job_requested_time_scope(job: dict[str, Any], payload: dict[str, Any]) -> str:
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     reference_date = str(request.get("reference_date") or "").strip()
@@ -3345,6 +3400,12 @@ def _aggregation_source_columns_by_alias(
     pandas_plan: list[Any],
     known_external_aliases: set[str] | None = None,
 ) -> dict[str, list[str]]:
+    """Collect source columns used by every executable analysis operation.
+
+    The helper name is retained for compatibility, but dataset time-scope
+    reconciliation must also cover detail/comparison plans that have no
+    ``aggregations`` entry (for example ``compare_group_attributes``).
+    """
     result: dict[str, list[str]] = {}
     known = set(known_external_aliases or set())
     for step in pandas_plan:
@@ -3360,6 +3421,7 @@ def _aggregation_source_columns_by_alias(
             alias = lineage_aliases[0] if len(lineage_aliases) == 1 else ""
         if not alias:
             continue
+        columns: list[str] = []
         aggregations = step.get("aggregations") if isinstance(step.get("aggregations"), list) else []
         if not aggregations and (step.get("agg_column") or step.get("aggregate_column")):
             aggregations = [
@@ -3368,14 +3430,37 @@ def _aggregation_source_columns_by_alias(
                 }
             ]
         for aggregation in aggregations:
-            if not isinstance(aggregation, dict):
-                continue
-            column = str(
-                aggregation.get("source_column")
-                or aggregation.get("column")
-                or aggregation.get("agg_column")
-                or ""
-            ).strip()
+            if isinstance(aggregation, dict):
+                columns.append(
+                    str(
+                        aggregation.get("source_column")
+                        or aggregation.get("column")
+                        or aggregation.get("agg_column")
+                        or ""
+                    ).strip()
+                )
+        # Non-aggregate operations expose their direct source columns through
+        # these common contract keys.  This remains metadata/IR driven and
+        # does not encode a dataset or business-specific question.
+        for key in (
+            "group_by",
+            "group_by_columns",
+            "group_columns",
+            "comparison_columns",
+            "compare_columns",
+            "columns",
+            "result_columns",
+            "projection",
+            "keys",
+            "join_keys",
+            "on",
+            "subset",
+            "sort_by",
+            "source_column",
+            "column",
+        ):
+            columns.extend(_string_list(step.get(key)))
+        for column in _merge_strings(columns):
             if column and column not in result.setdefault(alias, []):
                 result[alias].append(column)
     return result
@@ -3389,7 +3474,12 @@ def _reconcile_metric_dataset_selection(
     pandas_plan: list[Any],
     candidates: dict[str, Any],
 ) -> tuple[list[Any], dict[str, Any]]:
-    """Select a dataset only from explicit catalog metric and time-scope contracts."""
+    """Select a dataset from catalog time-scope and executable column contracts.
+
+    Detail and comparison plans often have no aggregation list.  Their
+    group/comparison/projection columns still identify the source schema and
+    must participate in current-day versus history dataset reconciliation.
+    """
     jobs = [deepcopy(item) for item in retrieval_jobs]
     source_columns = _aggregation_source_columns_by_alias(
         pandas_plan,
@@ -3422,6 +3512,7 @@ def _reconcile_metric_dataset_selection(
             for column in metric_columns
         )
         current_scope = _catalog_time_scope(current_item)
+        current_family = _catalog_dataset_family(current_item)
         if current_supports and current_scope == desired_scope:
             continue
 
@@ -3429,6 +3520,14 @@ def _reconcile_metric_dataset_selection(
         for item in catalog_items:
             candidate_key = str(item.get("dataset_key") or "").strip()
             if _catalog_time_scope(item) != desired_scope:
+                continue
+            candidate_family = _catalog_dataset_family(item)
+            # When the current catalog item is available, a time-scope
+            # companion must belong to the same dataset family.  Column
+            # overlap alone is insufficient because status/WIP catalogs can
+            # expose common product keys while representing a different
+            # source population.
+            if current_family and candidate_family != current_family:
                 continue
             if not all(
                 _catalog_supports_domain_column(candidates, candidate_key, column)
@@ -3475,6 +3574,251 @@ def _reconcile_metric_dataset_selection(
         "corrections": corrections,
         "unresolved": unresolved,
     }
+
+
+# 함수 설명: `_reconcile_source_dataset_selection()`은 실행 컬럼과 Catalog 선택 기준을 함께 확인해 더 적합한 source를 고릅니다.
+def _reconcile_source_dataset_selection(
+    payload: dict[str, Any],
+    retrieval_jobs: list[Any],
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    locked_metadata_refs: list[dict[str, str]] | None = None,
+    locked_source_aliases: set[str] | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Repair weak-model source choices from catalog selection criteria.
+
+    A model can choose a status table merely because it shares product
+    columns with a production table.  When the executable operation needs a
+    concrete schema and an unambiguous catalog candidate advertises a better
+    ``use_when``/``exclude_when`` fit, prefer that candidate.  The rule is
+    intentionally dataset-agnostic: explicit recipe source contracts remain
+    authoritative, and alternatives must support every column used by the
+    pandas plan.
+    """
+
+    jobs = [deepcopy(item) for item in retrieval_jobs]
+    catalog_items = [
+        item
+        for item in candidates.get("table_catalog_items", [])
+        if isinstance(item, dict) and str(item.get("dataset_key") or "").strip()
+    ]
+    if len(jobs) == 0 or len(catalog_items) < 2:
+        return jobs, {"status": "not_needed", "corrections": [], "skipped": "insufficient_catalog"}
+
+    known_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in jobs
+        if isinstance(item, dict)
+    }
+    source_columns = _aggregation_source_columns_by_alias(pandas_plan, known_aliases)
+    question = str(
+        (payload.get("request") if isinstance(payload.get("request"), dict) else {}).get("question")
+        or ""
+    ).strip()
+    locked = locked_metadata_refs if isinstance(locked_metadata_refs, list) else []
+    stage_locked = {
+        str(alias).strip()
+        for alias in (locked_source_aliases or set())
+        if str(alias).strip()
+    }
+    corrections: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        current_key = str(job.get("dataset_key") or "").strip()
+        if alias in stage_locked or job.get("source_dataset_locked") is True:
+            skipped.append(
+                {
+                    "source_alias": alias,
+                    "dataset_key": current_key,
+                    "reason": "validated_continuation_stage_source",
+                }
+            )
+            continue
+        required_columns = source_columns.get(alias, [])
+        if not alias or not current_key or not required_columns:
+            continue
+        if _dataset_locked_by_recipe(current_key, locked, candidates):
+            skipped.append({"source_alias": alias, "dataset_key": current_key, "reason": "explicit_recipe_source"})
+            continue
+        current_item = _table_catalog_item(candidates, current_key)
+        current_scope = _catalog_time_scope(current_item)
+        current_fit = _catalog_selection_fit(current_item, question)
+        current_supports = all(
+            _catalog_supports_domain_column(candidates, current_key, column)
+            for column in required_columns
+        )
+        current_identity_penalty = _catalog_unrequested_identity_penalty(
+            current_item,
+            required_columns,
+        )
+        alternatives: list[tuple[int, int, int, dict[str, Any]]] = []
+        for index, item in enumerate(catalog_items):
+            candidate_key = str(item.get("dataset_key") or "").strip()
+            if not candidate_key or candidate_key == current_key:
+                continue
+            candidate_scope = _catalog_time_scope(item)
+            if current_scope and candidate_scope and candidate_scope != current_scope:
+                continue
+            if not all(
+                _catalog_supports_domain_column(candidates, candidate_key, column)
+                for column in required_columns
+            ):
+                continue
+            fit = _catalog_selection_fit(item, question)
+            identity_penalty = _catalog_unrequested_identity_penalty(
+                item,
+                required_columns,
+            )
+            alternatives.append((fit, -identity_penalty, -index, item))
+        if not alternatives:
+            continue
+        best_fit, neg_best_penalty, _, best_item = max(
+            alternatives,
+            key=lambda value: (value[0], value[1], value[2]),
+        )
+        best_penalty = -neg_best_penalty
+        should_switch = False
+        if not current_supports and best_fit >= current_fit:
+            # A source that cannot provide a required executable column is
+            # never preferred merely because the model named it first.  A
+            # unique schema-capable catalog is sufficient evidence.
+            should_switch = True
+        elif best_fit > current_fit:
+            should_switch = True
+        elif best_fit == current_fit and best_penalty < current_identity_penalty:
+            # When selection phrases tie, prefer the catalog whose schema has
+            # fewer unrequested identity columns.  This is a generic detail
+            # vs status/population tie-breaker; it does not name a dataset or
+            # a manufacturing question.
+            should_switch = True
+        if not should_switch:
+            continue
+        selected_key = str(best_item.get("dataset_key") or "").strip()
+        selected_payload = _metadata_payload(best_item)
+        job["dataset_key"] = selected_key
+        source_type = str(selected_payload.get("source_type") or "").strip()
+        if source_type:
+            job["source_type"] = source_type
+        corrections.append(
+            {
+                "source_alias": alias,
+                "from_dataset_key": current_key,
+                "to_dataset_key": selected_key,
+                "source_columns": required_columns,
+                "current_fit": current_fit,
+                "selected_fit": best_fit,
+                "selected_identity_penalty": best_penalty,
+                "current_identity_penalty": current_identity_penalty,
+                "selection_source": (
+                    "table_catalog.schema_contract"
+                    if best_fit == current_fit
+                    else "table_catalog.selection_criteria"
+                ),
+            }
+        )
+    return jobs, {
+        "status": "applied" if corrections else "not_needed",
+        "corrections": corrections,
+        "skipped": skipped,
+    }
+
+
+# 함수 설명: `_dataset_locked_by_recipe()`는 Domain recipe가 명시한 source를 일반 후보 보정에서 보호합니다.
+def _dataset_locked_by_recipe(
+    dataset_key: str,
+    locked_metadata_refs: list[dict[str, str]],
+    candidates: dict[str, Any],
+) -> bool:
+    """Return whether a selected dataset belongs to an explicit recipe source contract."""
+
+    for ref in locked_metadata_refs:
+        if str(ref.get("section") or "").strip() != "analysis_recipes":
+            continue
+        item = _find_metadata_item(candidates, ref)
+        recipe = _metadata_payload(item)
+        declared = {
+            str(value).strip()
+            for value in _string_list(
+                recipe.get("source_datasets")
+                or recipe.get("source_dataset_keys")
+                or recipe.get("dependency_dataset_keys")
+            )
+            if str(value).strip()
+        }
+        if dataset_key in declared:
+            return True
+    return False
+
+
+# 함수 설명: `_catalog_selection_fit()`은 Catalog의 사용·제외 문구와 질문의 의미 겹침 정도를 점수화합니다.
+def _catalog_selection_fit(item: dict[str, Any], question: str) -> int:
+    """Score catalog use/exclude phrases against the user question."""
+
+    payload = _metadata_payload(item)
+    criteria = payload.get("selection_criteria") if isinstance(payload.get("selection_criteria"), dict) else {}
+    question_text = _compact_selection_text(question)
+    if not question_text:
+        return 0
+    score = 0
+    for phrase in _string_list(criteria.get("use_when")):
+        score += _selection_phrase_overlap(phrase, question_text)
+    for phrase in _string_list(criteria.get("exclude_when")):
+        score -= _selection_phrase_overlap(phrase, question_text)
+    return score
+
+
+# 함수 설명: `_catalog_unrequested_identity_penalty()`는 필요한 결과 컬럼에
+# 포함되지 않은 ID 계열 컬럼 수를 계산해 동률인 source의 인구/상태 스키마를
+# 일반적인 실행 컬럼 계약만으로 구분합니다.
+def _catalog_unrequested_identity_penalty(
+    item: dict[str, Any],
+    requested_columns: list[str],
+) -> int:
+    payload = _metadata_payload(item)
+    available = _catalog_column_names(payload)
+    requested = {_normalized_column_key(column) for column in requested_columns if str(column).strip()}
+    identity_columns = {
+        column
+        for column in available
+        if re.search(r"(?:ID|NO)$", column)
+    }
+    return len(identity_columns - requested)
+
+
+# 함수 설명: `_catalog_column_names()`는 catalog의 columns 계약을 대소문자
+# 구분 없이 비교할 수 있는 canonical 이름 집합으로 정리합니다.
+def _catalog_column_names(payload: dict[str, Any]) -> set[str]:
+    raw = payload.get("columns") if isinstance(payload.get("columns"), list) else []
+    return {
+        _normalized_column_key(value)
+        for value in raw
+        if str(value or "").strip()
+    }
+
+
+# 함수 설명: `_selection_phrase_overlap()`은 하나의 Catalog 선택 문구가 질문에 얼마나 나타나는지 계산합니다.
+def _selection_phrase_overlap(phrase: Any, question_text: str) -> int:
+    compact_phrase = _compact_selection_text(phrase)
+    if not compact_phrase:
+        return 0
+    if compact_phrase in question_text:
+        return max(3, len(compact_phrase))
+    tokens = [
+        token
+        for token in re.findall(r"\w+", str(phrase or "").casefold(), flags=re.UNICODE)
+        if len(token) >= 2
+    ]
+    matched = sum(1 for token in tokens if _compact_selection_text(token) in question_text)
+    return matched * 3
+
+
+# 함수 설명: `_compact_selection_text()`는 선택 기준 비교를 위해 공백과 대소문자를 정규화합니다.
+def _compact_selection_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").casefold())
 
 
 # 함수 설명: `_apply_selected_domain_conditions()`는 04 의도 계획 정규화기 처리 중 selected·도메인·conditions 관련 값을 계산·변환하는 내부
@@ -5755,6 +6099,25 @@ def _output_contract(
         "null_group_policy": str(raw.get("null_group_policy") or "preserve_as_blank").strip(),
         "metric_null_policy": str(raw.get("metric_null_policy") or "display_zero").strip(),
     }
+    # Keep the model's explicit output shape as the single owner of required
+    # columns.  Catalog defaults fill only an unshaped detail/entity request;
+    # they must not become mandatory columns after retrieval has already
+    # resolved the real source schema.
+    explicit_result_columns = _string_list(
+        raw.get("result_columns") or raw.get("columns")
+    )
+    explicit_required_columns = _string_list(raw.get("required_columns"))
+    explicit_output_shape = bool(
+        explicit_result_columns
+        or explicit_required_columns
+        or raw.get("strict_result_columns") is True
+    )
+    if explicit_result_columns:
+        contract["result_columns"] = explicit_result_columns
+        contract["required_columns"] = explicit_result_columns
+        contract["strict_result_columns"] = True
+    elif explicit_required_columns:
+        contract["required_columns"] = explicit_required_columns
     aggregation_outputs = _aggregation_output_contract(plan)
     metric_bindings = _metric_bindings(
         plan,
@@ -5884,7 +6247,14 @@ def _output_contract(
             metadata_candidates,
             requested_metrics,
         )
-        if requested_metrics and default_detail_columns:
+        if explicit_output_shape:
+            # Preserve the requested shape.  In particular, do not merge the
+            # table catalog's default detail list into a strict projection.
+            contract["required_columns"] = _merge_strings(
+                contract["required_columns"],
+                contract["metric_columns"],
+            )
+        elif requested_metrics and default_detail_columns:
             # When a detail question requests a concrete metric, the selected
             # metric provider and resolved grain are the trusted output shape.
             # Keep extra model-proposed columns only when the question names
@@ -6418,7 +6788,10 @@ def _metadata_candidates(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
     candidate_payload = _payload(value)
     nested = candidate_payload.get("metadata_candidates")
     if isinstance(nested, dict):
-        return nested
+        result = deepcopy(nested)
+        if isinstance(candidate_payload.get("metadata_load"), dict):
+            result["metadata_load"] = deepcopy(candidate_payload["metadata_load"])
+        return result
     if any(
         isinstance(candidate_payload.get(key), list)
         for key in ("domain_items", "table_catalog_items", "main_flow_filters")
@@ -6429,6 +6802,245 @@ def _metadata_candidates(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # 함수 설명: LLM metadata_refs 중 현재 후보에 실제 존재하는 참조만 실행 가능한 신뢰 목록으로 보존합니다.
+def _metadata_candidate_envelope(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep 01D loader status beside the compact candidate lists."""
+
+    candidate_payload = _payload(value)
+    if candidate_payload:
+        return candidate_payload
+    existing = payload.get("metadata_candidate_envelope")
+    return deepcopy(existing) if isinstance(existing, dict) else {}
+
+
+def _catalog_metadata_error(
+    envelope: dict[str, Any],
+    candidates: dict[str, Any],
+) -> dict[str, Any]:
+    """Fail closed when the real graph reports that Table Catalog is unavailable."""
+
+    load = envelope.get("metadata_load") if isinstance(envelope.get("metadata_load"), dict) else {}
+    if not load and isinstance(candidates.get("metadata_load"), dict):
+        load = candidates.get("metadata_load")
+    # Older direct unit callers can supply bare lists. The actual V2 graph
+    # always supplies loader evidence, so it is the production fail-close path.
+    if not isinstance(load, dict) or not load:
+        return {}
+    loads = load.get("loads") if isinstance(load.get("loads"), dict) else {}
+    table_load = loads.get("table_catalog_items") if isinstance(loads.get("table_catalog_items"), dict) else {}
+    table_status = str(table_load.get("status") or "").strip().lower()
+    overall_status = str(load.get("status") or "").strip().lower()
+    table_items = candidates.get("table_catalog_items") if isinstance(candidates.get("table_catalog_items"), list) else []
+    registered = [
+        str(item.get("dataset_key") or _metadata_payload(item).get("dataset_key") or "").strip()
+        for item in table_items
+        if isinstance(item, dict)
+    ]
+    registered = [item for item in dict.fromkeys(registered) if item]
+    failed_loads = _metadata_load_failures(loads)
+    if failed_loads or overall_status in {"error", "failed", "failure", "invalid"}:
+        return _metadata_load_error(
+            failed_loads or [{"metadata_kind": "metadata", "status": overall_status or "error"}],
+            registered_dataset_count=len(registered),
+        )
+    if not registered:
+        return {
+            "type": "table_catalog_metadata_unavailable",
+            "reason": "no_active_table_catalog",
+            "message": "MongoDB 메타데이터 연결은 되었지만 활성 Table Catalog에 등록된 데이터셋이 없습니다. 데이터셋 등록 상태와 collection의 status=active 설정을 확인해 주세요.",
+            "table_catalog_load_status": table_status or overall_status or "not_available",
+            "registered_dataset_count": 0,
+        }
+    return {}
+
+
+def _metadata_load_failures(loads: dict[str, Any]) -> list[dict[str, str]]:
+    """Keep the metadata loader failure reason through normalization without secrets."""
+
+    failed: list[dict[str, str]] = []
+    for metadata_kind, raw_load in loads.items():
+        if not isinstance(raw_load, dict):
+            continue
+        status = str(raw_load.get("status") or "").strip().lower()
+        if status not in {"error", "failed", "failure", "invalid", "skipped"}:
+            continue
+        raw_errors = raw_load.get("errors") if isinstance(raw_load.get("errors"), list) else []
+        first_error = next((item for item in raw_errors if isinstance(item, dict)), {})
+        error_type = str(first_error.get("type") or status or "metadata_load_error").strip()
+        detail = _safe_metadata_error_detail(first_error.get("message") or raw_load.get("message") or "")
+        failed.append(
+            {
+                "metadata_kind": str(metadata_kind or "metadata"),
+                "status": status,
+                "error_type": error_type,
+                "detail": detail,
+            }
+        )
+    return failed
+
+
+def _metadata_load_error(
+    failed_loads: list[dict[str, str]],
+    *,
+    registered_dataset_count: int,
+) -> dict[str, Any]:
+    """Return the same typed failure even if a stale router reached normalizer."""
+
+    first = _primary_metadata_load_failure(failed_loads)
+    kind = str(first.get("metadata_kind") or "metadata")
+    error_type = str(first.get("error_type") or first.get("status") or "metadata_load_error")
+    detail = str(first.get("detail") or "상세 오류 정보가 없습니다.")
+    return {
+        "type": "table_catalog_metadata_unavailable",
+        "reason": "metadata_connection_or_loader_failed",
+        "message": (
+            "메타데이터 연결 정보를 확인해 주세요. 분석에 필요한 메타데이터를 읽지 못해 분석을 시작하지 않았습니다. "
+            f"상세 사유: {kind} 조회 실패 ({error_type}) - {detail}"
+        ),
+        "table_catalog_load_status": str(first.get("status") or "error"),
+        "registered_dataset_count": registered_dataset_count,
+        "metadata_failures": deepcopy(failed_loads[:3]),
+    }
+
+
+def _primary_metadata_load_failure(failed_loads: list[dict[str, str]]) -> dict[str, str]:
+    """Prefer Table Catalog because it is the trusted execution allowlist."""
+
+    return next(
+        (item for item in failed_loads if str(item.get("metadata_kind") or "") == "table_catalog_items"),
+        failed_loads[0] if failed_loads else {},
+    )
+
+
+def _safe_metadata_error_detail(value: Any) -> str:
+    """Redact MongoDB credentials while preserving the actionable network error."""
+
+    text = " ".join(str(value or "").split())
+    text = re.sub(r"mongodb(?:\+srv)?://[^\s@/]+@", "mongodb://***@", text, flags=re.IGNORECASE)
+    return text[:500] if text else "상세 오류 정보가 없습니다."
+
+
+def _unregistered_dataset_error(
+    retrieval_jobs: list[dict[str, Any]],
+    envelope: dict[str, Any],
+    candidates: dict[str, Any],
+) -> dict[str, Any]:
+    """Reject LLM dataset keys that are not in the current Table Catalog."""
+
+    load = envelope.get("metadata_load") if isinstance(envelope.get("metadata_load"), dict) else {}
+    if not load and isinstance(candidates.get("metadata_load"), dict):
+        load = candidates.get("metadata_load")
+    # This strict check is for the actual graph, which supplies loader evidence.
+    # Bare unit callers still exercise the downstream trusted hydrator guard.
+    if not isinstance(load, dict) or not load:
+        return {}
+    table_items = candidates.get("table_catalog_items") if isinstance(candidates.get("table_catalog_items"), list) else []
+    registered = {
+        str(item.get("dataset_key") or _metadata_payload(item).get("dataset_key") or "").strip()
+        for item in table_items
+        if isinstance(item, dict)
+    }
+    registered.discard("")
+    unknown = [
+        str(job.get("dataset_key") or "").strip()
+        for job in retrieval_jobs
+        if isinstance(job, dict)
+        and str(job.get("dataset_key") or "").strip()
+        and str(job.get("dataset_key") or "").strip() not in registered
+    ]
+    unknown = list(dict.fromkeys(unknown))
+    if not unknown:
+        return {}
+    return {
+        "type": "unregistered_dataset_key",
+        "message": "등록된 Table Catalog에서 확인되지 않는 데이터셋이 요청 계획에 포함되어 분석을 시작하지 않았습니다: "
+        + ", ".join(unknown),
+        "dataset_keys": unknown,
+        "registered_dataset_count": len(registered),
+    }
+
+
+def _catalog_error_from_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    """Preserve the pre-LLM router's deterministic metadata failure verbatim."""
+
+    validation_errors = plan.get("validation_errors")
+    for raw in validation_errors if isinstance(validation_errors, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("type") or "").strip() == "table_catalog_metadata_unavailable":
+            return deepcopy(raw)
+    return {}
+
+
+def _blocked_catalog_metadata_payload(
+    payload: dict[str, Any],
+    error: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a typed terminal plan without inventing sources or columns."""
+
+    next_payload = deepcopy(payload)
+    plan = {
+        "analysis_kind": "metadata_catalog_unavailable",
+        "request_scope": "new_analysis",
+        "reference_mode": "none",
+        "reuse_strategy": "none",
+        "metadata_refs": [],
+        "retrieval_jobs": [],
+        "pandas_execution_plan": [],
+        "output_contract": {
+            "result_mode": "detail",
+            "required_columns": [],
+            "grain_columns": [],
+            "metric_columns": [],
+            "result_columns": [],
+            "strict_result_columns": True,
+        },
+        "validation_errors": [deepcopy(error)],
+        "intent_ir": {
+            "version": "intent.ir.v1",
+            "status": "blocked",
+            "route_source_aliases": [],
+        },
+    }
+    next_payload["intent_plan"] = plan
+    next_payload["metadata_refs"] = []
+    next_payload["execution_gate"] = {
+        "stage": "04_intent_plan_normalizer",
+        "status": "blocked",
+        "reason": str(error.get("type") or "metadata_contract_blocked"),
+        "critical_failures": [deepcopy(error)],
+        "pandas_execution_allowed": False,
+        "model_response_policy": "ignore",
+    }
+    trace = next_payload.setdefault("trace", {})
+    errors = trace.setdefault("errors", [])
+    if not any(
+        isinstance(item, dict)
+        and str(item.get("type") or "") == str(error.get("type") or "")
+        for item in errors
+    ):
+        errors.append(deepcopy(error))
+    trace.setdefault("inspection", {})["intent"] = {
+        "stage": "04_intent_plan_normalizer",
+        "status": "error",
+        "metadata_ref_guard": {"status": "unavailable", "removed_unknown_refs": []},
+        "metadata_catalog_guard": deepcopy(error),
+        "llm_plan_accepted": False,
+    }
+    next_payload["analysis"] = {
+        "status": "error",
+        "row_count": 0,
+        "columns": [],
+        "error": deepcopy(error),
+        "errors": [str(error.get("message") or "")],
+        "repairable_errors": [],
+        "step_outputs": [],
+        "function_case_results": [],
+    }
+    next_payload["data"] = {"columns": [], "rows": [], "row_count": 0, "data_ref": ""}
+    next_payload["answer_message"] = str(error.get("message") or "")
+    return next_payload
+
+
 def _known_metadata_refs(
     refs: list[dict[str, str]],
     candidates: dict[str, Any],
@@ -6442,9 +7054,9 @@ def _known_metadata_refs(
         if isinstance(item, dict)
     ]
     if not candidate_items:
-        return deepcopy(refs), {
-            "status": "not_available",
-            "removed_unknown_refs": [],
+        return [], {
+            "status": "unavailable",
+            "removed_unknown_refs": deepcopy(refs),
         }
     known: list[dict[str, str]] = []
     removed: list[dict[str, str]] = []
@@ -9309,6 +9921,146 @@ def _uses_previous_data_without_new_retrieval(plan: dict[str, Any]) -> bool:
 
 
 # 함수 설명: `_function_case_items()`는 선택된 Function Case에 신뢰 가능한 Domain 실행 계약을 결합해 전달합니다.
+def _auto_select_metadata_function_case(
+    plan: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    metadata_candidates: dict[str, Any],
+    question: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Recover an omitted helper selection from an explicit metadata contract.
+
+    This generic fallback activates only when a registered Function Case
+    declares token-oriented execution metadata and the question contains
+    multiple structured tokens. Ordinary column filters remain untouched.
+    """
+
+    existing = plan.get("pandas_function_cases") or plan.get("pandas_function_case")
+    if existing:
+        return plan, {"status": "not_needed", "reason": "model_selected_case"}
+    domain_items = metadata_candidates.get("domain_items") if isinstance(metadata_candidates, dict) else []
+    if not isinstance(domain_items, list):
+        domain_items = []
+    # 01D always carries a bounded runtime helper registry even when the
+    # matching Domain item was trimmed.  It is a trusted metadata contract,
+    # not a question-specific fallback, so it remains eligible for recovery.
+    runtime_helpers = (
+        metadata_candidates.get("runtime_function_helpers")
+        if isinstance(metadata_candidates, dict)
+        else []
+    )
+    if not isinstance(runtime_helpers, list):
+        runtime_helpers = []
+    helper_items = [
+        {
+            "section": "pandas_function_cases",
+            "key": helper.get("function_name"),
+            "function_name": helper.get("function_name"),
+            "payload": helper,
+        }
+        for helper in runtime_helpers
+        if isinstance(helper, dict) and helper.get("selectable_for_intent") is True
+    ]
+    for item in [*domain_items, *helper_items]:
+        if not isinstance(item, dict) or str(item.get("section") or "").strip() != "pandas_function_cases":
+            continue
+        payload = _metadata_payload(item)
+        helper_name = str(item.get("function_name") or payload.get("function_name") or "").strip()
+        if not helper_name:
+            continue
+        searchable = json.dumps(
+            {
+                "description": payload.get("description"),
+                "input_contract": payload.get("input_contract"),
+                "output_contract": payload.get("output_contract"),
+                "execution_context": payload.get("execution_context"),
+                "selection_criteria": payload.get("selection_criteria"),
+                "pseudocode_or_logic": payload.get("pseudocode_or_logic"),
+            },
+            ensure_ascii=False,
+            default=str,
+        ).casefold()
+        if "token" not in searchable:
+            continue
+        policy = payload.get("token_policy") if isinstance(payload.get("token_policy"), dict) else {}
+        token_values = _extract_function_case_tokens(question, policy)
+        value_tokens = _function_case_value_tokens(token_values, metadata_candidates)
+        if len(value_tokens) < 2:
+            continue
+        source_alias = str(
+            payload.get("source_alias")
+            or (retrieval_jobs[0].get("source_alias") if retrieval_jobs else "")
+            or (retrieval_jobs[0].get("dataset_key") if retrieval_jobs else "")
+        ).strip()
+        case = {
+            "section": "pandas_function_cases",
+            "key": str(item.get("key") or payload.get("key") or "").strip(),
+            "function_name": helper_name,
+            # The helper owns extraction of product/date/process/metric text
+            # according to its registered execution contract.
+            "input_text": question,
+            "source_alias": source_alias,
+            "selection_source": "metadata_token_contract_fallback",
+        }
+        next_plan = deepcopy(plan)
+        next_plan["pandas_function_cases"] = [case]
+        return next_plan, {
+            "status": "applied",
+            "function_case_key": case["key"],
+            "function_name": helper_name,
+            "token_values": value_tokens,
+            "source_alias": source_alias,
+        }
+    return plan, {"status": "not_needed", "reason": "no_matching_token_contract"}
+
+
+# 함수 설명: Catalog 컬럼명과 겹치는 토큰을 제거해 실제 제품 값만 Function Case 후보로 남깁니다.
+def _function_case_value_tokens(
+    tokens: list[str],
+    metadata_candidates: dict[str, Any],
+) -> list[str]:
+    """Remove catalog column identifiers from candidate value tokens.
+
+    Generic token patterns also match names such as ``PKG_TYPE1``.  Those are
+    comparison columns, not product values, and must not activate a
+    product-token helper for an ordinary attribute-comparison question.  The
+    exclusion set is derived from the bounded Table Catalog schema; when a
+    schema is unavailable we keep the historical token fallback behavior.
+    """
+
+    catalog_columns: set[str] = set()
+    items = (
+        metadata_candidates.get("table_catalog_items")
+        if isinstance(metadata_candidates, dict)
+        else []
+    )
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            payload = _metadata_payload(item)
+            raw_columns = payload.get("columns") if isinstance(payload.get("columns"), list) else []
+            catalog_columns.update(
+                _normalized_column_key(column)
+                for column in raw_columns
+                if str(column or "").strip()
+            )
+            canonical = payload.get("canonical_columns")
+            if isinstance(canonical, dict):
+                catalog_columns.update(
+                    _normalized_column_key(column)
+                    for column in canonical
+                    if str(column or "").strip()
+                )
+    if not catalog_columns:
+        return list(tokens)
+    return [
+        token
+        for token in tokens
+        if _normalized_column_key(token) not in catalog_columns
+    ]
+
+
+# 함수 설명: `_function_case_items()`는 질문 계획의 helper 선택을 정규화하고 Catalog 실행 계약을 붙입니다.
 def _function_case_items(
     plan: dict[str, Any],
     retrieval_jobs: list[dict[str, Any]],
@@ -9934,8 +10686,33 @@ def _json(value: Any) -> dict[str, Any]:
         try:
             parsed = json.loads(text, strict=False)
         except Exception:
-            parsed = _partial_intent_plan(text)
+            repaired = _repair_common_json_syntax(text)
+            if repaired != text:
+                try:
+                    parsed = json.loads(repaired)
+                except Exception:
+                    parsed = _partial_intent_plan(repaired)
+            else:
+                parsed = _partial_intent_plan(text)
     return parsed if isinstance(parsed, dict) else {}
+
+
+# 함수 설명: `_repair_common_json_syntax()`는 모델 JSON에서 구조적으로
+# 명백한 키 오타와 trailing comma만 보정합니다. 실행 코드나 임의 Python을
+# 평가하지 않아 출력 토큰을 늘리는 재호출 없이 계약 검증으로 진행합니다.
+def _repair_common_json_syntax(value: str) -> str:
+    text = str(value or "")
+    repaired = re.sub(
+        r"([,{]\s*)-([A-Za-z_][A-Za-z0-9_]*)\s*:",
+        r'\1"\2":',
+        text,
+    )
+    repaired = re.sub(
+        r"([,{]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:",
+        r'\1"\2":',
+        repaired,
+    )
+    return re.sub(r",\s*([}\]])", r"\1", repaired)
 
 
 # 함수 설명: `_partial_intent_plan()`는 LLM 응답이 완전하지 않아도 복구 가능한 의도 계획 필드만 우선 추출합니다.

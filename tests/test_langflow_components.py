@@ -4597,6 +4597,18 @@ def test_answer_message_adapter_adds_data_ref_download_links():
                 "ttl_hours": 1,
                 "expires_at": "2026-07-21T10:00:00+00:00",
             },
+            {
+                "store": "mongodb",
+                "ref_id": "result:s1:abc",
+                "database": "datagov",
+                "collection_name": "agent_v4_result_store",
+                "path": "payload.intermediate_rows.last_successful",
+                "role": "intermediate_result",
+                "label": "최종 계약 적용 전 계산 결과 (OPER_NAME, MCP_NO, DATE 필터 적용 후)",
+                "download_url": "http://localhost:8501/download.csv?download_ref=intermediate-token",
+                "ttl_hours": 1,
+                "expires_at": "2026-07-21T10:00:00+00:00",
+            },
         ],
     }
 
@@ -4608,9 +4620,10 @@ def test_answer_message_adapter_adds_data_ref_download_links():
     assert "### 데이터 다운로드" in message
     assert "분석 결과 데이터 CSV 다운로드" in message
     assert "사용 원본 데이터: production_data CSV 다운로드" in message
+    assert "최종 계약 적용 전 계산 결과 (OPER_NAME, MCP_NO, DATE 필터 적용 후) CSV 다운로드" in message
     assert "http://localhost:8501/download.csv?download_ref=" in message
-    assert message.count('target="_blank"') == 2
-    assert message.count('rel="noopener noreferrer"') == 2
+    assert message.count('target="_blank"') == 3
+    assert message.count('rel="noopener noreferrer"') == 3
     assert "CSV 파일이 바로 다운로드" in message
     assert "download_base_url" not in input_names
     assert "show_download_links" in input_names
@@ -17017,7 +17030,7 @@ def test_v5_trusted_catalog_hydrator_maps_declared_column_alias_to_required_para
     ]
 
 
-def test_v5_trusted_catalog_hydrator_blocks_unknown_live_dataset_but_allows_dummy():
+def test_v5_trusted_catalog_hydrator_blocks_unknown_dataset_in_every_mode():
     hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
     payload = {
         "intent_plan": {
@@ -17038,15 +17051,13 @@ def test_v5_trusted_catalog_hydrator_blocks_unknown_live_dataset_but_allows_dumm
 
     assert live["intent_plan"]["retrieval_jobs"] == []
     assert live["trace"]["errors"][0]["type"] == "unknown_dataset_key"
-    dummy_job = dummy["intent_plan"]["retrieval_jobs"][0]
-    assert dummy_job["dummy_only"] is True
-    assert dummy_job["source_type"] == "dummy"
-    assert "source_config" not in dummy_job
+    assert dummy["intent_plan"]["retrieval_jobs"] == []
+    assert dummy["trace"]["errors"][0]["type"] == "unknown_dataset_key"
     validator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py")
     router = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "07_retrieval_job_router.py")
     validated_dummy = validator.validate_retrieval_payload(dummy)
     dummy_bundle = router.route_retrieval_jobs(validated_dummy, "dummy")
-    assert dummy_bundle["retrieval_job_bundle"]["jobs"][0]["dataset_key"] == "invented_dataset"
+    assert dummy_bundle["retrieval_job_bundle"]["jobs"] == []
 
 
 def test_v5_retrieval_router_emits_only_thin_branch_bundle():
@@ -21014,6 +21025,51 @@ def test_download_manifest_is_source_type_neutral_for_all_retrievers():
     assert warning == ""
     assert {item.get("source_type") for item in manifest if item["role"] == "source_rows"} == set(source_types)
     assert all(item["download_url"].startswith("http://127.0.0.1:8765/download.csv?") for item in manifest)
+
+
+def test_result_store_persists_selected_intermediate_checkpoint_as_separate_download_ref():
+    store = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py"
+    )
+    payload = {
+        "data": {"columns": ["TOTAL"], "rows": [{"TOTAL": 300}], "row_count": 1},
+        "_full_result_rows": [{"TOTAL": 300}],
+        "_intermediate_download_rows": {
+            "last_successful": {
+                "rows": [{"OPER_NAME": "INPUT", "MCP_NO": "L-267A1", "PRODUCTION": 300}],
+                "columns": ["OPER_NAME", "MCP_NO", "PRODUCTION"],
+                "row_count": 1,
+                "label": "final pre-contract calculation",
+                "role": "computed_result",
+                "checkpoint_key": "computed_result",
+            }
+        },
+        "_intermediate_download_metadata": {
+            "last_successful": {
+                "label": "final pre-contract calculation",
+                "role": "computed_result",
+            }
+        },
+    }
+    stored, manifest = store._compact_store_payload(
+        payload,
+        max_result_rows=10,
+        max_source_rows_per_alias=10,
+        max_document_bytes=1024 * 1024,
+    )
+    assert stored["intermediate_rows"]["last_successful"]["rows"][0]["MCP_NO"] == "L-267A1"
+    assert manifest["intermediate_rows"]["last_successful"]["complete"] is True
+
+    refs = store._build_data_refs(
+        payload,
+        "result:s1:0123456789abcdef0123456789abcdef",
+        "db",
+        "collection",
+        manifest,
+    )
+    intermediate_ref = next(item for item in refs if item["role"] == "intermediate_result")
+    assert intermediate_ref["path"] == "payload.intermediate_rows.last_successful"
+    assert intermediate_ref["label"] == "final pre-contract calculation"
 
 
 def test_api_response_exposes_common_download_manifest():

@@ -123,6 +123,27 @@ def test_v2_flow_export_matches_current_native_graph():
     assert node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]["code"]["value"] == (
         V2_ROOT / "21_v2_answer_message_adapter.py"
     ).read_text(encoding="utf-8")
+    assert node_index["CustomComponent-A5y0b"]["data"]["node"]["field_order"] == [
+        "payload",
+        "include_diagnostics",
+        "show_result_table",
+        "table_preview_limit",
+        "show_analysis_evidence",
+        "show_intermediate_results",
+        "intermediate_preview_limit",
+        "show_download_links",
+        "show_notices",
+        "show_applied_criteria",
+        "show_next_questions",
+        "show_intent_analysis",
+        "show_data_retrieval",
+        "show_pandas_code",
+    ]
+    intent_template = node_index["LanguageModel-intent"]["data"]["node"]["template"]
+    assert intent_template["code"]["value"] == (
+        V2_ROOT / "03b_catalog_guarded_intent_router.py"
+    ).read_text(encoding="utf-8")
+    assert {"payload", "metadata_candidates", "intent_prompt", "model", "api_key"}.issubset(intent_template)
 
     edge_keys = {
         (
@@ -138,11 +159,232 @@ def test_v2_flow_export_matches_current_native_graph():
     assert ("CustomComponent-v5Helper", "selected_helper_code", "Prompt Template-xtzD5", "function_case_helper_code") in edge_keys
     assert ("Prompt Template-xtzD5", "pandas_prompt", "CustomComponent-s3mf1", "pandas_prompt") in edge_keys
     assert ("TextInput-VFbHh", "text", "CustomComponent-BVItv", "domain_answer_guidance") in edge_keys
+    assert ("CustomComponent-HFsYn", "payload_out", "LanguageModel-intent", "payload") in edge_keys
+    assert ("CustomComponent-DXrpf", "metadata_candidates", "LanguageModel-intent", "metadata_candidates") in edge_keys
+    assert ("Prompt Template-AUpQz", "prompt", "LanguageModel-intent", "intent_prompt") in edge_keys
     assert node_index["Prompt Template-xtzD5"]["data"]["node"]["display_name"] == "16 V2 경로 인식 pandas Prompt 생성기"
     answer_template = node_index["CustomComponent-BVItv"]["data"]["node"]["template"]
     assert answer_template["answer_prompt_template"]["value"]
     assert "answer_prompt" not in answer_template
     assert not any(target == "CustomComponent-BVItv" and field == "answer_prompt" for _, _, target, field in edge_keys)
+
+
+def test_catalog_guarded_intent_router_skips_model_when_table_catalog_load_fails():
+    router = load_module(V2_ROOT / "03b_catalog_guarded_intent_router.py")
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    gate = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py")
+    metadata = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        },
+        "metadata_load": {
+            "status": "error",
+            "loads": {"table_catalog_items": {"status": "error", "errors": [{"message": "DNS failed"}]}},
+        },
+    }
+    calls: list[str] = []
+    response, trace = router.route_intent_response(
+        {"request": {"question": "오늘 생산량 알려줘"}},
+        "intent prompt",
+        lambda prompt: calls.append(prompt),
+        metadata,
+    )
+
+    assert calls == []
+    assert trace["model_called"] is False
+    assert json.loads(response)["intent_plan"]["validation_errors"][0]["type"] == "table_catalog_metadata_unavailable"
+
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "오늘 생산량 알려줘"}},
+        response,
+        metadata,
+    )
+    assert normalized["intent_plan"]["retrieval_jobs"] == []
+    assert normalized["metadata_refs"] == []
+    assert normalized["execution_gate"]["status"] == "blocked"
+    gated = gate.apply_retrieval_execution_gate(normalized)
+    assert gated["execution_gate"]["status"] == "blocked"
+    assert gated["analysis"]["error"]["type"] == "table_catalog_metadata_unavailable"
+    assert "메타데이터 연결 정보를 확인해 주세요" in gated["answer_message"]
+
+
+def test_catalog_loader_failure_exposes_safe_detailed_reason_and_purges_llm_plan():
+    hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
+    gate = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py")
+    payload = {
+        "metadata_refs": [{"section": "Domain", "key": "invented_daily_production"}],
+        "intent_plan": {
+            "analysis_kind": "daily_production_volume_by_process",
+            "metadata_refs": [{"section": "Domain", "key": "invented_daily_production"}],
+            "retrieval_jobs": [{"dataset_key": "DAILY_PRODUCTION_DATA", "source_alias": "production_data"}],
+            "pandas_execution_plan": [{"operation": "groupby_and_aggregate"}],
+        },
+        "trace": {"errors": [], "warnings": [], "inspection": {}},
+    }
+    loader_failure = {
+        "table_catalog_items": [],
+        "metadata_load": {
+            "status": "error",
+            "metadata_kind": "table_catalog_items",
+            "database": "datagov",
+            "collection_name": "agent_v4_table_catalog_items",
+            "errors": [
+                {
+                    "type": "mongo_load_error",
+                    "message": (
+                        "The DNS response does not contain an answer to the question: "
+                        "_mongodb._tcp.datagov.example.mongodb.net. IN SRV "
+                        "mongodb+srv://user:password@datagov.example.mongodb.net"
+                    ),
+                }
+            ],
+        },
+    }
+
+    blocked = hydrator.hydrate_retrieval_jobs(payload, loader_failure, retrieval_mode="dummy")
+    final = gate.apply_retrieval_execution_gate(blocked)
+
+    assert blocked["intent_plan"]["analysis_kind"] == "metadata_catalog_unavailable"
+    assert blocked["intent_plan"]["retrieval_jobs"] == []
+    assert blocked["intent_plan"]["pandas_execution_plan"] == []
+    assert blocked["metadata_refs"] == []
+    assert final["analysis"]["error"]["type"] == "table_catalog_metadata_unavailable"
+    assert "메타데이터 연결 정보를 확인해 주세요" in final["answer_message"]
+    assert "mongo_load_error" in final["answer_message"]
+    assert "The DNS response does not contain an answer" in final["answer_message"]
+    assert "user:password" not in final["answer_message"]
+
+
+def test_metadata_candidate_loader_error_reaches_final_answer_without_model_call():
+    candidates_builder = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py")
+    router = load_module(V2_ROOT / "03b_catalog_guarded_intent_router.py")
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    gate = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py")
+    answer = load_module(V2_ROOT / "20_hybrid_answer_builder.py")
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    loader_error = {
+        "table_catalog_items": [],
+        "metadata_load": {
+            "status": "error",
+            "errors": [{"type": "mongo_load_error", "message": "The DNS response does not contain an answer to the question: _mongodb._tcp.example.net. IN SRV"}],
+        },
+    }
+    candidates = candidates_builder.build_metadata_candidates(
+        {"request": {"question": "오늘 DA공정 생산량 알려줘"}},
+        {"domain_items": [], "metadata_load": {"status": "error", "errors": []}},
+        loader_error,
+        {"main_flow_filters": [], "metadata_load": {"status": "error", "errors": []}},
+    )
+    calls: list[str] = []
+    response, trace = router.route_intent_response(
+        {"request": {"question": "오늘 DA공정 생산량 알려줘"}},
+        "intent prompt",
+        lambda prompt: calls.append(prompt),
+        candidates,
+    )
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "오늘 DA공정 생산량 알려줘"}},
+        response,
+        candidates,
+    )
+    final = gate.apply_retrieval_execution_gate(normalized)
+
+    assert calls == []
+    assert trace["model_called"] is False
+    assert final["intent_plan"]["retrieval_jobs"] == []
+    assert "메타데이터 연결 정보를 확인해 주세요" in final["answer_message"]
+    assert "mongo_load_error" in final["answer_message"]
+    assert "DNS response does not contain an answer" in final["answer_message"]
+
+    # The deterministic error must survive both final answer stages.  This is
+    # the path used by the Desktop Flow, not only an internal gate assertion.
+    answered = answer.build_answer_response(final, "LLM 응답은 사용하면 안 됩니다.")
+    rendered = adapter.build_message(answered, show_notices=True)
+    assert "메타데이터 연결 정보를 확인해 주세요" in rendered
+    assert "DNS response does not contain an answer" in rendered
+    assert "필수 데이터 조회에 실패하여 pandas 분석을 실행하지 않았고 모델 응답도 사용하지 않았습니다." not in rendered
+
+
+def test_catalog_loader_success_with_no_active_dataset_is_not_misreported_as_connection_failure():
+    hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
+    payload = {"intent_plan": {"retrieval_jobs": [{"dataset_key": "unknown", "source_alias": "source"}]}, "trace": {}}
+    empty_catalog = {"table_catalog_items": [], "metadata_load": {"status": "ok", "errors": []}}
+
+    blocked = hydrator.hydrate_retrieval_jobs(payload, empty_catalog, retrieval_mode="dummy")
+
+    failure = blocked["execution_gate"]["critical_failures"][0]
+    assert failure["reason"] == "no_active_table_catalog"
+    assert "연결은 성공했지만" in failure["message"]
+
+
+def test_v2_normalizer_rejects_unregistered_dataset_when_catalog_load_is_available():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    metadata = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [{"dataset_key": "production_today", "payload": {"columns": ["DATE", "PRODUCTION"]}}],
+            "main_flow_filters": [],
+        },
+        "metadata_load": {
+            "status": "ok",
+            "loads": {"table_catalog_items": {"status": "ok"}},
+        },
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "오늘 INPUT 수량"}},
+        {
+            "metadata_refs": [{"section": "domains", "key": "invented_domain"}],
+            "intent_plan": {
+                "retrieval_jobs": [{"dataset_key": "invented_dataset", "source_alias": "invented"}],
+                "pandas_execution_plan": [],
+            },
+        },
+        metadata,
+    )
+
+    error = normalized["intent_plan"]["validation_errors"][0]
+    assert error["type"] == "unregistered_dataset_key"
+    assert error["dataset_keys"] == ["invented_dataset"]
+    assert normalized["intent_plan"]["retrieval_jobs"] == []
+    assert normalized["metadata_refs"] == []
+
+
+def test_v2_normalizer_rejects_dataset_keys_not_present_in_live_catalog_snapshot():
+    """A model must never turn an unavailable schema into a dummy retrieval job."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    metadata = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [{"dataset_key": "production_today", "payload": {"columns": ["DATE", "PRODUCTION"]}}],
+            "main_flow_filters": [],
+        },
+        "metadata_load": {
+            "status": "ok",
+            "loads": {"table_catalog_items": {"status": "ok"}},
+        },
+    }
+
+    # These are representative hallucinated keys observed when MongoDB metadata
+    # was unavailable. The rule itself is catalog membership, not these names.
+    for dataset_key in ("fab_product_input_daily", "process_production_dataset"):
+        normalized = normalizer.normalize_intent_plan(
+            {"request": {"question": "데이터를 알려줘"}},
+            {
+                "intent_plan": {
+                    "retrieval_jobs": [{"dataset_key": dataset_key, "source_alias": "invented_source"}],
+                    "pandas_execution_plan": [],
+                }
+            },
+            metadata,
+        )
+
+        error = normalized["intent_plan"]["validation_errors"][0]
+        assert error["type"] == "unregistered_dataset_key"
+        assert error["dataset_keys"] == [dataset_key]
+        assert normalized["intent_plan"]["retrieval_jobs"] == []
 
 
 def test_fast_route_skips_full_pandas_prompt_serialization(monkeypatch):
@@ -168,7 +410,7 @@ def test_repair_prompt_contains_failed_code_only_once():
     assert "executed_code_with_preamble" not in template
 
 
-def test_complex_route_preserves_existing_pandas_prompt_content():
+def test_complex_route_uses_compact_function_case_selection_not_helper_source():
     pandas_prompt, _ = _prompt_modules()
     template = (ROOT / "langflow_components" / "data_analysis_flow" / "16_pandas_prompt_template_ko.md").read_text(encoding="utf-8")
     payload = _single_source_payload(
@@ -178,9 +420,86 @@ def test_complex_route_preserves_existing_pandas_prompt_content():
     )
     payload["simple_analysis_contract"] = {"route": "complex"}
     variables = pandas_prompt.build_variables(payload)
-    expected = template.format(**variables, function_case_helper_code="helper-code")
-    actual = pandas_prompt.build_route_aware_pandas_prompt(payload, template, "helper-code")
+    helper_source = "def selected_helper(input_text, frame):\n    return frame\n"
+    expected = template.format(**variables, function_case_helper_code="")
+    actual = pandas_prompt.build_route_aware_pandas_prompt(payload, template, helper_source)
     assert actual == expected
+    assert helper_source not in actual
+    assert "executor가 안전성 검증 후 namespace에 주입한다" in actual
+
+
+def test_v2_complex_executor_injects_trusted_helper_and_removes_llm_shadow_definition():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"TOKEN": "SP24", "QTY": 10}, {"TOKEN": "OTHER", "QTY": 20}],
+        steps=[{"operation": "apply_pandas_function_case", "source_alias": "source_1"}],
+        output_contract={"result_mode": "detail", "result_columns": ["TOKEN", "QTY"]},
+    )
+    helper_source = (
+        "def selected_helper(input_text, frame):\n"
+        "    return frame[frame['TOKEN'].eq(input_text)].copy()\n"
+    )
+    llm_response = {
+        "code": (
+            "def selected_helper(input_text, frame):\n"
+            "    return frame.iloc[0:0].copy()\n\n"
+            "df = sources['source_1'].copy()\n"
+            "result = selected_helper('SP24', df)[['TOKEN', 'QTY']].copy()"
+        )
+    }
+
+    executed = executor.execute_pandas_code(
+        payload,
+        llm_response,
+        function_case_helper_code=helper_source,
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [{"TOKEN": "SP24", "QTY": 10}]
+    helper_trace = executed["trace"]["inspection"]["pandas_execution"]["safe_import_normalization"]
+    assert helper_trace["trusted_helper_override"]["removed_generated_definitions"] == ["selected_helper"]
+
+
+def test_v2_repair_prompt_does_not_repeat_selected_helper_source():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"TOKEN": "SP24", "QTY": 10}],
+        steps=[{"operation": "apply_pandas_function_case", "source_alias": "source_1"}],
+        output_contract={"result_mode": "detail", "result_columns": ["TOKEN", "QTY"]},
+    )
+    helper_source = "def selected_helper(input_text, frame):\n    return frame\n"
+
+    prompt = executor.build_pandas_repair_prompt(
+        payload,
+        "helper={function_case_helper_code}",
+        helper_source,
+    )
+
+    assert helper_source not in prompt
+    assert "executor가 안전성 검증 후 주입합니다" in prompt
+
+
+def test_v2_retries_a_nonempty_invalid_llm_code_response_once():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"TOKEN": "SP24", "QTY": 10}],
+        steps=[],
+        output_contract={"result_mode": "detail", "result_columns": ["TOKEN", "QTY"]},
+    )
+    repair_prompts: list[str] = []
+
+    repaired = executor.execute_pandas_with_repair(
+        payload,
+        '{"code": "result = sources[\\"source_1\\"].copy()}',
+        repair_invoker=lambda prompt: repair_prompts.append(prompt)
+        or '{"code": "result = sources[\\"source_1\\"][[\\"TOKEN\\", \\"QTY\\"]].copy()"}',
+        repair_prompt_template="repair={repair_required}\n{function_case_helper_code}\n{failed_code}",
+        max_repair_attempts=1,
+    )
+
+    assert repaired["analysis"]["status"] == "ok"
+    assert repaired["trace"]["inspection"]["pandas_repair"]["attempted"] is True
+    assert len(repair_prompts) == 1
 
 
 def test_v2_fast_detail_query_uses_standardized_runtime_rows_when_schema_is_canonical():
@@ -435,6 +754,17 @@ def test_ranked_summary_uses_catalog_mapping_and_calls_no_analysis_model():
         {"OPER_NAME": "B", "QTY_SUM": 35},
         {"OPER_NAME": "A", "QTY_SUM": 10},
     ]
+    checkpoints = executed["intermediate_results"]
+    assert len(checkpoints) == 1
+    checkpoint = checkpoints[0]
+    assert checkpoint["role"] == "filtered_source"
+    assert checkpoint["row_count"] == 3
+    assert checkpoint["preview_rows"] == [
+        {"OPER_NAME": "A", "QTY": 10},
+        {"OPER_NAME": "B", "QTY": 20},
+        {"OPER_NAME": "B", "QTY": 15},
+    ]
+    assert executed["_intermediate_download_rows"]["last_successful"]["rows"] == checkpoint["preview_rows"]
     assert model_calls == []
     assert executed["trace"]["inspection"]["fast_path"]["llm_calls"]["pandas_generation"] == 0
 
@@ -1217,6 +1547,483 @@ def test_v2_message_adapter_shows_route_and_fixed_fast_logic():
     assert "_fast_aggregate" in message
 
 
+def test_v2_fast_contract_error_keeps_last_available_checkpoint_and_download_rows():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"LOT_ID": "L1", "QTY": 3}],
+        steps=[],
+        output_contract={"result_mode": "detail", "result_columns": ["LOT_ID", "MISSING_COL"]},
+    )
+    payload["simple_analysis_contract"] = {
+        "strict": True,
+        "route": "fast",
+        "operation": "execute_fast_path_recipe",
+        "recipe": "detail_query",
+        "source_alias": "source_1",
+        "projection": ["LOT_ID", "MISSING_COL"],
+        "result_columns": ["LOT_ID", "MISSING_COL"],
+    }
+    result = executor.execute_pandas_code(payload, "")
+    assert result["analysis"]["status"] == "error"
+    checkpoints = result.get("intermediate_results") or result["analysis"].get("intermediate_results")
+    assert checkpoints
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["role"] == "source_input"
+    assert checkpoints[0]["row_count"] == 1
+    assert checkpoints[0]["preview_rows"][0]["LOT_ID"] == "L1"
+    artifact = result["_intermediate_download_rows"]["last_successful"]
+    assert artifact["rows"] == [{"LOT_ID": "L1", "QTY": 3}]
+    assert result["data"]["partial"] is True
+    assert result["data"]["stage"] == "source:source_1"
+
+
+def test_v2_intermediate_success_falls_back_to_source_when_calculation_matches_final_result():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[
+            {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "L-267A1", "PRODUCTION": 300},
+            {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "M-001", "PRODUCTION": 100},
+            {"DATE": "20260808", "OPER_NAME": "INPUT", "MCP_NO": "L-267A2", "PRODUCTION": 200},
+        ],
+        steps=[],
+        filters={
+            "OPER_NAME": {"operator": "eq", "value": "INPUT"},
+            "MCP_NO": {"operator": "starts_with", "value": "L-267"},
+            "DATE": {"operator": "eq", "value": "20260809"},
+        },
+        output_contract={
+            "result_mode": "aggregate",
+            "grain_columns": ["OPER_NAME", "MCP_NO", "DATE"],
+            "metric_columns": ["PRODUCTION"],
+            "result_columns": ["OPER_NAME", "MCP_NO", "DATE", "PRODUCTION"],
+        },
+    )
+    payload["intent_plan"]["retrieval_jobs"][0]["required_params"] = {"DATE": "20260809"}
+    executed = executor.execute_pandas_code(
+        payload,
+        """
+df = sources[\"source_1\"].copy()
+result = df.groupby([\"OPER_NAME\", \"MCP_NO\", \"DATE\"], dropna=False)[\"PRODUCTION\"].sum().reset_index()
+""",
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    checkpoints = executed["intermediate_results"]
+    assert len(checkpoints) == 1
+    checkpoint = checkpoints[0]
+    assert checkpoint["role"] == "filtered_source"
+    assert checkpoint["row_count"] == 3
+    assert checkpoint["description"].startswith("최종 집계 전 중간 데이터")
+    assert executed["_intermediate_download_rows"]["last_successful"]["rows"] == [
+        {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "L-267A1", "PRODUCTION": 300},
+        {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "M-001", "PRODUCTION": 100},
+        {"DATE": "20260808", "OPER_NAME": "INPUT", "MCP_NO": "L-267A2", "PRODUCTION": 200},
+    ]
+
+
+def test_v2_intermediate_success_keeps_calculation_when_final_contract_changes_columns():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[
+            {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "L-267A1", "PRODUCTION": 300},
+        ],
+        steps=[],
+        filters={
+            "OPER_NAME": {"operator": "eq", "value": "INPUT"},
+            "MCP_NO": {"operator": "starts_with", "value": "L-267"},
+            "DATE": {"operator": "eq", "value": "20260809"},
+        },
+        output_contract={
+            "result_mode": "aggregate",
+            "grain_columns": ["OPER_NAME", "MCP_NO", "DATE"],
+            "metric_columns": ["PRODUCTION"],
+            "result_columns": ["OPER_NAME", "MCP_NO", "DATE", "PRODUCTION"],
+            "strict_result_columns": True,
+        },
+    )
+    payload["intent_plan"]["retrieval_jobs"][0]["required_params"] = {"DATE": "20260809"}
+    executed = executor.execute_pandas_code(
+        payload,
+        """
+df = sources["source_1"].copy()
+result = df.groupby(["OPER_NAME", "MCP_NO", "DATE"], dropna=False)["PRODUCTION"].sum().reset_index()
+result["INTERNAL_NOTE"] = "계약 전 보조 컬럼"
+""",
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    checkpoints = executed["intermediate_results"]
+    assert len(checkpoints) == 1
+    checkpoint = checkpoints[0]
+    assert checkpoint["role"] == "computed_result"
+    assert checkpoint["description"] == "최종 계약 적용 전 계산 결과 (OPER_NAME, MCP_NO, DATE 필터 적용 후)"
+    assert checkpoint["preview_rows"][0]["INTERNAL_NOTE"] == "계약 전 보조 컬럼"
+    assert executed["data"]["columns"] == ["OPER_NAME", "MCP_NO", "DATE", "PRODUCTION"]
+    artifact = executed["_intermediate_download_rows"]["last_successful"]
+    assert artifact["label"] == checkpoint["description"]
+    assert artifact["rows"][0]["INTERNAL_NOTE"] == "계약 전 보조 컬럼"
+
+
+def test_v2_multi_source_intermediate_results_keep_each_filtered_source_and_pre_contract_join():
+    _, executor, _ = _modules()
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production",
+                    "source_alias": "production_src",
+                    "required_params": {"DATE": "20260809"},
+                    "filters": {"OPER_NAME": {"operator": "eq", "value": "INPUT"}},
+                },
+                {
+                    "dataset_key": "eqp_uph",
+                    "source_alias": "eqp_uph_src",
+                    "required_params": {"DATE": "20260809"},
+                    "filters": {"OPER_NAME": {"operator": "eq", "value": "INPUT"}},
+                },
+            ],
+            "output_contract": {
+                "result_columns": ["EQP_MODEL", "TOTAL_PRODUCTION"],
+                "metric_columns": ["TOTAL_PRODUCTION"],
+            },
+        }
+    }
+    checkpoints = [
+        {"key": "filtered:production_src", "role": "filtered_source"},
+        {"key": "filtered:eqp_uph_src", "role": "filtered_source"},
+        {"key": "computed_result", "role": "computed_result"},
+    ]
+    values = {
+        "filtered:production_src": [
+            {"EQP_ID": "EQ1", "OPER_NAME": "INPUT", "PRODUCTION": 300}
+        ],
+        "filtered:eqp_uph_src": [
+            {"EQP_ID": "EQ1", "OPER_NAME": "INPUT", "EQP_MODEL": "M1", "UPH": 120}
+        ],
+        "computed_result": [
+            {"EQP_MODEL": "M1", "TOTAL_PRODUCTION": 300, "INTERNAL_JOIN_KEY": "EQ1"}
+        ],
+    }
+
+    visible, artifacts, metadata = executor._project_intermediate_checkpoint(
+        checkpoints,
+        values,
+        payload,
+        [],
+        completed=True,
+        final_rows=[{"EQP_MODEL": "M1", "TOTAL_PRODUCTION": 300}],
+        final_columns=["EQP_MODEL", "TOTAL_PRODUCTION"],
+    )
+
+    assert [item["download_key"] for item in visible] == [
+        "source_production_src",
+        "source_eqp_uph_src",
+        "pre_contract_result",
+    ]
+    assert [item["description"] for item in visible] == [
+        "production — 최종 집계 전 중간 데이터 (OPER_NAME, DATE 필터 적용 후)",
+        "eqp_uph — 최종 집계 전 중간 데이터 (OPER_NAME, DATE 필터 적용 후)",
+        "결합·계산 결과 (최종 계약 적용 전)",
+    ]
+    assert artifacts["source_production_src"]["rows"][0]["PRODUCTION"] == 300
+    assert artifacts["source_eqp_uph_src"]["rows"][0]["UPH"] == 120
+    assert artifacts["pre_contract_result"]["rows"][0]["INTERNAL_JOIN_KEY"] == "EQ1"
+    assert set(metadata) == set(artifacts)
+
+
+def test_v2_message_adapter_renders_each_published_multi_source_checkpoint():
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    payload = {
+        "analysis": {"status": "ok"},
+        "intermediate_results": [
+            {
+                "download_key": "source_production",
+                "description": "production — 최종 집계 전 중간 데이터",
+                "role": "filtered_source",
+                "row_count": 1,
+                "columns": ["EQP_ID", "PRODUCTION"],
+                "preview_rows": [{"EQP_ID": "EQ1", "PRODUCTION": 300}],
+            },
+            {
+                "download_key": "source_eqp_uph",
+                "description": "eqp_uph — 최종 집계 전 중간 데이터",
+                "role": "filtered_source",
+                "row_count": 1,
+                "columns": ["EQP_ID", "UPH"],
+                "preview_rows": [{"EQP_ID": "EQ1", "UPH": 120}],
+            },
+            {
+                "download_key": "pre_contract_result",
+                "description": "결합·계산 결과 (최종 계약 적용 전)",
+                "role": "computed_result",
+                "row_count": 1,
+                "columns": ["EQP_MODEL", "TOTAL_PRODUCTION"],
+                "preview_rows": [{"EQP_MODEL": "M1", "TOTAL_PRODUCTION": 300}],
+            },
+        ],
+    }
+
+    message = adapter.build_message(
+        payload,
+        show_intermediate_results=True,
+        show_result_table=False,
+        show_download_links=False,
+        show_notices=False,
+        show_applied_criteria=False,
+        show_next_questions=False,
+        show_intent_analysis=False,
+        show_data_retrieval=False,
+        show_pandas_code=False,
+    )
+
+    assert "#### production — 최종 집계 전 중간 데이터" in message
+    assert "#### eqp_uph — 최종 집계 전 중간 데이터" in message
+    assert "#### 결합·계산 결과 (최종 계약 적용 전)" in message
+    assert message.count("| EQP_ID |") == 2
+
+
+def test_result_store_creates_one_download_ref_per_multi_source_checkpoint():
+    store = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py"
+    )
+    payload = {
+        "data": {"columns": ["EQP_MODEL"], "row_count": 1},
+        "runtime_sources": {},
+        "_intermediate_download_rows": {
+            "source_production_src": {
+                "rows": [{"EQP_ID": "EQ1", "PRODUCTION": 300}],
+                "columns": ["EQP_ID", "PRODUCTION"],
+                "label": "production — 최종 집계 전 중간 데이터",
+                "role": "filtered_source",
+                "checkpoint_key": "filtered:production_src",
+            },
+            "source_eqp_uph_src": {
+                "rows": [{"EQP_ID": "EQ1", "UPH": 120}],
+                "columns": ["EQP_ID", "UPH"],
+                "label": "eqp_uph — 최종 집계 전 중간 데이터",
+                "role": "filtered_source",
+                "checkpoint_key": "filtered:eqp_uph_src",
+            },
+            "pre_contract_result": {
+                "rows": [{"EQP_MODEL": "M1", "TOTAL_PRODUCTION": 300}],
+                "columns": ["EQP_MODEL", "TOTAL_PRODUCTION"],
+                "label": "결합·계산 결과 (최종 계약 적용 전)",
+                "role": "computed_result",
+                "checkpoint_key": "computed_result",
+            },
+        },
+    }
+    refs = store._build_data_refs(
+        payload,
+        "result:session:0123456789abcdef0123456789abcdef",
+        "datagov",
+        "agent_v4_result_store",
+    )
+
+    intermediate_paths = {
+        ref["path"]
+        for ref in refs
+        if ref.get("role") == "intermediate_result"
+    }
+    assert intermediate_paths == {
+        "payload.intermediate_rows.source_production_src",
+        "payload.intermediate_rows.source_eqp_uph_src",
+        "payload.intermediate_rows.pre_contract_result",
+    }
+
+
+def test_v2_contract_error_after_calculation_keeps_computed_checkpoint():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"LOT_ID": "L1", "QTY": 3}],
+        steps=[],
+        output_contract={
+            "result_mode": "detail",
+            "result_columns": ["LOT_ID"],
+            "strict_result_columns": True,
+            "result_segments": [{"name": "left"}, {"name": "right"}],
+            "segment_column": "RESULT_GROUP",
+        },
+    )
+    result = executor.execute_pandas_code(
+        payload,
+        "result = sources[\"source_1\"][[\"LOT_ID\"]].copy()",
+    )
+
+    assert result["analysis"]["status"] == "error"
+    assert result["intermediate_results"][0]["role"] == "computed_result"
+    assert result["_intermediate_download_rows"]["last_successful"]["rows"] == [{"LOT_ID": "L1"}]
+
+
+def test_v2_fast_detail_projection_overrides_stale_catalog_defaults():
+    _, executor, _ = _modules()
+    rows = [
+        {
+            "LOT_ID": "L1",
+            "PROD_QTY": 10,
+            "WF_QTY": 20,
+            "CUM_TAT": 3,
+            "OPER_NAME": "W/B1",
+            "HOLD_STAT": "OnHold",
+            "HOLD_REASON": "R1",
+            "LOT_STAT": "HOLD",
+        }
+    ]
+    payload = _single_source_payload(
+        rows=rows,
+        steps=[],
+        output_contract={
+            "result_mode": "detail",
+            "required_columns": [
+                "LOT_ID",
+                "PROD_QTY",
+                "WF_QTY",
+                "CUM_TAT",
+                "OPER_NAME",
+                "HOLD_STAT",
+                "HOLD_REASON",
+                "LOT_STAT",
+            ],
+            "result_columns": [
+                "LOT_ID",
+                "PROD_QTY",
+                "WF_QTY",
+                "CUM_TAT",
+                "OPER_NAME",
+                "HOLD_STAT",
+                "HOLD_REASON",
+                "LOT_STAT",
+            ],
+        },
+    )
+    payload["simple_analysis_contract"] = {
+        "strict": True,
+        "route": "fast",
+        "operation": "execute_fast_path_recipe",
+        "recipe": "detail_query",
+        "source_alias": "source_1",
+        "projection": ["LOT_ID", "PROD_QTY", "WF_QTY", "CUM_TAT"],
+        # Simulate an older/stale resolver carrying catalog defaults.
+        "result_columns": [
+            "LOT_ID",
+            "PROD_QTY",
+            "WF_QTY",
+            "CUM_TAT",
+            "OPER_NAME",
+            "HOLD_STAT",
+            "HOLD_REASON",
+            "LOT_STAT",
+        ],
+    }
+    result = executor.execute_pandas_code(payload, "")
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["columns"] == ["LOT_ID", "PROD_QTY", "WF_QTY", "CUM_TAT"]
+    assert result["intent_plan"]["output_contract"]["required_columns"] == [
+        "LOT_ID",
+        "PROD_QTY",
+        "WF_QTY",
+        "CUM_TAT",
+    ]
+
+
+def test_v2_fast_detail_without_projection_drops_unavailable_catalog_defaults():
+    _, executor, _ = _modules()
+    rows = [
+        {"LOT_ID": "L1", "PROD_QTY": 10, "WF_QTY": 20, "CUM_TAT": 3},
+    ]
+    payload = _single_source_payload(rows=rows, steps=[], output_contract={"result_mode": "detail"})
+    payload["simple_analysis_contract"] = {
+        "strict": True,
+        "route": "fast",
+        "operation": "execute_fast_path_recipe",
+        "recipe": "detail_query",
+        "source_alias": "source_1",
+        # Simulate a weak resolver that copied the catalog detail defaults
+        # but did not produce a concrete select/projection step.
+        "result_columns": [
+            "LOT_ID",
+            "PROD_QTY",
+            "WF_QTY",
+            "CUM_TAT",
+            "OPER_NAME",
+            "IN_TAT",
+            "HOLD_STAT",
+            "HOLD_REASON",
+            "LOT_STAT",
+        ],
+    }
+    result = executor.execute_pandas_code(payload, "")
+    assert result["analysis"]["status"] == "ok"
+    assert result["data"]["columns"] == ["LOT_ID", "PROD_QTY", "WF_QTY", "CUM_TAT"]
+    assert result["intent_plan"]["output_contract"]["contract_reconciliation"]["policy"] == (
+        "available_detail_columns_own_shape"
+    )
+
+
+def test_v2_message_adapter_can_show_intermediate_results_without_prompt_context():
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    payload = {
+        "answer_message": "조회 결과를 확인했습니다.",
+        "data": {"columns": ["LOT_ID"], "rows": [{"LOT_ID": "L1"}], "row_count": 1},
+        "intermediate_results": [
+            {
+                "key": "source:lot_status",
+                "role": "source_input",
+                "description": "조회된 원본 데이터",
+                "row_count": 8,
+                "columns": ["LOT_ID", "HOLD_STAT"],
+                "preview_rows": [
+                    {"LOT_ID": "L1", "HOLD_STAT": "OnHold"},
+                    {"LOT_ID": "L2", "HOLD_STAT": "OnHold"},
+                    {"LOT_ID": "L3", "HOLD_STAT": "OnHold"},
+                    {"LOT_ID": "L4", "HOLD_STAT": "OnHold"},
+                    {"LOT_ID": "L5", "HOLD_STAT": "OnHold"},
+                    {"LOT_ID": "L6", "HOLD_STAT": "OnHold"},
+                ],
+            }
+        ],
+    }
+    hidden = adapter.build_message(payload, show_intermediate_results=False)
+    visible = adapter.build_message(
+        payload,
+        show_intermediate_results=True,
+        intermediate_preview_limit=2,
+    )
+    assert "중간 결과" not in hidden
+    assert "중간 결과" in visible
+    assert "조회된 원본 데이터" in visible
+    assert "#### 조회된 원본 데이터" in visible
+    assert "전체 8건 중 2건을 표시했습니다." in visible
+    assert "\n\n| LOT_ID | HOLD_STAT |" in visible
+    assert "L1" in visible and "L2" in visible
+    assert "L3" not in visible
+
+    # A large UI value never exposes more rows than the executor retained.
+    capped = adapter.build_message(
+        payload,
+        show_intermediate_results=True,
+        intermediate_preview_limit=99,
+    )
+    assert "전체 8건 중 5건을 표시했습니다." in capped
+    assert "L5" in capped
+    assert "L6" not in capped
+
+
+def test_common_hydrator_does_not_add_catalog_defaults_to_explicit_detail_shape():
+    hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
+    contract = hydrator._output_contract_with_default_detail(
+        {
+            "result_mode": "detail",
+            "required_columns": ["LOT_ID", "PROD_QTY", "WF_QTY", "CUM_TAT"],
+            "result_columns": ["LOT_ID", "PROD_QTY", "WF_QTY", "CUM_TAT"],
+            "strict_result_columns": True,
+        },
+        [{"default_detail_columns": ["OPER_NAME", "HOLD_REASON", "LOT_STAT"]}],
+    )
+    assert contract["required_columns"] == ["LOT_ID", "PROD_QTY", "WF_QTY", "CUM_TAT"]
+    assert "HOLD_REASON" not in contract["required_columns"]
+
+
 def test_v2_normalizer_aligns_aggregate_group_by_with_metadata_grain_before_fast_execution():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
     product_ref = {"section": "product_key_columns", "key": "standard_product_keys"}
@@ -1358,6 +2165,265 @@ def test_v2_normalizer_aligns_aggregate_group_by_with_metadata_grain_before_fast
     assert model_calls == []
 
 
+def test_v2_normalizer_reconciles_current_scope_for_comparison_without_aggregation():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    columns = ["TECH", "DEN", "PKG_TYPE2", "MCP_NO", "MODE", "PKG_TYPE1", "LEAD"]
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "production",
+                "payload": {
+                    "dataset_family": "production",
+                    "time_scope": "history",
+                    "columns": columns,
+                    "required_params": ["DATE"],
+                },
+            },
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "dataset_family": "production",
+                    "time_scope": "current_day",
+                    "columns": columns,
+                    "required_params": ["DATE"],
+                },
+            },
+            {
+                "dataset_key": "lot_status",
+                "payload": {
+                    "dataset_family": "lot",
+                    "time_scope": "current_day",
+                    "columns": columns,
+                    "required_params": ["DATE"],
+                },
+            },
+        ]
+    }
+    jobs, trace = normalizer._reconcile_metric_dataset_selection(
+        {
+            "request": {
+                "question": "현재 제품 중 TECH, DEN, PKG_TYPE2, MCP_NO는 같지만 MODE, PKG_TYPE1 또는 LEAD가 다른 제품들",
+                "reference_date": "20260701",
+            }
+        },
+        [
+            {
+                "dataset_key": "production",
+                "source_alias": "production_source",
+                "required_params": {"DATE": "20260701"},
+            }
+        ],
+        [
+            {
+                "operation": "compare_group_attributes",
+                "inputs": [{"kind": "external_source", "ref": "production_source"}],
+                "group_by": ["TECH", "DEN", "PKG_TYPE2", "MCP_NO"],
+                "comparison_columns": ["MODE", "PKG_TYPE1", "LEAD"],
+            }
+        ],
+        candidates,
+    )
+    assert jobs[0]["dataset_key"] == "production_today"
+    assert trace["status"] == "applied"
+    assert trace["corrections"][0]["requested_time_scope"] == "current_day"
+
+
+def test_v2_normalizer_repairs_weak_source_choice_from_catalog_selection_fit():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    columns = ["TECH", "DEN", "PKG_TYPE2", "MCP_NO", "MODE", "PKG_TYPE1", "LEAD"]
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "dataset_family": "production",
+                    "selection_criteria": {
+                        "time_scope": "current_day",
+                        "use_when": ["current production"],
+                    },
+                    "columns": columns,
+                },
+            },
+            {
+                "dataset_key": "lot_status",
+                "payload": {
+                    "dataset_family": "wip",
+                    "selection_criteria": {"time_scope": "current_day"},
+                    "columns": columns,
+                },
+            },
+        ]
+    }
+    jobs, trace = normalizer._reconcile_source_dataset_selection(
+        {
+            "request": {"question": "current product comparison"},
+        },
+        [{"dataset_key": "lot_status", "source_alias": "product_source"}],
+        [
+            {
+                "operation": "compare_group_attributes",
+                "source_alias": "product_source",
+                "group_by": ["TECH", "DEN", "PKG_TYPE2", "MCP_NO"],
+                "comparison_columns": ["MODE", "PKG_TYPE1", "LEAD"],
+            }
+        ],
+        candidates,
+        [],
+    )
+    assert jobs[0]["dataset_key"] == "production_today"
+    assert trace["status"] == "applied"
+    assert trace["corrections"][0]["selection_source"] == "table_catalog.selection_criteria"
+
+
+def test_v2_normalizer_switches_to_unique_schema_capable_source():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "production",
+                "payload": {
+                    "dataset_family": "production",
+                    "selection_criteria": {"time_scope": "history"},
+                    "columns": ["DATE", "PRODUCTION"],
+                },
+            },
+            {
+                "dataset_key": "target",
+                "payload": {
+                    "dataset_family": "target",
+                    "selection_criteria": {"time_scope": "history"},
+                    "columns": ["DATE", "INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                },
+            },
+        ]
+    }
+    jobs, trace = normalizer._reconcile_source_dataset_selection(
+        {"request": {"question": "생산 계획"}},
+        [{"dataset_key": "production", "source_alias": "plan_source"}],
+        [
+            {
+                "operation": "groupby_and_aggregate",
+                "source_alias": "plan_source",
+                "group_by": ["DATE"],
+                "aggregations": [
+                    {"column": "INPUT_PLAN_QTY", "method": "sum", "output_column": "INPUT_PLAN_QTY"},
+                    {"column": "OUT_PLAN_QTY", "method": "sum", "output_column": "OUT_PLAN_QTY"},
+                ],
+            }
+        ],
+        candidates,
+        [],
+    )
+    assert jobs[0]["dataset_key"] == "target"
+    assert trace["corrections"][0]["selection_source"] == "table_catalog.schema_contract"
+
+
+def test_v2_normalizer_uses_generic_identity_schema_tie_break():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    columns = ["TECH", "DEN", "PKG_TYPE2", "MCP_NO", "MODE", "PKG_TYPE1", "LEAD"]
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "status_population",
+                "payload": {
+                    "dataset_family": "population",
+                    "selection_criteria": {"time_scope": "current_day"},
+                    "columns": [*columns, "LOT_ID", "EQP_ID"],
+                },
+            },
+            {
+                "dataset_key": "product_population",
+                "payload": {
+                    "dataset_family": "population",
+                    "selection_criteria": {"time_scope": "current_day"},
+                    "columns": columns,
+                },
+            },
+        ]
+    }
+    jobs, trace = normalizer._reconcile_source_dataset_selection(
+        {"request": {"question": "현재 제품 중 그룹별 속성이 다른 제품"}},
+        [{"dataset_key": "status_population", "source_alias": "product_source"}],
+        [
+            {
+                "operation": "compare_group_attributes",
+                "source_alias": "product_source",
+                "group_by": ["TECH", "DEN", "PKG_TYPE2", "MCP_NO"],
+                "comparison_columns": ["MODE", "PKG_TYPE1", "LEAD"],
+            }
+        ],
+        candidates,
+        [],
+    )
+    assert jobs[0]["dataset_key"] == "product_population"
+    assert trace["corrections"][0]["selection_source"] == "table_catalog.schema_contract"
+
+
+def test_v2_normalizer_recovers_omitted_token_function_case_from_metadata():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan, trace = normalizer._auto_select_metadata_function_case(
+        {},
+        [{"dataset_key": "production", "source_alias": "production_source"}],
+        {
+            "domain_items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "product_token_match",
+                    "payload": {
+                        "function_name": "match_product_tokens",
+                        "description": "Select when product attributes are expressed as tokens.",
+                        "input_contract": {"input_text": "token bundle"},
+                    },
+                }
+            ]
+        },
+        "FCB production SP 24G GDDR7 X32 226 FCBGA DDP",
+    )
+    assert plan["pandas_function_cases"][0]["function_name"] == "match_product_tokens"
+    assert plan["pandas_function_cases"][0]["source_alias"] == "production_source"
+    assert trace["status"] == "applied"
+
+
+def test_v2_normalizer_does_not_activate_token_helper_for_column_comparison():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan, trace = normalizer._auto_select_metadata_function_case(
+        {},
+        [{"dataset_key": "production_today", "source_alias": "product_source"}],
+        {
+            "domain_items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "product_token_match",
+                    "payload": {
+                        "function_name": "match_product_tokens",
+                        "description": "Select when product attributes are expressed as tokens.",
+                        "input_contract": {"input_text": "token bundle"},
+                    },
+                }
+            ],
+            "table_catalog_items": [
+                {
+                    "dataset_key": "production_today",
+                    "payload": {
+                        "columns": [
+                            "TECH",
+                            "DEN",
+                            "MODE",
+                            "PKG_TYPE1",
+                            "PKG_TYPE2",
+                            "LEAD",
+                            "MCP_NO",
+                        ]
+                    },
+                }
+            ],
+        },
+        "현재 제품 중 TECH, DEN, PKG_TYPE2, MCP_NO는 같지만 MODE, PKG_TYPE1 또는 LEAD가 다른 제품",
+    )
+    assert "pandas_function_cases" not in plan
+    assert trace["status"] == "not_needed"
+
+
 def test_v2_resolver_rejects_result_columns_not_produced_by_aggregate_contract():
     resolver, _, _ = _modules()
     payload = _single_source_payload(
@@ -1429,6 +2495,48 @@ def test_v2_message_adapter_omits_llm_parse_diagnostics_for_fast_errors():
         show_pandas_code=True,
     )
     assert "LLM 응답 해석" not in message
+
+
+def test_v2_message_adapter_shows_invalid_llm_attempt_as_non_executed_code_excerpt():
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    payload = {
+        "intent_plan": {"pandas_execution_plan": []},
+        "analysis": {
+            "status": "error",
+            "execution_route": "complex",
+            "error": {"type": "missing_code", "message": "pandas code is unavailable"},
+        },
+        "trace": {
+            "inspection": {
+                "pandas_execution": {
+                    "status": "error",
+                    "execution_mode": "llm_generated_code",
+                    "error": {"type": "missing_code", "message": "pandas code is unavailable"},
+                    "llm_response_parse": {
+                        "mode": "invalid",
+                        "error": "unterminated string literal",
+                        "raw_response_preview": '{"code": "def selected_helper(...',
+                    },
+                }
+            }
+        },
+    }
+
+    message = adapter.build_message(
+        payload,
+        show_result_table=False,
+        show_download_links=False,
+        show_notices=False,
+        show_applied_criteria=False,
+        show_next_questions=False,
+        show_intent_analysis=False,
+        show_data_retrieval=False,
+        show_pandas_code=True,
+    )
+
+    assert "LLM 생성 시도 원문 (형식 오류로 실행하지 않음; 일부만 표시)" in message
+    assert "```text" in message
+    assert 'def selected_helper' in message
 
 
 def test_advanced_fast_recipes_execute_deterministically():

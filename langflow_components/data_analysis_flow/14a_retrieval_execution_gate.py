@@ -33,8 +33,23 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
 
     critical_failures: list[dict[str, Any]] = []
     optional_failures: list[dict[str, Any]] = []
-    validation_failures = _validation_failures(payload)
-    critical_failures.extend(validation_failures)
+    # Preserve a pre-retrieval safety block. Otherwise an empty job list can
+    # overwrite a deliberate metadata failure and permit later model execution.
+    preblocked_failures = _preblocked_failures(payload)
+    metadata_preblocked = [
+        item
+        for item in preblocked_failures
+        if str(item.get("type") or "") in {"table_catalog_metadata_unavailable", "unregistered_dataset_key"}
+    ]
+    # A deterministic metadata block is authoritative. Do not add the generic
+    # catalog_hydration_failed validation error afterwards, otherwise the user
+    # loses the actionable MongoDB/registration reason behind a vague retrieval
+    # failure message.
+    if metadata_preblocked:
+        critical_failures.extend(metadata_preblocked)
+    else:
+        critical_failures.extend(preblocked_failures)
+        critical_failures.extend(_validation_failures(payload))
 
     for job in jobs:
         alias = _alias(job)
@@ -107,8 +122,17 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
             str(item.get("type") or "") == "source_schema_contract_unresolved"
             for item in critical_failures
         )
+        metadata_contract_only = bool(critical_failures) and all(
+            str(item.get("type") or "")
+            in {"table_catalog_metadata_unavailable", "unregistered_dataset_key"}
+            for item in critical_failures
+        )
         error = {
-            "type": "source_schema_contract_unresolved" if schema_only else "required_source_retrieval_failed",
+            "type": (
+                str(critical_failures[0].get("type") or "metadata_contract_blocked")
+                if metadata_contract_only
+                else ("source_schema_contract_unresolved" if schema_only else "required_source_retrieval_failed")
+            ),
             "message": message,
             "failures": deepcopy(critical_failures),
         }
@@ -129,6 +153,27 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
 
 
 # 함수 설명: `_validation_failures()`는 job validation과 trusted catalog hydration의 치명 오류를 실행 차단 사유로 바꿉니다.
+def _preblocked_failures(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    gate = payload.get("execution_gate") if isinstance(payload.get("execution_gate"), dict) else {}
+    if str(gate.get("status") or "").strip().lower() != "blocked":
+        return []
+    failures = [
+        deepcopy(item)
+        for item in gate.get("critical_failures", [])
+        if isinstance(item, dict)
+    ]
+    if failures:
+        return failures
+    if str(gate.get("reason") or "").strip() == "table_catalog_metadata_unavailable":
+        return [
+            {
+                "type": "table_catalog_metadata_unavailable",
+                "message": "Table Catalog 메타데이터를 확인하지 못해 분석을 실행하지 않았습니다.",
+            }
+        ]
+    return []
+
+
 def _validation_failures(payload: dict[str, Any]) -> list[dict[str, Any]]:
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     inspection = trace.get("inspection") if isinstance(trace.get("inspection"), dict) else {}
@@ -247,6 +292,15 @@ def _is_required(job: dict[str, Any]) -> bool:
 
 # 함수 설명: `_blocked_message()`는 사용자와 운영자가 실패 source를 바로 확인할 수 있는 결정론적 메시지를 만듭니다.
 def _blocked_message(failures: list[dict[str, Any]]) -> str:
+    if failures and all(
+        str(item.get("type") or "")
+        in {"table_catalog_metadata_unavailable", "unregistered_dataset_key"}
+        for item in failures
+    ):
+        return str(
+            failures[0].get("message")
+            or "Table Catalog 메타데이터를 확인하지 못해 분석을 시작하지 않았습니다."
+        )
     if failures and all(
         str(item.get("type") or "") == "source_schema_contract_unresolved"
         for item in failures

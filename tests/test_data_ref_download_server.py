@@ -15,6 +15,7 @@ from urllib.request import Request
 from urllib.request import urlopen
 
 from tools import data_ref_download_server as server
+from web_app.data_ref_store import rows_from_data_ref_document
 
 
 def test_data_ref_download_token_round_trip() -> None:
@@ -131,6 +132,57 @@ def test_data_ref_download_rejects_other_collection_and_unapproved_path() -> Non
     assert "다른 MongoDB" in other_collection["message"]
     assert unsafe_path["ok"] is False
     assert "path" in unsafe_path["message"]
+
+
+def test_data_ref_download_allows_selected_intermediate_checkpoint_path() -> None:
+    config = server.ServerConfig(
+        mongo_uri="mongodb://unused",
+        mongo_database="datagov",
+        result_collection="agent_v4_result_store",
+        preview_limit=100,
+    )
+    normalized, error = server.normalize_download_ref(
+        {
+            "store": "mongodb",
+            "ref_id": "result:s1:0123456789abcdef0123456789abcdef",
+            "database": "datagov",
+            "collection_name": "agent_v4_result_store",
+            "path": "payload.intermediate_rows.last_successful",
+            "role": "intermediate_result",
+        },
+        config,
+    )
+
+    assert error == ""
+    assert normalized["path"] == "payload.intermediate_rows.last_successful"
+
+
+def test_data_ref_download_reads_selected_intermediate_checkpoint_rows() -> None:
+    document = {
+        "payload": {
+            "intermediate_rows": {
+                "last_successful": {
+                    "rows": [
+                        {"OPER_NAME": "INPUT", "MCP_NO": "L-267A1", "PRODUCTION": 300},
+                        {"OPER_NAME": "INPUT", "MCP_NO": "L-267A2", "PRODUCTION": 180},
+                    ],
+                    "columns": ["OPER_NAME", "MCP_NO", "PRODUCTION"],
+                    "row_count": 2,
+                }
+            }
+        }
+    }
+
+    loaded = rows_from_data_ref_document(
+        document,
+        limit=1,
+        path="payload.intermediate_rows.last_successful",
+    )
+
+    assert loaded["ok"] is True
+    assert loaded["row_count"] == 2
+    assert loaded["columns"] == ["OPER_NAME", "MCP_NO", "PRODUCTION"]
+    assert loaded["rows"] == [{"OPER_NAME": "INPUT", "MCP_NO": "L-267A1", "PRODUCTION": 300}]
 
 
 def test_data_ref_download_csv_uses_utf8_bom_and_headers() -> None:

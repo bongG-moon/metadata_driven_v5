@@ -33,6 +33,8 @@ RUNTIME_BUFFER_KEYS = {
     "_runtime_rows_by_alias",
     "_full_result_rows",
     "_runtime_result_rows",
+    "_intermediate_download_rows",
+    "_intermediate_download_metadata",
 }
 
 FORBIDDEN_NAMES = {"open", "exec", "eval", "__import__", "compile", "input"}
@@ -160,6 +162,16 @@ class OutputContractError(ValueError):
     pass
 
 
+# Langflow 컴포넌트 클래스: 부분 실행 체크포인트를 포함한 계약 오류입니다.
+class PartialExecutionError(OutputContractError):
+    """Execution stopped after a bounded checkpoint was captured."""
+
+    # 함수 설명: bounded intermediate result preview와 오류 메시지를 보존합니다.
+    def __init__(self, message: str, intermediate_results: list[dict[str, Any]] | None = None):
+        super().__init__(message)
+        self.intermediate_results = deepcopy(intermediate_results or [])
+
+
 # 주요 함수: 안전성 검사를 통과한 pandas 코드를 제한된 namespace에서 한 번 실행합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def execute_pandas_code(
@@ -171,6 +183,12 @@ def execute_pandas_code(
     if _execution_blocked(payload):
         return _blocked_execution_payload(payload)
     next_payload = _canonicalize_standardized_output_contract(payload)
+    next_payload.setdefault("intermediate_results", _initial_intermediate_results(next_payload))
+    # Keep the actual checkpoint rows only in the runtime payload.  The visible
+    # checkpoint remains a bounded preview and is never sent to an answer LLM.
+    checkpoint_values: dict[str, Any] = {}
+    intermediate_results: list[dict[str, Any]] = []
+    sources: dict[str, Any] = {}
     llm_code, response_parse = _parse_pandas_llm_response(llm_response)
     normalized_llm_code, safe_imports = _normalize_safe_imports(llm_code)
     deterministic_execution = _deterministic_execution_contract(next_payload)
@@ -190,6 +208,33 @@ def execute_pandas_code(
     execution_mode = str(
         deterministic_execution.get("operation") or "llm_generated_code"
     )
+    trusted_helper_preamble = ""
+    if not deterministic_execution:
+        (
+            normalized_llm_code,
+            trusted_helper_preamble,
+            trusted_helper_trace,
+            trusted_helper_error,
+        ) = _prepare_trusted_function_case_helpers(
+            normalized_llm_code,
+            function_case_helper_code,
+        )
+        safe_imports["normalized_llm_code"] = normalized_llm_code
+        if trusted_helper_trace:
+            safe_imports["trusted_helper_override"] = trusted_helper_trace
+        if trusted_helper_error:
+            return _analysis_error(
+                next_payload,
+                "trusted_function_case_contract_invalid",
+                trusted_helper_error,
+                normalized_llm_code,
+                "",
+                llm_code,
+                "",
+                [],
+                safe_imports,
+                response_parse=response_parse,
+            )
     code = normalized_llm_code
     if not normalized_llm_code.strip() and not deterministic_execution:
         return _analysis_error(
@@ -204,7 +249,10 @@ def execute_pandas_code(
             safe_imports,
             response_parse=response_parse,
         )
-    filter_plan = [] if fast_execution else _pandas_filter_plan(next_payload)
+    # Fast recipes apply their filters inside the deterministic contract, but
+    # the same plan is still useful for a truthful user-facing checkpoint label.
+    display_filter_plan = _pandas_filter_plan(next_payload)
+    filter_plan = [] if fast_execution else display_filter_plan
     row_match_plan = [] if fast_execution else _pandas_row_match_plan(next_payload)
     filter_preamble = _pandas_filter_preamble(filter_plan)
     row_match_preamble = _pandas_row_match_preamble(row_match_plan)
@@ -242,10 +290,17 @@ def execute_pandas_code(
             if item
         )
     else:
-        code = _with_pandas_execution_preambles(
-            code,
-            row_match_preamble,
-            filter_preamble,
+        code = "\n\n".join(
+            segment
+            for segment in (
+                trusted_helper_preamble.strip(),
+                _with_pandas_execution_preambles(
+                    code,
+                    row_match_preamble,
+                    filter_preamble,
+                ).strip(),
+            )
+            if segment
         )
     helper_trace = _runtime_helper_trace(code)
     if deterministic_transform_error:
@@ -336,6 +391,54 @@ def execute_pandas_code(
                 if configured_columns:
                     frame = pd.DataFrame(columns=configured_columns)
             sources[alias] = frame
+        # 함수 설명: `record_checkpoint()`는 실행 중 생성된 원본·필터·계산 결과를
+        # 화면 후보와 다운로드용 원본 값으로 함께 보관합니다.
+        def record_checkpoint(
+            key: Any,
+            value: Any,
+            description: Any = "",
+            role: Any = "",
+        ) -> dict[str, Any]:
+            item = _recorded_output(key, value, description, role)
+            marker = str(item.get("key") or "").strip()
+            if marker:
+                checkpoint_values[marker] = value
+            intermediate_results.append(item)
+            return item
+
+        # 함수 설명: `publish_checkpoint()`는 여러 후보 중 하나만 현재 payload에
+        # 노출하고, 전체 행은 답변 모델에 전달하지 않는 runtime buffer로 저장합니다.
+        def publish_checkpoint(
+            *,
+            completed: bool = False,
+            final_rows: list[dict[str, Any]] | None = None,
+            final_columns: list[str] | None = None,
+        ) -> None:
+            visible, rows_by_key, metadata_by_key = _project_intermediate_checkpoint(
+                intermediate_results,
+                checkpoint_values,
+                next_payload,
+                display_filter_plan,
+                completed=completed,
+                final_rows=final_rows,
+                final_columns=final_columns,
+            )
+            next_payload["intermediate_results"] = visible
+            if rows_by_key:
+                next_payload["_intermediate_download_rows"] = rows_by_key
+                next_payload["_intermediate_download_metadata"] = metadata_by_key
+            else:
+                next_payload.pop("_intermediate_download_rows", None)
+                next_payload.pop("_intermediate_download_metadata", None)
+
+        for alias, frame in sources.items():
+            record_checkpoint(
+                f"source:{alias}",
+                frame,
+                "조회된 원본 데이터",
+                "source_input",
+            )
+        publish_checkpoint()
         safe_builtins = {
             "Exception": Exception,
             "all": all,
@@ -366,7 +469,9 @@ def execute_pandas_code(
 
         # 함수 설명: `record_step()`는 pandas 실행 중 단계별 DataFrame 크기와 설명을 trace에 기록합니다.
         def record_step(key: Any, value: Any, description: Any = "", role: Any = "") -> Any:
-            step_outputs.append(_recorded_output(key, value, description, role))
+            recorded = record_checkpoint(key, value, description, role or "step_output")
+            step_outputs.append(deepcopy(recorded))
+            publish_checkpoint()
             return value
 
         # 함수 설명: `record_function_case_result()`는 선택 helper 실행 결과의 함수명·입력·행 수를 분석 근거로 기록합니다.
@@ -405,10 +510,12 @@ def execute_pandas_code(
             helper_trace["helper_sources"] = deepcopy(
                 deterministic_transform_execution
             )
+            fast_intermediate_frames: dict[str, Any] = {}
             deterministic_result = _execute_deterministic_contract(
                 deterministic_execution,
                 sources,
                 pd,
+                runtime_intermediate_frames=fast_intermediate_frames,
             )
             if (
                 isinstance(deterministic_result, tuple)
@@ -418,7 +525,24 @@ def execute_pandas_code(
             else:
                 result = deterministic_result
                 semantic_execution_certificate = {}
+            for checkpoint_key, frame in fast_intermediate_frames.items():
+                record_checkpoint(
+                    checkpoint_key,
+                    frame,
+                    "필터 적용 후 원본 데이터",
+                    "filtered_source",
+                )
             if fast_execution:
+                # The Fast result-contract reconciler can reject missing
+                # display columns.  Capture its input first so that rejection
+                # still exposes the real calculation immediately before it.
+                record_checkpoint(
+                    "computed_result",
+                    result,
+                    "최종 계약 적용 전 계산 결과",
+                    "computed_result",
+                )
+                publish_checkpoint()
                 next_payload = _apply_fast_result_contract(next_payload, result, semantic_execution_certificate)
             else:
                 result = _apply_deterministic_result_ordering(
@@ -439,6 +563,42 @@ def execute_pandas_code(
                 result = exec_ns.get("result_df")
             semantic_execution_certificate = {}
             deterministic_transform_execution = []
+            for alias, frame in sources.items():
+                record_checkpoint(
+                    f"filtered:{alias}",
+                    frame,
+                    "필터 적용 후 데이터",
+                    "filtered_source",
+                )
+            publish_checkpoint()
+        if isinstance(semantic_execution_certificate, dict):
+            certificate_results = semantic_execution_certificate.get("intermediate_results")
+            if isinstance(certificate_results, list):
+                intermediate_results.extend(
+                    item for item in deepcopy(certificate_results)
+                    if isinstance(item, dict)
+                )
+        deduped_intermediate_results: list[dict[str, Any]] = []
+        seen_intermediate_keys: set[str] = set()
+        for item in intermediate_results:
+            marker = str(item.get("key") or "") if isinstance(item, dict) else ""
+            if marker and marker in seen_intermediate_keys:
+                continue
+            if marker:
+                seen_intermediate_keys.add(marker)
+            if isinstance(item, dict):
+                deduped_intermediate_results.append(item)
+        intermediate_results = deduped_intermediate_results
+        if "computed_result" not in checkpoint_values:
+            record_checkpoint(
+                "computed_result",
+                result,
+                "최종 계약 적용 전 계산 결과",
+                "computed_result",
+            )
+        # Publish before the strict output contract so a contract failure can
+        # still return and download the last successful calculation.
+        publish_checkpoint()
         rows, columns = _result_to_rows(result, next_payload)
         rows, columns = _apply_strict_result_columns(
             rows,
@@ -458,6 +618,7 @@ def execute_pandas_code(
         if ordering_error:
             raise OutputContractError(ordering_error)
         next_payload["_full_result_rows"] = rows
+        publish_checkpoint(completed=True, final_rows=rows, final_columns=columns)
         next_payload["analysis"] = {
             "status": "ok",
             "row_count": len(rows),
@@ -465,6 +626,7 @@ def execute_pandas_code(
             "used_helpers": helper_trace["used_helpers"],
             "step_outputs": step_outputs,
             "function_case_results": function_case_results,
+            "intermediate_results": deepcopy(next_payload.get("intermediate_results", [])),
             "execution_mode": execution_mode,
         }
         if deterministic_execution:
@@ -494,11 +656,18 @@ def execute_pandas_code(
             "row_match_execution": row_match_execution,
             "deterministic_source_transforms": deterministic_transform_execution,
             "execution_result": {"row_count": len(rows), "columns": columns, "preview_rows": rows[:TRACE_PREVIEW_LIMIT]},
+            "intermediate_results": deepcopy(next_payload.get("intermediate_results", [])),
             "semantic_execution_certificate": deepcopy(semantic_execution_certificate),
             "error": None,
         }
         return next_payload
-    except OutputContractError as exc:
+    except PartialExecutionError as exc:
+        if exc.intermediate_results and not intermediate_results:
+            intermediate_results.extend(
+                item for item in exc.intermediate_results if isinstance(item, dict)
+            )
+        if intermediate_results:
+            publish_checkpoint()
         return _analysis_error(
             next_payload,
             "output_contract_violation",
@@ -512,8 +681,40 @@ def execute_pandas_code(
             row_match_plan,
             row_match_preamble,
             response_parse,
+            intermediate_results=next_payload.get("intermediate_results"),
+        )
+    except OutputContractError as exc:
+        if intermediate_results:
+            publish_checkpoint()
+        return _analysis_error(
+            next_payload,
+            "output_contract_violation",
+            str(exc),
+            code,
+            traceback.format_exc(limit=3),
+            llm_code,
+            filter_preamble,
+            filter_plan,
+            safe_imports,
+            row_match_plan,
+            row_match_preamble,
+            response_parse,
+            intermediate_results=next_payload.get("intermediate_results"),
         )
     except Exception as exc:
+        # A generated code error can happen after source filters have been
+        # applied but before `result` is assigned.  Preserve the latest frame
+        # without claiming that every planned filter was completed.
+        if sources and "computed_result" not in checkpoint_values and callable(locals().get("record_checkpoint")):
+            for alias, frame in sources.items():
+                record_checkpoint(
+                    f"last_available:{alias}",
+                    frame,
+                    "오류 전 마지막 확인 가능 데이터",
+                    "last_available_source",
+                )
+        if intermediate_results and callable(locals().get("publish_checkpoint")):
+            publish_checkpoint()
         return _analysis_error(
             next_payload,
             "pandas_execution_error",
@@ -527,6 +728,7 @@ def execute_pandas_code(
             row_match_plan,
             row_match_preamble,
             response_parse,
+            intermediate_results=next_payload.get("intermediate_results"),
         )
 
 
@@ -890,10 +1092,17 @@ def _execute_deterministic_contract(
     contract: dict[str, Any],
     sources: dict[str, Any],
     pd: Any,
+    *,
+    runtime_intermediate_frames: dict[str, Any] | None = None,
 ) -> Any:
     operation = str(contract.get("operation") or "").strip()
     if operation == "execute_fast_path_recipe":
-        return _execute_fast_path_recipe(contract, sources, pd)
+        return _execute_fast_path_recipe(
+            contract,
+            sources,
+            pd,
+            runtime_intermediate_frames=runtime_intermediate_frames,
+        )
     if operation == "empty_result":
         columns = [
             str(item).strip()
@@ -919,12 +1128,22 @@ def _execute_fast_path_recipe(
     contract: dict[str, Any],
     sources: dict[str, Any],
     pd: Any,
+    *,
+    runtime_intermediate_frames: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     source_alias = str(contract.get("source_alias") or "").strip()
     source = sources.get(source_alias)
     if source is None:
         raise OutputContractError(f"Fast Path source를 찾을 수 없습니다: {source_alias}")
     working = source.copy()
+    intermediate_results: list[dict[str, Any]] = [
+        _recorded_output(
+            f"source:{source_alias}",
+            working,
+            "조회된 원본 데이터",
+            "source_input",
+        )
+    ]
     source_row_count = int(len(working))
     all_filters = [item for item in contract.get("filters", []) if isinstance(item, dict)]
     retrieval_filters = [
@@ -935,6 +1154,7 @@ def _execute_fast_path_recipe(
         working,
         post_retrieval_filters,
         pd,
+        checkpoints=intermediate_results,
     )
     filter_execution = [
         {
@@ -947,14 +1167,44 @@ def _execute_fast_path_recipe(
         for item in retrieval_filters
     ] + filter_execution
     filtered_row_count = int(len(working))
+    if runtime_intermediate_frames is not None:
+        runtime_intermediate_frames[f"filtered:{source_alias}"] = working.copy()
+    if not post_retrieval_filters:
+        intermediate_results.append(
+            _recorded_output(
+                f"filtered:{source_alias}",
+                working,
+                "필터 적용 후 데이터",
+                "filtered_source",
+            )
+        )
     recipe = str(contract.get("recipe") or "").strip().lower()
     group_by = _string_list(contract.get("group_by"))
     metrics = [item for item in contract.get("metrics", []) if isinstance(item, dict)]
     calculation = contract.get("calculation") if isinstance(contract.get("calculation"), dict) else {}
     result_columns = _string_list(contract.get("result_columns"))
+    projection = _string_list(contract.get("projection"))
+    if recipe in {"detail_query", "latest_earliest", "distinct_summary"} and projection:
+        # A stale/weak resolver may still carry catalog defaults in
+        # result_columns.  The executable select projection is safer and
+        # already validated against the standardized source frame.
+        result_columns = list(dict.fromkeys(projection))
+    elif recipe in {"detail_query", "latest_earliest", "distinct_summary"} and result_columns:
+        available_detail_columns = [
+            column for column in result_columns if column in working.columns
+        ]
+        if available_detail_columns:
+            result_columns = available_detail_columns
 
     if recipe == "detail_query":
-        result = _fast_project(working, _string_list(contract.get("projection")) or result_columns)
+        detail_columns = projection or result_columns
+        if not projection and detail_columns:
+            available_detail_columns = [
+                column for column in detail_columns if column in working.columns
+            ]
+            if available_detail_columns:
+                detail_columns = available_detail_columns
+        result = _fast_project(working, detail_columns)
     elif recipe == "scalar_summary":
         if str(calculation.get("scalar_operation") or "") == "count_rows":
             output_column = _fast_output_column(calculation, result_columns, metrics)
@@ -973,7 +1223,14 @@ def _execute_fast_path_recipe(
     elif recipe == "quality_summary":
         result = _fast_quality_summary(working, calculation, pd)
     elif recipe == "latest_earliest":
-        result = _fast_project(working, _string_list(contract.get("projection")) or result_columns)
+        detail_columns = _string_list(contract.get("projection")) or result_columns
+        if not projection and detail_columns:
+            available_detail_columns = [
+                column for column in detail_columns if column in working.columns
+            ]
+            if available_detail_columns:
+                detail_columns = available_detail_columns
+        result = _fast_project(working, detail_columns)
     elif recipe == "percent_of_total":
         result = _fast_percent_of_total(working, group_by, metrics, calculation, pd)
     elif recipe == "rank_within_group":
@@ -997,6 +1254,14 @@ def _execute_fast_path_recipe(
         raise OutputContractError(f"지원하지 않는 Fast Path recipe입니다: {recipe}")
 
     result = _apply_fast_ordering_and_limit(result, contract)
+    intermediate_results.append(
+        _recorded_output(
+            "computed_result",
+            result,
+            "최종 계약 적용 전 계산 결과",
+            "computed_result",
+        )
+    )
     if recipe != "pivot_summary" and result_columns:
         missing = [column for column in result_columns if column not in result.columns]
         if missing:
@@ -1016,12 +1281,18 @@ def _execute_fast_path_recipe(
         "filter_execution": filter_execution,
         "deterministic_function": _fast_function_trace(contract),
         "postcondition_validation": "passed",
+        "intermediate_results": intermediate_results[-12:],
     }
     return result, certificate
 
 
 # 함수 설명: `_apply_fast_filters()`는 17 V2 Hybrid 분석 실행기 처리 중 FAST·필터 관련 값을 계산·변환하는 내부 helper입니다.
-def _apply_fast_filters(frame: Any, conditions: list[dict[str, Any]], pd: Any) -> tuple[Any, list[dict[str, Any]]]:
+def _apply_fast_filters(
+    frame: Any,
+    conditions: list[dict[str, Any]],
+    pd: Any,
+    checkpoints: list[dict[str, Any]] | None = None,
+) -> tuple[Any, list[dict[str, Any]]]:
     result = frame.copy()
     execution: list[dict[str, Any]] = []
     for condition in conditions:
@@ -1045,6 +1316,13 @@ def _apply_fast_filters(frame: Any, conditions: list[dict[str, Any]], pd: Any) -
                 "row_count_after": int(len(result)),
             }
         )
+        if checkpoints is not None:
+            checkpoints.append(_recorded_output(
+                f"filtered_after:{field}",
+                result,
+                f"{field} 필터 적용 후 데이터",
+                "filtered_source",
+            ))
     return result, execution
 
 
@@ -1479,6 +1757,33 @@ def _apply_fast_result_contract(payload: dict[str, Any], result: Any, certificat
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     output_contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
     fast_plan = payload.get("simple_analysis_contract") if isinstance(payload.get("simple_analysis_contract"), dict) else {}
+    recipe = str(fast_plan.get("recipe") or "").strip().lower()
+    projection = _string_list(fast_plan.get("projection"))
+    # The resolver's explicit projection is the final shape for detail-like
+    # recipes.  Reconcile the generic output contract to that actual frame so
+    # catalog defaults copied by a weak model cannot turn a successful query
+    # into a false missing-column error after filtering.
+    if recipe in {"detail_query", "latest_earliest", "distinct_summary"} and hasattr(result, "columns"):
+        actual_columns = [str(column) for column in result.columns]
+        declared_columns = _string_list(fast_plan.get("result_columns"))
+        requested_columns = projection or declared_columns
+        reconciled_columns = [column for column in requested_columns if column in actual_columns]
+        if reconciled_columns:
+            output_contract["result_columns"] = reconciled_columns
+            output_contract["required_columns"] = reconciled_columns
+            output_contract["strict_result_columns"] = True
+            output_contract["contract_reconciliation"] = {
+                "status": "applied",
+                "policy": (
+                    "explicit_fast_projection_owns_detail_shape"
+                    if projection
+                    else "available_detail_columns_own_shape"
+                ),
+                "columns": reconciled_columns,
+                "dropped_unavailable_columns": [
+                    column for column in requested_columns if column not in actual_columns
+                ],
+            }
     if str(fast_plan.get("result_schema_mode") or "") == "derived_bounded" and hasattr(result, "columns"):
         columns = [str(column) for column in result.columns]
         output_contract["result_columns"] = columns
@@ -2178,11 +2483,25 @@ def execute_pandas_with_repair(
 def _repairable_execution_failure(payload: dict[str, Any]) -> bool:
     error = _analysis_error_value(payload)
     error_type = str(error.get("type") or "").strip().lower() if isinstance(error, dict) else ""
-    return error_type in {
+    if error_type in {
         "pandas_execution_error",
         "unsafe_code",
         "generated_code_uses_physical_alias",
-    }
+    }:
+        return True
+    if error_type != "missing_code":
+        return False
+
+    # A non-empty malformed model response can be repaired with the compact
+    # retry prompt.  Empty answers and import-only outputs remain non-retryable
+    # because there is no actionable code attempt to repair.
+    trace = _pandas_execution_trace(payload)
+    response_parse = trace.get("llm_response_parse") if isinstance(trace, dict) else {}
+    return bool(
+        isinstance(response_parse, dict)
+        and str(response_parse.get("error") or "").strip()
+        and str(response_parse.get("raw_response_preview") or "").strip()
+    )
 
 
 # 주요 함수: 복구 LLM이 원인과 기존 코드를 함께 볼 수 있도록 수정 프롬프트를 조립합니다.
@@ -2228,7 +2547,12 @@ def build_pandas_repair_prompt(payload_value: Any, template: Any, function_case_
             indent=2,
         ),
         "function_case_selection_json": json.dumps(_repair_function_case_selection(prompt_plan), ensure_ascii=False, indent=2),
-        "function_case_helper_code": _text_value(function_case_helper_code),
+        "function_case_helper_code": (
+            "선택 helper 정의는 executor가 안전성 검증 후 주입합니다. "
+            "function_case_selection_json의 function_name만 호출하고 helper 정의를 재작성하지 마세요."
+            if _text_value(function_case_helper_code).strip()
+            else ""
+        ),
         "output_schema": json.dumps({"code": "수정된 pandas code. 반드시 result 또는 result_df를 설정한다."}, ensure_ascii=False, indent=2),
     }
     try:
@@ -2385,16 +2709,125 @@ def _safe_numpy_namespace() -> Any:
 # 함수 설명: `_safe_import_trace()`는 허용 import 정규화 내역을 실행 근거에 남길 수 있는 작은 trace로 만듭니다.
 def _safe_import_trace(value: dict[str, Any]) -> dict[str, Any]:
     removed = [str(item) for item in value.get("removed_imports", []) if str(item).strip()]
-    if not removed:
+    trusted_override = (
+        deepcopy(value.get("trusted_helper_override"))
+        if isinstance(value.get("trusted_helper_override"), dict)
+        else {}
+    )
+    if not removed and not trusted_override:
         return {}
     namespaces = ["pd"]
     if value.get("numpy_requested") is True:
         namespaces.append("np_safe")
-    return {
+    trace = {
         "policy": str(value.get("policy") or SAFE_IMPORT_POLICY),
         "removed_imports": removed,
         "provided_namespaces": namespaces,
     }
+    if trusted_override:
+        trace["trusted_helper_override"] = trusted_override
+    return trace
+
+
+# 함수 설명: 선택된 helper는 실행기가 안전하게 주입하고, LLM이 같은 이름을 재정의하지 못하게 합니다.
+def _prepare_trusted_function_case_helpers(
+    generated_code: Any,
+    helper_code_value: Any,
+) -> tuple[str, str, dict[str, Any], str]:
+    code = str(generated_code or "")
+    helper_code = _text_value(helper_code_value).strip()
+    if not helper_code:
+        return code, "", {}, ""
+    try:
+        helper_tree = ast.parse(helper_code)
+    except SyntaxError as exc:
+        return code, "", {}, f"선택 Function Case helper 코드 구문이 유효하지 않습니다: {exc}"
+    helper_nodes = [
+        node
+        for node in helper_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    if not helper_nodes or len(helper_nodes) != len(helper_tree.body):
+        return code, "", {}, "선택 Function Case helper에는 최상위 함수 정의만 허용됩니다."
+    trusted_names = [node.name for node in helper_nodes]
+    if len(trusted_names) != len(set(trusted_names)):
+        return code, "", {}, "선택 Function Case helper 이름이 중복되었습니다."
+    helper_guard_error = _guard_code(helper_code)
+    if helper_guard_error:
+        return code, "", {}, f"선택 Function Case helper 안전성 검증에 실패했습니다: {helper_guard_error}"
+    try:
+        generated_tree = ast.parse(code)
+    except SyntaxError as exc:
+        return code, "", {}, f"생성 pandas 코드 구문이 유효하지 않습니다: {exc}"
+
+    trusted_name_set = set(trusted_names)
+    removed_names: list[str] = []
+    removal_ranges: list[tuple[int, int]] = []
+    for node in generated_tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in trusted_name_set:
+            decorated_lines = [int(item.lineno) for item in node.decorator_list]
+            start_line = min([int(node.lineno), *decorated_lines])
+            end_line = int(getattr(node, "end_lineno", node.lineno))
+            removal_ranges.append((start_line, end_line))
+            removed_names.append(node.name)
+
+    normalized_lines = code.splitlines(keepends=True)
+    for start_line, end_line in removal_ranges:
+        for line_index in range(max(0, start_line - 1), min(len(normalized_lines), end_line)):
+            line = normalized_lines[line_index]
+            content = line.rstrip("\r\n")
+            normalized_lines[line_index] = line[len(content) :]
+    sanitized = "".join(normalized_lines)
+    try:
+        sanitized_tree = ast.parse(sanitized)
+    except SyntaxError as exc:
+        return code, "", {}, f"trusted helper 재정의 제거 후 pandas 코드가 유효하지 않습니다: {exc}"
+    rebound = _top_level_rebound_trusted_names(sanitized_tree, trusted_name_set)
+    if rebound:
+        return (
+            code,
+            "",
+            {},
+            "생성 pandas 코드가 선택 Function Case helper 이름을 함수 정의 외 방식으로 덮어씁니다: "
+            + ", ".join(rebound),
+        )
+    return (
+        sanitized,
+        helper_code,
+        {
+            "policy": "canonical_selected_helper_overrides_generated_definition",
+            "trusted_helper_names": trusted_names,
+            "removed_generated_definitions": list(dict.fromkeys(removed_names)),
+        },
+        "",
+    )
+
+
+# 함수 설명: 모듈 실행 범위에서 trusted helper 이름을 다시 바인딩하는 비함수 구문을 찾습니다.
+def _top_level_rebound_trusted_names(tree: ast.Module, trusted_names: set[str]) -> list[str]:
+    rebound: list[str] = []
+
+    # 함수 설명: `inspect()`는 생성 코드가 trusted helper 이름을 다른 값으로 다시 바인딩하는지 재귀적으로 확인합니다.
+    def inspect(node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in trusted_names and node.name not in rebound:
+                rebound.append(node.name)
+            return
+        if isinstance(node, ast.Lambda):
+            return
+        if isinstance(node, ast.ClassDef):
+            if node.name in trusted_names and node.name not in rebound:
+                rebound.append(node.name)
+            return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            if node.id in trusted_names and node.id not in rebound:
+                rebound.append(node.id)
+        for child in ast.iter_child_nodes(node):
+            inspect(child)
+
+    for statement in tree.body:
+        inspect(statement)
+    return sorted(rebound)
 
 
 # 함수 설명: `_guard_code()`는 생성된 pandas 코드 AST를 검사해 import·파일·네트워크·위험 builtin 사용을 차단합니다.
@@ -3095,6 +3528,491 @@ def _recorded_output(key: Any, value: Any, description: Any = "", role: Any = ""
     )
 
 
+# 함수 설명: 실행 전에 원본 source의 제한된 미리보기만 만들어 오류 시에도 복원합니다.
+INTERMEDIATE_DOWNLOAD_KEY = "last_successful"
+
+
+# 함수 설명: `_project_intermediate_checkpoint()`는 정상 완료 시 계산 직전 결과를,
+# 오류 시 마지막 정상 결과를 하나만 선택해 화면 미리보기와 다운로드용 전체 행으로 분리합니다.
+# 답변 모델에는 미리보기만 전달하고 전체 행은 runtime key로만 보존합니다.
+def _project_intermediate_checkpoint(
+    checkpoints: Any,
+    checkpoint_values: dict[str, Any],
+    payload: dict[str, Any],
+    filter_plan: Any,
+    *,
+    completed: bool,
+    final_rows: list[dict[str, Any]] | None = None,
+    final_columns: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    items = [item for item in checkpoints if isinstance(item, dict)] if isinstance(checkpoints, list) else []
+    if not items:
+        return [], {}, {}
+
+    selected: dict[str, Any] | None = None
+    if completed:
+        multi_source_projection = _project_multi_source_intermediate_checkpoints(
+            items,
+            checkpoint_values,
+            payload,
+            filter_plan,
+            final_rows or [],
+            final_columns or [],
+        )
+        if multi_source_projection is not None:
+            return multi_source_projection
+        # A successful aggregate may be identical to its final contract.  In
+        # that case, publish the closest earlier checkpoint that differs from
+        # the final table, normally the fully filtered source frame.
+        for item in reversed(items):
+            key = str(item.get("key") or "").strip()
+            if not key or key not in checkpoint_values:
+                continue
+            candidate_rows, candidate_columns = _result_to_rows(
+                checkpoint_values.get(key),
+                payload,
+            )
+            if not _intermediate_matches_final_result(
+                candidate_rows,
+                candidate_columns,
+                final_rows or [],
+                final_columns or [],
+                payload,
+            ):
+                selected = item
+                break
+    if selected is None:
+        for item in reversed(items):
+            if str(item.get("key") or "") in checkpoint_values:
+                selected = item
+                break
+    if selected is None:
+        # Early validation failures can occur before a DataFrame is built.  A
+        # preview is still useful, but there is no full-row download artifact.
+        fallback = deepcopy(items[-1])
+        fallback["description"] = _intermediate_checkpoint_label(
+            fallback,
+            payload,
+            filter_plan,
+            completed=False,
+        )
+        return [fallback], {}, {}
+
+    key = str(selected.get("key") or "").strip()
+    rows, columns = _result_to_rows(checkpoint_values.get(key), payload)
+    # 성공한 경우에만 최종 표와 비교한다. 오류 때는 마지막 정상 산출물을
+    # 항상 남겨야 원인 확인과 다운로드가 가능하다.
+    visible = deepcopy(selected)
+    selected_role = str(visible.get("role") or "").strip()
+    if completed and selected_role in {"filtered_source", "step_output"}:
+        criteria = _intermediate_criteria_fields(payload, filter_plan)
+        visible["description"] = (
+            "최종 집계 전 중간 데이터"
+            if criteria
+            else "최종 집계 전 중간 데이터"
+        )
+        if criteria:
+            visible["description"] += f" ({', '.join(criteria)} 필터 적용 후)"
+    elif completed and selected_role == "source_input":
+        visible["description"] = "최종 집계 전 중간 데이터"
+    else:
+        visible["description"] = _intermediate_checkpoint_label(
+            visible,
+            payload,
+            filter_plan,
+            completed=completed,
+        )
+    visible["row_count"] = len(rows)
+    visible["columns"] = columns
+    visible["preview_rows"] = deepcopy(rows[:TRACE_PREVIEW_LIMIT])
+    visible["download_key"] = INTERMEDIATE_DOWNLOAD_KEY
+
+    artifact = {
+        "rows": _json_ready(rows),
+        "columns": [str(column) for column in columns],
+        "row_count": len(rows),
+        "label": visible["description"],
+        "role": str(visible.get("role") or ""),
+        "checkpoint_key": key,
+    }
+    metadata = {
+        INTERMEDIATE_DOWNLOAD_KEY: {
+            "label": visible["description"],
+            "role": str(visible.get("role") or ""),
+            "checkpoint_key": key,
+            "row_count": len(rows),
+            "columns": [str(column) for column in columns],
+        }
+    }
+    return [visible], {INTERMEDIATE_DOWNLOAD_KEY: artifact}, metadata
+
+
+# 함수 설명: 다중 source 분석이 정상 완료되면 source별 필터 적용 데이터와 중복되지 않는 결합·계산 결과를 함께 선택합니다.
+def _project_multi_source_intermediate_checkpoints(
+    items: list[dict[str, Any]],
+    checkpoint_values: dict[str, Any],
+    payload: dict[str, Any],
+    filter_plan: Any,
+    final_rows: list[dict[str, Any]],
+    final_columns: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]] | None:
+    """Publish filtered inputs per source and a non-duplicate derived result."""
+    source_aliases = _intermediate_retrieval_source_aliases(payload)
+    if len(source_aliases) < 2:
+        return None
+
+    selected: list[dict[str, Any]] = []
+    for source_alias in source_aliases:
+        item = _latest_intermediate_item(
+            items,
+            checkpoint_values,
+            (f"filtered:{source_alias}", f"source:{source_alias}"),
+        )
+        if item is not None:
+            selected.append(item)
+    if len(selected) < 2:
+        return None
+
+    computed = _latest_intermediate_item(
+        items,
+        checkpoint_values,
+        ("computed_result",),
+    )
+    if computed is not None:
+        computed_key = str(computed.get("key") or "").strip()
+        computed_rows, computed_columns = _result_to_rows(
+            checkpoint_values.get(computed_key),
+            payload,
+        )
+        if not _intermediate_matches_final_result(
+            computed_rows,
+            computed_columns,
+            final_rows,
+            final_columns,
+            payload,
+        ):
+            selected.append(computed)
+
+    return _build_intermediate_projection(
+        selected,
+        checkpoint_values,
+        payload,
+        filter_plan,
+        completed=True,
+        multi_source=True,
+    )
+
+
+# 함수 설명: 지정된 checkpoint key 후보 중 실제 값이 남아 있는 가장 최근 항목을 찾습니다.
+def _latest_intermediate_item(
+    items: list[dict[str, Any]],
+    checkpoint_values: dict[str, Any],
+    keys: tuple[str, ...],
+) -> dict[str, Any] | None:
+    for key in keys:
+        for item in reversed(items):
+            item_key = str(item.get("key") or "").strip()
+            if item_key == key and item_key in checkpoint_values:
+                return item
+    return None
+
+
+# 함수 설명: 선택된 중간 checkpoint들을 화면 preview와 개별 CSV 다운로드 artifact로 분리해 구성합니다.
+def _build_intermediate_projection(
+    selected_items: list[dict[str, Any]],
+    checkpoint_values: dict[str, Any],
+    payload: dict[str, Any],
+    filter_plan: Any,
+    *,
+    completed: bool,
+    multi_source: bool,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    visible_items: list[dict[str, Any]] = []
+    artifacts: dict[str, dict[str, Any]] = {}
+    metadata: dict[str, dict[str, Any]] = {}
+    used_download_keys: set[str] = set()
+
+    for index, selected in enumerate(selected_items):
+        key = str(selected.get("key") or "").strip()
+        if not key or key not in checkpoint_values:
+            continue
+        rows, columns = _result_to_rows(checkpoint_values.get(key), payload)
+        download_key = _intermediate_download_key(selected, index, used_download_keys)
+        visible = deepcopy(selected)
+        if multi_source:
+            visible["description"] = _multi_source_intermediate_label(
+                visible,
+                payload,
+                filter_plan,
+            )
+        else:
+            visible["description"] = _intermediate_checkpoint_label(
+                visible,
+                payload,
+                filter_plan,
+                completed=completed,
+            )
+        visible["row_count"] = len(rows)
+        visible["columns"] = columns
+        visible["preview_rows"] = deepcopy(rows[:TRACE_PREVIEW_LIMIT])
+        visible["download_key"] = download_key
+        visible_items.append(visible)
+        artifacts[download_key] = {
+            "rows": _json_ready(rows),
+            "columns": [str(column) for column in columns],
+            "row_count": len(rows),
+            "label": visible["description"],
+            "role": str(visible.get("role") or ""),
+            "checkpoint_key": key,
+        }
+        metadata[download_key] = {
+            "label": visible["description"],
+            "role": str(visible.get("role") or ""),
+            "checkpoint_key": key,
+            "row_count": len(rows),
+            "columns": [str(column) for column in columns],
+        }
+    return visible_items, artifacts, metadata
+
+
+# 함수 설명: source별 중간 데이터와 계산 결과가 충돌하지 않도록 안정적인 다운로드 key를 만듭니다.
+def _intermediate_download_key(
+    item: dict[str, Any],
+    index: int,
+    used: set[str],
+) -> str:
+    role = str(item.get("role") or "").strip()
+    source_alias = _intermediate_source_alias(item)
+    if role in {"source_input", "filtered_source"} and source_alias:
+        base = f"source_{_safe_name(source_alias)}"
+    elif role == "computed_result":
+        base = "pre_contract_result"
+    else:
+        base = f"intermediate_{index + 1}"
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+# 함수 설명: checkpoint key에 기록된 source 또는 filter 접두사에서 source alias를 복원합니다.
+def _intermediate_source_alias(item: dict[str, Any]) -> str:
+    key = str(item.get("key") or "").strip()
+    for prefix in ("filtered:", "source:", "last_available:"):
+        if key.startswith(prefix):
+            return key[len(prefix):].strip()
+    return ""
+
+
+# 함수 설명: 현재 intent의 retrieval job에서 중복 없이 source alias 목록을 수집합니다.
+def _intermediate_retrieval_source_aliases(payload: dict[str, Any]) -> list[str]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    aliases: list[str] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if alias and alias.casefold() not in {item.casefold() for item in aliases}:
+            aliases.append(alias)
+    return aliases
+
+
+# 함수 설명: 다중 source 중간 결과의 dataset·필터·계산 단계를 사람이 읽을 수 있는 표시명으로 만듭니다.
+def _multi_source_intermediate_label(
+    item: dict[str, Any],
+    payload: dict[str, Any],
+    filter_plan: Any,
+) -> str:
+    role = str(item.get("role") or "").strip()
+    source_alias = _intermediate_source_alias(item)
+    if role in {"source_input", "filtered_source"} and source_alias:
+        source_name = _intermediate_source_name(source_alias, payload)
+        criteria = _intermediate_criteria_fields_for_source(
+            payload,
+            filter_plan,
+            source_alias,
+        )
+        if role == "filtered_source" and criteria:
+            return f"{source_name} — 최종 집계 전 중간 데이터 ({', '.join(criteria)} 필터 적용 후)"
+        return f"{source_name} — 최종 집계 전 중간 데이터"
+    if role == "computed_result":
+        return "결합·계산 결과 (최종 계약 적용 전)"
+    return _intermediate_checkpoint_label(item, payload, filter_plan, completed=True)
+
+
+# 함수 설명: source alias에 연결된 dataset key를 찾아 중간 결과의 사용자 표시명으로 사용합니다.
+def _intermediate_source_name(source_alias: str, payload: dict[str, Any]) -> str:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if alias.casefold() == source_alias.casefold():
+            return str(job.get("dataset_key") or source_alias).strip()
+    return source_alias
+
+
+# 함수 설명: 특정 source에 실제 적용된 필터와 조회 파라미터 컬럼을 중간 결과 설명용으로 수집합니다.
+def _intermediate_criteria_fields_for_source(
+    payload: dict[str, Any],
+    filter_plan: Any,
+    source_alias: str,
+) -> list[str]:
+    fields: list[str] = []
+
+    # 함수 설명: source 조건 컬럼을 공백과 대소문자 중복 없이 순서대로 추가합니다.
+    def append(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text.casefold() not in {item.casefold() for item in fields}:
+            fields.append(text)
+
+    for item in filter_plan if isinstance(filter_plan, list) else []:
+        if not isinstance(item, dict):
+            continue
+        item_alias = str(item.get("source_alias") or item.get("alias") or "").strip()
+        if item_alias and item_alias.casefold() != source_alias.casefold():
+            continue
+        conditions = item.get("conditions") if isinstance(item.get("conditions"), list) else []
+        for condition in conditions:
+            if isinstance(condition, dict):
+                append(condition.get("field") or condition.get("column"))
+
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if alias.casefold() != source_alias.casefold():
+            continue
+        for condition in _filter_conditions(job.get("filters")):
+            append(condition.get("field"))
+        required_params = job.get("required_params") if isinstance(job.get("required_params"), dict) else {}
+        for field, value in required_params.items():
+            if value not in (None, "", [], {}):
+                append(field)
+    return fields[:12]
+
+
+# 함수 설명: `_intermediate_matches_final_result()`는 컬럼 alias와 숫자 표현을
+# 정규화해 중간 계산 표가 최종 결과와 의미적으로 같은지 판정하고 중복 표시를 막습니다.
+def _intermediate_matches_final_result(
+    checkpoint_rows: list[dict[str, Any]],
+    checkpoint_columns: list[str],
+    final_rows: list[dict[str, Any]],
+    final_columns: list[str],
+    payload: dict[str, Any],
+) -> bool:
+    if len(checkpoint_rows) != len(final_rows) or not checkpoint_columns or not final_columns:
+        return False
+
+    checkpoint_by_key = {
+        str(column).strip().casefold(): str(column)
+        for column in checkpoint_columns
+        if str(column).strip()
+    }
+    pairs: list[tuple[str, str]] = []
+    used_checkpoint_columns: set[str] = set()
+    for final_column in final_columns:
+        text = str(final_column).strip()
+        if not text:
+            return False
+        matched = next(
+            (
+                checkpoint_by_key.get(str(candidate).strip().casefold())
+                for candidate in _equivalent_column_names(text, payload)
+                if checkpoint_by_key.get(str(candidate).strip().casefold())
+            ),
+            "",
+        )
+        if not matched or matched in used_checkpoint_columns:
+            return False
+        pairs.append((matched, text))
+        used_checkpoint_columns.add(matched)
+
+    # 중간 결과에 최종 표에 없는 컬럼이 있으면 사용자가 확인할 의미 있는
+    # 계산 정보가 있으므로 숨기지 않는다.
+    if len(used_checkpoint_columns) != len(checkpoint_by_key):
+        return False
+    for checkpoint_row, final_row in zip(checkpoint_rows, final_rows):
+        if not isinstance(checkpoint_row, dict) or not isinstance(final_row, dict):
+            return False
+        for checkpoint_column, final_column in pairs:
+            if _json_ready(checkpoint_row.get(checkpoint_column)) != _json_ready(final_row.get(final_column)):
+                return False
+    return True
+
+
+# 함수 설명: `_intermediate_checkpoint_label()`은 실제 적용된 필터·조회 파라미터를
+# 기준으로 선택된 중간 결과의 짧고 일관된 사용자 표시명을 생성합니다.
+def _intermediate_checkpoint_label(
+    item: dict[str, Any],
+    payload: dict[str, Any],
+    filter_plan: Any,
+    *,
+    completed: bool,
+) -> str:
+    role = str(item.get("role") or "").strip()
+    criteria = _intermediate_criteria_fields(payload, filter_plan)
+    suffix = f" ({', '.join(criteria)} 필터 적용 후)" if criteria else ""
+    if completed:
+        return "최종 계약 적용 전 계산 결과" + suffix
+    if role == "computed_result":
+        return "오류 전 마지막 정상 계산 결과" + suffix
+    if role in {"filtered_source", "step_output"}:
+        return "오류 전 마지막 정상 단계 결과" + suffix
+    if role == "last_available_source":
+        return "오류 전 마지막 확인 가능 데이터"
+    description = str(item.get("description") or "").strip()
+    return description or "오류 전 마지막 확인 가능 데이터"
+
+
+# 함수 설명: `_intermediate_criteria_fields()`는 중간 결과 설명에 넣을 실제 필터와
+# 조회 파라미터 컬럼명을 순서와 중복 없이 수집합니다.
+def _intermediate_criteria_fields(payload: dict[str, Any], filter_plan: Any) -> list[str]:
+    fields: list[str] = []
+
+    # 함수 설명: `append()`는 실제 조건 컬럼명을 공백·대소문자 중복 없이 추가합니다.
+    def append(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text.casefold() not in {item.casefold() for item in fields}:
+            fields.append(text)
+
+    for item in filter_plan if isinstance(filter_plan, list) else []:
+        conditions = item.get("conditions") if isinstance(item, dict) else []
+        for condition in conditions if isinstance(conditions, list) else []:
+            if isinstance(condition, dict):
+                append(condition.get("field") or condition.get("column"))
+
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        for condition in _filter_conditions(job.get("filters")):
+            append(condition.get("field"))
+        required_params = job.get("required_params") if isinstance(job.get("required_params"), dict) else {}
+        for field, value in required_params.items():
+            if value not in (None, "", [], {}):
+                append(field)
+    return fields[:12]
+
+
+# 함수 설명: `_initial_intermediate_results()`는 pandas와 결과 계약 실행 전 원본의
+# 제한된 미리보기 후보를 만들며, 이후에는 선택된 한 결과만 화면에 남습니다.
+def _initial_intermediate_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    return [
+        _recorded_output(f"source:{alias}", rows, "조회된 원본 데이터", "source_input")
+        for alias, rows in list(runtime_sources.items())[:8]
+    ]
+
+
 # 함수 설명: `_recorded_function_case()`는 Function Case 실행 결과를 함수명·입력·행 수·preview가 포함된 trace 항목으로 만듭니다.
 def _recorded_function_case(function_name: Any, input_text: Any, result_value: Any, description: Any = "") -> dict[str, Any]:
     rows, columns, row_count = _preview_rows_columns_count(result_value)
@@ -3128,6 +4046,37 @@ def _preview_rows_columns_count(value: Any) -> tuple[list[dict[str, Any]], list[
             pass
     rows, columns = _result_to_rows(value)
     return rows[:TRACE_PREVIEW_LIMIT], columns, len(rows)
+
+
+# 함수 설명: 계약 오류가 나도 마지막으로 확정된 source/filter 프리뷰를 API data로 복원합니다.
+def _partial_data_from_intermediate(value: Any) -> dict[str, Any]:
+    items = [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+    preferred_roles = (
+        "computed_result",
+        "last_available_source",
+        "step_output",
+        "filtered_source",
+        "source_input",
+    )
+    for role in preferred_roles:
+        matches = [item for item in items if str(item.get("role") or "") == role]
+        if not matches:
+            continue
+        item = matches[-1]
+        rows = item.get("preview_rows") if isinstance(item.get("preview_rows"), list) else []
+        columns = [str(column) for column in item.get("columns", []) if str(column).strip()]
+        if not columns and rows:
+            columns = [str(column) for column in rows[0]] if isinstance(rows[0], dict) else []
+        return {
+            "columns": columns,
+            "rows": deepcopy(rows[:TRACE_PREVIEW_LIMIT]),
+            "row_count": int(item.get("row_count") or len(rows)),
+            "data_ref": "",
+            "partial": True,
+            "preview_only": True,
+            "stage": str(item.get("key") or role),
+        }
+    return {}
 
 
 # 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.
@@ -3172,9 +4121,27 @@ def _analysis_error(
     row_match_plan: list[dict[str, Any]] | None = None,
     row_match_preamble: str = "",
     response_parse: dict[str, Any] | None = None,
+    intermediate_results: Any = None,
 ) -> dict[str, Any]:
     safe_import_info = safe_imports if isinstance(safe_imports, dict) else {}
     helper_trace = _runtime_helper_trace(code)
+    bounded_intermediate_results = [
+        deepcopy(item)
+        for item in (
+            intermediate_results
+            if isinstance(intermediate_results, list)
+            else payload.get("intermediate_results")
+            if isinstance(payload.get("intermediate_results"), list)
+            else []
+        )
+        if isinstance(item, dict)
+    ][-1:]
+    if bounded_intermediate_results:
+        payload["intermediate_results"] = bounded_intermediate_results
+        if not isinstance(payload.get("data"), dict) or not payload.get("data", {}).get("rows"):
+            partial_data = _partial_data_from_intermediate(bounded_intermediate_results)
+            if partial_data:
+                payload["data"] = partial_data
     payload["analysis"] = {
         "status": "error",
         "row_count": 0,
@@ -3184,6 +4151,7 @@ def _analysis_error(
         "repairable_errors": [message],
         "used_helpers": helper_trace["used_helpers"],
         "step_outputs": [],
+        "intermediate_results": deepcopy(bounded_intermediate_results),
         "function_case_results": [],
     }
     payload.setdefault("trace", {}).setdefault("errors", []).append({"type": error_type, "message": message})
@@ -3198,6 +4166,7 @@ def _analysis_error(
         "pandas_filter_preamble": filter_preamble,
         "pandas_filter_plan": filter_plan or [],
         "row_match_plan": row_match_plan or [],
+        "intermediate_results": deepcopy(bounded_intermediate_results),
         "used_helpers": helper_trace["used_helpers"],
         "helper_sources": helper_trace["helper_sources"],
         "error": {"type": error_type, "message": message, "traceback_summary": tb[:1000]},

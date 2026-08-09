@@ -1972,6 +1972,10 @@ def _project_stage(plan: dict[str, Any], stage: dict[str, Any]) -> None:
     stage_metadata_refs = stage.get("metadata_refs")
     if isinstance(stage_metadata_refs, list):
         plan["metadata_refs"] = deepcopy(stage_metadata_refs)
+    # The active stage's catalog choices are part of the validated Typed IR.
+    # Downstream normalizers may reconcile weak flat plans, but must not swap a
+    # stage source after the dependency compiler has selected it.
+    plan["_continuation_stage_active"] = True
 
 
 # 주요 함수: 공개 resume 계약의 버전·plan id/hash·stage 참조를 저장 계획과 비교합니다.
@@ -2046,13 +2050,39 @@ def _parse_json_response(value: Any) -> dict[str, Any]:
         try:
             parsed = json.loads(candidate)
         except Exception:
-            continue
+            repaired = _repair_common_json_syntax(candidate)
+            if repaired == candidate:
+                continue
+            try:
+                parsed = json.loads(repaired)
+            except Exception:
+                continue
         if isinstance(parsed, dict):
             return parsed
     raise ValueError("의도 분석 응답에서 JSON object를 찾을 수 없습니다.")
 
 
 # 함수 설명: 요청 payload에서 구조화된 continuation 입력만 복사합니다.
+# 함수 설명: `_repair_common_json_syntax()`는 모델이 키 앞에 붙인 하이픈,
+# 따옴표를 생략한 단순 object key, trailing comma만 제한적으로 보정합니다.
+# 실행 코드나 값 표현은 평가하지 않고 JSON 구조만 복구해 재호출 없이
+# 다음 계약 검증 단계로 넘깁니다.
+def _repair_common_json_syntax(value: str) -> str:
+    text = str(value or "")
+    repaired = re.sub(
+        r"([,{]\s*)-([A-Za-z_][A-Za-z0-9_]*)\s*:",
+        r'\1"\2":',
+        text,
+    )
+    repaired = re.sub(
+        r"([,{]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:",
+        r'\1"\2":',
+        repaired,
+    )
+    return re.sub(r",\s*([}\]])", r"\1", repaired)
+
+
+# 함수 설명: continuation 요청 영역만 추출해 stage 재개 계약을 안전하게 처리합니다.
 def _continuation_request(payload: dict[str, Any]) -> dict[str, Any]:
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     continuation = request.get("continuation")

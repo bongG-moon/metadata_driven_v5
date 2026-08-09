@@ -182,6 +182,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         intent_model,
         [
             ("data", "payload", "요청 페이로드", True, None),
+            ("data", "metadata_candidates", "메타데이터 후보", False, None),
             ("message", "intent_prompt", "의도 분석 프롬프트", False, ""),
             ("model", "model", "의도 분석 언어 모델", False, None),
             ("secret", "api_key", "의도 모델 API 키", False, "GOOGLE_API_KEY"),
@@ -325,6 +326,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         (TABLE_CATALOG_LOADER_NODE_ID, "table_catalog_items", CATALOG_CLOSURE_NODE_ID, "table_catalog_items"),
         (CATALOG_CLOSURE_NODE_ID, "metadata_candidates_out", INTENT_VARIABLES_NODE_ID, "metadata_candidates_in"),
         (CATALOG_CLOSURE_NODE_ID, "metadata_candidates_out", INTENT_NORMALIZER_NODE_ID, "metadata_candidates"),
+        (CATALOG_CLOSURE_NODE_ID, "metadata_candidates_out", INTENT_MODEL_NODE_ID, "metadata_candidates"),
         (CATALOG_CLOSURE_NODE_ID, "metadata_candidates_out", COMPILER_NODE_ID, "metadata_candidates"),
         (COMPILER_NODE_ID, "compiled_response", INTENT_NORMALIZER_NODE_ID, "llm_response"),
         (RESULT_LOADER_NODE_ID, "payload_out", ALIAS_NORMALIZER_NODE_ID, "payload"),

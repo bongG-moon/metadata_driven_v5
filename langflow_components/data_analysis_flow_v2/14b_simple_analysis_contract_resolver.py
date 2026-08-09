@@ -255,7 +255,7 @@ def resolve_simple_analysis_contract(
     calculation = _calculation(recipe_step, aggregation_step, output_contract, max_pivot_columns)
     if not ordering:
         ordering = _calculation_ordering(calculation)
-    result_columns = _result_columns(output_contract, projection, group_by, metrics, calculation)
+    result_columns = _result_columns(recipe, output_contract, projection, group_by, metrics, calculation)
     validation_errors = _validate_contract_parts(
         recipe,
         columns,
@@ -747,13 +747,27 @@ def _projection(steps: list[dict[str, Any]], output_contract: dict[str, Any]) ->
 
 # 함수 설명: `_result_columns()`는 컬럼에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
 def _result_columns(
+    recipe: str,
     output_contract: dict[str, Any],
     projection: list[str],
     group_by: list[str],
     metrics: list[dict[str, Any]],
     calculation: dict[str, Any],
 ) -> list[str]:
+    # A concrete select/projection step is the executable output shape for a
+    # detail query.  Model-produced ``output_contract.result_columns`` can
+    # contain catalog default columns that were never selected (for example a
+    # HOLD detail request that only asks for LOT_ID and quantities).  Letting
+    # those extras override the select step makes the Fast executor reject an
+    # otherwise valid filtered frame at the final contract check.  Aggregate
+    # recipes still keep the declared contract because their grain/metrics are
+    # produced by the aggregation itself.
+    recipe_hint = str(recipe or "").strip().lower()
     configured = _string_list(output_contract.get("result_columns"))
+    if projection and recipe_hint in {"detail_query", "latest_earliest", "distinct_summary"}:
+        metric_columns = [str(item.get("output_column") or "").strip() for item in metrics]
+        derived = _string_list(calculation.get("output_columns"))
+        return _dedupe([*projection, *metric_columns, *derived])
     if configured:
         return configured
     metric_columns = [str(item.get("output_column") or "").strip() for item in metrics]

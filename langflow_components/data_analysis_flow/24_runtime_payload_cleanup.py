@@ -23,6 +23,8 @@ RUNTIME_BUFFER_KEYS = (
     "_runtime_rows_by_alias",
     "_full_result_rows",
     "_runtime_result_rows",
+    "_intermediate_download_rows",
+    "_intermediate_download_metadata",
 )
 GC_MODES = ("disabled", "generation_0", "full")
 

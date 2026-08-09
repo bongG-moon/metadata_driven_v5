@@ -76,6 +76,12 @@ def hydrate_retrieval_jobs(
         if (key := _dataset_key(item))
     }
     mode = _mode(retrieval_mode)
+    metadata_issue = _table_catalog_metadata_issue(table_catalog_items_value, catalog_items)
+    if metadata_issue:
+        # This is a second, independent safety boundary. It protects an
+        # already-imported/stale intent router from turning a failed MongoDB
+        # metadata load into an invented dummy retrieval job.
+        return _blocked_for_catalog_metadata(next_payload, plan, metadata_issue, mode)
     request = next_payload.get("request")
     if not isinstance(request, dict):
         request = {}
@@ -115,14 +121,9 @@ def hydrate_retrieval_jobs(
                 dataset_key=dataset_key,
                 index=index,
             )
-            if mode == "live":
-                errors.append(issue)
-                continue
-            warnings.append({**issue, "message": issue["message"] + " dummy mode에서는 source_config 없이 계속합니다."})
-            clean_job["source_type"] = "dummy"
-            clean_job["trusted_catalog"] = False
-            clean_job["dummy_only"] = True
-            hydrated.append(clean_job)
+            # Dummy mode is a connector substitute for registered catalogs,
+            # never permission to execute a model-invented dataset key.
+            errors.append(issue)
             continue
 
         catalog_payload = _dict(catalog_item.get("payload")) or catalog_item
@@ -267,6 +268,97 @@ def _catalog_items(value: Any) -> list[dict[str, Any]]:
     if not isinstance(items, list) and isinstance(data.get("metadata_candidates"), dict):
         items = data["metadata_candidates"].get("table_catalog_items")
     return [deepcopy(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _table_catalog_metadata_issue(value: Any, catalog_items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Classify loader failure, empty registration, and safe provider detail."""
+
+    data = getattr(value, "data", value)
+    if not isinstance(data, dict):
+        return {}
+    load = data.get("metadata_load") if isinstance(data.get("metadata_load"), dict) else {}
+    if not load:
+        # Direct library callers may supply a plain catalog list. Production
+        # graph inputs always contain loader evidence and therefore fail closed.
+        return {}
+    status = str(load.get("status") or "").strip().lower()
+    errors = load.get("errors") if isinstance(load.get("errors"), list) else []
+    first_error = next((item for item in errors if isinstance(item, dict)), {})
+    if status in {"error", "failed", "failure", "invalid", "skipped"}:
+        error_type = str(first_error.get("type") or status or "metadata_load_error").strip()
+        detail = _safe_metadata_error_detail(first_error.get("message") or load.get("message") or "")
+        return {
+            "type": "table_catalog_metadata_unavailable",
+            "reason": "metadata_connection_or_loader_failed",
+            "metadata_kind": "table_catalog_items",
+            "metadata_error_type": error_type,
+            "table_catalog_load_status": status or "error",
+            "metadata_error_detail": detail,
+            "message": (
+                "메타데이터 연결 정보를 확인해 주세요. 분석에 필요한 Table Catalog를 읽지 못해 분석을 시작하지 않았습니다. "
+                f"상세 사유: MongoDB Table Catalog 조회 실패 ({error_type}) - {detail}"
+            ),
+        }
+    if status == "ok" and not catalog_items:
+        return {
+            "type": "table_catalog_metadata_unavailable",
+            "reason": "no_active_table_catalog",
+            "metadata_kind": "table_catalog_items",
+            "table_catalog_load_status": "ok",
+            "message": (
+                "MongoDB 메타데이터 연결은 성공했지만 활성 Table Catalog에 등록된 데이터셋이 없습니다. "
+                "데이터셋 등록 상태와 collection의 status=active 설정을 확인해 주세요."
+            ),
+        }
+    return {}
+
+
+def _blocked_for_catalog_metadata(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    issue: dict[str, Any],
+    retrieval_mode: str,
+) -> dict[str, Any]:
+    """Purge untrusted plan data and preserve one explicit blocked cause."""
+
+    blocked_plan = deepcopy(plan)
+    blocked_plan["analysis_kind"] = "metadata_catalog_unavailable"
+    blocked_plan["retrieval_jobs"] = []
+    blocked_plan["pandas_execution_plan"] = []
+    blocked_plan["metadata_refs"] = []
+    existing_errors = [item for item in _list(blocked_plan.get("validation_errors")) if isinstance(item, dict)]
+    blocked_plan["validation_errors"] = [deepcopy(issue), *existing_errors]
+    payload["intent_plan"] = blocked_plan
+    payload["metadata_refs"] = []
+    payload["execution_gate"] = {
+        "stage": "04a_trusted_retrieval_job_hydrator",
+        "status": "blocked",
+        "reason": "table_catalog_metadata_unavailable",
+        "critical_failures": [deepcopy(issue)],
+        "pandas_execution_allowed": False,
+        "model_response_policy": "ignore",
+    }
+    payload["answer_message"] = str(issue.get("message") or "Table Catalog 메타데이터를 확인하지 못했습니다.")
+    trace = payload.setdefault("trace", {})
+    trace.setdefault("errors", []).append(deepcopy(issue))
+    trace.setdefault("inspection", {})["catalog_hydration"] = {
+        "stage": "04a_trusted_retrieval_job_hydrator",
+        "status": "error",
+        "retrieval_mode": retrieval_mode,
+        "input_job_count": len(_list(plan.get("retrieval_jobs"))),
+        "hydrated_job_count": 0,
+        "catalog_item_count": 0,
+        "metadata_issue": deepcopy(issue),
+    }
+    return payload
+
+
+def _safe_metadata_error_detail(value: Any) -> str:
+    """Retain a bounded diagnostic while preventing a connection URI leak."""
+
+    text = " ".join(str(value or "").split())
+    text = re.sub(r"mongodb(?:\+srv)?://[^\s@/]+@", "mongodb://***@", text, flags=re.IGNORECASE)
+    return text[:500] if text else "상세 오류 정보가 없습니다."
 
 
 # 함수 설명: `_dataset_key()`는 key 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.
@@ -635,6 +727,28 @@ def _output_contract_with_default_detail(value: Any, jobs: list[dict[str, Any]])
     }
     result_mode = str(contract.get("result_mode") or contract.get("mode") or "").strip().lower()
     if result_mode not in {"detail", "entity_list"}:
+        return contract
+
+    # An explicitly declared result shape is authoritative.  Catalog
+    # ``default_detail_columns`` are only a fallback for an unshaped detail
+    # request; appending them to a strict/requested projection turns a valid
+    # filtered result into a false missing-column contract error (for example,
+    # a HOLD quantity query does not have to return every LOT status field).
+    explicit_result_columns = _string_list(
+        contract.get("result_columns") or contract.get("columns")
+    )
+    explicit_required_columns = _string_list(contract.get("required_columns"))
+    explicit_shape = bool(
+        explicit_result_columns
+        or explicit_required_columns
+        or contract.get("strict_result_columns") is True
+    )
+    if explicit_shape:
+        if explicit_result_columns:
+            contract["result_columns"] = explicit_result_columns
+            contract["required_columns"] = explicit_result_columns
+        elif explicit_required_columns:
+            contract["required_columns"] = explicit_required_columns
         return contract
 
     required_columns = _string_list(contract.get("required_columns") or contract.get("columns"))

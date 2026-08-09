@@ -26,6 +26,8 @@ RUNTIME_BUFFER_KEYS = {
     "_runtime_rows_by_alias",
     "_full_result_rows",
     "_runtime_result_rows",
+    "_intermediate_download_rows",
+    "_intermediate_download_metadata",
 }
 
 ANSWER_EVIDENCE_ROW_LIMIT = 5
@@ -965,12 +967,14 @@ def _evidence(payload: dict[str, Any]) -> dict[str, Any]:
     pandas_execution = _dict(_dict(_dict(payload.get("trace")).get("inspection")).get("pandas_execution"))
     step_outputs = _list(analysis.get("step_outputs")) or _list(pandas_execution.get("step_outputs"))
     function_case_results = _list(analysis.get("function_case_results")) or _list(pandas_execution.get("function_case_results"))
+    intermediate_results = _list(payload.get("intermediate_results")) or _list(analysis.get("intermediate_results")) or _list(pandas_execution.get("intermediate_results"))
     return _omit_empty(
         {
             "datasets": _compact_source_results(_list(payload.get("source_results"))),
             "calculation_rules": deepcopy(_list(payload.get("metadata_refs")))[:10],
             "step_outputs": deepcopy(step_outputs[:6]),
             "function_case_results": deepcopy(function_case_results[:6]),
+            "intermediate_results": deepcopy(intermediate_results[:8]),
         }
     )
 

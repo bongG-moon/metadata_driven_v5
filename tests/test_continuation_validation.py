@@ -145,7 +145,9 @@ def test_r09_live_fixture_adapter_adds_one_canonical_row_and_decoys_only_to_vali
     rows = adapted["source_results"][0]["rows"]
 
     assert retrieved["source_results"][0]["row_count"] == 1
-    assert len(rows) == 4
+    # The adapter intentionally replaces the provider rows so the token
+    # isolation assertion is attributable only to the three canonical fixtures.
+    assert len(rows) == 3
     assert sum(row.get("DEVICE") == "DEV-SP24-GDDR7-X32-226" for row in rows) == 1
     assert sum(str(row.get("DEVICE") or "").startswith("DECOY-SP24-") for row in rows) == 2
 

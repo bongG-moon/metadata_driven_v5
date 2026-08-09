@@ -31,6 +31,8 @@ RUNTIME_BUFFER_KEYS = {
     "_runtime_rows_by_alias",
     "_full_result_rows",
     "_runtime_result_rows",
+    "_intermediate_download_rows",
+    "_intermediate_download_metadata",
 }
 
 DEFAULT_DATABASE = "datagov"
@@ -43,6 +45,7 @@ DEFAULT_MAX_RESULT_ROWS = 20000
 DEFAULT_MAX_SOURCE_ROWS_PER_ALIAS = 10000
 DEFAULT_MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 14 * 1024 * 1024
+SAFE_INTERMEDIATE_ARTIFACT_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 # 주요 함수: 후속 질문 재사용에 필요한 결과를 MongoDB에 저장하고 data_ref를 발급합니다.
@@ -328,6 +331,7 @@ def _compact_store_payload(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     original_result_rows = _result_rows_for_store(payload)
     runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    original_intermediate_rows = _intermediate_artifacts_for_store(payload)
     included_source_aliases = _runtime_source_aliases_for_store(payload, runtime_sources)
     stored_result_rows = _json_ready(original_result_rows[:max_result_rows])
     stored_runtime_sources = {
@@ -340,12 +344,28 @@ def _compact_store_payload(
         for alias, rows in runtime_sources.items()
         if isinstance(rows, list) and str(alias) in included_source_aliases
     }
+    original_intermediate_counts = {
+        key: int(artifact.get("row_count") or len(artifact.get("rows") or []))
+        for key, artifact in original_intermediate_rows.items()
+    }
+    stored_intermediate_rows = {
+        key: {
+            **{
+                field: _json_ready(value)
+                for field, value in artifact.items()
+                if field != "rows"
+            },
+            "rows": _json_ready((artifact.get("rows") or [])[:max_result_rows]),
+        }
+        for key, artifact in original_intermediate_rows.items()
+    }
     stored_payload = {
         "request": _json_ready(payload.get("request", {})),
         "metadata_refs": _json_ready(payload.get("metadata_refs", [])),
         "intent_plan": _json_ready(payload.get("intent_plan", {})),
         "source_results": _json_ready(payload.get("source_results", [])),
         "runtime_sources": stored_runtime_sources,
+        "intermediate_rows": stored_intermediate_rows,
         "result_rows": stored_result_rows,
         "analysis": _json_ready(_compact_analysis_for_store(payload.get("analysis", {}))),
         "data": _json_ready(_compact_data_for_store(payload.get("data", {}))),
@@ -358,6 +378,7 @@ def _compact_store_payload(
         "max_source_rows_per_alias": max_source_rows_per_alias,
         "result_rows": {},
         "runtime_sources": {},
+        "intermediate_rows": {},
         "included_source_aliases": sorted(included_source_aliases),
         "excluded_source_aliases": sorted(
             str(alias)
@@ -367,7 +388,13 @@ def _compact_store_payload(
         "compacted": False,
     }
     stored_payload["storage_manifest"] = manifest
-    _refresh_storage_manifest(manifest, original_result_rows, original_source_counts, stored_payload)
+    _refresh_storage_manifest(
+        manifest,
+        original_result_rows,
+        original_source_counts,
+        original_intermediate_counts,
+        stored_payload,
+    )
 
     # MongoDB envelope와 BSON 오버헤드를 위해 설정값의 약 10%를 여유로 둡니다.
     target_payload_bytes = max(512, max_document_bytes - min(64 * 1024, max_document_bytes // 10))
@@ -376,13 +403,27 @@ def _compact_store_payload(
         if candidate is None:
             break
         kind, alias = candidate
-        rows = stored_payload["result_rows"] if kind == "result_rows" else stored_payload["runtime_sources"].get(alias, [])
+        if kind == "result_rows":
+            rows = stored_payload["result_rows"]
+        elif kind == "runtime_sources":
+            rows = stored_payload["runtime_sources"].get(alias, [])
+        else:
+            artifact = stored_payload.get("intermediate_rows", {}).get(alias, {})
+            rows = artifact.get("rows", []) if isinstance(artifact, dict) else []
         next_size = len(rows) // 2 if len(rows) > 1 else 0
         if kind == "result_rows":
             stored_payload["result_rows"] = rows[:next_size]
-        else:
+        elif kind == "runtime_sources":
             stored_payload["runtime_sources"][alias] = rows[:next_size]
-        _refresh_storage_manifest(manifest, original_result_rows, original_source_counts, stored_payload)
+        else:
+            stored_payload["intermediate_rows"][alias]["rows"] = rows[:next_size]
+        _refresh_storage_manifest(
+            manifest,
+            original_result_rows,
+            original_source_counts,
+            original_intermediate_counts,
+            stored_payload,
+        )
 
     manifest["estimated_payload_bytes"] = _json_size(stored_payload)
     return stored_payload, manifest
@@ -398,6 +439,11 @@ def _largest_stored_row_group(stored_payload: dict[str, Any]) -> tuple[str, str]
     for alias, rows in runtime_sources.items():
         if isinstance(rows, list) and rows:
             candidates.append((_json_size(rows), "runtime_sources", str(alias)))
+    intermediate_rows = stored_payload.get("intermediate_rows") if isinstance(stored_payload.get("intermediate_rows"), dict) else {}
+    for key, artifact in intermediate_rows.items():
+        rows = artifact.get("rows") if isinstance(artifact, dict) else []
+        if isinstance(rows, list) and rows:
+            candidates.append((_json_size(rows), "intermediate_rows", str(key)))
     if not candidates:
         return None
     _, kind, alias = max(candidates, key=lambda item: item[0])
@@ -409,6 +455,7 @@ def _refresh_storage_manifest(
     manifest: dict[str, Any],
     original_result_rows: list[Any],
     original_source_counts: dict[str, int],
+    original_intermediate_counts: dict[str, int],
     stored_payload: dict[str, Any],
 ) -> None:
     stored_result_rows = stored_payload.get("result_rows") if isinstance(stored_payload.get("result_rows"), list) else []
@@ -428,7 +475,47 @@ def _refresh_storage_manifest(
             "complete": len(stored_rows) == original_count,
         }
     manifest["runtime_sources"] = source_manifest
+    intermediate_rows = stored_payload.get("intermediate_rows") if isinstance(stored_payload.get("intermediate_rows"), dict) else {}
+    intermediate_manifest: dict[str, dict[str, Any]] = {}
+    for key, original_count in original_intermediate_counts.items():
+        artifact = intermediate_rows.get(key) if isinstance(intermediate_rows.get(key), dict) else {}
+        stored_rows = artifact.get("rows") if isinstance(artifact.get("rows"), list) else []
+        intermediate_manifest[key] = {
+            "original_count": original_count,
+            "stored_count": len(stored_rows),
+            "complete": len(stored_rows) == original_count,
+        }
+    manifest["intermediate_rows"] = intermediate_manifest
+    # Intermediate downloads are diagnostic convenience artifacts.  Their
+    # compaction must not invalidate a complete final result for follow-up use.
     manifest["compacted"] = not result_complete or any(not item["complete"] for item in source_manifest.values())
+
+
+# 함수 설명: `_intermediate_artifacts_for_store()`는 선택된 마지막 정상 중간 결과만
+# 다운로드 가능한 별도 데이터 묶음으로 정규화하고, 임의 key·비직렬화 값을 저장하지 않습니다.
+def _intermediate_artifacts_for_store(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = payload.get("_intermediate_download_rows")
+    metadata = payload.get("_intermediate_download_metadata") if isinstance(payload.get("_intermediate_download_metadata"), dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    artifacts: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_artifact in raw.items():
+        key = str(raw_key or "").strip()
+        if not key or not SAFE_INTERMEDIATE_ARTIFACT_KEY.fullmatch(key):
+            continue
+        artifact = raw_artifact if isinstance(raw_artifact, dict) else {"rows": raw_artifact}
+        rows = artifact.get("rows") if isinstance(artifact.get("rows"), list) else []
+        item_metadata = metadata.get(key) if isinstance(metadata.get(key), dict) else {}
+        columns = artifact.get("columns") if isinstance(artifact.get("columns"), list) else item_metadata.get("columns")
+        artifacts[key] = {
+            "rows": [row for row in _json_ready(rows) if isinstance(row, dict)],
+            "columns": [str(column) for column in (columns or _columns_from_rows(rows)) if str(column).strip()],
+            "row_count": int(artifact.get("row_count") or item_metadata.get("row_count") or len(rows)),
+            "label": str(artifact.get("label") or item_metadata.get("label") or "중간 계산 결과").strip(),
+            "role": str(artifact.get("role") or item_metadata.get("role") or "intermediate_result").strip(),
+            "checkpoint_key": str(artifact.get("checkpoint_key") or item_metadata.get("checkpoint_key") or key).strip(),
+        }
+    return artifacts
 
 
 # 함수 설명: `_json_size()`는 BSON 상한보다 보수적인 UTF-8 JSON 직렬화 크기를 계산합니다.
@@ -524,6 +611,28 @@ def _build_data_refs(
                 source_alias=str(alias),
                 dataset_key=source_result.get("dataset_key"),
                 source_type=source_result.get("source_type"),
+            )
+        )
+    intermediate_artifacts = _intermediate_artifacts_for_store(payload)
+    intermediate_manifest = (
+        storage_manifest.get("intermediate_rows")
+        if isinstance(storage_manifest, dict) and isinstance(storage_manifest.get("intermediate_rows"), dict)
+        else {}
+    )
+    for key, artifact in intermediate_artifacts.items():
+        manifest_item = intermediate_manifest.get(key) if isinstance(intermediate_manifest.get(key), dict) else {}
+        refs.append(
+            _data_ref_object(
+                ref_id,
+                database,
+                collection_name,
+                f"payload.intermediate_rows.{key}",
+                "intermediate_result",
+                str(artifact.get("label") or "중간 계산 결과"),
+                row_count=artifact.get("row_count"),
+                columns=artifact.get("columns"),
+                checkpoint_key=artifact.get("checkpoint_key"),
+                complete=manifest_item.get("complete", True),
             )
         )
     return refs

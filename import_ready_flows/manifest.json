@@ -34,7 +34,7 @@
     "router_has_separate_mode_input": false
   },
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "a06638867d7f2e7ca5dcea2aaa638dbf10aa5e3e8beea1f178321380fb5f9b60",
+  "single_file_ui_import_sha256": "ccd88f656845a9cbfedb96f17470996e615e37aacb789d3e73ee1ceb6888635b",
   "flows": [
     {
       "order": 1,
@@ -42,8 +42,8 @@
       "name": "01. v5_data_analysis",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 51,
-      "edges": 57,
-      "sha256": "a4ef971bc7862559f82c49a8ef541f4969735dc92349057e0207f0170838777c"
+      "edges": 59,
+      "sha256": "65e64f05f996fda98d3eca6eb3474752c7abcb404473925c0fe9e29d088b4213"
     },
     {
       "order": 2,
@@ -105,8 +105,8 @@
       "name": "08. v5_data_analysis_continuation",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis-continuation",
       "nodes": 56,
-      "edges": 65,
-      "sha256": "671ff995ae486463d08802b2131b06e63b7399ee7476180de9ff668072c45e77"
+      "edges": 67,
+      "sha256": "cb5197d707716f1eecbd268f6c31f35f691b5e1ac094ebb44a8727e8d4a9d1eb"
     },
     {
       "order": 9,
@@ -148,7 +148,7 @@
     "custom_component_source_sync": "validated by tools/validate_flow_component_sources.py; every active custom node maps to one repository source with no missing source",
     "korean_component_documentation": "validated by tools/validate_korean_component_documentation.py; all component and embedded custom-code functions are documented and strict UTF-8/BOM/JSON checks pass",
     "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
-    "langflow_frontend_edge_handles": "410/410 parsed and matched edge.data",
+    "langflow_frontend_edge_handles": "418/418 parsed and matched edge.data",
     "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
     "langflow_lfx_node_templates": "160/160 passed across 9 flows in Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2",
     "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",

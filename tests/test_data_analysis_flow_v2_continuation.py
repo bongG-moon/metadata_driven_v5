@@ -153,6 +153,166 @@ def test_extreme_row_chain_applies_filter_before_latest_selection(executor):
     assert certificate["predecessor_execution"][0]["row_count_after"] == 1
 
 
+def test_continuation_executor_falls_back_to_source_when_pre_contract_matches_final_result(executor):
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production",
+                    "source_alias": "production_src",
+                    "required_params": {"DATE": "20260809"},
+                    "filters": {
+                        "OPER_NAME": {"operator": "eq", "value": "INPUT"},
+                        "MCP_NO": {"operator": "starts_with", "value": "L-267"},
+                    },
+                }
+            ],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["OPER_NAME", "MCP_NO", "DATE"],
+                "metric_columns": ["PRODUCTION"],
+                "result_columns": ["OPER_NAME", "MCP_NO", "DATE", "PRODUCTION"],
+            },
+            "resolved_execution_graph": {
+                "external_source_requirements": [
+                    {"source_alias": "production_src", "provider": "retrieval_job", "required": True}
+                ]
+            },
+        },
+        "runtime_sources": {
+            "production_src": [
+                {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "L-267A1", "PRODUCTION": 300},
+                {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "M-001", "PRODUCTION": 100},
+            ]
+        },
+        "trace": {"inspection": {}},
+    }
+    result = executor.execute_pandas_code(
+        payload,
+        """
+df = sources[\"production_src\"].copy()
+result = df.groupby([\"OPER_NAME\", \"MCP_NO\", \"DATE\"], dropna=False)[\"PRODUCTION\"].sum().reset_index()
+""",
+    )
+
+    assert result["analysis"]["status"] == "ok"
+    checkpoints = result["intermediate_results"]
+    assert len(checkpoints) == 1
+    checkpoint = checkpoints[0]
+    assert checkpoint["role"] == "filtered_source"
+    assert checkpoint["row_count"] == 2
+    assert checkpoint["description"].startswith("최종 집계 전 중간 데이터")
+    assert result["_intermediate_download_rows"]["last_successful"]["rows"] == [
+        {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "L-267A1", "PRODUCTION": 300},
+        {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "M-001", "PRODUCTION": 100},
+    ]
+
+
+def test_continuation_executor_keeps_pre_contract_checkpoint_when_final_contract_changes_columns(executor):
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production",
+                    "source_alias": "production_src",
+                    "required_params": {"DATE": "20260809"},
+                    "filters": {
+                        "OPER_NAME": {"operator": "eq", "value": "INPUT"},
+                        "MCP_NO": {"operator": "starts_with", "value": "L-267"},
+                    },
+                }
+            ],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["OPER_NAME", "MCP_NO", "DATE"],
+                "metric_columns": ["PRODUCTION"],
+                "result_columns": ["OPER_NAME", "MCP_NO", "DATE", "PRODUCTION"],
+                "strict_result_columns": True,
+            },
+            "resolved_execution_graph": {
+                "external_source_requirements": [
+                    {"source_alias": "production_src", "provider": "retrieval_job", "required": True}
+                ]
+            },
+        },
+        "runtime_sources": {
+            "production_src": [
+                {"DATE": "20260809", "OPER_NAME": "INPUT", "MCP_NO": "L-267A1", "PRODUCTION": 300},
+            ]
+        },
+        "trace": {"inspection": {}},
+    }
+    result = executor.execute_pandas_code(
+        payload,
+        """
+df = sources["production_src"].copy()
+result = df.groupby(["OPER_NAME", "MCP_NO", "DATE"], dropna=False)["PRODUCTION"].sum().reset_index()
+result["INTERNAL_NOTE"] = "계약 전 보조 컬럼"
+""",
+    )
+
+    assert result["analysis"]["status"] == "ok"
+    assert len(result["intermediate_results"]) == 1
+    assert result["intermediate_results"][0]["preview_rows"][0]["INTERNAL_NOTE"] == "계약 전 보조 컬럼"
+    assert result["data"]["columns"] == ["OPER_NAME", "MCP_NO", "DATE", "PRODUCTION"]
+    assert result["_intermediate_download_rows"]["last_successful"]["rows"][0]["INTERNAL_NOTE"] == "계약 전 보조 컬럼"
+
+
+def test_continuation_executor_keeps_each_multi_source_checkpoint(executor):
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "lot_status",
+                    "source_alias": "lot_status_src",
+                    "required_params": {"DATE": "20260809"},
+                    "filters": {"HOLD_STAT": {"operator": "eq", "value": "OnHold"}},
+                },
+                {
+                    "dataset_key": "hold_history",
+                    "source_alias": "hold_history_src",
+                    "required_params": {"LOT_ID": ["L1"]},
+                    "filters": {},
+                },
+            ],
+            "output_contract": {
+                "result_columns": ["LOT_ID", "HOLD_CD"],
+            },
+        }
+    }
+    checkpoints = [
+        {"key": "filtered:lot_status_src", "role": "filtered_source"},
+        {"key": "filtered:hold_history_src", "role": "filtered_source"},
+        {"key": "computed_result", "role": "computed_result"},
+    ]
+    values = {
+        "filtered:lot_status_src": [{"LOT_ID": "L1", "HOLD_STAT": "OnHold"}],
+        "filtered:hold_history_src": [{"LOT_ID": "L1", "HOLD_CD": "H01", "HOLD_DESC": "reason"}],
+        "computed_result": [{"LOT_ID": "L1", "HOLD_CD": "H01", "INTERNAL_STAGE": "joined"}],
+    }
+
+    visible, artifacts, _ = executor._project_intermediate_checkpoint(
+        checkpoints,
+        values,
+        payload,
+        [],
+        completed=True,
+        final_rows=[{"LOT_ID": "L1", "HOLD_CD": "H01"}],
+        final_columns=["LOT_ID", "HOLD_CD"],
+    )
+
+    assert [item["download_key"] for item in visible] == [
+        "source_lot_status_src",
+        "source_hold_history_src",
+        "pre_contract_result",
+    ]
+    assert artifacts["source_lot_status_src"]["rows"] == [{"LOT_ID": "L1", "HOLD_STAT": "OnHold"}]
+    assert artifacts["source_hold_history_src"]["rows"][0]["HOLD_DESC"] == "reason"
+    assert artifacts["pre_contract_result"]["rows"][0]["INTERNAL_STAGE"] == "joined"
+
+
 def test_extreme_tie_error_uses_declared_tie_breakers(executor):
     contract = {
         "operation": "select_extreme_row_per_group",
@@ -459,6 +619,51 @@ def test_catalog_closure_preserves_same_family_temporal_companion_within_limit(c
     assert "production_today" in trace["included_temporal_companion_refs"]
 
 
+def test_catalog_closure_preserves_question_matched_domain_metric_hint(catalog_closure):
+    """A ranked metric domain item keeps its catalog even when 01D omitted it."""
+
+    selected = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "quantity_terms",
+                    "key": "target_data",
+                    "payload": {
+                        "aliases": ["생산계획", "INPUT 계획", "OUT 계획"],
+                        "data_source": "target",
+                        "column": "OUT_PLAN_QTY",
+                    },
+                }
+            ],
+            "table_catalog_items": [
+                {"key": "production", "payload": {"columns": ["DATE", "PRODUCTION"]}},
+                {"key": "production_today", "payload": {"columns": ["DATE", "PRODUCTION"]}},
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    full_catalog = {
+        "table_catalog_items": [
+            *selected["metadata_candidates"]["table_catalog_items"],
+            {
+                "key": "target",
+                "payload": {
+                    "columns": ["DATE", "INPUT 계획", "OUT 계획"],
+                    "required_params": ["DATE"],
+                },
+            },
+        ]
+    }
+    result = catalog_closure.close_dependency_catalog_candidates(
+        selected,
+        full_catalog,
+        max_table_items=3,
+    )
+    keys = [item["key"] for item in result["metadata_candidates"]["table_catalog_items"]]
+    assert keys[0] == "target"
+    assert result["metadata_load"]["dependency_catalog_closure"]["domain_dataset_refs"] == ["target"]
+
+
 def test_compiler_accepts_only_catalog_backed_extreme_columns_and_binding_linkage(compiler):
     plan, metadata = _dependent_plan_and_catalog()
     normalized = compiler._normalize_and_validate_plan(plan, metadata)
@@ -483,6 +688,13 @@ def test_compiler_accepts_only_catalog_backed_extreme_columns_and_binding_linkag
     non_strict["stages"][1]["pandas_execution_plan"][0]["strict"] = False
     with pytest.raises(ValueError, match="strict must be true"):
         compiler._normalize_and_validate_plan(non_strict, metadata)
+
+
+def test_continuation_intent_parser_repairs_structural_json_key_typo(compiler):
+    parsed = compiler._parse_json_response(
+        '{"intent_plan":{"join_plan":[{-join_type:"left",},],}}'
+    )
+    assert parsed["intent_plan"]["join_plan"][0]["join_type"] == "left"
 
 
 def test_compiler_hydrates_unique_catalog_entity_type_and_strengthens_empty_tie(compiler):
@@ -2512,6 +2724,27 @@ def test_flow14_ingress_blocks_invalid_contract_and_leaves_normal_question_uncha
     assert json.loads(response) == {"intent_plan": {}}
 
 
+def test_continuation_intent_router_skips_initial_model_when_catalog_is_unavailable(intent_router):
+    metadata = {
+        "metadata_candidates": {"table_catalog_items": []},
+        "metadata_load": {
+            "status": "error",
+            "loads": {"table_catalog_items": {"status": "error"}},
+        },
+    }
+    calls: list[str] = []
+    response, trace = intent_router.route_intent_response(
+        {"request": {"question": "ordinary question"}},
+        "must not be sent",
+        lambda prompt: calls.append(prompt) or "{}",
+        metadata_candidates_value=metadata,
+    )
+    assert calls == []
+    assert trace["mode"] == "metadata_blocked"
+    assert trace["model_called"] is False
+    assert json.loads(response)["intent_plan"]["validation_errors"][0]["type"] == "table_catalog_metadata_unavailable"
+
+
 def test_public_continuation_contract_is_compact_and_contains_no_full_ir():
     api = _module("_continuation_api_tests", "22_continuation_api_response_builder.py")
     payload = {
@@ -2706,6 +2939,7 @@ def test_export_uses_name_14_and_shared_result_store_settings():
     } == {
         "CustomComponent-B1hbh",
         "CustomComponent-5o0CN",
+        "LanguageModel-intent",
         "CustomComponent-v2ContinuationCompiler",
     }
 

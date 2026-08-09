@@ -108,7 +108,12 @@ def build_route_aware_pandas_prompt(
     if contract.get("requires_pandas_llm") is False:
         return ""
     variables = build_variables(payload)
-    variables["function_case_helper_code"] = _text(function_case_helper_code)
+    # Selected helper definitions are injected and guarded by the executor.
+    # Passing their source through the generation prompt makes smaller models
+    # repeat a large function body, increasing both input and output tokens.
+    # The compact selection contract already provides the function name,
+    # input_text, and source_alias needed for the call itself.
+    variables["function_case_helper_code"] = ""
     return _render_prompt_template(prompt_template, variables)
 
 

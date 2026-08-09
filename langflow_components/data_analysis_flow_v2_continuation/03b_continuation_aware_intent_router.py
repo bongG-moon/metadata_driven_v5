@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import hashlib
 from importlib import import_module
 import json
+import re
 from typing import Any, Callable
 
 from lfx.custom.custom_component.component import Component
@@ -36,6 +37,7 @@ def route_intent_response(
     mongo_uri: str = "",
     mongo_database: str = "",
     collection_name: str = "",
+    metadata_candidates_value: Any = None,
 ) -> tuple[str, dict[str, Any]]:
     payload = _payload(payload_value)
     request_error = _blocked_request_error(payload)
@@ -81,6 +83,16 @@ def route_intent_response(
         trace["upstream_result_ref"] = upstream_ref
         return json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), trace
 
+    catalog_error = _table_catalog_metadata_error(metadata_candidates_value)
+    if catalog_error:
+        envelope = _metadata_blocked_envelope(catalog_error)
+        return json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), {
+            "mode": "metadata_blocked",
+            "model_called": False,
+            "intent_llm_skipped": True,
+            "error": deepcopy(catalog_error),
+        }
+
     prompt = _text(intent_prompt)
     if not prompt:
         raise ValueError("의도 분석 prompt가 비어 있습니다.")
@@ -92,6 +104,138 @@ def route_intent_response(
         "model_called": True,
         "intent_llm_skipped": False,
         "prompt_chars": len(prompt),
+    }
+
+
+def _table_catalog_metadata_error(value: Any) -> dict[str, Any]:
+    """Require a registered Table Catalog before the initial intent model call."""
+
+    # Backward-compatible direct callers can omit this optional input. The
+    # generated continuation Flow always wires 01E candidate output here.
+    if value is None:
+        return {}
+    envelope = _payload(value)
+    candidates = envelope.get("metadata_candidates")
+    if not isinstance(candidates, dict):
+        candidates = envelope
+    load = envelope.get("metadata_load") if isinstance(envelope.get("metadata_load"), dict) else {}
+    if not load and isinstance(candidates.get("metadata_load"), dict):
+        load = candidates.get("metadata_load")
+    loads = load.get("loads") if isinstance(load.get("loads"), dict) else {}
+    table_load = loads.get("table_catalog_items") if isinstance(loads.get("table_catalog_items"), dict) else {}
+    table_status = str(table_load.get("status") or "").strip().lower()
+    overall_status = str(load.get("status") or "").strip().lower()
+    table_items = candidates.get("table_catalog_items") if isinstance(candidates.get("table_catalog_items"), list) else []
+    dataset_keys = [
+        str(item.get("dataset_key") or _dict(item.get("payload")).get("dataset_key") or "").strip()
+        for item in table_items
+        if isinstance(item, dict)
+    ]
+    dataset_keys = [item for item in dict.fromkeys(dataset_keys) if item]
+    failed_loads = _metadata_load_failures(loads)
+    if failed_loads or overall_status in {"error", "failed", "failure", "invalid"}:
+        return _metadata_load_error(
+            failed_loads or [{"metadata_kind": "metadata", "status": overall_status or "error"}],
+            registered_dataset_count=len(dataset_keys),
+        )
+    if not dataset_keys:
+        return {
+            "type": "table_catalog_metadata_unavailable",
+            "reason": "no_active_table_catalog",
+            "message": "MongoDB 메타데이터 연결은 되었지만 활성 Table Catalog에 등록된 데이터셋이 없습니다. 데이터셋 등록 상태와 collection의 status=active 설정을 확인해 주세요.",
+            "table_catalog_load_status": table_status or overall_status or "not_available",
+            "registered_dataset_count": 0,
+        }
+    return {}
+
+
+def _metadata_load_failures(loads: dict[str, Any]) -> list[dict[str, str]]:
+    """Keep a bounded, credential-safe detail for failed continuation metadata loads."""
+
+    failed: list[dict[str, str]] = []
+    for metadata_kind, raw_load in loads.items():
+        if not isinstance(raw_load, dict):
+            continue
+        status = str(raw_load.get("status") or "").strip().lower()
+        if status not in {"error", "failed", "failure", "invalid", "skipped"}:
+            continue
+        raw_errors = raw_load.get("errors") if isinstance(raw_load.get("errors"), list) else []
+        first_error = next((item for item in raw_errors if isinstance(item, dict)), {})
+        error_type = str(first_error.get("type") or status or "metadata_load_error").strip()
+        detail = _safe_metadata_error_detail(first_error.get("message") or raw_load.get("message") or "")
+        failed.append(
+            {
+                "metadata_kind": str(metadata_kind or "metadata"),
+                "status": status,
+                "error_type": error_type,
+                "detail": detail,
+            }
+        )
+    return failed
+
+
+def _metadata_load_error(
+    failed_loads: list[dict[str, str]],
+    *,
+    registered_dataset_count: int,
+) -> dict[str, Any]:
+    first = _primary_metadata_failure(failed_loads)
+    kind = str(first.get("metadata_kind") or "metadata")
+    error_type = str(first.get("error_type") or first.get("status") or "metadata_load_error")
+    detail = str(first.get("detail") or "상세 오류 정보가 없습니다.")
+    return {
+        "type": "table_catalog_metadata_unavailable",
+        "reason": "metadata_connection_or_loader_failed",
+        "message": (
+            "메타데이터 연결 정보를 확인해 주세요. 분석에 필요한 메타데이터를 읽지 못해 분석을 시작하지 않았습니다. "
+            f"상세 사유: {kind} 조회 실패 ({error_type}) - {detail}"
+        ),
+        "table_catalog_load_status": str(first.get("status") or "error"),
+        "registered_dataset_count": registered_dataset_count,
+        "metadata_failures": deepcopy(failed_loads[:3]),
+    }
+
+
+def _primary_metadata_failure(failed_loads: list[dict[str, str]]) -> dict[str, str]:
+    """Prefer Table Catalog because it is the executable dataset authority."""
+
+    return next(
+        (item for item in failed_loads if str(item.get("metadata_kind") or "") == "table_catalog_items"),
+        failed_loads[0] if failed_loads else {},
+    )
+
+
+def _safe_metadata_error_detail(value: Any) -> str:
+    text = " ".join(str(value or "").split())
+    text = re.sub(r"mongodb(?:\+srv)?://[^\s@/]+@", "mongodb://***@", text, flags=re.IGNORECASE)
+    return text[:500] if text else "상세 오류 정보가 없습니다."
+
+
+def _metadata_blocked_envelope(error: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "intent_plan": {
+            "analysis_kind": "metadata_catalog_unavailable",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "reuse_strategy": "none",
+            "metadata_refs": [],
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "detail",
+                "required_columns": [],
+                "grain_columns": [],
+                "metric_columns": [],
+                "result_columns": [],
+                "strict_result_columns": True,
+            },
+            "validation_errors": [deepcopy(error)],
+        },
+        "metadata_refs": [],
+        "trace": {
+            "decision_reason": ["table_catalog_metadata_unavailable"],
+            "errors": [deepcopy(error)],
+        },
     }
 
 
@@ -322,6 +466,7 @@ class ContinuationAwareIntentRouter(Component):
     description = "일반 요청만 의도 LLM을 호출하고 continuation은 저장된 Typed IR로 재개합니다."
     inputs = [
         DataInput(name="payload", display_name="요청 페이로드", required=True),
+        DataInput(name="metadata_candidates", display_name="메타데이터 후보", required=False),
         MessageTextInput(name="intent_prompt", display_name="의도 분석 프롬프트", required=False),
         ModelInput(name="model", display_name="의도 분석 언어 모델", required=False, real_time_refresh=True),
         SecretStrInput(name="api_key", display_name="의도 모델 API 키", required=False, advanced=True, real_time_refresh=True),
@@ -341,6 +486,7 @@ class ContinuationAwareIntentRouter(Component):
             getattr(self, "mongo_uri", ""),
             getattr(self, "mongo_database", ""),
             getattr(self, "collection_name", ""),
+            getattr(self, "metadata_candidates", None),
         )
         self.status = trace
         return Message(text=text)

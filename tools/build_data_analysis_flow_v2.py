@@ -46,12 +46,15 @@ COMMON_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow"
 RESOLVER_NODE_ID = "CustomComponent-v2FastResolver"
 INTENT_VARIABLES_NODE_ID = "CustomComponent-B1hbh"
 INTENT_PROMPT_NODE_ID = "Prompt Template-AUpQz"
+INTENT_MODEL_NODE_ID = "LanguageModel-intent"
 INTENT_NORMALIZER_NODE_ID = "CustomComponent-5o0CN"
+METADATA_CANDIDATES_NODE_ID = "CustomComponent-DXrpf"
 EXECUTION_GATE_NODE_ID = "CustomComponent-v5ExecutionGate"
 PANDAS_VARIABLES_NODE_ID = "CustomComponent-fc0Vb"
 PANDAS_PROMPT_NODE_ID = "Prompt Template-xtzD5"
 HYBRID_EXECUTOR_NODE_ID = "CustomComponent-s3mf1"
 RESULT_STORE_NODE_ID = "CustomComponent-AUrFb"
+RUNTIME_CLEANUP_NODE_ID = "CustomComponent-v5RuntimeCleanup"
 ANSWER_VARIABLES_NODE_ID = "CustomComponent-aKrkH"
 ANSWER_PROMPT_NODE_ID = "Prompt Template-ELVKc"
 HYBRID_ANSWER_NODE_ID = "CustomComponent-BVItv"
@@ -255,9 +258,81 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     # column is introduced here.
     _set_embedded_source(node_index[INTENT_VARIABLES_NODE_ID], _component_path("02_intent_variables_builder.py"))
     _set_embedded_source(node_index[INTENT_NORMALIZER_NODE_ID], _component_path("04_intent_plan_normalizer.py"))
+    # Keep shared retrieval contracts embedded at the same revision as the
+    # repository sources.  V2 is built from a donor export, so refreshing only
+    # V2 nodes would otherwise leave stale common hydrator/binder code behind.
+    _set_embedded_source(
+        node_index["CustomComponent-v5Hydrate"],
+        _common_component_path("04a_trusted_retrieval_job_hydrator.py"),
+    )
+    _set_embedded_source(
+        node_index["CustomComponent-v5UpstreamBinder"],
+        _common_component_path("05a_upstream_entity_parameter_binder.py"),
+    )
+    _set_embedded_source(
+        node_index[EXECUTION_GATE_NODE_ID],
+        _common_component_path("14a_retrieval_execution_gate.py"),
+    )
+    # The result store and cleanup node carry runtime-only checkpoint rows.
+    # Refresh both shared sources whenever V2 is rebuilt so downloaded
+    # intermediate artifacts cannot diverge from the standalone Python files.
+    _set_embedded_source(
+        node_index[RESULT_STORE_NODE_ID],
+        _common_component_path("23_mongodb_result_store.py"),
+    )
+    _set_embedded_source(
+        node_index[RUNTIME_CLEANUP_NODE_ID],
+        _common_component_path("24_runtime_payload_cleanup.py"),
+    )
     node_index[INTENT_PROMPT_NODE_ID]["data"]["node"]["template"]["template"]["value"] = (
         _component_path("03_intent_prompt_template_ko.md").read_text(encoding="utf-8")
     )
+
+    # Intent planning is allowed only after 01D has proved that a Table Catalog
+    # dataset is available. This replaces the native model node in place so the
+    # continuation builder can preserve the stable node ID and model settings.
+    old_intent_model = node_index[INTENT_MODEL_NODE_ID]
+    catalog_guarded_intent = deepcopy(node_index[HYBRID_ANSWER_NODE_ID])
+    catalog_guarded_intent["id"] = INTENT_MODEL_NODE_ID
+    catalog_guarded_intent["data"]["id"] = INTENT_MODEL_NODE_ID
+    catalog_guarded_intent["position"] = deepcopy(old_intent_model.get("position", {}))
+    catalog_guarded_intent["selected"] = False
+    _set_embedded_source(
+        catalog_guarded_intent,
+        _component_path("03b_catalog_guarded_intent_router.py"),
+    )
+    _apply_extended_component_spec(
+        catalog_guarded_intent,
+        [
+            ("data", "payload", "요청 페이로드", True, None),
+            ("data", "metadata_candidates", "메타데이터 후보", True, None),
+            ("message", "intent_prompt", "의도 분석 프롬프트", False, ""),
+            ("model", "model", "의도 분석 언어 모델", False, None),
+            ("secret", "api_key", "의도 분석 모델 API Key", False, "GOOGLE_API_KEY"),
+        ],
+        [("Message", "text_output", "의도 분석 응답", "build_response")],
+        node_index,
+    )
+    old_intent_template = old_intent_model["data"]["node"].get("template", {})
+    for field_name, display_name in (
+        ("model", "의도 분석 언어 모델"),
+        ("api_key", "의도 분석 모델 API Key"),
+    ):
+        if isinstance(old_intent_template.get(field_name), dict):
+            catalog_guarded_intent["data"]["node"]["template"][field_name] = deepcopy(
+                old_intent_template[field_name]
+            )
+            catalog_guarded_intent["data"]["node"]["template"][field_name].update(
+                {"name": field_name, "display_name": display_name, "required": False}
+            )
+    catalog_guarded_intent["data"]["node"].update(
+        {
+            "display_name": "03B Catalog 검증 Intent Router",
+            "description": "등록된 Table Catalog가 확인된 경우에만 Intent LLM을 호출하고, 메타데이터 연결 실패 시 추측 계획 없이 중단합니다.",
+        }
+    )
+    nodes[nodes.index(old_intent_model)] = catalog_guarded_intent
+    node_index[INTENT_MODEL_NODE_ID] = catalog_guarded_intent
 
     # Add the resolver from a generic Data->Data custom component shell.
     resolver = deepcopy(node_index["CustomComponent-5o0CN"])
@@ -400,6 +475,90 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         node_index[MESSAGE_ADAPTER_NODE_ID],
         _component_path("21_v2_answer_message_adapter.py"),
     )
+    # Keep the deterministic Fast contract visible when diagnostics are
+    # enabled, including follow-up turns.  The adapter renders the bounded
+    # function display without invoking another model.
+    adapter_template = node_index[MESSAGE_ADAPTER_NODE_ID]["data"]["node"].get("template", {})
+    if isinstance(adapter_template.get("show_pandas_code"), dict):
+        adapter_template["show_pandas_code"]["value"] = True
+    if not isinstance(adapter_template.get("show_intermediate_results"), dict):
+        # Older donor exports predate the optional intermediate-preview input.
+        # Add the schema from the existing BoolInput template so the source
+        # component and the generated Flow keep the same visible contract.
+        pandas_code_field = adapter_template.get("show_pandas_code")
+        if isinstance(pandas_code_field, dict):
+            intermediate_field = deepcopy(pandas_code_field)
+        else:
+            intermediate_field = {
+                "_input_type": "BoolInput",
+                "type": "bool",
+                "show": True,
+                "advanced": True,
+            }
+        intermediate_field.update(
+            {
+                "name": "show_intermediate_results",
+                "display_name": "중간 결과 표시",
+                "required": False,
+                "value": False,
+                "type": "bool",
+                "_input_type": "BoolInput",
+                "advanced": True,
+                "show": True,
+            }
+        )
+        adapter_template["show_intermediate_results"] = intermediate_field
+    else:
+        adapter_template["show_intermediate_results"]["value"] = False
+    if not isinstance(adapter_template.get("intermediate_preview_limit"), dict):
+        # Keep a dedicated user-visible cap for checkpoint tables.  The
+        # executor retains at most five rows, so the display cap defaults to
+        # three and is bounded by the standalone component at runtime.
+        preview_field = adapter_template.get("table_preview_limit")
+        if isinstance(preview_field, dict):
+            intermediate_preview_field = deepcopy(preview_field)
+        else:
+            intermediate_preview_field = {
+                "_input_type": "IntInput",
+                "type": "int",
+                "show": True,
+                "advanced": True,
+            }
+        intermediate_preview_field.update(
+            {
+                "name": "intermediate_preview_limit",
+                "display_name": "중간 결과 미리보기 행 수",
+                "info": "단계별 표에 표시할 최대 행 수입니다. 1~5 범위로 적용되며 답변 LLM 프롬프트에는 포함하지 않습니다.",
+                "required": False,
+                "value": 3,
+                "type": "int",
+                "_input_type": "IntInput",
+                "advanced": True,
+                "show": True,
+            }
+        )
+        adapter_template["intermediate_preview_limit"] = intermediate_preview_field
+    else:
+        adapter_template["intermediate_preview_limit"]["value"] = 3
+    adapter_node = node_index[MESSAGE_ADAPTER_NODE_ID]["data"]["node"]
+    # The serialized frontend order must be identical to AnswerMessageAdapter.inputs.
+    # A donor flow predating this option used to append it after show_pandas_code,
+    # which made Langflow reject the node even though the source itself was valid.
+    field_order = [
+        name
+        for name in list(adapter_node.get("field_order") or [])
+        if name not in {"show_intermediate_results", "intermediate_preview_limit"}
+    ]
+    insertion_index = (
+        field_order.index("show_analysis_evidence") + 1
+        if "show_analysis_evidence" in field_order
+        else len(field_order)
+    )
+    field_order[insertion_index:insertion_index] = [
+        "show_intermediate_results",
+        "intermediate_preview_limit",
+    ]
+    adapter_node["field_order"] = field_order
 
     # Node 20 owns AnswerEvidence and renders its prompt only after the visible
     # BoolInput branch. Removing the upstream answer materializer guarantees
@@ -415,6 +574,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     ]
 
     removals = {
+        (INTENT_PROMPT_NODE_ID, "prompt", INTENT_MODEL_NODE_ID, "input_value"),
         (EXECUTION_GATE_NODE_ID, "payload_out", PANDAS_VARIABLES_NODE_ID, "payload"),
         (EXECUTION_GATE_NODE_ID, "payload_out", HYBRID_EXECUTOR_NODE_ID, "payload"),
         (PANDAS_VARIABLES_NODE_ID, "intent_plan_json", PANDAS_PROMPT_NODE_ID, "intent_plan_json"),
@@ -428,6 +588,9 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     edges[:] = [edge for edge in edges if _edge_key(edge) not in removals]
 
     additions = [
+        ("CustomComponent-HFsYn", "payload_out", INTENT_MODEL_NODE_ID, "payload"),
+        (METADATA_CANDIDATES_NODE_ID, "metadata_candidates", INTENT_MODEL_NODE_ID, "metadata_candidates"),
+        (INTENT_PROMPT_NODE_ID, "prompt", INTENT_MODEL_NODE_ID, "intent_prompt"),
         (EXECUTION_GATE_NODE_ID, "payload_out", RESOLVER_NODE_ID, "payload"),
         (RESOLVER_NODE_ID, "payload_out", PANDAS_VARIABLES_NODE_ID, "payload"),
         (RESOLVER_NODE_ID, "payload_out", PANDAS_PROMPT_NODE_ID, "payload"),

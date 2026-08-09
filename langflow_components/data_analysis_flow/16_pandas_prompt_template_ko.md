@@ -110,10 +110,9 @@ Langflow custom component의 `15 Pandas Code Executor`가 실행할 수 있는 �
 - 단계형 분석에서 최종 결과를 이해하는 기준이 되는 중간 결과는 `record_step("key", dataframe_or_value, description="설명", role="basis")`로 기록한다.
 - 최종 표와 별도로 답변에 설명해야 할 중간 산출물이 있으면 `record_step`을 사용하되 full source 전체를 기록하지 말고 집계/상위/기준 row처럼 compact한 DataFrame만 기록한다.
 - `function_case_selection_json`에는 의도 분석 LLM이 선택한 function case, `selected_steps`, `input_text`, `source_alias`가 들어 있다.
-- `function_case_helper_code`에는 사용할 수 있는 helper 함수 정의 코드만 들어 있다.
-- executor가 특화 helper를 namespace로 제공한다고 가정하지 않는다. 특화 helper를 호출해야 하면 반드시 `function_case_helper_code`의 필요한 함수 정의를 같은 `code` 문자열 상단에 포함한다.
+- 선택된 Function Case helper 정의는 executor가 안전성 검증 후 namespace에 주입한다. `function_case_helper_code`를 생성 응답에 다시 복사하거나 같은 함수 이름을 재정의하지 않는다.
 - 실제로 필요한 함수만 `function_case_selection_json.selected_steps`의 `function_name`, `input_text`, `source_alias`에 맞춰 호출한다.
-- helper가 선택된 조건을 일반 column filter로 임의 대체하지 않는다. helper 함수 정의를 포함하고 선택된 `input_text`, `source_alias`를 보존해 호출한다.
+- helper가 선택된 조건을 일반 column filter로 임의 대체하지 않는다. 선택된 `input_text`, `source_alias`를 보존해 호출한다.
 - function case가 소유한 `input_text` 조건을 같은 source의 일반 column filter로 다시 적용하지 않는다. helper 조건과 일반 filter의 중복 실행은 결과를 과도하게 줄일 수 있다.
 - 여러 function case가 선택되면 `function_case_selection_json.selected_steps` 순서대로 필요한 helper만 호출한다.
 - `pandas_execution_plan`에서 `apply_pandas_function_case` 다음에 같은 source의 `apply_filters`가 있으면 반드시 계획 순서대로 코드를 작성한다. helper 반환값을 작업 DataFrame에 저장한 뒤 그 DataFrame에 후속 filter를 적용한다.
