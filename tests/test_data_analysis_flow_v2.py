@@ -3107,6 +3107,46 @@ def test_v2_message_adapter_can_show_intermediate_results_without_prompt_context
     assert "L6" not in capped
 
 
+def test_v2_message_adapter_keeps_control_characters_inside_one_table_cell_without_mutating_rows():
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    raw_detail = "첫 줄\r\n둘째 줄\t셋째 줄\u2028넷째|다섯째\r여섯째\x00끝"
+    payload = {
+        "answer_message": "결과를 확인했습니다.",
+        "data": {
+            "columns": ["HOLD_DESC"],
+            "rows": [{"HOLD_DESC": raw_detail}],
+            "row_count": 1,
+        },
+        "intermediate_results": [
+            {
+                "key": "pre_contract_result",
+                "role": "computed_result",
+                "description": "최종 집계 전 중간 데이터",
+                "row_count": 1,
+                "columns": ["HOLD_DESC"],
+                "preview_rows": [{"HOLD_DESC": raw_detail}],
+            }
+        ],
+    }
+
+    message = adapter.build_message(
+        payload,
+        show_intermediate_results=True,
+        show_download_links=False,
+        show_notices=False,
+        show_applied_criteria=False,
+    )
+    rendered_cell = "| 첫 줄 ⏎ 둘째 줄 ⇥ 셋째 줄 ⏎ 넷째\\|다섯째 ⏎ 여섯째 끝 |"
+
+    # 결과 표와 중간 결과 표가 같은 렌더러를 사용하며, 저장/다운로드용 원본 값은 바꾸지 않습니다.
+    assert message.count(rendered_cell) == 2
+    assert "\r" not in message
+    assert "\t" not in message
+    assert "\u2028" not in message
+    assert payload["data"]["rows"][0]["HOLD_DESC"] == raw_detail
+    assert payload["intermediate_results"][0]["preview_rows"][0]["HOLD_DESC"] == raw_detail
+
+
 def test_common_hydrator_does_not_add_catalog_defaults_to_explicit_detail_shape():
     hydrator = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "04a_trusted_retrieval_job_hydrator.py")
     contract = hydrator._output_contract_with_default_detail(
