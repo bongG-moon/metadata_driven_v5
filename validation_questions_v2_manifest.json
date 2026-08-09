@@ -311,7 +311,7 @@
     {
       "id": 27,
       "expected_route": "fast",
-      "expected_recipe": "list_summary",
+      "expected_recipe": null,
       "expected_execution_mode": "execute_fast_path_recipe",
       "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
       "fixture_plan": {
@@ -339,14 +339,30 @@
       "id": 30,
       "expected_route": "complex",
       "expected_recipe": null,
-      "expected_execution_mode": "llm_generated_code",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 1, "repair": 0, "answer_generation": 0}
+      "expected_execution_mode": "merge_metric_sources",
+      "expected_analysis_execution_mode": "deterministic_contract",
+      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
+      "fixture_plan": {
+        "deterministic_operation": "merge_metric_sources",
+        "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"],
+        "metrics": [
+          {"source_alias": "production_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "PRODUCTION"},
+          {"source_alias": "equipment_data", "source_column": "EQP_ID", "aggregation": "nunique", "output_column": "EQUIP_COUNT"},
+          {"source_alias": "equipment_data", "source_column": "EQP_ID", "aggregation": "collect_unique", "output_column": "EQUIP_LIST"}
+        ],
+        "join_type": "left",
+        "sort_by": "PRODUCTION",
+        "sort_order": "desc"
+      },
+      "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}
     },
     {
       "id": 31,
       "question": "7/6 생산 계획 데이터 알려줘",
       "expected_route": "fast",
-      "expected_recipe": "detail_query",
+      "expected_recipe": null,
+      "expected_dataset_keys": ["target"],
+      "forbidden_dataset_keys": ["production"],
       "expected_execution_mode": "execute_fast_path_recipe",
       "expected_model_calls": {"intent": 1, "pandas_generation": 0, "repair": 0, "answer_generation": 0}
     }

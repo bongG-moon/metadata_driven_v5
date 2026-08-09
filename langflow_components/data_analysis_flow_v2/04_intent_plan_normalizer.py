@@ -140,6 +140,7 @@ VALUELESS_FILTER_OPERATORS = {
     "not_empty",
     "not_blank",
 }
+FILTER_LOGICAL_KEYS = {"and", "or", "any", "all", "$and", "$or"}
 V2_FAST_RECIPES = {
     "detail_query",
     "scalar_summary",
@@ -209,6 +210,11 @@ def normalize_intent_plan(
         return _blocked_catalog_metadata_payload(payload, catalog_error)
     retrieval_jobs = _retrieval_jobs(plan)
     (
+        plan,
+        retrieval_jobs,
+        previous_result_pseudo_job_guard,
+    ) = _remove_previous_result_pseudo_jobs(plan, retrieval_jobs)
+    (
         metadata_candidates,
         retrieval_jobs,
         execution_catalog_resolution,
@@ -244,6 +250,17 @@ def normalize_intent_plan(
     )
     raw_pandas_plan, typed_input_binding = _bind_typed_external_source_aliases(
         raw_pandas_plan
+    )
+    # Retrieval jobs own the runtime source alias.  A model may use a harmless
+    # spelling variant such as ``dataset_src`` in a typed step while declaring
+    # ``dataset_source`` on the job.  Normalize only a unique dataset-stem
+    # match, so a true second source is never silently redirected.
+    plan, raw_pandas_plan, source_alias_reconciliation = (
+        _reconcile_execution_source_aliases(
+            plan,
+            retrieval_jobs,
+            raw_pandas_plan,
+        )
     )
     (
         plan,
@@ -320,7 +337,8 @@ def normalize_intent_plan(
         align_explicit_scope=not _has_ordered_process_range_case(plan),
     )
     retrieval_jobs, filter_operator_normalization = _normalize_retrieval_filter_operators(
-        retrieval_jobs
+        retrieval_jobs,
+        question=question,
     )
     retrieval_jobs, context_date_guard = _apply_context_date_guard(
         payload,
@@ -341,6 +359,19 @@ def normalize_intent_plan(
         question,
         domain_selection.get("locked_metadata_refs", []),
         raw_pandas_plan,
+    )
+    # A follow-up may legitimately carry an earlier condition into a different
+    # Catalog dataset.  Keep that condition only when the *new* trusted
+    # Catalog can execute it.  This prevents a prior source's date/process
+    # column from becoming an impossible schema requirement on a current
+    # snapshot or other independently-shaped source.
+    retrieval_jobs, inherited_filter_compatibility_guard = (
+        _drop_unsupported_inherited_filters(
+            plan,
+            retrieval_jobs,
+            metadata_candidates,
+            question,
+        )
     )
     retrieval_jobs, post_business_process_group_guard = _apply_process_group_filter_fields(
         retrieval_jobs,
@@ -449,6 +480,15 @@ def normalize_intent_plan(
             metadata_candidates,
         )
     )
+    (
+        function_cases,
+        pandas_plan,
+        function_case_source_sufficiency,
+    ) = _remove_source_filter_sufficient_function_cases(
+        function_cases,
+        pandas_plan,
+        retrieval_jobs,
+    )
     retrieval_jobs, function_owned_filter_normalization = (
         _remove_function_owned_retrieval_filters(
             retrieval_jobs,
@@ -456,6 +496,19 @@ def normalize_intent_plan(
         )
     )
     pandas_plan = _ensure_function_case_steps(function_cases, pandas_plan, retrieval_jobs)
+    (
+        plan,
+        retrieval_jobs,
+        pandas_plan,
+        source_sufficiency_pruning,
+    ) = _prune_source_sufficient_left_joins(
+        plan,
+        retrieval_jobs,
+        pandas_plan,
+        metadata_candidates,
+        function_cases,
+        question,
+    )
     request_scope = _request_scope(plan, payload)
     reference_mode_resolution = _reference_mode_resolution(plan, payload, request_scope)
     reference_mode = str(reference_mode_resolution.get("mode") or "none")
@@ -474,6 +527,10 @@ def normalize_intent_plan(
     )
     if reuse_strategy == "previous_result":
         pandas_plan = _bind_previous_result_alias(pandas_plan, retrieval_jobs)
+        pandas_plan = _normalize_reserved_previous_result_references(
+            pandas_plan,
+            reference_mode,
+        )
         function_cases = _bind_previous_result_alias(function_cases, retrieval_jobs)
     resolved_grain_plan = _resolve_grain_plan(
         plan,
@@ -549,6 +606,10 @@ def normalize_intent_plan(
     condition_resolution = _strip_removed_optional_date_conditions(
         condition_resolution,
         optional_date_filter_guard,
+    )
+    condition_resolution = _strip_dropped_inherited_filter_conditions(
+        condition_resolution,
+        inherited_filter_compatibility_guard,
     )
     (
         retrieval_jobs,
@@ -820,10 +881,12 @@ def normalize_intent_plan(
         "retrieval_job_count": len(retrieval_jobs),
         "pandas_step_count": len(pandas_plan),
         "previous_data_reuse": previous_data_reuse,
+        "previous_result_pseudo_job_guard": previous_result_pseudo_job_guard,
         "decision_reason": decision_reasons,
         "decision_reason_normalization": decision_reason_normalization,
         "context_date_guard": context_date_guard,
         "optional_date_filter_guard": optional_date_filter_guard,
+        "inherited_filter_compatibility_guard": inherited_filter_compatibility_guard,
         "business_time_guard": business_time_guard,
         "metadata_ref_guard": metadata_ref_guard,
         "domain_selection": domain_selection,
@@ -836,6 +899,8 @@ def normalize_intent_plan(
         "function_owned_filter_normalization": function_owned_filter_normalization,
         "followup_contract_guard": followup_contract_guard,
         "function_case_input_reconciliation": function_case_input_reconciliation,
+        "function_case_source_sufficiency": function_case_source_sufficiency,
+        "source_sufficiency_pruning": source_sufficiency_pruning,
         "auto_function_case_selection": auto_function_case_selection,
         "function_case_execution_contracts": function_case_execution_contracts,
         "reference_scope_normalization": reference_scope_normalization,
@@ -846,6 +911,7 @@ def normalize_intent_plan(
         "aggregate_grain_alignment": aggregate_grain_alignment,
         "output_contract_column_normalization": output_contract_column_normalization,
         "typed_input_binding": typed_input_binding,
+        "source_alias_reconciliation": source_alias_reconciliation,
         "external_source_catalog_binding": external_source_catalog_binding,
         "execution_catalog_resolution": execution_catalog_resolution,
         "temporal_metric_alignment": temporal_metric_alignment,
@@ -954,6 +1020,7 @@ def _reconcile_followup_execution_contract(
     direct_required_jobs = _direct_required_parameter_evidence(
         jobs,
         metadata_candidates,
+        question,
     )
     if direct_required_jobs:
         next_plan["request_scope"] = "new_analysis"
@@ -1173,6 +1240,7 @@ def _reconcile_followup_execution_contract(
 def _direct_required_parameter_evidence(
     retrieval_jobs: list[dict[str, Any]],
     candidates: dict[str, Any],
+    question: str = "",
 ) -> list[dict[str, Any]]:
     evidence: list[dict[str, Any]] = []
     for job in retrieval_jobs:
@@ -1191,10 +1259,16 @@ def _direct_required_parameter_evidence(
         complete = True
         for param_name in required_params:
             value = _normalized_mapping_value(supplied_params, param_name)
-            if _is_nonblank_direct_parameter(value):
+            if _is_nonblank_direct_parameter(value) and _question_confirms_required_parameter(
+                question,
+                value,
+            ):
                 continue
             value = _normalized_mapping_value(filters, param_name)
-            if _is_nonblank_direct_parameter(value):
+            if _is_nonblank_direct_parameter(value) and _question_confirms_required_parameter(
+                question,
+                value,
+            ):
                 continue
             complete = False
             break
@@ -1209,6 +1283,33 @@ def _direct_required_parameter_evidence(
                 }
             )
     return evidence
+
+
+def _question_confirms_required_parameter(question: str, value: Any) -> bool:
+    """Prove a nonblank required value came from the current user turn.
+
+    Models can copy a value from the compact previous-result preview into a
+    follow-up plan.  A populated field alone is therefore not evidence of an
+    independent query.  Treat it as direct only when one of its scalar values
+    is actually present in the new question.  This remains generic for any
+    catalog-required identifier and does not infer dataset-specific terms.
+    """
+
+    question_compact = re.sub(r"[^0-9A-Za-z가-힣]+", "", str(question or "")).upper()
+    if not question_compact:
+        return False
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    for raw in values:
+        if isinstance(raw, dict):
+            raw = raw.get("value") or raw.get("values")
+        if isinstance(raw, (list, tuple, set)):
+            if _question_confirms_required_parameter(question, raw):
+                return True
+            continue
+        candidate = re.sub(r"[^0-9A-Za-z가-힣]+", "", str(raw or "")).upper()
+        if len(candidate) >= 3 and candidate in question_compact:
+            return True
+    return False
 
 
 # 주요 함수: 표기 차이를 무시하고 mapping의 계약 필드 값을 찾습니다.
@@ -1687,10 +1788,74 @@ def _reference_mode_resolution(
                 "input": raw_mode,
                 "issues": [],
             }
+    # ``previous_result_rows`` is meaningful only when it limits a fresh
+    # retrieval.  If a model emits it for a retrieval-free follow-up transform,
+    # the structural plan itself proves that the intended operation is over
+    # the already materialized result.  Normalize that one reversible shape
+    # rather than rejecting a valid sort/filter of the prior result.
+    if (
+        raw_mode == "previous_result_rows"
+        and not _retrieval_jobs(plan)
+        and request_scope == "followup_transform"
+    ):
+        return {
+            "mode": "previous_result_transform",
+            "source": "reference_mode_shape_reconciliation",
+            "input": raw_mode,
+            "issues": [],
+        }
+    # A transform runs over the already materialized result only.  When a
+    # fresh Catalog retrieval is also present, the model is actually asking to
+    # enrich the prior result with rows from that source.  Use the row-match
+    # mode so the generic Typed-IR normalizer can preserve the left result
+    # grain instead of treating the new source as an unrelated transform.
+    if (
+        raw_mode == "previous_result_transform"
+        and _retrieval_jobs(plan)
+        and followup_hint.get("followup_candidate") is True
+        and str(followup_hint.get("reuse_strategy_hint") or "").strip()
+        == "previous_result"
+    ):
+        return {
+            "mode": "previous_result_rows",
+            "source": "reference_mode_shape_reconciliation",
+            "input": raw_mode,
+            "issues": [],
+        }
     if raw_mode in REFERENCE_MODE_TO_REUSE_STRATEGY:
         return {
             "mode": raw_mode,
             "source": "intent_plan.reference_mode",
+            "input": raw_mode,
+            "issues": [],
+        }
+    # Some otherwise valid model plans use the legacy reuse-strategy spelling
+    # in ``reference_mode`` (for example ``previous_result``) rather than the
+    # Typed-IR mode name.  It is safe to normalize that spelling only from the
+    # shape of the plan: a new retrieval needs previous result *rows* for
+    # matching, while a retrieval-free transform operates on the prior result
+    # itself.  This is intentionally independent of any particular dataset or
+    # business term.
+    if raw_mode == "previous_result":
+        mode = (
+            "previous_result_rows"
+            if _retrieval_jobs(plan)
+            else "previous_result_transform"
+        )
+        return {
+            "mode": mode,
+            "source": "legacy_intent_plan.reference_mode",
+            "input": raw_mode,
+            "issues": [],
+        }
+    legacy_mode_aliases = {
+        "previous_intent_with_new_retrieval": "previous_filters",
+        "trace_only": "previous_trace",
+    }
+    if raw_mode in legacy_mode_aliases:
+        return {
+            "mode": legacy_mode_aliases[raw_mode],
+            "source": "legacy_intent_plan.reference_mode",
             "input": raw_mode,
             "issues": [],
         }
@@ -1948,6 +2113,201 @@ def _apply_unrequested_optional_date_filter_guard(
 
 
 # 함수 설명: 명시 날짜, 상대 날짜, 현재 시점 표현이 질문에 실제로 있는지 판별합니다.
+def _drop_unsupported_inherited_filters(
+    plan: dict[str, Any],
+    retrieval_jobs: list[Any],
+    metadata_candidates: dict[str, Any],
+    question: str = "",
+) -> tuple[list[Any], dict[str, Any]]:
+    """Remove inherited or implicit snapshot filters the target Catalog cannot execute.
+
+    A condition stated in the current question remains visible and therefore
+    fails closed if the selected Catalog cannot support it.  This narrowing is
+    limited to fields the model explicitly marked as inherited from a prior
+    turn, where a new Catalog has a different physical schema.  A relative
+    temporal phrase such as ``current`` may also be projected by the model as
+    a physical DATE filter even when the selected Catalog is a current
+    snapshot without a date column.  That implicit projection is removed only
+    when the user did not provide an explicit calendar date.
+    """
+
+    resolution = (
+        plan.get("condition_resolution")
+        if isinstance(plan.get("condition_resolution"), dict)
+        else {}
+    )
+    inherited = (
+        resolution.get("inherited")
+        if isinstance(resolution.get("inherited"), dict)
+        else {}
+    )
+    inherited_fields = {
+        _normalized_column_key(field)
+        for field in inherited
+        if str(field or "").strip()
+        and str(field) not in {"effective_filters", "filters", "conditions"}
+    }
+    has_explicit_calendar_date = _question_has_explicit_calendar_date(question)
+    if not inherited_fields and has_explicit_calendar_date:
+        return retrieval_jobs, {"status": "not_needed", "dropped_filters": []}
+
+    effective_filters = (
+        resolution.get("effective_filters")
+        if isinstance(resolution.get("effective_filters"), dict)
+        else {}
+    )
+
+    result: list[Any] = []
+    dropped: list[dict[str, Any]] = []
+    for item in retrieval_jobs:
+        if not isinstance(item, dict):
+            result.append(deepcopy(item))
+            continue
+        job = deepcopy(item)
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        source_alias = str(job.get("source_alias") or dataset_key).strip()
+        has_filters = isinstance(job.get("filters"), dict)
+        filters = deepcopy(job.get("filters")) if has_filters else {}
+        considered_fields: set[str] = set()
+        has_params = isinstance(job.get("required_params"), dict)
+        params = deepcopy(job.get("required_params")) if has_params else {}
+        required_params = {
+            _normalized_column_key(value)
+            for value in _catalog_required_params(metadata_candidates, dataset_key)
+        }
+        for field in list(params):
+            field_key = _normalized_column_key(field)
+            inherited = field_key in inherited_fields
+            implicit_snapshot_date = (
+                _is_date_filter_field(field)
+                and bool(str(question or "").strip())
+                and not has_explicit_calendar_date
+            )
+            if not inherited and not implicit_snapshot_date:
+                continue
+            if field_key in required_params or _catalog_supports_domain_column(
+                metadata_candidates,
+                dataset_key,
+                field,
+            ):
+                continue
+            considered_fields.add(field_key)
+            dropped.append(
+                {
+                    "dataset_key": dataset_key,
+                    "source_alias": source_alias,
+                    "field": str(field),
+                    "condition": deepcopy(params.pop(field)),
+                    "reason": (
+                        "inherited_field_not_supported_by_target_catalog"
+                        if inherited
+                        else "implicit_date_scope_not_supported_by_target_catalog"
+                    ),
+                }
+            )
+        for field in list(filters):
+            field_key = _normalized_column_key(field)
+            considered_fields.add(field_key)
+            inherited = field_key in inherited_fields
+            implicit_snapshot_date = (
+                _is_date_filter_field(field)
+                and bool(str(question or "").strip())
+                and not has_explicit_calendar_date
+            )
+            if not inherited and not implicit_snapshot_date:
+                continue
+            if field_key in required_params or _catalog_supports_domain_column(
+                metadata_candidates,
+                dataset_key,
+                field,
+            ):
+                continue
+            dropped.append(
+                {
+                    "dataset_key": dataset_key,
+                    "source_alias": source_alias,
+                    "field": str(field),
+                    "condition": deepcopy(filters.pop(field)),
+                    "reason": (
+                        "inherited_field_not_supported_by_target_catalog"
+                        if inherited
+                        else "implicit_date_scope_not_supported_by_target_catalog"
+                    ),
+                }
+            )
+
+        # Some model responses place a temporal condition only in
+        # ``effective_filters`` while leaving it out of the retrieval job.
+        # The deterministic executor still consumes that map, so validate the
+        # same condition against the selected Catalog instead of allowing a
+        # hidden, non-executable DATE filter to reach pandas.
+        for raw_alias, raw_effective in effective_filters.items():
+            if not isinstance(raw_effective, dict):
+                continue
+            effective_dataset = str(raw_effective.get("dataset_key") or "").strip()
+            if str(raw_alias).strip() not in {source_alias, dataset_key} and effective_dataset != dataset_key:
+                continue
+            effective_map = (
+                raw_effective.get("filters")
+                if isinstance(raw_effective.get("filters"), dict)
+                else raw_effective
+            )
+            for field, condition in effective_map.items():
+                if field in {"dataset_key", "filters", "source_alias"}:
+                    continue
+                field_key = _normalized_column_key(field)
+                if field_key in considered_fields:
+                    continue
+                inherited = field_key in inherited_fields
+                implicit_snapshot_date = (
+                    _is_date_filter_field(field)
+                    and bool(str(question or "").strip())
+                    and not has_explicit_calendar_date
+                )
+                if not inherited and not implicit_snapshot_date:
+                    continue
+                if field_key in required_params or _catalog_supports_domain_column(
+                    metadata_candidates,
+                    dataset_key,
+                    field,
+                ):
+                    continue
+                considered_fields.add(field_key)
+                dropped.append(
+                    {
+                        "dataset_key": dataset_key,
+                        "source_alias": source_alias,
+                        "field": str(field),
+                        "condition": deepcopy(condition),
+                        "reason": (
+                            "inherited_field_not_supported_by_target_catalog"
+                            if inherited
+                            else "implicit_date_scope_not_supported_by_target_catalog"
+                        ),
+                    }
+                )
+        if has_filters:
+            job["filters"] = filters
+        if has_params:
+            job["required_params"] = params
+        result.append(job)
+    return result, {
+        "status": "applied" if dropped else "not_needed",
+        "dropped_filters": dropped,
+    }
+
+
+def _question_has_explicit_calendar_date(question: str) -> bool:
+    """Return true only for a concrete date, never for relative time words."""
+
+    text = str(question or "")
+    return bool(
+        re.search(r"(?<!\d)20\d{6}(?!\d)", text)
+        or re.search(r"(?<!\d)20\d{2}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{1,2}(?!\d)", text)
+        or re.search(r"(?<!\d)\d{1,2}\s*/\s*\d{1,2}(?!\d)", text)
+    )
+
+
 def _question_has_date_scope(question: Any) -> bool:
     text = str(question or "").strip()
     if not text:
@@ -1998,6 +2358,60 @@ def _strip_removed_optional_date_conditions(
                 scope.pop(field, None)
         if not scope:
             result.pop(scope_name, None)
+    return result
+
+
+def _strip_dropped_inherited_filter_conditions(
+    condition_resolution: dict[str, Any],
+    guard: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep displayed inherited criteria consistent with executable filters."""
+
+    dropped = [
+        item for item in guard.get("dropped_filters", []) if isinstance(item, dict)
+    ]
+    if not dropped:
+        return condition_resolution
+    result = deepcopy(condition_resolution)
+    dropped_keys = {_normalized_column_key(item.get("field")) for item in dropped}
+    # The model can label an implicit current-snapshot DATE either as
+    # ``changed`` or ``new``.  Remove it from the displayed contract together
+    # with the executable job filter, while preserving all unrelated criteria.
+    for scope_name in ("inherited", "changed", "new"):
+        scope = result.get(scope_name)
+        if not isinstance(scope, dict):
+            continue
+        for field in list(scope):
+            if _normalized_column_key(field) in dropped_keys:
+                scope.pop(field, None)
+        if not scope:
+            result.pop(scope_name, None)
+
+    by_alias: dict[str, set[str]] = {}
+    by_dataset: dict[str, set[str]] = {}
+    for item in dropped:
+        field_key = _normalized_column_key(item.get("field"))
+        alias = str(item.get("source_alias") or "").strip()
+        dataset_key = str(item.get("dataset_key") or "").strip()
+        if alias:
+            by_alias.setdefault(alias, set()).add(field_key)
+        if dataset_key:
+            by_dataset.setdefault(dataset_key, set()).add(field_key)
+    effective = result.get("effective_filters")
+    if isinstance(effective, dict):
+        for alias, raw_item in effective.items():
+            if not isinstance(raw_item, dict):
+                continue
+            dataset_key = str(raw_item.get("dataset_key") or "").strip()
+            fields = set(by_alias.get(str(alias), set())) | set(
+                by_dataset.get(dataset_key, set())
+            )
+            filters = raw_item.get("filters")
+            if not fields or not isinstance(filters, dict):
+                continue
+            for field in list(filters):
+                if _normalized_column_key(field) in fields:
+                    filters.pop(field, None)
     return result
 
 
@@ -2068,6 +2482,574 @@ def _bind_typed_external_source_aliases(
 
 
 # 함수 설명: `_pandas_plan_lineage()`는 PLAN·lineage 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
+# Function description: retrieval job aliases own runtime source identity.
+# This helper repairs only a unique lexical alias variant and leaves ambiguous
+# references unchanged for the ordinary Catalog validation path.
+def _reconcile_execution_source_aliases(
+    plan_value: dict[str, Any],
+    retrieval_jobs: list[Any],
+    pandas_plan: list[Any],
+) -> tuple[dict[str, Any], list[Any], dict[str, Any]]:
+    """Align structural source references with unique retrieval-job aliases."""
+
+    candidates: list[dict[str, str]] = []
+    for job in retrieval_jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        if alias and dataset_key:
+            candidates.append({"alias": alias, "dataset_key": dataset_key})
+
+    def stem(value: Any) -> str:
+        normalized = _normalized_alias(value)
+        for suffix in ("_source", "_src", "_data", "_dataset"):
+            if normalized.endswith(suffix):
+                return normalized[: -len(suffix)]
+        return normalized
+
+    def canonical_alias(reference: Any) -> str:
+        value = str(reference or "").strip()
+        if not value:
+            return ""
+        exact = list(
+            dict.fromkeys(
+                item["alias"]
+                for item in candidates
+                if value.casefold()
+                in {item["alias"].casefold(), item["dataset_key"].casefold()}
+            )
+        )
+        if len(exact) == 1:
+            return exact[0]
+        value_stem = stem(value)
+        matches = list(
+            dict.fromkeys(
+                item["alias"]
+                for item in candidates
+                if value_stem
+                and value_stem in {stem(item["alias"]), stem(item["dataset_key"])}
+            )
+        )
+        return matches[0] if len(matches) == 1 else ""
+
+    rewrites: list[dict[str, str]] = []
+
+    def rewrite(value: Any, field: str) -> Any:
+        original = str(value or "").strip()
+        replacement = canonical_alias(original)
+        if replacement and original and replacement != original:
+            rewrites.append({"field": field, "from": original, "to": replacement})
+            return replacement
+        return value
+
+    rewritten_plan = deepcopy(plan_value)
+    rewritten_steps: list[Any] = []
+    alias_fields = (
+        "source_alias",
+        "left_source_alias",
+        "right_source_alias",
+        "reference_source_alias",
+        "target_source_alias",
+    )
+    for raw_step in pandas_plan:
+        if not isinstance(raw_step, dict):
+            rewritten_steps.append(deepcopy(raw_step))
+            continue
+        step = deepcopy(raw_step)
+        for field in alias_fields:
+            if field in step:
+                step[field] = rewrite(step.get(field), f"pandas_execution_plan.{field}")
+        if isinstance(step.get("inputs"), list):
+            inputs: list[Any] = []
+            for raw_input in step["inputs"]:
+                if not isinstance(raw_input, dict):
+                    inputs.append(deepcopy(raw_input))
+                    continue
+                item = deepcopy(raw_input)
+                if str(item.get("kind") or "").strip() == "external_source":
+                    item["ref"] = rewrite(item.get("ref"), "pandas_execution_plan.inputs.ref")
+                inputs.append(item)
+            step["inputs"] = inputs
+        rewritten_steps.append(step)
+
+    def rewrite_nested(value: Any, field: str) -> Any:
+        if isinstance(value, list):
+            return [rewrite_nested(item, field) for item in value]
+        if not isinstance(value, dict):
+            return deepcopy(value)
+        result = deepcopy(value)
+        for alias_field in alias_fields:
+            if alias_field in result:
+                result[alias_field] = rewrite(result.get(alias_field), field)
+        return result
+
+    for key in (
+        "pandas_function_case",
+        "pandas_function_cases",
+        "selected_function_cases",
+        "grain_plan",
+        "join_plan",
+        "resolved_grain_plan",
+        "resolved_join_plan",
+    ):
+        if key in rewritten_plan:
+            rewritten_plan[key] = rewrite_nested(rewritten_plan.get(key), key)
+    contract = rewritten_plan.get("output_contract")
+    if isinstance(contract, dict) and isinstance(contract.get("metric_bindings"), list):
+        rewritten_contract = deepcopy(contract)
+        rewritten_contract["metric_bindings"] = rewrite_nested(
+            contract["metric_bindings"],
+            "output_contract.metric_bindings",
+        )
+        rewritten_plan["output_contract"] = rewritten_contract
+    unique_rewrites = list(
+        dict.fromkeys((item["field"], item["from"], item["to"]) for item in rewrites)
+    )
+    return rewritten_plan, rewritten_steps, {
+        "status": "applied" if unique_rewrites else "not_needed",
+        "rewrites": [
+            {"field": field, "from": before, "to": after}
+            for field, before, after in unique_rewrites
+        ],
+    }
+
+
+# 함수 설명: 왼쪽 원본만으로 질문의 필터·표시 계약을 만족하는 단순 left join은 보조 source를 제거합니다.
+def _prune_source_sufficient_left_joins(
+    plan: dict[str, Any],
+    retrieval_jobs: list[Any],
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    function_cases: list[Any],
+    question: str,
+) -> tuple[dict[str, Any], list[Any], list[Any], dict[str, Any]]:
+    """Remove an unconsumed auxiliary source from a simple preserve-left join.
+
+    This is deliberately a data-contract rule, not a question-pattern rule.
+    It applies only when a single left join declares population preservation,
+    every requested output column is available from the left catalog, and no
+    selected helper or metric is owned by the right source.  Any ambiguity
+    leaves the original multi-source plan untouched.
+    """
+
+    next_plan = deepcopy(plan)
+    jobs = [deepcopy(item) for item in retrieval_jobs if isinstance(item, dict)]
+    steps = [deepcopy(item) for item in pandas_plan if isinstance(item, dict)]
+    join_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if str(step.get("operation") or step.get("step") or "").strip().lower()
+        == "join"
+    ]
+    if len(join_indexes) != 1 or len(jobs) < 2:
+        return next_plan, jobs, steps, {"status": "not_needed"}
+
+    join_index = join_indexes[0]
+    join_step = steps[join_index]
+    join_type = str(join_step.get("join_type") or "").strip().lower()
+    population_policy = str(join_step.get("population_policy") or "").strip().lower()
+    if join_type != "left" or population_policy not in {
+        "preserve_left_rows",
+        "preserve_left",
+    }:
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "join_does_not_declare_preserve_left_population",
+        }
+
+    inputs = join_step.get("inputs") if isinstance(join_step.get("inputs"), list) else []
+    if len(inputs) != 2 or not all(isinstance(item, dict) for item in inputs):
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "join_inputs_not_two_typed_sources",
+        }
+    nodes_by_id, output_aliases = _pandas_plan_lineage(steps)
+    known_aliases = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in jobs
+        if str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+    }
+    left_aliases = _input_external_source_aliases(
+        inputs[0], nodes_by_id, output_aliases, steps, known_aliases
+    )
+    right_aliases = _input_external_source_aliases(
+        inputs[1], nodes_by_id, output_aliases, steps, known_aliases
+    )
+    if len(left_aliases) != 1 or len(right_aliases) != 1:
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "join_source_lineage_not_unique",
+            "left_aliases": left_aliases,
+            "right_aliases": right_aliases,
+        }
+    left_alias, right_alias = left_aliases[0], right_aliases[0]
+    job_by_alias = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip(): job
+        for job in jobs
+    }
+    left_job = job_by_alias.get(left_alias)
+    right_job = job_by_alias.get(right_alias)
+    if not left_job or not right_job or left_alias == right_alias:
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "join_jobs_not_resolved",
+        }
+
+    required_columns = _source_sufficiency_required_columns(next_plan, steps[join_index:])
+    if not required_columns:
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "output_columns_not_explicit",
+        }
+    left_dataset_key = str(left_job.get("dataset_key") or "").strip()
+    if not left_dataset_key:
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "left_dataset_key_missing",
+        }
+    unsupported_columns = [
+        column
+        for column in required_columns
+        if not _explicit_catalog_column_contract(candidates, left_dataset_key, column)
+    ]
+    next_plan, steps, dropped_columns = _drop_unrequested_auxiliary_output_columns(
+        next_plan,
+        steps,
+        unsupported_columns,
+        question,
+        candidates,
+    )
+    if dropped_columns:
+        required_columns = _source_sufficiency_required_columns(
+            next_plan, steps[join_index:]
+        )
+    if not all(
+        _explicit_catalog_column_contract(candidates, left_dataset_key, column)
+        for column in required_columns
+    ):
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "left_catalog_does_not_cover_output_contract",
+            "left_dataset_key": left_dataset_key,
+            "required_columns": required_columns,
+            "dropped_unrequested_auxiliary_columns": dropped_columns,
+        }
+    if _source_is_semantically_consumed(
+        next_plan, steps, function_cases, right_alias, join_index
+    ):
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "right_source_is_consumed_by_metric_or_transform",
+            "right_source_alias": right_alias,
+        }
+
+    join_ids = {
+        str(join_step.get("node_id") or "").strip(),
+        str(join_step.get("output_alias") or "").strip(),
+    }
+    join_ids.discard("")
+    if not join_ids:
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "join_has_no_rewritable_identity",
+        }
+
+    rewritten_steps: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(steps):
+        if index == join_index:
+            continue
+        step = deepcopy(raw_step)
+        step_inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        rewritten_inputs: list[Any] = []
+        for raw_input in step_inputs:
+            if not isinstance(raw_input, dict):
+                rewritten_inputs.append(raw_input)
+                continue
+            input_value = deepcopy(raw_input)
+            if (
+                str(input_value.get("kind") or "").strip() == "node_output"
+                and str(input_value.get("ref") or "").strip() in join_ids
+            ):
+                input_value = deepcopy(inputs[0])
+            rewritten_inputs.append(input_value)
+        if rewritten_inputs:
+            step["inputs"] = rewritten_inputs
+        for field in ("source_alias", "left_source_alias", "right_source_alias"):
+            if str(step.get(field) or "").strip() in join_ids:
+                step[field] = left_alias
+        rewritten_steps.append(step)
+
+    reachable_steps = _reachable_terminal_steps(rewritten_steps)
+    if not reachable_steps:
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "rewritten_plan_has_no_terminal_lineage",
+        }
+    used_aliases: set[str] = set()
+    for step in reachable_steps:
+        used_aliases.update(
+            _step_external_source_aliases(step, reachable_steps, known_aliases)
+        )
+    if right_alias in used_aliases:
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "right_source_remains_reachable_after_rewrite",
+        }
+    pruned_jobs = [
+        job
+        for job in jobs
+        if str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        != right_alias
+    ]
+    if len(pruned_jobs) != len(jobs) - 1:
+        return next_plan, jobs, steps, {
+            "status": "not_needed",
+            "reason": "right_source_job_not_uniquely_prunable",
+        }
+    # An LLM-provided join_plan would otherwise be resolved again after the
+    # typed join step is removed.  Drop only join metadata tied to this exact
+    # simple plan; unrelated multi-join plans never enter this branch.
+    next_plan.pop("join_plan", None)
+    return next_plan, pruned_jobs, reachable_steps, {
+        "status": "pruned",
+        "reason": "left_catalog_covers_output_contract_and_right_source_is_unconsumed",
+        "kept_source_alias": left_alias,
+        "kept_dataset_key": left_dataset_key,
+        "pruned_source_alias": right_alias,
+        "pruned_dataset_key": str(right_job.get("dataset_key") or "").strip(),
+        "required_columns": required_columns,
+        "dropped_unrequested_auxiliary_columns": dropped_columns,
+    }
+
+
+# 함수 설명: 질문에 근거가 없는 보조 source 전용 출력 컬럼은 left join pruning 전에 계약에서 제거합니다.
+def _drop_unrequested_auxiliary_output_columns(
+    plan: dict[str, Any],
+    steps: list[dict[str, Any]],
+    unsupported_columns: list[str],
+    question: str,
+    candidates: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    """Remove only explicitly unrequested, right-only display columns.
+
+    A model can add a familiar metric merely because it selected a second
+    catalog.  We never infer that a metric is absent: it is removed only when
+    the left catalog cannot supply it *and* neither its column/label nor a
+    registered metric alias appears in the question.
+    """
+
+    dropped = [
+        column
+        for column in _merge_strings(unsupported_columns)
+        if not _question_requests_output_column(question, plan, candidates, column)
+    ]
+    if not dropped:
+        return plan, steps, []
+    next_plan = deepcopy(plan)
+    contract = next_plan.get("output_contract") if isinstance(next_plan.get("output_contract"), dict) else {}
+    if not contract:
+        return plan, steps, []
+    for key in ("required_columns", "result_columns", "grain_columns", "metric_columns"):
+        if isinstance(contract.get(key), list):
+            contract[key] = [
+                value
+                for value in contract[key]
+                if str(value).strip() not in set(dropped)
+            ]
+    if isinstance(contract.get("metric_bindings"), list):
+        contract["metric_bindings"] = [
+            value
+            for value in contract["metric_bindings"]
+            if not isinstance(value, dict)
+            or str(value.get("source_column") or value.get("output_column") or "").strip()
+            not in set(dropped)
+        ]
+    if str(contract.get("primary_metric") or "").strip() in set(dropped):
+        contract.pop("primary_metric", None)
+    labels = contract.get("column_labels") if isinstance(contract.get("column_labels"), dict) else {}
+    if labels:
+        contract["column_labels"] = {
+            key: value for key, value in labels.items() if str(key).strip() not in set(dropped)
+        }
+    # A detail/aggregate contract without any display column is ambiguous; do
+    # not remove all columns merely to make a join disappear.
+    if not _string_list(contract.get("result_columns") or contract.get("required_columns")):
+        return plan, steps, []
+    next_plan["output_contract"] = contract
+    cleaned_steps: list[dict[str, Any]] = []
+    for raw_step in steps:
+        step = deepcopy(raw_step)
+        for key in ("columns", "selected_columns", "result_columns", "output_columns", "comparison_columns", "projection"):
+            if isinstance(step.get(key), list):
+                step[key] = [
+                    value for value in step[key] if str(value).strip() not in set(dropped)
+                ]
+        if isinstance(step.get("aggregations"), list):
+            step["aggregations"] = [
+                item
+                for item in step["aggregations"]
+                if not isinstance(item, dict)
+                or str(item.get("column") or item.get("output_column") or "").strip()
+                not in set(dropped)
+            ]
+        cleaned_steps.append(step)
+    return next_plan, cleaned_steps, dropped
+
+
+# 함수 설명: 컬럼명·표시명·등록 metric alias 중 질문에 실제 등장한 근거가 있는지 확인합니다.
+def _question_requests_output_column(
+    question: str,
+    plan: dict[str, Any],
+    candidates: dict[str, Any],
+    column: str,
+) -> bool:
+    if _domain_alias_matches(question, column):
+        return True
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    labels = contract.get("column_labels") if isinstance(contract.get("column_labels"), dict) else {}
+    label = str(labels.get(column) or "").strip()
+    if label and _domain_alias_matches(question, label):
+        return True
+    target = _normalized_column_key(column)
+    for item in candidates.get("domain_items", []) if isinstance(candidates.get("domain_items"), list) else []:
+        if not isinstance(item, dict) or str(item.get("section") or "").strip() not in {"metric_terms", "quantity_terms"}:
+            continue
+        payload = _metadata_payload(item)
+        owned_columns = _merge_strings(
+            _string_list(payload.get("columns")),
+            _string_list(payload.get("column")),
+            _string_list(payload.get("metric_columns")),
+            _string_list(payload.get("source_column")),
+        )
+        if target not in {_normalized_column_key(value) for value in owned_columns}:
+            continue
+        aliases = _merge_strings(
+            _string_list(payload.get("aliases")),
+            _string_list(payload.get("display_name")),
+        )
+        if any(_domain_alias_matches(question, alias) for alias in aliases):
+            return True
+    return False
+
+
+# 함수 설명: typed input이 가리키는 외부 retrieval source alias를 lineage로 추적합니다.
+def _input_external_source_aliases(
+    value: dict[str, Any],
+    nodes_by_id: dict[str, dict[str, Any]],
+    output_aliases: dict[str, str],
+    pandas_plan: list[Any],
+    known_aliases: set[str],
+) -> list[str]:
+    kind = str(value.get("kind") or "").strip()
+    ref = str(value.get("ref") or "").strip()
+    if kind == "external_source" and ref:
+        return [ref]
+    if kind != "node_output" or not ref:
+        return []
+    node_id = ref if ref in nodes_by_id else output_aliases.get(ref, "")
+    step = nodes_by_id.get(node_id)
+    if not isinstance(step, dict):
+        return []
+    return _step_external_source_aliases(step, pandas_plan, known_aliases)
+
+
+# 함수 설명: output 계약과 join 이후의 명시 컬럼만 모아 source sufficiency를 보수적으로 판정합니다.
+def _source_sufficiency_required_columns(
+    plan: dict[str, Any],
+    downstream_steps: list[Any],
+) -> list[str]:
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    columns = _merge_strings(
+        _string_list(contract.get("result_columns")),
+        _string_list(contract.get("required_columns")),
+        _string_list(contract.get("grain_columns")),
+        _string_list(contract.get("metric_columns")),
+    )
+    for raw_step in downstream_steps:
+        if not isinstance(raw_step, dict):
+            continue
+        operation = str(raw_step.get("operation") or raw_step.get("step") or "").strip().lower()
+        if operation in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}:
+            columns = _merge_strings(
+                columns,
+                _string_list(raw_step.get("group_by")),
+                _string_list(raw_step.get("group_by_columns")),
+            )
+            for aggregation in raw_step.get("aggregations", []) if isinstance(raw_step.get("aggregations"), list) else []:
+                if isinstance(aggregation, dict):
+                    columns = _merge_strings(columns, _string_list(aggregation.get("column")))
+        if operation in {"select_columns", "select", "project"}:
+            for key in ("columns", "selected_columns", "result_columns", "output_columns", "projection"):
+                columns = _merge_strings(columns, _string_list(raw_step.get(key)))
+        if operation in {"sort_and_top_n", "sort", "order_by"}:
+            columns = _merge_strings(columns, _string_list(raw_step.get("sort_by")))
+    return columns
+
+
+# 함수 설명: 보조 source가 metric·helper·후속 외부입력에 쓰이면 source pruning을 하지 않습니다.
+def _source_is_semantically_consumed(
+    plan: dict[str, Any],
+    steps: list[Any],
+    function_cases: list[Any],
+    source_alias: str,
+    join_index: int,
+) -> bool:
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    for binding in contract.get("metric_bindings", []) if isinstance(contract.get("metric_bindings"), list) else []:
+        if isinstance(binding, dict) and str(binding.get("source_alias") or "").strip() == source_alias:
+            return True
+    for item in function_cases:
+        if isinstance(item, dict) and str(item.get("source_alias") or "").strip() == source_alias:
+            return True
+    for index, raw_step in enumerate(steps):
+        if index <= join_index or not isinstance(raw_step, dict):
+            continue
+        inputs = raw_step.get("inputs") if isinstance(raw_step.get("inputs"), list) else []
+        if any(
+            isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "external_source"
+            and str(item.get("ref") or "").strip() == source_alias
+            for item in inputs
+        ):
+            return True
+        if str(raw_step.get("source_alias") or "").strip() == source_alias:
+            return True
+    return False
+
+
+# 함수 설명: 재작성한 typed plan의 마지막 결과에 실제로 연결된 노드만 남깁니다.
+def _reachable_terminal_steps(pandas_plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not pandas_plan:
+        return []
+    nodes_by_id, output_aliases = _pandas_plan_lineage(pandas_plan)
+    terminal_index = len(pandas_plan) - 1
+    terminal_id = str(pandas_plan[terminal_index].get("node_id") or f"__step_{terminal_index + 1}").strip()
+    pending = [terminal_id]
+    kept_ids: set[str] = set()
+    while pending:
+        node_id = pending.pop()
+        if node_id in kept_ids:
+            continue
+        step = nodes_by_id.get(node_id)
+        if not isinstance(step, dict):
+            continue
+        kept_ids.add(node_id)
+        for value in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
+            if not isinstance(value, dict) or str(value.get("kind") or "").strip() != "node_output":
+                continue
+            ref = str(value.get("ref") or "").strip()
+            parent = ref if ref in nodes_by_id else output_aliases.get(ref, "")
+            if parent and parent not in kept_ids:
+                pending.append(parent)
+    result: list[dict[str, Any]] = []
+    for index, step in enumerate(pandas_plan):
+        node_id = str(step.get("node_id") or f"__step_{index + 1}").strip()
+        if node_id in kept_ids:
+            result.append(step)
+    return result
+
+
 def _pandas_plan_lineage(
     pandas_plan: list[Any],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
@@ -3133,6 +4115,7 @@ def _ensure_selected_metric_sources(
         if isinstance(item, dict) and str(item.get("dataset_key") or "").strip()
     ]
     additions: list[dict[str, Any]] = []
+    replacements: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
     for contract in contracts:
         metrics = contract["metrics"]
@@ -3150,6 +4133,12 @@ def _ensure_selected_metric_sources(
         ):
             continue
 
+        # ``data_source``/``dataset_key`` declared by the matched domain is an
+        # explicit ownership hint.  A catalog without a ``time_scope`` is still
+        # valid for that exact hint: time scope only disambiguates alternatives,
+        # it must not discard the domain's registered metric source.
+        dataset_hint = str(contract.get("dataset_hint") or "").strip()
+        normalized_hint = dataset_hint.casefold()
         eligible = [
             item
             for item in catalog_items
@@ -3162,8 +4151,14 @@ def _ensure_selected_metric_sources(
                 for metric in metrics
             )
             and (
+                bool(normalized_hint)
+                and str(item.get("dataset_key") or "").strip().casefold()
+                == normalized_hint
+                or not normalized_hint
+                and (
                 not desired_scope
                 or _catalog_time_scope(item) == desired_scope
+                )
             )
         ]
         if len(eligible) != 1:
@@ -3202,6 +4197,72 @@ def _ensure_selected_metric_sources(
                 }
             )
             continue
+
+        # When a single planned source cannot supply the selected metric but
+        # the matched domain names one catalog explicitly, retain the source
+        # alias and replace only its catalog binding.  This keeps typed pandas
+        # inputs, filters, and downstream contracts stable while avoiding an
+        # invented second source/join.  Multi-source plans remain additive
+        # below because their semantics cannot be inferred safely here.
+        incompatible_jobs = [
+            job
+            for job in jobs
+            if isinstance(job, dict)
+            and not all(
+                _catalog_supports_domain_column(
+                    candidates,
+                    str(job.get("dataset_key") or "").strip(),
+                    metric,
+                )
+                for metric in metrics
+            )
+        ]
+        selected_is_explicit_hint = bool(normalized_hint) and dataset_key.casefold() == normalized_hint
+        if selected_is_explicit_hint and len(jobs) == 1 and len(incompatible_jobs) == 1:
+            job = incompatible_jobs[0]
+            previous_dataset_key = str(job.get("dataset_key") or "").strip()
+            if previous_dataset_key.casefold() != dataset_key.casefold():
+                previous_required = (
+                    job.get("required_params")
+                    if isinstance(job.get("required_params"), dict)
+                    else {}
+                )
+                rebound_required: dict[str, Any] = {}
+                for name in required_names:
+                    normalized_name = _normalized_column_key(name)
+                    existing_value = next(
+                        (
+                            value
+                            for key, value in previous_required.items()
+                            if _normalized_column_key(key) == normalized_name
+                            and value not in (None, "", [], {})
+                        ),
+                        None,
+                    )
+                    if existing_value is not None:
+                        rebound_required[name] = deepcopy(existing_value)
+                    elif normalized_name == _normalized_column_key("DATE") and requested_date:
+                        rebound_required[name] = requested_date
+                job["dataset_key"] = dataset_key
+                source_type = str(_metadata_payload(selected).get("source_type") or "").strip()
+                if source_type:
+                    job["source_type"] = source_type
+                if rebound_required:
+                    job["required_params"] = rebound_required
+                else:
+                    job.pop("required_params", None)
+                replacements.append(
+                    {
+                        "metadata_ref": contract["metadata_ref"],
+                        "source_alias": str(job.get("source_alias") or previous_dataset_key).strip(),
+                        "from_dataset_key": previous_dataset_key,
+                        "to_dataset_key": dataset_key,
+                        "metrics": metrics,
+                        "requested_time_scope": desired_scope,
+                        "selection_source": "domain_explicit_metric_dataset",
+                    }
+                )
+                continue
 
         used_aliases = {
             str(job.get("source_alias") or job.get("dataset_key") or "").strip()
@@ -3314,8 +4375,9 @@ def _ensure_selected_metric_sources(
             }
         )
     return jobs, steps, {
-        "status": "applied" if additions else ("unresolved" if unresolved else "not_needed"),
+        "status": "applied" if additions or replacements else ("unresolved" if unresolved else "not_needed"),
         "additions": additions,
+        "replacements": replacements,
         "unresolved": unresolved,
     }
 
@@ -3513,6 +4575,33 @@ def _aggregation_source_columns_by_alias(
     """
     result: dict[str, list[str]] = {}
     known = set(known_external_aliases or set())
+    # ``sort_by`` and result projections often name a column produced by an
+    # earlier aggregation.  That is an execution-graph value, not a physical
+    # source column which a Table Catalog must expose.  Treating it as physical
+    # made an otherwise valid current-day catalog look schema-incompatible
+    # (for example ``PRODUCTION_SUM`` after ``sum(PRODUCTION)``).  Collect only
+    # explicitly derived aggregate outputs here; raw columns with the same
+    # spelling are still collected from their actual aggregation/group input.
+    derived_output_keys = {
+        _normalized_column_key(
+            aggregation.get("output_column")
+            or aggregation.get("alias")
+            or aggregation.get("name")
+        )
+        for step in pandas_plan
+        if isinstance(step, dict)
+        for aggregation in (
+            step.get("aggregations")
+            if isinstance(step.get("aggregations"), list)
+            else []
+        )
+        if isinstance(aggregation, dict)
+        and _normalized_column_key(
+            aggregation.get("output_column")
+            or aggregation.get("alias")
+            or aggregation.get("name")
+        )
+    }
     for step in pandas_plan:
         if not isinstance(step, dict):
             continue
@@ -3526,7 +4615,8 @@ def _aggregation_source_columns_by_alias(
             alias = lineage_aliases[0] if len(lineage_aliases) == 1 else ""
         if not alias:
             continue
-        columns: list[str] = []
+        direct_source_columns: list[str] = []
+        derived_reference_columns: list[str] = []
         aggregations = step.get("aggregations") if isinstance(step.get("aggregations"), list) else []
         if not aggregations and (step.get("agg_column") or step.get("aggregate_column")):
             aggregations = [
@@ -3536,7 +4626,7 @@ def _aggregation_source_columns_by_alias(
             ]
         for aggregation in aggregations:
             if isinstance(aggregation, dict):
-                columns.append(
+                direct_source_columns.append(
                     str(
                         aggregation.get("source_column")
                         or aggregation.get("column")
@@ -3554,18 +4644,26 @@ def _aggregation_source_columns_by_alias(
             "comparison_columns",
             "compare_columns",
             "columns",
-            "result_columns",
             "projection",
             "keys",
             "join_keys",
             "on",
             "subset",
-            "sort_by",
             "source_column",
             "column",
         ):
-            columns.extend(_string_list(step.get(key)))
-        for column in _merge_strings(columns):
+            direct_source_columns.extend(_string_list(step.get(key)))
+        # These fields are often attached to an operation which consumes the
+        # output of a previous aggregation.  They are not automatically raw
+        # source requirements when they match a known aggregate output.
+        for key in ("result_columns", "output_columns", "sort_by", "order_by", "rank_by", "rank_column"):
+            derived_reference_columns.extend(_string_list(step.get(key)))
+        for column in _merge_strings(direct_source_columns):
+            if column and column not in result.setdefault(alias, []):
+                result[alias].append(column)
+        for column in _merge_strings(derived_reference_columns):
+            if _normalized_column_key(column) in derived_output_keys:
+                continue
             if column and column not in result.setdefault(alias, []):
                 result[alias].append(column)
     return result
@@ -4703,6 +5801,47 @@ def _bind_previous_result_alias(
     return result
 
 
+def _normalize_reserved_previous_result_references(
+    items: list[Any],
+    reference_mode: str,
+) -> list[Any]:
+    """Convert model spellings of the session result into one graph provider.
+
+    ``previous_result_rows`` is a Typed-IR reference mode, not a node output.
+    A model can nevertheless use it as a typed ``node_output`` input in a
+    join.  Normalize that reserved spelling to the executable external
+    ``previous_result`` provider before graph validation.  No user-defined
+    aliases or ordinary node outputs are changed.
+    """
+
+    if reference_mode not in {"previous_result_rows", "previous_result_transform"}:
+        return [deepcopy(item) for item in items]
+    result: list[Any] = []
+    for item in items:
+        if not isinstance(item, dict):
+            result.append(deepcopy(item))
+            continue
+        normalized = deepcopy(item)
+        for key in ("source_alias", "left_source_alias", "right_source_alias", "reference_source_alias"):
+            if str(normalized.get(key) or "").strip() == "previous_result_rows":
+                normalized[key] = PREVIOUS_RESULT_ALIAS
+        inputs = normalized.get("inputs")
+        if isinstance(inputs, list):
+            normalized_inputs: list[Any] = []
+            for raw_input in inputs:
+                if not isinstance(raw_input, dict):
+                    normalized_inputs.append(deepcopy(raw_input))
+                    continue
+                typed_input = deepcopy(raw_input)
+                if str(typed_input.get("ref") or "").strip() == "previous_result_rows":
+                    typed_input["kind"] = "external_source"
+                    typed_input["ref"] = PREVIOUS_RESULT_ALIAS
+                normalized_inputs.append(typed_input)
+            normalized["inputs"] = normalized_inputs
+        result.append(normalized)
+    return result
+
+
 # 함수 설명: `_ensure_previous_result_row_match_step()`는 직전 결과 행과 단일 신규 source를 연결하는 최소 전처리 단계를 LLM 출력과 무관하게 보장합니다.
 def _ensure_previous_result_row_match_step(
     items: list[Any],
@@ -4770,6 +5909,13 @@ def _normalize_row_match_steps(
         reference_alias = str(normalized.get("reference_source_alias") or "").strip()
         if not source_alias and len(retrieval_aliases) == 1:
             source_alias = retrieval_aliases[0]
+        # Models use both the typed reference mode name (``previous_result_rows``)
+        # and the runtime source alias (``previous_result``) in row-match
+        # steps. They designate the same trusted session rows, so normalize the
+        # former before graph construction. Unknown aliases are deliberately
+        # left untouched and fail the ordinary provider validation.
+        if reference_alias in {"previous_result_rows", PREVIOUS_RESULT_ALIAS}:
+            reference_alias = PREVIOUS_RESULT_ALIAS
         if not reference_alias and reference_mode == "previous_result_rows":
             reference_alias = PREVIOUS_RESULT_ALIAS
         plan_match_columns = _string_list(
@@ -4982,20 +6128,56 @@ def _synchronize_effective_filters_with_retrieval_jobs(
         if isinstance(item, dict)
         and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
     }
+    jobs_by_dataset: dict[str, list[dict[str, Any]]] = {}
+    for job in jobs_by_alias.values():
+        dataset_key = str(job.get("dataset_key") or "").strip().casefold()
+        if dataset_key:
+            jobs_by_dataset.setdefault(dataset_key, []).append(job)
+
+    synchronized_by_alias: dict[str, Any] = {}
     for alias, effective_item in list(effective_by_alias.items()):
-        job = jobs_by_alias.get(str(alias or "").strip())
+        raw_alias = str(alias or "").strip()
+        job = jobs_by_alias.get(raw_alias)
+        # LLM plans frequently name ``effective_filters`` by dataset_key while
+        # retrieval jobs use a deliberately distinct source_alias.  Resolve
+        # that only when the dataset maps to one job; multiple same-dataset
+        # jobs remain untouched because choosing one would lose source scope.
+        if not isinstance(job, dict):
+            effective_dataset_key = (
+                str(effective_item.get("dataset_key") or raw_alias).strip().casefold()
+                if isinstance(effective_item, dict)
+                else raw_alias.casefold()
+            )
+            candidates = jobs_by_dataset.get(effective_dataset_key, [])
+            if len(candidates) == 1:
+                job = candidates[0]
         if not isinstance(effective_item, dict) or not isinstance(job, dict):
+            synchronized_by_alias[raw_alias] = effective_item
             continue
+        target_alias = str(job.get("source_alias") or job.get("dataset_key") or raw_alias).strip()
         effective_filters = effective_item.get("filters")
         job_filters = job.get("filters")
         dataset_key = str(job.get("dataset_key") or "").strip()
+        synchronized_item = deepcopy(effective_item)
         if dataset_key:
-            effective_item["dataset_key"] = dataset_key
+            synchronized_item["dataset_key"] = dataset_key
         synchronized = _replace_matching_filter_fields(effective_filters, job_filters)
         if synchronized is not None:
-            effective_item["filters"] = synchronized
-            effective_by_alias[alias] = effective_item
-    result["effective_filters"] = effective_by_alias
+            synchronized_item["filters"] = synchronized
+        # The execution alias is authoritative.  This prevents an unchanged
+        # dataset-key entry from being interpreted as a second independent
+        # filter source after the retrieval job has already been normalized.
+        existing = synchronized_by_alias.get(target_alias)
+        if isinstance(existing, dict) and isinstance(synchronized_item, dict):
+            existing_filters = existing.get("filters")
+            next_filters = synchronized_item.get("filters")
+            if isinstance(existing_filters, dict) and isinstance(next_filters, dict):
+                merged = deepcopy(existing)
+                merged["filters"] = {**existing_filters, **next_filters}
+                synchronized_by_alias[target_alias] = merged
+                continue
+        synchronized_by_alias[target_alias or raw_alias] = synchronized_item
+    result["effective_filters"] = synchronized_by_alias
     return result
 
 
@@ -5233,10 +6415,52 @@ def _retrieval_jobs(plan: dict[str, Any]) -> list[Any]:
     return result
 
 
+def _remove_previous_result_pseudo_jobs(
+    plan: dict[str, Any],
+    retrieval_jobs: list[Any],
+) -> tuple[dict[str, Any], list[Any], dict[str, Any]]:
+    """Keep reserved prior-result providers out of the retrieval-job contract.
+
+    ``previous_result`` is restored from the same-session result store, not
+    fetched from a Table Catalog.  Some model responses represent it as a
+    retrieval job during a pure follow-up transform.  Removing only the
+    exact reserved alias/key pair lets the ordinary reference-mode rules turn
+    that shape into a deterministic previous-result transform while leaving
+    all real Catalog jobs untouched.
+    """
+
+    reserved = {PREVIOUS_RESULT_ALIAS, "previous_result_rows", "upstream_result"}
+    filtered: list[Any] = []
+    removed: list[dict[str, str]] = []
+    for item in retrieval_jobs:
+        if not isinstance(item, dict):
+            filtered.append(deepcopy(item))
+            continue
+        dataset_key = str(item.get("dataset_key") or "").strip()
+        source_alias = str(item.get("source_alias") or dataset_key).strip()
+        if dataset_key in reserved and source_alias in reserved:
+            removed.append(
+                {
+                    "dataset_key": dataset_key,
+                    "source_alias": source_alias,
+                }
+            )
+            continue
+        filtered.append(deepcopy(item))
+    next_plan = deepcopy(plan)
+    if removed:
+        next_plan["retrieval_jobs"] = deepcopy(filtered)
+    return next_plan, filtered, {
+        "status": "applied" if removed else "not_needed",
+        "removed_jobs": removed,
+    }
+
+
 # 함수 설명: 공정 그룹 metadata의 canonical field와 processes 값을 기준으로 LLM filter field 오선택을 교정합니다.
 # 함수 설명: 모든 retrieval filter operator를 동일한 canonical vocabulary로 정규화합니다.
 def _normalize_retrieval_filter_operators(
     retrieval_jobs: list[Any],
+    question: str = "",
 ) -> tuple[list[Any], dict[str, Any]]:
     """모든 retrieval filter operator를 동일한 canonical vocabulary로 정규화합니다."""
     normalized_jobs: list[Any] = []
@@ -5252,6 +6476,12 @@ def _normalize_retrieval_filter_operators(
                 f"retrieval_jobs[{index}].filters",
                 changes,
             )
+            job["filters"] = _promote_explicit_prefix_filter_conditions(
+                job["filters"],
+                question,
+                f"retrieval_jobs[{index}].filters",
+                changes,
+            )
         normalized_jobs.append(job)
     return normalized_jobs, {
         "status": "applied" if changes else "not_needed",
@@ -5260,13 +6490,161 @@ def _normalize_retrieval_filter_operators(
     }
 
 
-# 함수 설명: 중첩 filter 조건의 operator만 바꾸고 field/value는 그대로 보존합니다.
+# Function description: preserve an explicit user prefix expression when a
+# model flattened it to an equality predicate.  The value itself must appear
+# immediately beside a prefix cue in the question, so a prefix request for one
+# condition never broadens an unrelated date, process, or status predicate.
+def _promote_explicit_prefix_filter_conditions(
+    value: Any,
+    question: str,
+    path: str,
+    changes: list[dict[str, Any]],
+) -> Any:
+    if not question or not isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, list):
+        return [
+            _promote_explicit_prefix_filter_conditions(
+                item,
+                question,
+                f"{path}[{index}]",
+                changes,
+            )
+            for index, item in enumerate(value)
+        ]
+    result = deepcopy(value)
+    operator = str(result.get("operator") or "").strip().lower()
+    literal = result.get("value")
+    if (
+        operator in {"eq", "contains"}
+        and isinstance(literal, str)
+        and _is_compact_identifier_literal(literal)
+        and _value_has_explicit_prefix_cue(question, literal)
+    ):
+        result["operator"] = "starts_with"
+        changes.append(
+            {
+                "path": path,
+                "from": operator,
+                "to": "starts_with",
+                "reason": "explicit_prefix_cue_for_same_literal",
+            }
+        )
+        return result
+    # Some models fold a product qualifier and an explicitly prefixed
+    # identifier into one source-filter value (for example ``F315 L-116``).
+    # Do not guess the field or discard the qualifier: when the question
+    # unambiguously marks one embedded identifier as a prefix, repair only
+    # that selected source condition.  The remaining qualifier stays in the
+    # function-case input and is evaluated by its trusted helper.
+    if operator in {"eq", "contains"} and isinstance(literal, str):
+        literal_key = _filter_literal_key(literal)
+        for prefix_literal in _explicit_prefix_literals(question):
+            prefix_key = _filter_literal_key(prefix_literal)
+            if (
+                prefix_key
+                and prefix_key != literal_key
+                and prefix_key in literal_key
+            ):
+                result["operator"] = "starts_with"
+                result["value"] = prefix_literal
+                changes.append(
+                    {
+                        "path": path,
+                        "from": operator,
+                        "to": "starts_with",
+                        "reason": "explicit_prefix_literal_extracted_from_compound_filter",
+                    }
+                )
+                return result
+    for key, item in list(result.items()):
+        if key in {"operator", "op", "value", "values"}:
+            continue
+        if isinstance(item, (dict, list)):
+            result[key] = _promote_explicit_prefix_filter_conditions(
+                item,
+                question,
+                f"{path}.{key}",
+                changes,
+            )
+    return result
+
+
+# Function description: test the local natural-language context around a
+# literal value rather than relying on a particular business field name.
+def _value_has_explicit_prefix_cue(question: str, value: str) -> bool:
+    literal = str(value or "").strip()
+    if not literal:
+        return False
+    text = str(question or "")
+    escaped = re.escape(literal)
+    suffix = r"(?:\s*(?:로|으로|부터)?\s*(?:시작(?:하는|하|값)?|접두(?:어)?|prefix|starts?\s*with))"
+    prefix = r"(?:(?:prefix|starts?\s*with|시작(?:값)?|접두(?:어)?)\s*(?:값)?\s*)"
+    return bool(
+        re.search(escaped + suffix, text, flags=re.IGNORECASE)
+        or re.search(prefix + escaped, text, flags=re.IGNORECASE)
+    )
+
+
+def _is_compact_identifier_literal(value: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"[A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)*",
+            str(value or "").strip(),
+        )
+    )
+
+
+# Function description: extract only identifier-shaped literals whose local
+# wording explicitly asks for a prefix.  This deliberately does not infer a
+# catalog field; it is used solely to correct a malformed value on a field the
+# intent model has already selected.
+def _explicit_prefix_literals(question: str) -> list[str]:
+    text = str(question or "")
+    if not text:
+        return []
+    suffix = r"(?:\s*(?:로|으로|부터)?\s*(?:시작(?:하는|하|값)?|접두(?:어)?|prefix|starts?\s*with))"
+    prefix = r"(?:(?:prefix|starts?\s*with|시작(?:값)?|접두(?:어)?)\s*(?:값)?\s*)"
+    identifier = r"([A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)*)"
+    candidates = [
+        match.group(1).strip()
+        for match in re.finditer(identifier + suffix, text, flags=re.IGNORECASE)
+    ]
+    candidates.extend(
+        match.group(1).strip()
+        for match in re.finditer(prefix + identifier, text, flags=re.IGNORECASE)
+    )
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = _filter_literal_key(candidate)
+        # Prefix repair is intentionally restricted to compact identifiers;
+        # ordinary words such as a process name must not be reinterpreted.
+        if len(key) < 3 or not any(char.isdigit() for char in key) or key in seen:
+            continue
+        seen.add(key)
+        result.append(candidate)
+    return result
+
+
+def _filter_literal_key(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", str(value or "").strip().upper())
+
+
+# 함수 설명: 중첩 filter 조건을 canonical operator/value 형식으로 정규화합니다.
 def _normalize_filter_operator_value(
     value: Any,
     path: str,
     changes: list[dict[str, Any]],
 ) -> Any:
-    """중첩 filter 조건의 operator만 바꾸고 field/value는 그대로 보존합니다."""
+    """Normalize explicit and compact field filters without inventing values.
+
+    Intent models occasionally emit compact forms such as ``{"OPER_NAME":
+    ["D/A1", "D/A2"]}`` or ``{"DATE": "20260701"}``.  The executor
+    contract is operator-based, so those unambiguous forms are transformed to
+    ``in`` and ``eq`` respectively.  Existing explicit operators and logical
+    groups remain untouched apart from canonical operator spelling.
+    """
     if isinstance(value, list):
         return [
             _normalize_filter_operator_value(item, f"{path}[{index}]", changes)
@@ -5297,11 +6675,47 @@ def _normalize_filter_operator_value(
     for key, item in list(normalized.items()):
         if key in {"operator", "op", "value", "values"}:
             continue
-        if isinstance(item, (dict, list)):
+        normalized_key = str(key or "").strip().casefold()
+        if normalized_key in FILTER_LOGICAL_KEYS:
+            if isinstance(item, list):
+                normalized[key] = [
+                    _normalize_filter_operator_value(
+                        nested,
+                        f"{path}.{key}[{index}]",
+                        changes,
+                    )
+                    for index, nested in enumerate(item)
+                ]
+            elif isinstance(item, dict):
+                normalized[key] = _normalize_filter_operator_value(
+                    item,
+                    f"{path}.{key}",
+                    changes,
+                )
+            continue
+        if isinstance(item, dict):
             normalized[key] = _normalize_filter_operator_value(
                 item,
                 f"{path}.{key}",
                 changes,
+            )
+        elif isinstance(item, list):
+            normalized[key] = {"operator": "in", "value": deepcopy(item)}
+            changes.append(
+                {
+                    "path": f"{path}.{key}",
+                    "from": "list",
+                    "to": "in",
+                }
+            )
+        elif item is not None:
+            normalized[key] = {"operator": "eq", "value": deepcopy(item)}
+            changes.append(
+                {
+                    "path": f"{path}.{key}",
+                    "from": "scalar",
+                    "to": "eq",
+                }
             )
     return normalized
 
@@ -6343,6 +7757,19 @@ def _output_contract(
         resolved_metric_merge_plan or {},
         metadata_candidates or {},
     )
+    # A retrieval-free follow-up operates on the already restored
+    # ``previous_result`` frame.  There is no new aggregation step from which
+    # to rediscover its metrics, so retain only the explicit bindings that
+    # unambiguously point at that runtime frame.  This keeps a generic
+    # sort/top-N follow-up from losing the metric contract solely because it
+    # has no retrieval job.  Bindings for any other alias remain untrusted and
+    # are deliberately not copied through.
+    if not metric_bindings:
+        metric_bindings = _previous_result_transform_metric_bindings(
+            raw,
+            plan,
+            retrieval_jobs,
+        )
     metric_bindings, suppressed_metric_aliases = _deduplicate_metric_bindings(
         metric_bindings
     )
@@ -6505,6 +7932,23 @@ def _output_contract(
                 if isinstance(item, dict)
             ]
         )
+        # A raw right-side column is an execution input, not a result column,
+        # when the Typed join already consumes it to produce an aggregate such
+        # as a count or a unique-list.  Requiring both turns a correct grouped
+        # enrichment into a false output-contract failure.  Explicit user
+        # projections remain in ``contract[required_columns]``; this filters
+        # only catalog/plan-derived join value defaults.
+        aggregate_input_keys = {
+            _normalized_column_key(binding.get("source_column"))
+            for binding in metric_bindings
+            if isinstance(binding, dict)
+            and str(binding.get("source_column") or "").strip()
+        }
+        join_value_columns = [
+            column
+            for column in join_value_columns
+            if _normalized_column_key(column) not in aggregate_input_keys
+        ]
         contract["required_columns"] = _merge_strings(
             contract["grain_columns"],
             contract["metric_columns"],
@@ -6683,6 +8127,109 @@ def _metric_bindings(
             if binding:
                 result.append(binding)
     return result
+
+
+# 함수 설명: 이전 결과만 정렬·순위화하는 후속 분석은 원본 metric binding을 안전하게 유지합니다.
+def _previous_result_transform_metric_bindings(
+    raw_contract: dict[str, Any],
+    plan: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep explicit metrics only for a strict retrieval-free prior-result transform.
+
+    The model may describe a top-N follow-up without another aggregation
+    operation.  In that case the source column already exists in the restored
+    prior-result frame, while normal metric discovery intentionally finds no
+    retrieval-backed binding.  This narrow fallback never accepts an unknown
+    source alias or a plan that still performs a data retrieval.
+    """
+
+    if retrieval_jobs or not _is_retrieval_free_previous_result_transform_candidate(plan):
+        return []
+    raw_bindings = raw_contract.get("metric_bindings")
+    if not isinstance(raw_bindings, list) or not raw_bindings:
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in raw_bindings:
+        if not isinstance(item, dict):
+            return []
+        source_alias = str(item.get("source_alias") or "").strip()
+        source_column = str(item.get("source_column") or item.get("column") or "").strip()
+        output_column = str(item.get("output_column") or item.get("result_column") or "").strip()
+        aggregation = str(item.get("aggregation") or item.get("method") or "").strip().lower()
+        if (
+            source_alias != PREVIOUS_RESULT_ALIAS
+            or not source_column
+            or not output_column
+            or not aggregation
+        ):
+            return []
+        normalized.append(
+            {
+                "source_alias": PREVIOUS_RESULT_ALIAS,
+                "dataset_key": PREVIOUS_RESULT_ALIAS,
+                "source_column": source_column,
+                "aggregation": aggregation,
+                "output_column": output_column,
+                "semantic_scope": deepcopy(
+                    item.get("semantic_scope")
+                    or item.get("filter_scope")
+                    or item.get("filters")
+                    or item.get("temporal_scope")
+                    or {}
+                ),
+            }
+        )
+    return normalized
+
+
+# 함수 설명: 정규화 전 spelling 차이에도 이전 결과만 사용하는 후속 변환을 식별합니다.
+def _is_retrieval_free_previous_result_transform_candidate(plan: dict[str, Any]) -> bool:
+    """Recognize only an explicit, retrieval-free prior-result transform.
+
+    ``_output_contract`` runs before the reference-mode repair that converts
+    legacy ``previous_result`` / ``previous_result_rows`` spellings to the
+    canonical transform mode.  Check the Typed operation shape as well, so a
+    bare model claim cannot preserve bindings for an unrelated source.
+    """
+
+    if str(plan.get("request_scope") or "").strip() != "followup_transform":
+        return False
+    if str(plan.get("reference_mode") or "").strip() not in {
+        "previous_result_transform",
+        "previous_result_rows",
+        "previous_result",
+    }:
+        return False
+    steps = plan.get("pandas_execution_plan")
+    if not isinstance(steps, list) or not steps:
+        return False
+    reserved_aliases = {PREVIOUS_RESULT_ALIAS, "previous_result_rows"}
+    external_refs: list[str] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        for input_item in inputs:
+            if not isinstance(input_item, dict):
+                return False
+            if str(input_item.get("kind") or "").strip() == "external_source":
+                reference = str(input_item.get("ref") or "").strip()
+                if reference:
+                    external_refs.append(reference)
+        source_alias = str(step.get("source_alias") or "").strip()
+        if source_alias and source_alias not in reserved_aliases:
+            # A node-output alias is allowed only when it is produced by a
+            # preceding step; source aliases on raw sort/filter steps must not
+            # introduce an external data source.
+            produced = {
+                str(item.get("node_id") or item.get("output_alias") or "").strip()
+                for item in steps
+                if isinstance(item, dict)
+            }
+            if source_alias not in produced:
+                return False
+    return bool(external_refs) and all(reference in reserved_aliases for reference in external_refs)
 
 
 # 함수 설명: 다양한 집계 필드명을 하나의 metric binding 계약으로 정규화합니다.
@@ -8083,7 +9630,16 @@ def _resolve_reference_join_plan(
     if len(key_mappings) != len(canonical_keys):
         return {}
 
-    aggregations = _aggregation_contracts_for_alias(pandas_plan, right_alias)
+    # The aggregation can be downstream of an explicit join.  In that shape
+    # ``source_alias`` names the joined frame rather than the right retrieval
+    # source, so require both lineage and the right catalog's column ownership
+    # instead of relying on a literal source-alias match.
+    aggregations = _aggregation_contracts_for_alias(
+        pandas_plan,
+        right_alias,
+        candidates=candidates,
+        dataset_key=right_dataset,
+    )
     if not aggregations:
         return {}
     aggregations = [
@@ -9027,7 +10583,19 @@ def _metric_output_column(
 def _aggregation_contracts_for_alias(
     pandas_plan: list[Any],
     source_alias: str,
+    *,
+    candidates: dict[str, Any] | None = None,
+    dataset_key: str = "",
 ) -> list[dict[str, Any]]:
+    """Extract aggregate outputs whose input lineage includes one source.
+
+    ``source_alias`` normally appears directly on the aggregate step.  A
+    follow-up enrichment can instead filter and join that source with
+    ``previous_result`` first, so the aggregate's alias is the joined frame.
+    In that case the optional catalog guard keeps only metrics actually owned
+    by the requested right-hand dataset.  This is a general lineage rule, not
+    a rule for a particular product, process, or HOLD analysis.
+    """
     result: list[dict[str, Any]] = []
     for step in pandas_plan:
         if not isinstance(step, dict):
@@ -9039,7 +10607,7 @@ def _aggregation_contracts_for_alias(
                 pandas_plan,
                 {source_alias},
             )
-            if lineage_aliases != [source_alias]:
+            if source_alias not in lineage_aliases:
                 continue
         aggregations = (
             step.get("aggregations")
@@ -9088,6 +10656,15 @@ def _aggregation_contracts_for_alias(
                 or ""
             ).strip()
             if source_column and output_column:
+                if candidates is not None and dataset_key and not _catalog_supports_domain_column(
+                    candidates,
+                    dataset_key,
+                    source_column,
+                ):
+                    # A joined frame can contain measures from either side.
+                    # For the deterministic right-side enrichment contract,
+                    # accept only a column declared by that right catalog.
+                    continue
                 result.append(
                     {
                         "source_column": source_column,
@@ -10328,16 +11905,24 @@ def _auto_select_metadata_function_case(
             or (retrieval_jobs[0].get("source_alias") if retrieval_jobs else "")
             or (retrieval_jobs[0].get("dataset_key") if retrieval_jobs else "")
         ).strip()
+        # Preserve the user's product wording, including unpatterned values
+        # such as package codes.  Query-control terms are supplied separately
+        # from the typed output contract, so a metric word such as UPH cannot
+        # accidentally become a product token inside the trusted helper.
+        helper_arguments: dict[str, Any] = {}
+        excluded_tokens = _function_case_control_tokens(plan)
+        if excluded_tokens:
+            helper_arguments["excluded_tokens"] = excluded_tokens
         case = {
             "section": "pandas_function_cases",
             "key": str(item.get("key") or payload.get("key") or "").strip(),
             "function_name": helper_name,
-            # The helper owns extraction of product/date/process/metric text
-            # according to its registered execution contract.
             "input_text": question,
             "source_alias": source_alias,
             "selection_source": "metadata_token_contract_fallback",
         }
+        if helper_arguments:
+            case["arguments"] = helper_arguments
         next_plan = deepcopy(plan)
         next_plan["pandas_function_cases"] = [case]
         return next_plan, {
@@ -10395,6 +11980,53 @@ def _function_case_value_tokens(
         for token in tokens
         if _normalized_column_key(token) not in catalog_columns
     ]
+
+
+# Function description: derive non-product control words solely from the
+# typed analysis plan.  This keeps natural product wording intact while the
+# helper ignores output metrics such as UPH, QTY, or a derived total label.
+def _function_case_control_tokens(plan: dict[str, Any]) -> list[str]:
+    output = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    candidates: list[Any] = [
+        *_string_list(output.get("metric_columns")),
+        output.get("primary_metric"),
+    ]
+    for binding in (
+        output.get("metric_bindings", [])
+        if isinstance(output.get("metric_bindings"), list)
+        else []
+    ):
+        if isinstance(binding, dict):
+            candidates.extend(
+                [binding.get("source_column"), binding.get("output_column")]
+            )
+    for step in (
+        plan.get("pandas_execution_plan", [])
+        if isinstance(plan.get("pandas_execution_plan"), list)
+        else []
+    ):
+        if not isinstance(step, dict):
+            continue
+        candidates.extend([step.get("agg_column"), step.get("metric_column")])
+        for aggregation in (
+            step.get("aggregations", [])
+            if isinstance(step.get("aggregations"), list)
+            else []
+        ):
+            if isinstance(aggregation, dict):
+                candidates.extend(
+                    [aggregation.get("column"), aggregation.get("output_column")]
+                )
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        key = _function_token(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
 
 
 # 함수 설명: `_function_case_items()`는 질문 계획의 helper 선택을 정규화하고 Catalog 실행 계약을 붙입니다.
@@ -10496,6 +12128,115 @@ def _attach_function_case_execution_contracts(
 
 
 # 함수 설명: 제품 token helper가 해석할 원문 token을 같은 source의 단순 조회 filter로 중복 적용하지 않도록 실행 책임을 한 곳으로 모읍니다.
+# Function description: remove a selected helper when one typed source filter
+# already expresses its entire input literally.  This is a source-sufficiency
+# rule, not a function or column-specific exception: helpers remain required
+# whenever their input contains additional unconstrained tokens.
+def _remove_source_filter_sufficient_function_cases(
+    function_cases: list[dict[str, Any]],
+    pandas_plan: list[Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[Any], dict[str, Any]]:
+    jobs_by_alias = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip(): job
+        for job in retrieval_jobs
+        if isinstance(job, dict)
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+    }
+    retained: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    removed_markers: set[tuple[str, str, str]] = set()
+    aliases_with_single_removed_case: set[str] = set()
+    case_counts: dict[str, int] = {}
+    for case in function_cases:
+        if not isinstance(case, dict):
+            continue
+        alias = str(case.get("source_alias") or "").strip()
+        if alias:
+            case_counts[alias] = case_counts.get(alias, 0) + 1
+    for case in function_cases:
+        if not isinstance(case, dict):
+            continue
+        alias = str(case.get("source_alias") or "").strip()
+        input_text = str(case.get("input_text") or "").strip()
+        job = jobs_by_alias.get(alias)
+        matched_filter = _direct_filter_covering_function_input(
+            job.get("filters") if isinstance(job, dict) else None,
+            input_text,
+        )
+        if not matched_filter:
+            retained.append(deepcopy(case))
+            continue
+        marker = (
+            str(case.get("key") or "").strip(),
+            str(case.get("function_name") or "").strip(),
+            alias,
+        )
+        removed_markers.add(marker)
+        if alias and case_counts.get(alias) == 1:
+            aliases_with_single_removed_case.add(alias)
+        removed.append(
+            {
+                "source_alias": alias,
+                "function_case_key": marker[0],
+                "function_name": marker[1],
+                "filter_field": matched_filter,
+                "reason": "typed_source_filter_covers_entire_function_input",
+            }
+        )
+
+    if not removed:
+        return function_cases, pandas_plan, {"status": "not_needed", "removed": []}
+
+    normalized_plan: list[Any] = []
+    for step in pandas_plan:
+        if not isinstance(step, dict) or str(step.get("operation") or "").strip() != "apply_pandas_function_case":
+            normalized_plan.append(deepcopy(step))
+            continue
+        step_key = str(step.get("function_case_key") or step.get("key") or "").strip()
+        step_function = str(step.get("function_name") or "").strip()
+        step_alias = str(step.get("source_alias") or "").strip()
+        marker_match = bool(step_key or step_function) and any(
+            (not step_key or step_key == marker_key)
+            and (not step_function or step_function == marker_function)
+            and (not step_alias or step_alias == marker_alias)
+            for marker_key, marker_function, marker_alias in removed_markers
+        )
+        unambiguous_alias_match = (
+            not step_key
+            and not step_function
+            and step_alias in aliases_with_single_removed_case
+        )
+        if marker_match or unambiguous_alias_match:
+            continue
+        normalized_plan.append(deepcopy(step))
+    return retained, normalized_plan, {"status": "applied", "removed": removed}
+
+
+# Function description: locate a typed equality/prefix condition that covers a
+# complete helper input rather than merely one token within a larger input.
+def _direct_filter_covering_function_input(filters: Any, input_text: str) -> str:
+    target = _function_token(input_text)
+    if not target or not isinstance(filters, dict):
+        return ""
+    for field, condition in filters.items():
+        if str(field or "").strip().casefold() in FILTER_LOGICAL_KEYS:
+            continue
+        if not isinstance(condition, dict):
+            continue
+        operator = str(condition.get("operator") or "eq").strip().casefold()
+        raw_values = condition.get("value")
+        if raw_values is None:
+            raw_values = condition.get("values")
+        values = raw_values if isinstance(raw_values, (list, tuple, set)) else [raw_values]
+        normalized_values = [_function_token(value) for value in values]
+        if operator in {"eq", "starts_with", "startswith"} and len(normalized_values) == 1 and normalized_values[0] == target:
+            return str(field)
+        if operator == "in" and len(normalized_values) == 1 and normalized_values[0] == target:
+            return str(field)
+    return ""
+
+
 def _remove_function_owned_retrieval_filters(
     retrieval_jobs: list[dict[str, Any]],
     function_cases: list[dict[str, Any]],
@@ -11040,7 +12781,7 @@ def _json(value: Any) -> dict[str, Any]:
 def _repair_common_json_syntax(value: str) -> str:
     text = str(value or "")
     repaired = re.sub(
-        r"([,{]\s*)-([A-Za-z_][A-Za-z0-9_]*)\s*:",
+        r"([,{]\s*)-\s*([A-Za-z_][A-Za-z0-9_]*)\s*:",
         r'\1"\2":',
         text,
     )

@@ -45,6 +45,14 @@ PREVIOUS_RESULT_CUES = (
     "같은 세션",
 )
 FOLLOWUP_CUES = ("후속", "다음 조회", "이력 조회", "이어", "연결")
+# 작업자가 기존 카탈로그의 설명만 바꿀 때에는 SQL·컬럼을 다시 쓰게 하지 않는다.
+# key를 명시한 경우에만 이후 merge 단계에서 기존 실행 계약과 합칠 수 있도록
+# 최소 변경 후보를 표시한다. `db_key` 같은 내부 필드와 혼동하지 않도록
+# 일반적인 "key" 단독 표현은 허용하지 않는다.
+WORKER_DATASET_KEY_PATTERN = re.compile(
+    r"(?im)(?:데이터\s*(?:셋\s*)?키|카탈로그\s*키|dataset\s*key)\s*[:：은는]?\s*([A-Za-z][A-Za-z0-9_-]*)"
+)
+CATALOG_UPDATE_CUES = ("기존", "수정", "변경", "바꿔", "업데이트", "update")
 
 # 주요 함수: LLM 등록 후보 JSON을 추출·검증해 저장 전 표준 items 배열로 정리합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
@@ -78,10 +86,31 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
         if source_config:
             item["payload"]["source_config"] = source_config
         assumptions.extend(_normalize_natural_catalog_contract(item["payload"], source_text))
+        partial_update = _usage_description_partial_update(item, source_text)
+        if partial_update is not None:
+            item = partial_update
+            # 기존 실행 계약은 05의 exact-key 조회 결과와 07의 merge 단계에서만
+            # 복원한다. 여기에서 LLM의 unknown/빈 source 설정을 저장하면 안 된다.
+            assumptions.append(
+                "기존 카탈로그의 사용·제외 설명만 갱신하도록 최소 병합 후보로 정리했습니다."
+            )
         items.append(item)
+    if not items:
+        recovered = _recover_usage_description_partial_update(source_text, parsed)
+        if recovered is not None:
+            items.append(recovered)
+            assumptions.append(
+                "기존 카탈로그의 사용·제외 설명만 갱신하도록 최소 병합 후보로 정리했습니다."
+            )
     next_payload = payload
     next_payload["items"] = items
     next_payload["refinement"] = _refinement(payload, parsed)
+    if any(_is_partial_usage_update(item) for item in items):
+        # 정확한 기존 key와 선택 설명이 있는 merge 후보는 원본 schema를 다시
+        # 요구할 필요가 없다. 07이 exact existing item을 확인하지 못하면 저장은
+        # 계속 fail-closed 된다.
+        next_payload["refinement"]["needs_more_input"] = False
+        next_payload["refinement"]["missing_information"] = []
     if assumptions:
         next_payload["refinement"]["assumptions"] = _unique_texts(
             [
@@ -96,9 +125,96 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
     return next_payload
 
 
+# 함수 설명: `_usage_description_partial_update()`는 작업자가 기존 데이터의 사용 설명만
+# 바꾸려는 경우 모델이 만든 빈 SQL/unknown source skeleton을 저장하지 않도록 최소 변경으로 접습니다.
+def _usage_description_partial_update(
+    item: dict[str, Any], source_text: str
+) -> dict[str, Any] | None:
+    dataset_key = _worker_dataset_key(source_text)
+    if not dataset_key or not _is_usage_description_update(source_text):
+        return None
+    item_key = str(item.get("dataset_key") or item.get("key") or "").strip()
+    if item_key and _column_key(item_key) != _column_key(dataset_key):
+        return None
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    criteria = _selection_criteria_update(payload.get("selection_criteria"))
+    if not criteria:
+        return None
+    return {
+        "dataset_key": dataset_key,
+        "status": "active",
+        "payload": {"selection_criteria": criteria},
+        "_partial_update": {"fields": ["selection_criteria"], "reason": "worker_usage_description"},
+    }
+
+
+# 함수 설명: `_recover_usage_description_partial_update()`는 약한 모델이 items를 비워도
+# 원문에 명시된 key와 이미 구조화된 selection_criteria가 있을 때만 최소 update를 복원합니다.
+def _recover_usage_description_partial_update(
+    source_text: str, parsed: dict[str, Any]
+) -> dict[str, Any] | None:
+    if not _is_usage_description_update(source_text):
+        return None
+    dataset_key = _worker_dataset_key(source_text)
+    if not dataset_key:
+        return None
+    raw_criteria = parsed.get("selection_criteria") if isinstance(parsed, dict) else None
+    criteria = _selection_criteria_update(raw_criteria)
+    if not criteria:
+        return None
+    return {
+        "dataset_key": dataset_key,
+        "status": "active",
+        "payload": {"selection_criteria": criteria},
+        "_partial_update": {"fields": ["selection_criteria"], "reason": "worker_usage_description"},
+    }
+
+
+# 함수 설명: 작업자 입력의 명시적인 기존 카탈로그 설명 갱신 의도인지 판정합니다.
+def _is_usage_description_update(source_text: Any) -> bool:
+    text = str(source_text or "")
+    lowered = text.casefold()
+    if not _worker_dataset_key(text):
+        return False
+    if not any(cue in lowered for cue in CATALOG_UPDATE_CUES):
+        return False
+    return any(cue in lowered for cue in ("사용", "조회", "물어", "제외", "쓰지", "않아", "설명"))
+
+
+# 함수 설명: 자연어에서 명시한 dataset key만 안전하게 읽습니다.
+def _worker_dataset_key(source_text: Any) -> str:
+    match = WORKER_DATASET_KEY_PATTERN.search(str(source_text or ""))
+    return str(match.group(1) or "").strip() if match else ""
+
+
+# 함수 설명: 기존 카탈로그의 실행 계약을 건드리지 않고 사용·제외 문구만 보존합니다.
+def _selection_criteria_update(value: Any) -> dict[str, list[str]]:
+    raw = value if isinstance(value, dict) else {}
+    result: dict[str, list[str]] = {}
+    for field in ("use_when", "exclude_when"):
+        values = _as_string_list(raw.get(field))
+        if values:
+            result[field] = _unique_texts(values)
+    return result
+
+
+# 함수 설명: 07 writer가 partial merge인지 판정할 때 사용하는 내부 marker입니다.
+def _is_partial_usage_update(item: Any) -> bool:
+    marker = item.get("_partial_update") if isinstance(item, dict) else {}
+    return (
+        isinstance(marker, dict)
+        and marker.get("reason") == "worker_usage_description"
+        and marker.get("fields") == ["selection_criteria"]
+    )
+
+
 # 함수 설명: `_normalize_natural_catalog_contract()`는 작업자가 기술 구조를 쓰지 않아도
 # 명확한 자연어의 파생 지표와 직전 결과 연계 의도를 실행 가능한 Catalog 계약으로 보강합니다.
 def _normalize_natural_catalog_contract(payload: dict[str, Any], source_text: str) -> list[str]:
+    # LLM authoring responses occasionally repeat SELECT columns.  Keep the
+    # Catalog schema deterministic before derived metric/default validation so
+    # a repeated field cannot create a different contract for the same table.
+    payload["columns"] = _catalog_columns(payload.get("columns"))
     assumptions = _normalize_metric_semantics_from_natural_text(payload, source_text)
     _infer_previous_result_binding(payload, source_text)
     return assumptions
@@ -306,6 +422,31 @@ def _count_identifier_columns(prose: str, execution_columns: dict[str, str]) -> 
         target = execution_columns.get(_column_key(match.group(1)))
         if target and target not in result:
             result.append(target)
+    if result or not any(cue in lowered for cue in COUNT_CUES):
+        return result
+
+    # Workers often say "LOT 번호를 중복 없이" rather than spelling the
+    # physical identifier as LOT_ID.  Recover only when the natural identifier
+    # word uniquely points at one registered *_ID execution column.  This is a
+    # schema-backed fallback, not a dataset- or domain-specific rule.
+    normalized_prose = _column_key(prose)
+    identifier_columns: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for physical in execution_columns.values():
+        normalized = _column_key(physical)
+        if not normalized.endswith("ID") or normalized in seen:
+            continue
+        seen.add(normalized)
+        identifier_columns.append((normalized[:-2], physical))
+    matches = [
+        column
+        for stem, column in identifier_columns
+        if stem and stem in normalized_prose
+    ]
+    if len(matches) == 1:
+        return matches
+    if len(identifier_columns) == 1:
+        return [identifier_columns[0][1]]
     return result
 
 
@@ -474,6 +615,18 @@ def _payload(value: Any) -> dict[str, Any]:
 def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
+    # Gemini와 일부 Langflow provider는 content를 text block 배열로 반환한다.
+    # 첫 JSON text block만 읽어 Message.text 변환 유무에 따른 저장 Flow 차이를 없앤다.
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "").strip().lower() != "text":
+                continue
+            text = str(item.get("text") or "")
+            if text.strip():
+                return _json(text)
+        return {}
     text = str(value or "")
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:

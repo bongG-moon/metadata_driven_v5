@@ -28,7 +28,7 @@ V2_ROOT = ROOT / "langflow_components" / "data_analysis_flow_v2"
 MANIFEST_PATH = ROOT / "validation_questions_v2_manifest.json"
 LIVE_ONLY_CASE = {
     "id": 31,
-    "question": "7/6 생산 계획 데이터 알려줘",
+    "question": "PKG계획 데이터 7/6일자 보여줘",
     "min_rows": 1,
 }
 
@@ -212,7 +212,13 @@ def _apply_deterministic_complex_fixture(
     grain_columns = [str(item) for item in fixture_plan.get("grain_columns", []) if str(item).strip()]
     metrics = [deepcopy(item) for item in fixture_plan.get("metrics", []) if isinstance(item, dict)]
     aliases = [str(item.get("source_alias") or "").strip() for item in metrics]
-    if not grain_columns or len(metrics) != 2 or any(not alias for alias in aliases):
+    if (
+        not grain_columns
+        or len(metrics) < 2
+        or len(set(aliases)) < 2
+        or any(not alias for alias in aliases)
+        or (operation != "merge_metric_sources" and len(metrics) != 2)
+    ):
         raise ValueError(f"invalid deterministic Complex fixture: {fixture_plan!r}")
     grain_mappings = [
         {
@@ -335,6 +341,45 @@ def _prepared_payload(case: dict[str, Any], modules: dict[str, Any], reference_d
     return payload, pandas_vars
 
 
+def _dataset_selection_contract(
+    payload: dict[str, Any],
+    expectation: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """Validate optional metadata-backed dataset assertions in a test manifest.
+
+    The assertion is validation-only. Runtime selection remains owned by the
+    intent plan and registered metadata, not by a question-specific rule.
+    """
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    dataset_keys = list(
+        dict.fromkeys(
+            str(item.get("dataset_key") or "").strip()
+            for item in jobs
+            if isinstance(item, dict) and str(item.get("dataset_key") or "").strip()
+        )
+    )
+    normalized_actual = {value.casefold() for value in dataset_keys}
+    expected = [
+        str(value).strip()
+        for value in expectation.get("expected_dataset_keys", [])
+        if str(value).strip()
+    ]
+    forbidden = [
+        str(value).strip()
+        for value in expectation.get("forbidden_dataset_keys", [])
+        if str(value).strip()
+    ]
+    errors: list[str] = []
+    missing = [value for value in expected if value.casefold() not in normalized_actual]
+    if missing:
+        errors.append(f"expected dataset keys {missing}, got {dataset_keys or ['<none>']}")
+    selected_forbidden = [value for value in forbidden if value.casefold() in normalized_actual]
+    if selected_forbidden:
+        errors.append(f"forbidden dataset keys selected: {selected_forbidden}")
+    return dataset_keys, errors
+
+
 def validate_case(
     case: dict[str, Any],
     expectation: dict[str, Any],
@@ -391,6 +436,8 @@ def validate_case(
         errors.append(f"expected route {expected_route}, got {route}")
     if expected_recipe and actual_recipe != expected_recipe:
         errors.append(f"expected recipe {expected_recipe}, got {actual_recipe or '<empty>'}")
+    dataset_keys, dataset_errors = _dataset_selection_contract(payload, expectation)
+    errors.extend(dataset_errors)
     expected_executor_mode = str(expectation.get("expected_execution_mode") or "").strip()
     if expected_executor_mode and executor_mode != expected_executor_mode:
         errors.append(f"expected executor mode {expected_executor_mode}, got {executor_mode or '<empty>'}")
@@ -444,6 +491,7 @@ def validate_case(
         "route_reason_codes": resolved.get("simple_analysis_contract", {}).get("eligibility", {}).get("reason_codes", []),
         "model_calls": actual_calls,
         "pandas_model_calls": actual_calls["pandas_generation"],
+        "dataset_keys": dataset_keys,
         "row_count": executed.get("analysis", {}).get("row_count", 0),
         "errors": errors,
     }
@@ -531,6 +579,8 @@ def validate_live_case(
         errors.append(f"expected route {expected_route}, got {route}")
     if expected_recipe and actual_recipe != expected_recipe:
         errors.append(f"expected recipe {expected_recipe}, got {actual_recipe or '<empty>'}")
+    dataset_keys, dataset_errors = _dataset_selection_contract(payload, expectation)
+    errors.extend(dataset_errors)
     expected_executor_mode = str(expectation.get("expected_execution_mode") or "").strip()
     if expected_executor_mode and executor_mode != expected_executor_mode:
         errors.append(f"expected executor mode {expected_executor_mode}, got {executor_mode or '<empty>'}")
@@ -572,6 +622,7 @@ def validate_live_case(
         "model_calls": actual_calls,
         "pandas_model_calls": actual_calls["pandas_generation"],
         "answer_model_calls": actual_answer_calls,
+        "dataset_keys": dataset_keys,
         "row_count": answered.get("analysis", {}).get("row_count", 0),
         "errors": errors,
     }

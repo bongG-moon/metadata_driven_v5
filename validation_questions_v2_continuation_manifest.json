@@ -60,7 +60,7 @@
     {"id": "R24", "base_case_id": 24, "expected_route": "fast", "expected_recipe": "group_summary"},
     {"id": "R25", "base_case_id": 25, "expected_route": "complex", "expected_recipe": null},
     {"id": "R26", "base_case_id": 26, "expected_route": "fast", "expected_recipe": "group_summary"},
-    {"id": "R27", "base_case_id": 27, "expected_route": "fast", "expected_recipe": "list_summary"},
+    {"id": "R27", "base_case_id": 27, "expected_route": "fast", "expected_recipe": "group_summary"},
     {"id": "R28", "base_case_id": 28, "expected_route": "continuation", "expected_recipe": null, "parity_exception": "metadata_defined_latest_hold_history", "expected_child_calls": 2},
     {"id": "R29", "base_case_id": 29, "expected_route": "fast", "expected_recipe": "detail_query"},
     {"id": "R30", "base_case_id": 30, "expected_route": "complex", "expected_recipe": null}
@@ -230,7 +230,7 @@
     },
     {
       "id": "C10",
-      "question": "7/6 생산 계획 데이터 알려줘",
+      "question": "PKG계획 데이터 7/6일자 보여줘",
       "scenario": "simple_single_stage",
       "expected_route": "fast",
       "expected_stage_routes": ["fast"],
@@ -329,6 +329,10 @@
           "question": "오늘 DA공정에서 생산량 상위 3개 제품을 알려줘.",
           "expected_route": "fast",
           "expected_child_calls": 1,
+          "live_assertions": {
+            "required_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "PRODUCTION"],
+            "min_rows": 1
+          },
           "rows": [
             {"PRODUCT_KEY": "P-A", "PRODUCTION_QTY": 300},
             {"PRODUCT_KEY": "P-B", "PRODUCTION_QTY": 200},
@@ -342,6 +346,12 @@
           "expected_route": "complex",
           "expected_child_calls": 1,
           "reference_from_turn": 1,
+          "live_assertions": {
+            "required_datasets": ["equipment_assign"],
+            "required_columns": ["EQP_LIST"],
+            "required_column_groups": [["EQP_COUNT", "EQP_ID_COUNT"]],
+            "min_rows": 1
+          },
           "rows": [
             {"PRODUCT_KEY": "P-A", "PRODUCTION_QTY": 300, "EQP_COUNT": 2, "EQP_LIST": "EQP-01, EQP-02"},
             {"PRODUCT_KEY": "P-B", "PRODUCTION_QTY": 200, "EQP_COUNT": 1, "EQP_LIST": "EQP-03"},
@@ -355,6 +365,11 @@
           "expected_route": "fast",
           "expected_child_calls": 1,
           "reference_from_turn": 2,
+          "live_assertions": {
+            "required_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "PRODUCTION", "EQP_LIST"],
+            "required_column_groups": [["EQP_COUNT", "EQP_ID_COUNT"]],
+            "min_rows": 1
+          },
           "rows": [
             {"PRODUCT_KEY": "P-A", "PRODUCTION_QTY": 300, "EQP_COUNT": 2, "EQP_LIST": "EQP-01, EQP-02"}
           ],
@@ -371,6 +386,11 @@
           "question": "W/B공정 현재 HOLD LOT 알려줘.",
           "expected_route": "fast",
           "expected_child_calls": 1,
+          "live_assertions": {
+            "required_datasets": ["lot_status"],
+            "required_columns": ["LOT_ID", "OPER_NAME"],
+            "min_rows": 1
+          },
           "rows": [
             {"LOT_ID": "LOT-A", "OPER_NAME": "W/B1", "HOLD_STAT": "OnHold"},
             {"LOT_ID": "LOT-B", "OPER_NAME": "W/B2", "HOLD_STAT": "OnHold"}
@@ -379,10 +399,17 @@
         },
         {
           "turn": 2,
-          "question": "이 LOT들의 가장 최근 HOLD 코드와 상세 사유를 보여줘.",
+          "question": "위 LOT의 HOLD이력 알려줄래?",
           "expected_route": "complex",
           "expected_child_calls": 1,
           "reference_from_turn": 1,
+          "live_assertions": {
+            "required_datasets": ["hold_history"],
+            "required_columns": ["LOT_ID", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+            "previous_result_column": "LOT_ID",
+            "required_param": "LOT_ID",
+            "min_rows": 1
+          },
           "rows": [
             {"LOT_ID": "LOT-A", "OPER_NAME": "W/B1", "HOLD_STAT": "OnHold", "HOLD_TM": "2026-08-08 11:00:00", "HOLD_CD": "H02", "HOLD_DESC": "최신 사유"},
             {"LOT_ID": "LOT-B", "OPER_NAME": "W/B2", "HOLD_STAT": "OnHold", "HOLD_TM": "2026-08-08 09:30:00", "HOLD_CD": "H03", "HOLD_DESC": "장비 점검"}

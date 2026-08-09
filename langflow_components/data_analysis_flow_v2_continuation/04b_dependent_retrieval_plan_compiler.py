@@ -59,6 +59,14 @@ def compile_intent_response(
             plan.pop("dependent_retrieval_plan", None)
             dependent = None
             placeholder_removed = True
+    # The regular V2 normalizer consumes explicit output aliases.  For a
+    # two-stage wrapper that may safely be flattened, repair local node
+    # lineage before comparing the wrapper with the top-level plan.  Keep
+    # ordinary plans and malformed one-stage wrappers byte-shape compatible
+    # with their existing behavior; their own validators remain authoritative.
+    if isinstance(dependent, dict) and _explicit_dependency_fallback_shape(dependent):
+        plan = _normalize_flat_plan_node_aliases(plan)
+        dependent = plan.get("dependent_retrieval_plan")
     dataset_scope_reconciliation: dict[str, Any] | None = None
     existence_predicate: dict[str, Any] | None = None
     if not continuation_request:
@@ -72,10 +80,69 @@ def compile_intent_response(
             payload,
             metadata_candidates_value,
         )
-    explicit_dependent = isinstance(dependent, dict) and bool(dependent)
+    # A model may describe an already-declared two-stage recipe, but still
+    # invent a fragile row-matching or latest-row step.  When the selected
+    # recipe, the two dataset keys and the Catalog binding all agree, rebuild
+    # the stages from the metadata-owned contract instead of trusting those
+    # model-authored transform details.  This is intentionally generic: it
+    # works for any structured current/history recipe, not a named dataset or
+    # question pattern.
+    recipe_dependent_canonicalized = False
+    if isinstance(dependent, dict) and dependent and not continuation_request:
+        canonical_dependent = _canonicalize_explicit_recipe_dependent_plan(
+            plan,
+            dependent,
+            payload,
+            metadata_candidates_value,
+        )
+        if canonical_dependent:
+            dependent = canonical_dependent
+            plan["dependent_retrieval_plan"] = dependent
+            recipe_dependent_canonicalized = True
+    # ``explicit_dependent`` means an untrusted model-authored wrapper.  A
+    # recipe-canonicalized contract is metadata-owned and must not be
+    # flattened or discarded by the weak-plan fallback path below.
+    explicit_dependent = (
+        isinstance(dependent, dict)
+        and bool(dependent)
+        and not recipe_dependent_canonicalized
+    )
     flat_fallback: dict[str, Any] | None = None
     fallback_shape_eligible = (
         explicit_dependent and _explicit_dependency_fallback_shape(dependent)
+    )
+    # Do not flatten a two-stage wrapper before checking whether its first
+    # stage is already represented by trusted conversation rows.  This covers
+    # a generic enrichment shape where the second source has no required
+    # query parameter (for example a catalog join on the prior result's
+    # declared grain), so an ``upstream_bindings`` parameter contract is not
+    # the relevant proof.
+    conversational_structural_handoff = (
+        _project_conversational_structural_handoff(
+            plan,
+            dependent,
+            payload,
+            metadata_candidates_value,
+        )
+        if fallback_shape_eligible and not continuation_request
+        else None
+    )
+    if conversational_structural_handoff is not None:
+        projected_plan, evidence = conversational_structural_handoff
+        return _conversational_handoff_passthrough(
+            envelope,
+            projected_plan,
+            evidence=evidence,
+        )
+    conversational_row_handoff_candidate = (
+        _has_conversational_row_handoff_candidate(
+            plan,
+            dependent,
+            payload,
+            metadata_candidates_value,
+        )
+        if fallback_shape_eligible and not continuation_request
+        else False
     )
     if explicit_dependent and not continuation_request:
         flat_fallback = _independently_complete_flat_plan(plan, metadata_candidates_value)
@@ -89,7 +156,47 @@ def compile_intent_response(
                 flat_fallback,
                 reason="redundant_single_stage_dependent_wrapper",
             )
-    if fallback_shape_eligible and not continuation_request:
+    if (
+        fallback_shape_eligible
+        and not continuation_request
+        and not conversational_row_handoff_candidate
+    ):
+        stages = [item for item in dependent.get("stages", []) if isinstance(item, dict)]
+        stage2_missing_required = (
+            _stage2_missing_required_params(stages[1], metadata_candidates_value)
+            if len(stages) == MAX_STAGES
+            else None
+        )
+        flat_dataset_keys = {
+            str(job.get("dataset_key") or "").strip()
+            for job in (flat_fallback or {}).get("retrieval_jobs", [])
+            if isinstance(job, dict) and str(job.get("dataset_key") or "").strip()
+        }
+        staged_dataset_keys = {
+            str(job.get("dataset_key") or "").strip()
+            for stage in stages
+            for job in stage.get("retrieval_jobs", [])
+            if isinstance(job, dict) and str(job.get("dataset_key") or "").strip()
+        }
+        # A model may wrap an independently executable multi-source plan in
+        # two nominal stages simply because the prose says "first find, then
+        # show".  When the second catalog has no required parameter to bind
+        # and the top-level plan is already complete, that wrapper is neither
+        # a retrieval dependency nor an authorization to invent bindings.
+        # Preserve the complete flat contract rather than rejecting it against
+        # unrelated ``upstream_bindings`` metadata.
+        if (
+            flat_fallback is not None
+            and stage2_missing_required == set()
+            and staged_dataset_keys
+            and staged_dataset_keys.issubset(flat_dataset_keys)
+            and not _dependent_bindings_catalog_proven(dependent, metadata_candidates_value)
+        ):
+            return _ignored_dependent_passthrough(
+                envelope,
+                flat_fallback,
+                reason="untrusted_nonparam_dependent_wrapper",
+            )
         if not _dependent_final_contract_coherent(plan, dependent):
             if flat_fallback is not None:
                 return _ignored_dependent_passthrough(
@@ -120,7 +227,17 @@ def compile_intent_response(
             )
     lifted = False
     if not isinstance(dependent, dict) and not continuation_request:
-        dependent = _lift_flat_plan_from_catalog(plan, metadata_candidates_value)
+        # A selected analysis recipe may declare a safe two-stage selection
+        # contract.  This is deliberately driven by structured metadata (the
+        # recipe reference, dataset keys, trusted Catalog binding and declared
+        # activation terms), rather than by a dataset/question-specific branch.
+        dependent = _lift_recipe_driven_dependent_plan(
+            plan,
+            payload,
+            metadata_candidates_value,
+        )
+        if not dependent:
+            dependent = _lift_flat_plan_from_catalog(plan, metadata_candidates_value)
         if dependent:
             plan["dependent_retrieval_plan"] = dependent
             lifted = True
@@ -155,15 +272,27 @@ def compile_intent_response(
             dependent,
             metadata_candidates_value,
         )
+        dependent, projection_completed = _complete_strict_extreme_projections(
+            dependent,
+            metadata_candidates_value,
+        )
+        shape_repaired = shape_repaired or projection_completed
         dependent = _normalize_and_validate_plan(dependent, metadata_candidates_value)
     except ValueError:
         if (
             explicit_dependent
-            and fallback_shape_eligible
             and not continuation_request
             and flat_fallback is not None
+            and _has_two_stage_dependent_shape(dependent)
             and not _dependent_bindings_catalog_proven(dependent, metadata_candidates_value)
         ):
+            # A weak model can append a malformed continuation object to an
+            # otherwise complete, independent multi-source plan.  The flat
+            # plan is accepted only after its own graph/schema/required-param
+            # validation succeeded, while the untrusted dependency is
+            # discarded.  This is intentionally not a question-specific
+            # recovery: a real dependent retrieval remains fail-closed unless
+            # its Catalog upstream binding is proven.
             return _ignored_dependent_passthrough(
                 envelope,
                 flat_fallback,
@@ -176,6 +305,29 @@ def compile_intent_response(
         raise ValueError("dependent_retrieval_plan.plan_hash가 계약 내용과 일치하지 않습니다.")
     dependent["plan_hash"] = calculated_hash
     dependent["plan_id"] = str(dependent.get("plan_id") or f"drp-{calculated_hash[:12]}").strip()
+
+    # A conversational follow-up can already have the first stage's complete
+    # entity result in its trusted session state.  In that case, scheduling the
+    # same stage again is both wasteful and unsafe: a weak model can turn a
+    # two-turn request into a second nested continuation.  Reuse is allowed
+    # only when the follow-up contract, prior-result provenance, handoff
+    # columns, final-stage selection and Catalog binding all agree.  This is a
+    # Typed IR rule, not a rule for a particular dataset or business term.
+    conversational_handoff = _validated_conversational_handoff(
+        plan,
+        dependent,
+        payload,
+        metadata_candidates_value,
+    )
+    if conversational_handoff:
+        projected_plan = conversational_handoff.pop("_projected_plan", None)
+        if not isinstance(projected_plan, dict):
+            raise ValueError("검증된 후속 handoff의 최종 단계 계획이 없습니다.")
+        return _conversational_handoff_passthrough(
+            envelope,
+            projected_plan,
+            evidence=conversational_handoff,
+        )
 
     active_index = 0
     intent_llm_skipped = False
@@ -227,6 +379,8 @@ def compile_intent_response(
     }
     if shape_repaired:
         trace["continuation"]["dependent_shape_repaired"] = True
+    if recipe_dependent_canonicalized:
+        trace["continuation"]["dependent_recipe_canonicalized"] = True
     envelope["trace"] = trace
     return json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), deepcopy(trace["continuation"])
 
@@ -260,6 +414,640 @@ def _ignored_dependent_passthrough(
 
 
 # 함수 설명: 완전한 flat 계획과 동일한 단일 stage wrapper만 약한 모델의 중복 출력으로 간주합니다.
+def _conversational_handoff_passthrough(
+    envelope: dict[str, Any],
+    plan_value: dict[str, Any],
+    *,
+    evidence: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Keep a verified user follow-up as one ordinary previous-result query.
+
+    The generic V2 normalizer owns the actual previous-result row matching and
+    trusted parameter binding. This compiler only removes a duplicate staged
+    wrapper after proving that the state already supplies the first handoff.
+    """
+
+    plan = deepcopy(plan_value)
+    plan.pop("dependent_retrieval_plan", None)
+    plan.pop("_continuation_stage_active", None)
+    plan["request_scope"] = "followup_requery"
+    plan["reference_mode"] = "previous_result_rows"
+    plan["reuse_strategy"] = "previous_result"
+    envelope["intent_plan"] = plan
+    return json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), {
+        "status": "passthrough",
+        "dependent": False,
+        "active_stage_index": 0,
+        "conversational_handoff_reused": True,
+        "dependent_ignore_reason": "previous_result_satisfies_first_stage_handoff",
+        "conversational_handoff": deepcopy(evidence),
+        "retained_source_aliases": [
+            str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+            for job in plan.get("retrieval_jobs", [])
+            if isinstance(job, dict)
+        ],
+    }
+
+
+def _has_conversational_row_handoff_candidate(
+    plan: dict[str, Any],
+    dependent: dict[str, Any],
+    payload: dict[str, Any],
+    metadata_candidates_value: Any,
+) -> bool:
+    """Recognize a safe prior-result enrichment before flat-plan fallback.
+
+    The check is deliberately structural: it needs a follow-up hint, a
+    same-session first-stage result, an explicit typed reference to the first
+    stage from the final stage, and a Catalog-declared common grain.  It never
+    infers a business term, dataset name, or join key from prose.
+    """
+
+    hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    if (
+        hint.get("followup_candidate") is not True
+        # The upstream follow-up classifier may label a request as a
+        # ``followup_transform`` when it starts from prior rows.  A typed
+        # dependent plan with a new final-stage retrieval is still a real
+        # requery, so accept either neutral classifier spelling here and let
+        # the structural/Catalog checks below decide whether it is safe.
+        or str(hint.get("request_scope_hint") or "").strip()
+        not in {"followup_requery", "followup_transform"}
+        or str(hint.get("reuse_strategy_hint") or "").strip() != "previous_result"
+        or str(plan.get("reference_mode") or "").strip()
+        not in {"previous_result_rows", "previous_result"}
+    ):
+        return False
+    stages = [item for item in dependent.get("stages", []) if isinstance(item, dict)]
+    if len(stages) != MAX_STAGES:
+        return False
+    first_stage, final_stage = stages
+    if not _catalog_proven_structural_handoff_columns(
+        first_stage,
+        final_stage,
+        metadata_candidates_value,
+    ):
+        return False
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    return _positive_int(current_data.get("row_count")) > 0
+
+
+def _project_conversational_structural_handoff(
+    plan: dict[str, Any],
+    dependent: dict[str, Any],
+    payload: dict[str, Any],
+    metadata_candidates_value: Any,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Reuse an already-complete first stage for a Catalog-backed row join.
+
+    This covers a normal two-turn enrichment such as "those products -> their
+    assigned equipment": the right source does not need an upstream *query
+    parameter*, but its rows must be matched to the first result's declared
+    grain.  The compiler accepts it only when the typed stage graph itself
+    proves that relationship and both stages are backed by active Catalog
+    schemas.  The projected flat plan is still normalized and validated by
+    Flow 01 before retrieval.
+    """
+
+    if not _has_conversational_row_handoff_candidate(
+        plan,
+        dependent,
+        payload,
+        metadata_candidates_value,
+    ):
+        return None
+    stages = [item for item in dependent.get("stages", []) if isinstance(item, dict)]
+    if len(stages) != MAX_STAGES:
+        return None
+    first_stage, final_stage = stages
+    first_stage_id = str(first_stage.get("stage_id") or "").strip()
+    final_stage_id = str(final_stage.get("stage_id") or "").strip()
+    if not first_stage_id or not final_stage_id or _strings(final_stage.get("depends_on")) != [first_stage_id]:
+        return None
+    final_jobs = [item for item in final_stage.get("retrieval_jobs", []) if isinstance(item, dict)]
+    first_jobs = [item for item in first_stage.get("retrieval_jobs", []) if isinstance(item, dict)]
+    if len(final_jobs) != 1 or not first_jobs:
+        return None
+    catalogs = _catalog_by_dataset(metadata_candidates_value)
+    final_dataset = str(final_jobs[0].get("dataset_key") or "").strip()
+    final_catalog = catalogs.get(final_dataset)
+    if not isinstance(final_catalog, dict) or _catalog_required_params(final_catalog):
+        return None
+    top_jobs = [item for item in plan.get("retrieval_jobs", []) if isinstance(item, dict)]
+    top_final_jobs = [
+        deepcopy(job)
+        for job in top_jobs
+        if str(job.get("dataset_key") or "").strip() == final_dataset
+    ]
+    if not _same_stage_job_identity(top_final_jobs, final_jobs):
+        return None
+    first_datasets = _unique_job_datasets(first_jobs)
+    if not first_datasets:
+        return None
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    previous_datasets = set(_strings(current_data.get("source_dataset_keys")))
+    previous_plan = state.get("last_intent_plan") if isinstance(state.get("last_intent_plan"), dict) else {}
+    previous_datasets.update(
+        str(job.get("dataset_key") or "").strip()
+        for job in previous_plan.get("retrieval_jobs", [])
+        if isinstance(job, dict) and str(job.get("dataset_key") or "").strip()
+    )
+    if not first_datasets.issubset(previous_datasets):
+        return None
+    row_match_columns = _catalog_proven_structural_handoff_columns(
+        first_stage,
+        final_stage,
+        metadata_candidates_value,
+    )
+    if not row_match_columns:
+        return None
+    final_contract = final_stage.get("output_contract") if isinstance(final_stage.get("output_contract"), dict) else {}
+    if not _contract_result_columns(final_contract):
+        return None
+    projected = _project_conversational_final_stage(
+        plan,
+        first_stage,
+        final_stage,
+        top_final_jobs,
+        row_match_columns=row_match_columns,
+    )
+    if not projected:
+        return None
+    return projected, {
+        "first_stage_id": first_stage_id,
+        "final_stage_id": final_stage_id,
+        "handoff_columns": row_match_columns,
+        "handoff_proof": "typed_join_with_catalog_common_grain",
+        "previous_result_row_count": _positive_int(current_data.get("row_count")),
+        "previous_source_datasets": sorted(previous_datasets),
+        "final_source_datasets": [final_dataset],
+    }
+
+
+def _catalog_proven_structural_handoff_columns(
+    first_stage: dict[str, Any],
+    final_stage: dict[str, Any],
+    metadata_candidates_value: Any,
+) -> list[str]:
+    """Return a Catalog-backed row-match grain for a typed stage join.
+
+    This is used only when the downstream source does not require an upstream
+    query parameter.  The final stage must explicitly reference an output of
+    the first stage; merely sharing similarly named columns is not enough.
+    """
+
+    handoff = first_stage.get("handoff") if isinstance(first_stage.get("handoff"), dict) else {}
+    handoff_columns = _strings(handoff.get("columns"))
+    if not handoff_columns or handoff.get("require_complete") is False:
+        return []
+    first_aliases = _stage_output_aliases(first_stage)
+    if not first_aliases:
+        return []
+    references_first = False
+    for step in final_stage.get("pandas_execution_plan", []):
+        if not isinstance(step, dict):
+            continue
+        if any(
+            str(step.get(key) or "").strip() in first_aliases
+            for key in ("source_alias", "left_source_alias", "right_source_alias")
+        ):
+            references_first = True
+            break
+        for item in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
+            if isinstance(item, dict) and str(item.get("ref") or "").strip() in first_aliases:
+                references_first = True
+                break
+        if references_first:
+            break
+    if not references_first:
+        return []
+    final_jobs = [item for item in final_stage.get("retrieval_jobs", []) if isinstance(item, dict)]
+    if len(final_jobs) != 1:
+        return []
+    dataset_key = str(final_jobs[0].get("dataset_key") or "").strip()
+    catalog = _catalog_by_dataset(metadata_candidates_value).get(dataset_key)
+    if not isinstance(catalog, dict):
+        return []
+    available = set(_catalog_canonical_columns(catalog))
+    return handoff_columns if set(handoff_columns).issubset(available) else []
+
+
+def _validated_conversational_handoff(
+    plan: dict[str, Any],
+    dependent: dict[str, Any],
+    payload: dict[str, Any],
+    metadata_candidates_value: Any,
+) -> dict[str, Any]:
+    """Return compact proof that the first dependent stage is already present.
+
+    Missing state, ambiguous source provenance, a non-follow-up request, or a
+    binding not backed by the active Table Catalog leaves the normal two-stage
+    continuation path unchanged.
+    """
+
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    if (
+        hint.get("followup_candidate") is not True
+        or str(hint.get("request_scope_hint") or "").strip()
+        not in {"followup_requery", "followup_transform"}
+        or str(hint.get("reuse_strategy_hint") or "").strip() != "previous_result"
+    ):
+        return {}
+    if str(plan.get("request_scope") or "").strip() not in {
+        "followup_requery",
+        "followup_transform",
+    }:
+        return {}
+    # Some model responses use the legacy reuse-strategy spelling
+    # ``previous_result``.  With a followup requery and a new final-stage job,
+    # it has the same Typed-IR meaning as ``previous_result_rows``.  Accept it
+    # here so a proven conversational handoff is not turned into a nested
+    # continuation solely because of that spelling variance.
+    reference_mode = str(plan.get("reference_mode") or "").strip()
+    if reference_mode not in {"previous_result_rows", "previous_result"}:
+        return {}
+    if not str(request.get("question") or "").strip():
+        return {}
+    stages = [item for item in dependent.get("stages", []) if isinstance(item, dict)]
+    if len(stages) != MAX_STAGES:
+        return {}
+    first_stage, final_stage = stages
+    first_stage_id = str(first_stage.get("stage_id") or "").strip()
+    final_stage_id = str(final_stage.get("stage_id") or "").strip()
+    if not first_stage_id or not final_stage_id:
+        return {}
+    if _strings(final_stage.get("depends_on")) != [first_stage_id]:
+        return {}
+
+    handoff = first_stage.get("handoff") if isinstance(first_stage.get("handoff"), dict) else {}
+    handoff_columns = _strings(handoff.get("columns"))
+    if not handoff_columns or handoff.get("require_complete") is False:
+        return {}
+    bindings = [
+        item
+        for item in final_stage.get("input_bindings", [])
+        if isinstance(item, dict)
+    ]
+    binding_shape_valid = bool(bindings) and not any(
+        str(binding.get("source_stage_id") or "").strip() != first_stage_id
+        or str(binding.get("source_column") or "").strip() not in handoff_columns
+        for binding in bindings
+    )
+    binding_proven = binding_shape_valid and _dependent_bindings_catalog_proven(
+        dependent,
+        metadata_candidates_value,
+    )
+    # A second source can enrich prior rows without receiving a retrieval
+    # parameter.  In that shape the proof is the typed stage join plus a
+    # Catalog-declared common grain, not a fictitious query binding.  Only a
+    # single final source and an explicit first-stage output reference qualify.
+    row_match_columns = (
+        _strings([binding.get("source_column") for binding in bindings])
+        if binding_proven
+        else _catalog_proven_structural_handoff_columns(
+            first_stage,
+            final_stage,
+            metadata_candidates_value,
+        )
+    )
+    if not row_match_columns:
+        return {}
+
+    # The top-level plan may redundantly contain both source jobs because a
+    # weak model narrated the first stage again.  It is safe to remove that
+    # duplicate only when every top-level job belongs to the verified two-stage
+    # contract and the final-stage dataset set is unique and complete.
+    top_jobs = [item for item in plan.get("retrieval_jobs", []) if isinstance(item, dict)]
+    final_jobs = [item for item in final_stage.get("retrieval_jobs", []) if isinstance(item, dict)]
+    first_jobs = [item for item in first_stage.get("retrieval_jobs", []) if isinstance(item, dict)]
+    final_datasets = _unique_job_datasets(final_jobs)
+    first_datasets = _unique_job_datasets(first_jobs)
+    top_datasets = _unique_job_datasets(top_jobs)
+    if (
+        not top_jobs
+        or not final_jobs
+        or not final_datasets
+        or not first_datasets
+        or not top_datasets
+        or not final_datasets.issubset(top_datasets)
+        or not top_datasets.issubset(first_datasets.union(final_datasets))
+    ):
+        return {}
+    if not _dependent_final_contract_coherent(plan, dependent):
+        return {}
+
+    top_final_jobs = [
+        deepcopy(job)
+        for job in top_jobs
+        if str(job.get("dataset_key") or "").strip() in final_datasets
+    ]
+    if not _same_stage_job_identity(top_final_jobs, final_jobs):
+        return {}
+
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    row_count = _positive_int(current_data.get("row_count"))
+    rows = current_data.get("rows") if isinstance(current_data.get("rows"), list) else []
+    preview_rows = current_data.get("preview_rows") if isinstance(current_data.get("preview_rows"), list) else []
+    if row_count <= 0 or not (rows or preview_rows or str(current_data.get("data_ref") or "").strip()):
+        return {}
+
+    available_columns = set(_strings(current_data.get("columns")))
+    available_columns.update(_strings(current_data.get("result_columns")))
+    source_columns = current_data.get("source_columns_by_alias")
+    if isinstance(source_columns, dict):
+        for columns in source_columns.values():
+            available_columns.update(_strings(columns))
+    for row in [*rows[:1], *preview_rows[:1]]:
+        if isinstance(row, dict):
+            available_columns.update(str(key).strip() for key in row if str(key).strip())
+    if not set(row_match_columns).issubset(available_columns):
+        return {}
+
+    # A same-session result must identify the source dataset which supplied the
+    # handoff. This prevents a coincidentally named column from an unrelated
+    # previous analysis from authorizing the stage skip.
+    previous_datasets = set(_strings(current_data.get("source_dataset_keys")))
+    previous_plan = state.get("last_intent_plan") if isinstance(state.get("last_intent_plan"), dict) else {}
+    previous_datasets.update(
+        str(job.get("dataset_key") or "").strip()
+        for job in previous_plan.get("retrieval_jobs", [])
+        if isinstance(job, dict) and str(job.get("dataset_key") or "").strip()
+    )
+    if not first_datasets or not previous_datasets or not first_datasets.issubset(previous_datasets):
+        return {}
+
+    projected_plan = _project_conversational_final_stage(
+        plan,
+        first_stage,
+        final_stage,
+        top_final_jobs,
+        row_match_columns=row_match_columns,
+    )
+    if not projected_plan:
+        return {}
+
+    return {
+        "first_stage_id": first_stage_id,
+        "final_stage_id": final_stage_id,
+        "handoff_columns": row_match_columns,
+        "handoff_proof": (
+            "catalog_upstream_binding"
+            if binding_proven
+            else "typed_join_with_catalog_common_grain"
+        ),
+        "previous_result_row_count": row_count,
+        "previous_source_datasets": sorted(previous_datasets),
+        "final_source_datasets": sorted(final_datasets),
+        "_projected_plan": projected_plan,
+    }
+
+
+def _same_stage_job_identity(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
+    """Compare catalog datasets while permitting plan-local source aliases.
+
+    Source aliases are execution-plan scoped: a model may call the same
+    catalog source ``history_src`` while a metadata-owned stage calls it
+    ``history``.  Dataset identity is the stable trust boundary, provided
+    each side selects it only once; duplicate dataset jobs remain ambiguous
+    and therefore do not qualify for conversational stage reuse.
+    """
+
+    return bool(left) and len(left) == len(right) and _unique_job_datasets(left) == _unique_job_datasets(right)
+
+
+def _unique_job_datasets(items: list[dict[str, Any]]) -> set[str]:
+    """Return a non-ambiguous dataset set, or an empty set on malformed jobs."""
+
+    values = [str(item.get("dataset_key") or "").strip() for item in items]
+    if not values or any(not value for value in values) or len(values) != len(set(values)):
+        return set()
+    return set(values)
+
+
+def _project_conversational_final_stage(
+    root_plan: dict[str, Any],
+    first_stage: dict[str, Any],
+    final_stage: dict[str, Any],
+    top_final_jobs: list[dict[str, Any]],
+    *,
+    row_match_columns: list[str],
+) -> dict[str, Any]:
+    """Project the metadata-owned final stage using the caller's aliases.
+
+    The model's alias is retained only as a local execution name.  Retrieval
+    schema, latest-row selection and join semantics remain the validated
+    stage's contract.  An ambiguous alias mapping fails closed.
+    """
+
+    stage_jobs = [item for item in final_stage.get("retrieval_jobs", []) if isinstance(item, dict)]
+    stage_alias_by_dataset = {
+        str(job.get("dataset_key") or "").strip(): str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in stage_jobs
+        if str(job.get("dataset_key") or "").strip()
+    }
+    top_alias_by_dataset = {
+        str(job.get("dataset_key") or "").strip(): str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in top_final_jobs
+        if str(job.get("dataset_key") or "").strip()
+    }
+    if (
+        len(stage_alias_by_dataset) != len(stage_jobs)
+        or len(top_alias_by_dataset) != len(top_final_jobs)
+        or set(stage_alias_by_dataset) != set(top_alias_by_dataset)
+        or any(not value for value in [*stage_alias_by_dataset.values(), *top_alias_by_dataset.values()])
+    ):
+        return {}
+    alias_map = {
+        stage_alias_by_dataset[dataset]: top_alias_by_dataset[dataset]
+        for dataset in stage_alias_by_dataset
+        if stage_alias_by_dataset[dataset] != top_alias_by_dataset[dataset]
+    }
+    # ``upstream_result`` is the reserved alias for an explicit continuation
+    # child run.  A regular conversation restores the same trusted rows under
+    # ``previous_result``.  Convert only this reserved handoff reference; a
+    # catalog source is never allowed to use either reserved name here.
+    if {"upstream_result", "previous_result"}.intersection(stage_alias_by_dataset.values()):
+        return {}
+    alias_map["upstream_result"] = "previous_result"
+    # A weak model can refer to the already-finished first-stage output by its
+    # local node/output name. Only aliases that the verified first stage
+    # actually declares may be rewritten to the restored conversation result.
+    for alias in _stage_output_aliases(first_stage):
+        if alias and alias not in stage_alias_by_dataset.values():
+            alias_map[alias] = "previous_result"
+    # This is a legacy reference-mode spelling rather than a Catalog source.
+    # The conversational handoff proof above has already established a
+    # same-session previous result, so canonicalizing it cannot widen scope.
+    alias_map["previous_result_rows"] = "previous_result"
+
+    projected = deepcopy(root_plan)
+    projected["retrieval_jobs"] = deepcopy(top_final_jobs)
+    steps = deepcopy(final_stage.get("pandas_execution_plan") or [])
+    if not isinstance(steps, list):
+        return {}
+    # The first stage is already represented by trusted session rows in a
+    # conversational follow-up.  Materialize the catalog-proven handoff as a
+    # deterministic row-match before the final-stage transform.  The generic
+    # V2 normalizer will resolve the match columns from the prior result's
+    # output contract, so this remains portable across entity types instead of
+    # relying on a LOT- or history-specific branch.
+    if not any(
+        isinstance(step, dict)
+        and str(step.get("operation") or "").strip().lower()
+        == "apply_row_match_groups"
+        for step in steps
+    ):
+        row_match = _conversational_row_match_step(
+            final_stage,
+            stage_alias_by_dataset,
+            row_match_columns=row_match_columns,
+        )
+        if not isinstance(row_match, dict):
+            return {}
+        steps.insert(0, row_match)
+    projected["pandas_execution_plan"] = steps
+    projected["output_contract"] = deepcopy(final_stage.get("output_contract") or {})
+    projected.pop("dependent_retrieval_plan", None)
+    projected.pop("_continuation_stage_active", None)
+    if not _rewrite_stage_source_aliases(projected, alias_map):
+        return {}
+    return projected
+
+
+# 함수 설명: 검증된 이전 stage가 만든 node/output 별칭만 수집해 대화형 handoff 재작성 범위를 안전하게 제한합니다.
+def _stage_output_aliases(stage: dict[str, Any]) -> set[str]:
+    """Return declared node/output names, never a source alias."""
+
+    values: set[str] = set()
+    steps = stage.get("pandas_execution_plan") if isinstance(stage.get("pandas_execution_plan"), list) else []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        for key in ("node_id", "output_alias", "result_alias"):
+            value = str(step.get(key) or "").strip()
+            if value:
+                values.add(value)
+    return values
+
+
+def _conversational_row_match_step(
+    final_stage: dict[str, Any],
+    stage_alias_by_dataset: dict[str, str],
+    *,
+    row_match_columns: list[str],
+) -> dict[str, Any]:
+    """Build one safe current-result match from the typed stage bindings.
+
+    The caller has already verified that every binding is backed by the active
+    Catalog.  This helper still requires all bindings to target exactly one
+    final-stage retrieval alias; multi-target contracts retain their normal
+    continuation behavior rather than guessing which population to restrict.
+    """
+
+    bindings = [
+        item
+        for item in final_stage.get("input_bindings", [])
+        if isinstance(item, dict)
+    ]
+    target_aliases = {
+        str(item.get("target_source_alias") or "").strip()
+        for item in bindings
+        if str(item.get("target_source_alias") or "").strip()
+    }
+    if not target_aliases and len(stage_alias_by_dataset) == 1:
+        # Structural join handoff: no retrieval parameter is required, so the
+        # final stage's sole Catalog source is the row-match target.
+        target_aliases = set(stage_alias_by_dataset.values())
+    match_columns = _strings(row_match_columns)
+    if len(target_aliases) != 1 or not match_columns:
+        return {}
+    target_alias = next(iter(target_aliases))
+    if target_alias not in set(stage_alias_by_dataset.values()):
+        return {}
+    return {
+        "operation": "apply_row_match_groups",
+        "source_alias": target_alias,
+        "reference_source_alias": "upstream_result",
+        "match_columns": match_columns,
+        "blank_policy": "normalize_blank",
+    }
+
+
+def _rewrite_stage_source_aliases(plan: dict[str, Any], alias_map: dict[str, str]) -> bool:
+    """Rewrite verified cross-stage references into the restored result source.
+
+    A final stage may call the previous stage's terminal node by
+    ``node_output`` (for example ``top_products``) instead of the canonical
+    ``previous_result`` alias.  Once the first stage has been proven to be the
+    same-session handoff, that node no longer exists in this child execution.
+    Rewrite only an alias supplied by the verified stage-output map and turn
+    it into the reserved external provider.  Normal node-output lineage inside
+    the current final stage remains untouched.
+    """
+
+    if not alias_map:
+        return True
+    steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+    outputs = {
+        str(step.get(key) or "").strip()
+        for step in steps
+        if isinstance(step, dict)
+        for key in ("node_id", "output_alias")
+        if str(step.get(key) or "").strip()
+    }
+    if outputs.intersection(alias_map):
+        return False
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        for key in (
+            "source_alias",
+            "left_source_alias",
+            "right_source_alias",
+            "reference_source_alias",
+        ):
+            value = str(step.get(key) or "").strip()
+            if value in alias_map:
+                step[key] = alias_map[value]
+        inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        for item in inputs:
+            if not isinstance(item, dict):
+                return False
+            ref = str(item.get("ref") or "").strip()
+            kind = str(item.get("kind") or "").strip()
+            if ref not in alias_map:
+                continue
+            replacement = alias_map[ref]
+            if kind == "external_source":
+                item["ref"] = replacement
+            elif kind == "node_output" and replacement == "previous_result":
+                # This is a first-stage terminal alias established by the
+                # conversational-handoff proof above, not a local final-stage
+                # computation.  The earlier output collision guard ensures it
+                # cannot accidentally replace a local node.
+                item["kind"] = "external_source"
+                item["ref"] = replacement
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    for binding in contract.get("metric_bindings", []) if isinstance(contract.get("metric_bindings"), list) else []:
+        if not isinstance(binding, dict):
+            return False
+        alias = str(binding.get("source_alias") or "").strip()
+        if alias in alias_map:
+            binding["source_alias"] = alias_map[alias]
+    return True
+
+
+def _positive_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except Exception:
+        return 0
+
+
 def _is_redundant_single_stage_wrapper(
     dependent_plan: dict[str, Any],
     flat_plan: dict[str, Any],
@@ -555,8 +1343,7 @@ def _flatten_independent_dependent_plan(
     dependent_plan: dict[str, Any],
     metadata_candidates_value: Any,
 ) -> dict[str, Any] | None:
-    top_steps = [item for item in flat_plan.get("pandas_execution_plan", []) if isinstance(item, dict)]
-    if top_steps or not _explicit_dependency_fallback_shape(dependent_plan):
+    if not _explicit_dependency_fallback_shape(dependent_plan):
         return None
     stages = [deepcopy(item) for item in dependent_plan.get("stages", []) if isinstance(item, dict)]
     for stage in stages:
@@ -649,6 +1436,16 @@ def _rewrite_flattened_output_metric_bindings(
             rewritten.append(binding)
             continue
         output_column = str(binding.get("output_column") or "").strip()
+        # A two-stage *presentation* wrapper often describes a stage-1
+        # aggregate as though it were a physical column of the hand-off
+        # frame, for example ``source_column=TOTAL`` and
+        # ``output_column=TOTAL``.  That is not a new source-column
+        # requirement: it is a reference to the already-derived stage-1
+        # metric.  Resolve it only when the output metric and dataset point to
+        # exactly one stage-1 binding.  This remains fail-closed for an
+        # ambiguous or genuinely different physical source column.
+        source_column = str(binding.get("source_column") or "").strip()
+        references_stage_output = bool(output_column and source_column == output_column)
         candidates = [
             item
             for item in stage1_bindings
@@ -659,9 +1456,9 @@ def _rewrite_flattened_output_metric_bindings(
                 == str(binding.get("dataset_key") or "").strip()
             )
             and (
-                not str(binding.get("source_column") or "").strip()
-                or str(item.get("source_column") or "").strip()
-                == str(binding.get("source_column") or "").strip()
+                not source_column
+                or references_stage_output
+                or str(item.get("source_column") or "").strip() == source_column
             )
         ]
         if len(candidates) != 1:
@@ -782,6 +1579,26 @@ def _explicit_dependency_fallback_shape(value: dict[str, Any]) -> bool:
         if index == 1 and not isinstance(stage.get("input_bindings"), list):
             return False
     return True
+
+
+# 함수 설명: 약한 모델이 만든 불완전한 두 단계 계획을 안전한 flat fallback과 구분합니다.
+def _has_two_stage_dependent_shape(value: Any) -> bool:
+    """Return true only for an explicitly two-stage object.
+
+    This deliberately does not approve the stages themselves.  Structural and
+    Catalog validation remain mandatory for a real continuation; the helper is
+    used only to decide whether a *separate already-complete flat plan* may
+    safely survive an untrusted two-stage add-on.
+    """
+
+    if not isinstance(value, dict):
+        return False
+    stages = value.get("stages")
+    return (
+        isinstance(stages, list)
+        and len(stages) == MAX_STAGES
+        and all(isinstance(stage, dict) for stage in stages)
+    )
 
 
 # 함수 설명: Catalog로 증명된 stage2라도 선택 근거와 요청 출력 증거가 없으면 완전한 stage1 계획으로 축소합니다.
@@ -1219,6 +2036,398 @@ def _structurally_empty(value: Any) -> bool:
 
 
 # 주요 함수: 빈 필수 파라미터와 trusted upstream binding이 정확히 대응할 때만 flat plan을 2단계로 승격합니다.
+# Function description: turn a selected, structured analysis recipe into a
+# two-stage plan only when its own activation and both Catalog contracts prove
+# that the handoff is safe.  The compiler contains no dataset/entity-specific
+# rules: the recipe supplies the activation, selections and binding.
+def _lift_recipe_driven_dependent_plan(
+    plan_value: dict[str, Any],
+    payload_value: Any,
+    metadata_candidates_value: Any,
+) -> dict[str, Any]:
+    """Lift a current-selection recipe to its declared history selection."""
+
+    plan = deepcopy(plan_value)
+    payload = _payload(payload_value)
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    question = str(request.get("question") or payload.get("question") or "").strip().casefold()
+    if not question:
+        return {}
+    jobs = [deepcopy(item) for item in plan.get("retrieval_jobs", []) if isinstance(item, dict)]
+    if len(jobs) != 1:
+        return {}
+    current_job = jobs[0]
+    current_dataset = str(current_job.get("dataset_key") or "").strip()
+    current_alias = str(current_job.get("source_alias") or current_dataset).strip()
+    if not current_dataset or not current_alias:
+        return {}
+
+    domain_items = _domain_items_by_ref(metadata_candidates_value)
+    refs = plan.get("metadata_refs") if isinstance(plan.get("metadata_refs"), list) else []
+    recipes: list[tuple[str, dict[str, Any]]] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        section = _normalized_section(ref.get("section") or ref.get("type"))
+        key = str(ref.get("key") or "").strip()
+        recipe = domain_items.get((section, key)) if section == "analysis_recipes" and key else None
+        if isinstance(recipe, dict):
+            recipes.append((key, recipe))
+    if len(recipes) != 1:
+        return {}
+
+    recipe_key, recipe = recipes[0]
+    current_selection = recipe.get("current_selection")
+    history_selection = recipe.get("history_selection")
+    activation = recipe.get("dependent_selection")
+    if not (
+        isinstance(current_selection, dict)
+        and isinstance(history_selection, dict)
+        and isinstance(activation, dict)
+    ):
+        return {}
+    if str(activation.get("current_stage") or "").strip() != "current_selection":
+        return {}
+    if str(activation.get("next_stage") or "").strip() != "history_selection":
+        return {}
+    activation_terms = _strings(activation.get("when_question_includes_any"))
+    if not activation_terms or not any(term.casefold() in question for term in activation_terms):
+        return {}
+
+    selected_current_dataset = str(current_selection.get("dataset_key") or "").strip()
+    history_dataset = str(history_selection.get("dataset_key") or "").strip()
+    if current_dataset != selected_current_dataset or not history_dataset:
+        return {}
+    catalogs = _catalog_by_dataset(metadata_candidates_value)
+    current_catalog = catalogs.get(current_dataset)
+    history_catalog = catalogs.get(history_dataset)
+    if not isinstance(current_catalog, dict) or not isinstance(history_catalog, dict):
+        return {}
+
+    current_filters = current_selection.get("filter") if isinstance(current_selection.get("filter"), dict) else {}
+    job_filters = deepcopy(current_job.get("filters")) if isinstance(current_job.get("filters"), dict) else {}
+    for column, expected in current_filters.items():
+        canonical_column = str(column or "").strip()
+        if not canonical_column:
+            return {}
+        existing_key = next(
+            (key for key in job_filters if str(key).strip().casefold() == canonical_column.casefold()),
+            None,
+        )
+        if existing_key is None:
+            job_filters[canonical_column] = deepcopy(expected)
+        elif _canonical_json(job_filters.get(existing_key)) != _canonical_json(expected):
+            return {}
+    if job_filters:
+        current_job["filters"] = job_filters
+
+    declared_binding = history_selection.get("upstream_binding")
+    if not isinstance(declared_binding, dict):
+        return {}
+    source_column = str(declared_binding.get("source_column") or "").strip()
+    target_param = str(declared_binding.get("target_param") or "").strip()
+    operator = str(declared_binding.get("operator") or "in").strip().lower()
+    if not source_column or not target_param or operator not in {"eq", "in"}:
+        return {}
+    current_allowed = set(_catalog_canonical_columns(current_catalog))
+    history_allowed = set(_catalog_canonical_columns(history_catalog))
+    if source_column not in current_allowed or target_param not in set(_catalog_required_params(history_catalog)):
+        return {}
+    trusted_matches = [
+        item
+        for item in _catalog_upstream_bindings(history_catalog)
+        if str(item.get("source_column") or "").strip() == source_column
+        and str(item.get("target_param") or "").strip() == target_param
+        and str(item.get("operator") or "in").strip().lower() == operator
+        and _canonical_reference_alias(item.get("source_alias")) == "upstream_result"
+    ]
+    if len(trusted_matches) != 1:
+        return {}
+    trusted_binding = trusted_matches[0]
+
+    root_contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    current_columns = _strings(root_contract.get("result_columns")) or _strings(root_contract.get("required_columns"))
+    current_columns = [column for column in current_columns if column in current_allowed]
+    if source_column not in current_columns:
+        current_columns.append(source_column)
+    if not current_columns:
+        return {}
+    history_columns = _strings(history_selection.get("result_columns"))
+    latest = history_selection.get("latest_per_group")
+    if not isinstance(latest, dict):
+        return {}
+    partition_by = _strings(latest.get("partition_by"))
+    order_by = [deepcopy(item) for item in latest.get("order_by", []) if isinstance(item, dict)]
+    order_columns = _strings([item.get("column") for item in order_by])
+    if not partition_by or not order_by:
+        return {}
+    projection = _strings([*history_columns, target_param, *partition_by, *order_columns])
+    if not projection or any(column not in history_allowed for column in projection):
+        return {}
+    history_alias = str(history_selection.get("source_alias") or history_dataset).strip()
+    if not history_alias or history_alias == current_alias:
+        return {}
+
+    stage1_id = f"stage_1_{_safe_id(current_alias)}"
+    stage2_id = f"stage_2_{_safe_id(history_alias)}"
+    stage1_output = f"{_safe_id(current_alias)}_handoff"
+    latest_output = f"latest_{_safe_id(history_alias)}"
+    final_output = f"{_safe_id(history_alias)}_with_current"
+    history_params = history_selection.get("required_params") if isinstance(history_selection.get("required_params"), dict) else {}
+    history_job = {
+        "dataset_key": history_dataset,
+        "source_alias": history_alias,
+        "required_params": {
+            name: deepcopy(history_params.get(name, ""))
+            for name in _catalog_required_params(history_catalog)
+        },
+    }
+    history_source_type = str(history_catalog.get("source_type") or "").strip()
+    if history_source_type:
+        history_job["source_type"] = history_source_type
+    final_columns = _strings([*current_columns, *history_columns])
+    if not final_columns:
+        return {}
+    stage1_contract = {
+        "result_mode": "entity_list",
+        "required_columns": list(current_columns),
+        "grain_columns": [source_column],
+        "metric_columns": [],
+        "result_columns": list(current_columns),
+        "strict_result_columns": True,
+        "null_group_policy": "preserve_as_blank",
+        "metric_null_policy": "display_zero",
+    }
+    final_contract = {
+        "result_mode": "entity_list",
+        "required_columns": final_columns,
+        "grain_columns": [source_column],
+        "metric_columns": [],
+        "result_columns": final_columns,
+        "strict_result_columns": True,
+        "null_group_policy": "preserve_as_blank",
+        "metric_null_policy": "display_zero",
+    }
+    return {
+        "version": CONTRACT_VERSION,
+        "max_stages": MAX_STAGES,
+        "final_stage_id": stage2_id,
+        "activation": {
+            "reason": "analysis_recipe_dependent_selection",
+            "metadata_ref": {"section": "analysis_recipes", "key": recipe_key},
+            "matched_terms": [term for term in activation_terms if term.casefold() in question],
+        },
+        "stages": [
+            {
+                "stage_id": stage1_id,
+                "depends_on": [],
+                "retrieval_jobs": [current_job],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": f"select_{_safe_id(current_alias)}_handoff",
+                        "operation": "select_columns",
+                        "inputs": [{"kind": "external_source", "ref": current_alias}],
+                        "source_alias": current_alias,
+                        "output_alias": stage1_output,
+                        "projection": list(current_columns),
+                    }
+                ],
+                "output_contract": stage1_contract,
+                "handoff": {"columns": [source_column], "require_complete": True},
+            },
+            {
+                "stage_id": stage2_id,
+                "depends_on": [stage1_id],
+                "retrieval_jobs": [history_job],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": f"latest_{_safe_id(history_alias)}",
+                        "operation": "select_extreme_row_per_group",
+                        "inputs": [{"kind": "external_source", "ref": history_alias}],
+                        "source_alias": history_alias,
+                        "output_alias": latest_output,
+                        "partition_by": partition_by,
+                        "order_by": order_by,
+                        "tie_breakers": [deepcopy(item) for item in latest.get("tie_breakers", []) if isinstance(item, dict)],
+                        "limit_per_group": int(latest.get("limit_per_group") or 1),
+                        "tie_policy": str(latest.get("tie_policy") or "error").strip().lower(),
+                        "projection": projection,
+                        "strict": True,
+                    },
+                    {
+                        "node_id": f"join_{_safe_id(history_alias)}_current",
+                        "operation": "join",
+                        "inputs": [
+                            {"kind": "node_output", "ref": "upstream_result"},
+                            {"kind": "node_output", "ref": latest_output},
+                        ],
+                        "left_source_alias": "upstream_result",
+                        "right_source_alias": latest_output,
+                        "left_on": [source_column],
+                        "right_on": [target_param],
+                        "join_type": "left",
+                        "population_policy": "preserve_left",
+                        "output_alias": final_output,
+                    },
+                ],
+                "output_contract": final_contract,
+                "input_bindings": [
+                    {
+                        "source_stage_id": stage1_id,
+                        "source_column": source_column,
+                        "target_source_alias": history_alias,
+                        "target_param": target_param,
+                        "operator": operator,
+                        "source_alias": str(trusted_binding.get("source_alias") or "previous_result").strip(),
+                        "entity_type": str(trusted_binding.get("entity_type") or "").strip(),
+                    }
+                ],
+            },
+        ],
+    }
+
+
+# Function description: an explicit two-stage model plan may name the same
+# current/history recipe but contain unsafe transform details.  Reconstruct it
+# only when the model's stage dataset choices match the selected structured
+# recipe, then delegate all actual contract construction to the existing
+# recipe-driven compiler.
+def _canonicalize_explicit_recipe_dependent_plan(
+    plan_value: dict[str, Any],
+    dependent_value: dict[str, Any],
+    payload_value: Any,
+    metadata_candidates_value: Any,
+) -> dict[str, Any]:
+    """Return a metadata-owned replacement for a matching explicit wrapper.
+
+    A non-match is deliberately a no-op.  The caller then follows the normal
+    validation/fail-closed path for an explicit dependent plan, so this helper
+    never broadens what a weak model is allowed to execute.
+    """
+
+    if not _has_two_stage_dependent_shape(dependent_value):
+        return {}
+    stages = [item for item in dependent_value.get("stages", []) if isinstance(item, dict)]
+    if len(stages) != MAX_STAGES:
+        return {}
+    stage_jobs = [
+        [deepcopy(item) for item in stage.get("retrieval_jobs", []) if isinstance(item, dict)]
+        for stage in stages
+    ]
+    if any(len(jobs) != 1 for jobs in stage_jobs):
+        return {}
+    current_job = stage_jobs[0][0]
+    history_job = stage_jobs[1][0]
+    current_dataset = str(current_job.get("dataset_key") or "").strip()
+    history_dataset = str(history_job.get("dataset_key") or "").strip()
+    if not current_dataset or not history_dataset:
+        return {}
+
+    # Verify that exactly one selected structured recipe owns these two
+    # datasets before using the existing compiler.  This prevents a generic
+    # recipe reference from authorizing an unrelated model-selected source.
+    domain_items = _domain_items_by_ref(metadata_candidates_value)
+    refs = plan_value.get("metadata_refs") if isinstance(plan_value.get("metadata_refs"), list) else []
+    matches: list[dict[str, Any]] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        section = _normalized_section(ref.get("section") or ref.get("type"))
+        key = str(ref.get("key") or "").strip()
+        recipe = domain_items.get((section, key)) if section == "analysis_recipes" and key else None
+        if not isinstance(recipe, dict):
+            continue
+        current_selection = recipe.get("current_selection")
+        history_selection = recipe.get("history_selection")
+        activation = recipe.get("dependent_selection")
+        if not (
+            isinstance(current_selection, dict)
+            and isinstance(history_selection, dict)
+            and isinstance(activation, dict)
+        ):
+            continue
+        if (
+            str(current_selection.get("dataset_key") or "").strip() == current_dataset
+            and str(history_selection.get("dataset_key") or "").strip() == history_dataset
+        ):
+            matches.append(recipe)
+    if len(matches) != 1:
+        return {}
+
+    # _lift_recipe_driven_dependent_plan intentionally accepts one current
+    # source.  Seed it with the explicit stage-1 job so filters provided by the
+    # model remain subject to its declared recipe filter reconciliation, while
+    # history retrieval, latest-row selection and left-population preservation
+    # are rebuilt from metadata rather than reused from model code.
+    seed = deepcopy(plan_value)
+    seed["retrieval_jobs"] = [current_job]
+    stage1_steps = stages[0].get("pandas_execution_plan")
+    seed["pandas_execution_plan"] = (
+        [deepcopy(item) for item in stage1_steps if isinstance(item, dict)]
+        if isinstance(stage1_steps, list)
+        else []
+    )
+    stage1_contract = stages[0].get("output_contract")
+    if isinstance(stage1_contract, dict) and not isinstance(seed.get("output_contract"), dict):
+        seed["output_contract"] = deepcopy(stage1_contract)
+    seed.pop("dependent_retrieval_plan", None)
+    return _lift_recipe_driven_dependent_plan(seed, payload_value, metadata_candidates_value)
+
+
+# Function description: complete an otherwise proven strict latest-row step
+# from the stage Catalog-backed output columns.  The helper never invents a
+# source column, and leaves non-strict or ambiguous steps fail-closed.
+def _complete_strict_extreme_projections(
+    dependent_value: dict[str, Any],
+    metadata_candidates_value: Any,
+) -> tuple[dict[str, Any], bool]:
+    dependent = deepcopy(dependent_value)
+    catalogs = _catalog_by_dataset(metadata_candidates_value)
+    changed = False
+    stages = dependent.get("stages") if isinstance(dependent.get("stages"), list) else []
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        jobs = [item for item in stage.get("retrieval_jobs", []) if isinstance(item, dict)]
+        aliases = {
+            str(job.get("source_alias") or job.get("dataset_key") or "").strip(): job
+            for job in jobs
+            if str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        }
+        contract = stage.get("output_contract") if isinstance(stage.get("output_contract"), dict) else {}
+        contract_columns = _strings(contract.get("result_columns")) or _strings(contract.get("required_columns"))
+        steps = stage.get("pandas_execution_plan") if isinstance(stage.get("pandas_execution_plan"), list) else []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            if str(step.get("operation") or "").strip().lower() != "select_extreme_row_per_group":
+                continue
+            if step.get("strict") is not True or _strings(step.get("projection")):
+                continue
+            source_alias = str(step.get("source_alias") or "").strip()
+            job = aliases.get(source_alias)
+            dataset_key = str(job.get("dataset_key") or "").strip() if isinstance(job, dict) else ""
+            catalog = catalogs.get(dataset_key)
+            if not isinstance(catalog, dict):
+                continue
+            allowed = set(_catalog_canonical_columns(catalog))
+            partition_by = _strings(step.get("partition_by"))
+            order_columns = _strings(
+                [item.get("column") for item in step.get("order_by", []) if isinstance(item, dict)]
+            )
+            required = _strings([*partition_by, *order_columns])
+            if not required or any(column not in allowed for column in required):
+                continue
+            projection = _strings([
+                *[column for column in contract_columns if column in allowed],
+                *required,
+            ])
+            if projection:
+                step["projection"] = projection
+                changed = True
+    return dependent, changed
+
+
 def _lift_flat_plan_from_catalog(
     plan: dict[str, Any],
     metadata_candidates_value: Any,
@@ -1708,38 +2917,103 @@ def _normalize_stage_node_aliases(stage: dict[str, Any]) -> None:
         alias: str(steps[index].get("node_id") or "").strip()
         for alias, index in owners.items()
     }
+
+    def _prior_operation_output(reference: str, current_index: int) -> str:
+        """Resolve an unambiguous legacy operation-name reference within one stage.
+
+        Some model responses use ``groupby_and_aggregate`` or ``join`` as a
+        node-output reference instead of copying the preceding node id.  This
+        is safe to repair only when exactly one earlier stage step has that
+        operation name.  A repeated operation remains unresolved and is later
+        rejected rather than guessed.
+        """
+
+        text = str(reference or "").strip()
+        if not text:
+            return ""
+        normalized = re.sub(r"[^0-9a-z]+", "_", text.casefold()).strip("_")
+        if not normalized:
+            return ""
+        candidates: list[str] = []
+        for prior_index, prior in enumerate(steps[:current_index]):
+            operation = str(prior.get("operation") or prior.get("step") or "").strip()
+            operation_key = re.sub(r"[^0-9a-z]+", "_", operation.casefold()).strip("_")
+            if operation_key != normalized:
+                continue
+            node_id = str(prior.get("node_id") or prior.get("output_alias") or "").strip()
+            if node_id and node_id not in candidates:
+                candidates.append(node_id)
+        return candidates[0] if len(candidates) == 1 else ""
+
     for index, step in enumerate(steps):
-        if isinstance(step.get("inputs"), list) and step.get("inputs"):
-            continue
-        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
-        if operation in {"join", "merge", "outer_join", "left_join", "compare_presence"}:
-            aliases = _strings(
-                [
-                    step.get("left_source_alias") or step.get("source_alias"),
-                    step.get("right_source_alias") or step.get("reference_source_alias"),
-                ]
-            )
-        else:
-            aliases = _strings([step.get("source_alias")])
-        inputs: list[dict[str, str]] = []
-        for alias in aliases:
+        raw_inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        if not raw_inputs:
+            operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+            if operation in {"join", "merge", "outer_join", "left_join", "compare_presence"}:
+                aliases = _strings(
+                    [
+                        step.get("left_source_alias") or step.get("source_alias"),
+                        step.get("right_source_alias") or step.get("reference_source_alias"),
+                    ]
+                )
+            else:
+                aliases = _strings([step.get("source_alias")])
+            raw_inputs = [{"ref": alias} for alias in aliases]
+
+        inputs: list[dict[str, Any]] = []
+        for raw_input in raw_inputs:
+            if not isinstance(raw_input, dict):
+                continue
+            input_value = deepcopy(raw_input)
+            alias = str(input_value.get("ref") or "").strip()
+            if not alias:
+                continue
             if alias in external_aliases:
-                inputs.append({"kind": "external_source", "ref": alias})
-                continue
-            owner_index = owners.get(alias)
-            if owner_index is not None and owner_index < index:
-                inputs.append({"kind": "node_output", "ref": alias_nodes.get(alias) or alias})
-                continue
-            # An unresolved logical alias can be a stage-1 handoff reference;
-            # cross-stage normalization below either rewrites it or validation
-            # rejects it. It must never be guessed as a retrieval source.
-            inputs.append({"kind": "node_output", "ref": alias})
+                input_value["kind"] = "external_source"
+                input_value["ref"] = alias
+            else:
+                owner_index = owners.get(alias)
+                if owner_index is not None and owner_index < index:
+                    input_value["kind"] = "node_output"
+                    input_value["ref"] = alias_nodes.get(alias) or alias
+                else:
+                    operation_output = _prior_operation_output(alias, index)
+                    if operation_output:
+                        input_value["kind"] = "node_output"
+                        input_value["ref"] = operation_output
+                    else:
+                        # An unresolved logical alias can be a stage-1 handoff
+                        # reference; cross-stage normalization below either
+                        # rewrites it or validation rejects it.  It must never
+                        # be guessed as a retrieval source.
+                        input_value.setdefault("kind", "node_output")
+                        input_value["ref"] = alias
+            inputs.append(input_value)
         if inputs:
             step["inputs"] = inputs
     stage["pandas_execution_plan"] = steps
 
 
 # 함수 설명: continuation stage2가 참조한 stage1 식별자를 예약 외부 source upstream_result로 정규화합니다.
+def _normalize_flat_plan_node_aliases(plan: dict[str, Any]) -> dict[str, Any]:
+    """Apply the same safe alias completion to an ordinary flat plan."""
+
+    if not isinstance(plan, dict):
+        return {}
+    steps = plan.get("pandas_execution_plan")
+    if not isinstance(steps, list) or not any(isinstance(item, dict) for item in steps):
+        return plan
+    normalized = deepcopy(plan)
+    stage = {
+        "stage_id": "flat",
+        "retrieval_jobs": normalized.get("retrieval_jobs", []),
+        "pandas_execution_plan": normalized.get("pandas_execution_plan", []),
+    }
+    _normalize_stage_node_aliases(stage)
+    normalized["pandas_execution_plan"] = stage["pandas_execution_plan"]
+    return normalized
+
+
 def _normalize_continuation_cross_stage_references(stages: list[dict[str, Any]]) -> None:
     if len(stages) != MAX_STAGES:
         return
@@ -2070,7 +3344,7 @@ def _parse_json_response(value: Any) -> dict[str, Any]:
 def _repair_common_json_syntax(value: str) -> str:
     text = str(value or "")
     repaired = re.sub(
-        r"([,{]\s*)-([A-Za-z_][A-Za-z0-9_]*)\s*:",
+        r"([,{]\s*)-\s*([A-Za-z_][A-Za-z0-9_]*)\s*:",
         r'\1"\2":',
         text,
     )

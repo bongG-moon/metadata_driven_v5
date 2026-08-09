@@ -1246,8 +1246,20 @@ def _escape_table_cell(value: Any) -> str:
     else:
         formatted = _format_display_number(value)
         text = str(formatted) if formatted is not None else ("" if value is None else str(value))
-    text = _truncate(text.replace("\n", "<br>"), CELL_TEXT_LIMIT)
+    text = _truncate(_normalize_table_cell_text(text), CELL_TEXT_LIMIT)
     return _escape_markdown_tilde(text.replace("|", "\\|"))
+
+
+# 함수 설명: 원본 데이터는 보존한 채 Markdown 표를 위한 셀 문자열만 한 줄로 정규화합니다.
+# Windows/Unix 줄바꿈, 탭, Unicode 줄바꿈과 제어문자가 표 행 또는 열 구조를 깨뜨리지 않도록
+# 사람이 확인 가능한 기호로 바꿉니다.
+def _normalize_table_cell_text(value: Any) -> str:
+    text = str(value if value is not None else "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\n\v\f\u0085\u2028\u2029]+", " ⏎ ", text)
+    text = text.replace("\t", " ⇥ ")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", text)
+    return re.sub(r"[ \u00a0]{2,}", " ", text).strip()
 
 
 # 함수 설명: `_json_array_value()`는 JSON 배열 형태의 문자열만 list로 해석해 표 셀을 자연스러운 나열 형식으로 표시합니다.

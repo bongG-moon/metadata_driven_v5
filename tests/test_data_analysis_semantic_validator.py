@@ -193,6 +193,58 @@ def test_execution_graph_rejects_missing_previous_result_provider():
     )
 
 
+def test_metric_binding_accepts_restored_previous_result_only_when_graph_declares_it():
+    validator = load_module(ROOT / "tools" / "data_analysis_semantic_validator.py")
+    payload = base_payload()
+    payload["intent_plan"]["retrieval_jobs"] = []
+    payload["intent_plan"]["pandas_execution_plan"] = [
+        {
+            "node_id": "sort_prior_result",
+            "operation": "sort_and_top_n",
+            "inputs": [{"kind": "external_source", "ref": "previous_result"}],
+            "output_alias": "ranked_prior_result",
+            "source_alias": "previous_result",
+        }
+    ]
+    payload["intent_plan"]["resolved_execution_graph"] = {
+        "validation_errors": [],
+        "external_source_requirements": [
+            {
+                "source_alias": "previous_result",
+                "provider": "previous_result",
+                "required": True,
+            }
+        ],
+    }
+    payload["intent_plan"]["output_contract"].update(
+        {
+            "required_columns": ["EQP_COUNT"],
+            "grain_columns": [],
+            "metric_columns": ["EQP_COUNT"],
+            "metric_bindings": [
+                {
+                    "dataset_key": "previous_result",
+                    "source_alias": "previous_result",
+                    "source_column": "EQP_COUNT",
+                    "aggregation": "max",
+                    "output_column": "EQP_COUNT",
+                }
+            ],
+        }
+    )
+    payload["analysis"].update({"columns": ["EQP_COUNT"], "row_count": 1})
+    payload["data"]["rows"] = [{"EQP_COUNT": 3}]
+    payload["runtime_sources"] = {"previous_result": [{"EQP_COUNT": 3}]}
+
+    result = validator.validate_semantic_payload(payload)
+
+    assert result["status"] == "ok"
+    assert not any(
+        item.get("type") == "metric_binding_source_unresolved"
+        for item in result["errors"]
+    )
+
+
 def test_unordered_fixture_rows_are_diagnostics_in_semantic_live_profile():
     representative = load_module(ROOT / "tools" / "validate_representative_questions.py")
     payload = base_payload()
@@ -300,6 +352,31 @@ def test_single_value_in_filter_is_equivalent_to_eq_filter():
                         "dataset_key": "production_today",
                         "filters": {
                             "OPER_NAME": {"operator": "eq", "value": "INPUT"}
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    assert validator.validate_case_expectation(case, payload) == []
+
+
+def test_required_query_parameter_is_equivalent_to_expected_eq_filter():
+    validator = load_module(ROOT / "tools" / "data_analysis_semantic_validator.py")
+    payload = base_payload()
+    job = payload["intent_plan"]["retrieval_jobs"][0]
+    job["filters"] = {"OPER_NAME": {"operator": "eq", "value": "INPUT"}}
+    job["required_params"] = {"DATE": "20260701"}
+    case = {
+        "intent_response": {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "filters": {
+                            "OPER_NAME": {"operator": "eq", "value": "INPUT"},
+                            "DATE": {"operator": "eq", "value": "20260701"},
                         },
                     }
                 ]

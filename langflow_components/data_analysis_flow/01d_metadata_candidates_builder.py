@@ -512,12 +512,29 @@ def _select_candidates(
         max_table_items,
         max(min_table_items, min(table_related_count, max_table_items)),
     )
-    domain_dataset_refs = _domain_dataset_references(selected_domain)
+    # A domain can name an exact ``dataset_key`` (for example ``target``), or
+    # it can describe a reusable data family (for example ``equipment``).  The
+    # latter is candidate guidance only: keep every active catalog in that
+    # family visible to the intent model, then let the normalizer validate the
+    # final schema/metric plan.  Treating a family name as a missing exact key
+    # used to evict valid catalogs from the five-item model view.
+    domain_dataset_resolution = _resolve_domain_catalog_references(
+        selected_domain,
+        [entry[4] for entry in ranked["table_catalog_items"]],
+    )
+    exact_dataset_keys = set(domain_dataset_resolution["exact_dataset_keys"])
+    family_dataset_keys = set(domain_dataset_resolution["family_dataset_keys"])
     required_tables = [
         entry[4]
         for entry in ranked["table_catalog_items"]
-        if str(entry[4].get("dataset_key") or "").strip() in domain_dataset_refs
+        if _table_catalog_dataset_key(entry[4]).casefold() in exact_dataset_keys
     ]
+    required_tables.extend(
+        entry[4]
+        for entry in ranked["table_catalog_items"]
+        if _table_catalog_dataset_key(entry[4]).casefold() in family_dataset_keys
+        and _table_catalog_dataset_key(entry[4]).casefold() not in exact_dataset_keys
+    )
     initial_tables: list[dict[str, Any]] = []
     initial_table_ids: set[str] = set()
     for item in [*required_tables, *[entry[4] for entry in ranked["table_catalog_items"][:table_target]]]:
@@ -530,6 +547,7 @@ def _select_candidates(
         initial_tables,
         [entry[4] for entry in ranked["table_catalog_items"]],
         max_table_items,
+        protected_items=required_tables,
     )
     selected = {
         "domain_items": selected_domain,
@@ -543,9 +561,13 @@ def _select_candidates(
         },
         "temporal_family_companions": temporal_companion_stats,
         "domain_dataset_dependencies": {
-            "dataset_keys": sorted(domain_dataset_refs),
+            "dataset_keys": domain_dataset_resolution["raw_references"],
+            "exact_dataset_keys": domain_dataset_resolution["exact_dataset_keys"],
+            "family_reference_values": domain_dataset_resolution["family_reference_values"],
+            "family_included_dataset_keys": domain_dataset_resolution["family_included_dataset_keys"],
+            "unresolved_reference_values": domain_dataset_resolution["unresolved_reference_values"],
             "included_dataset_keys": sorted(
-                str(item.get("dataset_key") or "") for item in required_tables
+                _table_catalog_dataset_key(item) for item in required_tables
             ),
             "matched_domain_keys": [
                 f"{item.get('section')}:{item.get('key')}"
@@ -642,6 +664,70 @@ def _domain_dataset_references(items: list[dict[str, Any]]) -> set[str]:
     return result
 
 
+# 함수 설명: `_resolve_domain_catalog_references()`는 Domain의 dataset key와 dataset family 힌트를
+# 구분해, 실제 key는 직접 보호하고 family는 후보 Catalog 묶음으로만 확장합니다.
+def _resolve_domain_catalog_references(
+    items: list[dict[str, Any]],
+    table_items: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """Resolve domain references without turning a family hint into a forced dataset.
+
+    ``data_source`` is intentionally allowed to contain either a dataset key
+    or a reusable family label.  Exact keys remain the strongest signal.  A
+    non-key label is matched only against registered ``dataset_family`` values
+    and returns every matching catalog as an LLM candidate; it never selects a
+    single dataset or changes the eventual execution plan.
+    """
+
+    raw_references = sorted(
+        {
+            str(value or "").strip()
+            for value in _domain_dataset_references(items)
+            if str(value or "").strip()
+        },
+        key=str.casefold,
+    )
+    by_key = {
+        _table_catalog_dataset_key(item).casefold(): _table_catalog_dataset_key(item)
+        for item in table_items
+        if _table_catalog_dataset_key(item)
+    }
+    by_family: dict[str, list[str]] = {}
+    for item in table_items:
+        dataset_key = _table_catalog_dataset_key(item)
+        family = _table_dataset_family(item).casefold()
+        if dataset_key and family:
+            by_family.setdefault(family, []).append(dataset_key)
+
+    exact_dataset_keys: list[str] = []
+    family_reference_values: list[str] = []
+    family_included_dataset_keys: list[str] = []
+    unresolved_reference_values: list[str] = []
+    for reference in raw_references:
+        normalized = reference.casefold()
+        exact = by_key.get(normalized)
+        if exact:
+            exact_dataset_keys.append(exact)
+            continue
+        family_members = by_family.get(normalized, [])
+        if family_members:
+            family_reference_values.append(reference)
+            for dataset_key in family_members:
+                if dataset_key not in family_included_dataset_keys:
+                    family_included_dataset_keys.append(dataset_key)
+            continue
+        unresolved_reference_values.append(reference)
+
+    return {
+        "raw_references": raw_references,
+        "exact_dataset_keys": exact_dataset_keys,
+        "family_reference_values": family_reference_values,
+        "family_included_dataset_keys": family_included_dataset_keys,
+        "family_dataset_keys": family_included_dataset_keys,
+        "unresolved_reference_values": unresolved_reference_values,
+    }
+
+
 # 함수 설명: `_table_time_scope()`는 TIME·분석 범위을 현재 컴포넌트의 표준 반환 형태로 변환합니다.
 def _table_time_scope(item: dict[str, Any]) -> str:
     payload = _dict(item.get("payload"))
@@ -659,8 +745,18 @@ def _select_temporal_family_companions(
     initially_selected: list[dict[str, Any]],
     ranked_items: list[dict[str, Any]],
     max_items: int,
+    *,
+    protected_items: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Keep every structured time-scope variant for a selected dataset family."""
+    """Keep execution-proven catalogs before expanding temporal siblings.
+
+    A bounded candidate view can contain both an exact Domain dependency and a
+    family with multiple time-scope variants.  The exact dependency is needed
+    to make the intended source visible to the model, whereas a sibling is
+    only disambiguation guidance.  Preserve the former first; otherwise the
+    current/history pair can consume the entire quota and silently evict a
+    required second source from a valid multi-source question.
+    """
     members_by_family: dict[str, list[dict[str, Any]]] = {}
     scopes_by_family: dict[str, set[str]] = {}
     for item in ranked_items:
@@ -684,9 +780,17 @@ def _select_temporal_family_companions(
     }
     selected: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
+    protected = [item for item in (protected_items or []) if isinstance(item, dict)]
+    protected_ids = {_stable_identity(item) for item in protected}
+    for item in protected:
+        identity = _stable_identity(item)
+        if identity in selected_ids or len(selected) >= max_items:
+            continue
+        selected.append(item)
+        selected_ids.add(identity)
     for item in ranked_items:
         identity = _stable_identity(item)
-        if identity not in required_ids or identity in selected_ids:
+        if identity not in required_ids or identity in selected_ids or len(selected) >= max_items:
             continue
         selected.append(item)
         selected_ids.add(identity)
@@ -706,6 +810,11 @@ def _select_temporal_family_companions(
             str(item.get("dataset_key") or "")
             for item in selected
             if _stable_identity(item) in added_ids
+        ),
+        "protected_dataset_keys": sorted(
+            str(item.get("dataset_key") or "")
+            for item in selected
+            if _stable_identity(item) in protected_ids
         ),
     }
 
@@ -772,8 +881,8 @@ def _annotate_table_intent_selection_hints(
         next_item = deepcopy(item)
         payload = _dict(next_item.get("payload"))
         criteria = _dict(payload.get("selection_criteria"))
-        use_when = _bounded_hint_strings(criteria.get("use_when"))
-        exclude_when = _bounded_hint_strings(criteria.get("exclude_when"))
+        use_when = _bounded_hint_strings(criteria.get("use_when"), question)
+        exclude_when = _bounded_hint_strings(criteria.get("exclude_when"), question)
         semantics = (
             payload.get("metric_semantics")
             if isinstance(payload.get("metric_semantics"), dict)
@@ -812,36 +921,92 @@ def _annotate_table_intent_selection_hints(
 
 
 # 함수 설명: 후보 힌트에 저장할 문자열을 개수와 길이로 제한합니다.
-def _bounded_hint_strings(value: Any) -> list[str]:
+def _bounded_hint_strings(value: Any, question: Any = "") -> list[str]:
+    """Return a small, question-relevant projection of author-written hints.
+
+    Workers often write a natural list such as ``A, B, C일 때 사용`` in a
+    single sentence.  The full sentence stays in persisted metadata; this
+    input-only projection also considers comma-separated clauses so a relevant
+    late clause is not silently lost behind the three-hint bound.  It is still
+    only a candidate hint and never an execution source lock.
+    """
+
     raw = value if isinstance(value, list) else [value]
-    result: list[str] = []
-    for item in raw:
+    candidates: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for source_index, item in enumerate(raw):
         text = re.sub(r"\s+", " ", str(item or "")).strip()
-        if not text or text in result:
+        if not text:
             continue
-        result.append(text[:INTENT_SELECTION_HINT_MAX_TEXT])
-        if len(result) >= INTENT_SELECTION_HINT_MAX_PHRASES:
-            break
-    return result
+        fragments = _selection_hint_fragments(text)
+        for fragment_index, fragment in enumerate(fragments):
+            normalized = re.sub(r"\s+", " ", fragment).strip()
+            if not normalized:
+                continue
+            identity = normalized.casefold()
+            if identity in seen:
+                continue
+            seen.add(identity)
+            score = _selection_hint_match_score(question, normalized)
+            # Keep the original natural order for equal relevance while
+            # prioritizing fragments whose terms actually occur in the
+            # question.  Shortening is applied only after this ranking.
+            candidates.append((score, -(source_index * 100 + fragment_index), normalized))
+    candidates.sort(key=lambda item: (-item[0], -item[1]))
+    return [
+        text[:INTENT_SELECTION_HINT_MAX_TEXT]
+        for _, _, text in candidates[:INTENT_SELECTION_HINT_MAX_PHRASES]
+    ]
+
+
+# 함수 설명: 사람이 쉼표로 나열한 사용·제외 대상을 작은 후보 힌트로 나눕니다.
+def _selection_hint_fragments(text: str) -> list[str]:
+    fragments = [part.strip() for part in re.split(r"[,，;；]", text) if part.strip()]
+    return fragments or [text]
 
 
 # 함수 설명: 질문과 Catalog 사용 문구가 직접 겹칠 때만 후보 힌트의 match를 표시합니다.
 def _selection_hint_matches(question: Any, phrase: Any) -> bool:
+    return _selection_hint_match_score(question, phrase) > 0
+
+
+# 함수 설명: `_selection_hint_match_score()`는 후보 힌트와 질문의 직접·의미 토큰 겹침을
+# 점수화하여, 긴 자연어 목록의 관련 절이 max hint 제한에서 밀리지 않게 합니다.
+def _selection_hint_match_score(question: Any, phrase: Any) -> int:
     question_text = re.sub(r"[\s/\\._-]+", "", str(question or "").casefold())
     phrase_text = re.sub(r"[\s/\\._-]+", "", str(phrase or "").casefold())
     if not question_text or not phrase_text:
-        return False
+        return 0
     if phrase_text in question_text:
-        return True
+        return max(8, len(phrase_text))
+    question_variants: set[str] = set()
+    for token in re.findall(r"[\w가-힣]+", str(question or "").casefold()):
+        question_variants.update(_token_variants(token))
     tokens = [
         token
         for token in re.findall(r"[\w가-힣]+", str(phrase or "").casefold())
-        if len(token) >= 2
+        if len(token) >= 2 and token not in {
+            "데이터", "조회", "질문", "사용", "때", "경우", "결과", "함께",
+            "물어볼", "물으면", "알려줘", "보여줘", "하는", "할", "만",
+        }
     ]
-    return bool(tokens) and all(
-        re.sub(r"[\s/\\._-]+", "", token) in question_text
-        for token in tokens
+    unique_tokens = list(dict.fromkeys(tokens))
+    if not unique_tokens:
+        return 0
+    matched = sum(
+        1
+        for token in unique_tokens
+        if any(variant in question_variants for variant in _token_variants(token))
     )
+    minimum = 1 if len(unique_tokens) == 1 else 2
+    if matched < minimum:
+        return 0
+    # Two meaningful tokens are enough for a short worker-written clause.
+    # Longer clauses require a modest overlap so generic words such as
+    # "장비" alone cannot mark an unrelated catalog as matched.
+    if len(unique_tokens) >= 4 and matched / len(unique_tokens) < 0.4:
+        return 0
+    return matched * 3
 
 
 # 함수 설명: `_rank()`는 RANK의 일치도나 건수를 계산해 후보 비교와 요약에 사용합니다.
@@ -1384,6 +1549,16 @@ def _looks_like_product_token_expression(value: str) -> bool:
 # 함수 설명: `_token_variants()`는 질문 token의 한국어 조사·접미 표현을 단계적으로 제거해 등록 alias와 비교할 변형을 만듭니다.
 def _token_variants(token: str) -> list[str]:
     variants = [token]
+    # Natural worker questions frequently attach a Korean semantic word to an
+    # ASCII product/process abbreviation (for example ``PKG계획``).  A single
+    # mixed-script token hides the Korean term from the generic expansion map,
+    # so split script runs without assigning any dataset-specific meaning.
+    # The normal expansion table below still decides whether a split term has
+    # a reusable semantic alias such as ``plan`` or ``production``.
+    for match in re.finditer(r"[a-z0-9_]+|[가-힣]+", token):
+        segment = match.group(0)
+        if segment != token and len(segment) >= 2 and segment not in variants:
+            variants.append(segment)
     ascii_with_korean_suffix = re.fullmatch(r"([a-z0-9_]+)[가-힣]+", token)
     if ascii_with_korean_suffix:
         variants.append(ascii_with_korean_suffix.group(1))

@@ -130,6 +130,8 @@ Oracle PNT_RPT의 EQP_TABLE에서 설비별 보유 현황을 가져오는 데이
 이 데이터는 필수 파라미터 없이 조회해.
 주요 수량 정보는 없고 
 장비 수를 물어볼때는 이 데이터의 EQUIP_ID(표준컬럼 EQP_ID) 컬럼값의 중복 제거된 ROW COUNT가 장비 대수야. 따로 장비대수 컬럼은 없고 계산해줘야해.
+배정된 장비, 할당 장비, 장비 목록, 장비 대수, 장비 모델과 레시피 조합을 물어볼 때 사용하는 데이터야.
+UPH, 평균 UPH, 시간당 생산성을 물어볼 때는 이 데이터만으로 답하지 마.
 
 query_template:
 
@@ -170,6 +172,8 @@ text
 Oracle GMS_DB의 UPH 테이블에서 장비모델/공정/제품의 평균 UPH를 가져오는 데이터야.
 이 데이터는 필수 파라미터 없이 조회해.
 제품/장비모델별 UPH 값은 UPH 컬럼에 나와있어.
+장비별 UPH, 평균 UPH, 시간당 생산성을 물어볼 때 사용하는 데이터야.
+장비 목록, 장비 대수, 장비 모델과 레시피 조합만 물어볼 때는 이 데이터를 추가하지 마.
 
 query_template:
 
@@ -253,6 +257,7 @@ query_template:
 
             LOT_ID,
             PROD_QTY,
+            OLD_SUB_PROD_QTY,
             OPER,
             OPER_NAME,
             HOLD_TM,
@@ -280,6 +285,6 @@ query_template:
         FROM HOLD_HIS
         WHERE LOT_ID IN ({LOT_ID})
 
-filter_mappings는 LOT_ID -> LOT_ID, OPER_NAME -> OPER_NAME, OPER_NUM -> OPER,, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, TSV_DIE_TYP -> TSV_DIE_TYPE, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC 로 연결해줘.
+filter_mappings는 LOT_ID -> LOT_ID, OPER_NAME -> OPER_NAME, OPER_NUM -> OPER, MODE -> MODE, DEN -> DENSITY, TECH -> TECH, ORG -> ORG, PKG_TYPE1 -> PKG1, PKG_TYPE2 -> PKG2, LEAD -> LEAD, MCP_NO -> MCP_NO, DEVICE -> DEVICE, DEVICE_DESC -> DEVICE_DESC 로 연결해줘.
 default_detail_columns는 LOT_ID, OPER_NAME, HOLD_TM, HOLD_CD, HOLD_DESC로 저장해줘.
 이 데이터는 사용자가 LOT 번호를 직접 말하면 그 LOT의 이력을 바로 조회할 수 있어. 같은 세션에서 바로 앞에 조회한 LOT 목록이 있으면, 그 LOT 번호들을 사용해 이력도 이어서 조회할 수도 있게 해줘. 한 번에는 최대 200개의 LOT만 조회하면 돼.

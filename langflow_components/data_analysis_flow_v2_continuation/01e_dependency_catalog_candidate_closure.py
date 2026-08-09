@@ -147,7 +147,17 @@ def close_dependency_catalog_candidates(
         DOMAIN_DATASET_REFERENCE_KEYS,
         {_dataset_key(item) for item in selected_tables if _dataset_key(item)},
     )
-    closure_refs = _catalog_dependency_closure(domain_refs, full_index)
+    # Domain metrics may use a reusable family label such as ``equipment``
+    # instead of a concrete dataset key.  Preserve every registered member as
+    # a candidate; the continuation compiler/normalizer still chooses and
+    # validates the final job.  This mirrors 01D and avoids making Flow 08
+    # weaker than the default Flow 01 after the five-table projection.
+    domain_reference_resolution = _resolve_catalog_reference_values(
+        domain_refs,
+        full_tables,
+    )
+    resolved_domain_refs = domain_reference_resolution["resolved_dataset_refs"]
+    closure_refs = _catalog_dependency_closure(resolved_domain_refs, full_index)
     protected_refs = [key for key in closure_refs if key in full_index]
     temporal_companion_refs = _temporal_family_companion_refs(
         selected_tables,
@@ -193,7 +203,10 @@ def close_dependency_catalog_candidates(
         root["metadata_candidates"] = candidates
 
     missing_refs = [key for key in protected_refs if key not in included]
-    unknown_refs = [key for key in closure_refs if key not in full_index]
+    unknown_refs = list(dict.fromkeys([
+        *domain_reference_resolution["unresolved_reference_values"],
+        *[key for key in closure_refs if key not in full_index],
+    ]))
     metadata_load = root.get("metadata_load") if isinstance(root.get("metadata_load"), dict) else {}
     metadata_load = deepcopy(metadata_load)
     selected_counts = (
@@ -207,6 +220,9 @@ def close_dependency_catalog_candidates(
         "status": "complete" if not missing_refs and not unknown_refs else "incomplete",
         "max_table_items": limit,
         "domain_dataset_refs": domain_refs,
+        "resolved_domain_dataset_refs": resolved_domain_refs,
+        "family_reference_values": domain_reference_resolution["family_reference_values"],
+        "family_included_dataset_keys": domain_reference_resolution["family_included_dataset_keys"],
         "closure_dataset_refs": closure_refs,
         "included_dataset_refs": [key for key in closure_refs if key in included],
         "temporal_companion_refs": temporal_companion_refs,
@@ -346,6 +362,61 @@ def _catalog_dependency_closure(
                     seen.add(addition)
                     changed = True
     return ordered
+
+
+# 함수 설명: `_resolve_catalog_reference_values()`는 Domain의 concrete dataset key와
+# dataset_family 힌트를 구분해, family는 후보 보강에만 사용하도록 정규화합니다.
+def _resolve_catalog_reference_values(
+    references: list[str],
+    full_tables: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    """Resolve exact catalog keys first and expand only registered families.
+
+    A family value never selects one table.  It only adds the active members to
+    the bounded candidate pool so the intent model can make a schema-aware
+    decision.  Unknown values stay visible in the trace as unresolved.
+    """
+
+    key_lookup: dict[str, str] = {}
+    family_members: dict[str, list[str]] = {}
+    for item in full_tables:
+        dataset_key = _dataset_key(item)
+        if not dataset_key:
+            continue
+        key_lookup.setdefault(dataset_key.casefold(), dataset_key)
+        family = _catalog_dataset_family(_catalog_payload(item))
+        if family:
+            family_members.setdefault(family, []).append(dataset_key)
+
+    resolved: list[str] = []
+    family_reference_values: list[str] = []
+    family_included_dataset_keys: list[str] = []
+    unresolved_reference_values: list[str] = []
+    for raw in references:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        exact = key_lookup.get(value.casefold())
+        if exact:
+            if exact not in resolved:
+                resolved.append(exact)
+            continue
+        members = family_members.get(value.casefold(), [])
+        if members:
+            family_reference_values.append(value)
+            for dataset_key in members:
+                if dataset_key not in family_included_dataset_keys:
+                    family_included_dataset_keys.append(dataset_key)
+                if dataset_key not in resolved:
+                    resolved.append(dataset_key)
+            continue
+        unresolved_reference_values.append(value)
+    return {
+        "resolved_dataset_refs": resolved,
+        "family_reference_values": family_reference_values,
+        "family_included_dataset_keys": family_included_dataset_keys,
+        "unresolved_reference_values": unresolved_reference_values,
+    }
 
 
 # 함수 설명: 중첩 metadata에서 지정된 키가 소유한 dataset 식별자를 발견 순서대로 수집합니다.
