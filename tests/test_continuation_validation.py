@@ -46,6 +46,70 @@ def test_live_suite_covers_all_regressions_and_required_continuation_cases():
     assert {item["id"] for item in specs[30:]} == validator.LIVE_REQUIRED_CONTINUATION_IDS
 
 
+def test_live_multiturn_scenarios_are_explicitly_selectable_without_expanding_default_live_cost():
+    manifest = validator.load_manifest()
+
+    default_ids = {item["id"] for item in validator._live_case_specs(manifest)}
+    selected_specs = validator._live_case_specs(manifest, {"M02"})
+
+    assert "M02" not in default_ids
+    assert [item["id"] for item in selected_specs] == ["M02"]
+    assert selected_specs[0]["kind"] == "multiturn_live"
+
+
+def test_live_multiturn_contract_checks_generic_previous_result_parameter_lineage():
+    turn = {
+        "live_assertions": {
+            "required_datasets": ["hold_history"],
+            "required_columns": ["LOT_ID", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+            "previous_result_column": "LOT_ID",
+            "required_param": "LOT_ID",
+            "min_rows": 1,
+        }
+    }
+    previous_stage = {
+        "payload": {"data": {"rows": [{"LOT_ID": "LOT-1"}, {"LOT_ID": "LOT-2"}]}}
+    }
+    stage = {
+        "payload": {
+            "data": {
+                "row_count": 1,
+                "columns": ["LOT_ID", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+            },
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "hold_history",
+                        "required_params": {"LOT_ID": ["LOT-1", "LOT-2"]},
+                    }
+                ]
+            },
+        }
+    }
+
+    assert validator._live_multiturn_contract_errors(turn, stage, previous_stage) == []
+
+
+def test_live_multiturn_contract_allows_a_declared_derived_column_alias_group():
+    turn = {
+        "live_assertions": {
+            "required_columns": ["EQP_LIST"],
+            "required_column_groups": [["EQP_COUNT", "EQP_ID_COUNT"]],
+        }
+    }
+    stage = {
+        "payload": {
+            "data": {
+                "row_count": 1,
+                "columns": ["EQP_ID_COUNT", "EQP_LIST"],
+            },
+            "intent_plan": {"retrieval_jobs": []},
+        }
+    }
+
+    assert validator._live_multiturn_contract_errors(turn, stage, None) == []
+
+
 def test_source_validator_discovers_both_exact_continuation_export_names():
     keys = {
         str(item.get("endpoint_name") or item.get("name") or "")
@@ -150,6 +214,45 @@ def test_r09_live_fixture_adapter_adds_one_canonical_row_and_decoys_only_to_vali
     assert len(rows) == 3
     assert sum(row.get("DEVICE") == "DEV-SP24-GDDR7-X32-226" for row in rows) == 1
     assert sum(str(row.get("DEVICE") or "").startswith("DECOY-SP24-") for row in rows) == 2
+
+
+def test_r09_result_validation_accepts_a_correct_scalar_production_aggregate():
+    errors, warnings = validator._validate_r09_product_result(
+        [{"PRODUCTION_SUM": 424}],
+        ["PRODUCTION_SUM"],
+    )
+
+    assert errors == []
+    assert any("scalar production aggregate" in warning for warning in warnings)
+
+
+def test_r09_result_validation_rejects_an_incorrect_scalar_production_aggregate():
+    errors, _warnings = validator._validate_r09_product_result(
+        [{"PRODUCTION_SUM": 424.1}],
+        ["PRODUCTION_SUM"],
+    )
+
+    assert errors == ["canonical SP24 product-token scalar metric does not match the positive fixture"]
+
+
+def test_r25_live_fixture_adapter_exercises_prefix_selection_without_touching_provider_rows():
+    retrieved = {
+        "source_results": [
+            {
+                "dataset_key": "eqp_uph",
+                "rows": [{"MCP_NO": "EXISTING", "OPER_NAME": "W/B1", "UPH": 1.0}],
+                "columns": ["MCP_NO", "OPER_NAME", "UPH"],
+                "row_count": 1,
+            }
+        ]
+    }
+
+    adapted = validator._augment_live_fixture_retrieval({"id": "R25"}, retrieved, "20260808")
+    rows = adapted["source_results"][0]["rows"]
+
+    assert retrieved["source_results"][0]["row_count"] == 1
+    assert [row["MCP_NO"] for row in rows] == ["L-116A", "L-116B", "L-117-DECOY", "XL-116-DECOY"]
+    assert "wb_uph_mcp_prefix_rows" in adapted["source_results"][0]["validation_fixture_adapters"]
 
 
 @pytest.mark.parametrize("case_id", ["C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10", "C11", "C12", "C13", "C14"])

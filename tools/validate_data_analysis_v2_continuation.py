@@ -383,6 +383,11 @@ def _continuation_modules() -> dict[str, Any]:
         / "05a_continuation_binding_alias_normalizer.py",
         "binder": ROOT / "langflow_components" / "data_analysis_flow" / "05a_upstream_entity_parameter_binder.py",
         "gate": ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py",
+        # The canonical Flow runs this before candidate construction.  Keeping
+        # it in the live harness is important: a user-turn follow-up must be
+        # evaluated from the same compact session state as the Flow canvas,
+        # not from a validator-only inference shortcut.
+        "followup_hint": ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py",
     }
     missing = [str(path) for path in required.values() if not path.exists()]
     if missing:
@@ -1372,6 +1377,26 @@ def _live_case_specs(
             }
         )
     selected = {str(value).strip().upper() for value in (selected_ids or set()) if str(value).strip()}
+    # Multi-turn runs make several live model calls, so they are opt-in rather
+    # than silently extending the standard R01-R30 live suite.  They remain
+    # executable through the same `--ids M01,M02` interface as every other
+    # validation case.
+    if selected:
+        for scenario in manifest.get("multiturn_scenarios", []):
+            if not isinstance(scenario, dict):
+                continue
+            scenario_id = str(scenario.get("id") or "").upper()
+            if scenario_id in selected:
+                turns = scenario.get("turns") if isinstance(scenario.get("turns"), list) else []
+                final_turn = turns[-1] if turns and isinstance(turns[-1], dict) else {}
+                specs.append(
+                    {
+                        "id": scenario_id,
+                        "question": str(final_turn.get("question") or ""),
+                        "kind": "multiturn_live",
+                        "manifest": scenario,
+                    }
+                )
     if selected:
         specs = [item for item in specs if item["id"].upper() in selected]
     if limit > 0:
@@ -1460,6 +1485,54 @@ def _live_pipeline_modules(
     return v2
 
 
+def _restore_live_followup_result(
+    payload: dict[str, Any],
+    stored_document: dict[str, Any],
+    result_loader: Any,
+) -> dict[str, Any]:
+    """Restore the prior turn with the same result-loader branches as Flow 01.
+
+    The live suite intentionally keeps retrieval data local to its dummy
+    provider, but user-turn state still contains a real ``data_ref`` shape.
+    This adapter supplies the matching in-memory result-store document only
+    after the normalizer chose a reuse strategy; it does not invent a
+    reference mode or bypass catalog/binder validation.
+    """
+
+    stored_payload = (
+        stored_document.get("payload")
+        if isinstance(stored_document.get("payload"), dict)
+        else {}
+    )
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    data_ref = current_data.get("data_ref") if isinstance(current_data.get("data_ref"), dict) else {}
+    ref_id = str(data_ref.get("ref_id") or "").strip()
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    reuse_strategy = str(plan.get("reuse_strategy") or "none").strip()
+    if not ref_id:
+        return result_loader.load_previous_result(payload)
+    if reuse_strategy == "previous_result":
+        return result_loader._restore_previous_result(
+            payload,
+            stored_payload,
+            ref_id,
+            "validation",
+            "live_multiturn",
+        )
+    if reuse_strategy == "previous_source":
+        aliases = result_loader._requested_source_aliases(payload)
+        return result_loader._restore_previous_sources(
+            payload,
+            stored_payload,
+            aliases,
+            ref_id,
+            "validation",
+            "live_multiturn",
+        )
+    return result_loader.load_previous_result(payload)
+
+
 def _execute_live_stage(
     *,
     spec: dict[str, Any],
@@ -1473,6 +1546,8 @@ def _execute_live_stage(
     recorder: LiveModelRecorder,
     public_continuation: dict[str, Any] | None = None,
     stored_document: dict[str, Any] | None = None,
+    previous_state: dict[str, Any] | None = None,
+    previous_result_document: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the same pure component boundaries as one Langflow child run."""
 
@@ -1490,6 +1565,13 @@ def _execute_live_stage(
     else:
         payload = continuation["request"].build_request(question, session_id=session_id)
     payload.setdefault("request", {})["reference_date"] = reference_date
+    if isinstance(previous_state, dict):
+        payload["state"] = deepcopy(previous_state)
+    # The canvas sends the request through 01E before metadata candidates and
+    # intent variables.  Applying the same boundary here makes a natural
+    # second user question (for example, "위 LOT의 이력") use compact state
+    # rather than an artificial validator-only handoff.
+    payload = continuation["followup_hint"].build_followup_hint(payload)
 
     base_candidate_payload = modules["candidates"].build_metadata_candidates(
         payload,
@@ -1576,6 +1658,12 @@ def _execute_live_stage(
             str(public_continuation.get("result_ref") or ""),
             "validation",
             "live_checkpoint",
+        )
+    elif isinstance(previous_result_document, dict):
+        payload = _restore_live_followup_result(
+            payload,
+            previous_result_document,
+            continuation["result_loader"],
         )
     else:
         payload = continuation["result_loader"].load_previous_result(payload)
@@ -1715,7 +1803,7 @@ def _augment_live_fixture_retrieval(
     """Add only canonical-question fixtures missing from the inherited provider."""
 
     case_id = str(spec.get("id") or "")
-    if case_id not in {"R09", "R22", "C01", "C10", "C12"}:
+    if case_id not in {"R09", "R22", "R25", "C01", "C10", "C12"}:
         return retrieved
     result = deepcopy(retrieved)
     for source in result.get("source_results", []):
@@ -1811,6 +1899,53 @@ def _augment_live_fixture_retrieval(
             source["preview_rows"] = fixtures
             source.setdefault("validation_fixture_adapters", []).append(
                 "current_product_comparison_rows"
+            )
+            continue
+        if case_id == "R25" and dataset_key == "eqp_uph":
+            # The inherited dummy provider has no L-116 rows.  Keep one
+            # positive prefix population plus two boundary decoys so this
+            # live-model check validates both catalog selection and the
+            # field-agnostic starts_with correction above.
+            fixtures = [
+                {
+                    "MCP_NO": "L-116A",
+                    "LEAD": "315",
+                    "OPER_NAME": "W/B1",
+                    "EQP_MODEL": "WB-MODEL-A",
+                    "RECIPE_ID": "R-WB-315-A",
+                    "UPH": 120.0,
+                },
+                {
+                    "MCP_NO": "L-116B",
+                    "LEAD": "315",
+                    "OPER_NAME": "W/B2",
+                    "EQP_MODEL": "WB-MODEL-B",
+                    "RECIPE_ID": "R-WB-315-B",
+                    "UPH": 130.0,
+                },
+                {
+                    "MCP_NO": "L-117-DECOY",
+                    "LEAD": "315",
+                    "OPER_NAME": "W/B1",
+                    "EQP_MODEL": "WB-DECOY-1",
+                    "RECIPE_ID": "R-WB-DECOY-1",
+                    "UPH": 999.0,
+                },
+                {
+                    "MCP_NO": "XL-116-DECOY",
+                    "LEAD": "315",
+                    "OPER_NAME": "W/B2",
+                    "EQP_MODEL": "WB-DECOY-2",
+                    "RECIPE_ID": "R-WB-DECOY-2",
+                    "UPH": 999.0,
+                },
+            ]
+            source["rows"] = fixtures
+            source["row_count"] = len(fixtures)
+            source["columns"] = sorted({column for row in fixtures for column in row})
+            source["preview_rows"] = fixtures
+            source.setdefault("validation_fixture_adapters", []).append(
+                "wb_uph_mcp_prefix_rows"
             )
             continue
         if case_id == "C10" and dataset_key == "target":
@@ -2037,6 +2172,33 @@ def _validate_r09_product_result(
         return errors, warnings
 
     row = rows[0]
+    # A legitimate scalar request can intentionally project only the aggregate
+    # metric.  In that shape the trusted token function has already isolated
+    # the fixture rows; the deterministic proof is the unique positive total
+    # rather than product-grain columns that the answer did not ask to show.
+    scalar_metric_columns = {
+        "PRODUCTION_SUM",
+        "TOTAL_PRODUCTION",
+        "TOTAL_PRODUCTION_QTY",
+    }
+    present_scalar_metrics = [
+        column
+        for column in scalar_metric_columns
+        if column in columns or column in row
+    ]
+    if len(row) == 1 and len(present_scalar_metrics) == 1:
+        scalar_metric = present_scalar_metrics[0]
+        try:
+            if abs(float(row.get(scalar_metric)) - 424.0) > 1e-9:
+                errors.append("canonical SP24 product-token scalar metric does not match the positive fixture")
+            else:
+                warnings.append(
+                    "R09 returned a scalar production aggregate; token isolation was validated by the positive fixture total"
+                )
+        except (TypeError, ValueError):
+            errors.append("canonical SP24 product-token scalar metric is not numeric")
+        return errors, warnings
+
     if any(str(row.get(key) or "") != value for key, value in expected.items()):
         errors.append("canonical SP24/GDDR7/X32/226 product row is missing")
     has_org = "ORG" in columns or "ORG" in row
@@ -2289,16 +2451,20 @@ def _validate_live_result(
         errors.extend(r09_errors)
         warnings.extend(r09_warnings)
     if str(spec["id"]) == "C12":
-        matched_equipment = {
-            (str(row.get("RECIPE_ID") or ""), str(row.get("EQP_ID") or ""))
+        # The user asks for an equipment list, so a valid minimal output
+        # contract may intentionally project only ``EQP_ID``.  The predicate
+        # itself is checked above from the Typed retrieval job.  Validate the
+        # two positive fixture identifiers and the absence of decoy equipment
+        # rather than incorrectly requiring RECIPE_ID to be displayed.
+        matched_equipment_ids = {
+            str(row.get("EQP_ID") or "")
             for row in rows
+            if str(row.get("EQP_ID") or "")
         }
-        expected_equipment = {("R0429-A", "EQP-01"), ("R0429-B", "EQP-02")}
-        if not expected_equipment.issubset(matched_equipment):
+        expected_equipment_ids = {"EQP-01", "EQP-02"}
+        if not expected_equipment_ids.issubset(matched_equipment_ids):
             errors.append("equipment_assign R0429 positive fixtures are missing from the result")
-        if any(not recipe.startswith("R0429") for recipe, _ in matched_equipment):
-            errors.append("RECIPE_ID starts_with filter allowed a prefix decoy into the result")
-        if any(eqp_id.startswith("EQP-DECOY-") for _, eqp_id in matched_equipment):
+        if any(eqp_id.startswith("EQP-DECOY-") for eqp_id in matched_equipment_ids):
             errors.append("equipment_assign recipe prefix decoy leaked into the result")
     output_contract = payload.get("intent_plan", {}).get("output_contract", {})
     required_columns = [str(value) for value in output_contract.get("required_columns", [])]
@@ -2447,6 +2613,196 @@ def validate_live_case(
     return result
 
 
+def _live_multiturn_contract_errors(
+    turn: dict[str, Any],
+    stage: dict[str, Any],
+    previous_stage: dict[str, Any] | None,
+) -> list[str]:
+    """Check portable turn-to-turn facts declared by the validation manifest."""
+
+    assertions = turn.get("live_assertions") if isinstance(turn.get("live_assertions"), dict) else {}
+    payload = stage.get("payload") if isinstance(stage.get("payload"), dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    columns = {str(value) for value in data.get("columns", []) if str(value or "").strip()}
+    jobs = [
+        item
+        for item in payload.get("intent_plan", {}).get("retrieval_jobs", [])
+        if isinstance(item, dict)
+    ]
+    datasets = {str(item.get("dataset_key") or "") for item in jobs if str(item.get("dataset_key") or "")}
+    errors: list[str] = []
+    required_columns = {
+        str(value)
+        for value in assertions.get("required_columns", turn.get("columns", []))
+        if str(value or "").strip()
+    }
+    missing_columns = sorted(required_columns - columns)
+    if missing_columns:
+        errors.append(f"multiturn result columns missing: {missing_columns}")
+    # The user-facing meaning can be stable even when a model chooses one of
+    # several explicitly declared derived-column aliases (for example a count
+    # of an equipment ID).  A validation manifest may describe that portable
+    # semantic alternative without weakening the production output contract.
+    raw_column_groups = assertions.get("required_column_groups", [])
+    if isinstance(raw_column_groups, list):
+        for raw_group in raw_column_groups:
+            alternatives = {
+                str(value)
+                for value in raw_group
+                if str(value or "").strip()
+            } if isinstance(raw_group, list) else set()
+            if alternatives and not alternatives.intersection(columns):
+                errors.append(
+                    "multiturn result is missing every allowed semantic column: "
+                    + str(sorted(alternatives))
+                )
+    required_datasets = {
+        str(value)
+        for value in assertions.get("required_datasets", [])
+        if str(value or "").strip()
+    }
+    if not required_datasets.issubset(datasets):
+        errors.append(f"multiturn datasets missing: {sorted(required_datasets - datasets)}")
+    minimum_rows = int(assertions.get("min_rows") or 0)
+    if minimum_rows and int(data.get("row_count") or 0) < minimum_rows:
+        errors.append(
+            f"multiturn row_count {int(data.get('row_count') or 0)} is below {minimum_rows}"
+        )
+
+    previous_column = str(assertions.get("previous_result_column") or "").strip()
+    target_param = str(assertions.get("required_param") or "").strip()
+    if previous_column and target_param:
+        if previous_stage is None:
+            errors.append("multiturn reference assertion has no previous stage")
+            return errors
+        previous_payload = previous_stage.get("payload") if isinstance(previous_stage.get("payload"), dict) else {}
+        previous_rows = (
+            previous_payload.get("data", {}).get("rows", [])
+            if isinstance(previous_payload.get("data"), dict)
+            else []
+        )
+        previous_values = {
+            str(row.get(previous_column) or "").strip()
+            for row in previous_rows
+            if isinstance(row, dict) and str(row.get(previous_column) or "").strip()
+        }
+        matching_values: set[str] = set()
+        for job in jobs:
+            params = job.get("required_params") if isinstance(job.get("required_params"), dict) else {}
+            value = params.get(target_param)
+            values = value if isinstance(value, list) else [value]
+            matching_values.update(
+                str(item or "").strip() for item in values if str(item or "").strip()
+            )
+        if not previous_values:
+            errors.append(f"multiturn previous result has no {previous_column} values")
+        elif not matching_values.intersection(previous_values):
+            errors.append(
+                f"multiturn required parameter {target_param} was not bound from previous {previous_column}"
+            )
+    return errors
+
+
+def validate_live_multiturn_scenario(
+    scenario: dict[str, Any],
+    *,
+    reference_date: str,
+    modules: dict[str, Any],
+    continuation: dict[str, Any],
+    v2: dict[str, Any],
+    metadata_context: dict[str, Any],
+    llm_config: dict[str, Any],
+    checkpoint: LiveCheckpoint,
+    limits: dict[str, Any],
+) -> dict[str, Any]:
+    """Run user turns with compact state and a result-store-shaped handoff.
+
+    This is deliberately generic: the manifest supplies questions, expected
+    datasets/columns, and optional parameter lineage.  No HOLD, product, or
+    equipment branch exists in the runner itself.
+    """
+
+    scenario_id = str(scenario.get("id") or "").upper()
+    session_id = str(scenario.get("session_id") or f"continuation-live-{scenario_id.lower()}")
+    turns = [item for item in scenario.get("turns", []) if isinstance(item, dict)]
+    recorder = LiveModelRecorder(scenario_id, llm_config, checkpoint)
+    stages: list[dict[str, Any]] = []
+    turn_results: list[dict[str, Any]] = []
+    errors: list[str] = []
+    warnings: list[str] = []
+    previous_state: dict[str, Any] | None = None
+    previous_document: dict[str, Any] | None = None
+
+    for turn_index, turn in enumerate(turns):
+        spec = {
+            "id": f"{scenario_id}-T{turn_index + 1}",
+            "question": str(turn.get("question") or ""),
+            "kind": "multiturn_live_turn",
+            "manifest": {
+                "expected_route": str(turn.get("expected_route") or ""),
+                "expected_child_calls": int(turn.get("expected_child_calls") or 1),
+            },
+        }
+        stage = _execute_live_stage(
+            spec=spec,
+            stage_index=turn_index,
+            reference_date=reference_date,
+            session_id=session_id,
+            modules=modules,
+            continuation=continuation,
+            v2=v2,
+            metadata_context=metadata_context,
+            recorder=recorder,
+            previous_state=previous_state,
+            previous_result_document=previous_document,
+        )
+        stage_result = _validate_live_result(spec, [stage], recorder, limits)
+        turn_errors = list(stage_result.get("errors", []))
+        turn_errors.extend(_live_multiturn_contract_errors(turn, stage, stages[-1] if stages else None))
+        if turn_index > 0:
+            followup_hint = (
+                stage.get("payload", {}).get("followup_hint", {})
+                if isinstance(stage.get("payload"), dict)
+                else {}
+            )
+            if followup_hint.get("followup_candidate") is not True:
+                turn_errors.append("followup hint was not activated from the prior session state")
+        stage_result["errors"] = turn_errors
+        stage_result["status"] = "ok" if not turn_errors else "error"
+        turn_results.append(stage_result)
+        errors.extend(f"turn {turn_index + 1}: {item}" for item in turn_errors)
+        warnings.extend(
+            f"turn {turn_index + 1}: {item}" for item in stage_result.get("warnings", [])
+        )
+        stages.append(stage)
+        previous_state = deepcopy(stage.get("payload", {}).get("state", {}))
+        previous_document = _stored_stage_document(stage, session_id=session_id)
+
+    summary = recorder.summary()
+    result = {
+        "id": scenario_id,
+        "question": str(turns[-1].get("question") or "") if turns else "",
+        "kind": "multiturn_live",
+        "status": "ok" if not errors else "error",
+        "route": str(turn_results[-1].get("route") or "") if turn_results else "",
+        "child_calls": len(stages),
+        "model": str(llm_config.get("model") or ""),
+        "model_metrics": summary,
+        "turns": turn_results,
+        "errors": errors,
+        "warnings": warnings,
+        "continuation_prompt_overhead_bytes": max(
+            (
+                int(item.get("continuation_prompt_overhead_bytes") or 0)
+                for item in turn_results
+            ),
+            default=0,
+        ),
+    }
+    checkpoint.save_result(result)
+    return result
+
+
 def _resolve_live_llm_config(model_name: str = "") -> dict[str, Any]:
     config = base.resolve_llm_config()
     selected = str(model_name or os.getenv("LLM_MODEL_NAME") or DEFAULT_LIVE_MODEL).strip()
@@ -2490,17 +2846,30 @@ def run_live_validation(
     results: list[dict[str, Any]] = []
     for spec in specs:
         try:
-            result = validate_live_case(
-                spec,
-                reference_date=reference_date,
-                modules=modules,
-                continuation=continuation,
-                v2=v2,
-                metadata_context=metadata_context,
-                llm_config=llm_config,
-                checkpoint=checkpoint,
-                limits=manifest["limits"],
-            )
+            if str(spec.get("kind") or "") == "multiturn_live":
+                result = validate_live_multiturn_scenario(
+                    spec["manifest"],
+                    reference_date=reference_date,
+                    modules=modules,
+                    continuation=continuation,
+                    v2=v2,
+                    metadata_context=metadata_context,
+                    llm_config=llm_config,
+                    checkpoint=checkpoint,
+                    limits=manifest["limits"],
+                )
+            else:
+                result = validate_live_case(
+                    spec,
+                    reference_date=reference_date,
+                    modules=modules,
+                    continuation=continuation,
+                    v2=v2,
+                    metadata_context=metadata_context,
+                    llm_config=llm_config,
+                    checkpoint=checkpoint,
+                    limits=manifest["limits"],
+                )
         except Exception as exc:
             result = {
                 "id": str(spec["id"]),

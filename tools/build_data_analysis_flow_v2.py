@@ -50,6 +50,7 @@ INTENT_MODEL_NODE_ID = "LanguageModel-intent"
 INTENT_NORMALIZER_NODE_ID = "CustomComponent-5o0CN"
 METADATA_CANDIDATES_NODE_ID = "CustomComponent-DXrpf"
 EXECUTION_GATE_NODE_ID = "CustomComponent-v5ExecutionGate"
+DUMMY_RETRIEVER_NODE_ID = "CustomComponent-Pp7d0"
 PANDAS_VARIABLES_NODE_ID = "CustomComponent-fc0Vb"
 PANDAS_PROMPT_NODE_ID = "Prompt Template-xtzD5"
 HYBRID_EXECUTOR_NODE_ID = "CustomComponent-s3mf1"
@@ -290,6 +291,13 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     _set_embedded_source(
         node_index[EXECUTION_GATE_NODE_ID],
         _common_component_path("14a_retrieval_execution_gate.py"),
+    )
+    # The dummy retriever is part of the standalone validation/runtime switch.
+    # It must be refreshed together with the live retrieval contract so an
+    # imported Flow cannot run a stale fixture schema after source updates.
+    _set_embedded_source(
+        node_index[DUMMY_RETRIEVER_NODE_ID],
+        _common_component_path("08_dummy_data_retriever.py"),
     )
     # The result store and cleanup node carry runtime-only checkpoint rows.
     # Refresh both shared sources whenever V2 is rebuilt so downloaded

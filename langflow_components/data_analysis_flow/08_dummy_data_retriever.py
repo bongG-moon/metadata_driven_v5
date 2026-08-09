@@ -865,30 +865,35 @@ def _quantity_value(work_date: str, product_index: int, process_index: int, base
 # 함수 설명: `_target_rows()`는 행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _target_rows() -> list[dict[str, Any]]:
     rows = []
-    for index, product in enumerate(PRODUCTS):
-        rows.append(
-            {
-                "DATE": "2026-07-01",
-                "Mode": product["MODE"],
-                "DEN": product["DENSITY"],
-                "TECH": product["TECH"],
-                "PKG1": product["PKG1"],
-                "PKG2": product["PKG2"],
-                "LEAD": product["LEAD"],
-                "ORG": product["ORG"],
-                "MCP NO": product["MCP_NO"],
-                "INPUT 계획": 800 - index * 100,
-                "OUT 계획": 1200 - index * 150,
-                "MODE": product["MODE"],
-                "DENSITY": product["DENSITY"],
-                "PKG_TYPE1": product["PKG1"],
-                "PKG_TYPE2": product["PKG2"],
-                "MCP_NO": product["MCP_NO"],
-                "INPUT_PLAN": 800 - index * 100,
-                "OUT_PLAN": 1200 - index * 150,
-                "TARGET": 1200 - index * 150,
-            }
-        )
+    # The dummy catalog is used by both current-day and explicitly dated plan
+    # questions.  Keep two representative dates so a valid ``7/6`` request
+    # is not mistaken for a schema or dataset-selection failure merely because
+    # a fixture contains one calendar date.
+    for target_date in ("2026-07-01", "2026-07-06"):
+        for index, product in enumerate(PRODUCTS):
+            rows.append(
+                {
+                    "DATE": target_date,
+                    "Mode": product["MODE"],
+                    "DEN": product["DENSITY"],
+                    "TECH": product["TECH"],
+                    "PKG1": product["PKG1"],
+                    "PKG2": product["PKG2"],
+                    "LEAD": product["LEAD"],
+                    "ORG": product["ORG"],
+                    "MCP NO": product["MCP_NO"],
+                    "INPUT 계획": 800 - index * 100,
+                    "OUT 계획": 1200 - index * 150,
+                    "MODE": product["MODE"],
+                    "DENSITY": product["DENSITY"],
+                    "PKG_TYPE1": product["PKG1"],
+                    "PKG_TYPE2": product["PKG2"],
+                    "MCP_NO": product["MCP_NO"],
+                    "INPUT_PLAN": 800 - index * 100,
+                    "OUT_PLAN": 1200 - index * 150,
+                    "TARGET": 1200 - index * 150,
+                }
+            )
     return rows
 
 

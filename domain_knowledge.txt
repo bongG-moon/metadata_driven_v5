@@ -240,7 +240,7 @@ metric_columns는 INPUT_PLAN_QTY와 OUT_PLAN_QTY야.
 이 항목에는 물리 source 컬럼명을 저장하지 않고 Table Catalog가 canonical 실행 컬럼으로 정규화한 뒤 적용해.
 usage_condition은 질문에 계획 또는 스케쥴 의미가 포함된 경우에만 사용이야.
 
-장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대는 equipment 계열 데이터에서 EQP_ID 또는 EQPID의 중복 제거 개수로 계산해.
+장비 대수, 설비 대수, 장비 수, 설비 수, 몇 대, 장비 목록, 장비 LIST는 장비 Assign 현황 데이터(equipment_assign)를 사용해. 장비 수는 장비 번호 EQP_ID를 중복 없이 세면 돼. UPH를 함께 물을 때만 장비 UPH 데이터를 추가로 사용하고, 장비 대수나 목록만 물을 때는 장비 Assign 현황 데이터만 사용해.
 
 PKG OUT 실적 metric을 등록해줘.
 section은 quantity_terms이고 key는 pkg_out_quantity이며 status는 active야.

@@ -30,6 +30,49 @@ def _module(name: str, filename: str):
     return module
 
 
+def test_continuation_strict_contract_projects_a_unique_presentation_label_back_to_canonical_key(executor):
+    payload = {
+        "intent_plan": {
+            "output_contract": {
+                "result_mode": "scalar",
+                "result_columns": ["PRODUCTION_SUM"],
+                "required_columns": ["PRODUCTION_SUM"],
+                "metric_columns": ["PRODUCTION_SUM"],
+                "strict_result_columns": True,
+                "column_labels": {"PRODUCTION_SUM": "전일 생산량"},
+            },
+            "retrieval_jobs": [],
+        }
+    }
+
+    rows, columns = executor._apply_strict_result_columns(
+        [{"전일 생산량": 123}],
+        ["전일 생산량"],
+        payload,
+    )
+
+    assert columns == ["PRODUCTION_SUM"]
+    assert rows == [{"PRODUCTION_SUM": 123}]
+
+
+def test_continuation_rewrites_unknown_helper_result_alias_for_one_active_source(executor):
+    rewritten, trace, error = executor._replace_selected_function_case_calls(
+        "df = sources['matched_df']\nresult = df.copy()",
+        [
+            {
+                "function_name": "match_product_tokens",
+                "source_alias": "production_src",
+            }
+        ],
+        active_source_aliases={"production_src"},
+        runtime_source_aliases={"production_src"},
+    )
+
+    assert error == ""
+    assert "sources['production_src']" in rewritten
+    assert trace["replaced_unknown_source_refs"] == ["matched_df"]
+
+
 def _repo_module(name: str, relative_path: str):
     if "lfx" not in sys.modules:
         install_lfx_stubs()
@@ -151,6 +194,109 @@ def test_extreme_row_chain_applies_filter_before_latest_selection(executor):
         {"ENTITY_ID": "A", "EVENT_TM": "2026-08-08 10:00", "EVENT_SEQ": 1, "STATUS": "VALID", "DETAIL": "keep"}
     ]
     assert certificate["predecessor_execution"][0]["row_count_after"] == 1
+
+
+def test_extreme_row_contract_applies_previous_result_row_match_before_latest_selection(executor):
+    """An in-place prior-result match remains deterministic for any entity key."""
+
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [{"dataset_key": "history", "source_alias": "history"}],
+            "pandas_execution_plan": [
+                {
+                    "operation": "apply_row_match_groups",
+                    "source_alias": "history",
+                    "reference_source_alias": "previous_result",
+                    "match_columns": ["ENTITY_ID"],
+                },
+                {
+                    "node_id": "latest_history",
+                    "operation": "select_extreme_row_per_group",
+                    "inputs": [{"kind": "external_source", "ref": "history"}],
+                    "output_alias": "latest_history",
+                    "source_alias": "history",
+                    "partition_by": ["ENTITY_ID"],
+                    "order_by": [{"column": "EVENT_TM", "direction": "desc"}],
+                    "tie_breakers": [],
+                    "limit_per_group": 1,
+                    "tie_policy": "error",
+                    "projection": ["ENTITY_ID", "EVENT_TM", "DETAIL"],
+                    "strict": True,
+                },
+                {
+                    "operation": "join",
+                    "inputs": [
+                        {"kind": "node_output", "ref": "previous_result"},
+                        {"kind": "node_output", "ref": "latest_history"},
+                    ],
+                    "left_source_alias": "previous_result",
+                    "right_source_alias": "latest_history",
+                    "left_on": ["ENTITY_ID"],
+                    "right_on": ["ENTITY_ID"],
+                    "join_type": "left",
+                    "output_alias": "enriched",
+                },
+            ],
+            "output_contract": {
+                "result_columns": ["ENTITY_ID", "EVENT_TM", "DETAIL"]
+            },
+        }
+    }
+    contract = executor._select_extreme_row_per_group_contract(payload)
+    assert contract["pre_operations"][0]["operation"] == "apply_row_match_groups"
+    assert contract["join"]["left_source_alias"] == "previous_result"
+
+    result, certificate = executor._execute_select_extreme_row_per_group(
+        contract,
+        {
+            "previous_result": pd.DataFrame([{"ENTITY_ID": "A"}, {"ENTITY_ID": "C"}]),
+            "history": pd.DataFrame(
+                [
+                    {"ENTITY_ID": "A", "EVENT_TM": "2026-08-08 09:00", "DETAIL": "old"},
+                    {"ENTITY_ID": "A", "EVENT_TM": "2026-08-08 10:00", "DETAIL": "new"},
+                    {"ENTITY_ID": "B", "EVENT_TM": "2026-08-08 12:00", "DETAIL": "exclude"},
+                ]
+            ),
+        },
+        pd,
+    )
+    assert result.loc[0].to_dict() == {
+        "ENTITY_ID": "A",
+        "EVENT_TM": "2026-08-08 10:00",
+        "DETAIL": "new",
+    }
+    assert result["ENTITY_ID"].tolist() == ["A", "C"]
+    assert pd.isna(result.loc[1, "EVENT_TM"])
+    assert pd.isna(result.loc[1, "DETAIL"])
+    assert certificate["predecessor_execution"][0]["source_row_count_after"] == 2
+
+
+def test_continuation_typed_join_aggregates_right_source_before_merging(executor):
+    """The continuation executor shares the generic grouped-join semantics."""
+
+    result = executor._typed_join_frames(
+        pd.DataFrame([{"KEY": "A"}, {"KEY": "B"}]),
+        pd.DataFrame(
+            [
+                {"KEY": "A", "VALUE": "one"},
+                {"KEY": "A", "VALUE": "two"},
+                {"KEY": "A", "VALUE": "two"},
+            ]
+        ),
+        {
+            "on": ["KEY"],
+            "join_type": "left",
+            "aggregations": [
+                {"column": "VALUE", "method": "nunique", "output_column": "VALUE_COUNT"},
+                {"column": "VALUE", "method": "collect_unique", "output_column": "VALUE_LIST"},
+            ],
+        },
+        pd,
+    )
+    assert result.to_dict(orient="records") == [
+        {"KEY": "A", "VALUE_COUNT": 2, "VALUE_LIST": "one, two"},
+        {"KEY": "B", "VALUE_COUNT": 0, "VALUE_LIST": ""},
+    ]
 
 
 def test_continuation_executor_falls_back_to_source_when_pre_contract_matches_final_result(executor):
@@ -674,6 +820,38 @@ def test_catalog_closure_preserves_question_matched_domain_metric_hint(catalog_c
     assert result["metadata_load"]["dependency_catalog_closure"]["domain_dataset_refs"] == ["target"]
 
 
+def test_catalog_closure_expands_registered_family_hint_without_selecting_one(catalog_closure):
+    selected = {
+        "metadata_candidates": {
+            "domain_items": [
+                {
+                    "section": "quantity_terms",
+                    "key": "equipment_count",
+                    "payload": {"aliases": ["장비 대수"], "data_source": "equipment"},
+                }
+            ],
+            "table_catalog_items": [
+                {"key": "production_today", "payload": {"columns": ["DATE", "PRODUCTION"]}},
+            ],
+            "main_flow_filters": [],
+        }
+    }
+    full_catalog = {
+        "table_catalog_items": [
+            *selected["metadata_candidates"]["table_catalog_items"],
+            {"key": "equipment_assign", "payload": {"dataset_family": "equipment", "columns": ["EQP_ID"]}},
+            {"key": "eqp_uph", "payload": {"dataset_family": "equipment", "columns": ["EQP_ID", "UPH"]}},
+        ]
+    }
+
+    result = catalog_closure.close_dependency_catalog_candidates(selected, full_catalog, max_table_items=5)
+    keys = [item["key"] for item in result["metadata_candidates"]["table_catalog_items"]]
+    assert keys[:2] == ["equipment_assign", "eqp_uph"]
+    trace = result["metadata_load"]["dependency_catalog_closure"]
+    assert trace["family_reference_values"] == ["equipment"]
+    assert trace["family_included_dataset_keys"] == ["equipment_assign", "eqp_uph"]
+
+
 def test_compiler_accepts_only_catalog_backed_extreme_columns_and_binding_linkage(compiler):
     plan, metadata = _dependent_plan_and_catalog()
     normalized = compiler._normalize_and_validate_plan(plan, metadata)
@@ -705,6 +883,13 @@ def test_continuation_intent_parser_repairs_structural_json_key_typo(compiler):
         '{"intent_plan":{"join_plan":[{-join_type:"left",},],}}'
     )
     assert parsed["intent_plan"]["join_plan"][0]["join_type"] == "left"
+
+
+def test_continuation_intent_parser_repairs_markdown_list_key_typo(compiler):
+    parsed = compiler._parse_json_response(
+        '{"intent_plan":{"analysis_kind":"sample",\n    - temporal_semantics: [],\n}}'
+    )
+    assert parsed["intent_plan"]["temporal_semantics"] == []
 
 
 def test_compiler_hydrates_unique_catalog_entity_type_and_strengthens_empty_tie(compiler):
@@ -906,6 +1091,28 @@ def test_compiler_ignores_unproven_dependent_binding_when_flat_plan_is_complete(
     assert trace["dependent_ignore_reason"] == "dependent_binding_not_catalog_proven"
 
 
+def test_compiler_ignores_malformed_two_stage_addon_when_flat_plan_is_complete(compiler):
+    """A malformed two-stage add-on cannot block an independently valid plan."""
+
+    flat = _flat_plan_with_optional_unused_history()
+    # Keep two stage objects but remove a required continuation-only field.
+    # This emulates a weak model appending an unfinished continuation plan next
+    # to a complete ordinary analysis plan.
+    flat["dependent_retrieval_plan"]["stages"][1].pop("input_bindings")
+    _, metadata = _dependent_plan_and_catalog()
+
+    response, trace = compiler.compile_intent_response(
+        {"request": {"question": "entity list"}},
+        json.dumps({"intent_plan": flat}),
+        metadata,
+    )
+
+    compiled = json.loads(response)["intent_plan"]
+    assert "dependent_retrieval_plan" not in compiled
+    assert [job["source_alias"] for job in compiled["retrieval_jobs"]] == ["index"]
+    assert trace["dependent_ignore_reason"] == "dependent_binding_not_catalog_proven"
+
+
 def test_compiler_does_not_ignore_nonempty_one_stage_shape_even_with_complete_flat(compiler):
     response = {
         "intent_plan": {
@@ -992,6 +1199,682 @@ def _fresh_live_shape_catalogs():
             },
         ]
     }
+
+
+def _recipe_driven_hold_metadata():
+    metadata = _fresh_live_shape_catalogs()
+    metadata["domain_items"] = [
+        {
+            "section": "analysis_recipes",
+            "key": "current_hold_lot_selection",
+            "payload": {
+                "current_selection": {
+                    "dataset_key": "lot_status",
+                    "filter": {"HOLD_STAT": {"operator": "eq", "value": "OnHold"}},
+                },
+                "dependent_selection": {
+                    "when_question_includes_any": ["사유", "코드", "상세", "이력", "시간"],
+                    "current_stage": "current_selection",
+                    "next_stage": "history_selection",
+                },
+                "history_selection": {
+                    "dataset_key": "hold_history",
+                    "required_params": {"LOT_ID": ""},
+                    "upstream_binding": {
+                        "source_alias": "previous_result",
+                        "source_column": "LOT_ID",
+                        "target_param": "LOT_ID",
+                        "operator": "in",
+                    },
+                    "latest_per_group": {
+                        "partition_by": ["LOT_ID"],
+                        "order_by": [{"column": "HOLD_TM", "direction": "desc"}],
+                        "limit_per_group": 1,
+                        "tie_policy": "error",
+                    },
+                    "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+                },
+            },
+        }
+    ]
+    return metadata
+
+
+def test_compiler_lifts_selected_recipe_only_for_declared_detail_terms(compiler):
+    intent = {
+        "metadata_refs": [{"section": "analysis_recipes", "key": "current_hold_lot_selection"}],
+        "retrieval_jobs": [
+            {
+                "dataset_key": "lot_status",
+                "source_alias": "lot_status_src",
+                "filters": {"OPER_NAME": {"operator": "eq", "value": "W/B1"}},
+            }
+        ],
+        "pandas_execution_plan": [],
+        "output_contract": {
+            "result_mode": "entity_list",
+            "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"],
+        },
+    }
+    metadata = _recipe_driven_hold_metadata()
+    response, trace = compiler.compile_intent_response(
+        {"request": {"question": "W/B공정 현재 HOLD LOT와 HOLD 사유 알려줘"}},
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        metadata,
+    )
+    compiled = json.loads(response)["intent_plan"]
+    assert trace["status"] == "pending"
+    assert compiled["retrieval_jobs"][0]["filters"]["HOLD_STAT"]["value"] == "OnHold"
+    dependent = compiled["dependent_retrieval_plan"]
+    assert dependent["activation"]["reason"] == "analysis_recipe_dependent_selection"
+    assert dependent["stages"][1]["retrieval_jobs"][0]["dataset_key"] == "hold_history"
+    latest = dependent["stages"][1]["pandas_execution_plan"][0]
+    assert latest["projection"] == ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"]
+    join = dependent["stages"][1]["pandas_execution_plan"][1]
+    assert join["left_on"] == ["LOT_ID"]
+    assert join["right_on"] == ["LOT_ID"]
+
+    flat_response, flat_trace = compiler.compile_intent_response(
+        {"request": {"question": "W/B공정 현재 HOLD LOT 목록 알려줘"}},
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        metadata,
+    )
+    assert flat_trace["status"] == "passthrough"
+    assert "dependent_retrieval_plan" not in json.loads(flat_response)["intent_plan"]
+
+
+def test_compiler_rebuilds_matching_explicit_recipe_plan_from_catalog_contract(compiler):
+    """A weak model's unsafe history transform is replaced only by a matching recipe."""
+
+    metadata = _recipe_driven_hold_metadata()
+    recipe = metadata["domain_items"][0]["payload"]
+    recipe["dependent_selection"]["when_question_includes_any"] = ["reason"]
+    stage1_contract = {
+        "result_mode": "entity_list",
+        "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"],
+    }
+    final_contract = {
+        "result_mode": "entity_list",
+        "result_columns": [
+            "LOT_ID",
+            "OPER_NAME",
+            "HOLD_STAT",
+            "HOLD_REASON",
+            "HOLD_TM",
+            "HOLD_CD",
+            "HOLD_DESC",
+        ],
+    }
+    explicit = _live_dependent_stage(
+        stage1_id="model_current",
+        stage2_id="model_history",
+        stage1_contract=stage1_contract,
+        stage2_contract=final_contract,
+        stage1_steps=[
+            {
+                "operation": "select_columns",
+                "source_alias": "lot_status_src",
+                "projection": list(stage1_contract["result_columns"]),
+            }
+        ],
+        # This operation is deliberately not a deterministic latest-row
+        # contract.  The compiler must not execute or repair it directly.
+        stage2_steps=[
+            {
+                "operation": "apply_row_match_groups",
+                "source_alias": "hold_history_src",
+                "reference_source_alias": "model_current",
+                "match_columns": ["LOT_ID"],
+            }
+        ],
+        stage1_job={
+            "dataset_key": "lot_status",
+            "source_alias": "lot_status_src",
+            "filters": {"OPER_NAME": {"operator": "eq", "value": "W/B1"}},
+        },
+        stage2_job={
+            "dataset_key": "hold_history",
+            "source_alias": "hold_history_src",
+            "required_params": {"LOT_ID": ""},
+        },
+        handoff_columns=["LOT_ID"],
+        input_bindings=[
+            {
+                "source_stage_id": "model_current",
+                "source_column": "LOT_ID",
+                "target_source_alias": "hold_history_src",
+                "target_param": "LOT_ID",
+                "operator": "in",
+            }
+        ],
+    )
+    intent = {
+        "metadata_refs": [{"section": "analysis_recipes", "key": "current_hold_lot_selection"}],
+        "retrieval_jobs": [
+            {
+                "dataset_key": "lot_status",
+                "source_alias": "lot_status_src",
+                "filters": {"OPER_NAME": {"operator": "eq", "value": "W/B1"}},
+            },
+            {
+                "dataset_key": "hold_history",
+                "source_alias": "hold_history_src",
+                "required_params": {"LOT_ID": ""},
+            },
+        ],
+        "pandas_execution_plan": [],
+        "output_contract": final_contract,
+        "dependent_retrieval_plan": explicit,
+    }
+    response, trace = compiler.compile_intent_response(
+        {"request": {"question": "show current items and the latest reason"}},
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        metadata,
+    )
+    compiled = json.loads(response)["intent_plan"]
+    dependent = compiled["dependent_retrieval_plan"]
+    assert trace["status"] == "pending"
+    assert trace["dependent_recipe_canonicalized"] is True
+    assert dependent["activation"]["reason"] == "analysis_recipe_dependent_selection"
+    assert dependent["stages"][1]["retrieval_jobs"][0]["dataset_key"] == "hold_history"
+    operations = [
+        step["operation"]
+        for step in dependent["stages"][1]["pandas_execution_plan"]
+    ]
+    assert operations == ["select_extreme_row_per_group", "join"]
+    assert compiled["retrieval_jobs"][0]["dataset_key"] == "lot_status"
+
+
+@pytest.mark.parametrize(
+    "reference_mode",
+    ["previous_result_rows", "previous_result"],
+)
+def test_compiler_reuses_a_catalog_proven_first_stage_from_followup_state(
+    compiler,
+    v2_intent_normalizer,
+    reference_mode,
+):
+    """A two-turn dependent query must not schedule an already-held stage again."""
+
+    stage1_contract = {
+        "result_mode": "entity_list",
+        "required_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT"],
+        "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT"],
+    }
+    final_contract = {
+        "result_mode": "entity_list",
+        "required_columns": ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+        "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+    }
+    dependent = _live_dependent_stage(
+        stage1_contract=stage1_contract,
+        stage2_contract=final_contract,
+        stage1_steps=[
+            {
+                "operation": "select_columns",
+                "source_alias": "lot_status_src",
+                "projection": list(stage1_contract["result_columns"]),
+                "output_alias": "current_lots",
+            }
+        ],
+        stage2_steps=[
+            {
+                "operation": "select_extreme_row_per_group",
+                "source_alias": "hold_history_src",
+                "partition_by": ["LOT_ID"],
+                "order_by": [{"column": "HOLD_TM", "direction": "desc"}],
+                "tie_breakers": [],
+                "limit_per_group": 1,
+                "tie_policy": "error",
+                "projection": list(final_contract["result_columns"]),
+                "strict": True,
+                "output_alias": "latest_history",
+            },
+            {
+                "operation": "join",
+                "inputs": [
+                    {"kind": "node_output", "ref": "upstream_result"},
+                    {"kind": "node_output", "ref": "latest_history"},
+                ],
+                "left_source_alias": "upstream_result",
+                "right_source_alias": "latest_history",
+                "left_on": ["LOT_ID"],
+                "right_on": ["LOT_ID"],
+                "join_type": "left",
+                "population_policy": "preserve_left",
+                "output_alias": "history_with_current",
+            },
+        ],
+        stage1_job={"dataset_key": "lot_status", "source_alias": "lot_status_src"},
+        stage2_job={
+            "dataset_key": "hold_history",
+            "source_alias": "hold_history_src",
+            "required_params": {"LOT_ID": ""},
+        },
+        handoff_columns=["LOT_ID"],
+        input_bindings=[
+            {
+                "source_stage_id": "stage_1",
+                "source_column": "LOT_ID",
+                "target_source_alias": "hold_history_src",
+                "target_param": "LOT_ID",
+                "operator": "in",
+            }
+        ],
+    )
+    intent = {
+        "request_scope": "followup_requery",
+        "reference_mode": reference_mode,
+        "retrieval_jobs": [deepcopy(dependent["stages"][1]["retrieval_jobs"][0])],
+        "pandas_execution_plan": deepcopy(dependent["stages"][1]["pandas_execution_plan"]),
+        "output_contract": deepcopy(final_contract),
+        "dependent_retrieval_plan": dependent,
+    }
+    payload = {
+        "request": {"question": "show the history for those lots"},
+        "followup_hint": {
+            "followup_candidate": True,
+            # The generic follow-up classifier may call this a transform even
+            # though the typed plan needs one new Catalog retrieval.  The
+            # compiler must retain the structural prior-row handoff.
+            "request_scope_hint": "followup_transform",
+            "reuse_strategy_hint": "previous_result",
+        },
+        "state": {
+            "current_data": {
+                "row_count": 1,
+                "columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT"],
+                "rows": [{"LOT_ID": "L1", "OPER_NAME": "P1", "HOLD_STAT": "OnHold"}],
+                "source_dataset_keys": ["lot_status"],
+            },
+            "last_intent_plan": {
+                "retrieval_jobs": [{"dataset_key": "lot_status", "source_alias": "lot_status_src"}],
+                "resolved_grain_plan": {"canonical_columns": ["LOT_ID"]},
+            },
+        },
+    }
+    response, trace = compiler.compile_intent_response(
+        payload,
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        _fresh_live_shape_catalogs(),
+    )
+    compiled = json.loads(response)["intent_plan"]
+    assert trace["status"] == "passthrough"
+    assert trace["conversational_handoff_reused"] is True
+    assert trace["conversational_handoff"]["handoff_columns"] == ["LOT_ID"]
+    assert "dependent_retrieval_plan" not in compiled
+    assert compiled["retrieval_jobs"][0]["dataset_key"] == "hold_history"
+    assert compiled["reference_mode"] == "previous_result_rows"
+    row_match = compiled["pandas_execution_plan"][0]
+    assert row_match["operation"] == "apply_row_match_groups"
+    assert row_match["source_alias"] == "hold_history_src"
+    assert row_match["reference_source_alias"] == "previous_result"
+    join = compiled["pandas_execution_plan"][-1]
+    assert join["left_source_alias"] == "previous_result"
+    assert join["inputs"][0] == {"kind": "external_source", "ref": "previous_result"}
+
+    normalized = v2_intent_normalizer.normalize_intent_plan(
+        payload,
+        response,
+        _fresh_live_shape_catalogs(),
+    )["intent_plan"]
+    assert normalized.get("validation_errors", []) == []
+    assert normalized["reference_mode"] == "previous_result_rows"
+    assert normalized["retrieval_jobs"][0]["dataset_key"] == "hold_history"
+    assert {
+        (item["source_alias"], item["provider"])
+        for item in normalized["resolved_execution_graph"]["external_source_requirements"]
+    } == {
+        ("hold_history_src", "retrieval_job"),
+        ("previous_result", "previous_result"),
+    }
+
+
+def test_compiler_rewrites_verified_first_stage_output_alias_to_previous_result(compiler):
+    """A conversational follow-up may name a verified prior node output instead of the runtime alias."""
+
+    stage1_contract = {"required_columns": ["LOT_ID"], "result_columns": ["LOT_ID"]}
+    final_contract = {
+        "required_columns": ["LOT_ID", "HOLD_TM"],
+        "result_columns": ["LOT_ID", "HOLD_TM"],
+    }
+    dependent = _live_dependent_stage(
+        stage1_contract=stage1_contract,
+        stage2_contract=final_contract,
+        stage1_steps=[
+            {
+                "node_id": "stage1_select",
+                "operation": "select_columns",
+                "source_alias": "lot_status_src",
+                "projection": ["LOT_ID"],
+                "output_alias": "prior_lot_ids",
+            }
+        ],
+        stage2_steps=[
+            {
+                "node_id": "stage2_match",
+                "operation": "apply_row_match_groups",
+                "source_alias": "hold_history_src",
+                "reference_source_alias": "prior_lot_ids",
+                "match_columns": ["LOT_ID"],
+                "blank_policy": "normalize_blank",
+                "output_alias": "matched_history",
+            },
+            {
+                "node_id": "stage2_latest",
+                "operation": "select_extreme_row_per_group",
+                "inputs": [{"kind": "node_output", "ref": "matched_history"}],
+                "source_alias": "hold_history_src",
+                "partition_by": ["LOT_ID"],
+                "order_by": [{"column": "HOLD_TM", "direction": "desc"}],
+                "limit_per_group": 1,
+                "tie_policy": "error",
+                "projection": ["LOT_ID", "HOLD_TM"],
+                "strict": True,
+            },
+            {
+                "node_id": "stage2_join",
+                "operation": "join",
+                "inputs": [
+                    {"kind": "node_output", "ref": "prior_lot_ids"},
+                    {"kind": "node_output", "ref": "stage2_latest"},
+                ],
+                "left_source_alias": "prior_lot_ids",
+                "right_source_alias": "stage2_latest",
+                "join_type": "left",
+            },
+        ],
+        stage1_job={"dataset_key": "lot_status", "source_alias": "lot_status_src"},
+        stage2_job={
+            "dataset_key": "hold_history",
+            "source_alias": "hold_history_src",
+            "required_params": {"LOT_ID": ""},
+        },
+        handoff_columns=["LOT_ID"],
+        input_bindings=[
+            {
+                "source_stage_id": "stage_1",
+                "source_column": "LOT_ID",
+                "target_source_alias": "hold_history_src",
+                "target_param": "LOT_ID",
+                "operator": "in",
+            }
+        ],
+    )
+    intent = {
+        "request_scope": "followup_requery",
+        "reference_mode": "previous_result_rows",
+        "retrieval_jobs": [deepcopy(dependent["stages"][1]["retrieval_jobs"][0])],
+        "pandas_execution_plan": deepcopy(dependent["stages"][1]["pandas_execution_plan"]),
+        "output_contract": deepcopy(final_contract),
+        "dependent_retrieval_plan": dependent,
+    }
+    payload = {
+        "request": {"question": "show the history for those lots"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_requery",
+            "reuse_strategy_hint": "previous_result",
+        },
+        "state": {
+            "current_data": {
+                "row_count": 1,
+                "columns": ["LOT_ID"],
+                "rows": [{"LOT_ID": "L1"}],
+                "source_dataset_keys": ["lot_status"],
+            },
+            "last_intent_plan": {
+                "retrieval_jobs": [{"dataset_key": "lot_status", "source_alias": "lot_status_src"}],
+            },
+        },
+    }
+    response, trace = compiler.compile_intent_response(
+        payload,
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        _fresh_live_shape_catalogs(),
+    )
+    compiled = json.loads(response)["intent_plan"]
+    assert trace["conversational_handoff_reused"] is True
+    assert compiled["pandas_execution_plan"][0]["reference_source_alias"] == "previous_result"
+    join = next(
+        step
+        for step in compiled["pandas_execution_plan"]
+        if step.get("node_id") == "stage2_join"
+    )
+    assert join["left_source_alias"] == "previous_result"
+    assert join["inputs"][0] == {"kind": "external_source", "ref": "previous_result"}
+
+
+def test_compiler_reuses_structural_catalog_join_without_a_required_parameter(compiler):
+    """A prior-result row join is not an invented required-param binding."""
+
+    product = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
+    first_contract = {
+        "result_mode": "aggregate",
+        "required_columns": [*product, "PRODUCTION"],
+        "result_columns": [*product, "PRODUCTION"],
+    }
+    final_contract = {
+        "result_mode": "aggregate",
+        "required_columns": [*product, "EQP_COUNT", "EQP_LIST"],
+        "result_columns": [*product, "EQP_COUNT", "EQP_LIST"],
+    }
+    dependent = _live_dependent_stage(
+        stage1_id="stage1_products",
+        stage2_id="stage2_equipment",
+        stage1_contract=first_contract,
+        stage2_contract=final_contract,
+        stage1_steps=[
+            {
+                "node_id": "top_products",
+                "operation": "sort_and_top_n",
+                "source_alias": "production_today_src",
+                "sort_by": "PRODUCTION",
+                "order": "desc",
+                "limit": 3,
+                "output_alias": "top_products",
+            }
+        ],
+        stage2_steps=[
+            {
+                "node_id": "join_equipment",
+                "operation": "join",
+                "inputs": [
+                    {"kind": "node_output", "ref": "top_products"},
+                    {"kind": "external_source", "ref": "equipment_assign_src"},
+                ],
+                "left_source_alias": "top_products",
+                "right_source_alias": "equipment_assign_src",
+                "join_type": "left",
+                "output_alias": "joined_equipment",
+            },
+            {
+                "node_id": "aggregate_equipment",
+                "operation": "groupby_and_aggregate",
+                "inputs": [{"kind": "node_output", "ref": "joined_equipment"}],
+                "source_alias": "joined_equipment",
+                "group_by": product,
+                "aggregations": [
+                    {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                    {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQP_LIST"},
+                ],
+            },
+        ],
+        stage1_job={"dataset_key": "production_today", "source_alias": "production_today_src"},
+        stage2_job={"dataset_key": "equipment_assign", "source_alias": "equipment_assign_src"},
+        handoff_columns=product,
+        input_bindings=[],
+    )
+    intent = {
+        "request_scope": "followup_transform",
+        "reference_mode": "previous_result_rows",
+        "retrieval_jobs": [deepcopy(dependent["stages"][1]["retrieval_jobs"][0])],
+        "pandas_execution_plan": deepcopy(dependent["stages"][1]["pandas_execution_plan"]),
+        "output_contract": deepcopy(final_contract),
+        "dependent_retrieval_plan": dependent,
+    }
+    payload = {
+        "request": {"question": "show the assigned equipment for those products"},
+        "followup_hint": {
+            "followup_candidate": True,
+            # The classifier can label a row-enrichment follow-up as a
+            # transform.  The compiled typed join, not this label alone,
+            # proves whether a second source is needed.
+            "request_scope_hint": "followup_transform",
+            "reuse_strategy_hint": "previous_result",
+        },
+        "state": {
+            "current_data": {
+                "row_count": 2,
+                "columns": [*product, "PRODUCTION"],
+                "rows": [{column: "P" for column in product} | {"PRODUCTION": 10}],
+                "source_dataset_keys": ["production_today"],
+            },
+            "last_intent_plan": {
+                "retrieval_jobs": [
+                    {"dataset_key": "production_today", "source_alias": "production_today_src"}
+                ]
+            },
+        },
+    }
+
+    response, trace = compiler.compile_intent_response(
+        payload,
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        _fresh_live_shape_catalogs(),
+    )
+    compiled = json.loads(response)["intent_plan"]
+    assert trace["conversational_handoff_reused"] is True
+    assert trace["conversational_handoff"]["handoff_proof"] == "typed_join_with_catalog_common_grain"
+    assert [job["dataset_key"] for job in compiled["retrieval_jobs"]] == ["equipment_assign"]
+    row_match = compiled["pandas_execution_plan"][0]
+    assert row_match["operation"] == "apply_row_match_groups"
+    assert row_match["match_columns"] == product
+    join = next(step for step in compiled["pandas_execution_plan"] if step.get("node_id") == "join_equipment")
+    assert join["inputs"][0] == {"kind": "external_source", "ref": "previous_result"}
+
+
+def test_compiler_keeps_continuation_when_followup_state_does_not_prove_first_source(
+    compiler,
+):
+    """A matching identifier column alone must not authorize a stage skip."""
+
+    stage_contract = {"required_columns": ["LOT_ID"], "result_columns": ["LOT_ID"]}
+    dependent = _live_dependent_stage(
+        stage1_contract=stage_contract,
+        stage2_contract=stage_contract,
+        stage1_steps=[
+            {
+                "operation": "select_columns",
+                "source_alias": "lot_status_src",
+                "projection": ["LOT_ID"],
+                "output_alias": "current_lots",
+            }
+        ],
+        stage2_steps=[
+            {
+                "operation": "select_extreme_row_per_group",
+                "source_alias": "hold_history_src",
+                "partition_by": ["LOT_ID"],
+                "order_by": [{"column": "HOLD_TM", "direction": "desc"}],
+                "tie_breakers": [],
+                "limit_per_group": 1,
+                "tie_policy": "error",
+                "projection": ["LOT_ID", "HOLD_TM"],
+                "strict": True,
+            }
+        ],
+        stage1_job={"dataset_key": "lot_status", "source_alias": "lot_status_src"},
+        stage2_job={
+            "dataset_key": "hold_history",
+            "source_alias": "hold_history_src",
+            "required_params": {"LOT_ID": ""},
+        },
+        handoff_columns=["LOT_ID"],
+        input_bindings=[
+            {
+                "source_stage_id": "stage_1",
+                "source_column": "LOT_ID",
+                "target_source_alias": "hold_history_src",
+                "target_param": "LOT_ID",
+                "operator": "in",
+            }
+        ],
+    )
+    intent = {
+        "request_scope": "followup_requery",
+        "reference_mode": "previous_result_rows",
+        "retrieval_jobs": [deepcopy(dependent["stages"][1]["retrieval_jobs"][0])],
+        "pandas_execution_plan": deepcopy(dependent["stages"][1]["pandas_execution_plan"]),
+        "output_contract": deepcopy(stage_contract),
+        "dependent_retrieval_plan": dependent,
+    }
+    payload = {
+        "request": {"question": "show the history for those lots"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_requery",
+            "reuse_strategy_hint": "previous_result",
+        },
+        "state": {
+            "current_data": {
+                "row_count": 1,
+                "columns": ["LOT_ID"],
+                "rows": [{"LOT_ID": "L1"}],
+                "source_dataset_keys": ["unrelated_source"],
+            }
+        },
+    }
+    _, trace = compiler.compile_intent_response(
+        payload,
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        _fresh_live_shape_catalogs(),
+    )
+    assert trace["status"] == "pending"
+    assert trace.get("conversational_handoff_reused") is None
+
+
+def test_compiler_completes_strict_extreme_projection_from_catalog(compiler):
+    dependent = _live_dependent_stage(
+        stage1_contract={"result_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT"]},
+        stage2_contract={
+            "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_TM", "HOLD_CD", "HOLD_DESC"]
+        },
+        stage1_steps=[
+            {"operation": "select_columns", "source_alias": "lot_status_src", "projection": ["LOT_ID", "OPER_NAME", "HOLD_STAT"]}
+        ],
+        stage2_steps=[
+            {
+                "operation": "select_extreme_row_per_group",
+                "source_alias": "hold_history_src",
+                "partition_by": ["LOT_ID"],
+                "order_by": [{"column": "HOLD_TM", "direction": "desc"}],
+                "limit_per_group": 1,
+                "tie_policy": "error",
+                "strict": True,
+            }
+        ],
+        stage1_job={"dataset_key": "lot_status", "source_alias": "lot_status_src"},
+        stage2_job={"dataset_key": "hold_history", "source_alias": "hold_history_src", "required_params": {"LOT_ID": ""}},
+        handoff_columns=["LOT_ID"],
+        input_bindings=[
+            {
+                "source_stage_id": "stage_1",
+                "source_column": "LOT_ID",
+                "target_source_alias": "hold_history_src",
+                "target_param": "LOT_ID",
+                "operator": "in",
+            }
+        ],
+    )
+    response, trace = compiler.compile_intent_response(
+        {"request": {"question": "latest history"}},
+        json.dumps({"intent_plan": {"dependent_retrieval_plan": dependent}}, ensure_ascii=False),
+        _fresh_live_shape_catalogs(),
+    )
+    assert trace["status"] == "pending"
+    latest = json.loads(response)["intent_plan"]["dependent_retrieval_plan"]["stages"][1]["pandas_execution_plan"][0]
+    assert latest["projection"] == ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"]
 
 
 def _live_dependent_stage(
@@ -1793,6 +2676,119 @@ def test_live_c02_shape_flattens_independent_stages_into_one_complex_plan(
     assert metric_sources["PRODUCTION"] == "prod_today"
     assert metric_sources["EQP_COUNT"] == "eqp_assign"
     assert metric_sources["EQP_LIST"] == "eqp_assign"
+
+    # A weak model may also echo a legacy top-level multi-source plan without
+    # node aliases.  It is not a valid flat graph by itself, but the same
+    # non-parameter-dependent stages can still be flattened safely; they must
+    # not be rejected as an invented continuation binding.
+    legacy_top = deepcopy(intent)
+    legacy_top["retrieval_jobs"] = [
+        deepcopy(dependent["stages"][0]["retrieval_jobs"][0]),
+        deepcopy(dependent["stages"][1]["retrieval_jobs"][0]),
+    ]
+    legacy_top["pandas_execution_plan"] = []
+    for stage in dependent["stages"]:
+        for raw_step in stage["pandas_execution_plan"]:
+            step = deepcopy(raw_step)
+            for key in ("node_id", "output_alias", "inputs"):
+                step.pop(key, None)
+            legacy_top["pandas_execution_plan"].append(step)
+    legacy_response, legacy_trace = compiler.compile_intent_response(
+        {"request": {"question": "independent multi source"}},
+        json.dumps({"intent_plan": legacy_top}),
+        _fresh_live_shape_catalogs(),
+    )
+    legacy_compiled = json.loads(legacy_response)["intent_plan"]
+    assert legacy_trace["dependent_flattened"] is True
+    assert "dependent_retrieval_plan" not in legacy_compiled
+    assert [job["dataset_key"] for job in legacy_compiled["retrieval_jobs"]] == [
+        "production_today",
+        "equipment_assign",
+    ]
+
+
+def test_flattened_stage_metric_binding_resolves_derived_stage_column(compiler):
+    """A carried aggregate is a stage output, not a new Catalog column."""
+
+    rewritten = compiler._rewrite_flattened_output_metric_bindings(
+        {
+            "metric_bindings": [
+                {
+                    "output_column": "TOTAL_VALUE",
+                    "source_alias": "stage_one",
+                    "dataset_key": "source_data",
+                    # Weak plans frequently write the already-derived output
+                    # here instead of the original physical source column.
+                    "source_column": "TOTAL_VALUE",
+                    "aggregation": "sum",
+                }
+            ]
+        },
+        {
+            "metric_bindings": [
+                {
+                    "output_column": "TOTAL_VALUE",
+                    "source_alias": "source_alias",
+                    "dataset_key": "source_data",
+                    "source_column": "RAW_VALUE",
+                    "aggregation": "sum",
+                }
+            ]
+        },
+        {"stage_one"},
+    )
+
+    assert rewritten is not None
+    assert rewritten["metric_bindings"] == [
+        {
+            "output_column": "TOTAL_VALUE",
+            "source_alias": "source_alias",
+            "dataset_key": "source_data",
+            "source_column": "RAW_VALUE",
+            "aggregation": "sum",
+        }
+    ]
+
+
+def test_compiler_normalizes_unambiguous_legacy_operation_references(compiler):
+    """Operation names are accepted only as unique references to earlier steps."""
+
+    stage = {
+        "stage_id": "stage_two",
+        "retrieval_jobs": [{"dataset_key": "equipment_assign", "source_alias": "eqp_src"}],
+        "pandas_execution_plan": [
+            {
+                "operation": "join",
+                "inputs": [
+                    {"kind": "node_output", "ref": "previous_stage"},
+                    {"kind": "external_source", "ref": "eqp_src"},
+                ],
+            },
+            {
+                "operation": "groupby_and_aggregate",
+                "inputs": [{"kind": "node_output", "ref": "join"}],
+            },
+            {
+                "operation": "sort_and_top_n",
+                "inputs": [
+                    {"kind": "node_output", "ref": "groupby_and_aggregate"}
+                ],
+            },
+        ],
+    }
+
+    compiler._normalize_stage_node_aliases(stage)
+    steps = stage["pandas_execution_plan"]
+    assert steps[1]["inputs"] == [
+        {"kind": "node_output", "ref": steps[0]["node_id"]}
+    ]
+    assert steps[2]["inputs"] == [
+        {"kind": "node_output", "ref": steps[1]["node_id"]}
+    ]
+    # A cross-stage logical alias has no earlier in-stage operation owner and
+    # remains untouched for the dedicated cross-stage normalization pass.
+    assert steps[0]["inputs"][0] == {"kind": "node_output", "ref": "previous_stage"}
+    assert steps[0]["inputs"][1] == {"kind": "external_source", "ref": "eqp_src"}
 
 
 @pytest.mark.parametrize("placeholder_max_stages", [0, 1, 2, ""])
@@ -3267,3 +4263,25 @@ def test_live_c12_fixture_uses_equipment_assign_and_prefix_decoys():
     assert validation._live_expected_datasets({"id": "C12", "base_case": None})[0] == {
         "equipment_assign"
     }
+
+
+def test_continuation_reference_join_precedes_single_source_fast_recipe(executor):
+    """Continuation enrichment must not discard prior result metrics in Fast mode."""
+
+    reference_join = {
+        "strict": True,
+        "operation": "enrich_previous_result",
+        "left_source_alias": "previous_result",
+        "right_source_alias": "equipment_assign_src",
+    }
+    payload = {
+        "intent_plan": {"resolved_reference_join_plan": reference_join},
+        "simple_analysis_contract": {
+            "strict": True,
+            "route": "fast",
+            "operation": "execute_fast_path_recipe",
+            "recipe": "group_summary",
+        },
+    }
+
+    assert executor._deterministic_execution_contract(payload) == reference_join

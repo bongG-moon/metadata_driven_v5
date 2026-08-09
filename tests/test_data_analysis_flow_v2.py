@@ -102,6 +102,31 @@ def _resolve_and_execute(payload: dict):
     return resolved, executed, model_calls
 
 
+def test_v2_strict_contract_projects_a_unique_presentation_label_back_to_canonical_key():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"PRODUCTION": 10}],
+        steps=[],
+        output_contract={
+            "result_mode": "scalar",
+            "result_columns": ["PRODUCTION_SUM"],
+            "required_columns": ["PRODUCTION_SUM"],
+            "metric_columns": ["PRODUCTION_SUM"],
+            "strict_result_columns": True,
+            "column_labels": {"PRODUCTION_SUM": "전일 생산량"},
+        },
+    )
+
+    rows, columns = executor._apply_strict_result_columns(
+        [{"전일 생산량": 123}],
+        ["전일 생산량"],
+        payload,
+    )
+
+    assert columns == ["PRODUCTION_SUM"]
+    assert rows == [{"PRODUCTION_SUM": 123}]
+
+
 def test_v2_flow_export_matches_current_native_graph():
     flow = build_flow()
 
@@ -205,6 +230,151 @@ def test_catalog_guarded_intent_router_skips_model_when_table_catalog_load_fails
     assert gated["execution_gate"]["status"] == "blocked"
     assert gated["analysis"]["error"]["type"] == "table_catalog_metadata_unavailable"
     assert "메타데이터 연결 정보를 확인해 주세요" in gated["answer_message"]
+
+
+def test_v2_normalizer_reconciles_unique_dataset_alias_variants():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan, steps, trace = normalizer._reconcile_execution_source_aliases(
+        {
+            "pandas_function_cases": [
+                {
+                    "function_name": "match_product_tokens",
+                    "source_alias": "eqp_uph_src",
+                }
+            ],
+            "grain_plan": {"source_alias": "eqp_uph_src"},
+            "output_contract": {
+                "metric_bindings": [{"source_alias": "eqp_uph_src"}]
+            },
+        },
+        [{"dataset_key": "eqp_uph", "source_alias": "eqp_uph_source"}],
+        [
+            {
+                "operation": "apply_filters",
+                "source_alias": "eqp_uph_src",
+                "inputs": [{"kind": "external_source", "ref": "eqp_uph_src"}],
+            }
+        ],
+    )
+
+    assert trace["status"] == "applied"
+    assert steps[0]["source_alias"] == "eqp_uph_source"
+    assert steps[0]["inputs"][0]["ref"] == "eqp_uph_source"
+    assert plan["pandas_function_cases"][0]["source_alias"] == "eqp_uph_source"
+    assert plan["grain_plan"]["source_alias"] == "eqp_uph_source"
+    assert plan["output_contract"]["metric_bindings"][0]["source_alias"] == "eqp_uph_source"
+
+
+def test_v2_normalizer_prunes_unconsumed_right_source_from_simple_preserve_left_join():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {
+                    "columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                },
+            },
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {
+                    "columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+                },
+            },
+        ]
+    }
+    plan = {
+        "output_contract": {
+            "result_mode": "detail",
+            "result_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            "required_columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+        },
+        "join_plan": {"left_source_alias": "equipment_assign", "right_source_alias": "eqp_uph"},
+    }
+    jobs = [
+        {"dataset_key": "equipment_assign", "source_alias": "equipment_assign"},
+        {"dataset_key": "eqp_uph", "source_alias": "eqp_uph"},
+    ]
+    steps = [
+        {
+            "node_id": "left_filter",
+            "operation": "apply_filters",
+            "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+            "output_alias": "left_filtered",
+            "source_alias": "equipment_assign",
+        },
+        {
+            "node_id": "right_filter",
+            "operation": "apply_filters",
+            "inputs": [{"kind": "external_source", "ref": "eqp_uph"}],
+            "output_alias": "right_filtered",
+            "source_alias": "eqp_uph",
+        },
+        {
+            "node_id": "assignment_uph_join",
+            "operation": "join",
+            "inputs": [
+                {"kind": "node_output", "ref": "left_filter"},
+                {"kind": "node_output", "ref": "right_filter"},
+            ],
+            "output_alias": "assignment_uph_joined",
+            "left_source_alias": "equipment_assign",
+            "right_source_alias": "eqp_uph",
+            "join_type": "left",
+            "population_policy": "preserve_left_rows",
+        },
+        {
+            "node_id": "select_output",
+            "operation": "select_columns",
+            "inputs": [{"kind": "node_output", "ref": "assignment_uph_join"}],
+            "output_alias": "result",
+            "source_alias": "assignment_uph_joined",
+            "columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+        },
+    ]
+
+    normalized_plan, normalized_jobs, normalized_steps, trace = (
+        normalizer._prune_source_sufficient_left_joins(
+            plan, jobs, steps, candidates, [], "assigned equipment list"
+        )
+    )
+
+    assert trace["status"] == "pruned"
+    assert trace["pruned_source_alias"] == "eqp_uph"
+    assert [item["dataset_key"] for item in normalized_jobs] == ["equipment_assign"]
+    assert [item["node_id"] for item in normalized_steps] == ["left_filter", "select_output"]
+    assert normalized_steps[-1]["inputs"] == [{"kind": "node_output", "ref": "left_filter"}]
+    assert "join_plan" not in normalized_plan
+
+
+def test_v2_normalizer_keeps_right_source_when_output_metric_is_owned_by_it():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "table_catalog_items": [
+            {"dataset_key": "left", "payload": {"columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]}},
+            {"dataset_key": "right", "payload": {"columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]}},
+        ]
+    }
+    plan = {
+        "output_contract": {
+            "result_columns": ["EQP_MODEL", "UPH"],
+            "metric_bindings": [{"source_alias": "right", "source_column": "UPH"}],
+        }
+    }
+    jobs = [{"dataset_key": "left", "source_alias": "left"}, {"dataset_key": "right", "source_alias": "right"}]
+    steps = [
+        {"node_id": "left_step", "operation": "apply_filters", "inputs": [{"kind": "external_source", "ref": "left"}]},
+        {"node_id": "right_step", "operation": "apply_filters", "inputs": [{"kind": "external_source", "ref": "right"}]},
+        {"node_id": "join", "operation": "join", "inputs": [{"kind": "node_output", "ref": "left_step"}, {"kind": "node_output", "ref": "right_step"}], "join_type": "left", "population_policy": "preserve_left_rows"},
+    ]
+
+    _, normalized_jobs, _, trace = normalizer._prune_source_sufficient_left_joins(
+        plan, jobs, steps, candidates, [], "UPH by equipment"
+    )
+
+    assert trace["status"] == "not_needed"
+    assert trace["reason"] == "right_source_is_consumed_by_metric_or_transform"
+    assert len(normalized_jobs) == 2
 
 
 def test_catalog_loader_failure_exposes_safe_detailed_reason_and_purges_llm_plan():
@@ -429,6 +599,144 @@ def test_bounded_candidates_keep_full_execution_catalog_registry():
     assert "table_catalog_registry" not in model_candidates
 
 
+def test_candidate_tokens_split_mixed_ascii_korean_semantic_terms():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+
+    tokens = builder._tokens("PKG계획 데이터 7/6일자 보여줘")
+
+    assert {"pkg", "계획", "target", "plan"}.issubset(tokens)
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "PKG계획 데이터 7/6일자 보여줘"}},
+        [],
+        [
+            {
+                "dataset_key": "production",
+                "payload": {"display_name": "Production History", "columns": ["DATE", "PRODUCTION"]},
+            },
+            {
+                "dataset_key": "target",
+                "payload": {
+                    "display_name": "PKG Target Plan",
+                    "metric_semantics": {"INPUT_PLAN_QTY": {"default_rollup": "sum"}},
+                },
+            },
+        ],
+        [],
+        min_table_items=1,
+        max_table_items=1,
+    )
+
+    assert [item["dataset_key"] for item in result["metadata_candidates"]["table_catalog_items"]] == [
+        "target"
+    ]
+
+
+def test_bounded_candidates_preserve_exact_domain_source_before_temporal_companions():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "assigned equipment count"}},
+        [
+            {
+                "section": "quantity_terms",
+                "key": "equipment_count",
+                "payload": {
+                    "aliases": ["assigned equipment"],
+                    "data_source": "equipment_assign",
+                    "columns": ["EQP_ID"],
+                },
+            }
+        ],
+        [
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "dataset_family": "production",
+                    "selection_criteria": {"time_scope": "current_day"},
+                },
+            },
+            {
+                "dataset_key": "production",
+                "payload": {
+                    "dataset_family": "production",
+                    "selection_criteria": {"time_scope": "history"},
+                },
+            },
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"dataset_family": "equipment", "columns": ["EQP_ID"]},
+            },
+        ],
+        [],
+        min_table_items=1,
+        max_table_items=2,
+    )
+
+    selected = result["metadata_candidates"]["table_catalog_items"]
+    keys = [item["dataset_key"] for item in selected]
+    assert keys[0] == "equipment_assign"
+    assert "equipment_assign" in keys
+    assert result["metadata_load"]["temporal_family_companions"]["protected_dataset_keys"] == [
+        "equipment_assign"
+    ]
+
+
+def test_bounded_candidates_keep_registered_dataset_family_members_as_guidance():
+    """A family hint keeps choices visible; it never forces one dataset."""
+
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "장비 대수 알려줘"}},
+        [
+            {
+                "section": "quantity_terms",
+                "key": "equipment_count",
+                "payload": {
+                    "aliases": ["장비 대수", "장비 수"],
+                    "data_source": "equipment",
+                    "columns": ["EQP_ID"],
+                    "aggregation_method": "nunique",
+                },
+            }
+        ],
+        [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {
+                    "dataset_family": "equipment",
+                    "columns": ["EQP_ID", "RECIPE_ID"],
+                },
+            },
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {
+                    "dataset_family": "equipment",
+                    "columns": ["EQP_ID", "UPH"],
+                },
+            },
+            {
+                "dataset_key": "production_today",
+                "payload": {"dataset_family": "production", "columns": ["DATE", "PRODUCTION"]},
+            },
+        ],
+        [],
+        min_table_items=1,
+        max_table_items=5,
+    )
+
+    keys = [item["dataset_key"] for item in result["metadata_candidates"]["table_catalog_items"]]
+    assert {"equipment_assign", "eqp_uph"}.issubset(keys)
+    dependencies = result["metadata_load"]["domain_dataset_dependencies"]
+    assert dependencies["family_reference_values"] == ["equipment"]
+    assert dependencies["family_included_dataset_keys"] == ["equipment_assign", "eqp_uph"]
+    assert dependencies["unresolved_reference_values"] == []
+
+
 def test_normalizer_hydrates_registered_dataset_outside_bounded_candidates():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
     production_item = {
@@ -648,8 +956,126 @@ def test_v2_complex_executor_pretransforms_selected_function_case_before_llm_cod
     assert executed["analysis"]["status"] == "ok"
     assert executed["data"]["rows"] == [{"MCP_NO": "L-116A", "UPH": 112.0}]
     trace = executed["trace"]["inspection"]["pandas_execution"]
+    assert len(trace["deterministic_source_transforms"]) == 1
     assert trace["deterministic_source_transforms"][0]["function_name"] == "match_product_tokens"
     safe_trace = trace["safe_import_normalization"]
+    assert safe_trace["selected_function_case_pre_transform"]["replacement_count"] == 1
+
+
+def test_v2_complex_executor_repairs_single_source_generated_result_alias_for_selected_helper():
+    """A weak model may treat a helper result name as a source alias.
+
+    The repair is limited to one active retrieval source, so it cannot redirect
+    a legitimate second source in a join.
+    """
+
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[
+            {"MCP_NO": "L-116A", "UPH": 112.0},
+            {"MCP_NO": "OTHER", "UPH": 90.0},
+        ],
+        steps=[
+            {
+                "operation": "apply_pandas_function_case",
+                "function_name": "match_product_tokens",
+                "input_text": "L-116",
+                "source_alias": "source_1",
+            },
+            {"operation": "custom_complex_operation", "source_alias": "source_1"},
+        ],
+        output_contract={"result_mode": "detail", "result_columns": ["MCP_NO", "UPH"]},
+    )
+    payload["intent_plan"]["pandas_function_cases"] = [
+        {
+            "function_name": "match_product_tokens",
+            "input_text": "L-116",
+            "source_alias": "source_1",
+        }
+    ]
+    helper_source = (
+        "def match_product_tokens(input_text, frame):\n"
+        "    return frame[frame['MCP_NO'].astype(str).str.startswith(input_text)].copy()\n"
+    )
+
+    executed = executor.execute_pandas_code(
+        payload,
+        {
+            "code": (
+                "candidate = sources['matched_prod'].copy()\n"
+                "selected = match_product_tokens('L-116', candidate)\n"
+                "result = selected[['MCP_NO', 'UPH']].copy()"
+            )
+        },
+        function_case_helper_code=helper_source,
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [{"MCP_NO": "L-116A", "UPH": 112.0}]
+    safe_trace = executed["trace"]["inspection"]["pandas_execution"]["safe_import_normalization"]
+    rewrite = safe_trace["selected_function_case_pre_transform"]
+    assert rewrite["replaced_unknown_source_refs"] == ["matched_prod"]
+    assert rewrite["replaced_unbound_function_names"] == ["match_product_tokens"]
+
+
+def test_v2_complex_executor_does_not_redirect_same_helper_on_another_source():
+    """A source-local helper transform must not overwrite a second source's schema."""
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"MCP_NO": "L-116A", "UPH": 112.0}],
+        steps=[
+            {
+                "operation": "apply_pandas_function_case",
+                "function_name": "match_product_tokens",
+                "input_text": "L-116",
+                "source_alias": "source_1",
+            },
+            {"operation": "custom_complex_operation", "source_alias": "source_1"},
+        ],
+        output_contract={"result_mode": "detail", "result_columns": ["MCP_NO", "WIP"]},
+    )
+    payload["intent_plan"]["pandas_function_cases"] = [
+        {
+            "function_name": "match_product_tokens",
+            "input_text": "L-116",
+            "source_alias": "source_1",
+        }
+    ]
+    payload["intent_plan"]["retrieval_jobs"].append(
+        {"source_alias": "source_2", "dataset_key": "dataset_2", "filters": {}}
+    )
+    payload["intent_plan"]["resolved_execution_graph"]["external_source_requirements"].append(
+        {
+            "source_alias": "source_2",
+            "dataset_key": "dataset_2",
+            "provider": "retrieval_job",
+            "required": True,
+        }
+    )
+    payload["runtime_sources"]["source_2"] = [{"MCP_NO": "L-116B", "WIP": 47.0}]
+    payload["source_results"].append(
+        {"source_alias": "source_2", "dataset_key": "dataset_2", "status": "ok", "row_count": 1}
+    )
+    helper_source = (
+        "def match_product_tokens(input_text, frame):\n"
+        "    return frame[frame['MCP_NO'].astype(str).str.startswith(input_text)].copy()\n"
+    )
+
+    executed = executor.execute_pandas_code(
+        payload,
+        {
+            "code": (
+                "selected = match_product_tokens('L-116', sources['source_1'])\n"
+                "other = match_product_tokens('L-116', sources['source_2'])\n"
+                "result = other[['MCP_NO', 'WIP']].copy()"
+            )
+        },
+        function_case_helper_code=helper_source,
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [{"MCP_NO": "L-116B", "WIP": 47.0}]
+    safe_trace = executed["trace"]["inspection"]["pandas_execution"]["safe_import_normalization"]
     assert safe_trace["selected_function_case_pre_transform"]["replacement_count"] == 1
 
 
@@ -747,6 +1173,103 @@ def test_v2_catalog_metric_ownership_blocks_cross_dataset_metric_relabeling():
         candidates,
     )
     assert not any(error["type"] == "catalog_metric_ownership_mismatch" for error in safe_errors)
+
+
+def test_v2_explicit_metric_domain_dataset_is_not_discarded_for_missing_time_scope():
+    """A registered metric source remains authoritative when scope only ranks alternatives."""
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "domain_items": [
+            {
+                "section": "quantity_terms",
+                "key": "target_data",
+                "payload": {
+                    "aliases": ["생산계획", "계획"],
+                    "data_source": "target",
+                    "metric_columns": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+                },
+            }
+        ],
+        "table_catalog_items": [
+            {
+                "section": "table_catalog",
+                "key": "production",
+                "dataset_key": "production",
+                "payload": {
+                    "columns": ["DATE", "PRODUCTION"],
+                    "time_scope": "history",
+                },
+            },
+            {
+                "section": "table_catalog",
+                "key": "target",
+                "dataset_key": "target",
+                "payload": {
+                    "source_type": "goodocs",
+                    "columns": ["DATE", "INPUT 계획", "OUT 계획"],
+                    "filter_mappings": {
+                        "DATE": ["DATE"],
+                        "INPUT_PLAN_QTY": ["INPUT 계획"],
+                        "OUT_PLAN_QTY": ["OUT 계획"],
+                    },
+                    # The catalog deliberately has no time_scope.  It is a
+                    # standalone date-filtered plan dataset, not a history
+                    # companion of production.
+                },
+            },
+        ],
+    }
+    jobs, steps, guard = normalizer._ensure_selected_metric_sources(
+        {
+            "request": {
+                "question": "2026-07-06 생산계획을 보여줘",
+                "reference_date": "20260701",
+            }
+        },
+        [
+            {
+                "dataset_key": "production",
+                "source_alias": "retrieval_source",
+                "source_type": "oracle",
+                "required_params": {"DATE": "20260706"},
+                "filters": {"DATE": {"operator": "eq", "value": "20260706"}},
+            }
+        ],
+        [
+            {
+                "node_id": "select_plan",
+                "operation": "select_columns",
+                "inputs": [{"kind": "external_source", "ref": "retrieval_source"}],
+                "output_alias": "plan_result",
+                "source_alias": "retrieval_source",
+            }
+        ],
+        candidates,
+        [{"section": "quantity_terms", "key": "target_data"}],
+    )
+
+    assert steps[0]["source_alias"] == "retrieval_source"
+    assert jobs == [
+        {
+            "dataset_key": "target",
+            "source_alias": "retrieval_source",
+            "source_type": "goodocs",
+            "filters": {"DATE": {"operator": "eq", "value": "20260706"}},
+        }
+    ]
+    assert guard["status"] == "applied"
+    assert guard["additions"] == []
+    assert guard["replacements"] == [
+        {
+            "metadata_ref": {"section": "quantity_terms", "key": "target_data"},
+            "source_alias": "retrieval_source",
+            "from_dataset_key": "production",
+            "to_dataset_key": "target",
+            "metrics": ["INPUT_PLAN_QTY", "OUT_PLAN_QTY"],
+            "requested_time_scope": "history",
+            "selection_source": "domain_explicit_metric_dataset",
+        }
+    ]
 
 
 def test_v2_repair_prompt_does_not_repeat_selected_helper_source():
@@ -1261,6 +1784,163 @@ def test_multiple_external_sources_route_to_complex_and_invoke_model_once():
     assert executed["analysis"]["execution_route"] == "complex"
 
 
+def test_v2_typed_multi_source_plan_executes_without_pandas_model():
+    """A complete Typed IR joins generic sources without generating pandas code.
+
+    This deliberately uses neutral columns instead of manufacturing names.  It
+    protects the common multi-source path used by both the basic analysis Flow
+    and the continuation Flow without teaching either Flow a question-specific
+    recipe.
+    """
+
+    resolver, executor, _ = _modules()
+    payload = {
+        "question": "top groups with assigned item count and list",
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "left_dataset", "source_alias": "left_src", "filters": {}},
+                {"dataset_key": "right_dataset", "source_alias": "right_src", "filters": {}},
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "sum_left",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "external_source", "ref": "left_src"}],
+                    "output_alias": "group_totals",
+                    "group_by": ["GROUP"],
+                    "aggregations": [
+                        {"column": "RAW_VALUE", "method": "sum", "output_column": "TOTAL_VALUE"}
+                    ],
+                },
+                {
+                    "node_id": "join_assignments",
+                    "operation": "join",
+                    "inputs": [
+                        {"kind": "node_output", "ref": "group_totals"},
+                        {"kind": "external_source", "ref": "right_src"},
+                    ],
+                    "output_alias": "joined_groups",
+                    "on": ["GROUP"],
+                    "join_type": "left",
+                },
+                {
+                    "node_id": "aggregate_assignments",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "node_output", "ref": "joined_groups"}],
+                    "output_alias": "group_summary",
+                    "group_by": ["GROUP", "TOTAL_VALUE"],
+                    "aggregations": [
+                        {"column": "ITEM", "method": "nunique", "output_column": "ITEM_COUNT"},
+                        {"column": "ITEM", "method": "collect_unique", "output_column": "ITEM_LIST"},
+                    ],
+                },
+                {
+                    "node_id": "rank_groups",
+                    "operation": "sort_and_top_n",
+                    "inputs": [{"kind": "node_output", "ref": "group_summary"}],
+                    "output_alias": "final_groups",
+                    "sort_by": "TOTAL_VALUE",
+                    "order": "desc",
+                    "limit": 3,
+                },
+            ],
+            "output_contract": {
+                "strict_result_columns": True,
+                "result_mode": "aggregate",
+                "grain_columns": ["GROUP"],
+                "metric_columns": ["TOTAL_VALUE", "ITEM_COUNT", "ITEM_LIST"],
+                "required_columns": ["GROUP", "TOTAL_VALUE", "ITEM_COUNT", "ITEM_LIST"],
+                "result_columns": ["GROUP", "TOTAL_VALUE", "ITEM_COUNT", "ITEM_LIST"],
+            },
+            "resolved_execution_graph": {
+                "external_source_requirements": [
+                    {"source_alias": "left_src", "dataset_key": "left_dataset", "provider": "retrieval_job", "required": True},
+                    {"source_alias": "right_src", "dataset_key": "right_dataset", "provider": "retrieval_job", "required": True},
+                ],
+                "validation_errors": [],
+            },
+            "validation_errors": [],
+        },
+        "runtime_sources": {
+            "left_src": [
+                {"GROUP": "A", "RAW_VALUE": 7},
+                {"GROUP": "A", "RAW_VALUE": 3},
+                {"GROUP": "B", "RAW_VALUE": 4},
+            ],
+            "right_src": [
+                {"GROUP": "A", "ITEM": "E1"},
+                {"GROUP": "A", "ITEM": "E2"},
+                {"GROUP": "A", "ITEM": "E2"},
+                {"GROUP": "B", "ITEM": "E3"},
+            ],
+        },
+        "source_results": [
+            {"source_alias": "left_src", "dataset_key": "left_dataset", "status": "ok", "columns": ["GROUP", "RAW_VALUE"]},
+            {"source_alias": "right_src", "dataset_key": "right_dataset", "status": "ok", "columns": ["GROUP", "ITEM"]},
+        ],
+        "trace": {"inspection": {}},
+    }
+
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    contract = resolved["simple_analysis_contract"]
+    assert contract["route"] == "complex"
+    assert contract["operation"] == "execute_typed_pandas_plan"
+    assert contract["requires_pandas_llm"] is False
+
+    calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "this must never be used for a validated Typed IR",
+        model_invoker=lambda prompt: calls.append(prompt) or "{}",
+        repair_prompt_template="repair",
+    )
+
+    assert calls == []
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["analysis"]["execution_route"] == "complex"
+    assert executed["data"]["rows"] == [
+        {"GROUP": "A", "TOTAL_VALUE": 10, "ITEM_COUNT": 2, "ITEM_LIST": "E1, E2"},
+        {"GROUP": "B", "TOTAL_VALUE": 4, "ITEM_COUNT": 1, "ITEM_LIST": "E3"},
+    ]
+
+
+def test_v2_typed_join_aggregates_the_right_source_before_merging():
+    """A typed join can own its aggregate outputs without a redundant step."""
+
+    _, executor, _ = _modules()
+    result = executor._typed_join_frames(
+        pd.DataFrame(
+            [
+                {"GROUP": "A", "TOTAL": 10},
+                {"GROUP": "B", "TOTAL": 4},
+                {"GROUP": "C", "TOTAL": 1},
+            ]
+        ),
+        pd.DataFrame(
+            [
+                {"GROUP": "A", "ITEM": "E1"},
+                {"GROUP": "A", "ITEM": "E2"},
+                {"GROUP": "A", "ITEM": "E2"},
+                {"GROUP": "B", "ITEM": "E3"},
+            ]
+        ),
+        {
+            "on": ["GROUP"],
+            "join_type": "left",
+            "aggregations": [
+                {"column": "ITEM", "method": "nunique", "output_column": "ITEM_COUNT"},
+                {"column": "ITEM", "method": "collect_unique", "output_column": "ITEM_LIST"},
+            ],
+        },
+        pd,
+    )
+    assert result.to_dict(orient="records") == [
+        {"GROUP": "A", "TOTAL": 10, "ITEM_COUNT": 2, "ITEM_LIST": "E1, E2"},
+        {"GROUP": "B", "TOTAL": 4, "ITEM_COUNT": 1, "ITEM_LIST": "E3"},
+        {"GROUP": "C", "TOTAL": 1, "ITEM_COUNT": 0, "ITEM_LIST": ""},
+    ]
+
+
 def test_intent_ir_authoritatively_excludes_unused_retrieval_source_from_fast_route():
     resolver, executor, _ = _modules()
     payload = _single_source_payload(
@@ -1421,6 +2101,91 @@ def test_multiturn_scope_is_preserved_while_each_turn_resolves_its_own_route():
     assert executed3["analysis"]["execution_route"] == "fast"
     assert executed3["intent_plan"]["request_scope"] == "followup_transform"
     assert calls == []
+
+
+def test_v2_fast_path_uses_a_restored_previous_result_for_retrieval_free_top_n():
+    """A safe prior-result transform must not spend a pandas-model call."""
+
+    resolver, executor, _ = _modules()
+    payload = {
+        "intent_plan": {
+            "request_scope": "followup_transform",
+            "reference_mode": "previous_result_transform",
+            "reuse_strategy": "previous_result",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [
+                {
+                    "operation": "sort_and_top_n",
+                    "inputs": [{"kind": "external_source", "ref": "previous_result"}],
+                    "source_alias": "previous_result",
+                    "sort_by": "EQP_COUNT",
+                    "order": "desc",
+                    "limit": 1,
+                }
+            ],
+            "resolved_execution_graph": {
+                "external_source_requirements": [
+                    {
+                        "source_alias": "previous_result",
+                        "dataset_key": "",
+                        "provider": "previous_result",
+                        "required": True,
+                    }
+                ]
+            },
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["PRODUCT"],
+                "metric_columns": ["EQP_COUNT", "EQP_LIST", "PRODUCTION"],
+                "metric_bindings": [
+                    {
+                        "source_alias": "previous_result",
+                        "source_column": "EQP_COUNT",
+                        "output_column": "EQP_COUNT",
+                        "aggregation": "max",
+                    },
+                    {
+                        "source_alias": "previous_result",
+                        "source_column": "EQP_LIST",
+                        "output_column": "EQP_LIST",
+                        "aggregation": "collect_unique",
+                    },
+                    {
+                        "source_alias": "previous_result",
+                        "source_column": "PRODUCTION",
+                        "output_column": "PRODUCTION",
+                        "aggregation": "sum",
+                    },
+                ],
+                "result_columns": ["PRODUCT", "EQP_COUNT", "EQP_LIST", "PRODUCTION"],
+                "strict_result_columns": True,
+                "ordering": {"sort_by": "EQP_COUNT", "order": "desc", "limit": 1},
+            },
+        },
+        "runtime_sources": {
+            "previous_result": [
+                {"PRODUCT": "A", "EQP_COUNT": 1, "EQP_LIST": "E1", "PRODUCTION": 100},
+                {"PRODUCT": "B", "EQP_COUNT": 3, "EQP_LIST": "E2, E3, E4", "PRODUCTION": 50},
+            ]
+        },
+        "source_results": [],
+    }
+
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    assert resolved["simple_analysis_contract"]["route"] == "fast"
+    assert resolved["simple_analysis_contract"]["source_alias"] == "previous_result"
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "unused",
+        model_invoker=lambda prompt: (_ for _ in ()).throw(
+            AssertionError("retrieval-free previous-result Fast path called pandas LLM")
+        ),
+        repair_prompt_template="repair",
+    )
+    assert executed["analysis"]["execution_route"] == "fast"
+    assert executed["data"]["rows"] == [
+        {"PRODUCT": "B", "EQP_COUNT": 3, "EQP_LIST": "E2, E3, E4", "PRODUCTION": 50}
+    ]
 
 
 def test_fast_answer_builder_does_not_invoke_answer_model():
@@ -2561,6 +3326,162 @@ def test_v2_normalizer_reconciles_current_scope_for_comparison_without_aggregati
     assert trace["corrections"][0]["requested_time_scope"] == "current_day"
 
 
+def test_v2_source_scope_reconciliation_excludes_derived_aggregate_outputs():
+    """A post-aggregate sort key must not be required from the raw Catalog."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    columns = normalizer._aggregation_source_columns_by_alias(
+        [
+            {
+                "operation": "groupby_and_aggregate",
+                "source_alias": "production_source",
+                "inputs": [{"kind": "external_source", "ref": "production_source"}],
+                "group_by": ["TECH"],
+                "aggregations": [
+                    {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION_SUM"}
+                ],
+            },
+            {
+                "operation": "sort_and_top_n",
+                "source_alias": "production_source",
+                "inputs": [{"kind": "node_output", "ref": "aggregate"}],
+                "sort_by": "PRODUCTION_SUM",
+                "limit": 3,
+            },
+        ],
+        {"production_source"},
+    )
+    assert columns["production_source"] == ["PRODUCTION", "TECH"]
+
+
+def test_v2_normalizer_canonicalizes_unambiguous_filter_shorthand():
+    """Raw scalar/list filters become the deterministic executor contract."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    jobs, trace = normalizer._normalize_retrieval_filter_operators(
+        [
+            {
+                "dataset_key": "production_today",
+                "filters": {
+                    "DATE": "20260701",
+                    "OPER_NAME": ["D/A1", "D/A2"],
+                    "HOLD_STAT": {"operator": "=", "value": "OnHold"},
+                },
+            }
+        ]
+    )
+    filters = jobs[0]["filters"]
+    assert filters["DATE"] == {"operator": "eq", "value": "20260701"}
+    assert filters["OPER_NAME"] == {"operator": "in", "value": ["D/A1", "D/A2"]}
+    assert filters["HOLD_STAT"] == {"operator": "eq", "value": "OnHold"}
+    assert trace["status"] == "applied"
+
+
+def test_v2_normalizer_preserves_explicit_prefix_intent_for_the_same_literal_only():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    jobs, trace = normalizer._normalize_retrieval_filter_operators(
+        [
+            {
+                "dataset_key": "sample",
+                "source_alias": "sample_source",
+                "filters": {
+                    "MCP_NO": {"operator": "eq", "value": "L-116"},
+                    "OPER_NAME": {"operator": "eq", "value": "W/B1"},
+                    "DATE": {"operator": "eq", "value": "20260701"},
+                },
+            }
+        ],
+        question="F315 L-116로 시작하는 제품 WB 공정 차수별 UPH 알려줘",
+    )
+    filters = jobs[0]["filters"]
+    assert filters["MCP_NO"]["operator"] == "starts_with"
+    assert filters["OPER_NAME"]["operator"] == "eq"
+    assert filters["DATE"]["operator"] == "eq"
+    assert any(change.get("reason") == "explicit_prefix_cue_for_same_literal" for change in trace["changes"])
+
+
+def test_v2_normalizer_repairs_a_prefix_literal_embedded_in_a_compound_filter():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    jobs, trace = normalizer._normalize_retrieval_filter_operators(
+        [
+            {
+                "dataset_key": "sample",
+                "source_alias": "sample_source",
+                "filters": {
+                    "MCP_NO": {"operator": "contains", "value": "F315 L-116"},
+                    "OPER_NAME": {"operator": "eq", "value": "W/B1"},
+                    "DATE": {"operator": "eq", "value": "20260701"},
+                },
+            }
+        ],
+        question="F315 L-116로 시작하는 제품 WB 공정 차수별 UPH 알려줘",
+    )
+
+    filters = jobs[0]["filters"]
+    # The repair does not choose a new field or discard F315.  It only fixes
+    # the already selected field's malformed compound literal to the explicit
+    # prefix in the user's wording; F315 remains available to its helper.
+    assert filters["MCP_NO"] == {"operator": "starts_with", "value": "L-116"}
+    assert filters["OPER_NAME"]["operator"] == "eq"
+    assert filters["DATE"]["operator"] == "eq"
+    assert any(
+        change.get("reason") == "explicit_prefix_literal_extracted_from_compound_filter"
+        for change in trace["changes"]
+    )
+
+
+def test_v2_normalizer_removes_helper_only_when_one_typed_filter_covers_its_full_input():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    cases, steps, trace = normalizer._remove_source_filter_sufficient_function_cases(
+        [
+            {
+                "key": "generic_match",
+                "function_name": "generic_match",
+                "input_text": "L-116",
+                "source_alias": "source",
+            }
+        ],
+        [
+            {
+                "operation": "apply_pandas_function_case",
+                "source_alias": "source",
+            }
+        ],
+        [
+            {
+                "dataset_key": "sample",
+                "source_alias": "source",
+                "filters": {"MCP_NO": {"operator": "starts_with", "value": "L-116"}},
+            }
+        ],
+    )
+    assert cases == []
+    assert steps == []
+    assert trace["removed"][0]["filter_field"] == "MCP_NO"
+
+    retained, retained_steps, retained_trace = normalizer._remove_source_filter_sufficient_function_cases(
+        [
+            {
+                "key": "generic_match",
+                "function_name": "generic_match",
+                "input_text": "SP 24G GDDR7",
+                "source_alias": "source",
+            }
+        ],
+        [{"operation": "apply_pandas_function_case", "source_alias": "source"}],
+        [
+            {
+                "dataset_key": "sample",
+                "source_alias": "source",
+                "filters": {"MCP_NO": {"operator": "starts_with", "value": "L-116"}},
+            }
+        ],
+    )
+    assert len(retained) == 1
+    assert len(retained_steps) == 1
+    assert retained_trace["removed"] == []
+
+
 def test_v2_normalizer_keeps_schema_capable_llm_source_and_records_catalog_advisory():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
     columns = ["TECH", "DEN", "PKG_TYPE2", "MCP_NO", "MODE", "PKG_TYPE1", "LEAD"]
@@ -2642,6 +3563,52 @@ def test_metadata_candidates_expose_bounded_catalog_selection_hints_without_sour
     assert hint["metric_default_rollups"] == {"UPH": "mean"}
     assert hint["use_when"] == ["장비별 UPH를 조회하거나 평균 UPH를 비교할 때"]
     assert "dataset_key" not in hint
+
+
+def test_metadata_candidates_prioritize_matching_clause_from_worker_written_catalog_usage_list():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "현재 D/A1 공정에 배정된 장비를 장비 모델과 Recipe 조합별로 보여줘"}},
+        [],
+        [
+            {
+                "section": "table_catalog",
+                "key": "equipment_assign",
+                "dataset_key": "equipment_assign",
+                "payload": {
+                    "selection_criteria": {
+                        "use_when": [
+                            "배정된 장비, 할당 장비, 장비 목록, 장비 대수, 장비 모델과 레시피 조합을 조회할 때"
+                        ],
+                    },
+                    "columns": ["EQP_ID", "EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                },
+            },
+            {
+                "section": "table_catalog",
+                "key": "eqp_uph",
+                "dataset_key": "eqp_uph",
+                "payload": {
+                    "selection_criteria": {
+                        "exclude_when": ["장비 목록, 장비 대수, 장비 모델과 레시피 조합만 물어볼 때"],
+                    },
+                    "metric_semantics": {"UPH": {"default_rollup": "mean"}},
+                    "columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"],
+                },
+            },
+        ],
+        [],
+        min_table_items=2,
+        max_table_items=2,
+    )
+    by_key = {
+        item["dataset_key"]: item["intent_selection_hint"]
+        for item in result["metadata_candidates"]["table_catalog_items"]
+    }
+    assert "장비 모델과 레시피 조합을 조회할 때" in by_key["equipment_assign"]["matched_use_when"]
+    assert "장비 모델과 레시피 조합만 물어볼 때" in by_key["eqp_uph"]["matched_exclude_when"]
 
 
 def test_v2_normalizer_switches_to_unique_schema_capable_source():
@@ -2751,6 +3718,44 @@ def test_v2_normalizer_recovers_omitted_token_function_case_from_metadata():
     )
     assert plan["pandas_function_cases"][0]["function_name"] == "match_product_tokens"
     assert plan["pandas_function_cases"][0]["source_alias"] == "production_source"
+    assert plan["pandas_function_cases"][0]["input_text"] == "FCB production SP 24G GDDR7 X32 226 FCBGA DDP"
+    assert trace["status"] == "applied"
+
+
+def test_v2_auto_selected_product_helper_excludes_typed_metric_words_only():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan, trace = normalizer._auto_select_metadata_function_case(
+        {
+            "output_contract": {"metric_columns": ["UPH"]},
+            "pandas_execution_plan": [
+                {
+                    "operation": "groupby_and_aggregate",
+                    "aggregations": [
+                        {"column": "UPH", "method": "mean", "output_column": "AVG_UPH"}
+                    ],
+                }
+            ],
+        },
+        [{"dataset_key": "eqp_uph", "source_alias": "eqp_uph_source"}],
+        {
+            "domain_items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "product_token_match",
+                    "payload": {
+                        "function_name": "match_product_tokens",
+                        "description": "Select when product attributes are expressed as tokens.",
+                        "input_contract": {"input_text": "token bundle"},
+                    },
+                }
+            ]
+        },
+        "F315 L-116 제품 WB 공정 차수별 UPH 알려줘",
+    )
+
+    case = plan["pandas_function_cases"][0]
+    assert case["input_text"] == "F315 L-116 제품 WB 공정 차수별 UPH 알려줘"
+    assert case["arguments"]["excluded_tokens"] == ["UPH", "AVG_UPH"]
     assert trace["status"] == "applied"
 
 
@@ -3580,6 +4585,38 @@ def test_v2_direct_required_param_precedes_optional_previous_result_binding():
     )
 
 
+def test_v2_previous_preview_identifier_is_not_mistaken_for_a_direct_required_parameter():
+    """A model-copied identifier must retain the catalog-proven follow-up path."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    jobs = [
+        {
+            "dataset_key": "hold_history",
+            "source_alias": "hold_history_src",
+            "required_params": {"LOT_ID": ["LOT-A"]},
+            "filters": {},
+        }
+    ]
+    candidates = _followup_catalog_candidates()
+
+    assert normalizer._direct_required_parameter_evidence(
+        jobs,
+        candidates,
+        "위 LOT의 HOLD 이력 알려줘",
+    ) == []
+    assert normalizer._direct_required_parameter_evidence(
+        jobs,
+        candidates,
+        "LOT-A HOLD 이력 알려줘",
+    ) == [
+        {
+            "dataset_key": "hold_history",
+            "source_alias": "hold_history_src",
+            "required_params": ["LOT_ID"],
+        }
+    ]
+
+
 def test_v2_followup_product_grain_uses_source_reuse_not_previous_aggregate_rows():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
     payload = {
@@ -3747,6 +4784,296 @@ def test_v2_followup_requery_never_keeps_ambiguous_none_reference_mode():
     )
 
 
+def test_v2_followup_normalizes_legacy_previous_result_reference_mode_with_new_retrieval():
+    """A legacy spelling must not erase a valid previous-result row match."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    product_columns = [
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "LEAD",
+        "MCP_NO",
+    ]
+    payload = {
+        "request": {"question": "이 제품들에 할당된 장비 대수와 장비 목록을 보여줘"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_requery",
+            "reuse_strategy_hint": "previous_result",
+        },
+        "state": {
+            "current_data": {
+                "columns": [*product_columns, "PRODUCTION"],
+                "result_columns": [*product_columns, "PRODUCTION"],
+            },
+            "last_intent_plan": {
+                "output_contract": {"grain_columns": product_columns},
+            },
+        },
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "generic_equipment_followup",
+            "request_scope": "followup_transform",
+            # This is the legacy spelling produced by some model responses.
+            "reference_mode": "previous_result",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "equipment_assign_src",
+                    "filters": {},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "operation": "apply_row_match_groups",
+                    "source_alias": "equipment_assign_src",
+                    # Some model responses put the reference-mode spelling in
+                    # the step instead of the executable runtime alias.
+                    "reference_source_alias": "previous_result_rows",
+                },
+                {
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [
+                        {"kind": "node_output", "ref": "equipment_assign_src"}
+                    ],
+                    "group_by": product_columns,
+                    "aggregations": [
+                        {
+                            "column": "EQP_ID",
+                            "method": "nunique",
+                            "output_column": "EQP_COUNT",
+                        }
+                    ],
+                },
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": product_columns,
+                "result_columns": [*product_columns, "EQP_COUNT"],
+                "metric_columns": ["EQP_COUNT"],
+                "metric_bindings": [
+                    {
+                        "source_alias": "equipment_assign_src",
+                        "dataset_key": "equipment_assign",
+                        "source_column": "EQP_ID",
+                        "aggregation": "nunique",
+                        "output_column": "EQP_COUNT",
+                    }
+                ],
+            },
+        }
+    }
+    candidates = {
+        "domain_items": [],
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": [*product_columns, "EQP_ID"]},
+            }
+        ],
+        "main_flow_filters": [],
+    }
+
+    normalized = normalizer.normalize_intent_plan(payload, json.dumps(response), candidates)
+    plan = normalized["intent_plan"]
+
+    assert plan["reference_mode"] == "previous_result_rows"
+    assert plan["request_scope"] == "followup_requery"
+    assert plan["reuse_strategy"] == "previous_result"
+    row_match = next(
+        step
+        for step in plan["pandas_execution_plan"]
+        if step.get("operation") == "apply_row_match_groups"
+    )
+    assert row_match["reference_source_alias"] == "previous_result"
+    assert row_match["match_columns"] == product_columns
+    assert not any(
+        error.get("type") == "invalid_reference_mode_contract"
+        for error in plan.get("validation_errors", [])
+    )
+
+
+def test_reference_join_resolves_right_metrics_after_filter_and_manual_join():
+    """Follow-up metrics may be aggregated from a joined, not raw, alias.
+
+    The deterministic contract must trace the right retrieval source through
+    a filter and manual join while refusing a left-only measure.  This keeps
+    the behavior portable for every catalog-backed enrichment query.
+    """
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    product_columns = ["TECH", "DEN", "MODE"]
+    payload = {
+        "state": {
+            "current_data": {"columns": [*product_columns, "PRODUCTION"]},
+            "last_intent_plan": {
+                "resolved_grain_plan": {
+                    "column_mappings": [
+                        {"canonical_key": column, "source_candidates": [column]}
+                        for column in product_columns
+                    ]
+                }
+            },
+        }
+    }
+    candidates = {
+        "domain_items": [],
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": [*product_columns, "EQP_ID"]},
+            }
+        ],
+        "main_flow_filters": [],
+    }
+    jobs = [
+        {"dataset_key": "equipment_assign", "source_alias": "equipment_assign"}
+    ]
+    pandas_plan = [
+        {
+            "node_id": "match_equipment",
+            "operation": "apply_row_match_groups",
+            "source_alias": "equipment_assign",
+            "reference_source_alias": "previous_result",
+            "match_columns": product_columns,
+            "output_alias": "matched_equipment",
+        },
+        {
+            "node_id": "filter_equipment",
+            "operation": "apply_filters",
+            "source_alias": "equipment_assign",
+            "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+            "output_alias": "filtered_equipment",
+        },
+        {
+            "node_id": "join_equipment",
+            "operation": "join",
+            "source_alias": "previous_result",
+            "inputs": [
+                {"kind": "external_source", "ref": "previous_result"},
+                {"kind": "node_output", "ref": "filtered_equipment"},
+            ],
+            "output_alias": "joined_equipment",
+        },
+        {
+            "node_id": "aggregate_equipment",
+            "operation": "groupby_and_aggregate",
+            "source_alias": "joined_equipment",
+            "inputs": [{"kind": "node_output", "ref": "joined_equipment"}],
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                {"column": "PRODUCTION", "method": "sum", "output_column": "LEFT_ONLY_SUM"},
+            ],
+        },
+    ]
+
+    contract = normalizer._resolve_reference_join_plan(
+        payload,
+        candidates,
+        jobs,
+        pandas_plan,
+        "previous_result_rows",
+    )
+
+    assert contract["right_source_alias"] == "equipment_assign"
+    assert contract["aggregations"] == [
+        {
+            "source_column": "EQP_ID",
+            "aggregation": "nunique",
+            "output_column": "EQP_COUNT",
+            "source_candidates": ["EQP_ID"],
+        }
+    ]
+
+
+def test_v2_followup_normalizes_rows_mode_to_transform_without_new_retrieval():
+    """A retrieval-free top-N follow-up operates on the prior result itself."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    payload = {
+        "request": {"question": "그중 수량이 가장 많은 항목만 보여줘"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_transform",
+            "reuse_strategy_hint": "previous_result",
+        },
+        "state": {
+            "current_data": {
+                "columns": ["PRODUCT", "COUNT"],
+                "result_columns": ["PRODUCT", "COUNT"],
+            },
+            "last_intent_plan": {
+                "output_contract": {"grain_columns": ["PRODUCT"]},
+            },
+        },
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "generic_previous_result_top_n",
+            "request_scope": "followup_transform",
+            # A weak model may use the requery-specific spelling here.
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [
+                {
+                    "operation": "sort_and_top_n",
+                    "inputs": [{"kind": "external_source", "ref": "previous_result"}],
+                    "source_alias": "previous_result",
+                    "sort_by": "COUNT",
+                    "order": "desc",
+                    "limit": 1,
+                }
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["PRODUCT"],
+                "metric_columns": ["COUNT"],
+                "metric_bindings": [
+                    {
+                        "source_alias": "previous_result",
+                        "dataset_key": "previous_result",
+                        "source_column": "COUNT",
+                        "aggregation": "max",
+                        "output_column": "COUNT",
+                    }
+                ],
+                "result_columns": ["PRODUCT", "COUNT"],
+                "strict_result_columns": True,
+                "ordering": {"sort_by": "COUNT", "order": "desc", "limit": 1},
+            },
+        }
+    }
+
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        json.dumps(response),
+        {"domain_items": [], "table_catalog_items": [], "main_flow_filters": []},
+    )
+    plan = normalized["intent_plan"]
+
+    assert plan["reference_mode"] == "previous_result_transform"
+    assert plan["request_scope"] == "followup_transform"
+    assert plan["reuse_strategy"] == "previous_result"
+    assert plan["output_contract"]["metric_bindings"] == [
+        {
+            "source_alias": "previous_result",
+            "dataset_key": "previous_result",
+            "source_column": "COUNT",
+            "aggregation": "max",
+            "output_column": "COUNT",
+            "semantic_scope": {},
+        }
+    ]
+    assert not any(
+        error.get("type") == "invalid_reference_mode_contract"
+        for error in plan.get("validation_errors", [])
+    )
+
+
 def test_v2_followup_detail_without_catalog_contract_fails_closed():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
     payload = {
@@ -3792,3 +5119,370 @@ def test_v2_followup_detail_without_catalog_contract_fails_closed():
     guard = normalized["trace"]["inspection"]["intent"]["followup_contract_guard"]
     assert guard["status"] == "blocked"
     assert guard["reason"] == "dependent_catalog_unavailable"
+
+
+def test_v2_normalizer_repairs_markdown_list_key_typo_without_model_retry():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    parsed = normalizer._json(
+        '{"intent_plan":{"analysis_kind":"sample",\n    - temporal_semantics: [],\n}}'
+    )
+    assert parsed["intent_plan"]["temporal_semantics"] == []
+
+
+def test_dummy_target_fixture_covers_explicit_pkg_plan_date():
+    dummy = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "08_dummy_data_retriever.py")
+    rows = dummy._rows_for_dataset("target")
+    assert any(str(row.get("DATE")) == "2026-07-06" for row in rows)
+
+
+def test_effective_filters_follow_the_unique_retrieval_source_alias_after_process_scope_normalization():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    condition_resolution = {
+        "effective_filters": {
+            # A common LLM shape: this is keyed by dataset_key, while the
+            # retrieval plan gives the same dataset a contextual source alias.
+            "lot_status": {
+                "dataset_key": "lot_status",
+                "filters": {
+                    "OPER_NAME": {"operator": "eq", "value": "W/B"},
+                    "HOLD_STAT": {"operator": "eq", "value": "OnHold"},
+                },
+            }
+        }
+    }
+    jobs = [
+        {
+            "dataset_key": "lot_status",
+            "source_alias": "lot_status_src",
+            "filters": {
+                "OPER_NAME": {
+                    "operator": "in",
+                    "value": ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"],
+                },
+                "HOLD_STAT": {"operator": "eq", "value": "OnHold"},
+            },
+        }
+    ]
+
+    synchronized = normalizer._synchronize_effective_filters_with_retrieval_jobs(
+        condition_resolution,
+        jobs,
+    )
+
+    assert list(synchronized["effective_filters"]) == ["lot_status_src"]
+    assert synchronized["effective_filters"]["lot_status_src"]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": ["W/B1", "W/B2", "W/B3", "W/B4", "W/B5", "W/B6"],
+    }
+
+
+def test_inherited_filter_is_removed_only_when_the_followup_catalog_cannot_execute_it():
+    """A prior-turn date must not make a non-dated target catalog unusable."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan = {
+        "condition_resolution": {
+            "inherited": {
+                "DATE": "20260701",
+                "OPER_NAME": {"operator": "in", "value": ["FCB1"]},
+            }
+        }
+    }
+    jobs = [
+        {
+            "dataset_key": "equipment_assign",
+            "source_alias": "equipment_assign_src",
+            "filters": {
+                "DATE": {"operator": "eq", "value": "20260701"},
+                "OPER_NAME": {"operator": "in", "value": ["FCB1"]},
+            },
+        }
+    ]
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {
+                    "columns": ["EQUIP_ID", "OPER_NM"],
+                    "filter_mappings": {"OPER_NAME": ["OPER_NM"]},
+                },
+            }
+        ]
+    }
+
+    normalized, guard = normalizer._drop_unsupported_inherited_filters(
+        plan,
+        jobs,
+        candidates,
+    )
+
+    assert normalized[0]["filters"] == {
+        "OPER_NAME": {"operator": "in", "value": ["FCB1"]}
+    }
+    assert guard["status"] == "applied"
+    assert guard["dropped_filters"] == [
+        {
+            "dataset_key": "equipment_assign",
+            "source_alias": "equipment_assign_src",
+            "field": "DATE",
+            "condition": {"operator": "eq", "value": "20260701"},
+            "reason": "inherited_field_not_supported_by_target_catalog",
+        }
+    ]
+
+
+def test_relative_current_scope_does_not_become_an_unsupported_physical_date_filter():
+    """Current snapshot wording is a selection scope, not always a DATE column."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    jobs = [
+        {
+            "dataset_key": "equipment_assign",
+            "source_alias": "equipment_assign_src",
+            "filters": {"DATE": {"operator": "eq", "value": "20260701"}},
+        }
+    ]
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": ["EQUIP_ID", "OPER_NM"]},
+            }
+        ]
+    }
+
+    normalized, guard = normalizer._drop_unsupported_inherited_filters(
+        {"condition_resolution": {"changed": {"DATE": "20260701"}}},
+        jobs,
+        candidates,
+        "이 제품들에 할당된 현재 장비 목록을 보여줘",
+    )
+
+    assert normalized[0]["filters"] == {}
+    assert guard["dropped_filters"][0]["reason"] == (
+        "implicit_date_scope_not_supported_by_target_catalog"
+    )
+
+    explicit, explicit_guard = normalizer._drop_unsupported_inherited_filters(
+        {"condition_resolution": {"changed": {"DATE": "20260706"}}},
+        jobs,
+        candidates,
+        "2026-07-06 장비 목록을 보여줘",
+    )
+    assert "DATE" in explicit[0]["filters"]
+    assert explicit_guard["status"] == "not_needed"
+
+
+def test_unsupported_implicit_date_is_removed_when_only_effective_filters_contain_it():
+    """The executor-facing effective-filter map must match the retrieval job."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan = {
+        "condition_resolution": {
+            "changed": {"DATE": "20260701"},
+            "effective_filters": {
+                "equipment_assign_src": {
+                    "dataset_key": "equipment_assign",
+                    "filters": {"DATE": {"operator": "eq", "value": "20260701"}},
+                }
+            },
+        }
+    }
+    jobs = [
+        {
+            "dataset_key": "equipment_assign",
+            "source_alias": "equipment_assign_src",
+            "filters": {},
+        }
+    ]
+    candidates = {
+        "table_catalog_items": [
+            {"dataset_key": "equipment_assign", "payload": {"columns": ["EQUIP_ID"]}}
+        ]
+    }
+
+    _, guard = normalizer._drop_unsupported_inherited_filters(
+        plan,
+        jobs,
+        candidates,
+        "이 제품들에 현재 장비 목록을 보여줘",
+    )
+    displayed = normalizer._strip_dropped_inherited_filter_conditions(
+        plan["condition_resolution"],
+        guard,
+    )
+
+    assert guard["dropped_filters"][0]["field"] == "DATE"
+    assert "changed" not in displayed
+    assert displayed["effective_filters"]["equipment_assign_src"]["filters"] == {}
+
+
+def test_unsupported_implicit_date_is_removed_from_optional_job_parameters_too():
+    """A snapshot dataset without DATE must not receive a phantom DATE parameter."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    jobs = [
+        {
+            "dataset_key": "equipment_assign",
+            "source_alias": "equipment_assign_src",
+            "required_params": {"DATE": "20260701"},
+            "filters": {},
+        }
+    ]
+    candidates = {
+        "table_catalog_items": [
+            {"dataset_key": "equipment_assign", "payload": {"columns": ["EQUIP_ID"]}}
+        ]
+    }
+
+    normalized, guard = normalizer._drop_unsupported_inherited_filters(
+        {"condition_resolution": {"changed": {"DATE": "20260701"}}},
+        jobs,
+        candidates,
+        "이 제품들에 현재 할당된 장비를 보여줘",
+    )
+
+    assert normalized[0]["required_params"] == {}
+    assert guard["dropped_filters"][0]["field"] == "DATE"
+
+
+def test_reference_join_contract_precedes_single_source_fast_recipe():
+    """A follow-up enrichment must retain previous-result columns and grain."""
+
+    executor = load_module(V2_ROOT / "17_hybrid_analysis_executor.py")
+    reference_join = {
+        "strict": True,
+        "operation": "enrich_previous_result",
+        "left_source_alias": "previous_result",
+        "right_source_alias": "equipment_assign_src",
+    }
+    payload = {
+        "intent_plan": {"resolved_reference_join_plan": reference_join},
+        "simple_analysis_contract": {
+            "strict": True,
+            "route": "fast",
+            "operation": "execute_fast_path_recipe",
+            "recipe": "group_summary",
+        },
+    }
+
+    assert executor._deterministic_execution_contract(payload) == reference_join
+
+
+def test_followup_previous_result_pseudo_job_becomes_a_transform_not_a_catalog_lookup():
+    """Reserved runtime state is never an invented Table Catalog dataset."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan = {
+        "request_scope": "followup_transform",
+        "reference_mode": "previous_result_rows",
+        "retrieval_jobs": [
+            {
+                "dataset_key": "previous_result",
+                "source_alias": "previous_result",
+                "filters": {},
+            }
+        ],
+        "pandas_execution_plan": [
+            {
+                "operation": "sort_and_top_n",
+                "source_alias": "previous_result",
+                "inputs": [{"kind": "external_source", "ref": "previous_result"}],
+                "sort_by": "EQP_COUNT",
+                "order": "desc",
+                "limit": 1,
+            }
+        ],
+        "output_contract": {
+            "result_mode": "aggregate",
+            "grain_columns": ["PRODUCT"],
+            "metric_columns": ["EQP_COUNT"],
+            "result_columns": ["PRODUCT", "EQP_COUNT"],
+            "strict_result_columns": True,
+        },
+    }
+    payload = {
+        "request": {"question": "그중 장비 대수가 가장 많은 제품만 보여줘"},
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_transform",
+            "reuse_strategy_hint": "previous_result",
+        },
+        "state": {
+            "current_data": {
+                "columns": ["PRODUCT", "EQP_COUNT"],
+                "result_columns": ["PRODUCT", "EQP_COUNT"],
+            },
+            "last_intent_plan": {
+                "output_contract": {"grain_columns": ["PRODUCT"]},
+            },
+        },
+    }
+
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        json.dumps({"intent_plan": plan}),
+        {"domain_items": [], "table_catalog_items": [], "main_flow_filters": []},
+    )
+    intent = normalized["intent_plan"]
+
+    assert intent["retrieval_jobs"] == []
+    assert intent["reference_mode"] == "previous_result_transform"
+    assert intent["request_scope"] == "followup_transform"
+    assert normalized["trace"]["inspection"]["intent"][
+        "previous_result_pseudo_job_guard"
+    ]["status"] == "applied"
+
+
+def test_followup_transform_with_a_new_source_becomes_previous_result_row_enrichment():
+    """A new source plus prior-result intent requires row matching, not a bare transform."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    resolved = normalizer._reference_mode_resolution(
+        {
+            "reference_mode": "previous_result_transform",
+            "retrieval_jobs": [
+                {"dataset_key": "equipment_assign", "source_alias": "equipment_assign_src"}
+            ],
+        },
+        {
+            "followup_hint": {
+                "followup_candidate": True,
+                "reuse_strategy_hint": "previous_result",
+            }
+        },
+        "followup_transform",
+    )
+
+    assert resolved == {
+        "mode": "previous_result_rows",
+        "source": "reference_mode_shape_reconciliation",
+        "input": "previous_result_transform",
+        "issues": [],
+    }
+
+
+def test_reserved_previous_result_rows_node_input_becomes_an_external_provider():
+    """Typed reference modes cannot be graph node IDs."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    normalized = normalizer._normalize_reserved_previous_result_references(
+        [
+            {
+                "operation": "join",
+                "left_source_alias": "previous_result_rows",
+                "right_source_alias": "equipment_assign_src",
+                "inputs": [
+                    {"kind": "node_output", "ref": "previous_result_rows"},
+                    {"kind": "node_output", "ref": "filtered_equipment"},
+                ],
+            }
+        ],
+        "previous_result_rows",
+    )
+
+    assert normalized[0]["left_source_alias"] == "previous_result"
+    assert normalized[0]["inputs"][0] == {
+        "kind": "external_source",
+        "ref": "previous_result",
+    }

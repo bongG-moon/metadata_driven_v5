@@ -77,6 +77,14 @@ FILTER_OPERATOR_ALIASES = {
     "not_null_or_empty": "not_blank",
     "not_null_and_not_empty": "not_blank",
 }
+WORKER_DATASET_KEY_PATTERN = re.compile(r"[（(]\s*([a-z][a-z0-9_]{2,})\s*[)）]", re.IGNORECASE)
+WORKER_COLUMN_PATTERN = re.compile(r"(?<![A-Z0-9_])([A-Z][A-Z0-9_]*_(?:ID|QTY|CNT))(?![A-Z0-9_])")
+WORKER_RECIPE_KEY_PATTERN = re.compile(
+    r"(?:규칙\s*키|recipe\s*key|rule\s*key|키)\s*[:：]\s*[`'\"]?([a-z][a-z0-9_]{2,})[`'\"]?",
+    re.IGNORECASE,
+)
+WORKER_NUNIQUE_CUES = ("중복 없이", "중복제거", "중복 제거", "고유", "unique", "nunique")
+WORKER_SUM_CUES = ("합계", "합을", "합산", "합계로", "sum")
 
 
 # 주요 함수: LLM 등록 후보 JSON을 추출·검증해 저장 전 표준 items 배열로 정리합니다.
@@ -122,6 +130,33 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
     # strongly identifiable rule families before similarity lookup or Mongo
     # write; ordinary metadata items are left untouched.
     items = _canonicalize_worker_rule_items(payload, items)
+    items = _normalize_recipe_activation_contracts(payload, items)
+    # Gemini can occasionally answer an empty item list for a sufficiently
+    # concrete worker rule because it does not know which domain section to
+    # choose.  Recover only a schema-backed generic quantity rule: a literal
+    # dataset key, a literal execution column, and an explicit aggregation
+    # cue must all be present.  This keeps natural authoring usable without
+    # inventing a dataset, column, or business-specific recipe.
+    if not items:
+        recovered_recipe = _recover_recipe_update_from_worker_text(payload)
+        if recovered_recipe is not None:
+            items = [recovered_recipe]
+            payload.setdefault("trace", {})["worker_rule_recovery"] = {
+                "status": "recovered",
+                "section": recovered_recipe["section"],
+                "key": recovered_recipe["key"],
+                "reason": "empty_llm_items_with_explicit_existing_recipe_key_and_restrictive_activation",
+            }
+    if not items:
+        recovered = _recover_quantity_term_from_worker_text(payload)
+        if recovered is not None:
+            items = [recovered]
+            payload.setdefault("trace", {})["worker_rule_recovery"] = {
+                "status": "recovered",
+                "section": recovered["section"],
+                "key": recovered["key"],
+                "reason": "empty_llm_items_with_explicit_dataset_column_and_aggregation",
+            }
     next_payload = payload
     next_payload["items"] = items
     next_payload["refinement"] = _refinement(payload, parsed)
@@ -130,6 +165,34 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
     next_payload.setdefault("errors", []).extend(errors)
     next_payload.setdefault("trace", {})["generated_items_preview"] = [{"key": _key(item), "payload_keys": sorted(item.get("payload", {}).keys())} for item in items]
     return next_payload
+
+
+# 함수 설명: 기존 규칙의 사용 조건만 고치는 자연어 요청은 최소 변경 recipe 후보로 복원합니다.
+def _recover_recipe_update_from_worker_text(payload: dict[str, Any]) -> dict[str, Any] | None:
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    raw_text = str(request.get("raw_text") or "").strip()
+    key = _explicit_worker_recipe_key(raw_text)
+    terms = _worker_restricted_activation_terms(raw_text)
+    lowered = raw_text.casefold()
+    update_signal = any(token in raw_text for token in ("기존", "수정", "변경", "바꿔")) or any(
+        token in lowered for token in ("update", "change", "modify")
+    )
+    if not key or not terms or not update_signal:
+        return None
+    return {
+        "section": "analysis_recipes",
+        "key": key,
+        "status": "active",
+        # Do not invent data sources, joins, or display fields.  On a merge,
+        # the existing recipe retains its execution contract and only receives
+        # the worker-owned activation condition below.
+        "payload": {
+            "selection_criteria": {
+                "required_all_aliases": terms,
+                "rules": _worker_rule_sentences(raw_text),
+            }
+        },
+    }
 
 
 # 함수 설명: `_refinement()`는 LLM이 반환한 보완 필요 정보와 가정을 저장 전 검수 단계까지 보존합니다.
@@ -171,6 +234,225 @@ def _canonicalize_worker_rule_items(payload: dict[str, Any], items: list[dict[st
     if hold_signal:
         output.append(_build_hold_rule_item(raw_text, hold_sources))
     return output
+
+
+# 함수 설명: 작업자가 “A를 함께 물어볼 때만”이라고 쓴 제한 조건을 recipe 적용 계약으로 정규화합니다.
+def _normalize_recipe_activation_contracts(
+    payload: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Preserve worker prose while compiling explicit restrictive recipe cues.
+
+    This intentionally handles only a narrow, generic ownership signal: a
+    source or recipe is usable *only when* a stated concept is requested.  It
+    does not infer datasets, joins, columns, or business-specific aliases.
+    """
+
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    raw_text = str(request.get("raw_text") or "").strip()
+    if not raw_text:
+        return items
+    restricted_terms = _worker_restricted_activation_terms(raw_text)
+    if not restricted_terms:
+        return items
+    explicit_recipe_key = _explicit_worker_recipe_key(raw_text)
+
+    recipe_count = sum(
+        1
+        for item in items
+        if isinstance(item, dict)
+        and str(item.get("section") or "").strip() == "analysis_recipes"
+    )
+    normalized: list[dict[str, Any]] = []
+    for raw_item in items:
+        item = deepcopy(raw_item)
+        if str(item.get("section") or "").strip() != "analysis_recipes":
+            normalized.append(item)
+            continue
+        if recipe_count > 1 and not _recipe_mentions_activation_term(item, restricted_terms):
+            normalized.append(item)
+            continue
+        if explicit_recipe_key and recipe_count == 1:
+            # An author can name an existing rule for an update without
+            # exposing any storage mechanics.  The writer still resolves and
+            # validates that key against MongoDB before a merge is allowed.
+            item["key"] = explicit_recipe_key
+        item_payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        criteria = item_payload.get("selection_criteria")
+        if isinstance(criteria, dict):
+            compiled = deepcopy(criteria)
+        else:
+            compiled = {}
+        # A restrictive worker rule is an ownership contract.  Keep the
+        # worker's sentences, rather than model-invented explanations, as its
+        # human-readable record.  Existing structured keys remain untouched.
+        rules = _worker_rule_sentences(raw_text)
+
+        existing_required = _unique_text(
+            _string_values(compiled.get("required_all_aliases"))
+            + _string_values(compiled.get("required_terms_all"))
+            + _string_values(compiled.get("required_aliases_all"))
+        )
+        compiled["required_all_aliases"] = _unique_text(
+            existing_required + restricted_terms
+        )
+        if rules:
+            compiled["rules"] = rules
+        item_payload["selection_criteria"] = compiled
+        item["payload"] = item_payload
+        normalized.append(item)
+    return normalized
+
+
+# 함수 설명: 사람이 입력한 문장만 selection rules에 보존해 모델의 부가 설명을 실행 기준으로 쓰지 않습니다.
+def _worker_rule_sentences(raw_text: str) -> list[str]:
+    values = [
+        sentence.strip(" -\t")
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+        if sentence.strip()
+    ]
+    return _unique_text(values)[:12]
+
+
+# 함수 설명: 기존 규칙을 자연어로 수정할 때만 명시한 안전한 snake_case key를 읽습니다.
+def _explicit_worker_recipe_key(raw_text: str) -> str:
+    matches = _unique_text(match.group(1) for match in WORKER_RECIPE_KEY_PATTERN.finditer(raw_text))
+    return matches[0] if len(matches) == 1 else ""
+
+
+# 함수 설명: 여러 recipe가 함께 생성된 경우 제한 표현과 같은 개념을 가진 recipe에만 조건을 붙입니다.
+def _recipe_mentions_activation_term(item: dict[str, Any], terms: list[str]) -> bool:
+    item_text = _item_text(item)
+    return any(str(term).casefold() in item_text for term in terms)
+
+
+# 함수 설명: 자연어의 “~일 때만” 앞 개념을 짧고 검증 가능한 적용 조건으로 추출합니다.
+def _worker_restricted_activation_terms(raw_text: str) -> list[str]:
+    terms: list[str] = []
+    pattern = re.compile(
+        r"(?P<term>[A-Za-z0-9가-힣][A-Za-z0-9가-힣 _/\-]{0,64}?)"
+        r"(?:을|를|은|는|이|가)\s*"
+        r"(?:함께\s*)?"
+        r"(?:물을|물어볼|물어보|질문할|질문하|요청할|요청하|포함할|포함하|조회할|조회하|사용할|사용하|확인할|확인하)"
+        r"(?:\s*경우)?\s*때만",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(raw_text):
+        candidate = _clean_worker_activation_term(match.group("term"))
+        if candidate:
+            terms.append(candidate)
+    return _unique_text(terms)[:8]
+
+
+# 함수 설명: 앞 문장까지 붙은 자연어 후보에서 실제 적용 키워드만 보수적으로 분리합니다.
+def _clean_worker_activation_term(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" ,.;:()[]{}")
+    if not text:
+        return ""
+    # Structured identifiers are the least ambiguous worker-facing concepts.
+    identifiers = re.findall(r"\b[A-Z][A-Z0-9_/-]{1,}\b", text)
+    if identifiers:
+        return identifiers[-1]
+    text = re.split(r"(?:,|;|그리고|또는|이면|하면|물으면|에서)\s*", text)[-1].strip()
+    text = re.sub(r"^(?:이|그|해당)\s+", "", text)
+    text = re.sub(r"\s*(?:데이터|정보|값|항목|내용)$", "", text).strip()
+    if not text or len(text) > 48:
+        return ""
+    return text
+
+
+# 함수 설명: 문자열·문자열 배열·간단한 aliases 컨테이너를 보존 가능한 텍스트 배열로 바꿉니다.
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        value = value.get("aliases") or value.get("terms") or value.get("values") or value.get("rules")
+    if isinstance(value, (str, int, float)):
+        return [str(value).strip()]
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item or "").strip()]
+
+
+# 함수 설명: `_recover_quantity_term_from_worker_text()`는 LLM이 빈 후보를 반환했을 때도
+# 명시된 dataset/컬럼/집계 근거가 모두 있는 일반 수량 규칙만 안전하게 복원합니다.
+def _recover_quantity_term_from_worker_text(payload: dict[str, Any]) -> dict[str, Any] | None:
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    refinement = payload.get("refinement") if isinstance(payload.get("refinement"), dict) else {}
+    raw_text = str(refinement.get("refined_text") or request.get("raw_text") or "").strip()
+    if not raw_text:
+        return None
+    dataset_matches = list(WORKER_DATASET_KEY_PATTERN.finditer(raw_text))
+    column_matches = WORKER_COLUMN_PATTERN.findall(raw_text)
+    lowered = raw_text.casefold()
+    if not dataset_matches or not column_matches:
+        return None
+    aggregation = ""
+    if any(cue in lowered for cue in WORKER_NUNIQUE_CUES):
+        aggregation = "nunique"
+    elif any(cue in lowered for cue in WORKER_SUM_CUES):
+        aggregation = "sum"
+    if not aggregation:
+        return None
+
+    dataset_key = str(dataset_matches[0].group(1) or "").strip()
+    columns = _unique_text(column_matches)
+    if not dataset_key or len(columns) != 1:
+        return None
+    aliases = _worker_aliases_for_dataset_sentence(raw_text, dataset_matches[0])
+    if not aliases:
+        return None
+    display_name = aliases[0]
+    suffix = "count" if aggregation == "nunique" else "sum"
+    key = _safe_domain_key(f"{dataset_key}_{suffix}")
+    if not key:
+        return None
+    optional_criteria = _worker_optional_source_conditions(raw_text, dataset_key)
+    candidate_payload: dict[str, Any] = {
+        "display_name": display_name,
+        "aliases": aliases,
+        "data_source": dataset_key,
+        "columns": columns,
+        "aggregation_method": aggregation,
+    }
+    if optional_criteria:
+        candidate_payload["selection_criteria"] = optional_criteria
+    return {
+        "section": "quantity_terms",
+        "key": key,
+        "status": "active",
+        "payload": candidate_payload,
+    }
+
+
+# 함수 설명: `_worker_aliases_for_dataset_sentence()`는 실제 dataset key가 적힌 문장에서
+# 작업자가 나열한 자연어 표현만 별칭으로 추출합니다.
+def _worker_aliases_for_dataset_sentence(raw_text: str, match: re.Match[str]) -> list[str]:
+    sentence_start = max(raw_text.rfind(".", 0, match.start()), raw_text.rfind("\n", 0, match.start())) + 1
+    sentence = raw_text[sentence_start:match.start()]
+    # "장비 대수, 설비 수는 ..."처럼 dataset 앞에 있는 주어부만 사용한다.
+    subject = re.split(r"(?:은|는|이|가)\s+", sentence.strip(), maxsplit=1)[0].strip()
+    subject = re.sub(r"(?:을|를)\s*(?:계산|등록|정의).*?$", "", subject).strip()
+    values = re.split(r"[,/]|\s+또는\s+|\s+및\s+", subject)
+    aliases = _unique_text([value.strip(" -:·") for value in values])
+    return [value for value in aliases if 1 < len(value) <= 48][:12]
+
+
+# 함수 설명: `_worker_optional_source_conditions()`는 보조 데이터 사용 조건처럼 실행을
+# 강제하지 않는 자연어 조건만 selection_criteria로 보존합니다.
+def _worker_optional_source_conditions(raw_text: str, dataset_key: str) -> list[str]:
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", raw_text)
+    return _unique_text(
+        sentence.strip()
+        for sentence in sentences
+        if sentence.strip()
+        and dataset_key.casefold() not in sentence.casefold()
+        and any(token in sentence for token in ("함께", "때만", "추가", "보조"))
+    )[:4]
+
+
+# 함수 설명: `_safe_domain_key()`는 자연어 복구 후보의 key를 ASCII snake_case로 제한합니다.
+def _safe_domain_key(value: Any) -> str:
+    key = re.sub(r"[^a-z0-9]+", "_", str(value or "").casefold()).strip("_")
+    return key[:80]
 
 
 # 함수 설명: RECIPE 번호와 시작·접두·포함 표현이 함께 있는지 확인합니다.
@@ -273,6 +555,17 @@ def _build_hold_rule_item(raw_text: str, sources: list[dict[str, Any]]) -> dict[
             "HOLD라는 단어만으로 hold_history를 선택하지 않는다.",
         ]),
         "current_selection": {"dataset_key": "lot_status", "filter": {"HOLD_STAT": {"operator": "eq", "value": "OnHold"}}},
+        # This is an execution-neutral recipe activation contract.  The
+        # analysis flow reads the structured fields below; it does not infer a
+        # dependent query merely from a dataset name or a hard-coded question
+        # pattern.  A plain current-list request therefore remains one stage,
+        # while a request containing one of these history-detail concepts can
+        # continue to the recipe's declared history selection.
+        "dependent_selection": {
+            "when_question_includes_any": ["사유", "코드", "상세", "이력", "시간"],
+            "current_stage": "current_selection",
+            "next_stage": "history_selection",
+        },
         "history_selection": {
             "dataset_key": "hold_history", "required_params": {"LOT_ID": ""},
             "upstream_binding": {"source_alias": "previous_result", "source_column": "LOT_ID", "target_param": "LOT_ID", "operator": "in"},

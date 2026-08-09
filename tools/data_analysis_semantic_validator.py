@@ -50,7 +50,7 @@ def validate_semantic_payload(
 
     issues: list[dict[str, Any]] = []
     issues.extend(_execution_graph_errors(plan, data))
-    issues.extend(_metric_binding_errors(plan, columns))
+    issues.extend(_metric_binding_errors(plan, columns, data))
     issues.extend(_result_shape_errors(plan, rows, columns))
     issues.extend(_ordering_errors(plan, rows, columns))
     issues.extend(_temporal_contract_errors(plan))
@@ -104,7 +104,7 @@ def validate_case_expectation(case: Any, payload: Any) -> list[dict[str, Any]]:
         expected_filters = _dict(expected_job.get("filters"))
         if not expected_filters:
             continue
-        if not any(_filters_cover(_dict(job.get("filters")), expected_filters) for job in candidates):
+        if not any(_job_covers_expected_filters(job, expected_filters) for job in candidates):
             errors.append(
                 {
                     "type": "missing_expected_filter_contract",
@@ -116,6 +116,51 @@ def validate_case_expectation(case: Any, payload: Any) -> list[dict[str, Any]]:
             )
 
     return _unique_dicts(errors)
+
+
+def _job_covers_expected_filters(job: dict[str, Any], expected_filters: dict[str, Any]) -> bool:
+    """Accept an equivalent catalog-required query parameter as a filter contract.
+
+    Catalogs commonly expose date as a required query parameter while a fixture
+    represents the same restriction as ``DATE = value``.  This validator must
+    compare the execution meaning rather than require one storage location.
+    Only equality/membership conditions are eligible; ranges and text filters
+    still have to appear in the normal filter contract.
+    """
+
+    actual_filters = _dict(job.get("filters"))
+    if _filters_cover(actual_filters, expected_filters):
+        return True
+    required_params = _dict(job.get("required_params"))
+    if not required_params:
+        return False
+    for field, expected in expected_filters.items():
+        expected_contract = _dict(expected)
+        if field in actual_filters and _filters_cover({field: actual_filters[field]}, {field: expected_contract}):
+            continue
+        operator = str(expected_contract.get("operator") or "eq").strip().lower()
+        if operator not in {"eq", "in"}:
+            return False
+        actual_value = _case_insensitive_value(required_params, field)
+        if actual_value in (None, "", []):
+            return False
+        expected_values = _values(expected_contract.get("value", expected_contract.get("values")))
+        actual_values = _values(actual_value)
+        if not expected_values or not actual_values:
+            return False
+        if operator == "eq" and not all(value in actual_values for value in expected_values):
+            return False
+        if operator == "in" and not any(value in actual_values for value in expected_values):
+            return False
+    return True
+
+
+def _case_insensitive_value(mapping: dict[str, Any], key: Any) -> Any:
+    target = str(key or "").strip().casefold()
+    for candidate, value in mapping.items():
+        if str(candidate or "").strip().casefold() == target:
+            return value
+    return None
 
 
 def fixture_differences(case: Any, payload: Any) -> list[str]:
@@ -200,7 +245,11 @@ def _execution_graph_errors(
     return errors
 
 
-def _metric_binding_errors(plan: dict[str, Any], columns: list[str]) -> list[dict[str, Any]]:
+def _metric_binding_errors(
+    plan: dict[str, Any],
+    columns: list[str],
+    payload: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     contract = _dict(plan.get("output_contract"))
     jobs = _dict_items(plan.get("retrieval_jobs"))
     errors: list[dict[str, Any]] = []
@@ -212,6 +261,15 @@ def _metric_binding_errors(plan: dict[str, Any], columns: list[str]) -> list[dic
         aggregation = str(binding.get("aggregation") or "").strip().lower()
         job = _resolve_binding_job(plan, jobs, source_alias, dataset_key)
         if job is None:
+            # A retrieval-free follow-up may rank or re-aggregate a restored
+            # prior result.  It has no retrieval job by design, but remains a
+            # valid metric source only when the typed execution graph declares
+            # the same alias as a previous-result/source provider *and* that
+            # source was actually restored into this payload.  Do not allow a
+            # bare alias here: that would turn an LLM invention into a valid
+            # metric contract.
+            if _is_available_prior_result_metric_source(plan, payload, source_alias):
+                continue
             errors.append(
                 {
                     "type": "metric_binding_source_unresolved",
@@ -270,6 +328,34 @@ def _metric_binding_errors(plan: dict[str, Any], columns: list[str]) -> list[dic
                     }
                 )
     return errors
+
+
+def _is_available_prior_result_metric_source(
+    plan: dict[str, Any],
+    payload: dict[str, Any] | None,
+    source_alias: str,
+) -> bool:
+    if not source_alias:
+        return False
+    graph = _dict(plan.get("resolved_execution_graph"))
+    requirements = _dict_items(graph.get("external_source_requirements"))
+    declared = any(
+        str(item.get("source_alias") or "").strip() == source_alias
+        and str(item.get("provider") or "").strip() in {"previous_result", "previous_source"}
+        and bool(item.get("required", True))
+        for item in requirements
+    )
+    if not declared:
+        return False
+    data = _dict(payload)
+    runtime_sources = _dict(data.get("runtime_sources"))
+    if source_alias in runtime_sources:
+        return True
+    return any(
+        str(item.get("source_alias") or "").strip() == source_alias
+        and str(item.get("status") or "").strip().lower() in {"ok", "success"}
+        for item in _dict_items(data.get("source_results"))
+    )
 
 
 def _resolve_binding_job(

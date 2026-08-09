@@ -70,7 +70,7 @@ Data Analysis Flow V2 검증 질문셋
     - 단일 lot_status source의 HOLD 상세 컬럼 조회
 30. [COMPLEX | multiple_external_sources+join] 오늘 DA공정에서 생산량 상위 3개 제품과 각 제품에 할당된 장비 대수 및 LIST를 알려줘
     - production 상위 제품과 equipment_assign 결합
-31. [FAST | detail_query] 7/6 생산 계획 데이터 알려줘
+31. [FAST | detail_query] PKG계획 데이터 7/6일자 보여줘
     - 단일 target source의 날짜 filter와 계획 상세 조회
 
 멀티턴 검증

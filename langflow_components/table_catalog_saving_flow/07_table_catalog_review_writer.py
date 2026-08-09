@@ -44,6 +44,9 @@ def review_and_write(payload_value: Any, review_response: Any = "", mongo_uri: s
     payload = _payload(payload_value)
     dry_run = bool(_dict(payload.get("request")).get("dry_run", True))
     action = _duplicate_action(payload)
+    payload, partial_update_materialization = _materialize_partial_usage_updates(
+        payload, action
+    )
     deterministic_errors = _unique_errors(
         _deterministic_errors(payload) + _duplicate_lookup_errors(payload, action)
     )
@@ -51,6 +54,9 @@ def review_and_write(payload_value: Any, review_response: Any = "", mongo_uri: s
     review = _merge_review(llm_review, payload, deterministic_errors)
     ready = bool(review.get("ready_to_save"))
     next_payload = payload
+    next_payload.setdefault("trace", {})[
+        "partial_usage_update_materialization"
+    ] = partial_update_materialization
     next_payload["review"] = review
     if not ready:
         needs_input = bool(_list(review.get("supplement_requests")))
@@ -70,6 +76,84 @@ def review_and_write(payload_value: Any, review_response: Any = "", mongo_uri: s
         if next_payload["write_result"].get("success") and int(next_payload["write_result"].get("saved_count") or 0) > 0:
             next_payload["write_result"]["metadata_qa_snapshot_invalidated"] = _invalidate_metadata_qa_snapshot_cache()
     return next_payload
+
+
+# 함수 설명: `_materialize_partial_usage_updates()`는 기존 Catalog의 사용 설명만 수정할 때
+# 05의 exact-key 조회 결과를 먼저 병합하여, LLM이 만든 빈 SQL/컬럼 skeleton이 실행 계약을 덮지 않게 합니다.
+def _materialize_partial_usage_updates(
+    payload: dict[str, Any], action: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    next_payload = deepcopy(payload)
+    raw_items = next_payload.get("items")
+    if not isinstance(raw_items, list):
+        return next_payload, {"status": "not_needed", "items": []}
+
+    existing_by_key: dict[str, dict[str, Any]] = {}
+    for raw_match in _list(next_payload.get("existing_matches")):
+        match = _dict(raw_match)
+        key = str(match.get("existing_key") or match.get("new_key") or "").strip()
+        existing = _dict(match.get("existing_item"))
+        if key and existing:
+            existing_by_key[key.casefold()] = existing
+
+    materialized_items: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    details: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            materialized_items.append(deepcopy(raw_item))
+            continue
+        item = deepcopy(raw_item)
+        marker = item.pop("_partial_update", None)
+        if not _is_partial_usage_update_marker(marker):
+            materialized_items.append(item)
+            continue
+
+        key = str(item.get("dataset_key") or item.get("key") or "").strip()
+        existing = existing_by_key.get(key.casefold()) if key else None
+        if action != "merge":
+            errors.append(
+                {
+                    "type": "partial_usage_update_requires_merge",
+                    "message": "기존 데이터의 사용 설명만 바꾸려면 중복 처리 방식을 merge로 선택해야 합니다.",
+                    "key": key,
+                }
+            )
+            materialized_items.append(item)
+            continue
+        if not existing:
+            errors.append(
+                {
+                    "type": "partial_usage_update_existing_catalog_missing",
+                    "message": "기존 데이터의 사용 설명만 바꾸려면 같은 dataset_key의 기존 Table Catalog를 확인해야 합니다.",
+                    "key": key,
+                }
+            )
+            materialized_items.append(item)
+            continue
+        merged = _deep_merge(existing, item)
+        merged["dataset_key"] = key
+        merged.pop("_partial_update", None)
+        materialized_items.append(merged)
+        details.append({"dataset_key": key, "fields": ["selection_criteria"]})
+
+    next_payload["items"] = materialized_items
+    if errors:
+        next_payload.setdefault("errors", []).extend(errors)
+    return next_payload, {
+        "status": "applied" if details else ("blocked" if errors else "not_needed"),
+        "items": details,
+        "errors": errors,
+    }
+
+
+# 함수 설명: Table Catalog normalizer가 발행한 좁은 partial update marker만 수용합니다.
+def _is_partial_usage_update_marker(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("reason") == "worker_usage_description"
+        and value.get("fields") == ["selection_criteria"]
+    )
 
 
 # 함수 설명: `_invalidate_metadata_qa_snapshot_cache()`는 실제 저장 성공 후 같은 worker의 QA snapshot generation을 증가시킵니다.

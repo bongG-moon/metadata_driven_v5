@@ -12,7 +12,7 @@
 - `process_groups.payload.processes`는 `payload.field`에 적용할 값 목록이다. field를 누락하거나 processes 값만 보고 다른 컬럼을 추측하지 않는다.
 - 원문에 없는 `_PROCESS_GROUP`, `_TERM`, `_DOMAIN` 같은 설명형 suffix를 key에 임의로 붙이지 않는다.
 - `analysis_recipes`에 dataset 결합 규칙이 명시되면 `source_datasets`, `join_type`, `join_keys`, `left_key_mappings`, `right_key_mappings`, `preserve_left_rows`를 원문에 있는 범위에서 구조화해 보존한다. `context_columns`는 만들지 않는다.
-- `analysis_recipes`의 선택 조건, 제외 조건, 집계·표시 정책처럼 위 구조화 필드에 해당하지 않는 원문 규칙은 `selection_criteria` 문자열 배열에 문장 단위로 그대로 보존한다. 임의의 `policy`, `matching_rules` 같은 중첩 객체를 만들거나 `missing_information`으로 빼지 않는다.
+- `analysis_recipes`의 선택 조건, 제외 조건, 집계·표시 정책처럼 위 구조화 필드에 해당하지 않는 원문 규칙은 `selection_criteria`에 문장 단위로 보존한다. 다만 “A를 함께 물어볼 때만 사용”, “A가 포함될 때만 조회”처럼 보조 데이터 사용을 제한하는 명확한 조건은 `required_all_aliases`에 A를 넣고, 원문은 `rules`에 함께 보존한다. 이 구조는 질문에 A가 없을 때 해당 recipe를 선택하지 않게 하는 용도이며, 데이터셋을 강제로 선택하는 규칙이 아니다. 임의의 `policy`, `matching_rules` 같은 중첩 객체를 만들거나 `missing_information`으로 빼지 않는다.
 - 물리 컬럼명이 서로 다른 join은 표준 `join_keys`와 좌우 mapping을 분리해 기록한다. 원문에 없는 join key나 실행 순서를 추측하지 않는다.
 - 질문 기준일과 실제 조회일의 차이가 명시된 domain은 `payload.temporal_semantics`에 구조화해 보존한다. 허용 필드는 `business_timepoint`, `dataset_family`, `dataset_key`, `source_alias`, `date_param`, `requested_date_offset_days`, `disallowed_dataset_keys`, `inherit_filters`, `metric`, `source_column`, `aggregation`, `output_column`, `metric_aliases`다.
 - `requested_date_offset_days`는 질문 기준일에 더할 정수 일수다. 전일은 `-1`, 동일 일자는 `0`, 다음 날은 `1`로 저장한다. 원문에 없는 offset, dataset 또는 금지 dataset을 추측하지 않는다.
@@ -23,6 +23,9 @@
 - helper 선택·적용 조건과 실행 시 `input_text`, `source_alias`에 전달할 규칙은 `selection_criteria`의 문장으로 보존한다. `matching_rules`, `token_priority` 같은 임의의 중첩 key를 새로 만들지 않는다.
 - 원문이 helper와 source filter의 실행 순서를 명시한 경우에만 `execution_contract.source_filter_order`를 저장한다. 값은 `before_helper` 또는 `after_helper`만 사용하며, 특정 함수 이름을 공통 실행 노드에 하드코딩하기 위한 다른 실행 key는 만들지 않는다.
 - SQL, source_config, credential은 절대 domain item에 넣지 않는다.
+- 원문이 "A는 B 데이터(dataset_key)의 C 컬럼으로 계산한다"처럼 사용할 데이터와 계산 기준을 충분히 말하면 items를 비워 두지 않는다. 수량·대수·목록·합계·중복 제거 기준은 `quantity_terms`로 만든다.
+- 데이터 이름 괄호 안에 실제 dataset_key가 있으면 `payload.data_source`에는 그 key를 그대로 넣는다. 중복 없이 세는 기준은 `columns`와 `aggregation_method=nunique`, 합계 기준은 `columns`와 `aggregation_method=sum`으로 저장한다. 이는 후보를 잘 고르게 돕는 정보이며 실행 데이터셋을 강제로 고르는 규칙은 아니다.
+- 보조 데이터를 함께 쓰는 조건이 원문에 있으면 그 조건을 `selection_criteria`에 한 문장으로 보존한다. 기본 데이터와 보조 데이터를 임의로 바꾸거나 추가하지 않는다.
 
 중복 확인은 후보 생성 후 MongoDB의 동일 key와 같은 section의 identity를 대상으로 별도 수행한다. 기존 metadata를 추측하거나 임의로 덮어쓰지 않는다.
 

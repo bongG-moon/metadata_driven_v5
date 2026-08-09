@@ -151,6 +151,26 @@ DETERMINISTIC_OPERATIONS = {
     "merge_metric_sources",
     "enrich_previous_result",
 }
+TYPED_DETERMINISTIC_OPERATIONS = {
+    "apply_filters",
+    "select_columns",
+    "groupby_and_aggregate",
+    "sort_and_top_n",
+    "join",
+}
+TYPED_DETERMINISTIC_AGGREGATIONS = {
+    "sum",
+    "mean",
+    "min",
+    "max",
+    "count",
+    "nunique",
+    "median",
+    "first",
+    "last",
+    "collect_unique",
+}
+TYPED_DETERMINISTIC_JOIN_TYPES = {"inner", "left", "right", "outer"}
 
 
 # 함수 설명: `resolve_simple_analysis_contract()`는 여러 simple·분석·contract 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
@@ -182,6 +202,13 @@ def resolve_simple_analysis_contract(
     if not source_aliases:
         source_aliases = _external_source_aliases(next_payload)
     if len(source_aliases) != 1:
+        typed_contract = _typed_pandas_plan_execution_contract(
+            next_payload,
+            plan,
+            source_aliases,
+        )
+        if typed_contract:
+            return _attach_contract(next_payload, typed_contract, trace, started)
         reason = "no_external_source" if not source_aliases else "multiple_external_sources"
         contract = _route_contract("complex", reason)
         contract["external_source_aliases"] = source_aliases
@@ -200,6 +227,13 @@ def resolve_simple_analysis_contract(
     steps = [deepcopy(item) for item in _list(plan.get("pandas_execution_plan")) if isinstance(item, dict)]
     operations = [_operation(item) for item in steps]
     if any(operation in COMPLEX_OPERATIONS for operation in operations):
+        typed_contract = _typed_pandas_plan_execution_contract(
+            next_payload,
+            plan,
+            source_aliases,
+        )
+        if typed_contract:
+            return _attach_contract(next_payload, typed_contract, trace, started)
         contract = _route_contract("complex", "complex_operation_required")
         contract.update({"source_alias": source_alias, "dataset_key": dataset_key, "operations": operations})
         return _attach_contract(next_payload, contract, trace, started)
@@ -830,6 +864,32 @@ def _external_source_aliases(payload: dict[str, Any]) -> list[str]:
             if isinstance(item, dict)
         ]
         aliases = [alias for alias in job_aliases if alias in runtime_sources]
+    # A retrieval-free follow-up transform (for example, sort/top-N over the
+    # immediately preceding result) has no retrieval job by design.  Its
+    # restored ``previous_result`` frame is nevertheless a single, already
+    # validated runtime source and can use the same deterministic Fast recipe.
+    # Require all three facts below so this never turns an arbitrary state
+    # value into an executable source: canonical reference mode, no new jobs,
+    # and an execution-graph requirement backed by a restored runtime frame.
+    if (
+        not aliases
+        and str(plan.get("reference_mode") or "").strip()
+        == "previous_result_transform"
+        and not _list(plan.get("retrieval_jobs"))
+    ):
+        runtime_sources = _dict(payload.get("runtime_sources"))
+        previous_aliases = [
+            str(item.get("source_alias") or "").strip()
+            for item in _list(graph.get("external_source_requirements"))
+            if isinstance(item, dict)
+            and str(item.get("provider") or "").strip() == "previous_result"
+            and str(item.get("source_alias") or "").strip() == "previous_result"
+        ]
+        aliases = [
+            alias
+            for alias in _dedupe(previous_aliases)
+            if alias in runtime_sources and isinstance(runtime_sources.get(alias), list)
+        ]
     return _dedupe(aliases)
 
 
@@ -940,6 +1000,16 @@ def _analysis_execution_profile(
             "analysis_execution_mode": "deterministic_fast",
             "requires_pandas_llm": False,
         }
+    if (
+        contract.get("strict") is True
+        and str(contract.get("operation") or "").strip()
+        == "execute_typed_pandas_plan"
+    ):
+        return {
+            "analysis_execution_mode": "deterministic_typed_plan",
+            "requires_pandas_llm": False,
+            "deterministic_operation": "execute_typed_pandas_plan",
+        }
     for key in DETERMINISTIC_PLAN_KEYS:
         candidate = _dict(plan.get(key))
         operation = str(candidate.get("operation") or "").strip()
@@ -957,6 +1027,129 @@ def _analysis_execution_profile(
 
 
 # 함수 설명: `_intent_route_candidate()`는 조회 전 실행 계약만으로 Fast 후보 또는 Complex 필요 여부를 결정하며 최종 판정을 대신하지 않습니다.
+def _typed_pandas_plan_execution_contract(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    source_aliases: list[str],
+) -> dict[str, Any]:
+    """Return a deterministic multi-source contract only for an unambiguous Typed IR.
+
+    This is intentionally narrower than the general Complex path. It accepts
+    only a declarative DataFrame DAG whose every input is an earlier output or
+    an actually retrieved source. Unsupported calculations stay on the LLM
+    Pandas path rather than being guessed here.
+    """
+
+    if len(source_aliases) < 2 or len(source_aliases) > 8:
+        return {}
+    steps = [
+        deepcopy(item)
+        for item in _list(plan.get("pandas_execution_plan"))
+        if isinstance(item, dict)
+    ]
+    if not steps or len(steps) > 32:
+        return {}
+    output_contract = _dict(plan.get("output_contract"))
+    result_columns = _string_list(output_contract.get("result_columns"))
+    if not result_columns:
+        result_columns = _string_list(output_contract.get("required_columns"))
+    if output_contract.get("strict_result_columns") is not True or not result_columns:
+        return {}
+    if _list(plan.get("validation_errors")):
+        return {}
+    graph = _dict(plan.get("resolved_execution_graph"))
+    if _list(graph.get("validation_errors")):
+        return {}
+
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    jobs_by_alias: dict[str, dict[str, Any]] = {}
+    for job in _list(plan.get("retrieval_jobs")):
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if alias:
+            if alias in jobs_by_alias:
+                return {}
+            jobs_by_alias[alias] = job
+    if set(source_aliases) != set(jobs_by_alias).intersection(source_aliases):
+        return {}
+    if any(alias not in runtime_sources for alias in source_aliases):
+        return {}
+
+    produced: set[str] = set()
+    for step in steps:
+        operation = _operation(step)
+        if operation not in TYPED_DETERMINISTIC_OPERATIONS:
+            return {}
+        node_id = str(step.get("node_id") or "").strip()
+        output_alias = str(step.get("output_alias") or node_id).strip()
+        if not node_id or not output_alias or node_id in produced or output_alias in produced:
+            return {}
+        inputs = [item for item in _list(step.get("inputs")) if isinstance(item, dict)]
+        expected_input_count = 2 if operation == "join" else 1
+        if len(inputs) != expected_input_count:
+            return {}
+        for item in inputs:
+            kind = str(item.get("kind") or "").strip()
+            reference = str(item.get("ref") or "").strip()
+            if kind == "external_source":
+                if reference not in jobs_by_alias:
+                    return {}
+            elif kind == "node_output":
+                if reference not in produced:
+                    return {}
+            else:
+                return {}
+
+        if operation == "select_columns":
+            if not _string_list(step.get("projection") or step.get("columns")):
+                return {}
+        elif operation == "groupby_and_aggregate":
+            aggregations = [item for item in _list(step.get("aggregations")) if isinstance(item, dict)]
+            if not aggregations:
+                return {}
+            for aggregation in aggregations:
+                source_column = str(aggregation.get("column") or aggregation.get("source_column") or "").strip()
+                output_column = str(aggregation.get("output_column") or "").strip()
+                method = str(aggregation.get("method") or aggregation.get("aggregation") or "").strip().lower()
+                if not source_column or not output_column or method not in TYPED_DETERMINISTIC_AGGREGATIONS:
+                    return {}
+        elif operation == "sort_and_top_n":
+            if not str(step.get("sort_by") or "").strip():
+                return {}
+            try:
+                if int(step.get("limit") or 0) < 0:
+                    return {}
+            except (TypeError, ValueError):
+                return {}
+        elif operation == "join":
+            join_type = str(step.get("join_type") or "inner").strip().lower()
+            if join_type not in TYPED_DETERMINISTIC_JOIN_TYPES:
+                return {}
+            left_keys = _string_list(step.get("left_on"))
+            right_keys = _string_list(step.get("right_on"))
+            shared_keys = _string_list(step.get("on")) or _string_list(step.get("group_by"))
+            if (left_keys or right_keys) and (not left_keys or len(left_keys) != len(right_keys)):
+                return {}
+            if not left_keys and not shared_keys:
+                return {}
+        produced.update({node_id, output_alias})
+
+    return {
+        "version": CONTRACT_VERSION,
+        "strict": True,
+        "route": "complex",
+        "operation": "execute_typed_pandas_plan",
+        "steps": steps,
+        "result_columns": result_columns,
+        "external_source_aliases": list(source_aliases),
+        "eligibility": {
+            "eligible": False,
+            "reason_codes": ["typed_plan_contract_resolved", "model_code_not_required"],
+        },
+    }
+
+
 def _intent_route_candidate(plan: dict[str, Any]) -> dict[str, Any]:
     intent_ir = _dict(plan.get("intent_ir"))
     steps = [deepcopy(item) for item in _list(plan.get("pandas_execution_plan")) if isinstance(item, dict)]

@@ -33,7 +33,7 @@ except NameError:
 
 # 주요 함수: 질문의 제품 토큰을 표준 제품 컬럼에 역할별로 매칭해 DataFrame을 필터링합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
-def match_product_tokens(input_text, frame, token_columns=None, output_order=None):
+def match_product_tokens(input_text, frame, token_columns=None, output_order=None, excluded_tokens=None):
     # 원본 DataFrame을 변경하지 않기 위해 copy본에서 필터링을 수행한다.
     result = frame.copy()
     if result.empty:
@@ -87,6 +87,19 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
     # 함수 설명: `_tokens()`는 문자열을 비교 가능한 검색 token 목록으로 분리·정규화합니다.
     def _tokens(value):
         stopwords = {'PRODUCT', 'DEVICE', 'PKG', 'WIP', 'INPUT', 'OUTPUT', 'OUT', 'PRODUCTION', 'TODAY', 'YESTERDAY', 'WB', 'FCB', 'BG', 'SBM'}
+        # The normalizer may provide metric/control labels from the typed
+        # output contract. They are not product attributes and must not make
+        # a valid token match fail merely because the user also asked for a
+        # quantity or rate.
+        extra_stopwords = {
+            _norm(item)
+            for item in (
+                excluded_tokens
+                if isinstance(excluded_tokens, (list, tuple, set))
+                else ([excluded_tokens] if excluded_tokens not in (None, '') else [])
+            )
+            if _norm(item)
+        }
         raw_items = []
         current = ''
         for ch in str(value or '').upper():
@@ -101,7 +114,12 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
         result_tokens = []
         for item in raw_items:
             cleaned = item.strip('-_/')
-            if cleaned and cleaned not in stopwords and cleaned not in result_tokens:
+            if (
+                cleaned
+                and cleaned not in stopwords
+                and _norm(cleaned) not in extra_stopwords
+                and cleaned not in result_tokens
+            ):
                 result_tokens.append(cleaned)
         return result_tokens
 

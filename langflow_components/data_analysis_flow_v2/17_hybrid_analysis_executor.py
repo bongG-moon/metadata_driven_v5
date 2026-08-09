@@ -255,6 +255,12 @@ def execute_pandas_code(
             ) = _replace_selected_function_case_calls(
                 normalized_llm_code,
                 complex_source_transforms,
+                active_source_aliases=_active_retrieval_source_aliases(next_payload),
+                runtime_source_aliases=set(
+                    str(alias).strip()
+                    for alias in (next_payload.get("runtime_sources") or {}).keys()
+                    if str(alias).strip()
+                ),
             )
             if rewrite_error:
                 return _analysis_error(
@@ -580,11 +586,12 @@ def execute_pandas_code(
                 result = deterministic_result
                 semantic_execution_certificate = {}
             for checkpoint_key, frame in fast_intermediate_frames.items():
+                is_typed_step = str(checkpoint_key).startswith("typed_step:")
                 record_checkpoint(
                     checkpoint_key,
                     frame,
-                    "필터 적용 후 원본 데이터",
-                    "filtered_source",
+                    "Typed 실행 계획 단계 결과" if is_typed_step else "필터 적용 후 원본 데이터",
+                    "step_output" if is_typed_step else "filtered_source",
                 )
             if fast_execution:
                 # The Fast result-contract reconciler can reject missing
@@ -806,12 +813,30 @@ def execute_pandas_code(
 # 함수 설명: 정규화기가 만든 신뢰 가능한 다중 source 계약 중 실행할 하나를 선택합니다.
 def _deterministic_execution_contract(payload: dict[str, Any]) -> dict[str, Any]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    # A trusted previous-result enrichment has two real input frames even when
+    # the Fast resolver sees only the newly retrieved source.  Prefer the
+    # explicit left-preserving contract so the prior result grain/metrics are
+    # not discarded by a single-source Fast recipe.
+    reference_join = plan.get("resolved_reference_join_plan")
+    if (
+        isinstance(reference_join, dict)
+        and reference_join.get("strict") is True
+        and str(reference_join.get("operation") or "").strip()
+        == "enrich_previous_result"
+    ):
+        return deepcopy(reference_join)
     fast_plan = payload.get("simple_analysis_contract")
     if (
         isinstance(fast_plan, dict)
         and fast_plan.get("strict") is True
-        and str(fast_plan.get("route") or "").strip().lower() == "fast"
-        and str(fast_plan.get("operation") or "").strip() == "execute_fast_path_recipe"
+        and (
+            (
+                str(fast_plan.get("route") or "").strip().lower() == "fast"
+                and str(fast_plan.get("operation") or "").strip() == "execute_fast_path_recipe"
+            )
+            or str(fast_plan.get("operation") or "").strip()
+            == "execute_typed_pandas_plan"
+        )
     ):
         return deepcopy(fast_plan)
     for key in (
@@ -977,6 +1002,8 @@ def _deterministic_contract_display_code(contract: dict[str, Any]) -> str:
         lines.append("# action: aggregate one standardized source from the output contract")
     elif operation == "project_single_source":
         lines.append("# action: project canonical result columns from one standardized source")
+    elif operation == "execute_typed_pandas_plan":
+        lines.append("# action: execute the validated Typed IR DataFrame plan without model-generated code")
     return "\n".join(lines)
 
 
@@ -1196,6 +1223,13 @@ def _execute_deterministic_contract(
         return _execute_metric_comparison(contract, sources, pd)
     if operation in {"aggregate_single_source", "project_single_source"}:
         return _execute_single_source_contract(contract, sources, pd)
+    if operation == "execute_typed_pandas_plan":
+        return _execute_typed_pandas_plan(
+            contract,
+            sources,
+            pd,
+            runtime_intermediate_frames=runtime_intermediate_frames,
+        )
     raise OutputContractError(f"지원하지 않는 deterministic 실행 계약입니다: {operation}")
 
 
@@ -1928,6 +1962,278 @@ def _execute_single_source_contract(
 
 # 함수 설명: `_apply_deterministic_result_ordering()`는 17 pandas 실행/1회 복구기 처리 중 deterministic·결과·ordering 관련 값을 계산·변환하는
 #        내부 helper입니다.
+def _execute_typed_pandas_plan(
+    contract: dict[str, Any],
+    sources: dict[str, Any],
+    pd: Any,
+    *,
+    runtime_intermediate_frames: dict[str, Any] | None = None,
+) -> Any:
+    """Execute the narrow, validated DataFrame DAG used by deterministic Complex mode."""
+
+    steps = [item for item in contract.get("steps", []) if isinstance(item, dict)]
+    if not steps:
+        raise OutputContractError("Typed Pandas 실행 계약에 단계가 없습니다.")
+    frames = {
+        str(alias): frame.copy()
+        for alias, frame in sources.items()
+        if hasattr(frame, "columns")
+    }
+    last_result: Any = None
+    for index, step in enumerate(steps, start=1):
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        node_id = str(step.get("node_id") or "").strip()
+        output_alias = str(step.get("output_alias") or node_id).strip()
+        inputs = [item for item in step.get("inputs", []) if isinstance(item, dict)]
+        input_frames: list[Any] = []
+        for item in inputs:
+            reference = str(item.get("ref") or "").strip()
+            frame = frames.get(reference)
+            if frame is None:
+                raise OutputContractError(
+                    "Typed Pandas 단계 입력을 찾을 수 없습니다: " + reference
+                )
+            input_frames.append(frame.copy())
+        if operation == "apply_filters":
+            result = _apply_typed_step_filters(input_frames[0], step)
+        elif operation == "select_columns":
+            projection = _string_list(step.get("projection") or step.get("columns"))
+            missing = [column for column in projection if column not in input_frames[0].columns]
+            if missing:
+                raise OutputContractError(
+                    "Typed Pandas projection 컬럼을 찾을 수 없습니다: " + ", ".join(missing)
+                )
+            result = input_frames[0][projection].copy()
+        elif operation == "groupby_and_aggregate":
+            result = _typed_groupby_and_aggregate(input_frames[0], step, pd)
+        elif operation == "sort_and_top_n":
+            result = _typed_sort_and_top_n(input_frames[0], step)
+        elif operation == "join":
+            result = _typed_join_frames(input_frames[0], input_frames[1], step, pd)
+        else:
+            raise OutputContractError("지원하지 않는 Typed Pandas 연산입니다: " + operation)
+        if not hasattr(result, "columns"):
+            raise OutputContractError("Typed Pandas 단계 결과가 DataFrame이 아닙니다.")
+        frames[node_id] = result
+        frames[output_alias] = result
+        last_result = result
+        if runtime_intermediate_frames is not None:
+            runtime_intermediate_frames[f"typed_step:{index}:{output_alias}"] = result.copy()
+    return last_result
+
+
+def _apply_typed_step_filters(frame: Any, step: dict[str, Any]) -> Any:
+    """Apply only explicit, source-local filter conditions from a Typed IR step."""
+
+    raw_filters = step.get("filters")
+    if not isinstance(raw_filters, dict) or not raw_filters:
+        return frame.copy()
+    result = frame.copy()
+    for field, raw_condition in raw_filters.items():
+        column = str(field or "").strip()
+        if not column or column not in result.columns:
+            raise OutputContractError("Typed Pandas filter 컬럼을 찾을 수 없습니다: " + column)
+        condition = raw_condition if isinstance(raw_condition, dict) else {"value": raw_condition}
+        operator = str(condition.get("operator") or "eq").strip().lower().replace("-", "_")
+        raw_values = condition.get("value", condition.get("values"))
+        values = raw_values if isinstance(raw_values, list) else [raw_values]
+        values = [value for value in values if value is not None]
+        series = result[column]
+        text = series.fillna("").astype(str).str.strip()
+        if operator == "eq":
+            if len(values) != 1:
+                raise OutputContractError("Typed Pandas eq filter에는 값 하나가 필요합니다.")
+            mask = text.eq(str(values[0]).strip())
+        elif operator == "in":
+            mask = text.isin({str(value).strip() for value in values})
+        elif operator == "starts_with":
+            if len(values) != 1:
+                raise OutputContractError("Typed Pandas starts_with filter에는 값 하나가 필요합니다.")
+            mask = text.str.startswith(str(values[0]).strip(), na=False)
+        elif operator in {"contains", "like"}:
+            if len(values) != 1:
+                raise OutputContractError("Typed Pandas contains filter에는 값 하나가 필요합니다.")
+            mask = text.str.contains(re.escape(str(values[0]).strip()), na=False)
+        elif operator in {"not_blank", "not_empty"}:
+            mask = text.ne("")
+        elif operator in {"is_null", "is_empty", "null_or_empty"}:
+            mask = series.isna() | text.eq("")
+        elif operator == "not_null":
+            mask = ~(series.isna() | text.eq(""))
+        else:
+            raise OutputContractError("지원하지 않는 Typed Pandas filter 연산입니다: " + operator)
+        result = result[mask].copy()
+    return result
+
+
+def _typed_groupby_and_aggregate(frame: Any, step: dict[str, Any], pd: Any) -> Any:
+    group_by = _string_list(step.get("group_by") or step.get("group_by_columns"))
+    missing_group = [column for column in group_by if column not in frame.columns]
+    if missing_group:
+        raise OutputContractError("Typed Pandas group_by 컬럼을 찾을 수 없습니다: " + ", ".join(missing_group))
+    aggregations = [item for item in step.get("aggregations", []) if isinstance(item, dict)]
+    if not aggregations:
+        raise OutputContractError("Typed Pandas 집계 정의가 없습니다.")
+    working = frame.copy()
+    named_aggregations: dict[str, Any] = {}
+    for aggregation in aggregations:
+        source_column = str(aggregation.get("column") or aggregation.get("source_column") or "").strip()
+        output_column = str(aggregation.get("output_column") or "").strip()
+        method = str(aggregation.get("method") or aggregation.get("aggregation") or "").strip().lower()
+        if not source_column or source_column not in working.columns or not output_column:
+            raise OutputContractError("Typed Pandas 집계 컬럼 또는 출력명이 올바르지 않습니다.")
+        if method in {"sum", "mean", "median", "min", "max"}:
+            working[source_column] = pd.to_numeric(working[source_column], errors="coerce").fillna(0)
+        named_aggregations[output_column] = pd.NamedAgg(
+            column=source_column,
+            aggfunc=_pandas_aggregation_method(method),
+        )
+    output_columns = [*group_by, *named_aggregations]
+    if working.empty:
+        return pd.DataFrame(columns=output_columns)
+    if group_by:
+        return working.groupby(group_by, dropna=False).agg(**named_aggregations).reset_index()
+    row: dict[str, Any] = {}
+    for output_column, aggregation in named_aggregations.items():
+        row[output_column] = working[str(aggregation.column)].agg(aggregation.aggfunc)
+    return pd.DataFrame([row], columns=output_columns)
+
+
+def _typed_sort_and_top_n(frame: Any, step: dict[str, Any]) -> Any:
+    sort_by = str(step.get("sort_by") or "").strip()
+    if not sort_by or sort_by not in frame.columns:
+        raise OutputContractError("Typed Pandas 정렬 컬럼을 찾을 수 없습니다: " + sort_by)
+    order = str(step.get("order") or "desc").strip().lower()
+    if order not in {"asc", "desc"}:
+        raise OutputContractError("Typed Pandas 정렬 방향은 asc 또는 desc여야 합니다.")
+    try:
+        limit = max(0, int(step.get("limit") or 0))
+    except (TypeError, ValueError) as exc:
+        raise OutputContractError("Typed Pandas 정렬 limit이 올바르지 않습니다.") from exc
+    result = frame.sort_values(
+        by=sort_by,
+        ascending=order == "asc",
+        na_position="last",
+        kind="mergesort",
+    )
+    if limit:
+        result = result.head(limit)
+    return result.reset_index(drop=True)
+
+
+def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> Any:
+    left_keys = _string_list(step.get("left_on"))
+    right_keys = _string_list(step.get("right_on"))
+    if not left_keys:
+        left_keys = _string_list(step.get("on")) or _string_list(step.get("group_by"))
+        right_keys = list(left_keys)
+    if not left_keys or len(left_keys) != len(right_keys):
+        raise OutputContractError("Typed Pandas join key 계약이 올바르지 않습니다.")
+    missing_left = [column for column in left_keys if column not in left.columns]
+    missing_right = [column for column in right_keys if column not in right.columns]
+    if missing_left or missing_right:
+        missing = [*(f"left.{column}" for column in missing_left), *(f"right.{column}" for column in missing_right)]
+        raise OutputContractError("Typed Pandas join key 컬럼을 찾을 수 없습니다: " + ", ".join(missing))
+    join_type = str(step.get("join_type") or "inner").strip().lower()
+    if join_type not in {"inner", "left", "right", "outer"}:
+        raise OutputContractError("Typed Pandas join 방식이 올바르지 않습니다: " + join_type)
+    left_working = left.copy()
+    right_working = right.copy()
+    temporary_keys: list[str] = []
+    for index, (left_key, right_key) in enumerate(zip(left_keys, right_keys), start=1):
+        temporary = f"__typed_join_key_{index}__"
+        temporary_keys.append(temporary)
+        left_working[temporary] = left_working[left_key].map(_normalize_deterministic_join_value)
+        right_working[temporary] = right_working[right_key].map(_normalize_deterministic_join_value)
+    aggregations = [
+        item for item in step.get("aggregations", []) if isinstance(item, dict)
+    ]
+    if aggregations:
+        # A join that declares aggregate outputs is a grouped enrichment, not
+        # a raw many-to-many merge.  Aggregate the right side on the declared
+        # typed key first so identifiers such as an equipment list and count
+        # remain one value per left-side product grain.
+        right_grouped, fill_defaults = _typed_aggregate_join_right(
+            right_working,
+            temporary_keys,
+            aggregations,
+            pd,
+        )
+        result = left_working.merge(
+            right_grouped,
+            on=temporary_keys,
+            how=join_type,
+        )
+        for output_column, default in fill_defaults.items():
+            if output_column in result.columns:
+                result[output_column] = result[output_column].fillna(default)
+        return result.drop(columns=temporary_keys)
+    # When both sides use the same key name, the normalized temporary key has
+    # already established equality. Keep the left key as the canonical output
+    # dimension and remove the redundant right key before merge; otherwise
+    # pandas would rename both to ``*_left``/``*_right`` and a following typed
+    # aggregate could no longer refer to its declared grain.
+    redundant_right_keys = [
+        right_key
+        for left_key, right_key in zip(left_keys, right_keys)
+        if left_key == right_key and right_key in right_working.columns
+    ]
+    if redundant_right_keys:
+        right_working = right_working.drop(columns=redundant_right_keys)
+    result = left_working.merge(
+        right_working,
+        on=temporary_keys,
+        how=join_type,
+        suffixes=("_left", "_right"),
+    )
+    return result.drop(columns=temporary_keys)
+
+
+def _typed_aggregate_join_right(
+    frame: Any,
+    group_columns: list[str],
+    aggregations: list[dict[str, Any]],
+    pd: Any,
+) -> tuple[Any, dict[str, Any]]:
+    """Aggregate a typed join's right side without inferring business rules."""
+
+    working = frame.copy()
+    named_aggregations: dict[str, Any] = {}
+    fill_defaults: dict[str, Any] = {}
+    for aggregation in aggregations:
+        source_column = str(
+            aggregation.get("column") or aggregation.get("source_column") or ""
+        ).strip()
+        output_column = str(aggregation.get("output_column") or "").strip()
+        method = str(
+            aggregation.get("method") or aggregation.get("aggregation") or ""
+        ).strip().lower()
+        if (
+            not source_column
+            or source_column not in working.columns
+            or not output_column
+            or output_column in named_aggregations
+        ):
+            raise OutputContractError("Typed Pandas join 집계 컬럼 또는 출력명이 올바르지 않습니다.")
+        if method in {"sum", "mean", "median", "min", "max"}:
+            working[source_column] = pd.to_numeric(
+                working[source_column], errors="coerce"
+            ).fillna(0)
+        named_aggregations[output_column] = pd.NamedAgg(
+            column=source_column,
+            aggfunc=_pandas_aggregation_method(method),
+        )
+        fill_defaults[output_column] = "" if method == "collect_unique" else 0
+    if working.empty:
+        return pd.DataFrame(columns=[*group_columns, *named_aggregations]), fill_defaults
+    return (
+        working.groupby(group_columns, dropna=False)
+        .agg(**named_aggregations)
+        .reset_index(),
+        fill_defaults,
+    )
+
+
 def _apply_deterministic_result_ordering(
     result: Any,
     payload: dict[str, Any],
@@ -2862,7 +3168,28 @@ def _selected_function_case_source_transforms(
             "input_text": str(item.get("input_text") or ""),
             "arguments": arguments,
         }
-        marker = json.dumps(transform, ensure_ascii=False, sort_keys=True, default=str)
+        # A normalized plan stores the same selected helper both in the
+        # semantic case list and in its typed pandas step.  Node ids differ
+        # between those two representations, but execution intent does not;
+        # dedupe by the callable contract so a helper never filters the same
+        # source twice.
+        marker_payload = {
+            "source_alias": source_alias,
+            "function_case_key": transform["function_case_key"],
+            "function_name": function_name,
+            "input_text": transform["input_text"],
+        }
+        # A nonblank case key identifies one semantic function selection. The
+        # typed step may omit derived arguments, so retain the richer first
+        # representation instead of executing the same selection twice.
+        if not transform["function_case_key"]:
+            marker_payload["arguments"] = arguments
+        marker = json.dumps(
+            marker_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
         if marker in seen:
             continue
         seen.add(marker)
@@ -2871,9 +3198,31 @@ def _selected_function_case_source_transforms(
 
 
 # 함수 설명: 선택 helper 호출을 이미 전처리된 source copy로 바꿔 LLM의 함수 인자 순서 오류를 제거합니다.
+def _active_retrieval_source_aliases(payload: dict[str, Any]) -> set[str]:
+    """Return aliases owned by active retrieval jobs, not arbitrary result variables."""
+
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    aliases = {
+        str(job.get("source_alias") or "").strip()
+        for job in (plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else [])
+        if isinstance(job, dict) and str(job.get("source_alias") or "").strip()
+    }
+    if aliases:
+        return aliases
+    return {
+        str(item.get("source_alias") or "").strip()
+        for item in (payload.get("source_results") if isinstance(payload.get("source_results"), list) else [])
+        if isinstance(item, dict) and str(item.get("source_alias") or "").strip()
+    }
+
+
+# 함수 설명: 선택 helper 호출을 이미 전처리된 source copy로 바꿔 LLM의 함수 인자 순서 오류를 제거합니다.
 def _replace_selected_function_case_calls(
     generated_code: str,
     transforms: list[dict[str, Any]],
+    *,
+    active_source_aliases: set[str] | None = None,
+    runtime_source_aliases: set[str] | None = None,
 ) -> tuple[str, dict[str, Any], str]:
     aliases_by_function: dict[str, set[str]] = {}
     for item in transforms:
@@ -2914,10 +3263,69 @@ def _replace_selected_function_case_calls(
         for name, aliases in aliases_by_function.items()
         if len(aliases) == 1
     }
+    active_aliases = {
+        str(alias).strip()
+        for alias in (active_source_aliases or set())
+        if str(alias).strip()
+    }
+    runtime_aliases = {
+        str(alias).strip()
+        for alias in (runtime_source_aliases or set())
+        if str(alias).strip()
+    }
+    # A generated result alias such as ``sources['matched_prod']`` is not a
+    # retrieval source.  It is safe to repair only when the execution has a
+    # single active source and one selected transform for that same source.
+    # Multi-source code retains literal aliases to avoid cross-schema rewrites.
+    fallback_source_alias = ""
+    if len(active_aliases) == 1:
+        only_alias = next(iter(active_aliases))
+        transform_aliases = set(source_by_function.values())
+        if transform_aliases == {only_alias}:
+            fallback_source_alias = only_alias
+
+    def source_alias_from_expression(node: ast.AST) -> str:
+        """Return a literal ``sources['alias']`` reference through harmless wrappers."""
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "sources":
+            key = node.slice
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                return key.value
+        # Model code commonly uses ``sources['alias'].copy()`` as the frame
+        # argument.  Preserve that source identity without trying to resolve
+        # arbitrary variables or expressions.
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "copy":
+            return source_alias_from_expression(node.func.value)
+        return ""
+
+    def source_alias_from_call(node: ast.Call) -> str:
+        aliases = {
+            alias
+            for value in [*node.args, *(item.value for item in node.keywords)]
+            if (alias := source_alias_from_expression(value))
+        }
+        return next(iter(aliases)) if len(aliases) == 1 else ""
 
     class FunctionCaseCallRewriter(ast.NodeTransformer):
         def __init__(self) -> None:
             self.replaced: list[str] = []
+            self.replaced_unknown_source_refs: list[str] = []
+            self.replaced_unbound_calls: list[str] = []
+
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            node = self.generic_visit(node)
+            if not isinstance(node, ast.Subscript) or not fallback_source_alias:
+                return node
+            if not isinstance(node.value, ast.Name) or node.value.id != "sources":
+                return node
+            key = node.slice
+            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                return node
+            source_ref = str(key.value).strip()
+            if not source_ref or source_ref in active_aliases or source_ref in runtime_aliases:
+                return node
+            self.replaced_unknown_source_refs.append(source_ref)
+            node.slice = ast.copy_location(ast.Constant(value=fallback_source_alias), key)
+            return node
 
         def visit_Call(self, node: ast.Call) -> ast.AST:
             node = self.generic_visit(node)
@@ -2929,6 +3337,15 @@ def _replace_selected_function_case_calls(
             source_alias = source_by_function.get(function_name)
             if not source_alias or function_name not in called_functions:
                 return node
+            # The selected Function Case owns only its declared source.  The
+            # same trusted helper may legitimately be called for another
+            # source in a multi-source analysis; redirecting that call would
+            # silently replace its schema and cause missing-column failures.
+            call_source_alias = source_alias_from_call(node)
+            if call_source_alias != source_alias:
+                if not (fallback_source_alias == source_alias and not call_source_alias):
+                    return node
+                self.replaced_unbound_calls.append(function_name)
             replacement = ast.Call(
                 func=ast.Attribute(
                     value=ast.Subscript(
@@ -2949,13 +3366,20 @@ def _replace_selected_function_case_calls(
     rewritten = rewriter.visit(tree)
     ast.fix_missing_locations(rewritten)
     if not rewriter.replaced:
-        return generated_code, {}, ""
+        if not rewriter.replaced_unknown_source_refs:
+            return generated_code, {}, ""
     return (
         ast.unparse(rewritten),
         {
             "policy": "selected_function_case_pretransform_replaces_generated_calls",
             "replaced_function_names": list(dict.fromkeys(rewriter.replaced)),
             "replacement_count": len(rewriter.replaced),
+            "replaced_unknown_source_refs": list(
+                dict.fromkeys(rewriter.replaced_unknown_source_refs)
+            ),
+            "replaced_unbound_function_names": list(
+                dict.fromkeys(rewriter.replaced_unbound_calls)
+            ),
         },
         "",
     )
@@ -3628,8 +4052,36 @@ def _available_source_columns(payload: dict[str, Any]) -> list[str]:
 def _equivalent_column_names(column: str, payload: dict[str, Any]) -> list[str]:
     candidates = [column] if str(column or "").strip() else []
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
-    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    # `column_labels` is a presentation contract, not a second metric name.
+    # Lower-capability models sometimes use that visible label as the DataFrame
+    # column name.  Accept it only when the label belongs to exactly one
+    # declared canonical result column; this lets the strict contract project
+    # it back to the canonical key without accepting arbitrary prose aliases.
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    labels = contract.get("column_labels") if isinstance(contract.get("column_labels"), dict) else {}
+    label_owners: dict[str, list[str]] = {}
+    for canonical, label in labels.items():
+        canonical_name = str(canonical or "").strip()
+        label_name = str(label or "").strip()
+        if canonical_name and label_name:
+            label_owners.setdefault(label_name.casefold(), []).append(canonical_name)
     candidate_keys = {item.casefold() for item in candidates}
+    for label_key, owners in label_owners.items():
+        if len(owners) != 1 or owners[0].casefold() not in candidate_keys:
+            continue
+        label = next(
+            (
+                str(value).strip()
+                for key, value in labels.items()
+                if str(key or "").strip().casefold() == owners[0].casefold()
+                and str(value or "").strip().casefold() == label_key
+            ),
+            "",
+        )
+        if label and label.casefold() not in candidate_keys:
+            candidates.append(label)
+            candidate_keys.add(label.casefold())
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
     for job in jobs:
         if not isinstance(job, dict):
             continue

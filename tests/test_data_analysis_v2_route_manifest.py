@@ -26,6 +26,21 @@ def test_route_manifest_has_independent_expectations_for_every_representative_ca
     assert {
         item["expected_analysis_execution_mode"] for item in manifest.values()
     } == {"deterministic_fast", "deterministic_contract", "llm_pandas"}
+    assert manifest[31]["expected_dataset_keys"] == ["target"]
+    assert manifest[31]["forbidden_dataset_keys"] == ["production"]
+
+
+def test_dataset_selection_assertion_is_validation_only_and_reports_wrong_source():
+    dataset_keys, errors = validator._dataset_selection_contract(
+        {"intent_plan": {"retrieval_jobs": [{"dataset_key": "production"}]}},
+        {"expected_dataset_keys": ["target"], "forbidden_dataset_keys": ["production"]},
+    )
+
+    assert dataset_keys == ["production"]
+    assert errors == [
+        "expected dataset keys ['target'], got ['production']",
+        "forbidden dataset keys selected: ['production']",
+    ]
 
 
 @pytest.mark.parametrize(
