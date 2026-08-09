@@ -1,24 +1,10 @@
-# Metadata Driven v5 완전 연결 Langflow JSON
+# metadata_driven_v5 import-ready bundle
 
-## Data Analysis canonical route
+이 bundle에는 현재 지원하는 **9개 Flow**가 모두 포함되어 있습니다. 모든 Flow는 Langflow 1.9.2 / langflow-base 0.9.2 / LFX 0.4.2 기준으로 생성되었습니다.
 
-- `run_data_analysis`, route `data_analysis`, display name `01. v5_data_analysis`, and endpoint suffix `data-analysis` now execute the V2 hybrid graph.
-- The former V1 graph is not included in this selected 01~09 bundle; the canonical route is the V2 graph above.
-- Existing Langflow router/tool nodes that already persisted `flow_id_selected` must be reselected after import so the saved ID points to the new canonical V2 Flow. The bundle never clears a runtime selection automatically.
+## Import
 
-이 폴더의 JSON은 Langflow 1.9.2 standalone 환경에 바로 import할 수 있도록 모든 canvas edge와 Router 하위 endpoint를 미리 연결한 묶음입니다.
-
-## 가장 간단한 Import 방법
-
-Langflow의 Flow 화면에서 아래 파일 **하나만** 선택합니다.
-
-`00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
-
-Langflow UI가 최상위 `flows` 배열을 펼쳐 9개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{"flows":[`입니다.
-
-## 개별 Import 방법
-
-파일명 앞 번호 순서대로 `01`부터 `07`까지 import합니다. `01`은 운영 기본 Fast/Complex Hybrid Data Analysis V2, `02`~`05`는 메타데이터 저장·조회 Flow, `06`은 단일 호출용 Agent + Tool Mode Router, `07`은 실시간 생산 Report Flow입니다. 종속 조회용 `08`과 `09`는 continuation bundle이 추가합니다.
+Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 하나를 import하거나, 아래 순서대로 개별 파일을 import합니다.
 
 | 순서 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
@@ -29,78 +15,19 @@ Langflow UI가 최상위 `flows` 배열을 펼쳐 9개 Flow를 한 번에 import
 | 5 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 11 | 17 |
 | 6 | `06_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 9 | 8 |
 | 7 | `07_realtime_production_report_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report` | 9 | 11 |
+| 8 | `08_data_analysis_flow_v2_continuation_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis-continuation` | 56 | 67 |
+| 9 | `09_agent_tool_router_continuation_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router-continuation` | 9 | 8 |
 
-## 수동 연결 여부
+## 실행 범위
 
-- canvas edge 재연결: 필요 없음
-- Router Flow ID 치환: 필요 없음
-- Router URL 5개 개별 입력: 필요 없음
-- Agent Tool Router Flow ID 직접 입력: 필요 없음. 다만 import 후 각 Tool의 `대상 Flow`를 한 번씩 다시 선택하면 현재 ID가 저장됩니다. 실행 시 현재 ID와 `updated_at`을 확인한 뒤 유효한 graph cache를 사용합니다.
-- 종속 조회 continuation Flow ID 재연결: 필요 없음
+- 기본 분석은 `01. v5_data_analysis`입니다.
+- 현재 분석 결과를 다음 조회 조건으로 넘기는 경우에만 `08. v5_data_analysis_continuation`과 `09. v5_agent_tool_router_continuation`을 사용합니다.
+- `06. v5_agent_tool_router`와 `09. v5_agent_tool_router_continuation`에 이전 import의 `flow_id_selected`가 남아 있다면 현재 Flow를 다시 선택합니다.
+- CSV/JSON 다운로드와 Flow 07 HTML Report 발행은 Artifact Server(`python -m artifact_server`, 기본 `127.0.0.1:8765`)가 담당합니다.
 
-Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다시 import하면 Langflow가 endpoint에 `-1`을 붙일 수 있으므로, 재import 시에는 기존 `metadata-driven-v5-complete-20260710-*` Flow를 먼저 정리합니다.
+## 생성 및 구조 검증
 
-## 환경 설정
-
-- 기본 Langflow 주소: `http://127.0.0.1:7860`
-- 다른 주소/포트: `LANGFLOW_BASE_URL` 설정
-- 인증 사용: `LANGFLOW_API_KEY` 설정
-- Router 하위 Flow read timeout: 240초
-- 외부 Web/API client timeout 권장값: 단일 호출 300초, Workflow 연계 호출 600초
-- Gemini/provider credential: Langflow Model Providers 또는 Global Variable 설정
-- MongoDB: Langflow Credential Global Variable `MONGO_URL` 생성 후 import된 Mongo 노드의 바인딩 확인
-- MongoDB database: `datagov`
-- v4 공유 collection: `agent_v4_domain_items`, `agent_v4_table_catalog_items`, `agent_v4_main_flow_filters`, `agent_v4_result_store`, `agent_v4_session_states`, `agent_v4_workflow_skills`
-- v4 데이터를 v5로 복사하지 않고 기존 collection을 직접 사용
-- 실제 Mongo URI는 JSON에 포함되지 않으며 Python 컴포넌트는 OS `MONGODB_URI` fallback을 사용하지 않음
-- Data Analysis dummy/live 단일 설정: `04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode`
-- `07 데이터 조회 작업 라우터`에는 별도 모드 설정이 없으며 `04A`가 payload에 기록한 값을 사용
-- 저장 Flow: 안전을 위해 `dry_run=true`가 기본값이며 실제 저장 시에만 의도적으로 끕니다.
-
-## 검증 결과
-
-- Langflow/Flow 비웹 pytest: 전체 suite passed (별도 Streamlit 웹 런타임 테스트는 제외)
-- 커스텀 원본 동기화: `tools/validate_flow_component_sources.py`가 모든 활성 custom node와 저장소 Python 원본의 일대일 매핑 및 누락 0건을 검증
-- 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
-- 대표 Dummy 질문: 30/30 통과
-- Langflow 1.9.2 frontend edge handle codec: 418/418 parse 및 `edge.data` 일치
-- Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: 9개 Flow 160/160 검증 통과
-- Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
-- API Router 직접 응답/명확화 분기: Smart Router -> GaiA Output Adapter -> 표준 Chat Output 2/2, FinalGate 0개
-- API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개
-- Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
-- 선택된 01~07 Flow의 격리 Langflow 서버 import 계약을 검증했으며, continuation bundle은 08~09를 추가합니다.
-- 통합 `00` 단일 JSON은 9개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
-- 선택된 하위 Flow와 Route V2: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
-- Data Analysis: executor node 1개, 초기 성공 시 Repair LLM 0회, 실행 오류 시 이전 코드·오류 문맥을 전달해 최대 1회 복구, 단일 최종화 체인 확인
-- Data Analysis V2: 단일 source의 완성된 계약은 Fast 실행하여 pandas 생성·답변 LLM 0회, 다중 source·join·Function Case는 기존 Complex 경로 사용
-- Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
-- pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
-- pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
-- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router의 선택형 Cached Run Flow Tool 6개는 UI에서 저장한 현재 Flow ID와 `updated_at`을 실행 시 확인하고, 선택 ID가 현재 프로젝트에서 사라졌을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. `cache_flow=true`, `return_direct=true`이며, Flow 수정 시 오래된 graph cache를 무효화합니다. 실시간 생산 Report Tool은 `분석`과 지정된 실시간 분석 구문을 실행 직전에 다시 검증합니다.
-- Agent Tool Router의 Cached Run Flow Tool은 대상 Flow 선택·새로고침 이후에도 `component_as_tool` 출력 하나만 유지합니다. 하위 Flow의 `message`, `gaia_response`는 Tool 내부 결과 선택에만 사용합니다.
-- Agent Tool Router는 `n_messages=5`, `max_iterations=1`로 현재 저장 메시지와 이전 2턴을 조회합니다. GaiA Input Adapter가 원본 Message ID를 보존하고 LFX Agent가 현재 입력과 ID가 같은 메시지를 history에서 제거하므로, 현재 질문 중복 없이 이전 사용자/응답 2턴만 남습니다. 하위 Flow의 표준 Chat Output Message를 `return_direct=true`로 반환하며, LFX 0.4.2가 Tool 결과를 Agent 단계 카드에만 기록한 경우 GaiA Output Adapter가 마지막 완료 Tool 출력에서 본문을 복원합니다. Message.data의 `gaia_response`도 보존합니다.
-- Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 표준 Chat Input ID로 내부 변환합니다.
-- Agent Tool Router는 `session_source` 포트와 edge 없이 실제 Tool 출력 메서드 안에서 부모 runtime/graph `session_id`를 자동 상속합니다. 따라서 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰어도 하위 Flow의 세션 저장/복원이 유지됩니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.
-- 격리 import에서 현재 Langflow 실행 사용자로 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
-- Workflow Orchestrator의 이름 기반 Tool 7개는 `question`과 선택 `upstream_result_ref`만 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
-- Workflow Orchestrator는 기본 Language Model 계획기 -> `workflow.plan.v1` 파서 -> 기본 Loop -> 정확한 Tool 단일 실행기 순서로 최대 네 단계를 실행합니다. Registry와 일치하지 않아도 capability catalog의 Tool만으로 해결 가능하면 inline 계획을 만들며 Agent의 자율 반복은 사용하지 않습니다.
-- Workflow Orchestrator는 기본적으로 `datagov.agent_v4_workflow_skills`의 active Skill을 질문 기준 후보로 조회합니다. `inline_seed`는 사용자가 명시적으로 선택한 standalone 테스트 모드에서만 사용하며 MongoDB 오류 시 자동 fallback하지 않습니다.
-- Workflow Orchestrator는 Loop 결과를 compact context로 만든 뒤 기본 Language Model을 한 번만 호출하며, GaiA Output Adapter -> 표준 Chat Output과 terminal `api_response`를 제공합니다.
-- HTML Visualization Flow는 `run_data_analysis`의 `result_ref`를 복원하고 외부 CDN 없는 standalone HTML/SVG 차트를 생성합니다. `HTML Report API 주소`로 게시해 Tauri 상대경로가 아닌 절대 보기·다운로드 링크를 반환하며, 화면 Message와 별도의 API 종료 어댑터가 실제 terminal `api_response`를 제공합니다. 그래프 요청은 `run_data_analysis -> run_visualization` 순서와 `handoff=result_ref`로 실행합니다.
-- Realtime Production Report Flow는 Domain Metadata의 공정그룹을 전용 LLM으로 선택한 뒤 질문 원문과 허용목록으로 재검증합니다. 단일 그룹이 확정될 때만 해당 그룹의 판정 더미 Snapshot을 고정 Rule로 집계하고, 미지정·다중지정이면 HTML 없이 공정그룹을 다시 묻습니다.
-- Metadata 및 Workflow Skill 저장 Flow 4종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/GaiA Output Adapter/표준 Chat Output 사용
-- Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
-- Metadata 후보: 도메인 관련 항목 최대 20건, 테이블 5건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증
-- Data Analysis 파라미터: 각 retrieval job이 독립 실행 가능한 `required_params`를 가지며, 공통 조건은 각 job에 반복하고 `어제 재공과 오늘 생산량`처럼 범위가 다르면 서로 다른 값을 유지
-- Metadata QA 제품 설명: 제품 그룹은 `product_terms`, 제품 집계는 `product_key_columns`와 관련 `analysis_recipes`만 근거로 결정론적 표를 만들고 추가 LLM 호출을 생략
-
-## Additive continuation flows
-
-기존 `01` 및 `06`은 그대로 유지됩니다. 종속 조회가 필요한 실험·검증은 아래 별도 Flow를 사용합니다.
-
-| 순서 | 파일 | endpoint_name |
-| ---: | --- | --- |
-| 8 | `08_data_analysis_flow_v2_continuation_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis-continuation` |
-| 9 | `09_agent_tool_router_continuation_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router-continuation` |
+- GaiA Input/Output boundary node 없음; 각 Flow는 native Chat Input/Chat Output을 각각 하나씩 사용
+- 모든 node `lf_version=1.9.2`
+- edge handle 418/418
+- custom component template 160/160

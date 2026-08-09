@@ -208,6 +208,15 @@ def normalize_intent_plan(
     if catalog_error:
         return _blocked_catalog_metadata_payload(payload, catalog_error)
     retrieval_jobs = _retrieval_jobs(plan)
+    (
+        metadata_candidates,
+        retrieval_jobs,
+        execution_catalog_resolution,
+    ) = _hydrate_execution_catalog_candidates(
+        metadata_candidates,
+        metadata_envelope,
+        retrieval_jobs,
+    )
     unknown_dataset_error = _unregistered_dataset_error(
         retrieval_jobs,
         metadata_envelope,
@@ -216,6 +225,10 @@ def normalize_intent_plan(
     if unknown_dataset_error:
         return _blocked_catalog_metadata_payload(payload, unknown_dataset_error)
     metadata_refs = _metadata_refs(parsed, plan)
+    metadata_refs = _merge_metadata_ref_lists(
+        metadata_refs,
+        execution_catalog_resolution.get("metadata_refs", []),
+    )
     metadata_refs, metadata_ref_guard = _known_metadata_refs(
         metadata_refs,
         metadata_candidates,
@@ -834,6 +847,7 @@ def normalize_intent_plan(
         "output_contract_column_normalization": output_contract_column_normalization,
         "typed_input_binding": typed_input_binding,
         "external_source_catalog_binding": external_source_catalog_binding,
+        "execution_catalog_resolution": execution_catalog_resolution,
         "temporal_metric_alignment": temporal_metric_alignment,
         "metric_dataset_selection": metric_dataset_selection,
         "source_dataset_selection": source_dataset_selection,
@@ -932,6 +946,27 @@ def _reconcile_followup_execution_contract(
     hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
     if hint.get("followup_candidate") is not True:
         return next_plan, jobs, steps, {"status": "not_needed", "reason": "not_followup"}
+
+    # An upstream binding is a fallback for a required parameter that is not
+    # present in the current question.  If the intent already supplies every
+    # catalog-required parameter, keep this as an independent retrieval even
+    # when the conversation state makes it look like a follow-up.
+    direct_required_jobs = _direct_required_parameter_evidence(
+        jobs,
+        metadata_candidates,
+    )
+    if direct_required_jobs:
+        next_plan["request_scope"] = "new_analysis"
+        next_plan["reference_mode"] = "none"
+        next_plan["reuse_strategy"] = "none"
+        return next_plan, jobs, steps, {
+            "status": "applied",
+            "kind": "direct_required_parameter",
+            "reason": "explicit_required_parameter_precedes_previous_result_binding",
+            "direct_jobs": direct_required_jobs,
+            "llm_request_scope": str(plan.get("request_scope") or ""),
+            "llm_reference_mode": str(plan.get("reference_mode") or ""),
+        }
 
     state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
     current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
@@ -1133,6 +1168,76 @@ def _reconcile_followup_execution_contract(
 
 
 # 함수 설명: 후속 상태에 남은 식별 컬럼 중 Catalog upstream binding과 연결 가능한 컬럼만 반환합니다.
+# 주요 함수: 현재 질문의 직접 필수 조건이 완결되었는지 Catalog 기준으로 판별합니다.
+# dataset 또는 업무 용어에 의존하지 않으며, 값 자체는 trace에 남기지 않습니다.
+def _direct_required_parameter_evidence(
+    retrieval_jobs: list[dict[str, Any]],
+    candidates: dict[str, Any],
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for job in retrieval_jobs:
+        if not isinstance(job, dict):
+            continue
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        required_params = _catalog_required_params(candidates, dataset_key)
+        if not dataset_key or not required_params:
+            continue
+        supplied_params = job.get("required_params")
+        if not isinstance(supplied_params, dict):
+            supplied_params = (
+                job.get("params") if isinstance(job.get("params"), dict) else {}
+            )
+        filters = job.get("filters") if isinstance(job.get("filters"), dict) else {}
+        complete = True
+        for param_name in required_params:
+            value = _normalized_mapping_value(supplied_params, param_name)
+            if _is_nonblank_direct_parameter(value):
+                continue
+            value = _normalized_mapping_value(filters, param_name)
+            if _is_nonblank_direct_parameter(value):
+                continue
+            complete = False
+            break
+        if complete:
+            evidence.append(
+                {
+                    "dataset_key": dataset_key,
+                    "source_alias": str(
+                        job.get("source_alias") or dataset_key
+                    ).strip(),
+                    "required_params": required_params,
+                }
+            )
+    return evidence
+
+
+# 주요 함수: 표기 차이를 무시하고 mapping의 계약 필드 값을 찾습니다.
+def _normalized_mapping_value(mapping: dict[str, Any], target_name: str) -> Any:
+    target = _normalized_column_key(target_name)
+    for raw_name, value in mapping.items():
+        if _normalized_column_key(raw_name) == target:
+            return value
+    return None
+
+
+# 주요 함수: 현재 요청에서 직접 전달된 필수 조건 값을 빈 placeholder와 구분합니다.
+def _is_nonblank_direct_parameter(value: Any) -> bool:
+    if isinstance(value, dict):
+        if "values" in value:
+            return _is_nonblank_direct_parameter(value.get("values"))
+        if "value" in value:
+            return _is_nonblank_direct_parameter(value.get("value"))
+        return False
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set)):
+        return any(_is_nonblank_direct_parameter(item) for item in value)
+    return True
+
+
+# 주요 함수: 이전 결과에서 Catalog upstream binding에 사용할 수 있는 식별자 컬럼을 찾습니다.
 def _followup_previous_identifier_columns(payload: dict[str, Any]) -> list[str]:
     state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
     current = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
@@ -3576,7 +3681,7 @@ def _reconcile_metric_dataset_selection(
     }
 
 
-# 함수 설명: `_reconcile_source_dataset_selection()`은 실행 컬럼과 Catalog 선택 기준을 함께 확인해 더 적합한 source를 고릅니다.
+# 함수 설명: `_reconcile_source_dataset_selection()`은 실행 불가능한 source만 Catalog schema로 보정하고, 의미상 후보 비교는 Intent LLM 판단으로 남깁니다.
 def _reconcile_source_dataset_selection(
     payload: dict[str, Any],
     retrieval_jobs: list[Any],
@@ -3585,15 +3690,15 @@ def _reconcile_source_dataset_selection(
     locked_metadata_refs: list[dict[str, str]] | None = None,
     locked_source_aliases: set[str] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
-    """Repair weak-model source choices from catalog selection criteria.
+    """Keep the model's semantic dataset choice unless its schema is impossible.
 
-    A model can choose a status table merely because it shares product
-    columns with a production table.  When the executable operation needs a
-    concrete schema and an unambiguous catalog candidate advertises a better
-    ``use_when``/``exclude_when`` fit, prefer that candidate.  The rule is
-    intentionally dataset-agnostic: explicit recipe source contracts remain
-    authoritative, and alternatives must support every column used by the
-    pandas plan.
+    ``use_when``/``exclude_when`` are candidate guidance for the Intent LLM.
+    Replacing a schema-capable source merely because another candidate has a
+    higher phrase score makes otherwise valid questions non-deterministic and
+    hides why a source was selected.  This reconciler therefore only repairs a
+    source when the selected catalog cannot provide an executable column and a
+    single schema-capable alternative exists.  Better semantic candidates are
+    retained as trace-only advisories for diagnosis.
     """
 
     jobs = [deepcopy(item) for item in retrieval_jobs]
@@ -3603,7 +3708,12 @@ def _reconcile_source_dataset_selection(
         if isinstance(item, dict) and str(item.get("dataset_key") or "").strip()
     ]
     if len(jobs) == 0 or len(catalog_items) < 2:
-        return jobs, {"status": "not_needed", "corrections": [], "skipped": "insufficient_catalog"}
+        return jobs, {
+            "status": "not_needed",
+            "corrections": [],
+            "advisories": [],
+            "skipped": "insufficient_catalog",
+        }
 
     known_aliases = {
         str(item.get("source_alias") or item.get("dataset_key") or "").strip()
@@ -3622,6 +3732,7 @@ def _reconcile_source_dataset_selection(
         if str(alias).strip()
     }
     corrections: list[dict[str, Any]] = []
+    advisories: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
 
     for job in jobs:
@@ -3681,21 +3792,34 @@ def _reconcile_source_dataset_selection(
             key=lambda value: (value[0], value[1], value[2]),
         )
         best_penalty = -neg_best_penalty
-        should_switch = False
-        if not current_supports and best_fit >= current_fit:
-            # A source that cannot provide a required executable column is
-            # never preferred merely because the model named it first.  A
-            # unique schema-capable catalog is sufficient evidence.
-            should_switch = True
-        elif best_fit > current_fit:
-            should_switch = True
-        elif best_fit == current_fit and best_penalty < current_identity_penalty:
-            # When selection phrases tie, prefer the catalog whose schema has
-            # fewer unrequested identity columns.  This is a generic detail
-            # vs status/population tie-breaker; it does not name a dataset or
-            # a manufacturing question.
-            should_switch = True
+        schema_capable = [item for _, _, _, item in alternatives]
+        should_switch = not current_supports and len(schema_capable) == 1
         if not should_switch:
+            candidate_is_better = (
+                best_fit > current_fit
+                or (
+                    best_fit == current_fit
+                    and best_penalty < current_identity_penalty
+                )
+            )
+            if candidate_is_better or not current_supports:
+                advisories.append(
+                    {
+                        "source_alias": alias,
+                        "selected_dataset_key": current_key,
+                        "candidate_dataset_key": str(best_item.get("dataset_key") or "").strip(),
+                        "source_columns": required_columns,
+                        "current_schema_capable": current_supports,
+                        "candidate_schema_capable_count": len(schema_capable),
+                        "current_fit": current_fit,
+                        "candidate_fit": best_fit,
+                        "reason": (
+                            "semantic_candidate_not_forced"
+                            if current_supports
+                            else "schema_capable_candidate_not_unique"
+                        ),
+                    }
+                )
             continue
         selected_key = str(best_item.get("dataset_key") or "").strip()
         selected_payload = _metadata_payload(best_item)
@@ -3713,16 +3837,13 @@ def _reconcile_source_dataset_selection(
                 "selected_fit": best_fit,
                 "selected_identity_penalty": best_penalty,
                 "current_identity_penalty": current_identity_penalty,
-                "selection_source": (
-                    "table_catalog.schema_contract"
-                    if best_fit == current_fit
-                    else "table_catalog.selection_criteria"
-                ),
+                "selection_source": "table_catalog.unique_schema_contract",
             }
         )
     return jobs, {
-        "status": "applied" if corrections else "not_needed",
+        "status": "applied" if corrections else ("advisory" if advisories else "not_needed"),
         "corrections": corrections,
+        "advisories": advisories,
         "skipped": skipped,
     }
 
@@ -5936,6 +6057,24 @@ def _metric_source_validation_errors(
             }
         )
 
+    # A metric binding may be mechanically schema-valid while still relabeling
+    # a quantity from one dataset as a metric owned by another catalog.  Do not
+    # substitute a different dataset here; fail closed so the intent model can
+    # choose again using the catalog candidate guidance.
+    ownership_issues = _catalog_metric_ownership_issues(
+        output_contract,
+        jobs_by_alias,
+        metadata_candidates,
+    )
+    if ownership_issues:
+        errors.append(
+            {
+                "type": "catalog_metric_ownership_mismatch",
+                "message": "선택한 Table Catalog가 보유하지 않은 metric을 다른 source 컬럼으로 바꾸려 했습니다.",
+                "issues": ownership_issues,
+            }
+        )
+
     if business_time_guard.get("status") == "error":
         errors.append(
             {
@@ -6011,6 +6150,84 @@ def _metric_source_validation_errors(
             }
         )
     return errors
+
+
+# 함수 설명: `_catalog_metric_ownership_issues()`는 서로 다른 Catalog metric 이름으로 단순 재라벨링하는 계획을 차단합니다.
+def _catalog_metric_ownership_issues(
+    output_contract: dict[str, Any],
+    jobs_by_alias: dict[str, dict[str, Any]],
+    metadata_candidates: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return only unambiguous catalog-owned metric relabeling conflicts.
+
+    This intentionally does not infer a replacement dataset or reject normal
+    presentation aliases such as ``TOTAL_PRODUCTION``.  It applies only when a
+    result metric exactly matches a metric explicitly declared by some catalog
+    candidate and the selected source neither declares nor exposes that metric.
+    """
+
+    candidate_items = (
+        metadata_candidates.get("table_catalog_items")
+        if isinstance(metadata_candidates, dict)
+        else []
+    )
+    if not isinstance(candidate_items, list):
+        return []
+    owners_by_metric: dict[str, set[str]] = {}
+    for item in candidate_items:
+        if not isinstance(item, dict):
+            continue
+        dataset_key = str(item.get("dataset_key") or "").strip()
+        payload = _metadata_payload(item)
+        semantics = payload.get("metric_semantics")
+        if not dataset_key or not isinstance(semantics, dict):
+            continue
+        for metric in semantics:
+            metric_key = _normalized_column_key(metric)
+            if metric_key:
+                owners_by_metric.setdefault(metric_key, set()).add(dataset_key)
+    if not owners_by_metric:
+        return []
+
+    issues: list[dict[str, Any]] = []
+    for binding in output_contract.get("metric_bindings", []):
+        if not isinstance(binding, dict):
+            continue
+        alias = str(binding.get("source_alias") or "").strip()
+        job = jobs_by_alias.get(alias)
+        if not isinstance(job, dict):
+            continue
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        output_column = str(binding.get("output_column") or "").strip()
+        source_column = str(binding.get("source_column") or "").strip()
+        output_key = _normalized_column_key(output_column)
+        source_key = _normalized_column_key(source_column)
+        owners = owners_by_metric.get(output_key, set())
+        if (
+            not dataset_key
+            or not output_key
+            or not source_key
+            or output_key == source_key
+            or not owners
+            or dataset_key in owners
+            or _catalog_supports_domain_column(
+                metadata_candidates,
+                dataset_key,
+                output_column,
+            )
+        ):
+            continue
+        issues.append(
+            {
+                "source_alias": alias,
+                "dataset_key": dataset_key,
+                "source_column": source_column,
+                "output_column": output_column,
+                "metric_owner_dataset_keys": sorted(owners),
+                "issue": "selected_dataset_does_not_own_output_metric",
+            }
+        )
+    return issues
 
 
 # 함수 설명: V2 Fast Path에 필요한 범용 계산 계약과 파생 결과 컬럼을 기존 정규화 결과에 안전하게 보존합니다.
@@ -6812,6 +7029,118 @@ def _metadata_candidate_envelope(value: Any, payload: dict[str, Any]) -> dict[st
     return deepcopy(existing) if isinstance(existing, dict) else {}
 
 
+# 함수 설명: `_execution_catalog_registry_items()`는 LLM에 보인 상위 후보와 별도로,
+# 현재 활성 Table Catalog 전체를 실행 권한 확인과 선택 문서 보강에만 제공합니다.
+def _execution_catalog_registry_items(
+    envelope: dict[str, Any],
+    candidates: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return the authoritative Catalog registry without expanding the model prompt."""
+
+    registry = envelope.get("table_catalog_registry") if isinstance(envelope, dict) else {}
+    raw_items = registry.get("items") if isinstance(registry, dict) else registry
+    if not isinstance(raw_items, list):
+        raw_items = []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        dataset_key = _catalog_dataset_key(item)
+        normalized = dataset_key.casefold()
+        if not dataset_key or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(deepcopy(item))
+    if result:
+        return result
+
+    # 기존 export/direct unit input은 registry가 없을 수 있다. 그 경우에는
+    # 기존 후보 목록을 authoritative snapshot으로 사용하는 하위 호환을 유지한다.
+    raw_candidates = (
+        candidates.get("table_catalog_items")
+        if isinstance(candidates.get("table_catalog_items"), list)
+        else []
+    )
+    return [deepcopy(item) for item in raw_candidates if isinstance(item, dict)]
+
+
+# 함수 설명: 실행 계획이 후보 밖의 정상 등록 dataset을 선택하면 그 한 건의 Catalog 문서만
+# 후보에 보강합니다. 전체 registry를 LLM prompt에 다시 넣거나 dataset을 강제 선택하지 않습니다.
+def _hydrate_execution_catalog_candidates(
+    metadata_candidates: dict[str, Any],
+    metadata_envelope: dict[str, Any],
+    retrieval_jobs: list[Any],
+) -> tuple[dict[str, Any], list[Any], dict[str, Any]]:
+    """Materialize only trusted planned datasets omitted by bounded candidate selection."""
+
+    candidates = deepcopy(metadata_candidates) if isinstance(metadata_candidates, dict) else {}
+    selected = (
+        [deepcopy(item) for item in candidates.get("table_catalog_items", []) if isinstance(item, dict)]
+        if isinstance(candidates.get("table_catalog_items"), list)
+        else []
+    )
+    registry_items = _execution_catalog_registry_items(metadata_envelope, candidates)
+    registry_index = {
+        _catalog_dataset_key(item).casefold(): item
+        for item in registry_items
+        if _catalog_dataset_key(item)
+    }
+    selected_keys = {
+        _catalog_dataset_key(item).casefold()
+        for item in selected
+        if _catalog_dataset_key(item)
+    }
+    jobs: list[Any] = []
+    hydrated_keys: list[str] = []
+    unknown_keys: list[str] = []
+    for raw_job in retrieval_jobs:
+        if not isinstance(raw_job, dict):
+            jobs.append(deepcopy(raw_job))
+            continue
+        job = deepcopy(raw_job)
+        requested_key = str(job.get("dataset_key") or "").strip()
+        canonical_item = registry_index.get(requested_key.casefold()) if requested_key else None
+        if not canonical_item:
+            if requested_key:
+                unknown_keys.append(requested_key)
+            jobs.append(job)
+            continue
+        canonical_key = _catalog_dataset_key(canonical_item)
+        # dataset key의 대소문자 표기만 다른 경우 Catalog의 canonical key를 사용한다.
+        job["dataset_key"] = canonical_key
+        if canonical_key.casefold() not in selected_keys:
+            selected.append(deepcopy(canonical_item))
+            selected_keys.add(canonical_key.casefold())
+            hydrated_keys.append(canonical_key)
+        jobs.append(job)
+    candidates["table_catalog_items"] = selected
+    return candidates, jobs, {
+        "status": "hydrated" if hydrated_keys else ("unknown" if unknown_keys else "not_needed"),
+        "registry_dataset_count": len(registry_index),
+        "candidate_dataset_count": len(selected),
+        "hydrated_dataset_keys": hydrated_keys,
+        "unknown_dataset_keys": list(dict.fromkeys(unknown_keys)),
+        "metadata_refs": [
+            {"section": "table_catalog", "key": key}
+            for key in hydrated_keys
+        ],
+    }
+
+
+# 함수 설명: Catalog wrapper/payload의 dataset_key를 실행 비교에 사용할 canonical 문자열로 읽습니다.
+def _catalog_dataset_key(item: dict[str, Any]) -> str:
+    payload = _metadata_payload(item)
+    return str(
+        item.get("dataset_key")
+        or item.get("key")
+        or payload.get("dataset_key")
+        or payload.get("key")
+        or ""
+    ).strip()
+
+
+# 함수 설명: 실제 메타데이터 로더가 Table Catalog를 읽지 못한 상태를 정규화 단계에서도 fail-close로 유지합니다.
 def _catalog_metadata_error(
     envelope: dict[str, Any],
     candidates: dict[str, Any],
@@ -6829,7 +7158,7 @@ def _catalog_metadata_error(
     table_load = loads.get("table_catalog_items") if isinstance(loads.get("table_catalog_items"), dict) else {}
     table_status = str(table_load.get("status") or "").strip().lower()
     overall_status = str(load.get("status") or "").strip().lower()
-    table_items = candidates.get("table_catalog_items") if isinstance(candidates.get("table_catalog_items"), list) else []
+    table_items = _execution_catalog_registry_items(envelope, candidates)
     registered = [
         str(item.get("dataset_key") or _metadata_payload(item).get("dataset_key") or "").strip()
         for item in table_items
@@ -6853,6 +7182,7 @@ def _catalog_metadata_error(
     return {}
 
 
+# 함수 설명: 메타데이터 로더의 실패 사유를 비밀 정보 없이 후속 오류 응답으로 전달할 형태로 정리합니다.
 def _metadata_load_failures(loads: dict[str, Any]) -> list[dict[str, str]]:
     """Keep the metadata loader failure reason through normalization without secrets."""
 
@@ -6878,6 +7208,7 @@ def _metadata_load_failures(loads: dict[str, Any]) -> list[dict[str, str]]:
     return failed
 
 
+# 함수 설명: stale 라우터 응답이 들어와도 동일한 메타데이터 로드 실패 계약을 반환합니다.
 def _metadata_load_error(
     failed_loads: list[dict[str, str]],
     *,
@@ -6902,6 +7233,7 @@ def _metadata_load_error(
     }
 
 
+# 함수 설명: 조회 가능한 데이터셋의 신뢰 기준인 Table Catalog 실패를 우선 원인으로 선택합니다.
 def _primary_metadata_load_failure(failed_loads: list[dict[str, str]]) -> dict[str, str]:
     """Prefer Table Catalog because it is the trusted execution allowlist."""
 
@@ -6911,6 +7243,7 @@ def _primary_metadata_load_failure(failed_loads: list[dict[str, str]]) -> dict[s
     )
 
 
+# 함수 설명: MongoDB 연결 오류의 조치 정보는 남기되 URI 자격 증명과 과도한 길이를 제거합니다.
 def _safe_metadata_error_detail(value: Any) -> str:
     """Redact MongoDB credentials while preserving the actionable network error."""
 
@@ -6919,6 +7252,7 @@ def _safe_metadata_error_detail(value: Any) -> str:
     return text[:500] if text else "상세 오류 정보가 없습니다."
 
 
+# 함수 설명: LLM이 현재 Table Catalog에 없는 데이터셋을 계획에 넣었는지 확인해 실행 전 차단합니다.
 def _unregistered_dataset_error(
     retrieval_jobs: list[dict[str, Any]],
     envelope: dict[str, Any],
@@ -6933,7 +7267,7 @@ def _unregistered_dataset_error(
     # Bare unit callers still exercise the downstream trusted hydrator guard.
     if not isinstance(load, dict) or not load:
         return {}
-    table_items = candidates.get("table_catalog_items") if isinstance(candidates.get("table_catalog_items"), list) else []
+    table_items = _execution_catalog_registry_items(envelope, candidates)
     registered = {
         str(item.get("dataset_key") or _metadata_payload(item).get("dataset_key") or "").strip()
         for item in table_items
@@ -6959,6 +7293,7 @@ def _unregistered_dataset_error(
     }
 
 
+# 함수 설명: 앞 단계에서 이미 확정한 메타데이터 차단 원인을 변경 없이 보존합니다.
 def _catalog_error_from_plan(plan: dict[str, Any]) -> dict[str, Any]:
     """Preserve the pre-LLM router's deterministic metadata failure verbatim."""
 
@@ -6971,6 +7306,7 @@ def _catalog_error_from_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# 함수 설명: 메타데이터 오류 상황에서 데이터셋·컬럼을 추측하지 않는 최종 차단 페이로드를 생성합니다.
 def _blocked_catalog_metadata_payload(
     payload: dict[str, Any],
     error: dict[str, Any],
@@ -7041,6 +7377,7 @@ def _blocked_catalog_metadata_payload(
     return next_payload
 
 
+# 함수 설명: 모델이 언급한 메타데이터 참조 중 현재 후보 목록에 실제 존재하는 항목만 남깁니다.
 def _known_metadata_refs(
     refs: list[dict[str, str]],
     candidates: dict[str, Any],

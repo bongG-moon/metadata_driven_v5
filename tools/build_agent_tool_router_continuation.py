@@ -130,7 +130,8 @@ def build_flow(donor: dict[str, Any]) -> dict[str, Any]:
         base.add_edge(flow, tool, "component_as_tool", agent, "tools")
 
     base.add_edge(flow, agent, "response", output, "input_value")
-    return base.wrap_gaia_boundaries(flow, proto)
+    # Active flows use native Chat Input/Chat Output only.
+    return flow
 
 
 def write_flow() -> dict[str, Any]:

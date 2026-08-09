@@ -19,7 +19,6 @@ if str(ROOT) not in sys.path:
 from tools.build_data_analysis_flow_v2 import (  # noqa: E402
     TARGET_LANGFLOW_VERSION,
     _apply_extended_component_spec,
-    _remove_gaia_adapters,
     _set_embedded_source,
 )
 from tools.build_v5_data_analysis_flow import (  # noqa: E402
@@ -80,7 +79,6 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     nodes = flow["data"]["nodes"]
     edges = flow["data"]["edges"]
     node_index = {node["id"]: node for node in nodes}
-    _remove_gaia_adapters(flow)
     nodes = flow["data"]["nodes"]
     edges = flow["data"]["edges"]
     node_index = {node["id"]: node for node in nodes}

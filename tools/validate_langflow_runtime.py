@@ -13,7 +13,7 @@ from lfx.custom.utils import create_component_template
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_FLOW = ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json"
+DEFAULT_FLOW = ROOT / "flow_exports" / "data_analysis_flow_v2_standalone.json"
 DEFAULT_STOP_COMPONENT = "CustomComponent-DXrpf"
 
 

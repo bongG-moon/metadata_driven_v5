@@ -44,7 +44,7 @@ from tools.data_ref_download_server import (
     resolved_status,
     rows_columns,
 )
-from web_app.data_ref_store import DEFAULT_DATABASE, DEFAULT_RESULT_COLLECTION
+from artifact_server.data_ref_store import DEFAULT_DATABASE, DEFAULT_RESULT_COLLECTION
 
 
 LOGGER = logging.getLogger("metadata_driven_v5.artifact_server")

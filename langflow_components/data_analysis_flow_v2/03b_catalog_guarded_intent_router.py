@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+# =============================================================================
+# 컴포넌트 개요: 03B Table Catalog 검증 의도 라우터
+# 역할: 등록된 실행 데이터셋이 확인된 요청에만 의도 분석 LLM을 호출합니다.
+# 주요 입력: 요청 페이로드, Table Catalog 후보, 의도 분석 프롬프트, 언어 모델
+# 주요 출력: 모델 응답 또는 메타데이터 연결 오류를 담은 Message
+# 처리 흐름: Catalog 상태 확인 → 연결/등록 오류 차단 → 정상일 때만 모델 호출입니다.
+# =============================================================================
 """Catalog-gated initial intent routing for the standalone V2 analysis flow.
 
 The intent model is allowed to plan only when the current request has at least
@@ -18,6 +25,7 @@ from lfx.io import DataInput, MessageTextInput, ModelInput, Output, SecretStrInp
 from lfx.schema.message import Message
 
 
+# 함수 설명: Table Catalog가 유효한 경우에만 의도 모델을 호출하고, 오류면 모델 호출 없이 차단 계획을 반환합니다.
 def route_intent_response(
     payload_value: Any,
     intent_prompt: Any = "",
@@ -52,6 +60,7 @@ def route_intent_response(
     }
 
 
+# 함수 설명: 후보 메타데이터의 Table Catalog 로드 상태와 등록된 데이터셋 존재 여부를 검증합니다.
 def table_catalog_metadata_error(metadata_candidates_value: Any) -> dict[str, Any]:
     """Return a deterministic error unless registered Table Catalog data exists.
 
@@ -72,7 +81,11 @@ def table_catalog_metadata_error(metadata_candidates_value: Any) -> dict[str, An
     table_load = loads.get("table_catalog_items") if isinstance(loads.get("table_catalog_items"), dict) else {}
     table_status = str(table_load.get("status") or "").strip().lower()
     overall_status = str(metadata_load.get("status") or "").strip().lower()
-    table_items = candidates.get("table_catalog_items") if isinstance(candidates, dict) else []
+    registry = envelope.get("table_catalog_registry") if isinstance(envelope, dict) else {}
+    registry_items = registry.get("items") if isinstance(registry, dict) else registry
+    table_items = registry_items if isinstance(registry_items, list) else []
+    if not table_items:
+        table_items = candidates.get("table_catalog_items") if isinstance(candidates, dict) else []
     registered_keys = [
         str(item.get("dataset_key") or _payload(item).get("dataset_key") or "").strip()
         for item in table_items
@@ -97,6 +110,7 @@ def table_catalog_metadata_error(metadata_candidates_value: Any) -> dict[str, An
     return {}
 
 
+# 함수 설명: 여러 메타데이터 로더 중 실패한 항목을 자격 증명 없이 짧은 진단 정보로 추립니다.
 def _failed_metadata_loads(loads: dict[str, Any]) -> list[dict[str, str]]:
     """Expose a bounded, credential-safe reason for each failed metadata loader."""
 
@@ -122,6 +136,7 @@ def _failed_metadata_loads(loads: dict[str, Any]) -> list[dict[str, str]]:
     return failed
 
 
+# 함수 설명: 메타데이터 연결 또는 로드 실패를 사용자가 조치할 수 있는 단일 오류 계약으로 만듭니다.
 def _metadata_unavailable_error(
     failed_loads: list[dict[str, str]],
     *,
@@ -146,6 +161,7 @@ def _metadata_unavailable_error(
     }
 
 
+# 함수 설명: 실행 데이터셋 권한의 기준인 Table Catalog 실패를 우선 표시할 원인으로 선택합니다.
 def _primary_metadata_failure(failed_loads: list[dict[str, str]]) -> dict[str, str]:
     """Prefer the Table Catalog cause because it authorizes executable datasets."""
 
@@ -155,6 +171,7 @@ def _primary_metadata_failure(failed_loads: list[dict[str, str]]) -> dict[str, s
     )
 
 
+# 함수 설명: 공급자 오류의 진단 가치는 유지하면서 URI 계정 정보와 과도한 길이를 제거합니다.
 def _safe_error_detail(value: Any) -> str:
     """Keep a useful provider error while redacting credentials and bounding output."""
 
@@ -163,6 +180,7 @@ def _safe_error_detail(value: Any) -> str:
     return text[:500] if text else "상세 오류 정보가 없습니다."
 
 
+# 함수 설명: 메타데이터가 없을 때 임의 데이터셋을 만들지 않는 최소 차단 의도 계약을 생성합니다.
 def blocked_intent_envelope(error: dict[str, Any]) -> dict[str, Any]:
     """Build the same minimal typed plan for every metadata-unavailable case."""
 
@@ -200,16 +218,19 @@ def blocked_intent_envelope(error: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 함수 설명: Langflow Data 또는 dict 입력을 복사 가능한 일반 dict로 정규화합니다.
 def _data(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
+# 함수 설명: 메타데이터 항목에서 선택적으로 중첩된 payload dict만 안전하게 읽습니다.
 def _payload(item: dict[str, Any]) -> dict[str, Any]:
     payload = item.get("payload")
     return payload if isinstance(payload, dict) else {}
 
 
+# 함수 설명: Message·dict·문자열 모델 응답을 후속 JSON 처리용 텍스트로 바꿉니다.
 def _text(value: Any) -> str:
     text = getattr(value, "text", value)
     if isinstance(text, dict):
@@ -217,10 +238,12 @@ def _text(value: Any) -> str:
     return str(text or "").strip()
 
 
+# 함수 설명: 차단 의도 계약을 한국어를 보존하는 compact JSON 문자열로 직렬화합니다.
 def _json_text(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+# Langflow 컴포넌트 클래스: Table Catalog 확인 뒤에만 의도 분석 모델을 호출하는 안전 라우터입니다.
 class CatalogGuardedIntentRouter(Component):
     display_name = "03B Catalog 검증 Intent Router"
     description = "Table Catalog가 확인된 경우에만 Intent LLM을 호출하고, 메타데이터 연결 실패 시 추측 계획 없이 즉시 중단합니다."
@@ -233,6 +256,7 @@ class CatalogGuardedIntentRouter(Component):
     ]
     outputs = [Output(name="text_output", display_name="의도 분석 응답", method="build_response", types=["Message"])]
 
+    # 함수 설명: 현재 노드 입력으로 라우팅을 수행하고 모델 응답 또는 차단 계약을 Message로 반환합니다.
     def build_response(self) -> Message:
         text, trace = route_intent_response(
             getattr(self, "payload", None),
@@ -243,6 +267,7 @@ class CatalogGuardedIntentRouter(Component):
         self.status = trace
         return Message(text=text)
 
+    # 함수 설명: Langflow에서 선택된 언어 모델을 찾아 의도 분석 프롬프트를 한 번 호출합니다.
     def _invoke_model(self, prompt: str) -> Any:
         from lfx.base.models.unified_models import get_llm
 
@@ -255,6 +280,7 @@ class CatalogGuardedIntentRouter(Component):
             raise RuntimeError("Intent analysis language model is not connected.")
         return llm.invoke(prompt)
 
+    # 함수 설명: 화면에서 모델 제공자를 바꿀 때 해당 제공자의 설정 항목을 동적으로 반영합니다.
     def update_build_config(self, build_config: dict, field_value: str, field_name: str | None = None):
         from lfx.base.models.unified_models import (
             apply_provider_variable_config_to_build_config,

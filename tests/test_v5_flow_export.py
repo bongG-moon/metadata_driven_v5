@@ -63,6 +63,20 @@ def test_native_boundaries_are_direct_for_analysis_and_agent_router() -> None:
     assert ("Agent-agent-tool-router", "ChatOutput-agent-tool-router") in agent_edges
 
 
+def test_base_data_analysis_hides_explicit_upstream_result_reference() -> None:
+    analysis = _load(EXPORT_ROOT / "data_analysis_flow_v2_standalone.json")
+    request_loader = next(
+        node
+        for node in analysis["data"]["nodes"]
+        if node.get("id") == "CustomComponent-xpbhS"
+    )
+    component = request_loader["data"]["node"]
+    template = component["template"]
+
+    assert component["field_order"] == ["question", "previous_state"]
+    assert "upstream_result_ref" not in template
+
+
 def test_continuation_flows_are_native_and_versioned() -> None:
     for filename in (
         "08_data_analysis_flow_v2_continuation_standalone.json",

@@ -1,3 +1,11 @@
+"""Build the import-ready bundle for the currently supported Langflow flows.
+
+The repository intentionally keeps this builder small: it only knows about the
+seven base flows that are present in the import-ready bundle.  The isolated
+two-stage continuation flows are appended by
+``build_continuation_import_ready_bundle.py``.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -14,6 +22,11 @@ SOURCE_DIR = ROOT / "flow_exports"
 DEFAULT_OUTPUT_DIR = ROOT / "import_ready_flows"
 BUNDLE_VERSION = "20260710"
 ENDPOINT_PREFIX = f"metadata-driven-v5-complete-{BUNDLE_VERSION}"
+TARGET_LANGFLOW_VERSION = "1.9.2"
+TARGET_LANGFLOW_BASE_VERSION = "0.9.2"
+TARGET_LFX_VERSION = "0.4.2"
+MONGO_GLOBAL_VARIABLE = "MONGO_URL"
+
 MONGODB_CONTRACT = {
     "database": "datagov",
     "domain": "agent_v4_domain_items",
@@ -21,20 +34,11 @@ MONGODB_CONTRACT = {
     "main_flow_filter": "agent_v4_main_flow_filters",
     "result": "agent_v4_result_store",
     "session_state": "agent_v4_session_states",
-    "workflow_skill": "agent_v4_workflow_skills",
 }
-ROUTER_READ_TIMEOUT_SECONDS = "240"
-MONGO_GLOBAL_VARIABLE = "MONGO_URL"
-TARGET_LANGFLOW_VERSION = "1.9.2"
-TARGET_LANGFLOW_BASE_VERSION = "0.9.2"
-TARGET_LFX_VERSION = "0.4.2"
 
-# Keep the public Data Analysis contract stable while changing only the graph
-# behind it. Routers and clients continue to use ``data_analysis``,
-# ``run_data_analysis`` and the ``data-analysis`` endpoint. The former V1
-# graph remains importable through an explicitly named legacy route.
+# The public route and tool name stay stable while the graph behind Flow 01 is
+# the V2 implementation.
 CANONICAL_DATA_ANALYSIS_SOURCE = "data_analysis_flow_v2_standalone.json"
-
 FLOW_SPECS = [
     (CANONICAL_DATA_ANALYSIS_SOURCE, "data-analysis", "data_analysis"),
     ("domain_saving_flow_v5_standalone.json", "domain-saving", "domain_saving"),
@@ -44,159 +48,183 @@ FLOW_SPECS = [
     ("06_agent_tool_router_flow_v5_standalone.json", "agent-tool-router", "agent_tool_router"),
     ("07_realtime_production_report_flow_v5_standalone.json", "realtime-production-report", "realtime_production_report"),
 ]
-IMPORT_ORDER = {
-    "data_analysis": 1,
-    "domain_saving": 2,
-    "table_catalog_saving": 3,
-    "main_flow_filter_saving": 4,
-    "metadata_qa": 5,
-    "agent_tool_router": 6,
-    "realtime_production_report": 7,
-}
-
+IMPORT_ORDER = {route_name: index for index, (_, _, route_name) in enumerate(FLOW_SPECS, start=1)}
 FLOW_DISPLAY_NAMES = {
     "data_analysis": "01. v5_data_analysis",
     "domain_saving": "02. v5_domain_saving",
     "table_catalog_saving": "03. v5_table_catalog_saving",
     "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
     "metadata_qa": "05. v5_metadata_qa",
-    "api_router": "06. v5_api_router",
     "agent_tool_router": "06. v5_agent_tool_router",
-    "workflow_orchestrator": "08. v5_workflow_orchestrator",
-    "workflow_skill_saving": "09. v5_workflow_skill_saving",
-    "html_visualization": "10. v5_html_visualization",
     "realtime_production_report": "07. v5_realtime_production_report",
-    "cube_schedule_saving": "12. v5_cube_schedule_saving",
-    "data_analysis_legacy": "13. v5_data_analysis_legacy",
-}
-EXPLICIT_STRUCTURED_TERMINALS = {
-    "data_analysis": "CustomComponent-3eVde",
-    "domain_saving": "Api-domain",
-    "table_catalog_saving": "Api-table_catalog",
-    "main_flow_filter_saving": "Api-main_flow_filter",
-    "metadata_qa": "Api-metadata-qa",
-    "workflow_skill_saving": "Api-workflow_skill",
-    "html_visualization": "HtmlVisualizationApiTerminal-html-visualization",
-    "realtime_production_report": "RealtimeProductionReportApiTerminal-realtime-production-report",
-    "cube_schedule_saving": "Api-cube-schedule-saving",
-    "data_analysis_legacy": "CustomComponent-3eVde",
 }
 
-API_CHILD_ROUTE_NAMES = {
-    "data_analysis",
-    "domain_saving",
-    "table_catalog_saving",
-    "main_flow_filter_saving",
-    "metadata_qa",
-}
-CHILD_ROUTE_NAMES = {
-    *API_CHILD_ROUTE_NAMES,
-    "realtime_production_report",
-}
-WORKFLOW_CHILD_ROUTE_NAMES = {*CHILD_ROUTE_NAMES, "html_visualization", "realtime_production_report"}
 
-
-def sync_workflow_sources() -> None:
-    """Registry, Loop feedback, Workflow Skill Prompt 기준본을 source export에 동기화합니다."""
-
-    source = SOURCE_DIR / "workflow_orchestrator_flow_v5_standalone.json"
-    flow = json.loads(source.read_text(encoding="utf-8"))
-    registry_seed = json.dumps(
-        json.loads((ROOT / "docs" / "workflows" / "workflow_registry.example.json").read_text(encoding="utf-8")),
-        ensure_ascii=False,
-        indent=2,
-    )
-    matched = False
+def _set_frontend_flow_ids(flow: dict[str, Any], flow_id: str) -> None:
+    """Write the deterministic Flow id into any frontend-only template field."""
     for node in flow.get("data", {}).get("nodes", []):
-        if str(node.get("id") or "") != "WorkflowRegistryLoader-workflow-orchestrator":
-            continue
         template = node.get("data", {}).get("node", {}).get("template", {})
-        template["inline_seed_json"]["value"] = registry_seed
-        matched = True
-        break
-    if not matched:
-        raise ValueError("Workflow Orchestrator Registry loader was not found in the source export.")
+        field = template.get("_frontend_node_flow_id") if isinstance(template, dict) else None
+        if isinstance(field, dict):
+            field["value"] = flow_id
 
-    feedback_matched = False
-    for edge in flow.get("data", {}).get("edges", []):
-        if (
-            str(edge.get("source") or "") != "SequentialStepExecutor-workflow-orchestrator"
-            or str(edge.get("target") or "") != "Loop-workflow-orchestrator"
-            or str(edge.get("data", {}).get("sourceHandle", {}).get("name") or "") != "step_result"
-        ):
-            continue
-        target_handle = edge.get("data", {}).get("targetHandle", {})
-        if str(target_handle.get("name") or "") != "item":
-            continue
-        # Langflow 1.8.x의 Looping 포트는 item.types(Data)와
-        # item.loop_types(Message)를 합친 전체 타입 계약을 export합니다.
-        target_handle["output_types"] = ["Data", "Message"]
-        target_text = json.dumps(target_handle, ensure_ascii=False, separators=(",", ":")).replace('"', "œ")
-        edge["targetHandle"] = target_text
-        edge["id"] = (
-            f"xy-edge__{edge['source']}{edge['sourceHandle']}-"
-            f"{edge['target']}{target_text}"
+
+def _component_nodes(flow: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        node
+        for node in flow.get("data", {}).get("nodes", [])
+        if isinstance(node.get("data", {}).get("node"), dict)
+    ]
+
+
+def _custom_component_count(flows: list[dict[str, Any]]) -> int:
+    return sum(
+        1
+        for flow in flows
+        for node in _component_nodes(flow)
+        if node["data"]["node"].get("template", {}).get("_type") == "Component"
+        and isinstance(node["data"]["node"].get("template", {}).get("code"), dict)
+    )
+
+
+def _stamp_flow(flow: dict[str, Any], *, flow_id: str, route_name: str, endpoint_name: str) -> dict[str, Any]:
+    flow["id"] = flow_id
+    flow["name"] = FLOW_DISPLAY_NAMES[route_name]
+    flow["endpoint_name"] = endpoint_name
+    flow["last_tested_version"] = TARGET_LANGFLOW_VERSION
+    flow["tags"] = sorted(
+        set([*flow.get("tags", []), "complete-bundle", BUNDLE_VERSION, "import-ready"])
+    )
+    _set_frontend_flow_ids(flow, flow_id)
+    return flow
+
+
+def _destination_name(source_name: str, order: int) -> str:
+    return source_name if source_name.startswith(f"{order:02d}_") else f"{order:02d}_{source_name}"
+
+
+def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
+    """Validate the shared native Langflow shape without legacy Flow contracts."""
+    nodes = flow.get("data", {}).get("nodes", [])
+    edges = flow.get("data", {}).get("edges", [])
+    file_name = str(item["file"])
+
+    if any("GaiA" in str(node.get("data", {}).get("type") or "") for node in nodes):
+        raise ValueError(f"Active flow still contains a removed GaiA boundary node: {file_name}")
+    if sum(node.get("data", {}).get("type") == "ChatInput" for node in nodes) != 1:
+        raise ValueError(f"Active flow must contain exactly one native Chat Input: {file_name}")
+    if sum(node.get("data", {}).get("type") == "ChatOutput" for node in nodes) != 1:
+        raise ValueError(f"Active flow must contain exactly one native Chat Output: {file_name}")
+    for node in _component_nodes(flow):
+        if node["data"]["node"].get("lf_version") != TARGET_LANGFLOW_VERSION:
+            raise ValueError(f"Flow node version mismatch: {file_name}:{node.get('id')}")
+
+    if item["name"] == FLOW_DISPLAY_NAMES["data_analysis"]:
+        adapter = next(
+            (node for node in nodes if node.get("id") == "CustomComponent-A5y0b"),
+            None,
         )
-        feedback_matched = True
-        break
-    if not feedback_matched:
-        raise ValueError("Workflow Orchestrator Loop feedback edge was not found in the source export.")
-    source.write_bytes((json.dumps(flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        if adapter is None:
+            raise ValueError("Data Analysis V2 answer adapter is missing.")
+        adapter_node = adapter.get("data", {}).get("node", {})
+        field_order = adapter_node.get("field_order", [])
+        template = adapter_node.get("template", {})
+        if {"show_analysis_evidence", "show_next_questions"} & set(field_order):
+            raise ValueError("Removed answer-body display options remain in Flow 01 field_order.")
+        if {"show_analysis_evidence", "show_next_questions"} & set(template):
+            raise ValueError("Removed answer-body display options remain in Flow 01 template.")
+        if "show_intermediate_results" not in field_order:
+            raise ValueError("Flow 01 must retain the curated intermediate-results display option.")
 
-    skill_source = SOURCE_DIR / "workflow_skill_saving_flow_v5_standalone.json"
-    skill_flow = json.loads(skill_source.read_text(encoding="utf-8"))
-    prompt_text = (
-        ROOT / "langflow_components" / "workflow_skill_saving_flow" / "03_saving_prompt_template_ko.md"
-    ).read_text(encoding="utf-8")
-    prompt_matched = False
-    for node in skill_flow.get("data", {}).get("nodes", []):
-        if str(node.get("id") or "") != "PromptExtract-workflow_skill":
-            continue
-        template = node.get("data", {}).get("node", {}).get("template", {})
-        template["template"]["value"] = prompt_text
-        prompt_matched = True
-        break
-    if not prompt_matched:
-        raise ValueError("Workflow Skill Prompt Template was not found in the source export.")
-    skill_source.write_bytes((json.dumps(skill_flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    if item["name"] == FLOW_DISPLAY_NAMES["agent_tool_router"]:
+        edge_pairs = {(str(edge.get("source") or ""), str(edge.get("target") or "")) for edge in edges}
+        required = {
+            ("ChatInput-agent-tool-router", "Agent-agent-tool-router"),
+            ("Agent-agent-tool-router", "ChatOutput-agent-tool-router"),
+        }
+        if not required.issubset(edge_pairs):
+            raise ValueError("Agent Tool Router must keep direct native Chat Input -> Agent -> Chat Output edges.")
+    return 2 * len(edges)
 
 
-def build_bundle(output_dir: Path) -> dict[str, Any]:
+def _validate_base_bundle(output_dir: Path, manifest_flows: list[dict[str, Any]]) -> int:
+    expected_names = [FLOW_DISPLAY_NAMES[route_name] for _, _, route_name in FLOW_SPECS]
+    actual_names = [str(item.get("name") or "") for item in manifest_flows]
+    if actual_names != expected_names:
+        raise ValueError(f"Bundle Flow display names mismatch: actual={actual_names}, expected={expected_names}")
+    endpoints = [str(item.get("endpoint_name") or "") for item in manifest_flows]
+    if len(endpoints) != len(set(endpoints)):
+        raise ValueError("Bundle endpoint_name values must be unique.")
+    return sum(
+        _validate_base_flow(
+            json.loads((output_dir / item["file"]).read_text(encoding="utf-8")),
+            item,
+        )
+        for item in manifest_flows
+    )
+
+
+def _readme(
+    manifest_flows: list[dict[str, Any]],
+    edge_handle_count: int,
+    component_count: int,
+) -> str:
+    rows = "\n".join(
+        f"| {item['order']} | `{item['file']}` | `{item['endpoint_name']}` | {item['nodes']} | {item['edges']} |"
+        for item in manifest_flows
+    )
+    return f"""# metadata_driven_v5 import-ready bundle
+
+이 bundle은 현재 지원하는 **7개 기본 Flow**만 포함합니다. 모두 Langflow {TARGET_LANGFLOW_VERSION} / langflow-base {TARGET_LANGFLOW_BASE_VERSION} / LFX {TARGET_LFX_VERSION} 기준으로 생성되었습니다.
+
+## Import
+
+Langflow Desktop에서 `00_metadata_driven_v5_complete_{BUNDLE_VERSION}_ALL_FLOWS.json` 하나를 import하거나, 아래 순서대로 개별 파일을 import합니다.
+
+| 순서 | 파일 | endpoint_name | 노드 | 엣지 |
+| ---: | --- | --- | ---: | ---: |
+{rows}
+
+`08`과 `09`의 종속 조회 continuation Flow는 `python tools\\build_continuation_import_ready_bundle.py`로 추가 생성됩니다.
+
+## 운영 설정
+
+- Langflow 모델 Provider와 `MONGO_URL` Credential Global Variable을 import 후 설정합니다.
+- 기본 Data Analysis는 `01. v5_data_analysis`입니다. 명시적인 상위 결과 참조가 필요한 2단계 분석만 `08. v5_data_analysis_continuation`을 사용합니다.
+- 결과 CSV/JSON 다운로드와 실시간 Report HTML 발행은 Artifact Server(`python -m artifact_server`, 기본 `127.0.0.1:8765`)가 담당합니다.
+- 기존 Router Tool에 저장된 `flow_id_selected`가 있으면, import 뒤 대상 Flow를 한 번 다시 선택해 현재 Flow ID로 갱신합니다.
+
+## 생성 시 구조 검증
+
+- GaiA Input/Output boundary node 없음
+- 각 Flow의 native Chat Input/Chat Output 각각 1개
+- 모든 node `lf_version={TARGET_LANGFLOW_VERSION}`
+- edge handle {edge_handle_count}/{edge_handle_count}, custom component template {component_count}/{component_count}
+"""
+
+
+def build_bundle(output_dir: Path = DEFAULT_OUTPUT_DIR) -> dict[str, Any]:
+    """Generate the seven current base import artifacts and their manifest."""
+    output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    for stale_path in {
-        *output_dir.glob("[0-9][0-9]_*_v5_standalone.json"),
-        *output_dir.glob("[0-9][0-9]_*_v2_standalone.json"),
-    }:
+    for stale_path in output_dir.glob("[0-9][0-9]_*_standalone.json"):
         stale_path.unlink()
-    endpoint_by_route = {
-        route_name: f"{ENDPOINT_PREFIX}-{endpoint_suffix}"
-        for _, endpoint_suffix, route_name in FLOW_SPECS
-        if route_name in API_CHILD_ROUTE_NAMES
-    }
+
     manifest_flows: list[dict[str, Any]] = []
-    for filename, endpoint_suffix, route_name in FLOW_SPECS:
-        index = IMPORT_ORDER[route_name]
-        source = SOURCE_DIR / filename
+    for source_name, endpoint_suffix, route_name in FLOW_SPECS:
+        order = IMPORT_ORDER[route_name]
+        source = SOURCE_DIR / source_name
+        if not source.exists():
+            raise FileNotFoundError(f"Active flow export is missing: {source}")
         flow = json.loads(source.read_text(encoding="utf-8"))
-        flow_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{ENDPOINT_PREFIX}/{endpoint_suffix}"))
         endpoint_name = f"{ENDPOINT_PREFIX}-{endpoint_suffix}"
-        flow["id"] = flow_id
-        flow["name"] = FLOW_DISPLAY_NAMES[route_name]
-        flow["endpoint_name"] = endpoint_name
-        flow["tags"] = sorted(set([*flow.get("tags", []), "complete-bundle", BUNDLE_VERSION, "import-ready"]))
-        _set_frontend_flow_ids(flow, flow_id)
-        if route_name == "api_router":
-            _configure_router(flow, endpoint_by_route)
-        elif route_name == "agent_tool_router":
-            _configure_tool_router(flow)
-        elif route_name == "workflow_orchestrator":
-            _configure_workflow_orchestrator(flow)
-        destination_name = filename if filename.startswith(f"{index:02d}_") else f"{index:02d}_{filename}"
-        destination = output_dir / destination_name
+        flow_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{ENDPOINT_PREFIX}/{endpoint_suffix}"))
+        _stamp_flow(flow, flow_id=flow_id, route_name=route_name, endpoint_name=endpoint_name)
+        destination = output_dir / _destination_name(source_name, order)
         destination.write_bytes((json.dumps(flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
         manifest_flows.append(
             {
-                "order": index,
+                "order": order,
                 "file": destination.name,
                 "name": flow["name"],
                 "endpoint_name": endpoint_name,
@@ -206,27 +234,12 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
             }
         )
 
-    all_flows_path = output_dir / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
-    all_flows_payload = {
-        "flows": [
-            json.loads((output_dir / item["file"]).read_text(encoding="utf-8"))
-            for item in manifest_flows
-        ]
-    }
-    validated_node_template_count = sum(
-        1
-        for flow in all_flows_payload["flows"]
-        for node in flow.get("data", {}).get("nodes", [])
-        if node.get("data", {}).get("node", {}).get("template", {}).get("_type") == "Component"
-        and isinstance(
-            node.get("data", {}).get("node", {}).get("template", {}).get("code"),
-            dict,
-        )
-    )
-    all_flows_path.write_bytes(
-        json.dumps(all_flows_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    )
-    validated_edge_handle_count = _validate_bundle(output_dir, manifest_flows, endpoint_by_route)
+    flows = [json.loads((output_dir / item["file"]).read_text(encoding="utf-8")) for item in manifest_flows]
+    combined_path = output_dir / f"00_metadata_driven_v5_complete_{BUNDLE_VERSION}_ALL_FLOWS.json"
+    combined_path.write_bytes(json.dumps({"flows": flows}, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    edge_handle_count = _validate_base_bundle(output_dir, manifest_flows)
+    component_count = _custom_component_count(flows)
+
     manifest = {
         "bundle": f"metadata_driven_v5_complete_{BUNDLE_VERSION}",
         "langflow_version": TARGET_LANGFLOW_VERSION,
@@ -234,1497 +247,42 @@ def build_bundle(output_dir: Path) -> dict[str, Any]:
         "lfx_version": TARGET_LFX_VERSION,
         "flow_count": len(manifest_flows),
         "endpoint_prefix": ENDPOINT_PREFIX,
+        "single_file_ui_import": combined_path.name,
+        "single_file_ui_import_sha256": hashlib.sha256(combined_path.read_bytes()).hexdigest(),
         "mongodb_contract": {
-            "strategy": "reuse_v4_collections_without_copy",
-            "configuration_source": "langflow_node_input",
-            "credential_global_variable": MONGO_GLOBAL_VARIABLE,
+            "configuration_source": "Langflow node input / MONGO_URL Credential Global Variable",
             **MONGODB_CONTRACT,
-        },
-        "cube_schedule_authoring_contract": {
-            "schema_version": "cube.schedule.v1",
-            "database": "cube_authoring",
-            "collection": "cube_schedules",
-            "flow_writes_source_only": True,
-            "runtime_state_stored_separately": True,
-        },
-        "retrieval_mode_contract": {
-            "single_control": "04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode",
-            "values": ["dummy", "live"],
-            "default": "dummy",
-            "router_has_separate_mode_input": False,
-        },
-        "single_file_ui_import": all_flows_path.name,
-        "single_file_ui_import_sha256": hashlib.sha256(all_flows_path.read_bytes()).hexdigest(),
-        "flows": manifest_flows,
-        "router_configuration": {
-            "base_url_env": ["LANGFLOW_BASE_URL", "LANGFLOW_API_BASE_URL"],
-            "default_base_url": "http://127.0.0.1:7860",
-            "api_key_env": "LANGFLOW_API_KEY",
-            "manual_edge_rewiring_required": False,
-            "manual_flow_id_replacement_required": False,
-            "api_router": "Smart Router plus five Run API callers",
-            "agent_tool_router": "Agent plus six selected-ID-first cached Flow tools with deterministic realtime-analysis keyword gating and standalone name fallback",
-            "workflow_orchestrator": "Language Model planner plus native Loop and seven deterministic sequential Flow tools",
         },
         "data_analysis_routing_contract": {
             "canonical_route": "data_analysis",
             "canonical_source": CANONICAL_DATA_ANALYSIS_SOURCE,
             "canonical_display_name": FLOW_DISPLAY_NAMES["data_analysis"],
-            "canonical_endpoint_name": endpoint_by_route["data_analysis"],
+            "canonical_endpoint_name": f"{ENDPOINT_PREFIX}-data-analysis",
             "external_tool_name": "run_data_analysis",
-            "legacy_route": None,
-            "legacy_source": None,
-            "legacy_display_name": None,
-            "legacy_endpoint_name": None,
-            "stored_flow_id_migration": (
-                "After importing this bundle, reselect the canonical Data Analysis Flow in any existing "
-                "router/tool instance that already persisted flow_id_selected. Do not clear runtime IDs "
-                "programmatically; freshly exported router tools intentionally keep the selection empty."
-            ),
         },
         "validation": {
-            "pytest": "full non-web test suite passed in the exact Langflow 1.9.2 runtime; optional Streamlit web-app tests require the separate web runtime",
-            "custom_component_source_sync": "validated by tools/validate_flow_component_sources.py; every active custom node maps to one repository source with no missing source",
-            "korean_component_documentation": (
-                "validated by tools/validate_korean_component_documentation.py; all component and embedded "
-                "custom-code functions are documented and strict UTF-8/BOM/JSON checks pass"
-            ),
-            "representative_data_analysis_questions_dummy_retrieval": "30/30 passed",
-            "langflow_frontend_edge_handles": (
-                f"{validated_edge_handle_count}/{validated_edge_handle_count} parsed and matched edge.data"
-            ),
-            "langflow_connected_advanced_inputs": "0 edges target advanced component inputs",
-            "langflow_lfx_node_templates": (
-                f"{validated_node_template_count}/{validated_node_template_count} passed across "
-                f"{len(manifest_flows)} flows in Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2"
-            ),
-            "native_language_model_policy": "tool-free LLM stages and Workflow planning/final synthesis use native Language Model components; only the single-call Route V2 uses a native Agent with six real tools",
-            "router_direct_terminal_routes": "2/2 direct terminal routes connect SmartRouter through GaiA Output Adapter to native Chat Output; 0 gate nodes",
-            "router_single_entry_topology": "native Chat Input connects once through GaiA Input Adapter to Smart Router; 0 API-caller session fan-out edges",
-            "router_session_contract": "Langflow graph injects the parent session_id into all five API callers without extra native Chat Input edges",
-            "langflow_http_import": "Langflow 1.9.2 custom-source and node-template compatibility is validated locally; authenticated HTTP import remains an environment smoke test",
-            "single_chat_output": "10/10 child flows, Route V2, and Workflow Orchestrator each have one native Chat Output after one GaiA Output Adapter",
-            "data_analysis_v2_hybrid_route": "The canonical data_analysis route uses V2. Fast and strict deterministic Complex contracts use zero pandas model calls; open Complex uses pandas generation and at most one repair, while visible BoolInput use_llm_answer selects LLM synthesis (default) or deterministic synthesis",
-            "data_analysis_legacy_route": "The former V1 graph remains available only as the explicit data_analysis_legacy artifact and endpoint; routers and run_data_analysis do not target it",
-            "data_analysis_one_shot_repair": "initial success invokes repair 0 times; execution failure invokes repair at most once",
-            "data_analysis_runtime_cleanup": "large runtime row buffers are shared across deterministic stages, cleared after result and session persistence, and followed by one configurable generation-0 GC by default",
-            "data_result_download_contract": "23 Result Store keeps data for 1 hour by default and issues direct CSV attachment URLs for result/source refs; 21 owns no Base URL and maps URLs/follow-ups into GaiA metadata",
-            "unified_download_report_server_contract": "artifact_server provides the FastAPI operational endpoint for streaming data_ref CSV plus POST /reports, HTML view/download, TTL cleanup, CSP, storage limits, optional hashed access tokens, and masked query logs; tools/data_ref_download_server.py remains a compatibility launcher",
-            "table_preview_limit_contract": "21 Answer Message Adapter owns one advanced table_preview_limit input; default 10; result storage and downloads are unaffected",
-            "visible_repair_prompt": "17B raw Repair Prompt Text Input connects to executor non-advanced input",
-            "safe_pandas_imports": "exact pandas/numpy aliases normalized; other imports and file/network I/O blocked",
-            "safe_pandas_builtins": "object dtype comparison and zip are provided by the sandbox and succeed without invoking repair",
-            "router_timeout_contract": "5/5 child API callers use 240s read timeout; external web client default is 300s",
-            "run_flow_cache_policy": "API Router has 0 Run Flow tools; Route V2 6/6 validate the current UI-selected Flow ID and updated_at on every execution, use name fallback only when the selected ID is absent, and key graph caches by actual IDs; Workflow Orchestrator 7/7 remains exact-name resolved",
-            "agent_tool_schema_policy": "6/6 tools expose one required stable question field and resolve the current native Chat Input ID internally; realtime report execution also validates its configured keywords before child graph resolution",
-            "agent_tool_output_policy": "6/6 tools keep one component_as_tool output after Flow selection or refresh; child message and gaia_response outputs stay internal",
-            "agent_tool_direct_return": "6/6 tools use return_direct=true; Agent response passes through one GaiA Output Adapter to one native Chat Output",
-            "agent_tool_history_contract": "Agent retrieves 5 stored messages; native current-message ID filtering leaves the previous 2 user/assistant turns without duplicating current input",
-            "agent_tool_session_contract": "0 session-source ports/edges; all six tools resolve parent runtime/graph session_id inside the actual Tool output method",
-            "agent_tool_realtime_keyword_gate": "run_realtime_production_report requires keyword 분석 plus one of 실시간 생산 분석, 실시간 분석, 실시간 생산분석 before Flow 07 graph resolution",
-            "agent_tool_partial_build": "isolated import supports name fallback, while runtime Flow dropdown selection persists the current ID for direct cached execution",
-            "workflow_orchestrator_contract": "native planner Language Model emits workflow.plan.v1 from Registry or the seven-Tool capability catalog; parser enforces at most four steps and exact Tool names; native Loop executes one deterministic Tool per step",
-            "workflow_orchestrator_result_handoff": "Data Analysis produces an explicit result_ref consumed by a follow-up Data Analysis or HTML Visualization step",
-            "html_visualization_contract": "one result_ref-backed custom builder produces offline HTML/SVG, publishes absolute browser view/download URLs through the visible Report API input, and keeps raw HTML out of Workflow payloads; one GaiA Output Adapter plus native Chat Output and one separate API adapter expose the two response surfaces",
-            "realtime_production_report_contract": "one catalog-grounded Language Model selects a process group and one deterministic Gate validates question evidence before filtering the 500-row dummy snapshot; missing or multiple groups return clarification without HTML, while selected groups feed four fixed analyses and compact artifact-only API output",
-            "workflow_orchestrator_registry": "visible MongoDB registry loader reads active workflow.registry.v1 items from agent_v4_workflow_skills; inline_seed is an explicit standalone test source, never an implicit fallback",
-            "workflow_orchestrator_terminal_contract": "one final Language Model synthesis passes through GaiA Output Adapter to native Chat Output, alongside one terminal api_response; invalid or empty plans still reach the final error response",
-            "metadata_duplicate_lookup": "Domain/Table/Main Filter use candidate-targeted Matcher lookup without a dead preloader; Workflow Skill alone keeps its bounded ExistingLoader",
-            "domain_replace_identity": "unique same-section key/alias/display identity replaces canonical target; no match inserts; ambiguous target blocks",
-            "metadata_mongo_defaults": "22 standard MongoDB nodes across the original flows and isolated Data Analysis V2, plus one QA snapshot node, bind visible mongo_uri inputs to the MONGO_URL Credential Global Variable; the separate schedule-authoring writer exposes its own MongoDB URI and defaults to cube_authoring.cube_schedules",
-            "metadata_candidate_policy": "domain relevant <=20; table 5; all main filters; compact JSON <=32768 bytes",
-            "job_scoped_required_params": "each retrieval job carries its own complete required_params; common and distinct date scopes are preserved without cross-job propagation",
-            "metadata_qa_product_context": "product group and product aggregation questions use authoritative product_terms/product_key_columns/analysis_recipes context and ignore model prose in deterministic answer modes",
+            "bundle_structure": "native Chat boundaries, version stamps, Flow names, endpoints and active adapter inputs are verified while building",
+            "langflow_frontend_edge_handles": f"{edge_handle_count}/{edge_handle_count} structural handles",
+            "langflow_lfx_node_templates": f"{component_count}/{component_count} custom component templates across {len(flows)} base flows",
+            "runtime_parse": "Run tools/validate_langflow_runtime.py after changing custom component source.",
         },
+        "flows": manifest_flows,
     }
     (output_dir / "manifest.json").write_bytes((json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-    (output_dir / "README_IMPORT.md").write_bytes(
-        _readme(manifest_flows, validated_edge_handle_count, validated_node_template_count).encode("utf-8")
-    )
+    (output_dir / "README_IMPORT.md").write_bytes(_readme(manifest_flows, edge_handle_count, component_count).encode("utf-8"))
+
     zip_path = output_dir.parent / f"{output_dir.name}.zip"
     if zip_path.exists():
         zip_path.unlink()
-    shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=output_dir)
+    shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=output_dir.parent, base_dir=output_dir.name)
     return {"output_dir": str(output_dir), "zip": str(zip_path), **manifest}
 
 
-def _set_frontend_flow_ids(flow: dict[str, Any], flow_id: str) -> None:
-    for node in flow.get("data", {}).get("nodes", []):
-        template = node.get("data", {}).get("node", {}).get("template", {})
-        field = template.get("_frontend_node_flow_id") if isinstance(template, dict) else None
-        if isinstance(field, dict):
-            field["value"] = flow_id
-
-
-def _configure_router(flow: dict[str, Any], endpoint_by_route: dict[str, str]) -> None:
-    configured: set[str] = set()
-    for node in flow.get("data", {}).get("nodes", []):
-        if not str(node.get("id") or "").startswith("ApiCaller-"):
-            continue
-        template = node.get("data", {}).get("node", {}).get("template", {})
-        route_field = template.get("route_name") if isinstance(template, dict) else None
-        route_name = str(route_field.get("value") or "") if isinstance(route_field, dict) else ""
-        if route_name not in endpoint_by_route:
-            raise ValueError(f"Router route has no bundle endpoint: {route_name}")
-        template["api_url"]["value"] = f"/api/v1/run/{endpoint_by_route[route_name]}"
-        template["api_key"]["value"] = ""
-        read_timeout = template.get("read_timeout_seconds")
-        if not isinstance(read_timeout, dict):
-            raise ValueError(f"Router route has no read_timeout_seconds field: {route_name}")
-        read_timeout["value"] = ROUTER_READ_TIMEOUT_SECONDS
-        configured.add(route_name)
-    if configured != set(endpoint_by_route):
-        raise ValueError(f"Router routes mismatch: configured={sorted(configured)}, expected={sorted(endpoint_by_route)}")
-
-
-def _configure_tool_router(flow: dict[str, Any]) -> None:
-    configured: set[str] = set()
-    for node in flow.get("data", {}).get("nodes", []):
-        node_id = str(node.get("id") or "")
-        if not node_id.startswith("CachedFlowTool-"):
-            continue
-        route_name = node_id.removeprefix("CachedFlowTool-")
-        if route_name not in CHILD_ROUTE_NAMES:
-            raise ValueError(f"Agent Tool Router has an unknown route: {route_name}")
-        template = node.get("data", {}).get("node", {}).get("template", {})
-        template["flow_name_selected"]["value"] = FLOW_DISPLAY_NAMES[route_name]
-        template["flow_id_selected"]["value"] = ""
-        template["cache_flow"]["value"] = True
-        template["return_direct"]["value"] = True
-        node["data"]["node"]["tool_mode"] = True
-        configured.add(route_name)
-    if configured != CHILD_ROUTE_NAMES:
-        raise ValueError(
-            f"Agent Tool routes mismatch: configured={sorted(configured)}, expected={sorted(CHILD_ROUTE_NAMES)}"
-        )
-
-
-def _configure_workflow_orchestrator(flow: dict[str, Any]) -> None:
-    """Workflow Tool 이름과 검토된 inline Registry seed를 import 산출물에 동기화합니다."""
-
-    configured: set[str] = set()
-    registry_seed = json.dumps(
-        json.loads((ROOT / "docs" / "workflows" / "workflow_registry.example.json").read_text(encoding="utf-8")),
-        ensure_ascii=False,
-        indent=2,
-    )
-    registry_loader_found = False
-    for node in flow.get("data", {}).get("nodes", []):
-        node_id = str(node.get("id") or "")
-        if node_id == "WorkflowRegistryLoader-workflow-orchestrator":
-            template = node.get("data", {}).get("node", {}).get("template", {})
-            template["inline_seed_json"]["value"] = registry_seed
-            registry_loader_found = True
-            continue
-        if not node_id.startswith("WorkflowFlowTool-"):
-            continue
-        route_name = node_id.removeprefix("WorkflowFlowTool-")
-        if route_name not in WORKFLOW_CHILD_ROUTE_NAMES:
-            raise ValueError(f"Workflow Orchestrator has an unknown route: {route_name}")
-        template = node.get("data", {}).get("node", {}).get("template", {})
-        template["flow_name_selected"]["value"] = FLOW_DISPLAY_NAMES[route_name]
-        template["flow_id_selected"]["value"] = ""
-        template["cache_flow"]["value"] = True
-        template["return_direct"]["value"] = False
-        node["data"]["node"]["tool_mode"] = True
-        configured.add(route_name)
-    if configured != WORKFLOW_CHILD_ROUTE_NAMES:
-        raise ValueError(
-            "Workflow Orchestrator routes mismatch: "
-            f"configured={sorted(configured)}, expected={sorted(WORKFLOW_CHILD_ROUTE_NAMES)}"
-        )
-    if not registry_loader_found:
-        raise ValueError("Workflow Orchestrator Registry loader was not found while synchronizing the inline seed.")
-
-
-def _validate_bundle(
-    output_dir: Path,
-    manifest_flows: list[dict[str, Any]],
-    endpoint_by_route: dict[str, str],
-) -> int:
-    expected_flow_names = [FLOW_DISPLAY_NAMES[route_name] for _, _, route_name in FLOW_SPECS]
-    manifest_flow_names = [str(item.get("name") or "") for item in manifest_flows]
-    if manifest_flow_names != expected_flow_names:
-        raise ValueError(
-            f"Bundle Flow display names mismatch: actual={manifest_flow_names}, expected={expected_flow_names}"
-        )
-
-    # The active bundle intentionally contains only the nine supported flows
-    # (seven base flows plus the two additive continuation flows appended by
-    # the continuation bundle builder).  Validate the base subset here without
-    # relying on the removed API Router/Workflow/Visualization contracts.
-    endpoint_names = [str(item.get("endpoint_name") or "") for item in manifest_flows]
-    if len(endpoint_names) != len(set(endpoint_names)):
-        raise ValueError("Bundle endpoint_name values must be unique.")
-    edge_handle_count = 0
-    for item in manifest_flows:
-        flow = json.loads((output_dir / item["file"]).read_text(encoding="utf-8"))
-        nodes = flow.get("data", {}).get("nodes", [])
-        edges = flow.get("data", {}).get("edges", [])
-        if any("GaiA" in str(node.get("data", {}).get("type") or "") for node in nodes):
-            raise ValueError(f"Active flow still contains a GaiA boundary node: {item['file']}")
-        if sum(node.get("data", {}).get("type") == "ChatInput" for node in nodes) != 1:
-            raise ValueError(f"Active flow must contain one native Chat Input: {item['file']}")
-        if sum(node.get("data", {}).get("type") == "ChatOutput" for node in nodes) != 1:
-            raise ValueError(f"Active flow must contain one native Chat Output: {item['file']}")
-        for node in nodes:
-            component = node.get("data", {}).get("node", {})
-            if isinstance(component, dict) and component.get("lf_version") != TARGET_LANGFLOW_VERSION:
-                raise ValueError(f"Flow node version mismatch: {item['file']}:{node.get('id')}")
-        edge_handle_count += 2 * len(edges)
-    agent_item = next(
-        item for item in manifest_flows if item.get("name") == FLOW_DISPLAY_NAMES["agent_tool_router"]
-    )
-    agent_flow = json.loads((output_dir / agent_item["file"]).read_text(encoding="utf-8"))
-    agent_edges = {
-        (str(edge.get("source") or ""), str(edge.get("target") or ""))
-        for edge in agent_flow.get("data", {}).get("edges", [])
-    }
-    if ("ChatInput-agent-tool-router", "Agent-agent-tool-router") not in agent_edges:
-        raise ValueError("Agent Tool Router must connect native Chat Input directly to the Agent.")
-    if ("Agent-agent-tool-router", "ChatOutput-agent-tool-router") not in agent_edges:
-        raise ValueError("Agent Tool Router must connect the Agent directly to native Chat Output.")
-    return edge_handle_count
-
-    canonical_item = next(
-        item for item in manifest_flows if item["name"] == FLOW_DISPLAY_NAMES["data_analysis"]
-    )
-    legacy_item = next(
-        item for item in manifest_flows if item["name"] == FLOW_DISPLAY_NAMES["data_analysis_legacy"]
-    )
-    canonical_flow = json.loads((output_dir / canonical_item["file"]).read_text(encoding="utf-8"))
-    legacy_flow = json.loads((output_dir / legacy_item["file"]).read_text(encoding="utf-8"))
-    canonical_node_ids = {str(node.get("id") or "") for node in canonical_flow["data"]["nodes"]}
-    legacy_node_ids = {str(node.get("id") or "") for node in legacy_flow["data"]["nodes"]}
-    if "CustomComponent-v2FastResolver" not in canonical_node_ids:
-        raise ValueError("Canonical data_analysis route must use the V2 hybrid graph.")
-    if "CustomComponent-v2FastResolver" in legacy_node_ids:
-        raise ValueError("Explicit data_analysis_legacy route must preserve the V1 graph.")
-    if not str(canonical_item["endpoint_name"]).endswith("-data-analysis"):
-        raise ValueError("Canonical data_analysis endpoint contract changed unexpectedly.")
-    if not str(legacy_item["endpoint_name"]).endswith("-data-analysis-legacy"):
-        raise ValueError("Legacy Data Analysis endpoint must remain explicitly named.")
-    endpoint_names = [item["endpoint_name"] for item in manifest_flows]
-    if len(endpoint_names) != len(set(endpoint_names)):
-        raise ValueError("Bundle endpoint_name values must be unique.")
-    router_file = output_dir / next(item["file"] for item in manifest_flows if item["endpoint_name"].endswith("-api-router"))
-    router = json.loads(router_file.read_text(encoding="utf-8"))
-    router_text = json.dumps(router, ensure_ascii=False)
-    if "REPLACE_" in router_text:
-        raise ValueError("Router still contains a Flow ID placeholder.")
-    for endpoint in endpoint_by_route.values():
-        if f"/api/v1/run/{endpoint}" not in router_text:
-            raise ValueError(f"Router does not reference endpoint: {endpoint}")
-    legacy_endpoint = str(legacy_item["endpoint_name"])
-    if f"/api/v1/run/{legacy_endpoint}" in router_text:
-        raise ValueError("API Router must not target the explicit Data Analysis legacy endpoint.")
-    router_callers = [
-        node for node in router.get("data", {}).get("nodes", [])
-        if str(node.get("id") or "").startswith("ApiCaller-")
-    ]
-    if len(router_callers) != len(endpoint_by_route) or any(
-        str(
-            node.get("data", {})
-            .get("node", {})
-            .get("template", {})
-            .get("read_timeout_seconds", {})
-            .get("value", "")
-        )
-        != ROUTER_READ_TIMEOUT_SECONDS
-        for node in router_callers
-    ):
-        raise ValueError("Every Router API caller must use the 240-second child read timeout.")
-    for caller in router_callers:
-        caller_code = str(
-            caller.get("data", {}).get("node", {}).get("template", {}).get("code", {}).get("value", "")
-        )
-        if (
-            "NESTED_CHAT_IO_TWEAK" not in caller_code
-            or '"Chat Input": {"should_store_message": False}' not in caller_code
-            or '"Chat Output": {"should_store_message": False}' not in caller_code
-            or 'tweaks["GaiA Input Adapter"]' not in caller_code
-        ):
-            raise ValueError("Every Router API caller must propagate GaiA adapter context and suppress nested native Chat I/O storage.")
-    router_edges = router.get("data", {}).get("edges", [])
-    chat_input_edges = [edge for edge in router_edges if edge.get("source") == "ChatInput-api-router"]
-    if len(chat_input_edges) != 1 or chat_input_edges[0].get("target") != "GaiAInputAdapter-api-router":
-        raise ValueError("API Router native Chat Input must connect only to GaiA Input Adapter.")
-    adapter_router_edges = [
-        edge
-        for edge in router_edges
-        if edge.get("source") == "GaiAInputAdapter-api-router"
-        and edge.get("target") == "SmartRouter-api-router"
-    ]
-    if len(adapter_router_edges) != 1:
-        raise ValueError("API Router GaiA Input Adapter must connect exactly once to Smart Router.")
-    if any(
-        edge.get("data", {}).get("targetHandle", {}).get("fieldName") == "session_source"
-        for edge in router_edges
-    ):
-        raise ValueError("API Router must rely on graph session injection instead of ChatInput session fan-out edges.")
-    smart_router = next(
-        (node for node in router.get("data", {}).get("nodes", []) if node.get("id") == "SmartRouter-api-router"),
-        None,
-    )
-    if not smart_router or smart_router.get("data", {}).get("node", {}).get("base_classes") != []:
-        raise ValueError("API Smart Router base_classes must match the working legacy export ([]).")
-    if any(str(node.get("id") or "").startswith("FinalGate-") for node in router.get("data", {}).get("nodes", [])):
-        raise ValueError("Router must not contain the duplicate terminal FinalGate nodes.")
-    expected_direct_edges = {
-        ("category_6_result", "GaiAOutputAdapter-direct_answer"),
-        ("category_7_result", "GaiAOutputAdapter-clarification"),
-    }
-    actual_direct_edges = {
-        (
-            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
-            str(edge.get("target") or ""),
-        )
-        for edge in router_edges
-        if edge.get("source") == "SmartRouter-api-router"
-        and str(edge.get("target") or "").startswith("GaiAOutputAdapter-")
-    }
-    if actual_direct_edges != expected_direct_edges:
-        raise ValueError(f"Router direct terminal routes mismatch: {sorted(actual_direct_edges)}")
-
-    tool_router_file = output_dir / next(
-        item["file"] for item in manifest_flows if item["endpoint_name"].endswith("-agent-tool-router")
-    )
-    tool_router = json.loads(tool_router_file.read_text(encoding="utf-8"))
-    _validate_tool_router(tool_router)
-    workflow_orchestrator_file = output_dir / next(
-        item["file"]
-        for item in manifest_flows
-        if item["endpoint_name"].endswith("-workflow-orchestrator")
-    )
-    workflow_orchestrator = json.loads(workflow_orchestrator_file.read_text(encoding="utf-8"))
-    _validate_workflow_orchestrator(workflow_orchestrator)
-    workflow_skill_file = output_dir / next(
-        item["file"]
-        for item in manifest_flows
-        if item["endpoint_name"].endswith("-workflow-skill-saving")
-    )
-    workflow_skill = json.loads(workflow_skill_file.read_text(encoding="utf-8"))
-    _validate_workflow_skill_saving(workflow_skill)
-    html_visualization_file = output_dir / next(
-        item["file"]
-        for item in manifest_flows
-        if item["endpoint_name"].endswith("-html-visualization")
-    )
-    html_visualization = json.loads(html_visualization_file.read_text(encoding="utf-8"))
-    _validate_html_visualization(html_visualization)
-    realtime_report_file = output_dir / next(
-        item["file"]
-        for item in manifest_flows
-        if item["endpoint_name"].endswith("-realtime-production-report")
-    )
-    realtime_report = json.loads(realtime_report_file.read_text(encoding="utf-8"))
-    _validate_realtime_production_report(realtime_report)
-    cube_schedule_file = output_dir / next(
-        item["file"]
-        for item in manifest_flows
-        if item["endpoint_name"].endswith("-cube-schedule-saving")
-    )
-    cube_schedule = json.loads(cube_schedule_file.read_text(encoding="utf-8"))
-    _validate_cube_schedule_saving(cube_schedule)
-    all_flows_path = output_dir / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
-    all_raw = all_flows_path.read_bytes()
-    if all_raw.startswith(b"\xef\xbb\xbf") or not all_raw.startswith(b'{"flows":['):
-        raise ValueError("Single-file UI bundle must be UTF-8 without BOM and begin with {\"flows\":[")
-    all_payload = json.loads(all_raw.decode("utf-8"))
-    if len(all_payload.get("flows", [])) != len(manifest_flows):
-        raise ValueError("Single-file UI bundle flow count mismatch.")
-    combined_flow_names = [str(flow.get("name") or "") for flow in all_payload["flows"]]
-    if combined_flow_names != expected_flow_names:
-        raise ValueError(
-            f"Single-file UI bundle Flow display names mismatch: actual={combined_flow_names}, expected={expected_flow_names}"
-        )
-    all_text = all_raw.decode("utf-8")
-    forbidden_v5_collections = (
-        "agent_v5_domain_items",
-        "agent_v5_table_catalog_items",
-        "agent_v5_main_flow_filters",
-        "agent_v5_result_store",
-        "agent_v5_session_states",
-    )
-    if any(name in all_text for name in forbidden_v5_collections):
-        raise ValueError("Single-file UI bundle still contains an agent_v5 MongoDB collection name.")
-    for name in MONGODB_CONTRACT.values():
-        if name != "datagov" and name not in all_text:
-            raise ValueError(f"Single-file UI bundle is missing the shared v4 MongoDB collection: {name}")
-    mongo_default_nodes = 0
-    snapshot_default_nodes = 0
-    allowed_mongo_collections = {
-        MONGODB_CONTRACT["domain"],
-        MONGODB_CONTRACT["table_catalog"],
-        MONGODB_CONTRACT["main_flow_filter"],
-        MONGODB_CONTRACT["result"],
-        MONGODB_CONTRACT["workflow_skill"],
-    }
-    validated_edge_handle_count = 0
-    for flow in all_payload["flows"]:
-        node_by_id = {node.get("id"): node for node in flow.get("data", {}).get("nodes", [])}
-        route_name = next(
-            (key for key, display_name in FLOW_DISPLAY_NAMES.items() if display_name == str(flow.get("name") or "")),
-            "",
-        )
-        structured_terminal_id = EXPLICIT_STRUCTURED_TERMINALS.get(route_name)
-        if structured_terminal_id:
-            terminal = node_by_id.get(structured_terminal_id, {})
-            terminal_config = terminal.get("data", {}).get("node", {})
-            outgoing = [edge for edge in flow.get("data", {}).get("edges", []) if edge.get("source") == structured_terminal_id]
-            output_names = {
-                str(output.get("name") or "")
-                for output in terminal_config.get("outputs", [])
-                if isinstance(output, dict)
-            }
-            if terminal_config.get("is_output") is not True or outgoing or "api_response" not in output_names:
-                raise ValueError(
-                    f"{flow.get('name')} structured terminal {structured_terminal_id} must be an explicit, edge-free api_response graph output."
-                )
-        is_child_flow = not str(flow.get("endpoint_name") or "").endswith(("-api-router", "-agent-tool-router"))
-        if is_child_flow:
-            child_chat_inputs = [
-                node
-                for node in node_by_id.values()
-                if node.get("data", {}).get("type") == "ChatInput"
-            ]
-            child_input_adapters = [
-                node
-                for node in node_by_id.values()
-                if node.get("data", {}).get("type") == "GaiAInputAdapter"
-            ]
-            child_output_adapters = [
-                node
-                for node in node_by_id.values()
-                if node.get("data", {}).get("type") == "GaiAOutputAdapter"
-            ]
-            child_chat_outputs = [
-                node
-                for node in node_by_id.values()
-                if node.get("data", {}).get("type") == "ChatOutput"
-            ]
-            if not all(
-                len(items) == 1
-                for items in (
-                    child_chat_inputs,
-                    child_input_adapters,
-                    child_output_adapters,
-                    child_chat_outputs,
-                )
-            ):
-                raise ValueError(
-                    "Child Flow must contain one native Chat Input, one GaiA Input Adapter, "
-                    "one GaiA Output Adapter, and one native Chat Output."
-                )
-            if any(
-                node.get("data", {}).get("node", {}).get("template", {}).get("should_store_message", {}).get("value")
-                is not True
-                for node in child_chat_outputs
-            ):
-                raise ValueError("Child Flow native Chat Output must store messages by default for direct Playground use.")
-            for gaia_input in child_input_adapters:
-                template = gaia_input.get("data", {}).get("node", {}).get("template", {})
-                if not {"input_message", "data", "metadata"}.issubset(template):
-                    raise ValueError("Child Flow GaiA Input Adapter must expose input_message, data, and metadata.")
-            for gaia_output in child_output_adapters:
-                output_names = {
-                    str(output.get("name") or "")
-                    for output in gaia_output.get("data", {}).get("node", {}).get("outputs", [])
-                }
-                if output_names != {"message", "gaia_response"}:
-                    raise ValueError("Child Flow GaiA Output Adapter must expose message and gaia_response.")
-                if "should_store_message" in gaia_output.get("data", {}).get("node", {}).get("template", {}):
-                    raise ValueError("GaiA Output Adapter must delegate message storage to native Chat Output.")
-        for node_id, node in node_by_id.items():
-            template = node.get("data", {}).get("node", {}).get("template", {})
-            node_config = node.get("data", {}).get("node", {})
-            display_name = str(node_config.get("display_name") or "")
-            if display_name == "21 답변 메시지 어댑터" and "download_base_url" in template:
-                raise ValueError("21 Answer Message Adapter must not own the data download Base URL.")
-            if display_name == "23 MongoDB 결과 저장소":
-                download_field = template.get("download_base_url") if isinstance(template, dict) else None
-                ttl_field = template.get("ttl_hours") if isinstance(template, dict) else None
-                if not isinstance(download_field, dict) or (
-                    str(download_field.get("value") or "").strip() != "http://127.0.0.1:8765"
-                    or download_field.get("advanced") is not False
-                ):
-                    raise ValueError("23 Result Store must expose the visible direct-download Base URL input.")
-                if not isinstance(ttl_field, dict) or (
-                    str(ttl_field.get("value") or "").strip() != "1"
-                    or ttl_field.get("advanced") is not False
-                ):
-                    raise ValueError("23 Result Store must expose a visible 1-hour default TTL input.")
-            module_name = str(node_config.get("metadata", {}).get("module") or "")
-            is_run_flow = (
-                node_config.get("display_name") == "Run Flow"
-                or "run_flow.RunFlowComponent" in module_name
-                or node.get("data", {}).get("type") == "CachedNamedRunFlowTool"
-            )
-            if is_run_flow:
-                cache_field = template.get("cache_flow") if isinstance(template, dict) else None
-                if not isinstance(cache_field, dict) or cache_field.get("value") is not True:
-                    raise ValueError(f"Run Flow tool {node_id} must set cache_flow=true.")
-            database_field = template.get("mongo_database") if isinstance(template, dict) else None
-            collection_field = template.get("collection_name") if isinstance(template, dict) else None
-            snapshot_fields = {
-                "domain_collection_name": MONGODB_CONTRACT["domain"],
-                "table_collection_name": MONGODB_CONTRACT["table_catalog"],
-                "filter_collection_name": MONGODB_CONTRACT["main_flow_filter"],
-            }
-            is_snapshot_node = isinstance(database_field, dict) and all(
-                isinstance(template.get(field_name), dict) for field_name in snapshot_fields
-            )
-            if is_snapshot_node:
-                snapshot_default_nodes += 1
-                database_value = str(database_field.get("value") or "").strip()
-                if database_value != MONGODB_CONTRACT["database"]:
-                    raise ValueError(f"MongoDB snapshot node {node_id} has unexpected database default: {database_value!r}.")
-                code_value = str(template.get("code", {}).get("value") or "")
-                for field_name, expected_collection in snapshot_fields.items():
-                    field = template[field_name]
-                    collection_value = str(field.get("value") or "").strip()
-                    if collection_value != expected_collection or expected_collection not in code_value:
-                        raise ValueError(
-                            f"MongoDB snapshot node {node_id}.{field_name} has unexpected collection default: {collection_value!r}."
-                        )
-                    if field.get("load_from_db") is not False:
-                        raise ValueError(f"MongoDB snapshot node {node_id}.{field_name} must not load defaults as secrets.")
-                if database_field.get("load_from_db") is not False:
-                    raise ValueError(f"MongoDB snapshot node {node_id} database default must not be a secret DB variable.")
-                uri_field = template.get("mongo_uri")
-                if not isinstance(uri_field, dict) or (
-                    str(uri_field.get("value") or "").strip() != MONGO_GLOBAL_VARIABLE
-                    or uri_field.get("load_from_db") is not True
-                    or uri_field.get("advanced") is not False
-                ):
-                    raise ValueError(
-                        f"MongoDB snapshot node {node_id} must bind visible mongo_uri to {MONGO_GLOBAL_VARIABLE}."
-                    )
-                continue
-            if not isinstance(database_field, dict) or not isinstance(collection_field, dict):
-                continue
-            if route_name == "cube_schedule_saving" and node_id == "Writer-cube-schedule-saving":
-                database_value = str(database_field.get("value") or "").strip()
-                collection_value = str(collection_field.get("value") or "").strip()
-                uri_field = template.get("mongo_uri")
-                if database_value != "cube_authoring" or collection_value != "cube_schedules":
-                    raise ValueError("CUBE schedule Writer source database/collection defaults mismatch.")
-                if (
-                    database_field.get("load_from_db") is not False
-                    or collection_field.get("load_from_db") is not False
-                    or not isinstance(uri_field, dict)
-                    or str(uri_field.get("value") or "").strip() != MONGO_GLOBAL_VARIABLE
-                    or uri_field.get("load_from_db") is not True
-                    or uri_field.get("advanced") is not False
-                ):
-                    raise ValueError("CUBE schedule Writer must expose source settings and bind visible MONGO_URL.")
-                continue
-            mongo_default_nodes += 1
-            database_value = str(database_field.get("value") or "").strip()
-            collection_value = str(collection_field.get("value") or "").strip()
-            if database_value != MONGODB_CONTRACT["database"]:
-                raise ValueError(f"MongoDB node {node_id} has unexpected database default: {database_value!r}.")
-            if collection_value not in allowed_mongo_collections:
-                raise ValueError(f"MongoDB node {node_id} has unexpected collection default: {collection_value!r}.")
-            code_value = str(template.get("code", {}).get("value") or "")
-            code_collections = [name for name in allowed_mongo_collections if name in code_value]
-            if len(code_collections) != 1 or collection_value != code_collections[0]:
-                raise ValueError(
-                    f"MongoDB node {node_id} collection default {collection_value!r} does not match its component source."
-                )
-            if database_field.get("load_from_db") is not False or collection_field.get("load_from_db") is not False:
-                raise ValueError(f"MongoDB node {node_id} database/collection defaults must not be secret DB variables.")
-            uri_field = template.get("mongo_uri")
-            if not isinstance(uri_field, dict) or (
-                str(uri_field.get("value") or "").strip() != MONGO_GLOBAL_VARIABLE
-                or uri_field.get("load_from_db") is not True
-                or uri_field.get("advanced") is not False
-            ):
-                raise ValueError(f"MongoDB node {node_id} must bind visible mongo_uri to {MONGO_GLOBAL_VARIABLE}.")
-        for edge in flow.get("data", {}).get("edges", []):
-            for text_key, data_key in (("sourceHandle", "sourceHandle"), ("targetHandle", "targetHandle")):
-                handle_text = edge.get(text_key)
-                if not isinstance(handle_text, str):
-                    raise ValueError(f"Edge {edge.get('id')} has no {text_key} string.")
-                try:
-                    decoded_handle = json.loads(handle_text.replace("œ", '"'))
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"Edge {edge.get('id')} has a Langflow UI-incompatible {text_key}: {exc}"
-                    ) from exc
-                if decoded_handle != edge.get("data", {}).get(data_key):
-                    raise ValueError(f"Edge {edge.get('id')} {text_key} does not match edge.data.{data_key}.")
-                validated_edge_handle_count += 1
-            target_node = node_by_id.get(edge.get("target"), {})
-            target_field = edge.get("data", {}).get("targetHandle", {}).get("fieldName")
-            target_template = target_node.get("data", {}).get("node", {}).get("template", {})
-            target_input = target_template.get(target_field) if isinstance(target_template, dict) else None
-            if isinstance(target_input, dict) and target_input.get("advanced") is True:
-                raise ValueError(
-                    f"Edge {edge.get('id')} targets advanced input {edge.get('target')}.{target_field}; "
-                    "Langflow removes connections to advanced component fields during template refresh."
-                )
-    if mongo_default_nodes != 22 or snapshot_default_nodes != 1:
-        raise ValueError(
-            "Expected 22 standard MongoDB nodes and 1 three-collection QA snapshot node with explicit defaults, "
-            f"found standard={mongo_default_nodes}, snapshot={snapshot_default_nodes}."
-        )
-    return validated_edge_handle_count
-
-
-def _validate_tool_router(flow: dict[str, Any]) -> None:
-    nodes = flow.get("data", {}).get("nodes", [])
-    edges = flow.get("data", {}).get("edges", [])
-    tools = [node for node in nodes if str(node.get("id") or "").startswith("CachedFlowTool-")]
-    agents = [node for node in nodes if node.get("data", {}).get("type") == "Agent"]
-    chat_outputs = [node for node in nodes if node.get("data", {}).get("type") == "ChatOutput"]
-    input_adapters = [node for node in nodes if node.get("data", {}).get("type") == "GaiAInputAdapter"]
-    output_adapters = [node for node in nodes if node.get("data", {}).get("type") == "GaiAOutputAdapter"]
-    if (
-        len(tools) != 6
-        or len(agents) != 1
-        or len(chat_outputs) != 1
-        or len(input_adapters) != 1
-        or len(output_adapters) != 1
-    ):
-        raise ValueError("Agent Tool Router must contain six tools, one Agent, native Chat I/O, and one GaiA adapter pair.")
-
-    expected_tool_names = {
-        "run_data_analysis",
-        "run_metadata_qa",
-        "save_domain_metadata",
-        "save_table_catalog_metadata",
-        "save_main_flow_filter_metadata",
-        "run_realtime_production_report",
-    }
-    actual_edges = {
-        (
-            str(edge.get("source") or ""),
-            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
-            str(edge.get("target") or ""),
-            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
-        )
-        for edge in edges
-    }
-    actual_tool_names: set[str] = set()
-    for tool in tools:
-        node_id = str(tool["id"])
-        route_name = node_id.removeprefix("CachedFlowTool-")
-        template = tool["data"]["node"]["template"]
-        actual_tool_names.add(str(template["tool_name"]["value"]))
-        expected_flow_name = FLOW_DISPLAY_NAMES[route_name]
-        if template["flow_name_selected"]["value"] != expected_flow_name:
-            raise ValueError(f"{node_id} target name mismatch.")
-        if template["flow_id_selected"]["value"] not in ("", None):
-            raise ValueError(f"{node_id} must not export a static Flow ID.")
-        if template.get("flow_resolution_mode", {}).get("value") != "Flow ID 우선":
-            raise ValueError(f"{node_id} must prefer a runtime-selected Flow ID.")
-        if template["cache_flow"]["value"] is not True or template["return_direct"]["value"] is not True:
-            raise ValueError(f"{node_id} must enable graph cache and direct return.")
-        required_all_keywords = str(template.get("required_all_keywords", {}).get("value") or "")
-        required_any_phrases = str(template.get("required_any_phrases", {}).get("value") or "")
-        keyword_gate_message = str(template.get("keyword_gate_message", {}).get("value") or "")
-        if route_name == "realtime_production_report":
-            if required_all_keywords != "분석":
-                raise ValueError(f"{node_id} must require the 분석 keyword.")
-            if required_any_phrases.splitlines() != [
-                "실시간 생산 분석",
-                "실시간 분석",
-                "실시간 생산분석",
-            ]:
-                raise ValueError(f"{node_id} has unexpected realtime analysis phrases.")
-            if "'분석'" not in keyword_gate_message:
-                raise ValueError(f"{node_id} must explain the required 분석 keyword.")
-        elif required_all_keywords or required_any_phrases or keyword_gate_message:
-            raise ValueError(f"{node_id} must not apply the realtime analysis keyword gate.")
-        if "session_source" in template:
-            raise ValueError(f"{node_id} must inherit graph.session_id without a session-source port.")
-        code = str(template.get("code", {}).get("value") or "")
-        if (
-            '"name": "question"' not in code
-            or "def _question_tweaks" not in code
-            or "def _single_chat_output_id" not in code
-            or "GaiAInput" not in code
-            or "gaia_response" not in code
-            or 'runtime_user_id = str(getattr(self, "user_id"' not in code
-            or "self.user_id =" in code
-            or "UUID(requested_flow_id)" in code
-            or "def _chat_output_target" not in code
-            or "def _promote_graph_output" not in code
-            or "def _inherit_runtime_session" not in code
-            or "def _keyword_gate_error" not in code
-        ):
-            raise ValueError(f"{node_id} does not embed the stable question schema policy.")
-        if "allowed_names" in code:
-            raise ValueError(f"{node_id} still exposes node-ID based Tool fields.")
-        if tool["data"]["node"].get("tool_mode") is not True:
-            raise ValueError(f"{node_id} must be exported in Tool Mode.")
-        expected_edges = {(node_id, "component_as_tool", "Agent-agent-tool-router", "tools")}
-        if not expected_edges.issubset(actual_edges):
-            raise ValueError(f"{node_id} is missing its Agent tool edge.")
-    if actual_tool_names != expected_tool_names:
-        raise ValueError(f"Agent Tool names mismatch: {sorted(actual_tool_names)}")
-
-    agent_template = agents[0]["data"]["node"]["template"]
-    if (
-        agent_template.get("n_messages", {}).get("value") != 5
-        or agent_template.get("max_iterations", {}).get("value") != 1
-    ):
-        raise ValueError(
-            "Agent Tool Router must retrieve current plus four prior messages and run one Tool iteration."
-        )
-    if (
-        "Agent-agent-tool-router",
-        "response",
-        "GaiAOutputAdapter-agent-tool-router",
-        "input_value",
-    ) not in actual_edges or (
-        "GaiAOutputAdapter-agent-tool-router",
-        "message",
-        "ChatOutput-agent-tool-router",
-        "input_value",
-    ) not in actual_edges:
-        raise ValueError("Agent Tool Router must pass the Agent response through GaiA Output Adapter to native Chat Output.")
-    chat_input_edges = [edge for edge in actual_edges if edge[0] == "ChatInput-agent-tool-router"]
-    if chat_input_edges != [
-        ("ChatInput-agent-tool-router", "message", "GaiAInputAdapter-agent-tool-router", "input_message")
-    ] or (
-        "GaiAInputAdapter-agent-tool-router",
-        "message",
-        "Agent-agent-tool-router",
-        "input_value",
-    ) not in actual_edges:
-        raise ValueError("Agent Tool Router must pass native Chat Input through GaiA Input Adapter to Agent.input_value.")
-    if any(edge[3] == "session_source" for edge in actual_edges):
-        raise ValueError("Agent Tool Router must not contain session-source fan-out edges.")
-
-
-def _validate_workflow_orchestrator(flow: dict[str, Any]) -> None:
-    """Workflow의 planner·native Loop·정확한 Tool 실행·단일 최종 합성 계약을 검증합니다."""
-
-    nodes = flow.get("data", {}).get("nodes", [])
-    edges = flow.get("data", {}).get("edges", [])
-    node_by_id = {str(node.get("id") or ""): node for node in nodes}
-    tools = [node for node in nodes if str(node.get("id") or "").startswith("WorkflowFlowTool-")]
-    models = [node for node in nodes if node.get("data", {}).get("type") == "LanguageModelComponent"]
-    agents = [node for node in nodes if node.get("data", {}).get("type") == "Agent"]
-    loops = [node for node in nodes if node.get("data", {}).get("type") == "LoopComponent"]
-    chat_outputs = [node for node in nodes if node.get("data", {}).get("type") == "ChatOutput"]
-    input_adapters = [node for node in nodes if node.get("data", {}).get("type") == "GaiAInputAdapter"]
-    output_adapters = [node for node in nodes if node.get("data", {}).get("type") == "GaiAOutputAdapter"]
-    if (
-        len(tools) != 7
-        or len(models) != 2
-        or agents
-        or len(loops) != 1
-        or len(chat_outputs) != 1
-        or len(input_adapters) != 1
-        or len(output_adapters) != 1
-    ):
-        raise ValueError(
-            "Workflow Orchestrator must contain seven tools, two Language Models, one native Loop, no Agent, "
-            "native Chat I/O, and one GaiA adapter pair."
-        )
-
-    expected_tool_names = {
-        "run_data_analysis",
-        "run_metadata_qa",
-        "save_domain_metadata",
-        "save_table_catalog_metadata",
-        "save_main_flow_filter_metadata",
-        "run_visualization",
-        "run_realtime_production_report",
-    }
-    actual_tool_names: set[str] = set()
-    for tool in tools:
-        node_id = str(tool.get("id") or "")
-        route_name = node_id.removeprefix("WorkflowFlowTool-")
-        template = tool.get("data", {}).get("node", {}).get("template", {})
-        actual_tool_names.add(str(template.get("tool_name", {}).get("value") or ""))
-        expected_flow_name = FLOW_DISPLAY_NAMES[route_name]
-        if template.get("flow_name_selected", {}).get("value") != expected_flow_name:
-            raise ValueError(f"{node_id} target name mismatch.")
-        if template.get("flow_id_selected", {}).get("value") not in ("", None):
-            raise ValueError(f"{node_id} must not export a static Flow ID.")
-        if template.get("cache_flow", {}).get("value") is not True:
-            raise ValueError(f"{node_id} must enable graph cache.")
-        if template.get("return_direct", {}).get("value") is not False:
-            raise ValueError(f"{node_id} must disable direct return for Loop orchestration.")
-        if str(template.get("preferred_output_names", {}).get("value") or "") != "api_response":
-            raise ValueError(f"{node_id} must explicitly select the current child Flow api_response terminal.")
-        if tool.get("data", {}).get("node", {}).get("tool_mode") is not True:
-            raise ValueError(f"{node_id} must be exported in Tool Mode.")
-    if actual_tool_names != expected_tool_names:
-        raise ValueError(f"Workflow Orchestrator Tool names mismatch: {sorted(actual_tool_names)}")
-
-    parser = node_by_id.get("WorkflowPlanParser-workflow-orchestrator", {})
-    parser_template = parser.get("data", {}).get("node", {}).get("template", {})
-    registry_loader = node_by_id.get("WorkflowRegistryLoader-workflow-orchestrator", {})
-    registry_loader_template = registry_loader.get("data", {}).get("node", {}).get("template", {})
-    registry_path = ROOT / "docs" / "workflows" / "workflow_registry.example.json"
-    registry_expected = json.dumps(
-        json.loads(registry_path.read_text(encoding="utf-8")), ensure_ascii=False, indent=2
-    )
-    registry_value = str(parser_template.get("workflow_registry_json", {}).get("value") or "")
-    if registry_value != "{}":
-        raise ValueError("Workflow Orchestrator parser input must be empty unless the Registry loader edge supplies it.")
-    if (
-        str(registry_loader_template.get("registry_source", {}).get("value") or "") != "mongodb"
-        or str(registry_loader_template.get("mongo_database", {}).get("value") or "") != MONGODB_CONTRACT["database"]
-        or str(registry_loader_template.get("collection_name", {}).get("value") or "") != MONGODB_CONTRACT["workflow_skill"]
-        or str(registry_loader_template.get("inline_seed_json", {}).get("value") or "") != registry_expected
-        or str(registry_loader_template.get("candidate_limit", {}).get("value") or "") != "8"
-        or str(registry_loader_template.get("max_registry_bytes", {}).get("value") or "") != "65536"
-    ):
-        raise ValueError("Workflow Orchestrator Registry loader must use visible MongoDB defaults and the exact inline seed.")
-    planner_template = (
-        node_by_id.get("PromptPlanner-workflow-orchestrator", {})
-        .get("data", {})
-        .get("node", {})
-        .get("template", {})
-    )
-    planner_prompt = str(planner_template.get("template", {}).get("value", ""))
-    planner_registry = str(planner_template.get("workflow_registry_json", {}).get("value") or "")
-    if planner_registry != "{}" or "최대 4" not in planner_prompt or "{allowed_tool_catalog}" not in planner_prompt:
-        raise ValueError("Workflow Orchestrator planner must rely on the Registry edge and preserve the four-step limit.")
-    allowed_tools_value = str(parser_template.get("allowed_tool_names", {}).get("value") or "")
-    if set(json.loads(allowed_tools_value)) != expected_tool_names:
-        raise ValueError("Workflow Orchestrator parser allowed Tool names mismatch.")
-    planner_allowed_tools = str(planner_template.get("allowed_tool_names", {}).get("value") or "")
-    if set(json.loads(planner_allowed_tools)) != expected_tool_names:
-        raise ValueError("Workflow Orchestrator planner allowed Tool names mismatch.")
-    tool_catalog_value = str(planner_template.get("allowed_tool_catalog", {}).get("value") or "")
-    tool_catalog = json.loads(tool_catalog_value)
-    catalog_by_name = {
-        str(item.get("tool_name") or ""): item
-        for item in tool_catalog
-        if isinstance(item, dict)
-    }
-    if set(catalog_by_name) != expected_tool_names or any(
-        not str(item.get("description") or "").strip()
-        for item in catalog_by_name.values()
-    ):
-        raise ValueError("Workflow Orchestrator planner Tool capability catalog mismatch.")
-    if (
-        catalog_by_name["run_data_analysis"].get("accepts_upstream_result_ref") is not True
-        or catalog_by_name["run_data_analysis"].get("can_produce_result_ref") is not True
-        or catalog_by_name["run_visualization"].get("accepts_upstream_result_ref") is not True
-        or catalog_by_name["run_visualization"].get("can_produce_result_ref") is not False
-    ):
-        raise ValueError("Workflow Orchestrator result_ref capabilities are invalid.")
-
-    actual_edges = {
-        (
-            str(edge.get("source") or ""),
-            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
-            str(edge.get("target") or ""),
-            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
-            str(edge.get("data", {}).get("targetHandle", {}).get("name") or ""),
-        )
-        for edge in edges
-    }
-    expected_edges = {
-        (
-            "GaiAInputAdapter-workflow-orchestrator",
-            "message",
-            "WorkflowRegistryLoader-workflow-orchestrator",
-            "user_question",
-            "",
-        ),
-        (
-            "WorkflowRegistryLoader-workflow-orchestrator",
-            "workflow_registry_json",
-            "PromptPlanner-workflow-orchestrator",
-            "workflow_registry_json",
-            "",
-        ),
-        (
-            "WorkflowRegistryLoader-workflow-orchestrator",
-            "workflow_registry_json",
-            "WorkflowPlanParser-workflow-orchestrator",
-            "workflow_registry_json",
-            "",
-        ),
-        (
-            "WorkflowPlanParser-workflow-orchestrator",
-            "loop_dataframe",
-            "Loop-workflow-orchestrator",
-            "data",
-            "",
-        ),
-        (
-            "Loop-workflow-orchestrator",
-            "item",
-            "SequentialStepExecutor-workflow-orchestrator",
-            "loop_item",
-            "",
-        ),
-        (
-            "SequentialStepExecutor-workflow-orchestrator",
-            "step_result",
-            "Loop-workflow-orchestrator",
-            "",
-            "item",
-        ),
-        (
-            "WorkflowPlanParser-workflow-orchestrator",
-            "workflow_plan",
-            "FinalContext-workflow-orchestrator",
-            "execution_context",
-            "",
-        ),
-        (
-            "Loop-workflow-orchestrator",
-            "done",
-            "FinalContext-workflow-orchestrator",
-            "loop_results",
-            "",
-        ),
-        (
-            "FinalResponse-workflow-orchestrator",
-            "message",
-            "GaiAOutputAdapter-workflow-orchestrator",
-            "input_value",
-            "",
-        ),
-        (
-            "ChatInput-workflow-orchestrator",
-            "message",
-            "GaiAInputAdapter-workflow-orchestrator",
-            "input_message",
-            "",
-        ),
-        (
-            "GaiAOutputAdapter-workflow-orchestrator",
-            "message",
-            "ChatOutput-workflow-orchestrator",
-            "input_value",
-            "",
-        ),
-    }
-    missing_edges = expected_edges - actual_edges
-    if missing_edges:
-        raise ValueError(f"Workflow Orchestrator is missing required edges: {sorted(missing_edges)}")
-    feedback_edges = [
-        edge
-        for edge in edges
-        if str(edge.get("source") or "") == "SequentialStepExecutor-workflow-orchestrator"
-        and str(edge.get("target") or "") == "Loop-workflow-orchestrator"
-        and str(edge.get("data", {}).get("sourceHandle", {}).get("name") or "") == "step_result"
-        and str(edge.get("data", {}).get("targetHandle", {}).get("name") or "") == "item"
-    ]
-    if len(feedback_edges) != 1 or feedback_edges[0]["data"]["targetHandle"].get("output_types") != [
-        "Data",
-        "Message",
-    ]:
-        raise ValueError("Workflow Orchestrator Looping feedback must expose Data and Message target types.")
-    for tool in tools:
-        expected_edge = (
-            str(tool.get("id") or ""),
-            "component_as_tool",
-            "SequentialStepExecutor-workflow-orchestrator",
-            "tools",
-            "",
-        )
-        if expected_edge not in actual_edges:
-            raise ValueError(f"{tool.get('id')} is missing its exact executor Tool edge.")
-
-    response_node = node_by_id.get("FinalResponse-workflow-orchestrator", {})
-    response_outputs = response_node.get("data", {}).get("node", {}).get("outputs", [])
-    if not any(output.get("name") == "api_response" for output in response_outputs):
-        raise ValueError("Workflow Orchestrator must expose terminal api_response.")
-    if any(edge[0] == "FinalResponse-workflow-orchestrator" and edge[1] == "api_response" for edge in actual_edges):
-        raise ValueError("Workflow Orchestrator api_response must remain a terminal output.")
-
-
-def _validate_html_visualization(flow: dict[str, Any]) -> None:
-    """HTML 시각화 Flow의 단일 입력·단일 출력·result_ref·terminal API 계약을 검증합니다."""
-
-    nodes = {str(node.get("id") or ""): node for node in flow.get("data", {}).get("nodes", [])}
-    edges = {
-        (
-            str(edge.get("source") or ""),
-            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
-            str(edge.get("target") or ""),
-            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
-        )
-        for edge in flow.get("data", {}).get("edges", [])
-    }
-    expected_node_ids = {
-        "ChatInput-html-visualization",
-        "GaiAInputAdapter-html-visualization",
-        "HtmlVisualizationBuilder-html-visualization",
-        "GaiAOutputAdapter-html-visualization",
-        "ChatOutput-html-visualization",
-        "HtmlVisualizationApiTerminal-html-visualization",
-    }
-    if set(nodes) != expected_node_ids or len(edges) != 5:
-        raise ValueError("HTML Visualization must contain six nodes and five edges including native Chat I/O and GaiA adapters.")
-    expected_edges = {
-        (
-            "ChatInput-html-visualization",
-            "message",
-            "GaiAInputAdapter-html-visualization",
-            "input_message",
-        ),
-        (
-            "GaiAInputAdapter-html-visualization",
-            "message",
-            "HtmlVisualizationBuilder-html-visualization",
-            "question",
-        ),
-        (
-            "HtmlVisualizationBuilder-html-visualization",
-            "message",
-            "GaiAOutputAdapter-html-visualization",
-            "input_value",
-        ),
-        (
-            "GaiAOutputAdapter-html-visualization",
-            "message",
-            "ChatOutput-html-visualization",
-            "input_value",
-        ),
-        (
-            "HtmlVisualizationBuilder-html-visualization",
-            "api_response",
-            "HtmlVisualizationApiTerminal-html-visualization",
-            "visualization_result",
-        ),
-    }
-    if edges != expected_edges:
-        raise ValueError(f"HTML Visualization edges mismatch: {sorted(edges)}")
-
-    builder = nodes["HtmlVisualizationBuilder-html-visualization"]
-    template = builder.get("data", {}).get("node", {}).get("template", {})
-    if (
-        str(template.get("mongo_uri", {}).get("value") or "") != MONGO_GLOBAL_VARIABLE
-        or template.get("mongo_uri", {}).get("load_from_db") is not True
-        or str(template.get("mongo_database", {}).get("value") or "") != MONGODB_CONTRACT["database"]
-        or str(template.get("collection_name", {}).get("value") or "") != MONGODB_CONTRACT["result"]
-        or template.get("upstream_result_ref", {}).get("advanced") is not False
-        or str(template.get("report_api_url", {}).get("value") or "") != "http://127.0.0.1:8010"
-        or template.get("report_api_url", {}).get("advanced") is not False
-        or str(template.get("report_ttl_hours", {}).get("value") or "") != "24"
-        or template.get("report_ttl_hours", {}).get("advanced") is not False
-    ):
-        raise ValueError("HTML Visualization must expose standalone MongoDB, result_ref, and Report API inputs.")
-    output_names = {
-        str(output.get("name") or "")
-        for output in builder.get("data", {}).get("node", {}).get("outputs", [])
-    }
-    if output_names != {"message", "api_response"}:
-        raise ValueError("HTML Visualization builder must expose message and api_response outputs.")
-    source_path = ROOT / "langflow_components" / "visualization_flow" / "00_html_visualization_builder.py"
-    embedded = str(template.get("code", {}).get("value") or "")
-    if embedded != source_path.read_text(encoding="utf-8"):
-        raise ValueError("HTML Visualization embedded component source is out of sync.")
-
-    terminal = nodes["HtmlVisualizationApiTerminal-html-visualization"]
-    terminal_outputs = {
-        str(output.get("name") or "")
-        for output in terminal.get("data", {}).get("node", {}).get("outputs", [])
-    }
-    if terminal_outputs != {"api_response"}:
-        raise ValueError("HTML Visualization API terminal must expose one api_response output.")
-    if any(source == "HtmlVisualizationApiTerminal-html-visualization" for source, _handle, _target, _field in edges):
-        raise ValueError("HTML Visualization API adapter must remain terminal.")
-    terminal_source_path = ROOT / "langflow_components" / "visualization_flow" / "01_html_visualization_api_terminal.py"
-    terminal_template = terminal.get("data", {}).get("node", {}).get("template", {})
-    terminal_embedded = str(terminal_template.get("code", {}).get("value") or "")
-    if terminal_embedded != terminal_source_path.read_text(encoding="utf-8"):
-        raise ValueError("HTML Visualization API terminal embedded component source is out of sync.")
-
-
-def _validate_realtime_production_report(flow: dict[str, Any]) -> None:
-    """실시간 생산 Report Flow의 공정그룹 선택 Gate·더미 데이터·HTML·compact terminal 계약을 검증합니다."""
-
-    nodes = {str(node.get("id") or ""): node for node in flow.get("data", {}).get("nodes", [])}
-    edges = {
-        (
-            str(edge.get("source") or ""),
-            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
-            str(edge.get("target") or ""),
-            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
-        )
-        for edge in flow.get("data", {}).get("edges", [])
-    }
-    expected_node_ids = {
-        "ChatInput-realtime-production-report",
-        "GaiAInputAdapter-realtime-production-report",
-        "ProcessGroupCatalog-realtime-production-report",
-        "ProcessGroupPrompt-realtime-production-report",
-        "LanguageModelProcessGroup-realtime-production-report",
-        "DummyProductionJudgementData-realtime-production-report",
-        "ProcessGroupSelectionGate-realtime-production-report",
-        "RealtimeProductionReportBuilder-realtime-production-report",
-        "GaiAOutputAdapter-realtime-production-report",
-        "ChatOutput-realtime-production-report",
-        "RealtimeProductionReportApiTerminal-realtime-production-report",
-    }
-    if set(nodes) != expected_node_ids or len(edges) != 13:
-        raise ValueError("Realtime Production Report must contain eleven nodes and thirteen edges.")
-    expected_edges = {
-        (
-            "ChatInput-realtime-production-report",
-            "message",
-            "GaiAInputAdapter-realtime-production-report",
-            "input_message",
-        ),
-        (
-            "GaiAInputAdapter-realtime-production-report",
-            "message",
-            "ProcessGroupPrompt-realtime-production-report",
-            "question",
-        ),
-        (
-            "GaiAInputAdapter-realtime-production-report",
-            "message",
-            "ProcessGroupSelectionGate-realtime-production-report",
-            "question",
-        ),
-        (
-            "GaiAInputAdapter-realtime-production-report",
-            "message",
-            "RealtimeProductionReportBuilder-realtime-production-report",
-            "question",
-        ),
-        (
-            "ProcessGroupCatalog-realtime-production-report",
-            "process_group_catalog",
-            "ProcessGroupPrompt-realtime-production-report",
-            "process_group_catalog",
-        ),
-        (
-            "ProcessGroupPrompt-realtime-production-report",
-            "prompt",
-            "LanguageModelProcessGroup-realtime-production-report",
-            "input_value",
-        ),
-        (
-            "ProcessGroupCatalog-realtime-production-report",
-            "process_group_catalog",
-            "ProcessGroupSelectionGate-realtime-production-report",
-            "process_group_catalog",
-        ),
-        (
-            "LanguageModelProcessGroup-realtime-production-report",
-            "text_output",
-            "ProcessGroupSelectionGate-realtime-production-report",
-            "llm_response",
-        ),
-        (
-            "DummyProductionJudgementData-realtime-production-report",
-            "dataset",
-            "ProcessGroupSelectionGate-realtime-production-report",
-            "dataset",
-        ),
-        (
-            "ProcessGroupSelectionGate-realtime-production-report",
-            "selected_dataset",
-            "RealtimeProductionReportBuilder-realtime-production-report",
-            "dataset",
-        ),
-        (
-            "RealtimeProductionReportBuilder-realtime-production-report",
-            "message",
-            "GaiAOutputAdapter-realtime-production-report",
-            "input_value",
-        ),
-        (
-            "GaiAOutputAdapter-realtime-production-report",
-            "message",
-            "ChatOutput-realtime-production-report",
-            "input_value",
-        ),
-        (
-            "RealtimeProductionReportBuilder-realtime-production-report",
-            "api_response",
-            "RealtimeProductionReportApiTerminal-realtime-production-report",
-            "report_result",
-        ),
-    }
-    if edges != expected_edges:
-        raise ValueError(f"Realtime Production Report edges mismatch: {sorted(edges)}")
-
-    source_root = ROOT / "langflow_components" / "realtime_production_report_flow"
-    source_by_node = {
-        "ProcessGroupCatalog-realtime-production-report": source_root / "00a_process_group_catalog_loader.py",
-        "ProcessGroupPrompt-realtime-production-report": source_root / "00b_process_group_selection_prompt.py",
-        "DummyProductionJudgementData-realtime-production-report": source_root / "00_dummy_production_judgement_data.py",
-        "ProcessGroupSelectionGate-realtime-production-report": source_root / "00c_process_group_selection_gate.py",
-        "RealtimeProductionReportBuilder-realtime-production-report": source_root / "01_realtime_production_report_builder.py",
-        "RealtimeProductionReportApiTerminal-realtime-production-report": source_root / "02_realtime_production_report_api_terminal.py",
-    }
-    for node_id, source_path in source_by_node.items():
-        template = nodes[node_id].get("data", {}).get("node", {}).get("template", {})
-        embedded = str(template.get("code", {}).get("value") or "")
-        if embedded != source_path.read_text(encoding="utf-8"):
-            raise ValueError(f"Realtime Production Report embedded source is out of sync: {node_id}")
-
-    dummy_template = (
-        nodes["DummyProductionJudgementData-realtime-production-report"]
-        .get("data", {})
-        .get("node", {})
-        .get("template", {})
-    )
-    if (
-        str(dummy_template.get("row_count", {}).get("value") or "") != "500"
-        or str(dummy_template.get("seed", {}).get("value") or "") != "20260727"
-        or str(dummy_template.get("process_names", {}).get("value") or "")
-        != "W/B1,W/B2,W/B3,W/B4,B/G1,B/G2,B/G3,D/A1,D/A2,D/A3"
-    ):
-        raise ValueError("Realtime Production Report dummy generator defaults are invalid.")
-    catalog_template = (
-        nodes["ProcessGroupCatalog-realtime-production-report"]
-        .get("data", {})
-        .get("node", {})
-        .get("template", {})
-    )
-    if (
-        "source_mode" in catalog_template
-        or "inline_catalog_json" in catalog_template
-        or str(catalog_template.get("mongo_database", {}).get("value") or "") != "datagov"
-        or str(catalog_template.get("collection_name", {}).get("value") or "") != "agent_v4_domain_items"
-        or catalog_template.get("mongo_uri", {}).get("load_from_db") is not True
-    ):
-        raise ValueError("Realtime Production Report process-group catalog must use MongoDB without a source selector.")
-    builder_template = (
-        nodes["RealtimeProductionReportBuilder-realtime-production-report"]
-        .get("data", {})
-        .get("node", {})
-        .get("template", {})
-    )
-    if (
-        str(builder_template.get("report_api_url", {}).get("value") or "") != "http://127.0.0.1:8765"
-        or builder_template.get("report_api_url", {}).get("advanced") is not False
-        or str(builder_template.get("report_ttl_hours", {}).get("value") or "") != "4"
-        or builder_template.get("report_ttl_hours", {}).get("advanced") is not False
-        or str(builder_template.get("max_html_rows", {}).get("value") or "") != "1000"
-    ):
-        raise ValueError("Realtime Production Report must expose visible Report API settings and the HTML row limit.")
-    language_model_ids = {
-        node_id
-        for node_id, node in nodes.items()
-        if str(node.get("data", {}).get("type") or "") == "LanguageModelComponent"
-    }
-    if language_model_ids != {"LanguageModelProcessGroup-realtime-production-report"}:
-        raise ValueError("Realtime Production Report must use exactly one Language Model for process-group selection.")
-    if (
-        "LanguageModelProcessGroup-realtime-production-report",
-        "text_output",
-        "RealtimeProductionReportBuilder-realtime-production-report",
-        "dataset",
-    ) in edges:
-        raise ValueError("The process-group LLM must not bypass the deterministic selection Gate.")
-    terminal_id = "RealtimeProductionReportApiTerminal-realtime-production-report"
-    if any(source == terminal_id for source, _handle, _target, _field in edges):
-        raise ValueError("Realtime Production Report API adapter must remain terminal.")
-
-
-def _validate_cube_schedule_saving(flow: dict[str, Any]) -> None:
-    """CUBE 스케줄 authoring Flow의 standalone·dry-run·source-only 계약을 검증합니다."""
-
-    nodes = {str(node.get("id") or ""): node for node in flow.get("data", {}).get("nodes", [])}
-    edges = {
-        (
-            str(edge.get("source") or ""),
-            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
-            str(edge.get("target") or ""),
-            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
-        )
-        for edge in flow.get("data", {}).get("edges", [])
-    }
-    required_nodes = {
-        "ChatInput-cube-schedule-saving",
-        "Prompt-cube-schedule-saving",
-        "LanguageModel-cube-schedule-saving",
-        "Normalizer-cube-schedule-saving",
-        "Writer-cube-schedule-saving",
-        "Api-cube-schedule-saving",
-        "Message-cube-schedule-saving",
-        "ChatOutput-cube-schedule-saving",
-        "GaiAInputAdapter-cube-schedule-saving",
-        "GaiAOutputAdapter-cube-schedule-saving",
-    }
-    if set(nodes) != required_nodes or len(edges) != 10:
-        raise ValueError("CUBE schedule saving Flow node/edge contract mismatch.")
-    writer_template = nodes["Writer-cube-schedule-saving"]["data"]["node"]["template"]
-    if (
-        writer_template.get("dry_run", {}).get("value") is not True
-        or writer_template.get("mongo_uri", {}).get("load_from_db") is not True
-        or writer_template.get("mongo_uri", {}).get("advanced") is not False
-        or writer_template.get("mongo_database", {}).get("value") != "cube_authoring"
-        or writer_template.get("collection_name", {}).get("value") != "cube_schedules"
-    ):
-        raise ValueError("CUBE schedule Writer must expose MONGO_URL, source database/collection, and dry_run=true.")
-    terminal = nodes["Api-cube-schedule-saving"]["data"]["node"]
-    if terminal.get("is_output") is not True:
-        raise ValueError("CUBE schedule API response must be an explicit structured terminal.")
-    if any(source == "Api-cube-schedule-saving" for source, _handle, _target, _field in edges):
-        raise ValueError("CUBE schedule structured api_response must remain terminal.")
-
-
-def _validate_workflow_skill_saving(flow: dict[str, Any]) -> None:
-    """Workflow Skill 저장 Flow의 dry-run·기존 항목·단일 출력 계약을 검증합니다."""
-
-    nodes = {str(node.get("id") or ""): node for node in flow.get("data", {}).get("nodes", [])}
-    edges = {
-        (
-            str(edge.get("source") or ""),
-            str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
-            str(edge.get("target") or ""),
-            str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
-        )
-        for edge in flow.get("data", {}).get("edges", [])
-    }
-    chat_outputs = [node for node in nodes.values() if node.get("data", {}).get("type") == "ChatOutput"]
-    input_adapters = [node for node in nodes.values() if node.get("data", {}).get("type") == "GaiAInputAdapter"]
-    output_adapters = [node for node in nodes.values() if node.get("data", {}).get("type") == "GaiAOutputAdapter"]
-    models = [node for node in nodes.values() if node.get("data", {}).get("type") == "LanguageModelComponent"]
-    if (
-        len(nodes) != 15
-        or len(edges) != 16
-        or len(chat_outputs) != 1
-        or len(input_adapters) != 1
-        or len(output_adapters) != 1
-        or len(models) != 1
-    ):
-        raise ValueError(
-            "Workflow Skill saving Flow must contain 15 nodes, 16 edges, one Language Model, native Chat I/O, and one GaiA adapter pair."
-        )
-
-    request_template = nodes.get("Request-workflow_skill", {}).get("data", {}).get("node", {}).get("template", {})
-    if request_template.get("dry_run", {}).get("value") is not True:
-        raise ValueError("Workflow Skill saving Flow must default to dry_run=true.")
-    if request_template.get("duplicate_action", {}).get("options") != ["skip", "merge", "replace", "create_new"]:
-        raise ValueError("Workflow Skill saving Flow duplicate_action options mismatch.")
-    existing_template = (
-        nodes.get("ExistingLoader-workflow_skill", {}).get("data", {}).get("node", {}).get("template", {})
-    )
-    if str(existing_template.get("limit", {}).get("value") or "") != "500":
-        raise ValueError("Workflow Skill existing loader must read the bounded active list instead of being disabled.")
-
-    expected_edges = {
-        ("ExistingLoader-workflow_skill", "existing_items", "Matcher-workflow_skill", "existing_items"),
-        ("Matcher-workflow_skill", "payload_out", "Writer-workflow_skill", "payload"),
-        ("ChatInput-workflow_skill", "message", "GaiAInputAdapter-workflow_skill", "input_message"),
-        ("Message-workflow_skill", "message", "GaiAOutputAdapter-workflow_skill", "input_value"),
-        ("GaiAOutputAdapter-workflow_skill", "message", "ChatOutput-workflow_skill", "input_value"),
-    }
-    if not expected_edges.issubset(edges):
-        raise ValueError("Workflow Skill saving Flow is missing its existing-item, writer, or single-output edge.")
-
-
-def _readme(
-    flows: list[dict[str, Any]],
-    validated_edge_handle_count: int,
-    validated_node_template_count: int,
-) -> str:
-    rows = "\n".join(
-        f"| {item['order']} | `{item['file']}` | `{item['endpoint_name']}` | {item['nodes']} | {item['edges']} |"
-        for item in flows
-    )
-    flow_count = len(flows)
-    return f"""# Metadata Driven v5 완전 연결 Langflow JSON
-
-## Data Analysis canonical route
-
-- `run_data_analysis`, route `data_analysis`, display name `01. v5_data_analysis`, and endpoint suffix `data-analysis` now execute the V2 hybrid graph.
-- The former V1 graph is not included in this selected 01~09 bundle; the canonical route is the V2 graph above.
-- Existing Langflow router/tool nodes that already persisted `flow_id_selected` must be reselected after import so the saved ID points to the new canonical V2 Flow. The bundle never clears a runtime selection automatically.
-
-이 폴더의 JSON은 Langflow 1.9.2 standalone 환경에 바로 import할 수 있도록 모든 canvas edge와 Router 하위 endpoint를 미리 연결한 묶음입니다.
-
-## 가장 간단한 Import 방법
-
-Langflow의 Flow 화면에서 아래 파일 **하나만** 선택합니다.
-
-`00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
-
-Langflow UI가 최상위 `flows` 배열을 펼쳐 {flow_count}개 Flow를 한 번에 import합니다. 이 파일은 UTF-8 BOM 없이 minified JSON으로 생성되며 첫 바이트가 정확히 `{{\"flows\":[`입니다.
-
-## 개별 Import 방법
-
-파일명 앞 번호 순서대로 `01`부터 `07`까지 import합니다. `01`은 운영 기본 Fast/Complex Hybrid Data Analysis V2, `02`~`05`는 메타데이터 저장·조회 Flow, `06`은 단일 호출용 Agent + Tool Mode Router, `07`은 실시간 생산 Report Flow입니다. 종속 조회용 `08`과 `09`는 continuation bundle이 추가합니다.
-
-| 순서 | 파일 | endpoint_name | 노드 | 엣지 |
-| ---: | --- | --- | ---: | ---: |
-{rows}
-
-## 수동 연결 여부
-
-- canvas edge 재연결: 필요 없음
-- Router Flow ID 치환: 필요 없음
-- Router URL 5개 개별 입력: 필요 없음
-- Agent Tool Router Flow ID 직접 입력: 필요 없음. 다만 import 후 각 Tool의 `대상 Flow`를 한 번씩 다시 선택하면 현재 ID가 저장됩니다. 실행 시 현재 ID와 `updated_at`을 확인한 뒤 유효한 graph cache를 사용합니다.
-- 종속 조회 continuation Flow ID 재연결: 필요 없음
-
-Router는 고정 `endpoint_name` 경로를 사용합니다. 같은 bundle을 다시 import하면 Langflow가 endpoint에 `-1`을 붙일 수 있으므로, 재import 시에는 기존 `metadata-driven-v5-complete-{BUNDLE_VERSION}-*` Flow를 먼저 정리합니다.
-
-## 환경 설정
-
-- 기본 Langflow 주소: `http://127.0.0.1:7860`
-- 다른 주소/포트: `LANGFLOW_BASE_URL` 설정
-- 인증 사용: `LANGFLOW_API_KEY` 설정
-- Router 하위 Flow read timeout: 240초
-- 외부 Web/API client timeout 권장값: 단일 호출 300초, Workflow 연계 호출 600초
-- Gemini/provider credential: Langflow Model Providers 또는 Global Variable 설정
-- MongoDB: Langflow Credential Global Variable `MONGO_URL` 생성 후 import된 Mongo 노드의 바인딩 확인
-- MongoDB database: `datagov`
-- v4 공유 collection: `agent_v4_domain_items`, `agent_v4_table_catalog_items`, `agent_v4_main_flow_filters`, `agent_v4_result_store`, `agent_v4_session_states`, `agent_v4_workflow_skills`
-- v4 데이터를 v5로 복사하지 않고 기존 collection을 직접 사용
-- 실제 Mongo URI는 JSON에 포함되지 않으며 Python 컴포넌트는 OS `MONGODB_URI` fallback을 사용하지 않음
-- Data Analysis dummy/live 단일 설정: `04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode`
-- `07 데이터 조회 작업 라우터`에는 별도 모드 설정이 없으며 `04A`가 payload에 기록한 값을 사용
-- 저장 Flow: 안전을 위해 `dry_run=true`가 기본값이며 실제 저장 시에만 의도적으로 끕니다.
-
-## 검증 결과
-
-- Langflow/Flow 비웹 pytest: 전체 suite passed (별도 Streamlit 웹 런타임 테스트는 제외)
-- 커스텀 원본 동기화: `tools/validate_flow_component_sources.py`가 모든 활성 custom node와 저장소 Python 원본의 일대일 매핑 및 누락 0건을 검증
-- 한글 설명/인코딩: Python·JSON·ZIP 전체에서 strict UTF-8·BOM 없음·깨짐 문자 없음·JSON parse 확인
-- 대표 Dummy 질문: 30/30 통과
-- Langflow 1.9.2 frontend edge handle codec: {validated_edge_handle_count}/{validated_edge_handle_count} parse 및 `edge.data` 일치
-- Langflow 1.9.2 연결 규칙: advanced component input을 대상으로 하는 edge 0건
-- Langflow 1.9.2 / Langflow Base 0.9.2 / LFX 0.4.2 node template: {flow_count}개 Flow {validated_node_template_count}/{validated_node_template_count} 검증 통과
-- Tool 없는 모델 단계와 Workflow 계획/최종 합성은 기본 Language Model을 사용하고, 단일 호출 Route V2만 실제 Tool이 연결된 기본 Agent를 유지
-- API Router 직접 응답/명확화 분기: Smart Router -> GaiA Output Adapter -> 표준 Chat Output 2/2, FinalGate 0개
-- API Router 단일 진입 구조: 표준 Chat Input -> GaiA Input Adapter -> Smart Router, API caller용 session fan-out edge 0개
-- Router 세션: Langflow가 각 API caller의 `session_id` 입력에 부모 실행 세션을 자동 주입하므로 별도 Message edge 없이 유지
-- 선택된 01~07 Flow의 격리 Langflow 서버 import 계약을 검증했으며, continuation bundle은 08~09를 추가합니다.
-- 통합 `00` 단일 JSON은 {flow_count}개 Flow를 포함하도록 생성하고 UTF-8/BOM/flow count를 검증합니다.
-- 선택된 하위 Flow와 Route V2: GaiA Output Adapter 1개와 표준 Chat Output 1개씩 확인
-- Data Analysis: executor node 1개, 초기 성공 시 Repair LLM 0회, 실행 오류 시 이전 코드·오류 문맥을 전달해 최대 1회 복구, 단일 최종화 체인 확인
-- Data Analysis V2: 단일 source의 완성된 계약은 Fast 실행하여 pandas 생성·답변 LLM 0회, 다중 source·join·Function Case는 기존 Complex 경로 사용
-- Data Analysis Repair Prompt: `17B pandas 복구 프롬프트 템플릿` visible Text Input에서 원문을 관리하고 executor의 non-advanced 입력에 연결
-- pandas import 정책: 정확한 `import pandas as pd`, `import numpy as np`만 실제 import 없이 정규화하고, 기타 import와 파일·네트워크 I/O는 차단
-- pandas safe builtin 정책: `zip`을 executor namespace에서 제공해 `dict(zip(...))`가 불필요한 Repair LLM을 유발하지 않음
-- API Router는 Run Flow 노드가 0개입니다. Agent Tool Router의 선택형 Cached Run Flow Tool 6개는 UI에서 저장한 현재 Flow ID와 `updated_at`을 실행 시 확인하고, 선택 ID가 현재 프로젝트에서 사라졌을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. `cache_flow=true`, `return_direct=true`이며, Flow 수정 시 오래된 graph cache를 무효화합니다. 실시간 생산 Report Tool은 `분석`과 지정된 실시간 분석 구문을 실행 직전에 다시 검증합니다.
-- Agent Tool Router의 Cached Run Flow Tool은 대상 Flow 선택·새로고침 이후에도 `component_as_tool` 출력 하나만 유지합니다. 하위 Flow의 `message`, `gaia_response`는 Tool 내부 결과 선택에만 사용합니다.
-- Agent Tool Router는 `n_messages=5`, `max_iterations=1`로 현재 저장 메시지와 이전 2턴을 조회합니다. GaiA Input Adapter가 원본 Message ID를 보존하고 LFX Agent가 현재 입력과 ID가 같은 메시지를 history에서 제거하므로, 현재 질문 중복 없이 이전 사용자/응답 2턴만 남습니다. 하위 Flow의 표준 Chat Output Message를 `return_direct=true`로 반환하며, LFX 0.4.2가 Tool 결과를 Agent 단계 카드에만 기록한 경우 GaiA Output Adapter가 마지막 완료 Tool 출력에서 본문을 복원합니다. Message.data의 `gaia_response`도 보존합니다.
-- Agent Tool Router의 Tool schema에는 node ID가 없는 필수 `question` 하나만 포함합니다. 실행 직전에 현재 그래프의 단일 표준 Chat Input ID로 내부 변환합니다.
-- Agent Tool Router는 `session_source` 포트와 edge 없이 실제 Tool 출력 메서드 안에서 부모 runtime/graph `session_id`를 자동 상속합니다. 따라서 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰어도 하위 Flow의 세션 저장/복원이 유지됩니다. 표준 Chat Input의 Message는 GaiA Input Adapter를 거쳐 Agent에만 한 번 연결됩니다.
-- 격리 import에서 현재 Langflow 실행 사용자로 새로 발급된 Data Analysis Flow ID를 이름으로 해석하고 `CachedFlowTool-data_analysis`까지 실제 partial build를 통과했습니다.
-- Workflow Orchestrator의 이름 기반 Tool 7개는 `question`과 선택 `upstream_result_ref`만 노출하고, 하위 API 응답을 `route_v3.tool_result.v1` compact observation으로 변환합니다.
-- Workflow Orchestrator는 기본 Language Model 계획기 -> `workflow.plan.v1` 파서 -> 기본 Loop -> 정확한 Tool 단일 실행기 순서로 최대 네 단계를 실행합니다. Registry와 일치하지 않아도 capability catalog의 Tool만으로 해결 가능하면 inline 계획을 만들며 Agent의 자율 반복은 사용하지 않습니다.
-- Workflow Orchestrator는 기본적으로 `datagov.agent_v4_workflow_skills`의 active Skill을 질문 기준 후보로 조회합니다. `inline_seed`는 사용자가 명시적으로 선택한 standalone 테스트 모드에서만 사용하며 MongoDB 오류 시 자동 fallback하지 않습니다.
-- Workflow Orchestrator는 Loop 결과를 compact context로 만든 뒤 기본 Language Model을 한 번만 호출하며, GaiA Output Adapter -> 표준 Chat Output과 terminal `api_response`를 제공합니다.
-- HTML Visualization Flow는 `run_data_analysis`의 `result_ref`를 복원하고 외부 CDN 없는 standalone HTML/SVG 차트를 생성합니다. `HTML Report API 주소`로 게시해 Tauri 상대경로가 아닌 절대 보기·다운로드 링크를 반환하며, 화면 Message와 별도의 API 종료 어댑터가 실제 terminal `api_response`를 제공합니다. 그래프 요청은 `run_data_analysis -> run_visualization` 순서와 `handoff=result_ref`로 실행합니다.
-- Realtime Production Report Flow는 Domain Metadata의 공정그룹을 전용 LLM으로 선택한 뒤 질문 원문과 허용목록으로 재검증합니다. 단일 그룹이 확정될 때만 해당 그룹의 판정 더미 Snapshot을 고정 Rule로 집계하고, 미지정·다중지정이면 HTML 없이 공정그룹을 다시 묻습니다.
-- Metadata 및 Workflow Skill 저장 Flow 4종: Existing Loader를 Matcher에 직접 연결하고 단일 Writer/Response/GaiA Output Adapter/표준 Chat Output 사용
-- Metadata 저장·조회 MongoDB 설정: 일반 노드 14개와 QA 통합 snapshot 노드 1개(컬렉션 3종)에 database/collection 기본값 명시
-- Metadata 후보: 도메인 관련 항목 최대 20건, 테이블 5건, 메인 필터 전체, compact JSON 32KB 정책과 장비+UPH 질문 회귀 검증
-- Data Analysis 파라미터: 각 retrieval job이 독립 실행 가능한 `required_params`를 가지며, 공통 조건은 각 job에 반복하고 `어제 재공과 오늘 생산량`처럼 범위가 다르면 서로 다른 값을 유지
-- Metadata QA 제품 설명: 제품 그룹은 `product_terms`, 제품 집계는 `product_key_columns`와 관련 `analysis_recipes`만 근거로 결정론적 표를 만들고 추가 LLM 호출을 생략
-"""
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build the fully wired metadata-driven v5 Langflow JSON bundle.")
+    parser = argparse.ArgumentParser(description="Build the current seven-flow metadata-driven Langflow bundle.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
-    print(json.dumps(build_bundle(args.output_dir.resolve()), ensure_ascii=False, indent=2))
+    print(json.dumps(build_bundle(args.output_dir), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

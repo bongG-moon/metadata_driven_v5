@@ -9,7 +9,7 @@ Data Analysis V2가 기본 `data_analysis` 경로입니다. 외부 계약은 기
 - Tool 이름: `run_data_analysis`
 - import 파일: `01_data_analysis_flow_v2_standalone.json`
 
-기존 V1은 완전 묶음에서 `13. v5_data_analysis_legacy` 및 `data-analysis-legacy` endpoint로만 보존됩니다. 기존 Router가 `flow_id_selected`를 저장하고 있다면 새 묶음 import 후 V2 Flow를 다시 선택해야 합니다. 런타임 ID는 코드에서 임의로 초기화하지 않습니다.
+현재 import-ready 묶음에는 V1 legacy Flow를 포함하지 않습니다. 기존 Router가 이전 Flow ID를 저장하고 있다면 import 후 `01. v5_data_analysis`를 다시 선택해야 합니다. 런타임 ID는 코드에서 임의로 초기화하지 않습니다.
 
 ## 실행 흐름
 

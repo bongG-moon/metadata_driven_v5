@@ -1,0 +1,18 @@
+{
+  "report_id": "20260727140208_84eda155d23205dbeaef25e2257b9125",
+  "title": "실시간 생산 분석 Report",
+  "question": "{\n    \"timestamp\": \"2026-07-27 14:02:07.902062 UTC\",\n    \"sender\": \"User\",\n    \"sender_name\": \"User\",\n    \"session_id\": \"67bbc2bb-95d2-4511-b99d-26664d96bce3\",\n    \"context_id\": \"\",\n    \"text\": \"\",\n    \"files\": [],\n    \"error\": false,\n    \"edit\": false,\n    \"properties\": {\n        \"text_color\": null,\n        \"background_color\": null,\n        \"edited\": false,\n        \"source\": {\n            \"id\": null,\n            \"display_name\": null,\n            \"source\": null\n        },\n        \"icon\": null,\n        \"allow_markdown\": false,\n        \"positive_feedback\": null,\n        \"state\": \"complete\",\n        \"targets\": [],\n        \"usage\": null,\n        \"build_duration\": null\n    },\n    \"category\": \"message\",\n    \"content_blocks\": [],\n    \"session_metadata\": {\n        \"graph_run_id\": \"2202b974-5f1b-4f05-a223-34b438ba0269\"\n    },\n    \"id\": \"4185319f-b77b-4c1d-a35c-860ef873cf6c\",\n    \"flow_id\": \"67bbc2bb-95d2-4511-b99d-26664d96bce3\",\n    \"run_id\": \"2202b974-5f1b-4f05-a223-34b438ba0269\",\n    \"duration\": null,\n    \"a2a_data\": {\n        \"timestamp\": \"2026-07-27 14:02:07.902062 UTC\",\n        \"sender\": \"User\",\n        \"sender_name\": \"User\",\n        \"session_id\": \"67bbc2bb-95d2-4511-b99d-26664d96bce3\",\n        \"context_id\": \"\",\n        \"text\": \"\",\n        \"files\": [],\n        \"error\": false,\n        \"edit\": false,\n        \"properties\": {\n            \"text_color\": null,\n            \"background_color\": null,\n            \"edited\": false,\n            \"source\": {\n                \"id\": null,\n                \"display_name\": null,\n                \"source\": null\n            },\n            \"icon\": null,\n            \"allow_markdown\": false,\n            \"positive_feedback\": null,\n            \"state\": \"complete\",\n            \"targets\": [],\n            \"usage\": null,\n            \"build_duration\": null\n        },\n        \"category\": \"message\",\n        \"content_blocks\": [],\n        \"session_metadata\": {\n            \"graph_run_id\": \"2202b974-5f1b-4f05-a223-34b438ba0269\"\n        },\n        \"id\": \"4185319f-b77b-4c1d-a35c-860ef873cf6c\",\n        \"flow_id\": \"67bbc2bb-95d2-4511-b99d-26664d96bce3\",\n        \"run_id\": \"2202b974-5f1b-4f05-a223-34b438ba0269\",\n        \"duration\": null\n    },\n    \"metadata\": {},\n    \"framework2_metadata\": {},\n    \"a2a_metadata\": {}\n}",
+  "view_request": "metadata_driven_v5 realtime production report",
+  "available_datasets": [],
+  "report_plan": {
+    "source_flow": "11. v5_realtime_production_report",
+    "rules_version": "realtime.production.report.rules.v1",
+    "snapshot_id": "dummy:2026-07-27:20260727:500",
+    "case_count": 500
+  },
+  "html_bytes": 599722,
+  "download_filename": "realtime-production-report-d27aa1c4c8b2437a810e6e157617e681.html",
+  "created_at": "2026-07-27T14:02:08.241674+00:00",
+  "expires_at": "2026-07-27T18:02:08.241674+00:00",
+  "ttl_hours": 4
+}

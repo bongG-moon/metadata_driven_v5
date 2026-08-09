@@ -106,7 +106,7 @@ def test_intent_normalizer_canonicalizes_blank_operator_without_changing_value_f
     normalizer = load_module(
         ROOT
         / "langflow_components"
-        / "data_analysis_flow"
+            / "data_analysis_flow_v2"
         / "04_intent_plan_normalizer.py"
     )
     normalized = normalizer.normalize_intent_plan(
@@ -166,7 +166,7 @@ def test_numeric_comparison_operator_contract_is_canonicalized_and_saved():
     intent_normalizer = load_module(
         ROOT
         / "langflow_components"
-        / "data_analysis_flow"
+        / "data_analysis_flow_v2"
         / "04_intent_plan_normalizer.py"
     )
     normalized = intent_normalizer.normalize_intent_plan(

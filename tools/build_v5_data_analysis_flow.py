@@ -1,3 +1,10 @@
+"""Shared Flow-JSON helpers for the supported V2 builders.
+
+The former V1 Data Analysis export is retired.  ``build_data_analysis_flow_v2``
+and ``build_data_analysis_flow_v2_continuation`` still import the layout and
+template helpers in this module, but this module no longer creates a V1 Flow.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -11,12 +18,10 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SOURCE = ROOT / "flow_exports" / "data_analysis_flow_v4_reference.json"
-DEFAULT_TARGET = ROOT / "flow_exports" / "data_analysis_flow_v5_standalone.json"
+DEFAULT_SOURCE = ROOT / "tools" / "assets" / "data_analysis_flow_v2_donor.json"
+DEFAULT_TARGET = ROOT / "flow_exports" / "data_analysis_flow_v2_standalone.json"
 REPAIR_PROMPT_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "17b_pandas_repair_prompt_template_ko.md"
 HELPER_LIBRARY_SOURCE = ROOT / "langflow_components" / "data_analysis_flow" / "function_case_helper_code_input_example.py"
-GAIA_INPUT_ADAPTER_SOURCE = ROOT / "langflow_components" / "gaia_io" / "00_gaia_input.py"
-GAIA_OUTPUT_ADAPTER_SOURCE = ROOT / "langflow_components" / "gaia_io" / "01_gaia_output.py"
 REPAIR_PROMPT_NODE_ID = "TextInput-v5RepairPrompt"
 LANGUAGE_MODEL_NODE_IDS = {
     "Agent-mevnw": "LanguageModel-intent",
@@ -43,7 +48,6 @@ DATA_ANALYSIS_NOTE_PREFIX = "note-data-analysis-"
 # component code.
 DATA_ANALYSIS_V5_LAYOUT = {
     "ChatInput-Xs7uo": (-2400.0, 100.0),
-    "GaiAInputAdapter-data-analysis": (-1950.0, 100.0),
     "CustomComponent-Fti0r": (-1500.0, -350.0),
     "CustomComponent-xpbhS": (-1500.0, 550.0),
     "CustomComponent-HFsYn": (-1050.0, 100.0),
@@ -85,7 +89,6 @@ DATA_ANALYSIS_V5_LAYOUT = {
     "CustomComponent-fXdS4": (9300.0, 100.0),
     "CustomComponent-v5RuntimeCleanup": (9750.0, 100.0),
     "CustomComponent-A5y0b": (10200.0, 100.0),
-    "GaiAOutputAdapter-data-analysis": (10650.0, 100.0),
     "ChatOutput-rwbTs": (11100.0, 100.0),
     "CustomComponent-3eVde": (10650.0, 700.0),
 }
@@ -105,7 +108,6 @@ DATA_ANALYSIS_V2_LAYOUT_OVERRIDES = {
     "CustomComponent-fXdS4": (8400.0, 100.0),
     "CustomComponent-v5RuntimeCleanup": (8850.0, 100.0),
     "CustomComponent-A5y0b": (9300.0, 100.0),
-    "GaiAOutputAdapter-data-analysis": (9750.0, 100.0),
     "ChatOutput-rwbTs": (10200.0, 100.0),
     "CustomComponent-3eVde": (9750.0, 700.0),
 }
@@ -117,19 +119,12 @@ COMPONENT_FILES = {
     "CustomComponent-kzlcF": "data_analysis_flow/01c_mongodb_main_variable_loader.py",
     "CustomComponent-DXrpf": "data_analysis_flow/01d_metadata_candidates_builder.py",
     "CustomComponent-HFsYn": "data_analysis_flow/01e_followup_hint_builder.py",
-    "CustomComponent-B1hbh": "data_analysis_flow/02_intent_variables_builder.py",
-    "CustomComponent-5o0CN": "data_analysis_flow/04_intent_plan_normalizer.py",
     "CustomComponent-O8vfz": "data_analysis_flow/05_mongodb_result_loader.py",
     "CustomComponent-vVkhs": "data_analysis_flow/06_retrieval_job_validator.py",
     "CustomComponent-x6NXu": "data_analysis_flow/07_retrieval_job_router.py",
     "CustomComponent-Pp7d0": "data_analysis_flow/08_dummy_data_retriever.py",
     "MongoDBDomainMetadataLoader-geCh1": "data_analysis_flow/13_source_retrieval_merger.py",
     "CustomComponent-bhiAG": "data_analysis_flow/14_retrieval_payload_adapter.py",
-    "CustomComponent-fc0Vb": "data_analysis_flow/15_pandas_variables_builder.py",
-    "CustomComponent-s3mf1": "data_analysis_flow/17_pandas_code_executor.py",
-    "CustomComponent-aKrkH": "data_analysis_flow/18_answer_variables_builder.py",
-    "CustomComponent-BVItv": "data_analysis_flow/20_answer_response_builder.py",
-    "CustomComponent-A5y0b": "data_analysis_flow/21_answer_message_adapter.py",
     "CustomComponent-3eVde": "data_analysis_flow/22_api_response_builder.py",
     "CustomComponent-AUrFb": "data_analysis_flow/23_mongodb_result_store.py",
     "CustomComponent-Fti0r": "session_state_flow/00_mongodb_session_state_loader.py",
@@ -324,9 +319,8 @@ def _stage_note_specs(variant: str) -> list[dict[str, Any]]:
             "description": (
                 "## ① 요청·세션 입력\n\n"
                 "- **Chat Input**: Playground 질문을 받습니다.\n"
-                "- **GaiA Input Adapter**: Chat/GaiA 입력을 하나의 요청 형식으로 맞춥니다.\n"
                 "- **00 세션 상태 로더**: 같은 session의 이전 분석 상태를 읽습니다.\n"
-                "- **00 분석 요청 로더**: 질문·상위 결과 참조·이전 상태를 payload로 만듭니다.\n"
+                "- **00 분석 요청 로더**: 질문·이전 상태를 payload로 만듭니다.\n"
                 "- **01E 후속 질문 힌트**: 새 분석인지 후속 분석인지 판단할 최소 문맥을 준비합니다."
             ),
             "x": -2400.0,
@@ -401,9 +395,8 @@ def _stage_note_specs(variant: str) -> list[dict[str, Any]]:
             "description": (
                 "## ⑦ 상태 정리·최종 출력\n\n"
                 "- **24 런타임 정리기**: 큰 임시 row buffer를 제거해 최종 payload를 가볍게 만듭니다.\n"
-                "- **21 메시지 어댑터**: Chat/GaiA에서 표시할 Markdown 답변을 만듭니다.\n"
+                "- **21 메시지 어댑터**: Playground와 API client에 표시할 Markdown 답변을 만듭니다.\n"
                 "- **22 API 응답 생성기**: 웹/API용 구조화 응답을 제공합니다.\n"
-                "- **GaiA Output Adapter**: GaiA 출력 형식으로 변환합니다.\n"
                 "- **Chat Output**: Playground에 최종 답변을 표시합니다."
             ),
             "x": 9000.0 if not is_v2 else 8500.0,
@@ -510,547 +503,12 @@ def apply_data_analysis_canvas(flow: dict[str, Any], variant: str = "v5") -> Non
 
 
 def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
-    flow = json.loads(source.read_text(encoding="utf-8-sig"))
-    flow["last_tested_version"] = TARGET_LANGFLOW_VERSION
-    nodes = flow["data"]["nodes"]
-    edges = flow["data"]["edges"]
-    node_index = {node["id"]: node for node in nodes}
-
-    # 표준 Chat Input/Output은 Playground interface로 유지하고,
-    # GaiA data/metadata 변환은 사이에 추가한 custom adapter가 담당합니다.
-    _insert_gaia_boundary_adapters(flow)
-    node_index = {node["id"]: node for node in nodes}
-
-    for node_id, relative_path in COMPONENT_FILES.items():
-        _refresh_component_node(node_index[node_id], _component_path(relative_path))
-
-    for node_id, relative_path in PROMPT_FILES.items():
-        prompt = (ROOT / "langflow_components" / "data_analysis_flow" / relative_path).read_text(encoding="utf-8")
-        node_index[node_id]["data"]["node"]["template"]["template"]["value"] = prompt
-
-    for node_id, relative_path in TEXT_INPUT_FILES.items():
-        text_value = (ROOT / "langflow_components" / "data_analysis_flow" / relative_path).read_text(encoding="utf-8")
-        node_index[node_id]["data"]["node"]["template"]["input_value"]["value"] = text_value
-
-    node_index["TextInput-AXG9a"]["data"]["node"]["template"]["input_value"]["value"] = (
-        HELPER_LIBRARY_SOURCE.read_text(encoding="utf-8")
+    raise RuntimeError(
+        "The V1 Data Analysis builder is retired. Use tools/build_data_analysis_flow_v2.py "
+        "or tools/build_data_analysis_flow_v2_continuation.py."
     )
-
-    _apply_component_spec(
-        node_index["CustomComponent-xpbhS"],
-        [
-            ("message", "question", "사용자 질문", True, ""),
-            ("message", "upstream_result_ref", "상위 결과 참조", False, ""),
-            ("data", "previous_state", "이전 분석 상태", False, None),
-        ],
-        [("Data", "payload_out", "분석 요청 페이로드", "build_payload")],
-        node_index,
-    )
-
-    _apply_component_spec(
-        node_index["CustomComponent-DXrpf"],
-        [
-            ("data", "payload", "질문 페이로드", True, None),
-            ("data", "domain_items", "도메인 메타데이터", False, None),
-            ("data", "table_catalog_items", "테이블 카탈로그", False, None),
-            ("data", "main_flow_filters", "메인 변수", False, None),
-            ("message", "max_domain_items", "도메인 최대 후보 수", False, "20"),
-            ("message", "min_table_items", "테이블 최소 후보 수", False, "5"),
-            ("message", "max_table_items", "테이블 최대 후보 수", False, "5"),
-            ("message", "max_bytes", "최대 후보 바이트", False, "32768"),
-        ],
-        [("Data", "metadata_candidates", "메타데이터 후보", "build_payload")],
-        node_index,
-    )
-
-    _apply_component_spec(
-        node_index["CustomComponent-5o0CN"],
-        [
-            ("data", "payload", "페이로드", True, None),
-            ("message", "llm_response", "의도 LLM 응답", True, ""),
-            ("data", "metadata_candidates", "메타데이터 후보", False, None),
-        ],
-        [("Data", "payload_out", "페이로드 출력", "build_payload")],
-        node_index,
-    )
-
-    prototype = node_index["CustomComponent-5o0CN"]
-    for node_id, spec in NEW_COMPONENTS.items():
-        node = deepcopy(prototype)
-        node["id"] = node_id
-        node["data"]["id"] = node_id
-        node["position"] = deepcopy(spec["position"])
-        node["selected"] = False
-        _refresh_component_node(node, _component_path(spec["file"]))
-        _apply_component_spec(node, spec["inputs"], spec["outputs"], node_index)
-        nodes.append(node)
-        node_index[node_id] = node
-
-    repair_prompt = REPAIR_PROMPT_SOURCE.read_text(encoding="utf-8")
-    repair_prompt_node = deepcopy(node_index["TextInput-AXG9a"])
-    repair_prompt_node["id"] = REPAIR_PROMPT_NODE_ID
-    repair_prompt_node["data"]["id"] = REPAIR_PROMPT_NODE_ID
-    repair_prompt_node["position"] = {"x": -680.0, "y": 2440.0}
-    repair_prompt_node["selected"] = False
-    repair_prompt_component = repair_prompt_node["data"]["node"]
-    repair_prompt_component["display_name"] = "17B pandas 복구 프롬프트 템플릿"
-    repair_prompt_component["description"] = "실행 오류가 발생했을 때 executor가 동적 오류 문맥을 채워 사용하는 편집 가능한 raw Repair Prompt입니다."
-    repair_prompt_component["template"]["input_value"]["display_name"] = "Repair Prompt Template"
-    repair_prompt_component["template"]["input_value"]["value"] = repair_prompt
-    repair_prompt_component["template"]["input_value"]["advanced"] = False
-    if isinstance(repair_prompt_component["template"].get("use_global_variable"), dict):
-        repair_prompt_component["template"]["use_global_variable"]["value"] = False
-    nodes.append(repair_prompt_node)
-    node_index[REPAIR_PROMPT_NODE_ID] = repair_prompt_node
-
-    _apply_component_spec(
-        node_index["CustomComponent-s3mf1"],
-        [
-            ("data", "payload", "페이로드", True, None),
-            ("message", "llm_response", "pandas 코드 LLM 응답", True, ""),
-            ("message", "function_case_helper_code", "선택 Function Case Helper", False, ""),
-            ("message", "repair_prompt_template", "pandas Repair Prompt", True, ""),
-            ("model", "model", "Repair Language Model", True, None),
-            ("secret", "api_key", "Repair API Key", False, "GOOGLE_API_KEY"),
-            ("dropdown", "max_repair_attempts", "최대 Repair 횟수", False, "1"),
-        ],
-        [("Data", "payload_out", "페이로드 출력", "build_payload")],
-        node_index,
-    )
-    node_index["CustomComponent-s3mf1"]["data"]["node"]["template"]["max_repair_attempts"]["options"] = ["0", "1"]
-
-    _apply_component_spec(
-        node_index["CustomComponent-AUrFb"],
-        [
-            ("data", "payload", "페이로드", True, None),
-            ("message", "mongo_uri", "MongoDB 연결 URI", False, ""),
-            ("message", "mongo_database", "MongoDB 데이터베이스", False, "datagov"),
-            ("message", "collection_name", "결과 컬렉션", False, "agent_v4_result_store"),
-            ("message", "download_base_url", "다운로드 링크 Base URL", False, "http://127.0.0.1:8765"),
-            ("message", "ttl_hours", "데이터 보관 시간(시간)", False, "1"),
-            ("message", "max_result_rows", "저장 결과 최대 행 수", False, "20000"),
-            ("message", "max_source_rows_per_alias", "소스별 저장 최대 행 수", False, "10000"),
-            ("message", "max_document_bytes", "결과 문서 최대 바이트", False, "8388608"),
-        ],
-        [("Data", "payload_out", "페이로드 출력", "build_payload")],
-        node_index,
-    )
-
-    # 다운로드 URL은 저장된 data_ref와 같은 수명을 가져야 하므로 23번이 생성합니다.
-    # 21번은 이미 발급된 링크를 Markdown/GaiA metadata로 표현만 하며 Base URL을 보유하지 않습니다.
-    answer_template = node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]
-    answer_template.pop("download_base_url", None)
-    answer_component = node_index["CustomComponent-A5y0b"]["data"]["node"]
-    answer_component["field_order"] = [
-        field_name for field_name in answer_component.get("field_order", []) if field_name != "download_base_url"
-    ]
-    preview_limit_field = deepcopy(
-        node_index["Agent-mevnw"]["data"]["node"]["template"]["max_iterations"]
-    )
-    preview_limit_field.update(
-        {
-            "name": "table_preview_limit",
-            "display_name": "결과 테이블 미리보기 행 수",
-            "info": (
-                "최종 답변의 Markdown 결과 표에 표시할 최대 행 수입니다. "
-                "다운로드 데이터와 MongoDB 저장 행 수에는 영향을 주지 않습니다."
-            ),
-            "value": 10,
-            "required": False,
-            "advanced": True,
-            "show": True,
-            "type": "int",
-            "_input_type": "IntInput",
-        }
-    )
-    answer_template["table_preview_limit"] = preview_limit_field
-    answer_component["field_order"] = [
-        field_name
-        for field_name in answer_component.get("field_order", [])
-        if field_name != "table_preview_limit"
-    ]
-    insert_at = answer_component["field_order"].index("show_result_table") + 1
-    answer_component["field_order"].insert(insert_at, "table_preview_limit")
-    if isinstance(answer_template.get("show_next_questions"), dict):
-        answer_template["show_next_questions"]["value"] = False
-        answer_template["show_next_questions"]["display_name"] = "다음 질문을 답변 본문에도 표시"
-
-    _apply_component_spec(
-        node_index["CustomComponent-x6NXu"],
-        [("data", "payload", "페이로드", True, None)],
-        [
-            ("Data", "dummy_jobs", "더미 작업", "dummy_jobs_out"),
-            ("Data", "oracle_jobs", "Oracle 작업", "oracle_jobs_out"),
-            ("Data", "h_api_jobs", "H-API 작업", "h_api_jobs_out"),
-            ("Data", "datalake_jobs", "데이터레이크 작업", "datalake_jobs_out"),
-            ("Data", "goodocs_jobs", "Goodocs 작업", "goodocs_jobs_out"),
-        ],
-        node_index,
-    )
-
-    # A stopped Langflow branch can recursively inactivate shared descendants.
-    # Remove the donor's always-on repair branch. The refreshed single-output
-    # pandas executor invokes the visible Repair model at most once and only
-    # after an actual execution error, then returns one selected payload.
-    nodes[:] = [node for node in nodes if node["id"] not in REMOVED_REPAIR_NODES]
-    for node_id in REMOVED_REPAIR_NODES:
-        node_index.pop(node_id, None)
-    edges[:] = [
-        edge
-        for edge in edges
-        if edge["source"] not in REMOVED_REPAIR_NODES and edge["target"] not in REMOVED_REPAIR_NODES
-    ]
-
-    # Tool이 없는 세 LLM 단계는 Langflow 기본 Agent 대신 기본 Language Model을 사용합니다.
-    # 이 노드는 bind_tools를 호출하지 않으므로 Tool 호출을 지원하지 않는 외부 모델도 연결할 수 있습니다.
-    language_model_config = _load_native_component("Language Model")
-    for old_node_id, new_node_id in LANGUAGE_MODEL_NODE_IDS.items():
-        node = _rename_node(node_index, edges, old_node_id, new_node_id)
-        _apply_native_language_model(
-            node,
-            language_model_config,
-            LANGUAGE_MODEL_SYSTEM_MESSAGES[new_node_id],
-        )
-        _replace_edge_source_output(edges, new_node_id, "response", "text_output")
-
-    _apply_standalone_defaults(nodes)
-    # 사용자에게 일반 pandas 코드는 계속 보여주되 Function Case Helper 정의는
-    # 21번 어댑터가 숨김 주석으로 줄여 표시하도록 donor JSON과 무관하게 고정합니다.
-    node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]["show_pandas_code"]["value"] = True
-
-    removals = {
-        ("CustomComponent-5o0CN", "payload_out", "CustomComponent-O8vfz", "payload"),
-        ("CustomComponent-v5Hydrate", "payload_out", "CustomComponent-O8vfz", "payload"),
-        ("CustomComponent-O8vfz", "payload_out", "CustomComponent-vVkhs", "payload"),
-        ("TextInput-AXG9a", "text", "Prompt Template-xtzD5", "function_case_helper_code"),
-        ("CustomComponent-BVItv", "payload_out", "CustomComponent-A5y0b", "payload"),
-        ("CustomComponent-BVItv", "payload_out", "CustomComponent-3eVde", "payload"),
-        ("CustomComponent-bhiAG", "payload_out", "CustomComponent-fc0Vb", "payload"),
-        ("CustomComponent-bhiAG", "payload_out", "CustomComponent-s3mf1", "payload"),
-    }
-    edges[:] = [edge for edge in edges if _edge_key(edge) not in removals]
-
-    additions = [
-        ("CustomComponent-HFsYn", "payload_out", "CustomComponent-DXrpf", "payload"),
-        ("CustomComponent-DXrpf", "metadata_candidates", "CustomComponent-5o0CN", "metadata_candidates"),
-        ("CustomComponent-5o0CN", "payload_out", "CustomComponent-v5Hydrate", "payload"),
-        ("MongoDBDomainMetadataLoader-OM3Hg", "table_catalog_items", "CustomComponent-v5Hydrate", "table_catalog_items"),
-        ("CustomComponent-v5Hydrate", "payload_out", "CustomComponent-O8vfz", "payload"),
-        ("CustomComponent-O8vfz", "payload_out", "CustomComponent-v5UpstreamBinder", "payload"),
-        ("CustomComponent-v5UpstreamBinder", "payload_out", "CustomComponent-vVkhs", "payload"),
-        ("CustomComponent-fc0Vb", "function_case_selection_json", "CustomComponent-v5Helper", "function_case_selection_json"),
-        ("TextInput-AXG9a", "text", "CustomComponent-v5Helper", "helper_library"),
-        ("CustomComponent-v5Helper", "selected_helper_code", "Prompt Template-xtzD5", "function_case_helper_code"),
-        ("CustomComponent-v5Helper", "selected_helper_code", "CustomComponent-s3mf1", "function_case_helper_code"),
-        (REPAIR_PROMPT_NODE_ID, "text", "CustomComponent-s3mf1", "repair_prompt_template"),
-        ("CustomComponent-bhiAG", "payload_out", "CustomComponent-v5ExecutionGate", "payload"),
-        ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-fc0Vb", "payload"),
-        ("CustomComponent-v5ExecutionGate", "payload_out", "CustomComponent-s3mf1", "payload"),
-        ("CustomComponent-s3mf1", "payload_out", "CustomComponent-AUrFb", "payload"),
-        ("CustomComponent-fXdS4", "payload_out", "CustomComponent-v5RuntimeCleanup", "payload"),
-        ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-A5y0b", "payload"),
-        ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-3eVde", "payload"),
-        ("CustomComponent-x6NXu", "oracle_jobs", "CustomComponent-v5Oracle", "payload"),
-        ("CustomComponent-v5Oracle", "retrieval_payload", "MongoDBDomainMetadataLoader-geCh1", "oracle_retrieval"),
-        ("CustomComponent-x6NXu", "h_api_jobs", "CustomComponent-v5HApi", "payload"),
-        ("CustomComponent-v5HApi", "retrieval_payload", "MongoDBDomainMetadataLoader-geCh1", "h_api_retrieval"),
-        ("CustomComponent-x6NXu", "datalake_jobs", "CustomComponent-v5Datalake", "payload"),
-        ("CustomComponent-v5Datalake", "retrieval_payload", "MongoDBDomainMetadataLoader-geCh1", "datalake_retrieval"),
-        ("CustomComponent-x6NXu", "goodocs_jobs", "CustomComponent-v5Goodocs", "payload"),
-        ("CustomComponent-v5Goodocs", "retrieval_payload", "MongoDBDomainMetadataLoader-geCh1", "goodocs_retrieval"),
-    ]
-    for source_id, source_name, target_id, target_name in additions:
-        edges.append(_make_edge(node_index, source_id, source_name, target_id, target_name))
-    _refresh_edge_source_types(edges, node_index)
-
-    flow["name"] = "01. v5_data_analysis"
-    flow["description"] = (
-        "v5 standalone flow (dummy default, live retrievers included): bounded metadata candidates, "
-        "trusted catalog hydration, explicit same-session upstream result restoration, metadata-declared entity binding, "
-        "thin retrieval branches, selected helper code, visible raw Repair Prompt, failure-only one-attempt pandas repair, "
-        "native tool-free Language Model stages, deterministic required-source execution gating, shared runtime row buffers, "
-        "deterministic final buffer release with lightweight GC, one finalization path, and compact API payload with explicit repair audit details."
-    )
-    flow["endpoint_name"] = "metadata-driven-v5-data-analysis"
-    flow["tags"] = sorted(set([*flow.get("tags", []), "v5", "dummy-default", "live-ready", "standalone"]))
-    for node in flow["data"]["nodes"]:
-        component = node.get("data", {}).get("node")
-        if isinstance(component, dict):
-            component["lf_version"] = TARGET_LANGFLOW_VERSION
-    apply_data_analysis_canvas(flow, "v5")
-    return flow
-
-
 def _component_path(relative_path: str) -> Path:
     return ROOT / "langflow_components" / relative_path
-
-
-def _custom_gaia_adapter_node(
-    shell: dict[str, Any],
-    node_id: str,
-    source_path: Path,
-    x: float,
-    y: float,
-    input_handle_prototype: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """GaiA adapter Python 원본을 LFX 설치 없이 standalone node template으로 변환합니다."""
-
-    code = source_path.read_text(encoding="utf-8")
-    node = deepcopy(shell)
-    node["id"] = node_id
-    node["data"]["id"] = node_id
-    node["position"] = {"x": x, "y": y}
-    node["selected"] = False
-    node["dragging"] = False
-    component = node["data"]["node"]
-    previous_template = component["template"]
-    code_field = deepcopy(previous_template["code"])
-    code_field["value"] = code
-
-    if source_path == GAIA_INPUT_ADAPTER_SOURCE:
-        if not isinstance(input_handle_prototype, dict):
-            raise ValueError("GaiA Input Adapter requires a native HandleInput prototype.")
-        input_message = deepcopy(input_handle_prototype)
-        input_message.update(
-            {
-                "name": "input_message",
-                "display_name": "Chat Input Message",
-                "info": "표준 Chat Input에서 받은 사용자 Message입니다.",
-                "input_types": ["Message"],
-                "required": True,
-                "advanced": False,
-                "value": "",
-            }
-        )
-        json_field = deepcopy(previous_template["input_value"])
-        json_field.update({"value": "{}", "required": False, "advanced": False, "input_types": []})
-        data_field = deepcopy(json_field)
-        data_field.update(
-            {
-                "name": "data",
-                "display_name": "data",
-                "info": 'GAIA A2A data JSON from tweaks["GaiA Input Adapter"]["data"].',
-            }
-        )
-        metadata_field = deepcopy(json_field)
-        metadata_field.update(
-            {
-                "name": "metadata",
-                "display_name": "metadata",
-                "info": 'GAIA A2A metadata JSON from tweaks["GaiA Input Adapter"]["metadata"].',
-            }
-        )
-        component["template"] = {
-            "_type": deepcopy(previous_template["_type"]),
-            "code": code_field,
-            "input_message": input_message,
-            "data": data_field,
-            "metadata": metadata_field,
-        }
-        message_output = deepcopy(component["outputs"][0])
-        message_output.update(
-            {
-                "name": "message",
-                "display_name": "message",
-                "method": "message_response",
-                "selected": "Message",
-                "types": ["Message"],
-                "group_outputs": False,
-            }
-        )
-        component["outputs"] = [message_output]
-        component["base_classes"] = ["Message"]
-        component["field_order"] = ["input_message", "data", "metadata"]
-        component["display_name"] = "GaiA Input Adapter"
-        component["description"] = (
-            "표준 Chat Input Message에 GaiA A2A data와 metadata를 병합합니다."
-        )
-        node["data"]["type"] = "GaiAInputAdapter"
-    else:
-        input_value = deepcopy(previous_template["input_value"])
-        input_value.update(
-            {
-                "name": "input_value",
-                "display_name": "answer",
-                "info": "최종 답변 Message, Data 또는 DataFrame입니다.",
-                "input_types": ["Data", "DataFrame", "Message"],
-                "required": True,
-                "advanced": False,
-            }
-        )
-
-        def optional_reference_input(name: str) -> dict[str, Any]:
-            field = deepcopy(input_value)
-            field.update(
-                {
-                    "name": name,
-                    "display_name": name,
-                    "info": f"GaiA {name} reference collection.",
-                    "input_types": ["Data", "DataFrame"],
-                    "required": False,
-                    "value": "",
-                }
-            )
-            return field
-
-        component["template"] = {
-            "_type": deepcopy(previous_template["_type"]),
-            "code": code_field,
-            "input_value": input_value,
-            "docs": optional_reference_input("docs"),
-            "urls": optional_reference_input("urls"),
-            "images": optional_reference_input("images"),
-            "knowhows": optional_reference_input("knowhows"),
-            "followup_questions": optional_reference_input("followup_questions"),
-        }
-        message_output = deepcopy(component["outputs"][0])
-        message_output.update(
-            {
-                "name": "message",
-                "display_name": "message",
-                "method": "message_response",
-                "selected": "Message",
-                "types": ["Message"],
-                "group_outputs": True,
-            }
-        )
-        gaia_output = deepcopy(message_output)
-        gaia_output.update(
-            {
-                "name": "gaia_response",
-                "display_name": "GaiA Response",
-                "method": "gaia_response_output",
-                "selected": "Data",
-                "types": ["Data"],
-                "group_outputs": True,
-            }
-        )
-        component["outputs"] = [message_output, gaia_output]
-        component["base_classes"] = ["Message", "Data"]
-        component["field_order"] = [
-            "input_value",
-            "docs",
-            "urls",
-            "images",
-            "knowhows",
-            "followup_questions",
-        ]
-        component["display_name"] = "GaiA Output Adapter"
-        component["description"] = (
-            "최종 답변과 참고자료를 GaiA answer/metadata로 정리해 표준 Chat Output으로 전달합니다."
-        )
-        node["data"]["type"] = "GaiAOutputAdapter"
-
-    component["documentation"] = "https://docs.langflow.org/chat-input-and-output"
-    component["icon"] = "MessagesSquare"
-    component["minimized"] = True
-    component["lf_version"] = TARGET_LANGFLOW_VERSION
-    component.setdefault("metadata", {})["code_hash"] = hashlib.sha256(code.encode("utf-8")).hexdigest()[:12]
-    component["metadata"]["module"] = f"custom_components.{source_path.stem}"
-    return node
-
-
-def _edge_port(edge: dict[str, Any], side: str) -> str:
-    """Langflow edge handle에서 연결된 source 또는 target 포트 이름을 읽습니다."""
-
-    handle = edge.get("data", {}).get(f"{side}Handle", {})
-    key = "name" if side == "source" else "fieldName"
-    return str(handle.get(key) or "") if isinstance(handle, dict) else ""
-
-
-def _insert_gaia_boundary_adapters(flow: dict[str, Any]) -> None:
-    """표준 Chat Input/Output 사이에 GaiA 변환 어댑터를 삽입합니다."""
-
-    nodes = flow["data"]["nodes"]
-    edges = flow["data"]["edges"]
-    node_index = {node["id"]: node for node in nodes}
-    chat_input = node_index["ChatInput-Xs7uo"]
-    chat_output = node_index["ChatOutput-rwbTs"]
-
-    input_position = deepcopy(chat_input.get("position", {}))
-    chat_input["position"] = {
-        "x": float(input_position.get("x", 0.0)) - 360.0,
-        "y": float(input_position.get("y", 0.0)),
-    }
-    input_adapter = _custom_gaia_adapter_node(
-        chat_input,
-        "GaiAInputAdapter-data-analysis",
-        GAIA_INPUT_ADAPTER_SOURCE,
-        float(input_position.get("x", 0.0)),
-        float(input_position.get("y", 0.0)),
-        deepcopy(chat_output["data"]["node"]["template"]["input_value"]),
-    )
-    nodes.append(input_adapter)
-    node_index[input_adapter["id"]] = input_adapter
-    outgoing = [edge for edge in list(edges) if edge.get("source") == chat_input["id"]]
-    for edge in outgoing:
-        edges.remove(edge)
-    edges.append(_make_edge(node_index, chat_input["id"], "message", input_adapter["id"], "input_message"))
-    for edge in outgoing:
-        target_id = str(edge.get("target") or "")
-        target_name = _edge_port(edge, "target")
-        edges.append(_make_edge(node_index, input_adapter["id"], "message", target_id, target_name))
-
-    output_position = deepcopy(chat_output.get("position", {}))
-    output_adapter = _custom_gaia_adapter_node(
-        chat_output,
-        "GaiAOutputAdapter-data-analysis",
-        GAIA_OUTPUT_ADAPTER_SOURCE,
-        float(output_position.get("x", 0.0)),
-        float(output_position.get("y", 0.0)),
-    )
-    chat_output["position"] = {
-        "x": float(output_position.get("x", 0.0)) + 360.0,
-        "y": float(output_position.get("y", 0.0)),
-    }
-    nodes.append(output_adapter)
-    node_index[output_adapter["id"]] = output_adapter
-    incoming = [edge for edge in list(edges) if edge.get("target") == chat_output["id"]]
-    for edge in incoming:
-        edges.remove(edge)
-    for edge in incoming:
-        source_id = str(edge.get("source") or "")
-        source_name = _edge_port(edge, "source")
-        edges.append(_make_edge(node_index, source_id, source_name, output_adapter["id"], "input_value"))
-    edges.append(_make_edge(node_index, output_adapter["id"], "message", chat_output["id"], "input_value"))
-
-
-def _load_native_component(display_name: str) -> dict[str, Any]:
-    """현재 Langflow/LFX 설치본에서 기본 컴포넌트 템플릿을 읽습니다."""
-
-    try:
-        spec = find_spec("lfx")
-    except (ImportError, ModuleNotFoundError, ValueError):
-        # 단위 테스트의 경량 Langflow stub처럼 __spec__이 없는 module이 이미
-        # 등록돼 있어도 아래 standalone Desktop component index 경로를 사용합니다.
-        spec = None
-    candidates = []
-    explicit_index = str(os.getenv("LANGFLOW_COMPONENT_INDEX_PATH") or "").strip()
-    if explicit_index:
-        candidates.append(Path(explicit_index).expanduser().resolve())
-    if spec is not None and spec.origin:
-        candidates.append(Path(spec.origin).resolve().parent / "_assets" / "component_index.json")
-    candidates.append(
-        Path.home()
-        / "AppData"
-        / "Local"
-        / "com.LangflowDesktop"
-        / ".langflow-venv"
-        / "Lib"
-        / "site-packages"
-        / "lfx"
-        / "_assets"
-        / "component_index.json"
-    )
-    component_index = next((path for path in candidates if path.exists()), None)
-    if component_index is None:
-        raise RuntimeError("Langflow/LFX component_index.json is required to build the standalone Flow")
-    index = json.loads(component_index.read_text(encoding="utf-8"))
-    component = _find_native_component(index, display_name)
-    if not component:
-        raise RuntimeError(f"Langflow component template not found: {display_name}")
-    component["lf_version"] = TARGET_LANGFLOW_VERSION
-    return component
 
 
 def _find_native_component(value: Any, display_name: str) -> dict[str, Any]:
@@ -1441,7 +899,9 @@ def _handle_text(value: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build the v5 standalone Langflow export from the audited v4 export.")
+    parser = argparse.ArgumentParser(
+        description="Retired V1 builder helper. Use build_data_analysis_flow_v2.py instead."
+    )
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--output", type=Path, default=DEFAULT_TARGET)
     args = parser.parse_args()

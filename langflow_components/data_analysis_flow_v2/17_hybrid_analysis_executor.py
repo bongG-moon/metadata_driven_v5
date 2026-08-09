@@ -209,6 +209,10 @@ def execute_pandas_code(
         deterministic_execution.get("operation") or "llm_generated_code"
     )
     trusted_helper_preamble = ""
+    complex_source_transforms: list[dict[str, Any]] = []
+    complex_transform_preamble = ""
+    function_case_rewrite_trace: dict[str, Any] = {}
+    deterministic_transform_error = ""
     if not deterministic_execution:
         (
             normalized_llm_code,
@@ -219,7 +223,6 @@ def execute_pandas_code(
             normalized_llm_code,
             function_case_helper_code,
         )
-        safe_imports["normalized_llm_code"] = normalized_llm_code
         if trusted_helper_trace:
             safe_imports["trusted_helper_override"] = trusted_helper_trace
         if trusted_helper_error:
@@ -235,6 +238,50 @@ def execute_pandas_code(
                 safe_imports,
                 response_parse=response_parse,
             )
+        # Execute a selected Function Case once before the model-generated
+        # analysis body.  Calls in the body are replaced with the transformed
+        # source frame, so helper argument ordering cannot drift by model.
+        complex_source_transforms = _selected_function_case_source_transforms(
+            next_payload
+        )
+        # Legacy/import fixture 경로처럼 helper 코드 입력이 비어 있으면 LLM이
+        # 이미 inline한 helper를 실행하던 기존 동작을 유지한다. 실제 Flow에서
+        # trusted helper가 제공된 경우에만 아래 결정론적 전처리로 강화한다.
+        if complex_source_transforms and _text_value(function_case_helper_code).strip():
+            (
+                normalized_llm_code,
+                function_case_rewrite_trace,
+                rewrite_error,
+            ) = _replace_selected_function_case_calls(
+                normalized_llm_code,
+                complex_source_transforms,
+            )
+            if rewrite_error:
+                return _analysis_error(
+                    next_payload,
+                    "trusted_function_case_contract_invalid",
+                    rewrite_error,
+                    normalized_llm_code,
+                    "",
+                    llm_code,
+                    "",
+                    [],
+                    safe_imports,
+                    response_parse=response_parse,
+                )
+            (
+                complex_transform_preamble,
+                deterministic_transform_error,
+            ) = _deterministic_function_case_preamble(
+                {"source_transforms": complex_source_transforms},
+                function_case_helper_code,
+                include_helper_code=False,
+            )
+            if function_case_rewrite_trace:
+                safe_imports["selected_function_case_pre_transform"] = deepcopy(
+                    function_case_rewrite_trace
+                )
+        safe_imports["normalized_llm_code"] = normalized_llm_code
     code = normalized_llm_code
     if not normalized_llm_code.strip() and not deterministic_execution:
         return _analysis_error(
@@ -272,7 +319,6 @@ def execute_pandas_code(
             row_match_preamble,
             response_parse,
         )
-    deterministic_transform_error = ""
     if deterministic_execution:
         deterministic_transform_preamble, deterministic_transform_error = (
             _deterministic_function_case_preamble(
@@ -290,12 +336,20 @@ def execute_pandas_code(
             if item
         )
     else:
+        analysis_code = "\n\n".join(
+            item
+            for item in (
+                complex_transform_preamble.strip(),
+                code.strip(),
+            )
+            if item
+        )
         code = "\n\n".join(
             segment
             for segment in (
                 trusted_helper_preamble.strip(),
                 _with_pandas_execution_preambles(
-                    code,
+                    analysis_code,
                     row_match_preamble,
                     filter_preamble,
                 ).strip(),
@@ -552,6 +606,11 @@ def execute_pandas_code(
             row_match_execution = []
         else:
             exec(compile(code, "<pandas_code>", "exec"), exec_ns, exec_ns)
+            sources = (
+                exec_ns.get("sources")
+                if isinstance(exec_ns.get("sources"), dict)
+                else sources
+            )
             row_match_execution_value = exec_ns.get("_row_match_execution", [])
             row_match_execution = (
                 deepcopy(row_match_execution_value)
@@ -562,7 +621,19 @@ def execute_pandas_code(
             if result is None:
                 result = exec_ns.get("result_df")
             semantic_execution_certificate = {}
-            deterministic_transform_execution = []
+            deterministic_transform_execution_value = exec_ns.get(
+                "_deterministic_function_case_execution",
+                [],
+            )
+            deterministic_transform_execution = (
+                deepcopy(deterministic_transform_execution_value)
+                if isinstance(deterministic_transform_execution_value, list)
+                else []
+            )
+            if deterministic_transform_execution:
+                helper_trace["helper_sources"] = deepcopy(
+                    deterministic_transform_execution
+                )
             for alias, frame in sources.items():
                 record_checkpoint(
                     f"filtered:{alias}",
@@ -1002,6 +1073,8 @@ def _single_line_comment_value(value: Any) -> str:
 def _deterministic_function_case_preamble(
     contract: dict[str, Any],
     helper_code_value: Any,
+    *,
+    include_helper_code: bool = True,
 ) -> tuple[str, str]:
     transforms = [
         item
@@ -1028,7 +1101,10 @@ def _deterministic_function_case_preamble(
     if guard_error:
         return "", f"Function Case helper 안전성 검증에 실패했습니다: {guard_error}"
 
-    lines = [helper_code, "_deterministic_function_case_execution = []"]
+    lines = []
+    if include_helper_code:
+        lines.append(helper_code)
+    lines.append("_deterministic_function_case_execution = []")
     for index, transform in enumerate(transforms, start=1):
         function_name = str(transform.get("function_name") or "").strip()
         source_alias = str(transform.get("source_alias") or "").strip()
@@ -2714,7 +2790,12 @@ def _safe_import_trace(value: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value.get("trusted_helper_override"), dict)
         else {}
     )
-    if not removed and not trusted_override:
+    selected_pre_transform = (
+        deepcopy(value.get("selected_function_case_pre_transform"))
+        if isinstance(value.get("selected_function_case_pre_transform"), dict)
+        else {}
+    )
+    if not removed and not trusted_override and not selected_pre_transform:
         return {}
     namespaces = ["pd"]
     if value.get("numpy_requested") is True:
@@ -2726,7 +2807,158 @@ def _safe_import_trace(value: dict[str, Any]) -> dict[str, Any]:
     }
     if trusted_override:
         trace["trusted_helper_override"] = trusted_override
+    if selected_pre_transform:
+        trace["selected_function_case_pre_transform"] = selected_pre_transform
     return trace
+
+
+# 함수 설명: Complex 경로에서도 선택된 Function Case를 source 단위의 결정론적 전처리 계약으로 읽습니다.
+def _selected_function_case_source_transforms(
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Collect source-local Function Case transforms from normalized intent.
+
+    The same compact fields are accepted from the semantic selection list and
+    from a typed ``apply_pandas_function_case`` step.  No function name or
+    source is inferred from question text at this execution boundary.
+    """
+
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    raw_cases: list[dict[str, Any]] = []
+    for key in ("pandas_function_cases", "pandas_function_case"):
+        value = plan.get(key)
+        if isinstance(value, dict):
+            raw_cases.append(deepcopy(value))
+        elif isinstance(value, list):
+            raw_cases.extend(deepcopy(item) for item in value if isinstance(item, dict))
+    steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
+    raw_cases.extend(
+        deepcopy(item)
+        for item in steps
+        if isinstance(item, dict)
+        and str(item.get("operation") or item.get("step") or "").strip()
+        == "apply_pandas_function_case"
+    )
+
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw_cases, start=1):
+        function_name = str(item.get("function_name") or "").strip()
+        source_alias = str(item.get("source_alias") or "").strip()
+        if not function_name or not function_name.isidentifier() or not source_alias:
+            continue
+        arguments = (
+            deepcopy(item.get("arguments"))
+            if isinstance(item.get("arguments"), dict)
+            else {}
+        )
+        if isinstance(item.get("kwargs"), dict):
+            arguments.update(deepcopy(item["kwargs"]))
+        transform = {
+            "node_id": str(item.get("node_id") or f"__selected_function_case_{index}").strip(),
+            "source_alias": source_alias,
+            "function_case_key": str(item.get("function_case_key") or item.get("key") or "").strip(),
+            "function_name": function_name,
+            "input_text": str(item.get("input_text") or ""),
+            "arguments": arguments,
+        }
+        marker = json.dumps(transform, ensure_ascii=False, sort_keys=True, default=str)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(transform)
+    return result
+
+
+# 함수 설명: 선택 helper 호출을 이미 전처리된 source copy로 바꿔 LLM의 함수 인자 순서 오류를 제거합니다.
+def _replace_selected_function_case_calls(
+    generated_code: str,
+    transforms: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any], str]:
+    aliases_by_function: dict[str, set[str]] = {}
+    for item in transforms:
+        if not isinstance(item, dict):
+            continue
+        function_name = str(item.get("function_name") or "").strip()
+        source_alias = str(item.get("source_alias") or "").strip()
+        if function_name and source_alias:
+            aliases_by_function.setdefault(function_name, set()).add(source_alias)
+    if not aliases_by_function:
+        return generated_code, {}, ""
+    try:
+        tree = ast.parse(generated_code)
+    except SyntaxError as exc:
+        return generated_code, {}, f"Function Case 호출 정규화 전 pandas 코드가 유효하지 않습니다: {exc}"
+
+    called_functions = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in aliases_by_function
+    }
+    ambiguous = sorted(
+        name
+        for name in called_functions
+        if len(aliases_by_function.get(name, set())) != 1
+    )
+    if ambiguous:
+        return (
+            generated_code,
+            {},
+            "같은 Function Case helper가 여러 source에 선택되어 생성 코드 호출을 하나로 연결할 수 없습니다: "
+            + ", ".join(ambiguous),
+        )
+    source_by_function = {
+        name: next(iter(aliases))
+        for name, aliases in aliases_by_function.items()
+        if len(aliases) == 1
+    }
+
+    class FunctionCaseCallRewriter(ast.NodeTransformer):
+        def __init__(self) -> None:
+            self.replaced: list[str] = []
+
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            node = self.generic_visit(node)
+            if not isinstance(node, ast.Call):
+                return node
+            if not isinstance(node.func, ast.Name):
+                return node
+            function_name = node.func.id
+            source_alias = source_by_function.get(function_name)
+            if not source_alias or function_name not in called_functions:
+                return node
+            replacement = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Subscript(
+                        value=ast.Name(id="sources", ctx=ast.Load()),
+                        slice=ast.Constant(value=source_alias),
+                        ctx=ast.Load(),
+                    ),
+                    attr="copy",
+                    ctx=ast.Load(),
+                ),
+                args=[],
+                keywords=[],
+            )
+            self.replaced.append(function_name)
+            return ast.copy_location(replacement, node)
+
+    rewriter = FunctionCaseCallRewriter()
+    rewritten = rewriter.visit(tree)
+    ast.fix_missing_locations(rewritten)
+    if not rewriter.replaced:
+        return generated_code, {}, ""
+    return (
+        ast.unparse(rewritten),
+        {
+            "policy": "selected_function_case_pretransform_replaces_generated_calls",
+            "replaced_function_names": list(dict.fromkeys(rewriter.replaced)),
+            "replacement_count": len(rewriter.replaced),
+        },
+        "",
+    )
 
 
 # 함수 설명: 선택된 helper는 실행기가 안전하게 주입하고, LLM이 같은 이름을 재정의하지 못하게 합니다.
@@ -4550,6 +4782,22 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(job, dict)
         and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
     }
+    # condition_resolution은 설명·후속 상태를 보존하는 입력이며, LLM이 남긴
+    # 별칭이 실제 retrieval/runtime source와 연결되지 않을 수 있습니다. 그런
+    # 항목을 filter preamble으로 만들면 `sources.get(unknown_alias)`가 실행되어
+    # 다른 정상 source까지 실패하게 됩니다. 현재 실행 가능한 alias만 허용하고
+    # previous-result 계열의 명시적 예약 alias는 유지합니다.
+    runtime_sources = (
+        payload.get("runtime_sources")
+        if isinstance(payload.get("runtime_sources"), dict)
+        else {}
+    )
+    allowed_effective_aliases = {
+        *jobs_by_alias,
+        *(str(alias).strip() for alias in runtime_sources if str(alias).strip()),
+        "previous_result",
+        "upstream_result",
+    }
     filter_plan_by_alias: dict[str, dict[str, Any]] = {}
     for job in jobs:
         if not isinstance(job, dict):
@@ -4582,6 +4830,8 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for raw_alias, raw_item in effective_filters.items():
         alias = str(raw_alias or "").strip()
         if not alias or not isinstance(raw_item, dict):
+            continue
+        if alias not in allowed_effective_aliases:
             continue
         conditions = _filter_conditions(raw_item.get("filters"))
         if alias in standardized_aliases:

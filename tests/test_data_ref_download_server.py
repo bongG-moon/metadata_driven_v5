@@ -15,7 +15,7 @@ from urllib.request import Request
 from urllib.request import urlopen
 
 from tools import data_ref_download_server as server
-from web_app.data_ref_store import rows_from_data_ref_document
+from artifact_server.data_ref_store import rows_from_data_ref_document
 
 
 def test_data_ref_download_token_round_trip() -> None:

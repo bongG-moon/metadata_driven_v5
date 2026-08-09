@@ -107,6 +107,7 @@ def route_intent_response(
     }
 
 
+# 함수 설명: 최초 요청에서 Table Catalog가 실제로 등록·로드되었는지 확인해 추측 분석을 차단합니다.
 def _table_catalog_metadata_error(value: Any) -> dict[str, Any]:
     """Require a registered Table Catalog before the initial intent model call."""
 
@@ -149,6 +150,7 @@ def _table_catalog_metadata_error(value: Any) -> dict[str, Any]:
     return {}
 
 
+# 함수 설명: continuation 메타데이터 로더의 실패 항목을 안전한 짧은 진단 목록으로 만듭니다.
 def _metadata_load_failures(loads: dict[str, Any]) -> list[dict[str, str]]:
     """Keep a bounded, credential-safe detail for failed continuation metadata loads."""
 
@@ -174,6 +176,7 @@ def _metadata_load_failures(loads: dict[str, Any]) -> list[dict[str, str]]:
     return failed
 
 
+# 함수 설명: 메타데이터 조회 실패를 사용자 조치가 가능한 단일 차단 오류로 구성합니다.
 def _metadata_load_error(
     failed_loads: list[dict[str, str]],
     *,
@@ -196,6 +199,7 @@ def _metadata_load_error(
     }
 
 
+# 함수 설명: 실행 데이터셋을 권한화하는 Table Catalog 오류를 대표 원인으로 선택합니다.
 def _primary_metadata_failure(failed_loads: list[dict[str, str]]) -> dict[str, str]:
     """Prefer Table Catalog because it is the executable dataset authority."""
 
@@ -205,12 +209,14 @@ def _primary_metadata_failure(failed_loads: list[dict[str, str]]) -> dict[str, s
     )
 
 
+# 함수 설명: 오류 원문에서 MongoDB 인증 정보를 제거하고 표시 가능한 길이로 자릅니다.
 def _safe_metadata_error_detail(value: Any) -> str:
     text = " ".join(str(value or "").split())
     text = re.sub(r"mongodb(?:\+srv)?://[^\s@/]+@", "mongodb://***@", text, flags=re.IGNORECASE)
     return text[:500] if text else "상세 오류 정보가 없습니다."
 
 
+# 함수 설명: 메타데이터가 없을 때 LLM 계획을 만들지 않고 공통 최소 차단 계약을 반환합니다.
 def _metadata_blocked_envelope(error: dict[str, Any]) -> dict[str, Any]:
     return {
         "intent_plan": {

@@ -136,6 +136,11 @@ def close_dependency_catalog_candidates(
     full_tables = _extract_items(table_catalog_items_value, "table_catalog_items")
     full_index = _catalog_index([*full_tables, *selected_tables])
     selected_index = _catalog_index(selected_tables)
+    # 01E는 전체 Table Catalog 입력을 이미 받는다. 후보 5건으로 축소한 뒤에도
+    # 실행 정규화 단계가 정상 등록 dataset을 확인·보강할 수 있도록 registry를
+    # 모델 비노출 root 영역에 유지한다.
+    if full_tables:
+        root["table_catalog_registry"] = _execution_catalog_registry(full_tables)
 
     domain_refs = _selected_domain_dataset_references(
         _items(candidates.get("domain_items")),
@@ -431,6 +436,23 @@ def _catalog_index(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         if dataset_key and dataset_key not in result:
             result[dataset_key] = deepcopy(item)
     return result
+
+
+# 함수 설명: `_execution_catalog_registry()`는 후보 축소본과 별개로 전체 활성 Catalog를
+# 실행 권한 확인 및 필요한 단일 문서 보강에만 사용합니다.
+def _execution_catalog_registry(items: list[dict[str, Any]]) -> dict[str, Any]:
+    registry_items: list[dict[str, Any]] = []
+    dataset_keys: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        dataset_key = _dataset_key(item)
+        normalized = dataset_key.casefold()
+        if not dataset_key or normalized in seen:
+            continue
+        seen.add(normalized)
+        dataset_keys.append(dataset_key)
+        registry_items.append(_sanitize_table_item(item))
+    return {"dataset_keys": dataset_keys, "items": registry_items}
 
 
 # 함수 설명: wrapper와 payload 양쪽 형식에서 canonical dataset_key를 읽습니다.

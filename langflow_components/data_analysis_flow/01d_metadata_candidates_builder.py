@@ -28,6 +28,9 @@ DEFAULT_MAX_BYTES = 32 * 1024
 DOMAIN_MIN_SCORE = 6
 NON_RUNTIME_FUNCTION_CASE_MIN_SCORE = 12
 MAX_NON_RUNTIME_FUNCTION_CASES = 2
+INTENT_SELECTION_HINT_MAX_PHRASES = 3
+INTENT_SELECTION_HINT_MAX_METRICS = 8
+INTENT_SELECTION_HINT_MAX_TEXT = 120
 
 TECHNICAL_IDENTITY_KEYS = ("section", "key", "dataset_key", "filter_key", "function_name")
 LABEL_KEYS = ("display_name", "label")
@@ -290,6 +293,14 @@ def build_metadata_candidates(
         selected["domain_items"],
         question,
     )
+    # Table Catalog의 selection_criteria는 저장 계약 자체이지만, 후보가 여러 개일
+    # 때에는 약한 모델이 이 정보를 단순 본문으로만 읽고 놓칠 수 있습니다. 후보
+    # 객체에 작은 선택 힌트를 붙여 intent prompt가 사용할 수 있게 하되, dataset을
+    # 고정하거나 실행 계약을 바꾸지는 않습니다.
+    selected["table_catalog_items"] = _annotate_table_intent_selection_hints(
+        selected["table_catalog_items"],
+        question,
+    )
     candidates = {
         "domain_items": selected["domain_items"],
         "table_catalog_items": selected["table_catalog_items"],
@@ -336,8 +347,13 @@ def build_metadata_candidates(
             }
         )
 
+    execution_catalog_registry = _table_catalog_execution_registry(table_items)
     return {
         "metadata_candidates": candidates,
+        # LLM에는 위의 제한된 후보만 전달한다. 반면 실행 단계는 후보 밖의
+        # 정상 등록 dataset을 '미등록'으로 오판하면 안 되므로, 전체 활성
+        # Catalog는 모델 비노출 registry로 별도 보존한다.
+        "table_catalog_registry": execution_catalog_registry,
         "metadata_load": {
             "status": _combined_status(loads),
             "loaded_counts": {
@@ -350,6 +366,7 @@ def build_metadata_candidates(
                 "table_catalog_items": len(table_items),
                 "main_flow_filters": len(filter_items),
             },
+            "registered_dataset_count": len(execution_catalog_registry.get("dataset_keys", [])),
             "selected_counts": {
                 key: len(value)
                 for key, value in candidates.items()
@@ -387,6 +404,39 @@ def build_metadata_candidates(
             "errors": errors,
         },
     }
+
+
+# 함수 설명: `_table_catalog_execution_registry()`는 LLM 후보 축소와 별개로 전체 활성 Catalog의
+# 실행 권한·정확한 문서 보강에만 쓰는 비노출 registry를 만듭니다.
+def _table_catalog_execution_registry(table_items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep authoritative active Catalog entries out of the model candidate view."""
+
+    items: list[dict[str, Any]] = []
+    dataset_keys: list[str] = []
+    seen: set[str] = set()
+    for item in table_items:
+        if not isinstance(item, dict):
+            continue
+        dataset_key = _table_catalog_dataset_key(item)
+        normalized = dataset_key.casefold()
+        if not dataset_key or normalized in seen:
+            continue
+        seen.add(normalized)
+        dataset_keys.append(dataset_key)
+        items.append(deepcopy(item))
+    return {"dataset_keys": dataset_keys, "items": items}
+
+
+# 함수 설명: wrapper와 payload 어느 쪽에 저장되어도 Table Catalog의 dataset_key를 읽습니다.
+def _table_catalog_dataset_key(item: dict[str, Any]) -> str:
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+    return str(
+        item.get("dataset_key")
+        or item.get("key")
+        or payload.get("dataset_key")
+        or payload.get("key")
+        or ""
+    ).strip()
 
 
 # 함수 설명: `_select_candidates()`는 조건과 우선순위에 맞는 후보만 골라 원래 순서를 유지해 반환합니다.
@@ -702,6 +752,96 @@ def _annotate_process_detail_matches(
                 }
         annotated.append(next_item)
     return annotated
+
+
+# 함수 설명: 선택된 Table Catalog에만 짧은 후보 선택 힌트를 붙여 Intent LLM의 dataset 후보 비교를 돕습니다.
+def _annotate_table_intent_selection_hints(
+    items: list[dict[str, Any]],
+    question: str,
+) -> list[dict[str, Any]]:
+    """Expose catalog-owned usage evidence without turning it into a source lock.
+
+    The persisted catalog remains untouched.  This is an input-only projection
+    that deliberately contains only bounded ``use_when``/``exclude_when`` and
+    metric ownership information, so it improves candidate comparison without
+    increasing the model's output contract.
+    """
+
+    result: list[dict[str, Any]] = []
+    for item in items:
+        next_item = deepcopy(item)
+        payload = _dict(next_item.get("payload"))
+        criteria = _dict(payload.get("selection_criteria"))
+        use_when = _bounded_hint_strings(criteria.get("use_when"))
+        exclude_when = _bounded_hint_strings(criteria.get("exclude_when"))
+        semantics = (
+            payload.get("metric_semantics")
+            if isinstance(payload.get("metric_semantics"), dict)
+            else {}
+        )
+        metric_columns = [
+            str(column).strip()
+            for column in semantics
+            if str(column or "").strip()
+        ][:INTENT_SELECTION_HINT_MAX_METRICS]
+        metric_rollups = {
+            column: str(semantics[column].get("default_rollup") or "").strip()
+            for column in metric_columns
+            if isinstance(semantics.get(column), dict)
+            and str(semantics[column].get("default_rollup") or "").strip()
+        }
+        hint: dict[str, Any] = {}
+        if use_when:
+            hint["use_when"] = use_when
+            matched = [phrase for phrase in use_when if _selection_hint_matches(question, phrase)]
+            if matched:
+                hint["matched_use_when"] = matched
+        if exclude_when:
+            hint["exclude_when"] = exclude_when
+            matched = [phrase for phrase in exclude_when if _selection_hint_matches(question, phrase)]
+            if matched:
+                hint["matched_exclude_when"] = matched
+        if metric_columns:
+            hint["metric_columns"] = metric_columns
+        if metric_rollups:
+            hint["metric_default_rollups"] = metric_rollups
+        if hint:
+            next_item["intent_selection_hint"] = hint
+        result.append(next_item)
+    return result
+
+
+# 함수 설명: 후보 힌트에 저장할 문자열을 개수와 길이로 제한합니다.
+def _bounded_hint_strings(value: Any) -> list[str]:
+    raw = value if isinstance(value, list) else [value]
+    result: list[str] = []
+    for item in raw:
+        text = re.sub(r"\s+", " ", str(item or "")).strip()
+        if not text or text in result:
+            continue
+        result.append(text[:INTENT_SELECTION_HINT_MAX_TEXT])
+        if len(result) >= INTENT_SELECTION_HINT_MAX_PHRASES:
+            break
+    return result
+
+
+# 함수 설명: 질문과 Catalog 사용 문구가 직접 겹칠 때만 후보 힌트의 match를 표시합니다.
+def _selection_hint_matches(question: Any, phrase: Any) -> bool:
+    question_text = re.sub(r"[\s/\\._-]+", "", str(question or "").casefold())
+    phrase_text = re.sub(r"[\s/\\._-]+", "", str(phrase or "").casefold())
+    if not question_text or not phrase_text:
+        return False
+    if phrase_text in question_text:
+        return True
+    tokens = [
+        token
+        for token in re.findall(r"[\w가-힣]+", str(phrase or "").casefold())
+        if len(token) >= 2
+    ]
+    return bool(tokens) and all(
+        re.sub(r"[\s/\\._-]+", "", token) in question_text
+        for token in tokens
+    )
 
 
 # 함수 설명: `_rank()`는 RANK의 일치도나 건수를 계산해 후보 비교와 요약에 사용합니다.

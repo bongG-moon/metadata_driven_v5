@@ -2,7 +2,7 @@
 # =============================================================================
 # 컴포넌트 개요: 00 분석 요청 로더
 # 역할: 질문과 이전 상태를 표준 데이터 분석 페이로드로 변환합니다.
-# 주요 입력: 사용자 질문 (question) · 필수, 이전 상태 (previous_state), 상위 Flow 결과 참조 (upstream_result_ref)
+# 주요 입력: 사용자 질문 (question) · 필수, 이전 상태 (previous_state)
 # 주요 출력: 페이로드 출력 (payload_out)
 # 처리 흐름: 질문과 이전 상태를 읽고 세션 ID와 한국 기준일을 결정한 뒤 공통 분석 페이로드를 초기화합니다.
 # 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
@@ -89,7 +89,7 @@ def _resolve_session_id(previous_state_value: Any = None, session_id: Any = "") 
     return ""
 
 
-# 함수 설명: GaiA Input이 Message metadata에 담아준 세션 ID를 요청 세션 후보로 사용합니다.
+# 함수 설명: Chat Message metadata에 담긴 세션 ID를 요청 세션 후보로 사용합니다.
 def _metadata_session_id(value: Any) -> str:
     for attribute in ("a2a_metadata", "framework2_metadata", "metadata"):
         candidate = getattr(value, attribute, None)
@@ -153,13 +153,6 @@ class AnalysisRequestLoader(Component):
     description = "질문과 이전 상태를 표준 데이터 분석 페이로드로 변환합니다."
     inputs = [
         MessageTextInput(name="question", display_name="사용자 질문", required=True, tool_mode=True),
-        MessageTextInput(
-            name="upstream_result_ref",
-            display_name="상위 Flow 결과 참조",
-            info="Workflow 연계 실행에서 직전 Tool의 result_ref를 전달합니다. 일반 질문은 비워 둡니다.",
-            required=False,
-            tool_mode=True,
-        ),
         DataInput(name="previous_state", display_name="이전 상태", required=False),
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
@@ -172,6 +165,5 @@ class AnalysisRequestLoader(Component):
                 getattr(self, "question", ""),
                 getattr(self, "previous_state", None),
                 session_id=_runtime_session_id(self),
-                upstream_result_ref=getattr(self, "upstream_result_ref", ""),
             )
         )

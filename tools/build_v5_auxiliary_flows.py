@@ -17,9 +17,9 @@ from lfx.custom.utils import create_component_template
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_ROOT = ROOT / "langflow_components"
 EXPORT_ROOT = ROOT / "flow_exports"
-DONOR_PATH = EXPORT_ROOT / "data_analysis_flow_v5_standalone.json"
-GAIA_INPUT_ADAPTER_SOURCE = COMPONENT_ROOT / "gaia_io" / "00_gaia_input.py"
-GAIA_OUTPUT_ADAPTER_SOURCE = COMPONENT_ROOT / "gaia_io" / "01_gaia_output.py"
+# The maintained V2 donor provides the fixed Langflow 1.9.2 native node
+# templates.  The retired V1 export is deliberately not a build dependency.
+DONOR_PATH = ROOT / "tools" / "assets" / "data_analysis_flow_v2_donor.json"
 ROUTER_READ_TIMEOUT_SECONDS = "240"
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
 TARGET_LANGFLOW_VERSION = "1.9.2"
@@ -32,13 +32,8 @@ FLOW_DISPLAY_NAMES = {
     "table_catalog_saving": "03. v5_table_catalog_saving",
     "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
     "metadata_qa": "05. v5_metadata_qa",
-    "api_router": "06. v5_api_router",
     "agent_tool_router": "06. v5_agent_tool_router",
-    "workflow_orchestrator": "08. v5_workflow_orchestrator",
-    "workflow_skill_saving": "09. v5_workflow_skill_saving",
-    "html_visualization": "10. v5_html_visualization",
     "realtime_production_report": "07. v5_realtime_production_report",
-    "cube_schedule_saving": "12. v5_cube_schedule_saving",
 }
 
 
@@ -101,17 +96,6 @@ class ToolRouteSpec:
     keyword_gate_message: str = ""
 
 
-@dataclass(frozen=True)
-class WorkflowToolRouteSpec:
-    route_name: str
-    flow_name: str
-    tool_name: str
-    tool_description: str
-    accepts_upstream_result_ref: bool = False
-    can_produce_result_ref: bool = False
-    requires_upstream_result_ref: bool = False
-    entity_id_columns: str = ""
-
 
 SAVING_SPECS = [
     SavingSpec("domain", "도메인", "domain_saving_flow", None, "00_domain_saving_request_loader.py", "03_domain_saving_variables_builder.py", "03_saving_prompt_template_ko.md", "04_domain_saving_result_normalizer.py", "05_domain_similarity_checker.py", "07_domain_review_writer.py", "08_domain_saving_response_builder.py", "09_domain_saving_message_adapter.py", "10_domain_saving_api_response_builder.py"),
@@ -144,12 +128,6 @@ def prototypes(donor: dict[str, Any]) -> dict[str, dict[str, Any]]:
             provider_source,
             _find_component(component_index, "Language Model"),
             "LanguageModelComponent",
-        ),
-        "loop": _native_component_prototype(
-            by_id["CustomComponent-5o0CN"],
-            provider_source,
-            _find_component(component_index, "Loop"),
-            "LoopComponent",
         ),
         "chat_input": by_id["ChatInput-Xs7uo"],
         "chat_output": by_id["ChatOutput-rwbTs"],
@@ -382,144 +360,6 @@ def _edge_port(edge: dict[str, Any], side: str) -> str:
     return str(value or "")
 
 
-def _boundary_suffix(node_id: str, prefix: str) -> str:
-    """기존 Chat I/O ID의 suffix를 재사용해 어댑터 ID를 예측 가능하게 만듭니다."""
-
-    return node_id.removeprefix(prefix).strip("-") or "flow"
-
-
-def wrap_gaia_boundaries(flow: dict[str, Any], proto: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    # GaiA boundary adapters are intentionally disabled.  All retained flows
-    # connect native Chat Input/Output directly.
-    return flow
-
-    """표준 Chat I/O 사이에 GaiA 문맥/응답 어댑터를 삽입합니다.
-
-    표준 Chat Input/Output은 Playground interface component로 유지하고, custom GaiA
-    노드는 Message 변환만 담당합니다. 따라서 직접 실행과 Router 하위 실행에서 같은
-    JSON을 사용하면서도 메시지 저장은 표준 Chat Output에서 한 번만 수행됩니다.
-    """
-
-    nodes = flow["data"]["nodes"]
-    edges = flow["data"]["edges"]
-    node_index = {str(node["id"]): node for node in nodes}
-    chat_inputs = [node for node in list(nodes) if node.get("data", {}).get("type") == "ChatInput"]
-    chat_outputs = [node for node in list(nodes) if node.get("data", {}).get("type") == "ChatOutput"]
-    if len(chat_inputs) != 1:
-        raise ValueError(f"Flow must contain exactly one native Chat Input before GaiA wrapping: {flow.get('name')}")
-
-    for chat in chat_inputs:
-        chat_id = str(chat["id"])
-        outgoing = [edge for edge in list(edges) if str(edge.get("source") or "") == chat_id]
-        if not outgoing:
-            raise ValueError(f"Native Chat Input has no outgoing edge: {chat_id}")
-        original_position = deepcopy(chat.get("position", {}))
-        chat["position"] = {
-            "x": float(original_position.get("x", 0.0)) - 360.0,
-            "y": float(original_position.get("y", 0.0)),
-        }
-        adapter = custom_node(
-            proto["custom"],
-            f"GaiAInputAdapter-{_boundary_suffix(chat_id, 'ChatInput')}",
-            GAIA_INPUT_ADAPTER_SOURCE,
-            float(original_position.get("x", 0.0)),
-            float(original_position.get("y", 0.0)),
-        )
-        nodes.append(adapter)
-        node_index[str(adapter["id"])] = adapter
-        for edge in outgoing:
-            edges.remove(edge)
-        add_edge(flow, chat, "message", adapter, "input_message")
-        for edge in outgoing:
-            target_id = str(edge.get("target") or "")
-            target_name = _edge_port(edge, "target")
-            if target_id not in node_index or not target_name:
-                raise ValueError(f"Cannot restore Chat Input downstream edge: {chat_id} -> {target_id}")
-            add_edge(flow, adapter, "message", node_index[target_id], target_name)
-
-    for chat in chat_outputs:
-        chat_id = str(chat["id"])
-        incoming = [edge for edge in list(edges) if str(edge.get("target") or "") == chat_id]
-        if not incoming:
-            raise ValueError(f"Native Chat Output has no incoming edge: {chat_id}")
-        original_position = deepcopy(chat.get("position", {}))
-        adapter = custom_node(
-            proto["custom"],
-            f"GaiAOutputAdapter-{_boundary_suffix(chat_id, 'ChatOutput')}",
-            GAIA_OUTPUT_ADAPTER_SOURCE,
-            float(original_position.get("x", 0.0)),
-            float(original_position.get("y", 0.0)),
-        )
-        chat["position"] = {
-            "x": float(original_position.get("x", 0.0)) + 360.0,
-            "y": float(original_position.get("y", 0.0)),
-        }
-        nodes.append(adapter)
-        node_index[str(adapter["id"])] = adapter
-        for edge in incoming:
-            edges.remove(edge)
-        for edge in incoming:
-            source_id = str(edge.get("source") or "")
-            source_name = _edge_port(edge, "source")
-            if source_id not in node_index or not source_name:
-                raise ValueError(f"Cannot restore Chat Output upstream edge: {source_id} -> {chat_id}")
-            add_edge(flow, node_index[source_id], source_name, adapter, "input_value")
-        add_edge(flow, adapter, "message", chat, "input_value")
-    return flow
-
-
-def add_loop_feedback_edge(
-    flow: dict[str, Any],
-    source: dict[str, Any],
-    source_name: str,
-    loop: dict[str, Any],
-    loop_output_name: str = "item",
-) -> None:
-    """기본 Loop의 allows_loop 출력으로 돌아가는 전용 feedback edge를 추가합니다.
-
-    Loop feedback의 target handle은 일반 template input이 아니라 Loop의 `item`
-    output 계약을 사용합니다. 이때 ``types``뿐 아니라 ``loop_types``도 함께 넣어야
-    Langflow frontend가 `Looping` 포트의 전체 허용 타입을 복원할 수 있습니다.
-    """
-
-    source_output = next(item for item in source["data"]["node"]["outputs"] if item["name"] == source_name)
-    loop_output = next(
-        item for item in loop["data"]["node"]["outputs"] if item["name"] == loop_output_name
-    )
-    if loop_output.get("allows_loop") is not True:
-        raise ValueError(f"Loop feedback target must allow loops: {loop['id']}.{loop_output_name}")
-    source_types = source_output.get("types") or [source_output.get("selected") or "Data"]
-    declared_target_types = loop_output.get("types") or [loop_output.get("selected") or "Data"]
-    target_types = list(dict.fromkeys([*declared_target_types, *(loop_output.get("loop_types") or [])]))
-    source_handle = {
-        "dataType": source["data"]["type"],
-        "id": source["id"],
-        "name": source_name,
-        "output_types": source_types,
-    }
-    target_handle = {
-        "dataType": loop["data"]["type"],
-        "id": loop["id"],
-        "name": loop_output_name,
-        "output_types": target_types,
-    }
-    source_text = _source_handle_text(source_handle)
-    target_text = _target_handle_text(target_handle)
-    flow["data"]["edges"].append(
-        {
-            "animated": False,
-            "className": "",
-            "data": {"sourceHandle": source_handle, "targetHandle": target_handle},
-            "id": f"xy-edge__{source['id']}{source_text}-{loop['id']}{target_text}",
-            "selected": False,
-            "source": source["id"],
-            "sourceHandle": source_text,
-            "target": loop["id"],
-            "targetHandle": target_text,
-        }
-    )
-
-
 def _source_handle_text(value: dict[str, Any]) -> str:
     return _handle_text(value)
 
@@ -596,7 +436,7 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
     add_edge(flow, response, "payload_out", api, "payload")
     add_edge(flow, message, "message", api, "display_message")
     add_edge(flow, message, "message", output, "input_value")
-    return wrap_gaia_boundaries(flow, proto)
+    return flow
 
 
 def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -662,16 +502,7 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, normalizer, "payload_out", api, "payload")
     add_edge(flow, message, "message", api, "display_message")
     add_edge(flow, message, "message", output, "input_value")
-    return wrap_gaia_boundaries(flow, proto)
-
-
-ROUTES = [
-    ("data_analysis", "생산량, 재공, 투입, 장비 ASSIGN 등 실제 제조 데이터 조회 또는 분석 질문"),
-    ("metadata_qa", "등록된 데이터셋, 필수 파라미터, SQL, 도메인 용어, 계산 로직 확인 질문"),
-    ("domain_saving", "도메인 용어, 공정 그룹, 제품 그룹, 분석 규칙 저장 요청"),
-    ("table_catalog_saving", "데이터셋, source type, query template, 필수 파라미터, 컬럼 저장 요청"),
-    ("main_flow_filter_saving", "DATE, OPER_NAME, ORG 같은 공통 필터 정의 저장 요청"),
-]
+    return flow
 
 
 ROUTE_ENDPOINTS = {
@@ -729,186 +560,6 @@ TOOL_ROUTE_SPECS = [
 ]
 
 
-# Workflow Orchestrator는 하위 Flow별 result_ref 생성·소비 capability를 명시합니다.
-# 현재는 Data Analysis만 MongoDB result_ref를 생성·소비하며, 향후 전용 분석 Flow를
-# 추가할 때 같은 spec에 전달할 식별자 capability를 선언하면 됩니다.
-WORKFLOW_TOOL_ROUTE_SPECS = [
-    WorkflowToolRouteSpec(
-        "data_analysis",
-        FLOW_DISPLAY_NAMES["data_analysis"],
-        "run_data_analysis",
-        "실제 제조 데이터 값의 조회와 계산에 사용합니다. 첫 분석으로 실행할 수도 있고, upstream_result_ref가 있으면 직전 분석 결과를 명시적으로 복원해 연계 분석할 수 있습니다.",
-        accepts_upstream_result_ref=True,
-        can_produce_result_ref=True,
-        entity_id_columns="LOT_ID",
-    ),
-    WorkflowToolRouteSpec(
-        "metadata_qa",
-        FLOW_DISPLAY_NAMES["metadata_qa"],
-        "run_metadata_qa",
-        "등록된 도메인, 테이블 카탈로그, 필수 파라미터, SQL 템플릿, 컬럼과 계산 규칙을 설명하거나 확인할 때 사용합니다. 다른 Tool 결과 참조를 소비하지 않습니다.",
-    ),
-    WorkflowToolRouteSpec(
-        "domain_saving",
-        FLOW_DISPLAY_NAMES["domain_saving"],
-        "save_domain_metadata",
-        "사용자가 명시적으로 요청한 도메인 용어, 공정 그룹, 제품 그룹 또는 분석 규칙 저장에만 사용합니다. 한 요청에서 저장 Tool은 최대 한 번만 호출합니다.",
-    ),
-    WorkflowToolRouteSpec(
-        "table_catalog_saving",
-        FLOW_DISPLAY_NAMES["table_catalog_saving"],
-        "save_table_catalog_metadata",
-        "사용자가 명시적으로 요청한 데이터셋 source type, query template, 필수 파라미터 또는 컬럼 스키마 저장에만 사용합니다.",
-    ),
-    WorkflowToolRouteSpec(
-        "main_flow_filter_saving",
-        FLOW_DISPLAY_NAMES["main_flow_filter_saving"],
-        "save_main_flow_filter_metadata",
-        "사용자가 명시적으로 요청한 DATE, OPER_NAME, ORG 등 공통 필터 정의 저장에만 사용합니다.",
-    ),
-    WorkflowToolRouteSpec(
-        "html_visualization",
-        FLOW_DISPLAY_NAMES["html_visualization"],
-        "run_visualization",
-        "바로 앞 데이터 분석 결과를 받아 외부 CDN 없는 standalone HTML 차트로 만듭니다. 반드시 run_data_analysis 결과의 upstream_result_ref와 함께 순차 실행합니다.",
-        accepts_upstream_result_ref=True,
-        requires_upstream_result_ref=True,
-    ),
-    WorkflowToolRouteSpec(
-        "realtime_production_report",
-        FLOW_DISPLAY_NAMES["realtime_production_report"],
-        "run_realtime_production_report",
-        "질문에서 Domain Metadata의 공정그룹 하나를 먼저 선택·검증한 뒤 해당 그룹의 실시간 생산 판정 Snapshot만 고정 Rule로 집계합니다. 공정그룹이 없거나 모호하면 Report를 만들지 않고 그룹을 다시 묻습니다.",
-    ),
-]
-
-
-WORKFLOW_ALLOWED_TOOL_NAMES = [spec.tool_name for spec in WORKFLOW_TOOL_ROUTE_SPECS]
-WORKFLOW_REGISTRY_PATH = ROOT / "docs" / "workflows" / "workflow_registry.example.json"
-
-
-def _workflow_registry_json() -> str:
-    """build-time 원본을 읽어 standalone JSON에 내장할 Registry 문자열을 반환합니다."""
-
-    registry = json.loads(WORKFLOW_REGISTRY_PATH.read_text(encoding="utf-8"))
-    if registry.get("contract_version") != "workflow.registry.v1":
-        raise ValueError("Workflow Registry contract_version must be workflow.registry.v1.")
-    return json.dumps(registry, ensure_ascii=False, indent=2)
-
-
-def _workflow_allowed_tools_json() -> str:
-    """Parser와 planner에 동일하게 전달할 허용 Tool 이름 JSON을 반환합니다."""
-
-    return json.dumps(WORKFLOW_ALLOWED_TOOL_NAMES, ensure_ascii=False, indent=2)
-
-
-def _workflow_tool_catalog_json() -> str:
-    """미등록 inline 계획에서도 Tool capability를 판단하도록 이름·설명·ref 지원 계약을 반환합니다."""
-
-    return json.dumps(
-        [
-            {
-                "tool_name": spec.tool_name,
-                "description": spec.tool_description,
-                "accepts_upstream_result_ref": spec.accepts_upstream_result_ref,
-                "can_produce_result_ref": spec.can_produce_result_ref,
-                "requires_upstream_result_ref": spec.requires_upstream_result_ref,
-            }
-            for spec in WORKFLOW_TOOL_ROUTE_SPECS
-        ],
-        ensure_ascii=False,
-        indent=2,
-    )
-
-
-def _workflow_planner_prompt() -> str:
-    """자연어 요청을 검증 가능한 workflow.plan.v1 JSON으로 바꾸는 기본 Prompt 본문을 만듭니다."""
-
-    return """너는 제조 데이터 Workflow 계획기다.
-사용자 요청을 아래 Registry와 허용 Tool만 사용해 `workflow.plan.v1` JSON object 하나로 변환한다.
-Markdown code fence, 설명 문장, 주석은 출력하지 않는다.
-
-[사용자 요청]
-{user_question}
-
-[필수 규칙]
-1. 단계는 최소 1개, 최대 4개다.
-2. 요청이 Registry workflow와 의미상 일치하면 등록된 workflow_key와 단계 순서·dependency·handoff를 유지한다.
-3. 번호가 있는 자연어 절차나 결합 질문은 필요한 단계만 순서대로 만든다.
-4. step_id는 영문자로 시작하는 영문·숫자·밑줄·하이픈만 사용한다.
-5. tool_name은 아래 허용 이름 중 하나만 사용한다.
-6. depends_on은 반드시 앞 단계 step_id만 참조한다.
-7. 첫 단계는 depends_on=[] 및 handoff=none이다.
-8. handoff는 현재 단계가 앞 단계의 결과를 입력으로 받는지를 뜻한다. 결과를 생성하는 단계에 표시하는 필드가 아니다. 이전 결과를 현재 단계 입력으로 받을 때만 handoff=result_ref를 사용하고 depends_on을 정확히 하나 둔다.
-9. 단순 선행 순서만 필요하면 depends_on은 지정하되 handoff=none으로 둔다.
-10. 각 단계는 on_error=stop 또는 continue를 명시한다. 기본은 stop이다.
-11. 저장 Tool은 사용자가 저장·등록·변경을 명시한 경우에만 선택한다.
-12. Registry와 일치하지 않는 요청도 허용 Tool만으로 해결할 수 있으면 workflow_key=inline 계획을 만든다.
-13. 그래프·차트·시각화 요청은 먼저 run_data_analysis로 차트에 필요한 집계 결과를 조회하고, 바로 다음 run_visualization 단계가 해당 step 하나를 depends_on으로 참조하며 handoff=result_ref를 사용한다.
-14. run_visualization은 첫 단계로 선택하지 않고, question에는 원하는 차트 종류·축·제목만 독립적인 한국어로 적는다. 원본 행을 question에 복사하지 않는다.
-15. 없는 Tool이나 Registry 항목을 만들지 않는다.
-16. 금지: run_data_analysis가 결과를 생성한다는 이유로 그 단계에 handoff=result_ref를 쓰지 않는다. producer 단계는 handoff=none이고 consumer인 run_visualization 단계가 handoff=result_ref다.
-17. 출력 직전 모든 depends_on=[] 단계의 handoff가 none인지, run_visualization 단계의 depends_on이 정확히 1개이고 handoff가 result_ref인지 다시 검사한다.
-18. 사용자가 실시간 생산 판정 Report, 생산부족 원인, CAPA실적, 장비Assign 조정 Report를 요청하면 run_realtime_production_report 한 단계를 우선 사용한다. 이 전용 Tool에는 선행 run_data_analysis나 run_visualization을 붙이지 않는다.
-19. run_realtime_production_report 단계의 question에는 사용자 원문에 명시된 공정그룹 표현을 반드시 보존한다. 공정그룹이 없으면 임의 그룹이나 전체 공정을 보충하지 말고 원문 그대로 전달해 하위 Flow가 공정그룹을 다시 묻게 한다.
-
-[출력 형태]
-{{
-  "contract_version": "workflow.plan.v1",
-  "workflow_key": "등록 key 또는 inline",
-  "title": "짧은 제목",
-  "description": "짧은 목적",
-  "steps": [
-    {{
-      "step_id": "step_name",
-      "tool_name": "run_data_analysis",
-      "question": "하위 Flow에 전달할 독립적인 한국어 질문",
-      "depends_on": [],
-      "handoff": "none",
-      "on_error": "stop"
-    }}
-  ]
-}}
-
-[허용 Tool 이름]
-{allowed_tool_names}
-
-[Tool capability catalog]
-{allowed_tool_catalog}
-
-[시각화 요청의 올바른 단계 예시]
-{{
-  "steps": [
-    {{
-      "step_id": "analysis",
-      "tool_name": "run_data_analysis",
-      "question": "차트에 사용할 데이터를 조회해줘",
-      "depends_on": [],
-      "handoff": "none",
-      "on_error": "stop"
-    }},
-    {{
-      "step_id": "visualization",
-      "tool_name": "run_visualization",
-      "question": "조회 결과를 막대그래프로 그려줘",
-      "depends_on": ["analysis"],
-      "handoff": "result_ref",
-      "on_error": "stop"
-    }}
-  ]
-}}
-
-[Workflow Registry]
-{workflow_registry_json}
-"""
-
-
-def _workflow_final_prompt() -> str:
-    """Loop 실행 결과만 근거로 마지막 답변을 한 번 생성하는 기본 Prompt 본문을 반환합니다."""
-
-    return (COMPONENT_ROOT / "route_flow_v4" / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
-
-
 def _find_component(config: Any, display_name: str) -> dict[str, Any]:
     if isinstance(config, dict):
         if config.get("display_name") == display_name and isinstance(config.get("template"), dict):
@@ -923,71 +574,6 @@ def _find_component(config: Any, display_name: str) -> dict[str, Any]:
             if result:
                 return result
     return {}
-
-
-def smart_router_node(proto: dict[str, Any], agent_proto: dict[str, Any], node_id: str, routes: list[dict[str, Any]], x: float, y: float) -> dict[str, Any]:
-    index = json.loads(COMPONENT_INDEX.read_text(encoding="utf-8"))
-    config = _find_component(index, "Smart Router")
-    if not config:
-        raise RuntimeError("Smart Router component template not found")
-    config["template"]["model"]["value"] = deepcopy(agent_proto["data"]["node"]["template"]["model"]["value"])
-    config["template"]["api_key"]["value"] = ""
-    config["template"]["routes"]["value"] = routes
-    config["template"]["enable_else_output"]["value"] = False
-    config["template"]["custom_prompt"]["value"] = "저장 요청과 조회 요청을 엄격히 구분한다. 실제 데이터 값 질문은 data_analysis, metadata 정의와 SQL 설명 질문은 metadata_qa로 분류한다."
-    output_proto = deepcopy(agent_proto["data"]["node"]["outputs"][0])
-    config["outputs"] = []
-    for index_value, route in enumerate(routes, start=1):
-        output = deepcopy(output_proto)
-        output.update({"name": f"category_{index_value}_result", "display_name": route["route_category"], "method": "process_case", "group_outputs": True, "types": ["Message"], "selected": "Message"})
-        config["outputs"].append(output)
-    # Match the working legacy Smart Router export. Declaring Message here makes
-    # the router behave like a message terminal during repeated graph builds.
-    config["base_classes"] = []
-    node = _clone_node(proto, node_id, x, y)
-    node["data"]["type"] = "SmartRouter"
-    node["data"]["node"] = config
-    return node
-
-
-def build_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    proto = prototypes(donor)
-    flow = empty_flow(donor, FLOW_DISPLAY_NAMES["api_router"], "Smart Router classification with per-branch Langflow Run API calls, shared session propagation, pooled HTTP connections, secret API keys, and structured status outputs.", "metadata-driven-v5-api-router", ["v5", "standalone", "api-router", "optimized"])
-    routes = [{"route_category": name, "route_description": description, "output_value": ""} for name, description in ROUTES]
-    routes.extend(
-        [
-            {"route_category": "direct_answer", "route_description": "인사 또는 기능 안내처럼 하위 flow가 필요 없는 요청", "output_value": "안녕하세요. 제조 데이터 분석, 메타데이터 조회와 등록을 도와드릴 수 있습니다."},
-            {"route_category": "clarification", "route_description": "요청 목적이나 대상이 모호해 추가 설명이 필요한 경우", "output_value": "요청할 데이터, 메타데이터 종류 또는 저장하려는 내용을 조금 더 구체적으로 알려주세요."},
-        ]
-    )
-    chat = native_node(proto["chat_input"], "ChatInput-api-router", 0, 0)
-    _set_message_storage(chat, True)
-    router = smart_router_node(proto["custom"], proto["agent"], "SmartRouter-api-router", routes, 350, 0)
-    flow["data"]["nodes"].extend([chat, router])
-    add_edge(flow, chat, "message", router, "input_text")
-
-    caller_path = COMPONENT_ROOT / "route_flow" / "01_flow_api_message_caller.py"
-    for index_value, (route_name, _) in enumerate(ROUTES, start=1):
-        y = (index_value - 1) * 260 - 1100
-        caller = custom_node(proto["custom"], f"ApiCaller-{route_name}", caller_path, 800, y)
-        template = caller["data"]["node"]["template"]
-        _set_value(template, "route_name", route_name)
-        _set_value(template, "api_url", f"/api/v1/run/{ROUTE_ENDPOINTS[route_name]}")
-        _set_value(template, "read_timeout_seconds", ROUTER_READ_TIMEOUT_SECONDS)
-        output = native_node(proto["chat_output"], f"ChatOutput-{route_name}", 1180, y)
-        _set_message_storage(output, True)
-        flow["data"]["nodes"].extend([caller, output])
-        add_edge(flow, router, f"category_{index_value}_result", caller, "flow_input")
-        add_edge(flow, caller, "message", output, "input_value")
-
-    for offset, route_index in enumerate((len(ROUTES) + 1, len(ROUTES) + 2)):
-        route_name = routes[route_index - 1]["route_category"]
-        y = 1600 + offset * 260
-        output = native_node(proto["chat_output"], f"ChatOutput-{route_name}", 1180, y)
-        _set_message_storage(output, True)
-        flow["data"]["nodes"].append(output)
-        add_edge(flow, router, f"category_{route_index}_result", output, "input_value")
-    return wrap_gaia_boundaries(flow, proto)
 
 
 def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -1008,8 +594,8 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     agent_template = agent["data"]["node"]["template"]
     # Chat Input이 현재 사용자 Message를 먼저 저장하므로 5개 메시지를 조회합니다.
     # LFX Agent는 input_value와 ID가 같은 현재 Message를 제거하고, 이전 4개 메시지
-    # (사용자/응답 2턴)만 history로 유지합니다. GaiA Input Adapter는 원본 Message
-    # 객체를 그대로 전달해 이 ID 기반 중복 제거가 동작하도록 합니다.
+    # (사용자/응답 2턴)만 history로 유지합니다. Native Chat Input Message가 원본
+    # ID를 그대로 전달하므로 이 ID 기반 중복 제거가 동작합니다.
     _set_value(agent_template, "max_iterations", 1)
     _set_value(agent_template, "n_messages", 5)
     _set_value(agent_template, "add_current_date_tool", False)
@@ -1040,49 +626,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         add_edge(flow, tool, "component_as_tool", agent, "tools")
 
     add_edge(flow, agent, "response", output, "input_value")
-    return wrap_gaia_boundaries(flow, proto)
-
-
-def build_html_visualization_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    """MongoDB 결과 시각화와 실시간 생산 Report를 포함한 보조 Flow export를 만듭니다."""
-
-    proto = prototypes(donor)
-    flow = empty_flow(
-        donor,
-        FLOW_DISPLAY_NAMES["html_visualization"],
-        "Standalone HTML visualization flow that restores one Data Analysis result_ref, renders an offline HTML/SVG chart, and publishes browser-view/download links through a configurable Report API.",
-        "metadata-driven-v5-html-visualization",
-        ["v5", "standalone", "html-visualization", "result-ref", "offline-chart", "report-api"],
-    )
-    folder = COMPONENT_ROOT / "visualization_flow"
-    chat = native_node(proto["chat_input"], "ChatInput-html-visualization", 0, 0)
-    _set_message_storage(chat, True)
-    chart = custom_node(
-        proto["custom"],
-        "HtmlVisualizationBuilder-html-visualization",
-        folder / "00_html_visualization_builder.py",
-        430,
-        0,
-    )
-    chart_template = chart["data"]["node"]["template"]
-    _set_value(chart_template, "mongo_database", "datagov")
-    _set_value(chart_template, "collection_name", "agent_v4_result_store")
-    _set_value(chart_template, "report_api_url", "http://127.0.0.1:8010")
-    _set_value(chart_template, "report_ttl_hours", "24")
-    output = native_node(proto["chat_output"], "ChatOutput-html-visualization", 900, -130)
-    _set_message_storage(output, True)
-    api_terminal = custom_node(
-        proto["custom"],
-        "HtmlVisualizationApiTerminal-html-visualization",
-        folder / "01_html_visualization_api_terminal.py",
-        900,
-        210,
-    )
-    flow["data"]["nodes"].extend([chat, chart, output, api_terminal])
-    add_edge(flow, chat, "message", chart, "question")
-    add_edge(flow, chart, "message", output, "input_value")
-    add_edge(flow, chart, "api_response", api_terminal, "visualization_result")
-    return wrap_gaia_boundaries(flow, proto)
+    return flow
 
 
 def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -1178,259 +722,7 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     add_edge(flow, gate, "selected_dataset", report, "dataset")
     add_edge(flow, report, "message", output, "input_value")
     add_edge(flow, report, "api_response", api_terminal, "report_result")
-    return wrap_gaia_boundaries(flow, proto)
-
-
-def build_cube_schedule_saving_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    """외부 authoring MongoDB에 cube.schedule.v1 문서를 등록하는 12 Flow를 만듭니다."""
-
-    proto = prototypes(donor)
-    flow = empty_flow(
-        donor,
-        FLOW_DISPLAY_NAMES["cube_schedule_saving"],
-        "CUBE schedule authoring flow with one extraction Language Model, deterministic cube.schedule.v1 validation, visible dry-run and MongoDB inputs, versioned source upsert, and structured API output.",
-        "metadata-driven-v5-cube-schedule-saving",
-        ["v5", "standalone", "cube", "schedule-authoring", "mongodb", "dry-run"],
-    )
-    folder = COMPONENT_ROOT / "cube_schedule_saving_flow"
-    chat = native_node(proto["chat_input"], "ChatInput-cube-schedule-saving", 0, 0)
-    _set_message_storage(chat, True)
-    extraction_prompt = prompt_node(
-        proto["prompt"],
-        "Prompt-cube-schedule-saving",
-        (folder / "01_schedule_extraction_prompt_ko.md").read_text(encoding="utf-8"),
-        350,
-        -120,
-    )
-    extraction_model = language_model_node(
-        proto["language_model"],
-        "LanguageModel-cube-schedule-saving",
-        700,
-        -120,
-        "Extract one CUBE scheduled-query definition. Return exactly one JSON object, preserve the user question verbatim, and never guess missing employee or channel identifiers.",
-    )
-    _set_value(extraction_model["data"]["node"]["template"], "max_tokens", 1800)
-    normalizer = custom_node(
-        proto["custom"],
-        "Normalizer-cube-schedule-saving",
-        folder / "01_cube_schedule_normalizer.py",
-        1050,
-        -20,
-    )
-    writer = custom_node(
-        proto["custom"],
-        "Writer-cube-schedule-saving",
-        folder / "02_cube_schedule_mongodb_writer.py",
-        1400,
-        -20,
-    )
-    writer_template = writer["data"]["node"]["template"]
-    _set_value(writer_template, "mongo_database", "cube_authoring")
-    _set_value(writer_template, "collection_name", "cube_schedules")
-    _set_value(writer_template, "dry_run", True)
-    response = custom_node(
-        proto["custom"],
-        "Api-cube-schedule-saving",
-        folder / "03_cube_schedule_response_builder.py",
-        1750,
-        -180,
-    )
-    message_adapter = custom_node(
-        proto["custom"],
-        "Message-cube-schedule-saving",
-        folder / "04_cube_schedule_message_adapter.py",
-        1750,
-        160,
-    )
-    output = native_node(proto["chat_output"], "ChatOutput-cube-schedule-saving", 2110, -140)
-    _set_message_storage(output, True)
-    flow["data"]["nodes"].extend(
-        [chat, extraction_prompt, extraction_model, normalizer, writer, response, message_adapter, output]
-    )
-    add_edge(flow, chat, "message", extraction_prompt, "user_request")
-    add_edge(flow, extraction_prompt, "prompt", extraction_model, "input_value")
-    add_edge(flow, chat, "message", normalizer, "user_request")
-    add_edge(flow, extraction_model, "text_output", normalizer, "llm_response")
-    add_edge(flow, normalizer, "schedule_payload", writer, "schedule_payload")
-    add_edge(flow, writer, "write_result", response, "write_result")
-    add_edge(flow, writer, "write_result", message_adapter, "write_result")
-    add_edge(flow, message_adapter, "message", output, "input_value")
-    return wrap_gaia_boundaries(flow, proto)
-
-
-def build_workflow_orchestrator_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    """계획 LLM과 기본 Loop로 최대 네 단계 Workflow를 결정론적으로 실행하는 08 Flow를 만듭니다."""
-
-    proto = prototypes(donor)
-    flow = empty_flow(
-        donor,
-        FLOW_DISPLAY_NAMES["workflow_orchestrator"],
-        "Workflow-plan orchestrator with a native planning Language Model, visible standalone registry, native Loop, deterministic exact-tool step executor, compact final synthesis, one Chat Output, and terminal api_response.",
-        "metadata-driven-v5-workflow-orchestrator",
-        [
-            "v5",
-            "standalone",
-            "workflow-orchestrator",
-            "native-loop",
-            "cached-flow",
-            "multi-tool",
-            "optimized",
-        ],
-    )
-    folder = COMPONENT_ROOT / "route_flow_v4"
-    tool_path = COMPONENT_ROOT / "route_flow_v4" / "04_workflow_named_run_flow_tool.py"
-    registry_json = _workflow_registry_json()
-    allowed_tools_json = _workflow_allowed_tools_json()
-    allowed_tool_catalog_json = _workflow_tool_catalog_json()
-
-    chat = native_node(proto["chat_input"], "ChatInput-workflow-orchestrator", 0, 0)
-    _set_message_storage(chat, True)
-    registry_loader = custom_node(
-        proto["custom"],
-        "WorkflowRegistryLoader-workflow-orchestrator",
-        folder / "00a_mongodb_workflow_registry_loader.py",
-        340,
-        -620,
-    )
-    registry_loader_template = registry_loader["data"]["node"]["template"]
-    _set_value(registry_loader_template, "registry_source", "mongodb")
-    _set_value(registry_loader_template, "mongo_database", "datagov")
-    _set_value(registry_loader_template, "collection_name", "agent_v4_workflow_skills")
-    _set_value(registry_loader_template, "inline_seed_json", registry_json)
-    _set_value(registry_loader_template, "status_filter", "active")
-    _set_value(registry_loader_template, "max_items", "1000")
-    _set_value(registry_loader_template, "candidate_limit", "8")
-    _set_value(registry_loader_template, "max_registry_bytes", "65536")
-    planner_prompt = prompt_node(
-        proto["prompt"],
-        "PromptPlanner-workflow-orchestrator",
-        _workflow_planner_prompt(),
-        340,
-        -260,
-    )
-    planner_prompt_template = planner_prompt["data"]["node"]["template"]
-    _set_value(planner_prompt_template, "workflow_registry_json", "{}")
-    _set_value(planner_prompt_template, "allowed_tool_names", allowed_tools_json)
-    _set_value(planner_prompt_template, "allowed_tool_catalog", allowed_tool_catalog_json)
-    planner_model = language_model_node(
-        proto["language_model"],
-        "LanguageModelPlanner-workflow-orchestrator",
-        680,
-        -260,
-        "Return exactly one workflow.plan.v1 JSON object. Handoff belongs to the step consuming an upstream result, never the producer. The first step must use handoff=none. Do not emit markdown, code fences, or prose.",
-    )
-    parser = custom_node(
-        proto["custom"],
-        "WorkflowPlanParser-workflow-orchestrator",
-        folder / "00_workflow_plan_parser.py",
-        1020,
-        -260,
-    )
-    parser_template = parser["data"]["node"]["template"]
-    _set_value(parser_template, "workflow_key", "")
-    _set_value(parser_template, "workflow_registry_json", "{}")
-    _set_value(parser_template, "allowed_tool_names", allowed_tools_json)
-    _set_value(parser_template, "tool_capabilities_json", allowed_tool_catalog_json)
-    loop = native_node(proto["loop"], "Loop-workflow-orchestrator", 1370, -260)
-    executor = custom_node(
-        proto["custom"],
-        "SequentialStepExecutor-workflow-orchestrator",
-        folder / "01_sequential_step_executor.py",
-        2050,
-        -260,
-    )
-    _set_value(executor["data"]["node"]["template"], "observation_byte_limit", "8192")
-    final_context = custom_node(
-        proto["custom"],
-        "FinalContext-workflow-orchestrator",
-        folder / "02_final_context_builder.py",
-        2390,
-        -260,
-    )
-    _set_value(final_context["data"]["node"]["template"], "max_context_bytes", "32768")
-    final_prompt = prompt_node(
-        proto["prompt"],
-        "PromptFinal-workflow-orchestrator",
-        _workflow_final_prompt(),
-        2730,
-        -260,
-    )
-    final_model = language_model_node(
-        proto["language_model"],
-        "LanguageModelFinal-workflow-orchestrator",
-        3070,
-        -260,
-        "Synthesize one faithful Korean answer from the validated workflow context only.",
-    )
-    _set_value(final_model["data"]["node"]["template"], "max_tokens", 4096)
-    final_response = custom_node(
-        proto["custom"],
-        "FinalResponse-workflow-orchestrator",
-        folder / "03_workflow_final_response_builder.py",
-        3410,
-        -260,
-    )
-    output = native_node(proto["chat_output"], "ChatOutput-workflow-orchestrator", 3760, -360)
-    _set_message_storage(output, True)
-    flow["data"]["nodes"].extend(
-        [
-            chat,
-            registry_loader,
-            planner_prompt,
-            planner_model,
-            parser,
-            loop,
-            executor,
-            final_context,
-            final_prompt,
-            final_model,
-            final_response,
-            output,
-        ]
-    )
-
-    tool_y_positions = (-980, -720, -460, -200, 60, 320, 580)
-    for spec, y in zip(WORKFLOW_TOOL_ROUTE_SPECS, tool_y_positions, strict=True):
-        tool = custom_node(proto["custom"], f"WorkflowFlowTool-{spec.route_name}", tool_path, 1710, y)
-        tool_config = tool["data"]["node"]
-        tool_config["tool_mode"] = True
-        template = tool_config["template"]
-        _set_value(template, "flow_name_selected", spec.flow_name)
-        _set_value(template, "flow_id_selected", "")
-        _set_value(template, "cache_flow", True)
-        _set_value(template, "tool_name", spec.tool_name)
-        _set_value(template, "tool_description", spec.tool_description)
-        # 현재 v5 하위 Flow는 구조화 API 계약을 api_response 포트로 제공합니다.
-        # 다른 Flow를 연결할 때는 이 값만 해당 terminal 출력 이름으로 바꾸면 wrapper 코드는 그대로 재사용됩니다.
-        _set_value(template, "preferred_output_names", "api_response")
-        _set_value(template, "accepts_upstream_result_ref", spec.accepts_upstream_result_ref)
-        _set_value(template, "can_produce_result_ref", spec.can_produce_result_ref)
-        _set_value(template, "entity_id_columns", spec.entity_id_columns)
-        _set_value(template, "return_direct", False)
-        flow["data"]["nodes"].append(tool)
-        add_edge(flow, tool, "component_as_tool", executor, "tools")
-
-    add_edge(flow, chat, "message", planner_prompt, "user_question")
-    add_edge(flow, chat, "message", registry_loader, "user_question")
-    add_edge(flow, registry_loader, "workflow_registry_json", planner_prompt, "workflow_registry_json")
-    add_edge(flow, planner_prompt, "prompt", planner_model, "input_value")
-    add_edge(flow, planner_model, "text_output", parser, "workflow_input")
-    add_edge(flow, chat, "message", parser, "user_question")
-    add_edge(flow, registry_loader, "workflow_registry_json", parser, "workflow_registry_json")
-    add_edge(flow, parser, "loop_dataframe", loop, "data")
-    add_edge(flow, loop, "item", executor, "loop_item")
-    add_loop_feedback_edge(flow, executor, "step_result", loop, "item")
-    add_edge(flow, parser, "workflow_plan", final_context, "execution_context")
-    add_edge(flow, loop, "done", final_context, "loop_results")
-    add_edge(flow, chat, "message", final_context, "user_question")
-    add_edge(flow, final_context, "question", final_prompt, "question")
-    add_edge(flow, final_context, "workflow_context", final_prompt, "workflow_context")
-    add_edge(flow, final_context, "synthesis_instruction", final_prompt, "synthesis_instruction")
-    add_edge(flow, final_prompt, "prompt", final_model, "input_value")
-    add_edge(flow, final_context, "final_context", final_response, "final_context")
-    add_edge(flow, final_model, "text_output", final_response, "final_model_response")
-    add_edge(flow, final_response, "message", output, "input_value")
-    return wrap_gaia_boundaries(flow, proto)
+    return flow
 
 
 def write_flows() -> list[dict[str, Any]]:
@@ -1482,7 +774,7 @@ def _stamp_flow_version(flow: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build optimized v5 standalone metadata, Workflow Skill and CUBE schedule authoring, routers, Workflow Orchestrator, HTML visualization, and realtime production report flows.")
+    parser = argparse.ArgumentParser(description="Build the active metadata saving, QA, Agent Tool Router, and realtime production-report flows.")
     parser.parse_args()
     print(json.dumps(write_flows(), ensure_ascii=False, indent=2))
 

@@ -304,7 +304,7 @@ def _session_id_from_value(value: Any) -> str:
     return _session_id_from_state(_payload(value))
 
 
-# 함수 설명: GaiA Input이 Message metadata에 담아준 세션 ID를 MongoDB 세션 조회 후보로 사용합니다.
+# 함수 설명: Chat Message metadata에 담긴 세션 ID를 MongoDB 세션 조회 후보로 사용합니다.
 def _metadata_session_id(value: Any) -> str:
     for attribute in ("a2a_metadata", "framework2_metadata", "metadata"):
         candidate = getattr(value, attribute, None)

@@ -1,6 +1,7 @@
 종속 조회 규칙:
 
 - 1차 결과 식별자가 2차 dataset의 빈 필수 파라미터를 채워야 할 때만 `dependent_retrieval_plan`을 작성한다. 일반 단일 단계와 독립 다중-source join에는 작성하지 않는다.
+- 질문에 2차 dataset의 필수 파라미터 값이 직접 있으면, Catalog에 upstream binding이 있어도 종속 계획을 만들지 않는다. 해당 값은 일반 단일 단계 `retrieval_jobs[].required_params`로 전달하며, 이전 결과는 보조 입력 경로일 뿐 직접 값을 대체하지 않는다.
 - stage는 정확히 2개다. stage2는 stage1만 `depends_on`하며, 각 stage에 완전한 `retrieval_jobs`, `pandas_execution_plan`, `output_contract`를 둔다.
 - `handoff.columns`와 stage1 결과 컬럼, stage2 `input_bindings`의 required parameter·upstream binding은 선택된 Catalog에 명시된 값만 사용한다. dataset·parameter·column을 추측하지 않는다.
 - 별도 이력의 최신 상세는 stage2에서 `select_extreme_row_per_group`으로 선택한다. `partition_by`, `order_by`, `limit_per_group=1`, `tie_policy`, `tie_breakers`, `projection`, `strict=true`를 명시해 시각·코드·설명이 같은 행에서 나오게 한다.

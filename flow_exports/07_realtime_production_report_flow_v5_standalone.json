@@ -2403,7 +2403,7 @@
   },
   "description": "Realtime production report flow with Domain process-group catalog grounding, native LLM group selection, deterministic evidence validation and row filtering, clarification without HTML when no group is specified, and four fixed report sections.",
   "endpoint_name": "metadata-driven-v5-realtime-production-report",
-  "id": "45bc9786-09ca-5b31-b5fe-c6fa824bc51f",
+  "id": "4ef91703-97ef-5295-ac48-b1bbf4eb6749",
   "is_component": false,
   "last_tested_version": "1.9.2",
   "locked": false,

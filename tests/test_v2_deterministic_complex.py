@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from test_langflow_components import ROOT, load_module
+from component_test_support import ROOT, load_module
 
 
 V2_ROOT = ROOT / "langflow_components" / "data_analysis_flow_v2"
@@ -114,9 +114,7 @@ def _metric_merge_payload() -> dict:
 
 def test_complex_metric_merge_uses_deterministic_contract_without_pandas_llm():
     resolver = load_module(V2_ROOT / "14b_simple_analysis_contract_resolver.py")
-    prompt_builder = load_module(
-        ROOT / "langflow_components" / "data_analysis_flow" / "15_pandas_variables_builder.py"
-    )
+    prompt_builder = load_module(V2_ROOT / "16_route_aware_pandas_prompt_builder.py")
     executor = load_module(V2_ROOT / "17_hybrid_analysis_executor.py")
     payload = _metric_merge_payload()
 
@@ -161,9 +159,7 @@ def test_complex_metric_merge_uses_deterministic_contract_without_pandas_llm():
 
 
 def test_pandas_model_preview_is_bounded_without_mutating_runtime_sources():
-    prompt_builder = load_module(
-        ROOT / "langflow_components" / "data_analysis_flow" / "15_pandas_variables_builder.py"
-    )
+    prompt_builder = load_module(V2_ROOT / "16_route_aware_pandas_prompt_builder.py")
     rows = [
         {**{f"COL_{index}": f"value-{row_index}-{index}" for index in range(30)}, "QTY": row_index}
         for row_index in range(5)
@@ -208,4 +204,3 @@ def test_pandas_model_preview_is_bounded_without_mutating_runtime_sources():
     assert all(len(row) <= 16 for row in preview)
     assert "QTY" in preview[0]
     assert payload["runtime_sources"]["sample"] == rows
-

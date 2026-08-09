@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from web_app.data_ref_store import DEFAULT_DATABASE, DEFAULT_RESULT_COLLECTION, load_data_ref_rows
+from artifact_server.data_ref_store import DEFAULT_DATABASE, DEFAULT_RESULT_COLLECTION, load_data_ref_rows
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -44,7 +44,10 @@ DEFAULT_RESTART_TIMEOUT_SECONDS = 5.0
 DEFAULT_FORCE_TERMINATE_TIMEOUT_SECONDS = 3.0
 SERVICE_NAME = "metadata-driven-data-ref-download-server"
 CONTROL_SHUTDOWN_PATH = "/__control/shutdown"
-DEFAULT_REPORT_STORAGE_DIR = ROOT / "report_api" / "storage"
+# The active FastAPI artifact server owns both result downloads and HTML report
+# storage.  Keep the compatibility launcher on the same location so the
+# retired standalone ``report_api`` package is not required at runtime.
+DEFAULT_REPORT_STORAGE_DIR = ROOT / "artifact_server" / "storage" / "reports"
 DEFAULT_REPORT_TTL_HOURS = 24
 DEFAULT_MAX_REPORT_TTL_HOURS = 24 * 7
 DEFAULT_MAX_REPORT_HTML_BYTES = 10 * 1024 * 1024
@@ -247,7 +250,6 @@ def main() -> int:
     print("Langflow component setting:")
     component_base_url = f"http://{url_host(loopback_probe_host(args.host))}:{args.port}"
     print(f"  23 MongoDB 결과 저장소.download_base_url = {component_base_url}")
-    print(f"  00 HTML 시각화 생성기.report_api_url = {component_base_url}")
     print(f"  01 실시간 생산 분석 Report 생성기.report_api_url = {component_base_url}")
     print(f"HTML Report public base URL: {config.report_base_url}")
     print(f"HTML Report storage: {report_reports_dir(config)}")

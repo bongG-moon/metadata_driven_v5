@@ -97,9 +97,9 @@ def _is_io_vertex(vertex: Any, role: str) -> bool:
     display_name = str(getattr(vertex, "display_name", "") or "")
     vertex_id = str(getattr(vertex, "id", "") or "")
     if role == "input":
-        return node_type in {"ChatInput", "GaiAInput"} or display_name in {"Chat Input", "GaiA Input"} or vertex_id.startswith("ChatInput-")
+        return node_type == "ChatInput" or display_name == "Chat Input" or vertex_id.startswith("ChatInput-")
     if role == "output":
-        return node_type in {"ChatOutput", "GaiAOutput"} or display_name in {"Chat Output", "GaiA Output"} or vertex_id.startswith("ChatOutput-")
+        return node_type == "ChatOutput" or display_name == "Chat Output" or vertex_id.startswith("ChatOutput-")
     return False
 
 

@@ -188,14 +188,8 @@ def _edge_port(edge: dict[str, Any], side: str) -> str:
     return str(handle.get(key) or "") if isinstance(handle, dict) else ""
 
 
-def _remove_gaia_adapters(flow: dict[str, Any]) -> None:
-    """Remove legacy GaiA boundary nodes and bridge their native edges.
-
-    The V2 donor was historically wrapped by GaiA Input/Output adapters.  The
-    standalone flow now uses Langflow's native Chat Input/Output directly, so
-    this migration is performed at build time and is idempotent.
-    """
-
+# 함수 설명: 이전 donor에 남은 입출력 경계 어댑터를 제거하고 native Chat edge를 직접 연결합니다.
+def _remove_retired_boundary_adapters(flow: dict[str, Any]) -> None:
     nodes = flow["data"]["nodes"]
     edges = flow["data"]["edges"]
     node_index = {str(node["id"]): node for node in nodes}
@@ -248,10 +242,34 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     nodes = flow["data"]["nodes"]
     edges = flow["data"]["edges"]
     node_index = {node["id"]: node for node in nodes}
-    _remove_gaia_adapters(flow)
+    _remove_retired_boundary_adapters(flow)
     nodes = flow["data"]["nodes"]
     edges = flow["data"]["edges"]
     node_index = {node["id"]: node for node in nodes}
+
+    # 01 기본 Flow는 일반 질문과 세션 상태만 받습니다. 명시적인 상위 결과
+    # 참조/재개는 별도 08 Continuation Flow의 전용 요청 로더가 담당합니다.
+    _set_embedded_source(
+        node_index["CustomComponent-xpbhS"],
+        _common_component_path("00_analysis_request_loader.py"),
+    )
+    _apply_component_spec(
+        node_index["CustomComponent-xpbhS"],
+        [
+            ("message", "question", "사용자 질문", True, ""),
+            ("data", "previous_state", "이전 상태", False, None),
+        ],
+        [("Data", "payload_out", "분석 요청 페이로드", "build_payload")],
+        node_index,
+    )
+
+    # 01D는 Common 후보 선별 계약을 실제 Intent LLM에 전달하는 활성 노드다.
+    # donor export에 남은 예전 embedded source를 그대로 쓰면 저장소 Python과
+    # Flow JSON이 달라져 후보 선택/토큰 정책이 서로 다른 상태가 된다.
+    _set_embedded_source(
+        node_index[METADATA_CANDIDATES_NODE_ID],
+        _common_component_path("01d_metadata_candidates_builder.py"),
+    )
 
     # Keep the existing intent contract, but expose the V2 recipe/calculation
     # schema to the intent model. No dataset, process, product, or physical
@@ -283,6 +301,14 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     _set_embedded_source(
         node_index[RUNTIME_CLEANUP_NODE_ID],
         _common_component_path("24_runtime_payload_cleanup.py"),
+    )
+    # The session-state loader remains part of the active follow-up contract.
+    # Refresh it with the shared sources as well; otherwise a donor-only
+    # comment or implementation revision can make the exported node diverge
+    # from its standalone component source.
+    _set_embedded_source(
+        node_index["CustomComponent-Fti0r"],
+        ROOT / "langflow_components" / "session_state_flow" / "00_mongodb_session_state_loader.py",
     )
     node_index[INTENT_PROMPT_NODE_ID]["data"]["node"]["template"]["template"]["value"] = (
         _component_path("03_intent_prompt_template_ko.md").read_text(encoding="utf-8")
@@ -475,10 +501,14 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         node_index[MESSAGE_ADAPTER_NODE_ID],
         _component_path("21_v2_answer_message_adapter.py"),
     )
-    # Keep the deterministic Fast contract visible when diagnostics are
-    # enabled, including follow-up turns.  The adapter renders the bounded
-    # function display without invoking another model.
+    # Keep diagnostics opt-in while the user-facing intermediate-result
+    # preview remains a separate, bounded display option.
     adapter_template = node_index[MESSAGE_ADAPTER_NODE_ID]["data"]["node"].get("template", {})
+    # These legacy body sections were intentionally removed.  Follow-up
+    # questions remain Message metadata, and curated intermediate tables have
+    # their own display switch below.
+    for obsolete_field in ("show_analysis_evidence", "show_next_questions"):
+        adapter_template.pop(obsolete_field, None)
     if isinstance(adapter_template.get("show_pandas_code"), dict):
         adapter_template["show_pandas_code"]["value"] = True
     if not isinstance(adapter_template.get("show_intermediate_results"), dict):
@@ -547,11 +577,19 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     field_order = [
         name
         for name in list(adapter_node.get("field_order") or [])
-        if name not in {"show_intermediate_results", "intermediate_preview_limit"}
+        if name
+        not in {
+            "show_analysis_evidence",
+            "show_next_questions",
+            "show_intermediate_results",
+            "intermediate_preview_limit",
+        }
     ]
     insertion_index = (
-        field_order.index("show_analysis_evidence") + 1
-        if "show_analysis_evidence" in field_order
+        field_order.index("table_preview_limit") + 1
+        if "table_preview_limit" in field_order
+        else field_order.index("show_result_table") + 1
+        if "show_result_table" in field_order
         else len(field_order)
     )
     field_order[insertion_index:insertion_index] = [

@@ -1,134 +1,80 @@
 # metadata_driven_v5
 
-Langflow standalone 환경에서 실행하는 메타데이터 기반 제조 데이터 분석 에이전트입니다. v4 구현과 제공된 `1.1 data_analysis_flow_후속질문.json`을 기준으로 다시 구성했으며, 현재 기본 실행 모드는 `dummy`입니다. Oracle, H-API, Datalake, Goodocs 컴포넌트도 export에 포함되어 있어 환경 설정 후 `live`로 전환할 수 있습니다.
+Langflow standalone 환경에서 실행하는 메타데이터 기반 제조 데이터 분석 에이전트입니다. 등록된 Domain, Table Catalog, Main Flow Filter를 근거로 질의를 해석하고, Fast 고정 실행 또는 Complex pandas 분석으로 결과를 만듭니다.
 
-## 기본 개발 기준
+기준 런타임은 **Langflow 1.9.2 / langflow-base 0.9.2 / LFX 0.4.2 / Python 3.12**입니다.
 
-앞으로 별도 요청이 없으면 이 저장소의 신규 구현, 수정, Flow JSON 재생성, import 검증은 모두 `Langflow 1.9.2 / langflow-base 0.9.2 / LFX 0.4.2`를 기준으로 진행합니다. 설치 환경의 `latest` 또는 더 최신 Desktop 템플릿을 자동으로 현재 기준으로 간주하지 않습니다. 다른 버전 호환 작업은 명시적으로 요청된 경우에만 수행하며, 1.9.2 기준 회귀 검증을 함께 진행합니다.
+## 현재 지원 Flow
 
-세부 작업 원칙은 루트 [AGENTS.md](AGENTS.md), 설치·검증 방법은 [Langflow 1.9.2 전환 기준](docs/LANGFLOW_1_9_2_MIGRATION.md)을 따릅니다.
+| 번호 | Flow | 역할 |
+| ---: | --- | --- |
+| 01 | `v5_data_analysis` | 일반 메타데이터 기반 데이터 조회·분석. Fast/Complex Hybrid 실행 |
+| 02 | `v5_domain_saving` | 작업자 자연어 Domain 설명 저장 |
+| 03 | `v5_table_catalog_saving` | 실제 데이터셋·컬럼·조회 조건 Catalog 저장 |
+| 04 | `v5_main_flow_filter_saving` | 공통 필터 규칙 저장 |
+| 05 | `v5_metadata_qa` | 등록된 메타데이터 질의응답 |
+| 06 | `v5_agent_tool_router` | 일반 질의를 01 또는 지원 Tool로 라우팅 |
+| 07 | `v5_realtime_production_report` | 정해진 실시간 생산 Report 생성 |
+| 08 | `v5_data_analysis_continuation` | 상위 결과를 이용한 최대 2단계 종속 조회 |
+| 09 | `v5_agent_tool_router_continuation` | 08을 선택적으로 호출하는 Router |
 
-## 바로 확인할 파일
+`01`은 기본 Data Analysis Flow입니다. `08/09`는 첫 조회 결과의 식별자를 두 번째 조회 조건으로 전달해야 하는 경우에만 사용합니다.
 
-- 가져오기용 Flow: `flow_exports/data_analysis_flow_v2_standalone.json`
-- 전체 9개 Flow 단일 Import: `import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
-- 단일 호출 Agent + Tool Mode Router: `import_ready_flows/06_agent_tool_router_flow_v5_standalone.json`
-- 실시간 생산 판정 더미 데이터·HTML Report Flow: `import_ready_flows/07_realtime_production_report_flow_v5_standalone.json`
-- 최대 2단계 종속 조회 Data Analysis Flow: `import_ready_flows/08_data_analysis_flow_v2_continuation_standalone.json`
-- 종속 조회 전용 Agent + Tool Router: `import_ready_flows/09_agent_tool_router_continuation_flow_v5_standalone.json`
-- 06 커스텀 원본: `langflow_components/route_flow_v2/`
-- 07 커스텀 원본과 연결 가이드: `langflow_components/realtime_production_report_flow/`
-- Workflow Orchestrator 구현·운영 계약: `docs/ROUTE_V4_WORKFLOW_ORCHESTRATOR_IMPLEMENTATION.md`
-- Workflow 문서·registry 작성 예시: `docs/workflows/`
-- 전체 커스텀 원본 감사: `docs/CUSTOM_COMPONENT_SOURCE_AUDIT_20260712.md`
-- 현재 버전 정리 보고서: `docs/CURRENT_VERSION_CLEANUP_20260712.md`
-- Flow 재생성 도구: `tools/build_v5_data_analysis_flow.py`
-- Data Analysis 연결표: `langflow_components/data_analysis_flow/CONNECTION_GUIDE.md`
-- v5 변경 보고서: `docs/V5_IMPLEMENTATION_REPORT.md`
-- Router 수정·Agent Tool 구현 보고서: `docs/ROUTER_FIX_AND_AGENT_TOOL_IMPLEMENTATION_REPORT_20260711.md`
-- payload 계약: `docs/V5_PAYLOAD_CONTRACT.md`
-- 환경변수 예시: `.env.example`
-- FastAPI 두 서버 운영 가이드: `docs/FASTAPI_SERVERS_OPERATIONS_GUIDE.md`
+## Import-ready Flow
 
-## FastAPI 운영 서버
+- 전체 9개 Flow: [00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json](import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json)
+- 개별 Flow와 import 방법: [README_IMPORT.md](import_ready_flows/README_IMPORT.md)
+- 기본 Data Analysis: [01_data_analysis_flow_v2_standalone.json](import_ready_flows/01_data_analysis_flow_v2_standalone.json)
+- Continuation Data Analysis: [08_data_analysis_flow_v2_continuation_standalone.json](import_ready_flows/08_data_analysis_flow_v2_continuation_standalone.json)
 
-Artifact Server는 Data Result CSV/JSON 다운로드와 HTML Report 수명주기를 담당하고, CUBE Scheduler Server는 외부 MongoDB 스케줄을 read-only로 읽어 예약 질의를 CUBE 챗봇에 전달합니다. 스케줄 등록은 12번 Langflow Flow가 별도 authoring MongoDB에 수행하며 Scheduler에는 등록·수정 API가 없습니다.
+Import 후에는 Langflow Provider 설정과 `MONGO_URL` Credential Global Variable을 설정합니다. 이미 저장된 Router의 `flow_id_selected`가 있으면, 해당 Tool의 대상 Flow를 한 번 다시 선택해 현재 import Flow ID로 갱신합니다.
 
-```powershell
-python -m artifact_server
-python -m cube_scheduler_server
-```
+## 답변 표시 원칙
 
-두 프로세스는 별도로 실행해야 합니다. 설정, MongoDB 권한 분리, health check와 운영 배포 기준은 [FastAPI 두 서버 운영 가이드](docs/FASTAPI_SERVERS_OPERATIONS_GUIDE.md)를 따릅니다.
+`21 V2 답변 메시지 어댑터`는 운영자가 필요한 정보만 선택해 표시합니다.
 
-## 실행과 검증
+- `중간 결과 표시`: 유지합니다. 정상 완료 시에는 최종 집계 전 중간 데이터, 오류 시에는 마지막 정상 중간 데이터를 고정 표와 다운로드 링크로 표시합니다.
+- `중간 산출물/helper 결과 표시`: 제거했습니다. 내부 step/helper trace는 본문에 노출하지 않습니다.
+- `다음 질문을 답변 본문에도 표시`: 제거했습니다. 연관 질문은 본문 중복 없이 Message metadata로만 전달합니다.
+- `중간 결과 미리보기 행 수`: 1~5 범위에서 조정할 수 있으며, LLM 입력 토큰에는 포함되지 않습니다.
+
+## 필요한 서버
+
+현재 운영 서버는 **Artifact Server 하나**입니다. 분석 결과 CSV/JSON 다운로드와 Flow 07의 HTML Report 저장·보기·다운로드를 제공합니다.
 
 ```powershell
 cd C:\Users\qkekt\Desktop\metadata_driven_v5
-python -m pip install -e .
-python -m pytest -q --basetemp=.pytest_tmp
-python tools\build_v5_data_analysis_flow.py
-python tools\validate_representative_questions.py
+python -m artifact_server
+```
+
+기본 주소는 `http://127.0.0.1:8765`입니다. `ARTIFACT_LISTEN_HOST`, `ARTIFACT_LISTEN_PORT`, `ARTIFACT_PUBLIC_BASE_URL`은 [.env.example](.env.example)에서 설정합니다.
+
+## Flow 재생성
+
+```powershell
+python tools\build_v5_auxiliary_flows.py
+python tools\build_data_analysis_flow_v2.py
+python tools\build_data_analysis_flow_v2_continuation.py
+python tools\build_agent_tool_router_continuation.py
+python tools\build_continuation_import_ready_bundle.py
+```
+
+## 검증
+
+```powershell
+python -m pytest tests/test_data_analysis_flow_v2.py tests/test_v5_flow_export.py -q --basetemp=.pytest-tmp
 python tools\validate_flow_component_sources.py
-```
-
-Flow JSON은 제공된 v4 export와 현재 폴더의 custom component/prompt 원본을 결합해 재현 가능하게 생성합니다. 빌더를 다시 실행한 뒤 테스트가 통과하면 checked-in export와 코드가 일치합니다.
-`tools/assets/langflow_1_9_2_language_model.py`는 더 최신 Desktop에서 빌더를 실행해도 1.10+ 전용 필드가 섞이지 않도록 고정한 Langflow 1.9.2 기본 Language Model 원본입니다.
-
-Langflow가 설치된 가상환경에서는 실제 LFX parser와 실행 서버도 검증할 수 있습니다.
-
-```powershell
 python tools\validate_langflow_runtime.py
-python tools\validate_langflow_runtime.py --server-url http://127.0.0.1:7860 --partial-build --stop-component-id "Prompt Template-AUpQz"
 ```
 
-별도 terminal 환경이 필요하면 export의 기준 버전에 맞춰 설치합니다.
+실제 Provider·MongoDB·원천 데이터 연결이 필요한 검증은 해당 운영 환경의 인증정보와 네트워크가 준비된 뒤 수행합니다. 연결 실패 시에는 모델이 데이터셋을 추측하지 않고, 메타데이터 연결 또는 등록 상태를 오류 원인으로 반환하도록 설계되어 있습니다.
 
-```powershell
-uv venv .langflow-venv --python 3.12
-uv pip install --python .langflow-venv\Scripts\python.exe `
-  "langflow==1.9.2" "langflow-base==0.9.2" "lfx==0.4.2"
-.langflow-venv\Scripts\langflow.exe run --host 127.0.0.1 --port 7860 --no-open-browser
-```
+## 핵심 설계
 
-## standalone 배치 원칙
+1. **메타데이터 우선**: 모델은 등록된 후보 안에서만 dataset·조건·분석 의도를 선택합니다. 실행 설정·실제 컬럼 바인딩은 Catalog 기반으로 결정합니다.
+2. **Fast/Complex 분기**: 단일 데이터셋의 조회·집계·정렬·상하위·최대/최소/개수는 고정 실행으로 처리하고, 조인·복합 계산은 제한된 pandas 경로로 처리합니다.
+3. **계약 기반 안전성**: 조회 schema, 필수 컬럼, output contract를 실행 전에 확인합니다. 계약 오류가 나도 마지막 정상 중간 결과와 다운로드 참조를 남깁니다.
+4. **종속 조회**: 08은 Typed continuation 계약과 결과 참조를 이용해 같은 세션에서 한 번만 이어 조회합니다. 첫 단계 답변 LLM과 두 번째 단계 Intent LLM은 생략합니다.
+5. **재사용성**: 업무별 Python 조건문 대신 Domain, Table Catalog, Main Flow Filter와 Typed IR primitive로 동작하도록 구성했습니다.
 
-- 각 `langflow_components/**/*.py`는 Langflow Custom Component 한 노드에 파일 전체를 붙여 넣을 수 있도록 작성했습니다.
-- Prompt와 모델 호출은 custom component에 숨기지 않고 Langflow 기본 Prompt Template, Language Model, Agent 노드에 둡니다.
-- 저장소 내부 모듈을 import하지 않아도 각 custom component가 동작하도록 구성합니다.
-- 운영 비밀값은 코드나 Flow JSON에 넣지 않습니다. MongoDB는 Langflow Credential Global Variable `MONGO_URL`을 각 Mongo 노드 입력에 바인딩하고, 실제 URI는 Langflow가 주입합니다.
-- v5는 별도 데이터 복제 없이 v4와 같은 `datagov` 데이터베이스의 `agent_v4_domain_items`, `agent_v4_table_catalog_items`, `agent_v4_main_flow_filters`, `agent_v4_result_store`, `agent_v4_session_states` collection을 직접 재사용합니다. 08 Workflow Orchestrator의 반복 업무 정의는 같은 데이터베이스의 `agent_v4_workflow_skills`에 별도로 저장합니다.
-- Flow 이름과 API endpoint는 v5로 유지되며, MongoDB database/collection은 노드 입력에 명시된 v4 공유 기본값을 사용합니다.
-
-## v5에서 달라진 핵심
-
-1. 전체 메타데이터를 LLM에 넘기지 않습니다. 도메인은 관련 항목만 최대 20건, 테이블은 관련 후보 5건, 메인 필터는 전체를 전달하며 최종 후보 JSON은 32KB로 제한합니다.
-2. LLM은 `dataset_key`만 선택합니다. `source_type`, SQL, endpoint 같은 실행 설정은 active table catalog에서 deterministic하게 주입합니다.
-3. 조회 분기에는 전체 main payload가 아니라 선택된 job bundle과 최소 request context만 전달합니다.
-4. 전체 helper library 대신 실제 선택된 함수 정의만 pandas prompt에 전달합니다.
-5. pandas 실행 노드는 하나만 두고, 최초 실행이 실제로 실패한 경우에만 이전 생성 코드와 실행 오류를 Repair LLM에 전달해 정확히 한 번 수정·재실행합니다. Repair Prompt 원문은 canvas의 `17B pandas 복구 프롬프트 템플릿` Text Input에서 직접 확인·편집하며, 오류 문맥 치환과 모델 호출은 실패 시점에 executor 내부에서 수행합니다. 최초 성공 시 Repair LLM은 호출하지 않으며 최종 payload와 Chat Output은 하나로 유지합니다.
-6. row는 `data.rows`, 실행 코드는 `trace.inspection.pandas_execution.generated_code`, 사용자 메시지는 API의 `message`가 각각 단일 소유합니다.
-7. 세션 상태 저장기를 최종 Message/API 경로의 필수 선행 노드로 연결해 저장이 병렬 side effect로 빠지지 않게 했습니다.
-8. `WORK_DT`, `WORK_DATE` 등 날짜 의미 컬럼은 `20200625`처럼 숫자로 보여도 `YYYYMMDD` 문자열로 보존하고 수량형 숫자로 변환하지 않도록 pandas 생성 프롬프트에 고정했습니다.
-9. 의도 분석의 `analysis_kind`는 현재 dataset·metric·grouping을 반영한 구체적인 이름을 사용하며, 제품별 계획 질문은 `target_plan_by_product`로 분류하도록 프롬프트 계약을 명시했습니다.
-10. pandas 코드는 `pd`와 `Series.where`/`mask`/`fillna`를 우선 사용합니다. LLM이 정확한 단독 구문 `import pandas as pd` 또는 `import numpy as np`를 생성해도 executor가 실제 import를 실행하지 않고 해당 줄을 제거한 뒤 `pd` 또는 제한형 `np` 계산 namespace를 주입합니다. 다른 import와 pandas/numpy 파일·네트워크 I/O API는 계속 차단합니다.
-11. Router를 제외한 모든 Flow는 Chat Output을 하나만 사용합니다. 저장 Flow 3종은 dry/live 그래프 분기와 두 번째 review LLM을 제거하고 단일 Writer 경로로 통합했습니다.
-12. 저장 Flow는 기존 v4 문서를 `registration_trace`만 제외해 Matcher로 직접 전달하며, Domain은 같은 section의 exact key와 유일한 normalized key/alias/display_name identity를 canonical target으로 사용합니다. `replace`에서 유사 항목이 있으면 교체하고 없으면 신규 저장하며, 복수 target으로 모호할 때만 저장하지 않습니다. 기존 전체 문서는 Request나 LLM prompt에 전달하지 않습니다.
-13. standalone 실행을 대기·재개하지 못하는 `ask` 중복 모드는 제거했습니다. 기본값은 기존 문서를 보존하는 `skip`이며, 기존 `ask` 입력도 `skip`으로 안전하게 정규화합니다.
-14. 모든 MongoDB 노드는 URI 입력을 화면에 노출하고 Langflow Credential Global Variable `MONGO_URL`에 바인딩합니다. database/collection은 `datagov` 및 각 `agent_v4_*` 기본값을 직접 사용하며, Python 컴포넌트는 OS의 `MONGODB_URI` fallback에 의존하지 않습니다.
-15. API Router의 `direct_answer`와 `clarification`은 예전 정상 Flow와 동일하게 Smart Router에서 각 Chat Output으로 직접 연결합니다. 추가 terminal Gate는 질문 JSON 카드를 별도로 표시하므로 제거했습니다. 또한 Chat Input은 Smart Router에만 연결하고 API caller 5개로 향하던 `session_source` fan-out edge를 제거했습니다. Langflow가 caller의 `session_id` 입력에 부모 세션을 자동 주입하므로 세션은 유지하면서 Smart Router 재빌드와 질문 Message 반복을 막습니다.
-16. Router 하위 Flow read timeout은 240초, 외부 Web/API client 기본 timeout은 300초입니다. timeout 상향은 장기 실행을 실패로 오판하지 않기 위한 여유이며 실행시간 자체를 줄이는 최적화는 아닙니다.
-17. pandas 안전 실행 namespace에 `zip`을 명시적으로 제공하고 최초/repair 프롬프트에 같은 builtin 계약을 노출해 `dict(zip(...))`가 불필요한 1회 repair를 유발하지 않도록 했습니다. 기존 오류 시 최대 1회 repair 계약은 그대로 유지합니다.
-18. 운영 기본 Router는 결정된 API 방식이며 Native Run Flow 노드가 없습니다. API caller 5개는 240초 read timeout과 원본 session 전달을 유지합니다.
-19. 별도 `Agent + Tool Mode Router`를 추가했습니다. 선택형 Tool 6개는 import 후 UI에서 저장한 현재 Flow ID를 우선 사용해 별도 이름 조회 없이 `cache_flow=true` 그래프 캐시를 재사용하고, ID가 비어 있을 때만 같은 실행 `user_id` 범위의 이름 fallback을 사용합니다. 여섯 번째 `run_realtime_production_report`는 질문에 `분석`이 있고 `실시간 생산 분석`·`실시간 분석`·`실시간 생산분석` 중 하나가 있을 때만 11번 Flow를 실행합니다. Agent Prompt가 우선 라우팅하고 Tool이 실행 직전에 같은 조건을 다시 검증합니다. Tool schema에는 node ID가 없는 필수 `question` 하나만 포함하고, 실행 직전에 현재 하위 Flow의 단일 Chat Input으로 변환합니다. Router Agent는 `n_messages=5`, `max_iterations=1`로 현재 저장 메시지를 제외한 이전 2턴을 사용하며, GaiA Input Adapter가 원본 Message ID를 보존해 현재 질문 중복을 제거합니다. `return_direct=true` 결과가 Agent 단계 카드에만 남는 LFX 0.4.2 경로도 GaiA Output Adapter가 최종 본문으로 복원합니다. 각 Tool은 실제 Tool wrapper 실행 경로에서도 부모 runtime/graph `session_id`를 자동 상속합니다.
-20. 하위 Flow를 직접 Playground에서 실행할 때는 Chat Input/Output 저장을 켜 답변을 정상 표시합니다. Router nested 호출에서는 API tweak 또는 runtime node-ID tweak로 하위 저장만 끄고 부모 Router가 질문·답변을 한 번만 저장합니다.
-21. Data Analysis의 각 `retrieval_job.required_params`는 다른 job에 의존하지 않는 완성된 값으로 작성합니다. 하나의 날짜·FAB·조 조건이 여러 데이터셋에 공통이면 각 job에 반복하고, `어제 재공과 오늘 생산량`처럼 범위가 다르면 job별 값을 분리합니다. 일반 재공 요청은 WIP grain을 사용하며 LOT·랏·LOT_ID 등 LOT 단위 근거가 있을 때만 `lot_status`를 선택합니다.
-22. Metadata QA의 제품 그룹 질문은 `product_terms`, 제품 집계 방법 질문은 `product_key_columns`와 관련 `analysis_recipes`만 선택합니다. 조건·제품 키·grain/group by 표는 등록 메타데이터를 authoritative 근거로 결정론적으로 만들며, 기본 Language Model 응답이 있더라도 해당 모드에서는 사용하지 않습니다.
-23. Tool이 없는 의도 분석·pandas 코드·답변·Metadata QA·저장 후보 추출 7개 단계는 Langflow 기본 `Language Model`로 통일했습니다. 실제 Cached Run Flow Tool이 연결된 07 단일 호출 Router만 기본 `Agent`를 유지하므로, 일반 모델 호출에는 빈 `tools=[]`가 전달되지 않습니다.
-24. Data Analysis는 명시적 `upstream_result_ref`가 있을 때만 같은 세션의 MongoDB 결과 전체를 `upstream_result` alias로 복원합니다. 다음 조회 파라미터는 Table Catalog의 신뢰된 `source_config.upstream_bindings`로만 연결하며, 선언 누락·충돌·상한 초과 시 broad query를 실행하지 않습니다. 일반 단일 실행과 기존 후속 질문 경로는 이 모드를 사용하지 않습니다.
-25. 08 Workflow Orchestrator는 자연어 번호 목록 또는 화면에 등록한 Workflow JSON을 `workflow.plan.v1`로 먼저 확정하고, Langflow 기본 Loop가 최대 4단계를 한 번에 하나씩 실행합니다. 등록 Skill과 일치하지 않아도 일곱 Tool의 이름·설명·`result_ref` capability catalog 안에서 해결할 수 있으면 `workflow_key=inline` 계획을 생성합니다. 계획 생성과 마지막 종합에만 기본 Language Model을 사용하며, 단계 실행 중에는 지정 Tool 하나만 호출합니다. `depends_on`은 순서를, `handoff=result_ref`는 실제 MongoDB 결과 전달을 담당합니다.
-26. 08 Workflow Orchestrator는 운영 기본값으로 `datagov.agent_v4_workflow_skills`의 active 문서를 조회하고, 현재 질문과 관련된 후보만 최대 8개·64KB로 제한해 계획 모델과 파서에 함께 전달합니다. `inline_seed`는 명시적 테스트 모드이며 MongoDB 오류 시 자동 fallback하지 않습니다.
-27. 09 Workflow Skill 저장 Flow는 자연어 등록 요청에서 LLM 후보를 한 번 생성한 뒤 Python이 최대 4단계, Tool 이름, dependency 순서, `result_ref` producer/consumer, 32KB payload를 결정론적으로 검증합니다. 기본은 `dry_run=true`이며 `replace`는 유사 1건 교체, 0건 신규 저장, 복수 건 차단으로 동작합니다.
-28. 10 HTML Visualization Flow는 `run_data_analysis`가 저장한 `result_ref`를 복원해 외부 CDN 없는 standalone HTML 차트를 생성하고, 화면에 보이는 `HTML Report API 주소`로 게시해 절대 보기·다운로드 링크를 반환합니다. 08은 그래프·차트 요청을 `run_data_analysis → run_visualization` 두 단계와 `handoff=result_ref`로 순차 실행하므로 작은 시각화 조합마다 Skill을 미리 등록할 필요가 없습니다. 서버 실행과 링크 설정은 [HTML Report 링크 가이드](docs/HTML_REPORT_LINK_GUIDE.md)를 참고합니다.
-29. Data Analysis의 분석 결과와 사용 원본 데이터는 23번 MongoDB Result Store에 기본 1시간 보관됩니다. 23번이 직접 CSV 다운로드 URL을 발급하고 21번은 이를 Markdown과 GaiA `metadata.urls`로 표시합니다. 링크는 미리보기 화면 없이 파일을 반환하며, 실행·배포 방법은 [Data Result 다운로드 서버 가이드](docs/DATA_RESULT_DOWNLOAD_SERVER_GUIDE.md)를 참고합니다.
-30. 11 Realtime Production Report Flow는 Domain Metadata의 공정그룹을 LLM이 하나 선택하고 결정론적 Gate가 질문 근거를 재검증한 뒤, 약 500행의 판정 더미 Snapshot에서 해당 그룹만 필터링합니다. 이후 생산실적·생산부족 원인·CAPA실적·장비Assign 조정 집계는 고정 Python Rule로 실행합니다. 채팅에는 compact KPI와 링크만 반환하고, HTML에는 SVG Donut Chart, Radio 필터, 검색, 핵심/전체 컬럼 전환, 현재 보기 CSV 다운로드를 제공합니다. 운영 전환 시 공정그룹 카탈로그를 MongoDB 모드로 바꾸고 더미 노드만 실제 `production.judgement.dataset.v1` Snapshot 로더로 교체합니다.
-
-## 검증 상태와 현재 제약
-
-- 이 작업 환경에서는 실제 Oracle/H-API/Datalake/Goodocs 자격증명과 원천 데이터가 없어 dummy 경로로 검증했습니다.
-- 자동 검증 대상 대표 질문 30개는 trusted catalog hydration, 선택 helper, pandas 실행, 답변/API adapter를 포함한 deterministic dummy 경로에서 30/30 통과했습니다. 기존 질문뿐 아니라 NULL 표시, W/BM·A조, OPER_SEQ 구간, DA 그룹, FC78 제품 token, UPH 기본 상세 컬럼도 포함합니다. `LOT_ID`가 필수인 HOLD history는 선행 LOT 결과가 있는 멀티턴 검증으로 분리했습니다.
-- 대표 dummy 질문 30/30이 통과했습니다.
-- Data Analysis의 복합 지표는 Domain payload에 등록된 `temporal_semantics`, source별 `metric_bindings`, strict `result_columns` 계약으로 검증합니다. Intent Normalizer는 업무 표현을 하드코딩하지 않고 선택된 Domain의 dataset·날짜 파라미터·offset을 공통 해석합니다. 생산실적+아침재공은 각 source를 독립 집계해 병합하고, 이전 제품 결과+장비 후속 질문은 Table Catalog와 이전 `resolved_grain_plan`이 확정한 physical key로 내부 left join하여 metric 복사·중복 alias·수동 컬럼 map 오류를 차단합니다. 이번 변경 범위의 continuation·router·bundle 회귀와 Typed IR route 테스트를 실행했고, 정확한 Langflow 1.9.2 환경의 Flow 08/09 component parse 및 15개 Flow source-sync를 별도로 검증했습니다.
-- 기준 런타임은 `langflow 1.9.2`, `langflow-base 0.9.2`, `lfx 0.4.2`입니다. 전체 커스텀 소스와 현재 15개 Flow의 code-bearing Component node template 298개를 이 조합에서 파싱하고, export/import JSON의 node·edge·source 동기화 계약을 함께 검증합니다.
-- Workflow Orchestrator의 `result_ref` 연계 호출은 `agent_v4_result_store`를 사용하므로 `MONGO_URL`과 같은 부모/자식 `session_id`가 필수입니다. 저장된 결과가 없거나 다른 세션의 ref이면 후속 조회를 fail-closed로 중단합니다.
-- 실제 문제 실행 기록에서는 기존 06 Router의 session fan-out 때문에 ChatInput/SmartRouter가 각각 2회 빌드되고 비선택 direct/clarification Chat Output이 질문을 두 번 저장한 사실을 확인했습니다. 수정 JSON은 Chat Input outgoing edge를 Smart Router 한 개로 제한하며, 운영 provider를 사용한 최종 화면 재검증은 새 06을 import한 뒤 수행합니다.
-- 격리 Langflow 서버에는 `GOOGLE_API_KEY` Global Variable이 없어 Agent/LLM을 포함한 전체 Flow 실행은 수행하지 않았습니다. 운영 인스턴스에서는 같은 이름의 Global Variable 또는 회사 표준 provider 설정이 필요합니다.
-- 운영 전에는 Data Analysis Flow의 단일 설정인 `04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode=live`로 전환한 뒤 source별 최소 한 건 smoke test와 2-turn 후속질문 검증이 필요합니다. `07`에는 별도 모드 설정이 없습니다.
-
-## 한글 소스 설명과 JSON 동기화
-
-- `langflow_components`의 Python 85개에는 역할·입력·출력·처리 흐름·유지보수 포인트와 전체 함수 1445/1445의 인접 한글 설명이 들어 있습니다. private helper, 클래스 메서드, async 함수와 중첩 함수도 포함합니다.
-- JSON 문법은 구조 주석을 허용하지 않으므로, 한글 설명은 각 Custom Component의 `template.code.value`에 Python 주석으로 포함됩니다. Langflow 코드 편집기에서 원본과 동일하게 확인할 수 있습니다.
-- `.editorconfig`와 각 Python 파일 첫 줄의 UTF-8 선언으로 Windows 편집기의 인코딩 오저장을 예방합니다.
-- `python tools/add_korean_component_comments.py --check`와 `python tools/validate_korean_component_documentation.py`로 함수별 설명 누락·BOM·깨짐 문자·JSON 내장 코드·ZIP을 재검증할 수 있습니다. 자동 설명 규칙을 개선한 뒤에는 `--refresh-functions`로 기존 자동 주석을 갱신할 수 있습니다.
-- 자세한 적용 범위와 검증 결과는 `docs/KOREAN_COMPONENT_DOCUMENTATION_20260712.md`를 참고하세요.
+세부 설치 기준은 [LANGFLOW_1_9_2_MIGRATION.md](docs/LANGFLOW_1_9_2_MIGRATION.md), 현재 Flow·서버 운영 설명은 [ACTIVE_FLOWS_AND_RUNTIME.md](docs/ACTIVE_FLOWS_AND_RUNTIME.md)를 참고하세요.

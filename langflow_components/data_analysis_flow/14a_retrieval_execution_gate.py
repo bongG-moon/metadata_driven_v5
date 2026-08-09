@@ -174,6 +174,7 @@ def _preblocked_failures(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+# 함수 설명: 조회 검증·카탈로그 보정·스키마 해석 trace에서 실행을 막아야 하는 오류를 수집합니다.
 def _validation_failures(payload: dict[str, Any]) -> list[dict[str, Any]]:
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
     inspection = trace.get("inspection") if isinstance(trace.get("inspection"), dict) else {}

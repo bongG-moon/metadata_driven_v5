@@ -3,11 +3,12 @@
 # 컴포넌트 개요: 21 V2 답변 메시지 어댑터
 # 역할: 최종 답변과 결과 테이블에 Fast/Complex 경로와 고정 실행 함수를 포함해 서비스 채팅 메시지로 변환합니다.
 # 주요 입력: 페이로드 (payload) · 필수, 개발자 진단 포함 (include_diagnostics), 결과 테이블 표시
-#        (show_result_table), 결과 테이블 미리보기 행 수 (table_preview_limit), 중간 산출물/helper 결과 표시 (show_analysis_evidence), 다운로드 링크 표시 (show_download_links), 경고/참고
-#        표시 (show_notices), 적용 기준 표시 (show_applied_criteria), 다음 질문 표시 (show_next_questions), 의도 분석 표시
+#        (show_result_table), 결과 테이블 미리보기 행 수 (table_preview_limit), 중간 결과 표시
+#        (show_intermediate_results), 다운로드 링크 표시 (show_download_links), 경고/참고 표시
+#        (show_notices), 적용 기준 표시 (show_applied_criteria), 의도 분석 표시
 #        (show_intent_analysis), 데이터 조회 진단 표시 (show_data_retrieval), pandas 코드 표시 (show_pandas_code)
 # 주요 출력: 메시지 (message)
-# 처리 흐름: 구조화 답변을 표·다운로드·진단이 구분된 Markdown으로 만들고 GaiA metadata의 URL·후속 질문도 함께 구성합니다.
+# 처리 흐름: 구조화 답변을 표·다운로드·진단이 구분된 Markdown으로 만들고 client metadata의 URL·후속 질문도 함께 구성합니다.
 # 유지보수 포인트: 이 노드만 최종 Chat Output에 연결해 중간 질문이나 JSON이 대화 기록에 중복 출력되지 않게 합니다.
 # =============================================================================
 
@@ -61,14 +62,12 @@ def build_message(
     payload_value: Any,
     include_diagnostics: Any = False,
     show_result_table: Any = True,
-    show_analysis_evidence: Any = False,
     show_download_links: Any = True,
     show_notices: Any = True,
     show_intent_analysis: Any = "",
     show_data_retrieval: Any = "",
     show_pandas_code: Any = "",
     show_applied_criteria: Any = True,
-    show_next_questions: Any = True,
     table_preview_limit: Any = DEFAULT_TABLE_PREVIEW_LIMIT,
     show_intermediate_results: Any = False,
     intermediate_preview_limit: Any = DEFAULT_INTERMEDIATE_PREVIEW_LIMIT,
@@ -79,14 +78,12 @@ def build_message(
     options = _message_options(
         include_diagnostics,
         show_result_table,
-        show_analysis_evidence,
         show_download_links,
         show_notices,
         show_intent_analysis,
         show_data_retrieval,
         show_pandas_code,
         show_applied_criteria,
-        show_next_questions,
         show_intermediate_results,
     )
     answer_sections = payload.get("answer_sections") if isinstance(payload.get("answer_sections"), dict) else {}
@@ -119,8 +116,6 @@ def build_message(
         else _result_table_section(payload, preview_limit)
     )
     optional_sections = []
-    if options["analysis_evidence"]:
-        optional_sections.extend([_step_outputs_section(payload), _function_case_results_section(payload)])
     if options["intermediate_results"]:
         optional_sections.append(_intermediate_results_section(payload, intermediate_limit))
     optional_sections.append(result_table_section)
@@ -149,7 +144,7 @@ def _message_sections_from_answer_sections(
     table_preview_limit: Any = DEFAULT_TABLE_PREVIEW_LIMIT,
     intermediate_preview_limit: Any = DEFAULT_INTERMEDIATE_PREVIEW_LIMIT,
 ) -> list[str]:
-    options = options or _message_options(False, True, True, True, True, "", "", "", True, True, False)
+    options = options or _message_options(False, True, True, True, "", "", "", True, False)
     sections: list[str] = []
     summary = answer_sections.get("summary") if isinstance(answer_sections.get("summary"), dict) else {}
     answer = str(summary.get("headline") or payload.get("answer_message") or "").strip()
@@ -172,16 +167,12 @@ def _message_sections_from_answer_sections(
             sections.append(applied)
 
     optional_sections = []
-    if options["analysis_evidence"]:
-        optional_sections.extend([_step_outputs_section(payload), _function_case_results_section(payload)])
     if options["intermediate_results"]:
         optional_sections.append(_intermediate_results_section(payload, intermediate_preview_limit))
     if options["download_links"]:
         optional_sections.append(_download_links_section(payload))
     if options["notices"]:
         optional_sections.append(_notice_section_from_answer_sections(answer_sections))
-    if options["next_questions"]:
-        optional_sections.append(_next_questions_section_from_answer_sections(answer_sections))
     for section in optional_sections:
         if section:
             sections.append(section)
@@ -303,25 +294,13 @@ def _notice_section_from_answer_sections(answer_sections: dict[str, Any]) -> str
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-# 함수 설명: `_next_questions_section_from_answer_sections()`는 questions·응답 section·원본·답변을 최종 Message에 넣을 독립 Markdown
-#        section으로 렌더링합니다.
-def _next_questions_section_from_answer_sections(answer_sections: dict[str, Any]) -> str:
-    questions = answer_sections.get("next_questions")
-    questions = [str(item).strip() for item in questions if str(item or "").strip()] if isinstance(questions, list) else []
-    if not questions:
-        return ""
-    lines = ["### 다음에 볼 만한 질문"]
-    lines.extend(f"- {_escape_markdown_tilde(question)}" for question in questions[:3])
-    return "\n".join(lines)
-
-
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
 
 
-# 함수 설명: 21번 결과를 GaiA 채팅의 reference·연관 질문 UI가 해석할 canonical metadata로 변환합니다.
+# 함수 설명: 21번 결과를 클라이언트의 reference·연관 질문 UI가 해석할 canonical metadata로 변환합니다.
 def build_response_metadata(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     answer_sections = payload.get("answer_sections") if isinstance(payload.get("answer_sections"), dict) else {}
@@ -384,19 +363,26 @@ def _answer_markdown(text: Any) -> str:
 
 # 함수 설명: `_display_answer_text()`는 답변·문자열을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_answer_text(text: str, options: dict[str, bool]) -> str:
-    disabled_headings: list[str] = []
+    # Raw step/helper trace and suggested-question text are delivery metadata,
+    # not answer-body content.  They are therefore always removed even when a
+    # restored legacy payload happens to include the old headings.
+    disabled_headings: list[str] = [
+        "분석 과정 요약",
+        "분석 근거",
+        "중간 분석 산출물",
+        "helper 실행 결과",
+        "Helper 실행 결과",
+        "다음에 볼 만한 질문",
+        "다음 질문",
+    ]
     if not options.get("result_table"):
         disabled_headings.extend(["결과 테이블", "결과표"])
-    if not options.get("analysis_evidence"):
-        disabled_headings.extend(["분석 과정 요약", "분석 근거", "중간 분석 산출물", "helper 실행 결과", "Helper 실행 결과"])
     if not options.get("download_links"):
         disabled_headings.extend(["데이터 다운로드", "다운로드"])
     if not options.get("notices"):
         disabled_headings.extend(["경고/오류", "경고", "오류", "참고"])
     if not options.get("applied_criteria"):
         disabled_headings.append("적용 기준")
-    if not options.get("next_questions"):
-        disabled_headings.extend(["다음에 볼 만한 질문", "다음 질문"])
     if not options.get("intent_analysis"):
         disabled_headings.append("의도 분석")
     if not options.get("data_retrieval"):
@@ -497,29 +483,6 @@ def _result_table_section(
     return "### 결과 테이블\n" + _markdown_table(preview_rows, columns, column_labels) + note
 
 
-# 함수 설명: `_step_outputs_section()`는 outputs·응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
-def _step_outputs_section(payload: dict[str, Any]) -> str:
-    outputs = _analysis_items(payload, "step_outputs")
-    if not outputs:
-        return ""
-    lines = ["### 중간 분석 산출물"]
-    for item in outputs[:6]:
-        if not isinstance(item, dict):
-            continue
-        label = str(item.get("description") or item.get("key") or item.get("role") or "중간 결과").strip()
-        row_count = item.get("row_count")
-        columns = item.get("columns") if isinstance(item.get("columns"), list) else []
-        display_columns = _string_list(item.get("display_columns"))
-        column_labels = _dict_value(item.get("column_labels"))
-        preview_rows = item.get("preview_rows") if isinstance(item.get("preview_rows"), list) else []
-        lines.append(f"- {label}: 행 수 `{_display_value(row_count)}`")
-        if columns:
-            lines.append(f"  - 컬럼: `{_display_value(columns)}`")
-        if preview_rows:
-            lines.append(_markdown_table(preview_rows[:3], _display_columns(columns, preview_rows, display_columns), column_labels))
-    return "\n".join(lines)
-
-
 # 함수 설명: bounded 중간 결과 체크포인트를 독립된 Markdown 표로 렌더링합니다.
 def _intermediate_results_section(
     payload: dict[str, Any],
@@ -613,96 +576,6 @@ def _selected_intermediate_results(outputs: Any, payload: dict[str, Any]) -> lis
     # last item is also the safest fallback for older saved traces because it
     # represents the latest completed execution stage.
     return [items[-1]]
-
-
-# 함수 설명: `_function_case_results_section()`는 Function Case·결과·응답 section을 최종 Message에 넣을 독립 Markdown section으로
-#        렌더링합니다.
-def _function_case_results_section(payload: dict[str, Any]) -> str:
-    results = _analysis_items(payload, "function_case_results")
-    if not results:
-        return ""
-    lines = ["### helper 실행 결과"]
-    seen_previews: set[str] = set()
-    for item in results[:6]:
-        if not isinstance(item, dict):
-            continue
-        function_name = str(item.get("function_name") or "function_case").strip()
-        input_text = str(item.get("input_text") or "").strip()
-        description = str(item.get("description") or "").strip()
-        matched_count = item.get("matched_count", item.get("row_count"))
-        columns = item.get("columns") if isinstance(item.get("columns"), list) else []
-        preview_rows = item.get("preview_rows") if isinstance(item.get("preview_rows"), list) else []
-        display_columns = _string_list(item.get("display_columns"))
-        if function_name == "match_product_tokens" and not display_columns:
-            display_columns = _function_case_product_columns(columns, preview_rows)
-        column_labels = _dict_value(item.get("column_labels"))
-        compact_rows, compact_columns = _compact_function_case_preview(preview_rows, columns, display_columns)
-        dedupe_key = json.dumps({"function_name": function_name, "input_text": input_text, "rows": compact_rows}, ensure_ascii=False, sort_keys=True, default=str)
-        if dedupe_key in seen_previews:
-            continue
-        seen_previews.add(dedupe_key)
-        display_count = matched_count if matched_count not in (None, "") else len(compact_rows)
-        label = description or function_name
-        lines.append("")
-        lines.append(f"**{_escape_markdown_tilde(label)}**")
-        if input_text:
-            lines.append(f"- 입력: `{_escape_markdown_tilde(input_text)}`")
-        lines.append(f"- 전체 매칭: `{_display_value(display_count)}`건")
-        if compact_rows:
-            preview_count = len(compact_rows[:3])
-            lines.append(f"- 미리보기: `{preview_count}`건 표시")
-            lines.append("")
-            lines.append(_markdown_table(compact_rows[:3], compact_columns, column_labels))
-    return "\n".join(lines)
-
-
-# 함수 설명: `_function_case_product_columns()`는 Function Case·product·컬럼 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
-def _function_case_product_columns(columns: list[Any], rows: list[Any]) -> list[str]:
-    existing = [str(column) for column in columns if str(column or "").strip()]
-    if not existing:
-        existing = _columns_from_rows(rows)
-    priority = [
-        "TECH",
-        "DENSITY",
-        "DEN",
-        "MODE",
-        "ORG",
-        "PKG1",
-        "PKG_TYPE1",
-        "PKG2",
-        "PKG_TYPE2",
-        "LEAD",
-        "MCP_NO",
-        "DEVICE",
-        "DEVICE_DESC",
-        "OPER_NAME",
-        "WIP",
-        "PRODUCTION",
-    ]
-    return [column for column in priority if column in existing]
-
-
-# 함수 설명: `_compact_function_case_preview()`는 함수·Function Case·미리보기에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
-def _compact_function_case_preview(rows: list[Any], columns: list[Any], display_columns: list[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
-    existing = [str(column) for column in columns if str(column or "").strip()]
-    if not existing:
-        existing = _columns_from_rows(rows)
-    preferred = [str(column) for column in (display_columns or []) if str(column or "").strip()]
-    compact_columns = [column for column in preferred if column in existing] if preferred else _display_columns(existing, rows, [])
-    if not compact_columns:
-        compact_columns = existing or _columns_from_rows(rows)
-    seen: set[tuple[Any, ...]] = set()
-    compact_rows: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        compact_row = {column: row.get(column, "") for column in compact_columns if column in row}
-        key = tuple(compact_row.get(column, "") for column in compact_columns)
-        if key in seen:
-            continue
-        seen.add(key)
-        compact_rows.append(compact_row)
-    return compact_rows, compact_columns
 
 
 # 함수 설명: `_analysis_items()`는 항목에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
@@ -1474,25 +1347,21 @@ def _truthy(value: Any) -> bool:
 def _message_options(
     include_diagnostics: Any,
     show_result_table: Any,
-    show_analysis_evidence: Any,
     show_download_links: Any,
     show_notices: Any,
     show_intent_analysis: Any,
     show_data_retrieval: Any,
     show_pandas_code: Any,
     show_applied_criteria: Any,
-    show_next_questions: Any,
     show_intermediate_results: Any = False,
 ) -> dict[str, bool]:
     diagnostics_default = _truthy(include_diagnostics)
     return {
         "result_table": _option_enabled(show_result_table, True),
-        "analysis_evidence": _option_enabled(show_analysis_evidence, True),
         "intermediate_results": _option_enabled(show_intermediate_results, False),
         "download_links": _option_enabled(show_download_links, True),
         "notices": _option_enabled(show_notices, True),
         "applied_criteria": _option_enabled(show_applied_criteria, True),
-        "next_questions": _option_enabled(show_next_questions, True),
         "intent_analysis": diagnostics_default or _option_enabled(show_intent_analysis, False),
         "data_retrieval": diagnostics_default or _option_enabled(show_data_retrieval, False),
         "pandas_code": diagnostics_default or _option_enabled(show_pandas_code, False),
@@ -1550,13 +1419,6 @@ class AnswerMessageAdapter(Component):
             advanced=True,
         ),
         BoolInput(
-            name="show_analysis_evidence",
-            display_name="중간 산출물/helper 결과 표시",
-            value=False,
-            required=False,
-            advanced=True,
-        ),
-        BoolInput(
             name="show_intermediate_results",
             display_name="중간 결과 표시",
             info="조회 원본·필터 후·계산 전 결과의 제한된 미리보기를 표시합니다. 답변 LLM 프롬프트에는 포함하지 않습니다.",
@@ -1594,14 +1456,6 @@ class AnswerMessageAdapter(Component):
             advanced=True,
         ),
         BoolInput(
-            name="show_next_questions",
-            display_name="다음 질문을 답변 본문에도 표시",
-            info="GaiA 환경에서는 연관 질문 metadata로 항상 전달됩니다. 본문 중복 표시가 필요할 때만 켭니다.",
-            value=False,
-            required=False,
-            advanced=True,
-        ),
-        BoolInput(
             name="show_intent_analysis",
             display_name="의도 분석 표시",
             value=False,
@@ -1634,7 +1488,6 @@ class AnswerMessageAdapter(Component):
                 payload,
                 include_diagnostics=getattr(self, "include_diagnostics", False),
                 show_result_table=getattr(self, "show_result_table", True),
-                show_analysis_evidence=getattr(self, "show_analysis_evidence", False),
                 show_intermediate_results=getattr(self, "show_intermediate_results", False),
                 intermediate_preview_limit=getattr(
                     self,
@@ -1647,7 +1500,6 @@ class AnswerMessageAdapter(Component):
                 show_data_retrieval=getattr(self, "show_data_retrieval", False),
                 show_pandas_code=getattr(self, "show_pandas_code", False),
                 show_applied_criteria=getattr(self, "show_applied_criteria", True),
-                show_next_questions=getattr(self, "show_next_questions", False),
                 table_preview_limit=getattr(
                     self,
                     "table_preview_limit",

@@ -200,7 +200,9 @@ result = df.groupby([\"OPER_NAME\", \"MCP_NO\", \"DATE\"], dropna=False)[\"PRODU
     checkpoints = result["intermediate_results"]
     assert len(checkpoints) == 1
     checkpoint = checkpoints[0]
-    assert checkpoint["role"] == "filtered_source"
+    # 최종 계산 결과가 필터 적용 결과와 같으면, 사용자가 조건 전후를 비교할 수
+    # 있도록 최종 집계 전 원본 source를 대표 중간 결과로 선택한다.
+    assert checkpoint["role"] == "source_input"
     assert checkpoint["row_count"] == 2
     assert checkpoint["description"].startswith("최종 집계 전 중간 데이터")
     assert result["_intermediate_download_rows"]["last_successful"]["rows"] == [
@@ -530,6 +532,14 @@ def test_catalog_closure_protects_domain_dependency_tables_within_five(catalog_c
     keys = [item["key"] for item in result["metadata_candidates"]["table_catalog_items"]]
     assert keys[:2] == ["entity_index", "entity_history"]
     assert len(keys) == 5
+    assert result["table_catalog_registry"]["dataset_keys"] == [
+        "entity_index",
+        "entity_history",
+        "temporal_a",
+        "temporal_b",
+        "temporal_c",
+        "temporal_d",
+    ]
     trace = result["metadata_load"]["dependency_catalog_closure"]
     assert trace["status"] == "complete"
     assert trace["included_dataset_refs"] == ["entity_index", "entity_history"]

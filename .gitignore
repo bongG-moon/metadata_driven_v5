@@ -15,6 +15,8 @@ __pycache__/
 .tmp/
 validation_outputs/pytest_tmp*/
 validation_outputs/*.json
+validation_outputs/
+metadata_exports/
 .validation_live_continuation*.json
 .coverage
 coverage.xml
@@ -34,6 +36,7 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+artifact_server/storage/
 validation_runs/
 benchmark_results/
 *.log

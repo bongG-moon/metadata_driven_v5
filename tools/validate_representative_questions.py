@@ -16,7 +16,11 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# The representative fixture follows the supported V2 execution components.
+# Shared retrieval components remain in ``FLOW``; V2 owns planning, hybrid
+# pandas execution, answer construction, and message rendering.
 FLOW = ROOT / "langflow_components" / "data_analysis_flow"
+V2_FLOW = ROOT / "langflow_components" / "data_analysis_flow_v2"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -1068,20 +1072,20 @@ def load_flow_modules() -> dict[str, Any]:
         "main_loader": load_module(FLOW / "01c_mongodb_main_variable_loader.py"),
         "candidates": load_module(FLOW / "01d_metadata_candidates_builder.py"),
         "request": load_module(FLOW / "00_analysis_request_loader.py"),
-        "intent_vars": load_module(FLOW / "02_intent_variables_builder.py"),
-        "intent": load_module(FLOW / "04_intent_plan_normalizer.py"),
+        "intent_vars": load_module(V2_FLOW / "02_intent_variables_builder.py"),
+        "intent": load_module(V2_FLOW / "04_intent_plan_normalizer.py"),
         "hydrator": load_module(FLOW / "04a_trusted_retrieval_job_hydrator.py"),
         "validator": load_module(FLOW / "06_retrieval_job_validator.py"),
         "router": load_module(FLOW / "07_retrieval_job_router.py"),
         "dummy": load_module(FLOW / "08_dummy_data_retriever.py"),
         "merger": load_module(FLOW / "13_source_retrieval_merger.py"),
         "adapter": load_module(FLOW / "14_retrieval_payload_adapter.py"),
-        "pandas_vars": load_module(FLOW / "15_pandas_variables_builder.py"),
+        "pandas_vars": load_module(V2_FLOW / "16_route_aware_pandas_prompt_builder.py"),
         "helper_builder": load_module(FLOW / "15a_selected_helper_code_builder.py"),
-        "executor": load_module(FLOW / "17_pandas_code_executor.py"),
-        "answer_vars": load_module(FLOW / "18_answer_variables_builder.py"),
-        "answer_builder": load_module(FLOW / "20_answer_response_builder.py"),
-        "message_adapter": load_module(FLOW / "21_answer_message_adapter.py"),
+        "executor": load_module(V2_FLOW / "17_hybrid_analysis_executor.py"),
+        "answer_vars": load_module(V2_FLOW / "18_route_aware_answer_prompt_builder.py"),
+        "answer_builder": load_module(V2_FLOW / "20_hybrid_answer_builder.py"),
+        "message_adapter": load_module(V2_FLOW / "21_v2_answer_message_adapter.py"),
         "api_builder": load_module(FLOW / "22_api_response_builder.py"),
     }
 

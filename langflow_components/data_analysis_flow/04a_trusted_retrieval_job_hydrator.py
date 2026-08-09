@@ -158,7 +158,13 @@ def hydrate_retrieval_jobs(
                 ),
                 "",
             )
-            if supplied_key:
+            # An upstream binding is an optional way to fill a missing
+            # required parameter.  It must never replace a concrete value
+            # supplied in the current question (for example, a direct list of
+            # identifiers for an ``IN`` query).
+            if supplied_key and _blank_required_param_value(
+                supplied_params.get(supplied_key)
+            ):
                 supplied_params.pop(supplied_key, None)
                 replaced_by_previous_result_binding.append(target_name)
         clean_job["required_params"] = supplied_params
@@ -167,7 +173,9 @@ def hydrate_retrieval_jobs(
         missing_params = [
             name
             for name in required_names
-            if _casefold_dict_value(supplied_params, name) in (None, "", [], {})
+            if _blank_required_param_value(
+                _casefold_dict_value(supplied_params, name)
+            )
         ]
         upstream_targets = _upstream_target_params(
             source_config,
@@ -270,6 +278,7 @@ def _catalog_items(value: Any) -> list[dict[str, Any]]:
     return [deepcopy(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else []
 
 
+# 함수 설명: Table Catalog 로더 상태와 등록 목록을 함께 확인해 연결 실패 또는 미등록 상태를 안전한 오류 계약으로 분류합니다.
 def _table_catalog_metadata_issue(value: Any, catalog_items: list[dict[str, Any]]) -> dict[str, Any]:
     """Classify loader failure, empty registration, and safe provider detail."""
 
@@ -313,6 +322,7 @@ def _table_catalog_metadata_issue(value: Any, catalog_items: list[dict[str, Any]
     return {}
 
 
+# 함수 설명: 메타데이터 오류가 확인되면 LLM이 만든 조회 계획을 제거하고 하나의 차단 사유만 남깁니다.
 def _blocked_for_catalog_metadata(
     payload: dict[str, Any],
     plan: dict[str, Any],
@@ -353,6 +363,7 @@ def _blocked_for_catalog_metadata(
     return payload
 
 
+# 함수 설명: 연결 오류는 표시하되 MongoDB URI의 계정 정보는 가리고 길이를 제한합니다.
 def _safe_metadata_error_detail(value: Any) -> str:
     """Retain a bounded diagnostic while preventing a connection URI leak."""
 
@@ -715,6 +726,18 @@ def _casefold_dict_value(value: dict[str, Any], key: str) -> Any:
         if _contract_key(raw_key) == target:
             return item
     return None
+
+
+# 주요 함수: 필수 조회 조건의 빈 placeholder만 판별합니다.
+# 직접 입력한 0 또는 False 같은 유효 값은 빈 값으로 취급하지 않습니다.
+def _blank_required_param_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return not value
+    return False
 
 
 # 함수 설명: `_output_contract_with_default_detail()`은 상세 결과에만 trusted catalog 기본 컬럼을 required_columns로 합칩니다.

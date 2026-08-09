@@ -14,10 +14,9 @@
 
 ```text
 Chat Input
-  -> GaiA Input Adapter
-     -> 00B 공정그룹 선택 Prompt.question
-     -> 00C 공정그룹 선택 Gate.question
-     -> 01 Report 생성기.question
+  -> 00B 공정그룹 선택 Prompt.question
+  -> 00C 공정그룹 선택 Gate.question
+  -> 01 Report 생성기.question
 
 00A 공정그룹 카탈로그.process_group_catalog
   -> 00B 공정그룹 선택 Prompt.process_group_catalog
@@ -36,7 +35,6 @@ Language Model.text_output
   -> 01 실시간 생산 분석 Report 생성기.dataset
 
 01 Report 생성기.message
-  -> GaiA Output Adapter
   -> Chat Output
 
 01 Report 생성기.api_response
@@ -138,10 +136,10 @@ CSV에는 UTF-8 BOM을 넣어 Excel에서 한글이 깨지지 않게 합니다.
 }
 ```
 
-기본 `HTML Report API 주소`는 `http://127.0.0.1:8765`입니다.
+기본 `HTML Report API 주소`는 현재 결과 다운로드와 HTML Report를 함께 제공하는 Artifact Server의 `http://127.0.0.1:8765`입니다.
 
 ```powershell
-python tools\data_ref_download_server.py --host 127.0.0.1 --port 8765
+python -m artifact_server
 ```
 
 `HTML Report API 주소`가 비어 있거나 서버 연결에 실패하면 Langflow 저장소의 HTML은 남고 `status=partial`을 반환합니다. 단, 공정그룹 미지정 시에는 저장소와 Report API를 호출하지 않습니다.

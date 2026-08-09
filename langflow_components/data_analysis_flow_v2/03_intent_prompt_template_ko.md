@@ -18,6 +18,13 @@
 - 특화 지시는 선택된 metadata와 충돌하지 않는 범위에서만 적용하며, 충돌하면 Catalog/Domain 계약을 우선한다.
 - 실행 컬럼은 Table Catalog가 확정한 canonical column만 사용한다. 물리 컬럼명·표시 alias·사용자 표현을 pandas 계약에 섞지 않는다.
 
+Table Catalog 후보 비교:
+
+- `table_catalog_items[].intent_selection_hint`는 후보 비교를 돕는 Catalog 근거다. `use_when`, `exclude_when`, `matched_*`, `metric_columns`, `metric_default_rollups`를 함께 확인하되, 이것만으로 dataset을 강제 선택하지 않는다.
+- 최종 dataset 선택은 질문의 대상·요청 metric·필수 조건·사용 가능한 canonical column을 모두 만족하는 후보를 비교해 결정한다. 후보의 `use_when`과 질문이 맞고 `exclude_when`에 해당하지 않는 경우를 우선한다.
+- 선택한 dataset이 보유하지 않은 metric을 다른 수량 컬럼의 별칭으로 바꾸지 않는다. 예를 들어 Catalog가 `UPH`를 보유하지 않는 source의 `PRODUCTION`을 `UPH`로 출력하지 않는다.
+- 요청 metric을 지원하는 후보가 없거나 후보 간 의미가 유일하게 구분되지 않으면, 비슷해 보이는 dataset으로 대체하지 말고 clarification을 반환한다.
+
 날짜와 기준시점:
 
 - 상대 날짜는 `state_summary.request_context.reference_date`를 기준으로 해석하고 모델 실행 시점의 현재일을 추정하지 않는다.
@@ -32,6 +39,8 @@
 - 독립 질문은 `new_analysis + none`, 후속은 실제 재사용 방식에 맞는 `request_scope`와 `reference_mode`를 함께 작성한다.
 - 이전 결과 행을 새 source에 매칭하면 `previous_result_rows`와 `apply_row_match_groups`, 이전 결과를 재분석하면 `previous_result_transform`, 저장 원본 재사용은 `previous_source`, 조건만 상속한 새 조회는 `previous_filters`를 사용한다.
 - 후속 질문의 대상 컬럼이나 상세 이력이 직전 결과에 없으면 직전 집계 결과를 억지로 재가공하지 않는다. Catalog의 required/upstream binding이 있으면 dependent retrieval job과 `previous_result_rows`를 만들고, 없으면 재사용 가능한 원본 source 또는 직전 filter를 명시한다. 후속 재조회에서 `reference_mode=none`을 남기지 않는다.
+- Catalog의 upstream binding은 dataset을 후속 전용으로 만드는 규칙이 아니다. 현재 질문에 Catalog 필수 파라미터 값(예: LOT_ID)이 직접 있으면 해당 값을 `retrieval_jobs[].required_params`에 넣고 `new_analysis + none`으로 조회한다. 이전 결과 binding은 필수 파라미터 값이 질문에 없고, 직전 결과로만 채워야 할 때에만 사용한다.
+- 필수 파라미터가 여러 값이면 Catalog query의 `IN` 계약에 맞게 하나 이상의 값을 그대로 전달한다. 직접 입력한 값은 이전 결과 값으로 바꾸거나 제거하지 않는다.
 - 유지·변경·삭제·추가 조건은 `condition_resolution`의 해당 영역에 구분한다. 저장 source 범위가 부족하거나 필수 파라미터가 바뀌면 새 retrieval job을 만든다.
 
 조회와 typed pandas 계획:

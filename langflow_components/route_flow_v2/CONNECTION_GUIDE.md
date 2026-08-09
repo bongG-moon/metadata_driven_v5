@@ -13,7 +13,7 @@ Agent.response -> Chat Output.input_value
 - Chat Output은 정확히 하나입니다.
 - Chat Input은 Agent에만 한 번 연결합니다. Tool 6개는 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰는 경로에서도 실행 직전에 부모 runtime/graph `session_id`를 확정하므로 별도 세션 Message edge가 없습니다.
 - 각 Tool의 `cache_flow`와 `return_direct`는 `true`입니다.
-- Router Agent의 `n_messages`는 `5`, `max_iterations`는 `1`입니다. 이 값은 현재 저장 메시지 1개와 이전 사용자/응답 2턴 4개를 조회합니다. GaiA Input Adapter가 원본 Message ID를 보존하고 LFX Agent가 `input_value`와 ID가 같은 현재 메시지를 history에서 제거하므로, 모델에는 현재 질문이 중복되지 않은 이전 2턴만 전달됩니다. 선택된 Data Analysis Flow는 같은 부모 세션으로 저장된 분석 상태도 함께 복원합니다.
+- Router Agent의 `n_messages`는 `5`, `max_iterations`는 `1`입니다. 이 값은 현재 저장 메시지 1개와 이전 사용자/응답 2턴 4개를 조회합니다. Native Chat Input Message ID를 기준으로 현재 입력을 history에서 제거하므로, 모델에는 현재 질문이 중복되지 않은 이전 2턴만 전달됩니다. 선택된 Data Analysis Flow는 같은 부모 세션으로 저장된 분석 상태도 함께 복원합니다.
 - `flow_name_selected`는 기본 Run Flow처럼 새로고침 가능한 Flow 선택 드롭다운입니다. 실제 환경에서는 하위 Flow를 import한 뒤 각 Tool 노드에서 목록을 새로고침하고 대상을 다시 선택하면 현재 Flow ID가 `flow_id_selected`에 저장됩니다.
 - 기본 `Flow 해석 방식=Flow ID 우선`은 선택된 실제 ID를 먼저 확인합니다. 해당 ID가 현재 프로젝트에 있으면 최신 이름과 `updated_at`으로 실행하고, Flow 재import 등으로 ID가 사라졌을 때만 저장된 이름으로 현재 Flow를 다시 찾습니다.
 - 이름 검색을 완전히 금지하려면 각 Tool 노드에서 `Flow 해석 방식=선택한 Flow ID만`을 선택합니다. 이 모드에서 ID가 비어 있으면 잘못된 Flow를 실행하지 않고 대상 Flow 재선택 안내 오류를 반환합니다.
@@ -22,8 +22,8 @@ Agent.response -> Chat Output.input_value
 - 이름/ID 조회와 그래프 캐시는 Langflow가 component에 주입한 현재 실행 `user_id`를 사용합니다. `_user_id`가 없을 때는 Langflow 기본 속성이 부모 `graph.user_id`를 사용하며, custom component가 이 읽기 전용 값을 덮어쓰지 않습니다. Router와 하위 Flow 6종은 반드시 같은 사용자로 import하고 같은 사용자 또는 API key로 실행해야 합니다.
 - 선택된 ID는 실행할 때마다 현재 Flow metadata로 확인합니다. 그래프 캐시는 실제 `user_id + flow_id` 키를 사용하며, 대상 Flow의 현재 `updated_at`이 바뀌면 이전 그래프를 사용하지 않고 다시 구성합니다.
 - 캐시는 Flow 그래프 구성 비용만 줄입니다. 데이터 조회, pandas 실행, LLM 답변 결과는 매 요청 다시 실행합니다.
-- Flow를 선택하거나 목록을 새로고침해도 이 노드의 외부 출력은 `component_as_tool` 하나로 유지됩니다. 하위 Flow의 `message`, `gaia_response` 출력은 Tool 내부 실행 결과를 선택하는 데만 사용되며 Router canvas 포트로 노출되지 않습니다.
-- Langflow 1.9.2/LFX 0.4.2에서 `return_direct` Tool 결과가 Agent의 단계 카드에만 남고 본문이 비는 경우를 GaiA Output Adapter가 마지막 완료 Tool의 `content`에서 복원합니다. 따라서 하위 Flow 답변을 다시 LLM으로 재작성하지 않습니다.
+- Flow를 선택하거나 목록을 새로고침해도 이 노드의 외부 출력은 `component_as_tool` 하나로 유지됩니다. 하위 Flow의 native `message` 출력만 Tool 내부 실행 결과로 사용하며 Router canvas 포트로 노출되지 않습니다.
+- `return_direct=true`로 Tool 실행 뒤 결과를 다시 LLM으로 재작성하지 않습니다.
 - 하위 Flow에 화면용 `Chat Output.message`와 API용 구조화 terminal이 함께 있어도 Route V2는 현재 Chat Output만 실행 출력으로 활성화합니다. 다른 terminal은 해당 child 실행에서만 비활성화하므로 `return_direct=true` 결과가 하나의 Message로 끝납니다.
 
 ## Tool 매핑

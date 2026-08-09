@@ -7,9 +7,8 @@ import re
 
 import pandas as pd
 
-from test_langflow_components import ROOT, load_module
+from component_test_support import ROOT, load_module
 from tools.build_data_analysis_flow_v2 import build_flow
-from tools.build_v2_lazy_prompt_components import render_sources
 
 
 V2_ROOT = ROOT / "langflow_components" / "data_analysis_flow_v2"
@@ -24,16 +23,16 @@ def _modules():
 
 
 def _prompt_modules():
-    common_root = ROOT / "langflow_components" / "data_analysis_flow"
     return (
-        load_module(common_root / "15_pandas_variables_builder.py"),
-        load_module(common_root / "18_answer_variables_builder.py"),
+        load_module(V2_ROOT / "16_route_aware_pandas_prompt_builder.py"),
+        load_module(V2_ROOT / "18_route_aware_answer_prompt_builder.py"),
     )
 
 
-def test_v2_lazy_prompt_component_sources_are_generated_and_in_sync():
-    for path, expected in render_sources().items():
-        assert path.read_text(encoding="utf-8") == expected
+def test_v2_lazy_prompt_components_are_self_contained():
+    pandas_prompt, answer_prompt = _prompt_modules()
+    assert callable(pandas_prompt.build_route_aware_pandas_prompt)
+    assert callable(answer_prompt.build_route_aware_answer_prompt)
 
 
 def _single_source_payload(
@@ -128,13 +127,11 @@ def test_v2_flow_export_matches_current_native_graph():
         "include_diagnostics",
         "show_result_table",
         "table_preview_limit",
-        "show_analysis_evidence",
         "show_intermediate_results",
         "intermediate_preview_limit",
         "show_download_links",
         "show_notices",
         "show_applied_criteria",
-        "show_next_questions",
         "show_intent_analysis",
         "show_data_retrieval",
         "show_pandas_code",
@@ -387,6 +384,156 @@ def test_v2_normalizer_rejects_dataset_keys_not_present_in_live_catalog_snapshot
         assert normalized["intent_plan"]["retrieval_jobs"] == []
 
 
+def test_bounded_candidates_keep_full_execution_catalog_registry():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    catalog_items = [
+        {
+            "dataset_key": "production_today",
+            "payload": {"display_name": "Today Production", "columns": ["DATE", "PRODUCTION"]},
+        },
+        {
+            "dataset_key": "equipment_assign",
+            "payload": {"display_name": "Equipment Assignment", "columns": ["EQP_ID", "RECIPE_ID"]},
+        },
+    ]
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "today production"}},
+        [],
+        catalog_items,
+        [],
+        min_table_items=1,
+        max_table_items=1,
+    )
+
+    selected = result["metadata_candidates"]["table_catalog_items"]
+    registry = result["table_catalog_registry"]
+    assert len(selected) == 1
+    assert selected[0]["dataset_key"] == "production_today"
+    assert registry["dataset_keys"] == ["production_today", "equipment_assign"]
+    assert {item["dataset_key"] for item in registry["items"]} == {
+        "production_today",
+        "equipment_assign",
+    }
+    assert result["metadata_load"]["registered_dataset_count"] == 2
+    variables_builder = load_module(V2_ROOT / "02_intent_variables_builder.py")
+    model_candidates = json.loads(
+        variables_builder.build_variables({"request": {"question": "today production"}}, result)[
+            "metadata_candidates"
+        ]
+    )
+    assert [item["dataset_key"] for item in model_candidates["table_catalog_items"]] == [
+        "production_today"
+    ]
+    assert "table_catalog_registry" not in model_candidates
+
+
+def test_normalizer_hydrates_registered_dataset_outside_bounded_candidates():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    production_item = {
+        "dataset_key": "production_today",
+        "payload": {"columns": ["DATE", "PRODUCTION"]},
+    }
+    equipment_item = {
+        "dataset_key": "equipment_assign",
+        "payload": {
+            "columns": ["EQP_ID", "EQP_MODEL", "RECIPE_ID", "OPER_NM"],
+            "filter_mappings": {
+                "EQP_ID": ["EQP_ID"],
+                "EQP_MODEL": ["EQP_MODEL"],
+                "RECIPE_ID": ["RECIPE_ID"],
+                "OPER_NAME": ["OPER_NM"],
+            },
+        },
+    }
+    metadata = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [production_item],
+            "main_flow_filters": [],
+        },
+        "table_catalog_registry": {
+            "dataset_keys": ["production_today", "equipment_assign"],
+            "items": [production_item, equipment_item],
+        },
+        "metadata_load": {
+            "status": "ok",
+            "loads": {"table_catalog_items": {"status": "ok"}},
+        },
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "list equipment for recipe R0429"}},
+        {
+            "intent_plan": {
+                "analysis_kind": "recipe_equipment_list",
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "EQUIPMENT_ASSIGN",
+                        "source_alias": "equipment_source",
+                        "filters": {"RECIPE_ID": {"operator": "starts_with", "value": "R0429"}},
+                    }
+                ],
+                "pandas_execution_plan": [
+                    {
+                        "node_id": "select_equipment",
+                        "operation": "select_columns",
+                        "inputs": [{"kind": "external_source", "ref": "equipment_source"}],
+                        "source_alias": "equipment_source",
+                        "output_alias": "equipment_result",
+                    }
+                ],
+                "output_contract": {
+                    "result_mode": "detail",
+                    "result_columns": ["EQP_ID", "RECIPE_ID"],
+                },
+            }
+        },
+        metadata,
+    )
+
+    plan = normalized["intent_plan"]
+    assert plan["retrieval_jobs"][0]["dataset_key"] == "equipment_assign"
+    assert not any(
+        item.get("type") == "unregistered_dataset_key"
+        for item in plan.get("validation_errors", [])
+        if isinstance(item, dict)
+    )
+    resolution = normalized["trace"]["inspection"]["intent"]["execution_catalog_resolution"]
+    assert resolution["hydrated_dataset_keys"] == ["equipment_assign"]
+    assert {"section": "table_catalog", "key": "equipment_assign"} in normalized["metadata_refs"]
+
+
+def test_catalog_guard_uses_execution_registry_when_prompt_candidates_are_empty():
+    router = load_module(V2_ROOT / "03b_catalog_guarded_intent_router.py")
+    metadata = {
+        "metadata_candidates": {
+            "domain_items": [],
+            "table_catalog_items": [],
+            "main_flow_filters": [],
+        },
+        "table_catalog_registry": {
+            "dataset_keys": ["equipment_assign"],
+            "items": [{"dataset_key": "equipment_assign", "payload": {"columns": ["EQP_ID"]}}],
+        },
+        "metadata_load": {
+            "status": "ok",
+            "loads": {"table_catalog_items": {"status": "ok"}},
+        },
+    }
+    calls: list[str] = []
+    response, trace = router.route_intent_response(
+        {"request": {"question": "recipe equipment"}},
+        "intent prompt",
+        lambda prompt: calls.append(prompt) or '{"intent_plan":{"retrieval_jobs":[]}}',
+        metadata,
+    )
+
+    assert calls == ["intent prompt"]
+    assert trace["model_called"] is True
+    assert json.loads(response)["intent_plan"]["retrieval_jobs"] == []
+
+
 def test_fast_route_skips_full_pandas_prompt_serialization(monkeypatch):
     pandas_prompt, _ = _prompt_modules()
     payload = {"simple_analysis_contract": {"route": "fast"}}
@@ -425,7 +572,7 @@ def test_complex_route_uses_compact_function_case_selection_not_helper_source():
     actual = pandas_prompt.build_route_aware_pandas_prompt(payload, template, helper_source)
     assert actual == expected
     assert helper_source not in actual
-    assert "executor가 안전성 검증 후 namespace에 주입한다" in actual
+    assert "해당 `source_alias`에 **먼저 적용**한다" in actual
 
 
 def test_v2_complex_executor_injects_trusted_helper_and_removes_llm_shadow_definition():
@@ -458,6 +605,148 @@ def test_v2_complex_executor_injects_trusted_helper_and_removes_llm_shadow_defin
     assert executed["data"]["rows"] == [{"TOKEN": "SP24", "QTY": 10}]
     helper_trace = executed["trace"]["inspection"]["pandas_execution"]["safe_import_normalization"]
     assert helper_trace["trusted_helper_override"]["removed_generated_definitions"] == ["selected_helper"]
+
+
+def test_v2_complex_executor_pretransforms_selected_function_case_before_llm_code():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[
+            {"MCP_NO": "L-116A", "UPH": 112.0},
+            {"MCP_NO": "OTHER", "UPH": 90.0},
+        ],
+        steps=[
+            {
+                "operation": "apply_pandas_function_case",
+                "function_name": "match_product_tokens",
+                "input_text": "L-116",
+                "source_alias": "source_1",
+            },
+            {"operation": "custom_complex_operation", "source_alias": "source_1"},
+        ],
+        output_contract={"result_mode": "detail", "result_columns": ["MCP_NO", "UPH"]},
+    )
+    payload["intent_plan"]["pandas_function_cases"] = [
+        {
+            "function_name": "match_product_tokens",
+            "input_text": "L-116",
+            "source_alias": "source_1",
+        }
+    ]
+    helper_source = (
+        "def match_product_tokens(input_text, frame):\n"
+        "    return frame[frame['MCP_NO'].astype(str).str.startswith(input_text)].copy()\n"
+    )
+    # A weak model supplied the helper arguments in reverse order.  The
+    # executor must use the catalog-selected pre-transform instead of running
+    # this call directly.
+    executed = executor.execute_pandas_code(
+        payload,
+        {"code": "df = match_product_tokens(sources['source_1'], 'L-116')\nresult = df[['MCP_NO', 'UPH']].copy()"},
+        function_case_helper_code=helper_source,
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [{"MCP_NO": "L-116A", "UPH": 112.0}]
+    trace = executed["trace"]["inspection"]["pandas_execution"]
+    assert trace["deterministic_source_transforms"][0]["function_name"] == "match_product_tokens"
+    safe_trace = trace["safe_import_normalization"]
+    assert safe_trace["selected_function_case_pre_transform"]["replacement_count"] == 1
+
+
+def test_v2_complex_executor_rejects_ambiguous_function_case_source_rewrite():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"MCP_NO": "L-116A", "UPH": 112.0}],
+        steps=[{"operation": "custom_complex_operation", "source_alias": "source_1"}],
+        output_contract={"result_mode": "detail", "result_columns": ["MCP_NO", "UPH"]},
+    )
+    payload["intent_plan"]["pandas_function_cases"] = [
+        {"function_name": "match_product_tokens", "input_text": "L-116", "source_alias": "source_1"},
+        {"function_name": "match_product_tokens", "input_text": "L-116", "source_alias": "source_2"},
+    ]
+    helper_source = "def match_product_tokens(input_text, frame):\n    return frame.copy()\n"
+
+    executed = executor.execute_pandas_code(
+        payload,
+        {"code": "result = match_product_tokens('L-116', sources['source_1'])"},
+        function_case_helper_code=helper_source,
+    )
+
+    assert executed["analysis"]["status"] == "error"
+    assert executed["analysis"]["error"]["type"] == "trusted_function_case_contract_invalid"
+
+
+def test_v2_executor_ignores_unbound_effective_filter_alias():
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[{"GROUP": "A", "QTY": 10}],
+        steps=[{"operation": "custom_complex_operation", "source_alias": "source_1"}],
+        output_contract={"result_mode": "detail", "result_columns": ["GROUP", "QTY"]},
+    )
+    payload["intent_plan"]["condition_resolution"] = {
+        "effective_filters": {
+            "stale_alias": {"dataset_key": "other", "filters": {"GROUP": {"operator": "eq", "value": "A"}}}
+        }
+    }
+
+    assert executor._pandas_filter_plan(payload) == []
+
+
+def test_v2_catalog_metric_ownership_blocks_cross_dataset_metric_relabeling():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "production",
+                "payload": {
+                    "columns": ["PRODUCTION"],
+                    "metric_semantics": {"PRODUCTION": {"default_rollup": "sum"}},
+                },
+            },
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {
+                    "columns": ["UPH"],
+                    "metric_semantics": {"UPH": {"default_rollup": "mean"}},
+                },
+            },
+        ]
+    }
+    errors = normalizer._metric_source_validation_errors(
+        {
+            "metric_bindings": [
+                {
+                    "source_alias": "production_source",
+                    "dataset_key": "production",
+                    "source_column": "PRODUCTION",
+                    "output_column": "UPH",
+                }
+            ]
+        },
+        [{"source_alias": "production_source", "dataset_key": "production"}],
+        {},
+        {},
+        candidates,
+    )
+    assert any(error["type"] == "catalog_metric_ownership_mismatch" for error in errors)
+
+    safe_errors = normalizer._metric_source_validation_errors(
+        {
+            "metric_bindings": [
+                {
+                    "source_alias": "production_source",
+                    "dataset_key": "production",
+                    "source_column": "PRODUCTION",
+                    "output_column": "TOTAL_PRODUCTION",
+                }
+            ]
+        },
+        [{"source_alias": "production_source", "dataset_key": "production"}],
+        {},
+        {},
+        candidates,
+    )
+    assert not any(error["type"] == "catalog_metric_ownership_mismatch" for error in safe_errors)
 
 
 def test_v2_repair_prompt_does_not_repeat_selected_helper_source():
@@ -1535,7 +1824,6 @@ def test_v2_message_adapter_shows_route_and_fixed_fast_logic():
         show_download_links=False,
         show_notices=False,
         show_applied_criteria=False,
-        show_next_questions=False,
         show_intent_analysis=True,
         show_data_retrieval=False,
         show_pandas_code=True,
@@ -1611,7 +1899,9 @@ result = df.groupby([\"OPER_NAME\", \"MCP_NO\", \"DATE\"], dropna=False)[\"PRODU
     checkpoints = executed["intermediate_results"]
     assert len(checkpoints) == 1
     checkpoint = checkpoints[0]
-    assert checkpoint["role"] == "filtered_source"
+    # The filtered frame is identical to the final aggregate in this case, so
+    # show the unfiltered source as the only informative intermediate result.
+    assert checkpoint["role"] == "source_input"
     assert checkpoint["row_count"] == 3
     assert checkpoint["description"].startswith("최종 집계 전 중간 데이터")
     assert executed["_intermediate_download_rows"]["last_successful"]["rows"] == [
@@ -1770,7 +2060,6 @@ def test_v2_message_adapter_renders_each_published_multi_source_checkpoint():
         show_download_links=False,
         show_notices=False,
         show_applied_criteria=False,
-        show_next_questions=False,
         show_intent_analysis=False,
         show_data_retrieval=False,
         show_pandas_code=False,
@@ -1780,6 +2069,50 @@ def test_v2_message_adapter_renders_each_published_multi_source_checkpoint():
     assert "#### eqp_uph — 최종 집계 전 중간 데이터" in message
     assert "#### 결합·계산 결과 (최종 계약 적용 전)" in message
     assert message.count("| EQP_ID |") == 2
+
+
+def test_v2_message_adapter_keeps_curated_intermediate_results_but_hides_raw_evidence_and_body_followups():
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    payload = {
+        "answer_message": "분석을 완료했습니다.",
+        "answer_sections": {
+            "summary": {"headline": "분석을 완료했습니다."},
+            "next_questions": ["제품별로 더 나눠볼까요?"],
+        },
+        "analysis": {
+            "step_outputs": [{"key": "raw_step", "row_count": 99, "preview_rows": [{"RAW": "x"}]}],
+            "function_case_results": [{"function_name": "sample_helper", "matched_count": 99}],
+        },
+        "intermediate_results": [
+            {
+                "download_key": "pre_contract_result",
+                "description": "최종 집계 전 중간 데이터",
+                "role": "computed_result",
+                "row_count": 1,
+                "columns": ["DEVICE", "QTY"],
+                "preview_rows": [{"DEVICE": "DEV-A", "QTY": 10}],
+            }
+        ],
+        "data": {"columns": ["DEVICE", "QTY"], "rows": [{"DEVICE": "DEV-A", "QTY": 10}], "row_count": 1},
+    }
+
+    message = adapter.build_message(
+        payload,
+        show_intermediate_results=True,
+        show_result_table=False,
+        show_download_links=False,
+        show_notices=False,
+        show_applied_criteria=False,
+    )
+
+    assert "### 중간 결과" in message
+    assert "최종 집계 전 중간 데이터" in message
+    assert "### 중간 분석 산출물" not in message
+    assert "### helper 실행 결과" not in message
+    assert "### 다음에 볼 만한 질문" not in message
+    assert adapter.build_response_metadata(payload)["followup_questions"] == [
+        {"type": "followup_question", "id": "followup-1", "value": "제품별로 더 나눠볼까요?"}
+    ]
 
 
 def test_result_store_creates_one_download_ref_per_multi_source_checkpoint():
@@ -2228,7 +2561,7 @@ def test_v2_normalizer_reconciles_current_scope_for_comparison_without_aggregati
     assert trace["corrections"][0]["requested_time_scope"] == "current_day"
 
 
-def test_v2_normalizer_repairs_weak_source_choice_from_catalog_selection_fit():
+def test_v2_normalizer_keeps_schema_capable_llm_source_and_records_catalog_advisory():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
     columns = ["TECH", "DEN", "PKG_TYPE2", "MCP_NO", "MODE", "PKG_TYPE1", "LEAD"]
     candidates = {
@@ -2270,9 +2603,45 @@ def test_v2_normalizer_repairs_weak_source_choice_from_catalog_selection_fit():
         candidates,
         [],
     )
-    assert jobs[0]["dataset_key"] == "production_today"
-    assert trace["status"] == "applied"
-    assert trace["corrections"][0]["selection_source"] == "table_catalog.selection_criteria"
+    assert jobs[0]["dataset_key"] == "lot_status"
+    assert trace["status"] == "advisory"
+    assert trace["corrections"] == []
+    assert trace["advisories"][0]["candidate_dataset_key"] == "production_today"
+    assert trace["advisories"][0]["reason"] == "semantic_candidate_not_forced"
+
+
+def test_metadata_candidates_expose_bounded_catalog_selection_hints_without_source_lock():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    result = builder.build_metadata_candidates(
+        {"request": {"question": "장비별 UPH 평균을 알려줘"}},
+        [],
+        [
+            {
+                "section": "table_catalog",
+                "key": "eqp_uph",
+                "dataset_key": "eqp_uph",
+                "payload": {
+                    "selection_criteria": {
+                        "use_when": ["장비별 UPH를 조회하거나 평균 UPH를 비교할 때"],
+                        "exclude_when": ["생산 수량만 조회할 때"],
+                    },
+                    "metric_semantics": {"UPH": {"default_rollup": "mean"}},
+                },
+            }
+        ],
+        [],
+        min_table_items=1,
+        max_table_items=1,
+    )
+
+    candidate = result["metadata_candidates"]["table_catalog_items"][0]
+    hint = candidate["intent_selection_hint"]
+    assert hint["metric_columns"] == ["UPH"]
+    assert hint["metric_default_rollups"] == {"UPH": "mean"}
+    assert hint["use_when"] == ["장비별 UPH를 조회하거나 평균 UPH를 비교할 때"]
+    assert "dataset_key" not in hint
 
 
 def test_v2_normalizer_switches_to_unique_schema_capable_source():
@@ -2315,10 +2684,10 @@ def test_v2_normalizer_switches_to_unique_schema_capable_source():
         [],
     )
     assert jobs[0]["dataset_key"] == "target"
-    assert trace["corrections"][0]["selection_source"] == "table_catalog.schema_contract"
+    assert trace["corrections"][0]["selection_source"] == "table_catalog.unique_schema_contract"
 
 
-def test_v2_normalizer_uses_generic_identity_schema_tie_break():
+def test_v2_normalizer_keeps_schema_capable_identity_choice_and_records_advisory():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
     columns = ["TECH", "DEN", "PKG_TYPE2", "MCP_NO", "MODE", "PKG_TYPE1", "LEAD"]
     candidates = {
@@ -2355,8 +2724,9 @@ def test_v2_normalizer_uses_generic_identity_schema_tie_break():
         candidates,
         [],
     )
-    assert jobs[0]["dataset_key"] == "product_population"
-    assert trace["corrections"][0]["selection_source"] == "table_catalog.schema_contract"
+    assert jobs[0]["dataset_key"] == "status_population"
+    assert trace["status"] == "advisory"
+    assert trace["advisories"][0]["candidate_dataset_key"] == "product_population"
 
 
 def test_v2_normalizer_recovers_omitted_token_function_case_from_metadata():
@@ -2489,7 +2859,6 @@ def test_v2_message_adapter_omits_llm_parse_diagnostics_for_fast_errors():
         show_download_links=False,
         show_notices=False,
         show_applied_criteria=False,
-        show_next_questions=False,
         show_intent_analysis=False,
         show_data_retrieval=False,
         show_pandas_code=True,
@@ -2528,7 +2897,6 @@ def test_v2_message_adapter_shows_invalid_llm_attempt_as_non_executed_code_excer
         show_download_links=False,
         show_notices=False,
         show_applied_criteria=False,
-        show_next_questions=False,
         show_intent_analysis=False,
         show_data_retrieval=False,
         show_pandas_code=True,
@@ -3122,6 +3490,94 @@ def test_v2_followup_contract_compiles_previous_lot_rows_to_dependent_history_ca
         "HOLD_DESC",
     ]
     assert not plan.get("validation_errors")
+
+
+def test_v2_direct_required_param_precedes_optional_previous_result_binding():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    hydrator = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    payload = {
+        "request": {"question": "LOT-A와 LOT-B의 이력을 알려줘"},
+        # A direct question can be asked in a session that also has a prior
+        # result.  The optional binding must not overwrite the direct IDs.
+        "followup_hint": {
+            "followup_candidate": True,
+            "request_scope_hint": "followup_requery",
+            "reuse_strategy_hint": "previous_result",
+            "matched_cues": {"previous_entity_identifiers": ["LOT_ID"]},
+        },
+        "state": {
+            "current_data": {
+                "columns": ["LOT_ID"],
+                "result_columns": ["LOT_ID"],
+            }
+        },
+        "trace": {"inspection": {}},
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "history_lookup",
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "hold_history",
+                    "source_alias": "hold_history_src",
+                    "required_params": {"LOT_ID": ["LOT-A", "LOT-B"]},
+                    "filters": {},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "select_history",
+                    "operation": "select_columns",
+                    "inputs": [
+                        {"kind": "external_source", "ref": "hold_history_src"}
+                    ],
+                    "source_alias": "hold_history_src",
+                    "output_alias": "history_result",
+                }
+            ],
+            "output_contract": {
+                "result_mode": "detail",
+                "result_columns": ["LOT_ID", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+            },
+        }
+    }
+
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        json.dumps(response),
+        _followup_catalog_candidates(),
+    )
+    plan = normalized["intent_plan"]
+    assert plan["request_scope"] == "new_analysis"
+    assert plan["reference_mode"] == "none"
+    assert plan["reuse_strategy"] == "none"
+    assert plan["retrieval_jobs"][0]["required_params"] == {
+        "LOT_ID": ["LOT-A", "LOT-B"]
+    }
+    assert normalized["trace"]["inspection"]["intent"]["followup_contract_guard"]["kind"] == (
+        "direct_required_parameter"
+    )
+
+    hydrated = hydrator.hydrate_retrieval_jobs(
+        normalized,
+        {"table_catalog_items": _followup_catalog_candidates()["table_catalog_items"]},
+        retrieval_mode="dummy",
+    )
+    assert hydrated["intent_plan"]["retrieval_jobs"][0]["required_params"] == {
+        "LOT_ID": ["LOT-A", "LOT-B"]
+    }
+    assert not any(
+        item.get("type") == "missing_catalog_required_params"
+        for item in hydrated["trace"].get("warnings", [])
+        if isinstance(item, dict)
+    )
 
 
 def test_v2_followup_product_grain_uses_source_reuse_not_previous_aggregate_rows():

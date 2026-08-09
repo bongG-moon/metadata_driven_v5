@@ -1,0 +1,13 @@
+{
+  "report_id": "20260727134657_03ef73dd20411b0d0660bdec73a479a7",
+  "title": "실시간 생산 분석 Report 예시",
+  "question": "",
+  "view_request": "",
+  "available_datasets": [],
+  "report_plan": {},
+  "html_bytes": 599722,
+  "download_filename": "report.html",
+  "created_at": "2026-07-27T13:46:57.736858+00:00",
+  "expires_at": "2026-07-27T17:46:57.736858+00:00",
+  "ttl_hours": 4
+}

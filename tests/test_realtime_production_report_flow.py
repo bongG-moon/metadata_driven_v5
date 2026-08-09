@@ -18,6 +18,12 @@ TERMINAL_PATH = FLOW_ROOT / "02_realtime_production_report_api_terminal.py"
 
 
 def _install_lfx_stubs() -> None:
+    # Use the real Langflow 1.9.2/LFX runtime when it is installed.  Installing
+    # module-level stubs during collection otherwise contaminates later router
+    # tests in the same pytest process.
+    if importlib.util.find_spec("lfx") is not None:
+        return
+
     class Component:
         pass
 
@@ -209,7 +215,10 @@ def test_process_group_catalog_and_prompt_are_domain_grounded():
 
 
 def test_process_group_catalog_component_exposes_only_mongodb_configuration():
-    input_names = [item.kwargs["name"] for item in catalog.RealtimeProductionProcessGroupCatalogLoader.inputs]
+    input_names = [
+        item.kwargs["name"] if hasattr(item, "kwargs") else item.name
+        for item in catalog.RealtimeProductionProcessGroupCatalogLoader.inputs
+    ]
     assert input_names == [
         "mongo_uri",
         "mongo_database",
