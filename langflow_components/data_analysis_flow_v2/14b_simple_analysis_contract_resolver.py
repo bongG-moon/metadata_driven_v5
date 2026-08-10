@@ -153,6 +153,7 @@ DETERMINISTIC_OPERATIONS = {
 }
 TYPED_DETERMINISTIC_OPERATIONS = {
     "apply_filters",
+    "apply_row_match_groups",
     "select_columns",
     "groupby_and_aggregate",
     "sort_and_top_n",
@@ -1032,15 +1033,16 @@ def _typed_pandas_plan_execution_contract(
     plan: dict[str, Any],
     source_aliases: list[str],
 ) -> dict[str, Any]:
-    """Return a deterministic multi-source contract only for an unambiguous Typed IR.
+    """Return a deterministic Typed-IR contract only for an unambiguous DataFrame DAG.
 
     This is intentionally narrower than the general Complex path. It accepts
-    only a declarative DataFrame DAG whose every input is an earlier output or
-    an actually retrieved source. Unsupported calculations stay on the LLM
-    Pandas path rather than being guessed here.
+    only a declarative DataFrame DAG whose every input is an earlier output,
+    an actually retrieved source, or the trusted prior-result frame restored
+    for a follow-up. Unsupported calculations stay on the LLM Pandas path
+    rather than being guessed here.
     """
 
-    if len(source_aliases) < 2 or len(source_aliases) > 8:
+    if not source_aliases or len(source_aliases) > 8:
         return {}
     steps = [
         deepcopy(item)
@@ -1076,14 +1078,41 @@ def _typed_pandas_plan_execution_contract(
     if any(alias not in runtime_sources for alias in source_aliases):
         return {}
 
+    graph = _dict(plan.get("resolved_execution_graph"))
+    trusted_previous_aliases = {
+        str(item.get("source_alias") or "").strip()
+        for item in _list(graph.get("external_source_requirements"))
+        if isinstance(item, dict)
+        and str(item.get("provider") or "").strip()
+        in {"previous_result", "previous_source"}
+        and str(item.get("source_alias") or "").strip() in runtime_sources
+    }
+    reference_mode = str(plan.get("reference_mode") or "").strip()
+    if (
+        reference_mode in {"previous_result_rows", "previous_result_transform"}
+        and "previous_result" in runtime_sources
+    ):
+        trusted_previous_aliases.add("previous_result")
+    allowed_external_aliases = set(jobs_by_alias) | trusted_previous_aliases
+    if not allowed_external_aliases:
+        return {}
+
     produced: set[str] = set()
+    used_external_aliases: list[str] = []
     for step in steps:
         operation = _operation(step)
         if operation not in TYPED_DETERMINISTIC_OPERATIONS:
             return {}
         node_id = str(step.get("node_id") or "").strip()
         output_alias = str(step.get("output_alias") or node_id).strip()
-        if not node_id or not output_alias or node_id in produced or output_alias in produced:
+        if (
+            not node_id
+            or not output_alias
+            or node_id in produced
+            or output_alias in produced
+            or node_id in allowed_external_aliases
+            or output_alias in allowed_external_aliases
+        ):
             return {}
         inputs = [item for item in _list(step.get("inputs")) if isinstance(item, dict)]
         expected_input_count = 2 if operation == "join" else 1
@@ -1093,15 +1122,30 @@ def _typed_pandas_plan_execution_contract(
             kind = str(item.get("kind") or "").strip()
             reference = str(item.get("ref") or "").strip()
             if kind == "external_source":
-                if reference not in jobs_by_alias:
+                if reference not in allowed_external_aliases:
                     return {}
+                if reference not in used_external_aliases:
+                    used_external_aliases.append(reference)
             elif kind == "node_output":
                 if reference not in produced:
                     return {}
             else:
                 return {}
 
-        if operation == "select_columns":
+        if operation == "apply_row_match_groups":
+            reference_alias = str(step.get("reference_source_alias") or "").strip()
+            match_columns = _string_list(step.get("match_columns"))
+            blank_policy = str(step.get("blank_policy") or "normalize_blank").strip()
+            if (
+                not reference_alias
+                or reference_alias not in trusted_previous_aliases
+                or not match_columns
+                or blank_policy != "normalize_blank"
+            ):
+                return {}
+            if reference_alias not in used_external_aliases:
+                used_external_aliases.append(reference_alias)
+        elif operation == "select_columns":
             if not _string_list(step.get("projection") or step.get("columns")):
                 return {}
         elif operation == "groupby_and_aggregate":
@@ -1142,7 +1186,7 @@ def _typed_pandas_plan_execution_contract(
         "operation": "execute_typed_pandas_plan",
         "steps": steps,
         "result_columns": result_columns,
-        "external_source_aliases": list(source_aliases),
+        "external_source_aliases": used_external_aliases,
         "eligibility": {
             "eligible": False,
             "reason_codes": ["typed_plan_contract_resolved", "model_code_not_required"],

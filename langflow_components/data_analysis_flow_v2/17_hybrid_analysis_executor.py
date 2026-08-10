@@ -2016,6 +2016,13 @@ def _execute_typed_pandas_plan(
             input_frames.append(frame.copy())
         if operation == "apply_filters":
             result = _apply_typed_step_filters(input_frames[0], step)
+        elif operation == "apply_row_match_groups":
+            result = _typed_apply_row_match_groups(
+                input_frames[0],
+                frames,
+                step,
+                pd,
+            )
         elif operation == "select_columns":
             projection = _string_list(step.get("projection") or step.get("columns"))
             missing = [column for column in projection if column not in input_frames[0].columns]
@@ -2040,6 +2047,101 @@ def _execute_typed_pandas_plan(
         if runtime_intermediate_frames is not None:
             runtime_intermediate_frames[f"typed_step:{index}:{output_alias}"] = result.copy()
     return last_result
+
+
+# 함수 설명: `_typed_apply_row_match_groups()`는 이전 결과 행 조건을 현재 Typed DataFrame에 결정론적으로 적용합니다.
+def _typed_apply_row_match_groups(
+    target: Any,
+    frames: dict[str, Any],
+    step: dict[str, Any],
+    pd: Any,
+) -> Any:
+    """Apply a validated previous-result row match as a Typed-IR operation.
+
+    A row in the target matches when all declared keys match one reference row;
+    multiple reference rows are therefore OR-ed.  This mirrors the ordinary
+    Complex preamble but executes from the Typed graph so ``node_output``
+    aliases are real frames rather than model-inferred names.
+    """
+
+    reference_alias = str(step.get("reference_source_alias") or "").strip()
+    if not reference_alias:
+        raise OutputContractError("Typed Pandas row match reference source가 없습니다.")
+    reference = frames.get(reference_alias)
+    if reference is None or not hasattr(reference, "columns"):
+        raise OutputContractError(
+            "Typed Pandas row match reference source를 찾을 수 없습니다: "
+            + reference_alias
+        )
+    blank_policy = str(step.get("blank_policy") or "normalize_blank").strip()
+    if blank_policy != "normalize_blank":
+        raise OutputContractError(
+            "Typed Pandas row match blank_policy는 normalize_blank여야 합니다."
+        )
+    match_columns = _string_list(step.get("match_columns"))
+    if not match_columns:
+        raise OutputContractError("Typed Pandas row match match_columns가 없습니다.")
+    mappings = (
+        step.get("column_mappings")
+        if isinstance(step.get("column_mappings"), dict)
+        else {}
+    )
+
+    pairs: list[tuple[str, str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for canonical_column in match_columns:
+        candidates = _typed_row_match_candidates(canonical_column, mappings)
+        target_column = _find_frame_column(target, candidates)
+        reference_column = _find_frame_column(reference, candidates)
+        if not target_column or not reference_column:
+            raise OutputContractError(
+                "Typed Pandas row match 컬럼을 찾을 수 없습니다: "
+                + canonical_column
+            )
+        marker = (target_column.casefold(), reference_column.casefold())
+        if marker not in seen_pairs:
+            seen_pairs.add(marker)
+            pairs.append((canonical_column, target_column, reference_column))
+    if not pairs:
+        raise OutputContractError("Typed Pandas row match 실제 컬럼을 확정하지 못했습니다.")
+
+    reference_groups = {
+        tuple(
+            _normalize_deterministic_join_value(row.get(reference_column))
+            for _, _, reference_column in pairs
+        )
+        for row in reference.to_dict(orient="records")
+    }
+    if not reference_groups:
+        return target.iloc[0:0].copy()
+    target_keys = [
+        tuple(
+            _normalize_deterministic_join_value(row.get(target_column))
+            for _, target_column, _ in pairs
+        )
+        for row in target.to_dict(orient="records")
+    ]
+    mask = pd.Series(
+        [key in reference_groups for key in target_keys],
+        index=target.index,
+        dtype=bool,
+    )
+    return target[mask].copy()
+
+
+# 함수 설명: `_typed_row_match_candidates()`는 canonical 컬럼과 명시 매핑 후보를 안전하게 수집합니다.
+def _typed_row_match_candidates(
+    canonical_column: str,
+    mappings: dict[str, Any],
+) -> list[str]:
+    """Return a canonical key and any explicit aliases without guessing."""
+
+    candidates = [str(canonical_column).strip()]
+    for raw_key, raw_values in mappings.items():
+        if str(raw_key or "").strip().casefold() != str(canonical_column).strip().casefold():
+            continue
+        candidates.extend(_string_list(raw_values))
+    return [item for item in dict.fromkeys(candidates) if item]
 
 
 def _apply_typed_step_filters(frame: Any, step: dict[str, Any]) -> Any:
@@ -5361,7 +5463,108 @@ def _pandas_filter_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 mapping = raw_item.get(mapping_key)
                 if isinstance(mapping, dict) and mapping:
                     item[mapping_key] = deepcopy(mapping)
+    output_aliases_by_source = _filter_node_output_aliases(
+        plan.get("pandas_execution_plan"),
+        set(filter_plan_by_alias),
+    )
+    for alias, item in filter_plan_by_alias.items():
+        output_aliases = output_aliases_by_source.get(alias, [])
+        if output_aliases:
+            item["output_aliases"] = output_aliases
     return list(filter_plan_by_alias.values())
+
+
+# 함수 설명: `_plan_node_indexes()`는 Typed 실행 계획의 node ID와 output alias 인덱스를 만듭니다.
+def _plan_node_indexes(
+    steps_value: Any,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
+    """Index a Typed plan's node IDs and output aliases without guessing."""
+
+    steps = [item for item in steps_value if isinstance(item, dict)] if isinstance(steps_value, list) else []
+    nodes_by_id: dict[str, dict[str, Any]] = {}
+    output_to_node: dict[str, str] = {}
+    for index, step in enumerate(steps, start=1):
+        node_id = str(step.get("node_id") or f"__step_{index}").strip()
+        if not node_id or node_id in nodes_by_id:
+            continue
+        nodes_by_id[node_id] = step
+        output_alias = str(step.get("output_alias") or step.get("result_alias") or "").strip()
+        if output_alias and output_alias not in output_to_node:
+            output_to_node[output_alias] = node_id
+    return steps, nodes_by_id, output_to_node
+
+
+# 함수 설명: `_typed_step_external_aliases()`는 node_output 계보를 따라 실제 외부 source alias를 찾습니다.
+def _typed_step_external_aliases(
+    step: dict[str, Any],
+    steps_value: Any,
+    known_external_aliases: set[str],
+) -> list[str]:
+    """Resolve a node_output chain to declared external source aliases only."""
+
+    _, nodes_by_id, output_to_node = _plan_node_indexes(steps_value)
+
+    def visit(current: dict[str, Any], visited: set[str]) -> list[str]:
+        result: list[str] = []
+        inputs = current.get("inputs") if isinstance(current.get("inputs"), list) else []
+        for input_item in inputs:
+            if not isinstance(input_item, dict):
+                continue
+            kind = str(input_item.get("kind") or "").strip()
+            reference = str(input_item.get("ref") or "").strip()
+            if not reference:
+                continue
+            if kind == "external_source":
+                if reference in known_external_aliases and reference not in result:
+                    result.append(reference)
+                continue
+            if kind != "node_output" or reference in visited:
+                continue
+            node_id = reference if reference in nodes_by_id else output_to_node.get(reference, "")
+            parent = nodes_by_id.get(node_id)
+            if not isinstance(parent, dict):
+                continue
+            for alias in visit(parent, {*visited, reference, node_id}):
+                if alias not in result:
+                    result.append(alias)
+        if result:
+            return result
+        declared_alias = str(current.get("source_alias") or "").strip()
+        if declared_alias in known_external_aliases:
+            return [declared_alias]
+        node_id = output_to_node.get(declared_alias, "")
+        parent = nodes_by_id.get(node_id)
+        if isinstance(parent, dict) and node_id not in visited:
+            return visit(parent, {*visited, node_id})
+        return []
+
+    return visit(step, set())
+
+
+# 함수 설명: `_filter_node_output_aliases()`는 필터 단계의 output alias를 source별로 수집합니다.
+def _filter_node_output_aliases(
+    steps_value: Any,
+    source_aliases: set[str],
+) -> dict[str, list[str]]:
+    """Publish filter node outputs so later row-match aliases resolve to frames."""
+
+    result: dict[str, list[str]] = {}
+    steps, _, _ = _plan_node_indexes(steps_value)
+    for step in steps:
+        if str(step.get("operation") or step.get("step") or "").strip().lower() != "apply_filters":
+            continue
+        leaves = _typed_step_external_aliases(step, steps, source_aliases)
+        if len(leaves) != 1:
+            continue
+        aliases = [
+            str(step.get("output_alias") or "").strip(),
+            str(step.get("node_id") or "").strip(),
+        ]
+        bucket = result.setdefault(leaves[0], [])
+        for alias in aliases:
+            if alias and alias not in bucket:
+                bucket.append(alias)
+    return result
 
 
 # 함수 설명: 표준화된 runtime source에 적용할 filter field를 hydrated catalog의 canonical key로 통일합니다.
@@ -5441,11 +5644,31 @@ def _pandas_row_match_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if str(step.get("operation") or "").strip().lower() != "apply_row_match_groups":
             continue
-        source_alias = str(step.get("source_alias") or "").strip()
+        declared_source_alias = str(step.get("source_alias") or "").strip()
+        root_aliases = _typed_step_external_aliases(
+            step,
+            steps,
+            set(mappings_by_alias),
+        )
+        # The row-match executor works over runtime retrieval frames.  If the
+        # plan names a preceding node output, use its single declared source
+        # leaf while still publishing the requested output aliases below.
+        source_alias = root_aliases[0] if len(root_aliases) == 1 else declared_source_alias
+        output_aliases = [
+            declared_source_alias,
+            str(step.get("output_alias") or "").strip(),
+            str(step.get("node_id") or "").strip(),
+        ]
         result.append(
             {
                 "step_index": index,
                 "source_alias": source_alias,
+                "declared_source_alias": declared_source_alias,
+                "output_aliases": [
+                    alias
+                    for alias in dict.fromkeys(output_aliases)
+                    if alias and alias != source_alias
+                ],
                 "reference_source_alias": str(step.get("reference_source_alias") or "").strip(),
                 "match_columns": _string_list(step.get("match_columns")),
                 "blank_policy": "normalize_blank",
@@ -5487,6 +5710,8 @@ def _pandas_row_match_preamble(row_match_plan: list[dict[str, Any]]) -> str:
 
     for plan_index, item in enumerate(row_match_plan, start=1):
         source_alias = str(item.get("source_alias") or "").strip()
+        declared_source_alias = str(item.get("declared_source_alias") or "").strip()
+        output_aliases = _string_list(item.get("output_aliases"))
         reference_alias = str(item.get("reference_source_alias") or "").strip()
         match_columns = _string_list(item.get("match_columns"))
         mappings = item.get("column_mappings") if isinstance(item.get("column_mappings"), dict) else {}
@@ -5587,8 +5812,14 @@ def _pandas_row_match_preamble(row_match_plan: list[dict[str, Any]]) -> str:
                 f"    {target_var} = {target_var}.iloc[0:0].copy()",
                 "sources = dict(sources)",
                 f"sources[{source_alias!r}] = {target_var}",
+                *[
+                    f"sources[{output_alias!r}] = {target_var}"
+                    for output_alias in output_aliases
+                    if output_alias != source_alias
+                ],
                 "_row_match_execution.append({",
                 f"    'source_alias': {source_alias!r},",
+                f"    'declared_source_alias': {declared_source_alias!r},",
                 f"    'reference_source_alias': {reference_alias!r},",
                 f"    'match_columns': {match_columns!r},",
                 "    'resolved_columns': [",
@@ -5645,7 +5876,7 @@ def _unsupported_filter_operators(filter_plan: list[dict[str, Any]]) -> list[str
     return unsupported
 
 
-# 함수 설명: `_with_pandas_execution_preambles()`는 row match·일반 filter·LLM 분석 코드를 실제 실행 순서대로 하나의 코드로 결합합니다.
+# 함수 설명: `_with_pandas_execution_preambles()`는 일반 filter·row match·LLM 분석 코드를 Typed Plan 순서에 맞게 하나의 코드로 결합합니다.
 def _with_pandas_execution_preambles(
     code: Any,
     row_match_preamble: str,
@@ -5653,7 +5884,10 @@ def _with_pandas_execution_preambles(
 ) -> str:
     segments = [
         str(segment or "").strip()
-        for segment in (row_match_preamble, filter_preamble, code)
+        # A row-match target may be the filtered frame of the same retrieved
+        # source.  Filters must therefore run first; reversing these segments
+        # makes a valid node_output alias look like a missing source.
+        for segment in (filter_preamble, row_match_preamble, code)
         if str(segment or "").strip()
     ]
     return "\n\n".join(segments)
@@ -5695,6 +5929,7 @@ def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
     for job_index, item in enumerate(filter_plan, start=1):
         alias = str(item.get("source_alias") or "").strip()
         conditions = item.get("conditions") if isinstance(item.get("conditions"), list) else []
+        output_aliases = _string_list(item.get("output_aliases"))
         column_mappings = {} if item.get("columns_standardized") is True else {
             **(item.get("standard_column_aliases") if isinstance(item.get("standard_column_aliases"), dict) else {}),
             **(item.get("filter_mappings") if isinstance(item.get("filter_mappings"), dict) else {}),
@@ -5709,6 +5944,9 @@ def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
         for condition_index, condition in enumerate(conditions, start=1):
             lines.extend(_condition_code(df_var, job_index, condition_index, condition, column_mappings))
         lines.append(f"    sources[{alias!r}] = {df_var}")
+        for output_alias in output_aliases:
+            if output_alias != alias:
+                lines.append(f"    sources[{output_alias!r}] = {df_var}")
     return "\n".join(lines)
 
 

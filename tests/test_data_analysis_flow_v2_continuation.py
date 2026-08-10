@@ -90,6 +90,68 @@ def executor():
     return _module("_continuation_executor_tests", "17_continuation_hybrid_analysis_executor.py")
 
 
+def test_continuation_typed_row_match_runs_after_filter_node_output(executor):
+    """The continuation Flow follows the same validated alias lineage as Flow 01."""
+
+    product_columns = ["TECH", "DEN", "MODE"]
+    sources = {
+        "previous_result": pd.DataFrame(
+            [
+                {"TECH": "A", "DEN": "1", "MODE": "M"},
+                {"TECH": "B", "DEN": "2", "MODE": "N"},
+            ]
+        ),
+        "equipment_assign": pd.DataFrame(
+            [
+                {"TECH": "A", "DEN": "1", "MODE": "M", "EQP_ID": "E-01"},
+                {"TECH": "A", "DEN": "1", "MODE": "M", "EQP_ID": "E-02"},
+                {"TECH": "B", "DEN": "2", "MODE": "N", "EQP_ID": "E-03"},
+                {"TECH": "C", "DEN": "3", "MODE": "X", "EQP_ID": "E-99"},
+            ]
+        ),
+    }
+    contract = {
+        "steps": [
+            {
+                "node_id": "filter_equipment_assign",
+                "operation": "apply_filters",
+                "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+                "source_alias": "equipment_assign",
+                "output_alias": "filtered_equipment_assign",
+            },
+            {
+                "node_id": "match_previous_products",
+                "operation": "apply_row_match_groups",
+                "inputs": [{"kind": "node_output", "ref": "filter_equipment_assign"}],
+                "source_alias": "filtered_equipment_assign",
+                "reference_source_alias": "previous_result",
+                "match_columns": product_columns,
+                "blank_policy": "normalize_blank",
+                "output_alias": "matched_equipment_assign",
+            },
+            {
+                "node_id": "aggregate_equipment",
+                "operation": "groupby_and_aggregate",
+                "inputs": [{"kind": "node_output", "ref": "match_previous_products"}],
+                "source_alias": "matched_equipment_assign",
+                "output_alias": "product_equipment_summary",
+                "group_by": product_columns,
+                "aggregations": [
+                    {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                    {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQP_LIST"},
+                ],
+            },
+        ]
+    }
+
+    result = executor._execute_typed_pandas_plan(contract, sources, pd)
+
+    assert result.to_dict(orient="records") == [
+        {"TECH": "A", "DEN": "1", "MODE": "M", "EQP_COUNT": 2, "EQP_LIST": "E-01, E-02"},
+        {"TECH": "B", "DEN": "2", "MODE": "N", "EQP_COUNT": 1, "EQP_LIST": "E-03"},
+    ]
+
+
 @pytest.fixture(scope="module")
 def intent_router():
     return _module("_continuation_intent_router_tests", "03b_continuation_aware_intent_router.py")

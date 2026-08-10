@@ -9582,6 +9582,13 @@ def _resolve_reference_join_plan(
     ).strip()
     if not right_alias:
         return {}
+    # A typed plan is allowed to name the output of a preceding filter or
+    # projection as the row-match target.  The retrieval job still owns the
+    # physical source identity, so resolve that output through its declared
+    # ``node_output`` lineage instead of requiring a literal alias match.
+    #
+    # This is deliberately generic: it applies to every catalog-backed
+    # previous-result enrichment, not just equipment or product follow-ups.
     row_match_step = next(
         (
             item
@@ -9589,9 +9596,14 @@ def _resolve_reference_join_plan(
             if isinstance(item, dict)
             and str(item.get("operation") or "").strip()
             == "apply_row_match_groups"
-            and str(item.get("source_alias") or "").strip() == right_alias
             and str(item.get("reference_source_alias") or "").strip()
             == PREVIOUS_RESULT_ALIAS
+            and right_alias
+            in _step_external_source_aliases(
+                item,
+                pandas_plan,
+                {right_alias},
+            )
         ),
         None,
     )

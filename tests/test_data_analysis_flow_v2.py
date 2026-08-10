@@ -5320,6 +5320,378 @@ def test_reference_join_resolves_right_metrics_after_filter_and_manual_join():
     ]
 
 
+def test_reference_join_resolves_row_match_target_through_filtered_node_output():
+    """A follow-up may match the output of a preceding filter, not a raw source.
+
+    The source alias in a weak-model plan can legitimately be the preceding
+    ``output_alias``.  The normalizer must resolve that Typed-IR lineage to the
+    one catalog-backed retrieval job; otherwise the executor attempts to look
+    up an alias that never existed in ``sources``.
+    """
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    product_columns = ["TECH", "DEN", "MODE"]
+    payload = {
+        "state": {
+            "current_data": {"columns": [*product_columns, "PRODUCTION"]},
+            "last_intent_plan": {
+                "resolved_grain_plan": {
+                    "column_mappings": [
+                        {"canonical_key": column, "source_candidates": [column]}
+                        for column in product_columns
+                    ]
+                }
+            },
+        }
+    }
+    candidates = {
+        "domain_items": [],
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": [*product_columns, "EQP_ID"]},
+            }
+        ],
+        "main_flow_filters": [],
+    }
+    jobs = [{"dataset_key": "equipment_assign", "source_alias": "equipment_assign"}]
+    pandas_plan = [
+        {
+            "node_id": "filter_equipment_assign",
+            "operation": "apply_filters",
+            "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+            "source_alias": "equipment_assign",
+            "output_alias": "filtered_equipment_assign",
+        },
+        {
+            "node_id": "match_previous_products",
+            "operation": "apply_row_match_groups",
+            "inputs": [{"kind": "node_output", "ref": "filter_equipment_assign"}],
+            "source_alias": "filtered_equipment_assign",
+            "reference_source_alias": "previous_result",
+            "match_columns": product_columns,
+            "blank_policy": "normalize_blank",
+            "output_alias": "matched_equipment_assign",
+        },
+        {
+            "node_id": "aggregate_equipment",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "node_output", "ref": "match_previous_products"}],
+            "source_alias": "matched_equipment_assign",
+            "output_alias": "product_equipment_summary",
+            "group_by": product_columns,
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQP_LIST"},
+            ],
+        },
+    ]
+
+    contract = normalizer._resolve_reference_join_plan(
+        payload,
+        candidates,
+        jobs,
+        pandas_plan,
+        "previous_result_rows",
+    )
+
+    assert contract["right_source_alias"] == "equipment_assign"
+    assert [item["canonical_key"] for item in contract["key_mappings"]] == product_columns
+    assert contract["aggregations"] == [
+        {
+            "source_column": "EQP_ID",
+            "aggregation": "nunique",
+            "output_column": "EQP_COUNT",
+            "source_candidates": ["EQP_ID"],
+        },
+        {
+            "source_column": "EQP_ID",
+            "aggregation": "collect_unique",
+            "output_column": "EQP_LIST",
+            "source_candidates": ["EQP_ID"],
+        },
+    ]
+
+
+def test_v2_typed_row_match_uses_filtered_node_output_and_prior_rows_without_model():
+    """Validated follow-up DAGs execute filter -> row match -> aggregate in order."""
+
+    resolver, executor, _ = _modules()
+    product_columns = ["TECH", "DEN", "MODE"]
+    payload = {
+        "question": "assigned item count and list by prior groups",
+        "intent_plan": {
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "equipment_assign",
+                    "filters": {},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "filter_equipment_assign",
+                    "operation": "apply_filters",
+                    "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+                    "source_alias": "equipment_assign",
+                    "output_alias": "filtered_equipment_assign",
+                },
+                {
+                    "node_id": "match_previous_products",
+                    "operation": "apply_row_match_groups",
+                    "inputs": [{"kind": "node_output", "ref": "filter_equipment_assign"}],
+                    "source_alias": "filtered_equipment_assign",
+                    "reference_source_alias": "previous_result",
+                    "match_columns": product_columns,
+                    "blank_policy": "normalize_blank",
+                    "output_alias": "matched_equipment_assign",
+                },
+                {
+                    "node_id": "aggregate_equipment",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "node_output", "ref": "match_previous_products"}],
+                    "source_alias": "matched_equipment_assign",
+                    "output_alias": "product_equipment_summary",
+                    "group_by": product_columns,
+                    "aggregations": [
+                        {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                        {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQP_LIST"},
+                    ],
+                },
+            ],
+            "output_contract": {
+                "strict_result_columns": True,
+                "result_mode": "aggregate",
+                "grain_columns": product_columns,
+                "metric_columns": ["EQP_COUNT", "EQP_LIST"],
+                "required_columns": [*product_columns, "EQP_COUNT", "EQP_LIST"],
+                "result_columns": [*product_columns, "EQP_COUNT", "EQP_LIST"],
+            },
+            "resolved_execution_graph": {
+                "external_source_requirements": [
+                    {
+                        "source_alias": "equipment_assign",
+                        "dataset_key": "equipment_assign",
+                        "provider": "retrieval_job",
+                        "required": True,
+                    },
+                    {
+                        "source_alias": "previous_result",
+                        "dataset_key": "previous_result",
+                        "provider": "previous_result",
+                        "required": True,
+                    },
+                ],
+                "validation_errors": [],
+            },
+            "validation_errors": [],
+        },
+        "runtime_sources": {
+            "previous_result": [
+                {"TECH": "A", "DEN": "1", "MODE": "M", "PRODUCTION": 50},
+                {"TECH": "B", "DEN": "2", "MODE": "N", "PRODUCTION": 40},
+            ],
+            "equipment_assign": [
+                {"TECH": "A", "DEN": "1", "MODE": "M", "EQP_ID": "E-01"},
+                {"TECH": "A", "DEN": "1", "MODE": "M", "EQP_ID": "E-02"},
+                {"TECH": "A", "DEN": "1", "MODE": "M", "EQP_ID": "E-02"},
+                {"TECH": "B", "DEN": "2", "MODE": "N", "EQP_ID": "E-03"},
+                {"TECH": "C", "DEN": "3", "MODE": "X", "EQP_ID": "E-99"},
+            ],
+        },
+        "source_results": [
+            {
+                "source_alias": "equipment_assign",
+                "dataset_key": "equipment_assign",
+                "status": "ok",
+                "columns": [*product_columns, "EQP_ID"],
+            }
+        ],
+        "trace": {"inspection": {}},
+    }
+
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    contract = resolved["simple_analysis_contract"]
+    assert contract["route"] == "complex"
+    assert contract["operation"] == "execute_typed_pandas_plan"
+    assert contract["requires_pandas_llm"] is False
+
+    calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "must not be used for a valid typed follow-up",
+        model_invoker=lambda prompt: calls.append(prompt) or "{}",
+        repair_prompt_template="repair",
+    )
+
+    assert calls == []
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"TECH": "A", "DEN": "1", "MODE": "M", "EQP_COUNT": 2, "EQP_LIST": "E-01, E-02"},
+        {"TECH": "B", "DEN": "2", "MODE": "N", "EQP_COUNT": 1, "EQP_LIST": "E-03"},
+    ]
+
+
+def test_v2_pandas_fallback_materializes_filtered_alias_before_row_match():
+    """The guarded LLM fallback preserves Typed filter/output alias semantics."""
+
+    _, executor, _ = _modules()
+    payload = {
+        "runtime_sources": {
+            "previous_result": [
+                {"TECH": "A", "DEN": "1", "MODE": "M"},
+            ],
+            "equipment_assign": [
+                {"TECH": "A", "DEN": "1", "MODE": "M", "OPER_NAME": "D/A1", "EQP_ID": "E-01"},
+                {"TECH": "C", "DEN": "3", "MODE": "X", "OPER_NAME": "D/A1", "EQP_ID": "E-99"},
+                {"TECH": "A", "DEN": "1", "MODE": "M", "OPER_NAME": "OTHER", "EQP_ID": "E-02"},
+            ],
+        },
+        "intent_plan": {
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "equipment_assign",
+                    "filters": {
+                        "OPER_NAME": {"operator": "eq", "value": "D/A1"},
+                    },
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "filter_equipment_assign",
+                    "operation": "apply_filters",
+                    "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+                    "source_alias": "equipment_assign",
+                    "output_alias": "filtered_equipment_assign",
+                },
+                {
+                    "node_id": "match_previous_products",
+                    "operation": "apply_row_match_groups",
+                    "inputs": [{"kind": "node_output", "ref": "filter_equipment_assign"}],
+                    "source_alias": "filtered_equipment_assign",
+                    "reference_source_alias": "previous_result",
+                    "match_columns": ["TECH", "DEN", "MODE"],
+                    "blank_policy": "normalize_blank",
+                    "output_alias": "matched_equipment_assign",
+                },
+            ],
+        },
+    }
+    filter_plan = executor._pandas_filter_plan(payload)
+    row_match_plan = executor._pandas_row_match_plan(payload)
+    code = executor._with_pandas_execution_preambles(
+        "result = sources['matched_equipment_assign'].copy()",
+        executor._pandas_row_match_preamble(row_match_plan),
+        executor._pandas_filter_preamble(filter_plan),
+    )
+    namespace = {
+        "pd": pd,
+        "sources": {
+            alias: pd.DataFrame(rows)
+            for alias, rows in payload["runtime_sources"].items()
+        },
+    }
+
+    exec(code, namespace)
+
+    assert namespace["result"].to_dict(orient="records") == [
+        {"TECH": "A", "DEN": "1", "MODE": "M", "OPER_NAME": "D/A1", "EQP_ID": "E-01"},
+    ]
+
+
+def test_v2_filtered_row_match_enrichment_preserves_each_prior_product():
+    """The production→equipment follow-up keeps top products with zero equipment."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    executor = load_module(V2_ROOT / "17_hybrid_analysis_executor.py")
+    product_columns = ["TECH", "DEN", "MODE"]
+    payload = {
+        "state": {
+            "current_data": {"columns": [*product_columns, "PRODUCTION"]},
+            "last_intent_plan": {
+                "resolved_grain_plan": {
+                    "column_mappings": [
+                        {"canonical_key": column, "source_candidates": [column]}
+                        for column in product_columns
+                    ]
+                }
+            },
+        }
+    }
+    candidates = {
+        "domain_items": [],
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": [*product_columns, "EQP_ID"]},
+            }
+        ],
+        "main_flow_filters": [],
+    }
+    plan = [
+        {
+            "node_id": "filter_equipment_assign",
+            "operation": "apply_filters",
+            "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+            "source_alias": "equipment_assign",
+            "output_alias": "filtered_equipment_assign",
+        },
+        {
+            "node_id": "match_previous_products",
+            "operation": "apply_row_match_groups",
+            "inputs": [{"kind": "node_output", "ref": "filter_equipment_assign"}],
+            "source_alias": "filtered_equipment_assign",
+            "reference_source_alias": "previous_result",
+            "match_columns": product_columns,
+            "output_alias": "matched_equipment_assign",
+        },
+        {
+            "node_id": "aggregate_equipment",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "node_output", "ref": "match_previous_products"}],
+            "source_alias": "matched_equipment_assign",
+            "group_by": product_columns,
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQP_LIST"},
+            ],
+        },
+    ]
+    contract = normalizer._resolve_reference_join_plan(
+        payload,
+        candidates,
+        [{"dataset_key": "equipment_assign", "source_alias": "equipment_assign"}],
+        plan,
+        "previous_result_rows",
+    )
+
+    result = executor._execute_deterministic_contract(
+        contract,
+        {
+            "previous_result": pd.DataFrame(
+                [
+                    {"TECH": "A", "DEN": "1", "MODE": "M", "PRODUCTION": 50},
+                    {"TECH": "B", "DEN": "2", "MODE": "N", "PRODUCTION": 40},
+                ]
+            ),
+            "equipment_assign": pd.DataFrame(
+                [
+                    {"TECH": "A", "DEN": "1", "MODE": "M", "EQP_ID": "E-01"},
+                    {"TECH": "A", "DEN": "1", "MODE": "M", "EQP_ID": "E-02"},
+                ]
+            ),
+        },
+        pd,
+    )
+
+    assert result.to_dict(orient="records") == [
+        {"TECH": "A", "DEN": "1", "MODE": "M", "PRODUCTION": 50, "EQP_COUNT": 2, "EQP_LIST": "E-01, E-02"},
+        {"TECH": "B", "DEN": "2", "MODE": "N", "PRODUCTION": 40, "EQP_COUNT": 0, "EQP_LIST": ""},
+    ]
+
+
 def test_v2_followup_normalizes_rows_mode_to_transform_without_new_retrieval():
     """A retrieval-free top-N follow-up operates on the prior result itself."""
 
