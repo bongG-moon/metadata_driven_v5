@@ -62,6 +62,7 @@ ANSWER_VARIABLES_NODE_ID = "CustomComponent-aKrkH"
 ANSWER_PROMPT_NODE_ID = "Prompt Template-ELVKc"
 HYBRID_ANSWER_NODE_ID = "CustomComponent-BVItv"
 MESSAGE_ADAPTER_NODE_ID = "CustomComponent-A5y0b"
+API_RESPONSE_NODE_ID = "CustomComponent-3eVde"
 REMOVED_MODEL_NODE_IDS = {"LanguageModel-pandas", "LanguageModel-answer"}
 
 
@@ -318,6 +319,23 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     _set_embedded_source(
         node_index[RUNTIME_CLEANUP_NODE_ID],
         _common_component_path("24_runtime_payload_cleanup.py"),
+    )
+    # The API response node owns the public table contract. Refresh it with
+    # the shared result store and cleanup sources so the standalone source,
+    # Flow export, and import-ready bundle stay byte-for-byte synchronized.
+    _set_embedded_source(
+        node_index[API_RESPONSE_NODE_ID],
+        _common_component_path("22_api_response_builder.py"),
+    )
+    _apply_extended_component_spec(
+        node_index[API_RESPONSE_NODE_ID],
+        [
+            ("data", "payload", "페이로드", True, None),
+            ("message", "display_message", "채팅 표시 메시지", False, ""),
+            ("int", "intermediate_preview_limit", "중간 결과 미리보기 행 수", False, 5),
+        ],
+        [("Data", "api_response", "API 응답", "build_payload")],
+        node_index,
     )
     # The session-state loader remains part of the active follow-up contract.
     # Refresh it with the shared sources as well; otherwise a donor-only

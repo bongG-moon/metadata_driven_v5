@@ -299,6 +299,16 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         }
     )
     _set_embedded_source(node_index[API_NODE_ID], _component("22_continuation_api_response_builder.py"))
+    _apply_extended_component_spec(
+        node_index[API_NODE_ID],
+        [
+            ("data", "payload", "페이로드", True, None),
+            ("message", "display_message", "채팅 표시 메시지", False, ""),
+            ("int", "intermediate_preview_limit", "중간 결과 미리보기 행 수", False, 5),
+        ],
+        [("Data", "api_response", "API 응답", "build_payload")],
+        node_index,
+    )
     node_index[API_NODE_ID]["data"]["node"].update(
         {
             "display_name": "22 Continuation API 응답 생성기",

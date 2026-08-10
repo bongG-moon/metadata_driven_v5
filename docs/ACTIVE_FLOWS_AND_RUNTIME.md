@@ -52,6 +52,12 @@ The Flow 01/08 answer adapter has two deliberately separate display paths.
 
 For a multi-source analysis, the intermediate section can show one filtered source table per source and a separate join/calculation table. A normal single-source analysis shows only the meaningful final-pre-contract checkpoint. An error shows the latest successful checkpoint instead of hiding all evidence.
 
+### API table contract
+
+The final-result table keeps its preview rows in data.rows and exposes only display metadata through answer_sections.result_table. Curated intermediate checkpoints now follow the same separation: intermediate_tables contains the bounded preview rows, while answer_sections.intermediate_tables contains the title, columns, labels, total count, download information, and a row_source reference.
+
+This preserves a compact answer message and prevents a browser client from parsing trace or evidence objects to create a table. Intermediate preview rows are removed from the public analysis, trace, and answer evidence copies, leaving `intermediate_tables[n].rows` as their only API location. The client can render each intermediate table from that field, show the preview notice only when `preview_only` is true, and use the optional download object for the full CSV. The 22 API node exposes an advanced `중간 결과 미리보기 행 수` input; values are limited to the same 1–5 range as the answer-message adapter.
+
 ## Required runtime services
 
 ### Langflow

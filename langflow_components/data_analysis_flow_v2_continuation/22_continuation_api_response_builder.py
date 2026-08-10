@@ -15,19 +15,33 @@ import json
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import DataInput, MessageTextInput, Output
+from lfx.io import DataInput, IntInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
 MAX_PUBLIC_CONTINUATION_BYTES = 4 * 1024
+MAX_INTERMEDIATE_TABLE_COUNT = 8
+DEFAULT_INTERMEDIATE_PREVIEW_ROWS = 5
+MAX_INTERMEDIATE_PREVIEW_ROWS = 5
+
+# API contract: final rows remain in data.rows; curated checkpoints are projected
+# into intermediate_tables so a web client can render them without parsing the message.
 
 # 주요 함수: 내부 실행 필드를 제거하고 외부 API가 소비할 안정적인 응답을 만듭니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
-def build_api_response(payload_value: Any, display_message_value: Any = "") -> dict[str, Any]:
+def build_api_response(
+    payload_value: Any,
+    display_message_value: Any = "",
+    intermediate_preview_limit: Any = DEFAULT_INTERMEDIATE_PREVIEW_ROWS,
+) -> dict[str, Any]:
     payload = _payload(payload_value)
     answer_message = str(payload.get("answer_message") or "")
     display_message = _text(display_message_value) or answer_message
     status, stage_status = _pipeline_status(payload)
     continuation = _build_continuation(payload)
+    intermediate_tables = _build_intermediate_tables(
+        payload,
+        _intermediate_preview_limit(intermediate_preview_limit),
+    )
     if str(continuation.get("status") or "") == "followup_unavailable":
         status = "partial"
         stage_status = {**stage_status, "overall": "partial", "continuation": "followup_unavailable"}
@@ -41,17 +55,174 @@ def build_api_response(payload_value: Any, display_message_value: Any = "") -> d
         "stage_status": stage_status,
         "message": display_message,
         "data_mode": _data_mode(payload),
-        "answer_sections": payload.get("answer_sections", {}),
+        "answer_sections": _answer_sections_with_intermediate_tables(
+            payload.get("answer_sections"),
+            intermediate_tables,
+        ),
         "request": payload.get("request", {}),
         "intent_plan": _public_intent_plan(payload.get("intent_plan")),
-        "analysis": payload.get("analysis", {}),
+        "analysis": _without_intermediate_results(payload.get("analysis")),
         "data": payload.get("data", {}),
+        "intermediate_tables": intermediate_tables,
         "data_refs": payload.get("data_refs", []),
         "download_manifest": payload.get("download_manifest", []),
         "state": payload.get("state", {}),
-        "trace": payload.get("trace", {}),
+        "trace": _without_intermediate_results(payload.get("trace")),
         "continuation": continuation,
     }
+
+
+# 함수 설명: `_answer_sections_with_intermediate_tables()`는 화면 메타데이터와 행 데이터의 소유 위치를 분리합니다.
+def _answer_sections_with_intermediate_tables(value: Any, tables: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep table metadata in answer_sections while rows have one API owner."""
+    sections = _without_intermediate_results(value) if isinstance(value, dict) else {}
+    sections["intermediate_tables"] = [
+        {
+            "render_type": "table",
+            "table_id": table["table_id"],
+            "title": table["title"],
+            "role": table["role"],
+            "checkpoint_key": table["checkpoint_key"],
+            "columns": deepcopy(table["columns"]),
+            "display_columns": deepcopy(table["display_columns"]),
+            "column_labels": deepcopy(table["column_labels"]),
+            "row_source": table["row_source"],
+            "row_count": table["row_count"],
+            "preview_row_count": table["preview_row_count"],
+            "preview_only": table["preview_only"],
+            **({"download": deepcopy(table["download"])} if table.get("download") else {}),
+        }
+        for table in tables
+    ]
+    return sections
+
+
+# 함수 설명: `_build_intermediate_tables()`는 공개 가능한 체크포인트만 웹 테이블 형식으로 정규화합니다.
+def _build_intermediate_tables(payload: dict[str, Any], preview_limit: int) -> list[dict[str, Any]]:
+    """Project curated checkpoints into a direct, web-renderable table contract."""
+    downloads = _intermediate_downloads(payload)
+    tables: list[dict[str, Any]] = []
+    for index, item in enumerate(_selected_intermediate_results(payload)[:MAX_INTERMEDIATE_TABLE_COUNT]):
+        preview_rows = [
+            deepcopy(row)
+            for row in item.get("preview_rows", [])
+            if isinstance(row, dict)
+        ][:preview_limit]
+        columns = _string_list(item.get("columns")) or _columns_from_rows(preview_rows)
+        configured_display_columns = _string_list(item.get("display_columns"))
+        display_columns = [column for column in configured_display_columns if column in columns] or list(columns)
+        raw_labels = item.get("column_labels") if isinstance(item.get("column_labels"), dict) else {}
+        column_labels = {
+            str(column): _text(label)
+            for column, label in raw_labels.items()
+            if str(column) in columns and _text(label)
+        }
+        download_key = _text(item.get("download_key"))
+        checkpoint_key = _text(item.get("key")) or download_key
+        title = (
+            _text(item.get("description"))
+            or _text(item.get("label"))
+            or checkpoint_key
+            or "중간 결과"
+        )
+        row_count = _safe_int(item.get("row_count"), len(preview_rows))
+        table = {
+            "render_type": "table",
+            "table_id": f"intermediate:{download_key or checkpoint_key or index + 1}",
+            "title": title,
+            "role": _text(item.get("role")) or "intermediate_result",
+            "checkpoint_key": checkpoint_key,
+            "download_key": download_key,
+            "columns": columns,
+            "display_columns": display_columns,
+            "column_labels": column_labels,
+            "rows": preview_rows,
+            "row_source": f"intermediate_tables[{index}].rows",
+            "row_count": row_count,
+            "preview_row_count": len(preview_rows),
+            "preview_only": row_count > len(preview_rows),
+        }
+        if download_key and download_key in downloads:
+            table["download"] = downloads[download_key]
+        tables.append(table)
+    return tables
+
+
+# 함수 설명: `_selected_intermediate_results()`는 다운로드 가능 결과를 우선하고 레거시 결과는 마지막 계산값만 선택합니다.
+def _selected_intermediate_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = _intermediate_candidates(payload)
+    if not items:
+        return []
+    published = [item for item in items if _text(item.get("download_key"))]
+    if published:
+        return published[:MAX_INTERMEDIATE_TABLE_COUNT]
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    if _normalize_status(analysis.get("status"), default="error") == "ok":
+        computed = [item for item in items if _text(item.get("role")) == "computed_result"]
+        if computed:
+            return [computed[-1]]
+    return [items[-1]]
+
+
+# 함수 설명: `_intermediate_candidates()`는 공개 payload와 제한된 진단 영역에서 중간 결과 후보를 찾습니다.
+def _intermediate_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    inspection = trace.get("inspection") if isinstance(trace.get("inspection"), dict) else {}
+    pandas_execution = (
+        inspection.get("pandas_execution")
+        if isinstance(inspection.get("pandas_execution"), dict)
+        else {}
+    )
+    answer_sections = payload.get("answer_sections") if isinstance(payload.get("answer_sections"), dict) else {}
+    evidence = answer_sections.get("evidence") if isinstance(answer_sections.get("evidence"), dict) else {}
+    for value in (
+        payload.get("intermediate_results"),
+        analysis.get("intermediate_results"),
+        pandas_execution.get("intermediate_results"),
+        evidence.get("intermediate_results"),
+    ):
+        items = [deepcopy(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+        if items:
+            return items
+    return []
+
+
+# 함수 설명: `_intermediate_downloads()`는 저장소 data reference를 다운로드 정보로 연결합니다.
+def _intermediate_downloads(payload: dict[str, Any]) -> dict[str, dict[str, str]]:
+    downloads: dict[str, dict[str, str]] = {}
+    refs = payload.get("data_refs") if isinstance(payload.get("data_refs"), list) else []
+    for ref in refs:
+        if not isinstance(ref, dict) or _text(ref.get("role")) != "intermediate_result":
+            continue
+        path = _text(ref.get("path"))
+        prefix = "payload.intermediate_rows."
+        download_key = path[len(prefix):] if path.startswith(prefix) else _text(ref.get("download_key"))
+        download_url = _text(ref.get("download_url"))
+        if not download_key or not download_url:
+            continue
+        downloads[download_key] = {
+            "url": download_url,
+            "format": _text(ref.get("download_format")) or "csv",
+            "expires_at": _text(ref.get("expires_at")),
+        }
+    return downloads
+
+
+# 함수 설명: `_string_list()`는 비어 있지 않은 문자열 목록만 안전하게 반환합니다.
+def _string_list(value: Any) -> list[str]:
+    return [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
+
+
+# 함수 설명: `_columns_from_rows()`는 미리보기 행의 키 순서로 표시 컬럼을 추론합니다.
+def _columns_from_rows(rows: list[dict[str, Any]]) -> list[str]:
+    columns: list[str] = []
+    for row in rows:
+        for key in row:
+            column = str(key)
+            if column and column not in columns:
+                columns.append(column)
+    return columns
 
 
 # 함수 설명: 공개 intent 진단 정보는 유지하되 서버 저장형 dependent stage IR은 작은 실행 요약으로 치환합니다.
@@ -209,6 +380,28 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+# 함수 설명: `_intermediate_preview_limit()`는 API 중간 결과 미리보기 행 수를 1~5 범위로 제한합니다.
+def _intermediate_preview_limit(value: Any) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_INTERMEDIATE_PREVIEW_ROWS
+    return max(1, min(MAX_INTERMEDIATE_PREVIEW_ROWS, resolved))
+
+
+# 함수 설명: `_without_intermediate_results()`는 중간 행을 전용 `intermediate_tables`에만 남깁니다.
+def _without_intermediate_results(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_intermediate_results(item)
+            for key, item in value.items()
+            if key != "intermediate_results"
+        }
+    if isinstance(value, list):
+        return [_without_intermediate_results(item) for item in value]
+    return deepcopy(value)
+
+
 # 함수 설명: `_pipeline_status()`는 조회와 pandas 분석 상태를 함께 평가해 ok·partial·error를 결정합니다.
 def _pipeline_status(payload: dict[str, Any]) -> tuple[str, dict[str, str]]:
     analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
@@ -355,10 +548,24 @@ class ApiResponseBuilder(Component):
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         MessageTextInput(name="display_message", display_name="채팅 표시 메시지", required=False),
+        IntInput(
+            name="intermediate_preview_limit",
+            display_name="중간 결과 미리보기 행 수",
+            info="API 중간 결과 표에 표시할 행 수입니다. 1~5 범위로 적용됩니다.",
+            value=DEFAULT_INTERMEDIATE_PREVIEW_ROWS,
+            required=False,
+            advanced=True,
+        ),
     ]
     outputs = [Output(name="api_response", display_name="API 응답", method="build_payload")]
 
     # Langflow 출력 함수: 'API 응답 (api_response)' 포트가 요청될 때 실행됩니다.
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_payload(self) -> Data:
-        return Data(data=build_api_response(getattr(self, "payload", None), getattr(self, "display_message", "")))
+        return Data(
+            data=build_api_response(
+                getattr(self, "payload", None),
+                getattr(self, "display_message", ""),
+                getattr(self, "intermediate_preview_limit", DEFAULT_INTERMEDIATE_PREVIEW_ROWS),
+            )
+        )

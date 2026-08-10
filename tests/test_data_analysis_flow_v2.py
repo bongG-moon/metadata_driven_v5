@@ -202,6 +202,150 @@ def test_v2_flow_export_matches_current_native_graph():
     assert not any(target == "CustomComponent-BVItv" and field == "answer_prompt" for _, _, target, field in edge_keys)
 
 
+def test_api_response_builder_projects_curated_intermediate_results_as_web_tables():
+    api = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py")
+    payload = {
+        "answer_message": "분석 결과입니다.",
+        "analysis": {
+            "status": "ok",
+            "step_outputs": [{"key": "raw_step", "preview_rows": [{"RAW_ONLY": "do not publish"}]}],
+            "intermediate_results": [{"key": "analysis-only", "preview_rows": [{"RAW_ONLY": "analysis"}]}],
+        },
+        "data": {
+            "columns": ["FINAL"],
+            "rows": [{"FINAL": "final-value"}],
+            "row_count": 1,
+        },
+        "answer_sections": {
+            "summary": {"headline": "분석 결과입니다."},
+            "evidence": {"intermediate_results": [{"key": "evidence-only", "preview_rows": [{"RAW_ONLY": "evidence"}]}]},
+        },
+        "intermediate_results": [
+            {
+                "key": "source:production",
+                "description": "생산 데이터 필터 결과",
+                "role": "filtered_source",
+                "download_key": "source_production",
+                "columns": ["OPER", "QTY"],
+                "display_columns": ["OPER", "QTY"],
+                "column_labels": {"OPER": "공정", "QTY": "수량"},
+                "preview_rows": [
+                    {"OPER": "A", "QTY": 1},
+                    {"OPER": "B", "QTY": 2},
+                    {"OPER": "C", "QTY": 3},
+                    {"OPER": "D", "QTY": 4},
+                    {"OPER": "E", "QTY": 5},
+                    {"OPER": "F", "QTY": 6},
+                ],
+                "row_count": 12,
+            },
+            {
+                "key": "computed:before_contract",
+                "description": "최종 집계 전 중간 데이터",
+                "role": "computed_result",
+                "download_key": "pre_contract_result",
+                "columns": ["OPER", "TOTAL_QTY"],
+                "preview_rows": [{"OPER": "A", "TOTAL_QTY": 9}],
+                "row_count": 3,
+            },
+        ],
+        "data_refs": [
+            {
+                "role": "intermediate_result",
+                "path": "payload.intermediate_rows.source_production",
+                "download_url": "https://artifact.example.internal/download.csv?source",
+                "download_format": "csv",
+                "expires_at": "2026-08-10T12:00:00Z",
+            },
+            {
+                "role": "intermediate_result",
+                "path": "payload.intermediate_rows.pre_contract_result",
+                "download_url": "https://artifact.example.internal/download.csv?computed",
+                "download_format": "csv",
+                "expires_at": "2026-08-10T12:00:00Z",
+            },
+        ],
+        "trace": {
+            "inspection": {
+                "pandas_execution": {
+                    "intermediate_results": [{"key": "trace-only", "preview_rows": [{"RAW_ONLY": "trace"}]}]
+                }
+            }
+        },
+    }
+
+    response = api.build_api_response(payload, "웹용 요약", intermediate_preview_limit=2)
+
+    assert response["message"] == "웹용 요약"
+    assert response["data"]["rows"] == [{"FINAL": "final-value"}]
+    assert len(response["intermediate_tables"]) == 2
+    source_table, computed_table = response["intermediate_tables"]
+    assert source_table["render_type"] == "table"
+    assert source_table["title"] == "생산 데이터 필터 결과"
+    assert source_table["rows"] == payload["intermediate_results"][0]["preview_rows"][:2]
+    assert source_table["row_count"] == 12
+    assert source_table["preview_row_count"] == 2
+    assert source_table["preview_only"] is True
+    assert source_table["column_labels"] == {"OPER": "공정", "QTY": "수량"}
+    assert source_table["download"]["url"].endswith("?source")
+    assert computed_table["download"]["url"].endswith("?computed")
+    descriptors = response["answer_sections"]["intermediate_tables"]
+    assert [item["row_source"] for item in descriptors] == [
+        "intermediate_tables[0].rows",
+        "intermediate_tables[1].rows",
+    ]
+    assert all("rows" not in item for item in descriptors)
+    assert "RAW_ONLY" not in json.dumps(response["intermediate_tables"], ensure_ascii=False)
+    assert "intermediate_results" not in response["answer_sections"].get("evidence", {})
+    assert "intermediate_results" not in response["analysis"]
+    assert "intermediate_results" not in response["trace"]["inspection"]["pandas_execution"]
+
+
+def test_api_response_builder_uses_last_computed_checkpoint_when_legacy_results_are_not_published():
+    api = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py")
+    payload = {
+        "analysis": {"status": "ok"},
+        "intermediate_results": [
+            {
+                "key": "source:raw",
+                "role": "source_input",
+                "columns": ["RAW"],
+                "preview_rows": [{"RAW": "source"}],
+                "row_count": 10,
+            },
+            {
+                "key": "computed:legacy",
+                "role": "computed_result",
+                "description": "계약 전 계산 결과",
+                "columns": ["TOTAL"],
+                "preview_rows": [{"TOTAL": 7}],
+                "row_count": 1,
+            },
+        ],
+    }
+
+    response = api.build_api_response(payload)
+
+    assert response["intermediate_tables"] == [
+        {
+            "render_type": "table",
+            "table_id": "intermediate:computed:legacy",
+            "title": "계약 전 계산 결과",
+            "role": "computed_result",
+            "checkpoint_key": "computed:legacy",
+            "download_key": "",
+            "columns": ["TOTAL"],
+            "display_columns": ["TOTAL"],
+            "column_labels": {},
+            "rows": [{"TOTAL": 7}],
+            "row_source": "intermediate_tables[0].rows",
+            "row_count": 1,
+            "preview_row_count": 1,
+            "preview_only": False,
+        }
+    ]
+
+
 def test_catalog_guarded_intent_router_skips_model_when_table_catalog_load_fails():
     router = load_module(V2_ROOT / "03b_catalog_guarded_intent_router.py")
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")

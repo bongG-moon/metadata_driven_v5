@@ -3888,6 +3888,80 @@ def test_public_continuation_contract_is_compact_and_contains_no_full_ir():
     assert final_continuation["current_stage_index"] == 1
 
 
+def test_continuation_api_response_projects_intermediate_results_as_web_tables():
+    api = _module("_continuation_api_intermediate_table_tests", "22_continuation_api_response_builder.py")
+    payload = {
+        "answer_message": "Final answer",
+        "answer_sections": {
+            "summary": {"headline": "Final answer"},
+            "evidence": {"intermediate_results": [{"preview_rows": [{"HIDDEN": "evidence"}]}]},
+        },
+        "analysis": {"status": "ok", "intermediate_results": [{"preview_rows": [{"HIDDEN": "analysis"}]}]},
+        "data": {"columns": ["FINAL"], "rows": [{"FINAL": "value"}], "row_count": 1},
+        "intermediate_results": [
+            {
+                "key": "filtered:source_a",
+                "description": "Filtered source checkpoint",
+                "role": "filtered_source",
+                "download_key": "source_source_a",
+                "columns": ["ITEM", "QTY"],
+                "preview_rows": [{"ITEM": "A", "QTY": 2}],
+                "row_count": 9,
+            }
+        ],
+        "data_refs": [
+            {
+                "role": "intermediate_result",
+                "path": "payload.intermediate_rows.source_source_a",
+                "download_url": "https://artifact.example.internal/intermediate.csv",
+                "download_format": "csv",
+            }
+        ],
+        "trace": {
+            "inspection": {
+                "pandas_execution": {
+                    "intermediate_results": [{"preview_rows": [{"HIDDEN": "trace"}]}]
+                }
+            }
+        },
+    }
+
+    response = api.build_api_response(payload, "Web summary")
+
+    assert response["message"] == "Web summary"
+    assert response["data"]["rows"] == [{"FINAL": "value"}]
+    assert response["continuation"] == {"status": "not_applicable"}
+    assert response["intermediate_tables"] == [
+        {
+            "render_type": "table",
+            "table_id": "intermediate:source_source_a",
+            "title": "Filtered source checkpoint",
+            "role": "filtered_source",
+            "checkpoint_key": "filtered:source_a",
+            "download_key": "source_source_a",
+            "columns": ["ITEM", "QTY"],
+            "display_columns": ["ITEM", "QTY"],
+            "column_labels": {},
+            "rows": [{"ITEM": "A", "QTY": 2}],
+            "row_source": "intermediate_tables[0].rows",
+            "row_count": 9,
+            "preview_row_count": 1,
+            "preview_only": True,
+            "download": {
+                "url": "https://artifact.example.internal/intermediate.csv",
+                "format": "csv",
+                "expires_at": "",
+            },
+        }
+    ]
+    descriptor = response["answer_sections"]["intermediate_tables"][0]
+    assert descriptor["row_source"] == "intermediate_tables[0].rows"
+    assert "rows" not in descriptor
+    assert "intermediate_results" not in response["answer_sections"].get("evidence", {})
+    assert "intermediate_results" not in response["analysis"]
+    assert "intermediate_results" not in response["trace"]["inspection"]["pandas_execution"]
+
+
 @pytest.mark.parametrize(
     ("mutation", "error_type"),
     [
