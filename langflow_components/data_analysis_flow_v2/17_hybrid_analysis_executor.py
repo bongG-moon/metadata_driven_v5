@@ -1117,11 +1117,22 @@ def _deterministic_function_case_preamble(
         tree = ast.parse(helper_code)
     except SyntaxError as exc:
         return "", f"Function Case helper 코드 구문이 유효하지 않습니다: {exc}"
-    defined_names = {
-        node.name
+    helper_signatures = {
+        node.name: {
+            "keyword_names": {
+                argument.arg
+                for argument in [
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                ]
+            },
+            "accepts_kwargs": node.args.kwarg is not None,
+        }
         for node in tree.body
         if isinstance(node, ast.FunctionDef)
     }
+    defined_names = set(helper_signatures)
     if any(not isinstance(node, ast.FunctionDef) for node in tree.body):
         return "", "결정론적 source transform helper에는 최상위 함수 정의만 허용됩니다."
     guard_error = _guard_code(helper_code)
@@ -1146,11 +1157,20 @@ def _deterministic_function_case_preamble(
             if isinstance(transform.get("arguments"), dict)
             else {}
         )
+        signature = helper_signatures[function_name]
         rendered_arguments: list[str] = []
         for key, value in arguments.items():
             name = str(key or "").strip()
             if not name.isidentifier():
                 return "", f"Function Case argument 이름이 유효하지 않습니다: {name}"
+            if (
+                name not in signature["keyword_names"]
+                and not signature["accepts_kwargs"]
+            ):
+                return "", (
+                    "Function Case helper가 요청 인자를 지원하지 않습니다: "
+                    f"{function_name}({name}=...). Helper library를 최신 버전으로 동기화한 뒤 다시 실행하세요."
+                )
             rendered, error = _python_literal(value)
             if error:
                 return "", f"Function Case argument를 안전한 literal로 만들 수 없습니다: {name}"
@@ -4826,6 +4846,8 @@ def _analysis_error(
             partial_data = _partial_data_from_intermediate(bounded_intermediate_results)
             if partial_data:
                 payload["data"] = partial_data
+    result_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    recovered_result = _recovered_result_metadata(result_data, bounded_intermediate_results)
     payload["analysis"] = {
         "status": "error",
         "row_count": 0,
@@ -4837,6 +4859,7 @@ def _analysis_error(
         "step_outputs": [],
         "intermediate_results": deepcopy(bounded_intermediate_results),
         "function_case_results": [],
+        "recovered_result": recovered_result,
     }
     payload.setdefault("trace", {}).setdefault("errors", []).append({"type": error_type, "message": message})
     payload.setdefault("trace", {}).setdefault("inspection", {})["pandas_execution"] = {
@@ -4854,8 +4877,28 @@ def _analysis_error(
         "used_helpers": helper_trace["used_helpers"],
         "helper_sources": helper_trace["helper_sources"],
         "error": {"type": error_type, "message": message, "traceback_summary": tb[:1000]},
+        "recovered_result": deepcopy(recovered_result),
     }
     return payload
+
+
+# 함수 설명: 오류 뒤 직전 정상 체크포인트를 응답 data로 사용한 사실만 간결하게 기록합니다.
+# 원본 행이나 pandas 코드는 이 메타데이터에 넣지 않아 답변 모델 토큰을 늘리지 않습니다.
+def _recovered_result_metadata(data: dict[str, Any], checkpoints: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = data.get("rows") if isinstance(data.get("rows"), list) else []
+    try:
+        row_count = int(data.get("row_count") or len(rows))
+    except (TypeError, ValueError):
+        row_count = len(rows)
+    if not checkpoints or (not rows and row_count <= 0 and not data.get("data_ref")):
+        return {}
+    checkpoint = checkpoints[-1]
+    return {
+        "available": True,
+        "checkpoint_key": str(checkpoint.get("key") or "").strip(),
+        "checkpoint_role": str(checkpoint.get("role") or "").strip(),
+        "row_count": max(0, row_count),
+    }
 
 
 # 함수 설명: `_execution_blocked()`는 필수 조회 실패 gate가 pandas와 repair 실행을 금지했는지 확인합니다.

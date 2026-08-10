@@ -89,6 +89,7 @@ def build_message(
     answer_sections = payload.get("answer_sections") if isinstance(payload.get("answer_sections"), dict) else {}
     preview_limit = _positive_int(table_preview_limit, DEFAULT_TABLE_PREVIEW_LIMIT)
     intermediate_limit = _intermediate_preview_limit(intermediate_preview_limit)
+    recovery_notice = _recovered_result_notice(payload)
 
     if answer_sections:
         sections = _message_sections_from_answer_sections(
@@ -98,13 +99,17 @@ def build_message(
             preview_limit,
             intermediate_limit,
         )
+        if recovery_notice and sections:
+            sections.insert(0, recovery_notice)
         for section in _diagnostic_sections(payload, options):
             if section:
                 sections.append(section)
         if sections:
             return "\n\n".join(sections)
 
-    sections: list[str] = []
+    sections = []
+    if recovery_notice:
+        sections.append(recovery_notice)
     answer = str(payload.get("answer_message") or "").strip()
     answer = _display_answer_text(answer, options)
     if answer:
@@ -134,6 +139,59 @@ def build_message(
     if sections:
         return "\n\n".join(sections)
     return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+# 함수 설명: `_recovered_result_notice()`는 오류 뒤 직전 정상 결과로 응답을 이어 갈 때만
+# LLM과 무관한 고정 안내문을 답변의 가장 앞에 추가해 결과의 신뢰 범위를 분명히 알립니다.
+def _recovered_result_notice(payload: dict[str, Any]) -> str:
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    status = str(analysis.get("status") or "").strip().lower()
+    if status not in {"error", "failed", "partial", "blocked"}:
+        return ""
+
+    recovery = analysis.get("recovered_result") if isinstance(analysis.get("recovered_result"), dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    has_recovered_rows = bool(data.get("partial")) and _has_displayable_data(data)
+    if not bool(recovery.get("available")) and not has_recovered_rows:
+        return ""
+
+    stage = _recovered_result_failure_stage(payload)
+    return (
+        f"> ⚠️ **{stage} 단계에서 오류가 발생했습니다.**\n"
+        ">\n"
+        "> 직전 정상 단계의 결과 데이터를 기반으로 답변을 생성했습니다."
+    )
+
+
+# 함수 설명: 부분 결과를 실제로 사용자에게 보여줄 수 있는지 확인해 빈 오류 응답에는 복구 안내를 붙이지 않습니다.
+def _has_displayable_data(data: dict[str, Any]) -> bool:
+    rows = data.get("rows")
+    if isinstance(rows, list) and rows:
+        return True
+    if _safe_int(data.get("row_count"), 0) > 0:
+        return True
+    data_ref = data.get("data_ref")
+    if isinstance(data_ref, dict):
+        return bool(data_ref.get("ref_id") or data_ref.get("data_ref") or data_ref.get("download_url"))
+    return bool(data_ref)
+
+
+# 함수 설명: 내부 오류 코드 대신 사용자가 이해할 수 있는 실행 단계 이름을 복구 안내에 사용합니다.
+def _recovered_result_failure_stage(payload: dict[str, Any]) -> str:
+    analysis = payload.get("analysis") if isinstance(payload.get("analysis"), dict) else {}
+    inspection = _inspection(payload)
+    pandas_execution = inspection.get("pandas_execution") if isinstance(inspection.get("pandas_execution"), dict) else {}
+    error = analysis.get("error") if isinstance(analysis.get("error"), dict) else {}
+    if not error and isinstance(pandas_execution.get("error"), dict):
+        error = pandas_execution["error"]
+    error_type = str(error.get("type") or "").strip().lower()
+    if "contract" in error_type:
+        return "결과 계약 적용"
+    if any(token in error_type for token in ("retrieval", "source_schema", "metadata", "catalog")):
+        return "데이터 조회"
+    if "pandas" in error_type or pandas_execution:
+        return "pandas 처리"
+    return "분석 처리"
 
 
 # 함수 설명: `_message_sections_from_answer_sections()`는 응답 section·원본·답변을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
@@ -1062,7 +1120,10 @@ def _download_anchor(label: Any, url: Any) -> str:
 
     safe_label = escape(str(label or "CSV 다운로드"), quote=False)
     safe_url = escape(str(url or ""), quote=True)
-    return f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_label}</a>'
+    return (
+        f'📥 <a href="{safe_url}" target="_blank" rel="noopener noreferrer">'
+        f"<strong>{safe_label}</strong></a>"
+    )
 
 
 # 함수 설명: `_downloadable_data_refs()`는 사용자가 내려받을 수 있는 저장 결과 data_ref만 중복 없이 선별합니다.

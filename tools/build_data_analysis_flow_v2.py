@@ -42,6 +42,8 @@ DEFAULT_TARGET = ROOT / "flow_exports" / "data_analysis_flow_v2_standalone.json"
 DEFAULT_IMPORT_TARGET = ROOT / "import_ready_flows" / "01_data_analysis_flow_v2_standalone.json"
 V2_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow_v2"
 COMMON_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow"
+HELPER_LIBRARY_NODE_ID = "TextInput-AXG9a"
+HELPER_LIBRARY_SOURCE = COMMON_COMPONENT_ROOT / "function_case_helper_code_input_example.py"
 
 RESOLVER_NODE_ID = "CustomComponent-v2FastResolver"
 INTENT_VARIABLES_NODE_ID = "CustomComponent-B1hbh"
@@ -247,6 +249,13 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     nodes = flow["data"]["nodes"]
     edges = flow["data"]["edges"]
     node_index = {node["id"]: node for node in nodes}
+
+    # The donor export has a text-input helper library. Keep it synchronized
+    # with the canonical source so intent-normalizer arguments always match the
+    # Helper signature after a fresh import.
+    node_index[HELPER_LIBRARY_NODE_ID]["data"]["node"]["template"]["input_value"]["value"] = (
+        HELPER_LIBRARY_SOURCE.read_text(encoding="utf-8")
+    )
 
     # 01 기본 Flow는 일반 질문과 세션 상태만 받습니다. 명시적인 상위 결과
     # 참조/재개는 별도 08 Continuation Flow의 전용 요청 로더가 담당합니다.

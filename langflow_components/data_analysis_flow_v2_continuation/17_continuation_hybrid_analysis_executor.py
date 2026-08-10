@@ -5429,6 +5429,8 @@ def _analysis_error(
             partial_data = _partial_data_from_intermediate(bounded_intermediate_results)
             if partial_data:
                 payload["data"] = partial_data
+    result_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    recovered_result = _recovered_result_metadata(result_data, bounded_intermediate_results)
     payload["analysis"] = {
         "status": "error",
         "row_count": 0,
@@ -5440,6 +5442,7 @@ def _analysis_error(
         "step_outputs": [],
         "intermediate_results": deepcopy(bounded_intermediate_results),
         "function_case_results": [],
+        "recovered_result": recovered_result,
     }
     payload.setdefault("trace", {}).setdefault("errors", []).append({"type": error_type, "message": message})
     payload.setdefault("trace", {}).setdefault("inspection", {})["pandas_execution"] = {
@@ -5457,8 +5460,28 @@ def _analysis_error(
         "used_helpers": helper_trace["used_helpers"],
         "helper_sources": helper_trace["helper_sources"],
         "error": {"type": error_type, "message": message, "traceback_summary": tb[:1000]},
+        "recovered_result": deepcopy(recovered_result),
     }
     return payload
+
+
+# 함수 설명: 오류 뒤 직전 정상 체크포인트를 응답 data로 사용한 사실만 간결하게 기록합니다.
+# 원본 행이나 pandas 코드는 이 메타데이터에 넣지 않아 답변 모델 토큰을 늘리지 않습니다.
+def _recovered_result_metadata(data: dict[str, Any], checkpoints: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = data.get("rows") if isinstance(data.get("rows"), list) else []
+    try:
+        row_count = int(data.get("row_count") or len(rows))
+    except (TypeError, ValueError):
+        row_count = len(rows)
+    if not checkpoints or (not rows and row_count <= 0 and not data.get("data_ref")):
+        return {}
+    checkpoint = checkpoints[-1]
+    return {
+        "available": True,
+        "checkpoint_key": str(checkpoint.get("key") or "").strip(),
+        "checkpoint_role": str(checkpoint.get("role") or "").strip(),
+        "row_count": max(0, row_count),
+    }
 
 
 # 함수 설명: `_execution_blocked()`는 필수 조회 실패 gate가 pandas와 repair 실행을 금지했는지 확인합니다.

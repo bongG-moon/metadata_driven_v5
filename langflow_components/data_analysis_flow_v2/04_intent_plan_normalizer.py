@@ -488,6 +488,7 @@ def normalize_intent_plan(
         function_cases,
         pandas_plan,
         retrieval_jobs,
+        metadata_candidates,
     )
     retrieval_jobs, function_owned_filter_normalization = (
         _remove_function_owned_retrieval_filters(
@@ -11874,6 +11875,7 @@ def _auto_select_metadata_function_case(
         for helper in runtime_helpers
         if isinstance(helper, dict) and helper.get("selectable_for_intent") is True
     ]
+    skipped_by_typed_filters: list[dict[str, Any]] = []
     for item in [*domain_items, *helper_items]:
         if not isinstance(item, dict) or str(item.get("section") or "").strip() != "pandas_function_cases":
             continue
@@ -11895,16 +11897,49 @@ def _auto_select_metadata_function_case(
         ).casefold()
         if "token" not in searchable:
             continue
-        policy = payload.get("token_policy") if isinstance(payload.get("token_policy"), dict) else {}
-        token_values = _extract_function_case_tokens(question, policy)
-        value_tokens = _function_case_value_tokens(token_values, metadata_candidates)
-        if len(value_tokens) < 2:
-            continue
         source_alias = str(
             payload.get("source_alias")
             or (retrieval_jobs[0].get("source_alias") if retrieval_jobs else "")
             or (retrieval_jobs[0].get("dataset_key") if retrieval_jobs else "")
         ).strip()
+        policy = payload.get("token_policy") if isinstance(payload.get("token_policy"), dict) else {}
+        token_values = _extract_function_case_tokens(question, policy)
+        value_tokens = _function_case_value_tokens(token_values, metadata_candidates)
+        if helper_name == "match_product_tokens":
+            source_job = next(
+                (
+                    job
+                    for job in retrieval_jobs
+                    if isinstance(job, dict)
+                    and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+                    == source_alias
+                ),
+                None,
+            )
+            evidence = _product_token_filter_evidence(
+                {
+                    "function_name": helper_name,
+                    "input_text": question,
+                    "source_alias": source_alias,
+                },
+                source_job,
+                metadata_candidates,
+            )
+            value_tokens = _string_list(evidence.get("structured_tokens"))
+            uncovered_tokens = _string_list(evidence.get("uncovered_tokens"))
+            if len(uncovered_tokens) < 2:
+                skipped_by_typed_filters.append(
+                    {
+                        "function_name": helper_name,
+                        "source_alias": source_alias,
+                        "reason": str(evidence.get("reason") or "no_uncovered_structured_product_tokens"),
+                        "structured_tokens": value_tokens,
+                        "covered_tokens": _string_list(evidence.get("covered_tokens")),
+                    }
+                )
+                continue
+        elif len(value_tokens) < 2:
+            continue
         # Preserve the user's product wording, including unpatterned values
         # such as package codes.  Query-control terms are supplied separately
         # from the typed output contract, so a metric word such as UPH cannot
@@ -11931,6 +11966,12 @@ def _auto_select_metadata_function_case(
             "function_name": helper_name,
             "token_values": value_tokens,
             "source_alias": source_alias,
+        }
+    if skipped_by_typed_filters:
+        return plan, {
+            "status": "not_needed",
+            "reason": "no_uncovered_structured_product_tokens",
+            "skipped": skipped_by_typed_filters,
         }
     return plan, {"status": "not_needed", "reason": "no_matching_token_contract"}
 
@@ -12136,6 +12177,7 @@ def _remove_source_filter_sufficient_function_cases(
     function_cases: list[dict[str, Any]],
     pandas_plan: list[Any],
     retrieval_jobs: list[dict[str, Any]],
+    metadata_candidates: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[Any], dict[str, Any]]:
     jobs_by_alias = {
         str(job.get("source_alias") or job.get("dataset_key") or "").strip(): job
@@ -12164,7 +12206,12 @@ def _remove_source_filter_sufficient_function_cases(
             job.get("filters") if isinstance(job, dict) else None,
             input_text,
         )
-        if not matched_filter:
+        product_evidence = _product_token_filter_evidence(
+            case,
+            job,
+            metadata_candidates or {},
+        )
+        if not matched_filter and not product_evidence.get("removable"):
             retained.append(deepcopy(case))
             continue
         marker = (
@@ -12180,8 +12227,15 @@ def _remove_source_filter_sufficient_function_cases(
                 "source_alias": alias,
                 "function_case_key": marker[0],
                 "function_name": marker[1],
-                "filter_field": matched_filter,
-                "reason": "typed_source_filter_covers_entire_function_input",
+                "filter_field": matched_filter
+                or ", ".join(_string_list(product_evidence.get("filter_fields"))),
+                "reason": (
+                    "typed_source_filter_covers_entire_function_input"
+                    if matched_filter
+                    else str(product_evidence.get("reason") or "")
+                ),
+                "structured_tokens": _string_list(product_evidence.get("structured_tokens")),
+                "covered_tokens": _string_list(product_evidence.get("covered_tokens")),
             }
         )
 
@@ -12211,6 +12265,97 @@ def _remove_source_filter_sufficient_function_cases(
             continue
         normalized_plan.append(deepcopy(step))
     return retained, normalized_plan, {"status": "applied", "removed": removed}
+
+
+# 함수 설명: 제품 token helper는 typed 조회 filter로 이미 표현되지 않은 구조화 제품 token이 남아 있을 때만 유지합니다.
+# Function description: a product-token helper is useful only when its input
+# contains a structured product token not already expressed by a typed source
+# filter.  This is deliberately metadata/IR driven: it has no process,
+# dataset, or product-code-specific branch.
+def _product_token_filter_evidence(
+    case: dict[str, Any],
+    job: dict[str, Any] | None,
+    metadata_candidates: dict[str, Any],
+) -> dict[str, Any]:
+    if str(case.get("function_name") or "").strip() != "match_product_tokens":
+        return {"removable": False}
+    policy = _function_case_token_policy(case, metadata_candidates)
+    raw_tokens = _extract_function_case_tokens(case.get("input_text"), policy)
+    structured_tokens = _function_case_value_tokens(raw_tokens, metadata_candidates)
+    if not structured_tokens:
+        return {
+            "removable": True,
+            "reason": "no_structured_product_token_evidence",
+            "structured_tokens": [],
+            "covered_tokens": [],
+            "uncovered_tokens": [],
+            "filter_fields": [],
+        }
+
+    filter_values = _typed_filter_value_keys(
+        job.get("filters") if isinstance(job, dict) else None
+    )
+    covered_tokens: list[str] = []
+    uncovered_tokens: list[str] = []
+    filter_fields: list[str] = []
+    for token in structured_tokens:
+        key = _function_token(token)
+        matching_fields = filter_values.get(key, [])
+        if matching_fields:
+            covered_tokens.append(token)
+            filter_fields.extend(matching_fields)
+        else:
+            uncovered_tokens.append(token)
+    return {
+        "removable": not uncovered_tokens,
+        "reason": (
+            "typed_source_filters_cover_all_structured_product_tokens"
+            if not uncovered_tokens
+            else "uncovered_structured_product_tokens_remain"
+        ),
+        "structured_tokens": structured_tokens,
+        "covered_tokens": covered_tokens,
+        "uncovered_tokens": uncovered_tokens,
+        "filter_fields": _merge_strings(filter_fields),
+    }
+
+
+# 함수 설명: typed 동등·prefix filter의 리터럴 값을 수집해 Helper token의 source filter 충족 여부를 판단합니다.
+# Function description: collect literal values from typed equality/prefix
+# filters.  Only source-side restrictive operators may cover a helper token.
+def _typed_filter_value_keys(filters: Any) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+
+    # 함수 설명: 논리 filter 묶음을 재귀 순회하며 비교 가능한 리터럴 값만 수집합니다.
+    def visit(mapping: Any) -> None:
+        if not isinstance(mapping, dict):
+            return
+        for raw_field, condition in mapping.items():
+            field = str(raw_field or "").strip()
+            if field.casefold() in FILTER_LOGICAL_KEYS:
+                nested_items = condition if isinstance(condition, list) else [condition]
+                for item in nested_items:
+                    visit(item)
+                continue
+            if not isinstance(condition, dict):
+                continue
+            operator = str(condition.get("operator") or "eq").strip().casefold()
+            if operator not in {"eq", "in", "starts_with", "startswith"}:
+                continue
+            raw_values = condition.get("values")
+            if raw_values is None:
+                raw_values = condition.get("value")
+            values = raw_values if isinstance(raw_values, (list, tuple, set)) else [raw_values]
+            for value in values:
+                key = _function_token(value)
+                if not key:
+                    continue
+                fields = result.setdefault(key, [])
+                if field and field not in fields:
+                    fields.append(field)
+
+    visit(filters)
+    return result
 
 
 # Function description: locate a typed equality/prefix condition that covers a

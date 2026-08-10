@@ -147,6 +147,17 @@ def test_v2_flow_export_matches_current_native_graph():
     assert node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]["code"]["value"] == (
         V2_ROOT / "21_v2_answer_message_adapter.py"
     ).read_text(encoding="utf-8")
+    helper_library = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "function_case_helper_code_input_example.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        node_index["TextInput-AXG9a"]["data"]["node"]["template"]["input_value"]["value"]
+        == helper_library
+    )
+    assert "excluded_tokens=None" in helper_library
     assert node_index["CustomComponent-A5y0b"]["data"]["node"]["field_order"] == [
         "payload",
         "include_diagnostics",
@@ -2628,6 +2639,78 @@ def test_v2_fast_contract_error_keeps_last_available_checkpoint_and_download_row
     assert artifact["rows"] == [{"LOT_ID": "L1", "QTY": 3}]
     assert result["data"]["partial"] is True
     assert result["data"]["stage"] == "source:source_1"
+    assert result["analysis"]["recovered_result"] == {
+        "available": True,
+        "checkpoint_key": "source:source_1",
+        "checkpoint_role": "source_input",
+        "row_count": 1,
+    }
+
+
+def test_v2_message_adapter_emphasizes_recovered_result_and_formats_download_link():
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    payload = {
+        "answer_sections": {"summary": {"headline": "직전 결과를 확인할 수 있습니다."}},
+        "analysis": {
+            "status": "error",
+            "error": {"type": "output_contract_violation", "message": "missing column"},
+            "recovered_result": {
+                "available": True,
+                "checkpoint_key": "computed_result",
+                "checkpoint_role": "computed_result",
+                "row_count": 1,
+            },
+        },
+        "data": {
+            "columns": ["LOT_ID"],
+            "rows": [{"LOT_ID": "L1"}],
+            "row_count": 1,
+            "partial": True,
+        },
+        "data_refs": [
+            {
+                "ref_id": "result:checkpoint",
+                "role": "intermediate_result",
+                "label": "최종 집계 전 중간 데이터",
+                "download_url": "http://127.0.0.1:8765/download.csv?download_ref=result",
+            }
+        ],
+    }
+
+    message = adapter.build_message(
+        payload,
+        show_result_table=False,
+        show_intermediate_results=False,
+        show_notices=False,
+        show_applied_criteria=False,
+    )
+
+    assert message.startswith("> ⚠️ **결과 계약 적용 단계에서 오류가 발생했습니다.**")
+    assert "직전 정상 단계의 결과 데이터를 기반으로 답변을 생성했습니다." in message
+    assert "📥" in message
+    assert "<strong>최종 집계 전 중간 데이터 CSV 다운로드</strong>" in message
+
+
+def test_v2_message_adapter_omits_recovery_notice_when_no_result_was_recovered():
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    payload = {
+        "answer_message": "데이터를 찾지 못했습니다.",
+        "analysis": {
+            "status": "error",
+            "error": {"type": "output_contract_violation", "message": "missing column"},
+        },
+        "data": {"columns": [], "rows": [], "row_count": 0},
+    }
+
+    message = adapter.build_message(
+        payload,
+        show_result_table=False,
+        show_download_links=False,
+        show_notices=False,
+        show_applied_criteria=False,
+    )
+
+    assert "직전 정상 단계의 결과 데이터" not in message
 
 
 def test_v2_intermediate_success_falls_back_to_source_when_calculation_matches_final_result():
@@ -3520,6 +3603,213 @@ def test_v2_normalizer_removes_helper_only_when_one_typed_filter_covers_its_full
     assert len(retained) == 1
     assert len(retained_steps) == 1
     assert retained_trace["removed"] == []
+
+
+def test_v2_normalizer_removes_model_selected_product_helper_when_typed_filters_cover_all_tokens():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    question = "7/5 FCB1, FCB2, FCB/H process production summary"
+    cases, steps, trace = normalizer._remove_source_filter_sufficient_function_cases(
+        [
+            {
+                "key": "match_product_tokens",
+                "function_name": "match_product_tokens",
+                "input_text": question,
+                "source_alias": "production_source",
+            }
+        ],
+        [
+            {
+                "operation": "apply_pandas_function_case",
+                "function_name": "match_product_tokens",
+                "source_alias": "production_source",
+            },
+            {"operation": "groupby_and_aggregate", "source_alias": "production_source"},
+        ],
+        [
+            {
+                "dataset_key": "production",
+                "source_alias": "production_source",
+                "filters": {
+                    "OPER_NAME": {
+                        "operator": "in",
+                        "value": ["FCB1", "FCB2", "FCB/H"],
+                    },
+                    "DATE": {"operator": "eq", "value": "20260705"},
+                },
+            }
+        ],
+        {},
+    )
+
+    assert cases == []
+    assert [step["operation"] for step in steps] == ["groupby_and_aggregate"]
+    assert trace["status"] == "applied"
+    assert trace["removed"][0]["reason"] == (
+        "typed_source_filters_cover_all_structured_product_tokens"
+    )
+    assert trace["removed"][0]["covered_tokens"] == ["FCB1", "FCB2"]
+
+
+def test_v2_normalizer_keeps_product_helper_when_a_product_token_is_not_in_typed_filters():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    cases, steps, trace = normalizer._remove_source_filter_sufficient_function_cases(
+        [
+            {
+                "key": "match_product_tokens",
+                "function_name": "match_product_tokens",
+                "input_text": "F315 L-116 WB UPH",
+                "source_alias": "eqp_source",
+            }
+        ],
+        [{"operation": "apply_pandas_function_case", "source_alias": "eqp_source"}],
+        [
+            {
+                "dataset_key": "eqp_uph",
+                "source_alias": "eqp_source",
+                "filters": {
+                    "MCP_NO": {"operator": "starts_with", "value": "L-116"},
+                    "OPER_NAME": {"operator": "eq", "value": "W/B1"},
+                },
+            }
+        ],
+        {},
+    )
+
+    assert len(cases) == 1
+    assert len(steps) == 1
+    assert trace["removed"] == []
+
+
+def test_v2_auto_product_helper_skips_process_tokens_already_covered_by_typed_filters():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan, trace = normalizer._auto_select_metadata_function_case(
+        {},
+        [
+            {
+                "dataset_key": "production",
+                "source_alias": "production_source",
+                "filters": {
+                    "OPER_NAME": {
+                        "operator": "in",
+                        "value": ["FCB1", "FCB2", "FCB/H"],
+                    }
+                },
+            }
+        ],
+        {
+            "domain_items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "product_token_match",
+                    "payload": {
+                        "function_name": "match_product_tokens",
+                        "description": "Select when product attributes are expressed as tokens.",
+                        "input_contract": {"input_text": "token bundle"},
+                    },
+                }
+            ]
+        },
+        "7/5 FCB1, FCB2, FCB/H process production summary",
+    )
+
+    assert "pandas_function_cases" not in plan
+    assert trace["status"] == "not_needed"
+    assert trace["reason"] == "no_uncovered_structured_product_tokens"
+
+
+def test_v2_process_summary_executes_fast_after_product_helper_is_pruned():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    rows = [
+        {"DATE": "20260705", "OPER_NAME": "FCB1", "PRODUCTION": 10},
+        {"DATE": "20260705", "OPER_NAME": "FCB2", "PRODUCTION": 20},
+        {"DATE": "20260705", "OPER_NAME": "FCB/H", "PRODUCTION": 30},
+        {"DATE": "20260705", "OPER_NAME": "DA1", "PRODUCTION": 99},
+    ]
+    steps = [
+        {
+            "node_id": "aggregate_by_process",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "production_source"}],
+            "output_alias": "process_summary",
+            "source_alias": "production_source",
+            "group_by": ["OPER_NAME"],
+            "aggregations": [
+                {
+                    "column": "PRODUCTION",
+                    "method": "sum",
+                    "output_column": "PRODUCTION_SUM",
+                }
+            ],
+        }
+    ]
+    filters = {
+        "DATE": {"operator": "eq", "value": "20260705"},
+        "OPER_NAME": {"operator": "in", "value": ["FCB1", "FCB2", "FCB/H"]},
+    }
+    payload = _single_source_payload(
+        rows=rows,
+        steps=steps,
+        filters=filters,
+        source_alias="production_source",
+        dataset_key="production",
+        output_contract={
+            "result_mode": "detail",
+            "grain_columns": ["OPER_NAME"],
+            "metric_columns": ["PRODUCTION_SUM"],
+            "result_columns": ["OPER_NAME", "PRODUCTION_SUM"],
+            "required_columns": ["OPER_NAME", "PRODUCTION_SUM"],
+            "strict_result_columns": True,
+        },
+    )
+    cases, normalized_steps, trace = normalizer._remove_source_filter_sufficient_function_cases(
+        [
+            {
+                "key": "match_product_tokens",
+                "function_name": "match_product_tokens",
+                "input_text": "7/5 FCB1, FCB2, FCB/H process production summary",
+                "source_alias": "production_source",
+            }
+        ],
+        [
+            {"operation": "apply_pandas_function_case", "source_alias": "production_source"},
+            *steps,
+        ],
+        payload["intent_plan"]["retrieval_jobs"],
+        {},
+    )
+    assert cases == []
+    assert trace["status"] == "applied"
+    payload["intent_plan"]["pandas_execution_plan"] = normalized_steps
+    resolved, executed, model_calls = _resolve_and_execute(payload)
+
+    assert resolved["simple_analysis_contract"]["route"] == "fast"
+    assert model_calls == []
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"OPER_NAME": "FCB/H", "PRODUCTION_SUM": 30.0},
+        {"OPER_NAME": "FCB1", "PRODUCTION_SUM": 10.0},
+        {"OPER_NAME": "FCB2", "PRODUCTION_SUM": 20.0},
+    ]
+
+
+def test_v2_executor_rejects_stale_helper_keyword_contract_before_execution():
+    _, executor, _ = _modules()
+    contract = {
+        "source_transforms": [
+            {
+                "function_name": "match_product_tokens",
+                "source_alias": "source_1",
+                "input_text": "L-116",
+                "arguments": {"excluded_tokens": ["UPH"]},
+            }
+        ]
+    }
+    stale_helper = "def match_product_tokens(input_text, frame):\n    return frame.copy()\n"
+    preamble, error = executor._deterministic_function_case_preamble(contract, stale_helper)
+
+    assert preamble == ""
+    assert "excluded_tokens" in error
+    assert "최신 버전" in error
 
 
 def test_v2_normalizer_keeps_schema_capable_llm_source_and_records_catalog_advisory():
