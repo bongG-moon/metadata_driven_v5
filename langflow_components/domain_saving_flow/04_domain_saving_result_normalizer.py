@@ -547,14 +547,23 @@ def _build_hold_rule_item(raw_text: str, sources: list[dict[str, Any]]) -> dict[
         "source_datasets": ["lot_status", "hold_history"],
         "selection_criteria": _rule_criteria(raw_text, sources, [
             "LOT 목록이나 LOT ID만 물으면 lot_status에서 현재 HOLD LOT만 조회하고 HOLD 이력은 조회하지 않는다.",
-            "현재 HOLD 사유·코드·상세 사유·최근 HOLD 이력을 물으면 lot_status에서 HOLD_STAT=OnHold인 LOT를 먼저 조회한다.",
+            "현재 HOLD LOT, 현재 HOLD 상태 또는 HOLD 코드를 물으면 lot_status만 조회한다.",
+            "HOLD 상세 사유, HOLD 발생 시각 또는 최근 HOLD 이력을 물으면 lot_status에서 HOLD_STAT=OnHold인 LOT를 먼저 조회한다.",
             "선행 결과의 LOT_ID를 hold_history.required_params.LOT_ID로 전달한다.",
             "LOT_ID required_params가 빈 문자열인 상태에서 선행 결과의 result_ref와 LOT_ID를 전달해 후속 조회한다.",
             "hold_history는 LOT별 HOLD_TM 내림차순으로 정렬하고 LOT별 최신 한 건만 선택한다.",
             "결과는 LOT_ID, 공정, HOLD_TM, HOLD_CD, HOLD_DESC를 보여주며 이력이 없으면 이력 없음으로 표시한다.",
             "HOLD라는 단어만으로 hold_history를 선택하지 않는다.",
         ]),
-        "current_selection": {"dataset_key": "lot_status", "filter": {"HOLD_STAT": {"operator": "eq", "value": "OnHold"}}},
+        "current_selection": {
+            "dataset_key": "lot_status",
+            "filter": {"HOLD_STAT": {"operator": "eq", "value": "OnHold"}},
+            # The current-status dataset owns the current code/status display.
+            # The label is metadata, so the analysis flow does not need a
+            # question-specific HOLD branch to keep this request one stage.
+            "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"],
+            "column_labels": {"HOLD_REASON": "HOLD 코드"},
+        },
         # This is an execution-neutral recipe activation contract.  The
         # analysis flow reads the structured fields below; it does not infer a
         # dependent query merely from a dataset name or a hard-coded question
@@ -562,7 +571,19 @@ def _build_hold_rule_item(raw_text: str, sources: list[dict[str, Any]]) -> dict[
         # while a request containing one of these history-detail concepts can
         # continue to the recipe's declared history selection.
         "dependent_selection": {
-            "when_question_includes_any": ["사유", "코드", "상세", "이력", "시간"],
+            # Single words such as \"code\" or \"reason\" are intentionally
+            # not activation terms.  They are ambiguous and can be answered by
+            # the current-status source when that Catalog exposes the field.
+            # Only history-specific detail expressions activate the second
+            # retrieval stage.
+            "when_question_includes_any": [
+                "상세 사유",
+                "상세사유",
+                "발생 시각",
+                "발생시각",
+                "최근 HOLD 이력",
+                "HOLD 이력",
+            ],
             "current_stage": "current_selection",
             "next_stage": "history_selection",
         },

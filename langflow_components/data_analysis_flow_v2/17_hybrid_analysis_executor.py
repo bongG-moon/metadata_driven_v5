@@ -2014,7 +2014,13 @@ def _execute_typed_pandas_plan(
                     "Typed Pandas 단계 입력을 찾을 수 없습니다: " + reference
                 )
             input_frames.append(frame.copy())
-        if operation == "apply_filters":
+        if operation == "apply_pandas_function_case":
+            # The catalog-selected helper has already transformed its declared
+            # source in the deterministic preamble.  This Typed node merely
+            # gives that transformed frame an explicit DAG output for later
+            # filters, joins, or aggregates; it never re-invokes model code.
+            result = input_frames[0].copy()
+        elif operation == "apply_filters":
             result = _apply_typed_step_filters(input_frames[0], step)
         elif operation == "apply_row_match_groups":
             result = _typed_apply_row_match_groups(

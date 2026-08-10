@@ -170,6 +170,25 @@ def compiler():
     return _module("_continuation_compiler_tests", "04b_dependent_retrieval_plan_compiler.py")
 
 
+def test_continuation_intent_schema_keeps_model_output_flat_and_compact():
+    """The compiler, not the intent model, owns the optional two-stage IR."""
+
+    variables_builder = _module(
+        "_continuation_intent_variables_tests",
+        "02_intent_variables_builder.py",
+    )
+
+    variables = variables_builder.build_variables(
+        {"request": {"question": "현재 상태와 상세 이력을 알려줘"}},
+        {"domain_items": []},
+    )
+    schema = json.loads(variables["output_schema"])
+
+    assert "dependent_retrieval_plan" not in schema["intent_plan"]
+    assert "retrieval_jobs" in schema["intent_plan"]
+    assert "pandas_execution_plan" in schema["intent_plan"]
+
+
 @pytest.fixture(scope="module")
 def v2_intent_normalizer():
     return _repo_module(
@@ -1273,9 +1292,18 @@ def _recipe_driven_hold_metadata():
                 "current_selection": {
                     "dataset_key": "lot_status",
                     "filter": {"HOLD_STAT": {"operator": "eq", "value": "OnHold"}},
+                    "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"],
+                    "column_labels": {"HOLD_REASON": "HOLD 코드"},
                 },
                 "dependent_selection": {
-                    "when_question_includes_any": ["사유", "코드", "상세", "이력", "시간"],
+                    "when_question_includes_any": [
+                        "상세 사유",
+                        "상세사유",
+                        "발생 시각",
+                        "발생시각",
+                        "최근 HOLD 이력",
+                        "HOLD 이력",
+                    ],
                     "current_stage": "current_selection",
                     "next_stage": "history_selection",
                 },
@@ -1320,7 +1348,7 @@ def test_compiler_lifts_selected_recipe_only_for_declared_detail_terms(compiler)
     }
     metadata = _recipe_driven_hold_metadata()
     response, trace = compiler.compile_intent_response(
-        {"request": {"question": "W/B공정 현재 HOLD LOT와 HOLD 사유 알려줘"}},
+        {"request": {"question": "W/B공정 현재 HOLD LOT와 HOLD 상세 사유 알려줘"}},
         json.dumps({"intent_plan": intent}, ensure_ascii=False),
         metadata,
     )
@@ -1343,6 +1371,202 @@ def test_compiler_lifts_selected_recipe_only_for_declared_detail_terms(compiler)
     )
     assert flat_trace["status"] == "passthrough"
     assert "dependent_retrieval_plan" not in json.loads(flat_response)["intent_plan"]
+
+    direct_response, direct_trace = compiler.compile_intent_response(
+        {"request": {"question": "W/B공정 현재 HOLD LOT과 HOLD 코드 알려줘"}},
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        metadata,
+    )
+    assert direct_trace["status"] == "passthrough"
+    assert "dependent_retrieval_plan" not in json.loads(direct_response)["intent_plan"]
+
+
+def test_compiler_discards_unactivated_history_wrapper_when_current_stage_is_sufficient(compiler):
+    """A weak model cannot turn a current-code query into a history lookup."""
+
+    direct_columns = ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"]
+    stage_one = {
+        "stage_id": "current_hold_status",
+        "retrieval_jobs": [
+            {
+                "dataset_key": "lot_status",
+                "source_alias": "lot_status_src",
+                "filters": {"HOLD_STAT": {"operator": "eq", "value": "OnHold"}},
+            }
+        ],
+        "pandas_execution_plan": [
+            {
+                "node_id": "select_current_hold_code",
+                "operation": "select_columns",
+                "inputs": [{"kind": "external_source", "ref": "lot_status_src"}],
+                "source_alias": "lot_status_src",
+                "output_alias": "current_hold_code",
+                "projection": direct_columns,
+            }
+        ],
+        "output_contract": {
+            "result_mode": "detail",
+            "result_columns": direct_columns,
+            "required_columns": direct_columns,
+        },
+        "handoff": {"columns": ["LOT_ID"], "require_complete": True},
+    }
+    stage_two = {
+        "stage_id": "latest_hold_history",
+        "depends_on": ["current_hold_status"],
+        "retrieval_jobs": [
+            {
+                "dataset_key": "hold_history",
+                "source_alias": "hold_history_src",
+                "required_params": {"LOT_ID": ""},
+            }
+        ],
+        "pandas_execution_plan": [],
+        "output_contract": {
+            "result_mode": "detail",
+            "result_columns": direct_columns,
+            "required_columns": direct_columns,
+        },
+        "input_bindings": [],
+    }
+    intent = {
+        "metadata_refs": [{"section": "analysis_recipes", "key": "current_hold_lot_selection"}],
+        "retrieval_jobs": deepcopy(stage_one["retrieval_jobs"]),
+        "pandas_execution_plan": deepcopy(stage_one["pandas_execution_plan"]),
+        "output_contract": deepcopy(stage_one["output_contract"]),
+        "dependent_retrieval_plan": {"stages": [stage_one, stage_two]},
+    }
+
+    response, trace = compiler.compile_intent_response(
+        {"request": {"question": "W/B공정 현재 HOLD LOT과 HOLD 코드 알려줘"}},
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        _recipe_driven_hold_metadata(),
+    )
+
+    compiled = json.loads(response)["intent_plan"]
+    assert trace["status"] == "passthrough"
+    assert trace["dependent_ignore_reason"] == "dependent_stage2_not_activated_by_metadata"
+    assert trace["dependent_ignore_evidence"]["discarded_dataset"] == "hold_history"
+    assert [job["dataset_key"] for job in compiled["retrieval_jobs"]] == ["lot_status"]
+    assert "dependent_retrieval_plan" not in compiled
+
+
+def test_compiler_rebuilds_flat_current_history_wrapper_from_selected_recipe(compiler):
+    """A compact flat model output cannot weaken a recipe-owned latest-row contract."""
+
+    metadata = _recipe_driven_hold_metadata()
+    intent = {
+        "metadata_refs": [{"section": "analysis_recipes", "key": "current_hold_lot_selection"}],
+        "retrieval_jobs": [
+            {
+                "dataset_key": "lot_status",
+                "source_alias": "lot_status_src",
+                "filters": {"OPER_NAME": {"operator": "eq", "value": "W/B1"}},
+            },
+            {
+                "dataset_key": "hold_history",
+                "source_alias": "hold_history_src",
+                "required_params": {"LOT_ID": ""},
+            },
+        ],
+        # The weak flat plan omits strict/projection. It must never become the
+        # continuation executor contract when the selected recipe owns it.
+        "pandas_execution_plan": [
+            {
+                "node_id": "latest_from_model",
+                "operation": "select_extreme_row_per_group",
+                "inputs": [{"kind": "external_source", "ref": "hold_history_src"}],
+                "output_alias": "latest_from_model",
+                "partition_by": ["LOT_ID"],
+                "order_by": [{"column": "HOLD_TM", "direction": "desc"}],
+                "limit_per_group": 1,
+            }
+        ],
+        "output_contract": {
+            "result_mode": "detail",
+            "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+        },
+    }
+
+    response, trace = compiler.compile_intent_response(
+        {"request": {"question": "W/B공정 현재 HOLD LOT와 HOLD 상세 사유 알려줘"}},
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        metadata,
+    )
+
+    dependent = json.loads(response)["intent_plan"]["dependent_retrieval_plan"]
+    assert trace["status"] == "pending"
+    assert dependent["activation"]["reason"] == "analysis_recipe_dependent_selection"
+    latest = dependent["stages"][1]["pandas_execution_plan"][0]
+    assert latest["strict"] is True
+    assert latest["projection"] == ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"]
+
+
+def test_compiler_completes_direct_history_latest_step_from_unique_catalog_recipe(compiler):
+    """A direct identifier lookup remains one stage but gets safe recipe-owned details."""
+
+    intent = {
+        # The model did not cite the recipe. Candidate uniqueness and the
+        # history dataset contract, rather than a HOLD keyword, are the proof.
+        "retrieval_jobs": [
+            {
+                "dataset_key": "hold_history",
+                "source_alias": "history_src",
+                "required_params": {"LOT_ID": ["LOT-001"]},
+            }
+        ],
+        "pandas_execution_plan": [
+            {
+                "node_id": "filter_history",
+                "operation": "apply_filters",
+                "inputs": [{"kind": "external_source", "ref": "history_src"}],
+                "output_alias": "filtered_history",
+                "source_alias": "history_src",
+            },
+            {
+                "node_id": "latest_history",
+                # Models also emit the legacy generic latest shorthand.  The
+                # compiler may convert it only with the unique recipe proof.
+                "operation": "latest_earliest",
+                "inputs": [{"kind": "node_output", "ref": "filter_history"}],
+                "output_alias": "latest_history",
+                "partition_by": ["LOT_ID"],
+                "order_by": [{"column": "HOLD_TM", "direction": "desc"}],
+                "limit_per_group": 1,
+                "tie_policy": "error",
+            },
+            {
+                "node_id": "show_history",
+                "operation": "select_columns",
+                "inputs": [{"kind": "node_output", "ref": "latest_history"}],
+                "output_alias": "history_result",
+                "projection": ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+            },
+        ],
+        "output_contract": {
+            "result_mode": "detail",
+            "result_columns": ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+            "strict_result_columns": True,
+        },
+    }
+
+    response, trace = compiler.compile_intent_response(
+        {"request": {"question": "LOT-001 HOLD 이력 알려줘"}},
+        json.dumps({"intent_plan": intent}, ensure_ascii=False),
+        _recipe_driven_hold_metadata(),
+    )
+
+    compiled = json.loads(response)["intent_plan"]
+    latest = next(
+        step
+        for step in compiled["pandas_execution_plan"]
+        if step.get("node_id") == "latest_history"
+    )
+    assert trace["status"] == "passthrough"
+    assert trace["catalog_latest_selection"]["status"] == "applied"
+    assert latest["operation"] == "select_extreme_row_per_group"
+    assert latest["strict"] is True
+    assert latest["projection"] == ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"]
 
 
 def test_compiler_rebuilds_matching_explicit_recipe_plan_from_catalog_contract(compiler):
@@ -2426,6 +2650,84 @@ def test_continuation_alias_normalizer_preserves_nonblank_or_untrusted_params(
     assert untrusted["source_config"]["upstream_bindings"][0]["source_alias"] == "previous_result"
 
 
+def test_upstream_binder_replaces_unmentioned_model_inferred_param_with_trusted_previous_result(
+    upstream_binder,
+):
+    payload = {
+        "request": {"question": "위 LOT의 이력을 알려줘"},
+        "runtime_sources": {"previous_result": [{"LOT_ID": "LOT-ACTUAL"}]},
+        "intent_plan": {
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "history",
+                    "source_alias": "history_src",
+                    "trusted_catalog": True,
+                    "required_params": {"LOT_ID": "LOT-MODEL-INFERRED"},
+                    "source_config": {
+                        "upstream_bindings": [
+                            {
+                                "entity_type": "entity",
+                                "source_alias": "previous_result",
+                                "source_column": "LOT_ID",
+                                "target_param": "LOT_ID",
+                                "operator": "in",
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+    }
+
+    bound = upstream_binder.bind_upstream_entity_parameters(payload)
+
+    assert bound["orchestration"]["binding_status"] == "ok"
+    job = bound["intent_plan"]["retrieval_jobs"][0]
+    assert job["required_params"]["LOT_ID"] == ["LOT-ACTUAL"]
+    summary = bound["trace"]["inspection"]["upstream_parameter_binding"]["bindings"][0]
+    assert summary["binding_status"] == "replaced_unverified_planned_value"
+
+
+def test_upstream_binder_preserves_explicit_current_question_param_without_blocking(
+    upstream_binder,
+):
+    payload = {
+        "request": {"question": "LOT-EXPLICIT의 이력을 알려줘"},
+        "runtime_sources": {"previous_result": [{"LOT_ID": "LOT-PRIOR"}]},
+        "intent_plan": {
+            "reference_mode": "previous_result_rows",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "history",
+                    "source_alias": "history_src",
+                    "trusted_catalog": True,
+                    "required_params": {"LOT_ID": "LOT-EXPLICIT"},
+                    "source_config": {
+                        "upstream_bindings": [
+                            {
+                                "entity_type": "entity",
+                                "source_alias": "previous_result",
+                                "source_column": "LOT_ID",
+                                "target_param": "LOT_ID",
+                                "operator": "in",
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+    }
+
+    bound = upstream_binder.bind_upstream_entity_parameters(payload)
+
+    assert bound["orchestration"]["binding_status"] == "ok"
+    job = bound["intent_plan"]["retrieval_jobs"][0]
+    assert job["required_params"]["LOT_ID"] == "LOT-EXPLICIT"
+    summary = bound["trace"]["inspection"]["upstream_parameter_binding"]["bindings"][0]
+    assert summary["binding_status"] == "skipped_explicit_current_question_value"
+
+
 def test_binding_alias_normalizer_restores_explicit_detail_projection_contract(
     binding_alias_normalizer,
 ):
@@ -2767,6 +3069,63 @@ def test_live_c02_shape_flattens_independent_stages_into_one_complex_plan(
         "production_today",
         "equipment_assign",
     ]
+
+
+def test_independent_stage_flatten_rejects_a_terminal_contract_not_reached(compiler):
+    """Do not return a raw source frame when a wrapper loses its final aggregate."""
+
+    product = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
+    final_required = [*product, "PRODUCTION", "EQP_COUNT", "EQP_LIST"]
+    dependent = _live_dependent_stage(
+        stage1_id="stage1_top_products",
+        stage2_id="stage2_equipment_assignment",
+        stage1_contract={"required_columns": [*product, "PRODUCTION"]},
+        stage2_contract={"required_columns": final_required},
+        stage1_steps=[
+            {
+                "node_id": "stage1_group",
+                "operation": "groupby_and_aggregate",
+                "source_alias": "prod_today",
+                "group_by": product,
+                "aggregations": [
+                    {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION"}
+                ],
+            }
+        ],
+        # The final stage lost its aggregate. A global column union must not
+        # approve this because EQP_COUNT/EQP_LIST are not terminal columns.
+        stage2_steps=[
+            {
+                "node_id": "stage2_join",
+                "operation": "join",
+                "left_source_alias": "stage1_top_products",
+                "right_source_alias": "eqp_assign",
+                "join_type": "left",
+            }
+        ],
+        stage1_job={
+            "dataset_key": "production_today",
+            "source_alias": "prod_today",
+            "required_params": {"DATE": "20260701"},
+        },
+        stage2_job={"dataset_key": "equipment_assign", "source_alias": "eqp_assign"},
+        handoff_columns=product,
+        input_bindings=[],
+    )
+    flat_plan = {
+        "retrieval_jobs": [
+            deepcopy(dependent["stages"][0]["retrieval_jobs"][0]),
+            deepcopy(dependent["stages"][1]["retrieval_jobs"][0]),
+        ],
+        "pandas_execution_plan": [],
+        "output_contract": {"required_columns": final_required},
+    }
+
+    assert compiler._flatten_independent_dependent_plan(
+        flat_plan,
+        dependent,
+        _fresh_live_shape_catalogs(),
+    ) is None
 
 
 def test_flattened_stage_metric_binding_resolves_derived_stage_column(compiler):

@@ -37,6 +37,8 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 artifact_server/storage/
+artifacts/
+.validation_tmp/
 validation_runs/
 benchmark_results/
 *.log

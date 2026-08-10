@@ -67,9 +67,14 @@ def test_hold_recipe_contains_structured_dependent_selection_activation():
     selection = item["payload"]["dependent_selection"]
     assert selection["current_stage"] == "current_selection"
     assert selection["next_stage"] == "history_selection"
-    assert {"사유", "코드", "상세", "이력", "시간"}.issubset(
+    assert {"상세 사유", "상세사유", "발생 시각", "발생시각", "최근 HOLD 이력", "HOLD 이력"}.issubset(
         set(selection["when_question_includes_any"])
     )
+    assert "코드" not in selection["when_question_includes_any"]
+    assert "사유" not in selection["when_question_includes_any"]
+    current = item["payload"]["current_selection"]
+    assert current["result_columns"] == ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"]
+    assert current["column_labels"] == {"HOLD_REASON": "HOLD 코드"}
 
 
 def test_worker_only_when_rule_compiles_recipe_activation_without_dataset_forcing():

@@ -152,6 +152,7 @@ DETERMINISTIC_OPERATIONS = {
     "enrich_previous_result",
 }
 TYPED_DETERMINISTIC_OPERATIONS = {
+    "apply_pandas_function_case",
     "apply_filters",
     "apply_row_match_groups",
     "select_columns",
@@ -1097,6 +1098,13 @@ def _typed_pandas_plan_execution_contract(
     if not allowed_external_aliases:
         return {}
 
+    selected_function_cases = [
+        item
+        for item in _list(plan.get("pandas_function_cases"))
+        if isinstance(item, dict)
+    ]
+    source_transforms: list[dict[str, Any]] = []
+    transform_markers: set[tuple[str, str, str, str]] = set()
     produced: set[str] = set()
     used_external_aliases: list[str] = []
     for step in steps:
@@ -1132,7 +1140,57 @@ def _typed_pandas_plan_execution_contract(
             else:
                 return {}
 
-        if operation == "apply_row_match_groups":
+        if operation == "apply_pandas_function_case":
+            if len(inputs) != 1 or str(inputs[0].get("kind") or "") != "external_source":
+                return {}
+            source_alias = str(inputs[0].get("ref") or "").strip()
+            function_name = str(step.get("function_name") or "").strip()
+            function_case_key = str(
+                step.get("function_case_key") or step.get("key") or ""
+            ).strip()
+            input_text = str(step.get("input_text") or "")
+            matching_cases = [
+                item
+                for item in selected_function_cases
+                if str(item.get("source_alias") or "").strip() == source_alias
+                and (
+                    not function_name
+                    or str(item.get("function_name") or "").strip() == function_name
+                )
+                and (
+                    not function_case_key
+                    or str(item.get("key") or "").strip() == function_case_key
+                )
+                and (
+                    not input_text
+                    or str(item.get("input_text") or "") == input_text
+                )
+            ]
+            if len(matching_cases) != 1:
+                return {}
+            selected_case = matching_cases[0]
+            transform_name = str(selected_case.get("function_name") or "").strip()
+            transform_key = str(selected_case.get("key") or "").strip()
+            transform_input = str(selected_case.get("input_text") or "")
+            if not transform_name:
+                return {}
+            marker = (source_alias, transform_name, transform_key, transform_input)
+            if marker in transform_markers:
+                return {}
+            transform_markers.add(marker)
+            source_transforms.append(
+                {
+                    "node_id": node_id,
+                    "source_alias": source_alias,
+                    "function_name": transform_name,
+                    "function_case_key": transform_key,
+                    "input_text": transform_input,
+                    "arguments": deepcopy(selected_case.get("arguments"))
+                    if isinstance(selected_case.get("arguments"), dict)
+                    else {},
+                }
+            )
+        elif operation == "apply_row_match_groups":
             reference_alias = str(step.get("reference_source_alias") or "").strip()
             match_columns = _string_list(step.get("match_columns"))
             blank_policy = str(step.get("blank_policy") or "normalize_blank").strip()
@@ -1187,6 +1245,7 @@ def _typed_pandas_plan_execution_contract(
         "steps": steps,
         "result_columns": result_columns,
         "external_source_aliases": used_external_aliases,
+        "source_transforms": source_transforms,
         "eligibility": {
             "eligible": False,
             "reason_codes": ["typed_plan_contract_resolved", "model_code_not_required"],

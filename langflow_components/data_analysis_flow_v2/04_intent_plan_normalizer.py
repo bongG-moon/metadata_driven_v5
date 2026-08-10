@@ -630,6 +630,13 @@ def normalize_intent_plan(
         resolved_grain_plan,
         resolved_join_plan,
     )
+    pandas_plan, typed_join_contract_materialization = _materialize_resolved_join_steps(
+        pandas_plan,
+        resolved_join_plan,
+    )
+    pandas_plan, derived_aggregate_join_materialization = (
+        _materialize_derived_aggregate_join_keys(pandas_plan)
+    )
     pandas_plan, domain_execution_contracts = _apply_selected_domain_execution_contracts(
         pandas_plan,
         metadata_candidates,
@@ -686,6 +693,19 @@ def normalize_intent_plan(
         payload,
         reuse_strategy,
     )
+    # A required parameter that is still blank is not a harmless query
+    # placeholder.  In particular, a model can describe a two-stage analysis
+    # (first source discovers identifiers, second source consumes them) inside
+    # this single-pass Flow.  Retrieval happens before the pandas graph, so
+    # that value cannot be filled here.  Detect the contract boundary before
+    # issuing either a broad query or model-generated pandas code.
+    required_parameter_guard = _validate_required_retrieval_parameters(
+        retrieval_jobs,
+        metadata_candidates,
+        pandas_plan,
+        payload,
+    )
+    validation_errors.extend(required_parameter_guard.get("validation_errors", []))
     contract_plan = deepcopy(plan)
     contract_plan["pandas_execution_plan"] = pandas_plan
     normalized_raw_contract, output_contract_column_normalization = (
@@ -718,6 +738,13 @@ def normalize_intent_plan(
     output_contract = _preserve_v2_fast_output_contract(
         output_contract,
         contract_plan.get("output_contract"),
+    )
+    output_contract, terminal_output_contract_reconciliation = (
+        _reconcile_terminal_typed_output_contract(
+            output_contract,
+            pandas_plan,
+            resolved_execution_graph,
+        )
     )
     resolved_presence_comparison_plan = _resolve_presence_comparison_plan(
         pandas_plan,
@@ -908,9 +935,13 @@ def normalize_intent_plan(
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
         "pandas_column_normalization": pandas_column_normalization,
+        "typed_join_contract_materialization": typed_join_contract_materialization,
+        "derived_aggregate_join_materialization": derived_aggregate_join_materialization,
         "domain_execution_contracts": domain_execution_contracts,
         "aggregate_grain_alignment": aggregate_grain_alignment,
+        "required_parameter_guard": required_parameter_guard,
         "output_contract_column_normalization": output_contract_column_normalization,
+        "terminal_output_contract_reconciliation": terminal_output_contract_reconciliation,
         "typed_input_binding": typed_input_binding,
         "source_alias_reconciliation": source_alias_reconciliation,
         "external_source_catalog_binding": external_source_catalog_binding,
@@ -5893,6 +5924,17 @@ def _normalize_row_match_steps(
         and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
     ]
     previous_result_contract = _previous_result_match_contract(payload or {})
+    declared_step_outputs = {
+        str(value).strip()
+        for raw in items
+        if isinstance(raw, dict)
+        for value in (
+            raw.get("node_id"),
+            raw.get("output_alias"),
+            raw.get("result_alias"),
+        )
+        if str(value or "").strip()
+    }
     normalized_items: list[Any] = []
     normalized_steps: list[dict[str, Any]] = []
     invalid_steps: list[dict[str, Any]] = []
@@ -5908,17 +5950,50 @@ def _normalize_row_match_steps(
         normalized = deepcopy(item)
         source_alias = str(normalized.get("source_alias") or "").strip()
         reference_alias = str(normalized.get("reference_source_alias") or "").strip()
+        original_reference_alias = reference_alias
+        reference_alias_reconciliation = ""
         if not source_alias and len(retrieval_aliases) == 1:
             source_alias = retrieval_aliases[0]
         # Models use both the typed reference mode name (``previous_result_rows``)
         # and the runtime source alias (``previous_result``) in row-match
         # steps. They designate the same trusted session rows, so normalize the
-        # former before graph construction. Unknown aliases are deliberately
-        # left untouched and fail the ordinary provider validation.
+        # former before graph construction. A separately guarded recovery below
+        # handles only aliases that no current Typed DAG can provide.
         if reference_alias in {"previous_result_rows", PREVIOUS_RESULT_ALIAS}:
             reference_alias = PREVIOUS_RESULT_ALIAS
+            reference_alias_reconciliation = "reserved_previous_result_alias"
         if not reference_alias and reference_mode == "previous_result_rows":
             reference_alias = PREVIOUS_RESULT_ALIAS
+            reference_alias_reconciliation = "missing_reference_alias"
+        # In a follow-up requery, the only trusted reference frame is the
+        # restored prior result.  A weak model can give that frame an invented
+        # label (for example a former source alias) even though the label is
+        # neither a retrieved source nor an earlier Typed node output.  Recover
+        # this one structurally provable shape to ``previous_result`` instead
+        # of emitting a long pandas preamble that fails at runtime.  Real
+        # source aliases and declared node outputs remain untouched.
+        if (
+            reference_mode == "previous_result_rows"
+            and reference_alias
+            and reference_alias != PREVIOUS_RESULT_ALIAS
+            and reference_alias not in retrieval_aliases
+            and reference_alias not in declared_step_outputs
+            and source_alias in retrieval_aliases
+            and _string_list(previous_result_contract.get("match_columns"))
+        ):
+            reference_alias = PREVIOUS_RESULT_ALIAS
+            reference_alias_reconciliation = "unresolved_alias_to_previous_result"
+            raw_inputs = normalized.get("inputs")
+            if isinstance(raw_inputs, list):
+                normalized["inputs"] = [
+                    deepcopy(value)
+                    for value in raw_inputs
+                    if not (
+                        isinstance(value, dict)
+                        and str(value.get("kind") or "").strip() == "external_source"
+                        and str(value.get("ref") or "").strip() == original_reference_alias
+                    )
+                ]
         plan_match_columns = _string_list(
             normalized.get("match_columns")
             or normalized.get("condition_columns")
@@ -5979,6 +6054,7 @@ def _normalize_row_match_steps(
                     "reference_source_alias": reference_alias,
                     "match_columns": match_columns,
                     "match_columns_source": match_columns_source,
+                    "reference_alias_reconciliation": reference_alias_reconciliation,
                 }
             )
         normalized_items.append(normalized)
@@ -7771,6 +7847,12 @@ def _output_contract(
             plan,
             retrieval_jobs,
         )
+    metric_bindings = _reconcile_metric_binding_source_lineage(
+        metric_bindings,
+        plan,
+        retrieval_jobs,
+        metadata_candidates or {},
+    )
     metric_bindings, suppressed_metric_aliases = _deduplicate_metric_bindings(
         metric_bindings
     )
@@ -8234,6 +8316,263 @@ def _is_retrieval_free_previous_result_transform_candidate(plan: dict[str, Any])
 
 
 # 함수 설명: 다양한 집계 필드명을 하나의 metric binding 계약으로 정규화합니다.
+def _reconcile_metric_binding_source_lineage(
+    bindings: list[dict[str, Any]],
+    plan: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    metadata_candidates: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Correct a metric owner only when a Typed aggregation proves one source.
+
+    A join's aggregate can consume columns from different inputs.  The model
+    may label every output with the join's right source even when, for example,
+    an equipment count comes from the left source.  Resolve that only when the
+    aggregation's external lineage contains exactly one Catalog supporting the
+    source column; ties remain untouched and use normal validation.
+    """
+
+    steps = [
+        item
+        for item in plan.get("pandas_execution_plan", [])
+        if isinstance(item, dict)
+    ] if isinstance(plan.get("pandas_execution_plan"), list) else []
+    job_datasets = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip(): str(
+            item.get("dataset_key") or ""
+        ).strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    if not steps or not job_datasets:
+        return [deepcopy(item) for item in bindings if isinstance(item, dict)]
+
+    producers: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for step in steps:
+        aggregations = step.get("aggregations") if isinstance(step.get("aggregations"), list) else []
+        for aggregation in aggregations:
+            if not isinstance(aggregation, dict):
+                continue
+            output_column = str(
+                aggregation.get("output_column") or aggregation.get("result_column") or ""
+            ).strip()
+            source_column = str(
+                aggregation.get("source_column")
+                or aggregation.get("column")
+                or aggregation.get("agg_column")
+                or aggregation.get("aggregate_column")
+                or ""
+            ).strip()
+            if output_column and source_column:
+                producers.setdefault(_normalized_column_key(output_column), []).append(
+                    (step, aggregation)
+                )
+
+    reconciled: list[dict[str, Any]] = []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        next_binding = deepcopy(binding)
+        output_key = _normalized_column_key(next_binding.get("output_column"))
+        source_column = str(next_binding.get("source_column") or "").strip()
+        matches = producers.get(output_key, [])
+        if source_column and len(matches) == 1:
+            step, aggregation = matches[0]
+            declared_source = str(
+                aggregation.get("source_column")
+                or aggregation.get("column")
+                or aggregation.get("agg_column")
+                or aggregation.get("aggregate_column")
+                or ""
+            ).strip()
+            if _normalized_column_key(declared_source) == _normalized_column_key(source_column):
+                lineage_aliases = _step_external_source_aliases(
+                    step,
+                    steps,
+                    set(job_datasets),
+                )
+                compatible_aliases = [
+                    alias
+                    for alias in lineage_aliases
+                    if job_datasets.get(alias)
+                    and _catalog_supports_domain_column(
+                        metadata_candidates,
+                        job_datasets[alias],
+                        source_column,
+                    )
+                ]
+                # A typed join can carry an explicit side contract.  For
+                # example, ``right_value_columns=["UPH"]`` means the joined
+                # frame obtains UPH from the right side while identifiers and
+                # dimensions remain owned by the left population.  Preserve
+                # that lineage before falling back to broad catalog ownership;
+                # otherwise a shared join key such as EQP_ID can be attached to
+                # the wrong retrieval job and incorrectly fail validation.
+                declared_owner_aliases = _typed_join_metric_owner_aliases(
+                    step,
+                    steps,
+                    set(job_datasets),
+                    source_column,
+                )
+                if declared_owner_aliases:
+                    compatible_aliases = [
+                        alias
+                        for alias in compatible_aliases
+                        if alias in declared_owner_aliases
+                    ]
+                if len(compatible_aliases) == 1:
+                    alias = compatible_aliases[0]
+                    next_binding["source_alias"] = alias
+                    next_binding["dataset_key"] = job_datasets[alias]
+        reconciled.append(next_binding)
+    return reconciled
+
+
+def _typed_join_metric_owner_aliases(
+    aggregate_step: dict[str, Any],
+    pandas_plan: list[Any],
+    known_external_aliases: set[str],
+    source_column: str,
+) -> list[str]:
+    """Return the declared join side owning one aggregate input column.
+
+    ``right_value_columns`` is already part of the generic Typed join contract:
+    it says which values flow from the right table into a left-preserving join.
+    Use it only when the aggregate directly descends from one unambiguous join;
+    if the plan does not declare that provenance, return no owner and let the
+    existing catalog-only validation handle the ambiguity.
+    """
+
+    join_step = _nearest_upstream_typed_join(aggregate_step, pandas_plan)
+    if not join_step:
+        return []
+    right_values = {
+        _normalized_column_key(value)
+        for value in _string_list(join_step.get("right_value_columns"))
+    }
+    left_values = {
+        _normalized_column_key(value)
+        for value in _string_list(join_step.get("left_value_columns"))
+    }
+    if not right_values and not left_values:
+        return []
+
+    left_aliases, right_aliases = _typed_join_side_external_aliases(
+        join_step,
+        pandas_plan,
+        known_external_aliases,
+    )
+    column_key = _normalized_column_key(source_column)
+    if column_key in right_values:
+        return right_aliases
+    if column_key in left_values or right_values:
+        # In a left-preserving typed join, values not explicitly imported from
+        # the right side retain their left-side provenance.  This applies to
+        # IDs used for counts as well as dimensions used by a later groupby.
+        return left_aliases
+    return []
+
+
+def _nearest_upstream_typed_join(
+    step: dict[str, Any],
+    pandas_plan: list[Any],
+) -> dict[str, Any]:
+    """Find one join through transparent unary Typed steps, or return none."""
+
+    nodes_by_id, output_aliases = _pandas_plan_lineage(pandas_plan)
+    passthrough_operations = {
+        "apply_filters",
+        "filter",
+        "filter_rows",
+        "select_columns",
+        "rename_columns",
+        "sort_and_top_n",
+        "sort",
+        "apply_pandas_function_case",
+        "apply_function_case",
+    }
+
+    def visit(reference: str, visited: set[str]) -> dict[str, Any] | None:
+        node_id = reference if reference in nodes_by_id else output_aliases.get(reference, "")
+        if not node_id or node_id in visited:
+            return None
+        parent = nodes_by_id.get(node_id)
+        if not isinstance(parent, dict):
+            return None
+        operation = str(parent.get("operation") or parent.get("step") or "").strip().lower()
+        if operation in {"join", "merge", "left_join", "outer_join"}:
+            return parent
+        if operation not in passthrough_operations:
+            return None
+        refs = [
+            str(item.get("ref") or "").strip()
+            for item in parent.get("inputs", [])
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "node_output"
+            and str(item.get("ref") or "").strip()
+        ]
+        candidates = [visit(ref, {*visited, node_id}) for ref in refs]
+        found = [candidate for candidate in candidates if isinstance(candidate, dict)]
+        return found[0] if len(found) == 1 else None
+
+    refs = [
+        str(item.get("ref") or "").strip()
+        for item in step.get("inputs", [])
+        if isinstance(item, dict)
+        and str(item.get("kind") or "").strip() == "node_output"
+        and str(item.get("ref") or "").strip()
+    ]
+    candidates = [visit(ref, set()) for ref in refs]
+    found = [candidate for candidate in candidates if isinstance(candidate, dict)]
+    return found[0] if len(found) == 1 else None
+
+
+def _typed_join_side_external_aliases(
+    join_step: dict[str, Any],
+    pandas_plan: list[Any],
+    known_external_aliases: set[str],
+) -> tuple[list[str], list[str]]:
+    """Resolve left/right external leaves without treating derived aliases as jobs."""
+
+    def aliases_for_input(item: dict[str, Any] | None, declared_alias: str) -> list[str]:
+        if isinstance(item, dict):
+            kind = str(item.get("kind") or "").strip()
+            reference = str(item.get("ref") or "").strip()
+            if kind == "external_source" and reference:
+                return [reference]
+            if kind == "node_output" and reference:
+                wrapper = {"inputs": [{"kind": "node_output", "ref": reference}]}
+                return _step_external_source_aliases(
+                    wrapper,
+                    pandas_plan,
+                    known_external_aliases,
+                )
+        if not declared_alias:
+            return []
+        if declared_alias in known_external_aliases:
+            return [declared_alias]
+        wrapper = {"inputs": [{"kind": "node_output", "ref": declared_alias}]}
+        return _step_external_source_aliases(
+            wrapper,
+            pandas_plan,
+            known_external_aliases,
+        )
+
+    inputs = join_step.get("inputs") if isinstance(join_step.get("inputs"), list) else []
+    left_item = inputs[0] if len(inputs) > 0 and isinstance(inputs[0], dict) else None
+    right_item = inputs[1] if len(inputs) > 1 and isinstance(inputs[1], dict) else None
+    left_declared = str(
+        join_step.get("left_source_alias") or join_step.get("source_alias") or ""
+    ).strip()
+    right_declared = str(
+        join_step.get("right_source_alias") or join_step.get("reference_source_alias") or ""
+    ).strip()
+    return (
+        aliases_for_input(left_item, left_declared),
+        aliases_for_input(right_item, right_declared),
+    )
+
+
 def _normalized_metric_binding(
     value: dict[str, Any],
     job_datasets: dict[str, str],
@@ -9440,6 +9779,103 @@ def _compile_execution_graph(
 
 
 # 함수 설명: 선택된 metadata join 계약을 좌우 source의 실제 key 쌍으로 변환합니다.
+# 함수 설명: Typed 단계 별칭이 유일한 조회 source 계보를 가질 때만 해당 Table Catalog dataset을 찾습니다.
+def _dataset_key_for_execution_alias(
+    source_alias: str,
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+) -> str:
+    """Resolve a derived execution alias without changing ambiguous plans."""
+
+    direct_dataset = _dataset_key_for_alias(source_alias, retrieval_jobs)
+    if direct_dataset:
+        return direct_dataset
+    known_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    producers = [
+        item
+        for item in pandas_plan
+        if isinstance(item, dict)
+        and source_alias
+        in {
+            str(item.get("node_id") or "").strip(),
+            str(item.get("output_alias") or item.get("result_alias") or "").strip(),
+        }
+    ]
+    if len(producers) != 1:
+        return ""
+    lineage_aliases = _step_external_source_aliases(
+        producers[0],
+        pandas_plan,
+        known_aliases,
+    )
+    if len(lineage_aliases) != 1:
+        return ""
+    return _dataset_key_for_alias(lineage_aliases[0], retrieval_jobs)
+
+
+# 함수 설명: Typed join 단계가 명시한 양쪽 공통 key를 Catalog 검증 전에 보존해 metric metadata가 실행 lineage를 덮어쓰지 않게 합니다.
+def _typed_join_declared_key_pair(
+    pandas_plan: list[Any],
+    left_alias: str,
+    right_alias: str,
+) -> tuple[list[str], list[str], str]:
+    """Return one unambiguous Typed join key declaration, if present.
+
+    ``group_by`` on a join is supported by the Typed executor as a shared key
+    shorthand.  It is normalized here only after the step itself identifies
+    the same left/right inputs; Catalog validation remains the caller's
+    responsibility.  This keeps a metric's metadata reference from turning a
+    value column into a join key.
+    """
+
+    matches: list[dict[str, Any]] = []
+    for step in pandas_plan:
+        if (
+            not isinstance(step, dict)
+            or str(step.get("operation") or step.get("step") or "").strip().lower()
+            not in {"join", "merge", "left_join", "outer_join"}
+        ):
+            continue
+        declared_left = str(
+            step.get("left_source_alias") or step.get("source_alias") or ""
+        ).strip()
+        declared_right = str(
+            step.get("right_source_alias") or step.get("reference_source_alias") or ""
+        ).strip()
+        refs = [
+            str(item.get("ref") or "").strip()
+            for item in step.get("inputs", [])
+            if isinstance(item, dict) and str(item.get("ref") or "").strip()
+        ]
+        if (
+            (declared_left == left_alias and declared_right == right_alias)
+            or (left_alias in refs and right_alias in refs)
+        ):
+            matches.append(step)
+    if len(matches) != 1:
+        return [], [], ""
+
+    step = matches[0]
+    left_keys = _string_list(step.get("left_on"))
+    right_keys = _string_list(step.get("right_on"))
+    if left_keys or right_keys:
+        if len(left_keys) == len(right_keys) and left_keys:
+            return left_keys, right_keys, "typed_left_right_on"
+        return [], [], ""
+    shared_keys = _string_list(step.get("on"))
+    if shared_keys:
+        return shared_keys, list(shared_keys), "typed_on"
+    shared_grain = _string_list(step.get("group_by"))
+    if shared_grain:
+        return shared_grain, list(shared_grain), "typed_group_by"
+    return [], [], ""
+
+
 def _resolve_join_plan(
     plan: dict[str, Any],
     metadata_refs: list[dict[str, str]],
@@ -9492,22 +9928,77 @@ def _resolve_join_plan(
         right_alias = str(raw.get("right_source_alias") or "").strip()
         if not left_alias or not right_alias or not canonical_keys:
             continue
-        left_dataset = _dataset_key_for_alias(left_alias, retrieval_jobs)
-        right_dataset = _dataset_key_for_alias(right_alias, retrieval_jobs)
+        # A join may consume the output of a filter, projection, or Function
+        # Case. Preserve that execution alias on the join itself, while using
+        # its one trusted retrieval leaf only to look up Catalog ownership.
+        # Ambiguous lineage stays unresolved and follows the existing
+        # validation path; this never redirects a working multi-source plan.
+        left_dataset = _dataset_key_for_execution_alias(
+            left_alias,
+            retrieval_jobs,
+            pandas_plan,
+        )
+        right_dataset = _dataset_key_for_execution_alias(
+            right_alias,
+            retrieval_jobs,
+            pandas_plan,
+        )
         left_table = _table_catalog_item(candidates, left_dataset)
         right_table = _table_catalog_item(candidates, right_dataset)
-        key_mappings: list[dict[str, Any]] = []
-        for key in canonical_keys:
-            left_candidates = _mapped_column_candidates(left_table, key)
-            right_candidates = _mapped_column_candidates(right_table, key)
-            if left_candidates and right_candidates:
-                key_mappings.append(
+        declared_left_keys, declared_right_keys, declared_key_source = (
+            _typed_join_declared_key_pair(
+                pandas_plan,
+                left_alias,
+                right_alias,
+            )
+        )
+        declared_key_mappings: list[dict[str, Any]] = []
+        if declared_left_keys and len(declared_left_keys) == len(declared_right_keys):
+            for left_key, right_key in zip(declared_left_keys, declared_right_keys):
+                if not (
+                    _catalog_supports_domain_column(candidates, left_dataset, left_key)
+                    and _catalog_supports_domain_column(candidates, right_dataset, right_key)
+                ):
+                    declared_key_mappings = []
+                    break
+                left_candidates = _mapped_column_candidates(left_table, left_key)
+                right_candidates = _mapped_column_candidates(right_table, right_key)
+                if not left_candidates or not right_candidates:
+                    declared_key_mappings = []
+                    break
+                declared_key_mappings.append(
                     {
-                        "canonical_key": key,
+                        "canonical_key": left_key,
                         "left_candidates": left_candidates,
                         "right_candidates": right_candidates,
                     }
                 )
+        # A typed join can declare its own shared execution grain.  When both
+        # input Catalogs prove those columns, that lineage is more specific
+        # than a nearby metric/quantity metadata reference.  The latter can
+        # describe a value to aggregate (for example an equipment identifier)
+        # without being a valid key on the left source.
+        if declared_key_mappings and len(declared_key_mappings) == len(declared_left_keys):
+            key_mappings = declared_key_mappings
+            left_keys = declared_left_keys
+            right_keys = declared_right_keys
+            key_source = declared_key_source
+        else:
+            key_mappings = []
+            for key in canonical_keys:
+                left_candidates = _mapped_column_candidates(left_table, key)
+                right_candidates = _mapped_column_candidates(right_table, key)
+                if left_candidates and right_candidates:
+                    key_mappings.append(
+                        {
+                            "canonical_key": key,
+                            "left_candidates": left_candidates,
+                            "right_candidates": right_candidates,
+                        }
+                    )
+            left_keys = [item["canonical_key"] for item in key_mappings]
+            right_keys = [item["canonical_key"] for item in key_mappings]
+            key_source = "metadata_ref"
         if not key_mappings:
             continue
         join_type = str(metadata_payload.get("join_type") or raw.get("join_type") or "left").strip().lower()
@@ -9549,8 +10040,9 @@ def _resolve_join_plan(
                 "join_type": join_type,
                 "canonical_keys": [item["canonical_key"] for item in key_mappings],
                 "key_mappings": key_mappings,
-                "left_keys": [item["canonical_key"] for item in key_mappings],
-                "right_keys": [item["canonical_key"] for item in key_mappings],
+                "left_keys": left_keys,
+                "right_keys": right_keys,
+                "key_source": key_source,
                 "canonical_right_value_columns": canonical_right_value_columns,
                 "right_value_mappings": right_value_mappings,
                 "right_value_columns": right_value_columns,
@@ -11353,6 +11845,375 @@ def _normalize_pandas_plan_columns(
 
 
 # 함수 설명: 중첩된 pandas 단계에서 source alias 문맥을 유지하며 명시적인 컬럼 필드만 실제 컬럼명으로 바꿉니다.
+def _materialize_resolved_join_steps(
+    pandas_plan: list[Any],
+    resolved_join_plan: list[dict[str, Any]],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Copy a trusted catalog join key contract onto one matching Typed step.
+
+    The intent model can name the two sources and the join type, while the
+    catalog owns the executable key lineage.  A Typed executor cannot safely
+    infer that lineage from column names at runtime, so this fills only absent
+    key fields on one unambiguous matching join step.  Existing explicit keys,
+    conflicting pairs, and ambiguous matches remain untouched.
+    """
+
+    if not resolved_join_plan:
+        return pandas_plan, {"status": "not_needed", "applied": []}
+    normalized = deepcopy(pandas_plan)
+    applied: list[dict[str, Any]] = []
+    for resolved in resolved_join_plan:
+        if not isinstance(resolved, dict) or resolved.get("strict") is not True:
+            continue
+        left_alias = str(resolved.get("left_source_alias") or "").strip()
+        right_alias = str(resolved.get("right_source_alias") or "").strip()
+        left_keys = _string_list(resolved.get("left_keys"))
+        right_keys = _string_list(resolved.get("right_keys"))
+        if (
+            not left_alias
+            or not right_alias
+            or not left_keys
+            or len(left_keys) != len(right_keys)
+        ):
+            continue
+        matches: list[dict[str, Any]] = []
+        for step in normalized:
+            if (
+                not isinstance(step, dict)
+                or str(step.get("operation") or step.get("step") or "").strip().lower()
+                not in {"join", "merge", "left_join", "outer_join"}
+            ):
+                continue
+            declared_left = str(
+                step.get("left_source_alias") or step.get("source_alias") or ""
+            ).strip()
+            declared_right = str(
+                step.get("right_source_alias") or step.get("reference_source_alias") or ""
+            ).strip()
+            refs = [
+                str(item.get("ref") or "").strip()
+                for item in step.get("inputs", [])
+                if isinstance(item, dict)
+                and str(item.get("kind") or "").strip() == "external_source"
+            ]
+            if (
+                (declared_left == left_alias and declared_right == right_alias)
+                or (left_alias in refs and right_alias in refs)
+            ):
+                matches.append(step)
+        if len(matches) != 1:
+            continue
+        step = matches[0]
+        current_left = _string_list(step.get("left_on"))
+        current_right = _string_list(step.get("right_on"))
+        current_shared = _string_list(step.get("on"))
+        declared_shared_grain = _string_list(step.get("group_by"))
+        if (current_left or current_right) and (
+            current_left != left_keys or current_right != right_keys
+        ):
+            continue
+        if current_shared and (current_shared != left_keys or left_keys != right_keys):
+            continue
+        # The executor accepts a join's group_by as an explicit shared key.
+        # Normalize that shorthand only when it is the same Catalog-proven
+        # pair; otherwise leave it untouched rather than replacing it with an
+        # unrelated metric metadata key.
+        if (
+            not current_left
+            and not current_right
+            and not current_shared
+            and declared_shared_grain
+        ):
+            if declared_shared_grain != left_keys or left_keys != right_keys:
+                continue
+            step["on"] = list(declared_shared_grain)
+        elif not current_left and not current_right and not current_shared:
+            step["left_on"] = left_keys
+            step["right_on"] = right_keys
+        if not str(step.get("left_source_alias") or "").strip():
+            step["left_source_alias"] = left_alias
+        if not str(step.get("right_source_alias") or "").strip():
+            step["right_source_alias"] = right_alias
+        if not str(step.get("join_type") or "").strip():
+            step["join_type"] = str(resolved.get("join_type") or "left")
+        if not _string_list(step.get("right_value_columns")):
+            right_values = _string_list(resolved.get("right_value_columns"))
+            if right_values:
+                step["right_value_columns"] = right_values
+        applied.append(
+            {
+                "node_id": str(step.get("node_id") or "").strip(),
+                "left_source_alias": left_alias,
+                "right_source_alias": right_alias,
+                "left_on": left_keys,
+                "right_on": right_keys,
+            }
+        )
+    return normalized, {
+        "status": "applied" if applied else "not_needed",
+        "applied": applied,
+    }
+
+
+# 함수 설명: 검증된 다중 source 집계의 최종 스키마를 표시 계약으로 확정하고 중간 컬럼은 실행 계약으로 분리합니다.
+def _materialize_derived_aggregate_join_keys(
+    pandas_plan: list[Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Fill an absent join key only for two compatible aggregate outputs.
+
+    A common declarative plan aggregates two sources to the same explicit grain
+    and then joins those aggregate outputs. The grouping columns themselves are
+    an executable, typed join contract: both parents produce exactly those
+    columns. Models sometimes omit the redundant ``on`` field, which used to
+    push an otherwise deterministic plan to generated pandas code. Infer it
+    only for this strict shape; raw-source joins, unequal grains, and existing
+    key declarations remain untouched.
+    """
+
+    normalized = deepcopy(pandas_plan)
+    nodes_by_id, output_aliases = _pandas_plan_lineage(normalized)
+    passthrough_operations = {
+        "sort",
+        "sort_and_top_n",
+        "top_n",
+        "bottom_n",
+        "select_columns",
+        "rename_columns",
+        "apply_filters",
+        "filter",
+        "filter_rows",
+    }
+
+    def aggregate_grain(reference: str, visited: set[str]) -> list[str]:
+        node_id = reference if reference in nodes_by_id else output_aliases.get(reference, "")
+        if not node_id or node_id in visited:
+            return []
+        parent = nodes_by_id.get(node_id)
+        if not isinstance(parent, dict):
+            return []
+        operation = str(parent.get("operation") or parent.get("step") or "").strip().lower()
+        if operation in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}:
+            aggregations = [
+                item
+                for item in parent.get("aggregations", [])
+                if isinstance(item, dict)
+                and str(item.get("output_column") or item.get("result_column") or "").strip()
+            ]
+            return _string_list(
+                parent.get("group_by")
+                or parent.get("group_by_columns")
+                or parent.get("group_columns")
+            ) if aggregations else []
+        if operation not in passthrough_operations:
+            return []
+        inputs = [
+            item
+            for item in parent.get("inputs", [])
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "node_output"
+            and str(item.get("ref") or "").strip()
+        ]
+        return (
+            aggregate_grain(str(inputs[0].get("ref") or "").strip(), {*visited, node_id})
+            if len(inputs) == 1
+            else []
+        )
+
+    applied: list[dict[str, Any]] = []
+    for step in normalized:
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation not in {"join", "merge", "left_join", "outer_join"}:
+            continue
+        if (
+            _string_list(step.get("left_on"))
+            or _string_list(step.get("right_on"))
+            or _string_list(step.get("on"))
+            or _string_list(step.get("group_by"))
+        ):
+            continue
+        inputs = [
+            item
+            for item in step.get("inputs", [])
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "node_output"
+            and str(item.get("ref") or "").strip()
+        ]
+        if len(inputs) != 2:
+            continue
+        left_grain = aggregate_grain(str(inputs[0].get("ref") or "").strip(), set())
+        right_grain = aggregate_grain(str(inputs[1].get("ref") or "").strip(), set())
+        left_keys = [_normalized_column_key(value) for value in left_grain]
+        right_keys = [_normalized_column_key(value) for value in right_grain]
+        if (
+            not left_grain
+            or len(left_grain) != len(right_grain)
+            or len(set(left_keys)) != len(left_keys)
+            or set(left_keys) != set(right_keys)
+        ):
+            continue
+        step["on"] = left_grain
+        applied.append(
+            {
+                "node_id": str(step.get("node_id") or "").strip(),
+                "on": left_grain,
+                "source": "matching_aggregate_grain",
+            }
+        )
+    return normalized, {
+        "status": "applied" if applied else "not_needed",
+        "applied": applied,
+    }
+
+
+def _reconcile_terminal_typed_output_contract(
+    output_contract: dict[str, Any],
+    pandas_plan: list[Any],
+    resolved_execution_graph: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Separate a validated Typed plan's display schema from working columns.
+
+    A filter, join, helper, or aggregate can need transient columns which are
+    deliberately not present in the final projection.  The terminal typed
+    step owns the visible shape when it states that shape explicitly.  This
+    applies to aggregate, detail, and entity-list plans, but never invents a
+    schema for an ambiguous or untyped terminal operation.
+    """
+
+    contract = deepcopy(output_contract) if isinstance(output_contract, dict) else {}
+    result_mode = str(contract.get("result_mode") or "").strip().lower()
+    if result_mode not in {"aggregate", "detail", "entity_list"}:
+        return contract, {"status": "not_applicable"}
+    graph_errors = (
+        resolved_execution_graph.get("validation_errors")
+        if isinstance(resolved_execution_graph, dict)
+        else []
+    )
+    external_sources = [
+        item
+        for item in (
+            resolved_execution_graph.get("external_source_requirements", [])
+            if isinstance(resolved_execution_graph, dict)
+            else []
+        )
+        if isinstance(item, dict) and str(item.get("provider") or "") == "retrieval_job"
+    ]
+    if graph_errors or not external_sources:
+        return contract, {"status": "not_applicable"}
+    steps = [item for item in pandas_plan if isinstance(item, dict)]
+    if not steps:
+        return contract, {"status": "not_applicable"}
+    sort_suffix_operations = {"sort", "sort_and_top_n", "top_n", "bottom_n"}
+    terminal_index = next(
+        (
+            index
+            for index in range(len(steps) - 1, -1, -1)
+            if str(steps[index].get("operation") or steps[index].get("step") or "")
+            .strip()
+            .lower()
+            not in sort_suffix_operations
+        ),
+        -1,
+    )
+    if terminal_index < 0:
+        return contract, {"status": "not_applicable"}
+    suffix_operations = [
+        str(step.get("operation") or step.get("step") or "").strip().lower()
+        for step in steps[terminal_index + 1 :]
+    ]
+    if any(operation not in sort_suffix_operations for operation in suffix_operations):
+        return contract, {"status": "not_applicable"}
+    terminal_step = steps[terminal_index]
+    terminal_operation = str(
+        terminal_step.get("operation") or terminal_step.get("step") or ""
+    ).strip().lower()
+    group_columns: list[str] = []
+    aggregation_columns: list[str] = []
+    terminal_columns: list[str] = []
+    if terminal_operation in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}:
+        group_columns = _string_list(
+            terminal_step.get("group_by") or terminal_step.get("group_by_columns")
+        )
+        aggregations = [
+            item for item in terminal_step.get("aggregations", []) if isinstance(item, dict)
+        ]
+        aggregation_columns = _string_list(
+            [item.get("output_column") or item.get("result_column") for item in aggregations]
+        )
+        terminal_columns = _merge_strings(group_columns, aggregation_columns)
+        if not aggregation_columns:
+            return contract, {"status": "not_applicable"}
+    elif terminal_operation == "select_columns":
+        terminal_columns = _string_list(
+            terminal_step.get("projection")
+            or terminal_step.get("columns")
+            or terminal_step.get("select_columns")
+        )
+    elif terminal_operation == "distinct_values":
+        terminal_columns = _string_list(
+            terminal_step.get("group_by")
+            or terminal_step.get("columns")
+            or terminal_step.get("projection")
+        )
+    if not terminal_columns:
+        return contract, {"status": "not_applicable"}
+    current_columns = _merge_strings(
+        _string_list(contract.get("result_columns")),
+        _string_list(contract.get("required_columns")),
+    )
+    transient_columns = [column for column in current_columns if column not in terminal_columns]
+    if not transient_columns:
+        return contract, {"status": "not_needed", "terminal_columns": terminal_columns}
+    contract["execution_required_columns"] = _merge_strings(
+        _string_list(contract.get("execution_required_columns")),
+        transient_columns,
+    )
+    if group_columns:
+        contract["grain_columns"] = group_columns
+    else:
+        contract["grain_columns"] = [
+            column
+            for column in _string_list(contract.get("grain_columns"))
+            if column in terminal_columns
+        ]
+    terminal_metrics = aggregation_columns or [
+        column
+        for column in _string_list(contract.get("metric_columns"))
+        if column in terminal_columns
+    ]
+    contract["metric_columns"] = _merge_strings(
+        [
+            column
+            for column in _string_list(contract.get("metric_columns"))
+            if column in terminal_metrics
+        ],
+        terminal_metrics,
+    )
+    contract["required_columns"] = terminal_columns
+    contract["result_columns"] = terminal_columns
+    contract["strict_result_columns"] = True
+    labels = contract.get("column_labels")
+    if isinstance(labels, dict):
+        contract["column_labels"] = {
+            key: value for key, value in labels.items() if str(key) in terminal_columns
+        }
+    contract["terminal_output_contract_reconciliation"] = {
+        "policy": "typed_terminal_schema",
+        "terminal_node_id": str(terminal_step.get("node_id") or "").strip(),
+        "terminal_operation": terminal_operation,
+        "result_columns": terminal_columns,
+        "execution_required_columns": transient_columns,
+    }
+    return contract, {
+        "status": "applied",
+        "terminal_node_id": str(terminal_step.get("node_id") or "").strip(),
+        "terminal_operation": terminal_operation,
+        "result_columns": terminal_columns,
+        "execution_required_columns": transient_columns,
+    }
+
+
 def _consensus_lineage_column_alias_map(
     alias_maps: dict[str, dict[str, str]],
     lineage_aliases: list[str],
@@ -11734,6 +12595,280 @@ def _table_catalog_item(candidates: dict[str, Any], dataset_key: str) -> dict[st
 
 
 # 함수 설명: 선택 dataset의 catalog가 특정 조회 필수 파라미터를 선언했는지 정확한 이름 기준으로 확인합니다.
+def _validate_required_retrieval_parameters(
+    retrieval_jobs: list[dict[str, Any]],
+    candidates: dict[str, Any],
+    pandas_plan: list[Any],
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Reject only Catalog-required values that cannot exist before retrieval.
+
+    A blank optional filter is normal. A blank *required* parameter is not: it
+    either means that a direct identifier is missing, or that the model tried
+    to hand a first retrieval's rows to a second retrieval inside one Flow
+    execution. Retrieval happens before the pandas graph, so that value cannot
+    be filled here. Keep this catalog-driven for every identifier type.
+    """
+
+    jobs = [deepcopy(item) for item in retrieval_jobs if isinstance(item, dict)]
+    known_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in jobs
+        if str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    errors: list[dict[str, Any]] = []
+    blocked_parameters: list[dict[str, Any]] = []
+    for job in jobs:
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        source_alias = str(job.get("source_alias") or dataset_key).strip()
+        required_names = _catalog_required_params(candidates, dataset_key)
+        if not dataset_key or not required_names:
+            continue
+        supplied = (
+            job.get("required_params")
+            if isinstance(job.get("required_params"), dict)
+            else (job.get("params") if isinstance(job.get("params"), dict) else {})
+        )
+        catalog_item = _table_catalog_item(candidates, dataset_key)
+        bindings = _catalog_upstream_bindings(catalog_item)
+        for parameter in required_names:
+            value = _normalized_mapping_value(supplied, parameter)
+            if _is_nonblank_direct_parameter(value):
+                continue
+            matching_bindings = [
+                binding
+                for binding in bindings
+                if _normalized_column_key(
+                    binding.get("target_param")
+                    or binding.get("required_param")
+                    or binding.get("param")
+                )
+                == _normalized_column_key(parameter)
+            ]
+            # A real follow-up invocation already has a trusted
+            # ``previous_result`` frame before this Flow begins.  Its row-match
+            # operation is therefore a valid deferred parameter binding, not a
+            # same-run retrieval dependency.  Require the typed row-match edge
+            # and the Catalog-declared identifier column; merely naming a
+            # previous-result binding in an LLM plan is not enough.
+            if _has_typed_previous_result_parameter_binding(
+                pandas_plan,
+                source_alias,
+                matching_bindings,
+            ):
+                continue
+            # The continuation Flow resumes with a validated result-store ref
+            # before normalizing its active stage.  Its stage-two join consumes
+            # that restored upstream frame directly rather than using a
+            # row-match transform, so preserve this distinct trusted shape.
+            if _has_restored_upstream_parameter_binding(
+                payload or {},
+                pandas_plan,
+                matching_bindings,
+            ):
+                continue
+            producer_aliases: list[str] = []
+            for binding in matching_bindings:
+                source_column = str(
+                    binding.get("source_column")
+                    or binding.get("source_column_name")
+                    or ""
+                ).strip()
+                if not source_column:
+                    continue
+                for candidate_job in jobs:
+                    candidate_alias = str(
+                        candidate_job.get("source_alias")
+                        or candidate_job.get("dataset_key")
+                        or ""
+                    ).strip()
+                    candidate_dataset = str(candidate_job.get("dataset_key") or "").strip()
+                    if (
+                        candidate_alias
+                        and candidate_alias != source_alias
+                        and candidate_dataset
+                        and _catalog_supports_domain_column(
+                            candidates,
+                            candidate_dataset,
+                            source_column,
+                        )
+                        and candidate_alias not in producer_aliases
+                    ):
+                        producer_aliases.append(candidate_alias)
+            continuation_binding = any(
+                str(binding.get("source_alias") or binding.get("source") or "")
+                .strip()
+                .casefold()
+                in {"previous_result", "upstream_result"}
+                for binding in matching_bindings
+            )
+            attempted_same_run_handoff = bool(continuation_binding and producer_aliases)
+            error_type = (
+                "same_run_dependent_retrieval_requires_continuation"
+                if attempted_same_run_handoff
+                else "required_retrieval_parameter_unresolved"
+            )
+            entry = {
+                "type": error_type,
+                "message": (
+                    "같은 실행 안의 선행 조회 결과를 다음 조회의 필수 조건으로 사용할 수 없습니다. 후속 실행으로 분리해야 합니다."
+                    if attempted_same_run_handoff
+                    else "Table Catalog에서 필수로 지정한 조회 조건 값이 비어 있습니다."
+                ),
+                "source_alias": source_alias,
+                "dataset_key": dataset_key,
+                "required_param": parameter,
+            }
+            if producer_aliases:
+                entry["candidate_source_aliases"] = producer_aliases
+            errors.append(entry)
+            blocked_parameters.append(
+                {
+                    "source_alias": source_alias,
+                    "dataset_key": dataset_key,
+                    "required_param": parameter,
+                    "continuation_required": attempted_same_run_handoff,
+                    "candidate_source_aliases": producer_aliases,
+                }
+            )
+    return {
+        "status": "blocked" if errors else "ok",
+        "validation_errors": errors,
+        "blocked_parameters": blocked_parameters,
+        "known_source_aliases": sorted(alias for alias in known_aliases if alias),
+    }
+
+
+def _has_typed_previous_result_parameter_binding(
+    pandas_plan: list[Any],
+    target_source_alias: str,
+    matching_bindings: list[dict[str, Any]],
+) -> bool:
+    """Return true only for a Catalog-backed, already-restored row match.
+
+    Retrieval is normally a single pass, so a blank required parameter must
+    fail before a broad query.  The exception is an actual follow-up request:
+    the result loader has restored ``previous_result`` before retrieval and a
+    Typed ``apply_row_match_groups`` step explicitly binds its identifier rows
+    to this target source.  This intentionally checks graph shape rather than
+    request wording so it remains generic for LOTs and other entity types.
+    """
+
+    target = str(target_source_alias or "").strip()
+    if not target or not isinstance(pandas_plan, list):
+        return False
+    binding_columns = {
+        _normalized_column_key(
+            binding.get("source_column")
+            or binding.get("source_column_name")
+            or ""
+        )
+        for binding in matching_bindings
+        if isinstance(binding, dict)
+        and str(binding.get("source_alias") or binding.get("source") or "")
+        .strip()
+        .casefold()
+        in {"previous_result", "upstream_result"}
+    }
+    binding_columns.discard("")
+    if not binding_columns:
+        return False
+
+    for raw_step in pandas_plan:
+        if not isinstance(raw_step, dict):
+            continue
+        operation = str(
+            raw_step.get("operation") or raw_step.get("step") or ""
+        ).strip().lower()
+        if operation != "apply_row_match_groups":
+            continue
+        source_alias = str(raw_step.get("source_alias") or "").strip()
+        if source_alias != target:
+            continue
+        reference_alias = str(
+            raw_step.get("reference_source_alias")
+            or raw_step.get("reference_alias")
+            or ""
+        ).strip().casefold()
+        if reference_alias not in {"previous_result", "upstream_result"}:
+            continue
+        match_columns = {
+            _normalized_column_key(value)
+            for value in _string_list(
+                raw_step.get("match_columns")
+                or raw_step.get("condition_columns")
+                or raw_step.get("columns")
+            )
+        }
+        if binding_columns & match_columns:
+            return True
+    return False
+
+
+def _has_restored_upstream_parameter_binding(
+    payload: dict[str, Any],
+    pandas_plan: list[Any],
+    matching_bindings: list[dict[str, Any]],
+) -> bool:
+    """Recognize an explicit result-ref continuation without trusting prose.
+
+    Flow 08 has already verified the continuation contract and supplies an
+    opaque upstream result reference in the orchestration envelope.  Its active
+    stage can join that restored frame directly, so it does not necessarily
+    contain ``apply_row_match_groups``.  Require all three facts below: an
+    upstream ref, a Catalog binding from a prior/upstream source, and a typed
+    plan edge consuming that source.  A plain LLM-produced blank parameter
+    cannot satisfy this predicate.
+    """
+
+    if not isinstance(payload, dict) or not isinstance(pandas_plan, list):
+        return False
+    orchestration = (
+        payload.get("orchestration")
+        if isinstance(payload.get("orchestration"), dict)
+        else {}
+    )
+    upstream_ref = str(
+        orchestration.get("upstream_result_ref")
+        or orchestration.get("result_ref")
+        or ""
+    ).strip()
+    if not upstream_ref:
+        return False
+    accepted_binding_aliases = {
+        str(binding.get("source_alias") or binding.get("source") or "")
+        .strip()
+        .casefold()
+        for binding in matching_bindings
+        if isinstance(binding, dict)
+    }
+    if not accepted_binding_aliases & {"previous_result", "upstream_result"}:
+        return False
+
+    reserved_aliases = {"previous_result", "upstream_result"}
+    for step in pandas_plan:
+        if not isinstance(step, dict):
+            continue
+        declared_aliases = {
+            str(step.get(name) or "").strip().casefold()
+            for name in (
+                "source_alias",
+                "left_source_alias",
+                "right_source_alias",
+                "reference_source_alias",
+            )
+        }
+        if declared_aliases & reserved_aliases:
+            return True
+        for item in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            reference = str(item.get("ref") or "").strip().casefold()
+            if reference in reserved_aliases:
+                return True
+    return False
+
+
 def _catalog_requires_param(
     candidates: dict[str, Any],
     dataset_key: str,
@@ -12638,7 +13773,138 @@ def _ensure_function_case_steps(function_cases: list[dict[str, Any]], pandas_pla
                 "source_alias": source_alias,
             }
         )
-    return [*steps_to_add, *normalized_plan]
+    # Function Cases are source transforms just like a typed filter or
+    # projection.  Give an auto-added transform a real node/output edge so a
+    # following declarative step can consume it.  Without this, a weak intent
+    # response can name the natural transform alias (for example
+    # ``filtered_product``) while the normalizer adds only an unaddressable
+    # side-effect step.  The helper below repairs that shape only when the
+    # mapping is unique; ambiguous plans keep their validation error.
+    return _materialize_function_case_step_edges(
+        [*steps_to_add, *normalized_plan],
+        function_cases,
+        retrieval_jobs,
+    )
+
+
+# 함수 설명: 선택된 Function Case가 만드는 실제 출력 별칭과 Typed pandas 단계의 입력 연결을 안전하게 보완합니다.
+def _materialize_function_case_step_edges(
+    pandas_plan: list[Any],
+    function_cases: list[dict[str, Any]],
+    retrieval_jobs: list[dict[str, Any]],
+) -> list[Any]:
+    """Make catalog-selected Function Cases addressable Typed-DAG transforms.
+
+    This does not guess a missing business step.  It only supplies the
+    otherwise implicit input/output identity for a selected Function Case, and
+    only binds a dangling node-output reference when exactly one selected case
+    and one unresolved reference exist.  Existing explicit aliases always win.
+    """
+
+    normalized = deepcopy(pandas_plan)
+    case_count = len(
+        [
+            item
+            for item in function_cases
+            if isinstance(item, dict)
+            and (
+                str(item.get("function_name") or "").strip()
+                or str(item.get("key") or "").strip()
+            )
+        ]
+    )
+    source_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    node_ids = {
+        str(item.get("node_id") or "").strip()
+        for item in normalized
+        if isinstance(item, dict) and str(item.get("node_id") or "").strip()
+    }
+    output_aliases = {
+        str(item.get("output_alias") or item.get("result_alias") or "").strip()
+        for item in normalized
+        if isinstance(item, dict)
+        and str(item.get("output_alias") or item.get("result_alias") or "").strip()
+    }
+    unresolved_refs: list[str] = []
+    reserved_refs = {PREVIOUS_RESULT_ALIAS, "upstream_result", *source_aliases}
+    for step in normalized:
+        if not isinstance(step, dict):
+            continue
+        for item in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
+            if not isinstance(item, dict) or str(item.get("kind") or "").strip() != "node_output":
+                continue
+            ref = str(item.get("ref") or "").strip()
+            if (
+                ref
+                and ref not in node_ids
+                and ref not in output_aliases
+                and ref not in reserved_refs
+                and ref not in unresolved_refs
+            ):
+                unresolved_refs.append(ref)
+
+    def unique_identifier(base: str, used: set[str]) -> str:
+        normalized_base = re.sub(r"[^0-9a-zA-Z_]+", "_", base).strip("_") or "function_case"
+        candidate = normalized_base
+        suffix = 2
+        while candidate in used:
+            candidate = f"{normalized_base}_{suffix}"
+            suffix += 1
+        used.add(candidate)
+        return candidate
+
+    unbound_alias = unresolved_refs[0] if case_count == 1 and len(unresolved_refs) == 1 else ""
+    consumed_unbound_alias = False
+    used_node_ids = set(node_ids)
+    used_output_aliases = set(output_aliases)
+    for index, step in enumerate(normalized, start=1):
+        if (
+            not isinstance(step, dict)
+            or str(step.get("operation") or "").strip()
+            != "apply_pandas_function_case"
+        ):
+            continue
+        source_alias = str(step.get("source_alias") or "").strip()
+        explicit_inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        external_aliases = [
+            str(item.get("ref") or "").strip()
+            for item in explicit_inputs
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "external_source"
+            and str(item.get("ref") or "").strip() in source_aliases
+        ]
+        if not source_alias and len(external_aliases) == 1:
+            source_alias = external_aliases[0]
+            step["source_alias"] = source_alias
+        if not source_alias or source_alias not in source_aliases:
+            continue
+        if not explicit_inputs:
+            step["inputs"] = [{"kind": "external_source", "ref": source_alias}]
+        if not str(step.get("node_id") or "").strip():
+            function_key = str(
+                step.get("function_case_key") or step.get("function_name") or "function_case"
+            ).strip()
+            step["node_id"] = unique_identifier(
+                f"function_case_{index}_{function_key}",
+                used_node_ids,
+            )
+        if not str(step.get("output_alias") or step.get("result_alias") or "").strip():
+            if unbound_alias and not consumed_unbound_alias:
+                output_alias = unbound_alias
+                consumed_unbound_alias = True
+                used_output_aliases.add(output_alias)
+            else:
+                output_alias = unique_identifier(
+                    f"{source_alias}_function_case",
+                    used_output_aliases,
+                )
+            step["output_alias"] = output_alias
+    return normalized
 
 
 # 함수 설명: Domain Function Case가 선언한 공통 실행 순서에 따라 source filter를 helper 뒤 단계로 이동합니다.

@@ -112,6 +112,7 @@ def bind_upstream_entity_parameters(payload_value: Any) -> dict[str, Any]:
                 allowed_source_aliases,
                 index,
                 binding_required=binding_required,
+                current_question=_request_question(payload),
             )
             bound_jobs.append(bound_job)
             summaries.extend(job_summaries)
@@ -133,6 +134,37 @@ def bind_upstream_entity_parameters(payload_value: Any) -> dict[str, Any]:
     orchestration["bound_job_count"] = len(bound_jobs) if not errors else 0
     payload["orchestration"] = orchestration
     return payload
+
+
+# 함수 설명: `_request_question()`은 현재 사용자 질문을 안전한 문자열로 읽어 upstream binding의 직접 조회 우선순위를 판단합니다.
+def _request_question(payload: dict[str, Any]) -> str:
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    return str(request.get("question") or "").strip()
+
+
+# 함수 설명: `_question_explicitly_mentions_param_value()`는 현재 질문에 명시된 식별자만 이전 결과 binding보다 우선하도록 판별합니다.
+def _question_explicitly_mentions_param_value(question: str, value: Any) -> bool:
+    """Return true only for a concrete identifier visibly present in the question.
+
+    This deliberately uses no dataset or business vocabulary.  A trusted
+    previous-result binding may replace an unverified model-inferred parameter
+    during a follow-up, while a user-supplied direct lookup remains intact.
+    Short values are treated as ambiguous rather than guessed from prose.
+    """
+
+    normalized_question = " ".join(str(question or "").casefold().split())
+    if not normalized_question:
+        return False
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    concrete: list[str] = []
+    for item in values:
+        if isinstance(item, (dict, list, tuple, set)):
+            return False
+        text = " ".join(str(item or "").casefold().split())
+        if len(text) < 3:
+            return False
+        concrete.append(text)
+    return bool(concrete) and all(item in normalized_question for item in concrete)
 
 
 # 함수 설명: `_short_circuit_empty_upstream_result()`는 05A 상위 결과 파라미터 바인더 처리 중 circuit·empty·upstream·결과 관련 값을 계산·변환하는
@@ -210,6 +242,7 @@ def _bind_job(
     job_index: int,
     *,
     binding_required: bool,
+    current_question: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     next_job = deepcopy(job)
     dataset_key = str(next_job.get("dataset_key") or "").strip()
@@ -302,14 +335,32 @@ def _bind_job(
         target_params.add(target_marker)
         existing_key = _dict_key_ci(params, target_param)
         if existing_key and not _same_value(params.get(existing_key), bound_value):
-            errors.append(
-                _issue(
-                    "upstream_parameter_conflict",
-                    f"기존 required_params 값과 상위 결과 binding 값이 충돌합니다: {target_param}",
-                    dataset_key=dataset_key,
-                    index=job_index,
-                    binding_index=binding_index,
+            # A follow-up plan can contain an identifier inferred by the model
+            # from the conversation even though the user did not give that
+            # identifier in the current question.  In that case the trusted
+            # catalog binding is the only verified source of truth and should
+            # replace the inferred value.  Conversely, a value visibly stated
+            # in the current question remains an explicit direct lookup and is
+            # never silently replaced by a previous-result value.
+            if _question_explicitly_mentions_param_value(
+                current_question,
+                params.get(existing_key),
+            ):
+                summaries.append(
+                    {
+                        **summary,
+                        "binding_status": "skipped_explicit_current_question_value",
+                        "existing_param_key": existing_key,
+                    }
                 )
+                continue
+            params[existing_key] = deepcopy(bound_value)
+            summaries.append(
+                {
+                    **summary,
+                    "binding_status": "replaced_unverified_planned_value",
+                    "existing_param_key": existing_key,
+                }
             )
             continue
         params[existing_key or target_param] = deepcopy(bound_value)

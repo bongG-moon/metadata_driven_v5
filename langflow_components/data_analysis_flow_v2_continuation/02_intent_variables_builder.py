@@ -143,29 +143,6 @@ def _schema() -> dict[str, Any]:
             "analysis_kind": "string",
             "request_scope": "new_analysis|followup_requery|followup_transform|followup_expand_source|followup_explain|clarification",
             "reference_mode": "none|previous_result_rows|previous_result_transform|previous_source|previous_filters|previous_trace",
-            "dependent_retrieval_plan": {
-                "version": "analysis.dependent_retrieval.v1",
-                "max_stages": 2,
-                "stages": [
-                    {
-                        "stage_id": "string",
-                        "depends_on": [],
-                        "retrieval_jobs": [],
-                        "pandas_execution_plan": [],
-                        "output_contract": {},
-                        "handoff": {"columns": ["canonical entity id"]},
-                        "input_bindings": [
-                            {
-                                "source_stage_id": "string",
-                                "source_column": "canonical entity id",
-                                "target_source_alias": "stage2 retrieval alias",
-                                "target_param": "required parameter",
-                                "operator": "in|eq",
-                            }
-                        ],
-                    }
-                ],
-            },
             "condition_resolution": {
                 "inherited": {},
                 "changed": {},

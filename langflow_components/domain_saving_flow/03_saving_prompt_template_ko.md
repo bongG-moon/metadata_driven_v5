@@ -16,7 +16,7 @@
 - 물리 컬럼명이 서로 다른 join은 표준 `join_keys`와 좌우 mapping을 분리해 기록한다. 원문에 없는 join key나 실행 순서를 추측하지 않는다.
 - 질문 기준일과 실제 조회일의 차이가 명시된 domain은 `payload.temporal_semantics`에 구조화해 보존한다. 허용 필드는 `business_timepoint`, `dataset_family`, `dataset_key`, `source_alias`, `date_param`, `requested_date_offset_days`, `disallowed_dataset_keys`, `inherit_filters`, `metric`, `source_column`, `aggregation`, `output_column`, `metric_aliases`다.
 - `requested_date_offset_days`는 질문 기준일에 더할 정수 일수다. 전일은 `-1`, 동일 일자는 `0`, 다음 날은 `1`로 저장한다. 원문에 없는 offset, dataset 또는 금지 dataset을 추측하지 않는다.
-- 작업자가 HOLD LOT/현재 HOLD/LOT ID 목록 또는 HOLD 사유·코드·이력을 설명하면 `analysis_recipes:current_hold_lot_selection` 하나로 등록한다. 목록만 물으면 `lot_status`의 현재 HOLD만 선택하고, 사유·코드·최근 이력을 함께 물으면 먼저 LOT를 찾은 뒤 최신 HOLD 이력을 선택한다는 규칙을 `selection_criteria`에 저장한다. 최신 이력은 LOT별 HOLD 시간 내림차순 한 건이며 `HOLD_CD`, `HOLD_DESC`를 같은 행에서 보여준다는 내용을 보존한다.
+- 작업자가 HOLD LOT/현재 HOLD/LOT ID 목록 또는 HOLD 사유·코드·이력을 설명하면 `analysis_recipes:current_hold_lot_selection` 하나로 등록한다. 목록·현재 상태·현재 HOLD 코드는 `lot_status`만 선택하고, `상세 사유`·`발생 시각`·`최근 HOLD 이력`처럼 이력 전용 정보를 함께 물을 때만 먼저 LOT를 찾은 뒤 최신 HOLD 이력을 선택한다는 규칙을 `selection_criteria`에 저장한다. 단어 하나인 `코드`나 `사유`만으로 이력 조회를 활성화하지 않는다. 최신 이력은 LOT별 HOLD 시간 내림차순 한 건이며 `HOLD_CD`, `HOLD_DESC`를 같은 행에서 보여준다는 내용을 보존한다.
 - 작업자가 RECIPE 번호와 시작/포함 규칙을 설명하면 `analysis_recipes:recipe_id_starts_with`로 등록한다. `RECIPE_ID`는 완전 일치가 아니라 `starts_with`로 조회하고, `eq`/`contains`로 바꾸지 않는다.
 - `pandas_function_cases`의 payload에는 원문에 명시된 `display_name`, `function_name`, `aliases`, `required_columns`, `selection_criteria`, `execution_contract`만 사용한다.
 - pandas function case에는 실제 helper 구현, 함수 시그니처, pandas 코드 예시, `pseudocode`, I/O contract를 저장하지 않는다.

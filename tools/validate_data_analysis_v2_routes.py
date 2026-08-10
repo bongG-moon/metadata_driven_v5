@@ -73,6 +73,30 @@ def load_route_manifest(path: Path = MANIFEST_PATH) -> dict[int, dict[str, Any]]
     return result
 
 
+def _mode_matches(
+    actual: str,
+    expectation: dict[str, Any],
+    *,
+    primary_key: str,
+    alternatives_key: str,
+) -> bool:
+    """Accept an explicitly declared equivalent deterministic implementation.
+
+    A live model can express the same trusted Typed IR either as the legacy
+    operation-specific dispatcher or as a fully typed pandas plan.  The
+    manifest remains the oracle: alternatives are accepted only when that
+    exact case declares them, never as a blanket route relaxation.
+    """
+
+    expected = str(expectation.get(primary_key) or "").strip()
+    alternatives = expectation.get(alternatives_key)
+    allowed = [expected] if expected else []
+    if isinstance(alternatives, list):
+        allowed.extend(str(item or "").strip() for item in alternatives)
+    allowed = [item for item in dict.fromkeys(allowed) if item]
+    return not allowed or actual in allowed
+
+
 def _fixture_output_contract(
     fixture_plan: dict[str, Any],
     *,
@@ -439,10 +463,20 @@ def validate_case(
     dataset_keys, dataset_errors = _dataset_selection_contract(payload, expectation)
     errors.extend(dataset_errors)
     expected_executor_mode = str(expectation.get("expected_execution_mode") or "").strip()
-    if expected_executor_mode and executor_mode != expected_executor_mode:
+    if not _mode_matches(
+        executor_mode,
+        expectation,
+        primary_key="expected_execution_mode",
+        alternatives_key="expected_execution_modes",
+    ):
         errors.append(f"expected executor mode {expected_executor_mode}, got {executor_mode or '<empty>'}")
     expected_analysis_mode = str(expectation.get("expected_analysis_execution_mode") or "").strip()
-    if expected_analysis_mode and analysis_execution_mode != expected_analysis_mode:
+    if not _mode_matches(
+        analysis_execution_mode,
+        expectation,
+        primary_key="expected_analysis_execution_mode",
+        alternatives_key="expected_analysis_execution_modes",
+    ):
         errors.append(
             f"expected analysis execution mode {expected_analysis_mode}, got {analysis_execution_mode or '<empty>'}"
         )
@@ -582,10 +616,20 @@ def validate_live_case(
     dataset_keys, dataset_errors = _dataset_selection_contract(payload, expectation)
     errors.extend(dataset_errors)
     expected_executor_mode = str(expectation.get("expected_execution_mode") or "").strip()
-    if expected_executor_mode and executor_mode != expected_executor_mode:
+    if not _mode_matches(
+        executor_mode,
+        expectation,
+        primary_key="expected_execution_mode",
+        alternatives_key="expected_execution_modes",
+    ):
         errors.append(f"expected executor mode {expected_executor_mode}, got {executor_mode or '<empty>'}")
     expected_analysis_mode = str(expectation.get("expected_analysis_execution_mode") or "").strip()
-    if expected_analysis_mode and analysis_execution_mode != expected_analysis_mode:
+    if not _mode_matches(
+        analysis_execution_mode,
+        expectation,
+        primary_key="expected_analysis_execution_mode",
+        alternatives_key="expected_analysis_execution_modes",
+    ):
         errors.append(
             f"expected analysis execution mode {expected_analysis_mode}, got {analysis_execution_mode or '<empty>'}"
         )

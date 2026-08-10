@@ -136,10 +136,13 @@ CSV에는 UTF-8 BOM을 넣어 Excel에서 한글이 깨지지 않게 합니다.
 }
 ```
 
-기본 `HTML Report API 주소`는 현재 결과 다운로드와 HTML Report를 함께 제공하는 Artifact Server의 `http://127.0.0.1:8765`입니다.
+기본 `MongoDB Report API 주소`는 결과 다운로드와 HTML Report를 함께 제공하는 API_SERVER의 `http://127.0.0.1:5000`입니다. Flow가 실제 API_SERVER에 연결할 수 있는 주소로 이 값을 바꿉니다.
 
 ```powershell
-python -m artifact_server
+cd API_SERVER
+python app.py
 ```
 
-`HTML Report API 주소`가 비어 있거나 서버 연결에 실패하면 Langflow 저장소의 HTML은 남고 `status=partial`을 반환합니다. 단, 공정그룹 미지정 시에는 저장소와 Report API를 호출하지 않습니다.
+HTML 본문과 제목·만료·권한 토큰 해시·보고서 계획 같은 metadata는 API_SERVER의 `report_save_db` 단일 MongoDB 컬렉션 문서에 함께 저장됩니다. Flow는 MongoDB URI를 직접 사용하지 않으며 Langflow 파일 저장소에 HTML을 중복 저장하지 않습니다.
+
+`MongoDB Report API 주소`가 비어 있거나 API_SERVER 연결/저장에 실패하면 `status=error`와 빈 `artifacts`를 반환합니다. 공개 링크가 없는 로컬 HTML 파일은 남기지 않습니다. 단, 공정그룹 미지정 시에는 Report API를 호출하지 않습니다.

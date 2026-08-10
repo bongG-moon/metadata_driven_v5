@@ -191,7 +191,7 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_{BUNDLE_VERSION}_ALL_FLOW
 
 - Langflow 모델 Provider와 `MONGO_URL` Credential Global Variable을 import 후 설정합니다.
 - 기본 Data Analysis는 `01. v5_data_analysis`입니다. 명시적인 상위 결과 참조가 필요한 2단계 분석만 `08. v5_data_analysis_continuation`을 사용합니다.
-- 결과 CSV/JSON 다운로드와 실시간 Report HTML 발행은 Artifact Server(`python -m artifact_server`, 기본 `127.0.0.1:8765`)가 담당합니다.
+- 결과 CSV/JSON 다운로드와 실시간 Report HTML 발행은 API_SERVER(`python API_SERVER\\app.py`, bind `0.0.0.0:5000`)가 담당합니다. Flow 07 Report HTML과 메타데이터는 API_SERVER의 단일 MongoDB 컬렉션에 저장되므로 Flow의 Report API 주소를 접근 가능한 API URL로 설정합니다.
 - 기존 Router Tool에 저장된 `flow_id_selected`가 있으면, import 뒤 대상 Flow를 한 번 다시 선택해 현재 Flow ID로 갱신합니다.
 
 ## 생성 시 구조 검증

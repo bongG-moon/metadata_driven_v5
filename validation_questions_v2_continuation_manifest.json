@@ -330,7 +330,8 @@
           "expected_route": "fast",
           "expected_child_calls": 1,
           "live_assertions": {
-            "required_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "PRODUCTION"],
+            "required_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"],
+            "required_column_groups": [["PRODUCTION", "PRODUCTION_SUM", "PRODUCTION_QTY"]],
             "min_rows": 1
           },
           "rows": [
@@ -366,7 +367,7 @@
           "expected_child_calls": 1,
           "reference_from_turn": 2,
           "live_assertions": {
-            "required_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "PRODUCTION", "EQP_LIST"],
+            "required_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "EQP_LIST"],
             "required_column_groups": [["EQP_COUNT", "EQP_ID_COUNT"]],
             "min_rows": 1
           },

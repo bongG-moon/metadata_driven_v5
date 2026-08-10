@@ -5371,6 +5371,45 @@ def test_v2_followup_normalizes_legacy_previous_result_reference_mode_with_new_r
     )
 
 
+def test_row_match_recovers_an_unresolved_model_reference_alias_to_previous_result():
+    """A follow-up may safely repair only an alias no current DAG can provide."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    product_columns = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
+    payload = {
+        "state": {
+            "current_data": {"columns": [*product_columns, "PRODUCTION"]},
+            "last_intent_plan": {
+                "resolved_grain_plan": {"canonical_columns": product_columns}
+            },
+        }
+    }
+    steps, trace = normalizer._normalize_row_match_steps(
+        [
+            {
+                "node_id": "node_row_match",
+                "operation": "apply_row_match_groups",
+                "inputs": [{"kind": "external_source", "ref": "eqp_src"}],
+                "source_alias": "eqp_src",
+                # ``prod_src`` is neither a retrieval job nor a node output;
+                # it is a weak-model nickname for the restored prior result.
+                "reference_source_alias": "prod_src",
+                "match_columns": product_columns,
+                "output_alias": "filtered_eqp_src",
+            }
+        ],
+        [{"dataset_key": "equipment_assign", "source_alias": "eqp_src"}],
+        "previous_result_rows",
+        payload,
+    )
+
+    row_match = steps[0]
+    assert row_match["reference_source_alias"] == "previous_result"
+    assert row_match["match_columns"] == product_columns
+    assert row_match["inputs"] == [{"kind": "external_source", "ref": "eqp_src"}]
+    assert trace["steps"][0]["reference_alias_reconciliation"] == "unresolved_alias_to_previous_result"
+
+
 def test_reference_join_resolves_right_metrics_after_filter_and_manual_join():
     """Follow-up metrics may be aggregated from a joined, not raw, alias.
 
@@ -6332,3 +6371,876 @@ def test_reserved_previous_result_rows_node_input_becomes_an_external_provider()
         "kind": "external_source",
         "ref": "previous_result",
     }
+
+
+def test_v2_function_case_step_materializes_one_unambiguous_typed_output_alias():
+    """A selected source transform may satisfy one missing downstream alias.
+
+    The compiler must not invent a transform for arbitrary aliases.  This test
+    covers only the unambiguous Function Case shape emitted by weak intent
+    responses: one selected case, one source, and one dangling node output.
+    """
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    cases = [
+        {
+            "key": "product_token_match",
+            "function_name": "select_product",
+            "input_text": "L-256K9B",
+            "source_alias": "equipment_assign",
+        }
+    ]
+    jobs = [{"dataset_key": "equipment_assign", "source_alias": "equipment_assign"}]
+    plan = normalizer._ensure_function_case_steps(
+        cases,
+        [
+            {
+                "node_id": "group_by_process",
+                "operation": "groupby_and_aggregate",
+                "inputs": [{"kind": "node_output", "ref": "filtered_product"}],
+                "output_alias": "process_summary",
+                "group_by": ["OPER_NAME"],
+                "aggregations": [
+                    {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"}
+                ],
+            }
+        ],
+        jobs,
+    )
+
+    transform = plan[0]
+    assert transform["operation"] == "apply_pandas_function_case"
+    assert transform["output_alias"] == "filtered_product"
+    assert transform["inputs"] == [
+        {"kind": "external_source", "ref": "equipment_assign"}
+    ]
+    graph = normalizer._compile_execution_graph(plan, jobs, {}, "none")
+    assert graph["validation_errors"] == []
+    group = next(item for item in graph["nodes"] if item["node_id"] == "group_by_process")
+    assert group["inputs"] == [{"kind": "node_output", "ref": transform["node_id"]}]
+
+
+def test_v2_typed_function_case_pipeline_executes_without_pandas_model():
+    """A catalog-selected transform can feed a Typed aggregate deterministically."""
+
+    resolver, executor, _ = _modules()
+    payload = {
+        "question": "assigned equipment by process for one product",
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "equipment_assign", "source_alias": "equipment_assign", "filters": {}}
+            ],
+            "pandas_function_cases": [
+                {
+                    "key": "product_token_match",
+                    "function_name": "select_product",
+                    "input_text": "L-256K9B",
+                    "source_alias": "equipment_assign",
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "select_product_case",
+                    "operation": "apply_pandas_function_case",
+                    "function_case_key": "product_token_match",
+                    "function_name": "select_product",
+                    "input_text": "L-256K9B",
+                    "source_alias": "equipment_assign",
+                    "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+                    "output_alias": "filtered_product",
+                },
+                {
+                    "node_id": "group_by_process",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "node_output", "ref": "filtered_product"}],
+                    "output_alias": "process_summary",
+                    "group_by": ["OPER_NAME"],
+                    "aggregations": [
+                        {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                        {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQP_ID_LIST"},
+                    ],
+                },
+            ],
+            "output_contract": {
+                "strict_result_columns": True,
+                "result_mode": "aggregate",
+                "grain_columns": ["OPER_NAME"],
+                "metric_columns": ["EQP_COUNT", "EQP_ID_LIST"],
+                "required_columns": ["OPER_NAME", "EQP_COUNT", "EQP_ID_LIST"],
+                "result_columns": ["OPER_NAME", "EQP_COUNT", "EQP_ID_LIST"],
+            },
+            "resolved_execution_graph": {
+                "external_source_requirements": [
+                    {
+                        "source_alias": "equipment_assign",
+                        "dataset_key": "equipment_assign",
+                        "provider": "retrieval_job",
+                        "required": True,
+                    }
+                ],
+                "validation_errors": [],
+            },
+            "validation_errors": [],
+        },
+        "runtime_sources": {
+            "equipment_assign": [
+                {"MCP_NO": "L-256K9B-A", "OPER_NAME": "D/A1", "EQP_ID": "D701"},
+                {"MCP_NO": "L-256K9B-A", "OPER_NAME": "D/A1", "EQP_ID": "D702"},
+                {"MCP_NO": "OTHER", "OPER_NAME": "D/A1", "EQP_ID": "D799"},
+            ]
+        },
+        "source_results": [
+            {
+                "source_alias": "equipment_assign",
+                "dataset_key": "equipment_assign",
+                "status": "ok",
+                "columns": ["MCP_NO", "OPER_NAME", "EQP_ID"],
+            }
+        ],
+        "trace": {"inspection": {}},
+    }
+
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    assert resolved["simple_analysis_contract"]["operation"] == "execute_typed_pandas_plan"
+    assert resolved["simple_analysis_contract"]["requires_pandas_llm"] is False
+    calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "pandas prompt must not be used",
+        model_invoker=lambda prompt: calls.append(prompt) or "{}",
+        repair_prompt_template="repair",
+        function_case_helper_code=(
+            "def select_product(input_text, frame):\n"
+            "    return frame[frame['MCP_NO'].astype(str).str.startswith(input_text)].copy()\n"
+        ),
+    )
+
+    assert calls == []
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"OPER_NAME": "D/A1", "EQP_COUNT": 2, "EQP_ID_LIST": "D701, D702"}
+    ]
+
+
+def test_v2_typed_join_materializes_catalog_keys_and_terminal_output_schema():
+    """Typed joins retain left/right lineage and show only terminal aggregate columns."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    resolver, executor, _ = _modules()
+    raw_steps = [
+        {
+            "node_id": "join_assign_uph",
+            "operation": "join",
+            "inputs": [
+                {"kind": "external_source", "ref": "assign_src"},
+                {"kind": "external_source", "ref": "uph_src"},
+            ],
+            "output_alias": "assign_uph",
+            "join_type": "left",
+        },
+        {
+            "node_id": "group_by_lead",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "node_output", "ref": "assign_uph"}],
+            "output_alias": "lead_summary",
+            "group_by": ["LEAD"],
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQUIPMENT_COUNT"},
+                {"column": "UPH", "method": "mean", "output_column": "AVG_UPH"},
+            ],
+        },
+    ]
+    materialized, trace = normalizer._materialize_resolved_join_steps(
+        raw_steps,
+        [
+            {
+                "strict": True,
+                "left_source_alias": "assign_src",
+                "right_source_alias": "uph_src",
+                "left_keys": ["EQP_ID", "OPER_NAME"],
+                "right_keys": ["EQP_ID", "OPER_NAME"],
+                "right_value_columns": ["UPH"],
+                "join_type": "left",
+            }
+        ],
+    )
+    assert trace["status"] == "applied"
+    assert materialized[0]["left_on"] == ["EQP_ID", "OPER_NAME"]
+    assert materialized[0]["right_on"] == ["EQP_ID", "OPER_NAME"]
+
+    output_contract, output_trace = normalizer._reconcile_terminal_typed_output_contract(
+        {
+            "result_mode": "aggregate",
+            "required_columns": ["LEAD", "EQP_MODEL", "RECIPE_ID", "OPER_NAME", "EQUIPMENT_COUNT", "AVG_UPH"],
+            "result_columns": ["LEAD", "EQP_MODEL", "RECIPE_ID", "OPER_NAME", "EQUIPMENT_COUNT", "AVG_UPH"],
+            "metric_columns": ["EQUIPMENT_COUNT", "AVG_UPH"],
+        },
+        materialized,
+        {
+            "validation_errors": [],
+            "external_source_requirements": [
+                {"source_alias": "assign_src", "provider": "retrieval_job"},
+                {"source_alias": "uph_src", "provider": "retrieval_job"},
+            ],
+        },
+    )
+    assert output_trace["status"] == "applied"
+    assert output_contract["result_columns"] == ["LEAD", "EQUIPMENT_COUNT", "AVG_UPH"]
+    assert output_contract["execution_required_columns"] == ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"]
+
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "equipment_assign", "source_alias": "assign_src", "filters": {}},
+                {"dataset_key": "eqp_uph", "source_alias": "uph_src", "filters": {}},
+            ],
+            "pandas_execution_plan": materialized,
+            "output_contract": output_contract,
+            "resolved_execution_graph": {
+                "validation_errors": [],
+                "external_source_requirements": [
+                    {"source_alias": "assign_src", "dataset_key": "equipment_assign", "provider": "retrieval_job", "required": True},
+                    {"source_alias": "uph_src", "dataset_key": "eqp_uph", "provider": "retrieval_job", "required": True},
+                ],
+            },
+            "validation_errors": [],
+        },
+        "runtime_sources": {
+            "assign_src": [
+                {"EQP_ID": "D701", "OPER_NAME": "M/D", "LEAD": "200"},
+                {"EQP_ID": "D702", "OPER_NAME": "M/D", "LEAD": "200"},
+            ],
+            "uph_src": [
+                {"EQP_ID": "D701", "OPER_NAME": "M/D", "UPH": 100},
+                {"EQP_ID": "D702", "OPER_NAME": "M/D", "UPH": 120},
+            ],
+        },
+        "source_results": [
+            {"source_alias": "assign_src", "dataset_key": "equipment_assign", "status": "ok", "columns": ["EQP_ID", "OPER_NAME", "LEAD"]},
+            {"source_alias": "uph_src", "dataset_key": "eqp_uph", "status": "ok", "columns": ["EQP_ID", "OPER_NAME", "UPH"]},
+        ],
+        "trace": {"inspection": {}},
+    }
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "must not invoke pandas model",
+        model_invoker=lambda prompt: calls.append(prompt) or "{}",
+        repair_prompt_template="repair",
+    )
+    assert calls == []
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"LEAD": "200", "EQUIPMENT_COUNT": 2, "AVG_UPH": 110.0}
+    ]
+
+
+def test_v2_matching_aggregate_grains_materialize_a_safe_typed_join_without_llm():
+    """Two already-aggregated sources can join on their identical declared grain."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    resolver, executor, _ = _modules()
+    raw_steps = [
+        {
+            "node_id": "aggregate_production",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "production_src"}],
+            "output_alias": "production_by_product",
+            "group_by": ["PRODUCT"],
+            "aggregations": [
+                {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION_SUM"}
+            ],
+        },
+        {
+            "node_id": "rank_production",
+            "operation": "sort_and_top_n",
+            "inputs": [{"kind": "node_output", "ref": "production_by_product"}],
+            "output_alias": "top_products",
+            "sort_by": "PRODUCTION_SUM",
+            "order": "desc",
+            "limit": 3,
+        },
+        {
+            "node_id": "aggregate_equipment",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "equipment_src"}],
+            "output_alias": "equipment_by_product",
+            "group_by": ["PRODUCT"],
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQP_LIST"},
+            ],
+        },
+        {
+            "node_id": "join_product_equipment",
+            "operation": "join",
+            "inputs": [
+                {"kind": "node_output", "ref": "top_products"},
+                {"kind": "node_output", "ref": "equipment_by_product"},
+            ],
+            "output_alias": "final_result",
+            "join_type": "left",
+        },
+    ]
+    steps, trace = normalizer._materialize_derived_aggregate_join_keys(raw_steps)
+    assert trace == {
+        "status": "applied",
+        "applied": [
+            {
+                "node_id": "join_product_equipment",
+                "on": ["PRODUCT"],
+                "source": "matching_aggregate_grain",
+            }
+        ],
+    }
+    assert steps[-1]["on"] == ["PRODUCT"]
+
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "production_src", "filters": {}},
+                {"dataset_key": "equipment_assign", "source_alias": "equipment_src", "filters": {}},
+            ],
+            "pandas_execution_plan": steps,
+            "output_contract": {
+                "result_mode": "entity_list",
+                "grain_columns": ["PRODUCT"],
+                "metric_columns": ["PRODUCTION_SUM", "EQP_COUNT"],
+                "result_columns": ["PRODUCT", "PRODUCTION_SUM", "EQP_COUNT", "EQP_LIST"],
+                "required_columns": ["PRODUCT", "PRODUCTION_SUM", "EQP_COUNT", "EQP_LIST"],
+                "strict_result_columns": True,
+            },
+            "resolved_execution_graph": {
+                "validation_errors": [],
+                "external_source_requirements": [
+                    {"source_alias": "production_src", "dataset_key": "production", "provider": "retrieval_job", "required": True},
+                    {"source_alias": "equipment_src", "dataset_key": "equipment_assign", "provider": "retrieval_job", "required": True},
+                ],
+            },
+            "validation_errors": [],
+        },
+        "runtime_sources": {
+            "production_src": [
+                {"PRODUCT": "A", "PRODUCTION": 30},
+                {"PRODUCT": "B", "PRODUCTION": 20},
+            ],
+            "equipment_src": [
+                {"PRODUCT": "A", "EQP_ID": "E1"},
+                {"PRODUCT": "A", "EQP_ID": "E2"},
+                {"PRODUCT": "B", "EQP_ID": "E3"},
+            ],
+        },
+        "source_results": [
+            {"source_alias": "production_src", "dataset_key": "production", "status": "ok", "columns": ["PRODUCT", "PRODUCTION"]},
+            {"source_alias": "equipment_src", "dataset_key": "equipment_assign", "status": "ok", "columns": ["PRODUCT", "EQP_ID"]},
+        ],
+        "trace": {"inspection": {}},
+    }
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    assert resolved["simple_analysis_contract"]["operation"] == "execute_typed_pandas_plan"
+    calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "Pandas model must not be called",
+        model_invoker=lambda prompt: calls.append(prompt) or "{}",
+        repair_prompt_template="repair",
+    )
+    assert calls == []
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"PRODUCT": "A", "PRODUCTION_SUM": 30, "EQP_COUNT": 2, "EQP_LIST": "E1, E2"},
+        {"PRODUCT": "B", "PRODUCTION_SUM": 20, "EQP_COUNT": 1, "EQP_LIST": "E3"},
+    ]
+
+
+def test_v2_typed_join_prefers_catalog_proven_declared_shared_grain_over_metric_ref():
+    """A metric reference cannot replace a Typed join's common source grain."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    product_keys = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
+    pandas_plan = [
+        {
+            "node_id": "aggregate_production",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "production_src"}],
+            "output_alias": "top_products",
+            "group_by": product_keys,
+            "aggregations": [
+                {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION"}
+            ],
+        },
+        {
+            "node_id": "join_equipment",
+            "operation": "join",
+            "inputs": [
+                {"kind": "node_output", "ref": "top_products"},
+                {"kind": "external_source", "ref": "equipment_src"},
+            ],
+            "output_alias": "joined_products",
+            "left_source_alias": "top_products",
+            "right_source_alias": "equipment_src",
+            # The Typed executor already recognizes this compact spelling as
+            # a shared join key declaration.
+            "group_by": product_keys,
+            "join_type": "left",
+        },
+    ]
+    candidates = {
+        "domain_items": [
+            {
+                "section": "quantity_terms",
+                "key": "equipment_count",
+                "payload": {"columns": ["EQP_ID"]},
+            }
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "production_today",
+                "payload": {"columns": [*product_keys, "PRODUCTION"]},
+            },
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": [*product_keys, "EQP_ID"]},
+            },
+        ],
+        "main_flow_filters": [],
+    }
+    jobs = [
+        {"dataset_key": "production_today", "source_alias": "production_src"},
+        {"dataset_key": "equipment_assign", "source_alias": "equipment_src"},
+    ]
+    resolved = normalizer._resolve_join_plan(
+        {
+            "join_plan": {
+                "metadata_ref": {"section": "quantity_terms", "key": "equipment_count"},
+                "left_source_alias": "top_products",
+                "right_source_alias": "equipment_src",
+            }
+        },
+        [{"section": "quantity_terms", "key": "equipment_count"}],
+        candidates,
+        jobs,
+        pandas_plan,
+    )
+
+    assert resolved[0]["key_source"] == "typed_group_by"
+    assert resolved[0]["left_keys"] == product_keys
+    assert resolved[0]["right_keys"] == product_keys
+
+    materialized, trace = normalizer._materialize_resolved_join_steps(pandas_plan, resolved)
+
+    assert trace["status"] == "applied"
+    assert materialized[1]["on"] == product_keys
+    assert "left_on" not in materialized[1]
+
+
+def test_v2_join_metadata_resolves_catalog_ownership_through_a_derived_alias():
+    """A filter/helper output may be a join input without losing its source owner."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    pandas_plan = [
+        {
+            "node_id": "product_filter",
+            "operation": "apply_pandas_function_case",
+            "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+            "source_alias": "equipment_assign",
+            "output_alias": "filtered_equipment_assign",
+        },
+        {
+            "node_id": "join_assign_uph",
+            "operation": "join",
+            "inputs": [
+                {"kind": "node_output", "ref": "filtered_equipment_assign"},
+                {"kind": "external_source", "ref": "eqp_uph"},
+            ],
+            "left_source_alias": "filtered_equipment_assign",
+            "right_source_alias": "eqp_uph",
+            "right_value_columns": ["UPH"],
+            "output_alias": "joined_assign_uph",
+        },
+    ]
+    candidates = {
+        "domain_items": [
+            {
+                "section": "analysis_recipes",
+                "key": "equipment_uph_join",
+                "payload": {"join_keys": ["EQP_ID", "OPER_NAME"]},
+            }
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": ["EQP_ID", "OPER_NAME", "LEAD"]},
+            },
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {"columns": ["EQP_ID", "OPER_NAME", "UPH"]},
+            },
+        ],
+        "main_flow_filters": [],
+    }
+    resolved = normalizer._resolve_join_plan(
+        {
+            "join_plan": {
+                "metadata_ref": {
+                    "section": "analysis_recipes",
+                    "key": "equipment_uph_join",
+                },
+                "left_source_alias": "filtered_equipment_assign",
+                "right_source_alias": "eqp_uph",
+                "right_value_columns": ["UPH"],
+            }
+        },
+        [{"section": "analysis_recipes", "key": "equipment_uph_join"}],
+        candidates,
+        [
+            {"dataset_key": "equipment_assign", "source_alias": "equipment_assign"},
+            {"dataset_key": "eqp_uph", "source_alias": "eqp_uph"},
+        ],
+        pandas_plan,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0]["left_source_alias"] == "filtered_equipment_assign"
+    assert resolved[0]["left_dataset_key"] == "equipment_assign"
+    assert resolved[0]["right_dataset_key"] == "eqp_uph"
+    assert resolved[0]["left_keys"] == ["EQP_ID", "OPER_NAME"]
+    assert resolved[0]["right_keys"] == ["EQP_ID", "OPER_NAME"]
+
+
+def test_retrieval_gate_labels_pure_execution_plan_error_without_claiming_source_failure():
+    """A broken Typed DAG is actionable before any Oracle/Mongo retrieval occurs."""
+
+    gate = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py")
+    result = gate.apply_retrieval_execution_gate(
+        {
+            "intent_plan": {"retrieval_jobs": []},
+            "trace": {
+                "inspection": {
+                    "data_retrieval": {
+                        "job_validation": {
+                            "error_count": 1,
+                            "errors": [
+                                {
+                                    "type": "unresolved_execution_input",
+                                    "node_id": "group_by_process",
+                                    "node_output_ref": "filtered_product",
+                                }
+                            ],
+                        }
+                    }
+                }
+            },
+        }
+    )
+
+    assert result["analysis"]["error"]["type"] == "execution_plan_invalid"
+    assert "단계 연결" in result["answer_message"]
+    assert "group_by_process ← filtered_product" in result["answer_message"]
+
+
+def test_required_parameter_guard_blocks_same_run_handoff_before_retrieval():
+    """A blank Catalog-required parameter cannot be filled by a pandas step."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "current_entities",
+                "payload": {"columns": ["ENTITY_ID", "STATUS"]},
+            },
+            {
+                "dataset_key": "entity_history",
+                "payload": {
+                    "columns": ["ENTITY_ID", "EVENT_TIME"],
+                    "required_params": ["ENTITY_ID"],
+                    "source_config": {
+                        "upstream_bindings": [
+                            {
+                                "source_alias": "previous_result",
+                                "source_column": "ENTITY_ID",
+                                "target_param": "ENTITY_ID",
+                                "operator": "in",
+                            }
+                        ]
+                    },
+                },
+            },
+        ]
+    }
+    guard = normalizer._validate_required_retrieval_parameters(
+        [
+            {"dataset_key": "current_entities", "source_alias": "current_src"},
+            {
+                "dataset_key": "entity_history",
+                "source_alias": "history_src",
+                "required_params": {"ENTITY_ID": ""},
+            },
+        ],
+        candidates,
+        [],
+    )
+
+    assert guard["status"] == "blocked"
+    assert guard["validation_errors"] == [
+        {
+            "type": "same_run_dependent_retrieval_requires_continuation",
+            "message": "같은 실행 안의 선행 조회 결과를 다음 조회의 필수 조건으로 사용할 수 없습니다. 후속 실행으로 분리해야 합니다.",
+            "source_alias": "history_src",
+            "dataset_key": "entity_history",
+            "required_param": "ENTITY_ID",
+            "candidate_source_aliases": ["current_src"],
+        }
+    ]
+
+    gate = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "14a_retrieval_execution_gate.py")
+    blocked = gate.apply_retrieval_execution_gate(
+        {
+            "intent_plan": {"retrieval_jobs": []},
+            "trace": {
+                "inspection": {
+                    "data_retrieval": {
+                        "job_validation": {
+                            "error_count": 1,
+                            "errors": guard["validation_errors"],
+                        }
+                    }
+                }
+            },
+        }
+    )
+    assert blocked["analysis"]["error"]["type"] == "execution_plan_invalid"
+    assert "continuation Flow" in blocked["answer_message"]
+
+
+def test_required_parameter_guard_allows_a_direct_catalog_identifier():
+    """Direct identifier questions remain valid even when the Catalog has a binding."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "entity_history",
+                "payload": {
+                    "required_params": ["ENTITY_ID"],
+                    "source_config": {
+                        "upstream_bindings": [
+                            {
+                                "source_alias": "previous_result",
+                                "source_column": "ENTITY_ID",
+                                "target_param": "ENTITY_ID",
+                            }
+                        ]
+                    },
+                },
+            }
+        ]
+    }
+    guard = normalizer._validate_required_retrieval_parameters(
+        [
+            {
+                "dataset_key": "entity_history",
+                "source_alias": "history_src",
+                "required_params": {"ENTITY_ID": ["E-100"]},
+            }
+        ],
+        candidates,
+        [],
+    )
+
+    assert guard["status"] == "ok"
+    assert guard["validation_errors"] == []
+
+
+def test_normalizer_blocks_same_run_history_handoff_before_any_retrieval():
+    """A two-stage model plan is blocked in Flow 01 instead of reaching pandas."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "domain_items": [],
+        "table_catalog_items": [
+            {
+                "dataset_key": "current_entities",
+                "payload": {"columns": ["ENTITY_ID", "STATUS"]},
+            },
+            {
+                "dataset_key": "entity_history",
+                "payload": {
+                    "columns": ["ENTITY_ID", "EVENT_TIME", "EVENT_CODE"],
+                    "required_params": ["ENTITY_ID"],
+                    "source_config": {
+                        "upstream_bindings": [
+                            {
+                                "source_alias": "previous_result",
+                                "source_column": "ENTITY_ID",
+                                "target_param": "ENTITY_ID",
+                                "operator": "in",
+                            }
+                        ]
+                    },
+                },
+            },
+        ],
+        "main_flow_filters": [],
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "current_entity_history",
+            "retrieval_jobs": [
+                {"dataset_key": "current_entities", "source_alias": "current_src"},
+                {
+                    "dataset_key": "entity_history",
+                    "source_alias": "history_src",
+                    "required_params": {"ENTITY_ID": ""},
+                },
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "filter_current",
+                    "operation": "apply_filters",
+                    "inputs": [{"kind": "external_source", "ref": "current_src"}],
+                    "output_alias": "filtered_current",
+                },
+                {
+                    "node_id": "latest_history",
+                    "operation": "latest_earliest",
+                    "inputs": [{"kind": "external_source", "ref": "history_src"}],
+                    "output_alias": "latest_history",
+                },
+            ],
+            "output_contract": {
+                "result_mode": "detail",
+                "result_columns": ["ENTITY_ID", "EVENT_TIME", "EVENT_CODE"],
+            },
+        }
+    }
+
+    normalized = normalizer.normalize_intent_plan(
+        {"request": {"question": "current entities and their latest history"}},
+        json.dumps(response),
+        candidates,
+    )
+
+    errors = normalized["intent_plan"].get("validation_errors", [])
+    assert any(
+        item.get("type") == "same_run_dependent_retrieval_requires_continuation"
+        and item.get("source_alias") == "history_src"
+        for item in errors
+        if isinstance(item, dict)
+    )
+
+
+def test_terminal_select_projection_owns_detail_display_contract():
+    """A detail projection cannot be blocked by working/default columns it removed."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    contract, trace = normalizer._reconcile_terminal_typed_output_contract(
+        {
+            "result_mode": "detail",
+            "required_columns": ["ENTITY_ID", "STATUS", "INTERNAL_NOTE"],
+            "result_columns": ["ENTITY_ID", "STATUS", "INTERNAL_NOTE"],
+            "metric_columns": ["STATUS"],
+        },
+        [
+            {
+                "node_id": "filter_current",
+                "operation": "apply_filters",
+                "inputs": [{"kind": "external_source", "ref": "current_src"}],
+                "output_alias": "filtered_current",
+            },
+            {
+                "node_id": "select_visible",
+                "operation": "select_columns",
+                "inputs": [{"kind": "node_output", "ref": "filtered_current"}],
+                "output_alias": "visible_current",
+                "projection": ["ENTITY_ID", "STATUS"],
+            },
+        ],
+        {
+            "validation_errors": [],
+            "external_source_requirements": [
+                {"source_alias": "current_src", "provider": "retrieval_job"}
+            ],
+        },
+    )
+
+    assert trace["status"] == "applied"
+    assert trace["terminal_operation"] == "select_columns"
+    assert contract["result_columns"] == ["ENTITY_ID", "STATUS"]
+    assert contract["required_columns"] == ["ENTITY_ID", "STATUS"]
+    assert contract["execution_required_columns"] == ["INTERNAL_NOTE"]
+
+
+def test_metric_binding_lineage_reassigns_unique_join_source_owner():
+    """A join aggregate keeps each metric tied to its actual external source."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": ["EQP_ID", "OPER_NAME", "LEAD"]},
+            },
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {"columns": ["EQP_ID", "OPER_NAME", "UPH"]},
+            },
+        ]
+    }
+    plan = {
+        "pandas_execution_plan": [
+            {
+                "node_id": "join_assign_uph",
+                "operation": "join",
+                "inputs": [
+                    {"kind": "external_source", "ref": "assign_src"},
+                    {"kind": "external_source", "ref": "uph_src"},
+                ],
+                "output_alias": "assign_uph",
+                "left_on": ["EQP_ID", "OPER_NAME"],
+                "right_on": ["EQP_ID", "OPER_NAME"],
+                "right_value_columns": ["UPH"],
+            },
+            {
+                "node_id": "group_by_lead",
+                "operation": "groupby_and_aggregate",
+                "inputs": [{"kind": "node_output", "ref": "assign_uph"}],
+                "output_alias": "lead_summary",
+                "group_by": ["LEAD"],
+                "aggregations": [
+                    {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                    {"column": "UPH", "method": "mean", "output_column": "AVG_UPH"},
+                ],
+            },
+        ]
+    }
+    reconciled = normalizer._reconcile_metric_binding_source_lineage(
+        [
+            {
+                "source_alias": "uph_src",
+                "dataset_key": "eqp_uph",
+                "source_column": "EQP_ID",
+                "aggregation": "nunique",
+                "output_column": "EQP_COUNT",
+            },
+            {
+                "source_alias": "assign_src",
+                "dataset_key": "equipment_assign",
+                "source_column": "UPH",
+                "aggregation": "mean",
+                "output_column": "AVG_UPH",
+            },
+        ],
+        plan,
+        [
+            {"dataset_key": "equipment_assign", "source_alias": "assign_src"},
+            {"dataset_key": "eqp_uph", "source_alias": "uph_src"},
+        ],
+        candidates,
+    )
+
+    assert reconciled[0]["source_alias"] == "assign_src"
+    assert reconciled[0]["dataset_key"] == "equipment_assign"
+    assert reconciled[1]["source_alias"] == "uph_src"
+    assert reconciled[1]["dataset_key"] == "eqp_uph"

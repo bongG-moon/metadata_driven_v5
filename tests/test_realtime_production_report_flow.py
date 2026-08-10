@@ -98,14 +98,6 @@ class Question:
         self.data = {"text": text, "session_id": self.session_id}
 
 
-class FakeStorage:
-    def __init__(self):
-        self.calls = []
-
-    async def save_file(self, **kwargs):
-        self.calls.append(kwargs)
-
-
 def _multi_group_dataset():
     return generator.build_dummy_production_dataset(
         row_count=500,
@@ -304,7 +296,6 @@ def test_missing_process_group_returns_message_without_creating_html():
         },
         dataset_value=_multi_group_dataset(),
     )
-    storage = FakeStorage()
     result = asyncio.run(
         builder.build_realtime_production_report(
             dataset_value=selection,
@@ -312,8 +303,6 @@ def test_missing_process_group_returns_message_without_creating_html():
             max_html_rows=1_000,
             report_api_url="https://reports.example.internal",
             report_ttl_hours=4,
-            flow_id="flow-report",
-            storage_service=storage,
             report_publisher_fn=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not publish")),
             file_token="fixed",
         )
@@ -324,7 +313,6 @@ def test_missing_process_group_returns_message_without_creating_html():
     assert result["status"] == "clarification_required"
     assert result["artifacts"] == []
     assert "공정그룹을 선택해 주세요" in result["message"]
-    assert storage.calls == []
 
 
 def test_dummy_dataset_has_500_rows_and_all_expected_judgements():
@@ -420,15 +408,13 @@ def test_html_contains_four_sections_radio_filters_and_csv_download():
     assert len(document.encode("utf-8")) < builder.MAX_HTML_BYTES
 
 
-def test_report_builds_compact_api_contract_and_saves_once():
+def test_report_builds_compact_mongodb_collection_api_contract_without_langflow_file_copy():
     dataset = generator.build_dummy_production_dataset(
         row_count=500,
         seed=20260727,
         work_date="2026-07-27",
         snapshot_at="2026-07-27T14:30:00+09:00",
     )
-    storage = FakeStorage()
-
     def publish(**kwargs):
         assert "실시간 생산 분석 Report" in kwargs["html_document"]
         return {
@@ -437,6 +423,7 @@ def test_report_builds_compact_api_contract_and_saves_once():
             "download_url": "https://reports.example.internal/reports/download/report-1",
             "expires_at": "2026-07-27T18:30:00+09:00",
             "ttl_hours": 4,
+            "storage_backend": "mongodb_collection",
         }
 
     result = asyncio.run(
@@ -446,8 +433,6 @@ def test_report_builds_compact_api_contract_and_saves_once():
             max_html_rows=1_000,
             report_api_url="https://reports.example.internal",
             report_ttl_hours=4,
-            flow_id="flow-report",
-            storage_service=storage,
             report_publisher_fn=publish,
             file_token="fixed",
         )
@@ -458,12 +443,33 @@ def test_report_builds_compact_api_contract_and_saves_once():
     assert result["success"] is True
     assert result["report_scope"]["case_count"] == 500
     assert result["artifacts"][0]["artifact_type"] == "html_report"
+    assert result["artifacts"][0]["storage_backend"] == "mongodb_collection"
+    assert "path" not in result["artifacts"][0]
     assert result["artifacts"][0]["view_url"].startswith("https://")
     assert "상세 HTML Report 보기" in result["message"]
     assert "rows" not in result
     assert "html" not in result
-    assert len(storage.calls) == 1
-    assert storage.calls[0]["file_name"] == "realtime-production-report-fixed.html"
+
+
+def test_report_api_failure_returns_no_unpublished_local_artifact():
+    dataset = generator.build_dummy_production_dataset(
+        row_count=20,
+        seed=20260727,
+        work_date="2026-07-27",
+    )
+    result = asyncio.run(
+        builder.build_realtime_production_report(
+            dataset_value=dataset,
+            question_value=Question(),
+            report_api_url="https://reports.example.internal",
+            report_publisher_fn=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+            file_token="fixed",
+        )
+    )
+
+    assert result["status"] == "error"
+    assert result["artifacts"] == []
+    assert result["errors"][0]["type"] == "report_api_publish_error"
 
 
 def test_schema_failure_and_terminal_contract_are_deterministic():

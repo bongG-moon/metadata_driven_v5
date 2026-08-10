@@ -118,6 +118,7 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
 
     if blocked:
         message = _blocked_message(critical_failures)
+        execution_plan_only = _execution_plan_only_failures(critical_failures)
         schema_only = bool(critical_failures) and all(
             str(item.get("type") or "") == "source_schema_contract_unresolved"
             for item in critical_failures
@@ -131,7 +132,15 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
             "type": (
                 str(critical_failures[0].get("type") or "metadata_contract_blocked")
                 if metadata_contract_only
-                else ("source_schema_contract_unresolved" if schema_only else "required_source_retrieval_failed")
+                else (
+                    "source_schema_contract_unresolved"
+                    if schema_only
+                    else (
+                        "execution_plan_invalid"
+                        if execution_plan_only
+                        else "required_source_retrieval_failed"
+                    )
+                )
             ),
             "message": message,
             "failures": deepcopy(critical_failures),
@@ -317,6 +326,47 @@ def _blocked_message(failures: list[dict[str, Any]]) -> str:
                     details.append(f"{alias}({', '.join(columns)})")
         suffix = f" 미확정 컬럼: {'; '.join(details)}." if details else ""
         return "필수 실행 컬럼 계약을 확정하지 못해 pandas 분석을 실행하지 않았습니다." + suffix
+    plan_validation_errors = _execution_plan_validation_errors(failures)
+    if any(
+        str(item.get("type") or "")
+        == "same_run_dependent_retrieval_requires_continuation"
+        for item in plan_validation_errors
+    ) and not any(
+        str(item.get("type") or "") in {"source_retrieval_failed", "required_source_result_missing"}
+        for item in failures
+        if isinstance(item, dict)
+    ):
+        return (
+            "첫 조회 결과의 식별자를 다음 조회의 필수 조건으로 사용해야 하는 요청입니다. "
+            "이 Flow는 모든 조회를 먼저 실행하므로, 후속 조회를 지원하는 continuation Flow로 실행해야 합니다."
+        )
+    if _execution_plan_only_failures(failures):
+        if all(
+            str(item.get("type") or "")
+            in {
+                "same_run_dependent_retrieval_requires_continuation",
+                "required_retrieval_parameter_unresolved",
+            }
+            for item in plan_validation_errors
+        ):
+            continuation_required = any(
+                str(item.get("type") or "")
+                == "same_run_dependent_retrieval_requires_continuation"
+                for item in plan_validation_errors
+            )
+            if continuation_required:
+                return (
+                    "분석 계획에서 앞선 조회 결과를 다음 조회의 필수 조건으로 사용하려 했습니다. "
+                    "이 Flow는 모든 조회를 먼저 실행하므로 해당 분석은 후속 실행으로 분리해야 합니다."
+                )
+            return "Table Catalog에서 필수로 지정한 조회 조건 값이 비어 있어 분석을 시작하지 않았습니다."
+        details = _execution_plan_failure_details(failures)
+        suffix = f" 확인 필요: {', '.join(details)}." if details else ""
+        return (
+            "분석 실행 계획의 단계 연결 또는 컬럼 소유권을 확정하지 못해 "
+            "데이터 조회를 시작하지 않았습니다."
+            + suffix
+        )
     aliases = []
     for item in failures:
         alias = str(item.get("source_alias") or item.get("dataset_key") or "").strip()
@@ -324,6 +374,94 @@ def _blocked_message(failures: list[dict[str, Any]]) -> str:
             aliases.append(alias)
     suffix = f" 실패 source: {', '.join(aliases)}." if aliases else ""
     return "필수 데이터 조회에 실패하여 pandas 분석을 실행하지 않았고 모델 응답도 사용하지 않았습니다." + suffix
+
+
+# 함수 설명: 조회 자체의 실패와 실행 계획 연결·컬럼 소유권 검증 실패를 구분합니다.
+def _execution_plan_only_failures(failures: list[dict[str, Any]]) -> bool:
+    """Recognize plan compilation failures without relabeling them as retrieval errors."""
+
+    if not failures:
+        return False
+    allowed_types = {
+        "unresolved_execution_input",
+        "invalid_metric_source_contract",
+        "catalog_metric_ownership_mismatch",
+        "execution_plan_invalid",
+        "same_run_dependent_retrieval_requires_continuation",
+        "required_retrieval_parameter_unresolved",
+    }
+    observed: list[dict[str, Any]] = []
+    for failure in failures:
+        if not isinstance(failure, dict):
+            return False
+        failure_type = str(failure.get("type") or "").strip()
+        if failure_type in allowed_types:
+            observed.append(failure)
+            continue
+        if failure_type != "retrieval_job_validation_failed":
+            return False
+        validation_errors = [
+            item
+            for item in failure.get("validation_errors", [])
+            if isinstance(item, dict)
+        ]
+        if not validation_errors:
+            return False
+        if any(
+            str(item.get("type") or "").strip() not in allowed_types
+            for item in validation_errors
+        ):
+            return False
+        observed.extend(validation_errors)
+    return bool(observed)
+
+
+# 함수 설명: `_execution_plan_validation_errors()`는 중첩된 실행 계획 검증 오류를 하나의 목록으로 펼칩니다.
+def _execution_plan_validation_errors(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten gate failures to their typed plan-validation entries."""
+
+    result: list[dict[str, Any]] = []
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        if str(failure.get("type") or "") == "retrieval_job_validation_failed":
+            result.extend(
+                item
+                for item in failure.get("validation_errors", [])
+                if isinstance(item, dict)
+            )
+        else:
+            result.append(failure)
+    return result
+
+
+# 함수 설명: 실행 계획 오류에서 사용자에게 확인할 단계와 입력 별칭만 추려 반환합니다.
+def _execution_plan_failure_details(failures: list[dict[str, Any]]) -> list[str]:
+    details: list[str] = []
+    for failure in failures:
+        entries = (
+            failure.get("validation_errors", [])
+            if isinstance(failure, dict)
+            and str(failure.get("type") or "").strip()
+            == "retrieval_job_validation_failed"
+            else [failure]
+        )
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            node_id = str(item.get("node_id") or "").strip()
+            reference = str(
+                item.get("node_output_ref") or item.get("source_alias") or ""
+            ).strip()
+            if node_id and reference:
+                detail = f"{node_id} ← {reference}"
+            elif reference:
+                detail = reference
+            else:
+                continue
+            if detail not in details:
+                details.append(detail)
+    return details
 
 
 # 함수 설명: `_first_error_message()`는 source errors 배열에서 첫 번째 사람이 읽을 수 있는 메시지를 반환합니다.

@@ -43,6 +43,29 @@ def test_dataset_selection_assertion_is_validation_only_and_reports_wrong_source
     ]
 
 
+def test_live_manifest_can_declare_a_narrow_equivalent_deterministic_mode():
+    expectation = {
+        "expected_execution_mode": "merge_metric_sources",
+        "expected_execution_modes": [
+            "merge_metric_sources",
+            "execute_typed_pandas_plan",
+        ],
+    }
+
+    assert validator._mode_matches(
+        "execute_typed_pandas_plan",
+        expectation,
+        primary_key="expected_execution_mode",
+        alternatives_key="expected_execution_modes",
+    )
+    assert not validator._mode_matches(
+        "llm_generated_code",
+        expectation,
+        primary_key="expected_execution_mode",
+        alternatives_key="expected_execution_modes",
+    )
+
+
 @pytest.mark.parametrize(
     ("case_id", "route", "analysis_mode", "executor_mode", "pandas_calls"),
     [

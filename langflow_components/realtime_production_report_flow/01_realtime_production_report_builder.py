@@ -17,7 +17,6 @@ import re
 import urllib.error
 import urllib.request
 import uuid
-from importlib import import_module
 from math import pi
 from typing import Any
 from urllib.parse import urlsplit
@@ -32,7 +31,7 @@ CONTRACT_VERSION = "realtime.production.report.v1"
 DATASET_CONTRACT_VERSION = "production.judgement.dataset.v1"
 SELECTION_CONTRACT_VERSION = "production.process_group.selection.v1"
 RULES_VERSION = "realtime.production.report.rules.v1"
-DEFAULT_REPORT_API_URL = "http://127.0.0.1:8765"
+DEFAULT_REPORT_API_URL = "http://127.0.0.1:5000"
 DEFAULT_REPORT_TTL_HOURS = 4
 MAX_REPORT_TTL_HOURS = 24 * 7
 DEFAULT_MAX_HTML_ROWS = 1_000
@@ -857,13 +856,19 @@ def publish_production_report(
         "download_url": download_url,
         "expires_at": _clip(response.get("expires_at"), 80),
         "ttl_hours": _report_ttl_hours(response.get("ttl_hours") or report_ttl_hours),
+        "storage_backend": _clip(
+            (response.get("storage") or {}).get("backend")
+            if isinstance(response.get("storage"), dict)
+            else "mongodb_collection",
+            100,
+        )
+        or "mongodb_collection",
     }
 
 
 # 함수 설명: `_artifact_descriptor()`는 01 실시간 생산 분석 Report 생성기 처리 중 descriptor 관련 값을 계산·변환하는 내부 helper입니다.
 def _artifact_descriptor(
     *,
-    path: str,
     download_name: str,
     size_bytes: int,
     rendered_row_count: int,
@@ -872,7 +877,7 @@ def _artifact_descriptor(
 ) -> dict[str, Any]:
     descriptor = {
         "artifact_type": "html_report",
-        "path": path,
+        "storage_backend": "mongodb_collection",
         "mime_type": "text/html",
         "title": "실시간 생산 분석 Report",
         "download_name": download_name,
@@ -882,7 +887,14 @@ def _artifact_descriptor(
         "rules_version": RULES_VERSION,
     }
     link_data = links if isinstance(links, dict) else {}
-    for key in ("report_id", "view_url", "download_url", "expires_at", "ttl_hours"):
+    for key in (
+        "report_id",
+        "view_url",
+        "download_url",
+        "expires_at",
+        "ttl_hours",
+        "storage_backend",
+    ):
         value = link_data.get(key)
         if value not in (None, ""):
             descriptor[key] = value
@@ -992,8 +1004,6 @@ def build_realtime_production_report(
     max_html_rows: Any = DEFAULT_MAX_HTML_ROWS,
     report_api_url: Any = DEFAULT_REPORT_API_URL,
     report_ttl_hours: Any = DEFAULT_REPORT_TTL_HOURS,
-    flow_id: Any,
-    storage_service: Any,
     report_publisher_fn: Any = None,
     file_token: str = "",
 ):
@@ -1015,43 +1025,35 @@ def build_realtime_production_report(
         encoded = html_document.encode("utf-8")
         if len(encoded) > MAX_HTML_BYTES:
             return _error_result(_issue("html_size_limit_exceeded", f"생성 HTML이 {MAX_HTML_BYTES:,} byte 상한을 초과했습니다."))
-        runtime_flow_id = _text(flow_id)
-        if not runtime_flow_id:
-            return _error_result(_issue("missing_flow_id", "HTML을 저장할 현재 Flow ID를 확인할 수 없습니다."))
-        if storage_service is None or not callable(getattr(storage_service, "save_file", None)):
-            return _error_result(_issue("storage_service_unavailable", "Langflow 파일 저장소를 사용할 수 없습니다."))
         safe_token = re.sub(r"[^a-zA-Z0-9]", "", file_token)[:32] or uuid.uuid4().hex
         download_name = f"realtime-production-report-{safe_token}.html"
-        path = f"{runtime_flow_id}/{download_name}"
+        configured_report_api = _text(report_api_url)
+        if not configured_report_api:
+            return _error_result(
+                _issue(
+                    "report_api_required",
+                    "MongoDB Report API 주소가 비어 있어 HTML을 저장하지 않았습니다.",
+                )
+            )
+        publisher = report_publisher_fn if callable(report_publisher_fn) else publish_production_report
         try:
-            await storage_service.save_file(
-                flow_id=runtime_flow_id,
-                file_name=download_name,
-                data=encoded,
-                append=False,
+            report_links = await asyncio.to_thread(
+                publisher,
+                html_document=html_document,
+                question=question,
+                download_name=download_name,
+                analysis=analysis,
+                report_api_url=configured_report_api,
+                report_ttl_hours=report_ttl_hours,
             )
         except Exception as exc:  # noqa: BLE001
-            return _error_result(_issue("html_storage_error", f"HTML 파일을 저장하지 못했습니다: {exc}"))
-        report_links: dict[str, Any] = {}
-        configured_report_api = _text(report_api_url)
-        if configured_report_api:
-            publisher = report_publisher_fn if callable(report_publisher_fn) else publish_production_report
-            try:
-                report_links = await asyncio.to_thread(
-                    publisher,
-                    html_document=html_document,
-                    question=question,
-                    download_name=download_name,
-                    analysis=analysis,
-                    report_api_url=configured_report_api,
-                    report_ttl_hours=report_ttl_hours,
+            return _error_result(
+                _issue(
+                    "report_api_publish_error",
+                    f"MongoDB Report API에 HTML을 저장하지 못했습니다: {exc}",
                 )
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(_issue("report_api_publish_error", f"HTML은 생성했지만 보기/다운로드 링크를 만들지 못했습니다: {exc}"))
-        else:
-            warnings.append(_issue("report_api_disabled", "Report API 주소가 비어 있어 보기/다운로드 링크를 만들지 않았습니다."))
+            )
         descriptor = _artifact_descriptor(
-            path=path,
             download_name=download_name,
             size_bytes=len(encoded),
             rendered_row_count=len(rendered_rows),
@@ -1059,7 +1061,6 @@ def build_realtime_production_report(
             links=report_links,
         )
         message = _chat_message(analysis, descriptor)
-        status = "ok" if _artifact_links(descriptor) else "partial"
         kpis = {
             "production": analysis["production"],
             "shortage": analysis["shortage"],
@@ -1069,7 +1070,7 @@ def build_realtime_production_report(
         return {
             "contract_version": CONTRACT_VERSION,
             "response_type": "realtime_production_report",
-            "status": status,
+            "status": "ok",
             "success": True,
             "summary": _clip(
                 f"{analysis['scope']['process_group'].get('display_name') or analysis['scope']['process_group'].get('key') or '미지정 그룹'} / "
@@ -1090,19 +1091,10 @@ def build_realtime_production_report(
     return _run()
 
 
-# 함수 설명: `_runtime_storage_service()`는 01 실시간 생산 분석 Report 생성기 처리 중 storage·service 관련 값을 계산·변환하는 내부 helper입니다.
-def _runtime_storage_service() -> Any:
-    try:
-        deps = import_module("lfx.services.deps")
-        return getattr(deps, "get_storage_service")()
-    except Exception:  # noqa: BLE001
-        return None
-
-
 # Langflow 컴포넌트 클래스: 판정 데이터를 규칙 기반으로 집계해 채팅 요약과 독립형 HTML Report를 함께 생성합니다.
 class RealtimeProductionReportBuilder(Component):
     display_name = "01 실시간 생산 분석 Report 생성기"
-    description = "판정 데이터로 채팅 요약과 Radio 필터·CSV 다운로드가 포함된 standalone HTML Report를 만듭니다."
+    description = "판정 데이터로 standalone HTML Report를 만들고 API_SERVER의 단일 MongoDB 컬렉션에 발행합니다."
     name = "RealtimeProductionReportBuilder"
     icon = "ChartPie"
     inputs = [
@@ -1121,8 +1113,8 @@ class RealtimeProductionReportBuilder(Component):
         ),
         MessageTextInput(
             name="report_api_url",
-            display_name="HTML Report API 주소",
-            info="보기·다운로드 절대 URL을 발급하는 서버 주소입니다.",
+            display_name="MongoDB Report API 주소",
+            info="API_SERVER의 POST /reports 주소입니다. HTML과 메타데이터는 하나의 MongoDB 컬렉션에 저장되고 보기·다운로드 URL이 반환됩니다.",
             value=DEFAULT_REPORT_API_URL,
             required=False,
             advanced=False,
@@ -1177,19 +1169,13 @@ class RealtimeProductionReportBuilder(Component):
             max_html_rows=getattr(self, "max_html_rows", DEFAULT_MAX_HTML_ROWS),
             report_api_url=getattr(self, "report_api_url", DEFAULT_REPORT_API_URL),
             report_ttl_hours=getattr(self, "report_ttl_hours", DEFAULT_REPORT_TTL_HOURS),
-            flow_id=getattr(self, "flow_id", ""),
-            storage_service=_runtime_storage_service(),
         )
 
     # 함수 설명: `build_message()`는 구조화 결과를 사용자가 읽을 수 있는 단일 Markdown Message로 변환합니다.
     async def build_message(self) -> Message:
         result = await self._result_once()
         message = Message(text=str(result.get("message") or ""))
-        message.files = [
-            item["path"]
-            for item in result.get("artifacts", [])
-            if isinstance(item, dict) and item.get("path")
-        ]
+        message.files = []
         message.error = str(result.get("status") or "") == "error"
         message.category = "error" if message.error else "message"
         self.status = message

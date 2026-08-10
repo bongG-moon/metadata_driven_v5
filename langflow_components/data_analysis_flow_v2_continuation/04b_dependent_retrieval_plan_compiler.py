@@ -69,6 +69,7 @@ def compile_intent_response(
         dependent = plan.get("dependent_retrieval_plan")
     dataset_scope_reconciliation: dict[str, Any] | None = None
     existence_predicate: dict[str, Any] | None = None
+    flat_latest_selection: dict[str, Any] | None = None
     if not continuation_request:
         plan, dataset_scope_reconciliation = _reconcile_single_source_detail_time_scope(
             plan,
@@ -80,6 +81,16 @@ def compile_intent_response(
             payload,
             metadata_candidates_value,
         )
+        # ``select_extreme_row_per_group`` is a deterministic primitive, not a
+        # policy the model should be allowed to weaken.  A direct history
+        # lookup may legitimately have its required identifier already filled
+        # (rather than needing a new two-stage continuation), so complete only
+        # a unique Catalog recipe's omitted safety fields here.
+        if not isinstance(dependent, dict):
+            plan, flat_latest_selection = _apply_catalog_latest_selection_to_flat_plan(
+                plan,
+                metadata_candidates_value,
+            )
     # A model may describe an already-declared two-stage recipe, but still
     # invent a fragile row-matching or latest-row step.  When the selected
     # recipe, the two dataset keys and the Catalog binding all agree, rebuild
@@ -107,6 +118,26 @@ def compile_intent_response(
         and bool(dependent)
         and not recipe_dependent_canonicalized
     )
+    # A weak model can still emit a two-stage wrapper after a selected recipe
+    # explicitly says that the question does not require its secondary source.
+    # Retain the first stage only when it independently satisfies the original
+    # output contract.  This is a generic metadata activation guard: it does
+    # not inspect dataset names or question-specific business words.
+    if explicit_dependent and not continuation_request:
+        nonactivated_recipe_fallback = _nonactivated_recipe_stage2_fallback(
+            plan,
+            dependent,
+            payload,
+            metadata_candidates_value,
+        )
+        if nonactivated_recipe_fallback is not None:
+            direct_plan, evidence = nonactivated_recipe_fallback
+            return _ignored_dependent_passthrough(
+                envelope,
+                direct_plan,
+                reason="dependent_stage2_not_activated_by_metadata",
+                evidence=evidence,
+            )
     flat_fallback: dict[str, Any] | None = None
     fallback_shape_eligible = (
         explicit_dependent and _explicit_dependency_fallback_shape(dependent)
@@ -237,6 +268,17 @@ def compile_intent_response(
             metadata_candidates_value,
         )
         if not dependent:
+            # A compact flat-model contract may still list both current and
+            # history datasets.  When they exactly match one selected recipe
+            # and the history query has only blank Catalog-required parameters,
+            # rebuild the stages from metadata instead of treating model-owned
+            # latest-row details as executable policy.
+            dependent = _lift_recipe_driven_flat_wrapper(
+                plan,
+                payload,
+                metadata_candidates_value,
+            )
+        if not dependent:
             dependent = _lift_flat_plan_from_catalog(plan, metadata_candidates_value)
         if dependent:
             plan["dependent_retrieval_plan"] = dependent
@@ -262,6 +304,10 @@ def compile_intent_response(
         if dataset_scope_reconciliation is not None:
             passthrough_trace["dataset_scope_reconciliation"] = deepcopy(
                 dataset_scope_reconciliation
+            )
+        if flat_latest_selection and flat_latest_selection.get("status") == "applied":
+            passthrough_trace["catalog_latest_selection"] = deepcopy(
+                flat_latest_selection
             )
         return json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), passthrough_trace
 
@@ -1409,7 +1455,16 @@ def _flatten_independent_dependent_plan(
         if combined:
             result[key] = combined
     result.pop("dependent_retrieval_plan", None)
-    return _independently_complete_flat_plan(result, metadata_candidates_value)
+    # Flattening is a recovery for an untrusted model-authored wrapper.  Unlike
+    # a normal flat plan, it must prove that the *last* typed operation can
+    # actually produce every final contract column.  A global union of columns
+    # from earlier branches would otherwise accept a dangling stage and return
+    # an arbitrary source frame at runtime.
+    return _independently_complete_flat_plan(
+        result,
+        metadata_candidates_value,
+        require_terminal_contract=True,
+    )
 
 
 # 함수 설명: flatten된 최종 metric binding의 stage1 별칭을 stage1 원본 source 계약으로 되돌립니다.
@@ -1601,6 +1656,117 @@ def _has_two_stage_dependent_shape(value: Any) -> bool:
     )
 
 
+# Function description: reject an unactivated recipe-owned second stage only
+# when the verified current stage already covers the complete requested output.
+# The recipe supplies the activation terms and dataset pair; no dataset name or
+# business vocabulary is embedded here.
+def _nonactivated_recipe_stage2_fallback(
+    flat_plan: dict[str, Any],
+    dependent_plan: dict[str, Any],
+    payload_value: Any,
+    metadata_candidates_value: Any,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Project a sufficient current stage when recipe activation is absent."""
+
+    if not _explicit_dependency_fallback_shape(dependent_plan):
+        return None
+    stages = [deepcopy(item) for item in dependent_plan.get("stages", []) if isinstance(item, dict)]
+    if len(stages) != MAX_STAGES:
+        return None
+    first_jobs = [item for item in stages[0].get("retrieval_jobs", []) if isinstance(item, dict)]
+    second_jobs = [item for item in stages[1].get("retrieval_jobs", []) if isinstance(item, dict)]
+    if len(first_jobs) != 1 or len(second_jobs) != 1:
+        return None
+    first_dataset = str(first_jobs[0].get("dataset_key") or "").strip()
+    second_dataset = str(second_jobs[0].get("dataset_key") or "").strip()
+    if not first_dataset or not second_dataset:
+        return None
+
+    metadata_refs = flat_plan.get("metadata_refs") if isinstance(flat_plan.get("metadata_refs"), list) else []
+    recipes = _domain_items_by_ref(metadata_candidates_value)
+    matched: list[tuple[tuple[str, str], dict[str, Any], list[str]]] = []
+    for reference in metadata_refs:
+        if not isinstance(reference, dict):
+            continue
+        section = _normalized_section(reference.get("section") or reference.get("type"))
+        key = str(reference.get("key") or "").strip()
+        recipe = recipes.get((section, key)) if section == "analysis_recipes" and key else None
+        if not isinstance(recipe, dict):
+            continue
+        current_selection = recipe.get("current_selection")
+        history_selection = recipe.get("history_selection")
+        activation = recipe.get("dependent_selection")
+        if not (
+            isinstance(current_selection, dict)
+            and isinstance(history_selection, dict)
+            and isinstance(activation, dict)
+        ):
+            continue
+        if str(activation.get("current_stage") or "").strip() != "current_selection":
+            continue
+        if str(activation.get("next_stage") or "").strip() != "history_selection":
+            continue
+        terms = _strings(activation.get("when_question_includes_any"))
+        if not terms:
+            continue
+        if (
+            str(current_selection.get("dataset_key") or "").strip() != first_dataset
+            or str(history_selection.get("dataset_key") or "").strip() != second_dataset
+        ):
+            continue
+        matched.append(((section, key), current_selection, terms))
+    if len(matched) != 1:
+        return None
+
+    payload = _payload(payload_value)
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    question = str(request.get("question") or payload.get("question") or "").strip().casefold()
+    recipe_ref, current_selection, activation_terms = matched[0]
+    matched_terms = [term for term in activation_terms if term.casefold() in question]
+    if matched_terms:
+        return None
+
+    # Do not downgrade a request when the current Catalog cannot provide every
+    # requested output, or the stage itself only prepared a handoff.  In those
+    # cases the ordinary dependent-plan validation remains fail-closed.
+    requested_columns = _contract_result_columns(
+        flat_plan.get("output_contract") if isinstance(flat_plan.get("output_contract"), dict) else {}
+    )
+    stage_columns = _contract_result_columns(
+        stages[0].get("output_contract") if isinstance(stages[0].get("output_contract"), dict) else {}
+    )
+    catalogs = _catalog_by_dataset(metadata_candidates_value)
+    current_catalog = catalogs.get(first_dataset)
+    current_columns = set(_catalog_canonical_columns(current_catalog)) if isinstance(current_catalog, dict) else set()
+    if (
+        not requested_columns
+        or not set(requested_columns).issubset(current_columns)
+        or not set(requested_columns).issubset(set(stage_columns))
+    ):
+        return None
+
+    stage1 = deepcopy(stages[0])
+    _normalize_stage_node_aliases(stage1)
+    projected = deepcopy(flat_plan)
+    _project_stage(projected, stage1)
+    projected.pop("dependent_retrieval_plan", None)
+    complete = _independently_complete_flat_plan(projected, metadata_candidates_value)
+    if complete is None:
+        return None
+    return complete, {
+        "policy": "recipe_activation_and_current_stage_sufficiency",
+        "metadata_ref": {"section": recipe_ref[0], "key": recipe_ref[1]},
+        "activation_terms": activation_terms,
+        "matched_terms": [],
+        "retained_dataset": first_dataset,
+        "discarded_dataset": second_dataset,
+        "requested_columns": requested_columns,
+        "current_selection": {
+            "dataset_key": str(current_selection.get("dataset_key") or "").strip(),
+        },
+    }
+
+
 # 함수 설명: Catalog로 증명된 stage2라도 선택 근거와 요청 출력 증거가 없으면 완전한 stage1 계획으로 축소합니다.
 def _catalog_unselected_stage2_fallback(
     flat_plan: dict[str, Any],
@@ -1786,6 +1952,8 @@ def _prune_unreachable_flat_branches(
 def _independently_complete_flat_plan(
     plan: dict[str, Any],
     metadata_candidates_value: Any,
+    *,
+    require_terminal_contract: bool = False,
 ) -> dict[str, Any] | None:
     working_plan, _ = _prune_unreachable_flat_branches(plan)
     steps = [deepcopy(item) for item in working_plan.get("pandas_execution_plan", []) if isinstance(item, dict)]
@@ -1862,11 +2030,121 @@ def _independently_complete_flat_plan(
     available_columns.update(_flat_derived_columns(steps, output_contract))
     if any(column not in available_columns for column in output_columns):
         return None
+    if require_terminal_contract and not _terminal_flat_output_contract_reachable(
+        steps,
+        kept_jobs,
+        catalogs,
+        output_columns,
+    ):
+        return None
 
     result = deepcopy(working_plan)
     result["retrieval_jobs"] = kept_jobs
     result.pop("dependent_retrieval_plan", None)
     return result
+
+
+# 함수 설명: flatten recovery가 마지막 typed step에서 최종 결과 계약의 모든 컬럼을 실제로 만들 수 있는지 정적으로 증명합니다.
+def _terminal_flat_output_contract_reachable(
+    steps: list[dict[str, Any]],
+    jobs: list[dict[str, Any]],
+    catalogs: dict[str, dict[str, Any]],
+    output_columns: list[str],
+) -> bool:
+    """Prove a flattened recovery DAG reaches its final output contract.
+
+    This intentionally understands only the narrow deterministic Typed-IR
+    operations.  It is used for an untrusted two-stage-to-flat recovery, not
+    for ordinary plans; unknown transformations therefore remain on their
+    established execution path instead of being guessed here.
+    """
+
+    frames: dict[str, set[str]] = {}
+    for job in jobs:
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        alias = str(job.get("source_alias") or dataset_key).strip()
+        catalog = catalogs.get(dataset_key)
+        columns = set(_catalog_canonical_columns(catalog)) if isinstance(catalog, dict) else set()
+        if not alias or not columns or alias in frames:
+            return False
+        frames[alias] = columns
+        frames.setdefault(dataset_key, columns)
+
+    terminal_columns: set[str] = set()
+    for index, step in enumerate(steps):
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        node_id = str(step.get("node_id") or "").strip()
+        output_alias = str(step.get("output_alias") or node_id).strip()
+        inputs = [item for item in step.get("inputs", []) if isinstance(item, dict)]
+        if not operation or not node_id or not output_alias or not inputs:
+            return False
+        input_columns: list[set[str]] = []
+        for item in inputs:
+            reference = str(item.get("ref") or "").strip()
+            # References must be real external frames or outputs from an
+            # earlier step.  A later alias is not an executable provider.
+            if not reference or reference not in frames:
+                return False
+            input_columns.append(set(frames[reference]))
+
+        if operation in {"apply_filters", "apply_row_match_groups"}:
+            produced = input_columns[0]
+        elif operation == "select_columns":
+            projection = set(_strings(step.get("projection") or step.get("columns")))
+            if not projection or not projection.issubset(input_columns[0]):
+                return False
+            produced = projection
+        elif operation in {"groupby_and_aggregate", "aggregate_single_source"}:
+            group_by = set(_strings(step.get("group_by") or step.get("group_by_columns")))
+            aggregations = [item for item in step.get("aggregations", []) if isinstance(item, dict)]
+            aggregate_sources = {
+                str(item.get("column") or item.get("source_column") or "").strip()
+                for item in aggregations
+            }
+            aggregate_outputs = {
+                str(item.get("output_column") or "").strip()
+                for item in aggregations
+            }
+            if (
+                not aggregations
+                or "" in aggregate_sources
+                or "" in aggregate_outputs
+                or not group_by.issubset(input_columns[0])
+                or not aggregate_sources.issubset(input_columns[0])
+            ):
+                return False
+            produced = group_by | aggregate_outputs
+        elif operation == "sort_and_top_n":
+            sort_by = str(step.get("sort_by") or "").strip()
+            if not sort_by or sort_by not in input_columns[0]:
+                return False
+            produced = input_columns[0]
+        elif operation in {"join", "left_join", "merge", "outer_join"}:
+            if len(input_columns) != 2:
+                return False
+            # The normalizer may materialize a shared grain into explicit join
+            # keys later.  For recovery safety we only prove the declared
+            # source lineage and output availability here.
+            produced = input_columns[0] | input_columns[1]
+        elif operation in {"distinct_values", "project_single_source"}:
+            projection = set(
+                _strings(step.get("group_by") or step.get("projection") or step.get("columns"))
+            )
+            if not projection or not projection.issubset(input_columns[0]):
+                return False
+            produced = projection
+        else:
+            return False
+
+        # A collision with a source alias can make a later reference resolve
+        # to the wrong frame.  Normalized stage plans should never do this.
+        if node_id in frames or output_alias in frames:
+            return False
+        frames[node_id] = produced
+        frames[output_alias] = produced
+        terminal_columns = produced
+
+    return bool(terminal_columns) and set(output_columns).issubset(terminal_columns)
 
 
 # 함수 설명: flat step이 외부 source 또는 앞선 node output을 참조하는 모든 식별자를 수집합니다.
@@ -2285,6 +2563,276 @@ def _lift_recipe_driven_dependent_plan(
             },
         ],
     }
+
+
+# 함수 설명: 모델이 current/history 두 dataset을 flat 계획에 함께 적어도 선택 recipe가 완전히 증명되면 metadata-owned 2단계 계약으로 다시 만듭니다.
+# 함수 설명: direct history lookup의 latest-row safety field가 빠졌을 때 유일한 Catalog recipe에서만 Typed primitive 계약을 보완합니다.
+def _apply_catalog_latest_selection_to_flat_plan(
+    plan_value: dict[str, Any],
+    metadata_candidates_value: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Complete omitted latest-row fields from one structured history recipe.
+
+    This is intentionally independent of any dataset or Korean/English query
+    phrase.  It applies only when one candidate recipe owns the retrieved
+    history dataset, its selection fields are internally complete, and the
+    model did not explicitly contradict them.  A direct identifier lookup is
+    still a single query; it does not become a continuation merely because
+    the same Catalog also supports upstream binding.
+    """
+
+    plan = deepcopy(plan_value)
+    jobs = [item for item in plan.get("retrieval_jobs", []) if isinstance(item, dict)]
+    steps = [item for item in plan.get("pandas_execution_plan", []) if isinstance(item, dict)]
+    if not jobs or not steps:
+        return plan, {"status": "not_needed", "applied": [], "conflicts": []}
+
+    aliases = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip(): str(
+            job.get("dataset_key") or ""
+        ).strip()
+        for job in jobs
+        if str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        and str(job.get("dataset_key") or "").strip()
+    }
+    output_to_step: dict[str, dict[str, Any]] = {}
+    for step in steps:
+        for field_name in ("node_id", "output_alias", "result_alias"):
+            key = str(step.get(field_name) or "").strip()
+            if key:
+                output_to_step[key] = step
+
+    def source_dataset(step: dict[str, Any], visited: set[str] | None = None) -> str:
+        source_alias = str(step.get("source_alias") or "").strip()
+        if source_alias in aliases:
+            return aliases[source_alias]
+        seen = visited or set()
+        for item in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            reference = str(item.get("ref") or "").strip()
+            if reference in aliases:
+                return aliases[reference]
+            predecessor = output_to_step.get(reference)
+            if predecessor is not None and reference not in seen:
+                resolved = source_dataset(predecessor, {*seen, reference})
+                if resolved:
+                    return resolved
+        return ""
+
+    recipe_candidates: dict[str, list[tuple[tuple[str, str], dict[str, Any], dict[str, Any]]]] = {}
+    catalogs = _catalog_by_dataset(metadata_candidates_value)
+    for ref, recipe in _domain_items_by_ref(metadata_candidates_value).items():
+        if ref[0] != "analysis_recipes":
+            continue
+        history = recipe.get("history_selection") if isinstance(recipe.get("history_selection"), dict) else {}
+        latest = history.get("latest_per_group") if isinstance(history.get("latest_per_group"), dict) else {}
+        dataset_key = str(history.get("dataset_key") or "").strip()
+        partition_by = _strings(latest.get("partition_by"))
+        order_by = [deepcopy(item) for item in latest.get("order_by", []) if isinstance(item, dict)]
+        result_columns = _strings(history.get("result_columns"))
+        if not dataset_key or not partition_by or not order_by or not result_columns:
+            continue
+        try:
+            limit_per_group = int(latest.get("limit_per_group") or 1)
+        except (TypeError, ValueError):
+            continue
+        tie_policy = str(latest.get("tie_policy") or "error").strip().lower()
+        if limit_per_group != 1 or tie_policy not in {"first", "include_all", "error"}:
+            continue
+        if tie_policy == "first" and not [item for item in latest.get("tie_breakers", []) if isinstance(item, dict)]:
+            continue
+        catalog = catalogs.get(dataset_key)
+        allowed_columns = set(_catalog_canonical_columns(catalog)) if isinstance(catalog, dict) else set()
+        source_columns = _strings(
+            [
+                *partition_by,
+                *result_columns,
+                *[item.get("column") for item in order_by],
+                *[
+                    item.get("column")
+                    for item in latest.get("tie_breakers", [])
+                    if isinstance(item, dict)
+                ],
+            ]
+        )
+        if not allowed_columns or any(column not in allowed_columns for column in source_columns):
+            continue
+        recipe_candidates.setdefault(dataset_key, []).append((ref, history, latest))
+
+    applied: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    accepted_operations = {
+        "select_extreme_row_per_group",
+        # ``latest_earliest`` is a legacy generic Typed-IR shorthand.  It
+        # becomes the strict per-group primitive only when the unique recipe
+        # below proves the complete semantics; otherwise it keeps its normal
+        # established execution path.
+        "latest_earliest",
+    }
+    for step in steps:
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation not in accepted_operations:
+            continue
+        dataset_key = source_dataset(step)
+        matches = recipe_candidates.get(dataset_key, [])
+        if len(matches) != 1:
+            continue
+        ref, history, latest = matches[0]
+        partition_by = _strings(latest.get("partition_by"))
+        order_by = [deepcopy(item) for item in latest.get("order_by", []) if isinstance(item, dict)]
+        tie_breakers = [
+            deepcopy(item)
+            for item in latest.get("tie_breakers", [])
+            if isinstance(item, dict)
+        ]
+        expected_limit = int(latest.get("limit_per_group") or 1)
+        expected_policy = str(latest.get("tie_policy") or "error").strip().lower()
+        existing_partition = _strings(step.get("partition_by"))
+        existing_order = [item for item in step.get("order_by", []) if isinstance(item, dict)]
+        existing_breakers = [item for item in step.get("tie_breakers", []) if isinstance(item, dict)]
+        existing_limit = step.get("limit_per_group")
+        existing_policy = str(step.get("tie_policy") or "").strip().lower()
+        try:
+            has_conflicting_limit = (
+                existing_limit not in (None, "")
+                and int(existing_limit) != expected_limit
+            )
+        except (TypeError, ValueError):
+            has_conflicting_limit = True
+        conflicts_found = (
+            (existing_partition and existing_partition != partition_by)
+            or (existing_order and _canonical_json(existing_order) != _canonical_json(order_by))
+            or (existing_breakers and _canonical_json(existing_breakers) != _canonical_json(tie_breakers))
+            or has_conflicting_limit
+            or (existing_policy and existing_policy != expected_policy)
+        )
+        if conflicts_found:
+            conflicts.append(
+                {
+                    "node_id": str(step.get("node_id") or "").strip(),
+                    "dataset_key": dataset_key,
+                    "metadata_ref": {"section": ref[0], "key": ref[1]},
+                }
+            )
+            continue
+        history_params = (
+            history.get("required_params")
+            if isinstance(history.get("required_params"), dict)
+            else {}
+        )
+        required_param_names = _strings(list(history_params))
+        projection = _strings(
+            [
+                *(step.get("projection", []) if isinstance(step.get("projection"), list) else []),
+                *_strings(history.get("result_columns")),
+                *required_param_names,
+                *partition_by,
+                *[item.get("column") for item in order_by],
+                *[item.get("column") for item in tie_breakers],
+            ]
+        )
+        if not projection:
+            continue
+        step["partition_by"] = partition_by
+        step["order_by"] = order_by
+        step["tie_breakers"] = tie_breakers
+        step["limit_per_group"] = expected_limit
+        step["tie_policy"] = expected_policy
+        step["projection"] = projection
+        step["strict"] = True
+        step["operation"] = "select_extreme_row_per_group"
+        applied.append(
+            {
+                "node_id": str(step.get("node_id") or "").strip(),
+                "dataset_key": dataset_key,
+                "metadata_ref": {"section": ref[0], "key": ref[1]},
+            }
+        )
+    plan["pandas_execution_plan"] = steps
+    return plan, {
+        "status": "applied" if applied else "conflict" if conflicts else "not_needed",
+        "applied": applied,
+        "conflicts": conflicts,
+    }
+
+
+# 함수 설명: 모델이 current/history 두 dataset을 flat 계획에 함께 적어도 선택 recipe가 완전히 증명되면 metadata-owned 2단계 계약으로 다시 만듭니다.
+def _lift_recipe_driven_flat_wrapper(
+    plan_value: dict[str, Any],
+    payload_value: Any,
+    metadata_candidates_value: Any,
+) -> dict[str, Any]:
+    """Recover only a recipe-owned two-source flat wrapper.
+
+    The intent model is deliberately not asked to author a continuation IR.
+    Some models still include both datasets in a flat plan.  This helper keeps
+    that output safe only when one selected structured recipe proves the exact
+    current/history pair and the history source genuinely needs a value from
+    the current result.  The underlying recipe compiler then owns all latest
+    selection, strictness and join details.
+    """
+
+    plan = deepcopy(plan_value)
+    jobs = [deepcopy(item) for item in plan.get("retrieval_jobs", []) if isinstance(item, dict)]
+    if len(jobs) != MAX_STAGES:
+        return {}
+    domain_items = _domain_items_by_ref(metadata_candidates_value)
+    refs = plan.get("metadata_refs") if isinstance(plan.get("metadata_refs"), list) else []
+    matched: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        section = _normalized_section(ref.get("section") or ref.get("type"))
+        key = str(ref.get("key") or "").strip()
+        recipe = domain_items.get((section, key)) if section == "analysis_recipes" and key else None
+        if not isinstance(recipe, dict):
+            continue
+        current_selection = recipe.get("current_selection")
+        history_selection = recipe.get("history_selection")
+        if not isinstance(current_selection, dict) or not isinstance(history_selection, dict):
+            continue
+        current_dataset = str(current_selection.get("dataset_key") or "").strip()
+        history_dataset = str(history_selection.get("dataset_key") or "").strip()
+        current_jobs = [
+            job
+            for job in jobs
+            if str(job.get("dataset_key") or "").strip() == current_dataset
+        ]
+        history_jobs = [
+            job
+            for job in jobs
+            if str(job.get("dataset_key") or "").strip() == history_dataset
+        ]
+        if len(current_jobs) == 1 and len(history_jobs) == 1:
+            matched.append((current_jobs[0], history_jobs[0]))
+    if len(matched) != 1:
+        return {}
+
+    current_job, history_job = matched[0]
+    catalogs = _catalog_by_dataset(metadata_candidates_value)
+    history_dataset = str(history_job.get("dataset_key") or "").strip()
+    history_catalog = catalogs.get(history_dataset)
+    if not isinstance(history_catalog, dict):
+        return {}
+    history_params = (
+        history_job.get("required_params")
+        if isinstance(history_job.get("required_params"), dict)
+        else {}
+    )
+    required_params = _catalog_required_params(history_catalog)
+    # A direct parameter value is an ordinary single-query request, not a
+    # permission to replace it with prior-result data.
+    if not required_params or any(not _blank(history_params.get(name)) for name in required_params):
+        return {}
+
+    seed = deepcopy(plan)
+    seed["retrieval_jobs"] = [current_job]
+    return _lift_recipe_driven_dependent_plan(
+        seed,
+        payload_value,
+        metadata_candidates_value,
+    )
 
 
 # Function description: an explicit two-stage model plan may name the same

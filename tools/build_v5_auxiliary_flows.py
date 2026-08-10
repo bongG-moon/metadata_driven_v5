@@ -638,7 +638,7 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
         FLOW_DISPLAY_NAMES["realtime_production_report"],
         "Realtime production report flow with Domain process-group catalog grounding, native LLM group selection, deterministic evidence validation and row filtering, clarification without HTML when no group is specified, and four fixed report sections.",
         "metadata-driven-v5-realtime-production-report",
-        ["v5", "standalone", "realtime-production", "process-group", "dummy-data", "html-report", "report-api"],
+        ["v5", "standalone", "realtime-production", "process-group", "dummy-data", "html-report", "report-api", "mongodb-collection"],
     )
     folder = COMPONENT_ROOT / "realtime_production_report_flow"
     chat = native_node(proto["chat_input"], "ChatInput-realtime-production-report", 0, -180)
@@ -696,7 +696,7 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
         0,
     )
     report_template = report["data"]["node"]["template"]
-    _set_value(report_template, "report_api_url", "http://127.0.0.1:8765")
+    _set_value(report_template, "report_api_url", "http://127.0.0.1:5000")
     _set_value(report_template, "report_ttl_hours", "4")
     _set_value(report_template, "max_html_rows", "1000")
     output = native_node(proto["chat_output"], "ChatOutput-realtime-production-report", 2390, -130)

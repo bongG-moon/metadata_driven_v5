@@ -122,7 +122,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     continuation_rules_component = continuation_rules_node["data"]["node"]
     continuation_rules_component["display_name"] = "03A Continuation 계획 규칙"
     continuation_rules_component["description"] = (
-        "Catalog 근거가 있는 최대 2단계 종속 조회의 Typed IR 작성 규칙을 intent prompt에 제공합니다."
+        "의도 LLM에는 flat 조회 계획만 요청하고, Catalog 기반 종속 조회 계약은 뒤의 컴파일러가 결정하도록 안내합니다."
     )
     continuation_rules_component["template"]["input_value"]["value"] = continuation_rules
     continuation_rules_component["template"]["input_value"]["display_name"] = "Continuation 계획 규칙"

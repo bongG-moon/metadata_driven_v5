@@ -331,13 +331,13 @@ RECIPE 번호를 완전히 똑같은 값으로만 찾지 말고, 항상 해당 �
 
 HOLD LOT와 HOLD 이력 조회 규칙을 등록해줘.
 현재 HOLD LOT를 물어보면 현재 HOLD 중인 LOT 목록을 보여줘.
-사용자가 “HOLD 된 LOT ID 알려줘”처럼 LOT 목록이나 LOT ID만 물으면 현재 상태만 조회해줘. HOLD 이력까지 조회하지 마.
-사용자가 “현재 HOLD LOT와 HOLD 사유”, “HOLD 코드”, “HOLD 상세 사유”, “최근 HOLD 이력”을 함께 물으면 먼저 현재 HOLD LOT를 찾고, 그 LOT 번호들을 이용해서 각 LOT의 가장 최근 HOLD 이력을 조회해줘.
+사용자가 “HOLD 된 LOT ID 알려줘”, “현재 HOLD LOT과 HOLD 코드 알려줘”처럼 현재 상태나 HOLD 코드만 물으면 lot_status만 조회해줘. HOLD 이력까지 조회하지 마.
+사용자가 “현재 HOLD LOT와 HOLD 상세 사유”, “HOLD 발생 시각”, “최근 HOLD 이력”을 함께 물으면 먼저 현재 HOLD LOT를 찾고, 그 LOT 번호들을 이용해서 각 LOT의 가장 최근 HOLD 이력을 조회해줘.
 
 가장 최근 이력은 LOT별로 HOLD 시간이 가장 최신인 한 건만 보여줘.
 결과에는 LOT ID, 공정, HOLD 시간, HOLD 코드, HOLD 상세 사유를 보여줘.
 HOLD 이력이 없는 LOT는 임의의 다른 사유를 보여주지 말고 이력이 없다고 표시해줘.
-질문에 HOLD라는 단어가 있다고 해서 무조건 HOLD 이력을 조회하지 말고, 단순 LOT 목록인지 사유·코드·이력 요청인지 구분해줘.
+질문에 HOLD라는 단어가 있다고 해서 무조건 HOLD 이력을 조회하지 말고, 단순 LOT 목록·현재 상태·HOLD 코드 요청인지, 상세 사유·발생 시각·이력 요청인지 구분해줘.
 
 
 
