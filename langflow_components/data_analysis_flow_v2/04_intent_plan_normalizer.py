@@ -382,13 +382,25 @@ def normalize_intent_plan(
         ),
         align_explicit_scope=not _has_ordered_process_range_case(plan),
     )
-    if post_business_process_group_guard.get("corrections"):
+    if (
+        post_business_process_group_guard.get("corrections")
+        or post_business_process_group_guard.get("non_applicable_filters")
+    ):
         process_group_field_guard = {
             **process_group_field_guard,
             "status": "applied",
             "corrections": [
                 *(process_group_field_guard.get("corrections") or []),
                 *(post_business_process_group_guard.get("corrections") or []),
+            ],
+            "non_applicable_filters": [
+                *(process_group_field_guard.get("non_applicable_filters") or []),
+                *(
+                    post_business_process_group_guard.get(
+                        "non_applicable_filters"
+                    )
+                    or []
+                ),
             ],
             "value_alignment_mode": post_business_process_group_guard.get(
                 "value_alignment_mode",
@@ -5484,9 +5496,26 @@ def _validate_process_scope_contract(
         str(contract.get("field") or "OPER_NAME").strip().casefold()
         for contract in contracts
     }
+    dependent_scope_aliases = _dependent_process_scope_aliases(pandas_plan or [])
+    process_capable_aliases: set[str] = set()
+    non_applicable_source_aliases: set[str] = set()
+    direct_source_aliases: set[str] = set()
     for job in retrieval_jobs:
         if not isinstance(job, dict):
             continue
+        source_alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        if source_alias:
+            direct_source_aliases.add(source_alias)
+        supports_process_scope = any(
+            _catalog_supports_domain_column(candidates, dataset_key, field)
+            for field in process_fields
+        )
+        if supports_process_scope:
+            if source_alias:
+                process_capable_aliases.add(source_alias)
+        elif source_alias:
+            non_applicable_source_aliases.add(source_alias)
         for field, condition in _filter_field_entries(job.get("filters")):
             if str(field).strip().casefold() not in process_fields:
                 continue
@@ -5495,20 +5524,31 @@ def _validate_process_scope_contract(
                 continue
             matched_filter = True
             covered.update(value.casefold() for value in values)
-            scoped_aliases.add(
-                str(job.get("source_alias") or job.get("dataset_key") or "").strip()
-            )
+            if source_alias:
+                scoped_aliases.add(source_alias)
     missing = sorted(requested_keys - covered)
-    dependent_scope_aliases = _dependent_process_scope_aliases(pandas_plan or [])
-    unscoped_aliases = [
-        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
-        for job in retrieval_jobs
-        if isinstance(job, dict)
-        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
-        not in scoped_aliases
-        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
-        not in dependent_scope_aliases
-    ]
+    unscoped_aliases = sorted(
+        process_capable_aliases - scoped_aliases - dependent_scope_aliases
+    )
+    # If no selected source can express the requested process field, do not
+    # silently broaden the analysis.  The caller receives a semantic scope
+    # error rather than a later "missing physical column" failure.
+    non_dependent_aliases = direct_source_aliases - dependent_scope_aliases
+    if not process_capable_aliases and non_dependent_aliases:
+        error = {
+            "type": "process_scope_not_supported_by_selected_sources",
+            "message": "질문에 요청된 공정 조건을 적용할 수 있는 Table Catalog source가 없습니다.",
+            "requested_processes": requested,
+            "unscoped_sources": sorted(non_dependent_aliases),
+            "non_applicable_sources": sorted(non_applicable_source_aliases),
+        }
+        return {
+            "status": "error",
+            "requested_processes": requested,
+            "unscoped_sources": sorted(non_dependent_aliases),
+            "non_applicable_sources": sorted(non_applicable_source_aliases),
+            "validation_errors": [error],
+        }
     if unscoped_aliases:
         error = {
             "type": "process_scope_incomplete",
@@ -5517,6 +5557,7 @@ def _validate_process_scope_contract(
             "covered_processes": sorted(covered),
             "missing_processes": missing,
             "unscoped_sources": unscoped_aliases,
+            "non_applicable_sources": sorted(non_applicable_source_aliases),
         }
         return {
             "status": "error",
@@ -5524,6 +5565,7 @@ def _validate_process_scope_contract(
             "covered_processes": sorted(covered),
             "missing_processes": missing,
             "unscoped_sources": unscoped_aliases,
+            "non_applicable_sources": sorted(non_applicable_source_aliases),
             "validation_errors": [error],
         }
     # A dependent history/detail source can be scoped by the previous result's
@@ -5544,12 +5586,14 @@ def _validate_process_scope_contract(
                 "covered_processes": sorted(covered),
                 "missing_processes": missing,
                 "dependent_scope_sources": sorted(dependent_scope_aliases & job_aliases),
+                "non_applicable_sources": sorted(non_applicable_source_aliases),
                 "validation_errors": [],
             }
     if alignment.get("has_disjoint_scopes"):
         return {
             "status": "disjoint_scopes_allowed",
             "requested_processes": requested,
+            "non_applicable_sources": sorted(non_applicable_source_aliases),
             "validation_errors": [],
         }
     if not missing:
@@ -5557,6 +5601,7 @@ def _validate_process_scope_contract(
             "status": "complete",
             "requested_processes": requested,
             "covered_processes": sorted(covered),
+            "non_applicable_sources": sorted(non_applicable_source_aliases),
             "validation_errors": [],
         }
     error = {
@@ -5565,12 +5610,14 @@ def _validate_process_scope_contract(
         "requested_processes": requested,
         "covered_processes": sorted(covered),
         "missing_processes": missing,
+        "non_applicable_sources": sorted(non_applicable_source_aliases),
     }
     return {
         "status": "error",
         "requested_processes": requested,
         "covered_processes": sorted(covered),
         "missing_processes": missing,
+        "non_applicable_sources": sorted(non_applicable_source_aliases),
         "validation_errors": [error],
     }
 
@@ -6960,6 +7007,15 @@ def _apply_process_group_filter_fields(
 
     normalized_jobs: list[Any] = []
     corrections: list[dict[str, Any]] = []
+    # A process-group condition is meaningful only for a source whose trusted
+    # Table Catalog exposes the group's canonical field.  In a multi-source
+    # comparison, applying an OPER_NAME condition to every source turns an
+    # otherwise valid plan/target source into an impossible schema contract.
+    # Keep the condition on compatible sources and record the intentionally
+    # non-applicable source instead of treating a missing physical column as a
+    # generic schema failure.  This is deliberately limited to recognized
+    # process-group conditions; arbitrary user filters still fail closed.
+    non_applicable_filters: list[dict[str, Any]] = []
     for item in retrieval_jobs:
         if not isinstance(item, dict):
             normalized_jobs.append(deepcopy(item))
@@ -7037,6 +7093,27 @@ def _apply_process_group_filter_fields(
                     condition,
                     contracts,
                 )
+                if canonical_field and not _catalog_supports_domain_column(
+                    metadata_candidates,
+                    str(job.get("dataset_key") or "").strip(),
+                    canonical_field,
+                ):
+                    original_key = str(raw_field)
+                    original_value = normalized_filters.pop(
+                        original_key,
+                        deepcopy(condition),
+                    )
+                    non_applicable_filters.append(
+                        {
+                            "source_alias": alias,
+                            "dataset_key": str(job.get("dataset_key") or "").strip(),
+                            "field": canonical_field,
+                            "condition": original_value,
+                            "process_group_keys": group_keys,
+                            "reason": "process_scope_field_not_supported_by_catalog",
+                        }
+                    )
+                    continue
                 if not canonical_field or _normalized_column_key(raw_field) == _normalized_column_key(canonical_field):
                     continue
                 original_key = str(raw_field)
@@ -7104,6 +7181,22 @@ def _apply_process_group_filter_fields(
                         condition,
                         contracts,
                     )
+                    if canonical_field and not _catalog_supports_domain_column(
+                        metadata_candidates,
+                        str(job.get("dataset_key") or "").strip(),
+                        canonical_field,
+                    ):
+                        non_applicable_filters.append(
+                            {
+                                "source_alias": alias,
+                                "dataset_key": str(job.get("dataset_key") or "").strip(),
+                                "field": canonical_field,
+                                "condition": deepcopy(normalized),
+                                "process_group_keys": group_keys,
+                                "reason": "process_scope_field_not_supported_by_catalog",
+                            }
+                        )
+                        continue
                     if canonical_field and _normalized_column_key(raw_field) != _normalized_column_key(canonical_field):
                         normalized["field"] = canonical_field
                         normalized.pop("column", None)
@@ -7119,15 +7212,17 @@ def _apply_process_group_filter_fields(
             job["filters"] = normalized_filters
         normalized_jobs.append(job)
 
+    normalized_alignment_scope = _process_filter_alignment_scope(normalized_jobs)
     return normalized_jobs, {
-        "status": "applied" if corrections else "not_needed",
+        "status": "applied" if corrections or non_applicable_filters else "not_needed",
         "corrections": corrections,
+        "non_applicable_filters": non_applicable_filters,
         "value_alignment_mode": (
             "preserve_distinct_job_scopes"
             if preserve_distinct_job_scopes
             else "question_scope_alignment"
         ),
-        "job_process_scopes": alignment_scope["job_process_scopes"],
+        "job_process_scopes": normalized_alignment_scope["job_process_scopes"],
     }
 
 

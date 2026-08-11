@@ -6550,6 +6550,175 @@ def test_effective_filters_follow_the_unique_retrieval_source_alias_after_proces
     }
 
 
+def test_process_scope_is_applied_only_to_catalog_sources_that_support_its_field():
+    """A process condition must not make a non-process target catalog unusable."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "PKG_OUT",
+                "payload": {
+                    "aliases": ["PKG OUT"],
+                    "field": "OPER_NAME",
+                    "processes": ["SHIP PKT"],
+                },
+            }
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "target",
+                "payload": {
+                    "columns": ["DATE", "OUT 계획"],
+                    "filter_mappings": {"DATE": ["DATE"]},
+                },
+            },
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "columns": ["DATE", "OPER_NAME", "PRODUCTION"],
+                    "filter_mappings": {
+                        "DATE": ["DATE"],
+                        "OPER_NAME": ["OPER_NAME"],
+                    },
+                },
+            },
+        ],
+    }
+    jobs = [
+        {
+            "dataset_key": "target",
+            "source_alias": "target_df",
+            "filters": {
+                "DATE": {"operator": "eq", "value": "20260811"},
+                "OPER_NAME": {"operator": "eq", "value": "SHIP PKT"},
+            },
+        },
+        {
+            "dataset_key": "production_today",
+            "source_alias": "production_df",
+            "filters": {
+                "OPER_NAME": {"operator": "eq", "value": "SHIP PKT"},
+            },
+        },
+    ]
+
+    normalized, guard = normalizer._apply_process_group_filter_fields(
+        jobs,
+        candidates,
+        "오늘 PKG OUT 목표와 실적을 정리해줘",
+        declared_processes=["SHIP PKT"],
+    )
+    by_alias = {job["source_alias"]: job for job in normalized}
+
+    assert by_alias["target_df"]["filters"] == {
+        "DATE": {"operator": "eq", "value": "20260811"}
+    }
+    assert by_alias["production_df"]["filters"]["OPER_NAME"] == {
+        "operator": "eq",
+        "value": "SHIP PKT",
+    }
+    assert guard["non_applicable_filters"] == [
+        {
+            "source_alias": "target_df",
+            "dataset_key": "target",
+            "field": "OPER_NAME",
+            "condition": {"operator": "eq", "value": "SHIP PKT"},
+            "process_group_keys": ["PKG_OUT"],
+            "reason": "process_scope_field_not_supported_by_catalog",
+        }
+    ]
+
+    scope = normalizer._validate_process_scope_contract(
+        normalized,
+        candidates,
+        "오늘 PKG OUT 목표와 실적을 정리해줘",
+        declared_processes=["SHIP PKT"],
+    )
+    assert scope["status"] == "complete"
+    assert scope["non_applicable_sources"] == ["target_df"]
+
+    # Exercise the same two-pass process normalization used by the Flow.  This
+    # protects against a later normalizer stage restoring the discarded target
+    # filter after the source-specific decision above.
+    integrated = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "오늘 PKG OUT 목표와 실적을 정리해줘",
+                "reference_date": "20260811",
+            }
+        },
+        {
+            "intent_plan": {
+                "retrieval_jobs": jobs,
+                "pandas_execution_plan": [],
+            }
+        },
+        candidates,
+    )
+    integrated_by_alias = {
+        job["source_alias"]: job
+        for job in integrated["intent_plan"]["retrieval_jobs"]
+    }
+    assert integrated_by_alias["target_df"]["filters"] == {
+        "DATE": {"operator": "eq", "value": "20260811"}
+    }
+    assert integrated_by_alias["production_df"]["filters"]["OPER_NAME"] == {
+        "operator": "eq",
+        "value": "SHIP PKT",
+    }
+
+
+def test_process_scope_stays_blocked_when_no_selected_source_supports_it():
+    """Dropping a recognized process condition must never silently broaden every source."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "PKG_OUT",
+                "payload": {
+                    "aliases": ["PKG OUT"],
+                    "field": "OPER_NAME",
+                    "processes": ["SHIP PKT"],
+                },
+            }
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "target",
+                "payload": {"columns": ["DATE", "OUT 계획"]},
+            }
+        ],
+    }
+    jobs, _ = normalizer._apply_process_group_filter_fields(
+        [
+            {
+                "dataset_key": "target",
+                "source_alias": "target_df",
+                "filters": {"OPER_NAME": {"operator": "eq", "value": "SHIP PKT"}},
+            }
+        ],
+        candidates,
+        "PKG OUT 공정 목표를 알려줘",
+        declared_processes=["SHIP PKT"],
+    )
+
+    scope = normalizer._validate_process_scope_contract(
+        jobs,
+        candidates,
+        "PKG OUT 공정 목표를 알려줘",
+        declared_processes=["SHIP PKT"],
+    )
+
+    assert scope["status"] == "error"
+    assert scope["validation_errors"][0]["type"] == (
+        "process_scope_not_supported_by_selected_sources"
+    )
+
+
 def test_inherited_filter_is_removed_only_when_the_followup_catalog_cannot_execute_it():
     """A prior-turn date must not make a non-dated target catalog unusable."""
 
