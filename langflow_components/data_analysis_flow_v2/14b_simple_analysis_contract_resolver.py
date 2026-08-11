@@ -197,6 +197,15 @@ def resolve_simple_analysis_contract(
         contract = _route_contract("complex", "fast_path_disabled")
         return _attach_contract(next_payload, contract, trace, started)
 
+    # The normalizer compiles a compact frame contract from Catalog metadata.
+    # Re-check the same Typed DAG against the columns that actually reached
+    # this node.  This is deliberately separate from the Fast path: it gates
+    # only deterministic Typed execution, so an unsupported Complex plan
+    # keeps its established LLM/Pandas fallback instead of becoming a broad
+    # new block.
+    typed_frame_runtime_trace = _runtime_typed_frame_contract(plan, next_payload)
+    trace["typed_frame_runtime_contract"] = deepcopy(typed_frame_runtime_trace)
+
     # The normalizer grounds aliases before retrieval, but a strict metric
     # merge contract can be derived or retained after that point.  Re-check it
     # against the source aliases that actually reached the executor.  This
@@ -240,6 +249,23 @@ def resolve_simple_analysis_contract(
         trace["metric_merge_runtime_alias_reconciliation"]["fallback"] = (
             "ordinary_complex_path"
         )
+
+    # A complete strict metric-merge contract is more specific than the raw
+    # Typed DAG it was derived from.  Select it before generic multi-source
+    # Typed execution so a model's accidental raw join cannot reintroduce
+    # join-before-aggregate semantics.  Invalid contracts above still retain
+    # the established Typed-DAG fallback.
+    confirmed_metric_merge = _dict(plan.get("resolved_metric_merge_plan"))
+    if (
+        confirmed_metric_merge.get("strict") is True
+        and str(confirmed_metric_merge.get("operation") or "").strip()
+        == "merge_metric_sources"
+    ):
+        next_payload["intent_plan"] = plan
+        contract = _route_contract("complex", "strict_metric_merge_contract")
+        contract["deterministic_contract_key"] = "resolved_metric_merge_plan"
+        contract["deterministic_operation"] = "merge_metric_sources"
+        return _attach_contract(next_payload, contract, trace, started)
 
     plan["route_resolution"] = _intent_route_candidate(plan)
     next_payload["intent_plan"] = plan
@@ -1091,6 +1117,7 @@ def _runtime_retrieval_source_aliases(
     return _dedupe(aliases)
 
 
+# 함수 설명: `_reconcile_metric_merge_runtime_aliases()`는 독립 지표 병합 계약의 소스 별칭과 실행 시점 DataFrame을 안전하게 맞춥니다.
 def _reconcile_metric_merge_runtime_aliases(
     plan_value: dict[str, Any],
     payload: dict[str, Any],
@@ -1113,6 +1140,52 @@ def _reconcile_metric_merge_runtime_aliases(
         != "merge_metric_sources"
     ):
         return plan, {"status": "not_applicable"}
+
+    # New contracts record the topology that justified replacing a Typed raw
+    # join.  Validate that compact provenance here as a second boundary: an
+    # imported or stale contract must not silently claim independent metrics
+    # while carrying row-enrichment semantics.
+    execution_shape = str(merge_plan.get("execution_shape") or "").strip()
+    if execution_shape:
+        allowed_shapes = {
+            "aggregate_outputs_then_join",
+            "raw_join_rewritten_as_metric_merge",
+            "output_contract_independent_metric_shape",
+            "temporal_metric_merge",
+        }
+        join_type = str(merge_plan.get("join_type") or "").strip().lower()
+        population_policy = str(
+            merge_plan.get("population_policy") or ""
+        ).strip().lower()
+        join_node_ids = _string_list(merge_plan.get("join_node_ids"))
+        shape_issues: list[dict[str, Any]] = []
+        if execution_shape not in allowed_shapes:
+            shape_issues.append(
+                {"type": "unsupported_metric_merge_execution_shape", "value": execution_shape}
+            )
+        if join_type not in {"left", "outer"}:
+            shape_issues.append(
+                {"type": "metric_merge_join_type_invalid", "value": join_type}
+            )
+        expected_population = (
+            "left_source_only"
+            if join_type == "left"
+            else "preserve_all_metric_source_keys"
+        )
+        if population_policy and population_policy != expected_population:
+            shape_issues.append(
+                {
+                    "type": "metric_merge_population_policy_mismatch",
+                    "join_type": join_type,
+                    "population_policy": population_policy,
+                }
+            )
+        if execution_shape != "temporal_metric_merge" and len(join_node_ids) != 1:
+            shape_issues.append(
+                {"type": "metric_merge_join_provenance_missing", "join_node_ids": join_node_ids}
+            )
+        if shape_issues:
+            return plan, {"status": "invalid", "issues": shape_issues, "rewrites": []}
 
     runtime_sources = _dict(payload.get("runtime_sources"))
     jobs_by_alias: dict[str, dict[str, Any]] = {}
@@ -1367,6 +1440,209 @@ def _rewrite_nested_metric_aliases(value: Any, aliases: dict[str, str]) -> Any:
     return result
 
 
+# 함수 설명: 실제 조회 결과의 컬럼으로 Typed 단계별 frame 계약을 다시 확인합니다.
+def _runtime_typed_frame_contract(
+    plan: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Verify a supported Typed DAG against the frames that were actually retrieved.
+
+    This is a narrow execution-boundary check, not a second planner.  It proves
+    only column flow that follows directly from a Typed operation: filters and
+    ordering preserve a frame, projections narrow it, aggregates emit their
+    declared grain and output columns, and joins consume the immediate left and
+    right schemas.  If a schema cannot be observed or an operation is outside
+    this small set, return ``not_applicable`` so the established Complex path
+    remains available.  A known missing column is the only ``invalid`` result.
+    """
+
+    steps = [item for item in _list(plan.get("pandas_execution_plan")) if isinstance(item, dict)]
+    if not steps or len(steps) > 32:
+        return {"status": "not_applicable", "compiled_node_count": 0, "issues": []}
+
+    runtime_sources = _dict(payload.get("runtime_sources"))
+    external_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in _list(plan.get("retrieval_jobs"))
+        if isinstance(item, dict)
+    }
+    external_aliases.update(
+        alias
+        for alias in runtime_sources
+        if str(alias or "").strip() == "previous_result"
+    )
+    external_aliases = {alias for alias in external_aliases if alias and alias in runtime_sources}
+    if not external_aliases:
+        return {"status": "not_applicable", "compiled_node_count": 0, "issues": []}
+
+    # 함수 설명: 대소문자와 공백 차이를 무시하는 컬럼 비교용 키를 만듭니다.
+    def identity(value: Any) -> str:
+        return str(value or "").strip().casefold().replace(" ", "_")
+
+    # 함수 설명: 실행 frame의 실제 컬럼 이름을 요청한 표준 컬럼으로 찾습니다.
+    def actual_column(columns: list[str], requested: Any) -> str:
+        requested_id = identity(requested)
+        return next(
+            (column for column in columns if requested_id and identity(column) == requested_id),
+            "",
+        )
+
+    # 함수 설명: source 또는 앞 단계 별칭에 연결된 실행 frame 컬럼을 반환합니다.
+    def frame_columns(alias: str) -> list[str]:
+        columns = _source_columns(payload, alias)
+        if columns:
+            return columns
+        frame = runtime_sources.get(alias)
+        raw_columns = getattr(frame, "columns", None)
+        if raw_columns is not None:
+            return _dedupe([str(column).strip() for column in raw_columns if str(column).strip()])
+        return []
+
+    states: dict[str, dict[str, Any]] = {}
+    for alias in external_aliases:
+        columns = frame_columns(alias)
+        # A connector can validly return no rows.  The schema itself is still
+        # expected in source_results; without it we cannot prove Typed flow and
+        # must not claim that an empty runtime frame proves a missing column.
+        if not columns:
+            return {"status": "not_applicable", "compiled_node_count": 0, "issues": []}
+        states[alias] = {"columns": list(columns), "known": True}
+
+    issues: list[dict[str, Any]] = []
+    compiled = 0
+
+    # 함수 설명: Typed 단계의 입력 별칭을 하나의 목록으로 정규화합니다.
+    def inputs_for(step: dict[str, Any]) -> list[dict[str, Any]]:
+        return [item for item in _list(step.get("inputs")) if isinstance(item, dict)]
+
+    # 함수 설명: 입력 별칭의 현재 실행 스키마를 조회합니다.
+    def state_for_input(item: dict[str, Any]) -> dict[str, Any] | None:
+        reference = str(item.get("ref") or "").strip()
+        return states.get(reference)
+
+    for step in steps:
+        operation = _operation(step)
+        node_id = str(step.get("node_id") or "").strip()
+        output_alias = str(step.get("output_alias") or node_id).strip()
+        inputs = inputs_for(step)
+        if not node_id or not output_alias:
+            return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+        if operation not in TYPED_DETERMINISTIC_OPERATIONS:
+            return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+        input_states = [state_for_input(item) for item in inputs]
+        if not inputs or any(state is None for state in input_states):
+            return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+        states_list = [state for state in input_states if isinstance(state, dict)]
+
+        if operation in {
+            "apply_filters",
+            "apply_pandas_function_case",
+            "apply_row_match_groups",
+            "sort_and_top_n",
+        }:
+            if len(states_list) != 1:
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            result_columns = list(states_list[0]["columns"])
+            if operation == "sort_and_top_n":
+                sort_by = str(step.get("sort_by") or "").strip()
+                if sort_by and not actual_column(result_columns, sort_by):
+                    issues.append(
+                        {"type": "typed_frame_runtime_sort_column_missing", "node_id": node_id, "column": sort_by}
+                    )
+        elif operation == "select_columns":
+            if len(states_list) != 1:
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            source_columns = list(states_list[0]["columns"])
+            requested = _string_list(step.get("projection") or step.get("columns"))
+            if not requested:
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            missing = [column for column in requested if not actual_column(source_columns, column)]
+            if missing:
+                issues.append(
+                    {"type": "typed_frame_runtime_projection_column_missing", "node_id": node_id, "columns": missing}
+                )
+            result_columns = [actual_column(source_columns, column) or column for column in requested]
+        elif operation == "groupby_and_aggregate":
+            if len(states_list) != 1:
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            source_columns = list(states_list[0]["columns"])
+            group_by = _string_list(
+                step.get("group_by") or step.get("group_by_columns") or step.get("group_columns")
+            )
+            aggregations = [item for item in _list(step.get("aggregations")) if isinstance(item, dict)]
+            if not aggregations:
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            missing = [column for column in group_by if not actual_column(source_columns, column)]
+            output_columns: list[str] = []
+            for aggregation in aggregations:
+                source_column = str(
+                    aggregation.get("column") or aggregation.get("source_column") or aggregation.get("agg_column") or ""
+                ).strip()
+                output_column = str(
+                    aggregation.get("output_column") or aggregation.get("result_column") or ""
+                ).strip()
+                if not source_column or not output_column or not actual_column(source_columns, source_column):
+                    missing.append(source_column or output_column)
+                    continue
+                output_columns.append(output_column)
+            if missing:
+                issues.append(
+                    {"type": "typed_frame_runtime_aggregate_column_missing", "node_id": node_id, "columns": _dedupe(missing)}
+                )
+            result_columns = _dedupe([*group_by, *output_columns])
+        elif operation == "join":
+            if len(states_list) != 2:
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            left_columns = list(states_list[0]["columns"])
+            right_columns = list(states_list[1]["columns"])
+            left_keys = _string_list(step.get("left_on"))
+            right_keys = _string_list(step.get("right_on"))
+            if not left_keys:
+                left_keys = _string_list(step.get("on") or step.get("group_by"))
+                right_keys = list(left_keys)
+            if not left_keys or len(left_keys) != len(right_keys):
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            missing_keys = [
+                f"left.{column}" for column in left_keys if not actual_column(left_columns, column)
+            ] + [
+                f"right.{column}" for column in right_keys if not actual_column(right_columns, column)
+            ]
+            if missing_keys:
+                issues.append(
+                    {"type": "typed_frame_runtime_join_key_missing", "node_id": node_id, "columns": missing_keys}
+                )
+            right_values = _string_list(step.get("right_value_columns"))
+            missing_values = [
+                column for column in right_values if not actual_column(right_columns, column)
+            ]
+            if missing_values:
+                issues.append(
+                    {"type": "typed_frame_runtime_join_value_missing", "node_id": node_id, "columns": missing_values}
+                )
+            join_type = str(step.get("join_type") or "inner").strip().lower()
+            if join_type not in TYPED_DETERMINISTIC_JOIN_TYPES:
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            right_key_ids = {identity(column) for column in right_keys}
+            selected_right = right_values or right_columns
+            if join_type == "left" and right_values:
+                selected_right = [
+                    column for column in right_values if identity(column) not in right_key_ids
+                ]
+            result_columns = _dedupe([*left_columns, *selected_right])
+        else:
+            return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+
+        states[node_id] = {"columns": result_columns, "known": True}
+        states[output_alias] = states[node_id]
+        compiled += 1
+
+    return {
+        "status": "invalid" if issues else "verified",
+        "compiled_node_count": compiled,
+        "issues": issues[:8],
+    }
+
+
 def _typed_pandas_plan_execution_contract(
     payload: dict[str, Any],
     plan: dict[str, Any],
@@ -1400,6 +1676,13 @@ def _typed_pandas_plan_execution_contract(
         return {}
     graph = _dict(plan.get("resolved_execution_graph"))
     if _list(graph.get("validation_errors")):
+        return {}
+
+    static_frame_contract = _dict(plan.get("typed_frame_contract"))
+    if static_frame_contract.get("status") == "invalid":
+        return {}
+    runtime_frame_contract = _runtime_typed_frame_contract(plan, payload)
+    if runtime_frame_contract.get("status") != "verified":
         return {}
 
     runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}

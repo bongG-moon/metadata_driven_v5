@@ -2383,6 +2383,7 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
     return result.drop(columns=[*temporary_keys, *right_display_keys], errors="ignore")
 
 
+# 함수 설명: Left join에서 오른쪽 source가 선언한 값과 조인 키만 안전하게 유지합니다.
 def _project_typed_left_join_right_values(
     left: Any,
     right: Any,
@@ -2453,6 +2454,7 @@ def _project_typed_left_join_right_values(
     return right[selected].copy()
 
 
+# 함수 설명: Outer join 후 양쪽 값으로 보완할 수 있는 공통 차원을 찾습니다.
 def _typed_outer_shared_dimension_pairs(
     left: Any,
     right: Any,
@@ -2523,6 +2525,7 @@ def _typed_outer_shared_dimension_pairs(
     return pairs
 
 
+# 함수 설명: Outer join의 left-only와 right-only 차원을 보완하고 충돌은 차단합니다.
 def _coalesce_typed_outer_shared_dimensions(
     result: Any,
     pairs: list[tuple[str, str, str]],
@@ -2923,6 +2926,12 @@ def _execute_metric_source_merge(
         result = result.merge(right, on=join_columns, how=merge_how)
     if contract.get("fill_zero_on_success") is True:
         for metric in metrics:
+            # New normalized merge contracts declare whether an absent source
+            # group may be rendered as a zero.  Preserve legacy contracts that
+            # predate this field, but never turn a missing mean/extreme into a
+            # numeric observation merely because another source has the key.
+            if metric.get("fill_on_absence") is False:
+                continue
             output_metric = str(metric.get("output_column") or "").strip()
             if output_metric in result.columns:
                 result[output_metric] = result[output_metric].fillna(

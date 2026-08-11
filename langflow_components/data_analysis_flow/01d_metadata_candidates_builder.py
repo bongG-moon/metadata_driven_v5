@@ -312,7 +312,24 @@ def build_metadata_candidates(
         for key, value in candidates.items()
         if isinstance(value, list)
     }
-    candidates, byte_fit = _fit_bytes(candidates, byte_limit, table_minimum)
+    # The model receives a bounded view, but a Domain which is matched by an
+    # exact worker-written alias has already proved that its source is needed
+    # for this request.  Preserve that source while trimming prompt bytes.  We
+    # do not raise the byte cap or add prompt text; lower-priority candidates
+    # are removed first instead.
+    protected_table_dataset_keys = {
+        str(value).strip().casefold()
+        for value in selection_stats.get("domain_dataset_dependencies", {}).get(
+            "included_dataset_keys", []
+        )
+        if str(value or "").strip()
+    }
+    candidates, byte_fit = _fit_bytes(
+        candidates,
+        byte_limit,
+        table_minimum,
+        protected_table_dataset_keys=protected_table_dataset_keys,
+    )
 
     loads = {
         "domain_items": domain_load,
@@ -1116,6 +1133,8 @@ def _fit_bytes(
     candidates: dict[str, Any],
     max_bytes: int,
     min_table_items: int,
+    *,
+    protected_table_dataset_keys: set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     fitted = deepcopy(candidates)
     trimmed_counts = {"domain_items": 0, "table_catalog_items": 0, "main_flow_filters": 0}
@@ -1129,12 +1148,39 @@ def _fit_bytes(
         ("main_flow_filters", 0),
         ("table_catalog_items", 0),
     )
+    protected_keys = {
+        str(value).strip().casefold()
+        for value in (protected_table_dataset_keys or set())
+        if str(value or "").strip()
+    }
+
+    # 함수 설명: 바이트 제한 시 실행에 필요한 Domain 연결 카탈로그는 마지막까지 보존할 삭제 위치를 계산합니다.
+    def removable_index(key: str, values: list[Any]) -> int:
+        """Prefer dropping a non-dependency catalog candidate under the byte cap."""
+
+        if key != "table_catalog_items" or not protected_keys:
+            return len(values) - 1
+        for index in range(len(values) - 1, -1, -1):
+            item = values[index]
+            dataset_key = (
+                _table_catalog_dataset_key(item).casefold()
+                if isinstance(item, dict)
+                else ""
+            )
+            if dataset_key not in protected_keys:
+                return index
+        # The caller may still need to satisfy a hard byte cap when every
+        # remaining candidate is execution-critical.  In that exceptional
+        # case retain the existing bounded behaviour rather than exceeding the
+        # token budget.
+        return len(values) - 1
+
     for key, floor in phases:
         values = fitted.get(key)
         if not isinstance(values, list):
             continue
         while _json_bytes(fitted) > max_bytes and len(values) > floor:
-            values.pop()
+            values.pop(removable_index(key, values))
             trimmed_counts[key] += 1
         if _json_bytes(fitted) <= max_bytes:
             break

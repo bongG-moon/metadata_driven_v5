@@ -380,6 +380,85 @@ def test_continuation_typed_join_aggregates_right_source_before_merging(executor
     ]
 
 
+def test_continuation_typed_left_join_preserves_left_owned_shared_dimension(executor):
+    """Flow 08 shares Flow 01's explicit source-side left-join provenance."""
+
+    result = executor._execute_typed_pandas_plan(
+        {
+            "steps": [
+                {
+                    "node_id": "join_assign_uph",
+                    "operation": "join",
+                    "inputs": [
+                        {"kind": "external_source", "ref": "assign"},
+                        {"kind": "external_source", "ref": "uph"},
+                    ],
+                    "output_alias": "joined",
+                    "left_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "right_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "join_type": "left",
+                    "right_value_columns": ["UPH"],
+                },
+                {
+                    "node_id": "aggregate_lead",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "node_output", "ref": "joined"}],
+                    "output_alias": "summary",
+                    "group_by": ["LEAD"],
+                    "aggregations": [
+                        {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                        {"column": "UPH", "method": "mean", "output_column": "UPH_AVG"},
+                    ],
+                },
+            ]
+        },
+        {
+            "assign": pd.DataFrame(
+                [{"EQP_ID": "E1", "EQP_MODEL": "M1", "RECIPE_ID": "R1", "OPER_NAME": "M/D", "LEAD": "200"}]
+            ),
+            "uph": pd.DataFrame(
+                [{"EQP_MODEL": "M1", "RECIPE_ID": "R1", "OPER_NAME": "M/D", "LEAD": "200", "UPH": 120}]
+            ),
+        },
+        pd,
+    )
+
+    assert result.to_dict(orient="records") == [
+        {"LEAD": "200", "EQP_COUNT": 1, "UPH_AVG": 120.0}
+    ]
+
+
+def test_continuation_typed_outer_join_coalesces_shared_dimension(executor):
+    """Flow 08 keeps a canonical shared dimension for right-only outer rows."""
+
+    result = executor._typed_join_frames(
+        pd.DataFrame(
+            [{"EQP_MODEL": "M1", "RECIPE_ID": "R1", "OPER_NAME": "M/D", "LEAD": "200"}]
+        ),
+        pd.DataFrame(
+            [
+                {"EQP_MODEL": "M1", "RECIPE_ID": "R1", "OPER_NAME": "M/D", "LEAD": "200", "UPH": 100},
+                {"EQP_MODEL": "M2", "RECIPE_ID": "R2", "OPER_NAME": "M/D", "LEAD": "300", "UPH": 200},
+            ]
+        ),
+        {
+            "left_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            "right_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            "join_type": "outer",
+            "right_value_columns": ["UPH"],
+        },
+        pd,
+    )
+
+    assert "LEAD" in result.columns
+    assert "LEAD_left" not in result.columns
+    assert "LEAD_right" not in result.columns
+    assert {
+        (str(row["LEAD"]), int(row["UPH"]))
+        for _, row in result.iterrows()
+    } == {("200", 100), ("300", 200)}
+
+
 def test_continuation_typed_outer_join_keeps_right_only_product_keys(executor):
     """The continuation executor preserves outer-join keys just like Flow 01."""
 

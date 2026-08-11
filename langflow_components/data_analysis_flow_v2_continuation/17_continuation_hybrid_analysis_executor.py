@@ -2819,6 +2819,32 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         raise OutputContractError("Typed Pandas join 방식이 올바르지 않습니다: " + join_type)
     left_working = left.copy()
     right_working = right.copy()
+    aggregations = [
+        item for item in step.get("aggregations", []) if isinstance(item, dict)
+    ]
+    # A left-preserving Typed join may import only declared source-owned values
+    # from its right input. This keeps shared dimensions on the left canonical
+    # path instead of depending on pandas' implicit suffix naming.
+    if join_type == "left" and _string_list(step.get("right_value_columns")):
+        right_working = _project_typed_left_join_right_values(
+            left_working,
+            right_working,
+            left_keys,
+            right_keys,
+            _string_list(step.get("right_value_columns")),
+            aggregations,
+        )
+    outer_shared_dimensions = (
+        _typed_outer_shared_dimension_pairs(
+            left_working,
+            right_working,
+            left_keys,
+            right_keys,
+            _string_list(step.get("right_value_columns")),
+        )
+        if join_type == "outer"
+        else []
+    )
     temporary_keys: list[str] = []
     right_display_keys: list[str] = []
     used_helper_columns = {
@@ -2844,9 +2870,6 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         left_working[temporary] = left_working[left_key].map(_normalize_deterministic_join_value)
         right_working[temporary] = right_working[right_key].map(_normalize_deterministic_join_value)
         right_working[right_display] = right_working[right_key]
-    aggregations = [
-        item for item in step.get("aggregations", []) if isinstance(item, dict)
-    ]
     if aggregations:
         # A join with declared aggregate outputs is a grouped enrichment, not
         # a raw many-to-many merge.  Reducing the right side first preserves
@@ -2898,7 +2921,178 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         right_display_keys,
         join_type,
     )
+    if outer_shared_dimensions:
+        result = _coalesce_typed_outer_shared_dimensions(
+            result,
+            outer_shared_dimensions,
+        )
     return result.drop(columns=[*temporary_keys, *right_display_keys], errors="ignore")
+
+
+# 함수 설명: Left join에서 오른쪽 source가 선언한 값과 조인 키만 안전하게 유지합니다.
+def _project_typed_left_join_right_values(
+    left: Any,
+    right: Any,
+    left_keys: list[str],
+    right_keys: list[str],
+    right_value_columns: list[str],
+    aggregations: list[dict[str, Any]],
+) -> Any:
+    """Project a left-join right frame to declared source-owned values only."""
+
+    required_candidates = [*right_keys, *right_value_columns]
+    for aggregation in aggregations:
+        source_column = str(
+            aggregation.get("column") or aggregation.get("source_column") or ""
+        ).strip()
+        if source_column:
+            required_candidates.append(source_column)
+
+    selected: list[str] = []
+    value_columns: list[str] = []
+    missing: list[str] = []
+    value_ids = {str(column).strip().casefold() for column in right_value_columns}
+    for candidate in required_candidates:
+        actual = _find_frame_column(right, [candidate])
+        if not actual:
+            if candidate not in missing:
+                missing.append(candidate)
+            continue
+        if actual not in selected:
+            selected.append(actual)
+        if str(candidate).strip().casefold() in value_ids and actual not in value_columns:
+            value_columns.append(actual)
+    if missing:
+        raise OutputContractError(
+            "Typed Pandas left join declared right-side columns are unavailable: "
+            + ", ".join(missing)
+        )
+
+    left_key_ids = {str(column).strip().casefold() for column in left_keys}
+    left_non_key_ids = {
+        str(column).strip().casefold()
+        for column in getattr(left, "columns", [])
+        if str(column).strip().casefold() not in left_key_ids
+    }
+    right_key_ids = {str(column).strip().casefold() for column in right_keys}
+    conflicts = [
+        column
+        for column in value_columns
+        if str(column).strip().casefold() in left_non_key_ids
+        and str(column).strip().casefold() not in right_key_ids
+    ]
+    if conflicts:
+        raise OutputContractError(
+            "Typed Pandas left join has an ambiguous shared right-side value; "
+            "an explicit source-side output alias is required: "
+            + ", ".join(conflicts)
+        )
+    return right[selected].copy()
+
+
+# 함수 설명: Outer join 후 양쪽 값으로 보완할 수 있는 공통 차원을 찾습니다.
+def _typed_outer_shared_dimension_pairs(
+    left: Any,
+    right: Any,
+    left_keys: list[str],
+    right_keys: list[str],
+    right_value_columns: list[str],
+) -> list[tuple[str, str, str]]:
+    """Identify safe common dimensions to coalesce after a typed outer join."""
+
+    left_by_identity = {
+        str(column).strip().casefold(): str(column)
+        for column in getattr(left, "columns", [])
+        if str(column).strip()
+    }
+    right_by_identity = {
+        str(column).strip().casefold(): str(column)
+        for column in getattr(right, "columns", [])
+        if str(column).strip()
+    }
+    left_key_ids = {str(column).strip().casefold() for column in left_keys}
+    right_key_ids = {str(column).strip().casefold() for column in right_keys}
+    value_ids = {str(column).strip().casefold() for column in right_value_columns}
+
+    missing_values = [
+        column
+        for column in right_value_columns
+        if str(column).strip().casefold() not in right_by_identity
+    ]
+    if missing_values:
+        raise OutputContractError(
+            "Typed Pandas outer join declared right-side columns are unavailable: "
+            + ", ".join(missing_values)
+        )
+
+    conflicts = [
+        right_by_identity[column_id]
+        for column_id in value_ids
+        if column_id in left_by_identity
+        and column_id in right_by_identity
+        and column_id not in left_key_ids
+        and column_id not in right_key_ids
+    ]
+    if conflicts:
+        raise OutputContractError(
+            "Typed Pandas outer join has an ambiguous shared right-side value; "
+            "an explicit source-side output alias is required: "
+            + ", ".join(sorted(conflicts))
+        )
+
+    pairs: list[tuple[str, str, str]] = []
+    for column_id, left_column in left_by_identity.items():
+        right_column = right_by_identity.get(column_id)
+        if (
+            not right_column
+            or column_id in left_key_ids
+            or column_id in right_key_ids
+            or column_id in value_ids
+        ):
+            continue
+        pairs.append((left_column, left_column, right_column))
+    return pairs
+
+
+# 함수 설명: Outer join의 left-only와 right-only 차원을 보완하고 충돌은 차단합니다.
+def _coalesce_typed_outer_shared_dimensions(
+    result: Any,
+    pairs: list[tuple[str, str, str]],
+) -> Any:
+    """Coalesce safe shared dimensions and reject conflicting matched values."""
+
+    for canonical, left_column, right_column in pairs:
+        if left_column == right_column:
+            merged_left = f"{left_column}_left"
+            merged_right = f"{right_column}_right"
+        else:
+            merged_left = left_column
+            merged_right = right_column
+        if merged_left not in result.columns or merged_right not in result.columns:
+            continue
+        left_values = result[merged_left]
+        right_values = result[merged_right]
+        left_normalized = left_values.map(_normalize_deterministic_join_value)
+        right_normalized = right_values.map(_normalize_deterministic_join_value)
+        conflicts = (
+            left_normalized.ne("")
+            & right_normalized.ne("")
+            & left_normalized.ne(right_normalized)
+        )
+        if bool(conflicts.any()):
+            raise OutputContractError(
+                "Typed Pandas outer join has conflicting values for a shared dimension: "
+                + canonical
+            )
+        result[canonical] = left_values.where(left_normalized.ne(""), right_values)
+        drop_columns = [
+            column
+            for column in (merged_left, merged_right)
+            if column != canonical
+        ]
+        if drop_columns:
+            result = result.drop(columns=drop_columns, errors="ignore")
+    return result
 
 
 def _coalesce_typed_outer_join_keys(

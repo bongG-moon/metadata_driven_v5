@@ -557,6 +557,12 @@ def normalize_intent_plan(
         reference_mode,
         payload,
     )
+    pandas_plan, implicit_step_input_normalization = _materialize_implicit_step_inputs(
+        pandas_plan,
+        retrieval_jobs,
+        reference_mode,
+        payload,
+    )
     # Validate process scope only after the normalizer has materialized the
     # trusted previous/upstream row-match step. A dependent history source
     # may inherit the parent's scope through those rows rather than repeat
@@ -664,6 +670,18 @@ def normalize_intent_plan(
             resolved_grain_plan,
         )
     )
+    # Catalog metadata describes an external source, whereas every Typed
+    # Pandas step describes a new frame.  Compile the latter boundary before
+    # catalog validation or execution: a raw source field such as ``EQP_ID``
+    # cannot be carried through a group-by unless the aggregate explicitly
+    # emits an output for it.  The compiler only rewrites Catalog-injected
+    # join values when one aggregate output proves the replacement.  Other
+    # complex/unsupported plans retain their established execution path.
+    pandas_plan, typed_frame_contract = _compile_typed_frame_contract(
+        pandas_plan,
+        metadata_candidates,
+        retrieval_jobs,
+    )
     validation_errors.extend(
         _pandas_catalog_column_validation_errors(
             pandas_plan,
@@ -720,6 +738,7 @@ def normalize_intent_plan(
     validation_errors.extend(required_parameter_guard.get("validation_errors", []))
     contract_plan = deepcopy(plan)
     contract_plan["pandas_execution_plan"] = pandas_plan
+    contract_plan["typed_frame_contract"] = deepcopy(typed_frame_contract)
     normalized_raw_contract, output_contract_column_normalization = (
         _normalize_raw_output_contract_columns(
             contract_plan.get("output_contract"),
@@ -847,6 +866,7 @@ def normalize_intent_plan(
     normalized_plan["retrieval_jobs"] = retrieval_jobs
     normalized_plan["pandas_execution_plan"] = pandas_plan
     normalized_plan["output_contract"] = output_contract
+    normalized_plan["typed_frame_contract"] = deepcopy(typed_frame_contract)
     if business_time_guard.get("temporal_semantics"):
         normalized_plan["temporal_semantics"] = deepcopy(
             business_time_guard["temporal_semantics"]
@@ -946,11 +966,13 @@ def normalize_intent_plan(
         "reference_scope_normalization": reference_scope_normalization,
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
+        "implicit_step_input_normalization": implicit_step_input_normalization,
         "pandas_column_normalization": pandas_column_normalization,
         "typed_join_contract_materialization": typed_join_contract_materialization,
         "derived_aggregate_join_materialization": derived_aggregate_join_materialization,
         "domain_execution_contracts": domain_execution_contracts,
         "aggregate_grain_alignment": aggregate_grain_alignment,
+        "typed_frame_contract": typed_frame_contract,
         "required_parameter_guard": required_parameter_guard,
         "output_contract_column_normalization": output_contract_column_normalization,
         "terminal_output_contract_reconciliation": terminal_output_contract_reconciliation,
@@ -2545,6 +2567,36 @@ def _reconcile_execution_source_aliases(
         if alias and dataset_key:
             candidates.append({"alias": alias, "dataset_key": dataset_key})
 
+    # The LLM can use a presentation alias in a Typed node while the output
+    # contract still carries the trusted dataset key for that same alias.  Do
+    # not infer a dataset from words such as ``production`` or ``target``.
+    # Instead, keep only an *exact* alias -> dataset-key hint when the output
+    # contract declares exactly one key.  The hint is later usable only if one
+    # retrieval job owns that key, so two jobs for the same dataset remain
+    # intentionally unresolved.
+    output_alias_dataset_hints: dict[str, set[str]] = {}
+    raw_output_contract = plan_value.get("output_contract")
+    raw_metric_bindings = (
+        raw_output_contract.get("metric_bindings")
+        if isinstance(raw_output_contract, dict)
+        and isinstance(raw_output_contract.get("metric_bindings"), list)
+        else []
+    )
+    for raw_binding in raw_metric_bindings:
+        if not isinstance(raw_binding, dict):
+            continue
+        alias = str(raw_binding.get("source_alias") or "").strip()
+        dataset_key = str(raw_binding.get("dataset_key") or "").strip()
+        if alias and dataset_key:
+            output_alias_dataset_hints.setdefault(_normalized_alias(alias), set()).add(
+                dataset_key
+            )
+
+    # 함수 설명: 출력 계약의 별칭이 하나의 데이터셋을 명시한 경우에만 안전한 힌트를 반환합니다.
+    def output_alias_dataset_hint(reference: Any) -> str:
+        values = output_alias_dataset_hints.get(_normalized_alias(reference), set())
+        return next(iter(values)) if len(values) == 1 else ""
+
     def stem(value: Any) -> str:
         normalized = _normalized_alias(value)
         for suffix in ("_source", "_src", "_data", "_dataset"):
@@ -2597,7 +2649,13 @@ def _reconcile_execution_source_aliases(
 
     def rewrite(value: Any, field: str, dataset_key_hint: Any = "") -> Any:
         original = str(value or "").strip()
-        replacement = canonical_alias(original, dataset_key_hint)
+        # An explicit field-local hint wins.  When it is absent, an exact
+        # output-contract alias witness can safely ground the reference.
+        effective_dataset_hint = (
+            str(dataset_key_hint or "").strip()
+            or output_alias_dataset_hint(original)
+        )
+        replacement = canonical_alias(original, effective_dataset_hint)
         if replacement and original and replacement != original:
             rewrites.append({"field": field, "from": original, "to": replacement})
             return replacement
@@ -4150,7 +4208,7 @@ def _ensure_selected_metric_sources(
         else ""
     )
 
-    contracts: list[dict[str, Any]] = []
+    raw_contracts: list[dict[str, Any]] = []
     for reference in locked_metadata_refs:
         item = _find_metadata_item(candidates, reference)
         payload_value = _metadata_payload(item)
@@ -4166,7 +4224,14 @@ def _ensure_selected_metric_sources(
             metrics = _string_list(payload_value.get("columns"))
         if not metrics:
             continue
-        contracts.append(
+        aliases = _merge_strings(
+            _string_list(payload_value.get("aliases")),
+            _string_list(payload_value.get("display_name")),
+        )
+        matched_aliases = [
+            alias for alias in aliases if _domain_alias_matches(question, alias)
+        ]
+        raw_contracts.append(
             {
                 "metadata_ref": deepcopy(reference),
                 "dataset_hint": str(
@@ -4178,8 +4243,32 @@ def _ensure_selected_metric_sources(
                 "aggregation_method": str(
                     payload_value.get("aggregation_method") or "sum"
                 ).strip(),
+                "filter_contracts": _metadata_filter_contracts(payload_value),
+                "matched_aliases": matched_aliases,
             }
         )
+
+    # One worker phrase can contain a shorter generic alias (for example a
+    # more specific quantity term ending with "실적").  Keep the specific
+    # registered contract when every occurrence of the generic alias is inside
+    # that phrase.  If the question names the two metrics separately, both
+    # remain.  This prevents a single request from inventing a duplicate source
+    # while preserving genuine comparisons of two same-column metrics.
+    contracts = _deduplicate_overlapping_metric_source_contracts(
+        question,
+        raw_contracts,
+    )
+    contract_resource_keys = {
+        (
+            str(contract.get("dataset_hint") or "").strip().casefold(),
+            tuple(
+                _normalized_column_key(metric)
+                for metric in _string_list(contract.get("metrics"))
+            ),
+            _metric_contract_filter_identity(contract.get("filter_contracts")),
+        )
+        for contract in contracts
+    }
 
     catalog_items = [
         item
@@ -4290,7 +4379,12 @@ def _ensure_selected_metric_sources(
             )
         ]
         selected_is_explicit_hint = bool(normalized_hint) and dataset_key.casefold() == normalized_hint
-        if selected_is_explicit_hint and len(jobs) == 1 and len(incompatible_jobs) == 1:
+        if (
+            selected_is_explicit_hint
+            and len(contract_resource_keys) == 1
+            and len(jobs) == 1
+            and len(incompatible_jobs) == 1
+        ):
             job = incompatible_jobs[0]
             previous_dataset_key = str(job.get("dataset_key") or "").strip()
             if previous_dataset_key.casefold() != dataset_key.casefold():
@@ -4359,37 +4453,6 @@ def _ensure_selected_metric_sources(
             job["required_params"] = required_params
         jobs.append(job)
 
-        existing_terminal = next(
-            (
-                str(step.get("node_id") or step.get("output_alias") or "").strip()
-                for step in reversed(steps)
-                if isinstance(step, dict)
-                and str(step.get("node_id") or step.get("output_alias") or "").strip()
-            ),
-            "",
-        )
-        existing_grain = next(
-            (
-                _string_list(
-                    step.get("group_by")
-                    or step.get("group_by_columns")
-                    or step.get("group_columns")
-                    or step.get("group_cols")
-                )
-                for step in reversed(steps)
-                if isinstance(step, dict)
-                and str(step.get("operation") or step.get("step") or "").strip().lower()
-                in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}
-                and _string_list(
-                    step.get("group_by")
-                    or step.get("group_by_columns")
-                    or step.get("group_columns")
-                    or step.get("group_cols")
-                )
-            ),
-            [],
-        )
-        aggregate_node_id = f"metadata_metric_{len(additions) + 1}"
         catalog_payload = _metadata_payload(selected)
         semantics = (
             catalog_payload.get("metric_semantics")
@@ -4410,33 +4473,18 @@ def _ensure_selected_metric_sources(
                     "output_column": metric,
                 }
             )
-        steps.append(
-            {
-                "node_id": aggregate_node_id,
-                "operation": "groupby_and_aggregate",
-                "inputs": [{"kind": "external_source", "ref": source_alias}],
-                "output_alias": f"{source_alias}_by_grain",
-                "source_alias": source_alias,
-                "group_by": existing_grain,
-                "aggregations": aggregations,
-            }
+        steps, merge_detail = _append_catalog_metric_aggregate_merge(
+            steps,
+            source_alias=source_alias,
+            aggregations=aggregations,
+            ordinal=len(additions) + 1,
         )
-        if existing_terminal:
-            steps.append(
-                {
-                    "node_id": f"metadata_metric_join_{len(additions) + 1}",
-                    "operation": "join",
-                    "inputs": [
-                        {"kind": "node_output", "ref": existing_terminal},
-                        {"kind": "node_output", "ref": aggregate_node_id},
-                    ],
-                    "output_alias": f"metric_join_{len(additions) + 1}",
-                    "left_source_alias": existing_terminal,
-                    "right_source_alias": f"{source_alias}_by_grain",
-                    "join_type": "outer",
-                    "population_policy": "preserve_all_metric_source_keys",
-                }
-            )
+        if merge_detail.get("status") != "applied":
+            # A second source is useful only when the existing Typed plan proves
+            # how to merge it.  Do not leave an unconsumed retrieval job behind
+            # merely because a metric alias happened to match the question.
+            jobs.pop()
+            continue
         additions.append(
             {
                 "metadata_ref": contract["metadata_ref"],
@@ -4444,6 +4492,7 @@ def _ensure_selected_metric_sources(
                 "source_alias": source_alias,
                 "metrics": metrics,
                 "requested_time_scope": desired_scope,
+                "merge_detail": merge_detail,
             }
         )
     return jobs, steps, {
@@ -4455,6 +4504,212 @@ def _ensure_selected_metric_sources(
 
 
 # 함수 설명: `_resolve_execution_domain_selection()`는 질문과 등록 alias가 일치하는 실행 Domain을 잠그고 모호성을 기록합니다.
+def _metric_contract_filter_identity(value: Any) -> str:
+    """Create a stable identity for a Domain-owned metric filter contract."""
+
+    try:
+        return json.dumps(value or [], ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+# 함수 설명: 질문 안에서 등록된 별칭이 실제로 나타난 위치를 공백과 기호를 정규화해 찾습니다.
+def _compact_match_spans(question: str, alias: str) -> list[tuple[int, int]]:
+    """Return every compact-question occurrence of one registered alias."""
+
+    needle = _compact_domain_text(alias)
+    haystack = _compact_domain_text(question)
+    if len(needle) < 2 or not haystack:
+        return []
+    result: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        index = haystack.find(needle, start)
+        if index < 0:
+            break
+        result.append((index, index + len(needle)))
+        start = index + 1
+    return result
+
+
+# 함수 설명: 긴 작업자 별칭 안에만 포함된 일반 지표 별칭을 제거해 중복 데이터 원천 선택을 방지합니다.
+def _deduplicate_overlapping_metric_source_contracts(
+    question: str,
+    contracts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep a specific filtered metric term over its incidental generic suffix.
+
+    Registered aliases often overlap naturally: a worker can say "input actual"
+    while a generic actual-performance term is also registered. When the
+    generic word occurs only inside the longer matched alias, both terms do not
+    mean two requested sources. If the question names the two metrics
+    separately, both remain.
+    """
+
+    normalized = [deepcopy(item) for item in contracts if isinstance(item, dict)]
+    dropped_indexes: set[int] = set()
+    for index, candidate in enumerate(normalized):
+        if candidate.get("filter_contracts"):
+            continue
+        candidate_source = str(candidate.get("dataset_hint") or "").strip().casefold()
+        candidate_metrics = tuple(
+            _normalized_column_key(value)
+            for value in _string_list(candidate.get("metrics"))
+        )
+        generic_spans = {
+            span
+            for alias in _string_list(candidate.get("matched_aliases"))
+            for span in _compact_match_spans(question, alias)
+        }
+        if not generic_spans:
+            continue
+        for other_index, other in enumerate(normalized):
+            if index == other_index or not other.get("filter_contracts"):
+                continue
+            if str(other.get("dataset_hint") or "").strip().casefold() != candidate_source:
+                continue
+            other_metrics = tuple(
+                _normalized_column_key(value)
+                for value in _string_list(other.get("metrics"))
+            )
+            if other_metrics != candidate_metrics:
+                continue
+            specific_spans = {
+                span
+                for alias in _string_list(other.get("matched_aliases"))
+                for span in _compact_match_spans(question, alias)
+            }
+            if not specific_spans:
+                continue
+            if all(
+                any(
+                    specific_start <= start and end <= specific_end
+                    for specific_start, specific_end in specific_spans
+                )
+                for start, end in generic_spans
+            ):
+                dropped_indexes.add(index)
+                break
+    return [
+        item for index, item in enumerate(normalized) if index not in dropped_indexes
+    ]
+
+
+# 함수 설명: 동일 제품 기준이 증명된 두 지표를 각각 집계한 뒤 outer join하도록 Typed 계획을 보완합니다.
+def _append_catalog_metric_aggregate_merge(
+    pandas_plan: list[Any],
+    *,
+    source_alias: str,
+    aggregations: list[dict[str, Any]],
+    ordinal: int,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Append one catalog-proven metric as aggregate-then-outer-merge.
+
+    The recovery applies only when the existing plan ends in a source-local
+    aggregate (optionally followed by sorting) with an explicit non-empty
+    grain. It never rewrites row-enrichment joins or unsupported Complex plans.
+    """
+
+    normalized = [deepcopy(item) for item in pandas_plan]
+    sort_operations = {"sort", "sort_and_top_n", "top_n", "bottom_n"}
+    terminal_index = len(normalized) - 1
+    while terminal_index >= 0:
+        step = normalized[terminal_index]
+        operation = (
+            str(step.get("operation") or step.get("step") or "").strip().lower()
+            if isinstance(step, dict)
+            else ""
+        )
+        if operation in sort_operations:
+            terminal_index -= 1
+            continue
+        break
+    if terminal_index < 0 or not isinstance(normalized[terminal_index], dict):
+        return normalized, {"status": "not_applicable", "reason": "missing_terminal_step"}
+    terminal = normalized[terminal_index]
+    operation = str(terminal.get("operation") or terminal.get("step") or "").strip().lower()
+    if operation not in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}:
+        return normalized, {"status": "not_applicable", "reason": "terminal_not_source_local_aggregate"}
+    grain = _string_list(
+        terminal.get("group_by")
+        or terminal.get("group_by_columns")
+        or terminal.get("group_columns")
+        or terminal.get("group_cols")
+    )
+    if not grain or not aggregations:
+        return normalized, {"status": "not_applicable", "reason": "aggregate_grain_or_metric_missing"}
+    terminal_ref = str(terminal.get("output_alias") or terminal.get("node_id") or "").strip()
+    if not terminal_ref:
+        return normalized, {"status": "not_applicable", "reason": "terminal_alias_missing"}
+
+    aggregate_node_id = f"catalog_metric_aggregate_{ordinal}"
+    aggregate_alias = f"{source_alias}_by_grain"
+    join_node_id = f"catalog_metric_outer_merge_{ordinal}"
+    join_alias = f"catalog_metric_merge_{ordinal}"
+    new_aggregate = {
+        "node_id": aggregate_node_id,
+        "operation": "groupby_and_aggregate",
+        "inputs": [{"kind": "external_source", "ref": source_alias}],
+        "output_alias": aggregate_alias,
+        "source_alias": source_alias,
+        "group_by": grain,
+        "aggregations": deepcopy(aggregations),
+    }
+    new_join = {
+        "node_id": join_node_id,
+        "operation": "join",
+        "inputs": [
+            {"kind": "node_output", "ref": terminal_ref},
+            {"kind": "node_output", "ref": aggregate_alias},
+        ],
+        "output_alias": join_alias,
+        "left_source_alias": terminal_ref,
+        "right_source_alias": aggregate_alias,
+        "join_type": "outer",
+        "population_policy": "preserve_all_metric_source_keys",
+        "on": grain,
+        "right_value_columns": _string_list(
+            [item.get("output_column") for item in aggregations if isinstance(item, dict)]
+        ),
+        "multi_match_policy": "preserve_rows",
+    }
+    terminal_refs = {
+        value
+        for value in (
+            str(terminal.get("node_id") or "").strip(),
+            str(terminal.get("output_alias") or "").strip(),
+        )
+        if value
+    }
+    suffix = [deepcopy(item) for item in normalized[terminal_index + 1 :]]
+    for step in suffix:
+        if not isinstance(step, dict):
+            continue
+        inputs = step.get("inputs")
+        if isinstance(inputs, list):
+            rewritten_inputs: list[Any] = []
+            for raw_input in inputs:
+                value = deepcopy(raw_input)
+                if (
+                    isinstance(value, dict)
+                    and str(value.get("kind") or "").strip() == "node_output"
+                    and str(value.get("ref") or "").strip() in terminal_refs
+                ):
+                    value["ref"] = join_alias
+                rewritten_inputs.append(value)
+            step["inputs"] = rewritten_inputs
+        if str(step.get("source_alias") or "").strip() in terminal_refs:
+            step["source_alias"] = join_alias
+    merged = [*normalized[: terminal_index + 1], new_aggregate, new_join, *suffix]
+    return merged, {
+        "status": "applied",
+        "grain": grain,
+        "left_terminal": terminal_ref,
+        "right_source_alias": source_alias,
+        "join_alias": join_alias,
+    }
+
+
 def _resolve_execution_domain_selection(
     question: str,
     candidates: dict[str, Any],
@@ -4587,6 +4842,25 @@ def _catalog_supports_domain_column(
 
 
 # 함수 설명: `_catalog_time_scope()`는 04 의도 계획 정규화기 처리 중 TIME·분석 범위 관련 값을 계산·변환하는 내부 helper입니다.
+def _catalog_dataset_matches_source_hint(
+    candidates: dict[str, Any],
+    dataset_key: str,
+    source_hint: str,
+) -> bool:
+    """Match a natural Domain data source to an exact Catalog key or family."""
+
+    normalized_hint = str(source_hint or "").strip().casefold()
+    normalized_dataset = str(dataset_key or "").strip().casefold()
+    if not normalized_hint or not normalized_dataset:
+        return False
+    if normalized_hint == normalized_dataset:
+        return True
+    item = _table_catalog_item(candidates, dataset_key)
+    payload = _metadata_payload(item)
+    family = str(payload.get("dataset_family") or "").strip().casefold()
+    return bool(family and family == normalized_hint)
+
+
 def _catalog_time_scope(item: dict[str, Any]) -> str:
     payload = _metadata_payload(item)
     criteria = (
@@ -5253,6 +5527,14 @@ def _apply_selected_domain_conditions(
             )
             scoped_datasets = set(_string_list(raw.get("dataset_keys") or raw.get("dataset_key")))
             scoped_aliases = set(_string_list(raw.get("source_aliases") or raw.get("source_alias")))
+            # A worker usually writes a natural Domain rule such as "INPUT is
+            # production where OPER_NAME=INPUT" instead of a technical source
+            # alias.  Its data_source is nevertheless an ownership boundary:
+            # apply the condition only to the matching Catalog key/family when
+            # the rule did not declare a narrower scope.
+            source_hint = str(
+                payload.get("data_source") or payload.get("dataset_key") or ""
+            ).strip()
             for job in jobs:
                 if not isinstance(job, dict):
                     continue
@@ -5261,6 +5543,17 @@ def _apply_selected_domain_conditions(
                 if scoped_datasets and dataset_key not in scoped_datasets:
                     continue
                 if scoped_aliases and source_alias not in scoped_aliases:
+                    continue
+                if (
+                    source_hint
+                    and not scoped_datasets
+                    and not scoped_aliases
+                    and not _catalog_dataset_matches_source_hint(
+                        candidates,
+                        dataset_key,
+                        source_hint,
+                    )
+                ):
                     continue
                 if not _catalog_supports_domain_column(candidates, dataset_key, column):
                     continue
@@ -6208,9 +6501,95 @@ def _normalize_row_match_steps(
             )
         normalized_items.append(normalized)
 
+    # A new analysis has no trusted prior-result frame.  When there is exactly
+    # one external source and a model nevertheless inserts a row-match step
+    # whose reference is missing, self-referential, or otherwise unbound, that
+    # step cannot contribute a condition.  Treat it as an accidental no-op and
+    # reconnect the following Typed nodes to the already-proven source instead
+    # of blocking the whole source-local analysis.  Real follow-up matches and
+    # multi-source joins remain untouched.
+    dropped_steps: list[dict[str, Any]] = []
+    replacement_by_alias: dict[str, str] = {}
+    if reference_mode == "none" and len(retrieval_aliases) == 1 and invalid_steps:
+        retained_invalid: list[dict[str, Any]] = []
+        for item in invalid_steps:
+            raw_index = item.get("index")
+            index = int(raw_index) if isinstance(raw_index, int) else -1
+            step = (
+                normalized_items[index]
+                if 0 <= index < len(normalized_items)
+                and isinstance(normalized_items[index], dict)
+                else {}
+            )
+            source_alias = str(step.get("source_alias") or "").strip()
+            reference_alias = str(step.get("reference_source_alias") or "").strip()
+            issues = set(_string_list(item.get("issues")))
+            reference_is_unbound = (
+                not reference_alias
+                or reference_alias == PREVIOUS_RESULT_ALIAS
+                or reference_alias not in retrieval_aliases
+                and reference_alias not in declared_step_outputs
+            )
+            reference_is_self = bool(source_alias and source_alias == reference_alias)
+            if (
+                source_alias == retrieval_aliases[0]
+                and (reference_is_unbound or reference_is_self)
+                and issues
+            ):
+                aliases = _merge_strings(
+                    _string_list(
+                        [step.get("node_id"), step.get("output_alias"), step.get("result_alias")]
+                    )
+                )
+                for alias in aliases:
+                    replacement_by_alias[alias] = source_alias
+                dropped_steps.append(
+                    {
+                        "index": index,
+                        "node_id": str(step.get("node_id") or "").strip(),
+                        "source_alias": source_alias,
+                        "reference_source_alias": reference_alias,
+                        "issues": sorted(issues),
+                        "reason": "new_analysis_unbound_single_source_row_match",
+                    }
+                )
+            else:
+                retained_invalid.append(item)
+        invalid_steps = retained_invalid
+        if dropped_steps:
+            normalized_items = [
+                value
+                for index, value in enumerate(normalized_items)
+                if index not in {item["index"] for item in dropped_steps}
+            ]
+            for step in normalized_items:
+                if not isinstance(step, dict):
+                    continue
+                inputs = step.get("inputs")
+                if isinstance(inputs, list):
+                    rewritten_inputs: list[Any] = []
+                    for raw_input in inputs:
+                        value = deepcopy(raw_input)
+                        if (
+                            isinstance(value, dict)
+                            and str(value.get("kind") or "").strip() == "node_output"
+                        ):
+                            ref = str(value.get("ref") or "").strip()
+                            if ref in replacement_by_alias:
+                                value["kind"] = "external_source"
+                                value["ref"] = replacement_by_alias[ref]
+                        rewritten_inputs.append(value)
+                    step["inputs"] = rewritten_inputs
+                for field in ("source_alias", "left_source_alias", "right_source_alias"):
+                    value = str(step.get(field) or "").strip()
+                    if value in replacement_by_alias:
+                        step[field] = replacement_by_alias[value]
+
     status = "not_needed"
     if normalized_steps:
         status = "applied"
+    if dropped_steps and not normalized_steps:
+        status = "recovered"
     if invalid_steps:
         status = "invalid"
     return normalized_items, {
@@ -6218,8 +6597,140 @@ def _normalize_row_match_steps(
         "step_count": len(normalized_steps),
         "steps": normalized_steps,
         "invalid_steps": invalid_steps,
+        "dropped_steps": dropped_steps,
         "blank_policy": "normalize_blank" if normalized_steps or invalid_steps else "",
         "previous_result_match_contract": previous_result_contract,
+    }
+
+
+# 함수 설명: 생략된 Typed pandas 입력이 앞선 실제 노드 또는 조회 원천과 정확히 일치할 때만 명시 입력으로 복원합니다.
+def _materialize_implicit_step_inputs(
+    items: list[Any],
+    retrieval_jobs: list[dict[str, Any]],
+    reference_mode: str,
+    payload: dict[str, Any] | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Restore an unambiguous implicit Typed-DAG edge without guessing intent.
+
+    Some model responses use a preceding ``node_id`` as ``source_alias`` but
+    omit the equivalent ``inputs`` field and sometimes the producer's output
+    alias. A node id is nevertheless a stable, executable provider identity.
+    Materialize it only when the reference exactly matches a *preceding* node
+    id/output alias or a registered retrieval/previous-result provider. Any
+    unknown, ambiguous, forward, or specialized row-match reference remains
+    unchanged for the established validation and Complex fallback paths.
+    """
+
+    normalized_items: list[Any] = []
+    retrieval_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    previous_aliases = set()
+    if reference_mode == "previous_source":
+        previous_aliases.update(_previous_source_refs(payload or {}).keys())
+    if reference_mode in {"previous_result_rows", "previous_result_transform"}:
+        previous_aliases.update({PREVIOUS_RESULT_ALIAS, "upstream_result"})
+
+    producer_by_reference: dict[str, str] = {}
+    materialized: list[dict[str, Any]] = []
+    generated_node_ids: list[dict[str, str]] = []
+    join_operations = {"join", "merge", "left_join", "outer_join", "compare_presence"}
+    unary_operations = {
+        "apply_filters",
+        "filter",
+        "filter_rows",
+        "filter_result",
+        "select_columns",
+        "project_columns",
+        "projection",
+        "rename_columns",
+        "groupby_and_aggregate",
+        "group_by_and_aggregate",
+        "aggregate",
+        "sort_and_top_n",
+        "sort",
+        "top_n",
+        "bottom_n",
+        "distinct_values",
+        "apply_pandas_function_case",
+        "apply_function_case",
+    }
+    recognized_operations = join_operations | unary_operations
+    used_node_ids = {
+        str(item.get("node_id") or "").strip()
+        for item in items
+        if isinstance(item, dict) and str(item.get("node_id") or "").strip()
+    }
+
+    def resolve_reference(reference: Any) -> dict[str, str] | None:
+        ref = str(reference or "").strip()
+        if not ref:
+            return None
+        producer = producer_by_reference.get(ref)
+        if producer:
+            return {"kind": "node_output", "ref": producer}
+        if ref in retrieval_aliases or ref in previous_aliases:
+            return {"kind": "external_source", "ref": ref}
+        return None
+
+    for ordinal, raw in enumerate(items, start=1):
+        if not isinstance(raw, dict):
+            normalized_items.append(deepcopy(raw))
+            continue
+        step = deepcopy(raw)
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        node_id = str(step.get("node_id") or "").strip()
+        if not node_id and operation in recognized_operations:
+            safe_operation = re.sub(r"[^0-9a-z]+", "_", operation).strip("_") or "operation"
+            candidate = f"step_{ordinal}_{safe_operation}"
+            suffix = 2
+            while candidate in used_node_ids:
+                candidate = f"step_{ordinal}_{safe_operation}_{suffix}"
+                suffix += 1
+            step["node_id"] = candidate
+            node_id = candidate
+            used_node_ids.add(node_id)
+            generated_node_ids.append({"node_id": node_id, "operation": operation})
+        explicit_inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        if not explicit_inputs and operation in recognized_operations:
+            if operation in join_operations:
+                references = [
+                    step.get("left_source_alias") or step.get("source_alias"),
+                    step.get("right_source_alias") or step.get("reference_source_alias"),
+                ]
+            else:
+                references = [step.get("source_alias")]
+            resolved_inputs = [resolve_reference(reference) for reference in references]
+            if references and all(item is not None for item in resolved_inputs):
+                step["inputs"] = [
+                    item for item in resolved_inputs if isinstance(item, dict)
+                ]
+                materialized.append(
+                    {
+                        "node_id": node_id,
+                        "operation": operation,
+                        "inputs": deepcopy(step["inputs"]),
+                    }
+                )
+
+        normalized_items.append(step)
+        if not node_id:
+            continue
+        # A prior node id is always a valid Typed-DAG reference. An explicit
+        # output alias is only an additional spelling of the same provider.
+        producer_by_reference[node_id] = node_id
+        for alias in (step.get("output_alias"), step.get("result_alias")):
+            alias_text = str(alias or "").strip()
+            if alias_text:
+                producer_by_reference[alias_text] = node_id
+
+    return normalized_items, {
+        "status": "applied" if materialized or generated_node_ids else "not_needed",
+        "materialized": materialized[:12],
+        "generated_node_ids": generated_node_ids[:12],
     }
 
 
@@ -9933,6 +10444,13 @@ def _compile_execution_graph(
                 if alias in output_aliases:
                     inputs.append({"kind": "node_output", "ref": output_aliases[alias]})
                     continue
+                # A weak model can omit ``output_alias`` and use the preceding
+                # node id directly as ``source_alias``.  Accept only a node
+                # that has already been emitted; forward/unknown references
+                # remain validation errors rather than becoming a guessed edge.
+                if any(str(node.get("node_id") or "").strip() == alias for node in nodes):
+                    inputs.append({"kind": "node_output", "ref": alias})
+                    continue
                 resolved_leaf = leaf_ref(alias)
                 if resolved_leaf:
                     inputs.append(resolved_leaf)
@@ -10073,6 +10591,7 @@ def _typed_join_declared_key_pair(
     return [], [], ""
 
 
+# 함수 설명: 카탈로그 또는 명시된 Typed 공통 grain으로 조인 키와 좌우 원천 계약을 안전하게 확정합니다.
 def _resolve_join_plan(
     plan: dict[str, Any],
     metadata_refs: list[dict[str, str]],
@@ -10089,16 +10608,29 @@ def _resolve_join_plan(
             if isinstance(item, dict)
             and "join" in str(item.get("operation") or item.get("step") or "").lower()
         ]
-        product_refs = [
+        # Product-key metadata is the authoritative reusable join grain.  An
+        # analysis recipe can be present in the same model response for a
+        # different purpose (ranking, aggregation, display), so merely having
+        # two metadata refs must not make an otherwise explicit Typed join
+        # ambiguous.  Prefer exactly one registered product-key reference;
+        # fall back to one recipe only when no product-key reference exists.
+        product_key_refs = [
             ref
             for ref in metadata_refs
-            if ref.get("section") in {"product_key_columns", "analysis_recipes"}
+            if ref.get("section") == "product_key_columns"
         ]
-        if len(join_steps) == 1 and len(product_refs) == 1:
+        recipe_key_refs = [
+            ref
+            for ref in metadata_refs
+            if ref.get("section") == "analysis_recipes"
+            and _metadata_key_columns(_find_metadata_item(candidates, ref), candidates)
+        ]
+        preferred_key_refs = product_key_refs or recipe_key_refs
+        if len(join_steps) == 1 and len(preferred_key_refs) == 1:
             step = join_steps[0]
             join_items = [
                 {
-                    "metadata_ref": product_refs[0],
+                    "metadata_ref": preferred_key_refs[0],
                     "left_source_alias": (
                         step.get("left_source_alias")
                         or step.get("source_alias")
@@ -10112,6 +10644,35 @@ def _resolve_join_plan(
                     "multi_match_policy": step.get("multi_match_policy"),
                 }
             ]
+        elif len(join_steps) == 1:
+            # ``group_by`` on a Typed join is already an executable shared-key
+            # shorthand.  When no unique metadata key reference survived a
+            # compact/weak model response, use that explicit declaration only
+            # after both Catalog schemas prove every key below.  This is not a
+            # fuzzy column match and never invents a relationship.
+            step = join_steps[0]
+            declared_keys = _string_list(
+                step.get("on")
+                or step.get("left_on")
+                or step.get("group_by")
+            )
+            if declared_keys:
+                join_items = [
+                    {
+                        "canonical_keys": declared_keys,
+                        "left_source_alias": (
+                            step.get("left_source_alias")
+                            or step.get("source_alias")
+                        ),
+                        "right_source_alias": (
+                            step.get("right_source_alias")
+                            or step.get("reference_source_alias")
+                        ),
+                        "join_type": step.get("join_type"),
+                        "right_value_columns": step.get("right_value_columns"),
+                        "multi_match_policy": step.get("multi_match_policy"),
+                    }
+                ]
 
     result: list[dict[str, Any]] = []
     for raw in join_items:
@@ -10120,7 +10681,10 @@ def _resolve_join_plan(
         metadata_ref = _metadata_ref(raw.get("metadata_ref"))
         metadata_item = _find_metadata_item(candidates, metadata_ref)
         metadata_payload = _metadata_payload(metadata_item)
-        canonical_keys = _metadata_key_columns(metadata_item, candidates)
+        canonical_keys = _string_list(raw.get("canonical_keys")) or _metadata_key_columns(
+            metadata_item,
+            candidates,
+        )
         left_alias = str(raw.get("left_source_alias") or "").strip()
         right_alias = str(raw.get("right_source_alias") or "").strip()
         if not left_alias or not right_alias or not canonical_keys:
@@ -10748,6 +11312,555 @@ def _presence_output_contract(
 
 
 # 함수 설명: `_resolve_metric_merge_plan()`는 여러 metric·merge·PLAN 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
+# 함수 설명: `_independent_metric_merge_shape()`는 독립 지표의 source별 집계 후 병합 구조만 엄격하게 식별합니다.
+def _independent_metric_merge_shape(
+    pandas_plan: list[Any],
+    known_external_aliases: set[str],
+    metric_aliases: set[str],
+    canonical_grain: list[str],
+) -> dict[str, Any]:
+    """Return a proven aggregate-then-merge shape, otherwise an empty dict.
+
+    A Typed DAG may contain multiple source aliases for two very different
+    reasons: independent measures need comparison, or rows need enrichment.
+    Only the first shape can safely skip the raw join.  This helper deliberately
+    requires a narrow, inspectable topology so an unproven DAG stays on the
+    existing Typed executor path.
+    """
+
+    normalized_grain = _normalized_metric_merge_columns(canonical_grain)
+    if not normalized_grain or len(normalized_grain) != len(set(normalized_grain)):
+        return {}
+    nodes_by_id, output_aliases = _pandas_plan_lineage(pandas_plan)
+    join_candidates: list[dict[str, Any]] = []
+
+    for index, raw_step in enumerate(pandas_plan):
+        if not isinstance(raw_step, dict):
+            continue
+        operation = str(raw_step.get("operation") or raw_step.get("step") or "").strip().lower()
+        if operation not in {"join", "merge", "outer_join", "left_join"}:
+            continue
+        inputs = [
+            item
+            for item in raw_step.get("inputs", [])
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() in {"external_source", "node_output"}
+            and str(item.get("ref") or "").strip()
+        ]
+        if len(inputs) != 2:
+            continue
+        side_aliases: list[str] = []
+        for item in inputs:
+            aliases = _step_external_source_aliases(
+                {"inputs": [item]},
+                pandas_plan,
+                known_external_aliases,
+            )
+            if len(aliases) != 1:
+                side_aliases = []
+                break
+            side_aliases.append(aliases[0])
+        if (
+            len(side_aliases) != 2
+            or side_aliases[0] == side_aliases[1]
+            or not set(side_aliases).issubset(metric_aliases)
+        ):
+            continue
+        join_type = _metric_merge_join_type(raw_step, operation)
+        if join_type not in {"left", "outer"}:
+            continue
+        population_policy = str(raw_step.get("population_policy") or "").strip().lower()
+        if population_policy and population_policy not in {
+            "left_source_only",
+            "preserve_all_metric_source_keys",
+        }:
+            continue
+        if (
+            _string_list(raw_step.get("right_value_columns"))
+            or _string_list(raw_step.get("left_value_columns"))
+            or _string_list(raw_step.get("aggregations"))
+            or raw_step.get("calculation")
+        ):
+            # These fields state that a row-level relation or a join-time
+            # calculation matters.  Do not rewrite it as an independent merge.
+            continue
+        left_keys, right_keys = _metric_merge_join_keys(raw_step)
+        if (
+            not left_keys
+            or _normalized_metric_merge_columns(left_keys) != normalized_grain
+            or _normalized_metric_merge_columns(right_keys) != normalized_grain
+        ):
+            continue
+        join_candidates.append(
+            {
+                "node_id": str(raw_step.get("node_id") or f"__step_{index + 1}").strip(),
+                "output_alias": str(
+                    raw_step.get("output_alias") or raw_step.get("result_alias") or ""
+                ).strip(),
+                "inputs": inputs,
+                "source_aliases": side_aliases,
+                "join_type": join_type,
+                "population_policy": population_policy,
+            }
+        )
+
+    # Two independent metrics need exactly one eligible binary merge.  More
+    # complex graphs retain their explicit Typed DAG until separately modeled.
+    if len(join_candidates) != 1:
+        return {}
+    join = join_candidates[0]
+    left_alias, right_alias = join["source_aliases"]
+    left_ref = str(join["inputs"][0].get("ref") or "").strip()
+    right_ref = str(join["inputs"][1].get("ref") or "").strip()
+
+    if _metric_merge_is_join_of_source_local_aggregates(
+        left_ref,
+        right_ref,
+        left_alias,
+        right_alias,
+        normalized_grain,
+        nodes_by_id,
+        output_aliases,
+        pandas_plan,
+        known_external_aliases,
+    ):
+        kind = "aggregate_outputs_then_join"
+    elif _metric_merge_is_raw_join_followed_by_local_aggregate(
+        join,
+        left_ref,
+        right_ref,
+        left_alias,
+        right_alias,
+        normalized_grain,
+        nodes_by_id,
+        output_aliases,
+        pandas_plan,
+        known_external_aliases,
+    ):
+        kind = "raw_join_rewritten_as_metric_merge"
+    else:
+        return {}
+
+    return {
+        "kind": kind,
+        "join_node_ids": [join["node_id"]],
+        "source_aliases": [left_alias, right_alias],
+        "join_type": join["join_type"],
+        "population_policy": join["population_policy"]
+        or (
+            "left_source_only"
+            if join["join_type"] == "left"
+            else "preserve_all_metric_source_keys"
+        ),
+    }
+
+
+# 함수 설명: 출력 계약이 충분히 명시된 경우에만 불완전한 지표 병합 계획을 복원합니다.
+# Function description: recover a partial aggregate-then-merge plan from an
+# explicit output contract.  This is deliberately narrower than the normal
+# Typed-DAG path: two source-owned metrics, one outer comparison join, and a
+# shared final grain must all be proven.  It never manufactures a dataset,
+# source alias, join key, or metric column.
+def _output_contract_independent_metric_merge_shape(
+    raw_output_contract: dict[str, Any],
+    pandas_plan: list[Any],
+    known_external_aliases: set[str],
+    metrics: list[dict[str, Any]],
+    canonical_grain: list[str],
+) -> dict[str, Any]:
+    normalized_grain = _normalized_metric_merge_columns(canonical_grain)
+    if not normalized_grain or len(normalized_grain) != len(set(normalized_grain)):
+        return {}
+    if not isinstance(raw_output_contract, dict):
+        return {}
+    result_mode = str(raw_output_contract.get("result_mode") or "").strip().lower()
+    if result_mode != "aggregate":
+        return {}
+
+    contract_metrics = [
+        item
+        for item in metrics
+        if isinstance(item, dict)
+        and str(item.get("contract_source") or "")
+        == "output_contract_metric_binding"
+    ]
+    metric_aliases = {
+        str(item.get("source_alias") or "").strip()
+        for item in contract_metrics
+        if str(item.get("source_alias") or "").strip()
+    }
+    metric_outputs = {
+        _normalized_column_key(item.get("output_column"))
+        for item in contract_metrics
+        if _normalized_column_key(item.get("output_column"))
+    }
+    declared_outputs = {
+        _normalized_column_key(value)
+        for value in _string_list(
+            raw_output_contract.get("metric_columns")
+            or raw_output_contract.get("metrics")
+        )
+        if _normalized_column_key(value)
+    }
+    if (
+        len(metric_aliases) != 2
+        or len(contract_metrics) < 2
+        or not metric_outputs
+        or metric_outputs != declared_outputs
+    ):
+        return {}
+
+    # A recovery is allowed only for a pure final result shape.  Extra result
+    # attributes could mean a row-enrichment relation rather than an
+    # independent metric comparison, so retain the ordinary Typed path.
+    declared_result_columns = _string_list(
+        raw_output_contract.get("result_columns")
+        or raw_output_contract.get("required_columns")
+    )
+    declared_result_keys = {
+        _normalized_column_key(value)
+        for value in declared_result_columns
+        if _normalized_column_key(value)
+    }
+    allowed_result_keys = set(normalized_grain) | metric_outputs
+    if declared_result_keys and not declared_result_keys.issubset(allowed_result_keys):
+        return {}
+
+    candidates: list[dict[str, Any]] = []
+    for index, raw_step in enumerate(pandas_plan):
+        if not isinstance(raw_step, dict):
+            continue
+        operation = str(raw_step.get("operation") or raw_step.get("step") or "").strip().lower()
+        if operation not in {"join", "merge", "outer_join"}:
+            continue
+        inputs = _metric_merge_node_inputs(raw_step)
+        # This recovery does not skip an unrepresented filter/projection
+        # chain.  The source-local path must be directly rooted in the two
+        # retrieval sources that the output contract owns.
+        if (
+            len(inputs) != 2
+            or any(str(item.get("kind") or "").strip() != "external_source" for item in inputs)
+        ):
+            continue
+        side_aliases = [str(item.get("ref") or "").strip() for item in inputs]
+        if (
+            len(set(side_aliases)) != 2
+            or set(side_aliases) != metric_aliases
+            or not set(side_aliases).issubset(known_external_aliases)
+        ):
+            continue
+        join_type = _metric_merge_join_type(raw_step, operation)
+        population_policy = str(raw_step.get("population_policy") or "").strip().lower()
+        if join_type != "outer" or population_policy != "preserve_all_metric_source_keys":
+            continue
+        if _string_list(raw_step.get("left_value_columns")) or _string_list(
+            raw_step.get("aggregations")
+        ) or raw_step.get("calculation"):
+            continue
+
+        left_keys, right_keys = _metric_merge_join_keys(raw_step)
+        normalized_left = _normalized_metric_merge_columns(left_keys)
+        normalized_right = _normalized_metric_merge_columns(right_keys)
+        # The weak plan may omit one final key.  The output contract + both
+        # Catalogs later prove the full aggregate grain; any supplied raw join
+        # key still has to be a non-empty subset of that grain.
+        if (
+            not normalized_left
+            or normalized_left != normalized_right
+            or not set(normalized_left).issubset(set(normalized_grain))
+        ):
+            continue
+
+        right_alias = side_aliases[1]
+        right_metric_columns = {
+            _normalized_column_key(item.get("source_column"))
+            for item in contract_metrics
+            if str(item.get("source_alias") or "").strip() == right_alias
+            and _normalized_column_key(item.get("source_column"))
+        }
+        right_values = {
+            _normalized_column_key(value)
+            for value in _string_list(raw_step.get("right_value_columns"))
+            if _normalized_column_key(value)
+        }
+        # A model may leave a right metric value in the raw join skeleton.
+        # It is safe to erase only when that value is itself declared as an
+        # independent metric owned by the right source.  Any other right-side
+        # value remains a row-enrichment signal and is not rewritten.
+        if right_values and not right_values.issubset(right_metric_columns):
+            continue
+        candidates.append(
+            {
+                "node_id": str(raw_step.get("node_id") or f"__step_{index + 1}").strip(),
+                "source_aliases": side_aliases,
+                "join_type": join_type,
+                "population_policy": population_policy,
+                "metric_output_columns": sorted(metric_outputs),
+            }
+        )
+
+    if len(candidates) != 1:
+        return {}
+    return {
+        "kind": "output_contract_independent_metric_shape",
+        "join_node_ids": [candidates[0]["node_id"]],
+        "source_aliases": candidates[0]["source_aliases"],
+        "join_type": candidates[0]["join_type"],
+        "population_policy": candidates[0]["population_policy"],
+        "metric_output_columns": candidates[0]["metric_output_columns"],
+    }
+
+
+# 함수 설명: `_normalized_metric_merge_columns()`는 집계 병합 key를 대소문자·별칭 비교용 표준 key 목록으로 바꿉니다.
+def _normalized_metric_merge_columns(values: Any) -> list[str]:
+    return [
+        _normalized_column_key(value)
+        for value in _string_list(values)
+        if _normalized_column_key(value)
+    ]
+
+
+# 함수 설명: `_metric_merge_join_type()`은 Typed join 선언에서 안전한 left·outer 모집단 정책을 읽습니다.
+def _metric_merge_join_type(step: dict[str, Any], operation: str) -> str:
+    declared = str(step.get("join_type") or step.get("how") or "").strip().lower()
+    if declared in {"left", "outer"}:
+        return declared
+    if operation == "left_join":
+        return "left"
+    if operation == "outer_join":
+        return "outer"
+    return ""
+
+
+# 함수 설명: `_metric_merge_join_keys()`는 공통·좌측·우측 key 선언을 좌우 source별 key 목록으로 정리합니다.
+def _metric_merge_join_keys(step: dict[str, Any]) -> tuple[list[str], list[str]]:
+    common = _string_list(step.get("on") or step.get("join_keys"))
+    left = _string_list(step.get("left_on") or common)
+    right = _string_list(step.get("right_on") or common)
+    return left, right
+
+
+# 함수 설명: `_metric_merge_node_for_ref()`는 node ID 또는 output alias 참조를 실제 Typed step으로 해석합니다.
+def _metric_merge_node_for_ref(
+    reference: str,
+    nodes_by_id: dict[str, dict[str, Any]],
+    output_aliases: dict[str, str],
+) -> dict[str, Any] | None:
+    node_id = reference if reference in nodes_by_id else output_aliases.get(reference, "")
+    value = nodes_by_id.get(node_id)
+    return value if isinstance(value, dict) else None
+
+
+# 함수 설명: `_metric_merge_node_inputs()`는 metric 병합 구조 판정에 사용할 Typed 입력만 추출합니다.
+def _metric_merge_node_inputs(step: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in step.get("inputs", [])
+        if isinstance(item, dict)
+        and str(item.get("kind") or "").strip() in {"external_source", "node_output"}
+        and str(item.get("ref") or "").strip()
+    ]
+
+
+# 함수 설명: `_metric_merge_is_join_of_source_local_aggregates()`는 양쪽 source가 이미 같은 grain으로 집계됐는지 확인합니다.
+def _metric_merge_is_join_of_source_local_aggregates(
+    left_ref: str,
+    right_ref: str,
+    left_alias: str,
+    right_alias: str,
+    normalized_grain: list[str],
+    nodes_by_id: dict[str, dict[str, Any]],
+    output_aliases: dict[str, str],
+    pandas_plan: list[Any],
+    known_external_aliases: set[str],
+) -> bool:
+    for reference, alias in ((left_ref, left_alias), (right_ref, right_alias)):
+        step = _metric_merge_node_for_ref(reference, nodes_by_id, output_aliases)
+        if not isinstance(step, dict):
+            return False
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation not in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}:
+            return False
+        group_by = _normalized_metric_merge_columns(
+            step.get("group_by") or step.get("group_by_columns") or step.get("group_columns")
+        )
+        if group_by != normalized_grain:
+            return False
+        inputs = _metric_merge_node_inputs(step)
+        if len(inputs) != 1:
+            return False
+        if not _metric_merge_is_source_local_path(
+            str(inputs[0].get("ref") or "").strip(),
+            alias,
+            nodes_by_id,
+            output_aliases,
+            pandas_plan,
+            known_external_aliases,
+            set(),
+        ):
+            return False
+    return True
+
+
+# 함수 설명: `_metric_merge_is_raw_join_followed_by_local_aggregate()`는 안전하게 source별 선집계로 바꿀 수 있는 원본 join 패턴을 확인합니다.
+def _metric_merge_is_raw_join_followed_by_local_aggregate(
+    join: dict[str, Any],
+    left_ref: str,
+    right_ref: str,
+    left_alias: str,
+    right_alias: str,
+    normalized_grain: list[str],
+    nodes_by_id: dict[str, dict[str, Any]],
+    output_aliases: dict[str, str],
+    pandas_plan: list[Any],
+    known_external_aliases: set[str],
+) -> bool:
+    if not all(
+        _metric_merge_is_source_local_path(
+            reference,
+            alias,
+            nodes_by_id,
+            output_aliases,
+            pandas_plan,
+            known_external_aliases,
+            set(),
+        )
+        for reference, alias in ((left_ref, left_alias), (right_ref, right_alias))
+    ):
+        return False
+
+    join_id = str(join.get("node_id") or "").strip()
+    join_alias = str(join.get("output_alias") or "").strip()
+    downstream_aggregates: list[dict[str, Any]] = []
+    for step in pandas_plan:
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation not in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}:
+            continue
+        inputs = _metric_merge_node_inputs(step)
+        if len(inputs) != 1 or str(inputs[0].get("kind") or "").strip() != "node_output":
+            continue
+        reference = str(inputs[0].get("ref") or "").strip()
+        if reference not in {join_id, join_alias}:
+            continue
+        group_by = _normalized_metric_merge_columns(
+            step.get("group_by") or step.get("group_by_columns") or step.get("group_columns")
+        )
+        if group_by == normalized_grain:
+            downstream_aggregates.append(step)
+    return len(downstream_aggregates) == 1
+
+
+# 함수 설명: `_metric_merge_is_source_local_path()`는 조인 한쪽 계보가 하나의 조회 source와 신뢰된 전처리만 쓰는지 확인합니다.
+def _metric_merge_is_source_local_path(
+    reference: str,
+    expected_alias: str,
+    nodes_by_id: dict[str, dict[str, Any]],
+    output_aliases: dict[str, str],
+    pandas_plan: list[Any],
+    known_external_aliases: set[str],
+    visited: set[str],
+) -> bool:
+    if reference in known_external_aliases:
+        return reference == expected_alias
+    step = _metric_merge_node_for_ref(reference, nodes_by_id, output_aliases)
+    if not isinstance(step, dict):
+        return False
+    node_id = str(step.get("node_id") or output_aliases.get(reference) or reference).strip()
+    if not node_id or node_id in visited:
+        return False
+    aliases = _step_external_source_aliases(step, pandas_plan, known_external_aliases)
+    if aliases != [expected_alias]:
+        return False
+    operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+    if operation == "apply_pandas_function_case":
+        # Registered Function Cases are retained in source_transforms and run
+        # before deterministic aggregation.
+        return bool(str(step.get("function_name") or "").strip())
+    if operation in {"apply_filters", "filter", "filter_rows"}:
+        # Retrieval filters are executed in the deterministic preamble.  A
+        # filter node carrying its own condition would otherwise be omitted.
+        if _metric_merge_has_inline_filter(step):
+            return False
+    elif operation not in {"select_columns", "rename_columns", "project"}:
+        return False
+    if operation in {"select_columns", "rename_columns", "project"} and _metric_merge_has_inline_projection(step):
+        return False
+    inputs = _metric_merge_node_inputs(step)
+    if len(inputs) != 1:
+        return False
+    return _metric_merge_is_source_local_path(
+        str(inputs[0].get("ref") or "").strip(),
+        expected_alias,
+        nodes_by_id,
+        output_aliases,
+        pandas_plan,
+        known_external_aliases,
+        {*visited, node_id},
+    )
+
+
+# 함수 설명: `_metric_merge_has_inline_filter()`는 조회 계약에 없는 step 내부 필터가 있는지 판별합니다.
+def _metric_merge_has_inline_filter(step: dict[str, Any]) -> bool:
+    return any(
+        isinstance(step.get(key), (dict, list)) and bool(step.get(key))
+        for key in ("filters", "conditions", "filter_conditions", "where")
+    )
+
+
+# 함수 설명: `_metric_merge_has_inline_projection()`는 source별 집계 계약에서 생략될 수 없는 투영·rename 선언을 판별합니다.
+def _metric_merge_has_inline_projection(step: dict[str, Any]) -> bool:
+    return any(
+        bool(_string_list(step.get(key)))
+        for key in ("projection", "columns", "select_columns", "rename_map", "column_mapping")
+    )
+
+
+# 함수 설명: `_metric_merge_source_ownership_is_unambiguous()`는 모든 grain·metric이 각 source Table Catalog에 명시됐는지 확인합니다.
+def _metric_merge_source_ownership_is_unambiguous(
+    metrics: list[dict[str, Any]],
+    canonical_grain: list[str],
+    jobs_by_alias: dict[str, dict[str, Any]],
+    candidates: dict[str, Any],
+) -> bool:
+    """Require every source/grain/metric reference to have a catalog witness."""
+
+    aliases = {
+        str(metric.get("source_alias") or "").strip()
+        for metric in metrics
+        if isinstance(metric, dict) and str(metric.get("source_alias") or "").strip()
+    }
+    if len(aliases) < 2 or any(alias not in jobs_by_alias for alias in aliases):
+        return False
+    for alias in aliases:
+        dataset_key = str(jobs_by_alias[alias].get("dataset_key") or "").strip()
+        if not dataset_key:
+            return False
+        for grain in canonical_grain:
+            if not _catalog_supports_domain_column(candidates, dataset_key, grain):
+                return False
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            return False
+        alias = str(metric.get("source_alias") or "").strip()
+        source_column = str(metric.get("source_column") or "").strip()
+        output_column = str(metric.get("output_column") or "").strip()
+        if (
+            not alias
+            or not source_column
+            or not output_column
+            or not _catalog_supports_domain_column(
+                candidates,
+                str(jobs_by_alias[alias].get("dataset_key") or "").strip(),
+                source_column,
+            )
+        ):
+            return False
+    return True
+
+
+# 함수 설명: `_resolve_metric_merge_plan()`는 여러 metric 병합 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
 def _resolve_metric_merge_plan(
     plan: dict[str, Any],
     candidates: dict[str, Any],
@@ -10786,6 +11899,7 @@ def _resolve_metric_merge_plan(
         jobs_by_alias,
         business_time_guard,
         raw_metrics,
+        raw_output,
     )
     metric_aliases = {
         str(item.get("source_alias") or "").strip()
@@ -10802,40 +11916,44 @@ def _resolve_metric_merge_plan(
         business_time_guard.get("status") == "applied"
         and metric_aliases.intersection(temporal_aliases)
     )
-    typed_join_aliases: set[str] = set()
-    typed_join_nodes: list[str] = []
-    typed_population_policies: list[str] = []
-    for index, step in enumerate(pandas_plan):
-        if not isinstance(step, dict):
-            continue
-        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
-        if operation not in {"join", "merge", "outer_join", "left_join"}:
-            continue
-        inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
-        side_aliases: list[str] = []
-        for item in inputs[:2]:
-            if not isinstance(item, dict):
-                continue
-            aliases = _step_external_source_aliases(
-                {"inputs": [item]},
-                pandas_plan,
-                set(jobs_by_alias),
-            )
-            if len(aliases) == 1:
-                side_aliases.append(aliases[0])
-        if len(side_aliases) != 2 or side_aliases[0] == side_aliases[1]:
-            continue
-        if not set(side_aliases).issubset(metric_aliases):
-            continue
-        typed_join_aliases.update(side_aliases)
-        typed_join_nodes.append(
-            str(step.get("node_id") or f"__step_{index + 1}").strip()
-        )
-        population_policy = str(step.get("population_policy") or "").strip().lower()
-        if population_policy:
-            typed_population_policies.append(population_policy)
-    if not temporal_merge and len(typed_join_aliases) < 2:
+    canonical_grain = _string_list(
+        resolved_grain_plan.get("canonical_columns")
+        or resolved_grain_plan.get("grain_columns")
+    )
+    if not canonical_grain:
+        canonical_grain = _string_list(raw_output.get("grain_columns"))
+    if not canonical_grain:
         return {}
+
+    # A multi-source plan is not automatically a metric merge.  In particular,
+    # equipment/Recipe enrichment also owns metrics on both sides, but it must
+    # retain its raw row-level join.  Promote only a structurally proven
+    # independent-metric shape: either two source-local aggregates are joined,
+    # or a raw join followed by one aggregate can be losslessly rewritten to
+    # source-local aggregation before the merge.
+    metric_merge_shape = _independent_metric_merge_shape(
+        pandas_plan,
+        set(jobs_by_alias),
+        metric_aliases,
+        canonical_grain,
+    )
+    # A weak planner can leave the raw outer-join skeleton but omit the
+    # source-local aggregate nodes.  If the output contract independently
+    # proves both source-owned metrics and the final shared grain, recover the
+    # deterministic aggregate-then-merge contract.  This path is outer-only
+    # and rejects row-enrichment values, so it cannot turn an equipment/UPH
+    # style relationship into an independent metric comparison.
+    if not metric_merge_shape:
+        metric_merge_shape = _output_contract_independent_metric_merge_shape(
+            raw_output,
+            pandas_plan,
+            set(jobs_by_alias),
+            metrics,
+            canonical_grain,
+        )
+    if not metric_merge_shape and not temporal_merge:
+        return {}
+    typed_join_aliases = set(_string_list(metric_merge_shape.get("source_aliases")))
     if typed_join_aliases:
         metrics = [
             item
@@ -10849,14 +11967,12 @@ def _resolve_metric_merge_plan(
         }
         if len(metrics) < 2 or len(metric_aliases) < 2:
             return {}
-
-    canonical_grain = _string_list(
-        resolved_grain_plan.get("canonical_columns")
-        or resolved_grain_plan.get("grain_columns")
-    )
-    if not canonical_grain:
-        canonical_grain = _string_list(raw_output.get("grain_columns"))
-    if not canonical_grain:
+    if not _metric_merge_source_ownership_is_unambiguous(
+        metrics,
+        canonical_grain,
+        jobs_by_alias,
+        candidates,
+    ):
         return {}
 
     grain_mappings: list[dict[str, Any]] = []
@@ -10876,30 +11992,37 @@ def _resolve_metric_merge_plan(
                 "source_candidates": source_candidates,
             }
         )
-    use_left_population = bool(
-        typed_population_policies
-        and set(typed_population_policies) == {"left_source_only"}
-    )
+    join_type = str(metric_merge_shape.get("join_type") or "").strip().lower()
+    if not join_type:
+        # Existing temporal metric contracts predate explicit Typed join
+        # provenance.  Preserve their compatible outer-population behavior.
+        join_type = "outer"
+    population_policy = str(
+        metric_merge_shape.get("population_policy") or ""
+    ).strip().lower()
+    if not population_policy:
+        population_policy = (
+            "left_source_only"
+            if join_type == "left"
+            else "preserve_all_metric_source_keys"
+        )
     source_transforms = _metric_merge_source_transforms(
         pandas_plan,
         metric_aliases,
-        typed_join_nodes,
+        _string_list(metric_merge_shape.get("join_node_ids")),
         function_cases,
     )
     return {
         "operation": "merge_metric_sources",
-        "join_type": "left" if use_left_population else "outer",
-        "population_policy": (
-            "left_source_only"
-            if use_left_population
-            else "preserve_all_metric_source_keys"
-        ),
+        "join_type": join_type,
+        "population_policy": population_policy,
         "selection_source": (
             "temporal_metric_contract"
-            if temporal_merge
-            else "typed_metric_join_lineage"
+            if temporal_merge and not metric_merge_shape
+            else "typed_independent_metric_shape"
         ),
-        "join_node_ids": typed_join_nodes,
+        "execution_shape": str(metric_merge_shape.get("kind") or "temporal_metric_merge"),
+        "join_node_ids": _string_list(metric_merge_shape.get("join_node_ids")),
         "source_transforms": source_transforms,
         "grain_mappings": grain_mappings,
         "metrics": metrics,
@@ -11097,6 +12220,7 @@ def _resolved_metric_specs(
     jobs_by_alias: dict[str, dict[str, Any]],
     business_time_guard: dict[str, Any],
     raw_metrics: list[str],
+    raw_output_contract: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     temporal_by_alias = {
         str(item.get("source_alias") or "").strip(): item
@@ -11110,7 +12234,23 @@ def _resolved_metric_specs(
     for alias, job in jobs_by_alias.items():
         dataset_key = str(job.get("dataset_key") or "").strip()
         table_item = _table_catalog_item(candidates, dataset_key)
-        candidates_for_source = _aggregation_contracts_for_alias(pandas_plan, alias)
+        # An aggregate after a join can contain columns from several sources.
+        # Retain it only when this source's own Table Catalog proves the metric
+        # column belongs to the source; otherwise a raw join can incorrectly
+        # claim both measures for whichever alias is visited first.
+        candidates_for_source = _output_contract_metric_contracts_for_alias(
+            raw_output_contract or {},
+            alias,
+            dataset_key,
+        )
+        candidates_for_source.extend(
+            _aggregation_contracts_for_alias(
+            pandas_plan,
+            alias,
+            candidates=candidates,
+            dataset_key=dataset_key,
+            )
+        )
         candidates_for_source.extend(
             _domain_metric_contracts_for_dataset(candidates, dataset_key)
         )
@@ -11164,12 +12304,74 @@ def _resolved_metric_specs(
                     "aggregation": aggregation,
                     "output_column": output_column,
                     "fill_value": "" if aggregation == "collect_unique" else 0,
+                    # A missing metric source is not the same thing as a zero
+                    # observation for averages/extrema.  Keep the explicit
+                    # policy in the merge contract; legacy imported contracts
+                    # without this field retain their prior behavior.
+                    "fill_on_absence": aggregation
+                    in {"sum", "count", "nunique", "collect_unique"},
+                    "contract_source": str(contract.get("contract_source") or ""),
                     "source_candidates": _merge_strings(
                         _mapped_column_candidates(table_item, source_column),
                         [source_column],
                     ),
                 }
             )
+    return result
+
+
+# 함수 설명: 출력 계약의 소스·데이터셋 근거가 명확한 metric만 추출합니다.
+# Function description: derive an explicit metric only when the output
+# contract itself identifies the exact retrieval source and dataset.  This is
+# intentionally narrower than lexical metric matching: it lets a partial
+# Typed DAG be restored without inventing a source or a column.
+def _output_contract_metric_contracts_for_alias(
+    raw_output_contract: dict[str, Any],
+    source_alias: str,
+    dataset_key: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(raw_output_contract, dict) or not source_alias or not dataset_key:
+        return []
+    bindings = raw_output_contract.get("metric_bindings")
+    if not isinstance(bindings, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for raw_binding in bindings:
+        if not isinstance(raw_binding, dict):
+            continue
+        binding_alias = str(raw_binding.get("source_alias") or "").strip()
+        binding_dataset = str(raw_binding.get("dataset_key") or "").strip()
+        if binding_alias != source_alias:
+            continue
+        if binding_dataset and binding_dataset.casefold() != dataset_key.casefold():
+            continue
+        source_column = str(
+            raw_binding.get("source_column")
+            or raw_binding.get("metric_column")
+            or raw_binding.get("column")
+            or ""
+        ).strip()
+        output_column = str(
+            raw_binding.get("output_column")
+            or raw_binding.get("result_column")
+            or ""
+        ).strip()
+        aggregation = str(
+            raw_binding.get("aggregation")
+            or raw_binding.get("aggregation_method")
+            or ""
+        ).strip().lower()
+        if not source_column or not output_column or not aggregation:
+            continue
+        result.append(
+            {
+                "source_column": source_column,
+                "aggregation": aggregation,
+                "output_column": output_column,
+                "metric_aliases": _string_list(raw_binding.get("aliases")),
+                "contract_source": "output_contract_metric_binding",
+            }
+        )
     return result
 
 
@@ -12059,6 +13261,16 @@ def _materialize_resolved_join_steps(
         return pandas_plan, {"status": "not_needed", "applied": []}
     normalized = deepcopy(pandas_plan)
     applied: list[dict[str, Any]] = []
+    known_external_aliases = {
+        str(item.get("left_source_alias") or "").strip()
+        for item in resolved_join_plan
+        if isinstance(item, dict)
+    } | {
+        str(item.get("right_source_alias") or "").strip()
+        for item in resolved_join_plan
+        if isinstance(item, dict)
+    }
+    known_external_aliases.discard("")
     for resolved in resolved_join_plan:
         if not isinstance(resolved, dict) or resolved.get("strict") is not True:
             continue
@@ -12087,15 +13299,28 @@ def _materialize_resolved_join_steps(
             declared_right = str(
                 step.get("right_source_alias") or step.get("reference_source_alias") or ""
             ).strip()
-            refs = [
-                str(item.get("ref") or "").strip()
+            side_lineage: list[str] = []
+            inputs = [
+                item
                 for item in step.get("inputs", [])
                 if isinstance(item, dict)
-                and str(item.get("kind") or "").strip() == "external_source"
+                and str(item.get("kind") or "").strip()
+                in {"external_source", "node_output"}
+                and str(item.get("ref") or "").strip()
             ]
+            for item in inputs:
+                aliases = _step_external_source_aliases(
+                    {"inputs": [item]},
+                    normalized,
+                    known_external_aliases,
+                )
+                if len(aliases) != 1:
+                    side_lineage = []
+                    break
+                side_lineage.append(aliases[0])
             if (
                 (declared_left == left_alias and declared_right == right_alias)
-                or (left_alias in refs and right_alias in refs)
+                or (side_lineage == [left_alias, right_alias])
             ):
                 matches.append(step)
         if len(matches) != 1:
@@ -12137,6 +13362,14 @@ def _materialize_resolved_join_steps(
             right_values = _string_list(resolved.get("right_value_columns"))
             if right_values:
                 step["right_value_columns"] = right_values
+                # Keep the provenance only until the Typed frame compiler has
+                # checked the immediate right-hand output.  A Catalog owns
+                # raw source columns; it does not own columns after a groupby.
+                # The marker lets that compiler distinguish a safe metadata
+                # repair from an explicit model-authored value contract.
+                step["_catalog_materialized_right_value_columns"] = list(
+                    right_values
+                )
         applied.append(
             {
                 "node_id": str(step.get("node_id") or "").strip(),
@@ -12261,6 +13494,418 @@ def _materialize_derived_aggregate_join_keys(
     return normalized, {
         "status": "applied" if applied else "not_needed",
         "applied": applied,
+    }
+
+
+# 함수 설명: Typed 단계별 frame schema와 column ownership을 컴파일해 Catalog 원본 컬럼이 집계 결과로 새어 나가지 않도록 합니다.
+def _compile_typed_frame_contract(
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Compile a compact, deterministic frame contract for supported Typed DAGs.
+
+    Table Catalog columns belong only to external retrieval frames.  A Typed
+    operation produces a new frame, so downstream joins must inspect the
+    immediate input schema rather than reuse a raw Catalog value declaration.
+    This pass is intentionally non-invasive for unsupported/ambiguous plans:
+    it records ``not_applicable`` and lets the existing Complex path decide.
+    It only rewrites a Catalog-injected value when an upstream aggregate
+    explicitly proves the replacement output column.
+    """
+
+    normalized = deepcopy(pandas_plan)
+    external_states: dict[str, dict[str, Any]] = {}
+    for job in retrieval_jobs:
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        if not alias or not dataset_key:
+            continue
+        table_payload = _metadata_payload(_table_catalog_item(candidates, dataset_key))
+        columns = _catalog_declared_columns(table_payload)
+        # The hydrated retrieval job is the execution-time schema witness.  It
+        # can carry a more recent canonical-to-physical mapping than the
+        # metadata candidate (for example DEN -> DENSITY), so compile both
+        # names into the source frame state.  This never invents a mapping: it
+        # merely preserves trusted Catalog/hydrator aliases already supplied to
+        # the retriever.
+        mapping_sources = [
+            table_payload.get("filter_mappings"),
+            job.get("filter_mappings"),
+            job.get("standard_column_aliases"),
+        ]
+        for mappings in mapping_sources:
+            if not isinstance(mappings, dict):
+                continue
+            columns = _merge_strings(
+                columns,
+                _string_list(list(mappings.keys())),
+                *[_string_list(values) for values in mappings.values()],
+            )
+        external_states[alias] = {
+            "columns": columns,
+            "known": bool(columns),
+            "aggregate_outputs": {},
+            "owners": {
+                _normalized_column_key(column): {alias}
+                for column in columns
+                if _normalized_column_key(column)
+            },
+        }
+
+    states: dict[str, dict[str, Any]] = dict(external_states)
+    repairs: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    compiled_node_count = 0
+
+    # 함수 설명: 표준화된 이름으로 현재 frame에서 요청 컬럼의 실제 이름을 찾습니다.
+    def same_column(columns: list[str], requested: Any) -> str:
+        requested_key = _normalized_column_key(requested)
+        return next(
+            (
+                column
+                for column in columns
+                if requested_key and _normalized_column_key(column) == requested_key
+            ),
+            "",
+        )
+
+    # 함수 설명: source alias 또는 앞 단계 output alias에 연결된 frame 상태를 찾습니다.
+    def state_for_reference(reference: Any) -> dict[str, Any] | None:
+        return states.get(str(reference or "").strip())
+
+    # 함수 설명: 다음 단계에서 안전하게 갱신할 수 있도록 frame 상태를 복사합니다.
+    def copy_state(value: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "columns": list(value.get("columns") or []),
+            "known": value.get("known") is True,
+            "aggregate_outputs": deepcopy(value.get("aggregate_outputs") or {}),
+            "owners": {
+                key: set(values)
+                for key, values in (value.get("owners") or {}).items()
+                if isinstance(values, set)
+            },
+        }
+
+    # 함수 설명: Typed 단계의 입력을 공통 형식으로 정규화해 DAG 연결을 확인합니다.
+    def step_inputs(step: dict[str, Any], operation: str) -> list[dict[str, Any]]:
+        items = [item for item in step.get("inputs", []) if isinstance(item, dict)]
+        if items:
+            return items
+        if operation in {"join", "merge", "left_join", "outer_join"}:
+            return [
+                {"ref": value}
+                for value in _string_list(
+                    [
+                        step.get("left_source_alias") or step.get("source_alias"),
+                        step.get("right_source_alias")
+                        or step.get("reference_source_alias"),
+                    ]
+                )
+            ]
+        source_alias = str(step.get("source_alias") or "").strip()
+        return [{"ref": source_alias}] if source_alias else []
+
+    for index, step in enumerate(normalized):
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        node_id = str(step.get("node_id") or "").strip()
+        output_alias = str(step.get("output_alias") or step.get("result_alias") or node_id).strip()
+        inputs = step_inputs(step, operation)
+        input_states = [state_for_reference(item.get("ref")) for item in inputs]
+        if not node_id or not output_alias or not inputs or any(state is None for state in input_states):
+            # The existing execution graph still owns generic DAG errors.
+            # Do not turn an unsupported Complex plan into a new global block.
+            step.pop("_catalog_materialized_right_value_columns", None)
+            continue
+        states_list = [state for state in input_states if isinstance(state, dict)]
+
+        if operation in {
+            "apply_filters",
+            "filter",
+            "filter_rows",
+            "apply_pandas_function_case",
+            "apply_function_case",
+            "apply_row_match_groups",
+            "sort_and_top_n",
+            "sort",
+            "top_n",
+            "bottom_n",
+        }:
+            if len(states_list) != 1:
+                step.pop("_catalog_materialized_right_value_columns", None)
+                continue
+            result_state = copy_state(states_list[0])
+            if operation in {"sort_and_top_n", "sort", "top_n", "bottom_n"}:
+                sort_by = str(step.get("sort_by") or "").strip()
+                if result_state["known"] and sort_by and not same_column(result_state["columns"], sort_by):
+                    issues.append(
+                        {
+                            "type": "typed_frame_sort_column_missing",
+                            "node_id": node_id,
+                            "column": sort_by,
+                        }
+                    )
+        elif operation in {"select_columns", "project_columns", "projection"}:
+            if len(states_list) != 1:
+                step.pop("_catalog_materialized_right_value_columns", None)
+                continue
+            result_state = copy_state(states_list[0])
+            projection = _string_list(step.get("projection") or step.get("columns"))
+            if projection and result_state["known"]:
+                missing = [
+                    column
+                    for column in projection
+                    if not same_column(result_state["columns"], column)
+                ]
+                if missing:
+                    issues.append(
+                        {
+                            "type": "typed_frame_projection_column_missing",
+                            "node_id": node_id,
+                            "columns": missing,
+                        }
+                    )
+                else:
+                    result_state["columns"] = [
+                        same_column(result_state["columns"], column)
+                        for column in projection
+                    ]
+                    allowed = {
+                        _normalized_column_key(column)
+                        for column in result_state["columns"]
+                    }
+                    result_state["aggregate_outputs"] = {
+                        raw: [
+                            output
+                            for output in outputs
+                            if _normalized_column_key(output) in allowed
+                        ]
+                        for raw, outputs in result_state["aggregate_outputs"].items()
+                    }
+                    result_state["owners"] = {
+                        key: owners
+                        for key, owners in result_state["owners"].items()
+                        if key in allowed
+                    }
+        elif operation in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}:
+            if len(states_list) != 1:
+                step.pop("_catalog_materialized_right_value_columns", None)
+                continue
+            input_state = states_list[0]
+            group_by = _string_list(
+                step.get("group_by")
+                or step.get("group_by_columns")
+                or step.get("group_columns")
+            )
+            aggregations = [
+                item for item in step.get("aggregations", []) if isinstance(item, dict)
+            ]
+            if not aggregations:
+                step.pop("_catalog_materialized_right_value_columns", None)
+                continue
+            missing = []
+            aggregate_outputs: dict[str, list[str]] = {}
+            owners: dict[str, set[str]] = {}
+            for column in group_by:
+                actual = same_column(input_state["columns"], column)
+                if input_state["known"] and not actual:
+                    missing.append(column)
+                elif actual:
+                    owners[_normalized_column_key(actual)] = set(
+                        input_state.get("owners", {}).get(_normalized_column_key(actual), set())
+                    )
+            for aggregation in aggregations:
+                source_column = str(
+                    aggregation.get("column")
+                    or aggregation.get("source_column")
+                    or aggregation.get("agg_column")
+                    or ""
+                ).strip()
+                output_column = str(
+                    aggregation.get("output_column")
+                    or aggregation.get("result_column")
+                    or ""
+                ).strip()
+                actual = same_column(input_state["columns"], source_column)
+                if input_state["known"] and (not source_column or not output_column or not actual):
+                    missing.append(source_column or output_column)
+                    continue
+                if not source_column or not output_column:
+                    continue
+                aggregate_outputs.setdefault(_normalized_column_key(source_column), []).append(
+                    output_column
+                )
+                owners[_normalized_column_key(output_column)] = set(
+                    input_state.get("owners", {}).get(_normalized_column_key(actual), set())
+                )
+            if missing:
+                issues.append(
+                    {
+                        "type": "typed_frame_aggregate_column_missing",
+                        "node_id": node_id,
+                        "columns": _merge_strings(missing),
+                    }
+                )
+            result_state = {
+                "columns": _merge_strings(group_by, [
+                    item.get("output_column") or item.get("result_column")
+                    for item in aggregations
+                    if isinstance(item, dict)
+                ]),
+                "known": input_state["known"],
+                "aggregate_outputs": aggregate_outputs,
+                "owners": owners,
+            }
+        elif operation in {"join", "merge", "left_join", "outer_join"}:
+            if len(states_list) != 2:
+                step.pop("_catalog_materialized_right_value_columns", None)
+                continue
+            left_state, right_state = states_list
+            left_keys = _string_list(step.get("left_on"))
+            right_keys = _string_list(step.get("right_on"))
+            if not left_keys:
+                left_keys = _string_list(step.get("on") or step.get("group_by"))
+                right_keys = list(left_keys)
+            if not left_keys or len(left_keys) != len(right_keys):
+                step.pop("_catalog_materialized_right_value_columns", None)
+                continue
+            missing_keys = []
+            if left_state["known"]:
+                missing_keys.extend(
+                    f"left.{column}"
+                    for column in left_keys
+                    if not same_column(left_state["columns"], column)
+                )
+            if right_state["known"]:
+                missing_keys.extend(
+                    f"right.{column}"
+                    for column in right_keys
+                    if not same_column(right_state["columns"], column)
+                )
+            if missing_keys:
+                issues.append(
+                    {
+                        "type": "typed_frame_join_key_missing",
+                        "node_id": node_id,
+                        "columns": missing_keys,
+                    }
+                )
+
+            catalog_values = _string_list(
+                step.pop("_catalog_materialized_right_value_columns", [])
+            )
+            right_values = _string_list(step.get("right_value_columns"))
+            if catalog_values and right_state["known"]:
+                rebound: list[str] = []
+                unresolved: list[str] = []
+                for column in catalog_values:
+                    actual = same_column(right_state["columns"], column)
+                    if actual:
+                        rebound.append(actual)
+                        continue
+                    derived = [
+                        output
+                        for output in right_state.get("aggregate_outputs", {}).get(
+                            _normalized_column_key(column), []
+                        )
+                        if same_column(right_state["columns"], output)
+                    ]
+                    if derived:
+                        rebound.extend(derived)
+                    else:
+                        unresolved.append(column)
+                if unresolved:
+                    issues.append(
+                        {
+                            "type": "catalog_join_value_not_in_right_output",
+                            "node_id": node_id,
+                            "catalog_columns": catalog_values,
+                            "unresolved_columns": unresolved,
+                        }
+                    )
+                else:
+                    rebound = _merge_strings(rebound)
+                    if rebound != right_values:
+                        step["right_value_columns"] = rebound
+                        right_values = rebound
+                        repairs.append(
+                            {
+                                "node_id": node_id,
+                                "kind": "catalog_raw_value_to_aggregate_output",
+                                "from": catalog_values,
+                                "to": rebound,
+                            }
+                        )
+            if right_values and right_state["known"]:
+                missing_values = [
+                    column
+                    for column in right_values
+                    if not same_column(right_state["columns"], column)
+                ]
+                if missing_values:
+                    issues.append(
+                        {
+                            "type": "typed_frame_join_value_missing",
+                            "node_id": node_id,
+                            "columns": missing_values,
+                        }
+                    )
+
+            join_type = str(step.get("join_type") or "inner").strip().lower()
+            selected_right = right_values or list(right_state["columns"])
+            right_key_ids = {_normalized_column_key(column) for column in right_keys}
+            left_columns = list(left_state["columns"])
+            if join_type == "left" and right_values:
+                selected_right = [
+                    column
+                    for column in right_values
+                    if _normalized_column_key(column) not in right_key_ids
+                ]
+            result_columns = _merge_strings(left_columns, selected_right)
+            owners = {
+                key: set(values)
+                for key, values in (left_state.get("owners") or {}).items()
+            }
+            for column in selected_right:
+                key = _normalized_column_key(column)
+                if key and key not in owners:
+                    owners[key] = set(
+                        right_state.get("owners", {}).get(key, set())
+                    )
+            result_state = {
+                "columns": result_columns,
+                "known": left_state["known"] and right_state["known"],
+                "aggregate_outputs": {},
+                "owners": owners,
+            }
+        else:
+            step.pop("_catalog_materialized_right_value_columns", None)
+            continue
+
+        states[node_id] = result_state
+        states[output_alias] = result_state
+        compiled_node_count += 1
+
+    status = (
+        "invalid"
+        if issues
+        else "repaired"
+        if repairs
+        else "verified"
+        if compiled_node_count
+        else "not_applicable"
+    )
+    return normalized, {
+        "version": 1,
+        "status": status,
+        "compiled_node_count": compiled_node_count,
+        # Keep this compact because it can travel through later prompt nodes.
+        "repairs": repairs[:8],
+        "issues": issues[:8],
     }
 
 

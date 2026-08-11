@@ -445,6 +445,82 @@ def test_v2_normalizer_reconciles_metric_alias_from_unique_dataset_key():
     assert plan["output_contract"]["metric_bindings"][0]["source_alias"] == "production_source"
 
 
+def test_v2_normalizer_grounds_typed_inputs_from_output_contract_dataset_witness():
+    """A contract dataset witness may repair only its exact display alias."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan, steps, trace = normalizer._reconcile_execution_source_aliases(
+        {
+            "output_contract": {
+                "metric_bindings": [
+                    {
+                        "source_alias": "actual_display",
+                        "dataset_key": "production_today",
+                        "source_column": "PRODUCTION",
+                    },
+                    {
+                        "source_alias": "wip_display",
+                        "dataset_key": "wip_today",
+                        "source_column": "WIP",
+                    },
+                ]
+            }
+        },
+        [
+            {"dataset_key": "production_today", "source_alias": "prod_actual"},
+            {"dataset_key": "wip_today", "source_alias": "wip_actual"},
+        ],
+        [
+            {
+                "operation": "join",
+                "inputs": [
+                    {"kind": "external_source", "ref": "actual_display"},
+                    {"kind": "external_source", "ref": "wip_display"},
+                ],
+            }
+        ],
+    )
+
+    assert trace["status"] == "applied"
+    assert [item["ref"] for item in steps[0]["inputs"]] == [
+        "prod_actual",
+        "wip_actual",
+    ]
+    assert [
+        item["source_alias"] for item in plan["output_contract"]["metric_bindings"]
+    ] == ["prod_actual", "wip_actual"]
+
+
+def test_v2_normalizer_does_not_ground_typed_input_when_dataset_witness_is_ambiguous():
+    """Two runtime jobs for one dataset must retain the model reference."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    _, steps, trace = normalizer._reconcile_execution_source_aliases(
+        {
+            "output_contract": {
+                "metric_bindings": [
+                    {"source_alias": "actual_display", "dataset_key": "production"}
+                ]
+            }
+        },
+        [
+            {"dataset_key": "production", "source_alias": "production_current"},
+            {"dataset_key": "production", "source_alias": "production_previous"},
+        ],
+        [
+            {
+                "operation": "aggregate",
+                "inputs": [
+                    {"kind": "external_source", "ref": "actual_display"}
+                ],
+            }
+        ],
+    )
+
+    assert trace["status"] == "not_needed"
+    assert steps[0]["inputs"][0]["ref"] == "actual_display"
+
+
 def test_v2_normalizer_keeps_metric_alias_when_dataset_key_is_ambiguous():
     """Dataset-key evidence must not redirect one of several same-table jobs."""
 
@@ -2406,6 +2482,515 @@ def test_v2_typed_outer_aggregate_join_keeps_right_only_group_key():
 
     right_only = result.loc[result["GROUP"].eq("B")].iloc[0]
     assert right_only["ITEM_COUNT"] == 1
+
+
+def _independent_metric_catalogs() -> dict:
+    return {
+        "domain_items": [],
+        "main_flow_filters": [],
+        "table_catalog_items": [
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "columns": ["TECH", "PRODUCTION"],
+                    "filter_mappings": {"TECH": ["TECH"]},
+                },
+            },
+            {
+                "dataset_key": "wip_today",
+                "payload": {
+                    "columns": ["TECH", "WIP"],
+                    "filter_mappings": {"TECH": ["TECH"]},
+                },
+            },
+        ],
+    }
+
+
+def _raw_metric_join_plan() -> tuple[dict, list[dict], list[dict]]:
+    jobs = [
+        {"dataset_key": "production_today", "source_alias": "prod_src", "filters": {}},
+        {"dataset_key": "wip_today", "source_alias": "wip_src", "filters": {}},
+    ]
+    steps = [
+        {
+            "node_id": "join_raw_metrics",
+            "operation": "join",
+            "inputs": [
+                {"kind": "external_source", "ref": "prod_src"},
+                {"kind": "external_source", "ref": "wip_src"},
+            ],
+            "output_alias": "joined_metrics",
+            "on": ["TECH"],
+            "join_type": "outer",
+            "population_policy": "preserve_all_metric_source_keys",
+        },
+        {
+            "node_id": "aggregate_after_join",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "node_output", "ref": "joined_metrics"}],
+            "output_alias": "final_metrics",
+            "group_by": ["TECH"],
+            "aggregations": [
+                {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION_SUM"},
+                {"column": "WIP", "method": "sum", "output_column": "WIP_SUM"},
+            ],
+        },
+    ]
+    plan = {
+        "output_contract": {
+            "result_mode": "aggregate",
+            "grain_columns": ["TECH"],
+            "metric_columns": ["PRODUCTION_SUM", "WIP_SUM"],
+            "required_columns": ["TECH", "PRODUCTION_SUM", "WIP_SUM"],
+            "result_columns": ["TECH", "PRODUCTION_SUM", "WIP_SUM"],
+            "strict_result_columns": True,
+        }
+    }
+    return plan, jobs, steps
+
+
+def test_independent_raw_metric_join_is_compiled_to_source_local_merge():
+    """Raw source joins are rewritten only for a proven independent metric shape."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    resolver, executor, _ = _modules()
+    plan, jobs, steps = _raw_metric_join_plan()
+    merge = normalizer._resolve_metric_merge_plan(
+        plan,
+        _independent_metric_catalogs(),
+        jobs,
+        steps,
+        {"canonical_columns": ["TECH"]},
+        {},
+        [],
+    )
+
+    assert merge["execution_shape"] == "raw_join_rewritten_as_metric_merge"
+    assert merge["join_type"] == "outer"
+    assert {item["source_alias"] for item in merge["metrics"]} == {"prod_src", "wip_src"}
+    assert {item["output_column"] for item in merge["metrics"]} == {"PRODUCTION_SUM", "WIP_SUM"}
+
+    payload = {
+        "intent_plan": {
+            **plan,
+            "retrieval_jobs": jobs,
+            "pandas_execution_plan": steps,
+            "resolved_metric_merge_plan": merge,
+            "intent_ir": {"route_source_aliases": ["prod_src", "wip_src"], "operations": ["join", "groupby_and_aggregate"]},
+            "resolved_execution_graph": {"external_source_requirements": []},
+        },
+        "runtime_sources": {
+            "prod_src": [
+                {"TECH": "A", "PRODUCTION": 10},
+                {"TECH": "A", "PRODUCTION": 20},
+                {"TECH": "B", "PRODUCTION": 5},
+            ],
+            "wip_src": [
+                {"TECH": "A", "WIP": 2},
+                {"TECH": "A", "WIP": 3},
+                {"TECH": "C", "WIP": 7},
+            ],
+        },
+        "source_results": [
+            {"source_alias": "prod_src", "dataset_key": "production_today", "status": "ok", "columns": ["TECH", "PRODUCTION"]},
+            {"source_alias": "wip_src", "dataset_key": "wip_today", "status": "ok", "columns": ["TECH", "WIP"]},
+        ],
+        "trace": {"inspection": {}},
+    }
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    assert resolved["simple_analysis_contract"]["deterministic_operation"] == "merge_metric_sources"
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "",
+        model_invoker=lambda _: (_ for _ in ()).throw(AssertionError("metric merge must not call pandas LLM")),
+        repair_prompt_template="repair",
+    )
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"TECH": "A", "PRODUCTION_SUM": 30, "WIP_SUM": 5},
+        {"TECH": "B", "PRODUCTION_SUM": 5, "WIP_SUM": 0},
+        {"TECH": "C", "PRODUCTION_SUM": 0, "WIP_SUM": 7},
+    ]
+
+
+def test_explicit_output_contract_recovers_partial_outer_metric_merge():
+    """A partial raw outer join can recover only from explicit source ownership."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    resolver, executor, _ = _modules()
+    plan, jobs, _ = _raw_metric_join_plan()
+    plan["output_contract"]["metric_bindings"] = [
+        {
+            "source_alias": "prod_src",
+            "dataset_key": "production_today",
+            "source_column": "PRODUCTION",
+            "aggregation": "sum",
+            "output_column": "PRODUCTION_SUM",
+        },
+        {
+            "source_alias": "wip_src",
+            "dataset_key": "wip_today",
+            "source_column": "WIP",
+            "aggregation": "sum",
+            "output_column": "WIP_SUM",
+        },
+    ]
+    # The weak plan kept the comparison join, but omitted both source-local
+    # aggregates.  It also leaves the right metric on the raw join.  The
+    # explicit output contract is sufficient to restore aggregate-then-merge.
+    steps = [
+        {
+            "node_id": "partial_raw_join",
+            "operation": "join",
+            "inputs": [
+                {"kind": "external_source", "ref": "prod_src"},
+                {"kind": "external_source", "ref": "wip_src"},
+            ],
+            "output_alias": "partial_join",
+            "on": ["TECH"],
+            "join_type": "outer",
+            "population_policy": "preserve_all_metric_source_keys",
+            "right_value_columns": ["WIP"],
+        }
+    ]
+    merge = normalizer._resolve_metric_merge_plan(
+        plan,
+        _independent_metric_catalogs(),
+        jobs,
+        steps,
+        {"canonical_columns": ["TECH"]},
+        {},
+        [],
+    )
+
+    assert merge["execution_shape"] == "output_contract_independent_metric_shape"
+    assert merge["join_type"] == "outer"
+    assert {item["source_alias"] for item in merge["metrics"]} == {
+        "prod_src",
+        "wip_src",
+    }
+
+    payload = {
+        "intent_plan": {
+            **plan,
+            "retrieval_jobs": jobs,
+            "pandas_execution_plan": steps,
+            "resolved_metric_merge_plan": merge,
+            "intent_ir": {
+                "route_source_aliases": ["prod_src", "wip_src"],
+                "operations": ["join"],
+            },
+            "resolved_execution_graph": {"external_source_requirements": []},
+        },
+        "runtime_sources": {
+            "prod_src": [{"TECH": "A", "PRODUCTION": 10}],
+            "wip_src": [{"TECH": "B", "WIP": 3}],
+        },
+        "source_results": [
+            {
+                "source_alias": "prod_src",
+                "dataset_key": "production_today",
+                "status": "ok",
+                "columns": ["TECH", "PRODUCTION"],
+            },
+            {
+                "source_alias": "wip_src",
+                "dataset_key": "wip_today",
+                "status": "ok",
+                "columns": ["TECH", "WIP"],
+            },
+        ],
+        "trace": {"inspection": {}},
+    }
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    assert resolved["simple_analysis_contract"]["deterministic_operation"] == "merge_metric_sources"
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "",
+        model_invoker=lambda _: (_ for _ in ()).throw(
+            AssertionError("recovered metric merge must not call pandas LLM")
+        ),
+        repair_prompt_template="repair",
+    )
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"TECH": "A", "PRODUCTION_SUM": 10, "WIP_SUM": 0},
+        {"TECH": "B", "PRODUCTION_SUM": 0, "WIP_SUM": 3},
+    ]
+
+
+def test_partial_outer_metric_merge_rejects_row_enrichment_value():
+    """A right-side attribute outside metric ownership cannot be rewritten."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan, jobs, _ = _raw_metric_join_plan()
+    plan["output_contract"]["metric_bindings"] = [
+        {
+            "source_alias": "prod_src",
+            "dataset_key": "production_today",
+            "source_column": "PRODUCTION",
+            "aggregation": "sum",
+            "output_column": "PRODUCTION_SUM",
+        },
+        {
+            "source_alias": "wip_src",
+            "dataset_key": "wip_today",
+            "source_column": "WIP",
+            "aggregation": "sum",
+            "output_column": "WIP_SUM",
+        },
+    ]
+    steps = [
+        {
+            "node_id": "partial_enrichment_join",
+            "operation": "join",
+            "inputs": [
+                {"kind": "external_source", "ref": "prod_src"},
+                {"kind": "external_source", "ref": "wip_src"},
+            ],
+            "on": ["TECH"],
+            "join_type": "outer",
+            "population_policy": "preserve_all_metric_source_keys",
+            "right_value_columns": ["UNRELATED_ATTRIBUTE"],
+        }
+    ]
+
+    merge = normalizer._resolve_metric_merge_plan(
+        plan,
+        _independent_metric_catalogs(),
+        jobs,
+        steps,
+        {"canonical_columns": ["TECH"]},
+        {},
+        [],
+    )
+    assert merge == {}
+
+
+def test_partial_outer_metric_merge_uses_full_output_grain_over_raw_key_subset():
+    """A proven final grain prevents a weak raw join from collapsing keys."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    resolver, executor, _ = _modules()
+    candidates = _independent_metric_catalogs()
+    for item in candidates["table_catalog_items"]:
+        item["payload"]["columns"].append("ORG")
+        item["payload"]["filter_mappings"]["ORG"] = ["ORG"]
+    jobs = [
+        {"dataset_key": "production_today", "source_alias": "prod_src", "filters": {}},
+        {"dataset_key": "wip_today", "source_alias": "wip_src", "filters": {}},
+    ]
+    plan = {
+        "output_contract": {
+            "result_mode": "aggregate",
+            "grain_columns": ["TECH", "ORG"],
+            "metric_columns": ["PRODUCTION_SUM", "WIP_SUM"],
+            "result_columns": ["TECH", "ORG", "PRODUCTION_SUM", "WIP_SUM"],
+            "metric_bindings": [
+                {
+                    "source_alias": "prod_src",
+                    "dataset_key": "production_today",
+                    "source_column": "PRODUCTION",
+                    "aggregation": "sum",
+                    "output_column": "PRODUCTION_SUM",
+                },
+                {
+                    "source_alias": "wip_src",
+                    "dataset_key": "wip_today",
+                    "source_column": "WIP",
+                    "aggregation": "sum",
+                    "output_column": "WIP_SUM",
+                },
+            ],
+        }
+    }
+    # ``ORG`` is absent from the model's raw join key, but it is declared in
+    # the final output grain and both catalogs prove it.  The recovery must
+    # aggregate and merge by the full output grain instead of duplicating it.
+    steps = [
+        {
+            "node_id": "weak_raw_join",
+            "operation": "join",
+            "inputs": [
+                {"kind": "external_source", "ref": "prod_src"},
+                {"kind": "external_source", "ref": "wip_src"},
+            ],
+            "on": ["TECH"],
+            "join_type": "outer",
+            "population_policy": "preserve_all_metric_source_keys",
+            "right_value_columns": ["WIP"],
+        }
+    ]
+    merge = normalizer._resolve_metric_merge_plan(
+        plan,
+        candidates,
+        jobs,
+        steps,
+        {"canonical_columns": ["TECH", "ORG"]},
+        {},
+        [],
+    )
+    assert [
+        item["canonical_column"] for item in merge["grain_mappings"]
+    ] == ["TECH", "ORG"]
+
+    payload = {
+        "intent_plan": {
+            **plan,
+            "retrieval_jobs": jobs,
+            "pandas_execution_plan": steps,
+            "resolved_metric_merge_plan": merge,
+            "intent_ir": {"route_source_aliases": ["prod_src", "wip_src"]},
+            "resolved_execution_graph": {"external_source_requirements": []},
+        },
+        "runtime_sources": {
+            "prod_src": [
+                {"TECH": "A", "ORG": "1", "PRODUCTION": 10},
+                {"TECH": "A", "ORG": "2", "PRODUCTION": 20},
+            ],
+            "wip_src": [
+                {"TECH": "A", "ORG": "1", "WIP": 3},
+                {"TECH": "A", "ORG": "3", "WIP": 7},
+            ],
+        },
+        "source_results": [
+            {"source_alias": "prod_src", "dataset_key": "production_today", "status": "ok"},
+            {"source_alias": "wip_src", "dataset_key": "wip_today", "status": "ok"},
+        ],
+        "trace": {"inspection": {}},
+    }
+    executed = executor.execute_hybrid_analysis(
+        resolver.resolve_simple_analysis_contract(payload),
+        "",
+        model_invoker=lambda _: (_ for _ in ()).throw(
+            AssertionError("full-grain recovery must not call pandas LLM")
+        ),
+        repair_prompt_template="repair",
+    )
+    assert executed["data"]["rows"] == [
+        {"TECH": "A", "ORG": "1", "PRODUCTION_SUM": 10, "WIP_SUM": 3},
+        {"TECH": "A", "ORG": "2", "PRODUCTION_SUM": 20, "WIP_SUM": 0},
+        {"TECH": "A", "ORG": "3", "PRODUCTION_SUM": 0, "WIP_SUM": 7},
+    ]
+
+
+def test_row_enrichment_join_is_not_rewritten_as_independent_metric_merge():
+    """Equipment/UPH-style raw joins retain their row-level relationship."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "domain_items": [],
+        "main_flow_filters": [],
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": ["EQP_ID", "EQP_MODEL", "RECIPE_ID", "OPER_NAME", "LEAD"]},
+            },
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {"columns": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME", "UPH"]},
+            },
+        ],
+    }
+    jobs = [
+        {"dataset_key": "equipment_assign", "source_alias": "assign_src", "filters": {}},
+        {"dataset_key": "eqp_uph", "source_alias": "uph_src", "filters": {}},
+    ]
+    steps = [
+        {
+            "node_id": "join_assign_uph",
+            "operation": "join",
+            "inputs": [
+                {"kind": "external_source", "ref": "assign_src"},
+                {"kind": "external_source", "ref": "uph_src"},
+            ],
+            "output_alias": "joined_assign_uph",
+            "left_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            "right_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            "join_type": "left",
+            "population_policy": "left_source_only",
+            "right_value_columns": ["UPH"],
+        },
+        {
+            "node_id": "aggregate_by_lead",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "node_output", "ref": "joined_assign_uph"}],
+            "output_alias": "lead_summary",
+            "group_by": ["LEAD"],
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                {"column": "UPH", "method": "mean", "output_column": "UPH_AVG"},
+            ],
+        },
+    ]
+    plan = {
+        "output_contract": {
+            "grain_columns": ["LEAD"],
+            "metric_columns": ["EQP_COUNT", "UPH_AVG"],
+            "required_columns": ["LEAD", "EQP_COUNT", "UPH_AVG"],
+        }
+    }
+
+    merge = normalizer._resolve_metric_merge_plan(
+        plan,
+        candidates,
+        jobs,
+        steps,
+        {"canonical_columns": ["LEAD"]},
+        {},
+        [],
+    )
+    assert merge == {}
+
+
+def test_metric_merge_does_not_zero_fill_an_absent_average():
+    """An unavailable average stays absent while additive quantities can be zero."""
+
+    _, executor, _ = _modules()
+    result = executor._execute_metric_source_merge(
+        {
+            "operation": "merge_metric_sources",
+            "join_type": "outer",
+            "fill_zero_on_success": True,
+            "grain_mappings": [
+                {
+                    "canonical_column": "GROUP",
+                    "output_column": "GROUP",
+                    "source_candidates": {"quantity": ["GROUP"], "rate": ["GROUP"]},
+                }
+            ],
+            "metrics": [
+                {
+                    "source_alias": "quantity",
+                    "source_candidates": ["QTY"],
+                    "output_column": "QTY_SUM",
+                    "aggregation": "sum",
+                    "fill_value": 0,
+                    "fill_on_absence": True,
+                },
+                {
+                    "source_alias": "rate",
+                    "source_candidates": ["UPH"],
+                    "output_column": "UPH_AVG",
+                    "aggregation": "mean",
+                    "fill_value": 0,
+                    "fill_on_absence": False,
+                },
+            ],
+        },
+        {
+            "quantity": pd.DataFrame([{"GROUP": "A", "QTY": 10}]),
+            "rate": pd.DataFrame([{"GROUP": "B", "UPH": 200}]),
+        },
+        pd,
+    )
+    row_a = result.loc[result["GROUP"].eq("A")].iloc[0]
+    row_b = result.loc[result["GROUP"].eq("B")].iloc[0]
+    assert row_a["QTY_SUM"] == 10
+    assert pd.isna(row_a["UPH_AVG"])
+    assert row_b["QTY_SUM"] == 0
+    assert row_b["UPH_AVG"] == 200
 
 
 def test_intent_ir_authoritatively_excludes_unused_retrieval_source_from_fast_route():
@@ -7412,6 +7997,286 @@ def test_v2_matching_aggregate_grains_materialize_a_safe_typed_join_without_llm(
     ]
 
 
+def test_v2_frame_contract_rebinds_catalog_raw_values_to_aggregate_outputs():
+    """Catalog raw values cannot leak through a join fed by an aggregate frame."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    raw_steps = [
+        {
+            "node_id": "aggregate_production",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "production_src"}],
+            "output_alias": "production_by_product",
+            "group_by": ["PRODUCT"],
+            "aggregations": [
+                {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION_SUM"}
+            ],
+        },
+        {
+            "node_id": "aggregate_equipment",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "equipment_src"}],
+            "output_alias": "equipment_by_product",
+            "group_by": ["PRODUCT"],
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQP_LIST"},
+            ],
+        },
+        {
+            "node_id": "join_product_equipment",
+            "operation": "join",
+            "inputs": [
+                {"kind": "node_output", "ref": "production_by_product"},
+                {"kind": "node_output", "ref": "equipment_by_product"},
+            ],
+            "output_alias": "final_result",
+            "join_type": "left",
+        },
+    ]
+    steps, _ = normalizer._materialize_derived_aggregate_join_keys(raw_steps)
+    steps, materialization = normalizer._materialize_resolved_join_steps(
+        steps,
+        [
+            {
+                "strict": True,
+                "left_source_alias": "production_src",
+                "right_source_alias": "equipment_src",
+                "left_keys": ["PRODUCT"],
+                "right_keys": ["PRODUCT"],
+                "right_value_columns": ["EQP_ID"],
+                "join_type": "left",
+            }
+        ],
+    )
+    assert materialization["status"] == "applied"
+    assert steps[-1]["right_value_columns"] == ["EQP_ID"]
+
+    candidates = {
+        "table_catalog_items": [
+            {"dataset_key": "production", "payload": {"columns": ["PRODUCT", "PRODUCTION"]}},
+            {"dataset_key": "equipment_assign", "payload": {"columns": ["PRODUCT", "EQP_ID"]}},
+        ],
+        "domain_items": [],
+        "main_flow_filters": [],
+    }
+    jobs = [
+        {"dataset_key": "production", "source_alias": "production_src"},
+        {"dataset_key": "equipment_assign", "source_alias": "equipment_src"},
+    ]
+    compiled, trace = normalizer._compile_typed_frame_contract(steps, candidates, jobs)
+
+    assert trace["status"] == "repaired"
+    assert trace["repairs"] == [
+        {
+            "node_id": "join_product_equipment",
+            "kind": "catalog_raw_value_to_aggregate_output",
+            "from": ["EQP_ID"],
+            "to": ["EQP_COUNT", "EQP_LIST"],
+        }
+    ]
+    assert compiled[-1]["right_value_columns"] == ["EQP_COUNT", "EQP_LIST"]
+    assert "_catalog_materialized_right_value_columns" not in compiled[-1]
+
+    resolver, executor, _ = _modules()
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": jobs,
+            "pandas_execution_plan": compiled,
+            "typed_frame_contract": trace,
+            "output_contract": {
+                "result_mode": "aggregate",
+                "result_columns": ["PRODUCT", "PRODUCTION_SUM", "EQP_COUNT", "EQP_LIST"],
+                "required_columns": ["PRODUCT", "PRODUCTION_SUM", "EQP_COUNT", "EQP_LIST"],
+                "strict_result_columns": True,
+            },
+            "resolved_execution_graph": {"validation_errors": []},
+            "validation_errors": [],
+        },
+        "runtime_sources": {
+            "production_src": [
+                {"PRODUCT": "A", "PRODUCTION": 30},
+                {"PRODUCT": "B", "PRODUCTION": 20},
+            ],
+            "equipment_src": [
+                {"PRODUCT": "A", "EQP_ID": "E1"},
+                {"PRODUCT": "A", "EQP_ID": "E2"},
+                {"PRODUCT": "B", "EQP_ID": "E3"},
+            ],
+        },
+        "source_results": [
+            {"source_alias": "production_src", "columns": ["PRODUCT", "PRODUCTION"]},
+            {"source_alias": "equipment_src", "columns": ["PRODUCT", "EQP_ID"]},
+        ],
+        "trace": {"inspection": {}},
+    }
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "Pandas model must not be called",
+        model_invoker=lambda prompt: calls.append(prompt) or "{}",
+        repair_prompt_template="repair",
+    )
+
+    assert calls == []
+    assert resolved["simple_analysis_contract"]["operation"] == "execute_typed_pandas_plan"
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"PRODUCT": "A", "PRODUCTION_SUM": 30, "EQP_COUNT": 2, "EQP_LIST": "E1, E2"},
+        {"PRODUCT": "B", "PRODUCTION_SUM": 20, "EQP_COUNT": 1, "EQP_LIST": "E3"},
+    ]
+
+
+def test_v2_frame_contract_keeps_catalog_value_for_a_direct_right_frame():
+    """The same generic check preserves a Catalog value when the input is raw."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    steps = [
+        {
+            "node_id": "join_raw",
+            "operation": "join",
+            "inputs": [
+                {"kind": "external_source", "ref": "left_src"},
+                {"kind": "external_source", "ref": "right_src"},
+            ],
+            "output_alias": "joined",
+            "on": ["PRODUCT"],
+            "join_type": "left",
+            "right_value_columns": ["UPH"],
+            "_catalog_materialized_right_value_columns": ["UPH"],
+        }
+    ]
+    candidates = {
+        "table_catalog_items": [
+            {"dataset_key": "left", "payload": {"columns": ["PRODUCT", "PRODUCTION"]}},
+            {"dataset_key": "right", "payload": {"columns": ["PRODUCT", "UPH"]}},
+        ],
+        "domain_items": [],
+        "main_flow_filters": [],
+    }
+    jobs = [
+        {"dataset_key": "left", "source_alias": "left_src"},
+        {"dataset_key": "right", "source_alias": "right_src"},
+    ]
+    compiled, trace = normalizer._compile_typed_frame_contract(steps, candidates, jobs)
+
+    assert trace["status"] == "verified"
+    assert compiled[0]["right_value_columns"] == ["UPH"]
+    assert "_catalog_materialized_right_value_columns" not in compiled[0]
+
+
+def test_v2_frame_contract_accepts_trusted_hydrated_column_aliases():
+    """A physical Catalog schema is compatible with its trusted canonical mapping."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    steps = [
+        {
+            "node_id": "aggregate_source",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "source"}],
+            "output_alias": "summary",
+            "group_by": ["DEN", "PKG_TYPE1"],
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"}
+            ],
+        }
+    ]
+    candidates = {
+        "table_catalog_items": [
+            {"dataset_key": "equipment", "payload": {"columns": ["DENSITY", "PKG1", "EQUIP_ID"]}}
+        ],
+        "domain_items": [],
+        "main_flow_filters": [],
+    }
+    jobs = [
+        {
+            "dataset_key": "equipment",
+            "source_alias": "source",
+            "filter_mappings": {
+                "DEN": ["DENSITY"],
+                "PKG_TYPE1": ["PKG1"],
+                "EQP_ID": ["EQUIP_ID"],
+            },
+        }
+    ]
+
+    _, trace = normalizer._compile_typed_frame_contract(steps, candidates, jobs)
+
+    assert trace["status"] == "verified"
+    assert trace["issues"] == []
+
+
+def test_v2_runtime_frame_contract_keeps_invalid_aggregate_join_off_typed_execution():
+    """A model-authored stale raw column falls back before deterministic execution."""
+
+    resolver, _, _ = _modules()
+    payload = {
+        "intent_plan": {
+            "retrieval_jobs": [
+                {"dataset_key": "production", "source_alias": "production_src", "filters": {}},
+                {"dataset_key": "equipment_assign", "source_alias": "equipment_src", "filters": {}},
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "aggregate_production",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "external_source", "ref": "production_src"}],
+                    "output_alias": "production_by_product",
+                    "group_by": ["PRODUCT"],
+                    "aggregations": [
+                        {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION_SUM"}
+                    ],
+                },
+                {
+                    "node_id": "aggregate_equipment",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "external_source", "ref": "equipment_src"}],
+                    "output_alias": "equipment_by_product",
+                    "group_by": ["PRODUCT"],
+                    "aggregations": [
+                        {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"}
+                    ],
+                },
+                {
+                    "node_id": "join_product_equipment",
+                    "operation": "join",
+                    "inputs": [
+                        {"kind": "node_output", "ref": "production_by_product"},
+                        {"kind": "node_output", "ref": "equipment_by_product"},
+                    ],
+                    "output_alias": "final_result",
+                    "on": ["PRODUCT"],
+                    "join_type": "left",
+                    "right_value_columns": ["EQP_ID"],
+                },
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "result_columns": ["PRODUCT", "PRODUCTION_SUM", "EQP_COUNT"],
+                "required_columns": ["PRODUCT", "PRODUCTION_SUM", "EQP_COUNT"],
+                "strict_result_columns": True,
+            },
+            "resolved_execution_graph": {"validation_errors": []},
+            "validation_errors": [],
+        },
+        "runtime_sources": {
+            "production_src": [{"PRODUCT": "A", "PRODUCTION": 10}],
+            "equipment_src": [{"PRODUCT": "A", "EQP_ID": "E1"}],
+        },
+        "source_results": [
+            {"source_alias": "production_src", "columns": ["PRODUCT", "PRODUCTION"]},
+            {"source_alias": "equipment_src", "columns": ["PRODUCT", "EQP_ID"]},
+        ],
+        "trace": {"inspection": {}},
+    }
+
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+
+    assert resolved["trace"]["inspection"]["typed_frame_runtime_contract"]["status"] == "invalid"
+    assert resolved["simple_analysis_contract"].get("operation") != "execute_typed_pandas_plan"
+
+
 def test_v2_typed_join_prefers_catalog_proven_declared_shared_grain_over_metric_ref():
     """A metric reference cannot replace a Typed join's common source grain."""
 
@@ -7902,3 +8767,557 @@ def test_metric_binding_lineage_reassigns_unique_join_source_owner():
     assert reconciled[0]["dataset_key"] == "equipment_assign"
     assert reconciled[1]["source_alias"] == "uph_src"
     assert reconciled[1]["dataset_key"] == "eqp_uph"
+
+
+def test_candidate_byte_fit_preserves_exact_domain_backing_catalogs_before_incidental_tables():
+    builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    candidates = {
+        "domain_items": [],
+        "table_catalog_items": [
+            {"dataset_key": "production", "payload": {"columns": ["DATE", "PRODUCTION"]}},
+            {"dataset_key": "wip", "payload": {"columns": ["DATE", "WIP"]}},
+            {"dataset_key": "incidental", "payload": {"description": "x" * 8000}},
+        ],
+        "main_flow_filters": [],
+        "runtime_function_helpers": [],
+    }
+
+    fitted, trace = builder._fit_bytes(
+        candidates,
+        4096,
+        1,
+        protected_table_dataset_keys={"production", "wip"},
+    )
+
+    assert trace["truncated"] is True
+    assert [item["dataset_key"] for item in fitted["table_catalog_items"]] == [
+        "production",
+        "wip",
+    ]
+
+
+def test_v2_catalog_metric_coverage_recovers_missing_source_as_aggregate_then_outer_merge():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    product_grain = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
+    candidates = {
+        "domain_items": [
+            {
+                "section": "quantity_terms",
+                "key": "input_quantity",
+                "payload": {
+                    "aliases": ["input actual"],
+                    "data_source": "production",
+                    "column": "PRODUCTION",
+                    "aggregation_method": "sum",
+                    "filters": [{"column": "OPER_NAME", "operator": "eq", "value": "INPUT"}],
+                },
+            },
+            {
+                "section": "quantity_terms",
+                "key": "generic_actual",
+                "payload": {
+                    "aliases": ["actual"],
+                    "data_source": "production",
+                    "column": "PRODUCTION",
+                    "aggregation_method": "sum",
+                },
+            },
+            {
+                "section": "quantity_terms",
+                "key": "wip_quantity",
+                "payload": {
+                    "aliases": ["wip"],
+                    "data_source": "wip",
+                    "column": "WIP",
+                    "aggregation_method": "sum",
+                },
+            },
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "production",
+                "payload": {
+                    "dataset_family": "production",
+                    "columns": ["DATE", "OPER_NAME", *product_grain, "PRODUCTION"],
+                },
+            },
+            {
+                "dataset_key": "wip",
+                "payload": {
+                    "dataset_family": "wip",
+                    "columns": ["DATE", "OPER_NAME", *product_grain, "WIP"],
+                },
+            },
+        ],
+    }
+    refs = [
+        {"section": "quantity_terms", "key": "input_quantity"},
+        {"section": "quantity_terms", "key": "generic_actual"},
+        {"section": "quantity_terms", "key": "wip_quantity"},
+    ]
+    jobs, steps, trace = normalizer._ensure_selected_metric_sources(
+        {"request": {"question": "input actual versus wip"}},
+        [{"dataset_key": "wip", "source_alias": "wip_source"}],
+        [
+            {
+                "node_id": "wip_aggregate",
+                "operation": "groupby_and_aggregate",
+                "inputs": [{"kind": "external_source", "ref": "wip_source"}],
+                "output_alias": "wip_by_product",
+                "source_alias": "wip_source",
+                "group_by": product_grain,
+                "aggregations": [{"column": "WIP", "method": "sum", "output_column": "WIP"}],
+            },
+            {
+                "node_id": "wip_rank",
+                "operation": "sort_and_top_n",
+                "inputs": [{"kind": "node_output", "ref": "wip_by_product"}],
+                "output_alias": "ranked_wip",
+                "sort_by": "WIP",
+                "order": "desc",
+            },
+        ],
+        candidates,
+        refs,
+    )
+
+    assert trace["status"] == "applied"
+    assert [job["dataset_key"] for job in jobs] == ["wip", "production"]
+    assert [step["operation"] for step in steps] == [
+        "groupby_and_aggregate",
+        "groupby_and_aggregate",
+        "join",
+        "sort_and_top_n",
+    ]
+    assert steps[2]["join_type"] == "outer"
+    assert steps[2]["on"] == product_grain
+    assert steps[2]["right_value_columns"] == ["PRODUCTION"]
+    assert steps[-1]["inputs"] == [{"kind": "node_output", "ref": "catalog_metric_merge_1"}]
+
+    scoped_jobs, scope_trace = normalizer._apply_selected_domain_conditions(
+        jobs,
+        candidates,
+        refs,
+    )
+    assert scope_trace["status"] == "applied"
+    by_dataset = {job["dataset_key"]: job for job in scoped_jobs}
+    assert by_dataset["production"]["filters"] == {
+        "OPER_NAME": {"operator": "eq", "value": "INPUT"}
+    }
+    assert "filters" not in by_dataset["wip"]
+
+
+def test_v2_new_analysis_drops_unbound_single_source_row_match_and_rewires_downstream_input():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    steps, trace = normalizer._normalize_row_match_steps(
+        [
+            {
+                "node_id": "invented_match",
+                "operation": "apply_row_match_groups",
+                "inputs": [{"kind": "external_source", "ref": "lot_source"}],
+                "source_alias": "lot_source",
+                "reference_source_alias": "not_a_real_source",
+                "match_columns": ["LOT_ID"],
+                "output_alias": "matched_lots",
+            },
+            {
+                "node_id": "select_lots",
+                "operation": "select_columns",
+                "inputs": [{"kind": "node_output", "ref": "matched_lots"}],
+                "source_alias": "matched_lots",
+                "output_alias": "final_lots",
+            },
+        ],
+        [{"dataset_key": "lot_status", "source_alias": "lot_source"}],
+        "none",
+        {},
+    )
+
+    assert trace["status"] == "recovered"
+    assert trace["dropped_steps"][0]["node_id"] == "invented_match"
+    assert [step["node_id"] for step in steps] == ["select_lots"]
+    assert steps[0]["inputs"] == [{"kind": "external_source", "ref": "lot_source"}]
+    assert steps[0]["source_alias"] == "lot_source"
+
+
+def test_v2_materializes_implicit_prior_node_inputs_for_top_product_equipment_plan():
+    """A compact model DAG may use a prior node id without an output alias."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    jobs = [
+        {"dataset_key": "production_today", "source_alias": "prod_df"},
+        {"dataset_key": "equipment_assign", "source_alias": "equipment_assign"},
+    ]
+    raw_steps = [
+        {
+            "node_id": "agg_prod",
+            "operation": "groupby_and_aggregate",
+            "source_alias": "prod_df",
+            "group_by": ["PRODUCT"],
+            "aggregations": [
+                {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION"}
+            ],
+        },
+        {
+            "node_id": "sort_top_products",
+            "operation": "sort_and_top_n",
+            "inputs": [{"kind": "node_output", "ref": "agg_prod"}],
+            "output_alias": "top_prod_df",
+            "sort_by": "PRODUCTION",
+            "order": "desc",
+            "limit": 3,
+        },
+        {
+            "node_id": "join_eqp",
+            "operation": "join",
+            "left_source_alias": "top_prod_df",
+            "right_source_alias": "equipment_assign",
+            "join_type": "left",
+        },
+        {
+            "node_id": "agg_eqp_count_and_list",
+            "operation": "groupby_and_aggregate",
+            "source_alias": "join_eqp",
+            "group_by": ["PRODUCT", "PRODUCTION"],
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQUIPMENT_COUNT"},
+                {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQUIPMENT_LIST"},
+            ],
+        },
+    ]
+
+    steps, trace = normalizer._materialize_implicit_step_inputs(
+        raw_steps,
+        jobs,
+        "none",
+        {},
+    )
+
+    assert trace["status"] == "applied"
+    assert steps[0]["inputs"] == [{"kind": "external_source", "ref": "prod_df"}]
+    assert steps[2]["inputs"] == [
+        {"kind": "node_output", "ref": "sort_top_products"},
+        {"kind": "external_source", "ref": "equipment_assign"},
+    ]
+    assert steps[3]["inputs"] == [{"kind": "node_output", "ref": "join_eqp"}]
+
+    graph = normalizer._compile_execution_graph(steps, jobs, {}, "none")
+    assert graph["validation_errors"] == []
+
+
+def test_v2_implicit_node_input_keeps_equipment_metric_bound_to_real_source():
+    """An implicit join alias must not become a fictitious retrieval source."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    jobs = [
+        {"dataset_key": "production_today", "source_alias": "prod_df"},
+        {"dataset_key": "equipment_assign", "source_alias": "equipment_assign"},
+    ]
+    steps, _ = normalizer._materialize_implicit_step_inputs(
+        [
+            {
+                "node_id": "agg_prod",
+                "operation": "groupby_and_aggregate",
+                "source_alias": "prod_df",
+                "group_by": ["PRODUCT"],
+                "aggregations": [
+                    {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION"}
+                ],
+            },
+            {
+                "node_id": "join_eqp",
+                "operation": "join",
+                "left_source_alias": "agg_prod",
+                "right_source_alias": "equipment_assign",
+                "join_type": "left",
+                "right_value_columns": ["EQP_ID"],
+            },
+            {
+                "node_id": "agg_eqp_count",
+                "operation": "groupby_and_aggregate",
+                "source_alias": "join_eqp",
+                "group_by": ["PRODUCT"],
+                "aggregations": [
+                    {"column": "EQP_ID", "method": "nunique", "output_column": "EQUIPMENT_COUNT"}
+                ],
+            },
+        ],
+        jobs,
+        "none",
+        {},
+    )
+    candidates = {
+        "table_catalog_items": [
+            {"dataset_key": "production_today", "payload": {"columns": ["PRODUCT", "PRODUCTION"]}},
+            {"dataset_key": "equipment_assign", "payload": {"columns": ["PRODUCT", "EQP_ID"]}},
+        ]
+    }
+
+    bindings = normalizer._reconcile_metric_binding_source_lineage(
+        [
+            {
+                "source_alias": "join_eqp",
+                "dataset_key": "",
+                "source_column": "EQP_ID",
+                "aggregation": "nunique",
+                "output_column": "EQUIPMENT_COUNT",
+            }
+        ],
+        {"pandas_execution_plan": steps},
+        jobs,
+        candidates,
+    )
+
+    assert bindings[0]["source_alias"] == "equipment_assign"
+    assert bindings[0]["dataset_key"] == "equipment_assign"
+
+
+def test_v2_implicit_dag_generates_missing_node_id_and_reuses_explicit_output_alias():
+    """Weak-model omission of a node id remains executable without a guess."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    steps, trace = normalizer._materialize_implicit_step_inputs(
+        [
+            {
+                "operation": "apply_filters",
+                "source_alias": "source",
+                "output_alias": "filtered_source",
+            },
+            {
+                "node_id": "aggregate",
+                "operation": "groupby_and_aggregate",
+                "source_alias": "filtered_source",
+                "group_by": ["PRODUCT"],
+                "aggregations": [
+                    {"column": "QTY", "method": "sum", "output_column": "QTY_SUM"}
+                ],
+            },
+        ],
+        [{"dataset_key": "dataset", "source_alias": "source"}],
+        "none",
+        {},
+    )
+
+    assert trace["status"] == "applied"
+    assert steps[0]["node_id"] == "step_1_apply_filters"
+    assert trace["generated_node_ids"] == [
+        {"node_id": "step_1_apply_filters", "operation": "apply_filters"}
+    ]
+    assert steps[1]["inputs"] == [
+        {"kind": "node_output", "ref": "step_1_apply_filters"}
+    ]
+
+
+def test_v2_join_uses_product_key_metadata_when_an_unrelated_recipe_is_also_selected():
+    """One reusable product-key contract wins over an incidental recipe ref."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    grain = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
+    candidates = {
+        "domain_items": [
+            {
+                "section": "product_key_columns",
+                "key": "standard_product_keys",
+                "payload": {"columns": grain},
+            },
+            {
+                "section": "analysis_recipes",
+                "key": "product_grain_and_join_policy",
+                "payload": {"description": "aggregation recipe only"},
+            },
+        ],
+        "table_catalog_items": [
+            {"dataset_key": "production_today", "payload": {"columns": [*grain, "PRODUCTION"]}},
+            {"dataset_key": "equipment_assign", "payload": {"columns": [*grain, "EQP_ID"]}},
+        ],
+    }
+    jobs = [
+        {"dataset_key": "production_today", "source_alias": "prod_df"},
+        {"dataset_key": "equipment_assign", "source_alias": "equipment_assign"},
+    ]
+    steps, _ = normalizer._materialize_implicit_step_inputs(
+        [
+            {
+                "node_id": "aggregate_prod",
+                "operation": "groupby_and_aggregate",
+                "source_alias": "prod_df",
+                "output_alias": "prod_by_product",
+                "group_by": grain,
+                "aggregations": [
+                    {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION"}
+                ],
+            },
+            {
+                "node_id": "join_assign",
+                "operation": "join",
+                "left_source_alias": "prod_by_product",
+                "right_source_alias": "equipment_assign",
+                "join_type": "left",
+                "group_by": grain,
+            },
+        ],
+        jobs,
+        "none",
+        {},
+    )
+
+    resolved = normalizer._resolve_join_plan(
+        {},
+        [
+            {"section": "product_key_columns", "key": "standard_product_keys"},
+            {"section": "analysis_recipes", "key": "product_grain_and_join_policy"},
+        ],
+        candidates,
+        jobs,
+        steps,
+    )
+    materialized, trace = normalizer._materialize_resolved_join_steps(steps, resolved)
+
+    assert len(resolved) == 1
+    assert resolved[0]["metadata_ref"] == {
+        "section": "product_key_columns",
+        "key": "standard_product_keys",
+    }
+    assert resolved[0]["canonical_keys"] == grain
+    assert trace["status"] == "applied"
+    assert materialized[1]["on"] == grain
+
+
+def test_v2_weak_model_top_product_equipment_plan_executes_without_pandas_generation():
+    """A compact five-step multi-source plan remains deterministic end to end."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    grain = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"]
+    candidates = {
+        "domain_items": [],
+        "main_flow_filters": [],
+        "table_catalog_items": [
+            {
+                "dataset_key": "production_today",
+                "payload": {"columns": ["DATE", "OPER_NAME", *grain, "PRODUCTION"]},
+            },
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": ["OPER_NAME", *grain, "EQP_ID"]},
+            },
+        ],
+    }
+    response = {
+        "intent_plan": {
+            "analysis_kind": "top_n_production_equipment_count_list",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "retrieval_jobs": [
+                {"dataset_key": "production_today", "source_alias": "prod_df"},
+                {"dataset_key": "equipment_assign", "source_alias": "equipment_assign"},
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "agg_prod",
+                    "operation": "groupby_and_aggregate",
+                    "source_alias": "prod_df",
+                    "group_by": grain,
+                    "aggregations": [
+                        {"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION"}
+                    ],
+                },
+                {
+                    "node_id": "sort_top_products",
+                    "operation": "sort_and_top_n",
+                    "inputs": [{"kind": "node_output", "ref": "agg_prod"}],
+                    "output_alias": "top_prod_df",
+                    "sort_by": "PRODUCTION",
+                    "order": "desc",
+                    "limit": 3,
+                },
+                {
+                    "node_id": "join_eqp",
+                    "operation": "join",
+                    "left_source_alias": "top_prod_df",
+                    "right_source_alias": "equipment_assign",
+                    "join_type": "left",
+                    "group_by": grain,
+                },
+                {
+                    "node_id": "agg_eqp_count_and_list",
+                    "operation": "groupby_and_aggregate",
+                    "source_alias": "join_eqp",
+                    "group_by": [*grain, "PRODUCTION"],
+                    "aggregations": [
+                        {"column": "EQP_ID", "method": "nunique", "output_column": "EQUIPMENT_COUNT"},
+                        {"column": "EQP_ID", "method": "collect_unique", "output_column": "EQUIPMENT_LIST"},
+                    ],
+                },
+                {
+                    "node_id": "final_sort",
+                    "operation": "sort_and_top_n",
+                    "inputs": [{"kind": "node_output", "ref": "agg_eqp_count_and_list"}],
+                    "sort_by": "PRODUCTION",
+                    "order": "desc",
+                    "limit": 3,
+                },
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "result_columns": [*grain, "PRODUCTION", "EQUIPMENT_COUNT", "EQUIPMENT_LIST"],
+                "required_columns": [*grain, "PRODUCTION", "EQUIPMENT_COUNT", "EQUIPMENT_LIST"],
+                "strict_result_columns": True,
+            },
+        }
+    }
+
+    payload = normalizer.normalize_intent_plan(
+        {"request": {"question": "top product equipment", "reference_date": "20260811"}},
+        response,
+        candidates,
+    )
+    payload["runtime_sources"] = {
+        "prod_df": [
+            dict(zip(grain, ["T", "D", "M", "P1", "P2", "L", "M1"]), PRODUCTION=100),
+            dict(zip(grain, ["T", "D", "M", "P1", "P2", "L", "M2"]), PRODUCTION=90),
+        ],
+        "equipment_assign": [
+            dict(zip(grain, ["T", "D", "M", "P1", "P2", "L", "M1"]), EQP_ID="E1"),
+            dict(zip(grain, ["T", "D", "M", "P1", "P2", "L", "M1"]), EQP_ID="E2"),
+        ],
+    }
+    payload["source_results"] = [
+        {"source_alias": "prod_df", "columns": [*grain, "PRODUCTION"]},
+        {"source_alias": "equipment_assign", "columns": [*grain, "EQP_ID"]},
+    ]
+    payload.setdefault("trace", {}).setdefault("inspection", {})
+
+    resolved, executed, model_calls = _resolve_and_execute(payload)
+
+    assert payload["intent_plan"].get("validation_errors", []) == []
+    assert resolved["simple_analysis_contract"]["operation"] == "execute_typed_pandas_plan"
+    assert executed["analysis"]["status"] == "ok"
+    assert model_calls == []
+    assert executed["data"]["rows"] == [
+        {
+            "TECH": "T",
+            "DEN": "D",
+            "MODE": "M",
+            "PKG_TYPE1": "P1",
+            "PKG_TYPE2": "P2",
+            "LEAD": "L",
+            "MCP_NO": "M1",
+            "PRODUCTION": 100,
+            "EQUIPMENT_COUNT": 2,
+            "EQUIPMENT_LIST": "E1, E2",
+        },
+        {
+            "TECH": "T",
+            "DEN": "D",
+            "MODE": "M",
+            "PKG_TYPE1": "P1",
+            "PKG_TYPE2": "P2",
+            "LEAD": "L",
+            "MCP_NO": "M2",
+            "PRODUCTION": 90,
+            "EQUIPMENT_COUNT": 0,
+            "EQUIPMENT_LIST": "",
+        },
+    ]
