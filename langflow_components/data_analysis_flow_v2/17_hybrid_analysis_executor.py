@@ -2267,6 +2267,34 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         raise OutputContractError("Typed Pandas join 방식이 올바르지 않습니다: " + join_type)
     left_working = left.copy()
     right_working = right.copy()
+    aggregations = [
+        item for item in step.get("aggregations", []) if isinstance(item, dict)
+    ]
+    # A left-preserving Typed join may declare that only specific values flow
+    # from the right source (for example UPH).  Project the right frame before
+    # the merge so shared non-key dimensions remain owned by the left source
+    # instead of being renamed by pandas to ``*_left`` / ``*_right``.  This is
+    # generic source provenance, not a dataset-specific column rule.
+    if join_type == "left" and _string_list(step.get("right_value_columns")):
+        right_working = _project_typed_left_join_right_values(
+            left_working,
+            right_working,
+            left_keys,
+            right_keys,
+            _string_list(step.get("right_value_columns")),
+            aggregations,
+        )
+    outer_shared_dimensions = (
+        _typed_outer_shared_dimension_pairs(
+            left_working,
+            right_working,
+            left_keys,
+            right_keys,
+            _string_list(step.get("right_value_columns")),
+        )
+        if join_type == "outer"
+        else []
+    )
     temporary_keys: list[str] = []
     right_display_keys: list[str] = []
     used_helper_columns = {
@@ -2295,9 +2323,6 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         # merge key.  An outer/right join can contain rows that exist only on
         # the right, where the left canonical key is necessarily null.
         right_working[right_display] = right_working[right_key]
-    aggregations = [
-        item for item in step.get("aggregations", []) if isinstance(item, dict)
-    ]
     if aggregations:
         # A join that declares aggregate outputs is a grouped enrichment, not
         # a raw many-to-many merge.  Aggregate the right side on the declared
@@ -2350,7 +2375,201 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         right_display_keys,
         join_type,
     )
+    if outer_shared_dimensions:
+        result = _coalesce_typed_outer_shared_dimensions(
+            result,
+            outer_shared_dimensions,
+        )
     return result.drop(columns=[*temporary_keys, *right_display_keys], errors="ignore")
+
+
+def _project_typed_left_join_right_values(
+    left: Any,
+    right: Any,
+    left_keys: list[str],
+    right_keys: list[str],
+    right_value_columns: list[str],
+    aggregations: list[dict[str, Any]],
+) -> Any:
+    """Project a left-join right frame to its declared source-owned values.
+
+    ``right_value_columns`` is a Typed-IR provenance contract: left-side
+    dimensions and identifiers remain authoritative, while only explicitly
+    declared values may flow in from the right source.  Selecting the right
+    frame here prevents pandas' implicit suffix naming from changing the
+    canonical name of a left grouping column.
+
+    A declared right value that has the same non-key column name as the left
+    source cannot be represented safely without an explicit output alias.
+    Fail closed instead of inventing a ``_left``/``_right`` presentation name.
+    """
+
+    required_candidates = [*right_keys, *right_value_columns]
+    for aggregation in aggregations:
+        source_column = str(
+            aggregation.get("column") or aggregation.get("source_column") or ""
+        ).strip()
+        if source_column:
+            required_candidates.append(source_column)
+
+    selected: list[str] = []
+    value_columns: list[str] = []
+    missing: list[str] = []
+    for candidate in required_candidates:
+        actual = _find_frame_column(right, [candidate])
+        if not actual:
+            if candidate not in missing:
+                missing.append(candidate)
+            continue
+        if actual not in selected:
+            selected.append(actual)
+        if candidate in right_value_columns and actual not in value_columns:
+            value_columns.append(actual)
+    if missing:
+        raise OutputContractError(
+            "Typed Pandas left join의 선언된 right source 컬럼을 찾을 수 없습니다: "
+            + ", ".join(missing)
+        )
+
+    left_key_ids = {str(column).strip().casefold() for column in left_keys}
+    left_non_key_ids = {
+        str(column).strip().casefold()
+        for column in getattr(left, "columns", [])
+        if str(column).strip().casefold() not in left_key_ids
+    }
+    right_key_ids = {str(column).strip().casefold() for column in right_keys}
+    conflicts = [
+        column
+        for column in value_columns
+        if str(column).strip().casefold() in left_non_key_ids
+        and str(column).strip().casefold() not in right_key_ids
+    ]
+    if conflicts:
+        raise OutputContractError(
+            "Typed Pandas left join의 right value가 left source의 비-join 컬럼과 "
+            "겹칩니다. 명시적인 source-side output alias가 필요합니다: "
+            + ", ".join(conflicts)
+        )
+    return right[selected].copy()
+
+
+def _typed_outer_shared_dimension_pairs(
+    left: Any,
+    right: Any,
+    left_keys: list[str],
+    right_keys: list[str],
+    right_value_columns: list[str],
+) -> list[tuple[str, str, str]]:
+    """Return canonical shared dimensions that need outer-join coalescing.
+
+    An outer join cannot discard a common dimension from the right source:
+    right-only rows would lose that dimension.  A shared non-key field is safe
+    to materialize as one canonical column only when it is not a declared
+    right-side value.  Explicit right values with the same left-side name need
+    a separate output alias and therefore fail closed.
+    """
+
+    left_by_identity = {
+        str(column).strip().casefold(): str(column)
+        for column in getattr(left, "columns", [])
+        if str(column).strip()
+    }
+    right_by_identity = {
+        str(column).strip().casefold(): str(column)
+        for column in getattr(right, "columns", [])
+        if str(column).strip()
+    }
+    left_key_ids = {str(column).strip().casefold() for column in left_keys}
+    right_key_ids = {str(column).strip().casefold() for column in right_keys}
+    value_ids = {str(column).strip().casefold() for column in right_value_columns}
+
+    missing_values = [
+        column
+        for column in right_value_columns
+        if str(column).strip().casefold() not in right_by_identity
+    ]
+    if missing_values:
+        raise OutputContractError(
+            "Typed Pandas outer join의 선언된 right source 컬럼을 찾을 수 없습니다: "
+            + ", ".join(missing_values)
+        )
+
+    conflicts = [
+        right_by_identity[column_id]
+        for column_id in value_ids
+        if column_id in left_by_identity
+        and column_id in right_by_identity
+        and column_id not in left_key_ids
+        and column_id not in right_key_ids
+    ]
+    if conflicts:
+        raise OutputContractError(
+            "Typed Pandas outer join의 right value가 left source의 비-join 컬럼과 "
+            "겹칩니다. 명시적인 source-side output alias가 필요합니다: "
+            + ", ".join(sorted(conflicts))
+        )
+
+    pairs: list[tuple[str, str, str]] = []
+    for column_id, left_column in left_by_identity.items():
+        right_column = right_by_identity.get(column_id)
+        if (
+            not right_column
+            or column_id in left_key_ids
+            or column_id in right_key_ids
+            or column_id in value_ids
+        ):
+            continue
+        pairs.append((left_column, left_column, right_column))
+    return pairs
+
+
+def _coalesce_typed_outer_shared_dimensions(
+    result: Any,
+    pairs: list[tuple[str, str, str]],
+) -> Any:
+    """Coalesce declared shared outer-join dimensions without hiding conflict.
+
+    ``pandas.merge`` suffixes a same-named non-key column, even when the two
+    sources describe the same canonical dimension.  For each pair, preserve a
+    single left-named canonical field across left-only, matched, and right-only
+    rows.  A matched row with two distinct nonblank values is ambiguous and is
+    rejected rather than silently choosing one source.
+    """
+
+    for canonical, left_column, right_column in pairs:
+        if left_column == right_column:
+            merged_left = f"{left_column}_left"
+            merged_right = f"{right_column}_right"
+        else:
+            merged_left = left_column
+            merged_right = right_column
+        if merged_left not in result.columns or merged_right not in result.columns:
+            continue
+
+        left_values = result[merged_left]
+        right_values = result[merged_right]
+        left_normalized = left_values.map(_normalize_deterministic_join_value)
+        right_normalized = right_values.map(_normalize_deterministic_join_value)
+        conflicts = (
+            left_normalized.ne("")
+            & right_normalized.ne("")
+            & left_normalized.ne(right_normalized)
+        )
+        if bool(conflicts.any()):
+            raise OutputContractError(
+                "Typed Pandas outer join의 공통 차원 값이 source 간에 다릅니다. "
+                "명시적인 source-side contract가 필요합니다: " + canonical
+            )
+
+        result[canonical] = left_values.where(left_normalized.ne(""), right_values)
+        drop_columns = [
+            column
+            for column in (merged_left, merged_right)
+            if column != canonical
+        ]
+        if drop_columns:
+            result = result.drop(columns=drop_columns, errors="ignore")
+    return result
 
 
 def _coalesce_typed_outer_join_keys(

@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 import pandas as pd
+import pytest
 
 from component_test_support import ROOT, load_module
 from tools.build_data_analysis_flow_v2 import build_flow
@@ -2141,6 +2142,224 @@ def test_v2_typed_join_aggregates_the_right_source_before_merging():
         {"GROUP": "B", "TOTAL": 4, "ITEM_COUNT": 1, "ITEM_LIST": "E3"},
         {"GROUP": "C", "TOTAL": 1, "ITEM_COUNT": 0, "ITEM_LIST": ""},
     ]
+
+
+def test_v2_typed_left_join_keeps_left_group_column_when_right_values_are_declared():
+    """A left-preserving join must not suffix a shared left dimension."""
+
+    _, executor, _ = _modules()
+    result = executor._execute_typed_pandas_plan(
+        {
+            "steps": [
+                {
+                    "node_id": "join_assign_uph",
+                    "operation": "join",
+                    "inputs": [
+                        {"kind": "external_source", "ref": "equipment_assign"},
+                        {"kind": "external_source", "ref": "eqp_uph"},
+                    ],
+                    "output_alias": "joined_assign_uph",
+                    "left_source_alias": "equipment_assign",
+                    "right_source_alias": "eqp_uph",
+                    "left_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "right_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "join_type": "left",
+                    "population_policy": "left_source_only",
+                    "right_value_columns": ["UPH"],
+                },
+                {
+                    "node_id": "aggregate_by_lead",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "node_output", "ref": "joined_assign_uph"}],
+                    "output_alias": "lead_summary",
+                    "group_by": ["LEAD"],
+                    "aggregations": [
+                        {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"},
+                        {"column": "UPH", "method": "mean", "output_column": "UPH_AVG"},
+                    ],
+                },
+            ]
+        },
+        {
+            "equipment_assign": pd.DataFrame(
+                [
+                    {"EQP_ID": "E-01", "EQP_MODEL": "M-1", "RECIPE_ID": "R-1", "OPER_NAME": "M/D", "LEAD": "200"},
+                    {"EQP_ID": "E-02", "EQP_MODEL": "M-2", "RECIPE_ID": "R-2", "OPER_NAME": "M/D", "LEAD": "300"},
+                ]
+            ),
+            "eqp_uph": pd.DataFrame(
+                [
+                    {"EQP_MODEL": "M-1", "RECIPE_ID": "R-1", "OPER_NAME": "M/D", "LEAD": "200", "UPH": 100},
+                    {"EQP_MODEL": "M-2", "RECIPE_ID": "R-2", "OPER_NAME": "M/D", "LEAD": "300", "UPH": 200},
+                ]
+            ),
+        },
+        pd,
+    )
+
+    assert result.to_dict(orient="records") == [
+        {"LEAD": "200", "EQP_COUNT": 1, "UPH_AVG": 100.0},
+        {"LEAD": "300", "EQP_COUNT": 1, "UPH_AVG": 200.0},
+    ]
+
+
+def test_v2_typed_left_join_blocks_ambiguous_same_named_right_value():
+    """A source-side output alias is required for an overlapping right value."""
+
+    _, executor, _ = _modules()
+    with pytest.raises(executor.OutputContractError, match="source-side output alias"):
+        executor._typed_join_frames(
+            pd.DataFrame([{"KEY": "A", "UPH": 10}]),
+            pd.DataFrame([{"KEY": "A", "UPH": 20}]),
+            {
+                "on": ["KEY"],
+                "join_type": "left",
+                "right_value_columns": ["UPH"],
+            },
+            pd,
+        )
+
+
+def test_v2_typed_outer_join_coalesces_shared_dimension_for_right_only_rows():
+    """Outer joins retain one canonical shared dimension across both sides."""
+
+    _, executor, _ = _modules()
+    result = executor._typed_join_frames(
+        pd.DataFrame(
+            [
+                {
+                    "EQP_ID": "E-01",
+                    "EQP_MODEL": "M-1",
+                    "RECIPE_ID": "R-1",
+                    "OPER_NAME": "M/D",
+                    "LEAD": "200",
+                }
+            ]
+        ),
+        pd.DataFrame(
+            [
+                {
+                    "EQP_MODEL": "M-1",
+                    "RECIPE_ID": "R-1",
+                    "OPER_NAME": "M/D",
+                    "LEAD": "200",
+                    "UPH": 100,
+                },
+                {
+                    "EQP_MODEL": "M-2",
+                    "RECIPE_ID": "R-2",
+                    "OPER_NAME": "M/D",
+                    "LEAD": "300",
+                    "UPH": 200,
+                },
+            ]
+        ),
+        {
+            "left_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            "right_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+            "join_type": "outer",
+        },
+        pd,
+    )
+
+    assert "LEAD" in result.columns
+    assert "LEAD_left" not in result.columns
+    assert "LEAD_right" not in result.columns
+    assert {
+        (str(row["LEAD"]), int(row["UPH"]))
+        for _, row in result.iterrows()
+    } == {("200", 100), ("300", 200)}
+
+
+def test_v2_typed_outer_join_can_group_by_a_coalesced_shared_dimension():
+    """A following aggregate consumes the restored canonical dimension."""
+
+    _, executor, _ = _modules()
+    result = executor._execute_typed_pandas_plan(
+        {
+            "steps": [
+                {
+                    "node_id": "join_sources",
+                    "operation": "join",
+                    "inputs": [
+                        {"kind": "external_source", "ref": "assigned"},
+                        {"kind": "external_source", "ref": "uph"},
+                    ],
+                    "output_alias": "joined",
+                    "left_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "right_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                    "join_type": "outer",
+                    "right_value_columns": ["UPH"],
+                },
+                {
+                    "node_id": "aggregate_by_lead",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "node_output", "ref": "joined"}],
+                    "output_alias": "lead_summary",
+                    "group_by": ["LEAD"],
+                    "aggregations": [
+                        {"column": "UPH", "method": "mean", "output_column": "UPH_AVG"},
+                    ],
+                },
+            ]
+        },
+        {
+            "assigned": pd.DataFrame(
+                [{"EQP_MODEL": "M-1", "RECIPE_ID": "R-1", "OPER_NAME": "M/D", "LEAD": "200"}]
+            ),
+            "uph": pd.DataFrame(
+                [
+                    {"EQP_MODEL": "M-1", "RECIPE_ID": "R-1", "OPER_NAME": "M/D", "LEAD": "200", "UPH": 100},
+                    {"EQP_MODEL": "M-2", "RECIPE_ID": "R-2", "OPER_NAME": "M/D", "LEAD": "300", "UPH": 200},
+                ]
+            ),
+        },
+        pd,
+    )
+
+    assert result.to_dict(orient="records") == [
+        {"LEAD": "200", "UPH_AVG": 100.0},
+        {"LEAD": "300", "UPH_AVG": 200.0},
+    ]
+
+
+def test_v2_typed_outer_join_blocks_conflicting_shared_dimension_values():
+    """A shared outer-join dimension cannot silently choose either source."""
+
+    _, executor, _ = _modules()
+    with pytest.raises(executor.OutputContractError, match="공통 차원 값이 source 간에 다릅니다"):
+        executor._typed_join_frames(
+            pd.DataFrame(
+                [{"EQP_MODEL": "M-1", "RECIPE_ID": "R-1", "OPER_NAME": "M/D", "LEAD": "200"}]
+            ),
+            pd.DataFrame(
+                [{"EQP_MODEL": "M-1", "RECIPE_ID": "R-1", "OPER_NAME": "M/D", "LEAD": "300", "UPH": 100}]
+            ),
+            {
+                "left_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                "right_on": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+                "join_type": "outer",
+                "right_value_columns": ["UPH"],
+            },
+            pd,
+        )
+
+
+def test_v2_typed_outer_join_blocks_ambiguous_same_named_right_value():
+    """A value needed from both sides requires an explicit output alias."""
+
+    _, executor, _ = _modules()
+    with pytest.raises(executor.OutputContractError, match="source-side output alias"):
+        executor._typed_join_frames(
+            pd.DataFrame([{"KEY": "A", "UPH": 10}]),
+            pd.DataFrame([{"KEY": "A", "UPH": 20}]),
+            {
+                "on": ["KEY"],
+                "join_type": "outer",
+                "right_value_columns": ["UPH"],
+            },
+            pd,
+        )
 
 
 def test_v2_typed_outer_join_keeps_right_only_product_keys():
