@@ -64,7 +64,9 @@
       "expected_route": "complex",
       "expected_recipe": null,
       "expected_execution_mode": "merge_metric_sources",
+      "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"],
       "expected_analysis_execution_mode": "deterministic_contract",
+      "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"],
       "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
       "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1},
       "fixture_plan": {
@@ -154,7 +156,9 @@
       "expected_route": "complex",
       "expected_recipe": null,
       "expected_execution_mode": "merge_metric_sources",
+      "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"],
       "expected_analysis_execution_mode": "deterministic_contract",
+      "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"],
       "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
       "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1},
       "fixture_plan": {

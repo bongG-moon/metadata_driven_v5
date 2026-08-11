@@ -420,6 +420,53 @@ def test_v2_normalizer_reconciles_unique_dataset_alias_variants():
     assert plan["output_contract"]["metric_bindings"][0]["source_alias"] == "eqp_uph_source"
 
 
+def test_v2_normalizer_reconciles_metric_alias_from_unique_dataset_key():
+    """A unique declared dataset can ground a model-created metric alias."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan, _, trace = normalizer._reconcile_execution_source_aliases(
+        {
+            "output_contract": {
+                "metric_bindings": [
+                    {
+                        "source_alias": "prod_df",
+                        "dataset_key": "production",
+                        "source_column": "PRODUCTION",
+                    }
+                ]
+            }
+        },
+        [{"dataset_key": "production", "source_alias": "production_source"}],
+        [],
+    )
+
+    assert trace["status"] == "applied"
+    assert plan["output_contract"]["metric_bindings"][0]["source_alias"] == "production_source"
+
+
+def test_v2_normalizer_keeps_metric_alias_when_dataset_key_is_ambiguous():
+    """Dataset-key evidence must not redirect one of several same-table jobs."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    plan, _, trace = normalizer._reconcile_execution_source_aliases(
+        {
+            "output_contract": {
+                "metric_bindings": [
+                    {"source_alias": "prod_df", "dataset_key": "production"}
+                ]
+            }
+        },
+        [
+            {"dataset_key": "production", "source_alias": "production_current"},
+            {"dataset_key": "production", "source_alias": "production_previous"},
+        ],
+        [],
+    )
+
+    assert trace["status"] == "not_needed"
+    assert plan["output_contract"]["metric_bindings"][0]["source_alias"] == "prod_df"
+
+
 def test_v2_normalizer_prunes_unconsumed_right_source_from_simple_preserve_left_join():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
     candidates = {
@@ -2094,6 +2141,52 @@ def test_v2_typed_join_aggregates_the_right_source_before_merging():
         {"GROUP": "B", "TOTAL": 4, "ITEM_COUNT": 1, "ITEM_LIST": "E3"},
         {"GROUP": "C", "TOTAL": 1, "ITEM_COUNT": 0, "ITEM_LIST": ""},
     ]
+
+
+def test_v2_typed_outer_join_keeps_right_only_product_keys():
+    """Outer joins must not blank a product key that exists only on the right."""
+
+    _, executor, _ = _modules()
+    result = executor._typed_join_frames(
+        pd.DataFrame(
+            [{"TECH": "A", "DEVICE": "DEV-A", "INPUT_QTY": 100}]
+        ),
+        pd.DataFrame(
+            [
+                {"TECH": "A", "DEVICE": "DEV-A", "WIP_QTY": 10},
+                {"TECH": "B", "DEVICE": "DEV-B", "WIP_QTY": 200},
+            ]
+        ),
+        {"on": ["TECH", "DEVICE"], "join_type": "outer"},
+        pd,
+    )
+
+    right_only = result.loc[result["DEVICE"].eq("DEV-B")].iloc[0]
+    assert right_only["TECH"] == "B"
+    assert right_only["DEVICE"] == "DEV-B"
+    assert right_only["WIP_QTY"] == 200
+    assert pd.isna(right_only["INPUT_QTY"])
+
+
+def test_v2_typed_outer_aggregate_join_keeps_right_only_group_key():
+    """Grouped enrichment uses its normalized join key for a right-only row."""
+
+    _, executor, _ = _modules()
+    result = executor._typed_join_frames(
+        pd.DataFrame([{"GROUP": "A", "TOTAL": 10}]),
+        pd.DataFrame([{"GROUP": "B", "ITEM": "E-01"}]),
+        {
+            "on": ["GROUP"],
+            "join_type": "outer",
+            "aggregations": [
+                {"column": "ITEM", "method": "nunique", "output_column": "ITEM_COUNT"},
+            ],
+        },
+        pd,
+    )
+
+    right_only = result.loc[result["GROUP"].eq("B")].iloc[0]
+    assert right_only["ITEM_COUNT"] == 1
 
 
 def test_intent_ir_authoritatively_excludes_unused_retrieval_source_from_fast_route():

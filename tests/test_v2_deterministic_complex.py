@@ -158,6 +158,160 @@ def test_complex_metric_merge_uses_deterministic_contract_without_pandas_llm():
     assert trace["prompt_chars"]["pandas_generation"] == 0
 
 
+def test_metric_merge_reconciles_unique_dataset_witnessed_model_aliases():
+    """A model alias is safe to repair only when one runtime job owns its dataset."""
+
+    resolver = load_module(V2_ROOT / "14b_simple_analysis_contract_resolver.py")
+    executor = load_module(V2_ROOT / "17_hybrid_analysis_executor.py")
+    payload = _metric_merge_payload()
+    merge = payload["intent_plan"]["resolved_metric_merge_plan"]
+    merge["metrics"][0].update(
+        {"source_alias": "prod_df", "dataset_key": "left_dataset"}
+    )
+    merge["metrics"][1].update(
+        {"source_alias": "wip_df", "dataset_key": "right_dataset"}
+    )
+    merge["grain_mappings"][0]["source_candidates"] = {
+        "prod_df": ["GROUP"],
+        "wip_df": ["GROUP"],
+    }
+
+    resolved = resolver.resolve_simple_analysis_contract(deepcopy(payload))
+
+    trace = resolved["trace"]["inspection"][
+        "metric_merge_runtime_alias_reconciliation"
+    ]
+    assert trace["status"] == "reconciled"
+    assert resolved["simple_analysis_contract"]["deterministic_operation"] == "merge_metric_sources"
+    assert [
+        item["source_alias"]
+        for item in resolved["intent_plan"]["resolved_metric_merge_plan"]["metrics"]
+    ] == ["left_source", "right_source"]
+
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "",
+        model_invoker=lambda prompt: (_ for _ in ()).throw(
+            AssertionError("reconciled deterministic merge must not invoke the pandas model")
+        ),
+        repair_prompt_template="repair",
+    )
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"][-1] == {
+        "GROUP": "C",
+        "LEFT_QTY": 0,
+        "RIGHT_QTY": 7,
+    }
+
+
+def test_invalid_metric_merge_prefers_a_valid_typed_dag_from_runtime_aliases():
+    """An unresolved merge source cannot override a complete Typed DAG."""
+
+    resolver = load_module(V2_ROOT / "14b_simple_analysis_contract_resolver.py")
+    executor = load_module(V2_ROOT / "17_hybrid_analysis_executor.py")
+    payload = _metric_merge_payload()
+    plan = payload["intent_plan"]
+    plan["intent_ir"]["route_source_aliases"] = ["left_source"]
+    plan["pandas_execution_plan"] = [
+        {
+            "node_id": "aggregate_left",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "left_source"}],
+            "output_alias": "left_aggregate",
+            "source_alias": "left_source",
+            "group_by": ["GROUP"],
+            "aggregations": [
+                {"column": "LEFT_QTY", "method": "sum", "output_column": "LEFT_QTY"}
+            ],
+        },
+        {
+            "node_id": "aggregate_right",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "right_source"}],
+            "output_alias": "right_aggregate",
+            "source_alias": "right_source",
+            "group_by": ["GROUP"],
+            "aggregations": [
+                {"column": "RIGHT_QTY", "method": "sum", "output_column": "RIGHT_QTY"}
+            ],
+        },
+        {
+            "node_id": "join_metrics",
+            "operation": "join",
+            "inputs": [
+                {"kind": "node_output", "ref": "aggregate_left"},
+                {"kind": "node_output", "ref": "aggregate_right"},
+            ],
+            "output_alias": "joined_metrics",
+            "left_source_alias": "left_aggregate",
+            "right_source_alias": "right_aggregate",
+            "on": ["GROUP"],
+            "join_type": "outer",
+        },
+    ]
+    plan["resolved_metric_merge_plan"]["metrics"][0].update(
+        {"source_alias": "unregistered_model_alias", "dataset_key": ""}
+    )
+    plan["resolved_metric_merge_plan"]["grain_mappings"][0]["source_candidates"] = {
+        "unregistered_model_alias": ["GROUP"],
+        "right_source": ["GROUP"],
+    }
+
+    resolved = resolver.resolve_simple_analysis_contract(deepcopy(payload))
+
+    contract = resolved["simple_analysis_contract"]
+    assert contract["operation"] == "execute_typed_pandas_plan"
+    assert contract["fallback_from"] == "resolved_metric_merge_plan"
+    assert contract["analysis_execution_mode"] == "deterministic_typed_plan"
+    trace = resolved["trace"]["inspection"][
+        "metric_merge_runtime_alias_reconciliation"
+    ]
+    assert trace["status"] == "invalid"
+    assert trace["fallback"] == "execute_typed_pandas_plan"
+
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "",
+        model_invoker=lambda prompt: (_ for _ in ()).throw(
+            AssertionError("Typed fallback must not invoke the pandas model")
+        ),
+        repair_prompt_template="repair",
+    )
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"GROUP": "A", "LEFT_QTY": 10, "RIGHT_QTY": 3},
+        {"GROUP": "B", "LEFT_QTY": 20, "RIGHT_QTY": 0},
+        {"GROUP": "C", "LEFT_QTY": 0, "RIGHT_QTY": 7},
+    ]
+
+
+def test_invalid_metric_merge_without_a_valid_typed_dag_does_not_execute_it():
+    """Unsafe merge contracts fall back to the ordinary Complex route only."""
+
+    resolver = load_module(V2_ROOT / "14b_simple_analysis_contract_resolver.py")
+    payload = _metric_merge_payload()
+    payload["intent_plan"]["resolved_metric_merge_plan"]["metrics"][0][
+        "source_alias"
+    ] = "unregistered_model_alias"
+    payload["intent_plan"]["resolved_metric_merge_plan"]["grain_mappings"][0][
+        "source_candidates"
+    ] = {
+        "unregistered_model_alias": ["GROUP"],
+        "right_source": ["GROUP"],
+    }
+
+    resolved = resolver.resolve_simple_analysis_contract(deepcopy(payload))
+
+    contract = resolved["simple_analysis_contract"]
+    assert contract["route"] == "complex"
+    assert contract["analysis_execution_mode"] == "llm_pandas"
+    assert "resolved_metric_merge_plan" not in resolved["intent_plan"]
+    trace = resolved["trace"]["inspection"][
+        "metric_merge_runtime_alias_reconciliation"
+    ]
+    assert trace["fallback"] == "ordinary_complex_path"
+
+
 def test_pandas_model_preview_is_bounded_without_mutating_runtime_sources():
     prompt_builder = load_module(V2_ROOT / "16_route_aware_pandas_prompt_builder.py")
     rows = [

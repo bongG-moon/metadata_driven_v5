@@ -2820,11 +2820,30 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
     left_working = left.copy()
     right_working = right.copy()
     temporary_keys: list[str] = []
+    right_display_keys: list[str] = []
+    used_helper_columns = {
+        str(column)
+        for frame in (left_working, right_working)
+        for column in getattr(frame, "columns", [])
+    }
+
+    def helper_column(base: str) -> str:
+        candidate = base
+        suffix = 2
+        while candidate in used_helper_columns:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        used_helper_columns.add(candidate)
+        return candidate
+
     for index, (left_key, right_key) in enumerate(zip(left_keys, right_keys), start=1):
-        temporary = f"__typed_join_key_{index}__"
+        temporary = helper_column(f"__typed_join_key_{index}__")
+        right_display = helper_column(f"__typed_join_right_key_{index}__")
         temporary_keys.append(temporary)
+        right_display_keys.append(right_display)
         left_working[temporary] = left_working[left_key].map(_normalize_deterministic_join_value)
         right_working[temporary] = right_working[right_key].map(_normalize_deterministic_join_value)
+        right_working[right_display] = right_working[right_key]
     aggregations = [
         item for item in step.get("aggregations", []) if isinstance(item, dict)
     ]
@@ -2846,7 +2865,14 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         for output_column, default in fill_defaults.items():
             if output_column in result.columns:
                 result[output_column] = result[output_column].fillna(default)
-        return result.drop(columns=temporary_keys)
+        result = _coalesce_typed_outer_join_keys(
+            result,
+            left_keys,
+            temporary_keys,
+            right_display_keys,
+            join_type,
+        )
+        return result.drop(columns=[*temporary_keys, *right_display_keys], errors="ignore")
     # When both sides use the same key name, the normalized temporary key has
     # already established equality. Keep the left key as the canonical output
     # dimension and remove the redundant right key before merge; otherwise
@@ -2865,7 +2891,45 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         how=join_type,
         suffixes=("_left", "_right"),
     )
-    return result.drop(columns=temporary_keys)
+    result = _coalesce_typed_outer_join_keys(
+        result,
+        left_keys,
+        temporary_keys,
+        right_display_keys,
+        join_type,
+    )
+    return result.drop(columns=[*temporary_keys, *right_display_keys], errors="ignore")
+
+
+def _coalesce_typed_outer_join_keys(
+    result: Any,
+    left_keys: list[str],
+    temporary_keys: list[str],
+    right_display_keys: list[str],
+    join_type: str,
+) -> Any:
+    """Keep canonical key values on right-only outer/right join rows."""
+
+    if str(join_type or "").strip().lower() not in {"outer", "right"}:
+        return result
+    for left_key, temporary_key, right_display_key in zip(
+        left_keys,
+        temporary_keys,
+        right_display_keys,
+    ):
+        if left_key not in result.columns:
+            continue
+        fallback = ""
+        if right_display_key in result.columns:
+            fallback = right_display_key
+        elif temporary_key in result.columns:
+            fallback = temporary_key
+        if fallback:
+            result[left_key] = result[left_key].where(
+                result[left_key].notna(),
+                result[fallback],
+            )
+    return result
 
 
 def _typed_aggregate_join_right(

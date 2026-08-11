@@ -2540,7 +2540,7 @@ def _reconcile_execution_source_aliases(
                 return normalized[: -len(suffix)]
         return normalized
 
-    def canonical_alias(reference: Any) -> str:
+    def canonical_alias(reference: Any, dataset_key_hint: Any = "") -> str:
         value = str(reference or "").strip()
         if not value:
             return ""
@@ -2554,6 +2554,22 @@ def _reconcile_execution_source_aliases(
         )
         if len(exact) == 1:
             return exact[0]
+        # A metric binding can carry a model-created display alias (for
+        # example ``prod_df``) while still declaring the trusted dataset key.
+        # The dataset key is sufficient evidence only when exactly one
+        # retrieval job owns it; otherwise preserve the original reference so
+        # normal Catalog validation can report the ambiguity.
+        dataset_hint = str(dataset_key_hint or "").strip()
+        dataset_matches = list(
+            dict.fromkeys(
+                item["alias"]
+                for item in candidates
+                if dataset_hint
+                and dataset_hint.casefold() == item["dataset_key"].casefold()
+            )
+        )
+        if len(dataset_matches) == 1:
+            return dataset_matches[0]
         value_stem = stem(value)
         matches = list(
             dict.fromkeys(
@@ -2567,9 +2583,9 @@ def _reconcile_execution_source_aliases(
 
     rewrites: list[dict[str, str]] = []
 
-    def rewrite(value: Any, field: str) -> Any:
+    def rewrite(value: Any, field: str, dataset_key_hint: Any = "") -> Any:
         original = str(value or "").strip()
-        replacement = canonical_alias(original)
+        replacement = canonical_alias(original, dataset_key_hint)
         if replacement and original and replacement != original:
             rewrites.append({"field": field, "from": original, "to": replacement})
             return replacement
@@ -2591,7 +2607,11 @@ def _reconcile_execution_source_aliases(
         step = deepcopy(raw_step)
         for field in alias_fields:
             if field in step:
-                step[field] = rewrite(step.get(field), f"pandas_execution_plan.{field}")
+                step[field] = rewrite(
+                    step.get(field),
+                    f"pandas_execution_plan.{field}",
+                    step.get("dataset_key"),
+                )
         if isinstance(step.get("inputs"), list):
             inputs: list[Any] = []
             for raw_input in step["inputs"]:
@@ -2600,7 +2620,11 @@ def _reconcile_execution_source_aliases(
                     continue
                 item = deepcopy(raw_input)
                 if str(item.get("kind") or "").strip() == "external_source":
-                    item["ref"] = rewrite(item.get("ref"), "pandas_execution_plan.inputs.ref")
+                    item["ref"] = rewrite(
+                        item.get("ref"),
+                        "pandas_execution_plan.inputs.ref",
+                        item.get("dataset_key"),
+                    )
                 inputs.append(item)
             step["inputs"] = inputs
         rewritten_steps.append(step)
@@ -2613,7 +2637,11 @@ def _reconcile_execution_source_aliases(
         result = deepcopy(value)
         for alias_field in alias_fields:
             if alias_field in result:
-                result[alias_field] = rewrite(result.get(alias_field), field)
+                result[alias_field] = rewrite(
+                    result.get(alias_field),
+                    field,
+                    result.get("dataset_key"),
+                )
         return result
 
     for key in (

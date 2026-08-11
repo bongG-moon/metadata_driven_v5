@@ -380,6 +380,28 @@ def test_continuation_typed_join_aggregates_right_source_before_merging(executor
     ]
 
 
+def test_continuation_typed_outer_join_keeps_right_only_product_keys(executor):
+    """The continuation executor preserves outer-join keys just like Flow 01."""
+
+    result = executor._typed_join_frames(
+        pd.DataFrame([{"TECH": "A", "DEVICE": "DEV-A", "INPUT_QTY": 100}]),
+        pd.DataFrame(
+            [
+                {"TECH": "A", "DEVICE": "DEV-A", "WIP_QTY": 10},
+                {"TECH": "B", "DEVICE": "DEV-B", "WIP_QTY": 200},
+            ]
+        ),
+        {"on": ["TECH", "DEVICE"], "join_type": "outer"},
+        pd,
+    )
+
+    right_only = result.loc[result["DEVICE"].eq("DEV-B")].iloc[0]
+    assert right_only["TECH"] == "B"
+    assert right_only["DEVICE"] == "DEV-B"
+    assert right_only["WIP_QTY"] == 200
+    assert pd.isna(right_only["INPUT_QTY"])
+
+
 def test_continuation_executor_falls_back_to_source_when_pre_contract_matches_final_result(executor):
     payload = {
         "intent_plan": {

@@ -188,8 +188,6 @@ def resolve_simple_analysis_contract(
     payload = _payload(payload_value)
     next_payload = payload
     plan = _dict(next_payload.get("intent_plan"))
-    plan["route_resolution"] = _intent_route_candidate(plan)
-    next_payload["intent_plan"] = plan
     trace = next_payload.setdefault("trace", {}).setdefault("inspection", {})
 
     if _execution_blocked(next_payload):
@@ -198,6 +196,53 @@ def resolve_simple_analysis_contract(
     if not _bool(fast_path_enabled, True):
         contract = _route_contract("complex", "fast_path_disabled")
         return _attach_contract(next_payload, contract, trace, started)
+
+    # The normalizer grounds aliases before retrieval, but a strict metric
+    # merge contract can be derived or retained after that point.  Re-check it
+    # against the source aliases that actually reached the executor.  This
+    # prevents an LLM-only label from turning a valid Typed DAG into a runtime
+    # "metric source not found" error.
+    plan, metric_merge_runtime_trace = _reconcile_metric_merge_runtime_aliases(
+        plan,
+        next_payload,
+    )
+    trace["metric_merge_runtime_alias_reconciliation"] = deepcopy(
+        metric_merge_runtime_trace
+    )
+    if metric_merge_runtime_trace.get("status") == "invalid":
+        runtime_aliases = _runtime_retrieval_source_aliases(next_payload, plan)
+        typed_contract = _typed_pandas_plan_execution_contract(
+            next_payload,
+            plan,
+            runtime_aliases,
+        )
+        if typed_contract:
+            eligibility = _dict(typed_contract.get("eligibility"))
+            eligibility["reason_codes"] = _dedupe(
+                _string_list(eligibility.get("reason_codes"))
+                + ["invalid_metric_merge_contract_fallback"]
+            )
+            typed_contract["eligibility"] = eligibility
+            typed_contract["fallback_from"] = "resolved_metric_merge_plan"
+            typed_contract["fallback_reason"] = "runtime_metric_alias_contract_invalid"
+            trace["metric_merge_runtime_alias_reconciliation"]["fallback"] = (
+                "execute_typed_pandas_plan"
+            )
+            next_payload["intent_plan"] = plan
+            return _attach_contract(next_payload, typed_contract, trace, started)
+
+        # An unresolved strict merge contract must never win deterministic
+        # execution selection.  Preserve the diagnostic trace, then let the
+        # ordinary Complex path decide whether a separately valid LLM Pandas
+        # plan exists rather than running a contract with an invented source.
+        plan.pop("resolved_metric_merge_plan", None)
+        plan.pop("resolved_metric_comparison_plan", None)
+        trace["metric_merge_runtime_alias_reconciliation"]["fallback"] = (
+            "ordinary_complex_path"
+        )
+
+    plan["route_resolution"] = _intent_route_candidate(plan)
+    next_payload["intent_plan"] = plan
 
     intent_ir = _dict(plan.get("intent_ir"))
     source_aliases = _string_list(intent_ir.get("route_source_aliases"))
@@ -1029,6 +1074,299 @@ def _analysis_execution_profile(
 
 
 # 함수 설명: `_intent_route_candidate()`는 조회 전 실행 계약만으로 Fast 후보 또는 Complex 필요 여부를 결정하며 최종 판정을 대신하지 않습니다.
+def _runtime_retrieval_source_aliases(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+) -> list[str]:
+    """Return retrieval-job aliases that are present in the executor input."""
+
+    runtime_sources = _dict(payload.get("runtime_sources"))
+    aliases: list[str] = []
+    for job in _list(plan.get("retrieval_jobs")):
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if alias and alias in runtime_sources:
+            aliases.append(alias)
+    return _dedupe(aliases)
+
+
+def _reconcile_metric_merge_runtime_aliases(
+    plan_value: dict[str, Any],
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Ground a strict metric merge in actual runtime retrieval aliases.
+
+    A metric merge is deterministic only when every declared metric source is
+    also an actual retrieval job and runtime DataFrame. The model may use a
+    presentation alias even though its ``dataset_key`` identifies one unique
+    job. Such a unique dataset-key witness can safely repair the alias. We do
+    not guess when a dataset has multiple jobs or when the reference has no
+    trusted witness.
+    """
+
+    plan = deepcopy(plan_value)
+    merge_plan = _dict(plan.get("resolved_metric_merge_plan"))
+    if (
+        merge_plan.get("strict") is not True
+        or str(merge_plan.get("operation") or "").strip()
+        != "merge_metric_sources"
+    ):
+        return plan, {"status": "not_applicable"}
+
+    runtime_sources = _dict(payload.get("runtime_sources"))
+    jobs_by_alias: dict[str, dict[str, Any]] = {}
+    jobs_by_dataset: dict[str, list[str]] = {}
+    for job in _list(plan.get("retrieval_jobs")):
+        if not isinstance(job, dict):
+            continue
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        if not alias or not dataset_key or alias not in runtime_sources:
+            continue
+        jobs_by_alias[alias] = job
+        jobs_by_dataset.setdefault(dataset_key.casefold(), []).append(alias)
+
+    def alias_for(reference: Any, dataset_key_hint: Any = "") -> str:
+        raw = str(reference or "").strip()
+        if raw in jobs_by_alias:
+            return raw
+        exact = [
+            alias
+            for alias in jobs_by_alias
+            if raw and raw.casefold() == alias.casefold()
+        ]
+        if len(exact) == 1:
+            return exact[0]
+        dataset_key = str(dataset_key_hint or "").strip().casefold()
+        dataset_matches = jobs_by_dataset.get(dataset_key, []) if dataset_key else []
+        return dataset_matches[0] if len(dataset_matches) == 1 else ""
+
+    issues: list[dict[str, Any]] = []
+    rewrites: list[dict[str, str]] = []
+    alias_map: dict[str, str] = {}
+    metrics: list[dict[str, Any]] = []
+    for index, raw_metric in enumerate(_list(merge_plan.get("metrics")), start=1):
+        if not isinstance(raw_metric, dict):
+            issues.append({"type": "invalid_metric_spec", "index": index})
+            continue
+        metric = deepcopy(raw_metric)
+        raw_alias = str(metric.get("source_alias") or "").strip()
+        alias = alias_for(raw_alias, metric.get("dataset_key"))
+        if not alias:
+            issues.append(
+                {
+                    "type": "unresolved_metric_source_alias",
+                    "index": index,
+                    "source_alias": raw_alias,
+                    "dataset_key": str(metric.get("dataset_key") or ""),
+                }
+            )
+            continue
+        job = jobs_by_alias[alias]
+        actual_dataset_key = str(job.get("dataset_key") or "").strip()
+        declared_dataset_key = str(metric.get("dataset_key") or "").strip()
+        if declared_dataset_key and declared_dataset_key.casefold() != actual_dataset_key.casefold():
+            issues.append(
+                {
+                    "type": "metric_source_dataset_mismatch",
+                    "index": index,
+                    "source_alias": raw_alias,
+                    "declared_dataset_key": declared_dataset_key,
+                    "actual_dataset_key": actual_dataset_key,
+                }
+            )
+            continue
+        if raw_alias and raw_alias in alias_map and alias_map[raw_alias] != alias:
+            issues.append(
+                {
+                    "type": "ambiguous_metric_source_alias",
+                    "source_alias": raw_alias,
+                }
+            )
+            continue
+        if raw_alias and raw_alias != alias:
+            rewrites.append(
+                {
+                    "field": f"resolved_metric_merge_plan.metrics[{index - 1}].source_alias",
+                    "from": raw_alias,
+                    "to": alias,
+                }
+            )
+        if raw_alias:
+            alias_map[raw_alias] = alias
+        metric["source_alias"] = alias
+        metric["dataset_key"] = actual_dataset_key
+        metrics.append(metric)
+
+    if len(metrics) < 2 or len({str(item.get("source_alias") or "") for item in metrics}) < 2:
+        issues.append(
+            {
+                "type": "metric_source_population_incomplete",
+                "metric_source_aliases": [
+                    str(item.get("source_alias") or "") for item in metrics
+                ],
+            }
+        )
+
+    rewritten_grain_mappings: list[dict[str, Any]] = []
+    expected_aliases = {str(item.get("source_alias") or "") for item in metrics}
+    for index, raw_mapping in enumerate(_list(merge_plan.get("grain_mappings")), start=1):
+        if not isinstance(raw_mapping, dict):
+            issues.append({"type": "invalid_grain_mapping", "index": index})
+            continue
+        mapping = deepcopy(raw_mapping)
+        raw_candidates = mapping.get("source_candidates")
+        if not isinstance(raw_candidates, dict):
+            issues.append(
+                {
+                    "type": "missing_grain_source_candidates",
+                    "index": index,
+                }
+            )
+            continue
+        candidates: dict[str, Any] = {}
+        for raw_alias, columns in raw_candidates.items():
+            raw_alias_text = str(raw_alias or "").strip()
+            alias = alias_map.get(raw_alias_text) or alias_for(raw_alias_text)
+            if not alias:
+                issues.append(
+                    {
+                        "type": "unresolved_grain_source_alias",
+                        "index": index,
+                        "source_alias": raw_alias_text,
+                    }
+                )
+                continue
+            if raw_alias_text != alias:
+                rewrites.append(
+                    {
+                        "field": f"resolved_metric_merge_plan.grain_mappings[{index - 1}].source_candidates",
+                        "from": raw_alias_text,
+                        "to": alias,
+                    }
+                )
+            if alias in candidates:
+                issues.append(
+                    {
+                        "type": "duplicate_grain_source_alias",
+                        "index": index,
+                        "source_alias": alias,
+                    }
+                )
+                continue
+            candidates[alias] = deepcopy(columns)
+        missing_aliases = sorted(alias for alias in expected_aliases if alias and alias not in candidates)
+        if missing_aliases:
+            issues.append(
+                {
+                    "type": "metric_grain_source_missing",
+                    "index": index,
+                    "source_aliases": missing_aliases,
+                }
+            )
+        mapping["source_candidates"] = candidates
+        rewritten_grain_mappings.append(mapping)
+
+    if not rewritten_grain_mappings:
+        issues.append({"type": "metric_grain_mappings_missing"})
+
+    rewritten_transforms: list[dict[str, Any]] = []
+    for index, raw_transform in enumerate(_list(merge_plan.get("source_transforms")), start=1):
+        if not isinstance(raw_transform, dict):
+            issues.append({"type": "invalid_metric_source_transform", "index": index})
+            continue
+        transform = deepcopy(raw_transform)
+        raw_alias = str(transform.get("source_alias") or "").strip()
+        alias = alias_map.get(raw_alias) or alias_for(raw_alias, transform.get("dataset_key"))
+        if not alias:
+            issues.append(
+                {
+                    "type": "unresolved_metric_transform_alias",
+                    "index": index,
+                    "source_alias": raw_alias,
+                }
+            )
+            continue
+        if raw_alias != alias:
+            rewrites.append(
+                {
+                    "field": f"resolved_metric_merge_plan.source_transforms[{index - 1}].source_alias",
+                    "from": raw_alias,
+                    "to": alias,
+                }
+            )
+        transform["source_alias"] = alias
+        rewritten_transforms.append(transform)
+
+    if issues:
+        return plan, {
+            "status": "invalid",
+            "available_source_aliases": sorted(jobs_by_alias),
+            "issues": issues,
+            "rewrites": rewrites,
+        }
+
+    merge_plan["metrics"] = metrics
+    merge_plan["grain_mappings"] = rewritten_grain_mappings
+    if "source_transforms" in merge_plan:
+        merge_plan["source_transforms"] = rewritten_transforms
+    plan["resolved_metric_merge_plan"] = merge_plan
+
+    # A comparison contract is derived from the same merge sources. Apply the
+    # confirmed rewrites consistently so it cannot revive a stale alias later
+    # in deterministic execution selection.
+    comparison_plan = _dict(plan.get("resolved_metric_comparison_plan"))
+    if comparison_plan and alias_map:
+        plan["resolved_metric_comparison_plan"] = _rewrite_nested_metric_aliases(
+            comparison_plan,
+            alias_map,
+        )
+    output_contract = _dict(plan.get("output_contract"))
+    bindings = _list(output_contract.get("metric_bindings"))
+    if bindings and alias_map:
+        output_contract["metric_bindings"] = [
+            _rewrite_nested_metric_aliases(binding, alias_map)
+            if isinstance(binding, dict)
+            else deepcopy(binding)
+            for binding in bindings
+        ]
+        plan["output_contract"] = output_contract
+    return plan, {
+        "status": "reconciled" if rewrites else "valid",
+        "available_source_aliases": sorted(jobs_by_alias),
+        "rewrites": rewrites,
+    }
+
+
+def _rewrite_nested_metric_aliases(value: Any, aliases: dict[str, str]) -> Any:
+    """Rewrite only already-confirmed alias values in a nested contract."""
+
+    if isinstance(value, list):
+        return [_rewrite_nested_metric_aliases(item, aliases) for item in value]
+    if not isinstance(value, dict):
+        return deepcopy(value)
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {
+            "source_alias",
+            "left_source_alias",
+            "right_source_alias",
+            "reference_source_alias",
+            "target_source_alias",
+        }:
+            raw = str(item or "").strip()
+            result[key] = aliases.get(raw, item)
+        elif key == "source_candidates" and isinstance(item, dict):
+            result[key] = {
+                aliases.get(str(alias or "").strip(), str(alias or "").strip()): _rewrite_nested_metric_aliases(columns, aliases)
+                for alias, columns in item.items()
+            }
+        else:
+            result[key] = _rewrite_nested_metric_aliases(item, aliases)
+    return result
+
+
 def _typed_pandas_plan_execution_contract(
     payload: dict[str, Any],
     plan: dict[str, Any],
