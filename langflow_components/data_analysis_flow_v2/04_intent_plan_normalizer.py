@@ -4605,21 +4605,91 @@ def _catalog_dataset_family(item: dict[str, Any]) -> str:
 
 
 # 함수 설명: `_job_requested_time_scope()`는 조회 기준일과 요청 기준일을 비교해 현재·이력 시간 범위를 계산합니다.
-def _job_requested_time_scope(job: dict[str, Any], payload: dict[str, Any]) -> str:
+def _job_requested_time_scope(
+    job: dict[str, Any],
+    payload: dict[str, Any],
+    catalog_required_date_keys: set[str] | None = None,
+) -> str:
+    """Return a temporal dataset-selection scope for a query-time date only.
+
+    A model may place every date phrase in ``required_params``.  That is not
+    enough to make it a retrieval parameter: a date that the active Table
+    Catalog exposes only through ``filter_mappings`` must be applied after the
+    source is loaded.  ``catalog_required_date_keys`` is therefore supplied by
+    the caller for registered datasets.  ``None`` retains the legacy behavior
+    for an unregistered dataset so the later catalog boundary can report it.
+    """
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     reference_date = str(request.get("reference_date") or "").strip()
     required_params = job.get("required_params") if isinstance(job.get("required_params"), dict) else {}
+    accepted_keys = catalog_required_date_keys
+    if accepted_keys is not None and not accepted_keys:
+        return ""
     requested_date = next(
         (
             str(value or "").strip()
             for key, value in required_params.items()
-            if _normalized_column_key(key) == _normalized_column_key("DATE")
+            if (
+                _normalized_column_key(key) in accepted_keys
+                if accepted_keys is not None
+                else _normalized_column_key(key) == _normalized_column_key("DATE")
+            )
         ),
         "",
     )
     if not re.fullmatch(r"20\d{6}", requested_date) or not re.fullmatch(r"20\d{6}", reference_date):
         return ""
     return "current_day" if requested_date == reference_date else "history"
+
+
+def _catalog_required_date_param_keys(
+    candidates: dict[str, Any],
+    dataset_key: str,
+) -> set[str] | None:
+    """Return canonical keys that are query-time dates for a registered catalog.
+
+    ``set()`` deliberately means the catalog is known and has no query-time
+    date.  In that case a model-supplied DATE must remain a filter candidate;
+    it must not trigger current/history dataset replacement.  ``None`` means
+    no registered catalog was found and preserves the existing fail-closed
+    path for unknown datasets.
+    """
+    item = _table_catalog_item(candidates, dataset_key)
+    if not item:
+        return None
+    required_names = _catalog_required_params(candidates, dataset_key)
+    required_keys = {
+        _normalized_column_key(name)
+        for name in required_names
+        if _normalized_column_key(name)
+    }
+    date_key = _normalized_column_key("DATE")
+    if date_key in required_keys:
+        return {date_key}
+
+    # Some catalogs declare a physical query parameter (for example
+    # WORK_DATE) and map it from the canonical DATE field.  Honor that shape
+    # only when the mapped physical value is itself catalog-required.
+    payload = _metadata_payload(item)
+    contracts = [payload, item]
+    source_config = payload.get("source_config")
+    if isinstance(source_config, dict):
+        contracts.append(source_config)
+    for contract in contracts:
+        mappings = contract.get("required_param_mappings") if isinstance(contract, dict) else None
+        if not isinstance(mappings, dict):
+            continue
+        for canonical, mapped_values in mappings.items():
+            if _normalized_column_key(canonical) != date_key:
+                continue
+            mapped_keys = {
+                _normalized_column_key(value)
+                for value in _string_list(mapped_values)
+                if _normalized_column_key(value)
+            }
+            if required_keys.intersection(mapped_keys):
+                return {date_key, *required_keys.intersection(mapped_keys)}
+    return set()
 
 
 # 함수 설명: `_aggregation_source_columns_by_alias()`는 04 의도 계획 정규화기 처리 중 데이터 소스·컬럼·BY·alias 관련 값을 계산·변환하는 내부 helper입니다.
@@ -4765,11 +4835,15 @@ def _reconcile_metric_dataset_selection(
             continue
         alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
         metric_columns = source_columns.get(alias, [])
-        desired_scope = _job_requested_time_scope(job, payload)
-        if not metric_columns or not desired_scope:
-            continue
         current_key = str(job.get("dataset_key") or "").strip()
         current_item = _table_catalog_item(candidates, current_key)
+        desired_scope = _job_requested_time_scope(
+            job,
+            payload,
+            _catalog_required_date_param_keys(candidates, current_key),
+        )
+        if not metric_columns or not desired_scope:
+            continue
         current_supports = all(
             _catalog_supports_domain_column(candidates, current_key, column)
             for column in metric_columns

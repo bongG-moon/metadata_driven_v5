@@ -3905,6 +3905,183 @@ def test_v2_normalizer_reconciles_current_scope_for_comparison_without_aggregati
     assert trace["corrections"][0]["requested_time_scope"] == "current_day"
 
 
+def test_v2_metric_scope_distinguishes_query_time_and_optional_dates_before_hydration():
+    """A mixed actual-vs-target plan preserves each Catalog date role.
+
+    The model can initially place a date phrase in ``required_params``.  For a
+    registered Catalog that declares DATE only in ``filter_mappings``, the
+    normalizer must leave the source selected and the Hydrator must later move
+    that value to the trusted post-retrieval filter contract.  A second source
+    that declares DATE as required must still use it to select its current-day
+    Catalog and retain it as a query parameter.
+    """
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    hydrator = load_module(
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "04a_trusted_retrieval_job_hydrator.py"
+    )
+    product_columns = [
+        "DATE",
+        "TECH",
+        "DEN",
+        "MODE",
+        "PKG_TYPE1",
+        "PKG_TYPE2",
+        "ORG",
+        "LEAD",
+        "MCP_NO",
+    ]
+    target_item = {
+        "dataset_key": "target",
+        "payload": {
+            "source_type": "goodocs",
+            "dataset_family": "goodocs_pkg_plan",
+            "columns": [*product_columns, "OUT 계획"],
+            "required_params": [],
+            "filter_mappings": {
+                "DATE": ["DATE"],
+                "TECH": ["TECH"],
+                "DEN": ["DEN"],
+                "MODE": ["Mode"],
+                "PKG_TYPE1": ["PKG1"],
+                "PKG_TYPE2": ["PKG2"],
+                "ORG": ["ORG"],
+                "LEAD": ["LEAD"],
+                "MCP_NO": ["MCP NO"],
+                "OUT_PLAN_QTY": ["OUT 계획"],
+            },
+        },
+    }
+    candidates = {
+        "table_catalog_items": [
+            target_item,
+            {
+                "dataset_key": "production",
+                "payload": {
+                    "dataset_family": "production",
+                    "time_scope": "history",
+                    "required_params": ["DATE"],
+                    "filter_mappings": {"DATE": ["WORK_DATE"]},
+                    "columns": [*product_columns, "PRODUCTION"],
+                },
+            },
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "dataset_family": "production",
+                    "time_scope": "current_day",
+                    "required_params": ["DATE"],
+                    "filter_mappings": {"DATE": ["WORK_DATE"]},
+                    "columns": [*product_columns, "PRODUCTION"],
+                },
+            },
+        ]
+    }
+    raw_jobs = [
+        {
+            "dataset_key": "production",
+            "source_alias": "prod_actual",
+            "required_params": {"DATE": "20260811"},
+        },
+        {
+            "dataset_key": "target",
+            "source_alias": "tgt_plan",
+            # This models a raw intent response.  It is not a trusted
+            # query-time parameter because target has no Catalog-required DATE.
+            "required_params": {"DATE": "20260811"},
+        },
+    ]
+    pandas_plan = [
+        {
+            "node_id": "aggregate_actual",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "prod_actual"}],
+            "output_alias": "actual_by_product",
+            "source_alias": "prod_actual",
+            "group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "ORG", "LEAD", "MCP_NO"],
+            "aggregations": [
+                {"column": "PRODUCTION", "method": "sum", "output_column": "실적"}
+            ],
+        },
+        {
+            "node_id": "aggregate_target",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "tgt_plan"}],
+            "output_alias": "target_by_product",
+            "source_alias": "tgt_plan",
+            "group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "ORG", "LEAD", "MCP_NO"],
+            "aggregations": [
+                {"column": "OUT 계획", "method": "sum", "output_column": "목표"}
+            ],
+        }
+    ]
+
+    jobs, scope_trace = normalizer._reconcile_metric_dataset_selection(
+        {"request": {"reference_date": "20260811"}},
+        raw_jobs,
+        pandas_plan,
+        candidates,
+    )
+
+    jobs_by_alias = {job["source_alias"]: job for job in jobs}
+    assert jobs_by_alias["prod_actual"]["dataset_key"] == "production_today"
+    assert jobs_by_alias["prod_actual"]["required_params"] == {"DATE": "20260811"}
+    assert jobs_by_alias["tgt_plan"] == raw_jobs[1]
+    assert scope_trace["status"] == "applied"
+    assert scope_trace["unresolved"] == []
+    assert scope_trace["corrections"] == [
+        {
+            "source_alias": "prod_actual",
+            "from_dataset_key": "production",
+            "to_dataset_key": "production_today",
+            "metric_columns": [
+                "PRODUCTION",
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "ORG",
+                "LEAD",
+                "MCP_NO",
+            ],
+            "requested_time_scope": "current_day",
+            "selection_source": "table_catalog.selection_criteria",
+        }
+    ]
+
+    hydrated = hydrator.hydrate_retrieval_jobs(
+        {
+            "request": {"reference_date": "20260811"},
+            "intent_plan": {
+                "retrieval_jobs": jobs,
+                "pandas_execution_plan": pandas_plan,
+                "output_contract": {},
+            },
+        },
+        candidates,
+        "dummy",
+    )
+    hydrated_by_alias = {
+        job["source_alias"]: job
+        for job in hydrated["intent_plan"]["retrieval_jobs"]
+    }
+    assert hydrated_by_alias["prod_actual"]["required_params"] == {
+        "DATE": "20260811"
+    }
+    assert hydrated_by_alias["tgt_plan"]["required_params"] == {}
+    assert hydrated_by_alias["tgt_plan"]["filters"]["DATE"] == {
+        "operator": "eq",
+        "value": "20260811",
+    }
+    reconciliation = hydrated["trace"]["inspection"]["catalog_hydration"][
+        "condition_reconciliation"
+    ]
+    assert reconciliation[-1]["moved_to_filters"] == ["DATE"]
+
+
 def test_v2_source_scope_reconciliation_excludes_derived_aggregate_outputs():
     """A post-aggregate sort key must not be required from the raw Catalog."""
 
