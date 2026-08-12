@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 from pprint import pformat
 import re
 import traceback
@@ -183,6 +184,7 @@ def execute_pandas_code(
     if _execution_blocked(payload):
         return _blocked_execution_payload(payload)
     next_payload = _canonicalize_standardized_output_contract(payload)
+    next_payload = _reconcile_metric_merge_output_contract(next_payload)
     next_payload.setdefault("intermediate_results", _initial_intermediate_results(next_payload))
     # Keep the actual checkpoint rows only in the runtime payload.  The visible
     # checkpoint remains a bounded preview and is never sent to an answer LLM.
@@ -585,6 +587,10 @@ def execute_pandas_code(
             else:
                 result = deterministic_result
                 semantic_execution_certificate = {}
+            # Keep calculated checkpoints and the final result on the same
+            # declared quantity missing-value policy.  Raw source checkpoints
+            # intentionally remain unchanged for audit/download purposes.
+            result = _zero_fill_declared_metric_frame_values(result, next_payload)
             for checkpoint_key, frame in fast_intermediate_frames.items():
                 is_typed_step = str(checkpoint_key).startswith("typed_step:")
                 record_checkpoint(
@@ -667,6 +673,7 @@ def execute_pandas_code(
             if isinstance(item, dict):
                 deduped_intermediate_results.append(item)
         intermediate_results = deduped_intermediate_results
+        result = _zero_fill_declared_metric_frame_values(result, next_payload)
         if "computed_result" not in checkpoint_values:
             record_checkpoint(
                 "computed_result",
@@ -825,6 +832,18 @@ def _deterministic_execution_contract(payload: dict[str, Any]) -> dict[str, Any]
         == "enrich_previous_result"
     ):
         return deepcopy(reference_join)
+    # Semantic comparison contracts carry a postcondition that a generic Typed
+    # DAG (or a Fast recipe) cannot express by ordering alone.  Prefer them
+    # before the generic executor so a plan that says "A is less than B" never
+    # degrades into merely sorting the two metrics.
+    for key in (
+        "resolved_empty_result_plan",
+        "resolved_presence_comparison_plan",
+        "resolved_metric_comparison_plan",
+    ):
+        value = plan.get(key)
+        if isinstance(value, dict) and value.get("strict") is True:
+            return deepcopy(value)
     fast_plan = payload.get("simple_analysis_contract")
     if (
         isinstance(fast_plan, dict)
@@ -840,9 +859,6 @@ def _deterministic_execution_contract(payload: dict[str, Any]) -> dict[str, Any]
     ):
         return deepcopy(fast_plan)
     for key in (
-        "resolved_empty_result_plan",
-        "resolved_presence_comparison_plan",
-        "resolved_metric_comparison_plan",
         "resolved_metric_merge_plan",
         "resolved_reference_join_plan",
     ):
@@ -2828,7 +2844,15 @@ def _execute_metric_comparison(
     working = merged.copy()
     working[lhs_column] = pd.to_numeric(working[lhs_column], errors="coerce")
     working[rhs_column] = pd.to_numeric(working[rhs_column], errors="coerce")
-    valid_operands = working[lhs_column].notna() & working[rhs_column].notna()
+    null_numeric_policy = str(
+        contract.get("null_numeric_policy") or "exclude_missing_operand"
+    ).strip()
+    if null_numeric_policy == "fill_missing_with_zero":
+        working[lhs_column] = working[lhs_column].fillna(0)
+        working[rhs_column] = working[rhs_column].fillna(0)
+        valid_operands = pd.Series(True, index=working.index, dtype=bool)
+    else:
+        valid_operands = working[lhs_column].notna() & working[rhs_column].notna()
     mask = valid_operands & comparison(working[lhs_column], working[rhs_column]).fillna(False)
     result = working[mask].copy().reset_index(drop=True)
     postcondition_mask = comparison(result[lhs_column], result[rhs_column]).fillna(False)
@@ -2839,7 +2863,7 @@ def _execute_metric_comparison(
         "lhs_metric_column": lhs_name,
         "operator": operator,
         "rhs_metric_column": rhs_name,
-        "null_numeric_policy": "exclude_missing_operand",
+        "null_numeric_policy": null_numeric_policy,
         "postcondition_validation": "passed",
         "input_row_count": int(len(working)),
         "missing_operand_row_count": int((~valid_operands).sum()),
@@ -4182,7 +4206,7 @@ def _normalize_blank_dimension_values(rows: list[dict[str, Any]], payload: dict[
     return rows
 
 
-# 함수 설명: `_normalize_missing_metric_values()`는 최종 표시용 metric 결측치만 0으로 맞춥니다.
+# 함수 설명: `_normalize_missing_metric_values()`는 최종 표시용 수량·metric 결측치만 0으로 맞춥니다.
 def _normalize_missing_metric_values(rows: list[dict[str, Any]], payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not rows:
         return rows
@@ -4197,6 +4221,43 @@ def _normalize_missing_metric_values(rows: list[dict[str, Any]], payload: dict[s
             if _is_missing_display_value(row.get(column)):
                 row[column] = 0
     return rows
+
+
+def _zero_fill_declared_metric_frame_values(result: Any, payload: dict[str, Any]) -> Any:
+    """Apply the declared quantity/metric missing-value policy before checkpoints.
+
+    Raw source checkpoints remain untouched, while calculated intermediate
+    tables and the final result use the same zero-fill policy.  This keeps a
+    missing source-group metric visible as zero without converting dimensions
+    such as product, process, or organization into numeric values.
+    """
+
+    if not hasattr(result, "columns") or not hasattr(result, "copy"):
+        return result
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    declared_metrics = _string_list(contract.get("metric_columns"))
+    if not declared_metrics:
+        return result
+    working = result.copy()
+    handled_columns: set[str] = set()
+    for metric in declared_metrics:
+        actual_column = _find_frame_column(
+            working,
+            _equivalent_column_names(metric, payload),
+        )
+        if not actual_column or actual_column in handled_columns:
+            continue
+        handled_columns.add(actual_column)
+        series = working[actual_column]
+        try:
+            missing = series.isna() | series.astype(str).str.strip().str.casefold().isin(
+                BLANK_MATCH_TEXTS
+            )
+        except Exception:
+            continue
+        working.loc[missing, actual_column] = 0
+    return working
 
 
 # 함수 설명: `_metric_output_columns()`는 계약 우선, 이름·실제 숫자 값 차선으로 metric 컬럼을 보수적으로 선택합니다.
@@ -4227,9 +4288,13 @@ def _metric_output_columns(
     return metrics
 
 
-# 함수 설명: `_is_missing_display_value()`는 표시 단계에서 0 또는 빈 문자열로 바꿀 null·blank 값을 판별합니다.
+# 함수 설명: `_is_missing_display_value()`는 표시 단계에서 수량 0으로 바꿀 null·blank·NaN 계열 값을 판별합니다.
 def _is_missing_display_value(value: Any) -> bool:
-    return value is None or (isinstance(value, str) and not value.strip())
+    # Reuse the executor-wide missing-value vocabulary so pandas ``NaN`` and
+    # nullable scalar renderings (``<NA>``, ``NaT``) follow the same policy as
+    # ordinary None/blank quantity values.  Dimensions are excluded by the
+    # caller; only declared metric columns are zero-filled.
+    return _is_blank_match_value(value)
 
 
 # 함수 설명: `_has_numeric_result_value()`는 bool을 제외한 실제 숫자 값이 결과 컬럼에 하나라도 있는지 확인합니다.
@@ -4407,14 +4472,25 @@ def _ordering_contract_error(
     if limit and len(rows) > limit:
         return f"정렬 결과 limit={limit}을 초과했습니다: {len(rows)}건"
     values: list[float] = []
+    missing_value_seen = False
     for row in rows:
         value = row.get(actual_column)
         if value in (None, "") or isinstance(value, bool):
+            missing_value_seen = True
             continue
         try:
-            values.append(float(value))
+            numeric_value = float(value)
         except Exception:
             return ""
+        # pandas sorts NaN last when ``na_position=\"last\"`` is requested.
+        # Treat non-finite values as that missing tail instead of comparing
+        # them numerically, because ``10 <= NaN`` is always false.
+        if not math.isfinite(numeric_value):
+            missing_value_seen = True
+            continue
+        if missing_value_seen:
+            return f"결과가 ordering 계약({sort_by} {ordering.get('order') or 'desc'})대로 정렬되지 않았습니다."
+        values.append(numeric_value)
     if len(values) < 2:
         return ""
     order = str(ordering.get("order") or "desc").strip().lower()
@@ -5480,6 +5556,151 @@ def _canonicalize_standardized_output_contract(payload: dict[str, Any]) -> dict[
         "status": "applied",
         "policy": "standardized_filter_mappings_canonical_only",
         "changes": changes,
+    }
+    return payload
+
+
+# 함수 설명: 확정된 다중 source metric 병합의 모든 지표가 strict 결과 표에서 누락되지 않도록 출력 계약을 보강합니다.
+def _reconcile_metric_merge_output_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep every proven metric-merge output visible in the final projection.
+
+    ``merge_metric_sources`` is selected only after the Typed planner has proven
+    independent source-owned measures and their shared grain. A weak raw output
+    contract can still name only one measure, however. Applying that incomplete
+    strict projection would silently discard a correctly computed second
+    measure. Restore the display contract from the deterministic merge contract
+    instead of hiding it.
+    """
+
+    plan = (
+        payload.get("intent_plan")
+        if isinstance(payload.get("intent_plan"), dict)
+        else {}
+    )
+    merge = (
+        plan.get("resolved_metric_merge_plan")
+        if isinstance(plan.get("resolved_metric_merge_plan"), dict)
+        else {}
+    )
+    if (
+        merge.get("strict") is not True
+        or str(merge.get("operation") or "").strip() != "merge_metric_sources"
+    ):
+        return payload
+
+    contract = (
+        deepcopy(plan.get("output_contract"))
+        if isinstance(plan.get("output_contract"), dict)
+        else {}
+    )
+    result_mode = str(contract.get("result_mode") or "").strip().lower()
+    if result_mode and result_mode != "aggregate":
+        return payload
+
+    metrics = [item for item in merge.get("metrics", []) if isinstance(item, dict)]
+    metric_outputs = _string_list(
+        [item.get("output_column") for item in metrics]
+    )
+    metric_aliases = {
+        str(item.get("source_alias") or "").strip()
+        for item in metrics
+        if str(item.get("source_alias") or "").strip()
+    }
+    grain_columns = _string_list(
+        [
+            item.get("output_column") or item.get("canonical_column")
+            for item in merge.get("grain_mappings", [])
+            if isinstance(item, dict)
+        ]
+    )
+    if len(metric_outputs) < 2 or len(metric_aliases) < 2 or not grain_columns:
+        return payload
+
+    prior_result_columns = _string_list(contract.get("result_columns"))
+    prior_metric_columns = _string_list(contract.get("metric_columns"))
+    prior_required_columns = _string_list(contract.get("required_columns"))
+    reconciled_result_columns = _merge_unique_strings(
+        prior_result_columns,
+        grain_columns,
+        metric_outputs,
+    )
+    reconciled_metric_columns = _merge_unique_strings(
+        prior_metric_columns,
+        metric_outputs,
+    )
+    reconciled_required_columns = _merge_unique_strings(
+        prior_required_columns,
+        grain_columns,
+        metric_outputs,
+    )
+
+    bindings = [
+        deepcopy(item)
+        for item in contract.get("metric_bindings", [])
+        if isinstance(item, dict)
+    ]
+    bound_outputs = {
+        str(item.get("output_column") or "").strip().casefold()
+        for item in bindings
+        if str(item.get("output_column") or "").strip()
+    }
+    added_bindings: list[str] = []
+    for metric in metrics:
+        output_column = str(metric.get("output_column") or "").strip()
+        if not output_column or output_column.casefold() in bound_outputs:
+            continue
+        binding = {
+            key: deepcopy(metric[key])
+            for key in (
+                "source_alias",
+                "dataset_key",
+                "source_column",
+                "aggregation",
+                "output_column",
+            )
+            if metric.get(key) not in (None, "", [], {})
+        }
+        if binding:
+            bindings.append(binding)
+            bound_outputs.add(output_column.casefold())
+            added_bindings.append(output_column)
+
+    prior_result_keys = {column.casefold() for column in prior_result_columns}
+    missing_result_columns = [
+        column for column in metric_outputs if column.casefold() not in prior_result_keys
+    ]
+    changed = (
+        reconciled_result_columns != prior_result_columns
+        or reconciled_metric_columns != prior_metric_columns
+        or reconciled_required_columns != prior_required_columns
+        or bool(added_bindings)
+        or contract.get("strict_result_columns") is not True
+    )
+    if not changed:
+        return payload
+
+    contract["result_mode"] = result_mode or "aggregate"
+    contract["grain_columns"] = _merge_unique_strings(
+        _string_list(contract.get("grain_columns")),
+        grain_columns,
+    )
+    contract["metric_columns"] = reconciled_metric_columns
+    contract["required_columns"] = reconciled_required_columns
+    contract["result_columns"] = reconciled_result_columns
+    contract["strict_result_columns"] = True
+    if bindings:
+        contract["metric_bindings"] = bindings
+    plan["output_contract"] = contract
+    payload["intent_plan"] = plan
+    payload.setdefault("trace", {}).setdefault("inspection", {})[
+        "runtime_metric_merge_output_contract_reconciliation"
+    ] = {
+        "stage": "17_hybrid_analysis_executor",
+        "status": "applied",
+        "policy": "strict_metric_merge_outputs_must_be_visible",
+        "added_result_columns": missing_result_columns,
+        "added_metric_bindings": added_bindings,
+        "result_columns": reconciled_result_columns,
     }
     return payload
 
@@ -6650,7 +6871,21 @@ def _string_list(value: Any) -> list[str]:
     return result
 
 
-# 함수 설명: `_json()`는 Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.
+# 함수 설명: strict metric 병합 계약의 result·metric·required 열을 입력 순서대로 합치고 중복을 제거합니다.
+def _merge_unique_strings(*values: Any) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for text in _string_list(value):
+            marker = text.casefold()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(text)
+    return result
+
+
+# 함수 설명: Message·dict·JSON 문자열에서 Markdown fence를 제거하고 JSON object를 안전하게 추출합니다.
 def _json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)

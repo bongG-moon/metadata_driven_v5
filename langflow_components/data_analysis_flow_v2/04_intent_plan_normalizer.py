@@ -11189,8 +11189,23 @@ def _resolve_metric_comparison_plan(
         return {}
 
     comparison_merge_plan = deepcopy(metric_merge_plan)
-    comparison_merge_plan["join_type"] = "inner"
-    comparison_merge_plan["fill_zero_on_success"] = False
+    # A comparison must keep the population proven by the Typed merge shape.
+    # For example, an input-preserving left join means a product with no WIP
+    # record is still a valid comparison candidate.  Its absent metric is
+    # explicitly rendered as zero rather than silently excluded by an inner
+    # join.
+    comparison_join_type = str(
+        comparison_merge_plan.get("join_type") or "outer"
+    ).strip().lower()
+    if comparison_join_type not in {"left", "inner", "outer"}:
+        comparison_join_type = "outer"
+    comparison_merge_plan["join_type"] = comparison_join_type
+    comparison_merge_plan["population_policy"] = (
+        "left_source_only"
+        if comparison_join_type == "left"
+        else "preserve_all_metric_source_keys"
+    )
+    comparison_merge_plan["fill_zero_on_success"] = True
     return {
         "operation": "compare_metrics",
         "merge_plan": comparison_merge_plan,
@@ -11198,7 +11213,7 @@ def _resolve_metric_comparison_plan(
         "lhs_metric_column": lhs_column,
         "rhs_metric_column": rhs_column,
         "operator": operator,
-        "null_numeric_policy": "exclude_missing_operand",
+        "null_numeric_policy": "fill_missing_with_zero",
         "selection_source": selection_source,
         "strict": True,
     }
@@ -11318,6 +11333,7 @@ def _independent_metric_merge_shape(
     known_external_aliases: set[str],
     metric_aliases: set[str],
     canonical_grain: list[str],
+    metrics: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Return a proven aggregate-then-merge shape, otherwise an empty dict.
 
@@ -11375,14 +11391,22 @@ def _independent_metric_merge_shape(
             "preserve_all_metric_source_keys",
         }:
             continue
-        if (
-            _string_list(raw_step.get("right_value_columns"))
-            or _string_list(raw_step.get("left_value_columns"))
-            or _string_list(raw_step.get("aggregations"))
-            or raw_step.get("calculation")
+        declared_value_columns = {
+            "left": _string_list(raw_step.get("left_value_columns")),
+            "right": _string_list(raw_step.get("right_value_columns")),
+        }
+        if _string_list(raw_step.get("aggregations")) or raw_step.get("calculation"):
+            # Join-time aggregation or calculation changes the meaning of the
+            # relation, so it cannot be replaced by independent aggregation.
+            continue
+        if not _metric_merge_declared_values_are_source_metrics(
+            declared_value_columns,
+            side_aliases,
+            metrics,
         ):
-            # These fields state that a row-level relation or a join-time
-            # calculation matters.  Do not rewrite it as an independent merge.
+            # A declared value outside the owning source metric is evidence of
+            # row enrichment (for example, an equipment attribute).  Retain
+            # the original Typed DAG in that case.
             continue
         left_keys, right_keys = _metric_merge_join_keys(raw_step)
         if (
@@ -11401,6 +11425,7 @@ def _independent_metric_merge_shape(
                 "source_aliases": side_aliases,
                 "join_type": join_type,
                 "population_policy": population_policy,
+                "declared_value_columns": declared_value_columns,
             }
         )
 
@@ -11441,6 +11466,13 @@ def _independent_metric_merge_shape(
     else:
         return {}
 
+    # A model may retain ``right_value_columns`` even after both sides are
+    # source-local aggregates. Those columns are harmless only in that proven
+    # aggregate topology and only when each is an owned metric. Do not extend
+    # this exception to raw joins, which can still represent enrichment.
+    if any(join["declared_value_columns"].values()) and kind != "aggregate_outputs_then_join":
+        return {}
+
     return {
         "kind": kind,
         "join_node_ids": [join["node_id"]],
@@ -11461,6 +11493,37 @@ def _independent_metric_merge_shape(
 # Typed-DAG path: two source-owned metrics, one outer comparison join, and a
 # shared final grain must all be proven.  It never manufactures a dataset,
 # source alias, join key, or metric column.
+def _metric_merge_declared_values_are_source_metrics(
+    declared_value_columns: dict[str, list[str]],
+    side_aliases: list[str],
+    metrics: list[dict[str, Any]],
+) -> bool:
+    """Accept explicitly carried values only when their source owns the metric."""
+
+    if len(side_aliases) != 2:
+        return False
+    for side, alias in zip(("left", "right"), side_aliases):
+        values = _string_list(declared_value_columns.get(side))
+        if not values:
+            continue
+        allowed: set[str] = set()
+        for metric in metrics:
+            if not isinstance(metric, dict) or str(metric.get("source_alias") or "").strip() != alias:
+                continue
+            allowed.update(
+                _normalized_column_key(value)
+                for value in _merge_strings(
+                    _string_list(metric.get("source_column")),
+                    _string_list(metric.get("output_column")),
+                    _string_list(metric.get("source_candidates")),
+                )
+                if _normalized_column_key(value)
+            )
+        if not allowed or any(_normalized_column_key(value) not in allowed for value in values):
+            return False
+    return True
+
+
 def _output_contract_independent_metric_merge_shape(
     raw_output_contract: dict[str, Any],
     pandas_plan: list[Any],
@@ -11936,6 +11999,7 @@ def _resolve_metric_merge_plan(
         set(jobs_by_alias),
         metric_aliases,
         canonical_grain,
+        metrics,
     )
     # A weak planner can leave the raw outer-join skeleton but omit the
     # source-local aggregate nodes.  If the output contract independently
@@ -15232,6 +15296,7 @@ def _remove_source_filter_sufficient_function_cases(
         return function_cases, pandas_plan, {"status": "not_needed", "removed": []}
 
     normalized_plan: list[Any] = []
+    removed_output_providers: dict[str, str] = {}
     for step in pandas_plan:
         if not isinstance(step, dict) or str(step.get("operation") or "").strip() != "apply_pandas_function_case":
             normalized_plan.append(deepcopy(step))
@@ -15251,9 +15316,108 @@ def _remove_source_filter_sufficient_function_cases(
             and step_alias in aliases_with_single_removed_case
         )
         if marker_match or unambiguous_alias_match:
+            provider_alias = step_alias
+            if not provider_alias:
+                external_aliases = _string_list(
+                    [
+                        item.get("ref")
+                        for item in step.get("inputs", [])
+                        if isinstance(item, dict)
+                        and str(item.get("kind") or "").strip() == "external_source"
+                        and str(item.get("ref") or "").strip() in jobs_by_alias
+                    ]
+                )
+                if len(external_aliases) == 1:
+                    provider_alias = external_aliases[0]
+            if provider_alias in aliases_with_single_removed_case:
+                for provider_ref in (
+                    str(step.get("node_id") or "").strip(),
+                    str(step.get("output_alias") or step.get("result_alias") or "").strip(),
+                ):
+                    if provider_ref:
+                        removed_output_providers[provider_ref] = provider_alias
             continue
         normalized_plan.append(deepcopy(step))
-    return retained, normalized_plan, {"status": "applied", "removed": removed}
+    normalized_plan, rewired_inputs = _rewire_removed_function_case_inputs(
+        normalized_plan,
+        removed_output_providers,
+        aliases_with_single_removed_case,
+        set(jobs_by_alias),
+    )
+    return retained, normalized_plan, {
+        "status": "applied",
+        "removed": removed,
+        "rewired_inputs": rewired_inputs,
+    }
+
+
+def _rewire_removed_function_case_inputs(
+    pandas_plan: list[Any],
+    removed_output_providers: dict[str, str],
+    fallback_source_aliases: set[str],
+    external_source_aliases: set[str],
+) -> tuple[list[Any], list[dict[str, str]]]:
+    """Replace a pruned source-transform edge only when its provider is unique.
+
+    A Function Case may be removed because the retrieval filter already proves
+    the same restriction.  Its downstream frame is then equivalent to the
+    filtered external source, but a ``node_output`` reference is no longer a
+    valid Typed-DAG provider.  Explicit producer aliases are always rewired;
+    an implicit alias is rewired only when exactly one source-transform was
+    pruned and exactly one unresolved reference remains.
+    """
+
+    normalized = deepcopy(pandas_plan)
+    provided_refs = set(external_source_aliases)
+    for step in normalized:
+        if not isinstance(step, dict):
+            continue
+        for key in ("node_id", "output_alias", "result_alias"):
+            value = str(step.get(key) or "").strip()
+            if value:
+                provided_refs.add(value)
+
+    unresolved_refs: set[str] = set()
+    for step in normalized:
+        if not isinstance(step, dict):
+            continue
+        for item in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
+            if not isinstance(item, dict) or str(item.get("kind") or "").strip() != "node_output":
+                continue
+            reference = str(item.get("ref") or "").strip()
+            if reference and reference not in provided_refs and reference not in removed_output_providers:
+                unresolved_refs.add(reference)
+
+    fallback_alias = ""
+    if len(fallback_source_aliases) == 1 and len(unresolved_refs) == 1:
+        fallback_alias = next(iter(fallback_source_aliases))
+    rewired_inputs: list[dict[str, str]] = []
+    for step_index, step in enumerate(normalized, start=1):
+        if not isinstance(step, dict) or not isinstance(step.get("inputs"), list):
+            continue
+        node_id = str(step.get("node_id") or step.get("output_alias") or f"step_{step_index}").strip()
+        for item in step["inputs"]:
+            if not isinstance(item, dict) or str(item.get("kind") or "").strip() != "node_output":
+                continue
+            reference = str(item.get("ref") or "").strip()
+            source_alias = removed_output_providers.get(reference, "")
+            reason = "removed_function_case_explicit_output"
+            if not source_alias and fallback_alias and reference in unresolved_refs:
+                source_alias = fallback_alias
+                reason = "removed_function_case_unique_implicit_output"
+            if not source_alias:
+                continue
+            item["kind"] = "external_source"
+            item["ref"] = source_alias
+            rewired_inputs.append(
+                {
+                    "node_id": node_id,
+                    "from_ref": reference,
+                    "source_alias": source_alias,
+                    "reason": reason,
+                }
+            )
+    return normalized, rewired_inputs
 
 
 # 함수 설명: 제품 token helper는 typed 조회 filter로 이미 표현되지 않은 구조화 제품 token이 남아 있을 때만 유지합니다.
