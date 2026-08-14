@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+COMPONENT_PATH = ROOT / "langflow_components" / "route_flow_v2" / "03_silent_direct_return_router_agent.py"
+
+
+def _load_component():
+    spec = importlib.util.spec_from_file_location("test_silent_direct_return_router_agent", COMPONENT_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_silent_router_agent_send_message_returns_the_original_message_without_side_effects() -> None:
+    module = _load_component()
+    marker = object()
+
+    result = asyncio.run(
+        module.SilentDirectReturnRouterAgent.send_message(
+            object(),
+            marker,
+            id_="ignored",
+            skip_db_update=True,
+        )
+    )
+
+    assert result is marker
+
+
+def test_tool_content_detection_accepts_runtime_compatible_tool_blocks() -> None:
+    module = _load_component()
+
+    class ToolBlock:
+        type = "tool_use"
+        name = "run_data_analysis"
+        output = {"content": "답변"}
+
+    class MessageLike:
+        content_blocks = [ToolBlock()]
+
+    assert module._has_tool_content(MessageLike()) is True
+
+
+def test_router_agent_includes_the_langflow_1_11_calculator_compatibility_input() -> None:
+    module = _load_component()
+
+    calculator = next(
+        item for item in module.SilentDirectReturnRouterAgent.inputs if item.name == "add_calculator_tool"
+    )
+
+    assert calculator.value is False

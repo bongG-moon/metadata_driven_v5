@@ -50,7 +50,8 @@ def build_flow(donor: dict[str, Any]) -> dict[str, Any]:
         (
             "Additive Agent Tool Router that leaves Flow 07 unchanged, keeps one Agent Tool call with "
             "max_iterations=1 and return_direct, and lets only the Data Analysis Tool perform a bounded "
-            "structured continuation call without parsing answer text or exposing raw rows/trace/code."
+            "structured continuation call without parsing answer text or exposing raw rows/trace/code. "
+            "A direct-result adapter publishes only the successful Tool answer when Langflow forwards nested events."
         ),
         ENDPOINT_NAME,
         [
@@ -72,12 +73,15 @@ def build_flow(donor: dict[str, Any]) -> dict[str, Any]:
         / "01_cached_continuation_run_flow_tool.py"
     )
     regular_tool_path = COMPONENT_ROOT / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
+    result_adapter_path = COMPONENT_ROOT / "route_flow_v2" / "02_agent_direct_tool_result_adapter.py"
+    silent_agent_path = COMPONENT_ROOT / "route_flow_v2" / "03_silent_direct_return_router_agent.py"
 
     chat = base.native_node(proto["chat_input"], "ChatInput-agent-tool-router-continuation", 0, 0)
     base._set_message_storage(chat, True)
-    agent = base.agent_node(
-        proto["agent"],
+    agent = base.silent_router_agent_node(
+        proto["custom"],
         "Agent-agent-tool-router-continuation",
+        silent_agent_path,
         890,
         0,
         system_prompt,
@@ -88,14 +92,22 @@ def build_flow(donor: dict[str, Any]) -> dict[str, Any]:
     base._set_value(agent_template, "add_current_date_tool", False)
     base._set_value(agent_template, "handle_parsing_errors", True)
     base._set_value(agent_template, "verbose", False)
-    output = base.native_node(
-        proto["chat_output"],
-        "ChatOutput-agent-tool-router-continuation",
+    result_adapter = base.custom_node(
+        proto["custom"],
+        "DirectToolResultAdapter-agent-tool-router-continuation",
+        result_adapter_path,
         1310,
         0,
     )
+    base._set_value(result_adapter["data"]["node"]["template"], "prefer_tool_result", True)
+    output = base.native_node(
+        proto["chat_output"],
+        "ChatOutput-agent-tool-router-continuation",
+        1610,
+        0,
+    )
     base._set_message_storage(output, True)
-    flow["data"]["nodes"].extend([chat, agent, output])
+    flow["data"]["nodes"].extend([chat, agent, result_adapter, output])
     base.add_edge(flow, chat, "message", agent, "input_value")
 
     y_positions = (-650, -390, -130, 130, 390, 650)
@@ -129,7 +141,8 @@ def build_flow(donor: dict[str, Any]) -> dict[str, Any]:
         flow["data"]["nodes"].append(tool)
         base.add_edge(flow, tool, "component_as_tool", agent, "tools")
 
-    base.add_edge(flow, agent, "response", output, "input_value")
+    base.add_edge(flow, agent, "response", result_adapter, "agent_message")
+    base.add_edge(flow, result_adapter, "message", output, "input_value")
     # Active flows use native Chat Input/Chat Output only.
     return flow
 

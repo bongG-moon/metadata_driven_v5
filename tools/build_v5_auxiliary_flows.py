@@ -229,17 +229,39 @@ def prompt_node(proto: dict[str, Any], node_id: str, prompt_text: str, x: float,
 
 def agent_node(proto: dict[str, Any], node_id: str, x: float, y: float, system_prompt: str) -> dict[str, Any]:
     node = _clone_node(proto, node_id, x, y)
-    template = node["data"]["node"]["template"]
+    _configure_agent_template(node["data"]["node"]["template"], system_prompt)
+    return node
+
+
+def silent_router_agent_node(
+    proto: dict[str, Any],
+    node_id: str,
+    path: Path,
+    x: float,
+    y: float,
+    system_prompt: str,
+) -> dict[str, Any]:
+    """Build the Router-specific Agent that suppresses nested child Flow events."""
+
+    node = custom_node(proto, node_id, path, x, y)
+    _configure_agent_template(node["data"]["node"]["template"], system_prompt)
+    return node
+
+
+def _configure_agent_template(template: dict[str, Any], system_prompt: str) -> None:
+    """Apply the stable Router Agent defaults to native and custom Agent templates."""
+
+    _set_default_language_model(template)
     _set_value(template, "api_key", "")
     _set_value(template, "system_prompt", system_prompt)
     # 실제 Tool이 연결되는 Router Agent만 이 factory를 사용합니다.
     _set_value(template, "n_messages", 0)
     _set_value(template, "max_iterations", 1)
     _set_value(template, "add_current_date_tool", False)
+    _set_value(template, "add_calculator_tool", False)
     _set_value(template, "max_tokens", 8192)
     _set_value(template, "verbose", False)
     _set_value(template, "tools", "")
-    return node
 
 
 def language_model_node(
@@ -581,16 +603,25 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["agent_tool_router"],
-        "LLM Agent router with six compact selected-ID-first cached Flow tools, deterministic realtime-analysis keyword gating, name fallback for standalone imports, shared session propagation, direct child responses, and one final Chat Output.",
+        "LLM Agent router with six compact selected-ID-first cached Flow tools, deterministic realtime-analysis keyword gating, name fallback for standalone imports, shared session propagation, a silent direct-return Agent, a direct-result adapter that removes nested child events, and one final Chat Output.",
         "metadata-driven-v5-agent-tool-router",
-        ["v5", "standalone", "agent-router", "tool-mode", "selected-flow-id", "cached-flow", "optimized"],
+        ["v5", "standalone", "agent-router", "tool-mode", "selected-flow-id", "cached-flow", "direct-result-adapter", "optimized"],
     )
     system_prompt = (COMPONENT_ROOT / "route_flow_v2" / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
     tool_path = COMPONENT_ROOT / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
+    result_adapter_path = COMPONENT_ROOT / "route_flow_v2" / "02_agent_direct_tool_result_adapter.py"
+    silent_agent_path = COMPONENT_ROOT / "route_flow_v2" / "03_silent_direct_return_router_agent.py"
 
     chat = native_node(proto["chat_input"], "ChatInput-agent-tool-router", 0, 0)
     _set_message_storage(chat, True)
-    agent = agent_node(proto["agent"], "Agent-agent-tool-router", 850, 0, system_prompt)
+    agent = silent_router_agent_node(
+        proto["custom"],
+        "Agent-agent-tool-router",
+        silent_agent_path,
+        850,
+        0,
+        system_prompt,
+    )
     agent_template = agent["data"]["node"]["template"]
     # Chat Input이 현재 사용자 Message를 먼저 저장하므로 5개 메시지를 조회합니다.
     # LFX Agent는 input_value와 ID가 같은 현재 Message를 제거하고, 이전 4개 메시지
@@ -601,9 +632,17 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     _set_value(agent_template, "add_current_date_tool", False)
     _set_value(agent_template, "handle_parsing_errors", True)
     _set_value(agent_template, "verbose", False)
-    output = native_node(proto["chat_output"], "ChatOutput-agent-tool-router", 1250, 0)
+    result_adapter = custom_node(
+        proto["custom"],
+        "DirectToolResultAdapter-agent-tool-router",
+        result_adapter_path,
+        1120,
+        0,
+    )
+    _set_value(result_adapter["data"]["node"]["template"], "prefer_tool_result", True)
+    output = native_node(proto["chat_output"], "ChatOutput-agent-tool-router", 1420, 0)
     _set_message_storage(output, True)
-    flow["data"]["nodes"].extend([chat, agent, output])
+    flow["data"]["nodes"].extend([chat, agent, result_adapter, output])
     add_edge(flow, chat, "message", agent, "input_value")
 
     y_positions = (-650, -390, -130, 130, 390, 650)
@@ -625,7 +664,10 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         flow["data"]["nodes"].append(tool)
         add_edge(flow, tool, "component_as_tool", agent, "tools")
 
-    add_edge(flow, agent, "response", output, "input_value")
+    # Langflow 1.11 forwards nested child-flow LLM events into the Agent message.
+    # Keep return_direct on the Tools, but publish only their successful final output.
+    add_edge(flow, agent, "response", result_adapter, "agent_message")
+    add_edge(flow, result_adapter, "message", output, "input_value")
     return flow
 
 

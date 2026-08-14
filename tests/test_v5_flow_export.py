@@ -50,7 +50,7 @@ def test_active_exports_and_imports_have_no_gaia_boundary_nodes() -> None:
             assert "GaiA" not in str(edge.get("target", ""))
 
 
-def test_native_boundaries_are_direct_for_analysis_and_agent_router() -> None:
+def test_native_boundaries_keep_analysis_direct_and_clean_agent_tool_results() -> None:
     analysis = _load(EXPORT_ROOT / "data_analysis_flow_v2_standalone.json")
     agent = _load(EXPORT_ROOT / "06_agent_tool_router_flow_v5_standalone.json")
 
@@ -60,7 +60,13 @@ def test_native_boundaries_are_direct_for_analysis_and_agent_router() -> None:
 
     agent_edges = {(edge["source"], edge["target"]) for edge in agent["data"]["edges"]}
     assert ("ChatInput-agent-tool-router", "Agent-agent-tool-router") in agent_edges
-    assert ("Agent-agent-tool-router", "ChatOutput-agent-tool-router") in agent_edges
+    assert ("Agent-agent-tool-router", "DirectToolResultAdapter-agent-tool-router") in agent_edges
+    assert ("DirectToolResultAdapter-agent-tool-router", "ChatOutput-agent-tool-router") in agent_edges
+    router_agent = next(node for node in agent["data"]["nodes"] if node["id"] == "Agent-agent-tool-router")
+    assert router_agent["data"]["type"] == "SilentDirectReturnRouterAgent"
+    router_template = router_agent["data"]["node"]["template"]
+    assert router_template["add_calculator_tool"]["value"] is False
+    assert "add_calculator_tool" in router_agent["data"]["node"]["field_order"]
 
 
 def test_base_data_analysis_hides_explicit_upstream_result_reference() -> None:

@@ -140,10 +140,14 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
         edge_pairs = {(str(edge.get("source") or ""), str(edge.get("target") or "")) for edge in edges}
         required = {
             ("ChatInput-agent-tool-router", "Agent-agent-tool-router"),
-            ("Agent-agent-tool-router", "ChatOutput-agent-tool-router"),
+            ("Agent-agent-tool-router", "DirectToolResultAdapter-agent-tool-router"),
+            ("DirectToolResultAdapter-agent-tool-router", "ChatOutput-agent-tool-router"),
         }
         if not required.issubset(edge_pairs):
-            raise ValueError("Agent Tool Router must keep direct native Chat Input -> Agent -> Chat Output edges.")
+            raise ValueError("Agent Tool Router must route the direct Tool result through its result adapter before Chat Output.")
+        agent = next((node for node in nodes if node.get("id") == "Agent-agent-tool-router"), None)
+        if agent is None or agent.get("data", {}).get("type") != "SilentDirectReturnRouterAgent":
+            raise ValueError("Agent Tool Router must use the silent direct-return Agent to suppress child Flow event leakage.")
     return 2 * len(edges)
 
 

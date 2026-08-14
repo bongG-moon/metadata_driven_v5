@@ -299,16 +299,552 @@
         "data": {
           "id": "Agent-agent-tool-router",
           "node": {
+            "template": {
+              "_type": "Component",
+              "tools": {
+                "trace_as_metadata": true,
+                "list": true,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "tools",
+                "value": "",
+                "display_name": "Tools",
+                "advanced": false,
+                "input_types": [
+                  "Tool"
+                ],
+                "dynamic": false,
+                "info": "These are the tools that the agent can use to help with tasks.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "add_calculator_tool": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "add_calculator_tool",
+                "value": false,
+                "display_name": "Calculator",
+                "advanced": true,
+                "dynamic": false,
+                "info": "Router Flow에서는 별도 계산기 Tool을 추가하지 않습니다.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "add_current_date_tool": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "add_current_date_tool",
+                "value": false,
+                "display_name": "Current Date",
+                "advanced": true,
+                "dynamic": false,
+                "info": "If true, will add a tool to the agent that returns the current date.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "agent_description": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "multiline": true,
+                "ai_enabled": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "agent_description",
+                "value": "A helpful assistant with access to the following tools:",
+                "display_name": "Agent Description [Deprecated]",
+                "advanced": true,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The description of the agent. This is only used when in Tool Mode. Defaults to 'A helpful assistant with access to the following tools:' and tools are added dynamically. This feature is deprecated and will be removed in future versions.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "copy_field": false,
+                "password": false,
+                "type": "str",
+                "_input_type": "MultilineInput"
+              },
+              "api_key": {
+                "load_from_db": true,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "api_key",
+                "value": "",
+                "display_name": "API Key",
+                "advanced": true,
+                "input_types": [],
+                "dynamic": false,
+                "info": "Overrides global provider settings. Leave blank to use your pre-configured API Key.",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "password": true,
+                "type": "str",
+                "_input_type": "SecretStrInput"
+              },
+              "base_url_ibm_watsonx": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "https://us-south.ml.cloud.ibm.com",
+                  "https://eu-de.ml.cloud.ibm.com",
+                  "https://eu-gb.ml.cloud.ibm.com",
+                  "https://au-syd.ml.cloud.ibm.com",
+                  "https://jp-tok.ml.cloud.ibm.com",
+                  "https://ca-tor.ml.cloud.ibm.com"
+                ],
+                "options_metadata": [],
+                "combobox": true,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "base_url_ibm_watsonx",
+                "value": "https://us-south.ml.cloud.ibm.com",
+                "display_name": "watsonx API Endpoint",
+                "advanced": false,
+                "dynamic": false,
+                "info": "The base URL of the API (IBM watsonx.ai only)",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 03 무중간이벤트 직접 반환 Router Agent\n# 역할: return_direct Tool 실행 중 하위 Flow의 내부 LLM 이벤트가 상위 Playground 메시지로 노출되는 것을 차단합니다.\n# 주요 입력: Agent 기본 입력(모델, 지시문, 입력 메시지, tools)\n# 주요 출력: Response(response), Structured Response(structured_response)\n# 처리 흐름: 기본 Agent의 Tool 실행과 최종 Message 생성은 그대로 사용하되, 중간 send_message와 token event만 비활성화합니다.\n# 유지보수 포인트: 이 컴포넌트는 Router Flow에서만 사용하고, 최종 응답은 뒤의 직접 반환 결과 어댑터와 Chat Output이 저장합니다.\n# =============================================================================\n\"\"\"A Router-only Agent that keeps direct Tool results out of nested event noise.\n\nLangflow 1.11 forwards child Flow model events into an Agent's event stream.\nThe native Agent persists those events as intermediate Playground messages,\nwhich can expose a child Flow's raw intent JSON even when the Tool itself\nreturns the correct final response.  This component preserves native Agent\nplanning/tool behavior while making its intermediate event callbacks no-ops.\nThe downstream direct-result adapter and Chat Output remain the sole visible\nmessage path.\n\"\"\"\n\nfrom __future__ import annotations\n\nfrom copy import deepcopy\nfrom typing import Any\n\nfrom lfx.components.models_and_agents.agent import AgentComponent\nfrom lfx.io import BoolInput\nfrom lfx.schema.message import Message\n\n\n# 주요 함수: Agent가 Tool을 호출한 뒤 남긴 raw LLM TextContent가 있는지 확인합니다.\ndef _has_tool_content(message: Message) -> bool:\n    for content in getattr(message, \"content_blocks\", []) or []:\n        content_type = str(getattr(content, \"type\", \"\") or \"\").casefold()\n        if content_type in {\"tool\", \"tool_use\", \"tool_call\"}:\n            return True\n        if getattr(content, \"output\", None) is not None and getattr(content, \"name\", None):\n            return True\n    return False\n\n\n# 주요 함수: Langflow 1.9.2와 1.11의 Agent 입력 차이를 흡수합니다.\ndef _router_agent_inputs() -> list[Any]:\n    \"\"\"Keep the Router template compatible with Agent input additions in Langflow 1.11.\"\"\"\n\n    inputs = deepcopy(list(getattr(AgentComponent, \"inputs\", []) or []))\n    calculator_input = next(\n        (item for item in inputs if str(getattr(item, \"name\", \"\") or \"\") == \"add_calculator_tool\"),\n        None,\n    )\n    if calculator_input is not None:\n        # The built-in 1.11 default is true, but this specialized Router\n        # exposes only its connected Flow Tools by default.\n        calculator_input.value = False\n        return inputs\n\n    # Langflow 1.11 validates this key whenever the model field is updated.\n    # Older 1.9.2 Agent templates do not define it, so export it explicitly\n    # with the Router-safe default instead of producing an incompatible flow.\n    inputs.append(\n        BoolInput(\n            name=\"add_calculator_tool\",\n            display_name=\"Calculator\",\n            info=\"Router Flow에서는 별도 계산기 Tool을 추가하지 않습니다.\",\n            value=False,\n            advanced=True,\n        )\n    )\n    return inputs\n\n\n# Langflow 컴포넌트 클래스: 기본 Agent의 Tool 호출은 유지하고 Playground 중간 이벤트만 억제합니다.\nclass SilentDirectReturnRouterAgent(AgentComponent):\n    display_name = \"03 무중간이벤트 직접 반환 Router Agent\"\n    description = \"하위 Flow 내부 이벤트를 표시하지 않고 return_direct Tool의 최종 결과만 다음 Chat Output으로 전달합니다.\"\n    icon = \"Bot\"\n    name = \"SilentDirectReturnRouterAgent\"\n    inputs = _router_agent_inputs()\n\n    # Langflow 메시지 전송 함수: Agent의 부분 응답과 중간 Tool 이벤트를 DB·Playground에 기록하지 않습니다.\n    async def send_message(\n        self,\n        message: Message,\n        id_: str | None = None,\n        *,\n        skip_db_update: bool = False,\n    ) -> Message:\n        del id_, skip_db_update\n        return message\n\n    # Langflow Agent 실행 함수: 원래 Agent 실행 계약은 유지하되 token event도 중간 메시지로 보내지 않습니다.\n    async def run_agent(self, agent: Any) -> Message:\n        had_event_manager = hasattr(self, \"_event_manager\")\n        event_manager = getattr(self, \"_event_manager\", None)\n        if had_event_manager:\n            object.__setattr__(self, \"_event_manager\", None)\n        try:\n            result = await super().run_agent(agent)\n            # return_direct Tool은 ToolContent.output가 최종 답변의 source of truth입니다.\n            # 하위 Flow LLM의 raw JSON TextContent는 이 Agent 출력에서도 제거해\n            # node trace와 downstream Message 모두에서 별도 JSON으로 보이지 않게 합니다.\n            if _has_tool_content(result):\n                result.text = \"\"\n            return result\n        finally:\n            if had_event_manager:\n                object.__setattr__(self, \"_event_manager\", event_manager)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "context_id": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "context_id",
+                "value": "",
+                "display_name": "Context ID",
+                "advanced": true,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The context ID of the chat. Adds an extra layer to the local memory.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "format_instructions": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "multiline": true,
+                "ai_enabled": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "format_instructions",
+                "value": "You are an AI that extracts structured JSON objects from unstructured text. Use a predefined schema with expected types (str, int, float, bool, dict). Extract ALL relevant instances that match the schema - if multiple patterns exist, capture them all. Fill missing or ambiguous values with defaults: null for missing values. Remove exact duplicates but keep variations that have different field values. Always return valid JSON in the expected format, never throw errors. If multiple objects can be extracted, return them all in the structured format.",
+                "display_name": "Output Format Instructions",
+                "advanced": true,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "Generic Template for structured output formatting. Valid only with Structured response.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "copy_field": false,
+                "password": false,
+                "type": "str",
+                "_input_type": "MultilineInput"
+              },
+              "handle_parsing_errors": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "handle_parsing_errors",
+                "value": true,
+                "display_name": "Handle Parse Errors",
+                "advanced": true,
+                "dynamic": false,
+                "info": "Should the Agent fix errors when reading user input for better processing?",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "input_value": {
+                "trace_as_input": true,
+                "tool_mode": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "input_value",
+                "value": "",
+                "display_name": "Input",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The input provided by the user for the agent to process.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageInput"
+              },
+              "max_iterations": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "max_iterations",
+                "value": 1,
+                "display_name": "Max Iterations",
+                "advanced": true,
+                "dynamic": false,
+                "info": "The maximum number of attempts the agent can make to complete its task before it stops.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "int",
+                "_input_type": "IntInput"
+              },
+              "max_tokens": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "range_spec": {
+                  "step_type": "int",
+                  "min": 1.0,
+                  "max": 128000.0,
+                  "step": 1.0
+                },
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "max_tokens",
+                "value": 8192,
+                "display_name": "Max Tokens",
+                "advanced": true,
+                "dynamic": false,
+                "info": "Maximum number of tokens to generate. Field name varies by provider.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "int",
+                "_input_type": "IntInput"
+              },
+              "model": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "model_type": "language",
+                "external_options": {
+                  "fields": {
+                    "data": {
+                      "node": {
+                        "name": "connect_other_models",
+                        "display_name": "Connect other models",
+                        "icon": "CornerDownLeft"
+                      }
+                    }
+                  }
+                },
+                "override_skip": false,
+                "required": true,
+                "placeholder": "Setup Provider",
+                "show": true,
+                "name": "model",
+                "value": [
+                  {
+                    "name": "gemini-3.5-flash-lite",
+                    "icon": "GoogleGenerativeAI",
+                    "provider": "Google Generative AI",
+                    "metadata": {
+                      "api_key_param": "google_api_key",
+                      "context_length": 128000,
+                      "max_tokens_field_name": "max_output_tokens",
+                      "model_class": "ChatGoogleGenerativeAIFixed",
+                      "model_name_param": "model"
+                    }
+                  }
+                ],
+                "display_name": "Language Model",
+                "advanced": false,
+                "input_types": [
+                  "LanguageModel"
+                ],
+                "dynamic": false,
+                "info": "Select your model provider",
+                "real_time_refresh": true,
+                "refresh_button": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "model",
+                "_input_type": "ModelInput"
+              },
+              "n_messages": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "n_messages",
+                "value": 5,
+                "display_name": "Number of Chat History Messages",
+                "advanced": true,
+                "dynamic": false,
+                "info": "Number of chat history messages to retrieve.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "int",
+                "_input_type": "IntInput"
+              },
+              "output_schema": {
+                "tool_mode": false,
+                "is_list": true,
+                "list_add_label": "Add More",
+                "table_schema": [
+                  {
+                    "name": "name",
+                    "display_name": "Name",
+                    "type": "str",
+                    "description": "Specify the name of the output field.",
+                    "default": "field",
+                    "edit_mode": "inline"
+                  },
+                  {
+                    "name": "description",
+                    "display_name": "Description",
+                    "type": "str",
+                    "description": "Describe the purpose of the output field.",
+                    "default": "description of field",
+                    "edit_mode": "popover"
+                  },
+                  {
+                    "name": "type",
+                    "display_name": "Type",
+                    "type": "str",
+                    "edit_mode": "inline",
+                    "description": "Indicate the data type of the output field (e.g., str, int, float, bool, dict).",
+                    "options": [
+                      "str",
+                      "int",
+                      "float",
+                      "bool",
+                      "dict"
+                    ],
+                    "default": "str"
+                  },
+                  {
+                    "name": "multiple",
+                    "display_name": "As List",
+                    "type": "boolean",
+                    "description": "Set to True if this output field should be a list of the specified type.",
+                    "default": "False",
+                    "edit_mode": "inline"
+                  }
+                ],
+                "trigger_text": "Open table",
+                "trigger_icon": "Table",
+                "table_icon": "Table",
+                "trace_as_metadata": true,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "output_schema",
+                "value": [],
+                "display_name": "Output Schema",
+                "advanced": true,
+                "input_types": [
+                  "DataFrame",
+                  "Table"
+                ],
+                "dynamic": false,
+                "info": "Schema Validation: Define the structure and data types for structured output. No validation if no output schema.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "table",
+                "_input_type": "TableInput"
+              },
+              "project_id": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "project_id",
+                "value": "",
+                "display_name": "watsonx Project ID",
+                "advanced": false,
+                "dynamic": false,
+                "info": "The project ID associated with the foundation model (IBM watsonx.ai only)",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "system_prompt": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "multiline": true,
+                "ai_enabled": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "system_prompt",
+                "value": "당신은 제조 데이터 Agent의 최상위 라우터입니다. 사용자의 현재 요청을 처리하는 데 필요한 하위 Flow 도구를 정확히 하나만 선택하거나, 도구가 필요 없는 경우 직접 짧게 응답합니다.\n\n## 라우팅 원칙\n\n1. 현재 질문 원문에 `분석`이 포함되고, 동시에 `실시간 생산 분석`, `실시간 분석`, `실시간 생산분석` 중 하나가 포함되면 `run_realtime_production_report`를 정확히 한 번 호출합니다. 이 규칙은 일반 제조 데이터 조회보다 우선합니다.\n2. `분석`이 없는 `실시간 생산`, `실시간 생산 Report`, `실시간 현황` 표현만으로는 `run_realtime_production_report`를 호출하지 않습니다. 실제 수치 조회가 명확하면 `run_data_analysis`를 사용하고, 의도가 불명확하면 어떤 분석을 원하는지 한 번만 확인합니다.\n3. 실제 제조 데이터 값의 조회, 집계, 계산, 비교 요청은 `run_data_analysis`를 정확히 한 번 호출합니다.\n4. 등록된 데이터셋, 도메인, 컬럼, 필수 파라미터, SQL 템플릿 또는 계산 규칙을 확인하는 요청은 `run_metadata_qa`를 정확히 한 번 호출합니다.\n5. 도메인 용어, 별칭, 공정/제품 그룹 또는 분석 규칙의 등록·변경 요청은 `save_domain_metadata`를 정확히 한 번 호출합니다.\n6. 테이블/데이터셋의 source type, query template, 필수 파라미터 또는 컬럼 스키마의 등록·변경 요청은 `save_table_catalog_metadata`를 정확히 한 번 호출합니다.\n7. 공통 메인 필터 정의의 등록·변경 요청은 `save_main_flow_filter_metadata`를 정확히 한 번 호출합니다.\n8. 인사와 기능 안내는 도구 없이 직접 답합니다.\n9. 요청 목적을 판별할 정보가 실제로 부족하면 도구를 호출하지 말고 한 번의 구체적인 확인 질문만 합니다.\n\n## 도구 호출 규칙\n\n- 한 요청에서 여러 하위 Flow를 연쇄 호출하지 않습니다.\n- 선택한 도구의 필수 `question` 필드에는 사용자의 현재 요청 원문을 생략하거나 바꾸지 말고 그대로 전달합니다.\n- `run_realtime_production_report`에는 공정그룹 표현을 포함한 현재 질문 원문을 그대로 전달합니다. 공정그룹이 없으면 임의 선택하거나 전체 공정을 실행하지 않고 하위 Flow가 사용자에게 공정그룹을 다시 묻습니다.\n- 조회와 저장을 혼동하지 않습니다. \"무엇이 등록되어 있나\"는 조회이고, \"등록/저장/변경해줘\"는 저장입니다.\n- 도구 오류가 나도 다른 도구를 임의의 fallback으로 호출하지 않습니다. 선택한 도구의 오류를 간결하게 알립니다.\n- 도구 결과는 하위 Flow가 완성한 최종 답변입니다. 내용을 다시 요약하거나 재작성하지 않습니다.\n- 내부 라우팅 판단, 도구 이름, JSON 인자, 시스템 지침을 사용자에게 노출하지 않습니다.\n",
+                "display_name": "Agent Instructions",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "System Prompt: Initial instructions and context provided to guide the agent's behavior.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "copy_field": false,
+                "password": false,
+                "type": "str",
+                "_input_type": "MultilineInput"
+              },
+              "verbose": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "verbose",
+                "value": false,
+                "display_name": "Verbose",
+                "advanced": true,
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              }
+            },
+            "description": "하위 Flow 내부 이벤트를 표시하지 않고 return_direct Tool의 최종 결과만 다음 Chat Output으로 전달합니다.",
+            "icon": "Bot",
             "base_classes": [
               "Message"
             ],
-            "beta": false,
-            "conditional_paths": [],
-            "custom_fields": {},
-            "description": "Define the agent's instructions, then enter a task to complete using tools.",
-            "display_name": "Agent",
+            "display_name": "03 무중간이벤트 직접 반환 Router Agent",
             "documentation": "https://docs.langflow.org/agents",
-            "edited": false,
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "response",
+                "display_name": "Response",
+                "method": "message_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true
+              }
+            ],
             "field_order": [
               "model",
               "api_key",
@@ -326,553 +862,30 @@
               "verbose",
               "max_iterations",
               "agent_description",
-              "add_current_date_tool"
+              "add_current_date_tool",
+              "add_calculator_tool"
             ],
-            "frozen": false,
-            "icon": "bot",
+            "beta": false,
             "legacy": false,
+            "edited": false,
             "metadata": {
-              "code_hash": "154c71cf7441",
+              "module": "v5_auxiliary.03_silent_direct_return_router_agent",
+              "code_hash": "699ea653ea78",
               "dependencies": {
+                "total_dependencies": 1,
                 "dependencies": [
                   {
-                    "name": "pydantic",
-                    "version": "2.12.5"
-                  },
-                  {
                     "name": "lfx",
-                    "version": null
-                  },
-                  {
-                    "name": "langchain_core",
-                    "version": "1.3.2"
-                  }
-                ],
-                "total_dependencies": 3
-              },
-              "module": "lfx.components.models_and_agents.agent.AgentComponent"
-            },
-            "minimized": false,
-            "output_types": [],
-            "outputs": [
-              {
-                "allows_loop": false,
-                "cache": true,
-                "display_name": "Response",
-                "group_outputs": false,
-                "method": "message_response",
-                "name": "response",
-                "selected": "Message",
-                "tool_mode": true,
-                "types": [
-                  "Message"
-                ],
-                "value": "__UNDEFINED__"
-              }
-            ],
-            "pinned": false,
-            "template": {
-              "_type": "Component",
-              "add_current_date_tool": {
-                "_input_type": "BoolInput",
-                "advanced": true,
-                "display_name": "Current Date",
-                "dynamic": false,
-                "info": "If true, will add a tool to the agent that returns the current date.",
-                "list": false,
-                "list_add_label": "Add More",
-                "name": "add_current_date_tool",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "bool",
-                "value": false
-              },
-              "agent_description": {
-                "_input_type": "MultilineInput",
-                "advanced": true,
-                "ai_enabled": false,
-                "copy_field": false,
-                "display_name": "Agent Description [Deprecated]",
-                "dynamic": false,
-                "info": "The description of the agent. This is only used when in Tool Mode. Defaults to 'A helpful assistant with access to the following tools:' and tools are added dynamically. This feature is deprecated and will be removed in future versions.",
-                "input_types": [
-                  "Message"
-                ],
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "multiline": true,
-                "name": "agent_description",
-                "override_skip": false,
-                "password": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_input": true,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": "A helpful assistant with access to the following tools:"
-              },
-              "api_key": {
-                "_input_type": "SecretStrInput",
-                "advanced": true,
-                "display_name": "API Key",
-                "dynamic": false,
-                "info": "Overrides global provider settings. Leave blank to use your pre-configured API Key.",
-                "input_types": [],
-                "load_from_db": true,
-                "name": "api_key",
-                "override_skip": false,
-                "password": true,
-                "placeholder": "",
-                "real_time_refresh": true,
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": ""
-              },
-              "base_url_ibm_watsonx": {
-                "_input_type": "DropdownInput",
-                "advanced": false,
-                "combobox": true,
-                "dialog_inputs": {},
-                "display_name": "watsonx API Endpoint",
-                "dynamic": false,
-                "external_options": {},
-                "info": "The base URL of the API (IBM watsonx.ai only)",
-                "name": "base_url_ibm_watsonx",
-                "options": [
-                  "https://us-south.ml.cloud.ibm.com",
-                  "https://eu-de.ml.cloud.ibm.com",
-                  "https://eu-gb.ml.cloud.ibm.com",
-                  "https://au-syd.ml.cloud.ibm.com",
-                  "https://jp-tok.ml.cloud.ibm.com",
-                  "https://ca-tor.ml.cloud.ibm.com"
-                ],
-                "options_metadata": [],
-                "override_skip": false,
-                "placeholder": "",
-                "real_time_refresh": true,
-                "required": false,
-                "show": false,
-                "title_case": false,
-                "toggle": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "str",
-                "value": "https://us-south.ml.cloud.ibm.com"
-              },
-              "code": {
-                "advanced": true,
-                "dynamic": true,
-                "fileTypes": [],
-                "file_path": "",
-                "info": "",
-                "list": false,
-                "load_from_db": false,
-                "multiline": true,
-                "name": "code",
-                "password": false,
-                "placeholder": "",
-                "required": true,
-                "show": true,
-                "title_case": false,
-                "type": "code",
-                "value": "from __future__ import annotations\n\nimport json\nimport re\nfrom typing import TYPE_CHECKING\n\nfrom pydantic import ValidationError\n\nfrom lfx.components.models_and_agents.memory import MemoryComponent\n\nif TYPE_CHECKING:\n    from langchain_core.tools import Tool\n\nfrom lfx.base.agents.agent import LCToolsAgentComponent\nfrom lfx.base.agents.events import ExceptionWithMessageError\nfrom lfx.base.models.unified_models import (\n    get_language_model_options,\n    get_llm,\n    handle_model_input_update,\n)\nfrom lfx.base.models.watsonx_constants import IBM_WATSONX_URLS\nfrom lfx.components.agentics.helpers.model_config import validate_model_selection\nfrom lfx.components.helpers import CurrentDateComponent\nfrom lfx.components.langchain_utilities.tool_calling import ToolCallingAgentComponent\nfrom lfx.custom.custom_component.component import get_component_toolkit\nfrom lfx.field_typing.range_spec import RangeSpec\nfrom lfx.helpers.base_model import build_model_from_schema\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, ModelInput, StrInput\nfrom lfx.io import IntInput, MessageTextInput, MultilineInput, Output, SecretStrInput, TableInput\nfrom lfx.log.logger import logger\nfrom lfx.schema.data import Data\nfrom lfx.schema.dotdict import dotdict\nfrom lfx.schema.message import Message\nfrom lfx.schema.table import EditMode\n\n\ndef set_advanced_true(component_input):\n    component_input.advanced = True\n    return component_input\n\n\nclass AgentComponent(ToolCallingAgentComponent):\n    display_name: str = \"Agent\"\n    description: str = \"Define the agent's instructions, then enter a task to complete using tools.\"\n    documentation: str = \"https://docs.langflow.org/agents\"\n    icon = \"bot\"\n    beta = False\n    name = \"Agent\"\n\n    memory_inputs = [set_advanced_true(component_input) for component_input in MemoryComponent().inputs]\n\n    inputs = [\n        ModelInput(\n            name=\"model\",\n            display_name=\"Language Model\",\n            info=\"Select your model provider\",\n            real_time_refresh=True,\n            required=True,\n        ),\n        SecretStrInput(\n            name=\"api_key\",\n            display_name=\"API Key\",\n            info=\"Overrides global provider settings. Leave blank to use your pre-configured API Key.\",\n            real_time_refresh=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"base_url_ibm_watsonx\",\n            display_name=\"watsonx API Endpoint\",\n            info=\"The base URL of the API (IBM watsonx.ai only)\",\n            options=IBM_WATSONX_URLS,\n            value=IBM_WATSONX_URLS[0],\n            combobox=True,\n            show=False,\n            real_time_refresh=True,\n        ),\n        StrInput(\n            name=\"project_id\",\n            display_name=\"watsonx Project ID\",\n            info=\"The project ID associated with the foundation model (IBM watsonx.ai only)\",\n            show=False,\n            required=False,\n        ),\n        MultilineInput(\n            name=\"system_prompt\",\n            display_name=\"Agent Instructions\",\n            info=\"System Prompt: Initial instructions and context provided to guide the agent's behavior.\",\n            value=\"You are a helpful assistant that can use tools to answer questions and perform tasks.\",\n            advanced=False,\n        ),\n        MessageTextInput(\n            name=\"context_id\",\n            display_name=\"Context ID\",\n            info=\"The context ID of the chat. Adds an extra layer to the local memory.\",\n            value=\"\",\n            advanced=True,\n        ),\n        IntInput(\n            name=\"n_messages\",\n            display_name=\"Number of Chat History Messages\",\n            value=100,\n            info=\"Number of chat history messages to retrieve.\",\n            advanced=True,\n            show=True,\n        ),\n        IntInput(\n            name=\"max_tokens\",\n            display_name=\"Max Tokens\",\n            info=\"Maximum number of tokens to generate. Field name varies by provider.\",\n            advanced=True,\n            range_spec=RangeSpec(min=1, max=128000, step=1, step_type=\"int\"),\n        ),\n        MultilineInput(\n            name=\"format_instructions\",\n            display_name=\"Output Format Instructions\",\n            info=\"Generic Template for structured output formatting. Valid only with Structured response.\",\n            value=(\n                \"You are an AI that extracts structured JSON objects from unstructured text. \"\n                \"Use a predefined schema with expected types (str, int, float, bool, dict). \"\n                \"Extract ALL relevant instances that match the schema - if multiple patterns exist, capture them all. \"\n                \"Fill missing or ambiguous values with defaults: null for missing values. \"\n                \"Remove exact duplicates but keep variations that have different field values. \"\n                \"Always return valid JSON in the expected format, never throw errors. \"\n                \"If multiple objects can be extracted, return them all in the structured format.\"\n            ),\n            advanced=True,\n        ),\n        TableInput(\n            name=\"output_schema\",\n            display_name=\"Output Schema\",\n            info=(\n                \"Schema Validation: Define the structure and data types for structured output. \"\n                \"No validation if no output schema.\"\n            ),\n            advanced=True,\n            required=False,\n            value=[],\n            table_schema=[\n                {\n                    \"name\": \"name\",\n                    \"display_name\": \"Name\",\n                    \"type\": \"str\",\n                    \"description\": \"Specify the name of the output field.\",\n                    \"default\": \"field\",\n                    \"edit_mode\": EditMode.INLINE,\n                },\n                {\n                    \"name\": \"description\",\n                    \"display_name\": \"Description\",\n                    \"type\": \"str\",\n                    \"description\": \"Describe the purpose of the output field.\",\n                    \"default\": \"description of field\",\n                    \"edit_mode\": EditMode.POPOVER,\n                },\n                {\n                    \"name\": \"type\",\n                    \"display_name\": \"Type\",\n                    \"type\": \"str\",\n                    \"edit_mode\": EditMode.INLINE,\n                    \"description\": (\"Indicate the data type of the output field (e.g., str, int, float, bool, dict).\"),\n                    \"options\": [\"str\", \"int\", \"float\", \"bool\", \"dict\"],\n                    \"default\": \"str\",\n                },\n                {\n                    \"name\": \"multiple\",\n                    \"display_name\": \"As List\",\n                    \"type\": \"boolean\",\n                    \"description\": \"Set to True if this output field should be a list of the specified type.\",\n                    \"default\": \"False\",\n                    \"edit_mode\": EditMode.INLINE,\n                },\n            ],\n        ),\n        *LCToolsAgentComponent.get_base_inputs(),\n        # removed memory inputs from agent component\n        # *memory_inputs,\n        BoolInput(\n            name=\"add_current_date_tool\",\n            display_name=\"Current Date\",\n            advanced=True,\n            info=\"If true, will add a tool to the agent that returns the current date.\",\n            value=True,\n        ),\n    ]\n    outputs = [\n        Output(name=\"response\", display_name=\"Response\", method=\"message_response\"),\n    ]\n\n    def _resolve_selected_model(self):\n        \"\"\"Resolve the selected model, including legacy agent_llm/model_name inputs.\"\"\"\n        try:\n            from langchain_core.language_models import BaseLanguageModel\n\n            if isinstance(self.model, BaseLanguageModel):\n                return self.model\n        except ImportError:\n            pass\n\n        if isinstance(self.model, list) and self.model:\n            return self.model\n\n        legacy_provider = getattr(self, \"agent_llm\", None)\n        legacy_model_name = getattr(self, \"model_name\", None)\n        if not legacy_provider or not legacy_model_name:\n            return self.model\n\n        options = get_language_model_options(user_id=self.user_id)\n        for option in options:\n            if option.get(\"provider\") == legacy_provider and option.get(\"name\") == legacy_model_name:\n                return [option]\n\n        return [\n            {\n                \"name\": legacy_model_name,\n                \"provider\": legacy_provider,\n                \"metadata\": {},\n            }\n        ]\n\n    def _get_max_tokens_value(self):\n        \"\"\"Return the user-supplied max_tokens or None when unset/zero.\"\"\"\n        val = getattr(self, \"max_tokens\", None)\n        if val in {\"\", 0}:\n            return None\n        return val\n\n    def _get_llm(self):\n        \"\"\"Override parent to include max_tokens from the Agent's input field.\"\"\"\n        return get_llm(\n            model=self.model,\n            user_id=self.user_id,\n            api_key=getattr(self, \"api_key\", None),\n            max_tokens=self._get_max_tokens_value(),\n            watsonx_url=getattr(self, \"base_url_ibm_watsonx\", None),\n            watsonx_project_id=getattr(self, \"project_id\", None),\n        )\n\n    async def get_agent_requirements(self):\n        \"\"\"Get the agent requirements for the agent.\"\"\"\n        from langchain_core.tools import StructuredTool\n\n        selected_model = self._resolve_selected_model()\n        try:\n            from langchain_core.language_models import BaseLanguageModel\n\n            is_connected_model = isinstance(selected_model, BaseLanguageModel)\n        except ImportError:\n            is_connected_model = False\n\n        if not is_connected_model:\n            validate_model_selection(selected_model)\n\n        # Ensure _get_llm() uses the resolved model (e.g. from legacy agent_llm/model_name)\n        self.model = selected_model\n        llm_model = self._get_llm()\n        if llm_model is None:\n            msg = \"No language model selected. Please choose a model to proceed.\"\n            raise ValueError(msg)\n\n        # Get memory data\n        self.chat_history = await self.get_memory_data()\n        await logger.adebug(f\"Retrieved {len(self.chat_history)} chat history messages\")\n        if isinstance(self.chat_history, Message):\n            self.chat_history = [self.chat_history]\n\n        # Add current date tool if enabled\n        if self.add_current_date_tool:\n            if not isinstance(self.tools, list):  # type: ignore[has-type]\n                self.tools = []\n            current_date_tool = (await CurrentDateComponent(**self.get_base_args()).to_toolkit()).pop(0)\n\n            if not isinstance(current_date_tool, StructuredTool):\n                msg = \"CurrentDateComponent must be converted to a StructuredTool\"\n                raise TypeError(msg)\n            self.tools.append(current_date_tool)\n\n        # Set shared callbacks for tracing the tools used by the agent\n        self.set_tools_callbacks(self.tools, self._get_shared_callbacks())\n\n        return llm_model, self.chat_history, self.tools\n\n    async def message_response(self) -> Message:\n        try:\n            llm_model, self.chat_history, self.tools = await self.get_agent_requirements()\n            # Set up and run agent\n            self.set(\n                llm=llm_model,\n                tools=self.tools or [],\n                chat_history=self.chat_history,\n                input_value=self.input_value,\n                system_prompt=self.system_prompt,\n            )\n            agent = self.create_agent_runnable()\n            result = await self.run_agent(agent)\n\n            # Store result for potential JSON output\n            self._agent_result = result\n\n        except (ValueError, TypeError, KeyError) as e:\n            await logger.aerror(f\"{type(e).__name__}: {e!s}\")\n            raise\n        except ExceptionWithMessageError as e:\n            await logger.aerror(f\"ExceptionWithMessageError occurred: {e}\")\n            raise\n        # Avoid catching blind Exception; let truly unexpected exceptions propagate\n        except Exception as e:\n            await logger.aerror(f\"Unexpected error: {e!s}\")\n            raise\n        else:\n            return result\n\n    def _preprocess_schema(self, schema):\n        \"\"\"Preprocess schema to ensure correct data types for build_model_from_schema.\"\"\"\n        processed_schema = []\n        for field in schema:\n            processed_field = {\n                \"name\": str(field.get(\"name\", \"field\")),\n                \"type\": str(field.get(\"type\", \"str\")),\n                \"description\": str(field.get(\"description\", \"\")),\n                \"multiple\": field.get(\"multiple\", False),\n            }\n            # Ensure multiple is handled correctly\n            if isinstance(processed_field[\"multiple\"], str):\n                processed_field[\"multiple\"] = processed_field[\"multiple\"].lower() in [\n                    \"true\",\n                    \"1\",\n                    \"t\",\n                    \"y\",\n                    \"yes\",\n                ]\n            processed_schema.append(processed_field)\n        return processed_schema\n\n    async def build_structured_output_base(self, content: str):\n        \"\"\"Build structured output with optional BaseModel validation.\"\"\"\n        json_pattern = r\"\\{.*\\}\"\n        schema_error_msg = \"Try setting an output schema\"\n\n        # Try to parse content as JSON first\n        json_data = None\n        try:\n            json_data = json.loads(content)\n        except json.JSONDecodeError:\n            json_match = re.search(json_pattern, content, re.DOTALL)\n            if json_match:\n                try:\n                    json_data = json.loads(json_match.group())\n                except json.JSONDecodeError:\n                    return {\"content\": content, \"error\": schema_error_msg}\n            else:\n                return {\"content\": content, \"error\": schema_error_msg}\n\n        # If no output schema provided, return parsed JSON without validation\n        if not hasattr(self, \"output_schema\") or not self.output_schema or len(self.output_schema) == 0:\n            return json_data\n\n        # Use BaseModel validation with schema\n        try:\n            processed_schema = self._preprocess_schema(self.output_schema)\n            output_model = build_model_from_schema(processed_schema)\n\n            # Validate against the schema\n            if isinstance(json_data, list):\n                # Multiple objects\n                validated_objects = []\n                for item in json_data:\n                    try:\n                        validated_obj = output_model.model_validate(item)\n                        validated_objects.append(validated_obj.model_dump())\n                    except ValidationError as e:\n                        await logger.aerror(f\"Validation error for item: {e}\")\n                        # Include invalid items with error info\n                        validated_objects.append({\"data\": item, \"validation_error\": str(e)})\n                return validated_objects\n\n            # Single object\n            try:\n                validated_obj = output_model.model_validate(json_data)\n                return [validated_obj.model_dump()]  # Return as list for consistency\n            except ValidationError as e:\n                await logger.aerror(f\"Validation error: {e}\")\n                return [{\"data\": json_data, \"validation_error\": str(e)}]\n\n        except (TypeError, ValueError) as e:\n            await logger.aerror(f\"Error building structured output: {e}\")\n            # Fallback to parsed JSON without validation\n            return json_data\n\n    async def json_response(self) -> Data:\n        \"\"\"Convert agent response to structured JSON Data output with schema validation.\"\"\"\n        # Always use structured chat agent for JSON response mode for better JSON formatting\n        try:\n            system_components = []\n\n            # 1. Agent Instructions (system_prompt)\n            agent_instructions = getattr(self, \"system_prompt\", \"\") or \"\"\n            if agent_instructions:\n                system_components.append(f\"{agent_instructions}\")\n\n            # 2. Format Instructions\n            format_instructions = getattr(self, \"format_instructions\", \"\") or \"\"\n            if format_instructions:\n                system_components.append(f\"Format instructions: {format_instructions}\")\n\n            # 3. Schema Information from BaseModel\n            if hasattr(self, \"output_schema\") and self.output_schema and len(self.output_schema) > 0:\n                try:\n                    processed_schema = self._preprocess_schema(self.output_schema)\n                    output_model = build_model_from_schema(processed_schema)\n                    schema_dict = output_model.model_json_schema()\n                    schema_info = (\n                        \"You are given some text that may include format instructions, \"\n                        \"explanations, or other content alongside a JSON schema.\\n\\n\"\n                        \"Your task:\\n\"\n                        \"- Extract only the JSON schema.\\n\"\n                        \"- Return it as valid JSON.\\n\"\n                        \"- Do not include format instructions, explanations, or extra text.\\n\\n\"\n                        \"Input:\\n\"\n                        f\"{json.dumps(schema_dict, indent=2)}\\n\\n\"\n                        \"Output (only JSON schema):\"\n                    )\n                    system_components.append(schema_info)\n                except (ValidationError, ValueError, TypeError, KeyError) as e:\n                    await logger.aerror(f\"Could not build schema for prompt: {e}\", exc_info=True)\n\n            # Combine all components\n            combined_instructions = \"\\n\\n\".join(system_components) if system_components else \"\"\n            llm_model, self.chat_history, self.tools = await self.get_agent_requirements()\n            self.set(\n                llm=llm_model,\n                tools=self.tools or [],\n                chat_history=self.chat_history,\n                input_value=self.input_value,\n                system_prompt=combined_instructions,\n            )\n\n            # Create and run structured chat agent\n            try:\n                structured_agent = self.create_agent_runnable()\n            except (NotImplementedError, ValueError, TypeError) as e:\n                await logger.aerror(f\"Error with structured chat agent: {e}\")\n                raise\n            try:\n                result = await self.run_agent(structured_agent)\n            except (\n                ExceptionWithMessageError,\n                ValueError,\n                TypeError,\n                RuntimeError,\n            ) as e:\n                await logger.aerror(f\"Error with structured agent result: {e}\")\n                raise\n            # Extract content from structured agent result\n            if hasattr(result, \"content\"):\n                content = result.content\n            elif hasattr(result, \"text\"):\n                content = result.text\n            else:\n                content = str(result)\n\n        except (\n            ExceptionWithMessageError,\n            ValueError,\n            TypeError,\n            NotImplementedError,\n            AttributeError,\n        ) as e:\n            await logger.aerror(f\"Error with structured chat agent: {e}\")\n            # Fallback to regular agent\n            content_str = \"No content returned from agent\"\n            return Data(data={\"content\": content_str, \"error\": str(e)})\n\n        # Process with structured output validation\n        try:\n            structured_output = await self.build_structured_output_base(content)\n\n            # Handle different output formats\n            if isinstance(structured_output, list) and structured_output:\n                if len(structured_output) == 1:\n                    return Data(data=structured_output[0])\n                return Data(data={\"results\": structured_output})\n            if isinstance(structured_output, dict):\n                return Data(data=structured_output)\n            return Data(data={\"content\": content})\n\n        except (ValueError, TypeError) as e:\n            await logger.aerror(f\"Error in structured output processing: {e}\")\n            return Data(data={\"content\": content, \"error\": str(e)})\n\n    async def get_memory_data(self):\n        # TODO: This is a temporary fix to avoid message duplication. We should develop a function for this.\n        messages = (\n            await MemoryComponent(**self.get_base_args())\n            .set(\n                session_id=self.graph.session_id,\n                context_id=self.context_id,\n                order=\"Ascending\",\n                n_messages=self.n_messages,\n            )\n            .retrieve_messages()\n        )\n        return [\n            message for message in messages if getattr(message, \"id\", None) != getattr(self.input_value, \"id\", None)\n        ]\n\n    def update_input_types(self, build_config: dotdict) -> dotdict:\n        \"\"\"Update input types for all fields in build_config.\"\"\"\n        for key, value in build_config.items():\n            if isinstance(value, dict):\n                if value.get(\"input_types\") is None:\n                    build_config[key][\"input_types\"] = []\n            elif hasattr(value, \"input_types\") and value.input_types is None:\n                value.input_types = []\n        return build_config\n\n    async def update_build_config(\n        self,\n        build_config: dotdict,\n        field_value: list[dict],\n        field_name: str | None = None,\n    ) -> dotdict:\n        # Update model options with caching (for all field changes)\n        # Agents require tool calling, so filter for only tool-calling capable models\n        build_config = handle_model_input_update(\n            component=self,\n            build_config=dict(build_config),\n            field_value=field_value,\n            field_name=field_name,\n            cache_key_prefix=\"language_model_options_tool_calling\",\n            get_options_func=lambda user_id=None: get_language_model_options(user_id=user_id, tool_calling=True),\n        )\n        build_config = dotdict(build_config)\n\n        if field_name == \"model\":\n            build_config = self.update_input_types(build_config)\n\n            # Validate required keys\n            default_keys = [\n                \"code\",\n                \"_type\",\n                \"model\",\n                \"tools\",\n                \"input_value\",\n                \"add_current_date_tool\",\n                \"system_prompt\",\n                \"agent_description\",\n                \"max_iterations\",\n                \"handle_parsing_errors\",\n                \"verbose\",\n            ]\n            missing_keys = [key for key in default_keys if key not in build_config]\n            if missing_keys:\n                msg = f\"Missing required keys in build_config: {missing_keys}\"\n                raise ValueError(msg)\n        return dotdict({k: v.to_dict() if hasattr(v, \"to_dict\") else v for k, v in build_config.items()})\n\n    async def _get_tools(self) -> list[Tool]:\n        component_toolkit = get_component_toolkit()\n        tools_names = self._build_tools_names()\n        agent_description = self.get_tool_description()\n        # TODO: Agent Description Depreciated Feature to be removed\n        description = f\"{agent_description}{tools_names}\"\n\n        tools = component_toolkit(component=self).get_tools(\n            tool_name=\"Call_Agent\",\n            tool_description=description,\n            # here we do not use the shared callbacks as we are exposing the agent as a tool\n            callbacks=self.get_langchain_callbacks(),\n        )\n        if hasattr(self, \"tools_metadata\"):\n            tools = component_toolkit(component=self, metadata=self.tools_metadata).update_tools_metadata(tools=tools)\n\n        return tools\n"
-              },
-              "context_id": {
-                "_input_type": "MessageTextInput",
-                "advanced": true,
-                "display_name": "Context ID",
-                "dynamic": false,
-                "info": "The context ID of the chat. Adds an extra layer to the local memory.",
-                "input_types": [
-                  "Message"
-                ],
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "name": "context_id",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_input": true,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": ""
-              },
-              "format_instructions": {
-                "_input_type": "MultilineInput",
-                "advanced": true,
-                "ai_enabled": false,
-                "copy_field": false,
-                "display_name": "Output Format Instructions",
-                "dynamic": false,
-                "info": "Generic Template for structured output formatting. Valid only with Structured response.",
-                "input_types": [
-                  "Message"
-                ],
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "multiline": true,
-                "name": "format_instructions",
-                "override_skip": false,
-                "password": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_input": true,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": "You are an AI that extracts structured JSON objects from unstructured text. Use a predefined schema with expected types (str, int, float, bool, dict). Extract ALL relevant instances that match the schema - if multiple patterns exist, capture them all. Fill missing or ambiguous values with defaults: null for missing values. Remove exact duplicates but keep variations that have different field values. Always return valid JSON in the expected format, never throw errors. If multiple objects can be extracted, return them all in the structured format."
-              },
-              "handle_parsing_errors": {
-                "_input_type": "BoolInput",
-                "advanced": true,
-                "display_name": "Handle Parse Errors",
-                "dynamic": false,
-                "info": "Should the Agent fix errors when reading user input for better processing?",
-                "list": false,
-                "list_add_label": "Add More",
-                "name": "handle_parsing_errors",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "bool",
-                "value": true
-              },
-              "input_value": {
-                "_input_type": "MessageInput",
-                "advanced": false,
-                "display_name": "Input",
-                "dynamic": false,
-                "info": "The input provided by the user for the agent to process.",
-                "input_types": [
-                  "Message"
-                ],
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "name": "input_value",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": true,
-                "trace_as_input": true,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": ""
-              },
-              "max_iterations": {
-                "_input_type": "IntInput",
-                "advanced": true,
-                "display_name": "Max Iterations",
-                "dynamic": false,
-                "info": "The maximum number of attempts the agent can make to complete its task before it stops.",
-                "list": false,
-                "list_add_label": "Add More",
-                "name": "max_iterations",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "int",
-                "value": 1
-              },
-              "max_tokens": {
-                "_input_type": "IntInput",
-                "advanced": true,
-                "display_name": "Max Tokens",
-                "dynamic": false,
-                "info": "Maximum number of tokens to generate. Field name varies by provider.",
-                "list": false,
-                "list_add_label": "Add More",
-                "name": "max_tokens",
-                "override_skip": false,
-                "placeholder": "",
-                "range_spec": {
-                  "max": 128000.0,
-                  "min": 1.0,
-                  "step": 1.0,
-                  "step_type": "int"
-                },
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "int",
-                "value": 8192
-              },
-              "model": {
-                "_input_type": "ModelInput",
-                "advanced": false,
-                "display_name": "Language Model",
-                "dynamic": false,
-                "external_options": {
-                  "fields": {
-                    "data": {
-                      "node": {
-                        "display_name": "Connect other models",
-                        "icon": "CornerDownLeft",
-                        "name": "connect_other_models"
-                      }
-                    }
-                  }
-                },
-                "info": "Select your model provider",
-                "input_types": [
-                  "LanguageModel"
-                ],
-                "list": false,
-                "list_add_label": "Add More",
-                "model_type": "language",
-                "name": "model",
-                "override_skip": false,
-                "placeholder": "Setup Provider",
-                "real_time_refresh": true,
-                "refresh_button": true,
-                "required": true,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_input": true,
-                "track_in_telemetry": false,
-                "type": "model",
-                "value": [
-                  {
-                    "icon": "GoogleGenerativeAI",
-                    "metadata": {
-                      "api_key_param": "google_api_key",
-                      "context_length": 128000,
-                      "max_tokens_field_name": "max_output_tokens",
-                      "model_class": "ChatGoogleGenerativeAIFixed",
-                      "model_name_param": "model"
-                    },
-                    "name": "gemini-3.5-flash-lite",
-                    "provider": "Google Generative AI"
+                    "version": "0.4.2"
                   }
                 ]
-              },
-              "n_messages": {
-                "_input_type": "IntInput",
-                "advanced": true,
-                "display_name": "Number of Chat History Messages",
-                "dynamic": false,
-                "info": "Number of chat history messages to retrieve.",
-                "list": false,
-                "list_add_label": "Add More",
-                "name": "n_messages",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "int",
-                "value": 5
-              },
-              "output_schema": {
-                "_input_type": "TableInput",
-                "advanced": true,
-                "display_name": "Output Schema",
-                "dynamic": false,
-                "info": "Schema Validation: Define the structure and data types for structured output. No validation if no output schema.",
-                "input_types": [
-                  "DataFrame",
-                  "Table"
-                ],
-                "is_list": true,
-                "list_add_label": "Add More",
-                "name": "output_schema",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "table_icon": "Table",
-                "table_schema": [
-                  {
-                    "default": "field",
-                    "description": "Specify the name of the output field.",
-                    "display_name": "Name",
-                    "edit_mode": "inline",
-                    "name": "name",
-                    "type": "str"
-                  },
-                  {
-                    "default": "description of field",
-                    "description": "Describe the purpose of the output field.",
-                    "display_name": "Description",
-                    "edit_mode": "popover",
-                    "name": "description",
-                    "type": "str"
-                  },
-                  {
-                    "default": "str",
-                    "description": "Indicate the data type of the output field (e.g., str, int, float, bool, dict).",
-                    "display_name": "Type",
-                    "edit_mode": "inline",
-                    "name": "type",
-                    "options": [
-                      "str",
-                      "int",
-                      "float",
-                      "bool",
-                      "dict"
-                    ],
-                    "type": "str"
-                  },
-                  {
-                    "default": "False",
-                    "description": "Set to True if this output field should be a list of the specified type.",
-                    "display_name": "As List",
-                    "edit_mode": "inline",
-                    "name": "multiple",
-                    "type": "boolean"
-                  }
-                ],
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "trigger_icon": "Table",
-                "trigger_text": "Open table",
-                "type": "table",
-                "value": []
-              },
-              "project_id": {
-                "_input_type": "StrInput",
-                "advanced": false,
-                "display_name": "watsonx Project ID",
-                "dynamic": false,
-                "info": "The project ID associated with the foundation model (IBM watsonx.ai only)",
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "name": "project_id",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": false,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": ""
-              },
-              "system_prompt": {
-                "_input_type": "MultilineInput",
-                "advanced": false,
-                "ai_enabled": false,
-                "copy_field": false,
-                "display_name": "Agent Instructions",
-                "dynamic": false,
-                "info": "System Prompt: Initial instructions and context provided to guide the agent's behavior.",
-                "input_types": [
-                  "Message"
-                ],
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "multiline": true,
-                "name": "system_prompt",
-                "override_skip": false,
-                "password": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_input": true,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": "당신은 제조 데이터 Agent의 최상위 라우터입니다. 사용자의 현재 요청을 처리하는 데 필요한 하위 Flow 도구를 정확히 하나만 선택하거나, 도구가 필요 없는 경우 직접 짧게 응답합니다.\n\n## 라우팅 원칙\n\n1. 현재 질문 원문에 `분석`이 포함되고, 동시에 `실시간 생산 분석`, `실시간 분석`, `실시간 생산분석` 중 하나가 포함되면 `run_realtime_production_report`를 정확히 한 번 호출합니다. 이 규칙은 일반 제조 데이터 조회보다 우선합니다.\n2. `분석`이 없는 `실시간 생산`, `실시간 생산 Report`, `실시간 현황` 표현만으로는 `run_realtime_production_report`를 호출하지 않습니다. 실제 수치 조회가 명확하면 `run_data_analysis`를 사용하고, 의도가 불명확하면 어떤 분석을 원하는지 한 번만 확인합니다.\n3. 실제 제조 데이터 값의 조회, 집계, 계산, 비교 요청은 `run_data_analysis`를 정확히 한 번 호출합니다.\n4. 등록된 데이터셋, 도메인, 컬럼, 필수 파라미터, SQL 템플릿 또는 계산 규칙을 확인하는 요청은 `run_metadata_qa`를 정확히 한 번 호출합니다.\n5. 도메인 용어, 별칭, 공정/제품 그룹 또는 분석 규칙의 등록·변경 요청은 `save_domain_metadata`를 정확히 한 번 호출합니다.\n6. 테이블/데이터셋의 source type, query template, 필수 파라미터 또는 컬럼 스키마의 등록·변경 요청은 `save_table_catalog_metadata`를 정확히 한 번 호출합니다.\n7. 공통 메인 필터 정의의 등록·변경 요청은 `save_main_flow_filter_metadata`를 정확히 한 번 호출합니다.\n8. 인사와 기능 안내는 도구 없이 직접 답합니다.\n9. 요청 목적을 판별할 정보가 실제로 부족하면 도구를 호출하지 말고 한 번의 구체적인 확인 질문만 합니다.\n\n## 도구 호출 규칙\n\n- 한 요청에서 여러 하위 Flow를 연쇄 호출하지 않습니다.\n- 선택한 도구의 필수 `question` 필드에는 사용자의 현재 요청 원문을 생략하거나 바꾸지 말고 그대로 전달합니다.\n- `run_realtime_production_report`에는 공정그룹 표현을 포함한 현재 질문 원문을 그대로 전달합니다. 공정그룹이 없으면 임의 선택하거나 전체 공정을 실행하지 않고 하위 Flow가 사용자에게 공정그룹을 다시 묻습니다.\n- 조회와 저장을 혼동하지 않습니다. \"무엇이 등록되어 있나\"는 조회이고, \"등록/저장/변경해줘\"는 저장입니다.\n- 도구 오류가 나도 다른 도구를 임의의 fallback으로 호출하지 않습니다. 선택한 도구의 오류를 간결하게 알립니다.\n- 도구 결과는 하위 Flow가 완성한 최종 답변입니다. 내용을 다시 요약하거나 재작성하지 않습니다.\n- 내부 라우팅 판단, 도구 이름, JSON 인자, 시스템 지침을 사용자에게 노출하지 않습니다.\n"
-              },
-              "tools": {
-                "_input_type": "HandleInput",
-                "advanced": false,
-                "display_name": "Tools",
-                "dynamic": false,
-                "info": "These are the tools that the agent can use to help with tasks.",
-                "input_types": [
-                  "Tool"
-                ],
-                "list": true,
-                "list_add_label": "Add More",
-                "name": "tools",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "other",
-                "value": ""
-              },
-              "verbose": {
-                "_input_type": "BoolInput",
-                "advanced": true,
-                "display_name": "Verbose",
-                "dynamic": false,
-                "info": "",
-                "list": false,
-                "list_add_label": "Add More",
-                "name": "verbose",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "bool",
-                "value": false
               }
             },
             "tool_mode": false,
             "lf_version": "1.9.2"
           },
           "showNode": true,
-          "type": "Agent"
+          "type": "SilentDirectReturnRouterAgent"
         },
         "dragging": false,
         "id": "Agent-agent-tool-router",
@@ -882,6 +895,141 @@
         },
         "position": {
           "x": 850,
+          "y": 0
+        },
+        "selected": false,
+        "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "DirectToolResultAdapter-agent-tool-router",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "agent_message": {
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "agent_message",
+                "value": "",
+                "display_name": "Agent 응답",
+                "advanced": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "Agent의 response Message를 연결합니다.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "other",
+                "_input_type": "HandleInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 02 Agent 직접 반환 결과 어댑터\n# 역할: Langflow 1.11 Agent가 하위 Flow 내부 LLM 이벤트를 최종 메시지에 섞는 현상을 차단합니다.\n# 주요 입력: Agent 응답(agent_message), 도구 최종 답변 우선(prefer_tool_result)\n# 주요 출력: 정리된 메시지(message)\n# 처리 흐름: 성공한 ToolContent.output의 content만 골라 새 Message로 만들고, 원본 Agent content_blocks는 전달하지 않습니다.\n# 유지보수 포인트: Tool 응답의 content/message/output/data 중 표시 가능한 텍스트만 허용하며 임의 JSON 문자열화는 하지 않습니다.\n# =============================================================================\n\"\"\"Normalize a direct-return Agent result before it reaches Chat Output.\n\nLangflow 1.11 Agent graphs forward nested child-flow model events through the\nparent Agent event stream.  When a Run Flow tool uses ``return_direct=True``,\nthe Agent's own ``text`` can therefore contain an internal child LLM payload\ninstead of the tool's final answer.  The successful tool result is still\navailable in ``Message.content_blocks`` as ``ToolContent.output``.\n\nThis standalone component deliberately creates a new Message containing only\nthat final tool text.  It is placed between Agent and Chat Output so the\nintermediate Agent message is not persisted or rendered by the Playground.\n\"\"\"\n\nfrom __future__ import annotations\n\nfrom collections.abc import Mapping\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import BoolInput, HandleInput, Output\nfrom lfx.schema.message import Message\n\n\n_MISSING = object()\n_FAILED_TOOL_STATUSES = {\"error\", \"failed\", \"failure\", \"cancelled\", \"canceled\"}\n\n\n# 주요 함수: Langflow/Pydantic 객체와 JSON dict에서 같은 방식으로 필드 값을 읽습니다.\ndef _value(item: Any, key: str, default: Any = None) -> Any:\n    \"\"\"Read a field from Langflow/Pydantic objects and JSON-compatible dicts.\"\"\"\n\n    if isinstance(item, Mapping):\n        return item.get(key, default)\n    return getattr(item, key, default)\n\n\n# 주요 함수: Pydantic content 객체를 안전하게 mapping 형태로 정규화합니다.\ndef _as_mapping(item: Any) -> Mapping[str, Any] | None:\n    if isinstance(item, Mapping):\n        return item\n    model_dump = getattr(item, \"model_dump\", None)\n    if callable(model_dump):\n        try:\n            dumped = model_dump()\n        except Exception:  # pragma: no cover - defensive against third-party content objects\n            return None\n        return dumped if isinstance(dumped, Mapping) else None\n    return None\n\n\n# 주요 함수: 중첩된 rich content를 표시 순서대로 순회합니다.\ndef _walk_content(items: Any):\n    \"\"\"Yield content blocks in display order, including nested rich content.\"\"\"\n\n    if isinstance(items, (list, tuple)):\n        for item in items:\n            yield from _walk_content(item)\n        return\n    if items is None:\n        return\n    yield items\n    children = _value(items, \"contents\", None)\n    if isinstance(children, (list, tuple)):\n        for child in children:\n            yield from _walk_content(child)\n\n\n# 주요 함수: ToolContent 또는 호환 가능한 직렬화 Tool 블록인지 판별합니다.\ndef _is_tool_content(item: Any) -> bool:\n    item_type = str(_value(item, \"type\", \"\") or \"\").casefold()\n    if item_type in {\"tool\", \"tool_use\", \"tool_call\"}:\n        return True\n    output = _value(item, \"output\", _MISSING)\n    return output is not _MISSING and bool(_value(item, \"name\", \"\") or _value(item, \"tool_call_id\", \"\"))\n\n\n# 주요 함수: 임의 JSON을 노출하지 않고 사용자에게 표시할 수 있는 텍스트만 추출합니다.\ndef _text_from_value(value: Any, *, depth: int = 0) -> str:\n    \"\"\"Extract a human-visible answer without stringifying arbitrary JSON.\"\"\"\n\n    if value is None or depth > 6:\n        return \"\"\n    if isinstance(value, str):\n        return value.strip()\n    if isinstance(value, bytes):\n        try:\n            return value.decode(\"utf-8\").strip()\n        except UnicodeDecodeError:\n            return \"\"\n\n    # A child Run Flow may return a Message directly instead of a tool dict.\n    text = _value(value, \"text\", _MISSING)\n    if text is not _MISSING and text is not value:\n        extracted = _text_from_value(text, depth=depth + 1)\n        if extracted:\n            return extracted\n\n    mapping = _as_mapping(value)\n    if mapping is not None:\n        for key in (\"content\", \"message\", \"output\", \"data\"):\n            candidate = mapping.get(key, _MISSING)\n            if candidate is _MISSING or candidate is value:\n                continue\n            extracted = _text_from_value(candidate, depth=depth + 1)\n            if extracted:\n                return extracted\n        return \"\"\n\n    if isinstance(value, (list, tuple)):\n        parts = [_text_from_value(item, depth=depth + 1) for item in value]\n        return \"\\n\".join(part for part in parts if part).strip()\n    return \"\"\n\n\n# 주요 함수: 마지막 성공 Tool 결과와 오류 상태를 찾아 직접 반환 후보를 만듭니다.\ndef _last_tool_result(content_blocks: Any) -> tuple[str, bool, str]:\n    \"\"\"Return (successful_text, saw_tool, last_clean_error_text).\"\"\"\n\n    successful_text = \"\"\n    saw_tool = False\n    error_text = \"\"\n    for item in _walk_content(content_blocks):\n        if not _is_tool_content(item):\n            continue\n        saw_tool = True\n        error = _value(item, \"error\", None)\n        output = _value(item, \"output\", None)\n        status = str(_value(output, \"status\", \"\") or \"\").casefold()\n        if error or status in _FAILED_TOOL_STATUSES:\n            error_text = _text_from_value(error) or _text_from_value(output)\n            continue\n        extracted = _text_from_value(output)\n        if extracted:\n            successful_text = extracted\n    return successful_text, saw_tool, error_text\n\n\n# 주요 함수: 세션 문맥만 보존한 새 Message를 만들어 원본 Agent 이벤트를 끊습니다.\ndef _message_with_context(source: Any, text: str) -> Message:\n    \"\"\"Make a clean Message while retaining the session used by Chat Output.\"\"\"\n\n    kwargs: dict[str, Any] = {\"text\": text}\n    for field_name in (\"session_id\", \"context_id\"):\n        value = _value(source, field_name, None)\n        if value not in (None, \"\"):\n            kwargs[field_name] = value\n    return Message(**kwargs)\n\n\n# 주요 함수: return_direct Tool의 최종 답변을 선택하고 하위 LLM JSON 누출을 방지합니다.\ndef build_direct_tool_result(agent_message: Any, *, prefer_tool_result: bool = True) -> Message:\n    \"\"\"Select the final tool answer and prevent nested LLM JSON from leaking.\"\"\"\n\n    tool_text, saw_tool, tool_error = _last_tool_result(_value(agent_message, \"content_blocks\", None))\n    agent_text = _text_from_value(_value(agent_message, \"text\", \"\"))\n\n    if prefer_tool_result and tool_text:\n        return _message_with_context(agent_message, tool_text)\n    if saw_tool and not tool_text:\n        fallback = tool_error or \"도구 실행은 완료되었지만 표시할 최종 답변을 받지 못했습니다.\"\n        return _message_with_context(agent_message, fallback)\n    return _message_with_context(agent_message, agent_text)\n\n\n# Langflow 컴포넌트 클래스: 입력 Agent Message에서 성공 Tool 답변만 선택해 Chat Output으로 보냅니다.\nclass AgentDirectToolResultAdapter(Component):\n    display_name = \"02 Agent 직접 반환 결과 어댑터\"\n    description = \"return_direct 도구의 최종 답변만 선택하여 하위 Flow 내부 이벤트가 Playground 답변에 섞이지 않게 합니다.\"\n    icon = \"Route\"\n    name = \"AgentDirectToolResultAdapter\"\n\n    inputs = [\n        HandleInput(\n            name=\"agent_message\",\n            display_name=\"Agent 응답\",\n            info=\"Agent의 response Message를 연결합니다.\",\n            input_types=[\"Message\"],\n            required=True,\n        ),\n        BoolInput(\n            name=\"prefer_tool_result\",\n            display_name=\"도구 최종 답변 우선\",\n            info=\"도구가 성공한 경우 Agent 내부 텍스트 대신 ToolContent.output의 최종 답변을 반환합니다.\",\n            value=True,\n            advanced=True,\n        ),\n    ]\n    outputs = [\n        Output(\n            name=\"message\",\n            display_name=\"정리된 메시지\",\n            method=\"build_message\",\n            types=[\"Message\"],\n        )\n    ]\n\n    # Langflow 출력 함수: 캔버스 message 포트가 요청될 때 정리된 최종 Message를 반환합니다.\n    def build_message(self) -> Message:\n        return build_direct_tool_result(\n            getattr(self, \"agent_message\", None),\n            prefer_tool_result=bool(getattr(self, \"prefer_tool_result\", True)),\n        )\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "prefer_tool_result": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "prefer_tool_result",
+                "value": true,
+                "display_name": "도구 최종 답변 우선",
+                "advanced": true,
+                "dynamic": false,
+                "info": "도구가 성공한 경우 Agent 내부 텍스트 대신 ToolContent.output의 최종 답변을 반환합니다.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              }
+            },
+            "description": "return_direct 도구의 최종 답변만 선택하여 하위 Flow 내부 이벤트가 Playground 답변에 섞이지 않게 합니다.",
+            "icon": "Route",
+            "base_classes": [
+              "Message"
+            ],
+            "display_name": "02 Agent 직접 반환 결과 어댑터",
+            "documentation": "",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "message",
+                "display_name": "정리된 메시지",
+                "method": "build_message",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [
+              "agent_message",
+              "prefer_tool_result"
+            ],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "module": "v5_auxiliary.02_agent_direct_tool_result_adapter",
+              "code_hash": "51d43d84e79e",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": "0.4.2"
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.9.2"
+          },
+          "showNode": true,
+          "type": "AgentDirectToolResultAdapter"
+        },
+        "dragging": false,
+        "id": "DirectToolResultAdapter-agent-tool-router",
+        "measured": {
+          "height": 267,
+          "width": 320
+        },
+        "position": {
+          "x": 1120,
           "y": 0
         },
         "selected": false,
@@ -1179,7 +1327,7 @@
           "width": 192
         },
         "position": {
-          "x": 1250,
+          "x": 1420,
           "y": 0
         },
         "selected": false,
@@ -3662,9 +3810,37 @@
         "className": "",
         "data": {
           "sourceHandle": {
-            "dataType": "Agent",
+            "dataType": "SilentDirectReturnRouterAgent",
             "id": "Agent-agent-tool-router",
             "name": "response",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "agent_message",
+            "id": "DirectToolResultAdapter-agent-tool-router",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "xy-edge__Agent-agent-tool-router{œdataTypeœ:œSilentDirectReturnRouterAgentœ,œidœ:œAgent-agent-tool-routerœ,œnameœ:œresponseœ,œoutput_typesœ:[œMessageœ]}-DirectToolResultAdapter-agent-tool-router{œfieldNameœ:œagent_messageœ,œidœ:œDirectToolResultAdapter-agent-tool-routerœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "Agent-agent-tool-router",
+        "sourceHandle": "{œdataTypeœ:œSilentDirectReturnRouterAgentœ,œidœ:œAgent-agent-tool-routerœ,œnameœ:œresponseœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "DirectToolResultAdapter-agent-tool-router",
+        "targetHandle": "{œfieldNameœ:œagent_messageœ,œidœ:œDirectToolResultAdapter-agent-tool-routerœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "AgentDirectToolResultAdapter",
+            "id": "DirectToolResultAdapter-agent-tool-router",
+            "name": "message",
             "output_types": [
               "Message"
             ]
@@ -3680,10 +3856,10 @@
             "type": "other"
           }
         },
-        "id": "xy-edge__Agent-agent-tool-router{œdataTypeœ:œAgentœ,œidœ:œAgent-agent-tool-routerœ,œnameœ:œresponseœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-agent-tool-router{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-agent-tool-routerœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}",
+        "id": "xy-edge__DirectToolResultAdapter-agent-tool-router{œdataTypeœ:œAgentDirectToolResultAdapterœ,œidœ:œDirectToolResultAdapter-agent-tool-routerœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-agent-tool-router{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-agent-tool-routerœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}",
         "selected": false,
-        "source": "Agent-agent-tool-router",
-        "sourceHandle": "{œdataTypeœ:œAgentœ,œidœ:œAgent-agent-tool-routerœ,œnameœ:œresponseœ,œoutput_typesœ:[œMessageœ]}",
+        "source": "DirectToolResultAdapter-agent-tool-router",
+        "sourceHandle": "{œdataTypeœ:œAgentDirectToolResultAdapterœ,œidœ:œDirectToolResultAdapter-agent-tool-routerœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
         "target": "ChatOutput-agent-tool-router",
         "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-agent-tool-routerœ,œinputTypesœ:[œDataœ,œDataFrameœ,œMessageœ],œtypeœ:œotherœ}"
       }
@@ -3694,7 +3870,7 @@
       "zoom": 0.55
     }
   },
-  "description": "LLM Agent router with six compact selected-ID-first cached Flow tools, deterministic realtime-analysis keyword gating, name fallback for standalone imports, shared session propagation, direct child responses, and one final Chat Output.",
+  "description": "LLM Agent router with six compact selected-ID-first cached Flow tools, deterministic realtime-analysis keyword gating, name fallback for standalone imports, shared session propagation, a silent direct-return Agent, a direct-result adapter that removes nested child events, and one final Chat Output.",
   "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
   "id": "6453d625-68dc-56c1-b578-b872a8274e0b",
   "is_component": false,
@@ -3706,6 +3882,7 @@
     "agent-router",
     "cached-flow",
     "complete-bundle",
+    "direct-result-adapter",
     "import-ready",
     "optimized",
     "selected-flow-id",

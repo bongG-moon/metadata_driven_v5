@@ -6,7 +6,7 @@
   "flow_count": 9,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "4e1651a3a6a037b5346863aeaf3effadad3f74862d0dacac5e55fdd5ade4db5d",
+  "single_file_ui_import_sha256": "5a4b79e97096354f4074a55b63aecd2235b6910ffa0fdf2508078e9e0cbe1d79",
   "mongodb_contract": {
     "configuration_source": "Langflow node input / MONGO_URL Credential Global Variable",
     "database": "datagov",
@@ -25,8 +25,8 @@
   },
   "validation": {
     "bundle_structure": "native Chat boundaries, version stamps, Flow names, endpoints and active adapter inputs are verified while building",
-    "langflow_frontend_edge_handles": "418/418 structural handles",
-    "langflow_lfx_node_templates": "160/160 custom component templates across 9 flows",
+    "langflow_frontend_edge_handles": "422/422 structural handles",
+    "langflow_lfx_node_templates": "162/162 custom component templates across 9 flows",
     "runtime_parse": "Run tools/validate_langflow_runtime.py after changing custom component source."
   },
   "flows": [
@@ -80,9 +80,9 @@
       "file": "06_agent_tool_router_flow_v5_standalone.json",
       "name": "06. v5_agent_tool_router",
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
-      "nodes": 9,
-      "edges": 8,
-      "sha256": "730ff95a21afee29084612bbf5247cd1d1a447e21f7c0e0f225fb1d0acc61fd1"
+      "nodes": 10,
+      "edges": 9,
+      "sha256": "8b0650dcba079d70df01163bc761fa1c871cb304f743a780296124e779569d9f"
     },
     {
       "order": 7,
@@ -107,9 +107,9 @@
       "file": "09_agent_tool_router_continuation_flow_v5_standalone.json",
       "name": "09. v5_agent_tool_router_continuation",
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router-continuation",
-      "nodes": 9,
-      "edges": 8,
-      "sha256": "f54c18f0363f7d7176b7a8efbdc2609731a47907cbd09329c808b21345fa1bf3"
+      "nodes": 10,
+      "edges": 9,
+      "sha256": "121863efc74b1867d2b8f0d7fd1ddfa842579b1aa03f5d81988aa7895b7e0e66"
     }
   ],
   "continuation_routing_contract": {

@@ -13,10 +13,10 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 
 | 3 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 12 | 13 |
 | 4 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 12 | 13 |
 | 5 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 11 | 17 |
-| 6 | `06_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 9 | 8 |
+| 6 | `06_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 10 | 9 |
 | 7 | `07_realtime_production_report_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report` | 9 | 11 |
 | 8 | `08_data_analysis_flow_v2_continuation_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis-continuation` | 56 | 67 |
-| 9 | `09_agent_tool_router_continuation_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router-continuation` | 9 | 8 |
+| 9 | `09_agent_tool_router_continuation_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router-continuation` | 10 | 9 |
 
 ## 실행 범위
 
@@ -29,5 +29,5 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 
 
 - GaiA Input/Output boundary node 없음; 각 Flow는 native Chat Input/Chat Output을 각각 하나씩 사용
 - 모든 node `lf_version=1.9.2`
-- edge handle 418/418
-- custom component template 160/160
+- edge handle 422/422
+- custom component template 162/162
