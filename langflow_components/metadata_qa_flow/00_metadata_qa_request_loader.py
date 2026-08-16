@@ -25,7 +25,7 @@ def build_request(question: Any, previous_state_value: Any = None) -> dict[str, 
     errors = [] if text else [{"type": "empty_question", "message": "메타데이터 QA 질문이 비어 있습니다."}]
     return {
         "request": {"question": text},
-        "state": _payload(previous_state_value),
+        "state": _previous_state(previous_state_value),
         "metadata_route": {"route": "metadata_qa", "status": "ready" if text else "error"},
         "trace": {
             "warnings": [],
@@ -44,6 +44,13 @@ def build_request(question: Any, previous_state_value: Any = None) -> dict[str, 
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
     return deepcopy(data) if isinstance(data, dict) else {}
+
+
+# 함수 설명: `_previous_state()`는 Session State Loader의 `{state, session_state_load}` 출력에서 실제 compact state만 꺼냅니다.
+def _previous_state(value: Any) -> dict[str, Any]:
+    payload = _payload(value)
+    state = payload.get("state")
+    return deepcopy(state) if isinstance(state, dict) else payload
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.

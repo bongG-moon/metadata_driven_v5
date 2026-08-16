@@ -25,6 +25,8 @@ DEFAULT_DATABASE = "datagov"
 DEFAULT_SESSION_COLLECTION = "agent_v4_session_states"
 DEFAULT_PREVIEW_ROW_LIMIT = 5
 ENABLED_OPTIONS = ["true", "false"]
+METADATA_QA_INVENTORY_CONTRACT_VERSION = "metadata_qa.inventory.v1"
+MAX_METADATA_QA_INVENTORY_DATASETS = 50
 
 
 # 주요 함수: 직접 상태 또는 MongoDB 세션 상태를 후속 질문용 크기로 정규화합니다.
@@ -150,6 +152,9 @@ def _compact_state(state: Any, preview_limit: int) -> dict[str, Any]:
         value = state.get(key)
         if isinstance(value, dict) and value:
             result[key] = deepcopy(value)
+    metadata_qa_inventory = _compact_metadata_qa_inventory(state.get("metadata_qa_inventory"))
+    if metadata_qa_inventory:
+        result["metadata_qa_inventory"] = metadata_qa_inventory
     runtime_source_refs = _compact_runtime_source_refs(
         state.get("runtime_source_refs"),
         result.get("current_data"),
@@ -304,7 +309,7 @@ def _state_from_value(value: Any) -> dict[str, Any]:
         # `_payload()`가 입력 경계에서 이미 전체 값을 한 번 복사했으므로
         # 여기서는 그 복사본의 하위 state를 그대로 반환해 대용량 세션을 재복사하지 않습니다.
         return payload["state"]
-    if any(key in payload for key in ("session_id", "chat_history", "context", "current_data", "followup_source_results")):
+    if any(key in payload for key in ("session_id", "chat_history", "context", "current_data", "followup_source_results", "metadata_qa_inventory")):
         return payload
     return {}
 
@@ -332,6 +337,35 @@ def _payload(value: Any) -> dict[str, Any]:
             return {}
         return deepcopy(parsed) if isinstance(parsed, dict) else {}
     return {}
+
+
+# 함수 설명: `_compact_metadata_qa_inventory()`는 데이터셋 목록 후속질문에 필요한 key·범위만 검증해 세션에 유지합니다.
+def _compact_metadata_qa_inventory(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    if str(raw.get("contract_version") or "").strip() != METADATA_QA_INVENTORY_CONTRACT_VERSION:
+        return {}
+    raw_keys = raw.get("dataset_keys")
+    if not isinstance(raw_keys, list) or not raw_keys or len(raw_keys) > MAX_METADATA_QA_INVENTORY_DATASETS:
+        return {}
+    dataset_keys = [str(item).strip() for item in raw_keys if str(item or "").strip()]
+    if len(dataset_keys) != len(raw_keys) or len(set(dataset_keys)) != len(dataset_keys):
+        return {}
+    scope_raw = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
+    scope: dict[str, list[str]] = {}
+    for key in ("dataset_families", "source_types", "db_keys"):
+        values = scope_raw.get(key)
+        if not isinstance(values, list) or len(values) > MAX_METADATA_QA_INVENTORY_DATASETS:
+            continue
+        normalized = [str(item).strip() for item in values if str(item or "").strip()]
+        if len(normalized) == len(values) and len(set(normalized)) == len(normalized):
+            scope[key] = normalized
+    result: dict[str, Any] = {
+        "contract_version": METADATA_QA_INVENTORY_CONTRACT_VERSION,
+        "dataset_keys": dataset_keys,
+    }
+    if scope:
+        result["scope"] = scope
+    return result
 
 
 # 함수 설명: `_connect_collection()`는 짧은 server selection timeout으로 MongoDB client와 대상 collection을 생성합니다.

@@ -26,6 +26,8 @@ DEFAULT_SESSION_COLLECTION = "agent_v4_session_states"
 DEFAULT_PREVIEW_ROW_LIMIT = 5
 DEFAULT_HISTORY_LIMIT = 10
 ENABLED_OPTIONS = ["true", "false"]
+METADATA_QA_INVENTORY_CONTRACT_VERSION = "metadata_qa.inventory.v1"
+MAX_METADATA_QA_INVENTORY_DATASETS = 50
 RUNTIME_BUFFER_KEYS = {
     "runtime_sources",
     "_runtime_rows_by_alias",
@@ -183,6 +185,9 @@ def _compact_state(state: Any, preview_limit: int, history_limit: int) -> dict[s
         value = state.get(key)
         if isinstance(value, dict) and value:
             result[key] = deepcopy(value)
+    metadata_qa_inventory = _compact_metadata_qa_inventory(state.get("metadata_qa_inventory"))
+    if metadata_qa_inventory:
+        result["metadata_qa_inventory"] = metadata_qa_inventory
     runtime_source_refs = _compact_runtime_source_refs(
         state.get("runtime_source_refs"),
         result.get("current_data"),
@@ -374,6 +379,35 @@ def _payload(value: Any) -> dict[str, Any]:
             return {}
         return _copy_payload(parsed) if isinstance(parsed, dict) else {}
     return {}
+
+
+# 함수 설명: `_compact_metadata_qa_inventory()`는 데이터셋 목록 후속질문에 필요한 key·범위만 검증해 세션에 유지합니다.
+def _compact_metadata_qa_inventory(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    if str(raw.get("contract_version") or "").strip() != METADATA_QA_INVENTORY_CONTRACT_VERSION:
+        return {}
+    raw_keys = raw.get("dataset_keys")
+    if not isinstance(raw_keys, list) or not raw_keys or len(raw_keys) > MAX_METADATA_QA_INVENTORY_DATASETS:
+        return {}
+    dataset_keys = [str(item).strip() for item in raw_keys if str(item or "").strip()]
+    if len(dataset_keys) != len(raw_keys) or len(set(dataset_keys)) != len(dataset_keys):
+        return {}
+    scope_raw = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
+    scope: dict[str, list[str]] = {}
+    for key in ("dataset_families", "source_types", "db_keys"):
+        values = scope_raw.get(key)
+        if not isinstance(values, list) or len(values) > MAX_METADATA_QA_INVENTORY_DATASETS:
+            continue
+        normalized = [str(item).strip() for item in values if str(item or "").strip()]
+        if len(normalized) == len(values) and len(set(normalized)) == len(normalized):
+            scope[key] = normalized
+    result: dict[str, Any] = {
+        "contract_version": METADATA_QA_INVENTORY_CONTRACT_VERSION,
+        "dataset_keys": dataset_keys,
+    }
+    if scope:
+        result["scope"] = scope
+    return result
 
 
 # 함수 설명: `_copy_payload()`는 제어 필드는 깊게 복사하되 대용량 런타임 행 버퍼는 최종 정리 노드까지 공유합니다.

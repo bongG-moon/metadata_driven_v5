@@ -484,7 +484,7 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
 
 def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
     proto = prototypes(donor)
-    flow = empty_flow(donor, FLOW_DISPLAY_NAMES["metadata_qa"], "Metadata QA flow with MongoDB projection, mode-specific compact LLM context, SQL-on-demand, byte limit, deterministic fallback, and canonical API response.", "metadata-driven-v5-metadata-qa", ["v5", "standalone", "metadata-qa", "optimized"])
+    flow = empty_flow(donor, FLOW_DISPLAY_NAMES["metadata_qa"], "Metadata QA flow with MongoDB projection, deterministic catalog comparison/scope answers, compact same-session inventory reuse, SQL-on-demand, and canonical API response.", "metadata-driven-v5-metadata-qa", ["v5", "standalone", "metadata-qa", "optimized"])
     folder = COMPONENT_ROOT / "metadata_qa_flow"
     nodes: dict[str, dict[str, Any]] = {}
 
@@ -495,40 +495,73 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
 
     chat = add("chat", native_node(proto["chat_input"], "ChatInput-metadata-qa", 0, 0))
     _set_message_storage(chat, True)
-    request = add("request", custom_node(proto["custom"], "Request-metadata-qa", folder / "00_metadata_qa_request_loader.py", 320, 0))
-    snapshot = add("snapshot", custom_node(proto["custom"], "SnapshotLoader-metadata-qa", folder / "01_mongodb_metadata_snapshot_loader.py", 650, 320))
-    context = add("context", custom_node(proto["custom"], "Context-metadata-qa", folder / "02_metadata_qa_context_builder.py", 980, 0))
+    session_loader = add(
+        "session_loader",
+        custom_node(
+            proto["custom"],
+            "SessionStateLoader-metadata-qa",
+            COMPONENT_ROOT / "session_state_flow" / "00_mongodb_session_state_loader.py",
+            300,
+            -190,
+        ),
+    )
+    session_loader_template = session_loader["data"]["node"]["template"]
+    _set_value(session_loader_template, "mongo_database", "datagov")
+    _set_value(session_loader_template, "session_collection_name", "agent_v4_session_states")
+    _set_value(session_loader_template, "enabled", "true")
+    _set_value(session_loader_template, "preview_row_limit", "5")
+    request = add("request", custom_node(proto["custom"], "Request-metadata-qa", folder / "00_metadata_qa_request_loader.py", 600, 0))
+    snapshot = add("snapshot", custom_node(proto["custom"], "SnapshotLoader-metadata-qa", folder / "01_mongodb_metadata_snapshot_loader.py", 900, 320))
+    context = add("context", custom_node(proto["custom"], "Context-metadata-qa", folder / "02_metadata_qa_context_builder.py", 1260, 0))
     _set_value(context["data"]["node"]["template"], "max_items", "50")
     _set_value(context["data"]["node"]["template"], "max_bytes", "65536")
-    variables = add("variables", custom_node(proto["custom"], "Variables-metadata-qa", folder / "03_metadata_qa_variables_builder.py", 1280, 0))
+    variables = add("variables", custom_node(proto["custom"], "Variables-metadata-qa", folder / "03_metadata_qa_variables_builder.py", 1560, 0))
     prompt_text = (folder / "03_metadata_qa_prompt_template_ko.md").read_text(encoding="utf-8")
-    prompt = add("prompt", prompt_node(proto["prompt"], "Prompt-metadata-qa", prompt_text, 1580, 0))
+    prompt = add("prompt", prompt_node(proto["prompt"], "Prompt-metadata-qa", prompt_text, 1860, 0))
     model = add(
         "model",
         language_model_node(
             proto["language_model"],
             "LanguageModel-metadata-qa",
-            1880,
+            2160,
             0,
             "Answer only from the supplied metadata context and return the requested JSON object.",
         ),
     )
-    normalizer = add("normalizer", custom_node(proto["custom"], "Normalizer-metadata-qa", folder / "04_metadata_qa_response_normalizer.py", 2180, 0))
-    message = add("message", custom_node(proto["custom"], "Message-metadata-qa", folder / "05_metadata_qa_message_adapter.py", 2480, -100))
+    normalizer = add("normalizer", custom_node(proto["custom"], "Normalizer-metadata-qa", folder / "04_metadata_qa_response_normalizer.py", 2460, 0))
+    session_writer = add(
+        "session_writer",
+        custom_node(
+            proto["custom"],
+            "SessionStateWriter-metadata-qa",
+            COMPONENT_ROOT / "session_state_flow" / "01_mongodb_session_state_writer.py",
+            2760,
+            0,
+        ),
+    )
+    session_writer_template = session_writer["data"]["node"]["template"]
+    _set_value(session_writer_template, "mongo_database", "datagov")
+    _set_value(session_writer_template, "session_collection_name", "agent_v4_session_states")
+    _set_value(session_writer_template, "enabled", "true")
+    _set_value(session_writer_template, "preview_row_limit", "5")
+    _set_value(session_writer_template, "history_limit", "10")
+    message = add("message", custom_node(proto["custom"], "Message-metadata-qa", folder / "05_metadata_qa_message_adapter.py", 3060, -100))
     api = add(
         "api",
         custom_node(
             proto["custom"],
             "Api-metadata-qa",
             folder / "06_metadata_qa_api_response_builder.py",
-            2780,
+            3360,
             100,
         ),
     )
-    output = add("output", native_node(proto["chat_output"], "ChatOutput-metadata-qa", 2780, -160))
+    output = add("output", native_node(proto["chat_output"], "ChatOutput-metadata-qa", 3360, -160))
     _set_message_storage(output, True)
 
     add_edge(flow, chat, "message", request, "question")
+    add_edge(flow, chat, "message", session_loader, "question")
+    add_edge(flow, session_loader, "loaded_state", request, "previous_state")
     # 통합 snapshot loader는 빈 질문을 MongoDB 연결 전에 차단하고 cache miss에도 MongoClient를 한 번만 생성합니다.
     add_edge(flow, request, "payload_out", snapshot, "request_payload")
     add_edge(flow, request, "payload_out", context, "payload")
@@ -541,8 +574,9 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, prompt, "prompt", model, "input_value")
     add_edge(flow, context, "payload_out", normalizer, "payload")
     add_edge(flow, model, "text_output", normalizer, "llm_response")
-    add_edge(flow, normalizer, "payload_out", message, "payload")
-    add_edge(flow, normalizer, "payload_out", api, "payload")
+    add_edge(flow, normalizer, "payload_out", session_writer, "response_payload")
+    add_edge(flow, session_writer, "payload_out", message, "payload")
+    add_edge(flow, session_writer, "payload_out", api, "payload")
     add_edge(flow, message, "message", api, "display_message")
     add_edge(flow, message, "message", output, "input_value")
     return flow

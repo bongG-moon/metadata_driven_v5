@@ -12,7 +12,7 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 
 | 2 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 12 | 13 |
 | 3 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 12 | 13 |
 | 4 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 12 | 13 |
-| 5 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 11 | 17 |
+| 5 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 13 | 20 |
 | 6 | `06_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 11 | 10 |
 | 7 | `07_realtime_production_report_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report` | 10 | 13 |
 | 10 | `10_report_followup_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-report-followup` | 11 | 13 |
@@ -32,4 +32,4 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 
 - GaiA Input/Output boundary node 없음
 - 각 Flow의 native Chat Input/Chat Output 각각 1개
 - 모든 node `lf_version=1.11.0`
-- edge handle 330/330, custom component template 129/129
+- edge handle 336/336, custom component template 131/131

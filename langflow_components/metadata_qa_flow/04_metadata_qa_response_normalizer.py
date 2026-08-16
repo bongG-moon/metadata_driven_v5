@@ -21,8 +21,12 @@ from lfx.schema.data import Data
 
 AUTHORITATIVE_CONTEXT_TABLE_TYPES = {
     "available_sources",
+    "scoped_sources",
+    "dataset_comparison",
+    "inventory_followup_missing_context",
     "available_domains",
     "required_params",
+    "datasets_by_required_param",
     "term_definition",
     "process_group",
     "calculation_logic_list",
@@ -32,13 +36,19 @@ AUTHORITATIVE_CONTEXT_TABLE_TYPES = {
 }
 ALWAYS_USE_CONTEXT_TABLE_TYPES = {
     "available_sources",
+    "scoped_sources",
+    "dataset_comparison",
+    "inventory_followup_missing_context",
     "available_domains",
+    "datasets_by_required_param",
     "term_definition",
     "process_group",
     "calculation_logic_list",
     "product_domain_info",
     "product_condition",
 }
+METADATA_QA_INVENTORY_CONTRACT_VERSION = "metadata_qa.inventory.v1"
+MAX_METADATA_QA_INVENTORY_DATASETS = 50
 
 
 # 주요 함수: LLM QA 결과를 근거 문맥과 결합해 안정적인 답변 계약으로 정규화합니다.
@@ -105,7 +115,7 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
     if domain_summary:
         next_payload["metadata_qa"]["domain_summary"] = domain_summary
     next_payload["data"] = {"columns": columns, "rows": rows, "row_count": len(rows)}
-    next_payload["state"] = {
+    next_state = {
         **_dict(next_payload.get("state")),
         "current_metadata_qa": {
             "question": question,
@@ -113,6 +123,14 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
             "source_refs": source_refs[:10],
         },
     }
+    inventory = _metadata_qa_inventory(context, rows)
+    if inventory:
+        next_state["metadata_qa_inventory"] = inventory
+    else:
+        # 목록이 아닌 QA 응답 뒤에는 이전 전체 목록이 같은 지시어로 오인되지
+        # 않도록 제거합니다. 이후의 "여기서"는 새 목록을 먼저 요청해야 합니다.
+        next_state.pop("metadata_qa_inventory", None)
+    next_payload["state"] = next_state
     trace.setdefault("warnings", []).extend(warnings)
     trace.setdefault("inspection", {})["metadata_qa_response"] = {
         "stage": "04_metadata_qa_response_normalizer",
@@ -130,6 +148,42 @@ def normalize_metadata_qa_response(payload_value: Any, llm_response_value: Any =
     }
     next_payload["trace"] = trace
     return next_payload
+
+
+# 함수 설명: `_metadata_qa_inventory()`는 목록형 답변의 dataset key와 범위만 세션에 보관해 다음 목록 후속질문을 안전하게 좁힙니다.
+def _metadata_qa_inventory(context: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    answer_mode = str(context.get("answer_mode") or "").strip()
+    if answer_mode not in {"available_sources", "scoped_sources"}:
+        return {}
+    keys: list[str] = []
+    for row in rows:
+        key = str(row.get("key") or row.get("데이터셋 키") or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+        if len(keys) >= MAX_METADATA_QA_INVENTORY_DATASETS:
+            break
+    if not keys:
+        return {}
+    scope = _inventory_scope(context.get("catalog_scope"))
+    return {
+        "contract_version": METADATA_QA_INVENTORY_CONTRACT_VERSION,
+        "dataset_keys": keys,
+        "scope": scope,
+    }
+
+
+# 함수 설명: `_inventory_scope()`는 목록 범위에 허용된 문자열 배열만 남겨 세션 상태를 작고 검증 가능하게 만듭니다.
+def _inventory_scope(value: Any) -> dict[str, list[str]]:
+    raw = _dict(value)
+    result: dict[str, list[str]] = {}
+    for key in ("dataset_families", "source_types", "db_keys"):
+        values = raw.get(key)
+        if not isinstance(values, list) or len(values) > MAX_METADATA_QA_INVENTORY_DATASETS:
+            continue
+        cleaned = [str(item).strip() for item in values if str(item or "").strip()]
+        if len(cleaned) == len(values) and len(set(cleaned)) == len(cleaned):
+            result[key] = cleaned
+    return result
 
 
 # 함수 설명: `_empty_question_response()`는 빈 질문을 LLM 답변처럼 포장하지 않고 명시적인 오류 응답으로 종료합니다.
@@ -194,7 +248,7 @@ def _compact_answer_sections(answer_sections: dict[str, Any], columns: list[str]
 
 # 함수 설명: `_catalog_summary_for_response()`는 Context 집계와 최종 반환 행 수를 일치시킨 카탈로그 요약을 만듭니다.
 def _catalog_summary_for_response(context: dict[str, Any], returned_count: int) -> dict[str, Any]:
-    if str(context.get("answer_mode") or "") != "available_sources":
+    if str(context.get("answer_mode") or "") not in {"available_sources", "scoped_sources"}:
         return {}
     summary = deepcopy(_dict(context.get("catalog_summary")))
     try:
@@ -308,7 +362,8 @@ def _sync_answer_sections_from_context(
     current = _dict(sections.get("detail_table"))
     sections["summary"] = {"headline": answer_message, "description": summary}
     sections["key_points"] = _key_points(answer_type, rows, context)
-    title = _table_title(answer_type) if answer_type in {"available_sources", "available_domains"} else str(current.get("title") or _table_title(answer_type))
+    service_table_types = {"available_sources", "scoped_sources", "dataset_comparison", "available_domains", "datasets_by_required_param"}
+    title = _table_title(answer_type) if answer_type in service_table_types else str(current.get("title") or _table_title(answer_type))
     sections["detail_table"] = {
         "title": title,
         "columns": columns,
@@ -317,14 +372,14 @@ def _sync_answer_sections_from_context(
         "display_limit": _display_limit(answer_type),
     }
     sections.pop("usage_examples", None)
-    sections["related_items"] = [] if answer_type in {"available_sources", "available_domains"} else [ref for ref in source_refs if isinstance(ref, dict)]
-    sections["show_related_items"] = answer_type not in {"available_sources", "available_domains"}
+    sections["related_items"] = [] if answer_type in service_table_types else [ref for ref in source_refs if isinstance(ref, dict)]
+    sections["show_related_items"] = answer_type not in service_table_types
     return sections
 
 
 # 함수 설명: `_display_limit()`는 제한값을 Markdown 또는 사용자 화면에서 안전하게 읽을 수 있는 표현으로 변환합니다.
 def _display_limit(answer_type: str) -> int:
-    return 50 if answer_type in {"available_sources", "available_domains"} else 12
+    return 50 if answer_type in {"available_sources", "scoped_sources", "available_domains", "datasets_by_required_param"} else 12
 
 
 # 함수 설명: `_fallback_answer()`는 LLM 출력이 비어도 답변 모드와 실제 context에 근거한 결정론적 기본 답변을 만듭니다.
@@ -334,6 +389,9 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
     source_refs = _list(context.get("source_refs"))
     datasets = _list(context.get("matched_datasets"))
     answer_type = answer_mode
+    if answer_mode == "inventory_followup_missing_context":
+        message = "직전 데이터셋 목록을 같은 세션에서 찾지 못했습니다. 먼저 조회 가능한 데이터셋 목록을 다시 요청한 뒤 범위를 지정해 주세요."
+        return _fallback_payload(answer_type, message, {"columns": [], "rows": []}, [], [], context)
     if not rows and not source_refs:
         if answer_mode == "data_analysis_redirect":
             message = "이 질문은 실제 데이터 값을 계산해야 하므로 metadata QA가 아니라 data_analysis flow에서 처리하는 것이 적절합니다."
@@ -349,6 +407,12 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, sql_blocks, source_refs, context)
     if answer_mode == "available_sources":
         message = _available_sources_message(rows, context)
+        return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
+    if answer_mode == "scoped_sources":
+        message = _scoped_sources_message(rows, context)
+        return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
+    if answer_mode == "dataset_comparison":
+        message = _dataset_comparison_message(rows)
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "available_domains":
         message = _available_domains_message(rows, context)
@@ -368,6 +432,11 @@ def _fallback_answer(question: str, context: dict[str, Any]) -> dict[str, Any]:
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "required_params":
         message = f"질문과 관련된 데이터셋의 필수 조회 조건 {len(rows)}건을 정리했습니다."
+        return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
+    if answer_mode == "datasets_by_required_param":
+        requested_params = [str(value).strip() for value in _list(context.get("requested_required_params")) if str(value).strip()]
+        label = ", ".join(requested_params) if requested_params else "요청한"
+        message = f"{label} 조건이 필요한 데이터셋 {len(rows)}건을 등록된 Table Catalog 기준으로 정리했습니다."
         return _fallback_payload(answer_type, message, {"columns": _columns_from_rows(rows), "rows": rows}, [], source_refs, context)
     if answer_mode == "calculation_logic_list":
         query_scope = _dict(context.get("query_scope"))
@@ -463,8 +532,8 @@ def _build_answer_sections(
             "display_limit": _display_limit(answer_type),
         },
         "sql_blocks": [block for block in sql_blocks if isinstance(block, dict)],
-        "related_items": [] if answer_type in {"available_sources", "available_domains"} else [ref for ref in source_refs if isinstance(ref, dict)][:10],
-        "show_related_items": answer_type not in {"available_sources", "available_domains"},
+        "related_items": [] if answer_type in {"available_sources", "scoped_sources", "dataset_comparison", "available_domains", "datasets_by_required_param"} else [ref for ref in source_refs if isinstance(ref, dict)][:10],
+        "show_related_items": answer_type not in {"available_sources", "scoped_sources", "dataset_comparison", "available_domains", "datasets_by_required_param"},
         "route_hint": _route_hint(answer_type),
         "warnings": [warning for warning in warnings if isinstance(warning, dict)],
     }
@@ -473,10 +542,20 @@ def _build_answer_sections(
 # 함수 설명: `_service_table()`는 현재 metadata context를 사용 가능한 데이터 서비스 목록 표로 구성합니다.
 def _service_table(answer_type: str, table: dict[str, Any]) -> dict[str, Any]:
     rows = _row_list(table.get("rows"))
-    if answer_type == "available_sources":
+    if answer_type in {"available_sources", "scoped_sources"}:
         return {
             "columns": ["데이터셋", "데이터셋 키", "분류", "연결 방식", "DB/소스", "필수 조건"],
             "rows": [_available_source_row(row) for row in rows],
+        }
+    if answer_type == "dataset_comparison":
+        return {
+            "columns": ["데이터셋", "데이터셋 키", "용도·사용 시점", "기준 구분", "연결 방식", "필수 조건"],
+            "rows": [_dataset_comparison_service_row(row) for row in rows],
+        }
+    if answer_type == "datasets_by_required_param":
+        return {
+            "columns": ["데이터셋", "데이터셋 키", "용도", "필수 조건"],
+            "rows": [_required_param_dataset_service_row(row) for row in rows],
         }
     if answer_type == "available_domains":
         return {
@@ -728,6 +807,28 @@ def _available_source_row(row: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in result.items() if item not in (None, "", [], {})}
 
 
+# 함수 설명: `_required_param_dataset_service_row()`는 조건별 데이터셋 목록을 고정된 사용자용 열로 정리합니다.
+def _required_param_dataset_service_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "데이터셋": row.get("데이터셋") or row.get("display_name") or row.get("key"),
+        "데이터셋 키": row.get("데이터셋 키") or row.get("key"),
+        "용도": row.get("용도") or row.get("description") or "등록된 용도 설명 없음",
+        "필수 조건": row.get("필수 조건") or row.get("required_params") or "없음",
+    }
+
+
+# 함수 설명: `_dataset_comparison_service_row()`는 비교용 후보 행에서 고정된 여섯 사용자 열만 남깁니다.
+def _dataset_comparison_service_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "데이터셋": row.get("데이터셋") or row.get("display_name") or row.get("key"),
+        "데이터셋 키": row.get("데이터셋 키") or row.get("key"),
+        "용도·사용 시점": row.get("용도·사용 시점") or "등록된 용도 설명 없음",
+        "기준 구분": row.get("기준 구분") or "등록된 기준 구분 없음",
+        "연결 방식": row.get("연결 방식") or row.get("source_type") or "등록된 연결 방식 없음",
+        "필수 조건": row.get("필수 조건") or row.get("required_params") or "없음",
+    }
+
+
 # 함수 설명: `_available_domain_row()`는 내부 도메인 문서를 JSON 없이 사람이 읽기 좋은 목록 행으로 변환합니다.
 def _available_domain_row(row: dict[str, Any]) -> dict[str, Any]:
     result = {
@@ -786,6 +887,34 @@ def _available_sources_message(rows: list[dict[str, Any]], context: dict[str, An
     )
 
 
+# 함수 설명: `_scoped_sources_message()`는 전체 카탈로그 수를 섞지 않고 질문 범위에 남은 데이터셋만 짧게 요약합니다.
+def _scoped_sources_message(rows: list[dict[str, Any]], context: dict[str, Any] | None = None) -> str:
+    rows = [_available_source_row(row) for row in rows] if rows and "연결 방식" not in rows[0] else rows
+    scope = _dict(_dict(context).get("catalog_scope"))
+    labels = []
+    families = [str(value).strip() for value in _list(scope.get("dataset_families")) if str(value).strip()]
+    source_types = [str(value).strip() for value in _list(scope.get("source_types")) if str(value).strip()]
+    db_keys = [str(value).strip() for value in _list(scope.get("db_keys")) if str(value).strip()]
+    if families:
+        labels.append("분류 " + ", ".join(_family_label(value) for value in families))
+    if source_types:
+        labels.append("연결 방식 " + ", ".join(_source_type_label(value) for value in source_types))
+    if db_keys:
+        labels.append("DB/소스 " + ", ".join(db_keys))
+    scope_text = " · ".join(label for label in labels if label)
+    prefix = f"{scope_text}에 해당하는 " if scope_text else "요청한 범위에 해당하는 "
+    return f"{prefix}조회 데이터셋은 총 {len(rows)}개입니다. 필수 조건은 표에서 확인할 수 있습니다."
+
+
+# 함수 설명: `_dataset_comparison_message()`는 두 개 이상 명시된 데이터셋의 등록값만 비교했음을 짧게 안내합니다.
+def _dataset_comparison_message(rows: list[dict[str, Any]]) -> str:
+    names = [str(row.get("데이터셋") or row.get("display_name") or row.get("key") or "").strip() for row in rows if isinstance(row, dict)]
+    names = [name for name in names if name]
+    if len(names) >= 2:
+        return f"{', '.join(names)}의 등록된 용도·기준·연결 방식과 필수 조건을 비교했습니다."
+    return "명시된 데이터셋의 등록된 용도·기준·연결 방식과 필수 조건을 비교했습니다."
+
+
 # 함수 설명: `_available_domains_message()`는 등록된 도메인 전체·표시 건수와 section 구성을 짧게 요약합니다.
 def _available_domains_message(rows: list[dict[str, Any]], context: dict[str, Any] | None = None) -> str:
     rows = [_available_domain_row(row) for row in rows] if rows and "구분" not in rows[0] else rows
@@ -819,7 +948,7 @@ def _key_points(answer_type: str, rows: list[dict[str, Any]], context: dict[str,
         if section_counts:
             points.append("구분별 개수: " + ", ".join(f"{key} {value}개" for key, value in section_counts.items() if key))
         return points
-    if answer_type != "available_sources" or not rows:
+    if answer_type not in {"available_sources", "scoped_sources"} or not rows:
         return []
     catalog_summary = _catalog_summary_for_response(_dict(context), len(rows))
     total_count = int(catalog_summary.get("total_count", len(rows)))
@@ -828,7 +957,9 @@ def _key_points(answer_type: str, rows: list[dict[str, Any]], context: dict[str,
     truncated = bool(catalog_summary.get("truncated"))
     source_counts = _count_by(rows, "연결 방식")
     required_rows = [row for row in rows if str(row.get("필수 조건") or "").strip() not in {"", "없음"}]
-    if total_count_exact:
+    if answer_type == "scoped_sources":
+        count_point = f"요청한 범위의 데이터셋은 총 {total_count}개입니다." if total_count_exact else f"요청한 범위의 데이터셋은 최소 {total_count}개입니다."
+    elif total_count_exact:
         count_point = f"총 {total_count}개 데이터셋이 등록되어 있습니다."
     else:
         count_point = f"등록된 데이터셋은 최소 {total_count}개입니다."
@@ -859,9 +990,13 @@ def _count_by(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
 def _table_title(answer_type: str) -> str:
     return {
         "available_sources": "조회 가능한 데이터",
+        "scoped_sources": "조건에 맞는 조회 데이터",
+        "dataset_comparison": "데이터셋 비교",
+        "inventory_followup_missing_context": "이전 목록 확인 필요",
         "available_domains": "조회 가능한 도메인",
         "dataset_detail": "데이터셋 등록 정보",
         "required_params": "필수 조회 조건",
+        "datasets_by_required_param": "필수 조건 데이터셋",
         "dataset_sql": "데이터셋 등록 정보",
         "term_definition": "등록된 용어 정의",
         "process_group": "공정 그룹",

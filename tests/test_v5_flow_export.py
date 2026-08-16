@@ -6,6 +6,7 @@ from pathlib import Path
 from tools.build_import_ready_bundle import FLOW_SPECS, build_bundle
 from tools.build_v5_auxiliary_flows import (
     build_agent_tool_router_flow,
+    build_metadata_qa_flow,
     build_realtime_production_report_legacy_flow,
     build_realtime_production_report_flow,
     build_report_followup_flow,
@@ -142,6 +143,61 @@ def test_base_data_analysis_hides_explicit_upstream_result_reference() -> None:
 
     assert component["field_order"] == ["question", "previous_state"]
     assert "upstream_result_ref" not in template
+
+
+def test_metadata_qa_flow_restores_and_persists_compact_catalog_inventory_state() -> None:
+    flow = build_metadata_qa_flow(load_donor())
+    nodes = {node["id"]: node for node in flow["data"]["nodes"]}
+    edge_ports = {
+        (
+            edge["source"],
+            edge["data"]["sourceHandle"]["name"],
+            edge["target"],
+            edge["data"]["targetHandle"]["fieldName"],
+        )
+        for edge in flow["data"]["edges"]
+    }
+    loader_id = "SessionStateLoader-metadata-qa"
+    writer_id = "SessionStateWriter-metadata-qa"
+
+    assert {loader_id, writer_id}.issubset(nodes)
+    assert (
+        "ChatInput-metadata-qa",
+        "message",
+        loader_id,
+        "question",
+    ) in edge_ports
+    assert (
+        loader_id,
+        "loaded_state",
+        "Request-metadata-qa",
+        "previous_state",
+    ) in edge_ports
+    assert (
+        "Normalizer-metadata-qa",
+        "payload_out",
+        writer_id,
+        "response_payload",
+    ) in edge_ports
+    assert (
+        writer_id,
+        "payload_out",
+        "Message-metadata-qa",
+        "payload",
+    ) in edge_ports
+    assert (
+        writer_id,
+        "payload_out",
+        "Api-metadata-qa",
+        "payload",
+    ) in edge_ports
+
+    for node_id in (loader_id, writer_id):
+        template = nodes[node_id]["data"]["node"]["template"]
+        assert template["mongo_uri"]["value"] == "MONGO_URL"
+        assert template["mongo_uri"]["load_from_db"] is True
+        assert template["mongo_database"]["value"] == "datagov"
+        assert template["session_collection_name"]["value"] == "agent_v4_session_states"
 
 
 def test_realtime_report_flow_publishes_context_and_session_state() -> None:

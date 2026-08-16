@@ -6,7 +6,7 @@
   "flow_count": 9,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "feb2a6b87ff1fb4093b484f1a4db0afcc7caf6eac14c55d3d8ecf0825ea9f1b8",
+  "single_file_ui_import_sha256": "0e4dd1f780089e67c63348a5ff0430489ff368022378e2bc41369b87e4c8fb96",
   "mongodb_contract": {
     "configuration_source": "Langflow node input / MONGO_URL Credential Global Variable",
     "database": "datagov",
@@ -35,8 +35,8 @@
   },
   "validation": {
     "bundle_structure": "native Chat boundaries, version stamps, Flow names, endpoints and active adapter inputs are verified while building",
-    "langflow_frontend_edge_handles": "330/330 structural handles",
-    "langflow_lfx_node_templates": "129/129 custom component templates across 9 base flows",
+    "langflow_frontend_edge_handles": "336/336 structural handles",
+    "langflow_lfx_node_templates": "131/131 custom component templates across 9 base flows",
     "runtime_parse": "Run tools/validate_langflow_runtime.py after changing custom component source."
   },
   "flows": [
@@ -47,7 +47,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 51,
       "edges": 62,
-      "sha256": "cddb61323b20e3aaf9641b5851f2002062a5b2a30129a16a46ee333feaf8cce1"
+      "sha256": "945a4719fbcf7c7cebcf4eafa3f0ef4adde667212fd4620f2c0efe3f6532fd9e"
     },
     {
       "order": 2,
@@ -81,9 +81,9 @@
       "file": "05_metadata_qa_flow_v5_standalone.json",
       "name": "05. v5_metadata_qa",
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
-      "nodes": 11,
-      "edges": 17,
-      "sha256": "42e3daaa221861b34f9c2a735c5d406a35059225c65552a581c29beabb6203d7"
+      "nodes": 13,
+      "edges": 20,
+      "sha256": "1a49ac9c38e162075e44077c99e2e676e38cf62d74d1bdf339ce45f3585cd64a"
     },
     {
       "order": 6,
@@ -101,7 +101,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-realtime-production-report",
       "nodes": 10,
       "edges": 13,
-      "sha256": "3f3adedbedcebba0b96d4a6a8f9c46aed9c4af37d4e6a7b5f7e8d0a8683ebab5"
+      "sha256": "0bc57c253032819a406979d35e541a89d2d973ccc7f4e2c5c5067cc538e000c3"
     },
     {
       "order": 10,
@@ -110,7 +110,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-report-followup",
       "nodes": 11,
       "edges": 13,
-      "sha256": "159140e14ebae32310483171e2dcde74e2aa0c50bf0794f9ba834f966f2e38f4"
+      "sha256": "b39d393e2316b2fcc2bbf4233f3cf08d7438e8026a51b3297b87d33d044684f7"
     },
     {
       "order": 11,

@@ -5,19 +5,19 @@
 ## 연결 순서
 
 ```text
-Chat Input.message -> 00 Request Loader.question
-00.payload_out -> 01 Snapshot Loader.request_payload
-00.payload_out -> 02 Context Builder.payload
-01.domain_items -> 02.domain_items
-01.table_catalog_items -> 02.table_catalog_items
-01.main_flow_filters -> 02.main_flow_filters
+Chat Input.message -> Session State Loader.question / 00 Request Loader.question
+Session State Loader.loaded_state -> 00 Request Loader.previous_state
+00.payload_out -> 01 Snapshot Loader.request_payload / 02 Context Builder.payload
+01.domain_items -> 02 Context Builder.domain_items
+01.table_catalog_items -> 02 Context Builder.table_catalog_items
+01.main_flow_filters -> 02 Context Builder.main_flow_filters
 02.payload_out -> 03 Variables.payload
 03 outputs -> Prompt Template variables
 Prompt -> 기본 Language Model.input_value
 기본 Language Model.text_output -> 04 Normalizer.llm_response
 02.payload_out -> 04 Normalizer.payload
-04.payload_out -> 05 Message Adapter.payload
-04.payload_out -> 06 API Response.payload
+04.payload_out -> Session State Writer.response_payload
+Session State Writer.payload_out -> 05 Message Adapter.payload / 06 API Response.payload
 05.message -> 06.display_message / Chat Output
 ```
 
@@ -29,6 +29,9 @@ Prompt -> 기본 Language Model.input_value
 - 실제 metadata 저장 성공 시 같은 worker의 snapshot generation을 증가시켜 즉시 무효화한다. 다른 worker의 오래된 snapshot은 TTL 안에서만 유지될 수 있다.
 - `02`는 질문 모드를 먼저 결정한 뒤 필요한 필드만 LLM context에 포함한다.
 - `available_sources`: compact candidate rows만 전달하고 `query_template`은 제외한다.
+- `scoped_sources`: 질문에 명시된 Table Catalog 분류·연결방식·DB/소스와, 같은 세션의 직전 목록 key를 모두 만족하는 데이터셋만 표시한다.
+- `dataset_comparison`: 질문에 직접 언급된 둘 이상의 데이터셋만 `용도·사용 시점`, `기준 구분`, `연결 방식`, `필수 조건`으로 비교한다. 등록되지 않은 시간 기준은 추정하지 않는다.
+- `여기서`·`그중` 데이터셋 후속질문은 세션의 작은 `metadata_qa_inventory` allowlist를 사용한다. 이전 목록이 없거나 현재 카탈로그와 맞지 않으면 전체 목록으로 넓히지 않고 다시 목록을 요청한다.
 - `dataset_sql`: 선택된 dataset의 SQL만 포함한다.
 - 기본 최대 후보는 50, 기본 context 제한은 65,536 bytes다.
 - `max_items`와 `max_bytes`는 실제 상한으로 동작하며 축소 시 trace warning을 남긴다.
@@ -37,6 +40,7 @@ Prompt -> 기본 Language Model.input_value
 - 결정론적 답변 모드는 `answer_policy.mode=deterministic_context`로 표시하고 모델 응답이 있더라도 표·답변은 authoritative context를 우선한다.
 - 자유 서술 모드는 `answer_policy.mode=model_assisted`이며 기본 Language Model 응답을 정규화해 사용한다.
 - 단순한 단일 출력 구조를 유지하기 위해 기본 Language Model은 모든 유효 질문에서 실행된다. 결정론 모드의 응답 사용 여부는 04 Normalizer trace에서 확인한다.
+- Session State Loader/Writer의 `Mongo URI 선택값`은 다른 멀티턴 Flow와 동일하게 Langflow 전역 변수 `MONGO_URL`을 사용한다. Mongo 연결이 없으면 목록 후속질문만 unavailable이고, 단일 턴 QA는 계속 처리한다.
 
 ## 응답 계약
 
