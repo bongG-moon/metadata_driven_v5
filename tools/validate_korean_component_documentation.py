@@ -20,11 +20,6 @@ CUSTOM_MODULE_PREFIXES = ("custom_components.", "v5_auxiliary.")
 BROKEN_TEXT_PATTERNS = ("\ufffd", "占쏙옙", "\x00")
 FUNCTION_COMMENT_MARKERS = ("# 주요 함수:", "# Langflow 출력 함수:", "# 주요 메서드:", "# 함수 설명:")
 EMBEDDED_TEXT_TARGETS = {
-    "data_analysis_flow_v2_continuation/03_continuation_rules_prompt_ko.md": (
-        "flow_exports/08_data_analysis_flow_v2_continuation_standalone.json",
-        "import_ready_flows/08_data_analysis_flow_v2_continuation_standalone.json",
-        "import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-    ),
     "domain_saving_flow/03_saving_prompt_template_ko.md": (
         "flow_exports/domain_saving_flow_v5_standalone.json",
         "import_ready_flows/02_domain_saving_flow_v5_standalone.json",
@@ -48,11 +43,6 @@ EMBEDDED_TEXT_TARGETS = {
     "route_flow_v2/SYSTEM_PROMPT_KO.md": (
         "flow_exports/06_agent_tool_router_flow_v5_standalone.json",
         "import_ready_flows/06_agent_tool_router_flow_v5_standalone.json",
-        "import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-    ),
-    "route_flow_v2_continuation/SYSTEM_PROMPT_KO.md": (
-        "flow_exports/09_agent_tool_router_continuation_flow_v5_standalone.json",
-        "import_ready_flows/09_agent_tool_router_continuation_flow_v5_standalone.json",
         "import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
     ),
 }
@@ -214,7 +204,6 @@ def audit() -> dict[str, Any]:
     json_paths = sorted(
         {
             *FLOW_EXPORT_ROOT.glob("*_v5_standalone.json"),
-            FLOW_EXPORT_ROOT / "08_data_analysis_flow_v2_continuation_standalone.json",
             *IMPORT_READY_ROOT.glob("*.json"),
         }
     )

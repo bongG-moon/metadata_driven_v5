@@ -2,16 +2,20 @@
 
 ## Scope
 
-This guide describes only the nine Flow artifacts in `import_ready_flows/` and the runtime needed by them. Legacy workflow orchestration, visualization-only, CUBE scheduling, and GaiA boundary adapters are not part of the current product scope.
+This guide describes only the nine Flow artifacts in `import_ready_flows/` and the runtime needed by them. Retired continuation orchestration, visualization-only, CUBE scheduling, and GaiA boundary adapters are not part of the current product scope.
 
 ## Flow topology
 
 ```text
 User question
-  ├─ 06 Agent Tool Router ──> 01 Data Analysis (default)
-  │                              ├─ Fast: deterministic query/aggregate/answer
-  │                              └─ Complex: constrained pandas + optional answer LLM
-  └─ 09 Continuation Router ─> 08 Data Analysis Continuation (only dependent retrieval)
+  └─ 06 Agent Tool Router
+       ├─ new data question ───────> 01 Data Analysis
+       ├─ fixed report request ─────> 07 Realtime Production Report
+       │                                └─ snapshot + report.context.v1 stored
+       ├─ report snapshot follow-up ──> 10 Report Follow-up
+       │                                └─ restore and analyze the same snapshot only
+       └─ report current/cross-source ─> 01 Data Analysis
+                                        └─ explicit current/latest: new retrieval
 
 Metadata authoring
   ├─ 02 Domain Saving
@@ -19,7 +23,9 @@ Metadata authoring
   └─ 04 Main Flow Filter Saving
 
 Metadata inquiry ───────────> 05 Metadata QA
-Fixed report request ────────> 07 Realtime Production Report
+
+Direct compatibility run ──> 11 Legacy Realtime Production Report
+                              └─ original direct response; no snapshot context
 ```
 
 ## Flow responsibilities
@@ -32,13 +38,26 @@ Fixed report request ────────> 07 Realtime Production Report
 | 04 Main Flow Filter Saving | A shared filter rule is needed across questions | Main filter item |
 | 05 Metadata QA | The user asks what is registered or how a dataset is interpreted | Metadata-grounded answer |
 | 06 Agent Tool Router | A normal chat entry point should select one supported Flow | Direct child Flow answer |
-| 07 Realtime Production Report | A fixed end-to-end production report is requested | Compact answer and HTML/CSV report links |
-| 08 Data Analysis Continuation | The first result supplies identifiers required by a second retrieval | Final two-stage answer; maximum two child runs |
-| 09 Continuation Router | A chat entry point must select Flow 08 automatically | One final answer with compact continuation state |
+| 07 Realtime Production Report | A fixed end-to-end production report is requested | Compact answer, HTML/CSV links, and a session-bound snapshot context for Flow 10 |
+| 10 Report Follow-up | A same-session question selects columns, filters, sorts, or ranks the last Report snapshot or a pre-aggregated Report view | Snapshot-only answer; no metadata catalog, groupby, join, or source retrieval |
+| 11 Legacy Realtime Production Report | The pre-follow-up Report response and graph must be reproduced | Direct Report answer and artifact links; no snapshot/session context |
+
+## Report follow-up contract
+
+Flow 07 stores the selected process-group dataset in the shared Result Store and publishes its available Report views through `report.context.v1`. Flow 10 restores only the referenced Report snapshot/view after validating the same session, expiry, completeness, declared columns, metrics, grain, predicates, and allowed operations. The Report API and Agent receive only compact references and KPI facts; raw rows and HTML are not copied into chat history or the Router prompt.
+
+| Follow-up wording | Data source | Retrieval behavior |
+| --- | --- | --- |
+| `그중 생산부족 제품만 보여줘` | Report creation snapshot | Flow 10 restores the declared Report view; no source query |
+| `그중 현재작업재공이 0인 제품을 5개 보여줘` | Report creation snapshot | `현재작업재공` is treated as a Report column, then Flow 10 filters and limits the stored view |
+| `방금 Report의 현재 WIP도 알려줘` | Current registered source | Flow 01 performs a new retrieval |
+| Explicit Report reference without a valid context | None | Clarify or return a context error; never silently run a new query |
+
+The boundary is enforced by routing and again inside Flow 10. Flow 06 sends snapshot-only Report questions to Flow 10 and explicit current/latest or cross-source requests to Flow 01. Flow 10 contains no source retriever, validates the Report query-source contract before execution, and never falls back to Flow 01. Its guarded planner does not call the LLM for missing/expired context, clarification, or live-query handoff states. Its result loader also checks the same session, reference expiry, and complete row storage before restoring data.
 
 ## Data Analysis display contract
 
-The Flow 01/08 answer adapter has two deliberately separate display paths.
+The Flow 01 answer adapter has two deliberately separate display paths.
 
 | Item | User display | LLM prompt | Purpose |
 | --- | --- | --- | --- |
@@ -62,16 +81,16 @@ This preserves a compact answer message and prevents a browser client from parsi
 
 ### Langflow
 
-- Target versions: Langflow 1.9.2, langflow-base 0.9.2, LFX 0.4.2.
+- Target versions: Langflow 1.11.0, langflow-base 0.11.0, LFX 1.11.0.
 - Configure the language-model Provider in Langflow. Default model values in Flow artifacts use `gemini-3.5-flash-lite`.
 - Configure the `MONGO_URL` Credential Global Variable for metadata, result store, and session state.
 
-### Artifact Server
+### API Server
 
-Run the one FastAPI server that is currently required by supported flows:
+Run the one FastAPI artifact/report server that the generated Report nodes target by default:
 
 ```powershell
-python -m artifact_server
+python API_SERVER\app.py
 ```
 
 It serves:
@@ -80,13 +99,13 @@ It serves:
 - `/reports` and `/reports/view/{report_id}` for the Flow 07 HTML report lifecycle;
 - `/health` for an operational health check.
 
-The listen address and public link address are separate. Use `ARTIFACT_LISTEN_HOST`, `ARTIFACT_LISTEN_PORT`, and `ARTIFACT_PUBLIC_BASE_URL` in `.env`; do not expose `0.0.0.0` as a user-facing URL.
+The default local URL is `http://127.0.0.1:5000`. Keep the listen address and public link address separate through `API_SERVER/.env`; do not expose `0.0.0.0` as a user-facing URL.
 
 ## Import and update
 
 1. Import `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`.
 2. Set the Provider credential and `MONGO_URL`.
-3. Re-select `대상 Flow` in any persisted Router tool that already has a `flow_id_selected` from an older import.
+3. Re-select `대상 Flow` in any persisted Router tool that already has a `flow_id_selected` from an older import. In Flow 06, verify that `run_report_followup` selects `10. v5_report_followup`.
 4. Set `04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode` to `live` only after a source-level smoke test. The default is `dummy`.
 
 When custom component source changes, regenerate artifacts in this order:
@@ -94,13 +113,12 @@ When custom component source changes, regenerate artifacts in this order:
 ```powershell
 python tools\build_v5_auxiliary_flows.py
 python tools\build_data_analysis_flow_v2.py
-python tools\build_data_analysis_flow_v2_continuation.py
-python tools\build_agent_tool_router_continuation.py
-python tools\build_continuation_import_ready_bundle.py
+python tools\build_import_ready_bundle.py
 ```
 
 ## Failure behavior
 
 - If MongoDB metadata cannot be loaded, the analysis must stop with the metadata connection/registration reason. It must not invent a dataset key or column contract.
+- If the Report context is missing, expired, cross-session, incomplete, or does not declare the requested operation, Flow 10 returns a bounded context/clarification error and does not query a live source.
 - If an output contract fails after retrieval or filtering, the answer remains an error but exposes the last successful curated intermediate result and its download link when one exists.
-- If a continuation result reference is missing, expired, cross-session, oversized, or inconsistent with its plan hash, Flow 08/09 does not run the second retrieval.
+- Flow 11 never writes Report follow-up Context. Use Flow 07 when a later Flow 10 question is required.

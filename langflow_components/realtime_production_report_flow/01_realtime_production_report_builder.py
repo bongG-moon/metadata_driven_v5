@@ -17,6 +17,7 @@ import re
 import urllib.error
 import urllib.request
 import uuid
+from copy import deepcopy
 from math import pi
 from typing import Any
 from urllib.parse import urlsplit
@@ -31,6 +32,10 @@ CONTRACT_VERSION = "realtime.production.report.v1"
 DATASET_CONTRACT_VERSION = "production.judgement.dataset.v1"
 SELECTION_CONTRACT_VERSION = "production.process_group.selection.v1"
 RULES_VERSION = "realtime.production.report.rules.v1"
+REPORT_CONTEXT_VERSION = "report.context.v1"
+QUERY_SOURCE_CONTRACT_VERSION = "report.query_source.v1"
+REPORT_TYPE = "realtime_production"
+REPORT_CONTEXT_ALLOWED_OPERATIONS = ["filter", "sort_and_top_n", "select_columns"]
 DEFAULT_REPORT_API_URL = "http://127.0.0.1:5000"
 DEFAULT_REPORT_TTL_HOURS = 4
 MAX_REPORT_TTL_HOURS = 24 * 7
@@ -41,6 +46,7 @@ MAX_REPORT_RESPONSE_BYTES = 64 * 1024
 MAX_PUBLIC_URL_CHARS = 2_048
 MAX_ERROR_CHARS = 600
 MAX_QUESTION_CHARS = 4_000
+MAX_STATE_MESSAGE_CHARS = 12_000
 MAX_REPORT_ID_CHARS = 160
 REPORT_API_TIMEOUT_SECONDS = 30
 
@@ -67,6 +73,88 @@ CAPA_JUDGEMENT_VALUES = {"CAPA과다", "CAPA부족", "잉여장비"}
 CAPA_DETAIL_VALUES = {"정상", "Abnormal", *CAPA_ANOMALY_VALUES}
 EQUIPMENT_VALUES = {"정상", "장비필요", "교체필요", "교체불필요"}
 UTILIZATION_VALUES = {"정상", "Abnormal"}
+REPORT_CONTEXT_SEMANTIC_FILTERS = [
+    {
+        "key": "production_normal_or_excess",
+        "aliases": ["정상 생산", "정상/초과 생산", "정상 또는 초과 생산"],
+        "source_alias": "report_snapshot",
+        "column": "달성율*판정",
+        "operator": "in",
+        "value": ["정상", "정상(초과생산)"],
+    },
+    {
+        "key": "production_abnormal",
+        "aliases": ["생산 이상", "생산 Abnormal", "생산 비정상"],
+        "source_alias": "report_snapshot",
+        "column": "달성율*판정",
+        "operator": "eq",
+        "value": "Abnormal",
+    },
+    {
+        "key": "production_shortage",
+        "aliases": ["생산부족", "생산 부족", "생산 부족 제품", "생산부족 제품"],
+        "source_alias": "report_snapshot",
+        "column": "달성율*판정",
+        "operator": "eq",
+        "value": "생산부족",
+    },
+    {
+        "key": "shortage_wip_cause",
+        "aliases": ["적정재공부족", "적정 재공 부족", "재공 부족"],
+        "source_alias": "report_snapshot",
+        "column": "적정재공*판정",
+        "operator": "eq",
+        "value": "Abnormal",
+    },
+    {
+        "key": "wip_excess",
+        "aliases": ["재공과다", "재공 과다"],
+        "source_alias": "report_snapshot",
+        "column": "적정재공*판정",
+        "operator": "eq",
+        "value": "재공과다",
+    },
+    {
+        "key": "capa_shortage",
+        "aliases": ["CAPA부족", "CAPA 부족", "캐파 부족"],
+        "source_alias": "report_snapshot",
+        "column": "CAPA판정",
+        "operator": "eq",
+        "value": "CAPA부족",
+    },
+    {
+        "key": "low_utilization",
+        "aliases": ["가동율저조", "가동율 저조", "가동률 저조"],
+        "source_alias": "report_snapshot",
+        "column": "가동율판정",
+        "operator": "eq",
+        "value": "Abnormal",
+    },
+    {
+        "key": "equipment_needed",
+        "aliases": ["장비필요", "장비 필요", "장비필요 제품", "장비 필요 제품"],
+        "source_alias": "report_snapshot",
+        "column": "장비교체판단",
+        "operator": "eq",
+        "value": "장비필요",
+    },
+    {
+        "key": "equipment_change_needed",
+        "aliases": ["교체필요", "교체 필요", "장비 교체 필요"],
+        "source_alias": "report_snapshot",
+        "column": "장비교체판단",
+        "operator": "eq",
+        "value": "교체필요",
+    },
+]
+REPORT_CONTEXT_VALUE_DOMAINS = [
+    {"source_alias": "report_snapshot", "column": "달성율*판정", "values": sorted(PRODUCTION_VALUES)},
+    {"source_alias": "report_snapshot", "column": "적정재공*판정", "values": sorted(WIP_VALUES)},
+    {"source_alias": "report_snapshot", "column": "CAPA판정", "values": sorted(CAPA_JUDGEMENT_VALUES)},
+    {"source_alias": "report_snapshot", "column": "CAPA이상판단", "values": sorted(CAPA_DETAIL_VALUES)},
+    {"source_alias": "report_snapshot", "column": "장비교체판단", "values": sorted(EQUIPMENT_VALUES)},
+    {"source_alias": "report_snapshot", "column": "가동율판정", "values": sorted(UTILIZATION_VALUES)},
+]
 
 IDENTITY_COLUMNS = [
     "WORK_DATE", "OPER_NAME", "OPER", "MODE", "DENSITY", "TECH", "ORG", "PKG1", "PKG2",
@@ -142,6 +230,326 @@ def _message_parts(value: Any) -> tuple[str, str]:
 def _payload(value: Any) -> dict[str, Any]:
     raw = getattr(value, "data", value)
     return raw if isinstance(raw, dict) else {}
+
+
+# 함수 설명: `_ref_id()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _ref_id(value: Any) -> str:
+    if isinstance(value, dict):
+        return _clip(value.get("ref_id") or value.get("data_ref") or value.get("_id"), 500)
+    return _clip(value, 500)
+
+
+# 함수 설명: `_query_source_contract()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _query_source_contract(
+    value: Any,
+    *,
+    source_alias: str,
+    dataset_key: str,
+    available_columns: list[str],
+) -> dict[str, Any]:
+    """Project a stored Report-owned query contract without global mappings."""
+
+    raw = value if isinstance(value, dict) else {}
+    if (
+        _text(raw.get("contract_version")) != QUERY_SOURCE_CONTRACT_VERSION
+        or raw.get("authoritative") is not True
+        or _text(raw.get("source_alias")) != source_alias
+        or _text(raw.get("dataset_key")) != dataset_key
+    ):
+        return {}
+    columns = [
+        _clip(column, 200)
+        for column in raw.get("columns", [])
+        if _text(column) and _text(column) in available_columns
+    ] if isinstance(raw.get("columns"), list) else []
+    grain = raw.get("grain") if isinstance(raw.get("grain"), dict) else {}
+    grain_columns = [
+        _clip(column, 200)
+        for column in grain.get("columns", [])
+        if _text(column) and _text(column) in columns
+    ] if isinstance(grain.get("columns"), list) else []
+    purpose = _clip(raw.get("purpose"), 120)
+    if not purpose or not columns or not grain_columns:
+        return {}
+    projected: dict[str, Any] = {
+        "contract_version": QUERY_SOURCE_CONTRACT_VERSION,
+        "source_alias": source_alias,
+        "dataset_key": dataset_key,
+        "purpose": purpose,
+        "aliases": [
+            _clip(item, 120)
+            for item in raw.get("aliases", [])[:20]
+            if _text(item)
+        ] if isinstance(raw.get("aliases"), list) else [],
+        "authoritative": True,
+        "columns": columns,
+        "grain": {
+            "kind": _clip(grain.get("kind"), 80),
+            "columns": grain_columns,
+            "unique": grain.get("unique") is True,
+        },
+        "predicates": deepcopy(raw.get("predicates", [])[:20])
+        if isinstance(raw.get("predicates"), list)
+        else [],
+        "metrics": deepcopy(raw.get("metrics", [])[:20])
+        if isinstance(raw.get("metrics"), list)
+        else [],
+        "allowed_operations": [
+            _clip(item, 80)
+            for item in raw.get("allowed_operations", [])[:12]
+            if _text(item)
+        ] if isinstance(raw.get("allowed_operations"), list) else [],
+    }
+    materialized_from = _clip(raw.get("materialized_from"), 120)
+    if materialized_from:
+        projected["materialized_from"] = materialized_from
+    return projected
+
+
+# 함수 설명: `_context_projection()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _context_projection(value: Any, expected_session_id: str) -> dict[str, Any]:
+    """Project a result-store payload to refs only; never copy runtime rows."""
+
+    payload = _payload(value)
+    unavailable = {
+        "available": False,
+        "context_ref": "",
+        "result_ref": {},
+        "source_data_refs": [],
+        "available_datasets": [],
+        "reason": "context_payload_missing",
+    }
+    if not payload:
+        return unavailable
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    stored_session_id = _text(request.get("session_id"))
+    if not expected_session_id or not stored_session_id or stored_session_id != expected_session_id:
+        return {**unavailable, "reason": "context_session_mismatch"}
+    inspection = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    inspection = inspection.get("inspection") if isinstance(inspection.get("inspection"), dict) else {}
+    result_store = inspection.get("result_store") if isinstance(inspection.get("result_store"), dict) else {}
+    if _text(result_store.get("status")).lower() != "ok":
+        return {
+            **unavailable,
+            "reason": _clip(result_store.get("status") or "context_store_unavailable", 100),
+        }
+    refs = payload.get("data_refs") if isinstance(payload.get("data_refs"), list) else []
+    safe_refs = [dict(item) for item in refs if isinstance(item, dict) and _ref_id(item)]
+    result_ref = next(
+        (item for item in safe_refs if _text(item.get("role")) == "analysis_result"),
+        {},
+    )
+    context_ref = _ref_id(result_ref)
+    source_refs = [
+        item
+        for item in safe_refs
+        if _text(item.get("role")) == "source_rows" and _ref_id(item) == context_ref
+    ]
+    if not context_ref or not source_refs:
+        return {**unavailable, "reason": "context_data_refs_missing"}
+    source_summaries = {
+        _text(item.get("source_alias") or item.get("dataset_key")): item
+        for item in payload.get("source_results", [])
+        if isinstance(item, dict) and _text(item.get("source_alias") or item.get("dataset_key"))
+    } if isinstance(payload.get("source_results"), list) else {}
+    available_datasets = []
+    for ref in source_refs:
+        alias = _clip(ref.get("source_alias"), 120)
+        dataset_key = _clip(ref.get("dataset_key"), 160)
+        summary = source_summaries.get(alias) if isinstance(source_summaries.get(alias), dict) else {}
+        raw_columns = summary.get("columns") if isinstance(summary.get("columns"), list) else ref.get("columns", [])
+        columns = [
+            _clip(column, 200)
+            for column in raw_columns
+            if _text(column)
+        ] if isinstance(raw_columns, list) else []
+        query_contract = _query_source_contract(
+            summary.get("query_source_contract"),
+            source_alias=alias,
+            dataset_key=dataset_key,
+            available_columns=columns,
+        )
+        dataset_projection = {
+            "source_alias": alias,
+            "dataset_key": dataset_key,
+            "source_type": _clip(ref.get("source_type") or summary.get("source_type") or "report_snapshot", 80),
+            "row_count": _bounded_int(ref.get("row_count"), 0, 0, 1_000_000_000),
+            "columns": columns,
+            "data_ref": dict(ref),
+        }
+        if query_contract:
+            dataset_projection["query_source_contract"] = query_contract
+        available_datasets.append(dataset_projection)
+    query_sources = [
+        deepcopy(item["query_source_contract"])
+        for item in available_datasets
+        if isinstance(item.get("query_source_contract"), dict)
+    ]
+    return {
+        "available": True,
+        "context_ref": context_ref,
+        "result_ref": dict(result_ref),
+        "source_data_refs": source_refs,
+        "available_datasets": available_datasets,
+        "query_sources": query_sources,
+        "reason": "",
+    }
+
+
+# 함수 설명: `_report_followup_state()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_followup_state(
+    *,
+    session_id: str,
+    question: str,
+    message: str,
+    analysis: dict[str, Any],
+    kpis: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    if not context.get("available"):
+        return _report_context_tombstone_state(
+            session_id=session_id,
+            question=question,
+            message=message,
+            reason=_text(context.get("reason") or "report_context_unavailable"),
+        )
+    datasets = context.get("available_datasets") if isinstance(context.get("available_datasets"), list) else []
+    source_aliases = [
+        _text(item.get("source_alias"))
+        for item in datasets
+        if isinstance(item, dict) and _text(item.get("source_alias"))
+    ]
+    source_dataset_keys = [
+        _text(item.get("dataset_key"))
+        for item in datasets
+        if isinstance(item, dict) and _text(item.get("dataset_key"))
+    ]
+    source_columns_by_alias = {
+        _text(item.get("source_alias")): list(item.get("columns") or [])
+        for item in datasets
+        if isinstance(item, dict) and _text(item.get("source_alias"))
+    }
+    report_context = {
+        "context_version": REPORT_CONTEXT_VERSION,
+        "context_ref": _text(context.get("context_ref")),
+        "report_type": REPORT_TYPE,
+        "snapshot_id": _clip(analysis.get("scope", {}).get("snapshot_id"), 200),
+        "as_of": _clip(analysis.get("scope", {}).get("snapshot_at"), 100),
+        "expires_at": _clip(
+            (context.get("result_ref") or {}).get("expires_at")
+            if isinstance(context.get("result_ref"), dict)
+            else "",
+            100,
+        ),
+        "report_scope": dict(analysis.get("scope") or {}),
+        "kpi_facts": dict(kpis),
+        "rules": {"rules_version": RULES_VERSION},
+        "allowed_operations": list(REPORT_CONTEXT_ALLOWED_OPERATIONS),
+        "semantic_filters": deepcopy(REPORT_CONTEXT_SEMANTIC_FILTERS),
+        "value_domains": deepcopy(REPORT_CONTEXT_VALUE_DOMAINS),
+        "query_sources": deepcopy(context.get("query_sources") or []),
+    }
+    first_dataset = datasets[0] if datasets and isinstance(datasets[0], dict) else {}
+    current_data = {
+        "row_count": _bounded_int(
+            first_dataset.get("row_count") or analysis.get("scope", {}).get("case_count"),
+            0,
+            0,
+            1_000_000_000,
+        ),
+        "columns": list(first_dataset.get("columns") or []),
+        "result_columns": list(first_dataset.get("columns") or []),
+        "source_aliases": source_aliases,
+        "source_dataset_keys": source_dataset_keys,
+        "source_columns_by_alias": source_columns_by_alias,
+        "query_sources": deepcopy(context.get("query_sources") or []),
+        "data_ref": dict(context.get("result_ref") or {}),
+        "report_context": report_context,
+    }
+    followup_sources = [
+        {
+            "source_alias": item.get("source_alias"),
+            "dataset_key": item.get("dataset_key"),
+            "source_type": item.get("source_type"),
+            "columns": list(item.get("columns") or []),
+            "row_count": _bounded_int(item.get("row_count"), 0, 0, 1_000_000_000),
+            "data_ref": dict(item.get("data_ref") or {}),
+            "data_is_reference": True,
+            **(
+                {"query_source_contract": deepcopy(item.get("query_source_contract"))}
+                if isinstance(item.get("query_source_contract"), dict)
+                else {}
+            ),
+        }
+        for item in datasets
+        if isinstance(item, dict)
+    ]
+    runtime_source_refs = {
+        _text(item.get("source_alias")): dict(item.get("data_ref") or {})
+        for item in datasets
+        if isinstance(item, dict) and _text(item.get("source_alias"))
+    }
+    return {
+        "session_id": session_id,
+        "last_question": question,
+        "last_answer_message": message,
+        "current_data": current_data,
+        "followup_source_results": followup_sources,
+        "runtime_source_refs": runtime_source_refs,
+    }
+
+
+# 함수 설명: `_report_context_tombstone_state()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_context_tombstone_state(
+    *,
+    session_id: str,
+    question: str,
+    message: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Replace an older Report context when the newest Report is not reusable."""
+
+    if not _text(session_id):
+        return {}
+    return {
+        "session_id": _text(session_id),
+        "last_question": _clip(question, MAX_QUESTION_CHARS),
+        "last_answer_message": _clip(message, MAX_STATE_MESSAGE_CHARS),
+        "current_data": {
+            "row_count": 0,
+            "columns": [],
+            "result_columns": [],
+            "source_aliases": [],
+            "source_dataset_keys": [],
+            "source_columns_by_alias": {},
+            "report_context_status": {
+                "context_version": REPORT_CONTEXT_VERSION,
+                "report_type": REPORT_TYPE,
+                "status": "invalidated",
+                "reason": _clip(reason or "report_context_unavailable", 200),
+            },
+        },
+        "followup_source_results": [],
+        "runtime_source_refs": {},
+    }
+
+
+# 함수 설명: `_with_report_context_tombstone()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _with_report_context_tombstone(
+    result: dict[str, Any],
+    *,
+    session_id: str,
+    question: str,
+    reason: str,
+) -> dict[str, Any]:
+    next_result = deepcopy(result)
+    next_result["state"] = _report_context_tombstone_state(
+        session_id=session_id,
+        question=question,
+        message=_text(next_result.get("message")),
+        reason=reason,
+    )
+    return next_result
 
 
 # 함수 설명: `_percent()`는 01 실시간 생산 분석 Report 생성기 처리 중 percent 관련 값을 계산·변환하는 내부 helper입니다.
@@ -824,6 +1232,8 @@ def publish_production_report(
     analysis: dict[str, Any],
     report_api_url: Any,
     report_ttl_hours: Any,
+    available_datasets: Any = None,
+    context_ref: Any = "",
 ) -> dict[str, Any]:
     post_url = _reports_post_url(report_api_url)
     if not post_url:
@@ -835,12 +1245,18 @@ def publish_production_report(
             "title": "실시간 생산 분석 Report",
             "question": _clip(question, MAX_QUESTION_CHARS),
             "view_request": "metadata_driven_v5 realtime production report",
-            "available_datasets": [],
+            "available_datasets": (
+                list(available_datasets)
+                if isinstance(available_datasets, list)
+                else []
+            ),
             "report_plan": {
                 "source_flow": "07. v5_realtime_production_report",
                 "rules_version": RULES_VERSION,
                 "snapshot_id": _clip(analysis.get("scope", {}).get("snapshot_id"), 200),
                 "case_count": int(analysis.get("scope", {}).get("case_count") or 0),
+                "context_version": REPORT_CONTEXT_VERSION,
+                "context_ref": _clip(context_ref, 500),
             },
             "ttl_hours": _report_ttl_hours(report_ttl_hours),
             "filename_hint": download_name,
@@ -970,6 +1386,12 @@ def _selection_boundary_result(selection: dict[str, Any]) -> dict[str, Any]:
         "rules_version": RULES_VERSION,
         "kpis": {},
         "artifacts": [],
+        "context_ref": "",
+        "result_ref": {},
+        "source_data_refs": [],
+        "available_datasets": [],
+        "followup": {"available": False, "context_ref": "", "reason": "process_group_not_selected"},
+        "state": {},
         "process_group_candidates": list(selection.get("process_group_candidates") or []),
         "matched_process_groups": list(selection.get("matched_process_groups") or []),
         "llm_decision": dict(selection.get("llm_decision") or {}),
@@ -991,6 +1413,12 @@ def _error_result(error: dict[str, str]) -> dict[str, Any]:
         "report_scope": {},
         "kpis": {},
         "artifacts": [],
+        "context_ref": "",
+        "result_ref": {},
+        "source_data_refs": [],
+        "available_datasets": [],
+        "followup": {"available": False, "context_ref": "", "reason": "report_generation_failed"},
+        "state": {},
         "warnings": [],
         "errors": [error],
     }
@@ -1001,6 +1429,7 @@ def build_realtime_production_report(
     *,
     dataset_value: Any,
     question_value: Any,
+    context_payload_value: Any = None,
     max_html_rows: Any = DEFAULT_MAX_HTML_ROWS,
     report_api_url: Any = DEFAULT_REPORT_API_URL,
     report_ttl_hours: Any = DEFAULT_REPORT_TTL_HOURS,
@@ -1010,12 +1439,30 @@ def build_realtime_production_report(
     # 함수 설명: `_run()`는 RUN 실행 경계를 담당하고 성공 결과와 오류를 공통 계약으로 반환합니다.
     async def _run() -> dict[str, Any]:
         dataset = _payload(dataset_value)
+        question, session_id = _message_parts(question_value)
         if dataset.get("contract_version") == SELECTION_CONTRACT_VERSION:
-            return _selection_boundary_result(dataset)
+            return _with_report_context_tombstone(
+                _selection_boundary_result(dataset),
+                session_id=session_id,
+                question=question,
+                reason="process_group_not_selected",
+            )
         rows, warnings, validation_error = _validate_dataset(dataset)
         if validation_error:
-            return _error_result(validation_error)
-        question, _ = _message_parts(question_value)
+            return _with_report_context_tombstone(
+                _error_result(validation_error),
+                session_id=session_id,
+                question=question,
+                reason=_text(validation_error.get("type") or "report_generation_failed"),
+            )
+        context = _context_projection(context_payload_value, session_id)
+        if not context.get("available"):
+            warnings.append(
+                _issue(
+                    "report_context_unavailable",
+                    f"Report는 정상 생성하지만 후속 분석 Context를 사용할 수 없습니다: {context.get('reason') or 'unknown'}",
+                )
+            )
         analysis = analyze_production_rows(rows, dataset)
         render_limit = _bounded_int(max_html_rows, DEFAULT_MAX_HTML_ROWS, 10, MAX_HTML_ROWS)
         rendered_rows = rows[:render_limit]
@@ -1024,16 +1471,26 @@ def build_realtime_production_report(
         html_document = render_production_report_html(rendered_rows, analysis, warnings=warnings)
         encoded = html_document.encode("utf-8")
         if len(encoded) > MAX_HTML_BYTES:
-            return _error_result(_issue("html_size_limit_exceeded", f"생성 HTML이 {MAX_HTML_BYTES:,} byte 상한을 초과했습니다."))
+            error = _issue("html_size_limit_exceeded", f"생성 HTML이 {MAX_HTML_BYTES:,} byte 상한을 초과했습니다.")
+            return _with_report_context_tombstone(
+                _error_result(error),
+                session_id=session_id,
+                question=question,
+                reason=error["type"],
+            )
         safe_token = re.sub(r"[^a-zA-Z0-9]", "", file_token)[:32] or uuid.uuid4().hex
         download_name = f"realtime-production-report-{safe_token}.html"
         configured_report_api = _text(report_api_url)
         if not configured_report_api:
-            return _error_result(
-                _issue(
-                    "report_api_required",
-                    "MongoDB Report API 주소가 비어 있어 HTML을 저장하지 않았습니다.",
-                )
+            error = _issue(
+                "report_api_required",
+                "MongoDB Report API 주소가 비어 있어 HTML을 저장하지 않았습니다.",
+            )
+            return _with_report_context_tombstone(
+                _error_result(error),
+                session_id=session_id,
+                question=question,
+                reason=error["type"],
             )
         publisher = report_publisher_fn if callable(report_publisher_fn) else publish_production_report
         try:
@@ -1045,13 +1502,19 @@ def build_realtime_production_report(
                 analysis=analysis,
                 report_api_url=configured_report_api,
                 report_ttl_hours=report_ttl_hours,
+                available_datasets=context.get("available_datasets", []),
+                context_ref=context.get("context_ref", ""),
             )
         except Exception as exc:  # noqa: BLE001
-            return _error_result(
-                _issue(
-                    "report_api_publish_error",
-                    f"MongoDB Report API에 HTML을 저장하지 못했습니다: {exc}",
-                )
+            error = _issue(
+                "report_api_publish_error",
+                f"MongoDB Report API에 HTML을 저장하지 못했습니다: {exc}",
+            )
+            return _with_report_context_tombstone(
+                _error_result(error),
+                session_id=session_id,
+                question=question,
+                reason=error["type"],
             )
         descriptor = _artifact_descriptor(
             download_name=download_name,
@@ -1067,6 +1530,14 @@ def build_realtime_production_report(
             "capa": analysis["capa"],
             "equipment": analysis["equipment"],
         }
+        state = _report_followup_state(
+            session_id=session_id,
+            question=question,
+            message=message,
+            analysis=analysis,
+            kpis=kpis,
+            context=context,
+        )
         return {
             "contract_version": CONTRACT_VERSION,
             "response_type": "realtime_production_report",
@@ -1084,6 +1555,16 @@ def build_realtime_production_report(
             "rules_version": RULES_VERSION,
             "kpis": kpis,
             "artifacts": [descriptor],
+            "context_ref": _text(context.get("context_ref")),
+            "result_ref": dict(context.get("result_ref") or {}),
+            "source_data_refs": list(context.get("source_data_refs") or []),
+            "available_datasets": list(context.get("available_datasets") or []),
+            "followup": {
+                "available": bool(context.get("available")),
+                "context_ref": _text(context.get("context_ref")),
+                "reason": _text(context.get("reason")),
+            },
+            "state": state,
             "warnings": warnings,
             "errors": [],
         }
@@ -1110,6 +1591,12 @@ class RealtimeProductionReportBuilder(Component):
             display_name="선택 공정그룹 판정 데이터",
             info="00C Gate가 반환한 선택 그룹 production.judgement.dataset.v1 또는 clarification/error 계약입니다.",
             required=True,
+        ),
+        DataInput(
+            name="context_payload",
+            display_name="저장된 Report Context",
+            info="00D -> 공용 23 MongoDB 결과 저장소가 반환한 payload입니다. 저장 실패 시에도 Report 자체는 계속 생성합니다.",
+            required=False,
         ),
         MessageTextInput(
             name="report_api_url",
@@ -1166,6 +1653,7 @@ class RealtimeProductionReportBuilder(Component):
         return await build_realtime_production_report(
             dataset_value=getattr(self, "dataset", None),
             question_value=getattr(self, "question", None),
+            context_payload_value=getattr(self, "context_payload", None),
             max_html_rows=getattr(self, "max_html_rows", DEFAULT_MAX_HTML_ROWS),
             report_api_url=getattr(self, "report_api_url", DEFAULT_REPORT_API_URL),
             report_ttl_hours=getattr(self, "report_ttl_hours", DEFAULT_REPORT_TTL_HOURS),

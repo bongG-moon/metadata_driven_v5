@@ -17,12 +17,12 @@ from lfx.custom.utils import create_component_template
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_ROOT = ROOT / "langflow_components"
 EXPORT_ROOT = ROOT / "flow_exports"
-# The maintained V2 donor provides the fixed Langflow 1.9.2 native node
+# The maintained V2 donor provides the audited Langflow 1.11.0 native node
 # templates.  The retired V1 export is deliberately not a build dependency.
 DONOR_PATH = ROOT / "tools" / "assets" / "data_analysis_flow_v2_donor.json"
 ROUTER_READ_TIMEOUT_SECONDS = "240"
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
-TARGET_LANGFLOW_VERSION = "1.9.2"
+TARGET_LANGFLOW_VERSION = "1.11.0"
 DEFAULT_LANGUAGE_MODEL = "gemini-3.5-flash-lite"
 FLOW_DISPLAY_NAMES = {
     # Stable external target. The import bundle binds this name to the V2
@@ -34,6 +34,8 @@ FLOW_DISPLAY_NAMES = {
     "metadata_qa": "05. v5_metadata_qa",
     "agent_tool_router": "06. v5_agent_tool_router",
     "realtime_production_report": "07. v5_realtime_production_report",
+    "report_followup": "10. v5_report_followup",
+    "realtime_production_report_legacy": "11. v5_realtime_production_report_legacy",
 }
 
 
@@ -116,7 +118,12 @@ def prototypes(donor: dict[str, Any]) -> dict[str, dict[str, Any]]:
     component_index = json.loads(COMPONENT_INDEX.read_text(encoding="utf-8"))
     return {
         "custom": by_id["CustomComponent-5o0CN"],
-        "prompt": by_id["Prompt Template-AUpQz"],
+        "prompt": _native_component_prototype(
+            by_id["CustomComponent-5o0CN"],
+            provider_source,
+            _find_component(component_index, "Prompt Template"),
+            "Prompt Template",
+        ),
         "agent": _native_component_prototype(
             by_id["CustomComponent-5o0CN"],
             provider_source,
@@ -215,15 +222,29 @@ def prompt_node(proto: dict[str, Any], node_id: str, prompt_text: str, x: float,
     node = _clone_node(proto, node_id, x, y)
     config = node["data"]["node"]
     config["template"]["template"]["value"] = prompt_text
-    dynamic_template = deepcopy(config["template"].get("question"))
+    dynamic_template = deepcopy(config["template"].get("tool_placeholder"))
+    if not isinstance(dynamic_template, dict):
+        raise RuntimeError("Langflow 1.11 Prompt Template dynamic input prototype is missing.")
     keep = {"_type", "code", "template", "use_double_brackets", "tool_placeholder"}
     for key in list(config["template"]):
         if key not in keep:
             config["template"].pop(key, None)
+    config["custom_fields"] = {"template": []}
     for variable in _prompt_variables(prompt_text):
         field = deepcopy(dynamic_template)
-        field.update({"name": variable, "display_name": variable, "value": "", "required": True})
+        field.update(
+            {
+                "name": variable,
+                "display_name": variable,
+                "value": "",
+                "required": True,
+                "tool_mode": False,
+                "advanced": False,
+                "show": True,
+            }
+        )
         config["template"][variable] = field
+        config["custom_fields"]["template"].append(variable)
     return node
 
 
@@ -529,6 +550,7 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
 
 ROUTE_ENDPOINTS = {
     "data_analysis": "metadata-driven-v5-data-analysis",
+    "report_followup": "metadata-driven-v5-report-followup",
     "metadata_qa": "metadata-driven-v5-metadata-qa",
     "domain_saving": "metadata-driven-v5-domain-saving",
     "table_catalog_saving": "metadata-driven-v5-table-catalog-saving",
@@ -542,6 +564,12 @@ TOOL_ROUTE_SPECS = [
         FLOW_DISPLAY_NAMES["data_analysis"],
         "run_data_analysis",
         "실제 제조 데이터 값의 조회와 계산에 사용합니다. 생산량, 재공, 투입/산출, HOLD, 장비 배정, UPH, 제품별 집계와 비교 질문이 대상입니다. 메타데이터 정의 설명이나 등록 요청에는 사용하지 않습니다.",
+    ),
+    ToolRouteSpec(
+        "report_followup",
+        FLOW_DISPLAY_NAMES["report_followup"],
+        "run_report_followup",
+        "같은 세션의 직전 Report Snapshot 또는 Report가 미리 만든 집계 View를 대상으로 컬럼 선택, 필터, 정렬, 상위/하위 N을 수행할 때 사용합니다. 새 groupby 집계, 현재 기준·최신 데이터·다시/새로 조회하거나 다른 데이터셋을 결합하는 요청에는 사용하지 않습니다.",
     ),
     ToolRouteSpec(
         "metadata_qa",
@@ -603,7 +631,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["agent_tool_router"],
-        "LLM Agent router with six compact selected-ID-first cached Flow tools, deterministic realtime-analysis keyword gating, name fallback for standalone imports, shared session propagation, a silent direct-return Agent, a direct-result adapter that removes nested child events, and one final Chat Output.",
+        "LLM Agent router with seven compact selected-ID-first cached Flow tools, a dedicated same-session Report follow-up path, deterministic realtime-analysis keyword gating, name fallback for standalone imports, shared session propagation, a silent direct-return Agent, a direct-result adapter that removes nested child events, and one final Chat Output.",
         "metadata-driven-v5-agent-tool-router",
         ["v5", "standalone", "agent-router", "tool-mode", "selected-flow-id", "cached-flow", "direct-result-adapter", "optimized"],
     )
@@ -645,7 +673,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow["data"]["nodes"].extend([chat, agent, result_adapter, output])
     add_edge(flow, chat, "message", agent, "input_value")
 
-    y_positions = (-650, -390, -130, 130, 390, 650)
+    y_positions = (-780, -520, -260, 0, 260, 520, 780)
     for spec, y in zip(TOOL_ROUTE_SPECS, y_positions, strict=True):
         tool = custom_node(proto["custom"], f"CachedFlowTool-{spec.route_name}", tool_path, 350, y)
         tool_config = tool["data"]["node"]
@@ -672,15 +700,15 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    """Domain 공정그룹을 먼저 선택한 뒤 판정 더미 데이터로 Report를 만드는 11 Flow를 만듭니다."""
+    """후속 분석용 Snapshot을 함께 발행하는 현재 Realtime Report Flow를 만듭니다."""
 
     proto = prototypes(donor)
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["realtime_production_report"],
-        "Realtime production report flow with Domain process-group catalog grounding, native LLM group selection, deterministic evidence validation and row filtering, clarification without HTML when no group is specified, and four fixed report sections.",
+        "Realtime production report flow with Domain process-group catalog grounding, native LLM group selection, deterministic evidence validation and row filtering, a session-bound result-store context for shared follow-up analysis, clarification without HTML when no group is specified, and four fixed report sections.",
         "metadata-driven-v5-realtime-production-report",
-        ["v5", "standalone", "realtime-production", "process-group", "dummy-data", "html-report", "report-api", "mongodb-collection"],
+        ["v5", "standalone", "realtime-production", "process-group", "dummy-data", "html-report", "report-api", "mongodb-collection", "followup-context"],
     )
     folder = COMPONENT_ROOT / "realtime_production_report_flow"
     chat = native_node(proto["chat_input"], "ChatInput-realtime-production-report", 0, -180)
@@ -730,10 +758,159 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
         1540,
         0,
     )
+    context_payload = custom_node(
+        proto["custom"],
+        "ReportContextPayload-realtime-production-report",
+        folder / "00d_report_context_payload_builder.py",
+        1940,
+        300,
+    )
+    context_store = custom_node(
+        proto["custom"],
+        "ReportContextResultStore-realtime-production-report",
+        COMPONENT_ROOT / "data_analysis_flow" / "23_mongodb_result_store.py",
+        2340,
+        300,
+    )
+    context_store_template = context_store["data"]["node"]["template"]
+    _set_value(context_store_template, "mongo_database", "datagov")
+    _set_value(context_store_template, "collection_name", "agent_v4_result_store")
+    _set_value(context_store_template, "ttl_hours", "4")
     report = custom_node(
         proto["custom"],
         "RealtimeProductionReportBuilder-realtime-production-report",
         folder / "01_realtime_production_report_builder.py",
+        2740,
+        0,
+    )
+    report_template = report["data"]["node"]["template"]
+    _set_value(report_template, "report_api_url", "http://127.0.0.1:5000")
+    _set_value(report_template, "report_ttl_hours", "4")
+    _set_value(report_template, "max_html_rows", "1000")
+    output = native_node(proto["chat_output"], "ChatOutput-realtime-production-report", 3200, -130)
+    _set_message_storage(output, True)
+    session_writer = custom_node(
+        proto["custom"],
+        "ReportSessionStateWriter-realtime-production-report",
+        COMPONENT_ROOT / "session_state_flow" / "01_mongodb_session_state_writer.py",
+        3200,
+        210,
+    )
+    session_writer_template = session_writer["data"]["node"]["template"]
+    _set_value(session_writer_template, "mongo_database", "datagov")
+    _set_value(session_writer_template, "session_collection_name", "agent_v4_session_states")
+    _set_value(session_writer_template, "enabled", "true")
+    _set_value(session_writer_template, "preview_row_limit", "5")
+    _set_value(session_writer_template, "history_limit", "10")
+    api_terminal = custom_node(
+        proto["custom"],
+        "RealtimeProductionReportApiTerminal-realtime-production-report",
+        folder / "02_realtime_production_report_api_terminal.py",
+        3600,
+        210,
+    )
+    flow["data"]["nodes"].extend(
+        [
+            chat,
+            catalog,
+            prompt,
+            selector_model,
+            dummy,
+            gate,
+            context_payload,
+            context_store,
+            report,
+            output,
+            session_writer,
+            api_terminal,
+        ]
+    )
+    add_edge(flow, chat, "message", prompt, "question")
+    add_edge(flow, catalog, "process_group_catalog", prompt, "process_group_catalog")
+    add_edge(flow, prompt, "prompt", selector_model, "input_value")
+    add_edge(flow, chat, "message", gate, "question")
+    add_edge(flow, catalog, "process_group_catalog", gate, "process_group_catalog")
+    add_edge(flow, selector_model, "text_output", gate, "llm_response")
+    add_edge(flow, dummy, "dataset", gate, "dataset")
+    add_edge(flow, chat, "message", context_payload, "question")
+    add_edge(flow, gate, "selected_dataset", context_payload, "dataset")
+    add_edge(flow, context_payload, "context_payload", context_store, "payload")
+    add_edge(flow, chat, "message", report, "question")
+    add_edge(flow, gate, "selected_dataset", report, "dataset")
+    add_edge(flow, context_store, "payload_out", report, "context_payload")
+    add_edge(flow, report, "api_response", session_writer, "response_payload")
+    add_edge(flow, session_writer, "payload_out", api_terminal, "report_result")
+    add_edge(flow, report, "message", api_terminal, "report_message")
+    add_edge(flow, api_terminal, "message", output, "input_value")
+    return flow
+
+
+def build_realtime_production_report_legacy_flow(donor: dict[str, Any]) -> dict[str, Any]:
+    """후속 분석 Context가 없던 변경 전 Realtime Report 구조를 1.11로 재현합니다."""
+
+    proto = prototypes(donor)
+    flow = empty_flow(
+        donor,
+        FLOW_DISPLAY_NAMES["realtime_production_report_legacy"],
+        "Legacy realtime production report flow preserved for compatibility: Domain process-group selection, deterministic row filtering, direct Report publication, and no follow-up Snapshot or session-state side effects.",
+        "metadata-driven-v5-realtime-production-report-legacy",
+        ["v5", "standalone", "realtime-production", "legacy-report", "direct-run", "langflow-1.11"],
+    )
+    shared_folder = COMPONENT_ROOT / "realtime_production_report_flow"
+    legacy_folder = COMPONENT_ROOT / "realtime_production_report_legacy_flow"
+    suffix = "realtime-production-report-legacy"
+
+    chat = native_node(proto["chat_input"], f"ChatInput-{suffix}", 0, -180)
+    _set_message_storage(chat, True)
+    catalog = custom_node(
+        proto["custom"],
+        f"ProcessGroupCatalog-{suffix}",
+        shared_folder / "00a_process_group_catalog_loader.py",
+        350,
+        -360,
+    )
+    catalog_template = catalog["data"]["node"]["template"]
+    _set_value(catalog_template, "mongo_database", "datagov")
+    _set_value(catalog_template, "collection_name", "agent_v4_domain_items")
+    _set_value(catalog_template, "status_filter", "active")
+    prompt = custom_node(
+        proto["custom"],
+        f"ProcessGroupPrompt-{suffix}",
+        shared_folder / "00b_process_group_selection_prompt.py",
+        760,
+        -380,
+    )
+    selector_model = language_model_node(
+        proto["language_model"],
+        f"LanguageModelProcessGroup-{suffix}",
+        1160,
+        -380,
+        "Select only one explicitly evidenced process-group key from the supplied domain catalog. Return exactly one JSON object and never guess a default group.",
+    )
+    _set_value(selector_model["data"]["node"]["template"], "max_tokens", 700)
+    dummy = custom_node(
+        proto["custom"],
+        f"DummyProductionJudgementData-{suffix}",
+        shared_folder / "00_dummy_production_judgement_data.py",
+        760,
+        260,
+    )
+    dummy_template = dummy["data"]["node"]["template"]
+    _set_value(dummy_template, "row_count", "500")
+    _set_value(dummy_template, "seed", "20260727")
+    _set_value(dummy_template, "work_date", "")
+    _set_value(dummy_template, "process_names", "W/B1,W/B2,W/B3,W/B4,B/G1,B/G2,B/G3,D/A1,D/A2,D/A3")
+    gate = custom_node(
+        proto["custom"],
+        f"ProcessGroupSelectionGate-{suffix}",
+        shared_folder / "00c_process_group_selection_gate.py",
+        1540,
+        0,
+    )
+    report = custom_node(
+        proto["custom"],
+        f"RealtimeProductionReportBuilder-{suffix}",
+        legacy_folder / "01_realtime_production_report_builder.py",
         1940,
         0,
     )
@@ -741,15 +918,16 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     _set_value(report_template, "report_api_url", "http://127.0.0.1:5000")
     _set_value(report_template, "report_ttl_hours", "4")
     _set_value(report_template, "max_html_rows", "1000")
-    output = native_node(proto["chat_output"], "ChatOutput-realtime-production-report", 2390, -130)
+    output = native_node(proto["chat_output"], f"ChatOutput-{suffix}", 2380, -160)
     _set_message_storage(output, True)
     api_terminal = custom_node(
         proto["custom"],
-        "RealtimeProductionReportApiTerminal-realtime-production-report",
-        folder / "02_realtime_production_report_api_terminal.py",
-        2390,
-        210,
+        f"RealtimeProductionReportApiTerminal-{suffix}",
+        legacy_folder / "02_realtime_production_report_api_terminal.py",
+        2380,
+        180,
     )
+
     flow["data"]["nodes"].extend(
         [chat, catalog, prompt, selector_model, dummy, gate, report, output, api_terminal]
     )
@@ -764,6 +942,171 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     add_edge(flow, gate, "selected_dataset", report, "dataset")
     add_edge(flow, report, "message", output, "input_value")
     add_edge(flow, report, "api_response", api_terminal, "report_result")
+    return flow
+
+
+def build_report_followup_flow(donor: dict[str, Any]) -> dict[str, Any]:
+    """Build the isolated same-session Report Snapshot follow-up Flow 10."""
+
+    proto = prototypes(donor)
+    flow = empty_flow(
+        donor,
+        FLOW_DISPLAY_NAMES["report_followup"],
+        "Same-session Report follow-up flow that restores a declared raw or pre-aggregated Report Snapshot view, validates its query-source contract, executes only bounded select/filter/sort/top-N operations, and never performs live source retrieval, groupby, joins, or metadata-catalog planning.",
+        "metadata-driven-v5-report-followup",
+        [
+            "v5",
+            "standalone",
+            "report-followup",
+            "snapshot-only",
+            "same-session",
+            "bounded-analysis",
+            "no-live-retrieval",
+        ],
+    )
+    folder = COMPONENT_ROOT / "report_followup_flow"
+
+    chat = native_node(proto["chat_input"], "ChatInput-report-followup", 0, 0)
+    _set_message_storage(chat, True)
+
+    session_loader = custom_node(
+        proto["custom"],
+        "SessionStateLoader-report-followup",
+        COMPONENT_ROOT / "session_state_flow" / "00_mongodb_session_state_loader.py",
+        360,
+        -180,
+    )
+    session_loader_template = session_loader["data"]["node"]["template"]
+    _set_value(session_loader_template, "mongo_database", "datagov")
+    _set_value(session_loader_template, "session_collection_name", "agent_v4_session_states")
+    _set_value(session_loader_template, "enabled", "true")
+    _set_value(session_loader_template, "preview_row_limit", "5")
+
+    prompt_builder = custom_node(
+        proto["custom"],
+        "PromptBuilder-report-followup",
+        folder / "00_report_followup_prompt_builder.py",
+        720,
+        0,
+    )
+    native_plan_model = language_model_node(
+        proto["language_model"],
+        "LanguageModel-report-followup",
+        1080,
+        0,
+        "Plan only from the supplied Report query-source contract. Return exactly one JSON object and never request, infer, or join a live source.",
+    )
+    _set_value(native_plan_model["data"]["node"]["template"], "max_tokens", 1800)
+    guarded_plan_router = custom_node(
+        proto["custom"],
+        "GuardedPlanRouter-report-followup",
+        folder / "00b_report_followup_guarded_plan_router.py",
+        1080,
+        0,
+    )
+    native_model_template = native_plan_model["data"]["node"]["template"]
+    guarded_model_template = guarded_plan_router["data"]["node"]["template"]
+    # Langflow 1.11 native Language Model의 provider 선택 및 runtime override
+    # 계약을 custom guarded boundary에서도 그대로 노출합니다.
+    for field_name in (
+        "model",
+        "model_name",
+        "provider",
+        "api_key",
+        "system_message",
+        "stream",
+        "temperature",
+        "max_tokens",
+    ):
+        if isinstance(native_model_template.get(field_name), dict) and isinstance(guarded_model_template.get(field_name), dict):
+            guarded_model_template[field_name] = deepcopy(native_model_template[field_name])
+
+    normalizer = custom_node(
+        proto["custom"],
+        "PlanNormalizer-report-followup",
+        folder / "01_report_followup_plan_normalizer.py",
+        1440,
+        0,
+    )
+    result_loader = custom_node(
+        proto["custom"],
+        "ResultLoader-report-followup",
+        COMPONENT_ROOT / "data_analysis_flow" / "05_mongodb_result_loader.py",
+        1800,
+        0,
+    )
+    result_loader_template = result_loader["data"]["node"]["template"]
+    _set_value(result_loader_template, "mongo_database", "datagov")
+    _set_value(result_loader_template, "collection_name", "agent_v4_result_store")
+
+    executor = custom_node(
+        proto["custom"],
+        "SnapshotExecutor-report-followup",
+        folder / "02_report_snapshot_executor.py",
+        2160,
+        0,
+    )
+    response_builder = custom_node(
+        proto["custom"],
+        "ResponseBuilder-report-followup",
+        folder / "03_report_followup_response_builder.py",
+        2520,
+        0,
+    )
+    _set_value(response_builder["data"]["node"]["template"], "table_preview_limit", 5)
+
+    session_writer = custom_node(
+        proto["custom"],
+        "SessionStateWriter-report-followup",
+        COMPONENT_ROOT / "session_state_flow" / "01_mongodb_session_state_writer.py",
+        2880,
+        0,
+    )
+    session_writer_template = session_writer["data"]["node"]["template"]
+    _set_value(session_writer_template, "mongo_database", "datagov")
+    _set_value(session_writer_template, "session_collection_name", "agent_v4_session_states")
+    _set_value(session_writer_template, "enabled", "true")
+    _set_value(session_writer_template, "preview_row_limit", "5")
+    _set_value(session_writer_template, "history_limit", "10")
+
+    terminal = custom_node(
+        proto["custom"],
+        "ApiTerminal-report-followup",
+        folder / "04_report_followup_api_terminal.py",
+        3240,
+        0,
+    )
+    output = native_node(proto["chat_output"], "ChatOutput-report-followup", 3600, -120)
+    _set_message_storage(output, True)
+
+    flow["data"]["nodes"].extend(
+        [
+            chat,
+            session_loader,
+            prompt_builder,
+            guarded_plan_router,
+            normalizer,
+            result_loader,
+            executor,
+            response_builder,
+            session_writer,
+            terminal,
+            output,
+        ]
+    )
+    add_edge(flow, chat, "message", session_loader, "question")
+    add_edge(flow, chat, "message", prompt_builder, "question")
+    add_edge(flow, session_loader, "loaded_state", prompt_builder, "loaded_state")
+    add_edge(flow, prompt_builder, "payload_out", guarded_plan_router, "payload")
+    add_edge(flow, prompt_builder, "prompt", guarded_plan_router, "prompt")
+    add_edge(flow, prompt_builder, "payload_out", normalizer, "payload")
+    add_edge(flow, guarded_plan_router, "text_output", normalizer, "llm_response")
+    add_edge(flow, normalizer, "payload_out", result_loader, "payload")
+    add_edge(flow, result_loader, "payload_out", executor, "payload")
+    add_edge(flow, executor, "payload_out", response_builder, "payload")
+    add_edge(flow, response_builder, "payload_out", session_writer, "response_payload")
+    add_edge(flow, session_writer, "payload_out", terminal, "response_payload")
+    add_edge(flow, terminal, "message", output, "input_value")
     return flow
 
 
@@ -801,6 +1144,30 @@ def write_flows() -> list[dict[str, Any]]:
             "edges": len(realtime_production_report["data"]["edges"]),
         }
     )
+    report_followup = _stamp_flow_version(build_report_followup_flow(donor))
+    report_followup_path = EXPORT_ROOT / "10_report_followup_flow_v5_standalone.json"
+    report_followup_path.write_bytes(
+        (json.dumps(report_followup, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    )
+    outputs.append(
+        {
+            "path": str(report_followup_path),
+            "nodes": len(report_followup["data"]["nodes"]),
+            "edges": len(report_followup["data"]["edges"]),
+        }
+    )
+    legacy_report = _stamp_flow_version(build_realtime_production_report_legacy_flow(donor))
+    legacy_report_path = EXPORT_ROOT / "11_realtime_production_report_legacy_flow_v5_standalone.json"
+    legacy_report_path.write_bytes(
+        (json.dumps(legacy_report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    )
+    outputs.append(
+        {
+            "path": str(legacy_report_path),
+            "nodes": len(legacy_report["data"]["nodes"]),
+            "edges": len(legacy_report["data"]["edges"]),
+        }
+    )
     return outputs
 
 
@@ -816,7 +1183,7 @@ def _stamp_flow_version(flow: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build the active metadata saving, QA, Agent Tool Router, and realtime production-report flows.")
+    parser = argparse.ArgumentParser(description="Build the active metadata saving, QA, Router, current/legacy realtime Report, and Report follow-up flows.")
     parser.parse_args()
     print(json.dumps(write_flows(), ensure_ascii=False, indent=2))
 

@@ -1,12 +1,12 @@
 {
   "bundle": "metadata_driven_v5_complete_20260710",
-  "langflow_version": "1.9.2",
-  "langflow_base_version": "0.9.2",
-  "lfx_version": "0.4.2",
+  "langflow_version": "1.11.0",
+  "langflow_base_version": "0.11.0",
+  "lfx_version": "1.11.0",
   "flow_count": 9,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "5a4b79e97096354f4074a55b63aecd2235b6910ffa0fdf2508078e9e0cbe1d79",
+  "single_file_ui_import_sha256": "a546b7678bd301ae1d58ba3c80c4a3af1956c72bcf11a909034bbf9e7e79aaeb",
   "mongodb_contract": {
     "configuration_source": "Langflow node input / MONGO_URL Credential Global Variable",
     "database": "datagov",
@@ -23,10 +23,20 @@
     "canonical_endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
     "external_tool_name": "run_data_analysis"
   },
+  "report_followup_routing_contract": {
+    "strategy": "isolated_report_snapshot_followup",
+    "report_source_flow": "07. v5_realtime_production_report",
+    "report_followup_flow": "10. v5_report_followup",
+    "router_flow": "06. v5_agent_tool_router",
+    "external_tool_name": "run_report_followup",
+    "fresh_or_cross_source_route": "01. v5_data_analysis",
+    "legacy_report_flow": "11. v5_realtime_production_report_legacy",
+    "legacy_report_router_exposed": false
+  },
   "validation": {
     "bundle_structure": "native Chat boundaries, version stamps, Flow names, endpoints and active adapter inputs are verified while building",
-    "langflow_frontend_edge_handles": "422/422 structural handles",
-    "langflow_lfx_node_templates": "162/162 custom component templates across 9 flows",
+    "langflow_frontend_edge_handles": "332/332 structural handles",
+    "langflow_lfx_node_templates": "131/131 custom component templates across 9 base flows",
     "runtime_parse": "Run tools/validate_langflow_runtime.py after changing custom component source."
   },
   "flows": [
@@ -37,7 +47,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 51,
       "edges": 59,
-      "sha256": "daae6afe71bc2b02fe330ed91cc98bb86da4b1bb511aeaf14ccc4be538bed12a"
+      "sha256": "2207a6ec9d94fe1a0bf0db4d888ac574951942bfb22e1662593e93d9f5116646"
     },
     {
       "order": 2,
@@ -46,7 +56,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
       "nodes": 12,
       "edges": 13,
-      "sha256": "94fccdcebc30ba170149636bffeee7ad8353b7b55bfd2f03f35507a32a4c0799"
+      "sha256": "b334ed1d036269d0f823d4c6d3bdc3ba5656c45074bec3553ed954be267547d0"
     },
     {
       "order": 3,
@@ -55,7 +65,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-table-catalog-saving",
       "nodes": 12,
       "edges": 13,
-      "sha256": "1f7a4db8cab4413d2824c3647b6cff2a41225a598c1a7ceed7eaacba160ddadf"
+      "sha256": "a2bffb07bb673833e143907b8324cc01f3c605660a0f32035be2fc7205a6340c"
     },
     {
       "order": 4,
@@ -64,7 +74,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-main-flow-filter-saving",
       "nodes": 12,
       "edges": 13,
-      "sha256": "6ec41ec8f8901bcfc2cc5f1c850f82e5b5d52cb627bbe23d60c8bba499f12171"
+      "sha256": "1c85c081727abb7e6caa15a8b35525e88e46445a997b8767aa160e8ec23cccc8"
     },
     {
       "order": 5,
@@ -73,60 +83,43 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
       "nodes": 11,
       "edges": 17,
-      "sha256": "8718eafd1cad7d5300669508c06dccfa219d7d7806c0b1c4d6d214654703f950"
+      "sha256": "42e3daaa221861b34f9c2a735c5d406a35059225c65552a581c29beabb6203d7"
     },
     {
       "order": 6,
       "file": "06_agent_tool_router_flow_v5_standalone.json",
       "name": "06. v5_agent_tool_router",
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
-      "nodes": 10,
-      "edges": 9,
-      "sha256": "8b0650dcba079d70df01163bc761fa1c871cb304f743a780296124e779569d9f"
+      "nodes": 11,
+      "edges": 10,
+      "sha256": "60226e5bb47c58b4ea9af45d83d6be4ff4d8a18ad721988514086aa2a3d217e4"
     },
     {
       "order": 7,
       "file": "07_realtime_production_report_flow_v5_standalone.json",
       "name": "07. v5_realtime_production_report",
       "endpoint_name": "metadata-driven-v5-complete-20260710-realtime-production-report",
+      "nodes": 12,
+      "edges": 17,
+      "sha256": "a9f79367b904cf2e00c57b624978cce8761daac1c1d29a654349674e63f0d267"
+    },
+    {
+      "order": 10,
+      "file": "10_report_followup_flow_v5_standalone.json",
+      "name": "10. v5_report_followup",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-report-followup",
+      "nodes": 11,
+      "edges": 13,
+      "sha256": "159140e14ebae32310483171e2dcde74e2aa0c50bf0794f9ba834f966f2e38f4"
+    },
+    {
+      "order": 11,
+      "file": "11_realtime_production_report_legacy_flow_v5_standalone.json",
+      "name": "11. v5_realtime_production_report_legacy",
+      "endpoint_name": "metadata-driven-v5-complete-20260710-realtime-production-report-legacy",
       "nodes": 9,
       "edges": 11,
-      "sha256": "c97f58ab34064d2706f1a210d8ddaa7e93dd648dd2b463c9cba4f3f13ae98701"
-    },
-    {
-      "order": 8,
-      "file": "08_data_analysis_flow_v2_continuation_standalone.json",
-      "name": "08. v5_data_analysis_continuation",
-      "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis-continuation",
-      "nodes": 56,
-      "edges": 67,
-      "sha256": "ea65a86eb0253a50d804c070b41281452d6c25028f388e47941d0001f1f6c7d1"
-    },
-    {
-      "order": 9,
-      "file": "09_agent_tool_router_continuation_flow_v5_standalone.json",
-      "name": "09. v5_agent_tool_router_continuation",
-      "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router-continuation",
-      "nodes": 10,
-      "edges": 9,
-      "sha256": "121863efc74b1867d2b8f0d7fd1ddfa842579b1aa03f5d81988aa7895b7e0e66"
+      "sha256": "69d08c2a906b011a68a04ec13eb99b27be774f416eab72e06108796aade67725"
     }
-  ],
-  "continuation_routing_contract": {
-    "strategy": "isolated_optional_two_stage",
-    "base_flows": [
-      "01. v5_data_analysis",
-      "06. v5_agent_tool_router"
-    ],
-    "base_flows_unchanged": [
-      "01. v5_data_analysis",
-      "06. v5_agent_tool_router"
-    ],
-    "data_analysis_flow": "08. v5_data_analysis_continuation",
-    "agent_tool_router_flow": "09. v5_agent_tool_router_continuation",
-    "max_child_runs": 2,
-    "intermediate_answer_model_calls": 0,
-    "resume_intent_model_calls": 0,
-    "agent_observation": "compact continuation status only; no raw rows, trace, or generated code"
-  }
+  ]
 }

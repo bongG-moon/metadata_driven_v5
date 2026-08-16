@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
+from datetime import datetime, timezone
 from importlib import import_module
 from typing import Any
 
@@ -35,8 +36,19 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
     explicit_ref = _explicit_data_ref(payload)
     explicit_orchestration = bool(explicit_ref)
     reuse_strategy = _reuse_strategy(payload)
+    report_context_ref = "" if explicit_orchestration else _report_context_ref(payload)
+    report_reference = bool(report_context_ref)
     mongo_uri, mongo_database, collection_name = _resolve_config(mongo_uri, mongo_database, collection_name)
     next_payload = payload
+
+    if not explicit_orchestration and _report_reference_unresolved(next_payload):
+        return _mark_error(
+            next_payload,
+            mongo_database,
+            collection_name,
+            "",
+            [{"type": "report_context_missing", "message": "명시한 Report를 같은 세션에서 확인할 수 없어 신규 조회로 전환하지 않았습니다."}],
+        )
 
     if not explicit_orchestration and reuse_strategy not in ROW_REUSE_STRATEGIES:
         return _mark_skipped(
@@ -61,7 +73,7 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
             }],
         )
 
-    ref = explicit_ref or _find_data_ref(payload)
+    ref = explicit_ref or report_context_ref or _find_data_ref(payload)
     if not ref:
         return _mark_error(
             next_payload,
@@ -94,11 +106,35 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
                     ref,
                     [{"type": "upstream_result_not_found", "message": "상위 Flow result_ref에 해당하는 결과가 없습니다."}],
                 )
+            if report_reference:
+                return _mark_error(
+                    next_payload,
+                    mongo_database,
+                    collection_name,
+                    ref,
+                    [{"type": "report_context_not_found", "message": "참조한 Report snapshot을 결과 저장소에서 찾을 수 없습니다."}],
+                )
             return _mark_skipped(next_payload, mongo_database, collection_name, "result_not_found", "data_ref에 해당하는 이전 결과가 없습니다.", ref)
         stored_payload = doc.get("payload", {}) if isinstance(doc.get("payload"), dict) else {}
-        session_error = _session_error(next_payload, doc, explicit_orchestration)
+        session_error = _session_error(
+            next_payload,
+            doc,
+            explicit_orchestration,
+            report_reference=report_reference,
+        )
         if session_error:
             return _mark_error(next_payload, mongo_database, collection_name, ref, [session_error])
+        if report_reference:
+            expiry_error = _report_context_expiry_error(doc)
+            if expiry_error:
+                return _mark_error(next_payload, mongo_database, collection_name, ref, [expiry_error])
+            storage_errors = _report_context_storage_errors(
+                stored_payload,
+                reuse_strategy,
+                requested_aliases,
+            )
+            if storage_errors:
+                return _mark_error(next_payload, mongo_database, collection_name, ref, storage_errors)
         if explicit_orchestration:
             return _restore_explicit_upstream_result(
                 next_payload,
@@ -247,12 +283,14 @@ def _session_error(
     payload: dict[str, Any],
     document: dict[str, Any],
     explicit_orchestration: bool,
+    *,
+    report_reference: bool = False,
 ) -> dict[str, Any] | None:
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     current_session = str(request.get("session_id") or "").strip()
     stored_session = str(document.get("session_id") or "").strip()
-    prefix = "upstream" if explicit_orchestration else "previous_result"
-    label = "상위 결과" if explicit_orchestration else "이전 결과"
+    prefix = "upstream" if explicit_orchestration else ("report_context" if report_reference else "previous_result")
+    label = "상위 결과" if explicit_orchestration else ("Report snapshot" if report_reference else "이전 결과")
     if not current_session or not stored_session:
         return {
             "type": f"{prefix}_session_missing",
@@ -264,6 +302,100 @@ def _session_error(
             "message": f"현재 요청과 다른 세션에서 생성된 {label}이므로 복원을 차단했습니다.",
         }
     return None
+
+
+# 함수 설명: 현재 질문이 같은 세션의 Report snapshot을 명시적으로 참조할 때만 context_ref를 반환합니다.
+def _report_context_ref(payload: dict[str, Any]) -> str:
+    hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    if hint.get("report_reference") is not True:
+        return ""
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    context = current_data.get("report_context") if isinstance(current_data.get("report_context"), dict) else {}
+    return _ref_id(context.get("context_ref"))
+
+
+# 함수 설명: `_report_reference_unresolved()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_reference_unresolved(payload: dict[str, Any]) -> bool:
+    hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    return bool(
+        hint.get("unresolved_report_reference") is True
+        or (hint.get("report_reference") is True and not _report_context_ref(payload))
+    )
+
+
+# 함수 설명: MongoDB TTL 삭제 주기의 지연과 무관하게 Report snapshot의 만료 시각을 즉시 검사합니다.
+def _report_context_expiry_error(document: dict[str, Any]) -> dict[str, Any] | None:
+    raw = document.get("expires_at")
+    if raw in (None, ""):
+        return {
+            "type": "report_context_expiry_missing",
+            "message": "Report snapshot의 expires_at을 확인할 수 없어 복원을 차단했습니다.",
+        }
+    try:
+        if isinstance(raw, datetime):
+            expires_at = raw
+        else:
+            expires_at = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        else:
+            expires_at = expires_at.astimezone(timezone.utc)
+    except Exception:
+        return {
+            "type": "report_context_expiry_invalid",
+            "message": "Report snapshot의 expires_at 형식이 유효하지 않아 복원을 차단했습니다.",
+        }
+    if expires_at <= datetime.now(timezone.utc):
+        return {
+            "type": "report_context_expired",
+            "message": "Report snapshot이 만료되어 저장 당시 데이터로 후속 분석을 실행할 수 없습니다.",
+        }
+    return None
+
+
+# 함수 설명: Report 후속 분석은 저장 행의 완전성이 명시적으로 True인 snapshot만 복원합니다.
+def _report_context_storage_errors(
+    stored_payload: dict[str, Any],
+    reuse_strategy: str,
+    source_aliases: list[str],
+) -> list[dict[str, Any]]:
+    manifest = (
+        stored_payload.get("storage_manifest")
+        if isinstance(stored_payload.get("storage_manifest"), dict)
+        else {}
+    )
+    if reuse_strategy == "previous_source":
+        source_manifest = (
+            manifest.get("runtime_sources")
+            if isinstance(manifest.get("runtime_sources"), dict)
+            else {}
+        )
+        errors: list[dict[str, Any]] = []
+        for alias in source_aliases:
+            item = source_manifest.get(alias) if isinstance(source_manifest.get(alias), dict) else {}
+            if item.get("complete") is not True:
+                errors.append(
+                    {
+                        "type": "report_context_source_incomplete",
+                        "message": f"Report snapshot source_alias={alias!r}의 저장 완전성을 확인할 수 없습니다.",
+                        "source_alias": alias,
+                    }
+                )
+        return errors
+    result_manifest = (
+        manifest.get("result_rows")
+        if isinstance(manifest.get("result_rows"), dict)
+        else {}
+    )
+    if result_manifest.get("complete") is not True:
+        return [
+            {
+                "type": "report_context_result_incomplete",
+                "message": "Report snapshot 결과 행의 저장 완전성을 확인할 수 없습니다.",
+            }
+        ]
+    return []
 
 
 # 주요 함수: `previous_result`는 저장된 최종 결과 행만 예약 alias로 복원하고 이전 원본 source는 payload에 넣지 않습니다.

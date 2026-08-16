@@ -3,26 +3,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.build_import_ready_bundle import TARGET_LANGFLOW_VERSION  # noqa: E402
+
 COMPONENT_ROOT = ROOT / "langflow_components"
 FLOW_EXPORT_ROOT = ROOT / "flow_exports"
 IMPORT_READY_ROOT = ROOT / "import_ready_flows"
 COMBINED_IMPORT = IMPORT_READY_ROOT / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
 CUSTOM_MODULE_PREFIXES = ("custom_components.", "v5_auxiliary.")
 EXPECTED_FLOW_COUNT = 9
-CONTINUATION_EXPORTS = {
-    FLOW_EXPORT_ROOT / "08_data_analysis_flow_v2_continuation_standalone.json",
-    FLOW_EXPORT_ROOT / "09_agent_tool_router_continuation_flow_v5_standalone.json",
-}
-CONTINUATION_IMPORTS = {
-    IMPORT_READY_ROOT / "08_data_analysis_flow_v2_continuation_standalone.json",
-    IMPORT_READY_ROOT / "09_agent_tool_router_continuation_flow_v5_standalone.json",
-}
 SUPPORT_SOURCE_FILES = {
     "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py",
     # V2 Node 20 now owns lazy AnswerEvidence rendering so this generated
@@ -57,8 +55,42 @@ def _flow_key(flow: dict[str, Any]) -> str:
     return str(flow.get("endpoint_name") or flow.get("name") or flow.get("id") or "unknown")
 
 
-def _audit_flows(label: str, flows: list[dict[str, Any]], source_by_code: dict[str, list[Path]]) -> dict[str, Any]:
+def _version_contract_errors(label: str, flows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Verify the 1.11 version stamp on every exported/importable component."""
+
     errors: list[dict[str, Any]] = []
+    for flow in flows:
+        flow_key = _flow_key(flow)
+        if str(flow.get("last_tested_version") or "") != TARGET_LANGFLOW_VERSION:
+            errors.append(
+                {
+                    "flow": flow_key,
+                    "artifact": label,
+                    "type": "flow_version_mismatch",
+                    "expected": TARGET_LANGFLOW_VERSION,
+                    "actual": flow.get("last_tested_version"),
+                }
+            )
+        for node in flow.get("data", {}).get("nodes", []):
+            component = node.get("data", {}).get("node")
+            if not isinstance(component, dict):
+                continue
+            if str(component.get("lf_version") or "") != TARGET_LANGFLOW_VERSION:
+                errors.append(
+                    {
+                        "flow": flow_key,
+                        "artifact": label,
+                        "node": str(node.get("id") or ""),
+                        "type": "node_version_mismatch",
+                        "expected": TARGET_LANGFLOW_VERSION,
+                        "actual": component.get("lf_version"),
+                    }
+                )
+    return errors
+
+
+def _audit_flows(label: str, flows: list[dict[str, Any]], source_by_code: dict[str, list[Path]]) -> dict[str, Any]:
+    errors = _version_contract_errors(label, flows)
     source_paths: set[str] = set()
     node_count = 0
     # Keep one mapping entry per artifact.  Flow exports may intentionally
@@ -123,7 +155,6 @@ def _individual_import_flows() -> list[dict[str, Any]]:
         {
             *IMPORT_READY_ROOT.glob("[0-9][0-9]_*_v5_standalone.json"),
             *IMPORT_READY_ROOT.glob("[0-9][0-9]_*_v2_standalone.json"),
-            *(path for path in CONTINUATION_IMPORTS if path.exists()),
         }
     )
     return [_load_json(path) for path in paths]
@@ -142,7 +173,6 @@ def _flow_exports() -> list[dict[str, Any]]:
         {
             *FLOW_EXPORT_ROOT.glob("*_v5_standalone.json"),
             *FLOW_EXPORT_ROOT.glob("*_v2_standalone.json"),
-            *(path for path in CONTINUATION_EXPORTS if path.exists()),
         }
     )
     return [_load_json(path) for path in paths]
@@ -171,7 +201,6 @@ def audit_repository() -> dict[str, Any]:
         "langflow_components/route_flow_v2/01_cached_named_run_flow_tool.py",
         "langflow_components/route_flow_v2/02_agent_direct_tool_result_adapter.py",
         "langflow_components/route_flow_v2/03_silent_direct_return_router_agent.py",
-        "langflow_components/route_flow_v2_continuation/01_cached_continuation_run_flow_tool.py",
     }
     for path in sorted(expected_route_sources):
         if path not in used:

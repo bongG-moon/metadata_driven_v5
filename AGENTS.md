@@ -4,22 +4,23 @@
 
 ## 기본 Langflow 기준
 
-- 별도 요청이 없으면 모든 신규 구현, 수정, Flow JSON 재생성, import 검증은 `Langflow 1.9.2`를 기준으로 수행한다.
+- 별도 요청이 없으면 모든 신규 구현, 수정, Flow JSON 재생성, import 검증은 `Langflow 1.11.0`을 기준으로 수행한다.
 - 재현 가능한 정확한 패키지 조합은 다음과 같다.
-  - `langflow==1.9.2`
-  - `langflow-base==0.9.2`
-  - `lfx==0.4.2`
-- Python은 3.10 이상 3.14 미만을 사용하며, 기본 검증 버전은 Python 3.12로 한다.
-- `latest` 또는 설치 환경에 우연히 존재하는 더 최신 Langflow/LFX 템플릿을 기본값으로 사용하지 않는다.
-- 다른 Langflow 버전 호환 작업은 사용자가 명시적으로 요청한 경우에만 수행하고, 1.9.2 기준 동작을 깨뜨리지 않는지 별도로 검증한다.
+  - `langflow==1.11.0`
+  - `langflow-base==0.11.0`
+  - `lfx==1.11.0`
+- 기본 검증 인터프리터는 Langflow Desktop 1.11이 관리하는 Python 3.13이다. 별도 가상환경을 만들 때도 검증 결과에는 실제 Python·패키지 버전을 함께 남긴다.
+- `latest` 또는 설치 환경에 우연히 존재하는 다른 minor 버전의 Langflow/LFX 템플릿을 기본값으로 사용하지 않는다.
+- 1.9.2 Flow는 `langflow_1.9.0` 브랜치의 레거시 기준이며, 현재 브랜치의 구현·검증 기준으로 사용하지 않는다.
 
 ## 구현·JSON 동기화 원칙
 
 - Python custom component와 Flow JSON을 함께 수정하고, 원본과 export/import-ready JSON이 항상 동기화되도록 한다.
-- 더 최신 Langflow 환경에서 빌더를 실행할 때도 1.9.2 기본 컴포넌트 원본과 schema가 유지되어야 한다.
-- 기본 Language Model은 `tools/assets/langflow_1_9_2_language_model.py`를 사용한다.
-- 기본 컴포넌트 인덱스는 1.9.2의 `lfx/_assets/component_index.json`을 사용한다. 필요하면 `LANGFLOW_COMPONENT_INDEX_PATH`로 정확한 1.9.2 인덱스를 지정한다.
-- 빌더가 생성한 Flow와 import-ready bundle의 `last_tested_version`, 각 node의 `lf_version`은 `1.9.2`여야 한다.
+- 빌더는 1.11.0의 기본 컴포넌트 원본과 schema를 사용해야 한다. 기본 Language Model은 `tools/assets/langflow_1_11_0_language_model.py`를 사용하며, 1.11의 `model_name`·`provider` override 입력을 제거하지 않는다.
+- 기본 컴포넌트 인덱스는 1.11.0 `lfx/_assets/component_index.json`을 사용한다. 필요하면 `LANGFLOW_COMPONENT_INDEX_PATH`로 정확한 1.11.0 인덱스를 지정한다.
+- 빌더가 생성한 Flow와 import-ready bundle의 `last_tested_version`, 각 node의 `lf_version`은 `1.11.0`이어야 한다.
+- 1.11 `Message`의 `data`에는 표시 `text`가 함께 직렬화된다. Message에 trace/metadata를 붙일 때 `message.data` 전체를 대입하지 말고 기존 mapping에 키를 추가한다.
+- 기본 Agent와 Tool의 새 기능(HITL 승인, A2A, AG-UI)은 기존 읽기 전용 분석 경로에 자동으로 섞지 않는다. 새 경로로 채택할 때는 별도 Flow 계약과 실행 검증을 추가한다.
 
 ## Standalone 원칙
 
@@ -31,8 +32,8 @@
 
 - 변경 범위에 맞는 pytest와 대표 질문 검증을 실행한다.
 - `tools/validate_flow_component_sources.py`로 Python 원본과 export/import JSON 동기화를 확인한다.
-- 1.9.2 정확한 런타임 조합에서 모든 node template이 parse되는지 확인한다.
-- 생성된 10개 Flow의 `last_tested_version=1.9.2`와 모든 node의 `lf_version=1.9.2`를 확인한다.
+- 1.11.0 정확한 런타임 조합에서 모든 node template이 parse되는지 확인한다. LFX upgrade 검사는 기본 native node의 보류 업그레이드를 실패로 처리하고, standalone custom component의 별도 검증은 source/template parse로 수행한다.
+- 생성된 9개 Flow의 `last_tested_version=1.11.0`와 모든 node의 `lf_version=1.11.0`를 확인한다.
 - 과거 문서의 1.8.2 수치는 당시 검증 이력일 뿐 현재 구현 기준으로 사용하지 않는다.
 
-상세 설치 및 전환 기준은 `docs/LANGFLOW_1_9_2_MIGRATION.md`를 따른다.
+상세 설치 및 전환 기준은 `docs/LANGFLOW_1_11_MIGRATION.md`를 따른다.

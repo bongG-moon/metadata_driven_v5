@@ -48,6 +48,7 @@ def write_session_state(
     payload = _payload(response_payload_value)
     response = _response_view(payload)
     state = _state_from_response(payload, response)
+    state_guard, guard_present = _session_state_guard(payload, response)
     session = _session_id_from_payload(payload) or _session_id_from_payload(response) or _session_id_from_state(state)
     preview_limit = _positive_int(preview_row_limit, DEFAULT_PREVIEW_ROW_LIMIT)
     max_history = _positive_int(history_limit, DEFAULT_HISTORY_LIMIT)
@@ -58,6 +59,7 @@ def write_session_state(
         "saved": False,
         "session_id": session,
         "collection_name": collection_name,
+        "guarded": guard_present,
         "errors": [],
     }
     if not payload:
@@ -72,6 +74,10 @@ def write_session_state(
     if not session:
         status["reason"] = "missing_session_id"
         status["errors"] = ["현재 실행의 session_id를 확인할 수 없어 세션 상태를 저장하지 않았습니다."]
+        return {**payload, "session_state_write": status}
+    if guard_present and not state_guard:
+        status["reason"] = "invalid_session_state_guard"
+        status["errors"] = ["세션 상태 보호 조건에 expected_turn_count와 expected_report_context_ref가 모두 필요합니다."]
         return {**payload, "session_state_write": status}
 
     uri = _clean(mongo_uri)
@@ -94,6 +100,20 @@ def write_session_state(
         client, collection = _connect_collection(uri, database, collection_name)
         previous = collection.find_one({"_id": _document_id(session)}) or {}
         previous_turn_count = _positive_int(previous.get("turn_count") if isinstance(previous, dict) else 0, 0)
+        if state_guard:
+            expected_turn_count = int(state_guard["expected_turn_count"])
+            expected_context_ref = str(state_guard["expected_report_context_ref"])
+            actual_context_ref = _report_context_ref_from_document(previous)
+            status["state_guard"] = {
+                "expected_turn_count": expected_turn_count,
+                "actual_turn_count": previous_turn_count,
+                "expected_report_context_ref": expected_context_ref,
+                "actual_report_context_ref": actual_context_ref,
+            }
+            if previous_turn_count != expected_turn_count or actual_context_ref != expected_context_ref:
+                status["reason"] = "stale_session_state"
+                status["errors"] = ["Report 후속 분석 중 세션의 active Report가 변경되어 이전 상태를 덮어쓰지 않았습니다."]
+                return {**payload, "session_state_write": status}
         document = {
             "_id": _document_id(session),
             "session_id": session,
@@ -104,7 +124,21 @@ def write_session_state(
             "turn_count": previous_turn_count + 1,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        collection.replace_one({"_id": document["_id"]}, document, upsert=True)
+        if state_guard:
+            conditional_filter = {
+                "_id": document["_id"],
+                "turn_count": int(state_guard["expected_turn_count"]),
+                "state.current_data.report_context.context_ref": str(
+                    state_guard["expected_report_context_ref"]
+                ),
+            }
+            write_result = collection.replace_one(conditional_filter, document, upsert=False)
+            if int(getattr(write_result, "matched_count", 0) or 0) != 1:
+                status["reason"] = "stale_session_state"
+                status["errors"] = ["Report 후속 분석 저장 직전에 active Report가 변경되어 상태 저장을 취소했습니다."]
+                return {**payload, "session_state_write": status}
+        else:
+            collection.replace_one({"_id": document["_id"]}, document, upsert=True)
         status.update(
             {
                 "saved": True,
@@ -240,6 +274,45 @@ def _compact_source_result(source: dict[str, Any], preview_limit: int) -> dict[s
 def _response_view(payload: dict[str, Any]) -> dict[str, Any]:
     api_response = payload.get("api_response")
     return deepcopy(api_response) if isinstance(api_response, dict) else payload
+
+
+# 함수 설명: `_session_state_guard()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _session_state_guard(
+    payload: dict[str, Any],
+    response: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Return the optional optimistic-lock guard emitted by Report Flow 10."""
+
+    raw: Any = None
+    for source in (response, payload):
+        candidate = source.get("session_state_guard") if isinstance(source, dict) else None
+        if isinstance(candidate, dict):
+            raw = candidate
+            break
+    if raw is None:
+        return {}, False
+    expected_ref = str(raw.get("expected_report_context_ref") or "").strip()
+    expected_revision = raw.get("expected_turn_count")
+    try:
+        expected_revision = int(expected_revision)
+    except Exception:
+        return {}, True
+    if expected_revision < 0 or not expected_ref:
+        return {}, True
+    return {
+        "expected_turn_count": expected_revision,
+        "expected_report_context_ref": expected_ref,
+    }, True
+
+
+# 함수 설명: `_report_context_ref_from_document()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_context_ref_from_document(document: Any) -> str:
+    if not isinstance(document, dict):
+        return ""
+    state = document.get("state") if isinstance(document.get("state"), dict) else {}
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    context = current_data.get("report_context") if isinstance(current_data.get("report_context"), dict) else {}
+    return str(context.get("context_ref") or "").strip()
 
 
 # 함수 설명: `_state_from_response()`는 분석 응답의 next_state/current_state에서 다음 턴에 저장할 상태를 우선순위대로 추출합니다.

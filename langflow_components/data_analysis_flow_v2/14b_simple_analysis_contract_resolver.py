@@ -1200,6 +1200,7 @@ def _reconcile_metric_merge_runtime_aliases(
         jobs_by_alias[alias] = job
         jobs_by_dataset.setdefault(dataset_key.casefold(), []).append(alias)
 
+    # 함수 설명: `alias_for()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def alias_for(reference: Any, dataset_key_hint: Any = "") -> str:
         raw = str(reference or "").strip()
         if raw in jobs_by_alias:
@@ -1412,6 +1413,7 @@ def _reconcile_metric_merge_runtime_aliases(
     }
 
 
+# 함수 설명: `_rewrite_nested_metric_aliases()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _rewrite_nested_metric_aliases(value: Any, aliases: dict[str, str]) -> Any:
     """Rewrite only already-confirmed alias values in a nested contract."""
 
@@ -1643,6 +1645,7 @@ def _runtime_typed_frame_contract(
     }
 
 
+# 함수 설명: `_typed_pandas_plan_execution_contract()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _typed_pandas_plan_execution_contract(
     payload: dict[str, Any],
     plan: dict[str, Any],
@@ -1874,6 +1877,7 @@ def _typed_pandas_plan_execution_contract(
     }
 
 
+# 함수 설명: `_intent_route_candidate()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _intent_route_candidate(plan: dict[str, Any]) -> dict[str, Any]:
     intent_ir = _dict(plan.get("intent_ir"))
     steps = [deepcopy(item) for item in _list(plan.get("pandas_execution_plan")) if isinstance(item, dict)]

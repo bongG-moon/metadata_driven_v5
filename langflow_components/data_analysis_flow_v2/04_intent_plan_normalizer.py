@@ -100,6 +100,20 @@ PANDAS_CANONICAL_COLUMN_KEYS = {
     "canonical_columns",
     "canonical_keys",
 }
+REPORT_CONTEXT_OPERATION_ALIASES = {
+    "filter": "filter",
+    "apply_filters": "filter",
+    "filter_rows": "filter",
+    "filter_result": "filter",
+    "where": "filter",
+    "groupby_and_aggregate": "groupby_and_aggregate",
+    "group_by_and_aggregate": "groupby_and_aggregate",
+    "aggregate": "groupby_and_aggregate",
+    "sort_and_top_n": "sort_and_top_n",
+    "sort": "sort_and_top_n",
+    "top_n": "sort_and_top_n",
+    "bottom_n": "sort_and_top_n",
+}
 FILTER_OPERATOR_ALIASES = {
     "=": "eq",
     "==": "eq",
@@ -201,6 +215,7 @@ def normalize_intent_plan(
     parsed = _json(llm_response)
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
     plan = deepcopy(plan) if isinstance(plan, dict) else {}
+    plan, report_followup_guard = _prepare_report_followup_contract(payload, plan)
     metadata_envelope = _metadata_candidate_envelope(metadata_candidates_value, payload)
     metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
     catalog_error = _catalog_metadata_error(metadata_envelope, metadata_candidates)
@@ -438,13 +453,6 @@ def normalize_intent_plan(
         pandas_plan,
         metadata_candidates,
         domain_selection.get("locked_metadata_refs", []),
-        locked_source_aliases={
-            str(item.get("source_alias") or item.get("dataset_key") or "").strip()
-            for item in retrieval_jobs
-            if isinstance(item, dict)
-            and plan.get("_continuation_stage_active") is True
-            and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
-        },
     )
     # Dataset replacement can change the late catalog binding even though the
     # source alias remains stable.  Re-run the generic binding resolver after
@@ -522,6 +530,15 @@ def normalize_intent_plan(
         function_cases,
         question,
     )
+    retrieval_jobs, pandas_plan, report_followup_guard = (
+        _enforce_report_followup_execution_contract(
+            payload,
+            plan,
+            retrieval_jobs,
+            pandas_plan,
+            report_followup_guard,
+        )
+    )
     request_scope = _request_scope(plan, payload)
     reference_mode_resolution = _reference_mode_resolution(plan, payload, request_scope)
     reference_mode = str(reference_mode_resolution.get("mode") or "none")
@@ -585,6 +602,7 @@ def normalize_intent_plan(
         payload,
     )
     validation_errors = _reference_mode_validation_errors(reference_mode_guard)
+    validation_errors.extend(report_followup_guard.get("validation_errors", []))
     validation_errors.extend(followup_contract_guard.get("validation_errors", []))
     validation_errors.extend(
         function_case_input_reconciliation.get("validation_errors", [])
@@ -733,7 +751,6 @@ def normalize_intent_plan(
         retrieval_jobs,
         metadata_candidates,
         pandas_plan,
-        payload,
     )
     validation_errors.extend(required_parameter_guard.get("validation_errors", []))
     contract_plan = deepcopy(plan)
@@ -822,6 +839,37 @@ def normalize_intent_plan(
         domain_filter_contract_guard.get("validation_errors", [])
     )
     validation_errors.extend(process_scope_guard.get("validation_errors", []))
+
+    # 모든 column/source/filter 정규화가 끝난 최종 실행 계약만 검증합니다.
+    # 이 위치 이후에는 condition_resolution.effective_filters나 Typed pandas
+    # filter가 다시 작성되지 않으므로 validator와 executor가 같은 값을 봅니다.
+    report_contract = _report_followup_contract(payload)
+    if (
+        report_contract.get("report_reference") is True
+        and report_contract.get("context_ref")
+        and report_contract.get("fresh_data_requested") is not True
+    ):
+        report_semantic_plan = deepcopy(plan)
+        report_semantic_plan["condition_resolution"] = deepcopy(condition_resolution)
+        semantic_errors, semantic_filter_guard = _validate_report_semantic_filter_contract(
+            report_contract,
+            report_semantic_plan,
+            pandas_plan,
+        )
+        for semantic_error in semantic_errors:
+            _append_unique_validation_error(validation_errors, semantic_error)
+        guard_errors = [
+            deepcopy(item)
+            for item in report_followup_guard.get("validation_errors", [])
+            if isinstance(item, dict)
+        ]
+        for semantic_error in semantic_errors:
+            _append_unique_validation_error(guard_errors, semantic_error)
+        report_followup_guard["validation_errors"] = guard_errors
+        report_followup_guard["semantic_filter_guard"] = semantic_filter_guard
+        if semantic_errors:
+            report_followup_guard["status"] = "blocked"
+            report_followup_guard["reason"] = "report_snapshot_contract_violation"
 
     intent_ir = _build_intent_ir(
         plan,
@@ -958,6 +1006,7 @@ def normalize_intent_plan(
         "filter_operator_normalization": filter_operator_normalization,
         "function_owned_filter_normalization": function_owned_filter_normalization,
         "followup_contract_guard": followup_contract_guard,
+        "report_followup_guard": report_followup_guard,
         "function_case_input_reconciliation": function_case_input_reconciliation,
         "function_case_source_sufficiency": function_case_source_sufficiency,
         "source_sufficiency_pruning": source_sufficiency_pruning,
@@ -1351,6 +1400,7 @@ def _direct_required_parameter_evidence(
     return evidence
 
 
+# 함수 설명: `_question_confirms_required_parameter()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _question_confirms_required_parameter(question: str, value: Any) -> bool:
     """Prove a nonblank required value came from the current user turn.
 
@@ -1780,6 +1830,813 @@ def _extract_function_case_tokens(value: Any, policy: dict[str, Any]) -> list[st
         if _function_token(token) not in {_function_token(value) for value in ordered}:
             ordered.append(token)
     return ordered
+
+
+# 함수 설명: Report 후속 질문은 Intent LLM 계획보다 세션의 report_context 계약을 우선해
+# 저장 snapshot 재사용과 명시적 새 조회를 결정적으로 분리합니다.
+def _prepare_report_followup_contract(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    prepared = deepcopy(plan)
+    contract = _report_followup_contract(payload)
+    guard: dict[str, Any] = {
+        "status": "not_applicable",
+        "report_reference": contract.get("report_reference") is True,
+        "report_context_available": bool(contract.get("context_ref")),
+        "fresh_data_requested": contract.get("fresh_data_requested") is True,
+        "context_ref": str(contract.get("context_ref") or ""),
+        "snapshot_source_aliases": deepcopy(contract.get("snapshot_source_aliases", [])),
+        "allowed_operations": deepcopy(contract.get("allowed_operations", [])),
+        "blocked_retrieval_jobs": [],
+        "validation_errors": [],
+    }
+
+    if contract.get("unresolved_report_reference") is True:
+        error = {
+            "type": "report_context_missing",
+            "message": "명시한 Report를 같은 세션에서 확인할 수 없어 신규 조회로 전환하지 않았습니다.",
+        }
+        prepared.update(
+            {
+                "request_scope": "clarification",
+                "reference_mode": "none",
+                "reuse_strategy": "none",
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [],
+            }
+        )
+        guard.update(
+            {
+                "status": "blocked",
+                "reason": "report_context_missing",
+                "validation_errors": [error],
+            }
+        )
+        return prepared, guard
+
+    if contract.get("report_reference") is not True or not contract.get("context_ref"):
+        return prepared, guard
+
+    raw_jobs = _retrieval_jobs(prepared)
+    if contract.get("fresh_data_requested") is True:
+        # 최신/현재/재조회 요청은 snapshot 자체를 답으로 사용하지 않습니다.
+        # 이전 Report 행은 새 조회 대상의 범위를 제한하는 reference로만 사용합니다.
+        prepared["request_scope"] = "followup_requery"
+        prepared["reference_mode"] = "previous_result_rows"
+        prepared["reuse_strategy"] = "previous_result"
+        guard.update(
+            {
+                "status": "pending_retrieval_validation",
+                "reason": "explicit_fresh_data_request",
+            }
+        )
+        return prepared, guard
+
+    snapshot_aliases = _string_list(contract.get("snapshot_source_aliases"))
+    reference_mode = "previous_source" if snapshot_aliases else "previous_result_transform"
+    prepared["request_scope"] = "followup_transform"
+    prepared["reference_mode"] = reference_mode
+    prepared["reuse_strategy"] = _reuse_strategy(reference_mode)
+    prepared["retrieval_jobs"] = []
+    if snapshot_aliases:
+        prepared["pandas_execution_plan"] = _rewrite_report_snapshot_source_aliases(
+            prepared.get("pandas_execution_plan"),
+            snapshot_aliases[0],
+        )
+    guard.update(
+        {
+            "status": "snapshot_only",
+            "reason": "report_snapshot_is_authoritative",
+            "reference_mode": reference_mode,
+        }
+    )
+    if raw_jobs:
+        blocked_jobs = _compact_retrieval_job_identities(raw_jobs)
+        guard["status"] = "blocked"
+        guard["reason"] = "silent_requery_attempted"
+        guard["blocked_retrieval_jobs"] = blocked_jobs
+        guard["validation_errors"].append(
+            {
+                "type": "report_snapshot_requery_blocked",
+                "message": "Report 후속 질문에 최신 데이터 요청이 없어 외부 데이터 재조회를 차단했습니다.",
+                "retrieval_jobs": blocked_jobs,
+            }
+        )
+    return prepared, guard
+
+
+# 함수 설명: 앞선 범용 보정이 retrieval job이나 pandas 단계를 추가하더라도 Report 계약을
+# 실행 직전에 다시 검사해 외부 조회·허용되지 않은 계산으로 빠지는 우회 경로를 막습니다.
+def _enforce_report_followup_execution_contract(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    retrieval_jobs: list[Any],
+    pandas_plan: list[Any],
+    guard_value: dict[str, Any] | None = None,
+) -> tuple[list[Any], list[Any], dict[str, Any]]:
+    guard = deepcopy(guard_value) if isinstance(guard_value, dict) else {}
+    contract = _report_followup_contract(payload)
+    if contract.get("unresolved_report_reference") is True:
+        return [], [], guard
+    if contract.get("report_reference") is not True or not contract.get("context_ref"):
+        return retrieval_jobs, pandas_plan, guard
+
+    validation_errors = [
+        deepcopy(item)
+        for item in guard.get("validation_errors", [])
+        if isinstance(item, dict)
+    ]
+    fresh_data_requested = contract.get("fresh_data_requested") is True
+    if fresh_data_requested:
+        if not retrieval_jobs:
+            _append_unique_validation_error(
+                validation_errors,
+                {
+                    "type": "report_refresh_retrieval_required",
+                    "message": "Report의 현재·최신 데이터를 요청했지만 실행 가능한 신규 조회 작업이 없어 분석을 차단했습니다.",
+                },
+            )
+            guard.update(
+                {
+                    "status": "blocked",
+                    "reason": "fresh_retrieval_missing",
+                    "validation_errors": validation_errors,
+                }
+            )
+        else:
+            guard.update(
+                {
+                    "status": "fresh_retrieval_required",
+                    "reason": "explicit_fresh_data_request",
+                    "validation_errors": validation_errors,
+                }
+            )
+        plan["retrieval_jobs"] = deepcopy(retrieval_jobs)
+        return retrieval_jobs, pandas_plan, guard
+
+    if retrieval_jobs:
+        blocked_jobs = _compact_retrieval_job_identities(retrieval_jobs)
+        guard["blocked_retrieval_jobs"] = _merge_compact_job_identities(
+            guard.get("blocked_retrieval_jobs"),
+            blocked_jobs,
+        )
+        _append_unique_validation_error(
+            validation_errors,
+            {
+                "type": "report_snapshot_requery_blocked",
+                "message": "Report 후속 질문에 최신 데이터 요청이 없어 외부 데이터 재조회를 차단했습니다.",
+                "retrieval_jobs": blocked_jobs,
+            },
+        )
+
+    allowed = {
+        _canonical_report_context_operation(item)
+        for item in _string_list(contract.get("allowed_operations"))
+    }
+    allowed.discard("")
+    rejected_operations: list[str] = []
+    for step in pandas_plan:
+        if not isinstance(step, dict):
+            continue
+        raw_operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        canonical = _canonical_report_context_operation(raw_operation)
+        if not canonical or canonical not in allowed:
+            display = raw_operation or "<missing>"
+            if display not in rejected_operations:
+                rejected_operations.append(display)
+    if rejected_operations:
+        _append_unique_validation_error(
+            validation_errors,
+            {
+                "type": "report_context_operation_not_allowed",
+                "message": "Report snapshot에 허용되지 않은 pandas 작업이 포함되어 분석을 차단했습니다.",
+                "operations": rejected_operations,
+                "allowed_operations": sorted(allowed),
+            },
+        )
+
+    plan["retrieval_jobs"] = []
+    guard.update(
+        {
+            "status": "blocked" if validation_errors else "snapshot_only",
+            "reason": (
+                "report_snapshot_contract_violation"
+                if validation_errors
+                else "report_snapshot_is_authoritative"
+            ),
+            "validation_errors": validation_errors,
+            "rejected_operations": rejected_operations,
+            # condition_resolution과 Typed pandas 단계는 이 지점 이후에도
+            # 표준화됩니다. 실행기가 실제로 받는 최종 계약을 기준으로 아래
+            # main pipeline의 마지막 검증 단계에서 의미 필터를 검사합니다.
+            "semantic_filter_guard": {
+                "status": (
+                    "pending_final_validation"
+                    if contract.get("semantic_filters") or contract.get("value_domains")
+                    else "not_applicable"
+                )
+            },
+        }
+    )
+    return [], pandas_plan, guard
+
+
+# 함수 설명: report_context와 01E의 결정적 reference/freshness 힌트만 읽어 작은 실행 계약으로 만듭니다.
+def _report_followup_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    report_context = (
+        current_data.get("report_context")
+        if isinstance(current_data.get("report_context"), dict)
+        else {}
+    )
+    followup_hint = (
+        payload.get("followup_hint")
+        if isinstance(payload.get("followup_hint"), dict)
+        else {}
+    )
+    runtime_refs = (
+        state.get("runtime_source_refs")
+        if isinstance(state.get("runtime_source_refs"), dict)
+        else {}
+    )
+    declared_aliases = _string_list(current_data.get("source_aliases"))
+    snapshot_aliases = [
+        alias
+        for alias in declared_aliases
+        if isinstance(runtime_refs.get(alias), dict)
+        and str(runtime_refs[alias].get("ref_id") or "").strip()
+    ]
+    return {
+        "question": str(
+            (payload.get("request") if isinstance(payload.get("request"), dict) else {}).get("question")
+            or ""
+        ).strip(),
+        "context_ref": str(report_context.get("context_ref") or "").strip(),
+        "report_reference": followup_hint.get("report_reference") is True,
+        "unresolved_report_reference": followup_hint.get("unresolved_report_reference") is True,
+        "fresh_data_requested": followup_hint.get("fresh_data_requested") is True,
+        "snapshot_source_aliases": snapshot_aliases,
+        "allowed_operations": _string_list(report_context.get("allowed_operations")),
+        "semantic_filters": _bounded_report_semantic_filters(report_context.get("semantic_filters")),
+        "value_domains": _bounded_report_value_domains(report_context.get("value_domains")),
+    }
+
+
+# 함수 설명: 허용 작업과 실제 Typed pandas operation의 표준 alias를 같은 이름으로 비교합니다.
+def _canonical_report_context_operation(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return REPORT_CONTEXT_OPERATION_ALIASES.get(text, text)
+
+
+# 함수 설명: `_bounded_report_semantic_filters()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _bounded_report_semantic_filters(value: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in value[:24] if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        source_alias = str(item.get("source_alias") or "").strip()
+        column = str(item.get("column") or "").strip()
+        operator = _canonical_filter_operator(item.get("operator"))
+        aliases = _string_list(item.get("aliases"))[:16]
+        if not source_alias or not column or operator not in {"eq", "in"} or not aliases:
+            continue
+        raw_value = item.get("value")
+        if isinstance(raw_value, list):
+            raw_value = deepcopy(raw_value[:40])
+        elif isinstance(raw_value, (dict, tuple, set)):
+            continue
+        result.append(
+            {
+                "key": str(item.get("key") or "").strip()[:80],
+                "aliases": [str(alias).strip()[:100] for alias in aliases if str(alias).strip()],
+                "source_alias": source_alias[:80],
+                "column": column[:160],
+                "operator": operator,
+                "value": deepcopy(raw_value),
+            }
+        )
+    return result
+
+
+# 함수 설명: `_bounded_report_value_domains()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _bounded_report_value_domains(value: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in value[:24] if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        source_alias = str(item.get("source_alias") or "").strip()
+        column = str(item.get("column") or "").strip()
+        values = item.get("values") if isinstance(item.get("values"), list) else []
+        values = [deepcopy(raw) for raw in values[:40] if not isinstance(raw, (dict, list, tuple, set))]
+        if source_alias and column and values:
+            result.append(
+                {
+                    "source_alias": source_alias[:80],
+                    "column": column[:160],
+                    "values": values,
+                }
+            )
+    return result
+
+
+# 함수 설명: `_validate_report_semantic_filter_contract()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _validate_report_semantic_filter_contract(
+    contract: dict[str, Any],
+    plan: dict[str, Any],
+    pandas_plan: list[Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    semantic_filters = contract.get("semantic_filters") if isinstance(contract.get("semantic_filters"), list) else []
+    value_domains = contract.get("value_domains") if isinstance(contract.get("value_domains"), list) else []
+    snapshot_aliases = set(_string_list(contract.get("snapshot_source_aliases")))
+    conditions = _report_filter_conditions(plan, pandas_plan, snapshot_aliases)
+    matched, ambiguity, negated_aliases = _matched_report_semantic_filters(
+        str(contract.get("question") or ""),
+        semantic_filters,
+    )
+    errors: list[dict[str, Any]] = []
+    if ambiguity:
+        errors.append(
+            {
+                "type": "report_context_semantic_filter_ambiguous",
+                "message": "Report 후속 질문의 의미 필터가 둘 이상의 snapshot 조건과 겹쳐 분석을 차단했습니다.",
+                "aliases": ambiguity,
+            }
+        )
+    if negated_aliases:
+        errors.append(
+            {
+                "type": "report_context_semantic_filter_negation_unsupported",
+                "message": "Report 의미 필터에 제외·아님 조건이 포함되어 있으나 반대 조건 계약이 선언되지 않아 분석을 차단했습니다.",
+                "aliases": negated_aliases,
+            }
+        )
+
+    disallowed_sources = sorted(
+        {
+            str(item.get("source_alias") or "")
+            for item in conditions
+            if str(item.get("source_alias") or "")
+            and str(item.get("source_alias") or "") not in snapshot_aliases
+        }
+    )
+    if disallowed_sources:
+        errors.append(
+            {
+                "type": "report_context_source_not_allowed",
+                "message": "Report snapshot 외 source를 참조한 filter 조건이 있어 분석을 차단했습니다.",
+                "source_aliases": disallowed_sources,
+            }
+        )
+
+    domain_map = {
+        (
+            str(item.get("source_alias") or ""),
+            _normalized_column_key(item.get("column")),
+        ): {_report_scalar_key(raw) for raw in item.get("values", [])}
+        for item in value_domains
+        if isinstance(item, dict)
+    }
+    domain_violations: list[dict[str, Any]] = []
+    for condition in conditions:
+        domain = domain_map.get(
+            (
+                str(condition.get("source_alias") or ""),
+                _normalized_column_key(condition.get("field")),
+            )
+        )
+        if domain is None:
+            continue
+        operator = _canonical_filter_operator(condition.get("operator"))
+        values = _report_condition_values(operator, condition.get("value"))
+        if operator not in {"eq", "in"} or not values or any(_report_scalar_key(raw) not in domain for raw in values):
+            domain_violations.append(
+                {
+                    "source_alias": condition.get("source_alias"),
+                    "field": condition.get("field"),
+                    "operator": operator,
+                    "value": deepcopy(condition.get("value")),
+                }
+            )
+    if domain_violations:
+        errors.append(
+            {
+                "type": "report_context_value_domain_violation",
+                "message": "Report snapshot 판정 컬럼의 허용값 계약과 다른 filter 조건이 있어 분석을 차단했습니다.",
+                "conditions": domain_violations[:20],
+            }
+        )
+
+    semantic_conflicts: list[dict[str, Any]] = []
+    if not ambiguity and not negated_aliases:
+        for actual in conditions:
+            domain_key = (
+                str(actual.get("source_alias") or ""),
+                _normalized_column_key(actual.get("field")),
+            )
+            # 판정 domain 컬럼은 자연어에서 실제로 매칭된 semantic filter와
+            # 정확히 대응해야 합니다. identity/수치 컬럼의 추가 조건은 이
+            # 계약 밖이므로 기존 범용 filter 경로를 그대로 허용합니다.
+            if domain_key not in domain_map or any(
+                _report_condition_matches_semantic(actual, expected)
+                for expected in matched
+            ):
+                continue
+            semantic_conflicts.append(
+                {
+                    "origin": actual.get("origin"),
+                    "source_alias": actual.get("source_alias"),
+                    "field": actual.get("field"),
+                    "operator": _canonical_filter_operator(actual.get("operator")),
+                    "value": deepcopy(actual.get("value")),
+                }
+            )
+    if semantic_conflicts:
+        errors.append(
+            {
+                "type": "report_context_semantic_filter_conflict",
+                "message": "Report 의미값이 선언된 source·column과 다른 실행 filter에 사용되어 분석을 차단했습니다.",
+                "conditions": semantic_conflicts[:20],
+            }
+        )
+
+    missing_expected: list[dict[str, Any]] = []
+    for expected in matched:
+        if not any(_report_condition_matches_semantic(actual, expected) for actual in conditions):
+            missing_expected.append(
+                {
+                    "key": expected.get("key"),
+                    "source_alias": expected.get("source_alias"),
+                    "column": expected.get("column"),
+                    "operator": expected.get("operator"),
+                    "value": deepcopy(expected.get("value")),
+                }
+            )
+    if missing_expected:
+        errors.append(
+            {
+                "type": "report_context_semantic_filter_mismatch",
+                "message": "질문의 Report 의미어와 실행 filter 계약이 일치하지 않아 분석을 차단했습니다.",
+                "expected_filters": missing_expected,
+            }
+        )
+
+    status = "blocked" if errors else ("validated" if matched or value_domains else "not_applicable")
+    return errors, {
+        "status": status,
+        "matched_filter_keys": [str(item.get("key") or "") for item in matched],
+        "condition_count": len(conditions),
+        "ambiguity": ambiguity,
+        "negated_aliases": negated_aliases,
+        "errors": deepcopy(errors),
+    }
+
+
+# 함수 설명: `_matched_report_semantic_filters()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _matched_report_semantic_filters(
+    question: str,
+    semantic_filters: list[Any],
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    matches: list[dict[str, Any]] = []
+    for item in semantic_filters:
+        if not isinstance(item, dict):
+            continue
+        for raw_alias in _string_list(item.get("aliases")):
+            alias = _report_alias_key(raw_alias)
+            if not alias:
+                continue
+            pattern = r"[\s_-]*".join(re.escape(char) for char in alias)
+            for occurrence in re.finditer(pattern, question, flags=re.IGNORECASE):
+                if not _report_alias_has_valid_boundary(question, occurrence.end()):
+                    continue
+                matches.append(
+                    {
+                        "alias": alias,
+                        "start": occurrence.start(),
+                        "end": occurrence.end(),
+                        "item": item,
+                        "target": _report_semantic_target(item),
+                        "negated": _report_alias_is_negated(question, occurrence.end()),
+                    }
+                )
+
+    # 겹치는 표현만 같은 의미 후보군으로 묶습니다. 따라서
+    # "생산 부족 ... 장비 필요"처럼 떨어진 복수 조건은 모두 남습니다.
+    components: list[list[dict[str, Any]]] = []
+    for match in sorted(matches, key=lambda item: (item["start"], item["end"])):
+        overlapping = [
+            index
+            for index, component in enumerate(components)
+            if any(
+                match["start"] < member["end"] and member["start"] < match["end"]
+                for member in component
+            )
+        ]
+        if not overlapping:
+            components.append([match])
+            continue
+        base_index = overlapping[0]
+        components[base_index].append(match)
+        for merge_index in reversed(overlapping[1:]):
+            components[base_index].extend(components.pop(merge_index))
+
+    result: list[dict[str, Any]] = []
+    ambiguity: list[str] = []
+    negated_aliases: list[str] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for component in components:
+        targets = {member["target"] for member in component}
+        if len(targets) > 1:
+            ambiguity.extend(member["alias"] for member in component)
+            continue
+        chosen = max(
+            component,
+            key=lambda member: (
+                len(member["alias"]),
+                member["end"] - member["start"],
+            ),
+        )
+        if any(member.get("negated") for member in component):
+            negated_aliases.append(chosen["alias"])
+            continue
+        item = chosen["item"]
+        identity = (
+            str(item.get("source_alias") or ""),
+            _normalized_column_key(item.get("column")),
+            _canonical_filter_operator(item.get("operator")),
+            json.dumps(item.get("value"), ensure_ascii=False, sort_keys=True, default=str),
+        )
+        if identity not in seen:
+            seen.add(identity)
+            result.append(deepcopy(item))
+    return result, sorted(set(ambiguity)), sorted(set(negated_aliases))
+
+
+# 함수 설명: `_report_semantic_target()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_semantic_target(item: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(item.get("source_alias") or ""),
+        _normalized_column_key(item.get("column")),
+        _canonical_filter_operator(item.get("operator")),
+        json.dumps(item.get("value"), ensure_ascii=False, sort_keys=True, default=str),
+    )
+
+
+# 함수 설명: `_report_alias_is_negated()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_alias_is_negated(question: str, end: int) -> bool:
+    suffix = str(question or "")[end : end + 24]
+    return bool(
+        re.match(
+            r"^\s*(?:(?:을|를|이|가|은|는)\s*)?(?:제외|빼고|빼|아닌|아니고|아니|말고|미포함|하지\s*않(?:은|는|고|아|다)?)",
+            suffix,
+        )
+    )
+
+
+# 함수 설명: `_report_alias_has_valid_boundary()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_alias_has_valid_boundary(question: str, end: int) -> bool:
+    suffix = str(question or "")[end:]
+    if not suffix:
+        return True
+    if _report_alias_is_negated(question, end):
+        return True
+    first = suffix[0]
+    if first.isspace():
+        following = suffix.lstrip()
+        if not following:
+            return True
+        token_match = re.match(r"[0-9A-Za-z가-힣_*]+", following)
+        token = str(token_match.group(0) if token_match else "").strip().casefold()
+        # 의미 label 뒤에 수량·비율 명사가 오면 label이 아니라 metric
+        # column 이름일 가능성이 높습니다. 예: 장비 필요 대수.
+        metric_suffixes = {
+            "대수",
+            "수량",
+            "개수",
+            "건수",
+            "횟수",
+            "비율",
+            "값",
+            "합계",
+            "평균",
+            "최대",
+            "최소",
+            "count",
+            "qty",
+            "quantity",
+            "rate",
+            "ratio",
+            "value",
+        }
+        return token not in metric_suffixes
+    if not (first.isalnum() or "가" <= first <= "힣"):
+        return True
+    if re.match(
+        r"^(?:제품|대상|항목|케이스|case|lot)(?:(?:은|는|이|가|을|를|의|도|만|중|인|과|와|에서|으로|로|보다|처럼|부터|까지|하고))*(?:$|\s|[^0-9A-Za-z가-힣_])",
+        suffix,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    # 공백 없이 이어지는 한글/영숫자 compound는 거부하되, 독립 label에
+    # 붙는 조사만 허용합니다. 조사 뒤에는 끝·공백·문장부호가 와야 하므로
+    # `장비필요인원`을 `장비필요인 제품`으로 오인하지 않습니다.
+    return bool(
+        re.match(
+            r"^(?:(?:은|는|이|가|을|를|의|도|만|중|인|과|와|에서|으로|로|보다|처럼|부터|까지|하고))+(?:$|\s|[^0-9A-Za-z가-힣_])",
+            suffix,
+        )
+    )
+
+
+# 함수 설명: `_report_filter_conditions()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_filter_conditions(
+    plan: dict[str, Any],
+    pandas_plan: list[Any],
+    snapshot_aliases: set[str],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    condition_resolution = plan.get("condition_resolution") if isinstance(plan.get("condition_resolution"), dict) else {}
+    effective_filters = (
+        condition_resolution.get("effective_filters")
+        if isinstance(condition_resolution.get("effective_filters"), dict)
+        else {}
+    )
+    for raw_alias, raw_item in effective_filters.items():
+        item = raw_item if isinstance(raw_item, dict) else {}
+        alias = str(item.get("source_alias") or raw_alias or "").strip()
+        for field, condition in _filter_field_entries(item.get("filters")):
+            result.append(
+                _report_filter_condition(alias, field, condition, origin="effective_filter")
+            )
+
+    for raw_step in pandas_plan:
+        if not isinstance(raw_step, dict):
+            continue
+        operation = _canonical_report_context_operation(raw_step.get("operation") or raw_step.get("step"))
+        if operation != "filter":
+            continue
+        aliases = _merge_strings(
+            [str(raw_step.get("source_alias") or "").strip()],
+            [
+                str(item.get("ref") or "").strip()
+                for item in raw_step.get("inputs", [])
+                if isinstance(item, dict)
+                and str(item.get("kind") or "").strip() == "external_source"
+            ],
+        )
+        if not aliases and len(snapshot_aliases) == 1:
+            aliases = [next(iter(snapshot_aliases))]
+        # Typed executor는 step["filters"] dict만 실행합니다. 설명용
+        # ``conditions``를 신뢰하면 검증은 통과하지만 실행은 no-op가 되는
+        # divergence가 생기므로 같은 canonical object만 검사합니다.
+        raw_filters = raw_step.get("filters")
+        if not isinstance(raw_filters, dict):
+            continue
+        for alias in aliases:
+            for field, condition in _filter_field_entries(raw_filters):
+                candidate = _report_filter_condition(
+                    alias,
+                    field,
+                    condition,
+                    origin="pandas_step",
+                )
+                if candidate not in result:
+                    result.append(candidate)
+    return result
+
+
+# 함수 설명: `_report_filter_condition()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_filter_condition(
+    source_alias: str,
+    field: str,
+    condition: Any,
+    *,
+    origin: str,
+) -> dict[str, Any]:
+    if isinstance(condition, dict):
+        operator = _canonical_filter_operator(condition.get("operator") or "eq")
+        value = condition.get("value") if "value" in condition else condition.get("values")
+    else:
+        operator = "eq"
+        value = condition
+    return {
+        "source_alias": str(source_alias or "").strip(),
+        "field": str(field or "").strip(),
+        "operator": operator,
+        "value": deepcopy(value),
+        "origin": origin,
+    }
+
+
+# 함수 설명: `_report_condition_matches_semantic()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_condition_matches_semantic(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
+    expected_operator = _canonical_filter_operator(expected.get("operator"))
+    actual_operator = _canonical_filter_operator(actual.get("operator"))
+    if (
+        str(actual.get("source_alias") or "") != str(expected.get("source_alias") or "")
+        or _normalized_column_key(actual.get("field")) != _normalized_column_key(expected.get("column"))
+        or actual_operator != expected_operator
+    ):
+        return False
+    actual_values = {_report_scalar_key(raw) for raw in _report_condition_values(actual_operator, actual.get("value"))}
+    expected_values = {_report_scalar_key(raw) for raw in _report_condition_values(expected_operator, expected.get("value"))}
+    return bool(actual_values) and actual_values == expected_values
+
+
+# 함수 설명: `_report_condition_values()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_condition_values(operator: str, value: Any) -> list[Any]:
+    if operator == "in":
+        return list(value) if isinstance(value, (list, tuple, set)) else [value]
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return []
+    return [value]
+
+
+# 함수 설명: `_report_scalar_key()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_scalar_key(value: Any) -> str:
+    if isinstance(value, str):
+        # 판정값은 저장 데이터의 실제 계약입니다. 대소문자까지 임의로
+        # 동치 처리하지 않고 양끝 공백만 제거합니다.
+        return "text:" + value.strip()
+    return "json:" + json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+# 함수 설명: `_report_alias_key()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_alias_key(value: Any) -> str:
+    return re.sub(r"[\s_-]+", "", str(value or "").strip().casefold())
+
+
+# 함수 설명: Report snapshot이 단일 source로 저장된 경우 모델의 previous_result 예약 표기를
+# 실제 저장 source alias로 바꿔 previous_source loader가 같은 행 집합을 복원하도록 합니다.
+def _rewrite_report_snapshot_source_aliases(value: Any, snapshot_alias: str) -> list[Any]:
+    items = value if isinstance(value, list) else []
+    reserved = {
+        PREVIOUS_RESULT_ALIAS,
+        "previous_result_rows",
+        "previous_result_transform",
+    }
+    result: list[Any] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            result.append(deepcopy(raw))
+            continue
+        step = deepcopy(raw)
+        for key in (
+            "source_alias",
+            "left_source_alias",
+            "right_source_alias",
+            "reference_source_alias",
+        ):
+            if str(step.get(key) or "").strip() in reserved:
+                step[key] = snapshot_alias
+        if isinstance(step.get("inputs"), list):
+            for item in step["inputs"]:
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("kind") or "").strip() == "external_source"
+                    and str(item.get("ref") or "").strip() in reserved
+                ):
+                    item["ref"] = snapshot_alias
+        result.append(step)
+    return result
+
+
+# 함수 설명: 차단 trace에는 조회 내용·필터값 대신 dataset/source 식별자만 제한적으로 남깁니다.
+def _compact_retrieval_job_identities(value: Any) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        compact = {
+            "dataset_key": str(item.get("dataset_key") or "").strip(),
+            "source_alias": str(item.get("source_alias") or item.get("dataset_key") or "").strip(),
+        }
+        compact = {key: item_value for key, item_value in compact.items() if item_value}
+        if compact and compact not in result:
+            result.append(compact)
+        if len(result) >= 20:
+            break
+    return result
+
+
+# 함수 설명: `_merge_compact_job_identities()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _merge_compact_job_identities(existing: Any, additions: list[dict[str, str]]) -> list[dict[str, str]]:
+    result = [deepcopy(item) for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+    for item in additions:
+        if item not in result:
+            result.append(deepcopy(item))
+        if len(result) >= 20:
+            break
+    return result
+
+
+# 함수 설명: `_append_unique_validation_error()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _append_unique_validation_error(errors: list[dict[str, Any]], error: dict[str, Any]) -> None:
+    error_type = str(error.get("type") or "").strip()
+    if error_type and any(str(item.get("type") or "").strip() == error_type for item in errors):
+        return
+    errors.append(deepcopy(error))
 
 
 # 함수 설명: `_request_scope()`는 분석 범위에서 현재 단계가 사용할 필드만 추출해 표준 구조로 정리합니다.
@@ -2363,6 +3220,7 @@ def _drop_unsupported_inherited_filters(
     }
 
 
+# 함수 설명: `_question_has_explicit_calendar_date()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _question_has_explicit_calendar_date(question: str) -> bool:
     """Return true only for a concrete date, never for relative time words."""
 
@@ -2374,6 +3232,7 @@ def _question_has_explicit_calendar_date(question: str) -> bool:
     )
 
 
+# 함수 설명: `_question_has_date_scope()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _question_has_date_scope(question: Any) -> bool:
     text = str(question or "").strip()
     if not text:
@@ -2427,6 +3286,7 @@ def _strip_removed_optional_date_conditions(
     return result
 
 
+# 함수 설명: `_strip_dropped_inherited_filter_conditions()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _strip_dropped_inherited_filter_conditions(
     condition_resolution: dict[str, Any],
     guard: dict[str, Any],
@@ -2597,6 +3457,7 @@ def _reconcile_execution_source_aliases(
         values = output_alias_dataset_hints.get(_normalized_alias(reference), set())
         return next(iter(values)) if len(values) == 1 else ""
 
+    # 함수 설명: `stem()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def stem(value: Any) -> str:
         normalized = _normalized_alias(value)
         for suffix in ("_source", "_src", "_data", "_dataset"):
@@ -2604,6 +3465,7 @@ def _reconcile_execution_source_aliases(
                 return normalized[: -len(suffix)]
         return normalized
 
+    # 함수 설명: `canonical_alias()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def canonical_alias(reference: Any, dataset_key_hint: Any = "") -> str:
         value = str(reference or "").strip()
         if not value:
@@ -2647,6 +3509,7 @@ def _reconcile_execution_source_aliases(
 
     rewrites: list[dict[str, str]] = []
 
+    # 함수 설명: `rewrite()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def rewrite(value: Any, field: str, dataset_key_hint: Any = "") -> Any:
         original = str(value or "").strip()
         # An explicit field-local hint wins.  When it is absent, an exact
@@ -2699,6 +3562,7 @@ def _reconcile_execution_source_aliases(
             step["inputs"] = inputs
         rewritten_steps.append(step)
 
+    # 함수 설명: `rewrite_nested()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def rewrite_nested(value: Any, field: str) -> Any:
         if isinstance(value, list):
             return [rewrite_nested(item, field) for item in value]
@@ -3180,6 +4044,7 @@ def _reachable_terminal_steps(pandas_plan: list[dict[str, Any]]) -> list[dict[st
     return result
 
 
+# 함수 설명: `_pandas_plan_lineage()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _pandas_plan_lineage(
     pandas_plan: list[Any],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
@@ -4710,6 +5575,7 @@ def _append_catalog_metric_aggregate_merge(
     }
 
 
+# 함수 설명: `_resolve_execution_domain_selection()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _resolve_execution_domain_selection(
     question: str,
     candidates: dict[str, Any],
@@ -4861,6 +5727,7 @@ def _catalog_dataset_matches_source_hint(
     return bool(family and family == normalized_hint)
 
 
+# 함수 설명: `_catalog_time_scope()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _catalog_time_scope(item: dict[str, Any]) -> str:
     payload = _metadata_payload(item)
     criteria = (
@@ -4928,6 +5795,7 @@ def _job_requested_time_scope(
     return "current_day" if requested_date == reference_date else "history"
 
 
+# 함수 설명: `_catalog_required_date_param_keys()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _catalog_required_date_param_keys(
     candidates: dict[str, Any],
     dataset_key: str,
@@ -5206,7 +6074,6 @@ def _reconcile_source_dataset_selection(
     pandas_plan: list[Any],
     candidates: dict[str, Any],
     locked_metadata_refs: list[dict[str, str]] | None = None,
-    locked_source_aliases: set[str] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Keep the model's semantic dataset choice unless its schema is impossible.
 
@@ -5244,11 +6111,6 @@ def _reconcile_source_dataset_selection(
         or ""
     ).strip()
     locked = locked_metadata_refs if isinstance(locked_metadata_refs, list) else []
-    stage_locked = {
-        str(alias).strip()
-        for alias in (locked_source_aliases or set())
-        if str(alias).strip()
-    }
     corrections: list[dict[str, Any]] = []
     advisories: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -5258,15 +6120,6 @@ def _reconcile_source_dataset_selection(
             continue
         alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
         current_key = str(job.get("dataset_key") or "").strip()
-        if alias in stage_locked or job.get("source_dataset_locked") is True:
-            skipped.append(
-                {
-                    "source_alias": alias,
-                    "dataset_key": current_key,
-                    "reason": "validated_continuation_stage_source",
-                }
-            )
-            continue
         required_columns = source_columns.get(alias, [])
         if not alias or not current_key or not required_columns:
             continue
@@ -6275,6 +7128,7 @@ def _bind_previous_result_alias(
     return result
 
 
+# 함수 설명: `_normalize_reserved_previous_result_references()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _normalize_reserved_previous_result_references(
     items: list[Any],
     reference_mode: str,
@@ -6665,6 +7519,7 @@ def _materialize_implicit_step_inputs(
         if isinstance(item, dict) and str(item.get("node_id") or "").strip()
     }
 
+    # 함수 설명: `resolve_reference()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def resolve_reference(reference: Any) -> dict[str, str] | None:
         ref = str(reference or "").strip()
         if not ref:
@@ -7152,6 +8007,7 @@ def _retrieval_jobs(plan: dict[str, Any]) -> list[Any]:
     return result
 
 
+# 함수 설명: `_remove_previous_result_pseudo_jobs()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _remove_previous_result_pseudo_jobs(
     plan: dict[str, Any],
     retrieval_jobs: list[Any],
@@ -7231,6 +8087,7 @@ def _normalize_retrieval_filter_operators(
 # model flattened it to an equality predicate.  The value itself must appear
 # immediately beside a prefix cue in the question, so a prefix request for one
 # condition never broadens an unrelated date, process, or status predicate.
+# 함수 설명: `_promote_explicit_prefix_filter_conditions()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _promote_explicit_prefix_filter_conditions(
     value: Any,
     question: str,
@@ -7309,6 +8166,7 @@ def _promote_explicit_prefix_filter_conditions(
 
 # Function description: test the local natural-language context around a
 # literal value rather than relying on a particular business field name.
+# 함수 설명: `_value_has_explicit_prefix_cue()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _value_has_explicit_prefix_cue(question: str, value: str) -> bool:
     literal = str(value or "").strip()
     if not literal:
@@ -7323,6 +8181,7 @@ def _value_has_explicit_prefix_cue(question: str, value: str) -> bool:
     )
 
 
+# 함수 설명: `_is_compact_identifier_literal()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _is_compact_identifier_literal(value: str) -> bool:
     return bool(
         re.fullmatch(
@@ -7336,6 +8195,7 @@ def _is_compact_identifier_literal(value: str) -> bool:
 # wording explicitly asks for a prefix.  This deliberately does not infer a
 # catalog field; it is used solely to correct a malformed value on a field the
 # intent model has already selected.
+# 함수 설명: `_explicit_prefix_literals()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _explicit_prefix_literals(question: str) -> list[str]:
     text = str(question or "")
     if not text:
@@ -7364,6 +8224,7 @@ def _explicit_prefix_literals(question: str) -> list[str]:
     return result
 
 
+# 함수 설명: `_filter_literal_key()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _filter_literal_key(value: Any) -> str:
     return re.sub(r"[^A-Z0-9]+", "", str(value or "").strip().upper())
 
@@ -9136,6 +9997,7 @@ def _reconcile_metric_binding_source_lineage(
     return reconciled
 
 
+# 함수 설명: `_typed_join_metric_owner_aliases()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _typed_join_metric_owner_aliases(
     aggregate_step: dict[str, Any],
     pandas_plan: list[Any],
@@ -9181,6 +10043,7 @@ def _typed_join_metric_owner_aliases(
     return []
 
 
+# 함수 설명: `_nearest_upstream_typed_join()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _nearest_upstream_typed_join(
     step: dict[str, Any],
     pandas_plan: list[Any],
@@ -9200,6 +10063,7 @@ def _nearest_upstream_typed_join(
         "apply_function_case",
     }
 
+    # 함수 설명: `visit()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def visit(reference: str, visited: set[str]) -> dict[str, Any] | None:
         node_id = reference if reference in nodes_by_id else output_aliases.get(reference, "")
         if not node_id or node_id in visited:
@@ -9235,6 +10099,7 @@ def _nearest_upstream_typed_join(
     return found[0] if len(found) == 1 else None
 
 
+# 함수 설명: `_typed_join_side_external_aliases()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _typed_join_side_external_aliases(
     join_step: dict[str, Any],
     pandas_plan: list[Any],
@@ -9242,6 +10107,7 @@ def _typed_join_side_external_aliases(
 ) -> tuple[list[str], list[str]]:
     """Resolve left/right external leaves without treating derived aliases as jobs."""
 
+    # 함수 설명: `aliases_for_input()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def aliases_for_input(item: dict[str, Any] | None, declared_alias: str) -> list[str]:
         if isinstance(item, dict):
             kind = str(item.get("kind") or "").strip()
@@ -9281,6 +10147,7 @@ def _typed_join_side_external_aliases(
     )
 
 
+# 함수 설명: `_normalized_metric_binding()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _normalized_metric_binding(
     value: dict[str, Any],
     job_datasets: dict[str, str],
@@ -11524,6 +12391,7 @@ def _metric_merge_declared_values_are_source_metrics(
     return True
 
 
+# 함수 설명: `_output_contract_independent_metric_merge_shape()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _output_contract_independent_metric_merge_shape(
     raw_output_contract: dict[str, Any],
     pandas_plan: list[Any],
@@ -13478,6 +14346,7 @@ def _materialize_derived_aggregate_join_keys(
         "filter_rows",
     }
 
+    # 함수 설명: `aggregate_grain()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def aggregate_grain(reference: str, visited: set[str]) -> list[str]:
         node_id = reference if reference in nodes_by_id else output_aliases.get(reference, "")
         if not node_id or node_id in visited:
@@ -13973,6 +14842,7 @@ def _compile_typed_frame_contract(
     }
 
 
+# 함수 설명: `_reconcile_terminal_typed_output_contract()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _reconcile_terminal_typed_output_contract(
     output_contract: dict[str, Any],
     pandas_plan: list[Any],
@@ -14120,6 +14990,7 @@ def _reconcile_terminal_typed_output_contract(
     }
 
 
+# 함수 설명: `_consensus_lineage_column_alias_map()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _consensus_lineage_column_alias_map(
     alias_maps: dict[str, dict[str, str]],
     lineage_aliases: list[str],
@@ -14505,7 +15376,6 @@ def _validate_required_retrieval_parameters(
     retrieval_jobs: list[dict[str, Any]],
     candidates: dict[str, Any],
     pandas_plan: list[Any],
-    payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reject only Catalog-required values that cannot exist before retrieval.
 
@@ -14563,16 +15433,6 @@ def _validate_required_retrieval_parameters(
                 matching_bindings,
             ):
                 continue
-            # The continuation Flow resumes with a validated result-store ref
-            # before normalizing its active stage.  Its stage-two join consumes
-            # that restored upstream frame directly rather than using a
-            # row-match transform, so preserve this distinct trusted shape.
-            if _has_restored_upstream_parameter_binding(
-                payload or {},
-                pandas_plan,
-                matching_bindings,
-            ):
-                continue
             producer_aliases: list[str] = []
             for binding in matching_bindings:
                 source_column = str(
@@ -14601,24 +15461,24 @@ def _validate_required_retrieval_parameters(
                         and candidate_alias not in producer_aliases
                     ):
                         producer_aliases.append(candidate_alias)
-            continuation_binding = any(
+            dependent_binding = any(
                 str(binding.get("source_alias") or binding.get("source") or "")
                 .strip()
                 .casefold()
                 in {"previous_result", "upstream_result"}
                 for binding in matching_bindings
             )
-            attempted_same_run_handoff = bool(continuation_binding and producer_aliases)
+            attempted_same_run_dependency = bool(dependent_binding and producer_aliases)
             error_type = (
-                "same_run_dependent_retrieval_requires_continuation"
-                if attempted_same_run_handoff
+                "same_run_dependent_retrieval_unsupported"
+                if attempted_same_run_dependency
                 else "required_retrieval_parameter_unresolved"
             )
             entry = {
                 "type": error_type,
                 "message": (
                     "같은 실행 안의 선행 조회 결과를 다음 조회의 필수 조건으로 사용할 수 없습니다. 후속 실행으로 분리해야 합니다."
-                    if attempted_same_run_handoff
+                    if attempted_same_run_dependency
                     else "Table Catalog에서 필수로 지정한 조회 조건 값이 비어 있습니다."
                 ),
                 "source_alias": source_alias,
@@ -14633,7 +15493,7 @@ def _validate_required_retrieval_parameters(
                     "source_alias": source_alias,
                     "dataset_key": dataset_key,
                     "required_param": parameter,
-                    "continuation_required": attempted_same_run_handoff,
+                    "split_execution_required": attempted_same_run_dependency,
                     "candidate_source_aliases": producer_aliases,
                 }
             )
@@ -14645,6 +15505,7 @@ def _validate_required_retrieval_parameters(
     }
 
 
+# 함수 설명: `_has_typed_previous_result_parameter_binding()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _has_typed_previous_result_parameter_binding(
     pandas_plan: list[Any],
     target_source_alias: str,
@@ -14711,70 +15572,7 @@ def _has_typed_previous_result_parameter_binding(
     return False
 
 
-def _has_restored_upstream_parameter_binding(
-    payload: dict[str, Any],
-    pandas_plan: list[Any],
-    matching_bindings: list[dict[str, Any]],
-) -> bool:
-    """Recognize an explicit result-ref continuation without trusting prose.
-
-    Flow 08 has already verified the continuation contract and supplies an
-    opaque upstream result reference in the orchestration envelope.  Its active
-    stage can join that restored frame directly, so it does not necessarily
-    contain ``apply_row_match_groups``.  Require all three facts below: an
-    upstream ref, a Catalog binding from a prior/upstream source, and a typed
-    plan edge consuming that source.  A plain LLM-produced blank parameter
-    cannot satisfy this predicate.
-    """
-
-    if not isinstance(payload, dict) or not isinstance(pandas_plan, list):
-        return False
-    orchestration = (
-        payload.get("orchestration")
-        if isinstance(payload.get("orchestration"), dict)
-        else {}
-    )
-    upstream_ref = str(
-        orchestration.get("upstream_result_ref")
-        or orchestration.get("result_ref")
-        or ""
-    ).strip()
-    if not upstream_ref:
-        return False
-    accepted_binding_aliases = {
-        str(binding.get("source_alias") or binding.get("source") or "")
-        .strip()
-        .casefold()
-        for binding in matching_bindings
-        if isinstance(binding, dict)
-    }
-    if not accepted_binding_aliases & {"previous_result", "upstream_result"}:
-        return False
-
-    reserved_aliases = {"previous_result", "upstream_result"}
-    for step in pandas_plan:
-        if not isinstance(step, dict):
-            continue
-        declared_aliases = {
-            str(step.get(name) or "").strip().casefold()
-            for name in (
-                "source_alias",
-                "left_source_alias",
-                "right_source_alias",
-                "reference_source_alias",
-            )
-        }
-        if declared_aliases & reserved_aliases:
-            return True
-        for item in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
-            if not isinstance(item, dict):
-                continue
-            reference = str(item.get("ref") or "").strip().casefold()
-            if reference in reserved_aliases:
-                return True
-    return False
-
-
+# 함수 설명: `_catalog_requires_param()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _catalog_requires_param(
     candidates: dict[str, Any],
     dataset_key: str,
@@ -15079,6 +15877,7 @@ def _function_case_value_tokens(
 # Function description: derive non-product control words solely from the
 # typed analysis plan.  This keeps natural product wording intact while the
 # helper ignores output metrics such as UPH, QTY, or a derived total label.
+# 함수 설명: `_function_case_control_tokens()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _function_case_control_tokens(plan: dict[str, Any]) -> list[str]:
     output = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
     candidates: list[Any] = [
@@ -15351,6 +16150,7 @@ def _remove_source_filter_sufficient_function_cases(
     }
 
 
+# 함수 설명: `_rewire_removed_function_case_inputs()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _rewire_removed_function_case_inputs(
     pandas_plan: list[Any],
     removed_output_providers: dict[str, str],
@@ -15513,6 +16313,7 @@ def _typed_filter_value_keys(filters: Any) -> dict[str, list[str]]:
 
 # Function description: locate a typed equality/prefix condition that covers a
 # complete helper input rather than merely one token within a larger input.
+# 함수 설명: `_direct_filter_covering_function_input()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _direct_filter_covering_function_input(filters: Any, input_text: str) -> str:
     target = _function_token(input_text)
     if not target or not isinstance(filters, dict):
@@ -15535,6 +16336,7 @@ def _direct_filter_covering_function_input(filters: Any, input_text: str) -> str
     return ""
 
 
+# 함수 설명: `_remove_function_owned_retrieval_filters()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _remove_function_owned_retrieval_filters(
     retrieval_jobs: list[dict[str, Any]],
     function_cases: list[dict[str, Any]],
@@ -15854,6 +16656,7 @@ def _materialize_function_case_step_edges(
             ):
                 unresolved_refs.append(ref)
 
+    # 함수 설명: `unique_identifier()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def unique_identifier(base: str, used: set[str]) -> str:
         normalized_base = re.sub(r"[^0-9a-zA-Z_]+", "_", base).strip("_") or "function_case"
         candidate = normalized_base

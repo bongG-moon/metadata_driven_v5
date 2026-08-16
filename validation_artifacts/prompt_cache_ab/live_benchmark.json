@@ -1,0 +1,1480 @@
+{
+  "status": "error",
+  "benchmark_contract": {
+    "only_changed_inputs": [
+      "03_intent_prompt_template_ko.md",
+      "16_pandas_prompt_template_ko.md",
+      "17b_pandas_repair_prompt_template_ko.md",
+      "19_answer_prompt_template_ko.md"
+    ],
+    "provider": "gemini",
+    "model": "gemini-3.5-flash-lite",
+    "reference_date": "20260701",
+    "case_ids": [
+      1,
+      5,
+      10,
+      13,
+      22,
+      25,
+      30
+    ],
+    "before_template_dir": "validation_artifacts\\prompt_cache_ab\\before\\templates",
+    "after_template_dir": "validation_artifacts\\prompt_cache_ab\\after\\templates",
+    "measurement_note": "TTFT is time to the first non-empty Gemini SSE content event. cachedContentTokenCount is provider-reported implicit/explicit cache reuse; zero can mean no hit or an unavailable field."
+  },
+  "before": {
+    "name": "before",
+    "template_contract": {
+      "intent": {
+        "filename": "03_intent_prompt_template_ko.md",
+        "sha256": "aeeb082b60f805b5ab6844de94bb4a5aea0cfe08021bcde8f6e7fe2f156e9cab",
+        "chars": 6561,
+        "format_fields": [
+          "metadata_candidates",
+          "output_schema",
+          "question",
+          "specialized_prompt",
+          "state_summary"
+        ],
+        "call_count": 7
+      },
+      "pandas_generation": {
+        "filename": "16_pandas_prompt_template_ko.md",
+        "sha256": "66bff6887515f98880e3a4dd06cdc71896f07b0978a59e6d092fec8f604c2291",
+        "chars": 17163,
+        "format_fields": [
+          "function_case_helper_code",
+          "function_case_selection_json",
+          "intent_plan_json",
+          "output_contract_json",
+          "source_preview_json",
+          "source_schema_json"
+        ],
+        "call_count": 0
+      },
+      "pandas_repair": {
+        "filename": "17b_pandas_repair_prompt_template_ko.md",
+        "sha256": "59d524a2716f3063ae598217c880269cd199d52dd4b73cb559c4c1105bb62adf",
+        "chars": 11213,
+        "format_fields": [
+          "error_context_json",
+          "failed_code",
+          "function_case_helper_code",
+          "function_case_selection_json",
+          "intent_plan_json",
+          "output_schema",
+          "repair_required",
+          "source_preview_json",
+          "source_schema_json"
+        ],
+        "call_count": 0
+      },
+      "answer_generation": {
+        "filename": "19_answer_prompt_template_ko.md",
+        "sha256": "c61ee0960d5ec740b4ced2e996ca6c8308a508ffec33749dd7f4b91316611d28",
+        "chars": 3141,
+        "format_fields": [
+          "answer_context_json",
+          "applied_scope_json",
+          "domain_answer_guidance",
+          "question",
+          "result_summary_json",
+          "warnings_errors_json"
+        ],
+        "call_count": 4
+      }
+    },
+    "results": [
+      {
+        "id": 1,
+        "question": "오늘 투입된 제품중 MCP NO가 L-267로 시작하는 제품의 INPUT 수량 알려줘",
+        "status": "ok",
+        "expected_route": "fast",
+        "actual_route": "fast",
+        "expected_recipe": "group_summary",
+        "recipe": "group_summary",
+        "expected_execution_mode": "execute_fast_path_recipe",
+        "execution_mode": "execute_fast_path_recipe",
+        "expected_analysis_execution_mode": "deterministic_fast",
+        "analysis_execution_mode": "deterministic_fast",
+        "route_reason_codes": [
+          "single_source",
+          "supported_recipe",
+          "schema_resolved",
+          "filters_resolved"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 0
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 0,
+        "dataset_keys": [
+          "production_today"
+        ],
+        "row_count": 1,
+        "errors": [],
+        "wall_latency_ms": 5390.083,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 816.188,
+            "total_latency_ms": 5239.053,
+            "prompt_chars": 29817,
+            "prompt_sha256": "2f94fbe9303f01700e51224c1f3ab1c76b249a0156e77fa78965405fdf348a88",
+            "usage": {
+              "promptTokenCount": 10152,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 1201,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 11353,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10152
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "question": "6/27일 W/B공정에서 세부 공정별 생산실적과 아침재공 수량 알려줘",
+        "status": "ok",
+        "expected_route": "complex",
+        "actual_route": "complex",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "merge_metric_sources",
+        "execution_mode": "merge_metric_sources",
+        "expected_analysis_execution_mode": "deterministic_contract",
+        "analysis_execution_mode": "deterministic_contract",
+        "route_reason_codes": [
+          "strict_metric_merge_contract"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 1
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 1,
+        "dataset_keys": [
+          "production",
+          "wip"
+        ],
+        "row_count": 5,
+        "errors": [],
+        "wall_latency_ms": 8759.015,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 884.989,
+            "total_latency_ms": 6770.877,
+            "prompt_chars": 24370,
+            "prompt_sha256": "8a77a4303c3b111115bc1be7e523062cce30ec687c6b5c9bcd8cb71cfe0743cf",
+            "usage": {
+              "promptTokenCount": 8212,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 1848,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 10060,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 8212
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "answer_generation",
+            "ttft_ms": 865.691,
+            "total_latency_ms": 1853.048,
+            "prompt_chars": 7414,
+            "prompt_sha256": "708f1f129b5c6013b8e715bfe2dac19a6a1d1394e8c5cd2694a9f5865450cf80",
+            "usage": {
+              "promptTokenCount": 3139,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 349,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 3488,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 3139
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "question": "6/24일 투입 실적 대비 D/S1, DA1공정에서 WIP 많은 제품 알려줘",
+        "status": "ok",
+        "expected_route": "complex",
+        "actual_route": "complex",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "compare_metrics",
+        "execution_mode": "execute_typed_pandas_plan",
+        "expected_analysis_execution_mode": "deterministic_contract",
+        "analysis_execution_mode": "deterministic_typed_plan",
+        "route_reason_codes": [
+          "typed_plan_contract_resolved",
+          "model_code_not_required"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 1
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 1,
+        "dataset_keys": [
+          "production",
+          "wip"
+        ],
+        "row_count": 10,
+        "errors": [],
+        "wall_latency_ms": 9075.185,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 1075.664,
+            "total_latency_ms": 6739.788,
+            "prompt_chars": 31275,
+            "prompt_sha256": "fabd2e418ed079645cf7144e862482fa2dc55e0bd94a3c840b208a5b45f53635",
+            "usage": {
+              "promptTokenCount": 10644,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 1691,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 12335,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10644
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "answer_generation",
+            "ttft_ms": 722.217,
+            "total_latency_ms": 2017.088,
+            "prompt_chars": 8808,
+            "prompt_sha256": "ffc216b0bbec8e05bf4285af8869396707f5416347481d8f41de4eecfe6d5512",
+            "usage": {
+              "promptTokenCount": 3647,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 438,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 4085,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 3647
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 13,
+        "question": "W/B공정 IN TAT 10시간이상 된 LOT 알려줘",
+        "status": "ok",
+        "expected_route": "fast",
+        "actual_route": "fast",
+        "expected_recipe": "detail_query",
+        "recipe": "detail_query",
+        "expected_execution_mode": "execute_fast_path_recipe",
+        "execution_mode": "execute_fast_path_recipe",
+        "expected_analysis_execution_mode": "deterministic_fast",
+        "analysis_execution_mode": "deterministic_fast",
+        "route_reason_codes": [
+          "single_source",
+          "supported_recipe",
+          "schema_resolved",
+          "filters_resolved"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 0
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 0,
+        "dataset_keys": [
+          "lot_status"
+        ],
+        "row_count": 2,
+        "errors": [],
+        "wall_latency_ms": 3802.831,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 946.811,
+            "total_latency_ms": 3722.958,
+            "prompt_chars": 25526,
+            "prompt_sha256": "9d42a6175f8c009120604ca0d6a02086d4abdb3d5649c6e8a9ac441a363b95ff",
+            "usage": {
+              "promptTokenCount": 8669,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 984,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 9653,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 8669
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 22,
+        "question": "현재 제품 중 TECH, DEN, PKG_TYPE2, MCP_NO는 같지만 MODE, PKG_TYPE1 또는 LEAD가 다른 제품들을 찾아서 보여줘.",
+        "status": "error",
+        "expected_route": "complex",
+        "actual_route": "blocked",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "llm_generated_code",
+        "execution_mode": "",
+        "expected_analysis_execution_mode": "llm_pandas",
+        "analysis_execution_mode": "blocked",
+        "route_reason_codes": [
+          "source_schema_missing"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 0
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 0,
+        "dataset_keys": [],
+        "row_count": 0,
+        "errors": [
+          "expected route complex, got blocked",
+          "expected executor mode llm_generated_code, got <empty>",
+          "expected analysis execution mode llm_pandas, got blocked",
+          "analysis status=error: [{'type': 'fast_path_contract_invalid', 'message': 'Fast Path source schema를 확인할 수 없습니다.', 'source_alias': 'prod_source', 'issues': []}]",
+          "expected live pandas_generation model calls 1, got 0",
+          "expected live answer_generation model calls 1, got 0"
+        ],
+        "wall_latency_ms": 4448.884,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 976.596,
+            "total_latency_ms": 4401.77,
+            "prompt_chars": 29847,
+            "prompt_sha256": "15651381c2ad2f05972cb82298652bfdeacbd6bb9b9105f564fc6cbf964c3fca",
+            "usage": {
+              "promptTokenCount": 10289,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 1077,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 11366,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10289
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 25,
+        "question": "F315 L-116로 시작하는 제품 WB 공정 차수별 UPH 알려줘",
+        "status": "error",
+        "expected_route": "complex",
+        "actual_route": "complex",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "llm_generated_code",
+        "execution_mode": "execute_typed_pandas_plan",
+        "expected_analysis_execution_mode": "llm_pandas",
+        "analysis_execution_mode": "deterministic_typed_plan",
+        "route_reason_codes": [
+          "typed_plan_contract_resolved",
+          "model_code_not_required"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 1
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 1,
+        "dataset_keys": [
+          "eqp_uph"
+        ],
+        "row_count": 2,
+        "errors": [
+          "expected executor mode llm_generated_code, got execute_typed_pandas_plan",
+          "expected analysis execution mode llm_pandas, got deterministic_typed_plan",
+          "expected live pandas_generation model calls 1, got 0"
+        ],
+        "wall_latency_ms": 5980.981,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 992.849,
+            "total_latency_ms": 4565.837,
+            "prompt_chars": 30849,
+            "prompt_sha256": "1bf5e6017ac2e7c6a7c1b097ddedb6aaca5b3c545b76e1b7f57738ab7c4d6cc1",
+            "usage": {
+              "promptTokenCount": 10641,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 1175,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 11816,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10641
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "answer_generation",
+            "ttft_ms": 657.295,
+            "total_latency_ms": 1337.337,
+            "prompt_chars": 7387,
+            "prompt_sha256": "16f895cdefaac082993fa0bd36aefb963b67ff5a4452f37cf6386e27e7c644ca",
+            "usage": {
+              "promptTokenCount": 3223,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 267,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 3490,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 3223
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 30,
+        "question": "오늘 DA공정에서 생산량 상위 3개 제품과 각 제품에 할당된 장비 대수 및 LIST를 알려줘",
+        "status": "ok",
+        "expected_route": "complex",
+        "actual_route": "complex",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "merge_metric_sources",
+        "execution_mode": "execute_typed_pandas_plan",
+        "expected_analysis_execution_mode": "deterministic_contract",
+        "analysis_execution_mode": "deterministic_typed_plan",
+        "route_reason_codes": [
+          "typed_plan_contract_resolved",
+          "model_code_not_required"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 1
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 1,
+        "dataset_keys": [
+          "production_today",
+          "equipment_assign"
+        ],
+        "row_count": 3,
+        "errors": [],
+        "wall_latency_ms": 9883.839,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 903.387,
+            "total_latency_ms": 7693.505,
+            "prompt_chars": 31312,
+            "prompt_sha256": "11fe1123506a0c1a2542eab03048404278831219027f38e90112256c27e27ce9",
+            "usage": {
+              "promptTokenCount": 10784,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 2009,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 12793,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10784
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "answer_generation",
+            "ttft_ms": 1042.118,
+            "total_latency_ms": 2057.12,
+            "prompt_chars": 8070,
+            "prompt_sha256": "47af7eb2f6e3de6a0f9407a4d28ce6170bca8b082efda7131673ff1acbb13ee7",
+            "usage": {
+              "promptTokenCount": 3341,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 382,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 3723,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 3341
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "case_count": 7,
+      "passed": 5,
+      "failed": 2,
+      "model_call_count": 11,
+      "intent_call_count": 7,
+      "intent_median_ttft_ms": 946.811,
+      "intent_median_total_latency_ms": 5239.053,
+      "intent_prompt_tokens": 69391,
+      "intent_cached_content_tokens": 0,
+      "intent_cache_hit_calls": 0,
+      "intent_cache_read_ratio": 0.0,
+      "case_median_wall_latency_ms": 5980.981,
+      "stage_summaries": {
+        "intent": {
+          "call_count": 7,
+          "median_ttft_ms": 946.811,
+          "median_total_latency_ms": 5239.053,
+          "prompt_tokens": 69391,
+          "cached_content_tokens": 0,
+          "candidate_tokens": 9985,
+          "thought_tokens": 0,
+          "total_tokens": 79376,
+          "cache_hit_calls": 0,
+          "cache_read_ratio": 0.0
+        },
+        "pandas_generation": {
+          "call_count": 0,
+          "median_ttft_ms": 0.0,
+          "median_total_latency_ms": 0.0,
+          "prompt_tokens": 0,
+          "cached_content_tokens": 0,
+          "candidate_tokens": 0,
+          "thought_tokens": 0,
+          "total_tokens": 0,
+          "cache_hit_calls": 0,
+          "cache_read_ratio": 0.0
+        },
+        "pandas_repair": {
+          "call_count": 0,
+          "median_ttft_ms": 0.0,
+          "median_total_latency_ms": 0.0,
+          "prompt_tokens": 0,
+          "cached_content_tokens": 0,
+          "candidate_tokens": 0,
+          "thought_tokens": 0,
+          "total_tokens": 0,
+          "cache_hit_calls": 0,
+          "cache_read_ratio": 0.0
+        },
+        "answer_generation": {
+          "call_count": 4,
+          "median_ttft_ms": 793.954,
+          "median_total_latency_ms": 1935.068,
+          "prompt_tokens": 13350,
+          "cached_content_tokens": 0,
+          "candidate_tokens": 1436,
+          "thought_tokens": 0,
+          "total_tokens": 14786,
+          "cache_hit_calls": 0,
+          "cache_read_ratio": 0.0
+        }
+      }
+    }
+  },
+  "after": {
+    "name": "after",
+    "template_contract": {
+      "intent": {
+        "filename": "03_intent_prompt_template_ko.md",
+        "sha256": "c2c0ebb3d1461f5f0a7d79597bbd98a9ef2c26147844ac5a21c85b6a9aa77ff9",
+        "chars": 6643,
+        "format_fields": [
+          "metadata_candidates",
+          "output_schema",
+          "question",
+          "specialized_prompt",
+          "state_summary"
+        ],
+        "call_count": 7
+      },
+      "pandas_generation": {
+        "filename": "16_pandas_prompt_template_ko.md",
+        "sha256": "65ba013fef1e50b60e3936188def715dcae4136142e9693fb553c84b23dbda16",
+        "chars": 17245,
+        "format_fields": [
+          "function_case_helper_code",
+          "function_case_selection_json",
+          "intent_plan_json",
+          "output_contract_json",
+          "source_preview_json",
+          "source_schema_json"
+        ],
+        "call_count": 2
+      },
+      "pandas_repair": {
+        "filename": "17b_pandas_repair_prompt_template_ko.md",
+        "sha256": "9c1e00b1795b6c6108cc2b13ff1ead180db64311a96849056d062d7bf08c674f",
+        "chars": 11295,
+        "format_fields": [
+          "error_context_json",
+          "failed_code",
+          "function_case_helper_code",
+          "function_case_selection_json",
+          "intent_plan_json",
+          "output_schema",
+          "repair_required",
+          "source_preview_json",
+          "source_schema_json"
+        ],
+        "call_count": 0
+      },
+      "answer_generation": {
+        "filename": "19_answer_prompt_template_ko.md",
+        "sha256": "a294db8df442fc1dcf87a1313978949295e47a87b6ae79c916fa7b4395188f09",
+        "chars": 3224,
+        "format_fields": [
+          "answer_context_json",
+          "applied_scope_json",
+          "domain_answer_guidance",
+          "question",
+          "result_summary_json",
+          "warnings_errors_json"
+        ],
+        "call_count": 5
+      }
+    },
+    "results": [
+      {
+        "id": 1,
+        "question": "오늘 투입된 제품중 MCP NO가 L-267로 시작하는 제품의 INPUT 수량 알려줘",
+        "status": "ok",
+        "expected_route": "fast",
+        "actual_route": "fast",
+        "expected_recipe": "group_summary",
+        "recipe": "group_summary",
+        "expected_execution_mode": "execute_fast_path_recipe",
+        "execution_mode": "execute_fast_path_recipe",
+        "expected_analysis_execution_mode": "deterministic_fast",
+        "analysis_execution_mode": "deterministic_fast",
+        "route_reason_codes": [
+          "single_source",
+          "supported_recipe",
+          "schema_resolved",
+          "filters_resolved"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 0
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 0,
+        "dataset_keys": [
+          "production_today"
+        ],
+        "row_count": 1,
+        "errors": [],
+        "wall_latency_ms": 5096.996,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 946.022,
+            "total_latency_ms": 5005.016,
+            "prompt_chars": 29899,
+            "prompt_sha256": "26afd0b4b64a1ad26ad50af7dfe547f79b3e3992a61f0469d947f6a8caa3886c",
+            "usage": {
+              "promptTokenCount": 10197,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 1382,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 11579,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10197
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "question": "6/27일 W/B공정에서 세부 공정별 생산실적과 아침재공 수량 알려줘",
+        "status": "ok",
+        "expected_route": "complex",
+        "actual_route": "complex",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "merge_metric_sources",
+        "execution_mode": "merge_metric_sources",
+        "expected_analysis_execution_mode": "deterministic_contract",
+        "analysis_execution_mode": "deterministic_contract",
+        "route_reason_codes": [
+          "strict_metric_merge_contract"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 1
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 1,
+        "dataset_keys": [
+          "production",
+          "wip"
+        ],
+        "row_count": 6,
+        "errors": [],
+        "wall_latency_ms": 9505.209,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 993.83,
+            "total_latency_ms": 7516.7,
+            "prompt_chars": 24452,
+            "prompt_sha256": "f63b3dc1d6a79ed661af2770eb212fc9f535e4367383f87453c02b6b5ad9f9f1",
+            "usage": {
+              "promptTokenCount": 8257,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 2058,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 10315,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 8257
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "answer_generation",
+            "ttft_ms": 742.836,
+            "total_latency_ms": 1870.742,
+            "prompt_chars": 7638,
+            "prompt_sha256": "ffc9e3d360f886163b0d81fda8a8db4343c5f0f9837f00904e7e6484731724ba",
+            "usage": {
+              "promptTokenCount": 3258,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 315,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 3573,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 3258
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "question": "6/24일 투입 실적 대비 D/S1, DA1공정에서 WIP 많은 제품 알려줘",
+        "status": "ok",
+        "expected_route": "complex",
+        "actual_route": "complex",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "compare_metrics",
+        "execution_mode": "compare_metrics",
+        "expected_analysis_execution_mode": "deterministic_contract",
+        "analysis_execution_mode": "deterministic_typed_plan",
+        "route_reason_codes": [
+          "typed_plan_contract_resolved",
+          "model_code_not_required",
+          "invalid_metric_merge_contract_fallback"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 1
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 1,
+        "dataset_keys": [
+          "production",
+          "wip_today"
+        ],
+        "row_count": 1,
+        "errors": [],
+        "wall_latency_ms": 10104.192,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 745.551,
+            "total_latency_ms": 8087.303,
+            "prompt_chars": 31357,
+            "prompt_sha256": "1c4138f4c942e5d5ab4dea897eb6a69e2c4cf5949815b8fe9d2efdfbfe3c74e2",
+            "usage": {
+              "promptTokenCount": 10689,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 2037,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 12726,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10689
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "answer_generation",
+            "ttft_ms": 675.767,
+            "total_latency_ms": 1883.234,
+            "prompt_chars": 7473,
+            "prompt_sha256": "95bd60aae9c57b50e2c7935d468cafdce6df84ebd273b17c8bd29e31d7009c65",
+            "usage": {
+              "promptTokenCount": 3078,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 360,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 3438,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 3078
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 13,
+        "question": "W/B공정 IN TAT 10시간이상 된 LOT 알려줘",
+        "status": "ok",
+        "expected_route": "fast",
+        "actual_route": "fast",
+        "expected_recipe": "detail_query",
+        "recipe": "detail_query",
+        "expected_execution_mode": "execute_fast_path_recipe",
+        "execution_mode": "execute_fast_path_recipe",
+        "expected_analysis_execution_mode": "deterministic_fast",
+        "analysis_execution_mode": "deterministic_fast",
+        "route_reason_codes": [
+          "single_source",
+          "supported_recipe",
+          "schema_resolved",
+          "filters_resolved"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 0
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 0,
+        "dataset_keys": [
+          "lot_status"
+        ],
+        "row_count": 2,
+        "errors": [],
+        "wall_latency_ms": 4063.253,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 778.468,
+            "total_latency_ms": 3985.993,
+            "prompt_chars": 25608,
+            "prompt_sha256": "a01d26128e8777b72a4a3eb1724859345ccc18660428d36d0bc739dc92e1c700",
+            "usage": {
+              "promptTokenCount": 8714,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 1026,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 9740,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 8714
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 22,
+        "question": "현재 제품 중 TECH, DEN, PKG_TYPE2, MCP_NO는 같지만 MODE, PKG_TYPE1 또는 LEAD가 다른 제품들을 찾아서 보여줘.",
+        "status": "ok",
+        "expected_route": "complex",
+        "actual_route": "complex",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "llm_generated_code",
+        "execution_mode": "llm_generated_code",
+        "expected_analysis_execution_mode": "llm_pandas",
+        "analysis_execution_mode": "llm_pandas",
+        "route_reason_codes": [
+          "complex_operation_required"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 1,
+          "repair": 0,
+          "answer_generation": 1
+        },
+        "pandas_model_calls": 1,
+        "answer_model_calls": 1,
+        "dataset_keys": [
+          "wip_today"
+        ],
+        "row_count": 7,
+        "errors": [],
+        "wall_latency_ms": 8112.128,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 921.179,
+            "total_latency_ms": 4155.142,
+            "prompt_chars": 29929,
+            "prompt_sha256": "faf4010899e5848f7adf24713d501c52795a2f234db02cc42b1a153f29fdd4f8",
+            "usage": {
+              "promptTokenCount": 10334,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 1048,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 11382,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10334
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "pandas_generation",
+            "ttft_ms": 945.656,
+            "total_latency_ms": 1987.201,
+            "prompt_chars": 22992,
+            "prompt_sha256": "5406416e8a51aa594c5464137efd727a3ce33e7e2f16994a333a1113ecf649a5",
+            "usage": {
+              "promptTokenCount": 8739,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 378,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 9117,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 8739
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "answer_generation",
+            "ttft_ms": 833.424,
+            "total_latency_ms": 1871.694,
+            "prompt_chars": 7162,
+            "prompt_sha256": "858103bdbbabcbf91bb1d13ef1cfd1701f7755444a6c10652280508155ac9728",
+            "usage": {
+              "promptTokenCount": 3033,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 352,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 3385,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 3033
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 25,
+        "question": "F315 L-116로 시작하는 제품 WB 공정 차수별 UPH 알려줘",
+        "status": "ok",
+        "expected_route": "complex",
+        "actual_route": "complex",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "llm_generated_code",
+        "execution_mode": "llm_generated_code",
+        "expected_analysis_execution_mode": "llm_pandas",
+        "analysis_execution_mode": "llm_pandas",
+        "route_reason_codes": [
+          "complex_operation_required"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 1,
+          "repair": 0,
+          "answer_generation": 1
+        },
+        "pandas_model_calls": 1,
+        "answer_model_calls": 1,
+        "dataset_keys": [
+          "eqp_uph"
+        ],
+        "row_count": 1,
+        "errors": [],
+        "wall_latency_ms": 9750.923,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 1123.159,
+            "total_latency_ms": 5935.414,
+            "prompt_chars": 30931,
+            "prompt_sha256": "55af4e9d5f9e77d182fabb165ee06d06bee793b8324994552c7b9c409ffb05b8",
+            "usage": {
+              "promptTokenCount": 10686,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 1485,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 12171,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10686
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "pandas_generation",
+            "ttft_ms": 969.672,
+            "total_latency_ms": 1965.959,
+            "prompt_chars": 23769,
+            "prompt_sha256": "8ca267a345b1d7e1c132f90e20f0794f1f6ebd36a37bd457841ac0623e14624f",
+            "usage": {
+              "promptTokenCount": 9073,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 350,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 9423,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 9073
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "answer_generation",
+            "ttft_ms": 697.678,
+            "total_latency_ms": 1771.094,
+            "prompt_chars": 6689,
+            "prompt_sha256": "167ecbe99bf7111b9e099030af24bec562e9408b241b76d0f983e0bf6f4e381f",
+            "usage": {
+              "promptTokenCount": 2867,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 249,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 3116,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 2867
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": 30,
+        "question": "오늘 DA공정에서 생산량 상위 3개 제품과 각 제품에 할당된 장비 대수 및 LIST를 알려줘",
+        "status": "ok",
+        "expected_route": "complex",
+        "actual_route": "complex",
+        "expected_recipe": "",
+        "recipe": "",
+        "expected_execution_mode": "merge_metric_sources",
+        "execution_mode": "execute_typed_pandas_plan",
+        "expected_analysis_execution_mode": "deterministic_contract",
+        "analysis_execution_mode": "deterministic_typed_plan",
+        "route_reason_codes": [
+          "typed_plan_contract_resolved",
+          "model_code_not_required"
+        ],
+        "model_calls": {
+          "intent": 1,
+          "pandas_generation": 0,
+          "repair": 0,
+          "answer_generation": 1
+        },
+        "pandas_model_calls": 0,
+        "answer_model_calls": 1,
+        "dataset_keys": [
+          "production_today",
+          "equipment_assign"
+        ],
+        "row_count": 3,
+        "errors": [],
+        "wall_latency_ms": 9325.109,
+        "model_measurements": [
+          {
+            "stage": "intent",
+            "ttft_ms": 805.237,
+            "total_latency_ms": 7348.238,
+            "prompt_chars": 31394,
+            "prompt_sha256": "6d6d422d84ebb7f92a8bc94a820338c74c5aa9134fa1797e5e7024b421d5d127",
+            "usage": {
+              "promptTokenCount": 10829,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 2131,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 12960,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 10829
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          },
+          {
+            "stage": "answer_generation",
+            "ttft_ms": 726.758,
+            "total_latency_ms": 1849.745,
+            "prompt_chars": 7966,
+            "prompt_sha256": "b648b58b9012c1d3d67a21d84778de6a5d2518c648f28f3139f94229f2c22374",
+            "usage": {
+              "promptTokenCount": 3339,
+              "cachedContentTokenCount": 0,
+              "candidatesTokenCount": 340,
+              "thoughtsTokenCount": 0,
+              "totalTokenCount": 3679,
+              "promptTokensDetails": [
+                {
+                  "modality": "TEXT",
+                  "tokenCount": 3339
+                }
+              ],
+              "cacheTokensDetails": [],
+              "candidatesTokensDetails": [],
+              "cache_hit": false,
+              "cache_read_ratio": 0.0
+            }
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "case_count": 7,
+      "passed": 7,
+      "failed": 0,
+      "model_call_count": 14,
+      "intent_call_count": 7,
+      "intent_median_ttft_ms": 921.179,
+      "intent_median_total_latency_ms": 5935.414,
+      "intent_prompt_tokens": 69706,
+      "intent_cached_content_tokens": 0,
+      "intent_cache_hit_calls": 0,
+      "intent_cache_read_ratio": 0.0,
+      "case_median_wall_latency_ms": 9325.109,
+      "stage_summaries": {
+        "intent": {
+          "call_count": 7,
+          "median_ttft_ms": 921.179,
+          "median_total_latency_ms": 5935.414,
+          "prompt_tokens": 69706,
+          "cached_content_tokens": 0,
+          "candidate_tokens": 11167,
+          "thought_tokens": 0,
+          "total_tokens": 80873,
+          "cache_hit_calls": 0,
+          "cache_read_ratio": 0.0
+        },
+        "pandas_generation": {
+          "call_count": 2,
+          "median_ttft_ms": 957.664,
+          "median_total_latency_ms": 1976.58,
+          "prompt_tokens": 17812,
+          "cached_content_tokens": 0,
+          "candidate_tokens": 728,
+          "thought_tokens": 0,
+          "total_tokens": 18540,
+          "cache_hit_calls": 0,
+          "cache_read_ratio": 0.0
+        },
+        "pandas_repair": {
+          "call_count": 0,
+          "median_ttft_ms": 0.0,
+          "median_total_latency_ms": 0.0,
+          "prompt_tokens": 0,
+          "cached_content_tokens": 0,
+          "candidate_tokens": 0,
+          "thought_tokens": 0,
+          "total_tokens": 0,
+          "cache_hit_calls": 0,
+          "cache_read_ratio": 0.0
+        },
+        "answer_generation": {
+          "call_count": 5,
+          "median_ttft_ms": 726.758,
+          "median_total_latency_ms": 1870.742,
+          "prompt_tokens": 15575,
+          "cached_content_tokens": 0,
+          "candidate_tokens": 1616,
+          "thought_tokens": 0,
+          "total_tokens": 17191,
+          "cache_hit_calls": 0,
+          "cache_read_ratio": 0.0
+        }
+      }
+    }
+  },
+  "comparison": {
+    "all_cases_equivalent": false,
+    "equivalent_cases": 3,
+    "different_cases": 4,
+    "pairs": [
+      {
+        "id": 1,
+        "equivalent": true,
+        "differences": {}
+      },
+      {
+        "id": 5,
+        "equivalent": false,
+        "differences": {
+          "row_count": {
+            "before": 5,
+            "after": 6
+          }
+        }
+      },
+      {
+        "id": 10,
+        "equivalent": false,
+        "differences": {
+          "execution_mode": {
+            "before": "execute_typed_pandas_plan",
+            "after": "compare_metrics"
+          },
+          "dataset_keys": {
+            "before": [
+              "production",
+              "wip"
+            ],
+            "after": [
+              "production",
+              "wip_today"
+            ]
+          },
+          "row_count": {
+            "before": 10,
+            "after": 1
+          }
+        }
+      },
+      {
+        "id": 13,
+        "equivalent": true,
+        "differences": {}
+      },
+      {
+        "id": 22,
+        "equivalent": false,
+        "differences": {
+          "status": {
+            "before": "error",
+            "after": "ok"
+          },
+          "actual_route": {
+            "before": "blocked",
+            "after": "complex"
+          },
+          "execution_mode": {
+            "before": "",
+            "after": "llm_generated_code"
+          },
+          "analysis_execution_mode": {
+            "before": "blocked",
+            "after": "llm_pandas"
+          },
+          "dataset_keys": {
+            "before": [],
+            "after": [
+              "wip_today"
+            ]
+          },
+          "row_count": {
+            "before": 0,
+            "after": 7
+          }
+        }
+      },
+      {
+        "id": 25,
+        "equivalent": false,
+        "differences": {
+          "status": {
+            "before": "error",
+            "after": "ok"
+          },
+          "execution_mode": {
+            "before": "execute_typed_pandas_plan",
+            "after": "llm_generated_code"
+          },
+          "analysis_execution_mode": {
+            "before": "deterministic_typed_plan",
+            "after": "llm_pandas"
+          },
+          "row_count": {
+            "before": 2,
+            "after": 1
+          }
+        }
+      },
+      {
+        "id": 30,
+        "equivalent": true,
+        "differences": {}
+      }
+    ],
+    "intent_median_total_latency_delta_ms": 696.361,
+    "intent_median_total_latency_change_pct": 13.292,
+    "intent_median_ttft_delta_ms": -25.632,
+    "intent_median_ttft_change_pct": -2.707,
+    "intent_cached_content_token_delta": 0
+  }
+}

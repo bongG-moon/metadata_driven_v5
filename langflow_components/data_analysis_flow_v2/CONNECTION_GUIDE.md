@@ -109,4 +109,4 @@ python tools/validate_flow_component_sources.py
 python -m pytest tests/test_data_analysis_flow_v2.py tests/test_v5_flow_export.py -q
 ```
 
-정확한 import/runtime 검증은 Python 3.12, Langflow 1.9.2, `langflow-base==0.9.2`, `lfx==0.4.2` 조합을 기준으로 합니다.
+정확한 import/runtime 검증은 Langflow Desktop Python 3.13, Langflow 1.11.0, `langflow-base==0.11.0`, `lfx==1.11.0` 조합을 기준으로 합니다.

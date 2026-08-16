@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
@@ -25,12 +25,29 @@ FOLLOWUP_REFERENCE_CUES = (
     "같은 조건", "동일 조건", "그 제품", "그 제품들", "그 공정", "해당 제품", "해당 제품들", "해당 공정",
     "위 제품", "위 제품들", "위 항목", "위 항목들", "위 결과", "위 결과들",
     "이 제품", "이 제품들", "이 항목", "이 항목들", "이 결과", "이 결과들",
+    "이 report", "해당 report", "방금 report", "report에서",
+    "이 리포트", "해당 리포트", "방금 리포트", "리포트에서",
+    "이 보고서", "해당 보고서", "방금 보고서", "보고서에서",
     "이날", "이 날", "이 일자", "이 날짜", "그날", "그 날", "그 일자", "그 날짜", "해당 일자", "같은 날", "동일 일자",
 )
 ROW_REFERENCE_CUES = (
+    "그중",
     "이 제품", "이 제품들", "그 제품", "그 제품들", "해당 제품", "해당 제품들", "위 제품", "위 제품들",
     "이 항목", "이 항목들", "그 항목", "그 항목들", "해당 항목", "해당 항목들", "위 항목", "위 항목들",
     "이 결과", "이 결과들", "그 결과", "그 결과들", "해당 결과", "해당 결과들", "위 결과", "위 결과들",
+)
+REPORT_REFERENCE_CUES = (
+    "이 report", "해당 report", "방금 report", "report에서",
+    "이 리포트", "해당 리포트", "방금 리포트", "리포트에서",
+    "이 보고서", "해당 보고서", "방금 보고서", "보고서에서",
+)
+FRESH_DATA_CUE_PATTERNS = (
+    ("현재", re.compile(r"(?<![0-9A-Za-z가-힣_])현재(?![0-9A-Za-z가-힣_])", re.IGNORECASE)),
+    ("지금", re.compile(r"(?<![0-9A-Za-z가-힣_])지금(?![0-9A-Za-z가-힣_])", re.IGNORECASE)),
+    ("최신", re.compile(r"(?<![0-9A-Za-z가-힣_])최신(?![0-9A-Za-z가-힣_])", re.IGNORECASE)),
+    ("새로", re.compile(r"(?<![0-9A-Za-z가-힣_])새로(?=\s*(?:조회|불러|가져|확인))", re.IGNORECASE)),
+    ("다시 조회", re.compile(r"(?<![0-9A-Za-z가-힣_])다시\s*조회(?=$|\s|[를로]|해|하|했)", re.IGNORECASE)),
+    ("재조회", re.compile(r"(?<![0-9A-Za-z가-힣_])재조회(?=$|\s|[를로]|해|하|했)", re.IGNORECASE)),
 )
 EXPLAIN_CUES = ("왜", "이유", "근거", "설명", "어떤 조건", "어떤 데이터", "조회 조건", "pandas", "코드")
 TRANSFORM_CUES = (
@@ -49,7 +66,10 @@ ANALYSIS_SUBJECT_CUES = (
     "재공", "wip", "생산량", "생산 실적", "실적", "production", "uph", "장비", "설비",
     "equipment", "eqp", "계획", "target", "hold", "홀드", "lot", "랏", "로트",
 )
-DATE_CUE_PATTERN = re.compile(r"(\b20\d{6}\b|(?<!\d)\d{1,2}/\d{1,2}(?:일)?(?!\d)|(?<!\d)\d{1,2}월\s*\d{1,2}일(?!\d)|오늘|금일|어제|전일|내일|현시간|현재)")
+DATE_CUE_PATTERN = re.compile(
+    r"(\b20\d{6}\b|(?<!\d)\d{1,2}/\d{1,2}(?:일)?(?!\d)|(?<!\d)\d{1,2}월\s*\d{1,2}일(?!\d)|"
+    r"오늘|금일|어제|전일|내일|현시간|(?<![0-9A-Za-z가-힣_])현재(?![0-9A-Za-z가-힣_]))"
+)
 CONTEXT_DATE_CUE_PATTERN = re.compile(r"(이\s*일자|이\s*날짜|이\s*날|그\s*일자|그\s*날짜|그\s*날|해당\s*일자|같은\s*날|동일\s*일자)")
 
 
@@ -59,12 +79,22 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     payload = _payload(payload_value)
     question = str(_dict(payload.get("request")).get("question") or "").strip()
     state = _dict(payload.get("state"))
+    current_data = _dict(state.get("current_data"))
+    report_context = _dict(current_data.get("report_context"))
+    report_context_declared = bool(
+        str(report_context.get("report_type") or "").strip()
+        and str(report_context.get("context_ref") or "").strip()
+    )
+    report_context_status = _report_context_expiry_status(report_context)
+    has_report_context = bool(report_context_declared and report_context_status == "valid")
     previous_context = _previous_context(state)
     has_previous = bool(previous_context.get("has_previous_context"))
 
     date_hint = _date_change_hint(question, _dict(payload.get("request")).get("reference_date"), state)
     matched_references = _matched_cues(question, FOLLOWUP_REFERENCE_CUES)
     matched_row_references = _matched_cues(question, ROW_REFERENCE_CUES)
+    matched_report_references = _matched_cues(question, REPORT_REFERENCE_CUES)
+    matched_fresh = _matched_fresh_cues(question)
     matched_explain = _matched_cues(question, EXPLAIN_CUES)
     matched_transform = _matched_cues(question, TRANSFORM_CUES)
     matched_expand = _matched_cues(question, EXPAND_CUES)
@@ -75,7 +105,19 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     context_dependent = _looks_context_dependent(question)
     entity_switch_followup = _looks_entity_switch_followup(question, matched_entity_switch)
     reusable_source_aliases = _reusable_previous_source_aliases(state)
-    explicit_requery_requested = any(cue in {"새로", "다시 조회", "재조회"} for cue in matched_change)
+    if report_context_declared and not has_report_context:
+        reusable_source_aliases = []
+    report_reference = bool(has_report_context and (matched_report_references or matched_references))
+    unresolved_report_reference = bool(
+        (matched_report_references and not has_report_context)
+        or (
+            report_context_declared
+            and not has_report_context
+            and (matched_report_references or matched_references)
+        )
+    )
+    fresh_data_requested = bool(matched_fresh)
+    explicit_requery_requested = fresh_data_requested
     filter_change_can_reuse_source = bool(
         reusable_source_aliases
         and (matched_change or entity_switch_followup)
@@ -103,8 +145,23 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     required_artifacts: list[str] = []
     inheritance_candidates: list[str] = []
 
-    if has_previous:
-        if matched_explain and (matched_references or context_dependent):
+    if unresolved_report_reference:
+        # 명시적으로 Report를 가리키지만 유효한 context_ref가 없으면 일반 신규 조회로 조용히 전환하지 않습니다.
+        scope_hint = "clarification"
+        reuse_strategy_hint = "none"
+        confidence = "high"
+        required_artifacts = ["report_context"]
+    elif has_previous:
+        if fresh_data_requested and (report_reference or matched_row_references):
+            # Report/직전 결과가 가리키는 대상 key만 재사용하고, 요청 metric은 반드시 새 조회에서 가져옵니다.
+            scope_hint = "followup_requery"
+            reuse_strategy_hint = "previous_result"
+            confidence = "high"
+            required_artifacts = ["previous_result", "previous_intent_plan", "previous_applied_criteria"]
+            if has_report_context:
+                required_artifacts.append("report_context")
+            inheritance_candidates = ["required_params", "analysis_filters", "pandas_function_cases"]
+        elif matched_explain and (matched_references or context_dependent):
             scope_hint = "followup_explain"
             reuse_strategy_hint = "trace_only"
             confidence = "medium" if matched_references else "low"
@@ -114,6 +171,18 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             reuse_strategy_hint = "previous_result"
             confidence = "high" if matched_references else "medium"
             required_artifacts = ["previous_result", "previous_source", "previous_intent_plan"]
+            inheritance_candidates = ["required_params", "analysis_filters", "pandas_function_cases"]
+        elif report_reference:
+            # Report 후속 필터/집계는 저장된 snapshot source를 우선 재사용합니다.
+            # source ref가 없을 때만 Report 결과 행을 previous_result로 복원합니다.
+            scope_hint = "followup_transform"
+            reuse_strategy_hint = "previous_source" if reusable_source_aliases else "previous_result"
+            confidence = "high"
+            required_artifacts = (
+                ["previous_source", "previous_intent_plan", "report_context"]
+                if reusable_source_aliases
+                else ["previous_result", "previous_intent_plan", "report_context"]
+            )
             inheritance_candidates = ["required_params", "analysis_filters", "pandas_function_cases"]
         elif requested_columns:
             scope_hint = "followup_expand_source"
@@ -177,6 +246,8 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
                 {
                     "reference": matched_references,
                     "reference_rows": matched_row_references,
+                    "report_reference": matched_report_references,
+                    "fresh_data": matched_fresh,
                     "explain": matched_explain,
                     "transform": matched_transform,
                     "expand": matched_expand,
@@ -187,6 +258,11 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             ),
             "requested_columns_hint": requested_columns,
             "reusable_previous_source_aliases": reusable_source_aliases,
+            "report_context_available": has_report_context,
+            "report_context_status": report_context_status,
+            "report_reference": report_reference,
+            "unresolved_report_reference": unresolved_report_reference,
+            "fresh_data_requested": fresh_data_requested,
             "required_previous_artifacts": required_artifacts,
             "inheritance_candidates": inheritance_candidates,
             "complete_independent_request": complete_independent_request,
@@ -573,6 +649,35 @@ def _looks_complete_independent_request(
 def _matched_cues(question: str, cues: tuple[str, ...]) -> list[str]:
     normalized_question = _normalize(question)
     return [cue for cue in cues if _normalize(cue) in normalized_question]
+
+
+# 함수 설명: `_matched_fresh_cues()`는 최신 조회를 독립 표현 단위로만 감지해 `현재작업재공` 같은 컬럼명 내부 substring을 제외합니다.
+def _matched_fresh_cues(question: str) -> list[str]:
+    text = str(question or "")
+    return [cue for cue, pattern in FRESH_DATA_CUE_PATTERNS if pattern.search(text)]
+
+
+# 함수 설명: `_report_context_expiry_status()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _report_context_expiry_status(context: dict[str, Any]) -> str:
+    """Validate the Report context TTL before any follow-up reuse decision."""
+
+    if not (
+        str(context.get("report_type") or "").strip()
+        and str(context.get("context_ref") or "").strip()
+    ):
+        return "missing"
+    raw = context.get("expires_at")
+    if raw in (None, ""):
+        return "expiry_missing"
+    try:
+        expires_at = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        else:
+            expires_at = expires_at.astimezone(timezone.utc)
+    except Exception:
+        return "expiry_invalid"
+    return "expired" if expires_at <= datetime.now(timezone.utc) else "valid"
 
 
 # 함수 설명: `_notes()`는 후속 질문 해석에서 사용자에게 알릴 조건 상속·변경 주의사항을 구성합니다.

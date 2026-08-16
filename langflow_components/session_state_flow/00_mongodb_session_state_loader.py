@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import datetime, timezone
 from importlib import import_module
 from typing import Any
 
@@ -58,8 +59,11 @@ def load_session_state(
 
     if fallback_state:
         state = _compact_state(fallback_state, preview_limit)
+        state, report_context_status = _enforce_report_context_expiry(state)
         state.setdefault("session_id", session)
         status.update({"loaded": True, "source": "input_state", "preview_row_limit": preview_limit})
+        if report_context_status:
+            status["report_context_status"] = report_context_status
         return {"state": state, "session_state_load": status}
 
     if not _truthy(enabled):
@@ -94,7 +98,13 @@ def load_session_state(
             status["source"] = "mongodb_not_found"
             return {"state": {"session_id": session}, "session_state_load": status}
         state = _compact_state(document.get("state") if isinstance(document.get("state"), dict) else {}, preview_limit)
+        state, report_context_status = _enforce_report_context_expiry(state)
         state.setdefault("session_id", session)
+        # Flow 10 Report 후속 분석은 로드 이후 새 Report가 생성되는 경합을
+        # 감지해야 합니다. MongoDB 문서의 turn_count만 내부 revision으로
+        # 전달하고, 일반 세션 compactor는 이 값을 다음 상태에 자동 보존하지
+        # 않도록 underscore-prefixed 내부 키를 사용합니다.
+        state["_session_state_revision"] = _nonnegative_int(document.get("turn_count"), 0)
         status.update(
             {
                 "loaded": bool(state),
@@ -104,6 +114,8 @@ def load_session_state(
                 "preview_row_limit": preview_limit,
             }
         )
+        if report_context_status:
+            status["report_context_status"] = report_context_status
         return {"state": state, "session_state_load": status}
     except Exception as exc:
         status["errors"] = [str(exc)]
@@ -146,6 +158,64 @@ def _compact_state(state: Any, preview_limit: int) -> dict[str, Any]:
     if runtime_source_refs:
         result["runtime_source_refs"] = runtime_source_refs
     return _json_ready(result)
+
+
+# 함수 설명: `_enforce_report_context_expiry()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _enforce_report_context_expiry(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Remove reusable Report refs when their result-store TTL is no longer valid."""
+
+    result = deepcopy(state) if isinstance(state, dict) else {}
+    current_data = result.get("current_data") if isinstance(result.get("current_data"), dict) else {}
+    report_context = (
+        current_data.get("report_context")
+        if isinstance(current_data.get("report_context"), dict)
+        else {}
+    )
+    if not (
+        str(report_context.get("report_type") or "").strip()
+        and str(report_context.get("context_ref") or "").strip()
+    ):
+        return result, {}
+
+    raw = report_context.get("expires_at")
+    reason = ""
+    try:
+        if raw in (None, ""):
+            reason = "report_context_expiry_missing"
+        else:
+            expires_at = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            else:
+                expires_at = expires_at.astimezone(timezone.utc)
+            if expires_at <= datetime.now(timezone.utc):
+                reason = "report_context_expired"
+    except Exception:
+        reason = "report_context_expiry_invalid"
+    if not reason:
+        return result, {}
+
+    sanitized_current = deepcopy(current_data)
+    for key in ("report_context", "data_ref", "rows", "data", "preview_rows"):
+        sanitized_current.pop(key, None)
+    sanitized_current.update(
+        {
+            "row_count": 0,
+            "columns": [],
+            "result_columns": [],
+            "source_aliases": [],
+            "source_dataset_keys": [],
+            "source_columns_by_alias": {},
+            "report_context_status": {
+                "status": "invalidated",
+                "reason": reason,
+            },
+        }
+    )
+    result["current_data"] = sanitized_current
+    result["followup_source_results"] = []
+    result.pop("runtime_source_refs", None)
+    return result, {"status": "invalidated", "reason": reason}
 
 
 # 함수 설명: 현재 turn의 source alias에 해당하는 MongoDB 참조만 남겨 과거 source 참조가 다음 질문에 누적되지 않도록 합니다.
@@ -372,6 +442,15 @@ def _truthy(value: Any) -> bool:
 
 # 함수 설명: `_positive_int()`는 입력 숫자를 1 이상의 정수로 제한해 preview·history 한도에 사용합니다.
 def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = default
+    return max(0, parsed)
+
+
+# 함수 설명: `_nonnegative_int()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _nonnegative_int(value: Any, default: int = 0) -> int:
     try:
         parsed = int(value)
     except Exception:

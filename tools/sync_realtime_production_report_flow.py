@@ -51,7 +51,7 @@ def _edge_count(flow: dict[str, Any]) -> int:
 
 def _assert_target_version(flow: dict[str, Any]) -> None:
     if flow.get("last_tested_version") != bundle.TARGET_LANGFLOW_VERSION:
-        raise ValueError("Flow 07 last_tested_version is not Langflow 1.9.2.")
+        raise ValueError("Flow 07 last_tested_version is not Langflow 1.11.0.")
     for node in flow.get("data", {}).get("nodes", []):
         component = node.get("data", {}).get("node")
         if isinstance(component, dict) and component.get("lf_version") != bundle.TARGET_LANGFLOW_VERSION:

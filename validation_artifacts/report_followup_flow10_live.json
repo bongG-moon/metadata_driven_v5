@@ -1,0 +1,100 @@
+{
+  "status": "ok",
+  "runtime": {
+    "python": "3.13.14",
+    "llm_model": "gemini-3.5-flash-lite"
+  },
+  "report": {
+    "snapshot_rows": 160,
+    "shortage_product_rows": 17,
+    "context_stored": "ok"
+  },
+  "turns": [
+    {
+      "question": "방금 Report에서 생산부족 제품을 생산실적달성율이 낮은 순으로 5개 보여줘",
+      "source_alias": "report_shortage_products",
+      "operations": [
+        {
+          "operation": "sort",
+          "column": "생산실적달성율",
+          "direction": "asc",
+          "nulls": "last"
+        },
+        {
+          "operation": "top_n",
+          "limit": 5
+        }
+      ],
+      "result_rows": 5,
+      "retrieval_job_count": 0,
+      "result_loader_mode": "previous_source",
+      "session_turn_count": 2,
+      "session_guarded": true,
+      "guarded_plan_model_called": true,
+      "llm_latency_seconds": 1.104
+    },
+    {
+      "question": "그중 3개만 보여줘",
+      "source_alias": "report_shortage_products",
+      "operations": [
+        {
+          "operation": "sort",
+          "column": "생산실적달성율",
+          "direction": "asc",
+          "nulls": "last"
+        },
+        {
+          "operation": "top_n",
+          "limit": 5
+        },
+        {
+          "operation": "top_n",
+          "limit": 3
+        },
+        {
+          "operation": "select",
+          "columns": [
+            "MODE",
+            "DENSITY",
+            "TECH",
+            "ORG",
+            "PKG1",
+            "PKG2",
+            "LEAD",
+            "MCP_NO",
+            "PRODUCTION",
+            "OUT_PLAN",
+            "생산실적달성율",
+            "달성율*판정"
+          ]
+        }
+      ],
+      "inherited_previous_view": true,
+      "result_rows": 3,
+      "retrieval_job_count": 0,
+      "result_loader_mode": "previous_source",
+      "session_turn_count": 3,
+      "session_guarded": true,
+      "guarded_plan_model_called": true,
+      "llm_latency_seconds": 0.926
+    }
+  ],
+  "assertions": {
+    "same_report_snapshot_only": true,
+    "no_oracle_or_goodocs_retrieval": true,
+    "physical_report_product_grain": [
+      "MODE",
+      "DENSITY",
+      "TECH",
+      "ORG",
+      "PKG1",
+      "PKG2",
+      "LEAD",
+      "MCP_NO"
+    ],
+    "first_turn_sorted_top5": true,
+    "second_turn_inherited_top3": true,
+    "session_cas_guarded": true,
+    "non_ready_paths_skip_llm": true
+  }
+}

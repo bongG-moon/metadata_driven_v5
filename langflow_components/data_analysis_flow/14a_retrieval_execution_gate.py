@@ -329,7 +329,7 @@ def _blocked_message(failures: list[dict[str, Any]]) -> str:
     plan_validation_errors = _execution_plan_validation_errors(failures)
     if any(
         str(item.get("type") or "")
-        == "same_run_dependent_retrieval_requires_continuation"
+        == "same_run_dependent_retrieval_unsupported"
         for item in plan_validation_errors
     ) and not any(
         str(item.get("type") or "") in {"source_retrieval_failed", "required_source_result_missing"}
@@ -338,26 +338,27 @@ def _blocked_message(failures: list[dict[str, Any]]) -> str:
     ):
         return (
             "첫 조회 결과의 식별자를 다음 조회의 필수 조건으로 사용해야 하는 요청입니다. "
-            "이 Flow는 모든 조회를 먼저 실행하므로, 후속 조회를 지원하는 continuation Flow로 실행해야 합니다."
+            "Flow 01은 조회 작업을 단일 단계로 실행하므로, 먼저 식별자를 조회한 뒤 "
+            "해당 식별자를 포함해 새 질문으로 나눠 실행해 주세요."
         )
     if _execution_plan_only_failures(failures):
         if all(
             str(item.get("type") or "")
             in {
-                "same_run_dependent_retrieval_requires_continuation",
+                "same_run_dependent_retrieval_unsupported",
                 "required_retrieval_parameter_unresolved",
             }
             for item in plan_validation_errors
         ):
-            continuation_required = any(
+            split_execution_required = any(
                 str(item.get("type") or "")
-                == "same_run_dependent_retrieval_requires_continuation"
+                == "same_run_dependent_retrieval_unsupported"
                 for item in plan_validation_errors
             )
-            if continuation_required:
+            if split_execution_required:
                 return (
                     "분석 계획에서 앞선 조회 결과를 다음 조회의 필수 조건으로 사용하려 했습니다. "
-                    "이 Flow는 모든 조회를 먼저 실행하므로 해당 분석은 후속 실행으로 분리해야 합니다."
+                    "Flow 01에서는 먼저 식별자를 조회한 뒤 해당 식별자를 포함한 새 질문으로 나눠 실행해야 합니다."
                 )
             return "Table Catalog에서 필수로 지정한 조회 조건 값이 비어 있어 분석을 시작하지 않았습니다."
         details = _execution_plan_failure_details(failures)
@@ -387,7 +388,7 @@ def _execution_plan_only_failures(failures: list[dict[str, Any]]) -> bool:
         "invalid_metric_source_contract",
         "catalog_metric_ownership_mismatch",
         "execution_plan_invalid",
-        "same_run_dependent_retrieval_requires_continuation",
+        "same_run_dependent_retrieval_unsupported",
         "required_retrieval_parameter_unresolved",
     }
     observed: list[dict[str, Any]] = []

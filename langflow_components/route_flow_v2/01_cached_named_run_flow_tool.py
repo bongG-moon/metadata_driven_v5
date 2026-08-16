@@ -646,11 +646,13 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         )
         if gate_error:
             blocked = Message(text=gate_error)
-            blocked.data = {
-                "route_gate": {
-                    "status": "blocked",
-                    "tool_name": str(getattr(self, "tool_name", "") or ""),
-                }
+            # Do not replace Message.data: in Langflow 1.11 that mapping also
+            # contains the visible `text` value used by the Chat Output.
+            if not isinstance(getattr(blocked, "data", None), dict):
+                blocked.data = {"text": gate_error}
+            blocked.data["route_gate"] = {
+                "status": "blocked",
+                "tool_name": str(getattr(self, "tool_name", "") or ""),
             }
             return blocked
 

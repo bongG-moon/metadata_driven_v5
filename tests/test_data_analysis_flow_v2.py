@@ -36,6 +36,364 @@ def test_v2_lazy_prompt_components_are_self_contained():
     assert callable(answer_prompt.build_route_aware_answer_prompt)
 
 
+def _report_followup_state(*, with_source_ref: bool = True) -> dict:
+    state = {
+        "last_question": "D/A 공정그룹 실시간 생산 분석을 해줘",
+        "current_data": {
+            "row_count": 24,
+            "columns": ["TECH", "DEN", "MODE", "달성율*판정", "현재작업재공"],
+            "result_columns": ["TECH", "DEN", "MODE", "달성율*판정", "현재작업재공"],
+            "data_ref": {
+                "ref_id": "result:report-context",
+                "role": "analysis_result",
+                "download_url": "https://example.invalid/private-result",
+            },
+            "source_aliases": ["report_snapshot"],
+            "source_dataset_keys": ["production_judgement_snapshot"],
+            "source_columns_by_alias": {
+                "report_snapshot": ["TECH", "DEN", "MODE", "달성율*판정", "현재작업재공", "PRODUCTION"]
+            },
+            "preview_rows": [{"TECH": "SECRET_RAW_ROW"}],
+            "report_context": {
+                "context_version": "report.context.v1",
+                "context_ref": "result:report-context",
+                "report_type": "realtime_production",
+                "snapshot_id": "snapshot-20260815-090000",
+                "as_of": "2026-08-15T09:00:00+09:00",
+                "expires_at": "2099-08-15T13:00:00+09:00",
+                "report_scope": {"process_group": "DA", "date": "20260815"},
+                "kpi_facts": {
+                    "shortage_products": 12,
+                    "risk_note": "X" * 500,
+                },
+                "rules": {
+                    "rules_version": "production-risk-v3",
+                    "rows": [{"SECRET_RULE_ROW": 1}],
+                    "html": "<table>SECRET_HTML</table>",
+                },
+                "allowed_operations": [
+                    "filter",
+                    "groupby_and_aggregate",
+                    "sort_and_top_n",
+                ],
+                "semantic_filters": [
+                    {
+                        "key": "production_shortage",
+                        "aliases": ["생산부족", "생산 부족", "생산 부족 제품"],
+                        "source_alias": "report_snapshot",
+                        "column": "달성율*판정",
+                        "operator": "eq",
+                        "value": "생산부족",
+                        "rows": [{"SECRET_SEMANTIC_ROW": 1}],
+                    },
+                    {
+                        "key": "unsafe_filter",
+                        "aliases": ["위험 필터"],
+                        "source_alias": "report_snapshot",
+                        "column": "TECH",
+                        "operator": "python_eval",
+                        "value": "SECRET_UNSAFE_OPERATOR",
+                    },
+                ],
+                "value_domains": [
+                    {
+                        "source_alias": "report_snapshot",
+                        "column": "달성율*판정",
+                        "values": ["정상", "정상(초과생산)", "Abnormal", "생산부족"],
+                        "aliases": {"생산 부족": "생산부족"},
+                        "html": "SECRET_DOMAIN_HTML",
+                    }
+                ],
+                "artifacts": [{"view_url": "https://example.invalid/private-report"}],
+                "raw_rows": [{"SECRET_CONTEXT_ROW": 1}],
+                "html": "<html>SECRET_CONTEXT_HTML</html>",
+                "view_url": "https://example.invalid/private-report",
+            },
+        },
+        "followup_source_results": [
+            {
+                "source_alias": "report_snapshot",
+                "dataset_key": "production_judgement_snapshot",
+                "row_count": 24,
+                "columns": ["TECH", "DEN", "MODE", "판정", "PRODUCTION"],
+                "preview_rows": [{"TECH": "SECRET_SOURCE_ROW"}],
+                "data_ref": {
+                    "ref_id": "source:report-snapshot",
+                    "role": "source_rows",
+                    "download_url": "https://example.invalid/private-source",
+                },
+            }
+        ],
+    }
+    if with_source_ref:
+        state["runtime_source_refs"] = {
+            "report_snapshot": {
+                "ref_id": "source:report-snapshot",
+                "role": "source_rows",
+                "source_alias": "report_snapshot",
+                "download_url": "https://example.invalid/private-source",
+            }
+        }
+    return state
+
+
+def test_v2_intent_state_compacts_report_context_without_rows_html_or_urls():
+    builder = load_module(V2_ROOT / "02_intent_variables_builder.py")
+    variables = builder.build_variables(
+        {
+            "request": {"question": "그중 HBM 제품만 보여줘", "reference_date": "20260815"},
+            "followup_hint": {"followup_candidate": True},
+            "state": _report_followup_state(),
+        }
+    )
+
+    summary = json.loads(variables["state_summary"])
+    current_data = summary["state"]["current_data"]
+    report_context = current_data["report_context"]
+    serialized = json.dumps(summary["state"], ensure_ascii=False)
+
+    assert report_context["context_version"] == "report.context.v1"
+    assert report_context["report_type"] == "realtime_production"
+    assert report_context["expires_at"] == "2099-08-15T13:00:00+09:00"
+    assert report_context["report_scope"] == {"process_group": "DA", "date": "20260815"}
+    assert report_context["kpi_facts"]["shortage_products"] == 12
+    assert len(report_context["kpi_facts"]["risk_note"]) == 240
+    assert report_context["allowed_operations"] == [
+        "filter",
+        "groupby_and_aggregate",
+        "sort_and_top_n",
+    ]
+    assert report_context["semantic_filters"] == [
+        {
+            "key": "production_shortage",
+            "aliases": ["생산부족", "생산 부족", "생산 부족 제품"],
+            "source_alias": "report_snapshot",
+            "column": "달성율*판정",
+            "operator": "eq",
+            "value": "생산부족",
+        }
+    ]
+    assert report_context["value_domains"] == [
+        {
+            "source_alias": "report_snapshot",
+            "column": "달성율*판정",
+            "values": ["정상", "정상(초과생산)", "Abnormal", "생산부족"],
+            "aliases": {"생산 부족": "생산부족"},
+        }
+    ]
+    assert current_data["data_ref"] == {
+        "ref_id": "result:report-context",
+        "role": "analysis_result",
+    }
+    assert "preview_rows" not in current_data
+    assert summary["state"]["runtime_source_refs"]["report_snapshot"] == {
+        "ref_id": "source:report-snapshot",
+        "role": "source_rows",
+        "source_alias": "report_snapshot",
+    }
+    assert "preview_rows" not in summary["state"]["followup_source_results"][0]
+    for secret in (
+        "SECRET_RAW_ROW",
+        "SECRET_RULE_ROW",
+        "SECRET_HTML",
+        "SECRET_CONTEXT_ROW",
+        "SECRET_CONTEXT_HTML",
+        "SECRET_SOURCE_ROW",
+        "SECRET_SEMANTIC_ROW",
+        "SECRET_UNSAFE_OPERATOR",
+        "SECRET_DOMAIN_HTML",
+        "example.invalid",
+    ):
+        assert secret not in serialized
+
+
+def test_v2_report_context_aliases_are_normalized_and_bounded():
+    builder = load_module(V2_ROOT / "02_intent_variables_builder.py")
+    context = builder._compact_report_context(
+        {
+            "context_version": "report.context.v1",
+            "report_type": "realtime_production",
+            "scope": {"process_group": "DA"},
+            "kpis": {f"metric_{index}": index for index in range(40)},
+            "allowed_ops": [f"operation_{index}" for index in range(20)],
+            "semantic_filters": [
+                {
+                    "key": f"filter_{index}",
+                    "aliases": [f"alias_{alias_index}" for alias_index in range(20)],
+                    "source_alias": "report_snapshot",
+                    "column": f"COLUMN_{index}",
+                    "operator": "eq",
+                    "value": index,
+                }
+                for index in range(30)
+            ],
+            "value_domains": [
+                {
+                    "source_alias": "report_snapshot",
+                    "column": f"COLUMN_{index}",
+                    "values": [f"value_{value_index}" for value_index in range(50)],
+                }
+                for index in range(30)
+            ],
+        }
+    )
+
+    assert context["report_scope"] == {"process_group": "DA"}
+    assert list(context["kpi_facts"]) == [f"metric_{index}" for index in range(24)]
+    assert context["allowed_operations"] == [f"operation_{index}" for index in range(12)]
+    assert len(context["semantic_filters"]) == 24
+    assert context["semantic_filters"][0]["aliases"] == [f"alias_{index}" for index in range(16)]
+    assert len(context["value_domains"]) == 24
+    assert context["value_domains"][0]["values"] == [f"value_{index}" for index in range(40)]
+
+
+def test_v2_report_followup_prefers_snapshot_source_without_freshness_cue():
+    hint_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    result = hint_builder.build_followup_hint(
+        {
+            "request": {"question": "그중 HBM 제품만 보여줘", "reference_date": "20260815"},
+            "state": _report_followup_state(),
+        }
+    )
+
+    hint = result["followup_hint"]
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "followup_transform"
+    assert hint["reuse_strategy_hint"] == "previous_source"
+    assert hint["report_context_available"] is True
+    assert hint["report_context_status"] == "valid"
+    assert hint["report_reference"] is True
+    assert hint["fresh_data_requested"] is False
+    assert hint["reusable_previous_source_aliases"] == ["report_snapshot"]
+
+
+def test_v2_expired_report_context_is_fail_closed_before_intent_planning():
+    hint_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    state = _report_followup_state()
+    state["current_data"]["report_context"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+    result = hint_builder.build_followup_hint(
+        {
+            "request": {"question": "그중 생산부족 제품만 보여줘", "reference_date": "20260815"},
+            "state": state,
+        }
+    )
+
+    hint = result["followup_hint"]
+    assert hint["request_scope_hint"] == "clarification"
+    assert hint["reuse_strategy_hint"] == "none"
+    assert hint["report_context_available"] is False
+    assert hint["report_context_status"] == "expired"
+    assert hint["unresolved_report_reference"] is True
+    assert hint.get("reusable_previous_source_aliases", []) == []
+
+
+def test_v2_report_column_name_containing_current_is_not_a_freshness_request():
+    hint_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    result = hint_builder.build_followup_hint(
+        {
+            "request": {"question": "그중 현재작업재공이 0인 제품만 보여줘", "reference_date": "20260815"},
+            "state": _report_followup_state(),
+        }
+    )
+
+    hint = result["followup_hint"]
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "followup_transform"
+    assert hint["reuse_strategy_hint"] == "previous_source"
+    assert hint["fresh_data_requested"] is False
+    assert hint["matched_cues"].get("fresh_data", []) == []
+    assert hint.get("changed_conditions_hint", {}) == {}
+    assert hint_builder._matched_fresh_cues("현재작업재공") == []
+
+
+@pytest.mark.parametrize("question", ["이 Report를 현재 기준으로 다시 조회해줘", "방금 보고서를 최신 데이터로 보여줘"])
+def test_v2_report_followup_freshness_cue_requires_a_new_retrieval(question: str):
+    hint_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    result = hint_builder.build_followup_hint(
+        {
+            "request": {"question": question, "reference_date": "20260815"},
+            "state": _report_followup_state(),
+        }
+    )
+
+    hint = result["followup_hint"]
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "followup_requery"
+    assert hint["reuse_strategy_hint"] == "previous_result"
+    assert hint["report_reference"] is True
+    assert hint["fresh_data_requested"] is True
+    assert "previous_source" not in hint["required_previous_artifacts"]
+
+
+def test_v2_report_context_does_not_turn_an_independent_current_query_into_a_followup():
+    hint_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    result = hint_builder.build_followup_hint(
+        {
+            "request": {"question": "현재 WIP 알려줘", "reference_date": "20260815"},
+            "state": _report_followup_state(),
+        }
+    )
+
+    hint = result["followup_hint"]
+    assert hint["followup_candidate"] is False
+    assert hint["request_scope_hint"] == "new_analysis"
+    assert hint["reuse_strategy_hint"] == "none"
+    assert hint["report_context_available"] is True
+    assert hint["report_reference"] is False
+    assert hint["fresh_data_requested"] is True
+
+
+def test_v2_explicit_report_reference_without_context_requires_clarification():
+    hint_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    result = hint_builder.build_followup_hint(
+        {
+            "request": {"question": "방금 Report에서 HBM 제품만 보여줘", "reference_date": "20260815"},
+            "state": {},
+        }
+    )
+
+    hint = result["followup_hint"]
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "clarification"
+    assert hint["reuse_strategy_hint"] == "none"
+    assert hint["report_context_available"] is False
+    assert hint["report_reference"] is False
+    assert hint["unresolved_report_reference"] is True
+    assert hint["required_previous_artifacts"] == ["report_context"]
+
+
+def test_v2_normal_previous_result_followup_behavior_is_unchanged_without_report_context():
+    hint_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01e_followup_hint_builder.py"
+    )
+    state = _report_followup_state()
+    state["current_data"].pop("report_context")
+    result = hint_builder.build_followup_hint(
+        {
+            "request": {"question": "그중 수량이 가장 많은 항목만 보여줘", "reference_date": "20260815"},
+            "state": state,
+        }
+    )
+
+    hint = result["followup_hint"]
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "followup_transform"
+    assert hint["reuse_strategy_hint"] == "previous_result"
+    assert hint["report_context_available"] is False
+
+
 def _single_source_payload(
     *,
     rows: list[dict],
@@ -133,7 +491,7 @@ def test_v2_flow_export_matches_current_native_graph():
 
     assert flow["endpoint_name"] == "metadata-driven-v5-data-analysis"
     assert flow["name"] == "01. v5_data_analysis"
-    assert flow["last_tested_version"] == "1.9.2"
+    assert flow["last_tested_version"] == "1.11.0"
     assert len(flow["data"]["nodes"]) == 51
 
     node_ids = {node["id"] for node in flow["data"]["nodes"]}
@@ -144,7 +502,7 @@ def test_v2_flow_export_matches_current_native_graph():
     assert "LanguageModel-answer" not in node_ids
     assert "Prompt Template-ELVKc" not in node_ids
     assert "CustomComponent-aKrkH" not in node_ids
-    assert all(node["data"]["node"].get("lf_version") == "1.9.2" for node in flow["data"]["nodes"])
+    assert all(node["data"]["node"].get("lf_version") == "1.11.0" for node in flow["data"]["nodes"])
     assert node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]["code"]["value"] == (
         V2_ROOT / "21_v2_answer_message_adapter.py"
     ).read_text(encoding="utf-8")
@@ -2067,9 +2425,8 @@ def test_v2_typed_multi_source_plan_executes_without_pandas_model():
     """A complete Typed IR joins generic sources without generating pandas code.
 
     This deliberately uses neutral columns instead of manufacturing names.  It
-    protects the common multi-source path used by both the basic analysis Flow
-    and the continuation Flow without teaching either Flow a question-specific
-    recipe.
+    protects the common multi-source path used by Flow 01 without teaching the
+    analysis Flow a question-specific recipe.
     """
 
     resolver, executor, _ = _modules()
@@ -9028,7 +9385,7 @@ def test_required_parameter_guard_blocks_same_run_handoff_before_retrieval():
     assert guard["status"] == "blocked"
     assert guard["validation_errors"] == [
         {
-            "type": "same_run_dependent_retrieval_requires_continuation",
+            "type": "same_run_dependent_retrieval_unsupported",
             "message": "같은 실행 안의 선행 조회 결과를 다음 조회의 필수 조건으로 사용할 수 없습니다. 후속 실행으로 분리해야 합니다.",
             "source_alias": "history_src",
             "dataset_key": "entity_history",
@@ -9054,7 +9411,8 @@ def test_required_parameter_guard_blocks_same_run_handoff_before_retrieval():
         }
     )
     assert blocked["analysis"]["error"]["type"] == "execution_plan_invalid"
-    assert "continuation Flow" in blocked["answer_message"]
+    assert "Flow 01" in blocked["answer_message"]
+    assert "식별자를 포함해 새 질문" in blocked["answer_message"]
 
 
 def test_required_parameter_guard_allows_a_direct_catalog_identifier():
@@ -9167,7 +9525,7 @@ def test_normalizer_blocks_same_run_history_handoff_before_any_retrieval():
 
     errors = normalized["intent_plan"].get("validation_errors", [])
     assert any(
-        item.get("type") == "same_run_dependent_retrieval_requires_continuation"
+        item.get("type") == "same_run_dependent_retrieval_unsupported"
         and item.get("source_alias") == "history_src"
         for item in errors
         if isinstance(item, dict)

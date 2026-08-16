@@ -1,8 +1,8 @@
 """Shared Flow-JSON helpers for the supported V2 builders.
 
-The former V1 Data Analysis export is retired.  ``build_data_analysis_flow_v2``
-and ``build_data_analysis_flow_v2_continuation`` still import the layout and
-template helpers in this module, but this module no longer creates a V1 Flow.
+The former V1 Data Analysis export is retired. ``build_data_analysis_flow_v2``
+still imports the layout and template helpers in this module, but this module
+no longer creates a V1 Flow.
 """
 
 from __future__ import annotations
@@ -34,15 +34,15 @@ LANGUAGE_MODEL_SYSTEM_MESSAGES = {
     "LanguageModel-answer": "Follow the supplied prompt exactly and return only the requested answer text.",
 }
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
-TARGET_LANGFLOW_VERSION = "1.9.2"
-TARGET_LANGUAGE_MODEL_SOURCE = ROOT / "tools" / "assets" / "langflow_1_9_2_language_model.py"
+TARGET_LANGFLOW_VERSION = "1.11.0"
+TARGET_LANGUAGE_MODEL_SOURCE = ROOT / "tools" / "assets" / "langflow_1_11_0_language_model.py"
 # Keep the default provider selection in one build-time contract.  Individual
 # flow exports may still expose the provider's other model choices, but every
 # generated LLM node starts with this model selected.
 DEFAULT_LANGUAGE_MODEL = "gemini-3.5-flash-lite"
 DATA_ANALYSIS_NOTE_PREFIX = "note-data-analysis-"
 
-# The canvas uses the same native component dimensions as Langflow 1.9.2.
+# The canvas uses the native component dimensions audited with Langflow 1.11.0.
 # A 450 px horizontal step and a 500 px branch step leave enough room for
 # expanded component cards without baking presentation concerns into runtime
 # component code.
@@ -251,7 +251,7 @@ def _sticky_note_node(
     height: int,
     color: str,
 ) -> dict[str, Any]:
-    """Build a Langflow 1.9.2 noteNode without execution handles or edges."""
+    """Build a Langflow 1.11.0 noteNode without execution handles or edges."""
 
     return {
         "data": {
@@ -504,8 +504,7 @@ def apply_data_analysis_canvas(flow: dict[str, Any], variant: str = "v5") -> Non
 
 def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     raise RuntimeError(
-        "The V1 Data Analysis builder is retired. Use tools/build_data_analysis_flow_v2.py "
-        "or tools/build_data_analysis_flow_v2_continuation.py."
+        "The V1 Data Analysis builder is retired. Use tools/build_data_analysis_flow_v2.py."
     )
 def _component_path(relative_path: str) -> Path:
     return ROOT / "langflow_components" / relative_path
@@ -527,6 +526,69 @@ def _find_native_component(value: Any, display_name: str) -> dict[str, Any]:
             if found:
                 return found
     return {}
+
+
+def _resolve_component_index() -> Path:
+    """Locate the exact LFX component index used to build a Flow artifact."""
+
+    candidates: list[Path] = []
+    explicit_index = str(os.getenv("LANGFLOW_COMPONENT_INDEX_PATH") or "").strip()
+    if explicit_index:
+        candidates.append(Path(explicit_index).expanduser().resolve())
+    spec = find_spec("lfx")
+    if spec is not None and spec.origin:
+        candidates.append(Path(spec.origin).resolve().parent / "_assets" / "component_index.json")
+    candidates.append(
+        Path.home()
+        / "AppData"
+        / "Local"
+        / "com.LangflowDesktop"
+        / ".langflow-venv"
+        / "Lib"
+        / "site-packages"
+        / "lfx"
+        / "_assets"
+        / "component_index.json"
+    )
+    component_index = next((path for path in candidates if path.exists()), None)
+    if component_index is None:
+        raise RuntimeError("Langflow 1.11 LFX component_index.json을 찾을 수 없습니다.")
+    return component_index
+
+
+def native_component_config(display_name: str) -> dict[str, Any]:
+    """Load a native 1.11 component config by its user-visible display name."""
+
+    component_index = json.loads(_resolve_component_index().read_text(encoding="utf-8"))
+    config = _find_native_component(component_index, display_name)
+    if not config:
+        raise RuntimeError(f"Native component template not found: {display_name}")
+    config["lf_version"] = TARGET_LANGFLOW_VERSION
+    return config
+
+
+def _apply_native_prompt_template(node: dict[str, Any], component_config: dict[str, Any]) -> None:
+    """Upgrade a Prompt Template while preserving its dynamic input contract."""
+
+    previous = node["data"]["node"]
+    previous_template = previous.get("template", {})
+    config = deepcopy(component_config)
+    template = config["template"]
+    template_value = previous_template.get("template", {}).get("value")
+    if isinstance(template_value, str):
+        template["template"]["value"] = template_value
+    previous_custom_fields = previous.get("custom_fields", {})
+    dynamic_names = previous_custom_fields.get("template", []) if isinstance(previous_custom_fields, dict) else []
+    preserved_names: list[str] = []
+    for name in dynamic_names:
+        field = previous_template.get(name)
+        if isinstance(name, str) and isinstance(field, dict):
+            template[name] = deepcopy(field)
+            preserved_names.append(name)
+    config["custom_fields"] = {"template": preserved_names}
+    config["lf_version"] = TARGET_LANGFLOW_VERSION
+    node["data"]["type"] = "Prompt Template"
+    node["data"]["node"] = config
 
 
 def _rename_node(
@@ -559,15 +621,9 @@ def _apply_native_language_model(
     previous_template = node["data"]["node"]["template"]
     config = deepcopy(component_config)
     template = config["template"]
-    # Langflow 1.10+ index에는 1.9.2에 없던 provider/model_name 입력이 추가됩니다.
-    # 생성기를 더 최신 Desktop에서 실행해도 목표 1.9.2 JSON 계약이 달라지지 않게 제거합니다.
-    for field_name in ("model_name", "provider"):
-        template.pop(field_name, None)
-    config["field_order"] = [
-        field_name
-        for field_name in config.get("field_order", [])
-        if field_name not in {"model_name", "provider"}
-    ]
+    # 1.11 native Language Model의 model_name/provider override는 runtime model
+    # selection 계약의 일부입니다. 구 1.9 호환을 위해 제거하지 않고 그대로 보존합니다.
+    config["lf_version"] = TARGET_LANGFLOW_VERSION
     for field_name in ("model", "api_key"):
         previous = previous_template.get(field_name)
         current = template.get(field_name)

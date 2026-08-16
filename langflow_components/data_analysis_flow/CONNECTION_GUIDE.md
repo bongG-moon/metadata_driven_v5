@@ -1,13 +1,12 @@
 # Data Analysis 공통 컴포넌트 연결 가이드
 
-이 폴더는 Flow 01 `v5_data_analysis`와 Flow 08 `v5_data_analysis_continuation`이 함께 사용하는 조회·저장·세션·결과 처리 컴포넌트입니다. 새 구현은 Flow 01의 V2 JSON을 기준으로 합니다.
+이 폴더는 기본 데이터 분석 Flow 01 `v5_data_analysis`가 사용하는 조회·저장·세션·결과 처리 컴포넌트입니다. 신규 데이터 분석 구현과 후속 질문은 Flow 01의 V2 JSON 및 검증된 세션 계약을 기준으로 합니다.
 
 ## 현재 사용 Flow
 
 | Flow | 용도 |
 | --- | --- |
-| `01. v5_data_analysis` | 일반 메타데이터 기반 데이터 조회와 분석 |
-| `08. v5_data_analysis_continuation` | 첫 조회 결과를 안전하게 참조하는 최대 2단계 연계 분석 |
+| `01. v5_data_analysis` | 일반 메타데이터 기반 데이터 조회·분석과 검증된 세션 기반 후속 질문 |
 
 ## 공통 처리 순서
 

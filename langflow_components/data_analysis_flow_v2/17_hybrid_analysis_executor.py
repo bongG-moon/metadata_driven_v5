@@ -2166,6 +2166,7 @@ def _typed_row_match_candidates(
     return [item for item in dict.fromkeys(candidates) if item]
 
 
+# 함수 설명: `_apply_typed_step_filters()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _apply_typed_step_filters(frame: Any, step: dict[str, Any]) -> Any:
     """Apply only explicit, source-local filter conditions from a Typed IR step."""
 
@@ -2210,6 +2211,7 @@ def _apply_typed_step_filters(frame: Any, step: dict[str, Any]) -> Any:
     return result
 
 
+# 함수 설명: `_typed_groupby_and_aggregate()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _typed_groupby_and_aggregate(frame: Any, step: dict[str, Any], pd: Any) -> Any:
     group_by = _string_list(step.get("group_by") or step.get("group_by_columns"))
     missing_group = [column for column in group_by if column not in frame.columns]
@@ -2243,6 +2245,7 @@ def _typed_groupby_and_aggregate(frame: Any, step: dict[str, Any], pd: Any) -> A
     return pd.DataFrame([row], columns=output_columns)
 
 
+# 함수 설명: `_typed_sort_and_top_n()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _typed_sort_and_top_n(frame: Any, step: dict[str, Any]) -> Any:
     sort_by = str(step.get("sort_by") or "").strip()
     if not sort_by or sort_by not in frame.columns:
@@ -2265,6 +2268,7 @@ def _typed_sort_and_top_n(frame: Any, step: dict[str, Any]) -> Any:
     return result.reset_index(drop=True)
 
 
+# 함수 설명: `_typed_join_frames()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> Any:
     left_keys = _string_list(step.get("left_on"))
     right_keys = _string_list(step.get("right_on"))
@@ -2319,6 +2323,7 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         for column in getattr(frame, "columns", [])
     }
 
+    # 함수 설명: `helper_column()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def helper_column(base: str) -> str:
         candidate = base
         suffix = 2
@@ -2591,6 +2596,7 @@ def _coalesce_typed_outer_shared_dimensions(
     return result
 
 
+# 함수 설명: `_coalesce_typed_outer_join_keys()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _coalesce_typed_outer_join_keys(
     result: Any,
     left_keys: list[str],
@@ -2630,6 +2636,7 @@ def _coalesce_typed_outer_join_keys(
     return result
 
 
+# 함수 설명: `_typed_aggregate_join_right()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _typed_aggregate_join_right(
     frame: Any,
     group_columns: list[str],
@@ -2675,6 +2682,7 @@ def _typed_aggregate_join_right(
     )
 
 
+# 함수 설명: `_apply_deterministic_result_ordering()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _apply_deterministic_result_ordering(
     result: Any,
     payload: dict[str, Any],
@@ -3739,6 +3747,7 @@ def _replace_selected_function_case_calls(
         if transform_aliases == {only_alias}:
             fallback_source_alias = only_alias
 
+    # 함수 설명: `source_alias_from_expression()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def source_alias_from_expression(node: ast.AST) -> str:
         """Return a literal ``sources['alias']`` reference through harmless wrappers."""
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "sources":
@@ -3752,6 +3761,7 @@ def _replace_selected_function_case_calls(
             return source_alias_from_expression(node.func.value)
         return ""
 
+    # 함수 설명: `source_alias_from_call()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def source_alias_from_call(node: ast.Call) -> str:
         aliases = {
             alias
@@ -3761,11 +3771,13 @@ def _replace_selected_function_case_calls(
         return next(iter(aliases)) if len(aliases) == 1 else ""
 
     class FunctionCaseCallRewriter(ast.NodeTransformer):
+        # 함수 설명: `__init__()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
         def __init__(self) -> None:
             self.replaced: list[str] = []
             self.replaced_unknown_source_refs: list[str] = []
             self.replaced_unbound_calls: list[str] = []
 
+        # 함수 설명: `visit_Subscript()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
         def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
             node = self.generic_visit(node)
             if not isinstance(node, ast.Subscript) or not fallback_source_alias:
@@ -3782,6 +3794,7 @@ def _replace_selected_function_case_calls(
             node.slice = ast.copy_location(ast.Constant(value=fallback_source_alias), key)
             return node
 
+        # 함수 설명: `visit_Call()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
         def visit_Call(self, node: ast.Call) -> ast.AST:
             node = self.generic_visit(node)
             if not isinstance(node, ast.Call):
@@ -4223,6 +4236,7 @@ def _normalize_missing_metric_values(rows: list[dict[str, Any]], payload: dict[s
     return rows
 
 
+# 함수 설명: `_zero_fill_declared_metric_frame_values()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
 def _zero_fill_declared_metric_frame_values(result: Any, payload: dict[str, Any]) -> Any:
     """Apply the declared quantity/metric missing-value policy before checkpoints.
 
@@ -6034,6 +6048,7 @@ def _typed_step_external_aliases(
 
     _, nodes_by_id, output_to_node = _plan_node_indexes(steps_value)
 
+    # 함수 설명: `visit()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     def visit(current: dict[str, Any], visited: set[str]) -> list[str]:
         result: list[str] = []
         inputs = current.get("inputs") if isinstance(current.get("inputs"), list) else []

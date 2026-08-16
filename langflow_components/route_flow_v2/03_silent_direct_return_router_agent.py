@@ -39,7 +39,7 @@ def _has_tool_content(message: Message) -> bool:
     return False
 
 
-# 주요 함수: Langflow 1.9.2와 1.11의 Agent 입력 차이를 흡수합니다.
+# 주요 함수: Langflow 1.11 Agent 입력 계약을 Router 기본값으로 구성합니다.
 def _router_agent_inputs() -> list[Any]:
     """Keep the Router template compatible with Agent input additions in Langflow 1.11."""
 
@@ -54,9 +54,8 @@ def _router_agent_inputs() -> list[Any]:
         calculator_input.value = False
         return inputs
 
-    # Langflow 1.11 validates this key whenever the model field is updated.
-    # Older 1.9.2 Agent templates do not define it, so export it explicitly
-    # with the Router-safe default instead of producing an incompatible flow.
+    # The 1.11 Agent validates this key whenever the model field is updated.
+    # Keep the explicit Router-safe default if a customized Agent schema omits it.
     inputs.append(
         BoolInput(
             name="add_calculator_tool",
@@ -78,6 +77,7 @@ class SilentDirectReturnRouterAgent(AgentComponent):
     inputs = _router_agent_inputs()
 
     # Langflow 메시지 전송 함수: Agent의 부분 응답과 중간 Tool 이벤트를 DB·Playground에 기록하지 않습니다.
+    # 함수 설명: `send_message()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     async def send_message(
         self,
         message: Message,
@@ -89,6 +89,7 @@ class SilentDirectReturnRouterAgent(AgentComponent):
         return message
 
     # Langflow Agent 실행 함수: 원래 Agent 실행 계약은 유지하되 token event도 중간 메시지로 보내지 않습니다.
+    # 함수 설명: `run_agent()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
     async def run_agent(self, agent: Any) -> Message:
         had_event_manager = hasattr(self, "_event_manager")
         event_manager = getattr(self, "_event_manager", None)

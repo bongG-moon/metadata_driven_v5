@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 from tools.build_v5_data_analysis_flow import (  # noqa: E402
     TARGET_LANGFLOW_VERSION,
     _apply_component_spec,
+    _apply_native_prompt_template,
     _apply_standalone_defaults,
     _edge_key,
     _input_template,
@@ -34,6 +35,7 @@ from tools.build_v5_data_analysis_flow import (  # noqa: E402
     _refresh_component_node,
     _refresh_edge_source_types,
     apply_data_analysis_canvas,
+    native_component_config,
 )
 
 
@@ -44,6 +46,8 @@ V2_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow_v2"
 COMMON_COMPONENT_ROOT = ROOT / "langflow_components" / "data_analysis_flow"
 HELPER_LIBRARY_NODE_ID = "TextInput-AXG9a"
 HELPER_LIBRARY_SOURCE = COMMON_COMPONENT_ROOT / "function_case_helper_code_input_example.py"
+REPAIR_PROMPT_NODE_ID = "TextInput-v5RepairPrompt"
+REPAIR_PROMPT_SOURCE = COMMON_COMPONENT_ROOT / "17b_pandas_repair_prompt_template_ko.md"
 
 RESOLVER_NODE_ID = "CustomComponent-v2FastResolver"
 INTENT_VARIABLES_NODE_ID = "CustomComponent-B1hbh"
@@ -251,15 +255,28 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     edges = flow["data"]["edges"]
     node_index = {node["id"]: node for node in nodes}
 
+    # LFX 1.11 marks the 1.9 Prompt Template as a breaking upgrade. Recreate
+    # the one prompt node that remains in the V2 graph from the 1.11 native
+    # template, retaining its dynamic input names and current prompt text.
+    _apply_native_prompt_template(
+        node_index[INTENT_PROMPT_NODE_ID],
+        native_component_config("Prompt Template"),
+    )
+
     # The donor export has a text-input helper library. Keep it synchronized
     # with the canonical source so intent-normalizer arguments always match the
     # Helper signature after a fresh import.
     node_index[HELPER_LIBRARY_NODE_ID]["data"]["node"]["template"]["input_value"]["value"] = (
         HELPER_LIBRARY_SOURCE.read_text(encoding="utf-8")
     )
+    # Repair is a plain Text Input node rather than a Prompt Template node, so
+    # it must be refreshed explicitly when the canonical prompt file changes.
+    node_index[REPAIR_PROMPT_NODE_ID]["data"]["node"]["template"]["input_value"]["value"] = (
+        REPAIR_PROMPT_SOURCE.read_text(encoding="utf-8")
+    )
 
-    # 01 기본 Flow는 일반 질문과 세션 상태만 받습니다. 명시적인 상위 결과
-    # 참조/재개는 별도 08 Continuation Flow의 전용 요청 로더가 담당합니다.
+    # Flow 01은 일반 질문과 검증된 세션 상태만 받습니다. 외부에서 임의의
+    # 상위 결과 참조를 주입하지 않고, 저장된 세션 계약으로 후속 질문을 처리합니다.
     _set_embedded_source(
         node_index["CustomComponent-xpbhS"],
         _common_component_path("00_analysis_request_loader.py"),
@@ -280,6 +297,18 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     _set_embedded_source(
         node_index[METADATA_CANDIDATES_NODE_ID],
         _common_component_path("01d_metadata_candidates_builder.py"),
+    )
+    # Report Context and ordinary multi-turn questions both pass through the
+    # shared follow-up hint and result-loader nodes.  Refresh them explicitly
+    # instead of inheriting the donor's embedded revision so snapshot routing,
+    # expiry, session and completeness guards stay identical in source/export.
+    _set_embedded_source(
+        node_index["CustomComponent-HFsYn"],
+        _common_component_path("01e_followup_hint_builder.py"),
+    )
+    _set_embedded_source(
+        node_index["CustomComponent-O8vfz"],
+        _common_component_path("05_mongodb_result_loader.py"),
     )
 
     # Keep the existing intent contract, but expose the V2 recipe/calculation
@@ -337,21 +366,25 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         [("Data", "api_response", "API 응답", "build_payload")],
         node_index,
     )
-    # The session-state loader remains part of the active follow-up contract.
-    # Refresh it with the shared sources as well; otherwise a donor-only
-    # comment or implementation revision can make the exported node diverge
-    # from its standalone component source.
+    # The session-state loader and writer remain part of the active follow-up
+    # contract. Refresh both shared sources; otherwise Report-context expiry or
+    # CAS revisions added to the standalone files can silently diverge from the
+    # embedded Flow 01 implementation.
     _set_embedded_source(
         node_index["CustomComponent-Fti0r"],
         ROOT / "langflow_components" / "session_state_flow" / "00_mongodb_session_state_loader.py",
+    )
+    _set_embedded_source(
+        node_index["CustomComponent-fXdS4"],
+        ROOT / "langflow_components" / "session_state_flow" / "01_mongodb_session_state_writer.py",
     )
     node_index[INTENT_PROMPT_NODE_ID]["data"]["node"]["template"]["template"]["value"] = (
         _component_path("03_intent_prompt_template_ko.md").read_text(encoding="utf-8")
     )
 
     # Intent planning is allowed only after 01D has proved that a Table Catalog
-    # dataset is available. This replaces the native model node in place so the
-    # continuation builder can preserve the stable node ID and model settings.
+    # dataset is available. This replaces the native model node in place while
+    # preserving the stable node ID and model settings.
     old_intent_model = node_index[INTENT_MODEL_NODE_ID]
     catalog_guarded_intent = deepcopy(node_index[HYBRID_ANSWER_NODE_ID])
     catalog_guarded_intent["id"] = INTENT_MODEL_NODE_ID
