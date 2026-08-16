@@ -94,6 +94,14 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
         else:
             critical_failures.append(failure)
 
+    source_identity_failure = _missing_source_identity_failure(
+        plan,
+        jobs,
+        runtime_sources,
+    )
+    if source_identity_failure and not critical_failures:
+        critical_failures.append(source_identity_failure)
+
     blocked = bool(critical_failures)
     gate = {
         "stage": "14a_retrieval_execution_gate",
@@ -159,6 +167,36 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
         payload["answer_message"] = message
         trace.setdefault("errors", []).append(error)
     return payload
+
+
+# 함수 설명: 조회 없는 설명·후속 재사용은 보존하고, 새 분석의 빈 source identity만 pandas 실행 전에 차단합니다.
+def _missing_source_identity_failure(
+    plan: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    runtime_sources: dict[str, Any],
+) -> dict[str, Any] | None:
+    if jobs or any(str(alias or "").strip() for alias in runtime_sources):
+        return None
+    request_scope = str(plan.get("request_scope") or "new_analysis").strip()
+    reference_mode = str(plan.get("reference_mode") or "none").strip()
+    if request_scope == "clarification":
+        return None
+    if request_scope == "followup_explain" and reference_mode == "previous_trace":
+        return None
+    if reference_mode in {
+        "previous_result_rows",
+        "previous_result_transform",
+        "previous_source",
+    }:
+        # The dedicated result loader owns missing/expired/session checks for
+        # these modes. Avoid replacing its actionable error with a generic one.
+        return None
+    return {
+        "type": "source_identity_unavailable",
+        "message": "분석에 사용할 데이터 source가 확정되지 않아 pandas와 모델 실행을 시작하지 않았습니다.",
+        "request_scope": request_scope,
+        "reference_mode": reference_mode,
+    }
 
 
 # 함수 설명: `_validation_failures()`는 job validation과 trusted catalog hydration의 치명 오류를 실행 차단 사유로 바꿉니다.

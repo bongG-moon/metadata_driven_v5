@@ -16,6 +16,7 @@ GENERATOR_PATH = FLOW_ROOT / "00_dummy_production_judgement_data.py"
 CATALOG_PATH = FLOW_ROOT / "00a_process_group_catalog_loader.py"
 PROMPT_PATH = FLOW_ROOT / "00b_process_group_selection_prompt.py"
 GATE_PATH = FLOW_ROOT / "00c_process_group_selection_gate.py"
+DETERMINISTIC_GATE_PATH = FLOW_ROOT / "00c_deterministic_process_group_selection_gate.py"
 CONTEXT_PAYLOAD_PATH = FLOW_ROOT / "00d_report_context_payload_builder.py"
 BUILDER_PATH = FLOW_ROOT / "01_realtime_production_report_builder.py"
 TERMINAL_PATH = FLOW_ROOT / "02_realtime_production_report_api_terminal.py"
@@ -96,6 +97,10 @@ generator = _load("realtime_production_dummy_test", GENERATOR_PATH)
 catalog = _load("realtime_production_process_group_catalog_test", CATALOG_PATH)
 prompt = _load("realtime_production_process_group_prompt_test", PROMPT_PATH)
 gate = _load("realtime_production_process_group_gate_test", GATE_PATH)
+deterministic_gate = _load(
+    "realtime_production_deterministic_process_group_gate_test",
+    DETERMINISTIC_GATE_PATH,
+)
 context_builder = _load("realtime_production_report_context_payload_test", CONTEXT_PAYLOAD_PATH)
 builder = _load("realtime_production_report_builder_test", BUILDER_PATH)
 terminal = _load("realtime_production_report_terminal_test", TERMINAL_PATH)
@@ -348,6 +353,151 @@ def test_process_group_gate_requires_explicit_single_group_even_if_llm_guesses()
     )
     assert ambiguous["status"] == "clarification_required"
     assert {item["key"] for item in ambiguous["matched_process_groups"]} == {"WB", "BG"}
+
+
+def test_deterministic_process_group_gate_matches_legacy_selected_rows_without_llm():
+    dataset = _multi_group_dataset()
+    question = Question("W/B2 공정의 실시간 생산 분석 Report를 만들어줘")
+    catalog_value = _process_group_catalog()
+    legacy = gate.select_process_group_dataset(
+        question_value=question,
+        catalog_value=catalog_value,
+        llm_response_value={
+            "status": "selected",
+            "process_group_key": "WB",
+            "reason": "W/B2는 WB 그룹의 세부 공정입니다.",
+            "evidence": ["W/B2"],
+        },
+        dataset_value=dataset,
+    )
+    selected = deterministic_gate.select_process_group_dataset(
+        question_value=question,
+        catalog_value=catalog_value,
+        dataset_value=dataset,
+    )
+
+    assert selected["contract_version"] == "production.judgement.dataset.v1"
+    assert selected["rows"] == legacy["rows"]
+    assert selected["row_count"] == legacy["row_count"]
+    assert selected["processes"] == legacy["processes"]
+    assert selected["unfiltered_row_count"] == legacy["unfiltered_row_count"]
+    assert selected["selected_process_group"]["key"] == "WB"
+    assert selected["selected_process_group"]["question_evidence"] == ["W/B2"]
+    assert set(selected["selected_process_group"]["question_evidence"]).issubset(
+        set(legacy["selected_process_group"]["question_evidence"])
+    )
+    assert selected["selected_process_group"]["llm_reason"] == ""
+    assert selected["selection_provenance"]["method"] == "deterministic_explicit_match"
+    assert selected["selection_provenance"]["selected_key"] == "WB"
+
+
+def test_deterministic_process_group_gate_clarifies_missing_ambiguous_and_colliding_aliases():
+    dataset = _multi_group_dataset()
+    catalog_value = _process_group_catalog()
+
+    missing = deterministic_gate.select_process_group_dataset(
+        question_value=Question("오늘 실시간 생산 분석을 해줘"),
+        catalog_value=catalog_value,
+        dataset_value=dataset,
+    )
+    assert missing["contract_version"] == "production.process_group.selection.v1"
+    assert missing["status"] == "clarification_required"
+    assert missing["success"] is True
+    assert missing["llm_decision"] == {
+        "status": "",
+        "process_group_key": "",
+        "reason": "",
+        "evidence": [],
+    }
+    assert missing["selection_provenance"]["method"] == "deterministic_explicit_match"
+    assert missing["selection_provenance"]["matched_group_count"] == 0
+    assert "rows" not in missing
+
+    ambiguous = deterministic_gate.select_process_group_dataset(
+        question_value=Question("W/B와 B/G 공정그룹을 분석해줘"),
+        catalog_value=catalog_value,
+        dataset_value=dataset,
+    )
+    assert ambiguous["status"] == "clarification_required"
+    assert {item["key"] for item in ambiguous["matched_process_groups"]} == {"WB", "BG"}
+    assert ambiguous["selection_provenance"]["matched_group_count"] == 2
+
+    collision_catalog = deepcopy(catalog_value)
+    next(
+        item
+        for item in collision_catalog["process_groups"]
+        if item["key"] == "BG"
+    )["aliases"].append("W/B")
+    collision = deterministic_gate.select_process_group_dataset(
+        question_value=Question("W/B 공정그룹 실시간 생산 분석을 해줘"),
+        catalog_value=collision_catalog,
+        dataset_value=dataset,
+    )
+    assert collision["status"] == "clarification_required"
+    assert {item["key"] for item in collision["matched_process_groups"]} == {"WB", "BG"}
+
+
+def test_deterministic_process_group_gate_preserves_short_key_boundaries():
+    groups = _process_group_catalog()["process_groups"]
+
+    assert deterministic_gate.find_explicit_process_group_matches(
+        "D/A1공정 실시간 생산 분석을 해줘",
+        groups,
+    ) == {"DA": ["D/A1"]}
+    assert deterministic_gate.find_explicit_process_group_matches(
+        "D/A10공정 실시간 생산 분석을 해줘",
+        groups,
+    ) == {}
+    assert deterministic_gate.find_explicit_process_group_matches(
+        "DAILY 생산 분석을 해줘",
+        groups,
+    ) == {}
+
+
+def test_deterministic_process_group_gate_fails_closed_for_contract_schema_and_empty_group():
+    catalog_value = _process_group_catalog()
+    dataset = _multi_group_dataset()
+
+    invalid_contract = deepcopy(dataset)
+    invalid_contract["contract_version"] = "production.judgement.dataset.unknown"
+    contract_error = deterministic_gate.select_process_group_dataset(
+        question_value=Question("W/B 공정그룹 실시간 생산 분석을 해줘"),
+        catalog_value=catalog_value,
+        dataset_value=invalid_contract,
+    )
+    assert contract_error["status"] == "error"
+    assert contract_error["errors"][0]["type"] == "invalid_production_judgement_dataset_contract"
+
+    missing_field = deepcopy(dataset)
+    missing_field["columns"] = [column for column in missing_field["columns"] if column != "OPER_NAME"]
+    schema_error = deterministic_gate.select_process_group_dataset(
+        question_value=Question("W/B 공정그룹 실시간 생산 분석을 해줘"),
+        catalog_value=catalog_value,
+        dataset_value=missing_field,
+    )
+    assert schema_error["status"] == "error"
+    assert schema_error["errors"][0]["type"] == "missing_process_group_field"
+
+    invalid_rows = deepcopy(dataset)
+    invalid_rows["rows"] = [*invalid_rows["rows"], "invalid-row"]
+    row_error = deterministic_gate.select_process_group_dataset(
+        question_value=Question("W/B 공정그룹 실시간 생산 분석을 해줘"),
+        catalog_value=catalog_value,
+        dataset_value=invalid_rows,
+    )
+    assert row_error["status"] == "error"
+    assert row_error["errors"][0]["type"] == "invalid_production_judgement_dataset_schema"
+
+    empty_group = deepcopy(dataset)
+    empty_group["rows"] = [row for row in empty_group["rows"] if row["OPER_NAME"].startswith("B/G")]
+    empty_group["row_count"] = len(empty_group["rows"])
+    empty_error = deterministic_gate.select_process_group_dataset(
+        question_value=Question("W/B 공정그룹 실시간 생산 분석을 해줘"),
+        catalog_value=catalog_value,
+        dataset_value=empty_group,
+    )
+    assert empty_error["status"] == "error"
+    assert empty_error["errors"][0]["type"] == "empty_selected_process_group_dataset"
 
 
 def test_missing_process_group_returns_message_without_creating_html():

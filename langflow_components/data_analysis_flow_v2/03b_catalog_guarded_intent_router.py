@@ -24,6 +24,10 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, MessageTextInput, ModelInput, Output, SecretStrInput
 from lfx.schema.message import Message
 
+LEGACY_INTENT_DIALECT = "manufacturing.intent.legacy.v1"
+COMPACT_INTENT_DIALECT = "manufacturing.intent.compact.v1"
+SUPPORTED_INTENT_DIALECTS = {LEGACY_INTENT_DIALECT, COMPACT_INTENT_DIALECT}
+
 
 # 함수 설명: Table Catalog가 유효한 경우에만 의도 모델을 호출하고, 오류면 모델 호출 없이 차단 계획을 반환합니다.
 def route_intent_response(
@@ -31,17 +35,38 @@ def route_intent_response(
     intent_prompt: Any = "",
     model_invoker: Callable[[str], Any] | None = None,
     metadata_candidates_value: Any = None,
+    expected_dialect: Any = LEGACY_INTENT_DIALECT,
 ) -> tuple[str, dict[str, Any]]:
     """Invoke the intent model only after Table Catalog availability is proven."""
 
+    dialect = str(expected_dialect or LEGACY_INTENT_DIALECT).strip()
+    if dialect not in SUPPORTED_INTENT_DIALECTS:
+        error = {
+            "type": "intent_contract_dialect_unsupported",
+            "message": f"지원하지 않는 Intent dialect가 설정되었습니다: {dialect or '(empty)'}",
+            "expected_dialect": dialect,
+        }
+        envelope = blocked_intent_envelope(error, dialect)
+        return _json_text(envelope), {
+            "stage": "03B_catalog_guarded_intent_router",
+            "mode": "intent_contract_blocked",
+            "model_called": False,
+            "intent_llm_skipped": True,
+            "legacy_fallback_called": False,
+            "expected_dialect": dialect,
+            "error": deepcopy(error),
+        }
+
     error = table_catalog_metadata_error(metadata_candidates_value)
     if error:
-        envelope = blocked_intent_envelope(error)
+        envelope = blocked_intent_envelope(error, dialect)
         return _json_text(envelope), {
             "stage": "03B_catalog_guarded_intent_router",
             "mode": "metadata_blocked",
             "model_called": False,
             "intent_llm_skipped": True,
+            "legacy_fallback_called": False,
+            "expected_dialect": dialect,
             "error": deepcopy(error),
         }
 
@@ -50,14 +75,68 @@ def route_intent_response(
         raise ValueError("Intent analysis prompt is empty.")
     if model_invoker is None:
         raise RuntimeError("Intent analysis language model is not connected.")
-    response = model_invoker(prompt)
-    return _text(response), {
+    response = _text(model_invoker(prompt))
+    dialect_error = intent_response_dialect_error(response, dialect)
+    if dialect_error:
+        envelope = blocked_intent_envelope(dialect_error, dialect)
+        return _json_text(envelope), {
+            "stage": "03B_catalog_guarded_intent_router",
+            "mode": "intent_contract_blocked",
+            "model_called": True,
+            "intent_llm_skipped": False,
+            "legacy_fallback_called": False,
+            "expected_dialect": dialect,
+            "response_dialect_status": "rejected",
+            "prompt_chars": len(prompt),
+            "error": deepcopy(dialect_error),
+        }
+    return response, {
         "stage": "03B_catalog_guarded_intent_router",
         "mode": "catalog_verified",
         "model_called": True,
         "intent_llm_skipped": False,
+        "legacy_fallback_called": False,
+        "expected_dialect": dialect,
+        "response_dialect_status": "accepted",
         "prompt_chars": len(prompt),
     }
+
+
+# 함수 설명: 모델 응답의 선언 dialect가 노드에서 선택한 expected dialect와 정확히 일치하는지 검사합니다.
+def intent_response_dialect_error(response_value: Any, expected_dialect: Any) -> dict[str, Any]:
+    expected = str(expected_dialect or LEGACY_INTENT_DIALECT).strip()
+    parsed = _json_object(response_value)
+    plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else {}
+    # Legacy keeps the historical response/repair behavior. Only an explicit
+    # conflicting dialect is rejected; malformed Legacy JSON remains the
+    # existing Normalizer's responsibility.
+    if expected == LEGACY_INTENT_DIALECT:
+        if not plan:
+            return {}
+        actual = str(plan.get("input_contract_version") or "").strip()
+        if actual not in {"", expected}:
+            return {
+                "type": "intent_contract_dialect_mismatch",
+                "message": "Legacy Intent 요청에 다른 dialect 응답이 반환되었습니다.",
+                "expected_dialect": expected,
+                "actual_dialect": actual,
+            }
+        return {}
+    if not plan:
+        return {
+            "type": "intent_contract_response_invalid",
+            "message": "Intent LLM 응답에서 intent_plan JSON object를 찾지 못했습니다.",
+            "expected_dialect": expected,
+        }
+    actual = str(plan.get("input_contract_version") or "").strip()
+    if expected == COMPACT_INTENT_DIALECT and actual != expected:
+        return {
+            "type": "intent_contract_dialect_mismatch",
+            "message": "Compact Intent 응답의 input_contract_version이 expected dialect와 일치하지 않습니다.",
+            "expected_dialect": expected,
+            "actual_dialect": actual,
+        }
+    return {}
 
 
 # 함수 설명: 후보 메타데이터의 Table Catalog 로드 상태와 등록된 데이터셋 존재 여부를 검증합니다.
@@ -181,12 +260,17 @@ def _safe_error_detail(value: Any) -> str:
 
 
 # 함수 설명: 메타데이터가 없을 때 임의 데이터셋을 만들지 않는 최소 차단 의도 계약을 생성합니다.
-def blocked_intent_envelope(error: dict[str, Any]) -> dict[str, Any]:
+def blocked_intent_envelope(
+    error: dict[str, Any],
+    expected_dialect: Any = LEGACY_INTENT_DIALECT,
+) -> dict[str, Any]:
     """Build the same minimal typed plan for every metadata-unavailable case."""
 
-    return {
-        "intent_plan": {
-            "analysis_kind": "metadata_catalog_unavailable",
+    dialect = str(expected_dialect or LEGACY_INTENT_DIALECT).strip()
+    error_type = str(error.get("type") or "intent_contract_blocked")
+    metadata_error = error_type == "table_catalog_metadata_unavailable"
+    intent_plan = {
+            "analysis_kind": "metadata_catalog_unavailable" if metadata_error else "intent_contract_invalid",
             "request_scope": "new_analysis",
             "reference_mode": "none",
             "reuse_strategy": "none",
@@ -202,16 +286,22 @@ def blocked_intent_envelope(error: dict[str, Any]) -> dict[str, Any]:
                 "strict_result_columns": True,
             },
             "validation_errors": [deepcopy(error)],
-        },
+        }
+    if dialect == COMPACT_INTENT_DIALECT:
+        intent_plan["input_contract_version"] = COMPACT_INTENT_DIALECT
+    return {
+        "intent_plan": intent_plan,
         "metadata_refs": [],
         "trace": {
-            "decision_reason": ["table_catalog_metadata_unavailable"],
+            "decision_reason": [error_type],
             "errors": [deepcopy(error)],
             "inspection": {
                 "intent_router": {
                     "stage": "03B_catalog_guarded_intent_router",
                     "model_called": False,
-                    "reason": "table_catalog_metadata_unavailable",
+                    "reason": error_type,
+                    "expected_dialect": dialect,
+                    "legacy_fallback_called": False,
                 }
             },
         },
@@ -238,6 +328,23 @@ def _text(value: Any) -> str:
     return str(text or "").strip()
 
 
+# 함수 설명: dialect 확인에 필요한 intent_plan만 Markdown fence를 제거해 안전하게 JSON object로 읽습니다.
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return deepcopy(value)
+    text = _text(value)
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+    elif "{" in text and "}" in text:
+        text = text[text.find("{") : text.rfind("}") + 1]
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 # 함수 설명: 차단 의도 계약을 한국어를 보존하는 compact JSON 문자열로 직렬화합니다.
 def _json_text(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
@@ -251,6 +358,13 @@ class CatalogGuardedIntentRouter(Component):
         DataInput(name="payload", display_name="요청 페이로드", required=True),
         DataInput(name="metadata_candidates", display_name="메타데이터 후보", required=False),
         MessageTextInput(name="intent_prompt", display_name="의도 분석 프롬프트", required=False),
+        MessageTextInput(
+            name="expected_dialect",
+            display_name="예상 Intent Dialect",
+            value=LEGACY_INTENT_DIALECT,
+            required=False,
+            advanced=True,
+        ),
         ModelInput(name="model", display_name="의도 분석 언어 모델", required=False, real_time_refresh=True),
         SecretStrInput(name="api_key", display_name="의도 분석 모델 API Key", required=False, advanced=True, real_time_refresh=True),
     ]
@@ -263,6 +377,7 @@ class CatalogGuardedIntentRouter(Component):
             getattr(self, "intent_prompt", ""),
             self._invoke_model,
             getattr(self, "metadata_candidates", None),
+            getattr(self, "expected_dialect", LEGACY_INTENT_DIALECT),
         )
         self.status = trace
         return Message(text=text)

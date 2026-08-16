@@ -526,603 +526,6 @@
       },
       {
         "data": {
-          "id": "ProcessGroupPrompt-realtime-production-report",
-          "node": {
-            "template": {
-              "_type": "Component",
-              "process_group_catalog": {
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "trace_as_input": true,
-                "override_skip": false,
-                "required": true,
-                "placeholder": "",
-                "show": true,
-                "name": "process_group_catalog",
-                "value": "",
-                "display_name": "공정그룹 카탈로그",
-                "advanced": false,
-                "api_editable": false,
-                "input_types": [
-                  "Data",
-                  "JSON"
-                ],
-                "dynamic": false,
-                "info": "",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "JSONInput"
-              },
-              "question": {
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": true,
-                "placeholder": "",
-                "show": true,
-                "name": "question",
-                "value": "",
-                "display_name": "사용자 질문",
-                "advanced": false,
-                "api_editable": false,
-                "input_types": [
-                  "Message"
-                ],
-                "dynamic": false,
-                "info": "",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "HandleInput"
-              },
-              "code": {
-                "type": "code",
-                "required": true,
-                "placeholder": "",
-                "list": false,
-                "show": true,
-                "multiline": true,
-                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 00B 실시간 생산 공정그룹 선택 Prompt\n# 역할: 사용자 질문과 허용 공정그룹 카탈로그를 LLM이 단일 그룹 판별에만 쓰도록 제한된 Prompt로 만듭니다.\n# 주요 입력: 사용자 질문 Message, domain.process_group.catalog.v1 Data\n# 주요 출력: Language Model 입력 Message\n# 처리 흐름: 질문 추출 -> 후보 최소화 -> JSON 출력 계약과 금지 규칙 결합\n# 유지보수 포인트: 집계·판정 규칙은 Prompt에 넣지 않고 공정그룹 선택만 맡깁니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport json\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, HandleInput, Output\nfrom lfx.schema.message import Message\n\n\nMAX_QUESTION_CHARS = 4_000\n\n\n# 함수 설명: `_text()`는 Message 또는 일반 입력에서 사용자 질문 문자열을 안전하게 꺼냅니다.\ndef _text(value: Any) -> str:\n    if value is None:\n        return \"\"\n    data = getattr(value, \"data\", None)\n    if isinstance(data, dict):\n        candidate = getattr(value, \"text\", None) or data.get(\"text\")\n        if candidate is not None:\n            return str(candidate).strip()\n    return str(getattr(value, \"text\", value) or \"\").strip()\n\n\n# 함수 설명: `_payload()`는 Langflow Data 또는 dict에서 공정그룹 카탈로그 페이로드를 꺼냅니다.\ndef _payload(value: Any) -> dict[str, Any]:\n    raw = getattr(value, \"data\", value)\n    return raw if isinstance(raw, dict) else {}\n\n\n# 함수 설명: `build_process_group_selection_prompt()`는 사용자 질문과 허용 카탈로그를 단일 그룹 선택 JSON Prompt로 결합합니다.\ndef build_process_group_selection_prompt(question_value: Any, catalog_value: Any) -> str:\n    question = _text(question_value)[:MAX_QUESTION_CHARS]\n    catalog = _payload(catalog_value)\n    candidates = [\n        {\n            \"key\": str(group.get(\"key\") or \"\"),\n            \"display_name\": str(group.get(\"display_name\") or \"\"),\n            \"aliases\": list(group.get(\"aliases\") or []),\n            \"field\": str(group.get(\"field\") or \"OPER_NAME\"),\n            \"processes\": list(group.get(\"processes\") or []),\n        }\n        for group in catalog.get(\"process_groups\", [])\n        if isinstance(group, dict)\n    ]\n    return f\"\"\"너는 실시간 생산 분석 Flow 앞단의 공정그룹 선택기다.\n업무는 사용자 질문이 아래 허용 공정그룹 중 정확히 하나를 명시하거나 식별하는지 판별하는 것뿐이다.\n\n[사용자 질문]\n{question}\n\n[허용 공정그룹 카탈로그]\n{json.dumps(candidates, ensure_ascii=False, indent=2)}\n\n[판별 규칙]\n1. 출력은 JSON object 하나이며 Markdown code fence와 설명 문장을 붙이지 않는다.\n2. process_group_key에는 카탈로그의 key 하나만 쓴다. 세부 공정명은 출력하지 않는다.\n3. key, display_name, alias 또는 processes의 세부 공정명이 질문에 실제로 나타나 한 그룹을 식별할 때만 status=selected다.\n4. \"실시간 생산\", \"Report\", \"공정 분석\" 같은 일반 표현만으로 그룹을 추측하지 않는다.\n5. 그룹 증거가 없으면 status=missing, 서로 다른 그룹 증거가 둘 이상이면 status=ambiguous다.\n6. \"전체 공정\", \"모든 공정\"은 단일 그룹 요청이 아니므로 status=ambiguous다.\n7. 질문에 없는 그룹을 추천하거나 기본값으로 선택하지 않는다.\n\n[출력 계약]\n{{\n  \"status\": \"selected|missing|ambiguous\",\n  \"process_group_key\": \"selected일 때만 허용 key, 아니면 빈 문자열\",\n  \"reason\": \"짧은 한국어 근거\",\n  \"evidence\": [\"질문에서 확인한 원문 표현\"]\n}}\"\"\"\n\n\n# Langflow 컴포넌트 클래스: 공정그룹 선택만 수행하는 제한된 Language Model 입력 Message를 만듭니다.\nclass RealtimeProductionProcessGroupSelectionPrompt(Component):\n    display_name = \"00B 실시간 생산 공정그룹 선택 Prompt\"\n    description = \"질문과 Domain 공정그룹 허용목록을 LLM의 단일 그룹 선택 Prompt로 만듭니다.\"\n    name = \"RealtimeProductionProcessGroupSelectionPrompt\"\n    icon = \"MessageSquareCode\"\n    inputs = [\n        HandleInput(\n            name=\"question\",\n            display_name=\"사용자 질문\",\n            input_types=[\"Message\"],\n            required=True,\n        ),\n        DataInput(\n            name=\"process_group_catalog\",\n            display_name=\"공정그룹 카탈로그\",\n            required=True,\n        ),\n    ]\n    outputs = [\n        Output(\n            name=\"prompt\",\n            display_name=\"공정그룹 선택 Prompt\",\n            method=\"build_prompt\",\n            types=[\"Message\"],\n        )\n    ]\n\n    # 함수 설명: `build_prompt()`는 연결된 질문과 카탈로그로 Prompt Message를 생성합니다.\n    def build_prompt(self) -> Message:\n        prompt = build_process_group_selection_prompt(\n            getattr(self, \"question\", None),\n            getattr(self, \"process_group_catalog\", None),\n        )\n        self.status = prompt\n        return Message(text=prompt)\n",
-                "fileTypes": [],
-                "file_path": "",
-                "password": false,
-                "name": "code",
-                "advanced": true,
-                "api_editable": false,
-                "dynamic": true,
-                "info": "",
-                "load_from_db": false,
-                "title_case": false
-              }
-            },
-            "description": "질문과 Domain 공정그룹 허용목록을 LLM의 단일 그룹 선택 Prompt로 만듭니다.",
-            "icon": "MessageSquareCode",
-            "base_classes": [
-              "Message"
-            ],
-            "display_name": "00B 실시간 생산 공정그룹 선택 Prompt",
-            "documentation": "",
-            "minimized": false,
-            "custom_fields": {},
-            "output_types": [],
-            "pinned": false,
-            "conditional_paths": [],
-            "frozen": false,
-            "outputs": [
-              {
-                "types": [
-                  "Message"
-                ],
-                "selected": "Message",
-                "name": "prompt",
-                "display_name": "공정그룹 선택 Prompt",
-                "method": "build_prompt",
-                "value": "__UNDEFINED__",
-                "cache": true,
-                "allows_loop": false,
-                "group_outputs": false,
-                "tool_mode": true
-              }
-            ],
-            "field_order": [
-              "question",
-              "process_group_catalog"
-            ],
-            "beta": false,
-            "legacy": false,
-            "edited": false,
-            "metadata": {
-              "module": "v5_auxiliary.00b_process_group_selection_prompt",
-              "code_hash": "41c74613dd7f",
-              "dependencies": {
-                "total_dependencies": 1,
-                "dependencies": [
-                  {
-                    "name": "lfx",
-                    "version": "1.11.0"
-                  }
-                ]
-              }
-            },
-            "tool_mode": false,
-            "lf_version": "1.11.0"
-          },
-          "showNode": true,
-          "type": "RealtimeProductionProcessGroupSelectionPrompt"
-        },
-        "dragging": false,
-        "id": "ProcessGroupPrompt-realtime-production-report",
-        "measured": {
-          "height": 267,
-          "width": 320
-        },
-        "position": {
-          "x": 760,
-          "y": -380
-        },
-        "selected": false,
-        "type": "genericNode"
-      },
-      {
-        "data": {
-          "id": "LanguageModelProcessGroup-realtime-production-report",
-          "node": {
-            "base_classes": [
-              "LanguageModel",
-              "Message"
-            ],
-            "beta": false,
-            "conditional_paths": [],
-            "custom_fields": {},
-            "description": "Runs a language model given a specified provider.",
-            "display_name": "Language Model",
-            "documentation": "https://docs.langflow.org/components-models",
-            "edited": false,
-            "field_order": [
-              "model",
-              "model_name",
-              "provider",
-              "api_key",
-              "base_url_ibm_watsonx",
-              "project_id",
-              "ollama_base_url",
-              "input_value",
-              "system_message",
-              "stream",
-              "temperature",
-              "max_tokens"
-            ],
-            "frozen": false,
-            "icon": "brain-circuit",
-            "legacy": false,
-            "metadata": {
-              "code_hash": "4942994b24a6",
-              "dependencies": {
-                "dependencies": [
-                  {
-                    "name": "lfx",
-                    "version": null
-                  }
-                ],
-                "total_dependencies": 1
-              },
-              "keywords": [
-                "model",
-                "llm",
-                "language model",
-                "large language model"
-              ],
-              "module": "lfx.components.models_and_agents.language_model.LanguageModelComponent"
-            },
-            "minimized": false,
-            "output_types": [],
-            "outputs": [
-              {
-                "allows_loop": false,
-                "cache": true,
-                "display_name": "Model Response",
-                "group_outputs": false,
-                "method": "text_response",
-                "name": "text_output",
-                "selected": "Message",
-                "tool_mode": true,
-                "types": [
-                  "Message"
-                ],
-                "value": "__UNDEFINED__"
-              },
-              {
-                "allows_loop": false,
-                "cache": true,
-                "display_name": "Language Model",
-                "group_outputs": false,
-                "method": "build_model",
-                "name": "model_output",
-                "selected": "LanguageModel",
-                "tool_mode": true,
-                "types": [
-                  "LanguageModel"
-                ],
-                "value": "__UNDEFINED__"
-              }
-            ],
-            "pinned": false,
-            "template": {
-              "_type": "Component",
-              "api_key": {
-                "_input_type": "SecretStrInput",
-                "advanced": true,
-                "api_editable": false,
-                "display_name": "API Key",
-                "dynamic": false,
-                "info": "Overrides global provider settings. Leave blank to use your pre-configured API Key.",
-                "input_types": [],
-                "load_from_db": true,
-                "name": "api_key",
-                "override_skip": false,
-                "password": true,
-                "placeholder": "",
-                "real_time_refresh": true,
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": ""
-              },
-              "base_url_ibm_watsonx": {
-                "_input_type": "DropdownInput",
-                "advanced": false,
-                "api_editable": false,
-                "combobox": true,
-                "dialog_inputs": {},
-                "display_name": "watsonx API Endpoint",
-                "dynamic": false,
-                "external_options": {},
-                "info": "The base URL of the API (IBM watsonx.ai only)",
-                "name": "base_url_ibm_watsonx",
-                "options": [
-                  "https://us-south.ml.cloud.ibm.com",
-                  "https://eu-de.ml.cloud.ibm.com",
-                  "https://eu-gb.ml.cloud.ibm.com",
-                  "https://au-syd.ml.cloud.ibm.com",
-                  "https://jp-tok.ml.cloud.ibm.com",
-                  "https://ca-tor.ml.cloud.ibm.com"
-                ],
-                "options_metadata": [],
-                "override_skip": false,
-                "placeholder": "",
-                "real_time_refresh": true,
-                "required": false,
-                "show": false,
-                "title_case": false,
-                "toggle": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "str",
-                "value": "https://us-south.ml.cloud.ibm.com"
-              },
-              "code": {
-                "advanced": true,
-                "api_editable": false,
-                "dynamic": true,
-                "fileTypes": [],
-                "file_path": "",
-                "info": "",
-                "list": false,
-                "load_from_db": false,
-                "multiline": true,
-                "name": "code",
-                "password": false,
-                "placeholder": "",
-                "required": true,
-                "show": true,
-                "title_case": false,
-                "type": "code",
-                "value": "from lfx.base.models.model import LCModelComponent\nfrom lfx.base.models.unified_models import (\n    get_language_model_options,\n    get_llm,\n    handle_model_input_update,\n)\nfrom lfx.base.models.watsonx_constants import IBM_WATSONX_URLS\nfrom lfx.components.models_and_agents.model_selection import apply_model_overrides\nfrom lfx.field_typing.constants import LanguageModel\nfrom lfx.field_typing.range_spec import RangeSpec\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, StrInput\nfrom lfx.io import IntInput, MessageInput, ModelInput, MultilineInput, SecretStrInput, SliderInput\n\nDEFAULT_OLLAMA_URL = \"http://localhost:11434\"\n\n\nclass LanguageModelComponent(LCModelComponent):\n    display_name = \"Language Model\"\n    description = \"Runs a language model given a specified provider.\"\n    documentation: str = \"https://docs.langflow.org/components-models\"\n    icon = \"brain-circuit\"\n    category = \"models\"\n\n    inputs = [\n        ModelInput(\n            name=\"model\",\n            display_name=\"Language Model\",\n            info=\"Select your model provider\",\n            real_time_refresh=True,\n            required=True,\n        ),\n        StrInput(\n            name=\"model_name\",\n            display_name=\"Model Name Override\",\n            info=(\n                \"Optional model name to use instead of the selected model. \"\n                \"Can be set from a global variable for runtime model selection.\"\n            ),\n            advanced=True,\n            load_from_db=False,\n        ),\n        StrInput(\n            name=\"provider\",\n            display_name=\"Provider Override\",\n            info=(\n                \"Optional provider to use with Model Name Override. Leave blank to use the selected model's provider.\"\n            ),\n            advanced=True,\n            load_from_db=False,\n        ),\n        SecretStrInput(\n            name=\"api_key\",\n            display_name=\"API Key\",\n            info=\"Overrides global provider settings. Leave blank to use your pre-configured API Key.\",\n            required=False,\n            show=True,\n            real_time_refresh=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"base_url_ibm_watsonx\",\n            display_name=\"watsonx API Endpoint\",\n            info=\"The base URL of the API (IBM watsonx.ai only)\",\n            options=IBM_WATSONX_URLS,\n            value=IBM_WATSONX_URLS[0],\n            combobox=True,\n            show=False,\n            real_time_refresh=True,\n        ),\n        StrInput(\n            name=\"project_id\",\n            display_name=\"watsonx Project ID\",\n            info=\"The project ID associated with the foundation model (IBM watsonx.ai only)\",\n            show=False,\n            required=False,\n        ),\n        StrInput(\n            name=\"ollama_base_url\",\n            display_name=\"Ollama API URL\",\n            info=f\"Endpoint of the Ollama API (Ollama only). Defaults to {DEFAULT_OLLAMA_URL}\",\n            value=DEFAULT_OLLAMA_URL,\n            show=False,\n            real_time_refresh=True,\n        ),\n        MessageInput(\n            name=\"input_value\",\n            display_name=\"Input\",\n            info=\"The input text to send to the model\",\n        ),\n        MultilineInput(\n            name=\"system_message\",\n            display_name=\"System Message\",\n            info=\"A system message that helps set the behavior of the assistant\",\n            advanced=False,\n        ),\n        BoolInput(\n            name=\"stream\",\n            display_name=\"Stream\",\n            info=\"Whether to stream the response\",\n            value=False,\n            advanced=True,\n        ),\n        SliderInput(\n            name=\"temperature\",\n            display_name=\"Temperature\",\n            value=0.1,\n            info=\"Controls randomness in responses\",\n            range_spec=RangeSpec(min=0, max=1, step=0.01),\n            advanced=True,\n        ),\n        IntInput(\n            name=\"max_tokens\",\n            display_name=\"Max Tokens\",\n            info=\"Maximum number of tokens to generate. Field name varies by provider.\",\n            advanced=True,\n            range_spec=RangeSpec(min=1, max=128000, step=1, step_type=\"int\"),\n        ),\n    ]\n\n    def build_model(self) -> LanguageModel:\n        model = apply_model_overrides(\n            self.model,\n            model_name=getattr(self, \"model_name\", None),\n            provider=getattr(self, \"provider\", None),\n            user_id=self.user_id,\n            get_options=get_language_model_options,\n        )\n        return get_llm(\n            model=model,\n            user_id=self.user_id,\n            api_key=self.api_key,\n            temperature=self.temperature,\n            stream=self.stream,\n            max_tokens=getattr(self, \"max_tokens\", None),\n            watsonx_url=getattr(self, \"base_url_ibm_watsonx\", None),\n            watsonx_project_id=getattr(self, \"project_id\", None),\n            ollama_base_url=getattr(self, \"ollama_base_url\", None),\n        )\n\n    def update_build_config(self, build_config: dict, field_value: str, field_name: str | None = None):\n        \"\"\"Dynamically update build config with user-filtered model options.\"\"\"\n        return handle_model_input_update(self, build_config, field_value, field_name)\n"
-              },
-              "input_value": {
-                "_input_type": "MessageInput",
-                "advanced": false,
-                "api_editable": false,
-                "display_name": "Input",
-                "dynamic": false,
-                "info": "The input text to send to the model",
-                "input_types": [
-                  "Message"
-                ],
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "name": "input_value",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_input": true,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": ""
-              },
-              "max_tokens": {
-                "_input_type": "IntInput",
-                "advanced": true,
-                "api_editable": false,
-                "display_name": "Max Tokens",
-                "dynamic": false,
-                "info": "Maximum number of tokens to generate. Field name varies by provider.",
-                "list": false,
-                "list_add_label": "Add More",
-                "name": "max_tokens",
-                "override_skip": false,
-                "placeholder": "",
-                "range_spec": {
-                  "max": 128000.0,
-                  "min": 1.0,
-                  "step": 1.0,
-                  "step_type": "int"
-                },
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "int",
-                "value": 700
-              },
-              "model": {
-                "_input_type": "ModelInput",
-                "advanced": false,
-                "api_editable": false,
-                "display_name": "Language Model",
-                "dynamic": false,
-                "external_options": {
-                  "fields": {
-                    "data": {
-                      "node": {
-                        "display_name": "Connect other models",
-                        "icon": "CornerDownLeft",
-                        "name": "connect_other_models"
-                      }
-                    }
-                  }
-                },
-                "info": "Select your model provider",
-                "input_types": [
-                  "LanguageModel"
-                ],
-                "list": false,
-                "list_add_label": "Add More",
-                "model_type": "language",
-                "name": "model",
-                "override_skip": false,
-                "placeholder": "Setup Provider",
-                "real_time_refresh": true,
-                "refresh_button": true,
-                "required": true,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_input": true,
-                "track_in_telemetry": false,
-                "type": "model",
-                "value": [
-                  {
-                    "icon": "GoogleGenerativeAI",
-                    "metadata": {
-                      "api_key_param": "google_api_key",
-                      "context_length": 128000,
-                      "max_tokens_field_name": "max_output_tokens",
-                      "model_class": "ChatGoogleGenerativeAIFixed",
-                      "model_name_param": "model"
-                    },
-                    "name": "gemini-3.5-flash-lite",
-                    "provider": "Google Generative AI"
-                  }
-                ]
-              },
-              "model_name": {
-                "_input_type": "StrInput",
-                "advanced": true,
-                "api_editable": false,
-                "display_name": "Model Name Override",
-                "dynamic": false,
-                "info": "Optional model name to use instead of the selected model. Can be set from a global variable for runtime model selection.",
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "name": "model_name",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": ""
-              },
-              "ollama_base_url": {
-                "_input_type": "StrInput",
-                "advanced": false,
-                "api_editable": false,
-                "display_name": "Ollama API URL",
-                "dynamic": false,
-                "info": "Endpoint of the Ollama API (Ollama only). Defaults to http://localhost:11434",
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "name": "ollama_base_url",
-                "override_skip": false,
-                "placeholder": "",
-                "real_time_refresh": true,
-                "required": false,
-                "show": false,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": "http://localhost:11434"
-              },
-              "project_id": {
-                "_input_type": "StrInput",
-                "advanced": false,
-                "api_editable": false,
-                "display_name": "watsonx Project ID",
-                "dynamic": false,
-                "info": "The project ID associated with the foundation model (IBM watsonx.ai only)",
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "name": "project_id",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": false,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": ""
-              },
-              "provider": {
-                "_input_type": "StrInput",
-                "advanced": true,
-                "api_editable": false,
-                "display_name": "Provider Override",
-                "dynamic": false,
-                "info": "Optional provider to use with Model Name Override. Leave blank to use the selected model's provider.",
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "name": "provider",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": ""
-              },
-              "stream": {
-                "_input_type": "BoolInput",
-                "advanced": true,
-                "api_editable": false,
-                "display_name": "Stream",
-                "dynamic": false,
-                "info": "Whether to stream the response",
-                "list": false,
-                "list_add_label": "Add More",
-                "name": "stream",
-                "override_skip": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_metadata": true,
-                "track_in_telemetry": true,
-                "type": "bool",
-                "value": false
-              },
-              "system_message": {
-                "_input_type": "MultilineInput",
-                "advanced": false,
-                "ai_enabled": false,
-                "api_editable": false,
-                "copy_field": false,
-                "display_name": "System Message",
-                "dynamic": false,
-                "info": "A system message that helps set the behavior of the assistant",
-                "input_types": [
-                  "Message"
-                ],
-                "list": false,
-                "list_add_label": "Add More",
-                "load_from_db": false,
-                "multiline": true,
-                "name": "system_message",
-                "override_skip": false,
-                "password": false,
-                "placeholder": "",
-                "required": false,
-                "show": true,
-                "title_case": false,
-                "tool_mode": false,
-                "trace_as_input": true,
-                "trace_as_metadata": true,
-                "track_in_telemetry": false,
-                "type": "str",
-                "value": "Select only one explicitly evidenced process-group key from the supplied domain catalog. Return exactly one JSON object and never guess a default group."
-              },
-              "temperature": {
-                "_input_type": "SliderInput",
-                "advanced": true,
-                "api_editable": false,
-                "display_name": "Temperature",
-                "dynamic": false,
-                "info": "Controls randomness in responses",
-                "max_label": "",
-                "max_label_icon": "",
-                "min_label": "",
-                "min_label_icon": "",
-                "name": "temperature",
-                "override_skip": false,
-                "placeholder": "",
-                "range_spec": {
-                  "max": 1.0,
-                  "min": 0.0,
-                  "step": 0.01,
-                  "step_type": "float"
-                },
-                "required": false,
-                "show": true,
-                "slider_buttons": false,
-                "slider_buttons_options": [],
-                "slider_input": false,
-                "title_case": false,
-                "tool_mode": false,
-                "track_in_telemetry": false,
-                "type": "slider",
-                "value": 0.1
-              }
-            },
-            "tool_mode": false,
-            "lf_version": "1.11.0"
-          },
-          "showNode": true,
-          "type": "LanguageModelComponent"
-        },
-        "dragging": false,
-        "id": "LanguageModelProcessGroup-realtime-production-report",
-        "measured": {
-          "height": 267,
-          "width": 320
-        },
-        "position": {
-          "x": 1160,
-          "y": -380
-        },
-        "selected": false,
-        "type": "genericNode"
-      },
-      {
-        "data": {
           "id": "DummyProductionJudgementData-realtime-production-report",
           "node": {
             "template": {
@@ -1339,29 +742,6 @@
                 "type": "other",
                 "_input_type": "JSONInput"
               },
-              "llm_response": {
-                "trace_as_metadata": true,
-                "list": false,
-                "list_add_label": "Add More",
-                "override_skip": false,
-                "required": true,
-                "placeholder": "",
-                "show": true,
-                "name": "llm_response",
-                "value": "",
-                "display_name": "LLM 공정그룹 선택",
-                "advanced": false,
-                "api_editable": false,
-                "input_types": [
-                  "Message"
-                ],
-                "dynamic": false,
-                "info": "",
-                "title_case": false,
-                "track_in_telemetry": false,
-                "type": "other",
-                "_input_type": "HandleInput"
-              },
               "process_group_catalog": {
                 "tool_mode": false,
                 "trace_as_metadata": true,
@@ -1418,7 +798,7 @@
                 "list": false,
                 "show": true,
                 "multiline": true,
-                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 00C 실시간 생산 공정그룹 선택 Gate\n# 역할: LLM 선택을 Domain 허용목록과 질문 원문으로 재검증하고 선택 그룹의 행만 Report 생성기에 전달합니다.\n# 주요 입력: 사용자 질문, 공정그룹 카탈로그, LLM JSON 응답, 전체 판정 Snapshot\n# 주요 출력: 선택된 production.judgement.dataset.v1 또는 clarification/error 계약 Data\n# 처리 흐름: 질문 증거 검색 -> LLM JSON 검증 -> 허용 그룹 확정 -> payload.field/processes 필터\n# 유지보수 포인트: LLM이 질문에 없는 그룹을 추측해도 통과시키지 않으며 미지정 시 HTML 생성 경계를 열지 않습니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport json\nimport re\nfrom copy import deepcopy\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, HandleInput, Output\nfrom lfx.schema.data import Data\n\n\nCONTRACT_VERSION = \"production.process_group.selection.v1\"\nDATASET_CONTRACT_VERSION = \"production.judgement.dataset.v1\"\nCATALOG_CONTRACT_VERSION = \"domain.process_group.catalog.v1\"\nMAX_LLM_RESPONSE_CHARS = 20_000\n\n\n# 함수 설명: `_text()`는 Message 또는 일반 입력을 질문·LLM 응답 검증용 문자열로 변환합니다.\ndef _text(value: Any) -> str:\n    if value is None:\n        return \"\"\n    data = getattr(value, \"data\", None)\n    if isinstance(data, dict):\n        candidate = getattr(value, \"text\", None) or data.get(\"text\")\n        if candidate is not None:\n            return str(candidate).strip()\n    return str(getattr(value, \"text\", value) or \"\").strip()\n\n\n# 함수 설명: `_payload()`는 Langflow Data 또는 dict 입력을 독립 복사된 페이로드로 변환합니다.\ndef _payload(value: Any) -> dict[str, Any]:\n    raw = getattr(value, \"data\", value)\n    return deepcopy(raw) if isinstance(raw, dict) else {}\n\n\n# 함수 설명: `_parse_llm_decision()`은 Language Model의 JSON 또는 fenced JSON 응답을 선택 object로 파싱합니다.\ndef _parse_llm_decision(value: Any) -> tuple[dict[str, Any], dict[str, str] | None]:\n    if isinstance(value, dict):\n        payload = deepcopy(value)\n    else:\n        raw = _text(value)[:MAX_LLM_RESPONSE_CHARS]\n        fenced = re.search(r\"```(?:json)?\\s*([\\s\\S]*?)```\", raw, flags=re.IGNORECASE)\n        candidate = fenced.group(1).strip() if fenced else raw\n        try:\n            payload = json.loads(candidate)\n        except (TypeError, ValueError, json.JSONDecodeError) as exc:\n            return {}, {\"type\": \"invalid_process_group_llm_json\", \"message\": f\"공정그룹 선택 LLM 응답이 JSON object가 아닙니다: {exc}\"}\n    if not isinstance(payload, dict):\n        return {}, {\"type\": \"invalid_process_group_llm_shape\", \"message\": \"공정그룹 선택 LLM 응답은 JSON object여야 합니다.\"}\n    return payload, None\n\n\n# 함수 설명: `_token_present()`는 짧은 key의 부분 문자열 오탐을 피하면서 질문에 Domain 표현이 실제로 있는지 검사합니다.\ndef _token_present(question: str, token: str, *, short_key: bool = False) -> bool:\n    candidate = str(token or \"\").strip()\n    if not candidate:\n        return False\n    if short_key and re.fullmatch(r\"[A-Za-z0-9]{1,3}\", candidate):\n        return bool(\n            re.search(\n                rf\"(?<![A-Za-z0-9]){re.escape(candidate)}(?![A-Za-z0-9])\",\n                question,\n                flags=re.IGNORECASE,\n            )\n        )\n    return candidate.casefold() in question.casefold()\n\n\n# 함수 설명: `find_explicit_process_group_matches()`는 질문의 key·alias·display·세부 공정 근거를 그룹별로 수집합니다.\ndef find_explicit_process_group_matches(question: str, groups: list[dict[str, Any]]) -> dict[str, list[str]]:\n    matches: dict[str, list[str]] = {}\n    for group in groups:\n        key = str(group.get(\"key\") or \"\").strip().upper()\n        evidence: list[str] = []\n        for process in group.get(\"processes\") or []:\n            if _token_present(question, str(process)):\n                evidence.append(str(process))\n        for alias in group.get(\"aliases\") or []:\n            if _token_present(question, str(alias), short_key=str(alias).strip().upper() == key):\n                evidence.append(str(alias))\n        display_name = str(group.get(\"display_name\") or \"\")\n        if _token_present(question, display_name):\n            evidence.append(display_name)\n        if _token_present(question, key, short_key=True):\n            evidence.append(key)\n        unique = list(dict.fromkeys(item for item in evidence if item))\n        if key and unique:\n            matches[key] = unique\n    return matches\n\n\n# 함수 설명: `_candidate_summary()`는 재질문 응답에 노출할 공정그룹 후보 필드만 선택합니다.\ndef _candidate_summary(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    return [\n        {\n            \"key\": str(group.get(\"key\") or \"\"),\n            \"display_name\": str(group.get(\"display_name\") or \"\"),\n            \"aliases\": list(group.get(\"aliases\") or []),\n            \"processes\": list(group.get(\"processes\") or []),\n        }\n        for group in groups\n    ]\n\n\n# 함수 설명: `_clarification_message()`는 미지정 또는 다중지정 상황에서 단일 공정그룹을 요청하는 안내문을 만듭니다.\ndef _clarification_message(groups: list[dict[str, Any]], matched_keys: list[str]) -> str:\n    candidates = \", \".join(\n        f\"`{group.get('display_name') or group.get('key')}`\"\n        for group in groups\n    ) or \"등록된 공정그룹 없음\"\n    if len(matched_keys) > 1:\n        matched = \", \".join(f\"`{key}`\" for key in matched_keys)\n        lead = f\"여러 공정그룹({matched})이 함께 확인되어 하나를 선택해야 합니다.\"\n    else:\n        lead = \"실시간 생산 분석을 실행할 공정그룹이 질문에 없습니다.\"\n    return (\n        \"### 공정그룹을 선택해 주세요.\\n\\n\"\n        f\"{lead} Report는 아직 생성하지 않았습니다.\\n\\n\"\n        f\"- 선택 가능한 공정그룹: {candidates}\\n\"\n        \"- 예시: `W/B 공정 그룹의 실시간 생산 분석 Report를 만들어줘`\"\n    )\n\n\n# 함수 설명: `_selection_boundary()`는 Report를 생성하지 않는 선택 결과를 공통 clarification/error 계약으로 만듭니다.\ndef _selection_boundary(\n    *,\n    status: str,\n    message: str,\n    groups: list[dict[str, Any]],\n    matches: dict[str, list[str]],\n    llm_decision: dict[str, Any],\n    errors: list[dict[str, str]] | None = None,\n) -> dict[str, Any]:\n    return {\n        \"contract_version\": CONTRACT_VERSION,\n        \"response_type\": \"realtime_production_process_group_selection\",\n        \"status\": status,\n        \"success\": status == \"clarification_required\",\n        \"message\": message,\n        \"selected_process_group\": {},\n        \"process_group_candidates\": _candidate_summary(groups),\n        \"matched_process_groups\": [\n            {\"key\": key, \"evidence\": evidence}\n            for key, evidence in matches.items()\n        ],\n        \"llm_decision\": {\n            \"status\": str(llm_decision.get(\"status\") or \"\"),\n            \"process_group_key\": str(llm_decision.get(\"process_group_key\") or \"\"),\n            \"reason\": str(llm_decision.get(\"reason\") or \"\")[:500],\n            \"evidence\": list(llm_decision.get(\"evidence\") or [])[:20],\n        },\n        \"errors\": list(errors or []),\n    }\n\n\n# 함수 설명: `select_process_group_dataset()`는 LLM 선택을 질문 근거로 검증하고 Domain 허용 공정 행만 남깁니다.\ndef select_process_group_dataset(\n    *,\n    question_value: Any,\n    catalog_value: Any,\n    llm_response_value: Any,\n    dataset_value: Any,\n) -> dict[str, Any]:\n    question = _text(question_value)\n    catalog = _payload(catalog_value)\n    groups = [\n        deepcopy(group)\n        for group in catalog.get(\"process_groups\", [])\n        if isinstance(group, dict) and str(group.get(\"key\") or \"\").strip()\n    ]\n    if catalog.get(\"contract_version\") != CATALOG_CONTRACT_VERSION or catalog.get(\"status\") != \"ok\" or not groups:\n        errors = list(catalog.get(\"errors\") or [])\n        if not errors:\n            errors = [{\"type\": \"invalid_process_group_catalog\", \"message\": \"사용 가능한 공정그룹 카탈로그가 없습니다.\"}]\n        return _selection_boundary(\n            status=\"error\",\n            message=\"### 실시간 생산 분석 오류\\n공정그룹 정보를 불러오지 못해 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches={},\n            llm_decision={},\n            errors=errors,\n        )\n\n    matches = find_explicit_process_group_matches(question, groups)\n    matched_keys = sorted(matches)\n    llm_decision, llm_error = _parse_llm_decision(llm_response_value)\n    if len(matched_keys) != 1:\n        return _selection_boundary(\n            status=\"clarification_required\",\n            message=_clarification_message(groups, matched_keys),\n            groups=groups,\n            matches=matches,\n            llm_decision=llm_decision,\n            errors=[],\n        )\n    if llm_error:\n        return _selection_boundary(\n            status=\"error\",\n            message=\"### 실시간 생산 분석 오류\\n공정그룹 선택 응답을 검증하지 못해 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches=matches,\n            llm_decision={},\n            errors=[llm_error],\n        )\n\n    selected_key = matched_keys[0]\n    llm_status = str(llm_decision.get(\"status\") or \"\").strip().lower()\n    llm_key = str(llm_decision.get(\"process_group_key\") or \"\").strip().upper()\n    if llm_status != \"selected\" or llm_key != selected_key:\n        return _selection_boundary(\n            status=\"error\",\n            message=\"### 실시간 생산 분석 오류\\nLLM의 공정그룹 선택과 질문 원문 검증 결과가 일치하지 않아 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches=matches,\n            llm_decision=llm_decision,\n            errors=[\n                {\n                    \"type\": \"process_group_selection_mismatch\",\n                    \"message\": f\"질문 근거 그룹={selected_key}, LLM 선택 그룹={llm_key or '-'}\",\n                }\n            ],\n        )\n\n    selected_group = next(group for group in groups if str(group.get(\"key\") or \"\").strip().upper() == selected_key)\n    dataset = _payload(dataset_value)\n    rows = dataset.get(\"rows\")\n    if not isinstance(rows, list):\n        return _selection_boundary(\n            status=\"error\",\n            message=\"### 실시간 생산 분석 오류\\n판정 데이터 rows를 확인할 수 없어 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches=matches,\n            llm_decision=llm_decision,\n            errors=[{\"type\": \"missing_dataset_rows\", \"message\": \"판정 데이터 rows가 배열이 아닙니다.\"}],\n        )\n    field = str(selected_group.get(\"field\") or \"OPER_NAME\").strip()\n    allowed_processes = {str(item).strip().casefold() for item in selected_group.get(\"processes\") or [] if str(item).strip()}\n    selected_rows = [\n        deepcopy(row)\n        for row in rows\n        if isinstance(row, dict) and str(row.get(field) or \"\").strip().casefold() in allowed_processes\n    ]\n    if not selected_rows:\n        return _selection_boundary(\n            status=\"error\",\n            message=f\"### 실시간 생산 분석 오류\\n선택한 `{selected_group['display_name']}`의 판정 데이터가 없어 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches=matches,\n            llm_decision=llm_decision,\n            errors=[\n                {\n                    \"type\": \"empty_selected_process_group_dataset\",\n                    \"message\": f\"{field}에 등록 공정({', '.join(selected_group.get('processes') or [])})이 없습니다.\",\n                }\n            ],\n        )\n\n    selected = deepcopy(dataset)\n    selected[\"contract_version\"] = DATASET_CONTRACT_VERSION\n    selected[\"rows\"] = selected_rows\n    selected[\"row_count\"] = len(selected_rows)\n    selected[\"processes\"] = sorted(\n        {str(row.get(field) or \"\").strip() for row in selected_rows if str(row.get(field) or \"\").strip()}\n    )\n    selected[\"selected_process_group\"] = {\n        \"key\": selected_group[\"key\"],\n        \"display_name\": selected_group[\"display_name\"],\n        \"aliases\": list(selected_group.get(\"aliases\") or []),\n        \"field\": field,\n        \"processes\": list(selected_group.get(\"processes\") or []),\n        \"question_evidence\": matches[selected_key],\n        \"llm_reason\": str(llm_decision.get(\"reason\") or \"\")[:500],\n    }\n    selected[\"selection_contract_version\"] = CONTRACT_VERSION\n    selected[\"unfiltered_row_count\"] = len(rows)\n    return selected\n\n\n# Langflow 컴포넌트 클래스: 공정그룹 미지정 시 Report 생성을 닫고 단일 그룹 선택 데이터만 다음 노드로 전달합니다.\nclass RealtimeProductionProcessGroupSelectionGate(Component):\n    display_name = \"00C 실시간 생산 공정그룹 선택 Gate\"\n    description = \"LLM 선택을 Domain 허용목록과 질문 원문으로 검증하고 해당 공정그룹 데이터만 통과시킵니다.\"\n    name = \"RealtimeProductionProcessGroupSelectionGate\"\n    icon = \"ShieldCheck\"\n    inputs = [\n        HandleInput(name=\"question\", display_name=\"사용자 질문\", input_types=[\"Message\"], required=True),\n        DataInput(name=\"process_group_catalog\", display_name=\"공정그룹 카탈로그\", required=True),\n        HandleInput(name=\"llm_response\", display_name=\"LLM 공정그룹 선택\", input_types=[\"Message\"], required=True),\n        DataInput(name=\"dataset\", display_name=\"전체 판정 데이터\", required=True),\n    ]\n    outputs = [\n        Output(\n            name=\"selected_dataset\",\n            display_name=\"선택 공정그룹 판정 데이터\",\n            method=\"build_selected_dataset\",\n            types=[\"Data\"],\n        )\n    ]\n\n    # 함수 설명: `build_selected_dataset()`는 현재 입력을 검증해 선택 데이터 또는 재질문 계약을 Langflow Data로 반환합니다.\n    def build_selected_dataset(self) -> Data:\n        payload = select_process_group_dataset(\n            question_value=getattr(self, \"question\", None),\n            catalog_value=getattr(self, \"process_group_catalog\", None),\n            llm_response_value=getattr(self, \"llm_response\", None),\n            dataset_value=getattr(self, \"dataset\", None),\n        )\n        if payload.get(\"contract_version\") == DATASET_CONTRACT_VERSION:\n            group = payload.get(\"selected_process_group\") or {}\n            self.status = f\"{group.get('display_name') or group.get('key')} / {payload.get('row_count', 0):,}행\"\n        else:\n            self.status = str(payload.get(\"message\") or payload.get(\"status\") or \"\")\n        return Data(data=payload)\n",
+                "value": "# -*- coding: utf-8 -*-\n# =============================================================================\n# 컴포넌트 개요: 00C 실시간 생산 결정론 공정그룹 선택 Gate\n# 역할: 질문 원문에 명시된 Domain 공정그룹을 규칙으로 하나만 선택하고 해당 행만 통과시킵니다.\n# 주요 입력: 사용자 질문, 공정그룹 카탈로그, 전체 판정 Snapshot\n# 주요 출력: 선택된 production.judgement.dataset.v1 또는 clarification/error 계약 Data\n# 처리 흐름: 계약 검증 -> 질문 증거 검색 -> 단일 그룹 확정 -> field/processes 허용목록 필터\n# 유지보수 포인트: 의미 추측이나 기본 그룹 선택 없이 metadata에 등록된 표현만 정확히 허용합니다.\n# =============================================================================\n\nfrom __future__ import annotations\n\nimport re\nfrom copy import deepcopy\nfrom typing import Any\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DataInput, HandleInput, Output\nfrom lfx.schema.data import Data\n\n\nCONTRACT_VERSION = \"production.process_group.selection.v1\"\nDATASET_CONTRACT_VERSION = \"production.judgement.dataset.v1\"\nCATALOG_CONTRACT_VERSION = \"domain.process_group.catalog.v1\"\nSELECTION_METHOD = \"deterministic_explicit_match\"\nMAX_QUESTION_CHARS = 4_000\n\n\n# 함수 설명: `_text()`는 Message 또는 일반 입력을 질문 검증용 문자열로 변환합니다.\ndef _text(value: Any) -> str:\n    if value is None:\n        return \"\"\n    data = getattr(value, \"data\", None)\n    if isinstance(data, dict):\n        candidate = getattr(value, \"text\", None) or data.get(\"text\")\n        if candidate is not None:\n            return str(candidate).strip()\n    return str(getattr(value, \"text\", value) or \"\").strip()\n\n\n# 함수 설명: `_payload()`는 Langflow Data 또는 dict 입력을 독립 복사된 페이로드로 변환합니다.\ndef _payload(value: Any) -> dict[str, Any]:\n    raw = getattr(value, \"data\", value)\n    return deepcopy(raw) if isinstance(raw, dict) else {}\n\n\n# 함수 설명: `_empty_llm_decision()`은 기존 selection.v1 공개 shape와의 호환을 유지합니다.\ndef _empty_llm_decision() -> dict[str, Any]:\n    return {\n        \"status\": \"\",\n        \"process_group_key\": \"\",\n        \"reason\": \"\",\n        \"evidence\": [],\n    }\n\n\n# 함수 설명: `_selection_provenance()`는 모델을 사용하지 않은 선택 근거만 제한된 크기로 기록합니다.\ndef _selection_provenance(\n    matches: dict[str, list[str]],\n    *,\n    selected_key: str = \"\",\n) -> dict[str, Any]:\n    return {\n        \"method\": SELECTION_METHOD,\n        \"catalog_contract_version\": CATALOG_CONTRACT_VERSION,\n        \"matched_group_count\": len(matches),\n        \"selected_key\": str(selected_key or \"\"),\n        \"question_evidence\": {\n            str(key): [str(item)[:200] for item in evidence[:20]]\n            for key, evidence in matches.items()\n        },\n    }\n\n\n# 함수 설명: `_token_present()`는 등록 표현의 영숫자 경계를 지켜 D/A1과 D/A10 같은 prefix 오탐을 차단합니다.\ndef _token_present(question: str, token: str, *, short_key: bool = False) -> bool:\n    candidate = str(token or \"\").strip()\n    if not candidate:\n        return False\n    if short_key or re.search(r\"[A-Za-z0-9]\", candidate):\n        left_boundary = r\"(?<![A-Za-z0-9])\" if re.match(r\"[A-Za-z0-9]\", candidate) else \"\"\n        right_boundary = r\"(?![A-Za-z0-9])\" if re.search(r\"[A-Za-z0-9]$\", candidate) else \"\"\n        return bool(\n            re.search(\n                rf\"{left_boundary}{re.escape(candidate)}{right_boundary}\",\n                question,\n                flags=re.IGNORECASE,\n            )\n        )\n    return candidate.casefold() in question.casefold()\n\n\n# 함수 설명: `find_explicit_process_group_matches()`는 key·alias·display·세부 공정 근거를 그룹별로 수집합니다.\ndef find_explicit_process_group_matches(\n    question: str,\n    groups: list[dict[str, Any]],\n) -> dict[str, list[str]]:\n    matches: dict[str, list[str]] = {}\n    for group in groups:\n        key = str(group.get(\"key\") or \"\").strip().upper()\n        evidence: list[str] = []\n        for process in group.get(\"processes\") or []:\n            if _token_present(question, str(process)):\n                evidence.append(str(process))\n        for alias in group.get(\"aliases\") or []:\n            if _token_present(\n                question,\n                str(alias),\n                short_key=str(alias).strip().upper() == key,\n            ):\n                evidence.append(str(alias))\n        display_name = str(group.get(\"display_name\") or \"\")\n        if _token_present(question, display_name):\n            evidence.append(display_name)\n        if _token_present(question, key, short_key=True):\n            evidence.append(key)\n        unique = list(dict.fromkeys(item for item in evidence if item))\n        if key and unique:\n            matches[key] = unique\n    return matches\n\n\n# 함수 설명: `_validated_groups()`는 카탈로그 항목의 필수 schema와 key 유일성을 fail-closed로 검증합니다.\ndef _validated_groups(catalog: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:\n    errors: list[dict[str, str]] = []\n    raw_groups = catalog.get(\"process_groups\")\n    if not isinstance(raw_groups, list):\n        return [], [{\"type\": \"invalid_process_group_catalog_shape\", \"message\": \"process_groups가 배열이 아닙니다.\"}]\n\n    groups: list[dict[str, Any]] = []\n    seen_keys: set[str] = set()\n    for index, raw_group in enumerate(raw_groups):\n        if not isinstance(raw_group, dict):\n            errors.append(\n                {\n                    \"type\": \"invalid_process_group_item\",\n                    \"message\": f\"공정그룹 #{index + 1}이 object가 아닙니다.\",\n                }\n            )\n            continue\n        group = deepcopy(raw_group)\n        key = str(group.get(\"key\") or \"\").strip().upper()\n        display_name = str(group.get(\"display_name\") or \"\").strip()\n        field = str(group.get(\"field\") or \"\").strip()\n        aliases = group.get(\"aliases\")\n        processes = group.get(\"processes\")\n        if (\n            not key\n            or not display_name\n            or not field\n            or not isinstance(aliases, list)\n            or not isinstance(processes, list)\n            or not any(str(item or \"\").strip() for item in processes)\n        ):\n            errors.append(\n                {\n                    \"type\": \"invalid_process_group_item\",\n                    \"message\": f\"공정그룹 #{index + 1}의 key/display_name/aliases/field/processes 계약이 불완전합니다.\",\n                }\n            )\n            continue\n        if key in seen_keys:\n            errors.append(\n                {\n                    \"type\": \"duplicate_process_group_key\",\n                    \"message\": f\"중복 공정그룹 key가 있습니다: {key}\",\n                }\n            )\n            continue\n        seen_keys.add(key)\n        group[\"key\"] = key\n        group[\"display_name\"] = display_name\n        group[\"field\"] = field\n        group[\"aliases\"] = [str(item).strip() for item in aliases if str(item or \"\").strip()]\n        group[\"processes\"] = [str(item).strip() for item in processes if str(item or \"\").strip()]\n        groups.append(group)\n    return groups, errors\n\n\n# 함수 설명: `_candidate_summary()`는 재질문 응답에 노출할 공정그룹 후보 필드만 선택합니다.\ndef _candidate_summary(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:\n    return [\n        {\n            \"key\": str(group.get(\"key\") or \"\"),\n            \"display_name\": str(group.get(\"display_name\") or \"\"),\n            \"aliases\": list(group.get(\"aliases\") or []),\n            \"processes\": list(group.get(\"processes\") or []),\n        }\n        for group in groups\n    ]\n\n\n# 함수 설명: `_clarification_message()`는 미지정 또는 다중지정 상황에서 단일 공정그룹을 요청합니다.\ndef _clarification_message(groups: list[dict[str, Any]], matched_keys: list[str]) -> str:\n    candidates = \", \".join(\n        f\"`{group.get('display_name') or group.get('key')}`\"\n        for group in groups\n    ) or \"등록된 공정그룹 없음\"\n    if len(matched_keys) > 1:\n        matched = \", \".join(f\"`{key}`\" for key in matched_keys)\n        lead = f\"여러 공정그룹({matched})이 함께 확인되어 하나를 선택해야 합니다.\"\n    else:\n        lead = \"실시간 생산 분석을 실행할 공정그룹이 질문에 없습니다.\"\n    return (\n        \"### 공정그룹을 선택해 주세요.\\n\\n\"\n        f\"{lead} Report는 아직 생성하지 않았습니다.\\n\\n\"\n        f\"- 선택 가능한 공정그룹: {candidates}\\n\"\n        \"- 예시: `W/B 공정 그룹의 실시간 생산 분석 Report를 만들어줘`\"\n    )\n\n\n# 함수 설명: `_selection_boundary()`는 Report를 만들지 않는 clarification/error 계약을 생성합니다.\ndef _selection_boundary(\n    *,\n    status: str,\n    message: str,\n    groups: list[dict[str, Any]],\n    matches: dict[str, list[str]],\n    errors: list[dict[str, str]] | None = None,\n) -> dict[str, Any]:\n    return {\n        \"contract_version\": CONTRACT_VERSION,\n        \"response_type\": \"realtime_production_process_group_selection\",\n        \"status\": status,\n        \"success\": status == \"clarification_required\",\n        \"message\": message,\n        \"selected_process_group\": {},\n        \"process_group_candidates\": _candidate_summary(groups),\n        \"matched_process_groups\": [\n            {\"key\": key, \"evidence\": evidence}\n            for key, evidence in matches.items()\n        ],\n        \"llm_decision\": _empty_llm_decision(),\n        \"selection_provenance\": _selection_provenance(matches),\n        \"errors\": list(errors or []),\n    }\n\n\n# 함수 설명: `select_process_group_dataset()`는 질문의 단일 명시 그룹만 선택해 허용된 판정 행을 반환합니다.\ndef select_process_group_dataset(\n    *,\n    question_value: Any,\n    catalog_value: Any,\n    dataset_value: Any,\n) -> dict[str, Any]:\n    question = _text(question_value)[:MAX_QUESTION_CHARS]\n    catalog = _payload(catalog_value)\n    groups, group_errors = _validated_groups(catalog)\n    if (\n        catalog.get(\"contract_version\") != CATALOG_CONTRACT_VERSION\n        or catalog.get(\"status\") != \"ok\"\n        or not groups\n        or group_errors\n    ):\n        errors = [\n            deepcopy(item)\n            for item in catalog.get(\"errors\", [])\n            if isinstance(item, dict)\n        ]\n        errors.extend(group_errors)\n        if not errors:\n            errors = [{\"type\": \"invalid_process_group_catalog\", \"message\": \"사용 가능한 공정그룹 카탈로그가 없습니다.\"}]\n        return _selection_boundary(\n            status=\"error\",\n            message=\"### 실시간 생산 분석 오류\\n공정그룹 정보를 불러오지 못해 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches={},\n            errors=errors,\n        )\n\n    matches = find_explicit_process_group_matches(question, groups)\n    matched_keys = sorted(matches)\n    if len(matched_keys) != 1:\n        return _selection_boundary(\n            status=\"clarification_required\",\n            message=_clarification_message(groups, matched_keys),\n            groups=groups,\n            matches=matches,\n            errors=[],\n        )\n\n    selected_key = matched_keys[0]\n    selected_group = next(\n        group\n        for group in groups\n        if str(group.get(\"key\") or \"\").strip().upper() == selected_key\n    )\n    dataset = _payload(dataset_value)\n    if dataset.get(\"contract_version\") != DATASET_CONTRACT_VERSION:\n        return _selection_boundary(\n            status=\"error\",\n            message=\"### 실시간 생산 분석 오류\\n판정 데이터 계약을 확인할 수 없어 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches=matches,\n            errors=[\n                {\n                    \"type\": \"invalid_production_judgement_dataset_contract\",\n                    \"message\": f\"판정 데이터 contract_version은 {DATASET_CONTRACT_VERSION}이어야 합니다.\",\n                }\n            ],\n        )\n\n    rows = dataset.get(\"rows\")\n    columns = dataset.get(\"columns\")\n    if not isinstance(rows, list):\n        return _selection_boundary(\n            status=\"error\",\n            message=\"### 실시간 생산 분석 오류\\n판정 데이터 rows를 확인할 수 없어 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches=matches,\n            errors=[{\"type\": \"missing_dataset_rows\", \"message\": \"판정 데이터 rows가 배열이 아닙니다.\"}],\n        )\n    if not isinstance(columns, list) or any(not isinstance(row, dict) for row in rows):\n        return _selection_boundary(\n            status=\"error\",\n            message=\"### 실시간 생산 분석 오류\\n판정 데이터 schema를 확인할 수 없어 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches=matches,\n            errors=[\n                {\n                    \"type\": \"invalid_production_judgement_dataset_schema\",\n                    \"message\": \"판정 데이터 columns는 배열이고 모든 rows 항목은 object여야 합니다.\",\n                }\n            ],\n        )\n\n    field = str(selected_group.get(\"field\") or \"\").strip()\n    if field not in {str(column) for column in columns} or (rows and any(field not in row for row in rows)):\n        return _selection_boundary(\n            status=\"error\",\n            message=\"### 실시간 생산 분석 오류\\n공정그룹 필터 컬럼이 판정 데이터에 없어 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches=matches,\n            errors=[\n                {\n                    \"type\": \"missing_process_group_field\",\n                    \"message\": f\"판정 데이터에 metadata field `{field}`가 없습니다.\",\n                }\n            ],\n        )\n\n    allowed_processes = {\n        str(item).strip().casefold()\n        for item in selected_group.get(\"processes\") or []\n        if str(item).strip()\n    }\n    selected_rows = [\n        deepcopy(row)\n        for row in rows\n        if str(row.get(field) or \"\").strip().casefold() in allowed_processes\n    ]\n    if not selected_rows:\n        return _selection_boundary(\n            status=\"error\",\n            message=f\"### 실시간 생산 분석 오류\\n선택한 `{selected_group['display_name']}`의 판정 데이터가 없어 Report를 생성하지 않았습니다.\",\n            groups=groups,\n            matches=matches,\n            errors=[\n                {\n                    \"type\": \"empty_selected_process_group_dataset\",\n                    \"message\": f\"{field}에 등록 공정({', '.join(selected_group.get('processes') or [])})이 없습니다.\",\n                }\n            ],\n        )\n\n    selected = deepcopy(dataset)\n    selected[\"contract_version\"] = DATASET_CONTRACT_VERSION\n    selected[\"rows\"] = selected_rows\n    selected[\"row_count\"] = len(selected_rows)\n    selected[\"processes\"] = sorted(\n        {\n            str(row.get(field) or \"\").strip()\n            for row in selected_rows\n            if str(row.get(field) or \"\").strip()\n        }\n    )\n    selected[\"selected_process_group\"] = {\n        \"key\": selected_group[\"key\"],\n        \"display_name\": selected_group[\"display_name\"],\n        \"aliases\": list(selected_group.get(\"aliases\") or []),\n        \"field\": field,\n        \"processes\": list(selected_group.get(\"processes\") or []),\n        \"question_evidence\": matches[selected_key],\n        \"llm_reason\": \"\",\n    }\n    selected[\"selection_contract_version\"] = CONTRACT_VERSION\n    selected[\"selection_provenance\"] = _selection_provenance(\n        matches,\n        selected_key=selected_key,\n    )\n    selected[\"unfiltered_row_count\"] = len(rows)\n    return selected\n\n\n# Langflow 컴포넌트 클래스: 명시된 단일 공정그룹만 선택하고 미지정·모호 입력에서는 Report 생성을 닫습니다.\nclass RealtimeProductionDeterministicProcessGroupSelectionGate(Component):\n    display_name = \"00C 실시간 생산 결정론 공정그룹 선택 Gate\"\n    description = \"질문 원문과 Domain 허용목록만으로 단일 공정그룹을 확정하고 해당 데이터만 통과시킵니다.\"\n    name = \"RealtimeProductionDeterministicProcessGroupSelectionGate\"\n    icon = \"ShieldCheck\"\n    inputs = [\n        HandleInput(name=\"question\", display_name=\"사용자 질문\", input_types=[\"Message\"], required=True),\n        DataInput(name=\"process_group_catalog\", display_name=\"공정그룹 카탈로그\", required=True),\n        DataInput(name=\"dataset\", display_name=\"전체 판정 데이터\", required=True),\n    ]\n    outputs = [\n        Output(\n            name=\"selected_dataset\",\n            display_name=\"선택 공정그룹 판정 데이터\",\n            method=\"build_selected_dataset\",\n            types=[\"Data\"],\n        )\n    ]\n\n    # 함수 설명: `build_selected_dataset()`는 선택 데이터 또는 재질문/error 계약을 Langflow Data로 반환합니다.\n    def build_selected_dataset(self) -> Data:\n        payload = select_process_group_dataset(\n            question_value=getattr(self, \"question\", None),\n            catalog_value=getattr(self, \"process_group_catalog\", None),\n            dataset_value=getattr(self, \"dataset\", None),\n        )\n        if payload.get(\"contract_version\") == DATASET_CONTRACT_VERSION:\n            group = payload.get(\"selected_process_group\") or {}\n            self.status = f\"{group.get('display_name') or group.get('key')} / {payload.get('row_count', 0):,}행\"\n        else:\n            self.status = str(payload.get(\"message\") or payload.get(\"status\") or \"\")\n        return Data(data=payload)\n",
                 "fileTypes": [],
                 "file_path": "",
                 "password": false,
@@ -1431,13 +811,13 @@
                 "title_case": false
               }
             },
-            "description": "LLM 선택을 Domain 허용목록과 질문 원문으로 검증하고 해당 공정그룹 데이터만 통과시킵니다.",
+            "description": "질문 원문과 Domain 허용목록만으로 단일 공정그룹을 확정하고 해당 데이터만 통과시킵니다.",
             "icon": "ShieldCheck",
             "base_classes": [
               "Data",
               "JSON"
             ],
-            "display_name": "00C 실시간 생산 공정그룹 선택 Gate",
+            "display_name": "00C 실시간 생산 결정론 공정그룹 선택 Gate",
             "documentation": "",
             "minimized": false,
             "custom_fields": {},
@@ -1465,15 +845,14 @@
             "field_order": [
               "question",
               "process_group_catalog",
-              "llm_response",
               "dataset"
             ],
             "beta": false,
             "legacy": false,
             "edited": false,
             "metadata": {
-              "module": "v5_auxiliary.00c_process_group_selection_gate",
-              "code_hash": "e85f868bf25b",
+              "module": "v5_auxiliary.00c_deterministic_process_group_selection_gate",
+              "code_hash": "6da3adf32b40",
               "dependencies": {
                 "total_dependencies": 1,
                 "dependencies": [
@@ -1488,7 +867,7 @@
             "lf_version": "1.11.0"
           },
           "showNode": true,
-          "type": "RealtimeProductionProcessGroupSelectionGate"
+          "type": "RealtimeProductionDeterministicProcessGroupSelectionGate"
         },
         "dragging": false,
         "id": "ProcessGroupSelectionGate-realtime-production-report",
@@ -3002,92 +2381,6 @@
           },
           "targetHandle": {
             "fieldName": "question",
-            "id": "ProcessGroupPrompt-realtime-production-report",
-            "inputTypes": [
-              "Message"
-            ],
-            "type": "other"
-          }
-        },
-        "id": "xy-edge__ChatInput-realtime-production-report{œdataTypeœ:œChatInputœ,œidœ:œChatInput-realtime-production-reportœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-ProcessGroupPrompt-realtime-production-report{œfieldNameœ:œquestionœ,œidœ:œProcessGroupPrompt-realtime-production-reportœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}",
-        "selected": false,
-        "source": "ChatInput-realtime-production-report",
-        "sourceHandle": "{œdataTypeœ:œChatInputœ,œidœ:œChatInput-realtime-production-reportœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
-        "target": "ProcessGroupPrompt-realtime-production-report",
-        "targetHandle": "{œfieldNameœ:œquestionœ,œidœ:œProcessGroupPrompt-realtime-production-reportœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}"
-      },
-      {
-        "animated": false,
-        "className": "",
-        "data": {
-          "sourceHandle": {
-            "dataType": "RealtimeProductionProcessGroupCatalogLoader",
-            "id": "ProcessGroupCatalog-realtime-production-report",
-            "name": "process_group_catalog",
-            "output_types": [
-              "Data",
-              "JSON"
-            ]
-          },
-          "targetHandle": {
-            "fieldName": "process_group_catalog",
-            "id": "ProcessGroupPrompt-realtime-production-report",
-            "inputTypes": [
-              "Data",
-              "JSON"
-            ],
-            "type": "other"
-          }
-        },
-        "id": "xy-edge__ProcessGroupCatalog-realtime-production-report{œdataTypeœ:œRealtimeProductionProcessGroupCatalogLoaderœ,œidœ:œProcessGroupCatalog-realtime-production-reportœ,œnameœ:œprocess_group_catalogœ,œoutput_typesœ:[œDataœ,œJSONœ]}-ProcessGroupPrompt-realtime-production-report{œfieldNameœ:œprocess_group_catalogœ,œidœ:œProcessGroupPrompt-realtime-production-reportœ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}",
-        "selected": false,
-        "source": "ProcessGroupCatalog-realtime-production-report",
-        "sourceHandle": "{œdataTypeœ:œRealtimeProductionProcessGroupCatalogLoaderœ,œidœ:œProcessGroupCatalog-realtime-production-reportœ,œnameœ:œprocess_group_catalogœ,œoutput_typesœ:[œDataœ,œJSONœ]}",
-        "target": "ProcessGroupPrompt-realtime-production-report",
-        "targetHandle": "{œfieldNameœ:œprocess_group_catalogœ,œidœ:œProcessGroupPrompt-realtime-production-reportœ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}"
-      },
-      {
-        "animated": false,
-        "className": "",
-        "data": {
-          "sourceHandle": {
-            "dataType": "RealtimeProductionProcessGroupSelectionPrompt",
-            "id": "ProcessGroupPrompt-realtime-production-report",
-            "name": "prompt",
-            "output_types": [
-              "Message"
-            ]
-          },
-          "targetHandle": {
-            "fieldName": "input_value",
-            "id": "LanguageModelProcessGroup-realtime-production-report",
-            "inputTypes": [
-              "Message"
-            ],
-            "type": "str"
-          }
-        },
-        "id": "xy-edge__ProcessGroupPrompt-realtime-production-report{œdataTypeœ:œRealtimeProductionProcessGroupSelectionPromptœ,œidœ:œProcessGroupPrompt-realtime-production-reportœ,œnameœ:œpromptœ,œoutput_typesœ:[œMessageœ]}-LanguageModelProcessGroup-realtime-production-report{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelProcessGroup-realtime-production-reportœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
-        "selected": false,
-        "source": "ProcessGroupPrompt-realtime-production-report",
-        "sourceHandle": "{œdataTypeœ:œRealtimeProductionProcessGroupSelectionPromptœ,œidœ:œProcessGroupPrompt-realtime-production-reportœ,œnameœ:œpromptœ,œoutput_typesœ:[œMessageœ]}",
-        "target": "LanguageModelProcessGroup-realtime-production-report",
-        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelProcessGroup-realtime-production-reportœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
-      },
-      {
-        "animated": false,
-        "className": "",
-        "data": {
-          "sourceHandle": {
-            "dataType": "ChatInput",
-            "id": "ChatInput-realtime-production-report",
-            "name": "message",
-            "output_types": [
-              "Message"
-            ]
-          },
-          "targetHandle": {
-            "fieldName": "question",
             "id": "ProcessGroupSelectionGate-realtime-production-report",
             "inputTypes": [
               "Message"
@@ -3131,34 +2424,6 @@
         "sourceHandle": "{œdataTypeœ:œRealtimeProductionProcessGroupCatalogLoaderœ,œidœ:œProcessGroupCatalog-realtime-production-reportœ,œnameœ:œprocess_group_catalogœ,œoutput_typesœ:[œDataœ,œJSONœ]}",
         "target": "ProcessGroupSelectionGate-realtime-production-report",
         "targetHandle": "{œfieldNameœ:œprocess_group_catalogœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}"
-      },
-      {
-        "animated": false,
-        "className": "",
-        "data": {
-          "sourceHandle": {
-            "dataType": "LanguageModelComponent",
-            "id": "LanguageModelProcessGroup-realtime-production-report",
-            "name": "text_output",
-            "output_types": [
-              "Message"
-            ]
-          },
-          "targetHandle": {
-            "fieldName": "llm_response",
-            "id": "ProcessGroupSelectionGate-realtime-production-report",
-            "inputTypes": [
-              "Message"
-            ],
-            "type": "other"
-          }
-        },
-        "id": "xy-edge__LanguageModelProcessGroup-realtime-production-report{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelProcessGroup-realtime-production-reportœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}-ProcessGroupSelectionGate-realtime-production-report{œfieldNameœ:œllm_responseœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}",
-        "selected": false,
-        "source": "LanguageModelProcessGroup-realtime-production-report",
-        "sourceHandle": "{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelProcessGroup-realtime-production-reportœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}",
-        "target": "ProcessGroupSelectionGate-realtime-production-report",
-        "targetHandle": "{œfieldNameœ:œllm_responseœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œinputTypesœ:[œMessageœ],œtypeœ:œotherœ}"
       },
       {
         "animated": false,
@@ -3223,7 +2488,7 @@
         "className": "",
         "data": {
           "sourceHandle": {
-            "dataType": "RealtimeProductionProcessGroupSelectionGate",
+            "dataType": "RealtimeProductionDeterministicProcessGroupSelectionGate",
             "id": "ProcessGroupSelectionGate-realtime-production-report",
             "name": "selected_dataset",
             "output_types": [
@@ -3241,10 +2506,10 @@
             "type": "other"
           }
         },
-        "id": "xy-edge__ProcessGroupSelectionGate-realtime-production-report{œdataTypeœ:œRealtimeProductionProcessGroupSelectionGateœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œnameœ:œselected_datasetœ,œoutput_typesœ:[œDataœ,œJSONœ]}-ReportContextPayload-realtime-production-report{œfieldNameœ:œdatasetœ,œidœ:œReportContextPayload-realtime-production-reportœ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}",
+        "id": "xy-edge__ProcessGroupSelectionGate-realtime-production-report{œdataTypeœ:œRealtimeProductionDeterministicProcessGroupSelectionGateœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œnameœ:œselected_datasetœ,œoutput_typesœ:[œDataœ,œJSONœ]}-ReportContextPayload-realtime-production-report{œfieldNameœ:œdatasetœ,œidœ:œReportContextPayload-realtime-production-reportœ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}",
         "selected": false,
         "source": "ProcessGroupSelectionGate-realtime-production-report",
-        "sourceHandle": "{œdataTypeœ:œRealtimeProductionProcessGroupSelectionGateœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œnameœ:œselected_datasetœ,œoutput_typesœ:[œDataœ,œJSONœ]}",
+        "sourceHandle": "{œdataTypeœ:œRealtimeProductionDeterministicProcessGroupSelectionGateœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œnameœ:œselected_datasetœ,œoutput_typesœ:[œDataœ,œJSONœ]}",
         "target": "ReportContextPayload-realtime-production-report",
         "targetHandle": "{œfieldNameœ:œdatasetœ,œidœ:œReportContextPayload-realtime-production-reportœ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}"
       },
@@ -3311,7 +2576,7 @@
         "className": "",
         "data": {
           "sourceHandle": {
-            "dataType": "RealtimeProductionProcessGroupSelectionGate",
+            "dataType": "RealtimeProductionDeterministicProcessGroupSelectionGate",
             "id": "ProcessGroupSelectionGate-realtime-production-report",
             "name": "selected_dataset",
             "output_types": [
@@ -3329,10 +2594,10 @@
             "type": "other"
           }
         },
-        "id": "xy-edge__ProcessGroupSelectionGate-realtime-production-report{œdataTypeœ:œRealtimeProductionProcessGroupSelectionGateœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œnameœ:œselected_datasetœ,œoutput_typesœ:[œDataœ,œJSONœ]}-RealtimeProductionReportBuilder-realtime-production-report{œfieldNameœ:œdatasetœ,œidœ:œRealtimeProductionReportBuilder-realtime-production-reportœ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}",
+        "id": "xy-edge__ProcessGroupSelectionGate-realtime-production-report{œdataTypeœ:œRealtimeProductionDeterministicProcessGroupSelectionGateœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œnameœ:œselected_datasetœ,œoutput_typesœ:[œDataœ,œJSONœ]}-RealtimeProductionReportBuilder-realtime-production-report{œfieldNameœ:œdatasetœ,œidœ:œRealtimeProductionReportBuilder-realtime-production-reportœ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}",
         "selected": false,
         "source": "ProcessGroupSelectionGate-realtime-production-report",
-        "sourceHandle": "{œdataTypeœ:œRealtimeProductionProcessGroupSelectionGateœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œnameœ:œselected_datasetœ,œoutput_typesœ:[œDataœ,œJSONœ]}",
+        "sourceHandle": "{œdataTypeœ:œRealtimeProductionDeterministicProcessGroupSelectionGateœ,œidœ:œProcessGroupSelectionGate-realtime-production-reportœ,œnameœ:œselected_datasetœ,œoutput_typesœ:[œDataœ,œJSONœ]}",
         "target": "RealtimeProductionReportBuilder-realtime-production-report",
         "targetHandle": "{œfieldNameœ:œdatasetœ,œidœ:œRealtimeProductionReportBuilder-realtime-production-reportœ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}"
       },
@@ -3490,7 +2755,7 @@
       "zoom": 0.55
     }
   },
-  "description": "Realtime production report flow with Domain process-group catalog grounding, native LLM group selection, deterministic evidence validation and row filtering, a session-bound result-store context for shared follow-up analysis, clarification without HTML when no group is specified, and four fixed report sections.",
+  "description": "Realtime production report flow with Domain process-group catalog grounding, deterministic explicit process-group selection and row filtering, a session-bound result-store context for shared follow-up analysis, clarification without HTML when no group is specified, and four fixed report sections.",
   "endpoint_name": "metadata-driven-v5-complete-20260710-realtime-production-report",
   "id": "5e578563-65f1-51e5-a6ad-a5c7915e3044",
   "is_component": false,

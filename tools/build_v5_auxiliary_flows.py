@@ -658,7 +658,12 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     _set_value(agent_template, "max_iterations", 1)
     _set_value(agent_template, "n_messages", 5)
     _set_value(agent_template, "add_current_date_tool", False)
-    _set_value(agent_template, "handle_parsing_errors", True)
+    # LFX 1.11 maps this legacy-looking option to a broad
+    # ToolRetryMiddleware(max_retries=2).  The Router also exposes metadata
+    # write flows, so replaying an entire child Flow is not a safe recovery
+    # boundary.  Each Cached Flow Tool instead returns one sanitized
+    # status=error ToolMessage for validation/runtime failures.
+    _set_value(agent_template, "handle_parsing_errors", False)
     _set_value(agent_template, "verbose", False)
     result_adapter = custom_node(
         proto["custom"],
@@ -706,7 +711,7 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["realtime_production_report"],
-        "Realtime production report flow with Domain process-group catalog grounding, native LLM group selection, deterministic evidence validation and row filtering, a session-bound result-store context for shared follow-up analysis, clarification without HTML when no group is specified, and four fixed report sections.",
+        "Realtime production report flow with Domain process-group catalog grounding, deterministic explicit process-group selection and row filtering, a session-bound result-store context for shared follow-up analysis, clarification without HTML when no group is specified, and four fixed report sections.",
         "metadata-driven-v5-realtime-production-report",
         ["v5", "standalone", "realtime-production", "process-group", "dummy-data", "html-report", "report-api", "mongodb-collection", "followup-context"],
     )
@@ -724,21 +729,6 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     _set_value(catalog_template, "mongo_database", "datagov")
     _set_value(catalog_template, "collection_name", "agent_v4_domain_items")
     _set_value(catalog_template, "status_filter", "active")
-    prompt = custom_node(
-        proto["custom"],
-        "ProcessGroupPrompt-realtime-production-report",
-        folder / "00b_process_group_selection_prompt.py",
-        760,
-        -380,
-    )
-    selector_model = language_model_node(
-        proto["language_model"],
-        "LanguageModelProcessGroup-realtime-production-report",
-        1160,
-        -380,
-        "Select only one explicitly evidenced process-group key from the supplied domain catalog. Return exactly one JSON object and never guess a default group.",
-    )
-    _set_value(selector_model["data"]["node"]["template"], "max_tokens", 700)
     dummy = custom_node(
         proto["custom"],
         "DummyProductionJudgementData-realtime-production-report",
@@ -754,7 +744,7 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     gate = custom_node(
         proto["custom"],
         "ProcessGroupSelectionGate-realtime-production-report",
-        folder / "00c_process_group_selection_gate.py",
+        folder / "00c_deterministic_process_group_selection_gate.py",
         1540,
         0,
     )
@@ -813,8 +803,6 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
         [
             chat,
             catalog,
-            prompt,
-            selector_model,
             dummy,
             gate,
             context_payload,
@@ -825,12 +813,8 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
             api_terminal,
         ]
     )
-    add_edge(flow, chat, "message", prompt, "question")
-    add_edge(flow, catalog, "process_group_catalog", prompt, "process_group_catalog")
-    add_edge(flow, prompt, "prompt", selector_model, "input_value")
     add_edge(flow, chat, "message", gate, "question")
     add_edge(flow, catalog, "process_group_catalog", gate, "process_group_catalog")
-    add_edge(flow, selector_model, "text_output", gate, "llm_response")
     add_edge(flow, dummy, "dataset", gate, "dataset")
     add_edge(flow, chat, "message", context_payload, "question")
     add_edge(flow, gate, "selected_dataset", context_payload, "dataset")

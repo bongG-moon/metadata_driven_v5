@@ -27,6 +27,31 @@ FLOW_ID_PREFERRED = "Flow ID 우선"
 FLOW_ID_ONLY = "선택한 Flow ID만"
 FLOW_NAME_ONLY = "Flow 이름으로 조회"
 FLOW_RESOLUTION_OPTIONS = [FLOW_ID_PREFERRED, FLOW_ID_ONLY, FLOW_NAME_ONLY]
+TOOL_INPUT_VALIDATION_ERROR_MESSAGE = (
+    "요청 인자 형식이 올바르지 않아 하위 작업을 실행하지 않았습니다. "
+    "질문을 확인한 뒤 다시 요청해 주세요."
+)
+TOOL_RUNTIME_ERROR_MESSAGE = (
+    "선택한 하위 작업을 완료하지 못했습니다. "
+    "저장 요청이었다면 현재 반영 상태를 먼저 확인해 주세요."
+)
+
+
+# 함수 설명: LFX Tool의 status=error 계약은 유지하면서 내부 예외 상세가 사용자 답변에 노출되지 않게 합니다.
+def _configure_safe_tool_errors(tool: Any) -> Any:
+    """Convert validation/ToolException failures to one sanitized ToolMessage.
+
+    LFX component tools normally expose ``str(ToolException)`` and the native
+    Agent's ``handle_parsing_errors`` option can retry exceptions broadly.  A
+    fixed handler string lets LangChain keep ``ToolMessage.status='error'``
+    without replaying a child Flow or leaking Flow IDs, user IDs, connection
+    strings, or tracebacks.  Ordinary child results, including blocked and
+    clarification Messages, do not enter either error handler.
+    """
+
+    tool.handle_validation_error = TOOL_INPUT_VALIDATION_ERROR_MESSAGE
+    tool.handle_tool_error = TOOL_RUNTIME_ERROR_MESSAGE
+    return tool
 
 
 # 함수 설명: `_as_iso_text()`는 datetime 등 시간 값을 캐시 갱신 비교에 사용할 ISO 문자열로 변환합니다.
@@ -695,6 +720,7 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
         tool.description = str(self.tool_description or "").strip()
         tool.tags = [tool_name]
         tool.return_direct = bool(self.return_direct)
+        _configure_safe_tool_errors(tool)
         self.status = f"{tool.name}: {tool.description}"
         return [tool]
 

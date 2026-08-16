@@ -79,6 +79,11 @@ def test_native_boundaries_keep_analysis_direct_and_clean_agent_tool_results() -
 def test_default_router_exposes_one_dedicated_report_followup_tool() -> None:
     flow = build_agent_tool_router_flow(load_donor())
     nodes = flow["data"]["nodes"]
+    router_agent = next(node for node in nodes if node["id"] == "Agent-agent-tool-router")
+    router_template = router_agent["data"]["node"]["template"]
+    assert router_template["handle_parsing_errors"]["value"] is False
+    assert router_template["max_iterations"]["value"] == 1
+
     tool_nodes = [
         node
         for node in nodes
@@ -158,14 +163,24 @@ def test_realtime_report_flow_publishes_context_and_session_state() -> None:
     report_id = "RealtimeProductionReportBuilder-realtime-production-report"
     session_writer_id = "ReportSessionStateWriter-realtime-production-report"
     terminal_id = "RealtimeProductionReportApiTerminal-realtime-production-report"
+    gate_id = "ProcessGroupSelectionGate-realtime-production-report"
 
+    assert len(nodes) == 10
+    assert len(flow["data"]["edges"]) == 13
+    assert "ProcessGroupPrompt-realtime-production-report" not in nodes
+    assert "LanguageModelProcessGroup-realtime-production-report" not in nodes
     assert {
         context_id,
         result_store_id,
         report_id,
         session_writer_id,
         terminal_id,
+        gate_id,
     }.issubset(nodes)
+    assert (
+        "RealtimeProductionDeterministicProcessGroupSelectionGate"
+        in nodes[gate_id]["data"]["node"]["template"]["code"]["value"]
+    )
     assert ("ChatInput-realtime-production-report", context_id) in edges
     assert ("ProcessGroupSelectionGate-realtime-production-report", context_id) in edges
     assert (context_id, result_store_id) in edges
@@ -240,6 +255,12 @@ def test_legacy_realtime_report_preserves_original_direct_graph() -> None:
     assert flow["endpoint_name"] == "metadata-driven-v5-realtime-production-report-legacy"
     assert len(nodes) == 9
     assert len(flow["data"]["edges"]) == 11
+    assert f"ProcessGroupPrompt-{suffix}" in nodes
+    assert f"LanguageModelProcessGroup-{suffix}" in nodes
+    assert (
+        "RealtimeProductionProcessGroupSelectionGate"
+        in nodes[f"ProcessGroupSelectionGate-{suffix}"]["data"]["node"]["template"]["code"]["value"]
+    )
     assert not [node_id for node_id in nodes if "ReportContext" in node_id or "SessionStateWriter" in node_id]
     assert (report_id, "message", f"ChatOutput-{suffix}", "input_value") in edge_ports
     assert (

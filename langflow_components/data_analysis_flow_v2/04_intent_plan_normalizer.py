@@ -20,6 +20,194 @@ from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
+LEGACY_INTENT_DIALECT = "manufacturing.intent.legacy.v1"
+COMPACT_INTENT_DIALECT = "manufacturing.intent.compact.v1"
+SUPPORTED_INTENT_DIALECTS = {LEGACY_INTENT_DIALECT, COMPACT_INTENT_DIALECT}
+COMPACT_PLAN_KEYS = {
+    "input_contract_version",
+    "analysis_kind",
+    "request_scope",
+    "reference_mode",
+    "condition_resolution",
+    "metadata_refs",
+    "retrieval_jobs",
+    "pandas_function_cases",
+    "pandas_execution_plan",
+    "output_contract",
+}
+COMPACT_REQUEST_SCOPES = {
+    "new_analysis",
+    "followup_requery",
+    "followup_transform",
+    "followup_expand_source",
+    "followup_explain",
+    "clarification",
+}
+COMPACT_REFERENCE_MODES = {
+    "none",
+    "previous_result_rows",
+    "previous_result_transform",
+    "previous_source",
+    "previous_filters",
+    "previous_trace",
+}
+COMPACT_OPERATIONS = {
+    "apply_filters",
+    "select_columns",
+    "groupby_and_aggregate",
+    "sort_and_top_n",
+    "count_rows",
+    "value_counts",
+    "distinct_values",
+    "latest_earliest",
+    "percent_of_total",
+    "rank_within_group",
+    "threshold_after_aggregate",
+    "time_bucket_summary",
+    "period_change",
+    "running_total",
+    "moving_aggregate",
+    "percentile_summary",
+    "pivot_summary",
+    "join",
+    "compare_presence",
+    "compare_metrics",
+    "compare_group_attributes",
+    "find_duplicate_groups",
+    "apply_row_match_groups",
+    "apply_pandas_function_case",
+}
+COMPACT_STEP_KEYS = {
+    "node_id",
+    "operation",
+    "inputs",
+    "output_alias",
+    "source_alias",
+    "left_source_alias",
+    "right_source_alias",
+    "reference_source_alias",
+    "function_case_key",
+    "function_name",
+    "input_text",
+    "field",
+    "column",
+    "operator",
+    "value",
+    "values",
+    "filters",
+    "condition",
+    "columns",
+    "group_by",
+    "aggregations",
+    "agg_column",
+    "agg_method",
+    "sort_by",
+    "order",
+    "limit",
+    "left_metric_column",
+    "right_metric_column",
+    "lhs_metric_column",
+    "rhs_metric_column",
+    "comparison_metric_column",
+    "join_type",
+    "population_policy",
+    "presence_rule",
+    "comparison_columns",
+    "comparison_rule",
+    "match_columns",
+    "left_on",
+    "right_on",
+    "on",
+    "right_value_columns",
+    "multi_match_policy",
+    "blank_policy",
+    "null_key_policy",
+    "calculation",
+}
+COMPACT_CALCULATION_KEYS = {
+    "partition_by",
+    "order_by",
+    "denominator_scope",
+    "zero_division_policy",
+    "rank_method",
+    "tie_policy",
+    "time_column",
+    "time_bucket_column",
+    "frequency",
+    "timezone",
+    "closed",
+    "label",
+    "periods",
+    "change_method",
+    "window",
+    "min_periods",
+    "percentile",
+    "percentile_method",
+    "output_column",
+    "quality_check",
+    "quality_columns",
+    "duplicate_policy",
+    "threshold_column",
+    "threshold_operator",
+    "threshold_value",
+    "pivot_index",
+    "pivot_columns",
+    "pivot_values",
+    "pivot_aggregation",
+    "pivot_fill_value",
+    "max_pivot_columns",
+}
+COMPACT_OUTPUT_KEYS = {
+    "result_mode",
+    "result_columns",
+    "primary_metric",
+    "column_labels",
+    "result_segments",
+}
+COMPACT_FILTER_OPERATORS = {
+    "eq",
+    "in",
+    "ne",
+    "not_in",
+    "gt",
+    "ge",
+    "lt",
+    "le",
+    "contains",
+    "like",
+    "starts_with",
+    "ends_with",
+    "is_null",
+    "is_empty",
+    "null_or_empty",
+    "not_null",
+    "not_empty",
+    "not_blank",
+}
+COMPACT_SECURITY_SENSITIVE_KEYS = {
+    "source_type",
+    "source_config",
+    "db_key",
+    "query_template",
+    "sql_template",
+    "oracle_sql",
+    "sql",
+    "query",
+    "endpoint",
+    "url",
+    "api_url",
+    "headers",
+    "password",
+    "passwd",
+    "token",
+    "secret",
+    "api_key",
+    "apikey",
+    "credential",
+    "credentials",
+    "mongo_uri",
+    "mongodb_uri",
+}
 RETIRED_JOB_DETAIL_KEYS = {"row_identity_columns", "context_columns"}
 PREVIOUS_RESULT_ALIAS = "previous_result"
 REFERENCE_MODE_TO_REUSE_STRATEGY = {
@@ -183,13 +371,17 @@ V2_FAST_RECIPES = {
 # 이 패턴에 매칭되지 않으므로 helper 입력에 자동으로 섞이지 않습니다.
 GENERIC_FUNCTION_TOKEN_PATTERNS = (
     r"(?<![A-Za-z0-9])(?:FC|F|X)\d+(?![A-Za-z0-9])",
-    r"(?<![A-Za-z0-9])[A-Z]-\d+(?![A-Za-z0-9])",
+    # Letter-prefixed product identifiers may continue with alphanumerics
+    # after the first digit (for example ``L-256K9B``).  Requiring at least
+    # one digit keeps this narrower than a generic hyphenated word matcher.
+    r"(?<![A-Za-z0-9])[A-Z]-[A-Z0-9]*\d[A-Z0-9]*(?![A-Za-z0-9])",
     r"(?<![A-Za-z0-9])\d+G(?![A-Za-z0-9])",
     r"(?<![A-Za-z0-9])(?:DDR|GDDR|HBM)\d+[A-Z0-9-]*(?![A-Za-z0-9])",
     # Do not match the numeric suffix of a canonical column such as
     # ``PKG_TYPE2`` as a standalone product token.
     r"(?<![A-Za-z0-9_])[A-Z]{2,}\d+(?![A-Za-z0-9_])",
 )
+
 FUNCTION_CASE_DETAIL_CUES = (
     "이력",
     "내역",
@@ -204,18 +396,759 @@ FUNCTION_CASE_DETAIL_CUES = (
 )
 
 
+# 함수 설명: Compact Intent 응답을 allowlist·Typed DAG·최소 출력 계약으로 검증하고 실행 가능한 원문만 반환합니다.
+def _validate_compact_intent_response(
+    parsed: dict[str, Any],
+    plan: dict[str, Any],
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    errors: list[dict[str, Any]] = []
+
+    # 함수 설명: Compact 검증 오류를 최대 32건까지 동일한 구조로 누적합니다.
+    def issue(error_type: str, message: str, **details: Any) -> None:
+        if len(errors) >= 32:
+            return
+        errors.append({"type": error_type, "message": message, **details})
+
+    if set(parsed) != {"intent_plan"} or not isinstance(parsed.get("intent_plan"), dict):
+        issue(
+            "compact_top_level_invalid",
+            "Compact 응답의 최상위에는 intent_plan object 하나만 있어야 합니다.",
+            received_keys=sorted(str(key) for key in parsed),
+        )
+    security_paths = _compact_security_sensitive_paths(plan)
+    if security_paths:
+        issue(
+            "compact_security_sensitive_field",
+            "Compact 응답에 source/query/credential 계열 금지 필드가 포함되어 있습니다.",
+            field_paths=security_paths[:16],
+        )
+    unknown_plan_keys = sorted(str(key) for key in set(plan) - COMPACT_PLAN_KEYS)
+    if unknown_plan_keys:
+        issue(
+            "compact_plan_fields_unsupported",
+            "Compact intent_plan에 허용되지 않은 파생 또는 임의 필드가 있습니다.",
+            fields=unknown_plan_keys,
+        )
+    if str(plan.get("input_contract_version") or "").strip() != COMPACT_INTENT_DIALECT:
+        issue(
+            "intent_contract_dialect_mismatch",
+            "Compact input_contract_version이 expected dialect와 일치하지 않습니다.",
+            expected_dialect=COMPACT_INTENT_DIALECT,
+            actual_dialect=str(plan.get("input_contract_version") or "").strip(),
+        )
+    analysis_kind = str(plan.get("analysis_kind") or "").strip()
+    if not analysis_kind or len(analysis_kind) > 128:
+        issue("compact_analysis_kind_invalid", "analysis_kind는 1~128자의 문자열이어야 합니다.")
+    request_scope = str(plan.get("request_scope") or "").strip()
+    if request_scope not in COMPACT_REQUEST_SCOPES:
+        issue(
+            "compact_request_scope_invalid",
+            "Compact request_scope가 지원 범위에 없습니다.",
+            value=request_scope,
+        )
+    reference_mode = str(plan.get("reference_mode") or "").strip()
+    if reference_mode not in COMPACT_REFERENCE_MODES:
+        issue(
+            "compact_reference_mode_invalid",
+            "Compact reference_mode가 지원 범위에 없습니다.",
+            value=reference_mode,
+        )
+
+    condition_resolution = plan.get("condition_resolution", {})
+    if not isinstance(condition_resolution, dict):
+        issue("compact_condition_resolution_invalid", "condition_resolution은 object여야 합니다.")
+    else:
+        condition_keys = set(condition_resolution)
+        unknown_condition_keys = sorted(
+            str(key) for key in condition_keys - {"changed", "dropped", "new"}
+        )
+        if unknown_condition_keys:
+            issue(
+                "compact_condition_fields_unsupported",
+                "Compact follow-up 조건에는 changed/dropped/new만 허용됩니다.",
+                fields=unknown_condition_keys,
+            )
+        for key in ("changed", "dropped", "new"):
+            if key in condition_resolution:
+                _validate_compact_condition_delta(
+                    key,
+                    condition_resolution.get(key),
+                    issue,
+                )
+
+    metadata_refs = plan.get("metadata_refs")
+    if not isinstance(metadata_refs, list):
+        issue("compact_metadata_refs_invalid", "metadata_refs 배열이 필요합니다.")
+        metadata_refs = []
+    elif len(metadata_refs) > 64:
+        issue("compact_metadata_refs_too_many", "metadata_refs는 최대 64개까지 허용됩니다.")
+    for index, raw_ref in enumerate(metadata_refs[:64]):
+        if not isinstance(raw_ref, dict) or set(raw_ref) != {"section", "key"}:
+            issue(
+                "compact_metadata_ref_invalid",
+                "metadata_refs 항목은 section/key 문자열만 가져야 합니다.",
+                index=index,
+            )
+            continue
+        for key in ("section", "key"):
+            if not _compact_identifier(raw_ref.get(key)):
+                issue(
+                    "compact_metadata_ref_invalid",
+                    f"metadata_refs[{index}].{key}가 비어 있거나 너무 깁니다.",
+                    index=index,
+                    field=key,
+                )
+
+    jobs = plan.get("retrieval_jobs")
+    if not isinstance(jobs, list):
+        issue("compact_retrieval_jobs_invalid", "retrieval_jobs 배열이 필요합니다.")
+        jobs = []
+    elif len(jobs) > 16:
+        issue("compact_retrieval_jobs_too_many", "retrieval_jobs는 최대 16개까지 허용됩니다.")
+    job_aliases: set[str] = set()
+    for index, raw_job in enumerate(jobs[:16]):
+        if not isinstance(raw_job, dict):
+            issue("compact_retrieval_job_invalid", "retrieval job은 object여야 합니다.", index=index)
+            continue
+        unknown = sorted(
+            str(key)
+            for key in set(raw_job) - {"dataset_key", "source_alias", "required_params", "filters"}
+        )
+        if unknown:
+            issue(
+                "compact_retrieval_job_fields_unsupported",
+                "Compact retrieval job에는 dataset_key/source_alias/required_params/filters만 허용됩니다.",
+                index=index,
+                fields=unknown,
+            )
+        dataset_key = _compact_identifier(raw_job.get("dataset_key"))
+        source_alias = _compact_identifier(raw_job.get("source_alias"))
+        if not dataset_key or not source_alias:
+            issue(
+                "compact_retrieval_job_identity_invalid",
+                "retrieval job의 dataset_key와 source_alias가 필요합니다.",
+                index=index,
+            )
+        elif source_alias in job_aliases:
+            issue(
+                "compact_retrieval_alias_duplicate",
+                "retrieval source_alias는 중복될 수 없습니다.",
+                index=index,
+                source_alias=source_alias,
+            )
+        else:
+            job_aliases.add(source_alias)
+        required_params = raw_job.get("required_params")
+        if not isinstance(required_params, dict):
+            issue(
+                "compact_required_params_invalid",
+                "retrieval job required_params는 object여야 합니다.",
+                index=index,
+            )
+        elif len(required_params) > 64 or any(not _compact_identifier(key) for key in required_params):
+            issue(
+                "compact_required_params_invalid",
+                "required_params의 개수 또는 이름이 허용 범위를 벗어났습니다.",
+                index=index,
+            )
+        _validate_compact_filters(raw_job.get("filters"), f"retrieval_jobs[{index}].filters", issue)
+
+    function_cases = plan.get("pandas_function_cases")
+    if not isinstance(function_cases, list):
+        issue("compact_function_cases_invalid", "pandas_function_cases 배열이 필요합니다.")
+        function_cases = []
+    elif len(function_cases) > 8:
+        issue("compact_function_cases_too_many", "pandas_function_cases는 최대 8개까지 허용됩니다.")
+    for index, raw_case in enumerate(function_cases[:8]):
+        if not isinstance(raw_case, dict):
+            issue("compact_function_case_invalid", "Function Case는 object여야 합니다.", index=index)
+            continue
+        unknown = sorted(
+            str(key)
+            for key in set(raw_case) - {"key", "function_name", "input_text", "source_alias"}
+        )
+        if unknown:
+            issue(
+                "compact_function_case_fields_unsupported",
+                "Compact Function Case에 허용되지 않은 필드가 있습니다.",
+                index=index,
+                fields=unknown,
+            )
+        if not (_compact_identifier(raw_case.get("key")) or _compact_identifier(raw_case.get("function_name"))):
+            issue(
+                "compact_function_case_identity_invalid",
+                "Function Case에는 metadata key 또는 function_name이 필요합니다.",
+                index=index,
+            )
+        alias = _compact_identifier(raw_case.get("source_alias"))
+        if alias and alias not in job_aliases and alias not in _trusted_compact_external_aliases(payload):
+            issue(
+                "compact_function_case_source_unresolved",
+                "Function Case source_alias를 retrieval/state 계약에서 찾지 못했습니다.",
+                index=index,
+                source_alias=alias,
+            )
+
+    steps = plan.get("pandas_execution_plan")
+    if not isinstance(steps, list):
+        issue("compact_pandas_plan_invalid", "pandas_execution_plan 배열이 필요합니다.")
+        steps = []
+    elif len(steps) > 32:
+        issue("compact_pandas_plan_too_many", "pandas_execution_plan은 최대 32단계까지 허용됩니다.")
+    trusted_state_aliases = (
+        _trusted_compact_external_aliases(payload)
+        if reference_mode
+        in {"previous_source", "previous_result_transform", "previous_result_rows"}
+        else set()
+    )
+    overlapping_external_aliases = sorted(job_aliases & trusted_state_aliases)
+    if overlapping_external_aliases:
+        issue(
+            "compact_provider_identity_collision",
+            "retrieval source_alias가 기존 state source alias와 충돌합니다.",
+            identities=overlapping_external_aliases,
+        )
+    reserved_provider_aliases = {
+        PREVIOUS_RESULT_ALIAS,
+        "previous_result_rows",
+        "previous_result_transform",
+        "upstream_result",
+    }
+    reserved_retrieval_aliases = sorted(job_aliases & reserved_provider_aliases)
+    if reserved_retrieval_aliases:
+        issue(
+            "compact_provider_identity_collision",
+            "retrieval source_alias는 previous-result 예약 alias를 사용할 수 없습니다.",
+            identities=reserved_retrieval_aliases,
+        )
+    external_provider_refs = set(job_aliases) | trusted_state_aliases
+    for section_name in ("changed", "dropped", "new"):
+        section = (
+            condition_resolution.get(section_name)
+            if isinstance(condition_resolution, dict)
+            and isinstance(condition_resolution.get(section_name), dict)
+            else {}
+        )
+        filters_by_alias = section.get("filters") if isinstance(section.get("filters"), dict) else {}
+        for alias in filters_by_alias:
+            if _compact_identifier(alias) not in external_provider_refs:
+                issue(
+                    "compact_condition_source_unresolved",
+                    "Compact 조건 delta의 source alias를 retrieval/state 계약에서 찾지 못했습니다.",
+                    section=section_name,
+                    source_alias=str(alias),
+                )
+    prior_node_provider_refs: set[str] = set()
+    provider_owners: dict[str, str] = {
+        alias: "reserved_previous_provider_alias"
+        for alias in reserved_provider_aliases
+    }
+    for alias in job_aliases:
+        provider_owners.setdefault(alias, "retrieval_source_alias")
+    for alias in trusted_state_aliases:
+        provider_owners.setdefault(alias, "trusted_state_source_alias")
+    node_ids: set[str] = set()
+    output_aliases: set[str] = set()
+    for index, raw_step in enumerate(steps[:32]):
+        if not isinstance(raw_step, dict):
+            issue("compact_pandas_step_invalid", "pandas 단계는 object여야 합니다.", index=index)
+            continue
+        unknown = sorted(str(key) for key in set(raw_step) - COMPACT_STEP_KEYS)
+        if unknown:
+            issue(
+                "compact_pandas_step_fields_unsupported",
+                "Compact pandas 단계에 허용되지 않은 필드가 있습니다.",
+                index=index,
+                fields=unknown,
+            )
+        operation = str(raw_step.get("operation") or "").strip().lower()
+        if operation not in COMPACT_OPERATIONS:
+            issue(
+                "compact_pandas_operation_unsupported",
+                "Compact pandas operation이 지원 범위에 없습니다.",
+                index=index,
+                operation=operation,
+            )
+        node_id = _compact_identifier(raw_step.get("node_id"))
+        output_alias = _compact_identifier(raw_step.get("output_alias"))
+        if not node_id or not output_alias:
+            issue(
+                "compact_pandas_step_identity_invalid",
+                "모든 Compact pandas 단계에는 node_id와 output_alias가 필요합니다.",
+                index=index,
+            )
+        if node_id and output_alias and node_id == output_alias:
+            issue(
+                "compact_provider_identity_collision",
+                "같은 pandas 단계의 node_id와 output_alias는 서로 달라야 합니다.",
+                index=index,
+                identity=node_id,
+                owners=["node_id", "output_alias"],
+            )
+        if node_id in node_ids:
+            issue("compact_pandas_node_duplicate", "pandas node_id가 중복되었습니다.", index=index, node_id=node_id)
+        if output_alias in output_aliases:
+            issue(
+                "compact_pandas_output_duplicate",
+                "pandas output_alias가 중복되었습니다.",
+                index=index,
+                output_alias=output_alias,
+            )
+        for identity, owner in ((node_id, "node_id"), (output_alias, "output_alias")):
+            if not identity:
+                continue
+            previous_owner = provider_owners.get(identity)
+            if previous_owner:
+                issue(
+                    "compact_provider_identity_collision",
+                    "retrieval alias, node_id, output_alias는 하나의 전역 provider namespace에서 고유해야 합니다.",
+                    index=index,
+                    identity=identity,
+                    owners=[previous_owner, owner],
+                )
+        inputs = raw_step.get("inputs")
+        if not isinstance(inputs, list) or not inputs:
+            issue(
+                "compact_pandas_inputs_invalid",
+                "모든 Compact pandas 단계에는 하나 이상의 typed input이 필요합니다.",
+                index=index,
+            )
+            inputs = []
+        elif len(inputs) > 8:
+            issue("compact_pandas_inputs_too_many", "한 pandas 단계의 inputs는 최대 8개입니다.", index=index)
+        for input_index, raw_input in enumerate(inputs[:8]):
+            if not isinstance(raw_input, dict) or set(raw_input) != {"kind", "ref"}:
+                issue(
+                    "compact_pandas_input_invalid",
+                    "Typed input은 kind/ref 문자열만 가져야 합니다.",
+                    index=index,
+                    input_index=input_index,
+                )
+                continue
+            kind = str(raw_input.get("kind") or "").strip()
+            ref = _compact_identifier(raw_input.get("ref"))
+            if kind not in {"external_source", "node_output"} or not ref:
+                issue(
+                    "compact_pandas_input_invalid",
+                    "Typed input kind/ref가 유효하지 않습니다.",
+                    index=index,
+                    input_index=input_index,
+                )
+            elif ref in {node_id, output_alias}:
+                issue(
+                    "compact_pandas_self_reference",
+                    "Typed input은 현재 단계 자신의 node_id/output_alias를 참조할 수 없습니다.",
+                    index=index,
+                    input_index=input_index,
+                    ref=ref,
+                )
+            elif kind == "external_source":
+                if ref in prior_node_provider_refs:
+                    issue(
+                        "compact_typed_input_provider_kind_mismatch",
+                        "Typed external_source는 앞 단계 node output을 참조할 수 없습니다.",
+                        index=index,
+                        input_index=input_index,
+                        ref=ref,
+                        expected_kind="node_output",
+                    )
+                elif ref not in external_provider_refs:
+                    issue(
+                        "compact_external_source_unresolved",
+                        "Typed external_source를 retrieval/state 계약에서 찾지 못했습니다.",
+                        index=index,
+                        ref=ref,
+                    )
+            elif kind == "node_output":
+                if ref in external_provider_refs:
+                    issue(
+                        "compact_typed_input_provider_kind_mismatch",
+                        "Typed node_output은 retrieval/state leaf source를 참조할 수 없습니다.",
+                        index=index,
+                        input_index=input_index,
+                        ref=ref,
+                        expected_kind="external_source",
+                    )
+                elif ref not in prior_node_provider_refs:
+                    issue(
+                        "compact_node_output_unresolved",
+                        "Typed node_output은 앞 단계의 node_id 또는 output_alias만 참조할 수 있습니다.",
+                        index=index,
+                        ref=ref,
+                    )
+        _validate_compact_step_fields(raw_step, index, issue)
+        if node_id:
+            node_ids.add(node_id)
+            prior_node_provider_refs.add(node_id)
+            provider_owners.setdefault(node_id, "node_id")
+        if output_alias:
+            output_aliases.add(output_alias)
+            prior_node_provider_refs.add(output_alias)
+            provider_owners.setdefault(output_alias, "output_alias")
+
+    output_contract = plan.get("output_contract")
+    if not isinstance(output_contract, dict):
+        issue("compact_output_contract_invalid", "output_contract object가 필요합니다.")
+    else:
+        unknown_output = sorted(str(key) for key in set(output_contract) - COMPACT_OUTPUT_KEYS)
+        if unknown_output:
+            issue(
+                "compact_output_fields_unsupported",
+                "Compact output_contract에 정규화기가 파생할 중복 필드가 포함되어 있습니다.",
+                fields=unknown_output,
+            )
+        result_mode = str(output_contract.get("result_mode") or "").strip()
+        if result_mode not in {"aggregate", "detail", "entity_list", "scalar", "explanation"}:
+            issue("compact_result_mode_invalid", "output_contract.result_mode가 유효하지 않습니다.")
+        result_columns = output_contract.get("result_columns")
+        if not _compact_string_list(result_columns, 128):
+            issue("compact_result_columns_invalid", "result_columns는 최대 128개의 문자열 배열이어야 합니다.")
+        labels = output_contract.get("column_labels", {})
+        if not isinstance(labels, dict) or len(labels) > 128 or any(
+            not _compact_identifier(key) or not isinstance(value, str)
+            for key, value in labels.items()
+        ):
+            issue("compact_column_labels_invalid", "column_labels는 bounded 문자열 mapping이어야 합니다.")
+        segments = output_contract.get("result_segments", [])
+        if not isinstance(segments, list) or len(segments) > 16:
+            issue("compact_result_segments_invalid", "result_segments는 최대 16개의 배열이어야 합니다.")
+        else:
+            allowed_segment_keys = {"label", "operation", "limit", "sort_by", "order"}
+            for index, raw_segment in enumerate(segments):
+                if not isinstance(raw_segment, dict) or set(raw_segment) - allowed_segment_keys:
+                    issue(
+                        "compact_result_segment_invalid",
+                        "result segment에 허용되지 않은 필드가 있습니다.",
+                        index=index,
+                    )
+
+    _validate_compact_scope_invariants(
+        request_scope=request_scope,
+        reference_mode=reference_mode,
+        jobs=jobs,
+        steps=steps,
+        output_contract=output_contract if isinstance(output_contract, dict) else {},
+        trusted_state_aliases=trusted_state_aliases,
+        issue=issue,
+    )
+
+    return deepcopy(plan), errors
+
+
+# 함수 설명: Compact follow-up delta가 source별 filters 한 계층만 사용하도록 엄격히 검증합니다.
+def _validate_compact_condition_delta(
+    section_name: str,
+    value: Any,
+    issue: Any,
+) -> None:
+    if not isinstance(value, dict):
+        issue(
+            "compact_condition_value_invalid",
+            f"condition_resolution.{section_name}는 object여야 합니다.",
+        )
+        return
+    if not value:
+        return
+    unknown = sorted(str(key) for key in set(value) - {"filters"})
+    filters_by_alias = value.get("filters")
+    if unknown or not isinstance(filters_by_alias, dict) or len(filters_by_alias) > 16:
+        issue(
+            "compact_condition_delta_invalid",
+            f"condition_resolution.{section_name}에는 최대 16개 source의 filters mapping만 허용됩니다.",
+            fields=unknown,
+        )
+        return
+    for alias, raw_filters in filters_by_alias.items():
+        if not _compact_identifier(alias):
+            issue(
+                "compact_condition_source_invalid",
+                "Compact 조건 delta의 source alias가 비어 있거나 너무 깁니다.",
+                section=section_name,
+                source_alias=str(alias),
+            )
+            continue
+        path = f"condition_resolution.{section_name}.filters.{alias}"
+        if section_name == "dropped":
+            if not _compact_string_list(raw_filters, 64) or not raw_filters:
+                issue(
+                    "compact_dropped_filters_invalid",
+                    f"{path}는 제거할 canonical column 문자열 배열이어야 합니다.",
+                    source_alias=str(alias),
+                )
+            continue
+        _validate_compact_filters(raw_filters, path, issue)
+
+
+# 함수 설명: request scope별 최소 실행 경계를 검증해 빈 성공 계획이나 검증되지 않은 state 재사용을 차단합니다.
+def _validate_compact_scope_invariants(
+    *,
+    request_scope: str,
+    reference_mode: str,
+    jobs: list[Any],
+    steps: list[Any],
+    output_contract: dict[str, Any],
+    trusted_state_aliases: set[str],
+    issue: Any,
+) -> None:
+    has_jobs = any(
+        isinstance(item, dict)
+        and bool(_compact_identifier(item.get("dataset_key")))
+        and bool(_compact_identifier(item.get("source_alias")))
+        for item in jobs
+    )
+    has_steps = any(isinstance(item, dict) for item in steps)
+    result_columns = output_contract.get("result_columns")
+    has_result_schema = bool(result_columns) and _compact_string_list(result_columns, 128)
+    result_mode = str(output_contract.get("result_mode") or "").strip()
+
+    if request_scope == "clarification":
+        if has_jobs or reference_mode != "none" or has_steps or result_mode != "explanation":
+            issue(
+                "compact_clarification_contract_invalid",
+                "clarification은 no-job, reference_mode=none, 무실행 단계, explanation 결과만 허용됩니다.",
+            )
+        return
+
+    if request_scope == "followup_explain":
+        if has_jobs or reference_mode != "previous_trace" or has_steps or result_mode != "explanation":
+            issue(
+                "compact_followup_explain_contract_invalid",
+                "followup_explain은 no-job, previous_trace, 무실행 explanation 결과만 허용됩니다.",
+            )
+        return
+
+    if request_scope == "new_analysis" and not has_jobs:
+        issue(
+            "compact_new_analysis_retrieval_required",
+            "new_analysis에는 최소 하나의 검증된 retrieval job이 필요합니다.",
+        )
+
+    if has_jobs:
+        if not has_steps:
+            issue(
+                "compact_terminal_plan_required",
+                "조회 계획에는 결과를 만드는 최소 하나의 Typed pandas 단계가 필요합니다.",
+            )
+        if not has_result_schema:
+            issue(
+                "compact_result_schema_required",
+                "조회 계획에는 비어 있지 않은 output_contract.result_columns가 필요합니다.",
+            )
+        return
+
+    state_external_refs = {
+        _compact_identifier(raw_input.get("ref"))
+        for step in steps
+        if isinstance(step, dict) and isinstance(step.get("inputs"), list)
+        for raw_input in step["inputs"]
+        if isinstance(raw_input, dict)
+        and str(raw_input.get("kind") or "").strip() == "external_source"
+        and _compact_identifier(raw_input.get("ref"))
+        in trusted_state_aliases
+    }
+    verified_previous_transform = (
+        (
+            request_scope == "followup_transform"
+            and reference_mode in {"previous_result_transform", "previous_source"}
+        )
+        or (
+            request_scope == "followup_expand_source"
+            and reference_mode == "previous_source"
+        )
+    ) and (
+        bool(state_external_refs)
+        and has_steps
+        and has_result_schema
+    )
+    if not verified_previous_transform:
+        issue(
+            "compact_no_retrieval_source_unverified",
+            "no-job 분석은 clarification/explain 또는 실제 state source가 검증된 previous-data transform만 허용됩니다.",
+            request_scope=request_scope,
+            reference_mode=reference_mode,
+        )
+
+
+# 함수 설명: Compact filter는 canonical field별 operator/value 계약만 허용합니다.
+def _validate_compact_filters(
+    value: Any,
+    path: str,
+    issue: Any,
+) -> None:
+    if not isinstance(value, dict) or len(value) > 64:
+        issue("compact_filters_invalid", f"{path}는 최대 64개 조건의 object여야 합니다.", path=path)
+        return
+    for field, raw_condition in value.items():
+        if not _compact_identifier(field) or not isinstance(raw_condition, dict):
+            issue("compact_filter_invalid", f"{path}의 조건 형식이 유효하지 않습니다.", path=path, field=str(field))
+            continue
+        unknown = set(raw_condition) - {"operator", "value", "values"}
+        operator = str(raw_condition.get("operator") or "").strip().lower()
+        if unknown or operator not in COMPACT_FILTER_OPERATORS:
+            issue(
+                "compact_filter_invalid",
+                f"{path}의 operator 또는 필드가 허용 범위에 없습니다.",
+                path=path,
+                field=str(field),
+            )
+        if operator not in VALUELESS_FILTER_OPERATORS and not any(
+            key in raw_condition for key in ("value", "values")
+        ):
+            issue(
+                "compact_filter_value_missing",
+                f"{path}의 값이 필요한 filter에 value/values가 없습니다.",
+                path=path,
+                field=str(field),
+            )
+
+
+# 함수 설명: operation별 list/aggregate/calculation 내부 필드가 Compact allowlist에 맞는지 검증합니다.
+def _validate_compact_step_fields(raw_step: dict[str, Any], index: int, issue: Any) -> None:
+    for key in (
+        "columns",
+        "group_by",
+        "comparison_columns",
+        "match_columns",
+        "left_on",
+        "right_on",
+        "on",
+        "right_value_columns",
+    ):
+        if key in raw_step and not _compact_string_list(raw_step.get(key), 128):
+            issue(
+                "compact_pandas_columns_invalid",
+                f"pandas_execution_plan[{index}].{key}는 bounded 문자열 배열이어야 합니다.",
+                index=index,
+                field=key,
+            )
+    aggregations = raw_step.get("aggregations", [])
+    if "aggregations" in raw_step:
+        if not isinstance(aggregations, list) or len(aggregations) > 32:
+            issue("compact_aggregations_invalid", "aggregations는 최대 32개의 배열이어야 합니다.", index=index)
+        else:
+            for agg_index, raw_agg in enumerate(aggregations):
+                if not isinstance(raw_agg, dict) or set(raw_agg) != {"column", "method", "output_column"}:
+                    issue(
+                        "compact_aggregation_invalid",
+                        "aggregation은 column/method/output_column만 가져야 합니다.",
+                        index=index,
+                        aggregation_index=agg_index,
+                    )
+                    continue
+                if (
+                    not _compact_identifier(raw_agg.get("column"))
+                    or not _compact_identifier(raw_agg.get("output_column"))
+                    or str(raw_agg.get("method") or "").strip().lower()
+                    not in {"sum", "mean", "nunique", "count", "min", "max", "collect_unique"}
+                ):
+                    issue(
+                        "compact_aggregation_invalid",
+                        "aggregation의 column/method/output_column이 유효하지 않습니다.",
+                        index=index,
+                        aggregation_index=agg_index,
+                    )
+    calculation = raw_step.get("calculation")
+    if calculation is not None:
+        if not isinstance(calculation, dict):
+            issue("compact_calculation_invalid", "calculation은 object여야 합니다.", index=index)
+        else:
+            unknown = sorted(str(key) for key in set(calculation) - COMPACT_CALCULATION_KEYS)
+            if unknown:
+                issue(
+                    "compact_calculation_fields_unsupported",
+                    "calculation에 허용되지 않은 필드가 있습니다.",
+                    index=index,
+                    fields=unknown,
+                )
+    if "filters" in raw_step:
+        _validate_compact_filters(raw_step.get("filters"), f"pandas_execution_plan[{index}].filters", issue)
+
+
+# 함수 설명: Compact identifier는 비어 있지 않은 bounded 문자열만 허용합니다.
+def _compact_identifier(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    return text if 0 < len(text) <= 128 else ""
+
+
+# 함수 설명: Compact column list의 자료형·크기·빈 값을 공통으로 확인합니다.
+def _compact_string_list(value: Any, limit: int) -> bool:
+    return isinstance(value, list) and len(value) <= limit and all(
+        bool(_compact_identifier(item)) for item in value
+    )
+
+
+# 함수 설명: payload에서 session/orchestration이 신뢰한 외부 source alias만 Compact DAG 입력 후보로 복원합니다.
+def _trusted_compact_external_aliases(payload: dict[str, Any]) -> set[str]:
+    aliases: set[str] = set()
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    has_previous_result = bool(current_data) and any(
+        key in current_data
+        for key in ("rows", "data", "columns", "result_columns", "row_count", "report_context")
+    )
+    if has_previous_result:
+        aliases.update({PREVIOUS_RESULT_ALIAS, "upstream_result"})
+    for item in state.get("followup_source_results", []) if isinstance(state.get("followup_source_results"), list) else []:
+        if isinstance(item, dict) and (alias := _compact_identifier(item.get("source_alias"))):
+            aliases.add(alias)
+    runtime_refs = state.get("runtime_source_refs") if isinstance(state.get("runtime_source_refs"), dict) else {}
+    for key, item in runtime_refs.items():
+        if alias := _compact_identifier(key):
+            aliases.add(alias)
+        if isinstance(item, dict) and (alias := _compact_identifier(item.get("source_alias"))):
+            aliases.add(alias)
+    current_source_alias = _compact_identifier(current_data.get("source_alias"))
+    if current_source_alias and (
+        current_source_alias in aliases
+        or any(key in current_data for key in ("rows", "data"))
+    ):
+        aliases.add(current_source_alias)
+    orchestration = payload.get("orchestration") if isinstance(payload.get("orchestration"), dict) else {}
+    orchestration_alias = _compact_identifier(orchestration.get("source_alias"))
+    if orchestration_alias and any(
+        key in orchestration for key in ("source_ref", "ref_id", "rows", "data")
+    ):
+        aliases.add(orchestration_alias)
+    return aliases
+
+
+# 함수 설명: source/query/credential 계열 금지 키를 nested object 전체에서 찾아 bounded path 목록으로 반환합니다.
+def _compact_security_sensitive_paths(value: Any, path: str = "intent_plan") -> list[str]:
+    result: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key).strip()
+            next_path = f"{path}.{key_text}"
+            if key_text.casefold() in COMPACT_SECURITY_SENSITIVE_KEYS:
+                result.append(next_path)
+            if len(result) < 32:
+                result.extend(_compact_security_sensitive_paths(item, next_path))
+            if len(result) >= 32:
+                break
+    elif isinstance(value, list):
+        for index, item in enumerate(value[:64]):
+            result.extend(_compact_security_sensitive_paths(item, f"{path}[{index}]"))
+            if len(result) >= 32:
+                break
+    return result[:32]
+
+
 # 주요 함수: LLM 의도 결과를 신뢰 가능한 실행 계획 계약으로 정규화합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def normalize_intent_plan(
     payload_value: Any,
     llm_response: Any,
     metadata_candidates_value: Any = None,
+    expected_dialect: Any = LEGACY_INTENT_DIALECT,
 ) -> dict[str, Any]:
     payload = _payload(payload_value)
     parsed = _json(llm_response)
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
     plan = deepcopy(plan) if isinstance(plan, dict) else {}
-    plan, report_followup_guard = _prepare_report_followup_contract(payload, plan)
+    dialect = str(expected_dialect or LEGACY_INTENT_DIALECT).strip()
     metadata_envelope = _metadata_candidate_envelope(metadata_candidates_value, payload)
     metadata_candidates = _metadata_candidates(metadata_candidates_value, payload)
     catalog_error = _catalog_metadata_error(metadata_envelope, metadata_candidates)
@@ -223,6 +1156,53 @@ def normalize_intent_plan(
         catalog_error = _catalog_error_from_plan(plan)
     if catalog_error:
         return _blocked_catalog_metadata_payload(payload, catalog_error)
+    router_contract_error = _intent_contract_error_from_plan(plan)
+    if router_contract_error:
+        return _blocked_intent_contract_payload(payload, router_contract_error, dialect)
+    if dialect not in SUPPORTED_INTENT_DIALECTS:
+        return _blocked_intent_contract_payload(
+            payload,
+            {
+                "type": "intent_contract_dialect_unsupported",
+                "message": f"지원하지 않는 Intent dialect가 설정되었습니다: {dialect or '(empty)'}",
+                "expected_dialect": dialect,
+            },
+            dialect,
+        )
+    input_contract_trace = {
+        "expected_dialect": dialect,
+        "actual_dialect": str(plan.get("input_contract_version") or "").strip(),
+        "mode": "compact" if dialect == COMPACT_INTENT_DIALECT else "legacy",
+        "status": "accepted",
+        "legacy_fallback_called": False,
+    }
+    if dialect == COMPACT_INTENT_DIALECT:
+        plan, compact_errors = _validate_compact_intent_response(parsed, plan, payload)
+        if compact_errors:
+            return _blocked_intent_contract_payload(
+                payload,
+                {
+                    "type": "intent_compact_contract_invalid",
+                    "message": "Compact Intent 응답이 허용된 최소 계약을 충족하지 못했습니다.",
+                    "expected_dialect": dialect,
+                    "validation_errors": compact_errors,
+                },
+                dialect,
+            )
+    else:
+        actual_dialect = str(plan.get("input_contract_version") or "").strip()
+        if actual_dialect not in {"", LEGACY_INTENT_DIALECT}:
+            return _blocked_intent_contract_payload(
+                payload,
+                {
+                    "type": "intent_contract_dialect_mismatch",
+                    "message": "Legacy Intent 요청에 다른 dialect 응답이 전달되었습니다.",
+                    "expected_dialect": LEGACY_INTENT_DIALECT,
+                    "actual_dialect": actual_dialect,
+                },
+                LEGACY_INTENT_DIALECT,
+            )
+    plan, report_followup_guard = _prepare_report_followup_contract(payload, plan)
     retrieval_jobs = _retrieval_jobs(plan)
     (
         plan,
@@ -321,6 +1301,15 @@ def normalize_intent_plan(
         metadata_refs,
         domain_selection.get("locked_metadata_refs", []),
     )
+    metric_recovery_scope = _request_scope(plan, payload)
+    metric_recovery_reference_mode = str(
+        _reference_mode_resolution(
+            plan,
+            payload,
+            metric_recovery_scope,
+        ).get("mode")
+        or "none"
+    ).strip()
     (
         retrieval_jobs,
         raw_pandas_plan,
@@ -330,7 +1319,9 @@ def normalize_intent_plan(
         retrieval_jobs,
         raw_pandas_plan,
         metadata_candidates,
-        domain_selection.get("locked_metadata_refs", []),
+        metadata_refs,
+        request_scope=metric_recovery_scope,
+        reference_mode=metric_recovery_reference_mode,
     )
     retrieval_jobs, domain_condition_guard = _apply_selected_domain_conditions(
         retrieval_jobs,
@@ -500,22 +1491,17 @@ def normalize_intent_plan(
             metadata_candidates,
         )
     )
-    (
-        function_cases,
-        pandas_plan,
-        function_case_source_sufficiency,
-    ) = _remove_source_filter_sufficient_function_cases(
-        function_cases,
-        pandas_plan,
-        retrieval_jobs,
-        metadata_candidates,
-    )
-    retrieval_jobs, function_owned_filter_normalization = (
-        _remove_function_owned_retrieval_filters(
-            retrieval_jobs,
-            function_cases,
-        )
-    )
+    # Function Case의 입력 의미와 product token 해석은 Domain/특화 prompt의
+    # 책임이다. 공통 정규화기는 선택된 helper 또는 조회 filter를 의미적으로
+    # 대체·삭제하지 않고, 실행 가능한 Typed 단계 연결만 보장한다.
+    function_case_source_sufficiency = {
+        "status": "not_applied",
+        "reason": "function_case_semantics_preserved",
+    }
+    function_owned_filter_normalization = {
+        "status": "not_applied",
+        "reason": "specialized_prompt_owns_product_filter_guidance",
+    }
     pandas_plan = _ensure_function_case_steps(function_cases, pandas_plan, retrieval_jobs)
     (
         plan,
@@ -602,6 +1588,21 @@ def normalize_intent_plan(
         payload,
     )
     validation_errors = _reference_mode_validation_errors(reference_mode_guard)
+    source_first_guard = _source_first_contract_guard(
+        payload,
+        request_scope,
+        reference_mode,
+        retrieval_jobs,
+    )
+    validation_errors.extend(source_first_guard.get("validation_errors", []))
+    function_case_source_guard = _function_case_source_contract_guard(
+        payload,
+        reference_mode,
+        retrieval_jobs,
+        function_cases,
+        pandas_plan,
+    )
+    validation_errors.extend(function_case_source_guard.get("validation_errors", []))
     validation_errors.extend(report_followup_guard.get("validation_errors", []))
     validation_errors.extend(followup_contract_guard.get("validation_errors", []))
     validation_errors.extend(
@@ -889,6 +1890,10 @@ def normalize_intent_plan(
         optional_date_filter_guard,
     )
     normalized_plan = deepcopy(plan)
+    # input_contract_version은 LLM 응답 dialect 식별자이며 canonical 실행
+    # 계약의 필드가 아닙니다. 검증 결과는 trace에 남기고 intent_ir.v1 shape은
+    # Legacy와 동일하게 유지합니다.
+    normalized_plan.pop("input_contract_version", None)
     normalized_plan.pop("pandas_function_case", None)
     normalized_plan.pop("selected_function_cases", None)
     if decision_reasons:
@@ -1014,6 +2019,8 @@ def normalize_intent_plan(
         "function_case_execution_contracts": function_case_execution_contracts,
         "reference_scope_normalization": reference_scope_normalization,
         "reference_mode_guard": reference_mode_guard,
+        "source_first_guard": source_first_guard,
+        "function_case_source_guard": function_case_source_guard,
         "row_match_guard": row_match_guard,
         "implicit_step_input_normalization": implicit_step_input_normalization,
         "pandas_column_normalization": pandas_column_normalization,
@@ -1041,6 +2048,7 @@ def normalize_intent_plan(
         "resolved_presence_comparison": bool(resolved_presence_comparison_plan),
         "resolved_metric_comparison": bool(resolved_metric_comparison_plan),
         "metric_source_validation_errors": metric_source_errors,
+        "intent_input_contract": deepcopy(input_contract_trace),
         "intent_ir": deepcopy(intent_ir),
     }
     if not retrieval_jobs and not previous_data_reuse and not validation_errors:
@@ -4216,7 +5224,11 @@ def _bind_missing_external_sources_from_catalog_contracts(
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     question = str(request.get("question") or "").strip()
     reference_date = str(request.get("reference_date") or "").strip()
-    requested_date = _requested_question_date(question, reference_date)
+    requested_date = (
+        _requested_question_date(question, reference_date)
+        if _question_has_date_scope(question)
+        else ""
+    )
     desired_scope = (
         "current_day"
         if requested_date and requested_date == reference_date
@@ -5058,13 +6070,20 @@ def _ensure_selected_metric_sources(
     pandas_plan: list[Any],
     candidates: dict[str, Any],
     locked_metadata_refs: list[dict[str, str]],
+    request_scope: str = "new_analysis",
+    reference_mode: str = "none",
 ) -> tuple[list[Any], list[Any], dict[str, Any]]:
     jobs = [deepcopy(item) for item in retrieval_jobs]
     steps = [deepcopy(item) for item in pandas_plan]
+    initial_job_count = len([item for item in jobs if isinstance(item, dict)])
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     question = str(request.get("question") or "").strip()
     reference_date = str(request.get("reference_date") or "").strip()
-    requested_date = _requested_question_date(question, reference_date)
+    requested_date = (
+        _requested_question_date(question, reference_date)
+        if _question_has_date_scope(question)
+        else ""
+    )
     desired_scope = (
         "current_day"
         if requested_date and requested_date == reference_date
@@ -5083,10 +6102,12 @@ def _ensure_selected_metric_sources(
         if isinstance(payload_value.get("temporal_semantics"), (dict, list)):
             continue
         metrics = _string_list(payload_value.get("metric_columns"))
+        metric_match_mode = "all"
         if not metrics:
             metrics = _string_list(payload_value.get("column"))
         if not metrics and str(item.get("section") or "") == "quantity_terms":
             metrics = _string_list(payload_value.get("columns"))
+            metric_match_mode = "any"
         if not metrics:
             continue
         aliases = _merge_strings(
@@ -5105,6 +6126,7 @@ def _ensure_selected_metric_sources(
                     or ""
                 ).strip(),
                 "metrics": metrics,
+                "metric_match_mode": metric_match_mode,
                 "aggregation_method": str(
                     payload_value.get("aggregation_method") or "sum"
                 ).strip(),
@@ -5130,6 +6152,7 @@ def _ensure_selected_metric_sources(
                 _normalized_column_key(metric)
                 for metric in _string_list(contract.get("metrics"))
             ),
+            str(contract.get("metric_match_mode") or "all"),
             _metric_contract_filter_identity(contract.get("filter_contracts")),
         )
         for contract in contracts
@@ -5145,14 +6168,13 @@ def _ensure_selected_metric_sources(
     unresolved: list[dict[str, Any]] = []
     for contract in contracts:
         metrics = contract["metrics"]
+        metric_match_mode = str(contract.get("metric_match_mode") or "all")
         if any(
-            all(
-                _catalog_supports_domain_column(
-                    candidates,
-                    str(job.get("dataset_key") or "").strip(),
-                    metric,
-                )
-                for metric in metrics
+            _catalog_supports_metric_contract(
+                candidates,
+                str(job.get("dataset_key") or "").strip(),
+                metrics,
+                metric_match_mode,
             )
             for job in jobs
             if isinstance(job, dict)
@@ -5165,28 +6187,74 @@ def _ensure_selected_metric_sources(
         # it must not discard the domain's registered metric source.
         dataset_hint = str(contract.get("dataset_hint") or "").strip()
         normalized_hint = dataset_hint.casefold()
-        eligible = [
+        schema_time_eligible = [
             item
             for item in catalog_items
-            if all(
-                _explicit_catalog_column_contract(
-                    candidates,
-                    str(item.get("dataset_key") or "").strip(),
-                    metric,
-                )
-                for metric in metrics
+            if _explicit_catalog_metric_contract(
+                candidates,
+                str(item.get("dataset_key") or "").strip(),
+                metrics,
+                metric_match_mode,
             )
             and (
-                bool(normalized_hint)
-                and str(item.get("dataset_key") or "").strip().casefold()
-                == normalized_hint
-                or not normalized_hint
-                and (
                 not desired_scope
                 or _catalog_time_scope(item) == desired_scope
+                or (
+                    not _catalog_time_scope(item)
+                    and normalized_hint
+                    and str(item.get("dataset_key") or "").strip().casefold()
+                    == normalized_hint
                 )
             )
         ]
+        eligible = [
+            item
+            for item in schema_time_eligible
+            if not normalized_hint
+            or _catalog_dataset_matches_source_hint(
+                candidates,
+                str(item.get("dataset_key") or "").strip(),
+                dataset_hint,
+            )
+        ]
+        explicit_catalog_keys = {
+            str(reference.get("key") or "").strip().casefold()
+            for reference in locked_metadata_refs
+            if str(reference.get("section") or "").strip()
+            in {"table_catalog", "catalog"}
+            and str(reference.get("key") or "").strip()
+        }
+        question_alias_matches = [
+            item for item in eligible if _catalog_registered_alias_matches(item, question)
+        ]
+        alias_scope = question_alias_matches if question_alias_matches else eligible
+        explicitly_selected = [
+            item
+            for item in alias_scope
+            if str(item.get("dataset_key") or "").strip().casefold()
+            in explicit_catalog_keys
+        ]
+        # The model-selected metadata reference is a proposal, whereas a
+        # unique registered alias that appears in the user's question is
+        # direct deterministic evidence.  Never let a mismatched model ref
+        # override an unambiguous phrase such as ``ASSIGN``.
+        if len(question_alias_matches) == 1:
+            eligible = question_alias_matches
+        elif len(explicitly_selected) == 1:
+            eligible = explicitly_selected
+        elif len(explicitly_selected) > 1:
+            eligible = explicitly_selected
+        elif question_alias_matches:
+            eligible = question_alias_matches
+        if len(eligible) > 1:
+            scored = [
+                (_catalog_selection_fit(item, question), item)
+                for item in eligible
+            ]
+            best_score = max((score for score, _ in scored), default=0)
+            best = [item for score, item in scored if score == best_score and score > 0]
+            if len(best) == 1:
+                eligible = best
         if len(eligible) != 1:
             unresolved.append(
                 {
@@ -5203,6 +6271,13 @@ def _ensure_selected_metric_sources(
             continue
         selected = eligible[0]
         dataset_key = str(selected.get("dataset_key") or "").strip()
+        if metric_match_mode == "any":
+            metrics = [
+                metric
+                for metric in metrics
+                if _explicit_catalog_column_contract(candidates, dataset_key, metric)
+            ][:1]
+            contract["metrics"] = metrics
         required_names = _catalog_required_params(candidates, dataset_key)
         if any(
             _normalized_column_key(name) != _normalized_column_key("DATE")
@@ -5234,13 +6309,11 @@ def _ensure_selected_metric_sources(
             job
             for job in jobs
             if isinstance(job, dict)
-            and not all(
-                _catalog_supports_domain_column(
-                    candidates,
-                    str(job.get("dataset_key") or "").strip(),
-                    metric,
-                )
-                for metric in metrics
+            and not _catalog_supports_metric_contract(
+                candidates,
+                str(job.get("dataset_key") or "").strip(),
+                metrics,
+                metric_match_mode,
             )
         ]
         selected_is_explicit_hint = bool(normalized_hint) and dataset_key.casefold() == normalized_hint
@@ -5317,6 +6390,42 @@ def _ensure_selected_metric_sources(
         if required_params:
             job["required_params"] = required_params
         jobs.append(job)
+
+        # If the model omitted every retrieval job, a single matched metric
+        # contract can identify the *primary* source without inventing a join.
+        # This differs from the additive recovery below: there is no existing
+        # source to merge with, so requiring an aggregate-merge step would pop
+        # the only trusted job and later expose an empty ``sources`` mapping to
+        # the pandas model.  Recovery remains fail-closed when more than one
+        # metric resource is possible.
+        primary_source_recovery = (
+            initial_job_count == 0
+            and len(jobs) == 1
+            and len(contracts) == 1
+            and len(contract_resource_keys) == 1
+            and str(request_scope or "").strip()
+            in {"new_analysis", "followup_requery"}
+            and not (
+                str(request_scope or "").strip() == "followup_requery"
+                and str(reference_mode or "none").strip() == "previous_source"
+            )
+        )
+        if primary_source_recovery:
+            additions.append(
+                {
+                    "metadata_ref": contract["metadata_ref"],
+                    "dataset_key": dataset_key,
+                    "source_alias": source_alias,
+                    "metrics": metrics,
+                    "requested_time_scope": desired_scope,
+                    "recovery_mode": "primary_source",
+                    "merge_detail": {
+                        "status": "not_needed",
+                        "reason": "no_existing_source_to_merge",
+                    },
+                }
+            )
+            continue
 
         catalog_payload = _metadata_payload(selected)
         semantics = (
@@ -5707,6 +6816,34 @@ def _catalog_supports_domain_column(
     )
 
 
+# 함수 설명: quantity term의 대체 컬럼(any)과 복수 metric(all)을 구분해 Catalog 지원 여부를 판정합니다.
+def _catalog_supports_metric_contract(
+    candidates: dict[str, Any],
+    dataset_key: str,
+    metrics: list[str],
+    match_mode: str,
+) -> bool:
+    checks = [
+        _catalog_supports_domain_column(candidates, dataset_key, metric)
+        for metric in metrics
+    ]
+    return any(checks) if match_mode == "any" else bool(checks) and all(checks)
+
+
+# 함수 설명: source 복구에서는 추정 컬럼이 아니라 Catalog에 명시된 대체 또는 전체 metric 계약만 허용합니다.
+def _explicit_catalog_metric_contract(
+    candidates: dict[str, Any],
+    dataset_key: str,
+    metrics: list[str],
+    match_mode: str,
+) -> bool:
+    checks = [
+        _explicit_catalog_column_contract(candidates, dataset_key, metric)
+        for metric in metrics
+    ]
+    return any(checks) if match_mode == "any" else bool(checks) and all(checks)
+
+
 # 함수 설명: `_catalog_time_scope()`는 04 의도 계획 정규화기 처리 중 TIME·분석 범위 관련 값을 계산·변환하는 내부 helper입니다.
 def _catalog_dataset_matches_source_hint(
     candidates: dict[str, Any],
@@ -5725,6 +6862,23 @@ def _catalog_dataset_matches_source_hint(
     payload = _metadata_payload(item)
     family = str(payload.get("dataset_family") or "").strip().casefold()
     return bool(family and family == normalized_hint)
+
+
+# 함수 설명: Catalog가 등록한 별칭·표시명·사용 문구가 질문에 명시적으로 등장하는지 확인합니다.
+def _catalog_registered_alias_matches(item: dict[str, Any], question: str) -> bool:
+    payload = _metadata_payload(item)
+    criteria = (
+        payload.get("selection_criteria")
+        if isinstance(payload.get("selection_criteria"), dict)
+        else {}
+    )
+    aliases = _merge_strings(
+        _string_list(payload.get("aliases")),
+        _string_list(payload.get("display_name")),
+        _string_list(criteria.get("required_any_aliases")),
+        _string_list(criteria.get("use_when")),
+    )
+    return any(_domain_alias_matches(question, alias) for alias in aliases)
 
 
 # 함수 설명: `_catalog_time_scope()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
@@ -7686,7 +8840,16 @@ def _condition_resolution(
     }
     raw_effective_filters = value.get("effective_filters")
     if str(plan.get("reference_mode") or "").strip() == "previous_source":
-        raw_effective_filters = _compile_previous_source_effective_filters(value)
+        base_effective_filters = (
+            _trusted_previous_effective_filters(payload or {})
+            if str(plan.get("input_contract_version") or "").strip()
+            == COMPACT_INTENT_DIALECT
+            else None
+        )
+        raw_effective_filters = _compile_previous_source_effective_filters(
+            value,
+            base_effective_filters,
+        )
     effective_filters = _effective_filter_contract(
         raw_effective_filters,
         payload or {},
@@ -7836,15 +8999,48 @@ def _filter_list_condition(field: str, condition: Any) -> dict[str, Any]:
     return {"field": field, "operator": "eq", "value": deepcopy(condition)}
 
 
+# 함수 설명: Compact previous_source가 상속할 수 있는 실행 필터는 신뢰된 직전 canonical plan에서만 읽습니다.
+def _trusted_previous_effective_filters(payload: dict[str, Any]) -> dict[str, Any]:
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    previous_plan = (
+        state.get("last_intent_plan")
+        if isinstance(state.get("last_intent_plan"), dict)
+        else {}
+    )
+    previous_condition = (
+        previous_plan.get("condition_resolution")
+        if isinstance(previous_plan.get("condition_resolution"), dict)
+        else {}
+    )
+    effective_filters = previous_condition.get("effective_filters")
+    return deepcopy(effective_filters) if isinstance(effective_filters, dict) else {}
+
+
 # 함수 설명: LLM이 inherited/changed/new/dropped에 나눠 둔 previous_source 조건을 최종 실행 filter로 합칩니다.
 def _compile_previous_source_effective_filters(
     condition_resolution: dict[str, Any],
+    base_effective_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    compiled = deepcopy(
+    compiled = deepcopy(base_effective_filters) if isinstance(base_effective_filters, dict) else {}
+    current_effective = (
         condition_resolution.get("effective_filters")
         if isinstance(condition_resolution.get("effective_filters"), dict)
         else {}
     )
+    for alias, raw_item in current_effective.items():
+        if not isinstance(raw_item, dict):
+            continue
+        existing = compiled.get(alias)
+        merged = deepcopy(existing) if isinstance(existing, dict) else {}
+        existing_filters = merged.get("filters") if isinstance(merged.get("filters"), dict) else {}
+        current_filters = raw_item.get("filters") if isinstance(raw_item.get("filters"), dict) else {}
+        merged.update(deepcopy(raw_item))
+        if existing_filters or current_filters:
+            merged["filters"] = {
+                **deepcopy(existing_filters),
+                **deepcopy(current_filters),
+            }
+        compiled[alias] = merged
     inherited = (
         condition_resolution.get("inherited")
         if isinstance(condition_resolution.get("inherited"), dict)
@@ -10766,6 +11962,90 @@ def _catalog_error_from_plan(plan: dict[str, Any]) -> dict[str, Any]:
         if str(raw.get("type") or "").strip() == "table_catalog_metadata_unavailable":
             return deepcopy(raw)
     return {}
+
+
+# 함수 설명: Router가 dialect 불일치를 이미 차단한 경우 그 오류를 모델 계획으로 재해석하지 않고 그대로 보존합니다.
+def _intent_contract_error_from_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    validation_errors = plan.get("validation_errors")
+    for raw in validation_errors if isinstance(validation_errors, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        error_type = str(raw.get("type") or "").strip()
+        if error_type.startswith("intent_contract_") or error_type.startswith("intent_compact_"):
+            return deepcopy(raw)
+    return {}
+
+
+# 함수 설명: Compact/expected dialect 위반을 빈 조회 계획과 기존 intent.ir.v1 차단 상태로 변환합니다.
+def _blocked_intent_contract_payload(
+    payload: dict[str, Any],
+    error: dict[str, Any],
+    expected_dialect: Any,
+) -> dict[str, Any]:
+    next_payload = deepcopy(payload)
+    dialect = str(expected_dialect or LEGACY_INTENT_DIALECT).strip()
+    error_type = str(error.get("type") or "intent_contract_invalid")
+    plan = {
+        "analysis_kind": "intent_contract_invalid",
+        "request_scope": "new_analysis",
+        "reference_mode": "none",
+        "reuse_strategy": "none",
+        "metadata_refs": [],
+        "retrieval_jobs": [],
+        "pandas_execution_plan": [],
+        "output_contract": {
+            "result_mode": "detail",
+            "required_columns": [],
+            "grain_columns": [],
+            "metric_columns": [],
+            "result_columns": [],
+            "strict_result_columns": True,
+        },
+        "validation_errors": [deepcopy(error)],
+        "intent_ir": {
+            "version": 1,
+            "status": "blocked",
+            "route_source_aliases": [],
+        },
+    }
+    next_payload["intent_plan"] = plan
+    next_payload["metadata_refs"] = []
+    next_payload["execution_gate"] = {
+        "stage": "04_intent_plan_normalizer",
+        "status": "blocked",
+        "reason": error_type,
+        "critical_failures": [deepcopy(error)],
+        "pandas_execution_allowed": False,
+        "model_response_policy": "ignore",
+        "legacy_fallback_called": False,
+    }
+    trace = next_payload.setdefault("trace", {})
+    trace.setdefault("errors", []).append(deepcopy(error))
+    trace.setdefault("inspection", {})["intent"] = {
+        "stage": "04_intent_plan_normalizer",
+        "status": "error",
+        "llm_plan_accepted": False,
+        "intent_input_contract": {
+            "expected_dialect": dialect,
+            "actual_dialect": str(error.get("actual_dialect") or "").strip(),
+            "mode": "compact" if dialect == COMPACT_INTENT_DIALECT else "legacy",
+            "status": "rejected",
+            "legacy_fallback_called": False,
+        },
+    }
+    next_payload["analysis"] = {
+        "status": "error",
+        "row_count": 0,
+        "columns": [],
+        "error": deepcopy(error),
+        "errors": [str(error.get("message") or "")],
+        "repairable_errors": [],
+        "step_outputs": [],
+        "function_case_results": [],
+    }
+    next_payload["data"] = {"columns": [], "rows": [], "row_count": 0, "data_ref": ""}
+    next_payload["answer_message"] = str(error.get("message") or "")
+    return next_payload
 
 
 # 함수 설명: 메타데이터 오류 상황에서 데이터셋·컬럼을 추측하지 않는 최종 차단 페이로드를 생성합니다.
@@ -15674,6 +16954,205 @@ def _merge_strings(*values: list[str]) -> list[str]:
     return result
 
 
+# 함수 설명: 새 분석이 실제 조회 source 없이 pandas 단계로 넘어가지 않도록 source-first 계약을 검증합니다.
+def _source_first_contract_guard(
+    payload: dict[str, Any],
+    request_scope: str,
+    reference_mode: str,
+    retrieval_jobs: list[Any],
+) -> dict[str, Any]:
+    job_aliases = _string_list(
+        [
+            item.get("source_alias") or item.get("dataset_key")
+            for item in retrieval_jobs
+            if isinstance(item, dict)
+        ]
+    )
+    if job_aliases:
+        return {
+            "status": "verified",
+            "source": "retrieval_jobs",
+            "source_aliases": job_aliases,
+            "validation_errors": [],
+        }
+
+    if request_scope == "clarification":
+        return {
+            "status": "not_required",
+            "source": "clarification",
+            "source_aliases": [],
+            "validation_errors": [],
+        }
+    if request_scope == "followup_explain" and reference_mode == "previous_trace":
+        return {
+            "status": "not_required",
+            "source": "previous_trace",
+            "source_aliases": [],
+            "validation_errors": [],
+        }
+    if reference_mode in {"previous_result_transform", "previous_result_rows"}:
+        # The dedicated result loader verifies ownership, session, expiry and
+        # completeness after normalization.  Do not require a new retrieval job
+        # for an explicitly declared previous-result provider.
+        return {
+            "status": "deferred_to_result_loader",
+            "source": reference_mode,
+            "source_aliases": [PREVIOUS_RESULT_ALIAS],
+            "validation_errors": [],
+        }
+    if reference_mode == "previous_source":
+        previous_aliases = sorted(_previous_source_refs(payload))
+        if previous_aliases:
+            return {
+                "status": "deferred_to_result_loader",
+                "source": "previous_source",
+                "source_aliases": previous_aliases,
+                "validation_errors": [],
+            }
+
+    error = {
+        "type": "source_identity_unavailable",
+        "message": "분석에 사용할 데이터 source를 Table Catalog와 의도 계획에서 하나 이상 확정하지 못했습니다.",
+        "request_scope": request_scope,
+        "reference_mode": reference_mode,
+    }
+    return {
+        "status": "blocked",
+        "source": "unresolved",
+        "source_aliases": [],
+        "validation_errors": [error],
+    }
+
+
+# 함수 설명: 선택된 Function Case와 Typed 단계가 하나의 검증된 외부 source 소유자를 가리키는지 확인합니다.
+def _function_case_source_contract_guard(
+    payload: dict[str, Any],
+    reference_mode: str,
+    retrieval_jobs: list[Any],
+    function_cases: list[dict[str, Any]],
+    pandas_plan: list[Any],
+) -> dict[str, Any]:
+    selected_cases = [item for item in function_cases if isinstance(item, dict)]
+    function_steps = [
+        item
+        for item in pandas_plan
+        if isinstance(item, dict)
+        and str(item.get("operation") or item.get("step") or "").strip().lower()
+        == "apply_pandas_function_case"
+    ]
+    if not selected_cases and not function_steps:
+        return {
+            "status": "not_applicable",
+            "allowed_source_aliases": [],
+            "validation_errors": [],
+        }
+
+    allowed_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    if reference_mode == "previous_source":
+        allowed_aliases.update(_previous_source_refs(payload))
+    if reference_mode in {"previous_result_transform", "previous_result_rows"}:
+        allowed_aliases.add(PREVIOUS_RESULT_ALIAS)
+
+    errors: list[dict[str, Any]] = []
+
+    # 함수 설명: 동일 Function Case source 오류를 한 번만 기록해 차단 사유를 작고 명확하게 유지합니다.
+    def add_error(error: dict[str, Any]) -> None:
+        marker = (
+            str(error.get("type") or ""),
+            str(error.get("source_alias") or ""),
+            str(error.get("function_case_key") or error.get("node_id") or ""),
+        )
+        if any(
+            (
+                str(item.get("type") or ""),
+                str(item.get("source_alias") or ""),
+                str(item.get("function_case_key") or item.get("node_id") or ""),
+            )
+            == marker
+            for item in errors
+        ):
+            return
+        errors.append(error)
+
+    for case in selected_cases:
+        alias = str(case.get("source_alias") or "").strip()
+        case_key = str(case.get("key") or case.get("function_case_key") or "").strip()
+        if not alias:
+            add_error(
+                {
+                    "type": "function_case_source_unresolved",
+                    "message": "Function Case의 source_alias를 검증된 retrieval/state source와 연결하지 못했습니다.",
+                    "function_case_key": case_key,
+                    "source_alias": "",
+                }
+            )
+        elif alias not in allowed_aliases:
+            add_error(
+                {
+                    "type": "function_case_source_not_owned",
+                    "message": "Function Case가 retrieval/state 계약에 없는 source를 참조합니다.",
+                    "function_case_key": case_key,
+                    "source_alias": alias,
+                    "allowed_source_aliases": sorted(allowed_aliases),
+                }
+            )
+
+    for index, step in enumerate(function_steps, start=1):
+        alias = str(step.get("source_alias") or "").strip()
+        external_aliases = _string_list(
+            [
+                item.get("ref")
+                for item in step.get("inputs", [])
+                if isinstance(item, dict)
+                and str(item.get("kind") or "").strip() == "external_source"
+            ]
+        )
+        if not alias and len(external_aliases) == 1:
+            alias = external_aliases[0]
+        node_id = str(step.get("node_id") or f"function_case_step_{index}").strip()
+        if not alias:
+            add_error(
+                {
+                    "type": "function_case_step_source_unresolved",
+                    "message": "Function Case 실행 단계의 외부 source 소유자를 확정하지 못했습니다.",
+                    "node_id": node_id,
+                    "source_alias": "",
+                }
+            )
+            continue
+        if alias not in allowed_aliases:
+            add_error(
+                {
+                    "type": "function_case_step_source_not_owned",
+                    "message": "Function Case 실행 단계가 retrieval/state 계약에 없는 source를 참조합니다.",
+                    "node_id": node_id,
+                    "source_alias": alias,
+                    "allowed_source_aliases": sorted(allowed_aliases),
+                }
+            )
+        if external_aliases and external_aliases != [alias]:
+            add_error(
+                {
+                    "type": "function_case_step_source_mismatch",
+                    "message": "Function Case의 source_alias와 typed external_source 입력이 일치하지 않습니다.",
+                    "node_id": node_id,
+                    "source_alias": alias,
+                    "external_source_aliases": external_aliases,
+                }
+            )
+
+    return {
+        "status": "blocked" if errors else "verified",
+        "allowed_source_aliases": sorted(allowed_aliases),
+        "validation_errors": errors,
+    }
+
+
 # 함수 설명: `_uses_previous_data_without_new_retrieval()`는 04 의도 계획 정규화기 처리 중 이전 값·데이터·without·NEW·데이터 조회 관련 값을 계산·변환하는
 #        내부 helper입니다.
 def _uses_previous_data_without_new_retrieval(plan: dict[str, Any]) -> bool:
@@ -15726,7 +17205,6 @@ def _auto_select_metadata_function_case(
         for helper in runtime_helpers
         if isinstance(helper, dict) and helper.get("selectable_for_intent") is True
     ]
-    skipped_by_typed_filters: list[dict[str, Any]] = []
     for item in [*domain_items, *helper_items]:
         if not isinstance(item, dict) or str(item.get("section") or "").strip() != "pandas_function_cases":
             continue
@@ -15756,40 +17234,10 @@ def _auto_select_metadata_function_case(
         policy = payload.get("token_policy") if isinstance(payload.get("token_policy"), dict) else {}
         token_values = _extract_function_case_tokens(question, policy)
         value_tokens = _function_case_value_tokens(token_values, metadata_candidates)
-        if helper_name == "match_product_tokens":
-            source_job = next(
-                (
-                    job
-                    for job in retrieval_jobs
-                    if isinstance(job, dict)
-                    and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
-                    == source_alias
-                ),
-                None,
-            )
-            evidence = _product_token_filter_evidence(
-                {
-                    "function_name": helper_name,
-                    "input_text": question,
-                    "source_alias": source_alias,
-                },
-                source_job,
-                metadata_candidates,
-            )
-            value_tokens = _string_list(evidence.get("structured_tokens"))
-            uncovered_tokens = _string_list(evidence.get("uncovered_tokens"))
-            if len(uncovered_tokens) < 2:
-                skipped_by_typed_filters.append(
-                    {
-                        "function_name": helper_name,
-                        "source_alias": source_alias,
-                        "reason": str(evidence.get("reason") or "no_uncovered_structured_product_tokens"),
-                        "structured_tokens": value_tokens,
-                        "covered_tokens": _string_list(evidence.get("covered_tokens")),
-                    }
-                )
-                continue
-        elif len(value_tokens) < 2:
+        # 공통 정규화기는 제품·공정 등 Function Case별 의미를 판정하지 않는다.
+        # 모델이 특화 prompt와 Domain 계약에 따라 선택하지 않은 Case는 여러
+        # 구조 token이 동시에 확인되는 일반 fallback에서만 보완한다.
+        if len(value_tokens) < 2:
             continue
         # Preserve the user's product wording, including unpatterned values
         # such as package codes.  Query-control terms are supplied separately
@@ -15817,12 +17265,6 @@ def _auto_select_metadata_function_case(
             "function_name": helper_name,
             "token_values": value_tokens,
             "source_alias": source_alias,
-        }
-    if skipped_by_typed_filters:
-        return plan, {
-            "status": "not_needed",
-            "reason": "no_uncovered_structured_product_tokens",
-            "skipped": skipped_by_typed_filters,
         }
     return plan, {"status": "not_needed", "reason": "no_matching_token_contract"}
 
@@ -16054,14 +17496,18 @@ def _remove_source_filter_sufficient_function_cases(
         alias = str(case.get("source_alias") or "").strip()
         input_text = str(case.get("input_text") or "").strip()
         job = jobs_by_alias.get(alias)
-        matched_filter = _direct_filter_covering_function_input(
-            job.get("filters") if isinstance(job, dict) else None,
-            input_text,
-        )
         product_evidence = _product_token_filter_evidence(
             case,
             job,
             metadata_candidates or {},
+        )
+        is_product_helper = str(case.get("function_name") or "").strip() == "match_product_tokens"
+        # A product helper's own Domain contract decides whether a typed
+        # source filter is equivalent.  Do not let a literal value match
+        # bypass that decision.
+        matched_filter = "" if is_product_helper else _direct_filter_covering_function_input(
+            job.get("filters") if isinstance(job, dict) else None,
+            input_text,
         )
         if not matched_filter and not product_evidence.get("removable"):
             retained.append(deepcopy(case))
@@ -16220,56 +17666,20 @@ def _rewire_removed_function_case_inputs(
     return normalized, rewired_inputs
 
 
-# 함수 설명: 제품 token helper는 typed 조회 filter로 이미 표현되지 않은 구조화 제품 token이 남아 있을 때만 유지합니다.
-# Function description: a product-token helper is useful only when its input
-# contains a structured product token not already expressed by a typed source
-# filter.  This is deliberately metadata/IR driven: it has no process,
-# dataset, or product-code-specific branch.
+# 함수 설명: 제품 Function Case의 의미는 특화 prompt와 Domain 계약이 소유하므로 공통 정규화기에서 조회 filter와 동등성 비교를 하지 않습니다.
 def _product_token_filter_evidence(
     case: dict[str, Any],
     job: dict[str, Any] | None,
     metadata_candidates: dict[str, Any],
 ) -> dict[str, Any]:
-    if str(case.get("function_name") or "").strip() != "match_product_tokens":
-        return {"removable": False}
-    policy = _function_case_token_policy(case, metadata_candidates)
-    raw_tokens = _extract_function_case_tokens(case.get("input_text"), policy)
-    structured_tokens = _function_case_value_tokens(raw_tokens, metadata_candidates)
-    if not structured_tokens:
-        return {
-            "removable": True,
-            "reason": "no_structured_product_token_evidence",
-            "structured_tokens": [],
-            "covered_tokens": [],
-            "uncovered_tokens": [],
-            "filter_fields": [],
-        }
-
-    filter_values = _typed_filter_value_keys(
-        job.get("filters") if isinstance(job, dict) else None
-    )
-    covered_tokens: list[str] = []
-    uncovered_tokens: list[str] = []
-    filter_fields: list[str] = []
-    for token in structured_tokens:
-        key = _function_token(token)
-        matching_fields = filter_values.get(key, [])
-        if matching_fields:
-            covered_tokens.append(token)
-            filter_fields.extend(matching_fields)
-        else:
-            uncovered_tokens.append(token)
+    del case, job, metadata_candidates
     return {
-        "removable": not uncovered_tokens,
-        "reason": (
-            "typed_source_filters_cover_all_structured_product_tokens"
-            if not uncovered_tokens
-            else "uncovered_structured_product_tokens_remain"
-        ),
-        "structured_tokens": structured_tokens,
-        "covered_tokens": covered_tokens,
-        "uncovered_tokens": uncovered_tokens,
-        "filter_fields": _merge_strings(filter_fields),
+        "removable": False,
+        "reason": "function_case_semantics_preserved",
+        "structured_tokens": [],
+        "covered_tokens": [],
+        "uncovered_tokens": [],
+        "filter_fields": [],
     }
 
 
@@ -16336,126 +17746,17 @@ def _direct_filter_covering_function_input(filters: Any, input_text: str) -> str
     return ""
 
 
-# 함수 설명: `_remove_function_owned_retrieval_filters()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+# 함수 설명: 선택 Function Case의 특화 filter 의미를 공통 정규화기에서 변경하지 않습니다.
 def _remove_function_owned_retrieval_filters(
     retrieval_jobs: list[dict[str, Any]],
     function_cases: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    product_filter_fields = {
-        "TECH",
-        "DEN",
-        "DENSITY",
-        "MODE",
-        "PKGTYPE1",
-        "PKG1",
-        "PKGTYP1",
-        "PKGTYPE2",
-        "PKG2",
-        "PKGTYP2",
-        "LEAD",
-        "MCPNO",
-        "MCPSALESNO",
-        "MCPSALECD",
-        "DEVICE",
-        "DEVICEDESC",
-        "ORG",
-        "ORGANIZCD",
+    del function_cases
+    return deepcopy(retrieval_jobs), {
+        "status": "not_applied",
+        "reason": "function_case_semantics_preserved",
+        "removed": [],
     }
-    owned_cases = [
-        item
-        for item in function_cases
-        if str(item.get("function_name") or "").strip() == "match_product_tokens"
-        and str(item.get("input_text") or "").strip()
-    ]
-    if not owned_cases:
-        return retrieval_jobs, {"removed": []}
-
-    normalized_jobs = deepcopy(retrieval_jobs)
-    removed: list[dict[str, Any]] = []
-    for job in normalized_jobs:
-        if not isinstance(job, dict):
-            continue
-        source_alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
-        matching_cases = [
-            item
-            for item in owned_cases
-            if not str(item.get("source_alias") or "").strip()
-            or str(item.get("source_alias") or "").strip() == source_alias
-        ]
-        filters = job.get("filters")
-        if not matching_cases or not isinstance(filters, dict):
-            continue
-        retained_filters: dict[str, Any] = {}
-        for field, condition in filters.items():
-            normalized_field = _normalized_column_key(field)
-            owner = next(
-                (
-                    item
-                    for item in matching_cases
-                    if normalized_field in product_filter_fields
-                    and _function_case_owns_filter_value(
-                        normalized_field,
-                        condition,
-                        str(item.get("input_text") or ""),
-                    )
-                ),
-                None,
-            )
-            if owner is None:
-                retained_filters[field] = condition
-                continue
-            removed.append(
-                {
-                    "source_alias": source_alias,
-                    "field": str(field),
-                    "function_name": "match_product_tokens",
-                    "function_case_key": str(owner.get("key") or ""),
-                }
-            )
-        job["filters"] = retained_filters
-    return normalized_jobs, {"removed": removed}
-
-
-# 함수 설명: filter 값이 helper input에 직접 포함된 제품 token인지 판정하며, domain이 소유한 별도 조건은 유지합니다.
-def _function_case_owns_filter_value(
-    normalized_field: str,
-    condition: Any,
-    input_text: str,
-) -> bool:
-    if isinstance(condition, dict):
-        operator = str(condition.get("operator") or "eq").strip().casefold()
-        raw_value = (
-            condition.get("values")
-            if condition.get("values") is not None
-            else condition.get("value")
-        )
-    else:
-        operator = "eq"
-        raw_value = condition
-    if operator not in {"eq", "in", "contains", "starts_with", "startswith"}:
-        return False
-    raw_values = raw_value if isinstance(raw_value, (list, tuple, set)) else [raw_value]
-    values = [_function_token(item) for item in raw_values]
-    values = [item for item in values if item]
-    if not values:
-        return False
-    input_tokens = {
-        _function_token(item)
-        for item in re.findall(r"[A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)*", input_text)
-    }
-    input_tokens.discard("")
-    if not input_tokens:
-        return False
-
-    for value in values:
-        candidates = {value}
-        if normalized_field == "LEAD":
-            candidates.update({f"F{value}", f"FC{value}", f"{value}LEAD", f"{value}BALL"})
-        elif normalized_field in {"ORG", "ORGANIZCD"}:
-            candidates.add(f"X{value}")
-        if not candidates.intersection(input_tokens):
-            return False
-    return True
 
 
 # 함수 설명: 제품 token과 filter 값을 공백·구분자·대소문자 차이 없이 비교할 최소 형태로 정규화합니다.
@@ -17094,10 +18395,17 @@ def _text_value(value: Any) -> str:
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class IntentPlanNormalizer(Component):
     display_name = "04 의도 계획 정규화기"
-    description = "Langflow 에이전트/LLM의 의도 JSON을 표준 의도 계획으로 정규화합니다."
+    description = "Expected dialect를 검증한 Legacy/Compact 응답을 동일한 canonical intent_ir.v1 계획으로 정규화합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         MessageTextInput(name="llm_response", display_name="의도 LLM 응답", required=True),
+        MessageTextInput(
+            name="expected_dialect",
+            display_name="예상 Intent Dialect",
+            value=LEGACY_INTENT_DIALECT,
+            required=False,
+            advanced=True,
+        ),
         DataInput(
             name="metadata_candidates",
             display_name="메타데이터 후보",
@@ -17114,5 +18422,6 @@ class IntentPlanNormalizer(Component):
                 getattr(self, "payload", None),
                 getattr(self, "llm_response", ""),
                 getattr(self, "metadata_candidates", None),
+                getattr(self, "expected_dialect", LEGACY_INTENT_DIALECT),
             )
         )

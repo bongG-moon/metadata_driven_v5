@@ -6,7 +6,7 @@
   "flow_count": 9,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "a546b7678bd301ae1d58ba3c80c4a3af1956c72bcf11a909034bbf9e7e79aaeb",
+  "single_file_ui_import_sha256": "feb2a6b87ff1fb4093b484f1a4db0afcc7caf6eac14c55d3d8ecf0825ea9f1b8",
   "mongodb_contract": {
     "configuration_source": "Langflow node input / MONGO_URL Credential Global Variable",
     "database": "datagov",
@@ -35,8 +35,8 @@
   },
   "validation": {
     "bundle_structure": "native Chat boundaries, version stamps, Flow names, endpoints and active adapter inputs are verified while building",
-    "langflow_frontend_edge_handles": "332/332 structural handles",
-    "langflow_lfx_node_templates": "131/131 custom component templates across 9 base flows",
+    "langflow_frontend_edge_handles": "330/330 structural handles",
+    "langflow_lfx_node_templates": "129/129 custom component templates across 9 base flows",
     "runtime_parse": "Run tools/validate_langflow_runtime.py after changing custom component source."
   },
   "flows": [
@@ -46,8 +46,8 @@
       "name": "01. v5_data_analysis",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 51,
-      "edges": 59,
-      "sha256": "2207a6ec9d94fe1a0bf0db4d888ac574951942bfb22e1662593e93d9f5116646"
+      "edges": 62,
+      "sha256": "cddb61323b20e3aaf9641b5851f2002062a5b2a30129a16a46ee333feaf8cce1"
     },
     {
       "order": 2,
@@ -92,16 +92,16 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
       "nodes": 11,
       "edges": 10,
-      "sha256": "60226e5bb47c58b4ea9af45d83d6be4ff4d8a18ad721988514086aa2a3d217e4"
+      "sha256": "848a23c5d0e2bbded1c66f686ba351825f201fe3a6e2109d168857dcaf30bb32"
     },
     {
       "order": 7,
       "file": "07_realtime_production_report_flow_v5_standalone.json",
       "name": "07. v5_realtime_production_report",
       "endpoint_name": "metadata-driven-v5-complete-20260710-realtime-production-report",
-      "nodes": 12,
-      "edges": 17,
-      "sha256": "a9f79367b904cf2e00c57b624978cce8761daac1c1d29a654349674e63f0d267"
+      "nodes": 10,
+      "edges": 13,
+      "sha256": "3f3adedbedcebba0b96d4a6a8f9c46aed9c4af37d4e6a7b5f7e8d0a8683ebab5"
     },
     {
       "order": 10,

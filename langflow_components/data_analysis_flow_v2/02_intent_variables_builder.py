@@ -17,9 +17,12 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import DataInput, Output
+from lfx.io import DataInput, DropdownInput, Output
 from lfx.schema.message import Message
 
+LEGACY_INTENT_DIALECT = "manufacturing.intent.legacy.v1"
+COMPACT_INTENT_DIALECT = "manufacturing.intent.compact.v1"
+INTENT_CONTRACT_MODES = {"legacy", "compact"}
 RETIRED_DETAIL_CONTRACT_KEYS = {"row_identity_columns", "context_columns"}
 MODEL_INTERNAL_CATALOG_KEYS = {
     "columns",
@@ -74,8 +77,13 @@ REPORT_CONTEXT_FILTER_OPERATORS = {
 
 # 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
-def build_variables(payload_value: Any, metadata_candidates_value: Any = None) -> dict[str, Any]:
+def build_variables(
+    payload_value: Any,
+    metadata_candidates_value: Any = None,
+    intent_contract_mode: Any = "legacy",
+) -> dict[str, Any]:
     payload = _payload(payload_value)
+    contract_mode = _intent_contract_mode(intent_contract_mode)
     metadata_candidates = _metadata_candidates_for_model(
         _without_retired_table_catalog_contract(
             _compact_metadata_candidates(_payload(metadata_candidates_value) or {})
@@ -85,7 +93,8 @@ def build_variables(payload_value: Any, metadata_candidates_value: Any = None) -
         "question": payload.get("request", {}).get("question", ""),
         "state_summary": _compact_json(_without_retired_intent_contract(_state_summary(payload))),
         "metadata_candidates": _compact_json(metadata_candidates),
-        "output_schema": _compact_json(_schema()),
+        "output_schema": _compact_json(_schema(contract_mode)),
+        "expected_dialect": _expected_dialect(contract_mode),
     }
 
 
@@ -172,8 +181,133 @@ def _compact_orchestration(value: Any) -> dict[str, Any]:
     )
 
 
-# 함수 설명: `_schema()`는 의도 분석 LLM이 반환해야 할 JSON 스키마를 작은 dict로 구성합니다.
-def _schema() -> dict[str, Any]:
+# 함수 설명: 명시적 UI mode를 두 개의 지원 값으로만 정규화해 우발적인 계약 전환을 막습니다.
+def _intent_contract_mode(value: Any) -> str:
+    mode = str(value or "legacy").strip().lower()
+    return mode if mode in INTENT_CONTRACT_MODES else "legacy"
+
+
+# 함수 설명: 선택 mode가 요구하는 모델 응답 dialect를 후속 Router와 Normalizer에 전달합니다.
+def _expected_dialect(mode: Any) -> str:
+    return (
+        COMPACT_INTENT_DIALECT
+        if _intent_contract_mode(mode) == "compact"
+        else LEGACY_INTENT_DIALECT
+    )
+
+
+# 함수 설명: `_schema()`는 선택 mode의 의도 분석 LLM 출력 스키마를 반환하며 기본값은 기존 계약입니다.
+def _schema(intent_contract_mode: Any = "legacy") -> dict[str, Any]:
+    if _intent_contract_mode(intent_contract_mode) == "compact":
+        return _compact_schema()
+    return _legacy_schema()
+
+
+# 함수 설명: Compact schema는 정규화기가 metadata와 Typed IR에서 다시 파생할 중복 계약을 모델 출력에서 제외합니다.
+def _compact_schema() -> dict[str, Any]:
+    return {
+        "intent_plan": {
+            "input_contract_version": COMPACT_INTENT_DIALECT,
+            "analysis_kind": "string",
+            "request_scope": "new_analysis|followup_requery|followup_transform|followup_expand_source|followup_explain|clarification",
+            "reference_mode": "none|previous_result_rows|previous_result_transform|previous_source|previous_filters|previous_trace",
+            "condition_resolution": {
+                "changed": {
+                    "filters": {
+                        "SOURCE_ALIAS": {
+                            "CANONICAL_COLUMN": {"operator": "operator", "value": "value"}
+                        }
+                    }
+                },
+                "dropped": {"filters": {"SOURCE_ALIAS": ["CANONICAL_COLUMN"]}},
+                "new": {
+                    "filters": {
+                        "SOURCE_ALIAS": {
+                            "CANONICAL_COLUMN": {"operator": "operator", "value": "value"}
+                        }
+                    }
+                },
+            },
+            "metadata_refs": [{"section": "string", "key": "string"}],
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "catalog dataset_key",
+                    "source_alias": "unique alias",
+                    "required_params": {"CATALOG_REQUIRED_PARAM": "value"},
+                    "filters": {
+                        "CANONICAL_FILTER_COLUMN": {
+                            "operator": "eq|in|ne|not_in|gt|ge|lt|le|contains|like|starts_with|ends_with|is_null|is_empty|null_or_empty|not_null|not_empty|not_blank",
+                            "value": "value or list; omit for valueless operators",
+                        }
+                    },
+                }
+            ],
+            "pandas_function_cases": [
+                {
+                    "key": "metadata case key",
+                    "function_name": "helper name",
+                    "input_text": "helper input text",
+                    "source_alias": "source alias",
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "unique node id",
+                    "operation": "apply_filters|select_columns|groupby_and_aggregate|sort_and_top_n|count_rows|value_counts|distinct_values|latest_earliest|percent_of_total|rank_within_group|threshold_after_aggregate|time_bucket_summary|period_change|running_total|moving_aggregate|percentile_summary|pivot_summary|join|compare_presence|compare_metrics|compare_group_attributes|find_duplicate_groups|apply_row_match_groups|apply_pandas_function_case",
+                    "inputs": [
+                        {
+                            "kind": "external_source|node_output",
+                            "ref": "leaf alias or prior node id/output alias",
+                        }
+                    ],
+                    "output_alias": "unique output alias",
+                    "source_alias": "optional provider alias",
+                    "columns": [],
+                    "field": "filter column",
+                    "operator": "typed operator",
+                    "value": "typed scalar or list",
+                    "group_by": [],
+                    "aggregations": [
+                        {
+                            "column": "metric column",
+                            "method": "sum|mean|nunique|count|min|max|collect_unique",
+                            "output_column": "metric output column",
+                        }
+                    ],
+                    "sort_by": "terminal metric column",
+                    "order": "asc|desc",
+                    "limit": 0,
+                    "left_source_alias": "join/comparison left alias",
+                    "right_source_alias": "join/comparison right alias",
+                    "left_on": [],
+                    "right_on": [],
+                    "join_type": "outer|left|inner",
+                    "population_policy": "preserve_all_metric_source_keys|left_source_only",
+                    "right_value_columns": [],
+                    "calculation": {"operation-specific canonical fields only": "value"},
+                }
+            ],
+            "output_contract": {
+                "result_mode": "aggregate|detail|entity_list|scalar|explanation",
+                "result_columns": [],
+                "primary_metric": "optional unambiguous representative metric",
+                "column_labels": {"RESULT_COLUMN": "user-facing label"},
+                "result_segments": [
+                    {
+                        "label": "string",
+                        "operation": "top_n|bottom_n|filter|comparison",
+                        "limit": 0,
+                        "sort_by": "string",
+                        "order": "asc|desc",
+                    }
+                ],
+            },
+        }
+    }
+
+
+# 함수 설명: Legacy schema는 기존 Full Intent 응답 계약을 변경 없이 유지합니다.
+def _legacy_schema() -> dict[str, Any]:
     return {
         "intent_plan": {
             "analysis_kind": "string",
@@ -869,26 +1003,36 @@ def _omit_empty(value: dict[str, Any]) -> dict[str, Any]:
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class IntentVariablesBuilder(Component):
     display_name = "02 의도 분석 변수 생성기"
-    description = "Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 의도 분석 변수를 제공합니다."
+    description = "Legacy 또는 Compact Intent 계약을 명시적으로 선택하고 프롬프트·검증 단계에 같은 dialect를 전달합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         DataInput(name="metadata_candidates_in", display_name="메타데이터 후보", required=False),
+        DropdownInput(
+            name="intent_contract_mode",
+            display_name="Intent 계약 모드",
+            options=["legacy", "compact"],
+            value="legacy",
+            required=False,
+            advanced=False,
+        ),
     ]
     outputs = [
         Output(name="question", display_name="사용자 질문", method="build_question", types=["Message"], group_outputs=True),
         Output(name="state_summary", display_name="상태/요청 컨텍스트 JSON", method="build_state_summary", types=["Message"], group_outputs=True),
         Output(name="metadata_candidates", display_name="메타데이터 후보 JSON", method="build_metadata_candidates", types=["Message"], group_outputs=True),
         Output(name="output_schema", display_name="출력 스키마 JSON", method="build_output_schema", types=["Message"], group_outputs=True),
+        Output(name="expected_dialect", display_name="예상 Intent Dialect", method="build_expected_dialect", types=["Message"], group_outputs=True),
     ]
 
     # 함수 설명: `_variables_once()`는 한 vertex 실행에서 여러 group output이 같은 payload를 반복 직렬화하지 않도록 결과를 재사용합니다.
     def _variables_once(self) -> dict[str, Any]:
         payload = getattr(self, "payload", None)
         metadata = getattr(self, "metadata_candidates_in", None)
-        cache_key = (id(payload), id(metadata))
+        contract_mode = getattr(self, "intent_contract_mode", "legacy")
+        cache_key = (id(payload), id(metadata), str(contract_mode or "legacy"))
         if getattr(self, "_variables_cache_key", None) != cache_key:
             self._variables_cache_key = cache_key
-            self._variables_cache = build_variables(payload, metadata)
+            self._variables_cache = build_variables(payload, metadata, contract_mode)
         return self._variables_cache
 
     # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.
@@ -910,3 +1054,7 @@ class IntentVariablesBuilder(Component):
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_schema(self) -> Message:
         return Message(text=self._variables_once()["output_schema"])
+
+    # Langflow 출력 함수: Router와 Normalizer가 같은 응답 dialect를 검증하도록 exact identifier를 전달합니다.
+    def build_expected_dialect(self) -> Message:
+        return Message(text=self._variables_once()["expected_dialect"])

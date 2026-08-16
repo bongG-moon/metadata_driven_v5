@@ -66,5 +66,8 @@ Direct Tool Result Adapter.message -> Chat Output.input_value
 - 첫 실행: Agent의 Tool 선택 + 하위 Flow 그래프 로드 + 하위 Flow 실행
 - 이후 실행: Agent의 Tool 선택 + 캐시된 그래프 복원 + 하위 Flow 실행
 - `return_direct=true`: Tool 실행 뒤 결과를 다시 쓰는 추가 Agent LLM 단계를 생략
+- Router Agent의 `handle_parsing_errors`는 `false`입니다. Langflow 1.11에서 이 입력은 `ToolRetryMiddleware(max_retries=2, retry_on=Exception)`를 추가하므로, 저장 Flow까지 포함한 상위 Router에서는 사용하지 않습니다.
+- Tool 입력 검증 또는 실행 예외는 하위 Flow를 재실행하지 않고 `status=error`인 안전한 안내로 한 번 반환합니다. 정상적으로 반환된 Blocked·clarification 답변은 그대로 전달합니다.
+- 저장 요청이 오류로 끝났다면 자동 재시도하지 말고 MongoDB 반영 상태를 먼저 확인합니다.
 
 분류만 필요한 운영 기본 경로에서는 API Smart Router가 더 빠를 수 있습니다. Agent Tool Router는 복합적인 자연어 분류 완성도와 관리 편의성을 비교 검증하기 위한 대안입니다.

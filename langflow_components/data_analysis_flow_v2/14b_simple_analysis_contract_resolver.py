@@ -274,6 +274,16 @@ def resolve_simple_analysis_contract(
     source_aliases = _string_list(intent_ir.get("route_source_aliases"))
     if not source_aliases:
         source_aliases = _external_source_aliases(next_payload)
+    if not source_aliases:
+        if _source_identity_not_required(plan):
+            contract = _route_contract("complex", "no_external_source")
+            contract["external_source_aliases"] = []
+            return _attach_contract(next_payload, contract, trace, started)
+        message = "분석에 사용할 데이터 source가 확정되지 않아 pandas 모델 실행을 시작하지 않았습니다."
+        _block_source_identity(next_payload, message)
+        contract = _route_contract("blocked", "source_identity_unavailable")
+        contract["external_source_aliases"] = []
+        return _attach_contract(next_payload, contract, trace, started)
     if len(source_aliases) != 1:
         typed_contract = _typed_pandas_plan_execution_contract(
             next_payload,
@@ -282,8 +292,7 @@ def resolve_simple_analysis_contract(
         )
         if typed_contract:
             return _attach_contract(next_payload, typed_contract, trace, started)
-        reason = "no_external_source" if not source_aliases else "multiple_external_sources"
-        contract = _route_contract("complex", reason)
+        contract = _route_contract("complex", "multiple_external_sources")
         contract["external_source_aliases"] = source_aliases
         return _attach_contract(next_payload, contract, trace, started)
 
@@ -1010,6 +1019,33 @@ def _block_contract(
     }
     payload["execution_gate"] = {"status": "blocked", "reason": "fast_path_contract_invalid", "failures": [failure]}
     payload.setdefault("trace", {}).setdefault("errors", []).append(failure)
+
+
+# 함수 설명: source identity가 없는 Complex 경로를 모델 호출 전에 명시적인 실행 차단 계약으로 바꿉니다.
+def _block_source_identity(payload: dict[str, Any], message: str) -> None:
+    failure = {
+        "type": "source_identity_unavailable",
+        "message": message,
+        "source_alias": "",
+    }
+    payload["execution_gate"] = {
+        "status": "blocked",
+        "reason": "source_identity_unavailable",
+        "critical_failures": [deepcopy(failure)],
+        "failures": [deepcopy(failure)],
+        "pandas_execution_allowed": False,
+        "model_response_policy": "ignore",
+    }
+    payload.setdefault("trace", {}).setdefault("errors", []).append(failure)
+
+
+# 함수 설명: 조회 없이 답할 수 있는 확인 질문과 이전 trace 설명만 source identity 차단에서 제외합니다.
+def _source_identity_not_required(plan: dict[str, Any]) -> bool:
+    request_scope = str(plan.get("request_scope") or "").strip()
+    reference_mode = str(plan.get("reference_mode") or "none").strip()
+    return request_scope == "clarification" or (
+        request_scope == "followup_explain" and reference_mode == "previous_trace"
+    )
 
 
 # 함수 설명: `_attach_contract()`는 14B V2 단순 분석 계약 결정기 처리 중 contract 관련 값을 계산·변환하는 내부 helper입니다.
