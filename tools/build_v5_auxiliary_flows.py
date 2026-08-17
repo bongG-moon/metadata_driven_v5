@@ -33,9 +33,9 @@ FLOW_DISPLAY_NAMES = {
     "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
     "metadata_qa": "05. v5_metadata_qa",
     "agent_tool_router": "06. v5_agent_tool_router",
-    "realtime_production_report": "07. v5_realtime_production_report",
-    "report_followup": "10. v5_report_followup",
-    "realtime_production_report_legacy": "11. v5_realtime_production_report_legacy",
+    "realtime_production_report_legacy": "07. v5_realtime_production_report_legacy",
+    "realtime_production_report": "07-1. v5_realtime_production_report",
+    "report_followup": "07-2. v5_report_followup",
 }
 
 
@@ -745,9 +745,9 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["realtime_production_report"],
-        "Realtime production report flow with Domain process-group catalog grounding, deterministic explicit process-group selection and row filtering, a session-bound result-store context for shared follow-up analysis, clarification without HTML when no group is specified, and four fixed report sections.",
+        "Realtime production report flow with Domain process-group catalog grounding, deterministic explicit process-group selection and row filtering, a Report View Bundle plus shared Context Publisher for no-code follow-up Snapshot contracts, clarification without HTML when no group is specified, and four fixed report sections.",
         "metadata-driven-v5-realtime-production-report",
-        ["v5", "standalone", "realtime-production", "process-group", "dummy-data", "html-report", "report-api", "mongodb-collection", "followup-context"],
+        ["v5", "standalone", "realtime-production", "process-group", "dummy-data", "html-report", "report-api", "mongodb-collection", "followup-context", "report-bundle", "context-publisher"],
     )
     folder = COMPONENT_ROOT / "realtime_production_report_flow"
     chat = native_node(proto["chat_input"], "ChatInput-realtime-production-report", 0, -180)
@@ -784,16 +784,23 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     )
     context_payload = custom_node(
         proto["custom"],
-        "ReportContextPayload-realtime-production-report",
+        "RealtimeReportViewBundle-realtime-production-report",
         folder / "00d_report_context_payload_builder.py",
         1940,
+        300,
+    )
+    context_publisher = custom_node(
+        proto["custom"],
+        "ReportContextPublisher-realtime-production-report",
+        folder / "00e_report_context_publisher.py",
+        2340,
         300,
     )
     context_store = custom_node(
         proto["custom"],
         "ReportContextResultStore-realtime-production-report",
         COMPONENT_ROOT / "data_analysis_flow" / "23_mongodb_result_store.py",
-        2340,
+        2740,
         300,
     )
     context_store_template = context_store["data"]["node"]["template"]
@@ -804,20 +811,20 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
         proto["custom"],
         "RealtimeProductionReportBuilder-realtime-production-report",
         folder / "01_realtime_production_report_builder.py",
-        2740,
+        3140,
         0,
     )
     report_template = report["data"]["node"]["template"]
     _set_value(report_template, "report_api_url", "http://127.0.0.1:5000")
     _set_value(report_template, "report_ttl_hours", "4")
     _set_value(report_template, "max_html_rows", "1000")
-    output = native_node(proto["chat_output"], "ChatOutput-realtime-production-report", 3200, -130)
+    output = native_node(proto["chat_output"], "ChatOutput-realtime-production-report", 3600, -130)
     _set_message_storage(output, True)
     session_writer = custom_node(
         proto["custom"],
         "ReportSessionStateWriter-realtime-production-report",
         COMPONENT_ROOT / "session_state_flow" / "01_mongodb_session_state_writer.py",
-        3200,
+        3600,
         210,
     )
     session_writer_template = session_writer["data"]["node"]["template"]
@@ -830,7 +837,7 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
         proto["custom"],
         "RealtimeProductionReportApiTerminal-realtime-production-report",
         folder / "02_realtime_production_report_api_terminal.py",
-        3600,
+        4000,
         210,
     )
     flow["data"]["nodes"].extend(
@@ -840,6 +847,7 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
             dummy,
             gate,
             context_payload,
+            context_publisher,
             context_store,
             report,
             output,
@@ -852,7 +860,9 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     add_edge(flow, dummy, "dataset", gate, "dataset")
     add_edge(flow, chat, "message", context_payload, "question")
     add_edge(flow, gate, "selected_dataset", context_payload, "dataset")
-    add_edge(flow, context_payload, "context_payload", context_store, "payload")
+    add_edge(flow, chat, "message", context_publisher, "question")
+    add_edge(flow, context_payload, "report_bundle", context_publisher, "report_bundle")
+    add_edge(flow, context_publisher, "context_payload", context_store, "payload")
     add_edge(flow, chat, "message", report, "question")
     add_edge(flow, gate, "selected_dataset", report, "dataset")
     add_edge(flow, context_store, "payload_out", report, "context_payload")
@@ -964,7 +974,7 @@ def build_realtime_production_report_legacy_flow(donor: dict[str, Any]) -> dict[
 
 
 def build_report_followup_flow(donor: dict[str, Any]) -> dict[str, Any]:
-    """Build the isolated same-session Report Snapshot follow-up Flow 10."""
+    """Build the isolated same-session Report Snapshot follow-up Flow 07-2."""
 
     proto = prototypes(donor)
     flow = empty_flow(
@@ -1131,6 +1141,15 @@ def build_report_followup_flow(donor: dict[str, Any]) -> dict[str, Any]:
 def write_flows() -> list[dict[str, Any]]:
     donor = load_donor()
     outputs = []
+    # 07 / 07-1 / 07-2 전환 전에 사용하던 생성물만 정확히 제거합니다.
+    for retired_name in (
+        "07_realtime_production_report_flow_v5_standalone.json",
+        "10_report_followup_flow_v5_standalone.json",
+        "11_realtime_production_report_legacy_flow_v5_standalone.json",
+    ):
+        retired_path = EXPORT_ROOT / retired_name
+        if retired_path.exists():
+            retired_path.unlink()
     for spec in SAVING_SPECS:
         flow = _stamp_flow_version(build_saving_flow(donor, spec))
         path = EXPORT_ROOT / f"{spec.slug}_saving_flow_v5_standalone.json"
@@ -1151,7 +1170,7 @@ def write_flows() -> list[dict[str, Any]]:
         }
     )
     realtime_production_report = _stamp_flow_version(build_realtime_production_report_flow(donor))
-    realtime_production_report_path = EXPORT_ROOT / "07_realtime_production_report_flow_v5_standalone.json"
+    realtime_production_report_path = EXPORT_ROOT / "07_1_realtime_production_report_flow_v5_standalone.json"
     realtime_production_report_path.write_bytes(
         (json.dumps(realtime_production_report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     )
@@ -1163,7 +1182,7 @@ def write_flows() -> list[dict[str, Any]]:
         }
     )
     report_followup = _stamp_flow_version(build_report_followup_flow(donor))
-    report_followup_path = EXPORT_ROOT / "10_report_followup_flow_v5_standalone.json"
+    report_followup_path = EXPORT_ROOT / "07_2_report_followup_flow_v5_standalone.json"
     report_followup_path.write_bytes(
         (json.dumps(report_followup, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     )
@@ -1175,7 +1194,7 @@ def write_flows() -> list[dict[str, Any]]:
         }
     )
     legacy_report = _stamp_flow_version(build_realtime_production_report_legacy_flow(donor))
-    legacy_report_path = EXPORT_ROOT / "11_realtime_production_report_legacy_flow_v5_standalone.json"
+    legacy_report_path = EXPORT_ROOT / "07_realtime_production_report_legacy_flow_v5_standalone.json"
     legacy_report_path.write_bytes(
         (json.dumps(legacy_report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     )

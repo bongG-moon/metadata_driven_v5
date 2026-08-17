@@ -62,7 +62,8 @@ def _runtime_modules() -> dict[str, Any]:
             "result_store": base.load_module(FLOW / "23_mongodb_result_store.py"),
             "resolver": base.load_module(V2_FLOW / "14b_simple_analysis_contract_resolver.py"),
             "selection": base.load_module(V2_FLOW / "15_function_case_selection_builder.py"),
-            "context_builder": base.load_module(REPORT_FLOW / "00d_report_context_payload_builder.py"),
+            "view_bundle_builder": base.load_module(REPORT_FLOW / "00d_report_context_payload_builder.py"),
+            "context_publisher": base.load_module(REPORT_FLOW / "00e_report_context_publisher.py"),
             "report_builder": base.load_module(REPORT_FLOW / "01_realtime_production_report_builder.py"),
             "report_dummy": base.load_module(REPORT_FLOW / "00_dummy_production_judgement_data.py"),
             "session_writer": base.load_module(SESSION_FLOW / "01_mongodb_session_state_writer.py"),
@@ -106,10 +107,8 @@ def validate_live_followup(*, keep_records: bool = False) -> dict[str, Any]:
         )
         report_question = "D/A 공정그룹 실시간 생산 분석을 해줘"
         report_message = _message(report_question, session_id)
-        context_payload = modules["context_builder"].build_report_context_payload(
-            dataset,
-            report_message,
-        )
+        report_bundle = modules["view_bundle_builder"].build_realtime_report_view_bundle(dataset, report_message)
+        context_payload = modules["context_publisher"].build_report_context_payload(report_message, report_bundle)
         stored_context = modules["result_store"].store_result(
             context_payload,
             mongo_uri=mongo_uri,

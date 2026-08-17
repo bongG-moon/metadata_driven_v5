@@ -269,13 +269,14 @@ def _query_source_contract(
         if _text(column) and _text(column) in columns
     ] if isinstance(grain.get("columns"), list) else []
     purpose = _clip(raw.get("purpose"), 120)
-    if not purpose or not columns or not grain_columns:
+    if not purpose or not columns:
         return {}
     projected: dict[str, Any] = {
         "contract_version": QUERY_SOURCE_CONTRACT_VERSION,
         "source_alias": source_alias,
         "dataset_key": dataset_key,
         "purpose": purpose,
+        "display_name": _clip(raw.get("display_name"), 200) or purpose,
         "aliases": [
             _clip(item, 120)
             for item in raw.get("aliases", [])[:20]
@@ -284,7 +285,7 @@ def _query_source_contract(
         "authoritative": True,
         "columns": columns,
         "grain": {
-            "kind": _clip(grain.get("kind"), 80),
+            "kind": _clip(grain.get("kind"), 80) or "row",
             "columns": grain_columns,
             "unique": grain.get("unique") is True,
         },
@@ -299,10 +300,23 @@ def _query_source_contract(
             for item in raw.get("allowed_operations", [])[:12]
             if _text(item)
         ] if isinstance(raw.get("allowed_operations"), list) else [],
+        "default_display_columns": [
+            _clip(item, 200)
+            for item in raw.get("default_display_columns", [])[:40]
+            if _text(item) and _text(item) in columns
+        ] if isinstance(raw.get("default_display_columns"), list) else [],
+        "default_view": raw.get("default_view") is True,
     }
     materialized_from = _clip(raw.get("materialized_from"), 120)
     if materialized_from:
         projected["materialized_from"] = materialized_from
+    lineage = [
+        _clip(item, 120)
+        for item in raw.get("lineage", [])[:12]
+        if _text(item)
+    ] if isinstance(raw.get("lineage"), list) else []
+    if lineage:
+        projected["lineage"] = list(dict.fromkeys(lineage))
     return projected
 
 
@@ -1251,7 +1265,7 @@ def publish_production_report(
                 else []
             ),
             "report_plan": {
-                "source_flow": "07. v5_realtime_production_report",
+                "source_flow": "07-1. v5_realtime_production_report",
                 "rules_version": RULES_VERSION,
                 "snapshot_id": _clip(analysis.get("scope", {}).get("snapshot_id"), 200),
                 "case_count": int(analysis.get("scope", {}).get("case_count") or 0),

@@ -81,6 +81,7 @@ def _isolated_lfx_stubs():
 
 FLOW_ROOT = ROOT / "langflow_components" / "report_followup_flow"
 with _isolated_lfx_stubs():
+    context_publisher = load_module(ROOT / "langflow_components" / "realtime_production_report_flow" / "00e_report_context_publisher.py")
     prompt_builder = load_module(FLOW_ROOT / "00_report_followup_prompt_builder.py")
     guarded_plan_router = load_module(FLOW_ROOT / "00b_report_followup_guarded_plan_router.py")
     plan_normalizer = load_module(FLOW_ROOT / "01_report_followup_plan_normalizer.py")
@@ -518,6 +519,82 @@ def test_arbitrary_report_physical_columns_work_without_table_catalog_mapping():
     assert executed["analysis"]["status"] == "ok"
     assert executed["data"]["columns"] == ["품목코드", "보고서점수"]
     assert [row["품목코드"] for row in executed["_full_result_rows"]] == ["P3", "P1"]
+
+
+def test_prompt_builder_uses_generic_publisher_default_view_and_display_name():
+    risk_view = _query_source(
+        alias="shortage_equipment_risk_products",
+        purpose="shortage_equipment_risk_products",
+        aliases=["장비 위험 제품"],
+        columns=["제품", "생산실적달성율", "장비교체판단", "필요장비대수"],
+        grain_kind="product",
+        grain_columns=["제품"],
+    )
+    risk_view.update(
+        {
+            "display_name": "생산부족 장비위험 제품",
+            "default_view": True,
+            "lineage": ["production_cases", "equipment_assign"],
+        }
+    )
+
+    request = prompt_builder.build_report_followup_request(
+        "방금 Report에서 달성율이 낮은 순으로 5개만 보여줘",
+        _loaded_state(_state([risk_view])),
+    )
+    prompt = prompt_builder.build_report_followup_prompt(request)
+
+    assert request["report_followup"]["status"] == "ready"
+    assert request["report_followup"]["candidate_source_aliases"] == ["shortage_equipment_risk_products"]
+    assert '"display_name":"생산부족 장비위험 제품"' in prompt
+    assert '"default_view":true' in prompt
+    assert '"lineage":["production_cases","equipment_assign"]' in prompt
+
+
+def test_flow10_accepts_a_query_contract_auto_generated_from_simple_report_data():
+    question = types.SimpleNamespace(
+        text="방금 Report에서 위험점수가 높은 순으로 1개 보여줘",
+        session_id="report-session",
+        data={"text": "방금 Report에서 위험점수가 높은 순으로 1개 보여줘", "session_id": "report-session"},
+    )
+    published = context_publisher.build_report_context_payload(
+        question,
+        report_data_value={
+            "rows": [
+                {"제품": "P-01", "위험점수": 91, "내부관리값": "secret"},
+                {"제품": "P-02", "위험점수": 14, "내부관리값": "secret"},
+            ],
+            "report_columns": ["제품", "위험점수"],
+        },
+        report_title="장비 위험 Report",
+        report_type="equipment_risk",
+        view_label="장비 위험 제품",
+    )
+    source = published["source_results"][0]["query_source_contract"]
+    request = prompt_builder.build_report_followup_request(question, _loaded_state(_state([source])))
+
+    assert request["report_followup"]["status"] == "ready"
+    assert request["report_followup"]["candidate_source_aliases"] == ["report_snapshot"]
+    assert '"display_name":"장비 위험 제품"' in prompt_builder.build_report_followup_prompt(request)
+
+    normalized = plan_normalizer.normalize_report_followup_plan(
+        request,
+        {
+            "status": "ready",
+            "source_alias": "report_snapshot",
+            "operations": [
+                {"operation": "sort", "column": "위험점수", "direction": "desc"},
+                {"operation": "top_n", "limit": 1},
+                {"operation": "select", "columns": ["제품", "위험점수"]},
+            ],
+        },
+    )
+    executed = executor.execute_report_snapshot(
+        _loaded_source_payload(normalized, "report_snapshot", published["runtime_sources"]["report_snapshot"])
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["_full_result_rows"] == [{"제품": "P-01", "위험점수": 91}]
 
 
 @pytest.mark.parametrize(

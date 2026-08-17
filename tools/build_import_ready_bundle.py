@@ -40,9 +40,9 @@ FLOW_SPECS = [
     ("main_flow_filter_saving_flow_v5_standalone.json", "main-flow-filter-saving", "main_flow_filter_saving"),
     ("metadata_qa_flow_v5_standalone.json", "metadata-qa", "metadata_qa"),
     ("06_agent_tool_router_flow_v5_standalone.json", "agent-tool-router", "agent_tool_router"),
-    ("07_realtime_production_report_flow_v5_standalone.json", "realtime-production-report", "realtime_production_report"),
-    ("10_report_followup_flow_v5_standalone.json", "report-followup", "report_followup"),
-    ("11_realtime_production_report_legacy_flow_v5_standalone.json", "realtime-production-report-legacy", "realtime_production_report_legacy"),
+    ("07_realtime_production_report_legacy_flow_v5_standalone.json", "realtime-production-report-legacy", "realtime_production_report_legacy"),
+    ("07_1_realtime_production_report_flow_v5_standalone.json", "realtime-production-report", "realtime_production_report"),
+    ("07_2_report_followup_flow_v5_standalone.json", "report-followup", "report_followup"),
 ]
 IMPORT_ORDER = {
     "data_analysis": 1,
@@ -51,9 +51,20 @@ IMPORT_ORDER = {
     "main_flow_filter_saving": 4,
     "metadata_qa": 5,
     "agent_tool_router": 6,
-    "realtime_production_report": 7,
-    "report_followup": 10,
-    "realtime_production_report_legacy": 11,
+    "realtime_production_report_legacy": 7,
+    "realtime_production_report": 8,
+    "report_followup": 9,
+}
+FLOW_NUMBER_LABELS = {
+    "data_analysis": "01",
+    "domain_saving": "02",
+    "table_catalog_saving": "03",
+    "main_flow_filter_saving": "04",
+    "metadata_qa": "05",
+    "agent_tool_router": "06",
+    "realtime_production_report_legacy": "07",
+    "realtime_production_report": "07-1",
+    "report_followup": "07-2",
 }
 FLOW_DISPLAY_NAMES = {
     "data_analysis": "01. v5_data_analysis",
@@ -62,9 +73,9 @@ FLOW_DISPLAY_NAMES = {
     "main_flow_filter_saving": "04. v5_main_flow_filter_saving",
     "metadata_qa": "05. v5_metadata_qa",
     "agent_tool_router": "06. v5_agent_tool_router",
-    "realtime_production_report": "07. v5_realtime_production_report",
-    "report_followup": "10. v5_report_followup",
-    "realtime_production_report_legacy": "11. v5_realtime_production_report_legacy",
+    "realtime_production_report_legacy": "07. v5_realtime_production_report_legacy",
+    "realtime_production_report": "07-1. v5_realtime_production_report",
+    "report_followup": "07-2. v5_report_followup",
 }
 
 
@@ -107,8 +118,9 @@ def _stamp_flow(flow: dict[str, Any], *, flow_id: str, route_name: str, endpoint
     return flow
 
 
-def _destination_name(source_name: str, order: int) -> str:
-    return source_name if source_name.startswith(f"{order:02d}_") else f"{order:02d}_{source_name}"
+def _destination_name(source_name: str, number_label: str) -> str:
+    file_prefix = number_label.replace("-", "_")
+    return source_name if source_name.startswith(f"{file_prefix}_") else f"{file_prefix}_{source_name}"
 
 
 def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
@@ -164,7 +176,7 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
             raise ValueError("Agent Tool Router must expose the dedicated Report follow-up Tool.")
         report_template = report_tool.get("data", {}).get("node", {}).get("template", {})
         if report_template.get("flow_name_selected", {}).get("value") != FLOW_DISPLAY_NAMES["report_followup"]:
-            raise ValueError("Report follow-up Tool must target Flow 10.")
+            raise ValueError("Report follow-up Tool must target Flow 07-2.")
         if report_template.get("tool_name", {}).get("value") != "run_report_followup":
             raise ValueError("Report follow-up Tool public name is inconsistent.")
         if report_template.get("return_direct", {}).get("value") is not True:
@@ -184,7 +196,7 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
         )
         realtime_template = (realtime_tool or {}).get("data", {}).get("node", {}).get("template", {})
         if realtime_template.get("flow_name_selected", {}).get("value") != FLOW_DISPLAY_NAMES["realtime_production_report"]:
-            raise ValueError("Router realtime Report Tool must target the follow-up-enabled Flow 07.")
+            raise ValueError("Router realtime Report Tool must target the follow-up-enabled Flow 07-1.")
 
     if item["name"] == FLOW_DISPLAY_NAMES["report_followup"]:
         edge_ports = {
@@ -223,29 +235,30 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
             ),
         }
         if not required.issubset(edge_ports):
-            raise ValueError("Flow 10 must restore and execute the Report Snapshot before its single Chat Output.")
+            raise ValueError("Flow 07-2 must restore and execute the Report Snapshot before its single Chat Output.")
         if any(
             any(token in str(node.get("id") or "") for token in ("Oracle", "Goodocs", "Datalake", "RetrievalJob"))
             for node in nodes
         ):
-            raise ValueError("Flow 10 must not contain a live source retriever.")
+            raise ValueError("Flow 07-2 must not contain a live source retriever.")
 
     if item["name"] == FLOW_DISPLAY_NAMES["realtime_production_report"]:
         node_ids = {str(node.get("id") or "") for node in nodes}
         required_ids = {
-            "ReportContextPayload-realtime-production-report",
+            "RealtimeReportViewBundle-realtime-production-report",
+            "ReportContextPublisher-realtime-production-report",
             "ReportContextResultStore-realtime-production-report",
             "ReportSessionStateWriter-realtime-production-report",
         }
         if not required_ids.issubset(node_ids):
-            raise ValueError("Flow 07 must publish the same-session Report follow-up Context.")
+            raise ValueError("Flow 07-1 must publish the same-session Report follow-up Context.")
 
     if item["name"] == FLOW_DISPLAY_NAMES["realtime_production_report_legacy"]:
         if len(nodes) != 9 or len(edges) != 11:
-            raise ValueError("Legacy Report Flow 11 must preserve the original 9-node/11-edge graph.")
+            raise ValueError("Legacy Report Flow 07 must preserve the original 9-node/11-edge graph.")
         node_ids = {str(node.get("id") or "") for node in nodes}
         if any(token in node_id for node_id in node_ids for token in ("ReportContext", "SessionStateWriter")):
-            raise ValueError("Legacy Report Flow 11 must not publish follow-up Context or session state.")
+            raise ValueError("Legacy Report Flow 07 must not publish follow-up Context or session state.")
         edge_pairs = {(str(edge.get("source") or ""), str(edge.get("target") or "")) for edge in edges}
         suffix = "realtime-production-report-legacy"
         required_pairs = {
@@ -253,7 +266,7 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
             (f"RealtimeProductionReportBuilder-{suffix}", f"RealtimeProductionReportApiTerminal-{suffix}"),
         }
         if not required_pairs.issubset(edge_pairs):
-            raise ValueError("Legacy Report Flow 11 must retain direct Chat/API terminal outputs.")
+            raise ValueError("Legacy Report Flow 07 must retain direct Chat/API terminal outputs.")
     return 2 * len(edges)
 
 
@@ -280,18 +293,18 @@ def _readme(
     component_count: int,
 ) -> str:
     rows = "\n".join(
-        f"| {item['order']} | `{item['file']}` | `{item['endpoint_name']}` | {item['nodes']} | {item['edges']} |"
+        f"| {item['display_order']} | `{item['file']}` | `{item['endpoint_name']}` | {item['nodes']} | {item['edges']} |"
         for item in manifest_flows
     )
     return f"""# metadata_driven_v5 import-ready bundle
 
-이 bundle은 현재 지원하는 **9개 Flow(01~07, 10, 11)**를 포함합니다. 모두 Langflow {TARGET_LANGFLOW_VERSION} / langflow-base {TARGET_LANGFLOW_BASE_VERSION} / LFX {TARGET_LFX_VERSION} 기준으로 생성되었습니다.
+이 bundle은 현재 지원하는 **9개 Flow(01~06, 07, 07-1, 07-2)**를 포함합니다. 모두 Langflow {TARGET_LANGFLOW_VERSION} / langflow-base {TARGET_LANGFLOW_BASE_VERSION} / LFX {TARGET_LFX_VERSION} 기준으로 생성되었습니다.
 
 ## Import
 
 Langflow Desktop에서 `00_metadata_driven_v5_complete_{BUNDLE_VERSION}_ALL_FLOWS.json` 하나를 import하거나, 아래 순서대로 개별 파일을 import합니다.
 
-| 순서 | 파일 | endpoint_name | 노드 | 엣지 |
+| 번호 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
 {rows}
 
@@ -299,8 +312,8 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_{BUNDLE_VERSION}_ALL_FLOW
 
 - Langflow 모델 Provider와 `MONGO_URL` Credential Global Variable을 import 후 설정합니다.
 - 모든 일반 Data Analysis와 일반 분석 후속 질문은 `01. v5_data_analysis`가 담당합니다.
-- 같은 세션의 Report Snapshot 또는 Report가 미리 만든 집계 View에 대한 컬럼 선택·필터·정렬·순위는 `10. v5_report_followup`이 담당합니다. 새 groupby 계산, 최신 데이터나 다른 데이터셋이 필요한 질문은 `01. v5_data_analysis`로 보냅니다.
-- `07. v5_realtime_production_report`는 후속분석 Context를 저장하는 현재 기본 Report입니다. `11. v5_realtime_production_report_legacy`는 변경 전 직접 응답 구조를 보존한 호환 Flow이며 Router가 자동 선택하지 않습니다.
+- 같은 세션의 Report Snapshot 또는 Report가 미리 만든 집계 View에 대한 컬럼 선택·필터·정렬·순위는 `07-2. v5_report_followup`이 담당합니다. 새 groupby 계산, 최신 데이터나 다른 데이터셋이 필요한 질문은 `01. v5_data_analysis`로 보냅니다.
+- `07. v5_realtime_production_report_legacy`는 변경 전 직접 응답 구조를 보존한 호환 Flow이며 Router가 자동 선택하지 않습니다. `07-1. v5_realtime_production_report`가 후속분석 Context를 저장하는 현재 Router 대상 Report입니다.
 - 결과 CSV/JSON 다운로드와 실시간 Report HTML 발행은 API_SERVER(`python API_SERVER\\app.py`, bind `0.0.0.0:5000`)가 담당합니다. Report HTML과 메타데이터는 API_SERVER의 단일 MongoDB 컬렉션에 저장되므로 Flow의 Report API 주소를 접근 가능한 API URL로 설정합니다.
 - 기존 Router Tool에 저장된 `flow_id_selected`가 있으면, import 뒤 대상 Flow를 한 번 다시 선택해 현재 Flow ID로 갱신합니다.
 
@@ -323,6 +336,7 @@ def build_bundle(output_dir: Path = DEFAULT_OUTPUT_DIR) -> dict[str, Any]:
     manifest_flows: list[dict[str, Any]] = []
     for source_name, endpoint_suffix, route_name in FLOW_SPECS:
         order = IMPORT_ORDER[route_name]
+        display_order = FLOW_NUMBER_LABELS[route_name]
         source = SOURCE_DIR / source_name
         if not source.exists():
             raise FileNotFoundError(f"Active flow export is missing: {source}")
@@ -330,11 +344,12 @@ def build_bundle(output_dir: Path = DEFAULT_OUTPUT_DIR) -> dict[str, Any]:
         endpoint_name = f"{ENDPOINT_PREFIX}-{endpoint_suffix}"
         flow_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{ENDPOINT_PREFIX}/{endpoint_suffix}"))
         _stamp_flow(flow, flow_id=flow_id, route_name=route_name, endpoint_name=endpoint_name)
-        destination = output_dir / _destination_name(source_name, order)
+        destination = output_dir / _destination_name(source_name, display_order)
         destination.write_bytes((json.dumps(flow, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
         manifest_flows.append(
             {
                 "order": order,
+                "display_order": display_order,
                 "file": destination.name,
                 "name": flow["name"],
                 "endpoint_name": endpoint_name,

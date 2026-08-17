@@ -1,7 +1,7 @@
-"""Synchronize only Flow 07 after changing its standalone component source.
+"""Synchronize only Flow 07-1 after changing its standalone component source.
 
 The general import-bundle builder rewrites every base Flow and deletes/rebuilds
-the individual imports.  This targeted tool intentionally updates only Flow 07
+the individual imports.  This targeted tool intentionally updates only Flow 07-1
 and its entry in the combined import file, manifest, and ZIP.  It preserves
 unrelated in-progress changes in the other Flow artifacts.
 """
@@ -22,9 +22,9 @@ import build_v5_auxiliary_flows as auxiliary
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPORT_PATH = ROOT / "flow_exports" / "07_realtime_production_report_flow_v5_standalone.json"
+EXPORT_PATH = ROOT / "flow_exports" / "07_1_realtime_production_report_flow_v5_standalone.json"
 IMPORT_DIR = ROOT / "import_ready_flows"
-IMPORT_PATH = IMPORT_DIR / "07_realtime_production_report_flow_v5_standalone.json"
+IMPORT_PATH = IMPORT_DIR / "07_1_realtime_production_report_flow_v5_standalone.json"
 COMBINED_PATH = IMPORT_DIR / f"00_metadata_driven_v5_complete_{bundle.BUNDLE_VERSION}_ALL_FLOWS.json"
 MANIFEST_PATH = IMPORT_DIR / "manifest.json"
 ROUTE_NAME = "realtime_production_report"
@@ -51,11 +51,11 @@ def _edge_count(flow: dict[str, Any]) -> int:
 
 def _assert_target_version(flow: dict[str, Any]) -> None:
     if flow.get("last_tested_version") != bundle.TARGET_LANGFLOW_VERSION:
-        raise ValueError("Flow 07 last_tested_version is not Langflow 1.11.0.")
+        raise ValueError("Flow 07-1 last_tested_version is not Langflow 1.11.0.")
     for node in flow.get("data", {}).get("nodes", []):
         component = node.get("data", {}).get("node")
         if isinstance(component, dict) and component.get("lf_version") != bundle.TARGET_LANGFLOW_VERSION:
-            raise ValueError(f"Flow 07 node version mismatch: {node.get('id')}")
+            raise ValueError(f"Flow 07-1 node version mismatch: {node.get('id')}")
 
 
 def _replace_combined_flow(import_flow: dict[str, Any]) -> int:
@@ -73,7 +73,7 @@ def _replace_combined_flow(import_flow: dict[str, Any]) -> int:
         )
     ]
     if len(target_indexes) != 1:
-        raise ValueError(f"Expected one Flow 07 in combined import file, found {len(target_indexes)}.")
+        raise ValueError(f"Expected one Flow 07-1 in combined import file, found {len(target_indexes)}.")
     flows[target_indexes[0]] = deepcopy(import_flow)
     _write_compact_json(COMBINED_PATH, combined)
     return len(flows)
@@ -94,10 +94,12 @@ def _update_manifest(import_flow: dict[str, Any], combined_flow_count: int) -> N
         )
     ]
     if len(target_items) != 1:
-        raise ValueError(f"Expected one Flow 07 manifest item, found {len(target_items)}.")
+        raise ValueError(f"Expected one Flow 07-1 manifest item, found {len(target_items)}.")
     target = target_items[0]
     target.update(
         {
+            "order": bundle.IMPORT_ORDER[ROUTE_NAME],
+            "display_order": bundle.FLOW_NUMBER_LABELS[ROUTE_NAME],
             "file": IMPORT_PATH.name,
             "name": bundle.FLOW_DISPLAY_NAMES[ROUTE_NAME],
             "endpoint_name": ENDPOINT_NAME,
@@ -130,7 +132,18 @@ def _refresh_zip() -> Path:
 
 
 def sync(*, refresh_zip: bool = True) -> dict[str, Any]:
-    """Regenerate source/export/import representations for the Flow 07 only."""
+    """Regenerate source/export/import representations for Flow 07-1 only."""
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    actual_labels = [
+        str(item.get("display_order") or "")
+        for item in manifest.get("flows", [])
+        if isinstance(item, dict)
+    ]
+    expected_labels = ["01", "02", "03", "04", "05", "06", "07", "07-1", "07-2"]
+    if actual_labels != expected_labels:
+        raise ValueError(
+            "Flow 07/07-1/07-2 번호 체계가 준비되지 않았습니다. 전체 bundle builder를 먼저 실행하세요."
+        )
     donor = auxiliary.load_donor()
     export_flow = auxiliary._stamp_flow_version(
         auxiliary.build_realtime_production_report_flow(donor)
@@ -165,7 +178,7 @@ def sync(*, refresh_zip: bool = True) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Synchronize the single MongoDB collection Report API update into Flow 07 only."
+        description="Synchronize the single MongoDB collection Report API update into Flow 07-1 only."
     )
     parser.add_argument("--no-zip", action="store_true", help="Do not refresh import_ready_flows.zip.")
     args = parser.parse_args()

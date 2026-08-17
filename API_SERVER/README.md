@@ -65,10 +65,13 @@ The base route deliberately differs from the original artifact server:
 API_SERVER routes / to FastAPI docs, while CSV downloads remain available at
 /download or /download.csv.
 
-## Flow 07 connection
+## Flow 07 and 07-1 connection
 
-`07_realtime_production_report_flow_v5_standalone.json` publishes a finished
-report to this API. Its `report_api_url` input defaults to
+`07_1_realtime_production_report_flow_v5_standalone.json` publishes a finished
+report and its follow-up context, while
+`07_realtime_production_report_legacy_flow_v5_standalone.json` preserves the
+direct-only report path. Both publish HTML to this API. Their `report_api_url`
+input defaults to
 `http://127.0.0.1:5000` for a co-located deployment. In production, set it to
 the externally reachable API base URL (for example `http://aaa.test.com`) so
 the returned `view_url` and `download_url` are usable by the recipient.

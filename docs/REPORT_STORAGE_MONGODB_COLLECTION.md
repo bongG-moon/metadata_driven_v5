@@ -1,12 +1,12 @@
-# Flow 07 Report 단일 MongoDB 컬렉션 전환 코드 변경 기록
+# Flow 07-1 Report 단일 MongoDB 컬렉션 전환 코드 변경 기록
 
-이 문서는 **Flow 07의 Report 관련 노드 코드에서 바뀐 부분만** 기록합니다. API_SERVER의 일반 운영 설정이나 다른 Flow의 변경 사항은 다루지 않습니다.
+이 문서는 **Flow 07-1의 Report 관련 노드 코드에서 바뀐 부분만** 기록합니다. API_SERVER의 일반 운영 설정이나 다른 Flow의 변경 사항은 다루지 않습니다.
 
 대상 노드와 원본 파일은 다음과 같습니다.
 
 | 항목 | 값 |
 | --- | --- |
-| Flow | `07. v5_realtime_production_report` |
+| Flow | `07-1. v5_realtime_production_report` |
 | 노드 | `01 실시간 생산 분석 Report 생성기` |
 | 노드 ID | `RealtimeProductionReportBuilder-realtime-production-report` |
 | 원본 | `langflow_components/realtime_production_report_flow/01_realtime_production_report_builder.py` |
@@ -38,7 +38,7 @@ else "mongodb_collection"
 or "mongodb_collection"
 ```
 
-따라서 Flow 07 결과의 `artifacts[0].storage_backend`는 이제 `mongodb_collection`입니다.
+따라서 Flow 07-1 결과의 `artifacts[0].storage_backend`는 이제 `mongodb_collection`입니다.
 
 ## 2. 기본 artifact descriptor
 
@@ -79,10 +79,10 @@ _issue("report_api_publish_error", f"MongoDB Report API에 HTML을 저장하지 
 
 ## 4. Flow JSON 반영 위치
 
-위 Python 소스는 아래 Flow 07 JSON에 같은 컴포넌트 소스로 반영됩니다.
+위 Python 소스는 아래 Flow 07-1 JSON에 같은 컴포넌트 소스로 반영됩니다.
 
-- `flow_exports/07_realtime_production_report_flow_v5_standalone.json`
-- `import_ready_flows/07_realtime_production_report_flow_v5_standalone.json`
+- `flow_exports/07_1_realtime_production_report_flow_v5_standalone.json`
+- `import_ready_flows/07_1_realtime_production_report_flow_v5_standalone.json`
 - `import_ready_flows/00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`
 
 각 JSON의 노드 입력 표시명과 포함된 Python 소스 모두 `mongodb_collection` / `MongoDB Report API 주소` 기준으로 동기화됩니다.

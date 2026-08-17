@@ -32,23 +32,23 @@ Direct Tool Result Adapter.message -> Chat Output.input_value
 | Tool | 대상 Flow |
 | --- | --- |
 | `run_data_analysis` | `01. v5_data_analysis` |
-| `run_report_followup` | `10. v5_report_followup` |
+| `run_report_followup` | `07-2. v5_report_followup` |
 | `run_metadata_qa` | `05. v5_metadata_qa` |
 | `save_domain_metadata` | `02. v5_domain_saving` |
 | `save_table_catalog_metadata` | `03. v5_table_catalog_saving` |
 | `save_main_flow_filter_metadata` | `04. v5_main_flow_filter_saving` |
-| `run_realtime_production_report` | `07. v5_realtime_production_report` |
+| `run_realtime_production_report` | `07-1. v5_realtime_production_report` |
 
 ## Report 후속 질문 분리
 
-- 직전 응답이 같은 세션의 Report이고 저장 Snapshot 또는 Report가 미리 만든 집계 View의 컬럼 선택·필터·정렬·상위/하위 N을 요청하면 `run_report_followup`을 선택합니다. Flow 10 자체는 새 groupby 집계를 만들지 않습니다.
+- 직전 응답이 같은 세션의 Report이고 저장 Snapshot 또는 Report가 미리 만든 집계 View의 컬럼 선택·필터·정렬·상위/하위 N을 요청하면 `run_report_followup`을 선택합니다. Flow 07-2 자체는 새 groupby 집계를 만들지 않습니다.
 - `현재 기준`, `현재 데이터`, `지금 시점`, `최신 데이터`, `다시 조회`, `새로 조회`처럼 새 기준시점을 명시하거나 다른 데이터셋과의 결합이 필요하면 `run_data_analysis`를 선택합니다. `현재작업재공`처럼 `현재`가 Report 컬럼명의 일부인 경우는 재조회 신호가 아닙니다.
-- Agent는 Report의 `context_ref`나 원천 행을 Tool 인자로 전달하지 않습니다. Flow 10이 같은 세션 상태에서 참조를 복원하고 만료·완전성·허용 연산을 검증합니다.
-- Flow 10 오류를 Flow 01로 자동 fallback하지 않습니다. 이 규칙은 Snapshot 질문이 모델 판단 하나로 원천 재조회되는 것을 막습니다.
+- Agent는 Report의 `context_ref`나 원천 행을 Tool 인자로 전달하지 않습니다. Flow 07-2가 같은 세션 상태에서 참조를 복원하고 만료·완전성·허용 연산을 검증합니다.
+- Flow 07-2 오류를 Flow 01로 자동 fallback하지 않습니다. 이 규칙은 Snapshot 질문이 모델 판단 하나로 원천 재조회되는 것을 막습니다.
 
 ## 실시간 생산 분석 실행 Gate
 
-`run_realtime_production_report`는 다음 두 조건을 모두 만족할 때만 07번 Flow를 실행합니다.
+`run_realtime_production_report`는 다음 두 조건을 모두 만족할 때만 07-1번 Flow를 실행합니다.
 
 1. 질문에 `분석`이 포함되어야 합니다.
 2. `실시간 생산 분석`, `실시간 분석`, `실시간 생산분석` 중 하나가 포함되어야 합니다.

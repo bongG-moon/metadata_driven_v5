@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Report 07 -> stored views -> Flow 10 with live Gemini and MongoDB.
+"""Validate Report 07-1 -> stored views -> Flow 07-2 with live Gemini and MongoDB.
 
 The validator uses deterministic dummy Report rows and uniquely named temporary
 MongoDB collections.  It never calls Oracle/Goodocs and removes the temporary
@@ -131,7 +131,8 @@ def _runtime_modules() -> dict[str, Any]:
     with _isolated_lfx_stubs():
         return {
             "report_dummy": base.load_module(REPORT_FLOW / "00_dummy_production_judgement_data.py"),
-            "context_builder": base.load_module(REPORT_FLOW / "00d_report_context_payload_builder.py"),
+            "view_bundle_builder": base.load_module(REPORT_FLOW / "00d_report_context_payload_builder.py"),
+            "context_publisher": base.load_module(REPORT_FLOW / "00e_report_context_publisher.py"),
             "report_builder": base.load_module(REPORT_FLOW / "01_realtime_production_report_builder.py"),
             "result_store": base.load_module(DATA_FLOW / "23_mongodb_result_store.py"),
             "result_loader": base.load_module(DATA_FLOW / "05_mongodb_result_loader.py"),
@@ -288,7 +289,8 @@ def validate_live_flow10(*, keep_records: bool = False) -> dict[str, Any]:
         )
         report_question = "D/A 공정그룹 실시간 생산 분석을 해줘"
         report_message = _message(report_question, session_id)
-        context_payload = modules["context_builder"].build_report_context_payload(dataset, report_message)
+        report_bundle = modules["view_bundle_builder"].build_realtime_report_view_bundle(dataset, report_message)
+        context_payload = modules["context_publisher"].build_report_context_payload(report_message, report_bundle)
         shortage_rows = context_payload.get("runtime_sources", {}).get("report_shortage_products", [])
         _require(len(shortage_rows) >= 5, "dummy Report did not produce five shortage products")
 

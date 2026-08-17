@@ -1,4 +1,4 @@
-# 10. v5_report_followup 연결 가이드
+# 07-2. v5_report_followup 연결 가이드
 
 이 Flow는 같은 세션에서 생성된 Report가 저장한 materialized query source만 다시 불러와 후속 질문에 답합니다. Table Catalog, Main Filter, 신규 데이터 조회, join, 자유 pandas 코드는 사용하지 않습니다.
 
@@ -29,12 +29,14 @@ Router의 이름 기반 Run Flow Tool은 `04.message -> Chat Output`의 단일 n
 ## 실행 경계
 
 - Report가 `report.query_source.v1`로 선언하고 result store에 함께 저장한 source만 실행합니다.
+- `report.query_source.v1`은 Flow 07-1의 공용 Report Context Publisher가 Bundle/Data의 실제 schema에서 자동 생성합니다. 사용자가 JSON으로 `source_alias`, 컬럼 목록, 허용 연산을 작성할 필요가 없습니다.
 - context 누락·만료·확인 필요·신규 조회 위임 상태는 00B가 LLM을 호출하지 않고 결정론적으로 전달합니다.
 - 실행 직전 복원된 `source_results[].query_source_contract`가 `authoritative=true`인지 다시 확인합니다.
 - 지원 연산은 `filter`, `sort(nulls last)`, `top_n`, `select`입니다.
 - `현재 기준`, `현재 데이터`, `지금 시점`, `최신 데이터`, `다시 조회`, `새로 조회`와 외부 source 결합 요청은 `live_retrieval_required`로 차단합니다.
 - `현재작업재공`처럼 `현재`가 물리 컬럼명 일부인 경우에는 최신 데이터 요청으로 해석하지 않습니다.
 - Report의 실제 물리 컬럼명을 사용하므로 `DEN`/`DENSITY` 같은 전역 alias 매핑이 필요하지 않습니다.
+- 여러 원천으로 만든 Report라도 생성 시점에 완성된 공개 View만 query source로 발행합니다. Evidence 원본, 조인 키, 내부 컬럼은 Flow 07-2에 노출하지 않습니다.
 
 ## 상태 보존
 

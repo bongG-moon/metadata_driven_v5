@@ -102,7 +102,7 @@ def load_session_state(
         state = _compact_state(document.get("state") if isinstance(document.get("state"), dict) else {}, preview_limit)
         state, report_context_status = _enforce_report_context_expiry(state)
         state.setdefault("session_id", session)
-        # Flow 10 Report 후속 분석은 로드 이후 새 Report가 생성되는 경합을
+        # Flow 07-2 Report 후속 분석은 로드 이후 새 Report가 생성되는 경합을
         # 감지해야 합니다. MongoDB 문서의 turn_count만 내부 revision으로
         # 전달하고, 일반 세션 compactor는 이 값을 다음 상태에 자동 보존하지
         # 않도록 underscore-prefixed 내부 키를 사용합니다.

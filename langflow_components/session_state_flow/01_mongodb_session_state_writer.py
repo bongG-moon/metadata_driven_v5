@@ -286,7 +286,7 @@ def _session_state_guard(
     payload: dict[str, Any],
     response: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
-    """Return the optional optimistic-lock guard emitted by Report Flow 10."""
+    """Return the optional optimistic-lock guard emitted by Report Flow 07-2."""
 
     raw: Any = None
     for source in (response, payload):

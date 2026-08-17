@@ -232,12 +232,14 @@ def _query_source_contracts(state: dict[str, Any]) -> list[dict[str, Any]]:
         purpose = _text(raw.get("purpose")) or _default_purpose(alias)
         columns = _string_list(raw.get("columns")) or _string_list(source_columns.get(alias))
         grain = raw.get("grain") if isinstance(raw.get("grain"), dict) else {}
-        known_aliases = [*KNOWN_VIEW_ALIASES.get(purpose, []), *_string_list(raw.get("aliases"), 30)]
+        display_name = _text(raw.get("display_name")) or purpose or alias
+        known_aliases = [display_name, *KNOWN_VIEW_ALIASES.get(purpose, []), *_string_list(raw.get("aliases"), 30)]
         contract = {
             "contract_version": _text(raw.get("contract_version")) or QUERY_SOURCE_CONTRACT_VERSION,
             "source_alias": alias,
             "dataset_key": _text(raw.get("dataset_key")) or alias,
             "purpose": purpose,
+            "display_name": display_name,
             "aliases": list(dict.fromkeys(known_aliases)),
             "authoritative": raw.get("authoritative") is True,
             "columns": columns,
@@ -249,6 +251,8 @@ def _query_source_contracts(state: dict[str, Any]) -> list[dict[str, Any]]:
             "predicates": [deepcopy(item) for item in raw.get("predicates", []) if isinstance(item, dict)][:50],
             "allowed_operations": _normalized_allowed_operations(raw.get("allowed_operations"), fallback_allowed),
             "default_display_columns": _string_list(raw.get("default_display_columns")),
+            "default_view": raw.get("default_view") is True,
+            "lineage": _string_list(raw.get("lineage"), MAX_QUERY_SOURCES),
         }
         if contract["contract_version"] == QUERY_SOURCE_CONTRACT_VERSION and columns:
             normalized.append(contract)
@@ -285,7 +289,7 @@ def _explicit_source_matches(question: str, sources: list[dict[str, Any]]) -> li
     normalized_question = _normalized_phrase(question)
     scored: list[tuple[int, dict[str, Any]]] = []
     for source in sources:
-        terms = [source.get("purpose"), source.get("source_alias"), *source.get("aliases", [])]
+        terms = [source.get("display_name"), source.get("purpose"), source.get("source_alias"), *source.get("aliases", [])]
         matches = [len(_normalized_phrase(term)) for term in terms if _normalized_phrase(term) and _normalized_phrase(term) in normalized_question]
         if matches:
             scored.append((max(matches), source))
@@ -312,6 +316,9 @@ def _matched_sources(question: str, sources: list[dict[str, Any]], current_view_
         previous = [source for source in sources if source.get("source_alias") == previous_alias]
         if previous:
             return previous
+    defaults = [source for source in sources if source.get("default_view") is True]
+    if len(defaults) == 1:
+        return defaults
     defaults = [source for source in sources if source.get("purpose") == "case_detail"]
     if len(defaults) == 1:
         return defaults
@@ -453,6 +460,7 @@ def build_report_followup_prompt(payload_value: Any, prompt_template: Any = "") 
                 "source_alias": item.get("source_alias"),
                 "dataset_key": item.get("dataset_key"),
                 "purpose": item.get("purpose"),
+                "display_name": item.get("display_name"),
                 "aliases": item.get("aliases", []),
                 "columns": item.get("columns", []),
                 "grain": item.get("grain", {}),
@@ -460,6 +468,8 @@ def build_report_followup_prompt(payload_value: Any, prompt_template: Any = "") 
                 "predicates_already_applied": item.get("predicates", []),
                 "allowed_operations": item.get("allowed_operations", []),
                 "default_display_columns": item.get("default_display_columns", []),
+                "default_view": item.get("default_view") is True,
+                "lineage": item.get("lineage", []),
             }
         )
     template = _text(prompt_template) or DEFAULT_PROMPT_TEMPLATE

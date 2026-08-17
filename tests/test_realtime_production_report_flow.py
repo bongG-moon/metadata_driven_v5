@@ -17,7 +17,8 @@ CATALOG_PATH = FLOW_ROOT / "00a_process_group_catalog_loader.py"
 PROMPT_PATH = FLOW_ROOT / "00b_process_group_selection_prompt.py"
 GATE_PATH = FLOW_ROOT / "00c_process_group_selection_gate.py"
 DETERMINISTIC_GATE_PATH = FLOW_ROOT / "00c_deterministic_process_group_selection_gate.py"
-CONTEXT_PAYLOAD_PATH = FLOW_ROOT / "00d_report_context_payload_builder.py"
+VIEW_BUNDLE_PATH = FLOW_ROOT / "00d_report_context_payload_builder.py"
+CONTEXT_PUBLISHER_PATH = FLOW_ROOT / "00e_report_context_publisher.py"
 BUILDER_PATH = FLOW_ROOT / "01_realtime_production_report_builder.py"
 TERMINAL_PATH = FLOW_ROOT / "02_realtime_production_report_api_terminal.py"
 LEGACY_BUILDER_PATH = LEGACY_FLOW_ROOT / "01_realtime_production_report_builder.py"
@@ -72,6 +73,7 @@ def _install_lfx_stubs() -> None:
         "DataInput",
         "DropdownInput",
         "HandleInput",
+        "IntInput",
         "MessageTextInput",
         "MultilineInput",
         "Output",
@@ -101,7 +103,8 @@ deterministic_gate = _load(
     "realtime_production_deterministic_process_group_gate_test",
     DETERMINISTIC_GATE_PATH,
 )
-context_builder = _load("realtime_production_report_context_payload_test", CONTEXT_PAYLOAD_PATH)
+view_bundle_builder = _load("realtime_production_report_view_bundle_test", VIEW_BUNDLE_PATH)
+context_publisher = _load("realtime_production_report_context_publisher_test", CONTEXT_PUBLISHER_PATH)
 builder = _load("realtime_production_report_builder_test", BUILDER_PATH)
 terminal = _load("realtime_production_report_terminal_test", TERMINAL_PATH)
 legacy_builder = _load("realtime_production_report_legacy_builder_test", LEGACY_BUILDER_PATH)
@@ -118,9 +121,19 @@ class Question:
         self.data = {"text": text, "session_id": self.session_id}
 
 
+# 함수 설명: Realtime Report Recipe Bundle과 공용 Publisher를 연결해 실제 Flow 07-1 Context payload를 만듭니다.
+def _context_payload(dataset, question=None):
+    request = question or Question()
+    bundle = view_bundle_builder.build_realtime_report_view_bundle(dataset, request)
+    return context_publisher.build_report_context_payload(request, bundle)
+
+
 def _stored_report_context(dataset, *, session_id="session-report"):
     columns = list(dataset["columns"])
-    context_payload = context_builder.build_report_context_payload(dataset, Question())
+    question = Question()
+    question.session_id = session_id
+    question.data = {"text": question.text, "session_id": session_id}
+    context_payload = _context_payload(dataset, question)
     result_ref = {
         "store": "mongodb",
         "ref_id": "result:session-report:context-1",
@@ -680,9 +693,13 @@ def test_report_context_payload_is_result_store_compatible_and_session_bound():
         work_date="2026-07-27",
         snapshot_at="2026-07-27T14:30:00+09:00",
     )
-    payload = context_builder.build_report_context_payload(dataset, Question())
+    bundle = view_bundle_builder.build_realtime_report_view_bundle(dataset, Question())
+    payload = _context_payload(dataset)
 
-    assert payload["contract_version"] == "realtime.production.report.context.payload.v1"
+    assert bundle["contract_version"] == "report.view.bundle.v1"
+    assert bundle["views"][0]["view_key"] == "report_snapshot"
+    assert "query_source_contract" not in bundle["views"][0]
+    assert payload["contract_version"] == "report.context.payload.v1"
     assert payload["execution_gate"]["status"] == "ready"
     assert payload["request"]["session_id"] == "session-report"
     assert payload["analysis"]["row_count"] == 20
@@ -746,9 +763,9 @@ def test_report_context_payload_is_result_store_compatible_and_session_bound():
     missing_session = Question()
     missing_session.session_id = ""
     missing_session.data = {"text": missing_session.text}
-    blocked = context_builder.build_report_context_payload(dataset, missing_session)
+    blocked = _context_payload(dataset, missing_session)
     assert blocked["execution_gate"] == {"status": "blocked", "reason": "missing_session_id"}
-    assert "runtime_sources" not in blocked
+    assert blocked["runtime_sources"] == {}
     assert "_full_result_rows" not in blocked
 
 
@@ -774,13 +791,13 @@ def test_report_context_materializes_one_shortage_row_per_physical_product_and_r
     dataset["rows"] = [first, second, missing_quantity, excluded]
     dataset["row_count"] = len(dataset["rows"])
 
-    payload = context_builder.build_report_context_payload(dataset, Question())
+    payload = _context_payload(dataset)
 
     assert payload["runtime_sources"]["report_snapshot"] == dataset["rows"]
     shortage_rows = payload["runtime_sources"]["report_shortage_products"]
     assert len(shortage_rows) == 1
-    assert {column: shortage_rows[0][column] for column in context_builder.PRODUCT_KEY_COLUMNS} == {
-        column: base[column] for column in context_builder.PRODUCT_KEY_COLUMNS
+    assert {column: shortage_rows[0][column] for column in view_bundle_builder.PRODUCT_KEY_COLUMNS} == {
+        column: base[column] for column in view_bundle_builder.PRODUCT_KEY_COLUMNS
     }
     assert shortage_rows[0]["PRODUCTION"] == 40
     assert shortage_rows[0]["OUT_PLAN"] == 200
@@ -788,10 +805,85 @@ def test_report_context_materializes_one_shortage_row_per_physical_product_and_r
     assert shortage_rows[0]["달성율*판정"] == "생산부족"
     assert len(
         {
-            tuple(row[column] for column in context_builder.PRODUCT_KEY_COLUMNS)
+            tuple(row[column] for column in view_bundle_builder.PRODUCT_KEY_COLUMNS)
             for row in shortage_rows
         }
     ) == len(shortage_rows)
+
+
+def test_generic_context_publisher_derives_safe_query_contract_without_manual_json():
+    report_data = {
+        "rows": [
+            {"제품": "P-01", "위험등급": "높음", "위험점수": 91, "내부비고": "공개 금지"},
+            {"제품": "P-02", "위험등급": "낮음", "위험점수": 14, "내부비고": "공개 금지"},
+        ],
+        "report_columns": ["제품", "위험등급", "위험점수"],
+        "source_type": "report_recipe",
+    }
+    payload = context_publisher.build_report_context_payload(
+        Question("생산부족 장비 위험 Report를 만들어줘"),
+        report_data_value=report_data,
+        report_title="생산부족 장비 위험 Report",
+        report_type="shortage_equipment_risk",
+        view_label="장비 위험 제품",
+    )
+
+    assert payload["execution_gate"]["status"] == "ready"
+    assert payload["trace"]["inspection"]["report_context_publisher"]["input_mode"] == "direct_data"
+    source = payload["source_results"][0]
+    contract = source["query_source_contract"]
+    assert source["source_alias"] == "report_snapshot"
+    assert contract["display_name"] == "장비 위험 제품"
+    assert contract["default_view"] is True
+    assert contract["columns"] == ["제품", "위험등급", "위험점수"]
+    assert contract["grain"] == {"kind": "row", "columns": [], "unique": False}
+    assert contract["allowed_operations"] == ["filter", "sort_and_top_n", "select_columns"]
+    assert "내부비고" not in payload["runtime_sources"]["report_snapshot"][0]
+
+
+def test_generic_context_publisher_keeps_multiple_evidence_sources_but_exposes_only_declared_views():
+    bundle = {
+        "contract_version": "report.view.bundle.v1",
+        "report": {"report_type": "shortage_equipment_risk", "title": "생산부족 장비 위험 Report"},
+        "views": [
+            {
+                "view_key": "production_cases",
+                "display_name": "생산 Case 원본",
+                "rows": [{"제품": "P-01", "생산량": 20}],
+                "columns": ["제품", "생산량"],
+            },
+            {
+                "view_key": "equipment_assign",
+                "display_name": "장비 Assign 원본",
+                "rows": [{"제품": "P-01", "필요장비대수": 2}],
+                "columns": ["제품", "필요장비대수"],
+            },
+            {
+                "view_key": "shortage_equipment_risk_products",
+                "display_name": "생산부족 장비위험 제품",
+                "aliases": ["장비 위험 제품"],
+                "purpose": "shortage_equipment_risk_products",
+                "rows": [{"제품": "P-01", "생산실적달성율": 67.0, "장비교체판단": "장비필요", "필요장비대수": 2}],
+                "columns": ["제품", "생산실적달성율", "장비교체판단", "필요장비대수"],
+                "identity_columns": ["제품"],
+                "grain": {"kind": "product", "unique": True},
+                "lineage": ["production_cases", "equipment_assign"],
+                "default_view": True,
+            },
+        ],
+    }
+    payload = context_publisher.build_report_context_payload(Question(), bundle)
+
+    assert [item["source_alias"] for item in payload["source_results"]] == [
+        "production_cases",
+        "equipment_assign",
+        "shortage_equipment_risk_products",
+    ]
+    assert "query_source_contract" not in payload["source_results"][0]
+    assert "query_source_contract" not in payload["source_results"][1]
+    contract = payload["source_results"][2]["query_source_contract"]
+    assert contract["lineage"] == ["production_cases", "equipment_assign"]
+    assert contract["default_view"] is True
 
 
 def test_report_projects_stored_context_to_compact_followup_contract_and_state():

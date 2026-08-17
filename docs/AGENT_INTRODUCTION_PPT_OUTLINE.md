@@ -11,7 +11,7 @@
 | 구현 방식 | 현재 v5의 대표 Flow | 설명할 가치 |
 | --- | --- | --- |
 | Flexible Data Analysis | `01. v5_data_analysis` | 일반 데이터 분석의 유일한 canonical Flow로서, 질문·조건·집계가 달라도 Metadata와 Typed Contract를 재사용한다. |
-| Fixed Workflow Report | 현재 기본 `07`, Snapshot 후속 조회 `10`, 호환용 직접 실행 `11` | 업무 절차·판정·보고서 형식이 고정된 경우, E2E Flow로 결과와 artifact를 일관되게 만들고 같은 Snapshot을 안전하게 후속 조회한다. |
+| Fixed Workflow Report | 현재 기본 `07-1`, Snapshot 후속 조회 `07-2`, 호환용 직접 실행 `07` | 업무 절차·판정·보고서 형식이 고정된 경우, E2E Flow로 결과와 artifact를 일관되게 만들고 같은 Snapshot을 안전하게 후속 조회한다. |
 
 ## 2. 이 초안의 사용 범위
 
@@ -27,10 +27,10 @@
 | 항목 | 현재 기준 |
 | --- | --- |
 | Langflow 런타임 | `Langflow 1.11.0` / `langflow-base 0.11.0` / `lfx 1.11.0` |
-| import-ready bundle | 9개 Flow — `01`~`07`, `10`, `11` |
-| Flexible 기본 Flow | `01` — 51 nodes / 59 edges |
-| Fixed Report Flow | 현재 기본 `07` — 12 nodes / 17 edges, Snapshot 후속 `10` — 11 nodes / 13 edges |
-| Legacy Report Flow | Router 미노출 `11` — 9 nodes / 11 edges, 변경 전 직접 응답 구조 보존 |
+| import-ready bundle | 9개 Flow — `01`~`06`, `07`, `07-1`, `07-2` |
+| Flexible 기본 Flow | `01` — 51 nodes / 62 edges |
+| Fixed Report Flow | 현재 기본 `07-1` — 11 nodes / 15 edges, Snapshot 후속 `07-2` — 11 nodes / 13 edges |
+| Legacy Report Flow | Router 미노출 `07` — 9 nodes / 11 edges, 변경 전 직접 응답 구조 보존 |
 | 기본 데이터 조회 모드 | `dummy`; `live` 전환은 `04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode` 한 곳에서 제어 |
 
 > 발표에서는 과거 번호나 다른 프로젝트의 Flow 번호를 현재 구현 사실처럼 쓰지 않는다. 이 문서의 Flow 번호는 현재 v5 import-ready bundle 기준이다.
@@ -140,7 +140,7 @@ SQL · source_config · endpoint · credential · 임의 물리 컬럼 · 제한
 
 | 구분 | Flexible Data Analysis | Fixed Workflow Report |
 | --- | --- | --- |
-| 대표 Flow | 일반 분석의 유일한 canonical 경로 `01` | 현재 Report `07` + Snapshot 후속 `10`; 호환용 직접 실행 `11` |
+| 대표 Flow | 일반 분석의 유일한 canonical 경로 `01` | 현재 Report `07-1` + Snapshot 후속 `07-2`; 호환용 직접 실행 `07` |
 | 입력 | 질문마다 달라지는 dataset·조건·집계 | 정해진 업무 요청과 공정그룹 |
 | 계획 | Metadata 후보 + Intent IR + Route Resolver | Catalog + Gate + 고정 Python Rule |
 | 결과 | `data.rows`, trace, `result_ref` | `report_scope`, KPI, HTML/CSV artifact |
@@ -171,28 +171,28 @@ flowchart LR
     U[USER / Chat UI] --> G[06 Agent Tool Router]
 
     G --> F01[01 Flexible Data Analysis]
-    G --> F07[07 Current Production Report]
-    G --> F10[10 Report Snapshot Follow-up]
-    U -. direct compatibility only .-> F11[11 Legacy Direct Report]
+    G --> F071[07-1 Current Production Report]
+    G --> F072[07-2 Report Snapshot Follow-up]
+    U -. direct compatibility only .-> F07[07 Legacy Direct Report]
 
     META[(Domain / Table / Filter Catalog)] --> F01
-    META --> F07
+    META --> F071
 
     F01 --> SRC[Dummy / Oracle / H-API / Datalake / Goodocs]
     F01 --> RS[(Result Store)]
 
-    F07 --> RS
-    RS --> F10
-    F07 --> ART[Report API / HTML / CSV]
-    F10 --> OUT[Snapshot Table / Answer]
-    F11 --> ART
+    F071 --> RS
+    RS --> F072
+    F071 --> ART[Report API / HTML / CSV]
+    F072 --> OUT[Snapshot Table / Answer]
+    F07 --> ART
 ```
 
 **이 장에서 꼭 구분할 것**
 
-- `06`은 일반 분석 `01`, 현재 Report `07`, Report Snapshot 후속 `10`을 선택하는 운영 Agent Tool Router다.
+- `06`은 일반 분석 `01`, 현재 Report `07-1`, Report Snapshot 후속 `07-2`를 선택하는 운영 Agent Tool Router다.
 - 일반 데이터 분석의 canonical 실행 경로는 `01` 하나뿐이다.
-- `11`은 변경 전 Report 직접 응답을 재현하는 호환 Flow이며 Router Tool로 노출하지 않는다.
+- `07`은 변경 전 Report 직접 응답을 재현하는 호환 Flow이며 Router Tool로 노출하지 않는다.
 - Result Store는 단순 로그가 아니라 대화창에 대량 rows를 복사하지 않기 위한 상태 참조 경계다.
 
 ---
@@ -495,24 +495,24 @@ flowchart TD
 
 **제목**
 
-`Flow 07이 만든 Report 데이터는 Flow 10이 같은 세션에서 제한적으로 다시 조회한다`
+`Flow 07-1이 만든 Report 데이터는 Flow 07-2가 같은 세션에서 제한적으로 다시 조회한다`
 
 **이 장의 한 문장**
 
-Report 후속 질문은 HTML이나 대화 문장을 다시 읽지 않고, `07`이 저장한 materialized query source와 허용 연산 계약을 `10`이 검증·실행한다.
+Report 후속 질문은 HTML이나 대화 문장을 다시 읽지 않고, `07-1`이 저장한 materialized query source와 허용 연산 계약을 `07-2`가 검증·실행한다.
 
 **구조도**
 
 ```mermaid
 flowchart LR
-    F07[07 Current Report] --> C[report.context.v1
+    F071[07-1 Current Report] --> C[report.context.v1
 report.query_source.v1]
     C --> RS[(Session State / Result Store)]
     U[후속 질문] --> G[06 Agent Tool Router]
-    G --> F10[10 Report Snapshot Follow-up]
+    G --> F072[07-2 Report Snapshot Follow-up]
     RS --> V{same session / expiry /
 complete source / allowed operation}
-    F10 --> V
+    F072 --> V
     V -->|pass| X[select / filter / sort / top_n]
     V -->|fail| B[bounded context error]
     X --> O[표 / 답변]
@@ -533,9 +533,9 @@ complete source / allowed operation}
 
 **발표 포인트**
 
-- Flow 10은 Report가 실제로 저장한 물리 컬럼과 미리 생성한 View를 사용하므로 전역 컬럼 별칭을 추측하지 않는다.
+- Flow 07-2는 Report가 실제로 저장한 물리 컬럼과 미리 생성한 View를 사용하므로 전역 컬럼 별칭을 추측하지 않는다.
 - Table Catalog, Main Filter, 신규 source 조회, join, 새 groupby, 자유 pandas 실행은 이 경로에 없다.
-- `현재 기준`, `최신 데이터`, `다시 조회`처럼 새 시점을 요구하면 Flow 10이 아니라 canonical 분석 Flow 01로 보낸다.
+- `현재 기준`, `최신 데이터`, `다시 조회`처럼 새 시점을 요구하면 Flow 07-2가 아니라 canonical 분석 Flow 01로 보낸다.
 - `현재작업재공`처럼 `현재`가 Report 컬럼명의 일부인 경우에는 Snapshot 필터로 처리한다.
 
 ---
@@ -544,11 +544,11 @@ complete source / allowed operation}
 
 **제목**
 
-`Flow 07은 완료 Snapshot을 정해진 Rule로 보고하고 Flow 10용 query source도 함께 저장한다`
+`Flow 07-1은 완료 Snapshot을 정해진 Rule로 보고하고 Flow 07-2용 query source도 함께 저장한다`
 
 **이 장의 한 문장**
 
-현재 기본 `07. v5_realtime_production_report`는 공정그룹 선택, 검증, 고정 Rule 집계, artifact 생성, 후속 Context 저장을 하나의 E2E Flow로 묶는다.
+현재 기본 `07-1. v5_realtime_production_report`는 공정그룹 선택, 검증, 고정 Rule 집계, artifact 생성, 후속 Context 저장을 하나의 E2E Flow로 묶는다.
 
 **현재 12-node / 17-edge Flow 구조**
 
@@ -580,7 +580,7 @@ flowchart LR
 
 ---
 
-## Slide 13. 현재 Flow 07과 Legacy Flow 11은 같은 Gate 뒤의 상태 계약이 다르다
+## Slide 13. 현재 Flow 07-1과 Legacy Flow 07은 같은 Gate 뒤의 상태 계약이 다르다
 
 **제목**
 
@@ -588,17 +588,17 @@ flowchart LR
 
 **이 장의 한 문장**
 
-두 Report Flow 모두 등록된 공정그룹과 질문 근거가 정확히 하나로 일치할 때만 실행한다. 현재 기본 `07`은 Flow 10용 Context를 저장하고, `11`은 변경 전 직접 응답 구조만 재현한다.
+두 Report Flow 모두 등록된 공정그룹과 질문 근거가 정확히 하나로 일치할 때만 실행한다. 현재 기본 `07-1`은 Flow 07-2용 Context를 저장하고, `07`은 변경 전 직접 응답 구조만 재현한다.
 
 **현재/호환 Flow 구분**
 
-| 구분 | `07. v5_realtime_production_report` | `11. v5_realtime_production_report_legacy` |
+| 구분 | `07-1. v5_realtime_production_report` | `07. v5_realtime_production_report_legacy` |
 | --- | --- | --- |
 | 역할 | 현재 운영 기본 Report | 변경 전 직접 응답 재현 |
 | Router 노출 | `06`의 Report Tool 대상 | 미노출; 필요할 때 직접 실행 |
-| 그래프 | 12 nodes / 17 edges | 9 nodes / 11 edges |
+| 그래프 | 11 nodes / 15 edges | 9 nodes / 11 edges |
 | 후속 상태 | Context·query source·session state 저장 | 저장하지 않음 |
-| 후속 질문 | `10`에서 Snapshot 조회 가능 | 지원하지 않음 |
+| 후속 질문 | `07-2`에서 Snapshot 조회 가능 | 지원하지 않음 |
 
 **공정그룹 선택 결과 예시**
 
@@ -629,8 +629,8 @@ flowchart LR
 
 - 공정그룹이 없거나 여러 개면 HTML을 만들지 않고 clarification을 반환한다.
 - Workflow observation에는 원본 rows와 HTML 본문을 넣지 않고, `report_scope`, KPI, artifact descriptor, warning/error만 둔다.
-- Flow 11은 호환성 검증용이므로 Router가 자동 선택하거나 Flow 10의 입력 Context를 생성하지 않는다.
-- 운영 전환 시 현재 기본 Flow 07의 더미 Snapshot 노드만 완료 Snapshot Loader로 교체하며, Catalog → Gate → Builder → API 계약은 유지한다.
+- Flow 07은 호환성 검증용이므로 Router가 자동 선택하거나 Flow 07-2의 입력 Context를 생성하지 않는다.
+- 운영 전환 시 현재 기본 Flow 07-1의 더미 Snapshot 노드만 완료 Snapshot Loader로 교체하며, Catalog → Gate → Builder → API 계약은 유지한다.
 
 ---
 
@@ -650,9 +650,9 @@ flowchart LR
 | --- | --- | --- |
 | 새 dataset·컬럼·조건 | Domain / Table Catalog / Main Filter | 기존 Flexible Flow에서 바로 후보화 가능 |
 | 자주 반복되는 간단 분석 | Function Case / Fast recipe | 모델 호출 없이 빠른 deterministic 경로 |
-| Report 생성 당시 데이터를 다시 보는 질문 | Flow 07 query source + Flow 10 | 신규 조회 없이 같은 Snapshot을 제한적으로 조회 |
+| Report 생성 당시 데이터를 다시 보는 질문 | Flow 07-1 query source + Flow 07-2 | 신규 조회 없이 같은 Snapshot을 제한적으로 조회 |
 | 정해진 E2E 업무 | 새 Fixed Workflow Flow | 업무 Rule·보고서 품질·artifact 표준화 |
-| 변경 전 Report 동작 재현 | Router 미노출 Flow 11 직접 실행 | 현재 경로를 오염시키지 않고 호환성 비교 |
+| 변경 전 Report 동작 재현 | Router 미노출 Flow 07 직접 실행 | 현재 경로를 오염시키지 않고 호환성 비교 |
 | Legacy 조치 | 결과 뒤의 별도 API/승인 경계 | 분석 결과와 실제 변경 작업 분리 |
 
 **발표 포인트**
@@ -678,9 +678,9 @@ flowchart LR
 | --- | --- | --- |
 | Flexible Data Analysis | 9개 Flow bundle, canonical Flow 01, Component source/JSON 동기화, dummy 질문 검증 | live credential·network·schema·성능 smoke test |
 | Hybrid pandas | Fast/Complex/Blocked 경로, 최대 1회 repair, 코드 trace | OS 수준 격리 필요성 검토, 실제 데이터 UAT |
-| Realtime Report | Flow 07 dummy Snapshot, 공정그룹 Gate, 고정 Report, 후속 query source 발행 | Golden Dataset, 업무 숫자 대조, Report API 운영 배포 |
-| Report Snapshot Follow-up | Flow 10 same-session·만료·완전성·허용 연산 검증 | 실제 Agent 세션 E2E와 대표 후속 질문 UAT |
-| Legacy Direct Report | Flow 11 변경 전 직접 응답 그래프, Router 미노출 | 필요 기간·폐기 기준과 호환성 비교 범위 확정 |
+| Realtime Report | Flow 07-1 dummy Snapshot, 공정그룹 Gate, 고정 Report, 후속 query source 발행 | Golden Dataset, 업무 숫자 대조, Report API 운영 배포 |
+| Report Snapshot Follow-up | Flow 07-2 same-session·만료·완전성·허용 연산 검증 | 실제 Agent 세션 E2E와 대표 후속 질문 UAT |
+| Legacy Direct Report | Flow 07 변경 전 직접 응답 그래프, Router 미노출 | 필요 기간·폐기 기준과 호환성 비교 범위 확정 |
 
 **마무리 문장**
 
@@ -694,19 +694,19 @@ flowchart LR
 
 | 번호 | Flow | nodes / edges | 발표에서의 위치 |
 | ---: | --- | ---: | --- |
-| 01 | `v5_data_analysis` | 51 / 59 | Flexible Data Analysis 기본 경로 |
+| 01 | `v5_data_analysis` | 51 / 62 | Flexible Data Analysis 기본 경로 |
 | 02 | `v5_domain_saving` | 12 / 13 | Domain Metadata 등록 |
 | 03 | `v5_table_catalog_saving` | 12 / 13 | Table Catalog 등록 |
 | 04 | `v5_main_flow_filter_saving` | 12 / 13 | Main Filter 등록 |
 | 05 | `v5_metadata_qa` | 11 / 17 | Metadata 질의/검증 |
-| 06 | `v5_agent_tool_router` | 11 / 10 | 운영 Agent Tool 진입; `01`·`07`·`10` 선택 |
-| 07 | `v5_realtime_production_report` | 12 / 17 | 현재 기본 Fixed Workflow Report |
-| 10 | `v5_report_followup` | 11 / 13 | 같은 세션의 Report Snapshot 후속 조회 |
-| 11 | `v5_realtime_production_report_legacy` | 9 / 11 | Router 미노출 변경 전 직접 Report |
+| 06 | `v5_agent_tool_router` | 11 / 10 | 운영 Agent Tool 진입; `01`·`07-1`·`07-2` 선택 |
+| 07 | `v5_realtime_production_report_legacy` | 9 / 11 | Router 미노출 변경 전 직접 Report |
+| 07-1 | `v5_realtime_production_report` | 11 / 15 | 현재 기본 Fixed Workflow Report |
+| 07-2 | `v5_report_followup` | 11 / 13 | 같은 세션의 Report Snapshot 후속 조회 |
 
 **PPT 사용 규칙**
 
-- 본문에서는 canonical 분석 `01`, 현재 Report `07`, Snapshot 후속 `10`을 크게 다룬다. `11`은 호환성 설명에서만 구분한다.
+- 본문에서는 canonical 분석 `01`, 현재 Report `07-1`, Snapshot 후속 `07-2`를 크게 다룬다. `07`은 호환성 설명에서만 구분한다.
 - `02`~`05`는 Flexible Flow의 재사용성을 가능하게 하는 Metadata 관리 Flow로 한 줄만 연결한다.
 - 전체 Canvas 스크린샷을 그대로 넣기보다, Slide 5의 책임 구역 구조와 함께 이 표를 부록에 둔다.
 
@@ -720,8 +720,8 @@ flowchart LR
     I --> T[Trusted Retrieval Job]
     T --> S[Source Bundle]
     S --> E[Result Envelope]
-    E -. Flow 07 only .-> C[Report Query Source Contract]
-    C --> F10[Flow 10 Snapshot Query]
+    E -. Flow 07-1 only .-> C[Report Query Source Contract]
+    C --> F072[Flow 07-2 Snapshot Query]
 ```
 
 | 단계 | owner | 다음 단계에 전달하는 핵심 값 |
@@ -750,7 +750,7 @@ Catalog와 Rule이 만든 값이 “실행 가능한 사실”이다.
 - [ ] LLM이 source_config, SQL, endpoint, credential을 신뢰 설정으로 결정한다고 보이지 않는가
 - [ ] `data.rows`가 최종 rows의 canonical 위치라고 설명했는가
 - [ ] pandas는 모든 질문의 기본 실행기가 아니라 Complex `llm_pandas` 경로의 제한된 escape hatch라고 설명했는가
-- [ ] Flow 10이 대화 문장이나 HTML이 아니라 같은 세션의 `result_ref`와 Report query source 계약을 검증한다고 설명했는가
+- [ ] Flow 07-2가 대화 문장이나 HTML이 아니라 같은 세션의 `result_ref`와 Report query source 계약을 검증한다고 설명했는가
 - [ ] Fixed Report가 원천 생산 판정을 재계산하지 않고 완료 Snapshot을 고정 Rule로 집계한다고 설명했는가
 - [ ] HTML 본문과 원본 rows를 Workflow observation에 넣지 않는 경계를 설명했는가
 - [ ] Flow 수·노드 수·런타임 버전을 현재 `import_ready_flows/manifest.json` 기준으로 확인했는가
@@ -761,9 +761,9 @@ Catalog와 Rule이 만든 값이 “실행 가능한 사실”이다.
 - Flexible Data Analysis export: `flow_exports/data_analysis_flow_v2_standalone.json`
 - Flexible Flow 연결 가이드: `langflow_components/data_analysis_flow_v2/CONNECTION_GUIDE.md`
 - Payload ownership / trust boundary: `docs/V5_PAYLOAD_CONTRACT.md`
-- Current Fixed Report export: `flow_exports/07_realtime_production_report_flow_v5_standalone.json`
-- Report Snapshot Follow-up export: `flow_exports/10_report_followup_flow_v5_standalone.json`
-- Legacy Direct Report export: `flow_exports/11_realtime_production_report_legacy_flow_v5_standalone.json`
+- Current Fixed Report export: `flow_exports/07_1_realtime_production_report_flow_v5_standalone.json`
+- Report Snapshot Follow-up export: `flow_exports/07_2_report_followup_flow_v5_standalone.json`
+- Legacy Direct Report export: `flow_exports/07_realtime_production_report_legacy_flow_v5_standalone.json`
 - Report 후속 분리 설계: `docs/REPORT_FOLLOWUP_FLOW_DESIGN.md`
 - Fixed Report 운영 경계: `docs/REALTIME_PRODUCTION_REPORT_PRODUCTION_IMPLEMENTATION_GUIDE.md`
 

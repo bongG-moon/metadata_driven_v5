@@ -24,9 +24,20 @@ EXPECTED_NAMES = [
     "04. v5_main_flow_filter_saving",
     "05. v5_metadata_qa",
     "06. v5_agent_tool_router",
-    "07. v5_realtime_production_report",
-    "10. v5_report_followup",
-    "11. v5_realtime_production_report_legacy",
+    "07. v5_realtime_production_report_legacy",
+    "07-1. v5_realtime_production_report",
+    "07-2. v5_report_followup",
+]
+EXPECTED_FILES = [
+    "01_data_analysis_flow_v2_standalone.json",
+    "02_domain_saving_flow_v5_standalone.json",
+    "03_table_catalog_saving_flow_v5_standalone.json",
+    "04_main_flow_filter_saving_flow_v5_standalone.json",
+    "05_metadata_qa_flow_v5_standalone.json",
+    "06_agent_tool_router_flow_v5_standalone.json",
+    "07_realtime_production_report_legacy_flow_v5_standalone.json",
+    "07_1_realtime_production_report_flow_v5_standalone.json",
+    "07_2_report_followup_flow_v5_standalone.json",
 ]
 
 
@@ -43,7 +54,19 @@ def test_selected_flow_manifest_contains_only_supported_flows() -> None:
     manifest = _load(IMPORT_ROOT / "manifest.json")
     assert manifest["flow_count"] == 9
     assert [item["name"] for item in manifest["flows"]] == EXPECTED_NAMES
-    assert [item["order"] for item in manifest["flows"]] == [1, 2, 3, 4, 5, 6, 7, 10, 11]
+    assert [item["order"] for item in manifest["flows"]] == list(range(1, 10))
+    assert [item["display_order"] for item in manifest["flows"]] == [
+        "01", "02", "03", "04", "05", "06", "07", "07-1", "07-2"
+    ]
+    assert [item["file"] for item in manifest["flows"]] == EXPECTED_FILES
+    endpoint_by_name = {item["name"]: item["endpoint_name"] for item in manifest["flows"]}
+    assert endpoint_by_name["07. v5_realtime_production_report_legacy"].endswith(
+        "-realtime-production-report-legacy"
+    )
+    assert endpoint_by_name["07-1. v5_realtime_production_report"].endswith(
+        "-realtime-production-report"
+    )
+    assert endpoint_by_name["07-2. v5_report_followup"].endswith("-report-followup")
 
 
 def test_active_exports_and_imports_have_no_gaia_boundary_nodes() -> None:
@@ -96,7 +119,7 @@ def test_default_router_exposes_one_dedicated_report_followup_tool() -> None:
         node for node in tool_nodes if node["id"] == "CachedFlowTool-report_followup"
     )
     template = report_tool["data"]["node"]["template"]
-    assert template["flow_name_selected"]["value"] == "10. v5_report_followup"
+    assert template["flow_name_selected"]["value"] == "07-2. v5_report_followup"
     assert template["flow_id_selected"]["value"] == ""
     assert template["tool_name"]["value"] == "run_report_followup"
     assert template["return_direct"]["value"] is True
@@ -112,10 +135,10 @@ def test_default_router_exposes_one_dedicated_report_followup_tool() -> None:
     )["data"]["node"]["template"]
     assert data_template["flow_name_selected"]["value"] == "01. v5_data_analysis"
     assert data_template["tool_name"]["value"] == "run_data_analysis"
-    assert realtime_template["flow_name_selected"]["value"] == "07. v5_realtime_production_report"
+    assert realtime_template["flow_name_selected"]["value"] == "07-1. v5_realtime_production_report"
     assert all(
         node["data"]["node"]["template"]["flow_name_selected"]["value"]
-        != "11. v5_realtime_production_report_legacy"
+        != "07. v5_realtime_production_report_legacy"
         for node in tool_nodes
     )
 
@@ -214,19 +237,21 @@ def test_realtime_report_flow_publishes_context_and_session_state() -> None:
         for edge in flow["data"]["edges"]
     }
 
-    context_id = "ReportContextPayload-realtime-production-report"
+    bundle_id = "RealtimeReportViewBundle-realtime-production-report"
+    publisher_id = "ReportContextPublisher-realtime-production-report"
     result_store_id = "ReportContextResultStore-realtime-production-report"
     report_id = "RealtimeProductionReportBuilder-realtime-production-report"
     session_writer_id = "ReportSessionStateWriter-realtime-production-report"
     terminal_id = "RealtimeProductionReportApiTerminal-realtime-production-report"
     gate_id = "ProcessGroupSelectionGate-realtime-production-report"
 
-    assert len(nodes) == 10
-    assert len(flow["data"]["edges"]) == 13
+    assert len(nodes) == 11
+    assert len(flow["data"]["edges"]) == 15
     assert "ProcessGroupPrompt-realtime-production-report" not in nodes
     assert "LanguageModelProcessGroup-realtime-production-report" not in nodes
     assert {
-        context_id,
+        bundle_id,
+        publisher_id,
         result_store_id,
         report_id,
         session_writer_id,
@@ -237,9 +262,11 @@ def test_realtime_report_flow_publishes_context_and_session_state() -> None:
         "RealtimeProductionDeterministicProcessGroupSelectionGate"
         in nodes[gate_id]["data"]["node"]["template"]["code"]["value"]
     )
-    assert ("ChatInput-realtime-production-report", context_id) in edges
-    assert ("ProcessGroupSelectionGate-realtime-production-report", context_id) in edges
-    assert (context_id, result_store_id) in edges
+    assert ("ChatInput-realtime-production-report", bundle_id) in edges
+    assert ("ProcessGroupSelectionGate-realtime-production-report", bundle_id) in edges
+    assert ("ChatInput-realtime-production-report", publisher_id) in edges
+    assert (bundle_id, publisher_id) in edges
+    assert (publisher_id, result_store_id) in edges
     assert (result_store_id, report_id) in edges
     assert (report_id, session_writer_id) in edges
     assert (session_writer_id, terminal_id) in edges
@@ -249,16 +276,23 @@ def test_realtime_report_flow_publishes_context_and_session_state() -> None:
     assert (
         "ChatInput-realtime-production-report",
         "message",
-        context_id,
+        bundle_id,
         "question",
     ) in edge_ports
     assert (
         "ProcessGroupSelectionGate-realtime-production-report",
         "selected_dataset",
-        context_id,
+        bundle_id,
         "dataset",
     ) in edge_ports
-    assert (context_id, "context_payload", result_store_id, "payload") in edge_ports
+    assert (
+        "ChatInput-realtime-production-report",
+        "message",
+        publisher_id,
+        "question",
+    ) in edge_ports
+    assert (bundle_id, "report_bundle", publisher_id, "report_bundle") in edge_ports
+    assert (publisher_id, "context_payload", result_store_id, "payload") in edge_ports
     assert (result_store_id, "payload_out", report_id, "context_payload") in edge_ports
     assert (report_id, "api_response", session_writer_id, "response_payload") in edge_ports
     assert (session_writer_id, "payload_out", terminal_id, "report_result") in edge_ports
@@ -276,7 +310,7 @@ def test_realtime_report_flow_publishes_context_and_session_state() -> None:
             if parent not in ancestors:
                 ancestors.add(parent)
                 pending.append(parent)
-    assert {context_id, result_store_id, report_id, session_writer_id, terminal_id}.issubset(ancestors)
+    assert {bundle_id, publisher_id, result_store_id, report_id, session_writer_id, terminal_id}.issubset(ancestors)
 
     result_store_template = nodes[result_store_id]["data"]["node"]["template"]
     assert result_store_template["mongo_uri"]["value"] == "MONGO_URL"
@@ -307,7 +341,7 @@ def test_legacy_realtime_report_preserves_original_direct_graph() -> None:
     suffix = "realtime-production-report-legacy"
     report_id = f"RealtimeProductionReportBuilder-{suffix}"
 
-    assert flow["name"] == "11. v5_realtime_production_report_legacy"
+    assert flow["name"] == "07. v5_realtime_production_report_legacy"
     assert flow["endpoint_name"] == "metadata-driven-v5-realtime-production-report-legacy"
     assert len(nodes) == 9
     assert len(flow["data"]["edges"]) == 11
@@ -340,7 +374,7 @@ def test_report_followup_flow_restores_snapshot_without_source_retrievers() -> N
         for edge in flow["data"]["edges"]
     }
 
-    assert flow["name"] == "10. v5_report_followup"
+    assert flow["name"] == "07-2. v5_report_followup"
     assert flow["last_tested_version"] == "1.11.0"
     assert sum(node.get("data", {}).get("type") == "ChatInput" for node in nodes.values()) == 1
     assert sum(node.get("data", {}).get("type") == "ChatOutput" for node in nodes.values()) == 1
@@ -447,6 +481,10 @@ def test_bundle_builder_is_reproducible_for_selected_base_flows(tmp_path: Path) 
     result = build_bundle(tmp_path)
     assert result["flow_count"] == 9
     assert [item["name"] for item in result["flows"]] == EXPECTED_NAMES
-    assert [item["order"] for item in result["flows"]] == [1, 2, 3, 4, 5, 6, 7, 10, 11]
+    assert [item["order"] for item in result["flows"]] == list(range(1, 10))
+    assert [item["display_order"] for item in result["flows"]] == [
+        "01", "02", "03", "04", "05", "06", "07", "07-1", "07-2"
+    ]
+    assert [item["file"] for item in result["flows"]] == EXPECTED_FILES
     combined = _load(tmp_path / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json")
     assert len(combined["flows"]) == 9
