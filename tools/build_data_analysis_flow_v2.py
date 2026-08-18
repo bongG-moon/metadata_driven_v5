@@ -334,39 +334,30 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         _common_component_path("05_mongodb_result_loader.py"),
     )
 
-    # Intent defaults to the existing Legacy contract. Compact is an explicit
-    # opt-in and publishes its exact expected dialect to the Prompt, Router,
-    # and Normalizer so the same request can never silently fall back.
+    # Keep the baseline Legacy intent contract.  Rebuild the serialized input
+    # and output order explicitly so the 1.11 Flow template stays identical to
+    # the standalone component signature after a fresh import.
     _set_embedded_source(node_index[INTENT_VARIABLES_NODE_ID], _component_path("02_intent_variables_builder.py"))
     _set_embedded_source(node_index[INTENT_NORMALIZER_NODE_ID], _component_path("04_intent_plan_normalizer.py"))
-    _apply_extended_component_spec(
+    _apply_component_spec(
         node_index[INTENT_VARIABLES_NODE_ID],
         [
             ("data", "payload", "페이로드", True, None),
             ("data", "metadata_candidates_in", "메타데이터 후보", False, None),
-            ("dropdown", "intent_contract_mode", "Intent 계약 모드", False, "legacy"),
         ],
         [
             ("Message", "question", "사용자 질문", "build_question"),
             ("Message", "state_summary", "상태/요청 컨텍스트 JSON", "build_state_summary"),
             ("Message", "metadata_candidates", "메타데이터 후보 JSON", "build_metadata_candidates"),
             ("Message", "output_schema", "출력 스키마 JSON", "build_output_schema"),
-            ("Message", "expected_dialect", "예상 Intent Dialect", "build_expected_dialect"),
         ],
         node_index,
     )
-    intent_mode_field = node_index[INTENT_VARIABLES_NODE_ID]["data"]["node"]["template"]["intent_contract_mode"]
-    intent_mode_field["options"] = ["legacy", "compact"]
-    intent_mode_field["advanced"] = False
-    intent_mode_field["info"] = (
-        "legacy가 기본값입니다. compact는 manufacturing.intent.compact.v1 최소 계약을 엄격 검증합니다."
-    )
-    _apply_extended_component_spec(
+    _apply_component_spec(
         node_index[INTENT_NORMALIZER_NODE_ID],
         [
             ("data", "payload", "페이로드", True, None),
             ("message", "llm_response", "의도 LLM 응답", True, ""),
-            ("message", "expected_dialect", "예상 Intent Dialect", False, "manufacturing.intent.legacy.v1"),
             ("data", "metadata_candidates", "메타데이터 후보", False, None),
         ],
         [("Data", "payload_out", "페이로드 출력", "build_payload")],
@@ -437,21 +428,6 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     node_index[INTENT_PROMPT_NODE_ID]["data"]["node"]["template"]["template"]["value"] = (
         _component_path("03_intent_prompt_template_ko.md").read_text(encoding="utf-8")
     )
-    intent_prompt_component = node_index[INTENT_PROMPT_NODE_ID]["data"]["node"]
-    intent_prompt_template = intent_prompt_component["template"]
-    if "expected_dialect" not in intent_prompt_template:
-        expected_dialect_field = deepcopy(intent_prompt_template["question"])
-        expected_dialect_field.update(
-            {
-                "name": "expected_dialect",
-                "display_name": "expected_dialect",
-                "value": "manufacturing.intent.legacy.v1",
-            }
-        )
-        intent_prompt_template["expected_dialect"] = expected_dialect_field
-    prompt_dynamic_fields = intent_prompt_component.setdefault("custom_fields", {}).setdefault("template", [])
-    if "expected_dialect" not in prompt_dynamic_fields:
-        prompt_dynamic_fields.append("expected_dialect")
 
     # Intent planning is allowed only after 01D has proved that a Table Catalog
     # dataset is available. This replaces the native model node in place while
@@ -472,7 +448,6 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
             ("data", "payload", "요청 페이로드", True, None),
             ("data", "metadata_candidates", "메타데이터 후보", True, None),
             ("message", "intent_prompt", "의도 분석 프롬프트", False, ""),
-            ("message", "expected_dialect", "예상 Intent Dialect", False, "manufacturing.intent.legacy.v1"),
             ("model", "model", "의도 분석 언어 모델", False, None),
             ("secret", "api_key", "의도 분석 모델 API Key", False, "GOOGLE_API_KEY"),
         ],
@@ -615,7 +590,6 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         [
             ("data", "payload", "페이로드", True, None),
             ("bool", "use_llm_answer", "Complex 답변 LLM 사용", False, True),
-            ("dropdown", "answer_policy", "Complex 답변 호출 정책", False, "auto"),
             (
                 "multiline",
                 "answer_prompt_template",
@@ -636,19 +610,6 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     )
     node_index[HYBRID_ANSWER_NODE_ID]["data"]["node"]["template"]["use_llm_answer"]["info"] = (
         "활성화하면 Complex만 답변 LLM을 호출하고, 비활성화하면 Fast와 Complex 모두 고정 로직으로 답변합니다."
-    )
-    answer_policy_field = node_index[HYBRID_ANSWER_NODE_ID]["data"]["node"]["template"]["answer_policy"]
-    answer_policy_field.update(
-        {
-            "options": ["always", "auto", "never"],
-            "value": "auto",
-            "advanced": False,
-            "show": True,
-            "info": (
-                "always는 기존처럼 Complex 답변 LLM을 항상 호출하고, auto는 검증된 표준 결과만 고정 답변으로 처리하며, "
-                "never는 Complex에서도 답변 LLM을 호출하지 않습니다."
-            ),
-        }
     )
 
     _set_embedded_source(
@@ -783,9 +744,6 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         ("CustomComponent-HFsYn", "payload_out", INTENT_MODEL_NODE_ID, "payload"),
         (METADATA_CANDIDATES_NODE_ID, "metadata_candidates", INTENT_MODEL_NODE_ID, "metadata_candidates"),
         (INTENT_PROMPT_NODE_ID, "prompt", INTENT_MODEL_NODE_ID, "intent_prompt"),
-        (INTENT_VARIABLES_NODE_ID, "expected_dialect", INTENT_PROMPT_NODE_ID, "expected_dialect"),
-        (INTENT_VARIABLES_NODE_ID, "expected_dialect", INTENT_MODEL_NODE_ID, "expected_dialect"),
-        (INTENT_VARIABLES_NODE_ID, "expected_dialect", INTENT_NORMALIZER_NODE_ID, "expected_dialect"),
         (EXECUTION_GATE_NODE_ID, "payload_out", RESOLVER_NODE_ID, "payload"),
         (RESOLVER_NODE_ID, "payload_out", PANDAS_VARIABLES_NODE_ID, "payload"),
         (RESOLVER_NODE_ID, "payload_out", PANDAS_PROMPT_NODE_ID, "payload"),

@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Report View Bundle 안내서 — Report를 만들고 안전하게 후속 질문받는 방법</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #5d6b82;
+      --line: #dce4ef;
+      --paper: #ffffff;
+      --wash: #f5f8fc;
+      --navy: #183153;
+      --blue: #2563eb;
+      --cyan: #0f9cb8;
+      --teal: #078b78;
+      --amber: #b85c00;
+      --rose: #b4235a;
+      --code: #111b2d;
+      --shadow: 0 14px 34px rgba(29, 48, 78, .09);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: linear-gradient(180deg, #eef5ff 0, #fff 360px);
+      font-family: "Pretendard", "Noto Sans KR", "Malgun Gothic", Arial, sans-serif;
+      line-height: 1.7;
+      word-break: keep-all;
+    }
+    a { color: var(--blue); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    code { font-family: "Cascadia Code", Consolas, monospace; font-size: .91em; }
+
+    .wrap { width: min(1180px, calc(100% - 36px)); margin: 0 auto; }
+    .hero { padding: 70px 0 42px; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px; padding: 6px 11px;
+      border: 1px solid #b9cff8; border-radius: 999px; background: #f7fbff;
+      color: #23539d; font-weight: 800; font-size: .86rem;
+    }
+    .eyebrow::before { content: "●"; color: var(--teal); font-size: .75rem; }
+    h1 { margin: 16px 0 14px; max-width: 920px; font-size: clamp(2rem, 4vw, 3.85rem); line-height: 1.16; letter-spacing: -.055em; }
+    .lead { margin: 0; max-width: 850px; color: #40516b; font-size: 1.18rem; }
+    .hero-grid { display: grid; grid-template-columns: 1.35fr .65fr; gap: 20px; margin-top: 31px; }
+    .hero-card, .card, .notice, details { border: 1px solid var(--line); border-radius: 16px; background: var(--paper); box-shadow: var(--shadow); }
+    .hero-card { padding: 21px 23px; }
+    .hero-card strong { display: block; margin-bottom: 5px; font-size: 1.13rem; }
+    .hero-card p { margin: 0; color: var(--muted); }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #e8f6f4; color: #087163; font-size: .79rem; font-weight: 800; }
+
+    .toc { margin: 6px 0 42px; padding: 16px 20px; border-left: 4px solid var(--blue); background: #fff; box-shadow: var(--shadow); }
+    .toc strong { margin-right: 12px; }
+    .toc a { margin-right: 13px; white-space: nowrap; }
+
+    section { margin: 50px 0; scroll-margin-top: 20px; }
+    h2 { margin: 0 0 16px; font-size: clamp(1.5rem, 2.4vw, 2.2rem); letter-spacing: -.035em; }
+    h3 { margin: 30px 0 11px; font-size: 1.25rem; letter-spacing: -.025em; }
+    h4 { margin: 0 0 8px; font-size: 1.04rem; }
+    p { margin: 10px 0; }
+    .muted { color: var(--muted); }
+    .small { font-size: .91rem; }
+
+    .flow { display: grid; grid-template-columns: repeat(5, 1fr); align-items: stretch; gap: 11px; margin: 22px 0 8px; }
+    .flow-node { position: relative; min-height: 142px; padding: 17px 15px; border: 1px solid var(--line); border-radius: 15px; background: white; box-shadow: var(--shadow); }
+    .flow-node:not(:last-child)::after { content: "→"; position: absolute; right: -17px; top: 50%; z-index: 2; transform: translateY(-50%); color: #7590b8; font-size: 1.8rem; font-weight: 700; }
+    .flow-node .step { display: block; color: var(--blue); font-size: .78rem; font-weight: 900; letter-spacing: .05em; }
+    .flow-node strong { display: block; margin: 5px 0; line-height: 1.35; }
+    .flow-node p { margin: 0; color: var(--muted); font-size: .89rem; line-height: 1.55; }
+    .flow-node.recipe { border-color: #8dc7bc; background: #f4fffc; }
+    .flow-node.publisher { border-color: #9abbf4; background: #f5f9ff; }
+    .flow-node.followup { border-color: #e6c388; background: #fffbf2; }
+
+    .two-col, .three-col { display: grid; gap: 18px; }
+    .two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .three-col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { padding: 21px; }
+    .card p:last-child { margin-bottom: 0; }
+    .card.recipe-accent { border-top: 4px solid var(--teal); }
+    .card.auto-accent { border-top: 4px solid var(--blue); }
+    .card.followup-accent { border-top: 4px solid #d88900; }
+    .card.stop-accent { border-top: 4px solid var(--rose); }
+    .icon { display: grid; place-items: center; width: 32px; height: 32px; margin-bottom: 11px; border-radius: 9px; color: white; background: var(--navy); font-weight: 900; }
+    .recipe-accent .icon { background: var(--teal); }
+    .auto-accent .icon { background: var(--blue); }
+    .followup-accent .icon { background: #d88900; }
+    .stop-accent .icon { background: var(--rose); }
+
+    .notice { margin: 18px 0; padding: 16px 18px; }
+    .notice strong { display: block; margin-bottom: 4px; }
+    .notice.good { border-left: 5px solid var(--teal); background: #f2fbf8; }
+    .notice.warn { border-left: 5px solid #d88900; background: #fff9ed; }
+    .notice.stop { border-left: 5px solid var(--rose); background: #fff5f8; }
+    .notice.info { border-left: 5px solid var(--blue); background: #f5f8ff; }
+
+    .source-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 18px 0; }
+    .source { padding: 15px; border-radius: 13px; border: 1px solid #cdd9eb; background: #fafdff; }
+    .source .name { display: block; color: #224773; font-family: Consolas, monospace; font-weight: 800; }
+    .source p { margin: 5px 0 0; color: var(--muted); font-size: .9rem; line-height: 1.5; }
+    .arrow-down { margin: -4px 0 4px; color: var(--teal); text-align: center; font-size: 2rem; font-weight: 800; line-height: 1; }
+
+    pre { overflow: auto; margin: 14px 0; padding: 19px 20px; border-radius: 14px; color: #e9f0ff; background: var(--code); box-shadow: 0 12px 24px rgba(17,27,45,.15); line-height: 1.62; tab-size: 2; }
+    pre code { font-size: .85rem; }
+    .code-caption { margin: 0; color: var(--muted); font-size: .92rem; }
+    .comment { color: #8fa5cb; }
+    .key { color: #8ee6be; }
+    .str { color: #f7c56d; }
+    .fn { color: #a8ccff; }
+
+    table { width: 100%; border-collapse: collapse; overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: #fff; box-shadow: var(--shadow); }
+    th, td { padding: 12px 13px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { color: #334d75; background: #f4f8ff; font-size: .9rem; }
+    tr:last-child td { border-bottom: 0; }
+    td code { color: #174a87; }
+
+    .view-stack { display: grid; gap: 12px; margin: 18px 0; }
+    .view { display: grid; grid-template-columns: 180px 1fr; gap: 14px; align-items: center; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+    .view-label { display: flex; flex-direction: column; gap: 4px; }
+    .view-label code { color: var(--blue); font-weight: 800; }
+    .pill { display: inline-block; width: fit-content; padding: 2px 8px; border-radius: 999px; background: #eaf1ff; color: #2654a1; font-size: .77rem; font-weight: 800; }
+    .pill.private { background: #f1f3f6; color: #566274; }
+    .pill.public { background: #e6f7f2; color: #087863; }
+    .view p { margin: 0; color: var(--muted); font-size: .93rem; }
+
+    ol.steps { padding: 0; list-style: none; counter-reset: item; }
+    ol.steps li { position: relative; min-height: 50px; margin: 12px 0; padding: 12px 14px 12px 58px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+    ol.steps li::before { content: counter(item); counter-increment: item; position: absolute; left: 14px; top: 11px; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; color: white; background: var(--blue); font-weight: 900; }
+    ol.steps li strong { display: block; }
+
+    details { padding: 0 18px; box-shadow: none; }
+    details + details { margin-top: 10px; }
+    summary { padding: 15px 2px; cursor: pointer; font-weight: 800; }
+    details > div { padding: 0 2px 17px; }
+
+    .qa { display: grid; gap: 11px; }
+    .qa-item { display: grid; grid-template-columns: 1fr 1fr; gap: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: white; }
+    .qa-item > div { padding: 14px 16px; }
+    .qa-item > div:first-child { border-right: 1px solid var(--line); background: #f8fbff; }
+    .qa-item strong { display: block; margin-bottom: 4px; }
+    .qa-item p { margin: 0; font-size: .92rem; }
+
+    .checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 15px; padding: 0; list-style: none; }
+    .checklist li { position: relative; padding: 12px 14px 12px 42px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+    .checklist li::before { content: "✓"; position: absolute; left: 14px; top: 11px; color: var(--teal); font-weight: 900; }
+
+    .footer { margin-top: 70px; padding: 30px 0 45px; color: #6b7890; font-size: .88rem; }
+
+    @media (max-width: 900px) {
+      .hero-grid, .two-col, .three-col { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; gap: 25px; }
+      .flow-node:not(:last-child)::after { right: auto; left: 50%; top: auto; bottom: -31px; transform: translateX(-50%) rotate(90deg); }
+      .source-row { grid-template-columns: 1fr; }
+      .view { grid-template-columns: 1fr; }
+      .qa-item { grid-template-columns: 1fr; }
+      .qa-item > div:first-child { border-right: 0; border-bottom: 1px solid var(--line); }
+      .checklist { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <span class="eyebrow">학습용 구현 안내서 · Flow 07-1 / 07-2</span>
+      <h1>여러 원천 데이터를 쓰는 Report를<br>안전하게 만들고 후속 질문까지 받는 방법</h1>
+      <p class="lead">
+        이 문서는 “중간 소스가 3개든 10개든, 왜 Flow 07-2에는 최종 결과 View만 넘기는가?”를
+        실제 구현 예시와 함께 설명합니다. 핵심은 복잡한 계산은 <strong>Report Recipe</strong>에서 끝내고,
+        후속 질문은 저장된 <strong>완성 View</strong> 안에서만 처리하는 것입니다.
+      </p>
+      <div class="hero-grid">
+        <div class="hero-card">
+          <strong>한 문장으로 이해하기</strong>
+          <p>Report Recipe는 “요리사”, Flow 07-2는 “완성된 메뉴에서 찾고·정렬하고·골라 주는 직원”입니다. 직원에게 주방의 모든 재료와 조리법을 맡기지 않습니다.</p>
+        </div>
+        <div class="hero-card">
+          <span class="badge">현재 구현 기준</span>
+          <p style="margin-top:9px;">07은 기존 직접 Report, 07-1은 View를 저장하는 향상된 Report, 07-2는 저장된 View의 후속 질문 전용 Flow입니다.</p>
+        </div>
+      </div>
+    </header>
+
+    <nav class="toc" aria-label="목차">
+      <strong>빠른 이동</strong>
+      <a href="#big-picture">전체 구조</a>
+      <a href="#example-three">3개 소스 예시</a>
+      <a href="#code">Recipe 코드</a>
+      <a href="#publisher">00E 자동 처리</a>
+      <a href="#many-sources">10개 소스 예시</a>
+      <a href="#followup">후속 질문</a>
+      <a href="#html">HTML Report</a>
+      <a href="#checklist">작성 체크리스트</a>
+    </nav>
+
+    <section id="big-picture">
+      <h2>1. 먼저 전체 구조를 한 번에 보기</h2>
+      <p>
+        “중간 소스”는 Report를 만들기 위한 재료입니다. 반면 “공개 View”는 이미 계산이 끝난 결과물입니다.
+        Flow 07-2는 전자에 접근하지 않고 후자만 읽습니다.
+      </p>
+      <div class="flow" role="img" aria-label="중간 데이터에서 Report Recipe, 공개 View, 00E Publisher, Flow 07-2로 흐르는 구조">
+        <div class="flow-node">
+          <span class="step">01 · 재료</span>
+          <strong>중간 소스<br>3개 ~ 10개</strong>
+          <p>생산, 계획, 재공, 장비, UPH, 불량, HOLD 등</p>
+        </div>
+        <div class="flow-node recipe">
+          <span class="step">02 · 업무 계산</span>
+          <strong>Report Recipe<br>(Python)</strong>
+          <p>검증, 조인, 중복 제거, 집계, 비율 재계산</p>
+        </div>
+        <div class="flow-node">
+          <span class="step">03 · 완성품</span>
+          <strong>공개 View<br>1개 ~ 여러 개</strong>
+          <p>제품 위험, 공정 위험, KPI 요약, 상세 목록</p>
+        </div>
+        <div class="flow-node publisher">
+          <span class="step">04 · 공용 인프라</span>
+          <strong>00E Context<br>Publisher</strong>
+          <p>실제 컬럼 추출, 안전 계약 생성, Snapshot 저장용 payload 생성</p>
+        </div>
+        <div class="flow-node followup">
+          <span class="step">05 · 후속 질문</span>
+          <strong>Flow 07-2</strong>
+          <p>필터, 정렬, 상위 N, 컬럼 선택만 실행</p>
+        </div>
+      </div>
+      <div class="notice good">
+        <strong>가장 중요한 경계</strong>
+        Flow 07-2가 새로 조인하거나 원천 DB를 재조회하지 않게 하면, 답변 범위가 “Report를 만들었던 시점의 검증된 결과”로 고정됩니다. 이것이 안전성과 이해 가능성을 함께 높입니다.
+      </div>
+
+      <div class="three-col">
+        <article class="card recipe-accent">
+          <div class="icon">R</div>
+          <h3 style="margin-top:0;">Recipe가 맡는 일</h3>
+          <p>업무 규칙, 원천 검증, 조인, 수량·비율 계산, 어떤 결과를 사용자에게 공개할지 결정합니다.</p>
+        </article>
+        <article class="card auto-accent">
+          <div class="icon">A</div>
+          <h3 style="margin-top:0;">00E가 자동으로 하는 일</h3>
+          <p>실제 행에서 컬럼을 읽고, 안전한 내부 이름·후속질문 계약·Snapshot/Result Store 저장용 payload를 만듭니다.</p>
+        </article>
+        <article class="card followup-accent">
+          <div class="icon">F</div>
+          <h3 style="margin-top:0;">07-2가 하는 일</h3>
+          <p>공개된 View 안에서만 찾고, 정렬하고, 상위 N개와 필요한 열을 보여 줍니다.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="example-three">
+      <h2>2. 예시 ① — 중간 소스가 3개인 “생산부족·장비위험 제품” Report</h2>
+      <p>
+        아래 Report는 생산부족 제품 중에서 장비 위험까지 있는 제품을 찾는다고 가정합니다.
+        사용자는 나중에 “생산실적달성율이 낮은 순으로 5개 보여줘”라고 물을 수 있습니다.
+      </p>
+
+      <div class="source-row">
+        <div class="source"><span class="name">production_cases</span><p>제품·공정별 생산량, 계획량, 생산 판정</p></div>
+        <div class="source"><span class="name">target_plan</span><p>제품별 목표량 또는 기준 계획</p></div>
+        <div class="source"><span class="name">equipment_assign</span><p>제품별 필요 장비 수, 교체 판단</p></div>
+      </div>
+      <div class="arrow-down">↓</div>
+      <div class="card recipe-accent">
+        <h3 style="margin-top:0;">Report Recipe가 하는 계산</h3>
+        <ol class="steps">
+          <li><strong>입력 검증</strong>필수 소스가 모두 있고, 조인에 필요한 제품 키와 계산 컬럼이 존재하는지 확인합니다.</li>
+          <li><strong>제품 단위로 조인·집계</strong>공정별 생산 Case를 제품별로 합산하고, 장비 판단을 붙입니다.</li>
+          <li><strong>비율은 다시 계산</strong><code>생산실적달성율 = 생산량 합계 ÷ 계획량 합계 × 100</code>으로 계산합니다. 공정별 비율을 단순 평균하지 않습니다.</li>
+          <li><strong>공개할 View 완성</strong>후속 질문에 필요한 행과 컬럼만 가진 “생산부족·장비위험 제품” View를 만듭니다.</li>
+        </ol>
+      </div>
+
+      <h3>최종적으로 공개되는 View의 모습</h3>
+      <table>
+        <thead><tr><th>제품</th><th>생산실적달성율</th><th>장비교체판단</th><th>필요장비대수</th></tr></thead>
+        <tbody>
+          <tr><td>L-256K9B</td><td>72.4</td><td>장비필요</td><td>3</td></tr>
+          <tr><td>SP 24G GDDR7</td><td>81.7</td><td>교체필요</td><td>1</td></tr>
+          <tr><td>HBM-TEST</td><td>88.1</td><td>정상</td><td>0</td></tr>
+        </tbody>
+      </table>
+      <p class="code-caption">이 표가 Flow 07-2에 저장되어 후속 질문의 대상이 됩니다. 세 개의 원천 테이블은 직접 공개하지 않습니다.</p>
+    </section>
+
+    <section id="code">
+      <h2>3. Recipe 코드는 어디까지 작성하면 될까?</h2>
+      <p>
+        Report 작성자가 직접 만들어야 하는 것은 <strong>업무 계산과 완성된 View의 행</strong>입니다.
+        <code>report.query_source.v1</code> 같은 내부 실행 계약을 직접 조립할 필요는 없습니다.
+      </p>
+
+      <div class="notice info">
+        <strong>아래 코드는 이해를 위한 작은 예시입니다.</strong>
+        실제 프로젝트에서는 이 함수를 Langflow Custom Component의 핵심 함수로 넣고, 각 원천 Data를 입력으로 연결하면 됩니다. 데이터 조회 자체는 Recipe 앞단의 기존 노드가 담당합니다.
+      </div>
+
+      <h3>3-1. 먼저 업무 계산을 하는 Python</h3>
+      <pre><code><span class="comment"># 예시: 세 원천을 받아 “제품 위험” 완성 View를 만든다.</span>
+<span class="key">def</span> <span class="fn">build_product_risk_rows</span>(production_cases, target_plan, equipment_assign):
+    <span class="comment"># 1) 필요한 컬럼을 먼저 확인한다. 없으면 추측해서 진행하지 않는다.</span>
+    required = {
+        <span class="str">"production_cases"</span>: {<span class="str">"제품"</span>, <span class="str">"생산량"</span>, <span class="str">"계획량"</span>},
+        <span class="str">"equipment_assign"</span>: {<span class="str">"제품"</span>, <span class="str">"장비교체판단"</span>, <span class="str">"필요장비대수"</span>},
+    }
+    <span class="fn">assert_required_columns</span>(production_cases, required[<span class="str">"production_cases"</span>])
+    <span class="fn">assert_required_columns</span>(equipment_assign, required[<span class="str">"equipment_assign"</span>])
+
+    <span class="comment"># 2) 공정별 Case를 제품별로 합산한다.</span>
+    totals = <span class="fn">sum_by_product</span>(production_cases,
+                            product_column=<span class="str">"제품"</span>,
+                            sum_columns=[<span class="str">"생산량"</span>, <span class="str">"계획량"</span>])
+
+    <span class="comment"># 3) 제품 키로 장비 판단을 붙인다. 조인 결과가 1:1이어야 한다면 여기서 검증한다.</span>
+    rows = <span class="fn">left_join_one_to_one</span>(totals, equipment_assign, key=<span class="str">"제품"</span>)
+
+    <span class="comment"># 4) 비율은 합산된 분자·분모로 다시 계산한다.</span>
+    result = []
+    <span class="key">for</span> row <span class="key">in</span> rows:
+        plan = row[<span class="str">"계획량"</span>]
+        rate = <span class="fn">round</span>(row[<span class="str">"생산량"</span>] / plan * 100, 1) <span class="key">if</span> plan <span class="key">else</span> <span class="key">None</span>
+        <span class="key">if</span> rate <span class="key">is not None</span> <span class="key">and</span> rate &lt; 90:
+            result.append({
+                <span class="str">"제품"</span>: row[<span class="str">"제품"</span>],
+                <span class="str">"생산실적달성율"</span>: rate,
+                <span class="str">"장비교체판단"</span>: row[<span class="str">"장비교체판단"</span>],
+                <span class="str">"필요장비대수"</span>: row[<span class="str">"필요장비대수"</span>],
+            })
+    <span class="key">return</span> result</code></pre>
+      <p class="code-caption">핵심: 조인 키·중복 처리·수량 합계·비율 재계산은 Recipe 안에 있습니다. 이 부분이 Report마다 달라지는 업무 코드입니다.</p>
+
+      <h3>3-2. 그 다음은 “작은 Bundle”로 감싼다</h3>
+      <pre><code><span class="key">def</span> <span class="fn">make_report_bundle</span>(session_id, product_risk_rows):
+    <span class="key">return</span> {
+        <span class="str">"contract_version"</span>: <span class="str">"report.view.bundle.v1"</span>,
+        <span class="str">"request"</span>: {<span class="str">"session_id"</span>: session_id},
+        <span class="str">"report"</span>: {
+            <span class="str">"report_type"</span>: <span class="str">"production_equipment_risk"</span>,
+            <span class="str">"title"</span>: <span class="str">"생산부족·장비위험 Report"</span>,
+        },
+        <span class="str">"views"</span>: [
+            {
+                <span class="str">"view_key"</span>: <span class="str">"shortage_equipment_risk_products"</span>,
+                <span class="str">"display_name"</span>: <span class="str">"생산부족·장비위험 제품"</span>,
+                <span class="str">"aliases"</span>: [<span class="str">"위험 제품"</span>, <span class="str">"생산부족 장비위험 제품"</span>],
+                <span class="str">"rows"</span>: product_risk_rows,            <span class="comment"># 가장 중요: 실제 완성 행</span>
+                <span class="str">"display_columns"</span>: [              <span class="comment"># 공개할 열만 선택</span>
+                    <span class="str">"제품"</span>, <span class="str">"생산실적달성율"</span>, <span class="str">"장비교체판단"</span>, <span class="str">"필요장비대수"</span>
+                ],
+                <span class="str">"default_view"</span>: <span class="key">True</span>,             <span class="comment"># “방금 Report에서”의 기본 대상</span>
+                <span class="str">"followup_enabled"</span>: <span class="key">True</span>,        <span class="comment"># Flow 07-2에 공개</span>
+                <span class="str">"grain"</span>: {<span class="str">"kind"</span>: <span class="str">"product"</span>, <span class="str">"unique"</span>: <span class="key">True</span>},
+                <span class="str">"metrics"</span>: [
+                    {<span class="str">"column"</span>: <span class="str">"생산실적달성율"</span>, <span class="str">"method"</span>: <span class="str">"display"</span>},
+                    {<span class="str">"column"</span>: <span class="str">"필요장비대수"</span>, <span class="str">"method"</span>: <span class="str">"display"</span>},
+                ],
+            }
+        ],
+    }</code></pre>
+      <div class="notice good">
+        <strong>코드를 줄이는 핵심</strong>
+        <code>columns</code>와 내부 <code>source_alias</code>는 이 예시에서 쓰지 않았습니다. 00E는 실제 <code>rows</code>를 읽어서 컬럼을 자동 추출하고, <code>view_key</code>에서 안전한 내부 이름을 만듭니다. 필요할 때만 <code>display_columns</code>으로 “보여 줄 열”을 좁히면 됩니다.
+      </div>
+    </section>
+
+    <section id="publisher">
+      <h2>4. 00E Context Publisher는 정확히 무엇을 자동으로 할까?</h2>
+      <p>
+        00E는 Report의 업무 규칙을 대신 계산하지 않습니다. 대신 완성된 View를 후속 질문에 안전하게 쓰도록
+        “보관·공개·검증”합니다.
+      </p>
+      <div class="two-col">
+        <div>
+          <h3>Recipe가 00E에 넘기는 것</h3>
+          <table>
+            <thead><tr><th>필드</th><th>의미</th></tr></thead>
+            <tbody>
+              <tr><td><code>rows</code></td><td>계산이 끝난 실제 결과 행</td></tr>
+              <tr><td><code>view_key</code></td><td>View의 짧은 식별 이름</td></tr>
+              <tr><td><code>display_name</code></td><td>사용자에게 보이는 View 이름</td></tr>
+              <tr><td><code>default_view</code></td><td>“방금 Report에서”의 기본 대상 여부</td></tr>
+              <tr><td><code>followup_enabled</code></td><td>Flow 07-2에 공개할지 여부</td></tr>
+              <tr><td><code>display_columns</code></td><td>공개해도 되는 실제 컬럼 범위</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h3>00E가 자동으로 만드는 것</h3>
+          <table>
+            <thead><tr><th>자동 결과</th><th>왜 필요한가</th></tr></thead>
+            <tbody>
+              <tr><td>실제 컬럼 목록</td><td>행에 존재하는 컬럼만 후속 질문에서 허용</td></tr>
+              <tr><td>안전한 내부 alias</td><td>Langflow·저장소에서 일관되게 참조</td></tr>
+              <tr><td>제한형 조회 계약</td><td>필터·정렬·상위 N·열 선택만 허용</td></tr>
+              <tr><td>Snapshot/Result Store payload</td><td>같은 세션의 Report 결과를 복원</td></tr>
+              <tr><td>기본 표시 열</td><td>질문 결과를 과도하게 길게 보이지 않게 함</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <h3>Langflow에서는 이렇게 연결합니다</h3>
+      <pre><code><span class="comment"># Flow 07-1의 개념적 연결</span>
+원천 조회 노드들
+    → Report Recipe Python Component
+        <span class="comment"># Data 출력: { contract_version, request, report, views }</span>
+    → 00E Report Context Publisher의 <span class="str">report_bundle</span> 입력
+    → 공용 Result Store / Session State Writer
+    → Report HTML + Chat Output
+
+Chat Input의 Message
+    → 00E Report Context Publisher의 <span class="str">question</span> 입력
+       <span class="comment"># 여기서 session_id도 함께 확인한다.</span></code></pre>
+
+      <div class="notice warn">
+        <strong><code>lineage</code>의 의미를 혼동하지 않기</strong>
+        현재 00E의 <code>lineage</code>는 Bundle 안에 함께 실린 <em>다른 View</em>를 가리키는 용도입니다. <code>production_cases</code> 같은 원천 테이블 이름을 그대로 넣으면 현재 Publisher는 Bundle 안의 View가 아니라고 보고 차단합니다. 원천 3개·10개 정보는 Recipe 코드·trace·Report 문서에서 관리하고, Bundle의 <code>lineage</code>에는 <code>case_detail_view → product_risk_view</code>처럼 Bundle View 간 관계만 넣습니다.
+      </div>
+
+      <h3>가장 단순한 Report라면 더 적게 작성할 수도 있습니다</h3>
+      <p>
+        조인·계산이 이미 끝난 단일 표가 있다면 Bundle을 만들지 않고 <code>report_data</code>에
+        <code>{"rows": [...]}</code>만 연결할 수도 있습니다. 00E는 이를 하나의 기본 View로 감쌉니다.
+        여러 View 또는 명확한 공개 범위가 필요한 Report만 <code>report.view.bundle.v1</code>을 사용하면 됩니다.
+      </p>
+    </section>
+
+    <section id="many-sources">
+      <h2>5. 예시 ② — 중간 소스가 10개여도 같은 방식이다</h2>
+      <p>
+        원천이 많아진다고 Flow 07-2가 복잡해지는 것은 아닙니다. 복잡함은 Recipe 안에 머물고,
+        후속 질문에는 작은 결과 View만 전달합니다.
+      </p>
+      <div class="card recipe-accent">
+        <h3 style="margin-top:0;">공정 위험 종합 Report의 내부 재료</h3>
+        <p class="muted"><code>생산 + 계획 + 재공 + 장비 + UPH + 불량 + HOLD + CAPA + 작업자 + 일정</code></p>
+        <div class="arrow-down">↓</div>
+        <p><strong>Report Recipe</strong>가 각 소스의 기준일·조인 키·중복·집계 방식을 확인하고 다음 세 개의 결과를 만듭니다.</p>
+      </div>
+
+      <div class="view-stack">
+        <div class="view">
+          <div class="view-label"><span class="pill public">공개 View</span><code>process_risk_summary</code></div>
+          <p><strong>공정 위험 View</strong> — 공정, 위험 점수, 병목 원인, 가동률. 공정 단위로 정렬·필터·Top N.</p>
+        </div>
+        <div class="view">
+          <div class="view-label"><span class="pill public">기본 View</span><code>product_risk_summary</code></div>
+          <p><strong>제품 위험 View</strong> — 제품, 달성율, 재공, 장비 위험, HOLD 여부. 사용자가 가장 많이 묻는 대상이라 기본 View로 공개.</p>
+        </div>
+        <div class="view">
+          <div class="view-label"><span class="pill public">공개 View</span><code>kpi_summary</code></div>
+          <p><strong>KPI 요약 View</strong> — KPI 이름, 목표, 실적, 상태. 정렬·열 선택에 적합한 작은 표.</p>
+        </div>
+        <div class="view">
+          <div class="view-label"><span class="pill private">비공개 Evidence</span><code>join_audit_detail</code></div>
+          <p><strong>조인 검증용 Evidence</strong> — 개발·감사용입니다. <code>followup_enabled</code>를 켜지 않으면 Flow 07-2의 질문 대상이 되지 않습니다.</p>
+        </div>
+      </div>
+
+      <div class="notice good">
+        <strong>서로 다른 컬럼명도 괜찮습니다</strong>
+        Report A가 <code>제품, 생산달성율, 부족수량</code>을 쓰고, Report B가 <code>LOT_ID, HOLD_CODE, HOLD_TIME</code>을 쓰고, Report C가 <code>공정, 장비기종, UPH, 가동률</code>을 써도 됩니다. Flow 07-2는 전역 <code>DEN</code>, <code>MODE</code>, <code>MCP_NO</code>를 억지로 강제하지 않고, 저장된 해당 View의 실제 컬럼만 사용합니다.
+      </div>
+
+      <h3>그렇다면 원천 10개는 어디에 기록할까?</h3>
+      <p>
+        업무적으로 필요한 원천 목록·조인 규칙·실행 진단은 Recipe 내부 상수, Recipe의 trace, Report 설계 문서에 둡니다.
+        Flow 07-2가 사용하는 Bundle에는 <strong>사용자에게 공개할 완성 View</strong>만 넣습니다.
+        현재 00E는 한 Bundle에서 최대 12개 View를 처리하도록 구성되어 있으므로, 공개 View는 그 안에 가볍게 유지하는 것이 좋습니다.
+      </p>
+    </section>
+
+    <section id="followup">
+      <h2>6. Flow 07-2는 어떤 후속 질문을 처리할까?</h2>
+      <p>Flow 07-2는 “이미 만들어져 저장된 Report View를 더 잘 보는” 역할입니다. 새 계산이나 원천 조회를 맡기지 않습니다.</p>
+      <div class="qa">
+        <div class="qa-item">
+          <div><strong>가능: View 내부 필터</strong><p>“방금 Report에서 장비필요 제품만 보여줘”</p></div>
+          <div><strong>동작</strong><p><code>장비교체판단 = 장비필요</code> 행만 선택합니다.</p></div>
+        </div>
+        <div class="qa-item">
+          <div><strong>가능: 정렬 + 상위 N</strong><p>“생산실적달성율이 낮은 순으로 5개 보여줘”</p></div>
+          <div><strong>동작</strong><p>실제 <code>생산실적달성율</code> 열을 숫자 정렬하고 상위 5행을 반환합니다.</p></div>
+        </div>
+        <div class="qa-item">
+          <div><strong>가능: 컬럼 선택</strong><p>“제품, 달성율, 필요장비대수만 보여줘”</p></div>
+          <div><strong>동작</strong><p>View에 존재하고 공개된 세 열만 보여 줍니다.</p></div>
+        </div>
+        <div class="qa-item">
+          <div><strong>상위 Router가 Flow 01로 라우팅: 최신 데이터</strong><p>“현재 WIP도 함께 알려줘”</p></div>
+          <div><strong>이유</strong><p>Snapshot에 없는 최신 외부 데이터가 필요합니다. Flow 07-2는 자동 조회로 전환하지 않으며, 직접 들어온 요청은 차단·안내합니다.</p></div>
+        </div>
+        <div class="qa-item">
+          <div><strong>상위 Router가 Flow 01로 라우팅: 새 조인</strong><p>“이 Report와 불량 데이터를 조인해서 비교해줘”</p></div>
+          <div><strong>이유</strong><p>새 데이터셋과의 결합은 다시 조회·검증해야 합니다. Flow 07-2는 새 조인을 실행하지 않고, 상위 Router가 일반 분석 Flow로 보냅니다.</p></div>
+        </div>
+      </div>
+
+      <div class="notice stop">
+        <strong>왜 제한하는가?</strong>
+        Report 시점의 결과에 “몰래 새 데이터가 섞이는 것”을 막기 위해서입니다. View에 없는 열, 새 조인, 원천 재조회는 상위 Router/호출 애플리케이션이 Flow 01로 라우팅해야 하며, Flow 07-2는 이를 스스로 실행하지 않습니다.
+      </div>
+    </section>
+
+    <section id="html">
+      <h2>7. HTML Report도 중간 소스가 아니라 최종 View를 기준으로 만든다</h2>
+      <p>
+        HTML 화면도 Recipe와 같은 완성 View를 입력으로 사용하면 됩니다. 즉, “제품 위험 표”, “공정 위험 차트”, “KPI 카드”는 각각 대응하는 View를 그립니다.
+      </p>
+      <div class="two-col">
+        <div class="card">
+          <h3 style="margin-top:0;">화면과 View의 대응</h3>
+          <table>
+            <thead><tr><th>HTML 영역</th><th>사용하는 View</th></tr></thead>
+            <tbody>
+              <tr><td>KPI 카드</td><td><code>kpi_summary</code></td></tr>
+              <tr><td>제품 위험 표</td><td><code>product_risk_summary</code></td></tr>
+              <tr><td>공정 위험 차트</td><td><code>process_risk_summary</code></td></tr>
+              <tr><td>상세 목록</td><td><code>case_detail_view</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0;">이 방식의 장점</h3>
+          <p>HTML과 후속 질문이 같은 결과를 보므로, 화면에는 A를 보여 주고 후속 질문에는 B를 쓰는 불일치가 줄어듭니다.</p>
+          <p class="muted">원천 테이블 수가 늘어도 HTML Renderer의 입력은 “몇 개의 완성 View”로 안정적으로 유지됩니다.</p>
+        </div>
+      </div>
+      <pre><code><span class="key">def</span> <span class="fn">render_report_html</span>(bundle):
+    views = {view[<span class="str">"view_key"</span>]: view <span class="key">for</span> view <span class="key">in</span> bundle[<span class="str">"views"</span>]}
+    kpis = views.get(<span class="str">"kpi_summary"</span>, {}).get(<span class="str">"rows"</span>, [])
+    products = views.get(<span class="str">"product_risk_summary"</span>, {}).get(<span class="str">"rows"</span>, [])
+    processes = views.get(<span class="str">"process_risk_summary"</span>, {}).get(<span class="str">"rows"</span>, [])
+
+    <span class="key">return</span> (
+        <span class="fn">render_kpi_cards</span>(kpis)
+        + <span class="fn">render_table</span>(products, columns=[<span class="str">"제품"</span>, <span class="str">"생산실적달성율"</span>, <span class="str">"장비위험"</span>])
+        + <span class="fn">render_process_chart</span>(processes)
+    )</code></pre>
+      <p class="code-caption">이 함수는 View의 이름과 공개 컬럼만 알면 되므로, 조인 키나 원천 DB 구조를 다시 알 필요가 없습니다.</p>
+    </section>
+
+    <section id="checklist">
+      <h2>8. 새 Report를 만들 때 실제로 정의할 것</h2>
+      <p>아래만 분명하면 새로운 Report 유형을 추가할 수 있습니다. 나머지 보관·후속 질문 인프라는 공용 00E와 Flow 07-2를 재사용합니다.</p>
+      <div class="two-col">
+        <div>
+          <h3>Recipe에서 반드시 정의</h3>
+          <ul class="checklist">
+            <li>필수 원천과 선택 원천</li>
+            <li>조인 키와 1:1 / 1:N 관계</li>
+            <li>중복 행을 처리하는 방식</li>
+            <li>수량은 합계, UPH는 평균 등 집계 규칙</li>
+            <li>비율을 평균하지 않고 재계산할지 여부</li>
+            <li>공개할 최종 View와 컬럼</li>
+            <li>필수 소스 실패·빈 데이터일 때의 메시지</li>
+            <li>기본 후속 질문 대상 View 하나</li>
+          </ul>
+        </div>
+        <div>
+          <h3>00E / Flow 07-2가 공통 처리</h3>
+          <ul class="checklist">
+            <li>실제 행으로부터 컬럼 자동 추출</li>
+            <li>안전한 내부 source alias 생성</li>
+            <li>제한된 후속 질문 연산 계약</li>
+            <li>Result Store 저장에 필요한 Snapshot payload 생성</li>
+            <li>같은 세션인지·만료됐는지 검증</li>
+            <li>필터·정렬·상위 N·열 선택 실행</li>
+            <li>외부 재조회·새 조인 차단 및 Flow 01 위임</li>
+            <li>직전 “그중” View 계획 유지</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3>가장 작은 작업 순서</h3>
+      <ol class="steps">
+        <li><strong>Report 질문을 하나 정한다.</strong>예: “공정별 장비 위험 현황을 보여줘”.</li>
+        <li><strong>그 질문에 필요한 원천과 계산식을 Recipe에 작성한다.</strong>원천 3개든 10개든 이 단계에만 존재합니다.</li>
+        <li><strong>사용자에게 보여 줄 결과를 1~3개 View로 만든다.</strong>각 View의 실제 행, 표시명, 공개 컬럼만 정합니다.</li>
+        <li><strong>Bundle을 00E에 연결한다.</strong>00E가 Snapshot/Result Store 저장용 payload와 후속 질문용 계약을 자동 생성합니다.</li>
+        <li><strong>HTML Renderer도 같은 View를 사용한다.</strong>화면과 후속 질문이 같은 결과를 보게 됩니다.</li>
+        <li><strong>후속 질문을 검증한다.</strong>필터, 정렬+Top N, 컬럼 선택, 최신 데이터 전환, context 없는 질문을 각각 확인합니다.</li>
+      </ol>
+    </section>
+
+    <section id="pitfalls">
+      <h2>9. 자주 생기는 오해와 피해야 할 구현</h2>
+      <details open>
+        <summary>“중간 소스 10개를 View Bundle에 전부 넣으면 더 유연하지 않을까?”</summary>
+        <div>아닙니다. 그렇게 하면 Flow 07-2가 어떤 조인·집계·기준일을 써야 하는지 다시 판단해야 합니다. 이는 일반 분석 Flow와 같은 복잡도를 다시 만들고, Report 당시 결과와 다른 답을 만들 위험도 커집니다. 최종 View만 공개해야 후속 질문의 범위가 작고 명확합니다.</div>
+      </details>
+      <details>
+        <summary>“컬럼명이 표준 컬럼과 다르면 전역 매핑을 추가해야 할까?”</summary>
+        <div>후속 질문 전용 View에는 꼭 그렇지 않습니다. 예를 들어 <code>장비기종</code>, <code>가동률</code>, <code>HOLD_TIME</code>처럼 Report가 실제로 가진 열을 그대로 사용하면 됩니다. 전역 Catalog 매핑은 새 원천을 다시 조회하는 Flow 01에서 필요할 수 있지만, 저장된 View에서는 실제 컬럼이 권위입니다.</div>
+      </details>
+      <details>
+        <summary>“View의 비율을 후속 질문에서 다시 집계해도 될까?”</summary>
+        <div>현재 Flow 07-2의 역할은 filter/sort/top-N/select입니다. 비율 재집계처럼 분자·분모 규칙이 필요한 일은 Recipe에서 미리 제품 View나 공정 View로 만들어 두는 것이 안전합니다.</div>
+      </details>
+      <details>
+        <summary>“Report마다 너무 많은 View가 필요하면?”</summary>
+        <div>현재 00E는 Bundle의 최대 12개 View를 처리합니다. 사용자가 실제로 질문할 가능성이 높은 View만 공개하고, 개발·감사용 Evidence View는 비공개로 두세요. 12개를 안정적으로 넘겨야 한다면 evidence와 query View를 별도 계층으로 확장하는 설계를 먼저 검토합니다.</div>
+      </details>
+    </section>
+
+    <section>
+      <h2>마지막 요약</h2>
+      <div class="notice good">
+        <strong>새 Report를 만들 때 매번 다시 만들 필요가 있는 것</strong>
+        업무 계산 Python Recipe와 HTML 화면 구성입니다.
+      </div>
+      <div class="notice info">
+        <strong>공통으로 재사용되는 것</strong>
+        실제 컬럼 추출, Snapshot/Result Store 저장용 payload 생성, 세션 검증, 제한된 후속 질문 계약, Flow 07-2의 filter/sort/top-N/select 실행입니다.
+      </div>
+      <p>
+        따라서 Report의 원천이 3개에서 10개로 늘어나도, 후속 질문 쪽의 구조와 안전성은 거의 변하지 않습니다.
+        복잡한 업무 규칙은 Recipe에 모으고, Flow 07-2에는 검증된 최종 결과만 넘기는 것이 이 구조의 핵심입니다.
+      </p>
+    </section>
+
+    <footer class="footer">
+      기준 구현: Flow 07(기존 직접 Report), Flow 07-1(향상된 Report + Context Publisher), Flow 07-2(저장 View 후속 질문).<br>
+      이 문서는 프로젝트 내부 학습용 안내서이며, 실제 연결 포트와 상세 입력명은 해당 Flow JSON 및 Component 설명을 기준으로 확인합니다.
+    </footer>
+  </main>
+</body>
+</html>

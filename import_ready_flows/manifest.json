@@ -6,7 +6,7 @@
   "flow_count": 9,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "e5b092fe1023ffd411f17f5a61c63720aa021d055cd49dc1c8d8391ece1e89c6",
+  "single_file_ui_import_sha256": "e0b0203f0b971ab4f9d52296ac3ddebd2b3ad425dc1cacb3b6d6294c4ea5105d",
   "mongodb_contract": {
     "configuration_source": "Langflow node input / MONGO_URL Credential Global Variable",
     "database": "datagov",
@@ -35,7 +35,7 @@
   },
   "validation": {
     "bundle_structure": "native Chat boundaries, version stamps, Flow names, endpoints and active adapter inputs are verified while building",
-    "langflow_frontend_edge_handles": "340/340 structural handles",
+    "langflow_frontend_edge_handles": "334/334 structural handles",
     "langflow_lfx_node_templates": "132/132 custom component templates across 9 base flows",
     "runtime_parse": "Run tools/validate_langflow_runtime.py after changing custom component source."
   },
@@ -47,8 +47,8 @@
       "name": "01. v5_data_analysis",
       "endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
       "nodes": 51,
-      "edges": 62,
-      "sha256": "87254498ff355a6a88cdd69206be42a2dd9b8ddac673ea0a335d5b719af477ed"
+      "edges": 59,
+      "sha256": "528626dc0d1745c1eb888cfb35e882d0879e0ea7b50d79862fb57c76866fa2a8"
     },
     {
       "order": 2,

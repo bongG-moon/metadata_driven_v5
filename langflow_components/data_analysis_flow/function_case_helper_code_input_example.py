@@ -36,18 +36,8 @@ except NameError:
 def match_product_tokens(input_text, frame, token_columns=None, output_order=None, excluded_tokens=None):
     # 원본 DataFrame을 변경하지 않기 위해 copy본에서 필터링을 수행한다.
     result = frame.copy()
-    empty_result = result.iloc[0:0].copy()
-
-    # 함수 설명: `_finish()`는 제품 token helper의 성공·계약 누락 결과를 같은 실행 근거 형식으로 기록합니다.
-    def _finish(value, description):
-        try:
-            record_function_case_result('match_product_tokens', input_text, value, description)
-        except Exception:
-            pass
-        return value
-
     if result.empty:
-        return _finish(result, '제품 token 원본이 비어 있음')
+        return result
 
     # 비교 안정성을 위해 값에서 영문/숫자만 남기고 대문자로 정규화한다.
     # 함수 설명: `_norm()`는 제품 token 비교를 위해 값을 영문·숫자 중심의 표준 문자열로 정규화합니다.
@@ -157,12 +147,8 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
     columns = [str(column) for column in requested if str(column) in result.columns] if requested else [str(column) for column in result.columns if _col_key(column) in known_aliases]
     groups = [_tokens(part) for part in str(input_text or '').split(',')]
     groups = [group for group in groups if group]
-    if not groups:
-        return _finish(result, '구조화 제품 token 입력이 없음')
-    if not columns:
-        # 제품 조건을 적용할 수 없는데 원본 전체를 반환하면 다른 제품의
-        # 장비·생산량을 질문 대상 결과로 오인할 수 있으므로 빈 schema로 닫는다.
-        return _finish(empty_result, '제품 token 매칭 가능 column 누락')
+    if not columns or not groups:
+        return result
 
     columns_by_role = {role: [] for role in role_aliases}
     columns_by_role['ALL'] = list(columns)
@@ -287,7 +273,11 @@ def match_product_tokens(input_text, frame, token_columns=None, output_order=Non
     if ordered_columns:
         rest = [column for column in filtered.columns if column not in ordered_columns]
         filtered = filtered[ordered_columns + rest]
-    return _finish(filtered, '제품 속성 token 매칭 결과')
+    try:
+        record_function_case_result('match_product_tokens', input_text, filtered, '제품 속성 token 매칭 결과')
+    except Exception:
+        pass
+    return filtered
 
 # 주요 함수: 질문에서 찾은 두 label의 숫자 order 최소·최대 사이를 포함 범위로 필터링합니다.
 # label 값이나 order 값은 특정 공정명에 종속하지 않으며, 끝점 누락·중복 해석 시 빈 DataFrame으로 닫습니다.

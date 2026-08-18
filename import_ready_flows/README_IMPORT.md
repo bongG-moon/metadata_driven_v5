@@ -8,7 +8,7 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 
 
 | 번호 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
-| 01 | `01_data_analysis_flow_v2_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 51 | 62 |
+| 01 | `01_data_analysis_flow_v2_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 51 | 59 |
 | 02 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 12 | 13 |
 | 03 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 12 | 13 |
 | 04 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 12 | 13 |
@@ -32,4 +32,4 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 
 - GaiA Input/Output boundary node 없음
 - 각 Flow의 native Chat Input/Chat Output 각각 1개
 - 모든 node `lf_version=1.11.0`
-- edge handle 340/340, custom component template 132/132
+- edge handle 334/334, custom component template 132/132

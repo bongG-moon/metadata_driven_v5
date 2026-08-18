@@ -7105,16 +7105,6 @@ def execute_hybrid_analysis(
         )
         return _finalize_hybrid_trace(result, "complex", started, llm_calls)
 
-    source_guard = _runtime_source_identity_guard(payload)
-    fast_trace["source_identity_guard"] = deepcopy(source_guard)
-    if source_guard.get("status") not in {"verified", "not_required"}:
-        result = _hybrid_model_error(
-            payload,
-            "source_identity_unavailable",
-            "분석에 사용할 runtime source가 없어 pandas 모델과 repair를 호출하지 않았습니다.",
-        )
-        return _finalize_hybrid_trace(result, "complex", started, llm_calls)
-
     prompt = _text_value(pandas_prompt).strip()
     fast_trace.setdefault("prompt_chars", {})["pandas_generation"] = len(prompt)
     if not prompt or model_invoker is None:
@@ -7138,110 +7128,6 @@ def execute_hybrid_analysis(
     if isinstance(repair_trace, dict) and repair_trace.get("llm_called") is True:
         llm_calls["repair"] = int(llm_calls.get("repair") or 0) + 1
     return _finalize_hybrid_trace(result, "complex", started, llm_calls)
-
-
-# 함수 설명: Complex pandas 모델 호출 직전에 이름이 검증된 runtime source가 실제로 존재하는지 마지막으로 확인합니다.
-def _runtime_source_identity_guard(payload: dict[str, Any]) -> dict[str, Any]:
-    plan = (
-        payload.get("intent_plan")
-        if isinstance(payload.get("intent_plan"), dict)
-        else {}
-    )
-    request_scope = str(plan.get("request_scope") or "").strip()
-    reference_mode = str(plan.get("reference_mode") or "none").strip()
-    if request_scope == "clarification" or (
-        request_scope == "followup_explain" and reference_mode == "previous_trace"
-    ):
-        return {
-            "status": "not_required",
-            "source_aliases": [],
-            "reason": request_scope,
-        }
-    runtime_sources = (
-        payload.get("runtime_sources")
-        if isinstance(payload.get("runtime_sources"), dict)
-        else {}
-    )
-    aliases = sorted(
-        {
-            str(alias or "").strip()
-            for alias in runtime_sources
-            if str(alias or "").strip()
-        }
-    )
-    graph = (
-        plan.get("resolved_execution_graph")
-        if isinstance(plan.get("resolved_execution_graph"), dict)
-        else {}
-    )
-    graph_requirements = [
-        item
-        for item in _as_list(graph.get("external_source_requirements"))
-        if isinstance(item, dict)
-    ]
-    expected_aliases: list[str] = []
-    if graph_requirements:
-        expected_aliases = _ordered_unique_text(
-            [
-                item.get("source_alias")
-                for item in graph_requirements
-                if isinstance(item, dict) and item.get("required", True) is not False
-            ]
-        )
-    if not expected_aliases:
-        required_jobs = [
-            item
-            for item in _as_list(plan.get("retrieval_jobs"))
-            if isinstance(item, dict) and item.get("required", True) is not False
-        ]
-        if required_jobs:
-            expected_aliases = _ordered_unique_text(
-                [
-                    item.get("source_alias") or item.get("dataset_key")
-                    for item in required_jobs
-                ]
-            )
-    if not expected_aliases and not graph_requirements:
-        contract = (
-            payload.get("simple_analysis_contract")
-            if isinstance(payload.get("simple_analysis_contract"), dict)
-            else {}
-        )
-        expected_aliases = _ordered_unique_text(
-            [
-                *_as_list(contract.get("external_source_aliases")),
-                contract.get("source_alias"),
-            ]
-        )
-    if not expected_aliases and not graph_requirements:
-        intent_ir = plan.get("intent_ir") if isinstance(plan.get("intent_ir"), dict) else {}
-        expected_aliases = _ordered_unique_text(
-            _as_list(intent_ir.get("route_source_aliases"))
-        )
-    missing = [alias for alias in expected_aliases if alias not in aliases]
-    if expected_aliases and not missing:
-        return {
-            "status": "verified",
-            "source_aliases": aliases,
-            "expected_source_aliases": expected_aliases,
-        }
-    return {
-        "status": "blocked",
-        "source_aliases": aliases,
-        "expected_source_aliases": expected_aliases,
-        "missing_source_aliases": missing,
-        "reason": "source_identity_unavailable",
-    }
-
-
-# 함수 설명: source alias 후보를 공백 제거 후 첫 등장 순서로 중복 없이 정리합니다.
-def _ordered_unique_text(values: list[Any]) -> list[str]:
-    result: list[str] = []
-    for value in values:
-        text = str(value or "").strip()
-        if text and text not in result:
-            result.append(text)
-    return result
 
 
 # 함수 설명: `_hybrid_model_error()`는 17 V2 Hybrid 분석 실행기 처리 중 model·오류 관련 값을 계산·변환하는 내부 helper입니다.

@@ -8,7 +8,6 @@
 - 이전 대화/세션 state 및 자동 요청 컨텍스트: `{state_summary}`
 - 후보 metadata: `{metadata_candidates}`
 - 공정/현장 특화 추가 지시: `{specialized_prompt}`
-- 예상 Intent dialect: `{expected_dialect}`
 - 출력 schema: `{output_schema}`
 
 기본 원칙:
@@ -18,12 +17,6 @@
 - 선택된 metadata가 없는 업무 규칙은 임의로 만들지 말고 clarification으로 보낸다.
 - 특화 지시는 선택된 metadata와 충돌하지 않는 범위에서만 적용하며, 충돌하면 Catalog/Domain 계약을 우선한다.
 - 실행 컬럼은 Table Catalog가 확정한 canonical column만 사용한다. 물리 컬럼명·표시 alias·사용자 표현을 pandas 계약에 섞지 않는다.
-
-Intent dialect:
-
-- Legacy이면 Full schema를 그대로 따르고 `input_contract_version`은 생략할 수 있다.
-- Compact이면 exact `manufacturing.intent.compact.v1`과 최상위 `intent_plan` 하나만 반환한다. 출력 schema 밖의 파생·trace·source/query/credential 필드는 금지하며, 각 Typed 단계에 고유 `node_id`·`output_alias`·선행 입력을 쓴다.
-- dialect 불일치는 Legacy 재시도 없이 조회 전 차단된다.
 
 Table Catalog 후보 비교:
 
@@ -46,15 +39,9 @@ Table Catalog 후보 비교:
 - 독립 질문은 `new_analysis + none`, 후속은 실제 재사용 방식에 맞는 `request_scope`와 `reference_mode`를 함께 작성한다.
 - 이전 결과 행을 새 source에 매칭하면 `previous_result_rows`와 `apply_row_match_groups`, 이전 결과를 재분석하면 `previous_result_transform`, 저장 원본 재사용은 `previous_source`, 조건만 상속한 새 조회는 `previous_filters`를 사용한다.
 - 후속 질문의 대상 컬럼이나 상세 이력이 직전 결과에 없으면 직전 집계 결과를 억지로 재가공하지 않는다. Catalog의 required/upstream binding이 있으면 dependent retrieval job과 `previous_result_rows`를 만들고, 없으면 재사용 가능한 원본 source 또는 직전 filter를 명시한다. 후속 재조회에서 `reference_mode=none`을 남기지 않는다.
-- `state.current_data.report_context`가 있으면 이는 직전 Report의 bounded 의미 계약이다. `report_type`, `report_scope`, `kpi_facts`, `as_of`, `rules`, `allowed_operations`, `semantic_filters`, `value_domains`만 근거로 사용하고 Report HTML·URL·표시 문자열에서 데이터 행을 복원하거나 추측하지 않는다.
-- `그중`, `이 Report`, `방금 Report`, `이 보고서`처럼 직전 Report를 가리키며 새 기준시점을 요구하지 않는 질문은 저장된 Report 결과 행이면 `previous_result_transform`, 저장된 Report snapshot source이면 `previous_source`로 처리한다. `allowed_operations`는 허용 범위를 좁히는 계약이며 Catalog에 없는 dataset·column·operation을 새로 허용하지 않는다.
-- Report 후속 질문의 자연어 조건이 `semantic_filters[].aliases` 한 항목과 유일하게 일치하면 해당 항목의 `source_alias`, `column`, `operator`, `value`를 그대로 retrieval filter와 `apply_filters` 단계에 사용한다. Legacy에서는 `condition_resolution.effective_filters`에도 기록하고, Compact에서는 `changed` 또는 `new`에만 조건 변경 의미를 기록한다. 예시 문구나 KPI 표시명을 보고 다른 컬럼·값으로 번역하지 않는다.
-- `value_domains`는 source와 column별 실제 허용값 계약이다. 같은 `Abnormal` 값이 여러 판정 컬럼에 있어도 서로 바꾸지 않으며, semantic alias가 둘 이상에 겹치거나 값이 해당 column의 domain에 없으면 clarification으로 보낸다.
-- Report 후속 질문에 `현재`, `지금`, `최신`, `다시 조회`, `재조회`가 있으면 `as_of` snapshot을 현재 데이터처럼 사용하지 않는다. 대상 식별에만 이전 결과 행을 사용할 수 있고, 요청 metric은 새 retrieval job으로 조회하며 답변에 snapshot 시점과 새 조회 기준시점이 다름을 남긴다.
-- 질문이 Report를 명시적으로 가리키는데 유효한 `context_ref`가 없거나 저장 Context를 복원할 수 없으면 일반 신규 분석으로 조용히 바꾸지 말고 clarification 또는 명시적 오류로 종료한다. 만료·타 세션·불완전 snapshot도 같은 원칙으로 fail-closed 처리한다.
 - Catalog의 upstream binding은 dataset을 후속 전용으로 만드는 규칙이 아니다. 현재 질문에 Catalog 필수 파라미터 값(예: LOT_ID)이 직접 있으면 해당 값을 `retrieval_jobs[].required_params`에 넣고 `new_analysis + none`으로 조회한다. 이전 결과 binding은 필수 파라미터 값이 질문에 없고, 직전 결과로만 채워야 할 때에만 사용한다.
 - 필수 파라미터가 여러 값이면 Catalog query의 `IN` 계약에 맞게 하나 이상의 값을 그대로 전달한다. 직접 입력한 값은 이전 결과 값으로 바꾸거나 제거하지 않는다.
-- Legacy는 유지·변경·삭제·추가 조건을 `condition_resolution`의 각 영역에 구분한다. Compact follow-up은 `changed`, `dropped`, `new`만 기록하고 inherited/effective filter는 정규화기가 안전하게 재구성하도록 둔다. 저장 source 범위가 부족하거나 필수 파라미터가 바뀌면 새 retrieval job을 만든다.
+- 유지·변경·삭제·추가 조건은 `condition_resolution`의 해당 영역에 구분한다. 저장 source 범위가 부족하거나 필수 파라미터가 바뀌면 새 retrieval job을 만든다.
 
 조회와 typed pandas 계획:
 
@@ -72,7 +59,7 @@ grain·결과 계약:
 - detail/entity, aggregate, scalar, explanation에 맞게 `output_contract.result_mode`를 작성한다.
 - Catalog의 canonical column·metric semantics·default detail·value transform·허용 rollup을 그대로 따른다. 비가산 metric 합산, transform 중복, 포괄 컬럼 생성은 금지한다.
 - 같은 source metric은 결과 컬럼 하나로만 표현하고 표시명은 `column_labels`로 구분한다. 동일 의미의 물리명·표준명 컬럼을 함께 만들지 않는다.
-- 요청한 정렬·상위·하위만 pandas 단계에 기록한다. Legacy는 `output_contract.ordering`에도 기록하고 Compact는 Typed 정렬 단계만 남긴다.
+- 요청한 정렬·상위·하위만 pandas 단계와 `output_contract.ordering`에 기록한다.
 - `analysis_kind`는 현재 metric, operation, grouping/scope를 설명하는 구체적인 snake_case로 작성한다.
 
 function case:
@@ -84,7 +71,7 @@ function case:
 
 V2 실행 경로:
 
-- 단일 source이며 Catalog mapping, 필수 파라미터, 필터, grain, metric, 결과 컬럼이 모두 유일하게 확정되고 지원 operation으로 충분하면 Legacy에서는 `fast_path_candidate=true`를 사용할 수 있다. Compact에서는 route 후보를 반환하지 않고 완성된 Typed 단계만 작성한다.
+- 단일 source이며 Catalog mapping, 필수 파라미터, 필터, grain, metric, 결과 컬럼이 모두 유일하게 확정되고 지원 operation으로 충분하면 `fast_path_candidate=true`를 사용한다.
 - Fast 후보라도 계약이 하나라도 불완전하거나 여러 source·복잡한 계산·helper 순서·불확실한 mapping이 있으면 Complex 경로로 둔다.
 - Fast/Complex 구분은 질문 예시나 dataset 이름이 아니라 확정된 typed execution contract의 완전성으로 판단한다.
 - 단순 조회·필터·정렬·상위/하위·count·distinct count·sum/mean/min/max·group summary는 지원 계약이 완성된 경우에만 Fast로 보낸다.
@@ -95,6 +82,6 @@ V2 실행 경로:
 
 - 최종 response는 `intent_plan`을 가진 단일 JSON이어야 한다. 빈 성공 계획이나 누락된 필수 배열을 반환하지 않는다.
 - `analysis_kind`, retrieval dataset, metric, grouping, join, sort/top, 실행 경로가 서로 같은 분석을 설명하는지 최종 확인한다.
-- `metadata_refs`에는 참조한 metadata의 `section`, `key`만 남긴다. Compact에서는 반드시 `intent_plan.metadata_refs` 안에 둔다.
-- Legacy의 `trace.decision_reason`은 한국어 문장 배열로 짧게 작성할 수 있다. Compact에서는 trace를 반환하지 않는다.
+- `metadata_refs`에는 참조한 metadata의 `section`, `key`만 남긴다.
+- `trace.decision_reason`은 한국어 문장 배열로 짧게 작성하고 schema 값은 canonical 영문을 유지한다.
 - 반환 JSON 구조는 입력으로 제공된 `출력 schema`를 따른다.

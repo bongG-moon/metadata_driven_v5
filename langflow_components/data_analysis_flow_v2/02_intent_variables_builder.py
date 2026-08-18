@@ -17,12 +17,9 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import DataInput, DropdownInput, Output
+from lfx.io import DataInput, Output
 from lfx.schema.message import Message
 
-LEGACY_INTENT_DIALECT = "manufacturing.intent.legacy.v1"
-COMPACT_INTENT_DIALECT = "manufacturing.intent.compact.v1"
-INTENT_CONTRACT_MODES = {"legacy", "compact"}
 RETIRED_DETAIL_CONTRACT_KEYS = {"row_identity_columns", "context_columns"}
 MODEL_INTERNAL_CATALOG_KEYS = {
     "columns",
@@ -38,52 +35,11 @@ MODEL_INTERNAL_ITEM_KEYS = {
     "status",
     "updated_at",
 }
-REPORT_CONTEXT_BLOCKED_KEYS = {
-    "artifact",
-    "artifacts",
-    "body",
-    "content",
-    "download_url",
-    "html",
-    "preview_rows",
-    "raw_rows",
-    "report_html",
-    "rows",
-    "signed_url",
-    "url",
-    "urls",
-    "view_url",
-}
-REPORT_CONTEXT_FILTER_OPERATORS = {
-    "contains",
-    "ends_with",
-    "eq",
-    "ge",
-    "gt",
-    "in",
-    "is_empty",
-    "is_null",
-    "le",
-    "like",
-    "lt",
-    "ne",
-    "not_blank",
-    "not_empty",
-    "not_in",
-    "not_null",
-    "null_or_empty",
-    "starts_with",
-}
 
 # 주요 함수: LLM 프롬프트에 연결할 변수만 선별하고 JSON-safe 문자열 또는 dict로 정리합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
-def build_variables(
-    payload_value: Any,
-    metadata_candidates_value: Any = None,
-    intent_contract_mode: Any = "legacy",
-) -> dict[str, Any]:
+def build_variables(payload_value: Any, metadata_candidates_value: Any = None) -> dict[str, Any]:
     payload = _payload(payload_value)
-    contract_mode = _intent_contract_mode(intent_contract_mode)
     metadata_candidates = _metadata_candidates_for_model(
         _without_retired_table_catalog_contract(
             _compact_metadata_candidates(_payload(metadata_candidates_value) or {})
@@ -93,8 +49,7 @@ def build_variables(
         "question": payload.get("request", {}).get("question", ""),
         "state_summary": _compact_json(_without_retired_intent_contract(_state_summary(payload))),
         "metadata_candidates": _compact_json(metadata_candidates),
-        "output_schema": _compact_json(_schema(contract_mode)),
-        "expected_dialect": _expected_dialect(contract_mode),
+        "output_schema": _compact_json(_schema()),
     }
 
 
@@ -181,133 +136,8 @@ def _compact_orchestration(value: Any) -> dict[str, Any]:
     )
 
 
-# 함수 설명: 명시적 UI mode를 두 개의 지원 값으로만 정규화해 우발적인 계약 전환을 막습니다.
-def _intent_contract_mode(value: Any) -> str:
-    mode = str(value or "legacy").strip().lower()
-    return mode if mode in INTENT_CONTRACT_MODES else "legacy"
-
-
-# 함수 설명: 선택 mode가 요구하는 모델 응답 dialect를 후속 Router와 Normalizer에 전달합니다.
-def _expected_dialect(mode: Any) -> str:
-    return (
-        COMPACT_INTENT_DIALECT
-        if _intent_contract_mode(mode) == "compact"
-        else LEGACY_INTENT_DIALECT
-    )
-
-
-# 함수 설명: `_schema()`는 선택 mode의 의도 분석 LLM 출력 스키마를 반환하며 기본값은 기존 계약입니다.
-def _schema(intent_contract_mode: Any = "legacy") -> dict[str, Any]:
-    if _intent_contract_mode(intent_contract_mode) == "compact":
-        return _compact_schema()
-    return _legacy_schema()
-
-
-# 함수 설명: Compact schema는 정규화기가 metadata와 Typed IR에서 다시 파생할 중복 계약을 모델 출력에서 제외합니다.
-def _compact_schema() -> dict[str, Any]:
-    return {
-        "intent_plan": {
-            "input_contract_version": COMPACT_INTENT_DIALECT,
-            "analysis_kind": "string",
-            "request_scope": "new_analysis|followup_requery|followup_transform|followup_expand_source|followup_explain|clarification",
-            "reference_mode": "none|previous_result_rows|previous_result_transform|previous_source|previous_filters|previous_trace",
-            "condition_resolution": {
-                "changed": {
-                    "filters": {
-                        "SOURCE_ALIAS": {
-                            "CANONICAL_COLUMN": {"operator": "operator", "value": "value"}
-                        }
-                    }
-                },
-                "dropped": {"filters": {"SOURCE_ALIAS": ["CANONICAL_COLUMN"]}},
-                "new": {
-                    "filters": {
-                        "SOURCE_ALIAS": {
-                            "CANONICAL_COLUMN": {"operator": "operator", "value": "value"}
-                        }
-                    }
-                },
-            },
-            "metadata_refs": [{"section": "string", "key": "string"}],
-            "retrieval_jobs": [
-                {
-                    "dataset_key": "catalog dataset_key",
-                    "source_alias": "unique alias",
-                    "required_params": {"CATALOG_REQUIRED_PARAM": "value"},
-                    "filters": {
-                        "CANONICAL_FILTER_COLUMN": {
-                            "operator": "eq|in|ne|not_in|gt|ge|lt|le|contains|like|starts_with|ends_with|is_null|is_empty|null_or_empty|not_null|not_empty|not_blank",
-                            "value": "value or list; omit for valueless operators",
-                        }
-                    },
-                }
-            ],
-            "pandas_function_cases": [
-                {
-                    "key": "metadata case key",
-                    "function_name": "helper name",
-                    "input_text": "helper input text",
-                    "source_alias": "source alias",
-                }
-            ],
-            "pandas_execution_plan": [
-                {
-                    "node_id": "unique node id",
-                    "operation": "apply_filters|select_columns|groupby_and_aggregate|sort_and_top_n|count_rows|value_counts|distinct_values|latest_earliest|percent_of_total|rank_within_group|threshold_after_aggregate|time_bucket_summary|period_change|running_total|moving_aggregate|percentile_summary|pivot_summary|join|compare_presence|compare_metrics|compare_group_attributes|find_duplicate_groups|apply_row_match_groups|apply_pandas_function_case",
-                    "inputs": [
-                        {
-                            "kind": "external_source|node_output",
-                            "ref": "leaf alias or prior node id/output alias",
-                        }
-                    ],
-                    "output_alias": "unique output alias",
-                    "source_alias": "optional provider alias",
-                    "columns": [],
-                    "field": "filter column",
-                    "operator": "typed operator",
-                    "value": "typed scalar or list",
-                    "group_by": [],
-                    "aggregations": [
-                        {
-                            "column": "metric column",
-                            "method": "sum|mean|nunique|count|min|max|collect_unique",
-                            "output_column": "metric output column",
-                        }
-                    ],
-                    "sort_by": "terminal metric column",
-                    "order": "asc|desc",
-                    "limit": 0,
-                    "left_source_alias": "join/comparison left alias",
-                    "right_source_alias": "join/comparison right alias",
-                    "left_on": [],
-                    "right_on": [],
-                    "join_type": "outer|left|inner",
-                    "population_policy": "preserve_all_metric_source_keys|left_source_only",
-                    "right_value_columns": [],
-                    "calculation": {"operation-specific canonical fields only": "value"},
-                }
-            ],
-            "output_contract": {
-                "result_mode": "aggregate|detail|entity_list|scalar|explanation",
-                "result_columns": [],
-                "primary_metric": "optional unambiguous representative metric",
-                "column_labels": {"RESULT_COLUMN": "user-facing label"},
-                "result_segments": [
-                    {
-                        "label": "string",
-                        "operation": "top_n|bottom_n|filter|comparison",
-                        "limit": 0,
-                        "sort_by": "string",
-                        "order": "asc|desc",
-                    }
-                ],
-            },
-        }
-    }
-
-
-# 함수 설명: Legacy schema는 기존 Full Intent 응답 계약을 변경 없이 유지합니다.
-def _legacy_schema() -> dict[str, Any]:
+# 함수 설명: `_schema()`는 의도 분석 LLM이 반환해야 할 JSON 스키마를 작은 dict로 구성합니다.
+def _schema() -> dict[str, Any]:
     return {
         "intent_plan": {
             "analysis_kind": "string",
@@ -696,7 +526,6 @@ def _without_retired_intent_contract(value: dict[str, Any]) -> dict[str, Any]:
 # 함수 설명: `_compact_state()`는 상태에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
 def _compact_state(state: dict[str, Any]) -> dict[str, Any]:
     current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
-    report_context = _compact_report_context(current_data.get("report_context"))
     result: dict[str, Any] = {}
     if state.get("last_question") or isinstance(state.get("request"), dict):
         result["last_question"] = state.get("last_question") or state.get("request", {}).get("question", "")
@@ -711,259 +540,18 @@ def _compact_state(state: dict[str, Any]) -> dict[str, Any]:
                 "source_aliases": _string_list(current_data.get("source_aliases"))[:30],
                 "source_dataset_keys": _string_list(current_data.get("source_dataset_keys"))[:30],
                 "source_columns_by_alias": _compact_source_columns(current_data.get("source_columns_by_alias")),
-                "data_ref": (
-                    _compact_report_data_ref(current_data.get("data_ref"))
-                    if report_context
-                    else current_data.get("data_ref")
-                ),
-                # Report Context가 있으면 표시용 preview 행도 Intent LLM에 전달하지 않습니다.
-                # 후속 분석 데이터는 data_ref/source ref로만 복원하며 HTML과 원천 행은 모델 문맥 밖에 둡니다.
-                "preview_rows": (
-                    []
-                    if report_context
-                    else current_data.get("preview_rows")
-                    if isinstance(current_data.get("preview_rows"), list)
-                    else []
-                ),
-                "report_context": report_context,
+                "data_ref": current_data.get("data_ref"),
+                "preview_rows": current_data.get("preview_rows") if isinstance(current_data.get("preview_rows"), list) else [],
             }
         )
     for key in ("last_intent_plan", "last_applied_criteria", "runtime_source_refs"):
         value = state.get(key)
         if value not in (None, "", [], {}):
-            result[key] = (
-                _compact_report_runtime_source_refs(value)
-                if report_context and key == "runtime_source_refs"
-                else deepcopy(value)
-            )
+            result[key] = deepcopy(value)
     followup_sources = state.get("followup_source_results")
     if isinstance(followup_sources, list):
-        result["followup_source_results"] = (
-            _compact_report_followup_sources(followup_sources)
-            if report_context
-            else deepcopy(followup_sources[:6])
-        )
+        result["followup_source_results"] = deepcopy(followup_sources[:6])
     return _omit_empty(result)
-
-
-# 함수 설명: `_compact_report_context()`는 Report 후속 질문에 필요한 의미 계약만 canonical key로 제한해 Intent LLM에 전달합니다.
-# HTML·URL·artifact·rows는 명시적으로 투영하지 않으며 별칭 입력도 canonical key로 정규화합니다.
-def _compact_report_context(value: Any) -> dict[str, Any]:
-    context = value if isinstance(value, dict) else {}
-    if not context:
-        return {}
-
-    report_scope = context.get("report_scope")
-    if not isinstance(report_scope, dict):
-        report_scope = context.get("scope") if isinstance(context.get("scope"), dict) else {}
-    kpi_facts = context.get("kpi_facts")
-    if not isinstance(kpi_facts, dict):
-        kpi_facts = context.get("kpis") if isinstance(context.get("kpis"), dict) else {}
-    allowed_operations = context.get("allowed_operations")
-    if not isinstance(allowed_operations, list):
-        allowed_operations = context.get("allowed_ops") if isinstance(context.get("allowed_ops"), list) else []
-
-    return _omit_empty(
-        {
-            "context_version": _clip_text(context.get("context_version"), 64),
-            "context_ref": _clip_text(context.get("context_ref"), 160),
-            "report_type": _clip_text(context.get("report_type"), 80),
-            "snapshot_id": _clip_text(context.get("snapshot_id"), 160),
-            "as_of": _clip_text(context.get("as_of"), 80),
-            "expires_at": _clip_text(context.get("expires_at"), 80),
-            "report_scope": _bounded_report_value(report_scope, max_items=20, max_depth=2, text_limit=160),
-            "kpi_facts": _bounded_report_value(kpi_facts, max_items=24, max_depth=2, text_limit=240),
-            "rules": _bounded_report_value(context.get("rules"), max_items=12, max_depth=2, text_limit=300),
-            "allowed_operations": [
-                _clip_text(item, 64)
-                for item in allowed_operations[:12]
-                if _clip_text(item, 64)
-            ],
-            "semantic_filters": _compact_report_semantic_filters(context.get("semantic_filters")),
-            "value_domains": _compact_report_value_domains(context.get("value_domains")),
-        }
-    )
-
-
-# 함수 설명: `_compact_report_semantic_filters()`는 자연어 의미어를 snapshot의 canonical filter로 연결하는 선언만 허용합니다.
-def _compact_report_semantic_filters(value: Any) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for item in value[:24] if isinstance(value, list) else []:
-        if not isinstance(item, dict):
-            continue
-        operator = _clip_text(item.get("operator"), 40).casefold()
-        if operator not in REPORT_CONTEXT_FILTER_OPERATORS:
-            continue
-        compacted = _omit_empty(
-            {
-                "key": _clip_text(item.get("key"), 80),
-                "aliases": _bounded_string_list(item.get("aliases"), max_items=16, text_limit=100),
-                "source_alias": _clip_text(item.get("source_alias"), 80),
-                "column": _clip_text(item.get("column"), 160),
-                "operator": operator,
-                "value": _bounded_filter_value(item.get("value")),
-            }
-        )
-        if compacted.get("key") and compacted.get("aliases") and compacted.get("source_alias") and compacted.get("column"):
-            result.append(compacted)
-    return result
-
-
-# 함수 설명: `_compact_report_value_domains()`는 같은 표시값을 가진 판정 컬럼을 혼동하지 않도록 source/column별 허용값을 제한해 전달합니다.
-def _compact_report_value_domains(value: Any) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for item in value[:24] if isinstance(value, list) else []:
-        if not isinstance(item, dict):
-            continue
-        compacted = _omit_empty(
-            {
-                "source_alias": _clip_text(item.get("source_alias"), 80),
-                "column": _clip_text(item.get("column"), 160),
-                "values": _bounded_scalar_list(item.get("values"), max_items=40, text_limit=160),
-                "aliases": _bounded_alias_mapping(item.get("aliases")),
-            }
-        )
-        if compacted.get("source_alias") and compacted.get("column") and compacted.get("values"):
-            result.append(compacted)
-    return result
-
-
-# 함수 설명: `_bounded_filter_value()`는 filter 값에 scalar 또는 제한된 scalar 목록만 허용합니다.
-def _bounded_filter_value(value: Any) -> Any:
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, str):
-        return _clip_text(value, 160)
-    return _bounded_scalar_list(value, max_items=20, text_limit=160)
-
-
-# 함수 설명: `_bounded_scalar_list()`는 의미 필터·값 도메인의 scalar 목록을 중복 없이 제한합니다.
-def _bounded_scalar_list(value: Any, *, max_items: int, text_limit: int) -> list[Any]:
-    result: list[Any] = []
-    for item in value[:max_items] if isinstance(value, list) else []:
-        compacted = item if isinstance(item, (bool, int, float)) else _clip_text(item, text_limit)
-        if compacted not in (None, "") and compacted not in result:
-            result.append(compacted)
-    return result
-
-
-# 함수 설명: `_bounded_string_list()`는 alias 문자열을 중복 없이 제한합니다.
-def _bounded_string_list(value: Any, *, max_items: int, text_limit: int) -> list[str]:
-    result: list[str] = []
-    for item in value[:max_items] if isinstance(value, list) else []:
-        text = _clip_text(item, text_limit)
-        if text and text not in result:
-            result.append(text)
-    return result
-
-
-# 함수 설명: `_bounded_alias_mapping()`은 선택적인 사용자 값 alias를 canonical 값에 연결하되 문자열 mapping만 허용합니다.
-def _bounded_alias_mapping(value: Any) -> dict[str, str]:
-    aliases = value if isinstance(value, dict) else {}
-    result: dict[str, str] = {}
-    for raw_alias, raw_canonical in list(aliases.items())[:40]:
-        alias = _clip_text(raw_alias, 100)
-        canonical = _clip_text(raw_canonical, 160)
-        if alias and canonical:
-            result[alias] = canonical
-    return result
-
-
-# 함수 설명: `_compact_report_data_ref()`는 Intent LLM에는 opaque ref 식별·역할 정보만 남기고 URL과 저장소 세부값을 제거합니다.
-def _compact_report_data_ref(value: Any) -> dict[str, Any]:
-    ref = value if isinstance(value, dict) else {}
-    return _omit_empty(
-        {
-            "ref_id": _clip_text(ref.get("ref_id"), 200),
-            "role": _clip_text(ref.get("role"), 40),
-            "source_alias": _clip_text(ref.get("source_alias"), 80),
-            "dataset_key": _clip_text(ref.get("dataset_key"), 80),
-            "row_count": ref.get("row_count") if isinstance(ref.get("row_count"), int) else None,
-            "expires_at": _clip_text(ref.get("expires_at"), 80),
-        }
-    )
-
-
-# 함수 설명: `_compact_report_runtime_source_refs()`는 Report snapshot source별 안전한 opaque ref만 제한된 개수로 투영합니다.
-def _compact_report_runtime_source_refs(value: Any) -> dict[str, dict[str, Any]]:
-    refs = value if isinstance(value, dict) else {}
-    result: dict[str, dict[str, Any]] = {}
-    for raw_alias, raw_ref in list(refs.items())[:30]:
-        alias = _clip_text(raw_alias, 80)
-        compacted = _compact_report_data_ref(raw_ref)
-        if alias and compacted:
-            result[alias] = compacted
-    return result
-
-
-# 함수 설명: `_compact_report_followup_sources()`는 Report source의 schema/ref만 남기고 preview/raw rows와 URL을 제거합니다.
-def _compact_report_followup_sources(value: list[Any]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for source in value[:6]:
-        if not isinstance(source, dict):
-            continue
-        compacted = _omit_empty(
-            {
-                "source_alias": _clip_text(source.get("source_alias"), 80),
-                "dataset_key": _clip_text(source.get("dataset_key"), 80),
-                "source_type": _clip_text(source.get("source_type"), 40),
-                "row_count": source.get("row_count") if isinstance(source.get("row_count"), int) else None,
-                "columns": _string_list(source.get("columns"))[:80],
-                "data_ref": _compact_report_data_ref(source.get("data_ref")),
-            }
-        )
-        if compacted:
-            result.append(compacted)
-    return result
-
-
-# 함수 설명: `_bounded_report_value()`는 Report scope/KPI/rule의 중첩 깊이·항목 수·문자열 길이를 제한하고 금지 payload key를 제거합니다.
-def _bounded_report_value(
-    value: Any,
-    *,
-    max_items: int,
-    max_depth: int,
-    text_limit: int,
-    depth: int = 0,
-) -> Any:
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    if isinstance(value, str):
-        return _clip_text(value, text_limit)
-    if isinstance(value, dict):
-        if depth >= max_depth:
-            return {}
-        result: dict[str, Any] = {}
-        for raw_key, raw_value in list(value.items())[:max_items]:
-            key = _clip_text(raw_key, 80)
-            if not key or key.strip().casefold() in REPORT_CONTEXT_BLOCKED_KEYS:
-                continue
-            compacted = _bounded_report_value(
-                raw_value,
-                max_items=max_items,
-                max_depth=max_depth,
-                text_limit=text_limit,
-                depth=depth + 1,
-            )
-            if compacted not in (None, "", [], {}):
-                result[key] = compacted
-        return result
-    if isinstance(value, (list, tuple)):
-        if depth >= max_depth:
-            return []
-        result = []
-        for item in list(value)[:max_items]:
-            compacted = _bounded_report_value(
-                item,
-                max_items=max_items,
-                max_depth=max_depth,
-                text_limit=text_limit,
-                depth=depth + 1,
-            )
-            if compacted not in (None, "", [], {}):
-                result.append(compacted)
-        return result
-    return _clip_text(value, text_limit)
 
 
 # 함수 설명: `_compact_source_columns()`는 데이터 소스·컬럼에서 후속 단계에 필요한 정보만 남겨 payload와 token 크기를 줄입니다.
@@ -1003,36 +591,26 @@ def _omit_empty(value: dict[str, Any]) -> dict[str, Any]:
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class IntentVariablesBuilder(Component):
     display_name = "02 의도 분석 변수 생성기"
-    description = "Legacy 또는 Compact Intent 계약을 명시적으로 선택하고 프롬프트·검증 단계에 같은 dialect를 전달합니다."
+    description = "Langflow 프롬프트 템플릿과 에이전트/LLM에 연결할 의도 분석 변수를 제공합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         DataInput(name="metadata_candidates_in", display_name="메타데이터 후보", required=False),
-        DropdownInput(
-            name="intent_contract_mode",
-            display_name="Intent 계약 모드",
-            options=["legacy", "compact"],
-            value="legacy",
-            required=False,
-            advanced=False,
-        ),
     ]
     outputs = [
         Output(name="question", display_name="사용자 질문", method="build_question", types=["Message"], group_outputs=True),
         Output(name="state_summary", display_name="상태/요청 컨텍스트 JSON", method="build_state_summary", types=["Message"], group_outputs=True),
         Output(name="metadata_candidates", display_name="메타데이터 후보 JSON", method="build_metadata_candidates", types=["Message"], group_outputs=True),
         Output(name="output_schema", display_name="출력 스키마 JSON", method="build_output_schema", types=["Message"], group_outputs=True),
-        Output(name="expected_dialect", display_name="예상 Intent Dialect", method="build_expected_dialect", types=["Message"], group_outputs=True),
     ]
 
     # 함수 설명: `_variables_once()`는 한 vertex 실행에서 여러 group output이 같은 payload를 반복 직렬화하지 않도록 결과를 재사용합니다.
     def _variables_once(self) -> dict[str, Any]:
         payload = getattr(self, "payload", None)
         metadata = getattr(self, "metadata_candidates_in", None)
-        contract_mode = getattr(self, "intent_contract_mode", "legacy")
-        cache_key = (id(payload), id(metadata), str(contract_mode or "legacy"))
+        cache_key = (id(payload), id(metadata))
         if getattr(self, "_variables_cache_key", None) != cache_key:
             self._variables_cache_key = cache_key
-            self._variables_cache = build_variables(payload, metadata, contract_mode)
+            self._variables_cache = build_variables(payload, metadata)
         return self._variables_cache
 
     # Langflow 출력 함수: '사용자 질문 (question)' 포트가 요청될 때 실행됩니다.
@@ -1054,7 +632,3 @@ class IntentVariablesBuilder(Component):
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_schema(self) -> Message:
         return Message(text=self._variables_once()["output_schema"])
-
-    # Langflow 출력 함수: Router와 Normalizer가 같은 응답 dialect를 검증하도록 exact identifier를 전달합니다.
-    def build_expected_dialect(self) -> Message:
-        return Message(text=self._variables_once()["expected_dialect"])

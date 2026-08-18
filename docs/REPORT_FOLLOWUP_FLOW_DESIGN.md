@@ -1,5 +1,7 @@
 # Report Follow-up Flow 설계
 
+> 처음 구조를 익히는 경우에는 [Report View Bundle HTML 안내서](REPORT_VIEW_BUNDLE_GUIDE.html)를 먼저 보면 됩니다. 여러 원천을 Report Recipe에서 완성 View로 바꾸고 07-2 후속 질문으로 연결하는 예시 코드가 포함되어 있습니다.
+
 ## 결정
 
 Report 생성 결과에 대한 snapshot 내부 후속 분석은 Data Analysis Flow 01과 분리하여 `07-2. v5_report_followup`에서 처리한다.

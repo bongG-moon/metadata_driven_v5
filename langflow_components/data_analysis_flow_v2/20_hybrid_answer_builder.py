@@ -2,7 +2,7 @@
 # =============================================================================
 # 컴포넌트 개요: 20 V2 Hybrid 답변 생성기
 # 역할: Fast 결과는 고정 문장으로 만들고 Complex 결과일 때만 답변 LLM을 지연 호출합니다.
-# 주요 입력: 페이로드, Complex 답변 LLM 호환 Boolean·호출 정책, 답변 prompt, 답변 언어 모델
+# 주요 입력: 페이로드, Complex 답변 LLM 사용 여부, 답변 prompt, 답변 언어 모델
 # 주요 출력: 페이로드 출력 (payload_out)
 # 처리 흐름: LLM 답변과 결정론적 분석 결과를 합쳐 answer sections, evidence, 현재 상태와 후속 상태를 구성합니다.
 # 유지보수 포인트: inputs/outputs의 name은 Langflow JSON edge 계약이므로 변경 시 모든 Flow JSON을 재생성하고 source sync 검증을 실행해야 합니다.
@@ -18,7 +18,7 @@ from time import perf_counter
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
-from lfx.io import BoolInput, DataInput, DropdownInput, MessageTextInput, ModelInput, MultilineInput, Output, SecretStrInput
+from lfx.io import BoolInput, DataInput, MessageTextInput, ModelInput, MultilineInput, Output, SecretStrInput
 from lfx.schema.data import Data
 
 RUNTIME_BUFFER_KEYS = {
@@ -35,16 +35,6 @@ ANSWER_EVIDENCE_COLUMN_LIMIT = 16
 ANSWER_EVIDENCE_CELL_LIMIT = 160
 ANSWER_EVIDENCE_ITEM_LIMIT = 4
 ANSWER_EVIDENCE_MESSAGE_LIMIT = 600
-ANSWER_POLICY_ALWAYS = "always"
-ANSWER_POLICY_AUTO = "auto"
-ANSWER_POLICY_NEVER = "never"
-ANSWER_POLICIES = {ANSWER_POLICY_ALWAYS, ANSWER_POLICY_AUTO, ANSWER_POLICY_NEVER}
-DETERMINISTIC_RESULT_MODES = {"aggregate", "detail", "entity_list", "scalar"}
-NARRATIVE_QUESTION_PATTERN = re.compile(
-    r"(?:왜|원인|이유|해석|의미|시사점|추천|권고|개선(?:안|방법)?|조치(?:안|방법)?|설명(?:해|하|을|이)|"
-    r"why|cause|reason|interpret|recommend|insight|explain)",
-    re.IGNORECASE,
-)
 ANSWER_PROMPT_REFERENCE_REWRITES = {
     "answer_context_json.applied_criteria": "applied_scope_json.criteria",
     "answer_context_json.result_shape.columns": "result_summary_json.columns",
@@ -229,9 +219,7 @@ def _numeric_claims(text: str) -> list[tuple[str, float]]:
 # 함수 설명: `_authoritative_result_message()`는 실제 data.rows와 사용자 질문만 이용해 수치 모순이 없는 질문 맞춤형 교정 문장을 만듭니다.
 def _authoritative_result_message(payload: dict[str, Any]) -> str:
     data = _dict(payload.get("data"))
-    preview_rows = [row for row in _list(data.get("rows")) if isinstance(row, dict)]
-    full_rows = [row for row in _list(payload.get("_full_result_rows")) if isinstance(row, dict)]
-    rows = full_rows or preview_rows
+    rows = [row for row in _list(data.get("rows")) if isinstance(row, dict)]
     if not rows:
         return ""
     columns = _string_list(data.get("columns")) or _columns_from_rows(rows)
@@ -1653,119 +1641,6 @@ def _answer_rows_have_zero(rows: list[Any]) -> bool:
     return False
 
 
-# 함수 설명: 새 answer_policy가 없을 때 기존 use_llm_answer Boolean 의미를 그대로 보존합니다.
-def _resolved_answer_policy(answer_policy: Any, use_llm_answer: Any) -> tuple[str, str]:
-    if not _bool(use_llm_answer, True):
-        return ANSWER_POLICY_NEVER, "legacy_use_llm_answer_disabled"
-    raw_policy = str(answer_policy or "").strip().lower()
-    if raw_policy in ANSWER_POLICIES:
-        return raw_policy, "explicit_answer_policy"
-    return ANSWER_POLICY_ALWAYS, "legacy_use_llm_answer"
-
-
-# 함수 설명: 최종 Typed plan에서 실제 비교 operation 이름을 중복 없이 추출합니다.
-def _answer_plan_operations(payload: dict[str, Any]) -> list[str]:
-    plan = _dict(payload.get("intent_plan"))
-    operations: list[str] = []
-    for item in _list(plan.get("pandas_execution_plan")):
-        operation = str(_dict(item).get("operation") or "").strip()
-        if operation and operation not in operations:
-            operations.append(operation)
-    return operations
-
-
-# 함수 설명: 비교 결과가 성공했더라도 의미 인증서가 없으면 LLM 추론 대신 보수적 건수 답변을 선택합니다.
-def _missing_answer_comparison_certificate(payload: dict[str, Any]) -> str:
-    for operation in _answer_plan_operations(payload):
-        if operation in {"compare_presence", "compare_metrics"} and not _verified_semantic_execution_certificate(
-            payload,
-            operation,
-        ):
-            return operation
-    return ""
-
-
-# 함수 설명: Auto 모드에서 검증된 실행 계약과 서술 요청만 사용해 Answer LLM 필요 여부를 결정합니다.
-def _auto_answer_decision(payload: dict[str, Any]) -> dict[str, Any]:
-    analysis = _dict(payload.get("analysis"))
-    data = _dict(payload.get("data"))
-    output_contract = _dict(_dict(payload.get("intent_plan")).get("output_contract"))
-    result_mode = str(output_contract.get("result_mode") or "detail").strip().lower()
-    question = str(_dict(payload.get("request")).get("question") or "").strip()
-    actual_columns = _string_list(data.get("columns")) or _columns_from_rows(_list(data.get("rows")))
-    result_columns = _string_list(output_contract.get("result_columns"))
-    row_count = _int(data.get("row_count"), len(_list(data.get("rows"))))
-
-    if str(analysis.get("status") or "").strip().lower() not in {"ok", "success"}:
-        return {"strategy": "deterministic", "reason": "analysis_not_successful"}
-    if row_count == 0:
-        return {"strategy": "deterministic", "reason": "empty_result"}
-    if result_mode == "explanation":
-        return {"strategy": "llm", "reason": "result_mode_explanation"}
-    if _bool(output_contract.get("narrative_required"), False):
-        return {"strategy": "llm", "reason": "trusted_contract_narrative_required"}
-    if NARRATIVE_QUESTION_PATTERN.search(question):
-        return {"strategy": "llm", "reason": "explicit_narrative_question"}
-
-    missing_certificate = _missing_answer_comparison_certificate(payload)
-    if missing_certificate:
-        return {
-            "strategy": "deterministic",
-            "reason": "comparison_certificate_missing",
-            "safe_generic_only": True,
-            "operation": missing_certificate,
-        }
-    if not actual_columns or any(column not in actual_columns for column in result_columns):
-        return {
-            "strategy": "deterministic",
-            "reason": "result_projection_not_proven",
-            "safe_generic_only": True,
-        }
-    if result_mode == "scalar":
-        primary_metric = str(output_contract.get("primary_metric") or "").strip()
-        if row_count != 1 or (primary_metric and primary_metric not in actual_columns):
-            return {
-                "strategy": "deterministic",
-                "reason": "scalar_shape_not_proven",
-                "safe_generic_only": True,
-            }
-    if result_mode in DETERMINISTIC_RESULT_MODES:
-        return {"strategy": "deterministic", "reason": f"verified_{result_mode}_contract"}
-    return {"strategy": "llm", "reason": "deterministic_renderer_not_declared"}
-
-
-# 함수 설명: Auto/never 경로에서 인증되지 않은 비교는 수치를 추론하지 않고 안전한 결과 건수만 안내합니다.
-def _safe_deterministic_complex_answer(
-    payload: dict[str, Any],
-    contract: dict[str, Any],
-    *,
-    safe_generic_only: bool = False,
-) -> str:
-    analysis = _dict(payload.get("analysis"))
-    if str(analysis.get("status") or "").strip().lower() not in {"ok", "success"}:
-        # 빈 문자열을 반환하면 build_answer_response가 실행 오류에서 확정된
-        # answer_message 또는 표준 실패 문구를 사용합니다. 직전 정상 rows가
-        # payload에 남아 있어도 성공형 수치 요약을 만들지 않습니다.
-        return ""
-    data = _dict(payload.get("data"))
-    row_count = _int(data.get("row_count"), len(_list(data.get("rows"))))
-    if safe_generic_only:
-        return (
-            "적용된 조건을 만족하는 결과가 없습니다."
-            if row_count == 0
-            else f"적용된 조건을 만족하는 결과는 총 {row_count:,}건입니다. 상세 값은 아래 결과 표에서 확인할 수 있습니다."
-        )
-    return (
-        _authoritative_result_message(payload)
-        or _deterministic_fast_answer(payload, contract)
-        or (
-            "적용된 조건을 만족하는 결과가 없습니다."
-            if row_count == 0
-            else f"적용된 조건을 만족하는 결과는 총 {row_count:,}건입니다. 상세 값은 아래 결과 표에서 확인할 수 있습니다."
-        )
-    )
-
-
 # 함수 설명: `build_hybrid_answer_response()`는 hybrid·답변·응답 구성 요소를 모아 다음 단계가 사용할 표준 결과로 만듭니다.
 def build_hybrid_answer_response(
     payload_value: Any,
@@ -1774,7 +1649,6 @@ def build_hybrid_answer_response(
     use_llm_answer: Any = True,
     answer_prompt_template: Any = "",
     domain_answer_guidance: Any = "",
-    answer_policy: Any = "",
 ) -> dict[str, Any]:
     """Use deterministic answers for Fast and optionally for Complex."""
 
@@ -1782,8 +1656,7 @@ def build_hybrid_answer_response(
     payload = _payload(payload_value)
     contract = _dict(payload.get("simple_analysis_contract"))
     route = str(_dict(payload.get("analysis")).get("execution_route") or contract.get("route") or "complex").strip().lower()
-    resolved_policy, policy_source = _resolved_answer_policy(answer_policy, use_llm_answer)
-    llm_answer_enabled = resolved_policy != ANSWER_POLICY_NEVER
+    llm_answer_enabled = _bool(use_llm_answer, True)
     fast_trace = payload.setdefault("trace", {}).setdefault("inspection", {}).setdefault("fast_path", {})
     llm_calls = fast_trace.setdefault(
         "llm_calls",
@@ -1799,8 +1672,6 @@ def build_hybrid_answer_response(
                 "model_called": False,
                 "policy": "deterministic_fast_answer",
                 "llm_answer_enabled": llm_answer_enabled,
-                "answer_policy": resolved_policy,
-                "answer_policy_source": policy_source,
             }
         )
     elif route == "blocked" or _execution_blocked(payload):
@@ -1811,109 +1682,51 @@ def build_hybrid_answer_response(
                 "model_called": False,
                 "policy": "blocked_without_model",
                 "llm_answer_enabled": llm_answer_enabled,
-                "answer_policy": resolved_policy,
-                "answer_policy_source": policy_source,
+            }
+        )
+    elif not llm_answer_enabled:
+        answer_text = (
+            _authoritative_result_message(payload)
+            or _deterministic_fast_answer(payload, contract)
+        )
+        result = build_answer_response(payload, answer_text)
+        result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(
+            {
+                "stage": "20_hybrid_answer_builder",
+                "model_called": False,
+                "policy": "deterministic_complex_answer",
+                "llm_answer_enabled": False,
             }
         )
     else:
-        auto_decision = (
-            _auto_answer_decision(payload)
-            if resolved_policy == ANSWER_POLICY_AUTO
-            else {
-                "strategy": "deterministic" if resolved_policy == ANSWER_POLICY_NEVER else "llm",
-                "reason": "explicit_never" if resolved_policy == ANSWER_POLICY_NEVER else "explicit_always",
-            }
+        template = _message_text(answer_prompt_template).strip()
+        prompt = (
+            build_lazy_llm_answer_prompt(payload, template, domain_answer_guidance)
+            if template
+            else _answer_text(answer_prompt).strip()
         )
-        use_answer_model = auto_decision.get("strategy") == "llm"
-
-        if not use_answer_model:
-            answer_text = _safe_deterministic_complex_answer(
-                payload,
-                contract,
-                safe_generic_only=bool(auto_decision.get("safe_generic_only")),
-            )
-            result = build_answer_response(payload, answer_text)
-            result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(
-                {
-                    "stage": "20_hybrid_answer_builder",
-                    "model_called": False,
-                    "policy": (
-                        "deterministic_complex_answer_auto"
-                        if resolved_policy == ANSWER_POLICY_AUTO
-                        else "deterministic_complex_answer"
-                    ),
-                    "llm_answer_enabled": llm_answer_enabled,
-                    "answer_policy": resolved_policy,
-                    "answer_policy_source": policy_source,
-                    "selection_reason": auto_decision.get("reason"),
-                    "selection_operation": auto_decision.get("operation"),
-                }
-            )
-        else:
-            prompt = ""
-            response: Any = ""
-            model_called = False
-            model_succeeded = False
+        response: Any = ""
+        if prompt and model_invoker is not None:
             try:
-                template = _message_text(answer_prompt_template).strip()
-                prompt = (
-                    build_lazy_llm_answer_prompt(payload, template, domain_answer_guidance)
-                    if template
-                    else _answer_text(answer_prompt).strip()
-                )
-                model_called = bool(prompt and model_invoker is not None)
-                if model_called:
-                    llm_calls["answer"] = int(llm_calls.get("answer") or 0) + 1
-                    response = model_invoker(prompt)
-                    structured_response = _answer_payload(response)
-                    displayable_response = (
-                        _answer_text_from_dict(structured_response)
-                        if structured_response
-                        else _answer_text(response).strip()
-                    )
-                    model_succeeded = bool(displayable_response)
+                llm_calls["answer"] = int(llm_calls.get("answer") or 0) + 1
+                response = model_invoker(prompt)
             except Exception as exc:
                 payload.setdefault("trace", {}).setdefault("errors", []).append(
-                    {
-                        "type": (
-                            "answer_model_invocation_failed"
-                            if model_called
-                            else "answer_prompt_materialization_failed"
-                        ),
-                        "message": f"{type(exc).__name__}: {exc}",
-                    }
+                    {"type": "answer_model_invocation_failed", "message": f"{type(exc).__name__}: {exc}"}
                 )
-            if not model_succeeded:
-                warning_type = "answer_model_empty_response" if model_called else "answer_model_unavailable"
-                payload.setdefault("trace", {}).setdefault("warnings", []).append(
-                    {
-                        "type": warning_type,
-                        "message": "Answer Language Model 결과를 사용할 수 없어 검증된 분석 결과로 답변했습니다.",
-                    }
-                )
-                response = _safe_deterministic_complex_answer(payload, contract)
-            result = build_answer_response(payload, response)
-            result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(
-                {
-                    "stage": "20_hybrid_answer_builder",
-                    "model_called": model_called,
-                    "model_succeeded": model_succeeded,
-                    "fallback_used": not model_succeeded,
-                    "policy": (
-                        "llm_complex_answer_auto"
-                        if resolved_policy == ANSWER_POLICY_AUTO
-                        else "llm_complex_answer"
-                    ),
-                    "llm_answer_enabled": True,
-                    "answer_policy": resolved_policy,
-                    "answer_policy_source": policy_source,
-                    "selection_reason": auto_decision.get("reason"),
-                    "prompt_chars": len(prompt),
-                    "answer_evidence_row_limit": ANSWER_EVIDENCE_ROW_LIMIT,
-                    "answer_evidence_column_limit": ANSWER_EVIDENCE_COLUMN_LIMIT,
-                    "answer_evidence_cell_limit": ANSWER_EVIDENCE_CELL_LIMIT,
-                }
-            )
+        result = build_answer_response(payload, response)
+        result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(
+            {
+                "stage": "20_hybrid_answer_builder",
+                "model_called": bool(prompt and model_invoker is not None),
+                "policy": "llm_complex_answer",
+                "llm_answer_enabled": True,
+                "prompt_chars": len(prompt),
+                "answer_evidence_row_limit": ANSWER_EVIDENCE_ROW_LIMIT,
+                "answer_evidence_column_limit": ANSWER_EVIDENCE_COLUMN_LIMIT,
+                "answer_evidence_cell_limit": ANSWER_EVIDENCE_CELL_LIMIT,
+            }
+        )
     trace = result.setdefault("trace", {}).setdefault("inspection", {}).setdefault("fast_path", {})
     trace["llm_calls"] = deepcopy(llm_calls)
     trace.setdefault("timing_ms", {})["answer_build"] = round((perf_counter() - started) * 1000, 3)
@@ -2017,7 +1830,7 @@ def _first_order_direction(contract: dict[str, Any]) -> str:
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class HybridAnswerBuilder(Component):
     display_name = "20 V2 Hybrid 답변 생성기"
-    description = "Fast는 고정 답변으로 만들고, Complex는 호환 Boolean과 answer policy에 따라 답변 모델을 선택 호출합니다."
+    description = "Fast는 항상 고정 답변으로 만들고, Complex는 BoolInput 설정에 따라 답변 모델 또는 고정 답변을 사용합니다."
     inputs = [
         DataInput(name="payload", display_name="페이로드", required=True),
         BoolInput(
@@ -2025,15 +1838,6 @@ class HybridAnswerBuilder(Component):
             display_name="Complex 답변 LLM 사용",
             info="활성화하면 Complex만 답변 LLM을 호출하고, 비활성화하면 Fast와 Complex 모두 고정 로직으로 답변합니다.",
             value=True,
-            required=False,
-            advanced=False,
-        ),
-        DropdownInput(
-            name="answer_policy",
-            display_name="Complex 답변 호출 정책",
-            info="always는 기존처럼 항상 LLM, auto는 검증된 표준 결과만 결정론 처리, never는 LLM을 호출하지 않습니다.",
-            options=[ANSWER_POLICY_ALWAYS, ANSWER_POLICY_AUTO, ANSWER_POLICY_NEVER],
-            value=ANSWER_POLICY_ALWAYS,
             required=False,
             advanced=False,
         ),
@@ -2104,6 +1908,5 @@ class HybridAnswerBuilder(Component):
                 getattr(self, "use_llm_answer", True),
                 getattr(self, "answer_prompt_template", ""),
                 getattr(self, "domain_answer_guidance", ""),
-                getattr(self, "answer_policy", ""),
             )
         )
