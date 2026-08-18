@@ -44,6 +44,8 @@ TRACE_PREVIEW_LIMIT = 5
 DEFAULT_MAX_REPAIR_ATTEMPTS = 1
 REPAIR_CODE_PREVIEW_LIMIT = 1000
 LLM_RESPONSE_PREVIEW_LIMIT = 500
+PRESENTATION_ROW_NUMBER_KEY = "__display_row_no__"
+PRESENTATION_ROW_NUMBER_LABEL = "No."
 SAFE_IMPORT_POLICY = "exact pandas/numpy aliases are removed and trusted namespaces are injected"
 BLANK_MATCH_TEXTS = {"", "null", "none", "nan", "nat", "<na>", "empty"}
 SAFE_NUMPY_ATTRIBUTES = (
@@ -1487,11 +1489,10 @@ def _fast_filter_mask(series: Any, operator: str, values: list[Any], pd: Any) ->
             nested_values = item.get("values") if isinstance(item.get("values"), list) else [item.get("value")]
             mask = mask | _fast_filter_mask(series, str(item.get("operator") or item.get("op") or "eq"), nested_values, pd)
         return mask
-    normalized_series, normalized_values = _fast_comparable_values(series, values, pd)
     if operator in {"eq", "in"}:
-        return normalized_series.isin(normalized_values)
+        return _fast_identity_membership_mask(series, values, pd)
     if operator in {"ne", "not_in"}:
-        return ~normalized_series.isin(normalized_values)
+        return ~_fast_identity_membership_mask(series, values, pd)
     if operator in {"gt", "ge", "lt", "le"}:
         numeric_series = pd.to_numeric(series, errors="coerce")
         numeric_value = pd.to_numeric(pd.Series(values[:1]), errors="coerce").iloc[0] if values else float("nan")
@@ -1521,7 +1522,38 @@ def _fast_filter_mask(series: Any, operator: str, values: list[Any], pd: Any) ->
 def _fast_comparable_values(series: Any, values: list[Any], pd: Any) -> tuple[Any, list[Any]]:
     if values and all(_looks_like_date_value(value) for value in values):
         return series.map(_normalize_date_identifier), [_normalize_date_identifier(value) for value in values]
+    if _uses_text_identity_comparison(series, pd):
+        return series.astype(str).str.strip(), [str(value).strip() for value in values]
     return series, values
+
+
+# 함수 설명: `_fast_identity_membership_mask()`는 텍스트형 속성값의 숫자/문자 표현 차이를 동등 비교로 정규화합니다.
+def _fast_identity_membership_mask(series: Any, values: list[Any], pd: Any) -> Any:
+    non_blank_values = [value for value in values if not _is_blank_match_value(value)]
+    normalized_series, normalized_values = _fast_comparable_values(series, non_blank_values, pd)
+    if normalized_values:
+        mask = normalized_series.isin(normalized_values)
+    else:
+        mask = pd.Series(False, index=series.index)
+    if _has_blank_match_values(values):
+        mask = mask | series.isna() | series.astype(str).str.strip().str.casefold().isin(BLANK_MATCH_TEXTS)
+    return mask.fillna(False)
+
+
+# 함수 설명: `_uses_text_identity_comparison()`는 실제 조회 DataFrame의 문자열·범주형 속성 컬럼만 문자열 동일성 비교 대상으로 판정합니다.
+def _uses_text_identity_comparison(series: Any, pd: Any) -> bool:
+    dtype = getattr(series, "dtype", None)
+    if dtype == object:
+        return True
+    try:
+        if pd.api.types.is_string_dtype(dtype):
+            return True
+    except Exception:
+        pass
+    try:
+        return any(isinstance(value, str) for value in series.dropna().head(64).tolist())
+    except Exception:
+        return False
 
 
 # 함수 설명: `_looks_like_date_value()`는 입력값이 LIKE·날짜·값 조건에 해당하는지 부작용 없이 bool로 판정합니다.
@@ -4718,17 +4750,68 @@ def _scalar_metric_label(payload: dict[str, Any] | None = None) -> str:
     return "결과값"
 
 
+# 함수 설명: `_with_display_row_numbers()`는 계산·저장용 rows를 바꾸지 않고 화면용 표에만 순번을 추가합니다.
+def _with_display_row_numbers(
+    rows: list[dict[str, Any]],
+    columns: list[str],
+) -> tuple[list[dict[str, Any]], list[str], dict[str, str], list[str]]:
+    """Return a display-only numbered view without changing business rows.
+
+    ``No.`` is deliberately not added to a DataFrame, a Typed-IR contract, or
+    a stored result.  It is a per-table presentation index, so every source,
+    intermediate checkpoint, and final answer table can start at one without
+    becoming a filter, join, group-by, or follow-up key.
+    """
+
+    business_columns = [str(column) for column in columns if str(column or "").strip()]
+    # A number column without a row is only visual noise.  More importantly,
+    # keeping the empty-table schema business-only lets the existing empty
+    # result wording remain precise.
+    if not rows:
+        return [], business_columns, {}, []
+    display_key = PRESENTATION_ROW_NUMBER_KEY
+    occupied = {column.casefold() for column in business_columns}
+    for row in rows:
+        if isinstance(row, dict):
+            occupied.update(
+                str(key).casefold()
+                for key in row
+                if str(key or "").strip()
+            )
+    suffix = 2
+    while display_key.casefold() in occupied:
+        display_key = f"{PRESENTATION_ROW_NUMBER_KEY}_{suffix}"
+        suffix += 1
+
+    display_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        row_dict = row if isinstance(row, dict) else {"value": row}
+        display_rows.append({display_key: index, **deepcopy(row_dict)})
+    return (
+        display_rows,
+        [display_key, *business_columns],
+        {display_key: PRESENTATION_ROW_NUMBER_LABEL},
+        [display_key],
+    )
+
+
 # 함수 설명: `_recorded_output()`는 pandas 단계 실행 결과를 행 수·컬럼·제한 preview가 포함된 trace 항목으로 만듭니다.
 def _recorded_output(key: Any, value: Any, description: Any = "", role: Any = "") -> dict[str, Any]:
     rows, columns, row_count = _preview_rows_columns_count(value)
+    display_rows, display_columns, column_labels, display_only_columns = _with_display_row_numbers(
+        rows,
+        columns,
+    )
     return _json_ready(
         {
             "key": str(key or ""),
             "description": str(description or ""),
             "role": str(role or ""),
             "row_count": row_count,
-            "columns": columns,
-            "preview_rows": rows[:TRACE_PREVIEW_LIMIT],
+            "columns": display_columns,
+            "preview_rows": display_rows[:TRACE_PREVIEW_LIMIT],
+            "column_labels": column_labels,
+            "display_only_columns": display_only_columns,
         }
     )
 
@@ -4827,9 +4910,15 @@ def _project_intermediate_checkpoint(
             filter_plan,
             completed=completed,
         )
+    display_rows, display_columns, column_labels, display_only_columns = _with_display_row_numbers(
+        rows,
+        columns,
+    )
     visible["row_count"] = len(rows)
-    visible["columns"] = columns
-    visible["preview_rows"] = deepcopy(rows[:TRACE_PREVIEW_LIMIT])
+    visible["columns"] = display_columns
+    visible["preview_rows"] = deepcopy(display_rows[:TRACE_PREVIEW_LIMIT])
+    visible["column_labels"] = column_labels
+    visible["display_only_columns"] = display_only_columns
     visible["download_key"] = INTERMEDIATE_DOWNLOAD_KEY
 
     artifact = {
@@ -4957,9 +5046,15 @@ def _build_intermediate_projection(
                 filter_plan,
                 completed=completed,
             )
+        display_rows, display_columns, column_labels, display_only_columns = _with_display_row_numbers(
+            rows,
+            columns,
+        )
         visible["row_count"] = len(rows)
-        visible["columns"] = columns
-        visible["preview_rows"] = deepcopy(rows[:TRACE_PREVIEW_LIMIT])
+        visible["columns"] = display_columns
+        visible["preview_rows"] = deepcopy(display_rows[:TRACE_PREVIEW_LIMIT])
+        visible["column_labels"] = column_labels
+        visible["display_only_columns"] = display_only_columns
         visible["download_key"] = download_key
         visible_items.append(visible)
         artifacts[download_key] = {
@@ -5221,14 +5316,20 @@ def _initial_intermediate_results(payload: dict[str, Any]) -> list[dict[str, Any
 # 함수 설명: `_recorded_function_case()`는 Function Case 실행 결과를 함수명·입력·행 수·preview가 포함된 trace 항목으로 만듭니다.
 def _recorded_function_case(function_name: Any, input_text: Any, result_value: Any, description: Any = "") -> dict[str, Any]:
     rows, columns, row_count = _preview_rows_columns_count(result_value)
+    display_rows, display_columns, column_labels, display_only_columns = _with_display_row_numbers(
+        rows,
+        columns,
+    )
     return _json_ready(
         {
             "function_name": str(function_name or ""),
             "input_text": str(input_text or ""),
             "description": str(description or ""),
             "matched_count": row_count,
-            "columns": columns,
-            "preview_rows": rows[:TRACE_PREVIEW_LIMIT],
+            "columns": display_columns,
+            "preview_rows": display_rows[:TRACE_PREVIEW_LIMIT],
+            "column_labels": column_labels,
+            "display_only_columns": display_only_columns,
         }
     )
 
@@ -5270,6 +5371,22 @@ def _partial_data_from_intermediate(value: Any) -> dict[str, Any]:
         item = matches[-1]
         rows = item.get("preview_rows") if isinstance(item.get("preview_rows"), list) else []
         columns = [str(column) for column in item.get("columns", []) if str(column).strip()]
+        display_only_columns = {
+            str(column)
+            for column in item.get("display_only_columns", [])
+            if str(column or "").strip()
+        }
+        if display_only_columns:
+            rows = [
+                {
+                    key: value
+                    for key, value in row.items()
+                    if str(key) not in display_only_columns
+                }
+                for row in rows
+                if isinstance(row, dict)
+            ]
+            columns = [column for column in columns if column not in display_only_columns]
         if not columns and rows:
             columns = [str(column) for column in rows[0]] if isinstance(rows[0], dict) else []
         return {
@@ -6450,6 +6567,44 @@ def _with_pandas_filter_preamble(code: Any, filter_plan: list[dict[str, Any]]) -
 # 함수 설명: `_pandas_filter_preamble()`는 의도 계획의 필터 조건을 생성 코드보다 먼저 적용할 안전한 pandas 전처리 코드로 만듭니다.
 def _pandas_filter_preamble(filter_plan: list[dict[str, Any]]) -> str:
     lines: list[str] = []
+    if filter_plan:
+        lines.extend(
+            [
+                "def _identity_membership_mask(series, values):",
+                "    _identity_blank_texts = ('', 'null', 'none', 'nan', 'nat', '<na>', 'empty')",
+                "    _identity_non_blank_values = []",
+                "    _identity_has_blank = False",
+                "    for _identity_value in values:",
+                "        _identity_text = str(_identity_value if _identity_value is not None else '').strip().casefold()",
+                "        if _identity_value is None or _identity_text in _identity_blank_texts:",
+                "            _identity_has_blank = True",
+                "        else:",
+                "            _identity_non_blank_values.append(_identity_value)",
+                "    _identity_dtype = series.dtype",
+                "    _identity_text_like = _identity_dtype == object",
+                "    if not _identity_text_like:",
+                "        try:",
+                "            _identity_text_like = pd.api.types.is_string_dtype(_identity_dtype)",
+                "        except Exception:",
+                "            _identity_text_like = False",
+                "    if not _identity_text_like:",
+                "        try:",
+                "            _identity_text_like = any(isinstance(_identity_value, str) for _identity_value in series.dropna().head(64).tolist())",
+                "        except Exception:",
+                "            _identity_text_like = False",
+                "    if _identity_text_like:",
+                "        _identity_series = series.astype(str).str.strip()",
+                "        _identity_values = [str(_identity_value).strip() for _identity_value in _identity_non_blank_values]",
+                "    else:",
+                "        _identity_series = series",
+                "        _identity_values = _identity_non_blank_values",
+                "    _identity_mask = _identity_series.isin(_identity_values) if _identity_values else pd.Series(False, index=series.index)",
+                "    if _identity_has_blank:",
+                "        _identity_mask = _identity_mask | series.isna() | series.astype(str).str.strip().str.casefold().isin(_identity_blank_texts)",
+                "    return _identity_mask.fillna(False)",
+                "",
+            ]
+        )
     if _has_date_filter_condition(filter_plan):
         lines.extend(
             [
@@ -6529,23 +6684,17 @@ def _condition_code(
             lines.append(f"        {values_var} = [_normalize_date_filter_value(value) for value in {values_var}]")
             lines.append(f"        {date_series_var} = {df_var}[{col_var}].map(_normalize_date_filter_value)")
             lines.append(f"        {df_var} = {df_var}[{date_series_var}.isin({values_var})]")
-        elif _has_blank_match_values(values):
-            expression = _blank_aware_membership_expression(f"{df_var}[{col_var}]", values)
-            lines.append(f"        {mask_var} = {expression}")
-            lines.append(f"        {df_var} = {df_var}[{mask_var}]")
         else:
-            lines.append(f"        {df_var} = {df_var}[{df_var}[{col_var}].isin({values_var})]")
+            lines.append(f"        {mask_var} = _identity_membership_mask({df_var}[{col_var}], {values_var})")
+            lines.append(f"        {df_var} = {df_var}[{mask_var}]")
     elif operator in {"ne", "not_in"}:
         if _is_date_filter_field(field):
             lines.append(f"        {values_var} = [_normalize_date_filter_value(value) for value in {values_var}]")
             lines.append(f"        {date_series_var} = {df_var}[{col_var}].map(_normalize_date_filter_value)")
             lines.append(f"        {df_var} = {df_var}[~{date_series_var}.isin({values_var})]")
-        elif _has_blank_match_values(values):
-            expression = _blank_aware_membership_expression(f"{df_var}[{col_var}]", values)
-            lines.append(f"        {mask_var} = {expression}")
-            lines.append(f"        {df_var} = {df_var}[~{mask_var}]")
         else:
-            lines.append(f"        {df_var} = {df_var}[~{df_var}[{col_var}].isin({values_var})]")
+            lines.append(f"        {mask_var} = _identity_membership_mask({df_var}[{col_var}], {values_var})")
+            lines.append(f"        {df_var} = {df_var}[~{mask_var}]")
     elif operator in {"gt", "ge", "lt", "le"}:
         numeric_series_var = f"_filter_numeric_series_{job_index}_{condition_index}"
         numeric_value_var = f"_filter_numeric_value_{job_index}_{condition_index}"
@@ -6681,10 +6830,7 @@ def _compound_condition_lines(df_var: str, col_var: str, mask_var: str, values: 
         elif op == "null_or_empty":
             lines.append(f"        {mask_var} = {mask_var} | ({_blank_aware_membership_expression(series, [''])})")
         elif op in {"eq", "in"} and raw_values:
-            if _has_blank_match_values(raw_values):
-                lines.append(f"        {mask_var} = {mask_var} | ({_blank_aware_membership_expression(series, raw_values)})")
-            else:
-                lines.append(f"        {mask_var} = {mask_var} | {series}.isin({raw_values!r})")
+            lines.append(f"        {mask_var} = {mask_var} | _identity_membership_mask({series}, {raw_values!r})")
         elif op == "starts_with" and raw_values:
             lines.append(f"        {mask_var} = {mask_var} | {series}.astype(str).str.startswith(str({raw_values[0]!r}), na=False)")
             for raw_value in raw_values[1:]:

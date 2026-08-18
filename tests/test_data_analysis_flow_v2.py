@@ -1850,12 +1850,18 @@ def test_ranked_summary_uses_catalog_mapping_and_calls_no_analysis_model():
     checkpoint = checkpoints[0]
     assert checkpoint["role"] == "filtered_source"
     assert checkpoint["row_count"] == 3
+    number_key = checkpoint["display_only_columns"][0]
+    assert checkpoint["column_labels"][number_key] == "No."
     assert checkpoint["preview_rows"] == [
+        {number_key: 1, "OPER_NAME": "A", "QTY": 10},
+        {number_key: 2, "OPER_NAME": "B", "QTY": 20},
+        {number_key: 3, "OPER_NAME": "B", "QTY": 15},
+    ]
+    assert executed["_intermediate_download_rows"]["last_successful"]["rows"] == [
         {"OPER_NAME": "A", "QTY": 10},
         {"OPER_NAME": "B", "QTY": 20},
         {"OPER_NAME": "B", "QTY": 15},
     ]
-    assert executed["_intermediate_download_rows"]["last_successful"]["rows"] == checkpoint["preview_rows"]
     assert model_calls == []
     assert executed["trace"]["inspection"]["fast_path"]["llm_calls"]["pandas_generation"] == 0
 
@@ -1955,6 +1961,79 @@ def test_retriever_pushdown_filter_is_not_applied_twice():
     assert filter_trace[0]["status"] == "already_applied"
     assert executed["data"]["rows"] == [{"GROUP": "A", "QTY": 10}]
     assert model_calls == []
+
+
+def test_fast_filter_matches_numeric_intent_value_against_text_attribute_column():
+    """Product attributes can be text in the source even when intent parsed a numeric token."""
+
+    payload = _single_source_payload(
+        rows=[
+            {"LEAD": "267", "PRODUCTION": 10},
+            {"LEAD": "268", "PRODUCTION": 20},
+        ],
+        filters={"LEAD": {"operator": "eq", "value": 267}},
+        steps=[
+            {"operation": "apply_filters", "source_alias": "prod_today"},
+            {
+                "operation": "groupby_and_aggregate",
+                "source_alias": "prod_today",
+                "group_by": ["LEAD"],
+                "aggregations": [{"column": "PRODUCTION", "method": "sum", "output_column": "PRODUCTION"}],
+            },
+        ],
+        output_contract={
+            "result_mode": "aggregate",
+            "grain_columns": ["LEAD"],
+            "metric_columns": ["PRODUCTION"],
+            "required_columns": ["LEAD", "PRODUCTION"],
+            "result_columns": ["LEAD", "PRODUCTION"],
+            "strict_result_columns": True,
+        },
+        source_alias="prod_today",
+        dataset_key="production_today",
+    )
+
+    resolved, executed, model_calls = _resolve_and_execute(payload)
+
+    assert resolved["simple_analysis_contract"]["route"] == "fast"
+    assert resolved["simple_analysis_contract"]["filters"][0]["typed_values"] == [267]
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [{"LEAD": "267", "PRODUCTION": 10}]
+    assert model_calls == []
+
+
+def test_identity_filter_keeps_identifier_text_and_numeric_range_semantics_separate():
+    """Text identifiers do not lose leading zeroes, while numeric ranges remain numeric."""
+
+    _, executor, _ = _modules()
+
+    assert executor._fast_filter_mask(pd.Series(["0267", "267"]), "eq", [267], pd).tolist() == [False, True]
+    assert executor._fast_filter_mask(pd.Series(["267", "268", "269"]), "in", [267, 268], pd).tolist() == [True, True, False]
+    assert executor._fast_filter_mask(pd.Series([267, 268]), "ge", [268], pd).tolist() == [False, True]
+
+
+def test_complex_filter_preamble_matches_numeric_intent_value_against_text_attribute_column():
+    """The guarded Complex code path uses the same representation-aware identity match."""
+
+    _, executor, _ = _modules()
+    payload = _single_source_payload(
+        rows=[
+            {"LEAD": "267", "PRODUCTION": 10},
+            {"LEAD": "268", "PRODUCTION": 20},
+        ],
+        filters={"LEAD": {"operator": "eq", "value": 267}},
+        steps=[{"operation": "custom_complex_operation", "source_alias": "source_1"}],
+        output_contract={"result_mode": "detail", "result_columns": ["LEAD", "PRODUCTION"]},
+    )
+    payload["simple_analysis_contract"] = {"route": "complex"}
+
+    executed = executor.execute_pandas_code(
+        payload,
+        {"code": "result = sources['source_1'][['LEAD', 'PRODUCTION']].copy()"},
+    )
+
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [{"LEAD": "267", "PRODUCTION": 10}]
 
 
 def test_missing_filter_mapping_is_blocked_instead_of_guessed():
@@ -3743,6 +3822,146 @@ def test_fast_answer_builder_does_not_invoke_answer_model():
     assert result["trace"]["inspection"]["fast_path"]["llm_calls"]["answer"] == 0
 
 
+def test_v2_answer_table_presentation_adds_number_and_verified_conditions_without_mutating_result_data():
+    _, _, answer = _modules()
+    adapter = load_module(V2_ROOT / "21_v2_answer_message_adapter.py")
+    raw_rows = [{"PRODUCTION_SUM": 123}]
+    payload = {
+        "intent_plan": {
+            "output_contract": {
+                "result_columns": ["PRODUCTION_SUM"],
+                "column_labels": {"PRODUCTION_SUM": "생산량"},
+            }
+        },
+        "analysis": {"status": "ok", "execution_route": "fast", "row_count": 1},
+        "source_results": [
+            {
+                "source_alias": "production_today",
+                "dataset_key": "production_today",
+                "status": "ok",
+                "applied_params": {"DATE": "20260818"},
+                "pandas_filters": {"LEAD": {"operator": "eq", "value": "266"}},
+            }
+        ],
+        "data": {
+            "columns": ["PRODUCTION_SUM"],
+            "rows": deepcopy(raw_rows),
+            "row_count": 1,
+        },
+        "trace": {"inspection": {}},
+    }
+
+    result = answer.build_answer_response(payload, "생산량을 확인했습니다.")
+    table = result["answer_sections"]["result_table"]
+    labels = table["column_labels"]
+    label_to_key = {label: key for key, label in labels.items()}
+
+    assert result["data"]["rows"] == raw_rows
+    assert result["data"]["columns"] == ["PRODUCTION_SUM"]
+    assert result["intent_plan"]["output_contract"]["result_columns"] == ["PRODUCTION_SUM"]
+    assert table["row_source"] == "result_table.display_rows"
+    assert [labels.get(column, column) for column in table["display_columns"]] == [
+        "No.",
+        "DATE",
+        "LEAD",
+        "생산량",
+    ]
+    assert table["display_rows"] == [
+        {
+            label_to_key["No."]: 1,
+            label_to_key["DATE"]: "20260818",
+            label_to_key["LEAD"]: "266",
+            "PRODUCTION_SUM": 123,
+        }
+    ]
+
+    message = adapter.build_message(
+        result,
+        show_download_links=False,
+        show_notices=False,
+        show_applied_criteria=False,
+        show_intent_analysis=False,
+        show_data_retrieval=False,
+        show_pandas_code=False,
+    )
+    assert "| No. | DATE | LEAD | 생산량 |" in message
+    assert "| 1 | 20260818 | 266 | 123 |" in message
+
+
+def test_v2_answer_table_presentation_keeps_existing_condition_column_and_labels_multi_value_conditions():
+    _, _, answer = _modules()
+    payload = {
+        "analysis": {"status": "ok", "row_count": 1},
+        "source_results": [
+            {
+                "source_alias": "production_today",
+                "status": "ok",
+                "pandas_filters": {
+                    "LEAD": {"operator": "eq", "value": "266"},
+                    "OPER_NAME": {"operator": "in", "value": ["D/A1", "D/A2"]},
+                },
+            }
+        ],
+        "data": {
+            "columns": ["LEAD", "PRODUCTION_SUM"],
+            "rows": [{"LEAD": "266", "PRODUCTION_SUM": 123}],
+            "row_count": 1,
+        },
+    }
+
+    table = answer._build_answer_sections(payload, "생산량을 확인했습니다.")["result_table"]
+    labels = table["column_labels"]
+    label_to_key = {label: key for key, label in labels.items()}
+
+    assert [labels.get(column, column) for column in table["display_columns"]] == [
+        "No.",
+        "OPER_NAME (적용 조건)",
+        "LEAD",
+        "PRODUCTION_SUM",
+    ]
+    assert table["display_rows"][0][label_to_key["OPER_NAME (적용 조건)"]] == "IN: D/A1, D/A2"
+    assert "__applied_condition__LEAD" not in table["display_rows"][0]
+
+
+def test_v2_answer_table_presentation_never_shows_conditions_from_failed_or_empty_results():
+    _, _, answer = _modules()
+    failed = answer._build_answer_sections(
+        {
+            "analysis": {"status": "error"},
+            "source_results": [
+                {
+                    "source_alias": "production_today",
+                    "status": "error",
+                    "applied_params": {"DATE": "20260818"},
+                    "pandas_filters": {"LEAD": {"operator": "eq", "value": "266"}},
+                }
+            ],
+            "data": {"columns": ["PRODUCTION_SUM"], "rows": [{"PRODUCTION_SUM": 123}], "row_count": 1},
+        },
+        "오류가 발생했습니다.",
+    )["result_table"]
+    empty = answer._build_answer_sections(
+        {
+            "analysis": {"status": "ok"},
+            "source_results": [
+                {
+                    "source_alias": "production_today",
+                    "status": "ok",
+                    "applied_params": {"DATE": "20260818"},
+                }
+            ],
+            "data": {"columns": ["PRODUCTION_SUM"], "rows": [], "row_count": 0},
+        },
+        "결과가 없습니다.",
+    )["result_table"]
+
+    assert failed["columns"] == [answer.PRESENTATION_ROW_NUMBER_KEY, "PRODUCTION_SUM"]
+    assert failed["display_rows"][0][answer.PRESENTATION_ROW_NUMBER_KEY] == 1
+    assert all("DATE" not in label for label in failed["column_labels"].values())
+    assert empty["columns"] == ["PRODUCTION_SUM"]
+    assert empty.get("display_rows", []) == []
+
+
 def test_complex_answer_builder_bool_toggle_controls_answer_model_call():
     _, _, answer = _modules()
     payload = {
@@ -4154,6 +4373,65 @@ def test_v2_fast_contract_error_keeps_last_available_checkpoint_and_download_row
         "checkpoint_role": "source_input",
         "row_count": 1,
     }
+
+
+def test_v2_source_and_intermediate_previews_add_number_only_to_presentation_rows():
+    _, executor, _ = _modules()
+    raw_rows = [
+        {"LOT_ID": "L1", "QTY": 3},
+        {"LOT_ID": "L2", "QTY": 4},
+    ]
+    source_preview = executor._recorded_output(
+        "source:lot_status",
+        raw_rows,
+        "조회된 원본 데이터",
+        "source_input",
+    )
+    function_preview = executor._recorded_function_case(
+        "sample_helper",
+        "테스트",
+        raw_rows,
+    )
+
+    for preview in (source_preview, function_preview):
+        assert preview["columns"][0] == executor.PRESENTATION_ROW_NUMBER_KEY
+        assert preview["column_labels"][executor.PRESENTATION_ROW_NUMBER_KEY] == "No."
+        assert [row[executor.PRESENTATION_ROW_NUMBER_KEY] for row in preview["preview_rows"]] == [1, 2]
+        assert preview["display_only_columns"] == [executor.PRESENTATION_ROW_NUMBER_KEY]
+
+    partial = executor._partial_data_from_intermediate([source_preview])
+    assert partial["rows"] == raw_rows
+    assert partial["columns"] == ["LOT_ID", "QTY"]
+
+    payload = _single_source_payload(
+        rows=raw_rows,
+        steps=[],
+        output_contract={"result_mode": "detail", "result_columns": ["LOT_ID", "QTY"]},
+    )
+    visible, artifacts, _ = executor._project_intermediate_checkpoint(
+        [{"key": "source:source_1", "role": "source_input"}],
+        {"source:source_1": raw_rows},
+        payload,
+        [],
+        completed=False,
+    )
+
+    assert visible[0]["columns"][0] == executor.PRESENTATION_ROW_NUMBER_KEY
+    assert visible[0]["preview_rows"][0][executor.PRESENTATION_ROW_NUMBER_KEY] == 1
+    assert artifacts["last_successful"]["rows"] == raw_rows
+    assert artifacts["last_successful"]["columns"] == ["LOT_ID", "QTY"]
+
+    collision = executor._recorded_output(
+        "source:collision",
+        [{executor.PRESENTATION_ROW_NUMBER_KEY: "business-value", "QTY": 1}],
+        "조회된 원본 데이터",
+        "source_input",
+    )
+    number_key = collision["display_only_columns"][0]
+    assert number_key != executor.PRESENTATION_ROW_NUMBER_KEY
+    assert collision["column_labels"][number_key] == "No."
+    assert collision["preview_rows"][0][number_key] == 1
+    assert collision["preview_rows"][0][executor.PRESENTATION_ROW_NUMBER_KEY] == "business-value"
 
 
 def test_v2_message_adapter_emphasizes_recovered_result_and_formats_download_link():

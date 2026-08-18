@@ -35,6 +35,19 @@ ANSWER_EVIDENCE_COLUMN_LIMIT = 16
 ANSWER_EVIDENCE_CELL_LIMIT = 160
 ANSWER_EVIDENCE_ITEM_LIMIT = 4
 ANSWER_EVIDENCE_MESSAGE_LIMIT = 600
+PRESENTATION_ROW_NUMBER_KEY = "__display_row_no__"
+PRESENTATION_ROW_NUMBER_LABEL = "No."
+PRESENTATION_CONDITION_KEY_PREFIX = "__applied_condition__"
+PRESENTATION_CONDITION_LIMIT = 12
+PRESENTATION_SENSITIVE_FIELD_TOKENS = (
+    "password",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+)
 ANSWER_PROMPT_REFERENCE_REWRITES = {
     "answer_context_json.applied_criteria": "applied_scope_json.criteria",
     "answer_context_json.result_shape.columns": "result_summary_json.columns",
@@ -848,16 +861,28 @@ def _build_answer_sections(payload: dict[str, Any], answer_message: str, section
     overrides = _dict(section_overrides)
     result_table_overrides = _dict(overrides.get("result_table"))
     rows = _list(data.get("rows"))
-    columns = _string_list(data.get("columns")) or _columns_from_rows(rows)
-    display_columns = _string_list(data.get("display_columns")) or _string_list(result_table_overrides.get("display_columns"))
+    business_columns = _string_list(data.get("columns")) or _columns_from_rows(rows)
+    applied_criteria = _applied_criteria(payload)
+    presentation = _result_table_presentation(payload, rows, business_columns)
+    columns = _string_list(presentation.get("columns")) or business_columns
+    requested_display_columns = _string_list(data.get("display_columns")) or _string_list(result_table_overrides.get("display_columns"))
+    display_columns = _presentation_display_columns(
+        presentation,
+        requested_display_columns,
+        business_columns,
+    )
     override_labels = _dict(result_table_overrides.get("column_labels"))
-    default_labels = _result_contract_column_labels(payload, columns)
-    column_labels = {**default_labels, **override_labels, **_dict(data.get("column_labels"))}
+    default_labels = _result_contract_column_labels(payload, business_columns)
+    column_labels = {
+        **default_labels,
+        **_dict(presentation.get("column_labels")),
+        **override_labels,
+        **_dict(data.get("column_labels")),
+    }
     if not display_columns and default_labels:
         priority_columns = [column for column in ("RESULT_GROUP", "RESULT_RANK") if column in columns]
         display_columns = priority_columns + [column for column in columns if column not in priority_columns]
     row_count = _int(data.get("row_count"), len(rows))
-    applied_criteria = _applied_criteria(payload)
     evidence = _evidence(payload)
     notices = _notices(payload, row_count, rows)
     downloads = _downloads(payload)
@@ -870,8 +895,9 @@ def _build_answer_sections(payload: dict[str, Any], answer_message: str, section
             {
                 "columns": columns,
                 "display_columns": display_columns,
+                "display_rows": deepcopy(_list(presentation.get("rows"))),
                 "column_labels": deepcopy(column_labels),
-                "row_source": "data.rows",
+                "row_source": "result_table.display_rows",
                 "row_count": row_count,
             }
         ),
@@ -881,6 +907,272 @@ def _build_answer_sections(payload: dict[str, Any], answer_message: str, section
         "downloads": downloads,
         "next_questions": _next_questions(payload),
     }
+
+
+# 함수 설명: `_result_table_presentation()`은 분석·후속 상태를 바꾸지 않고 최종 표에 순번과 실제 적용 조건을 덧붙입니다.
+def _result_table_presentation(
+    payload: dict[str, Any],
+    rows: list[Any],
+    columns: list[str],
+) -> dict[str, Any]:
+    """Build a display-only table view from authoritative result rows.
+
+    The rows retained under ``data.rows`` remain the sole source for answer
+    grounding, state persistence, follow-up matching, and result storage.
+    Presentation values never extend ``output_contract.result_columns`` and
+    therefore cannot change aggregation grain or downstream execution.
+    """
+
+    business_columns = [str(column) for column in columns if str(column or "").strip()]
+    row_dicts = [deepcopy(row) for row in rows if isinstance(row, dict)]
+    if not row_dicts:
+        return {
+            "rows": [],
+            "columns": business_columns,
+            "prefix_columns": [],
+            "column_labels": {},
+        }
+    occupied = {column.casefold() for column in business_columns}
+    for row in row_dicts:
+        occupied.update(
+            str(key).casefold()
+            for key in row
+            if str(key or "").strip()
+        )
+    number_key = _presentation_key(PRESENTATION_ROW_NUMBER_KEY, occupied)
+    occupied.add(number_key.casefold())
+
+    actual_columns_by_field = {
+        _presentation_field_key(column): column
+        for column in business_columns
+        if _presentation_field_key(column)
+    }
+    conditions_by_field: dict[str, list[dict[str, Any]]] = {}
+    for condition in _verified_display_conditions(payload):
+        field_key = _presentation_field_key(condition.get("field"))
+        if field_key:
+            conditions_by_field.setdefault(field_key, []).append(condition)
+
+    annotation_columns: list[str] = []
+    condition_columns: list[str] = []
+    annotation_values: dict[str, str] = {}
+    labels: dict[str, str] = {number_key: PRESENTATION_ROW_NUMBER_LABEL}
+    for field_key, condition_group in conditions_by_field.items():
+        actual_column = actual_columns_by_field.get(field_key, "")
+        signatures = {
+            _display_condition_signature(condition)
+            for condition in condition_group
+        }
+        if actual_column and len(signatures) == 1:
+            condition_columns.append(actual_column)
+            continue
+
+        multi_source = len(condition_group) > 1
+        for condition in condition_group:
+            if len(annotation_columns) >= PRESENTATION_CONDITION_LIMIT:
+                break
+            field = str(condition.get("field") or "").strip()
+            if not field:
+                continue
+            alias = str(condition.get("source_alias") or "").strip()
+            operator = str(condition.get("operator") or "eq").strip().lower()
+            suffix = "" if operator == "eq" and not multi_source else " (적용 조건)"
+            label = f"{alias}.{field}{suffix}" if multi_source and alias else f"{field}{suffix}"
+            key = _presentation_key(
+                PRESENTATION_CONDITION_KEY_PREFIX + _safe_presentation_name(label),
+                occupied,
+            )
+            occupied.add(key.casefold())
+            annotation_columns.append(key)
+            labels[key] = label
+            annotation_values[key] = _display_condition_value(condition)
+
+    condition_columns = _dedupe_texts(condition_columns)
+    prefix_columns = [number_key, *annotation_columns, *condition_columns]
+    presentation_columns = _dedupe_texts(
+        [*prefix_columns, *business_columns]
+    )
+    presentation_rows = [
+        {
+            number_key: index,
+            **annotation_values,
+            **row,
+        }
+        for index, row in enumerate(row_dicts, start=1)
+    ]
+    return {
+        "rows": presentation_rows,
+        "columns": presentation_columns,
+        "prefix_columns": prefix_columns,
+        "column_labels": labels,
+    }
+
+
+# 함수 설명: `_presentation_display_columns()`는 기존 사용자 표시 순서를 보존하면서 순번·조건 컬럼을 항상 앞에 둡니다.
+def _presentation_display_columns(
+    presentation: dict[str, Any],
+    requested_columns: list[str],
+    business_columns: list[str],
+) -> list[str]:
+    prefix = _string_list(presentation.get("prefix_columns"))
+    available = _string_list(presentation.get("columns"))
+    if requested_columns:
+        requested = [
+            column
+            for column in requested_columns
+            if column in business_columns and column in available
+        ]
+    else:
+        requested = [column for column in business_columns if column in available]
+    return _dedupe_texts([*prefix, *requested])
+
+
+# 함수 설명: `_verified_display_conditions()`는 성공한 실제 조회 결과가 보유한 파라미터·필터만 답변 표 후보로 수집합니다.
+def _verified_display_conditions(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    analysis = _dict(payload.get("analysis"))
+    if str(analysis.get("status") or "").strip().lower() != "ok":
+        return []
+
+    conditions: list[dict[str, Any]] = []
+    for source in _list(payload.get("source_results")):
+        if not isinstance(source, dict):
+            continue
+        source_status = str(source.get("status") or "").strip().lower()
+        if (
+            source_status not in {"ok", "success"}
+            or source.get("failure_type")
+            or source.get("error")
+        ):
+            continue
+        alias = str(source.get("source_alias") or source.get("dataset_key") or "").strip()
+        for field, value in _dict(source.get("applied_params")).items():
+            _append_display_condition(
+                conditions,
+                alias,
+                field,
+                {"operator": "eq", "value": value},
+            )
+        filters = _dict(source.get("pandas_filters")) or _dict(source.get("applied_filters"))
+        for field, raw_condition in filters.items():
+            _append_display_condition(conditions, alias, field, raw_condition)
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for condition in conditions:
+        marker = json.dumps(
+            {
+                "field": _presentation_field_key(condition.get("field")),
+                "operator": condition.get("operator"),
+                "values": condition.get("values"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(condition)
+    return deduped
+
+
+# 함수 설명: `_append_display_condition()`은 사용자 표시에 안전한 실제 적용 조건 하나를 표준 형태로 추가합니다.
+def _append_display_condition(
+    conditions: list[dict[str, Any]],
+    source_alias: str,
+    field: Any,
+    raw_condition: Any,
+) -> None:
+    text_field = str(field or "").strip()
+    field_key = _presentation_field_key(text_field)
+    if not text_field or not field_key or any(token in field_key for token in PRESENTATION_SENSITIVE_FIELD_TOKENS):
+        return
+    condition = _dict(raw_condition)
+    operator = str(condition.get("operator") or "eq").strip().lower().replace("-", "_")
+    raw_values = condition.get("values", condition.get("value")) if condition else raw_condition
+    values = raw_values if isinstance(raw_values, list) else [raw_values]
+    values = [value for value in values if value not in (None, "")]
+    if not values:
+        return
+    conditions.append(
+        {
+            "source_alias": source_alias,
+            "field": text_field,
+            "operator": operator or "eq",
+            "values": deepcopy(values),
+        }
+    )
+
+
+# 함수 설명: `_display_condition_value()`는 조건을 결과값으로 오인하지 않도록 연산자를 포함한 짧은 표시 문자열을 만듭니다.
+def _display_condition_value(condition: dict[str, Any]) -> str:
+    operator = str(condition.get("operator") or "eq").strip().lower()
+    values = _list(condition.get("values"))
+    text_values = [_display_value(value) for value in values[:10]]
+    if len(values) > len(text_values):
+        text_values.append(f"외 {len(values) - len(text_values)}개")
+    joined = ", ".join(text_values)
+    prefixes = {
+        "eq": "",
+        "in": "IN: ",
+        "contains": "포함: ",
+        "like": "포함: ",
+        "starts_with": "시작: ",
+        "gte": ">= ",
+        "gt": "> ",
+        "lte": "<= ",
+        "lt": "< ",
+        "ne": "!= ",
+    }
+    return prefixes.get(operator, f"{operator}: ") + joined
+
+
+# 함수 설명: `_display_condition_signature()`는 같은 필드 조건이 실제로 같은 범위인지 비교합니다.
+def _display_condition_signature(condition: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "operator": condition.get("operator"),
+            "values": condition.get("values"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
+# 함수 설명: `_presentation_field_key()`는 컬럼·필드 비교에 쓸 공백·대소문자 무시 키를 만듭니다.
+def _presentation_field_key(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
+# 함수 설명: `_safe_presentation_name()`은 내부 표시 키에 쓸 안정적인 식별자를 만듭니다.
+def _safe_presentation_name(value: Any) -> str:
+    text = re.sub(r"[^0-9A-Za-z가-힣_]+", "_", str(value or "")).strip("_")
+    return text or "condition"
+
+
+# 함수 설명: `_presentation_key()`는 실제 업무 컬럼과 충돌하지 않는 표시 전용 키를 고릅니다.
+def _presentation_key(base: str, occupied: set[str]) -> str:
+    candidate = base
+    suffix = 2
+    while candidate.casefold() in occupied:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+# 함수 설명: `_dedupe_texts()`는 표시 컬럼 순서를 유지하면서 같은 컬럼을 한 번만 남깁니다.
+def _dedupe_texts(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
 
 
 # 함수 설명: 공통 결과 구간 컬럼을 사용자가 이해하기 쉬운 표 머리글로 표시합니다.
