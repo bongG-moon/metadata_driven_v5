@@ -410,6 +410,17 @@ def _safe_catalog_job_contract(*values: dict[str, Any]) -> dict[str, Any]:
             if raw not in (None, "", [], {}):
                 result[key] = _sanitize_trusted_config(raw)
                 break
+    # Runtime schema validation must distinguish Catalog-declared columns from
+    # model-authored display suggestions.  Carry only the normalized column
+    # names extracted from the trusted Catalog item; never copy an arbitrary
+    # ``columns`` value from the intent job itself.
+    catalog_columns: list[str] = []
+    for value in values:
+        for column in _catalog_column_names(value):
+            if column not in catalog_columns:
+                catalog_columns.append(column)
+    if catalog_columns:
+        result["catalog_columns"] = catalog_columns
     return result
 
 

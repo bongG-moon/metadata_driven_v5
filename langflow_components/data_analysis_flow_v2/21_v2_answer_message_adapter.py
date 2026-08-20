@@ -210,6 +210,15 @@ def _message_sections_from_answer_sections(
     if answer:
         sections.append("### 답변\n" + _answer_markdown(answer))
 
+    # A retrieval/execution gate can carry an actionable, normalized reason
+    # even though it has no result rows.  It is a core part of the blocked
+    # response, so it is deliberately independent of the optional notices UI.
+    confirmation_required = _confirmation_required_section_from_answer_sections(
+        answer_sections
+    )
+    if confirmation_required:
+        sections.append(confirmation_required)
+
     if options["result_table"] and not _contains_markdown_table(answer):
         result_table = _result_table_section_from_answer_sections(
             answer_sections,
@@ -235,6 +244,54 @@ def _message_sections_from_answer_sections(
         if section:
             sections.append(section)
     return sections
+
+
+# 함수 설명: 차단된 조회의 정규화된 확인사항만 독립 Markdown section으로 렌더링합니다.
+def _confirmation_required_section_from_answer_sections(
+    answer_sections: dict[str, Any],
+) -> str:
+    confirmation = (
+        answer_sections.get("confirmation_required")
+        if isinstance(answer_sections.get("confirmation_required"), dict)
+        else {}
+    )
+    items = confirmation.get("items") if isinstance(confirmation.get("items"), list) else []
+    safe_items: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        # The producer emits strings only.  Keep this defensive check here as
+        # well, so a manually supplied answer_sections object cannot expose a
+        # raw trace/error dict in a customer-facing Markdown response.
+        if not isinstance(item, str):
+            continue
+        text = _normalize_confirmation_required_item(item)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        safe_items.append(text)
+        if len(safe_items) >= 4:
+            break
+    if not safe_items:
+        return ""
+    return "### 확인필요사항\n" + "\n".join(
+        f"- {_escape_markdown_tilde(item)}" for item in safe_items
+    )
+
+
+# 함수 설명: 확인사항 항목을 한 줄의 제한된 Markdown 표시값으로 정리합니다.
+def _normalize_confirmation_required_item(value: str) -> str:
+    text = str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or (
+        (text.startswith("{") and text.endswith("}"))
+        or (text.startswith("[") and text.endswith("]"))
+    ):
+        return ""
+    return text[:499].rstrip() + "…" if len(text) > 500 else text
 
 
 # 함수 설명: `_result_table_section_from_answer_sections()`는 표·응답 section·원본·답변을 최종 Message에 넣을 독립 Markdown section으로

@@ -18,16 +18,21 @@ def route_runtime():
 
 def test_route_manifest_has_independent_expectations_for_every_representative_case():
     manifest = validator.load_route_manifest()
-    fixture_ids = {int(item["id"]) for item in base.representative_cases()}
+    fixture_cases = {int(item["id"]): item for item in base.representative_cases()}
 
-    assert set(manifest) == fixture_ids | {31}
-    assert sum(item["expected_route"] == "fast" for item in manifest.values()) == 22
-    assert sum(item["expected_route"] == "complex" for item in manifest.values()) == 9
-    assert {
-        item["expected_analysis_execution_mode"] for item in manifest.values()
-    } == {"deterministic_fast", "deterministic_contract", "llm_pandas"}
-    assert manifest[31]["expected_dataset_keys"] == ["target"]
-    assert manifest[31]["forbidden_dataset_keys"] == ["production"]
+    assert set(manifest) == set(fixture_cases)
+    assert len(manifest) == 31
+    assert {item["expected_route"] for item in manifest.values()} == {"fast", "complex"}
+    assert sum(item["expected_route"] == "fast" for item in manifest.values()) == 13
+    assert sum(item["expected_route"] == "complex" for item in manifest.values()) == 18
+
+    for case_id, fixture_case in fixture_cases.items():
+        expectation = manifest[case_id]
+        assert expectation["question"] == fixture_case["question"]
+        assert expectation["expected_dataset_keys"]
+        if expectation["expected_route"] == "fast":
+            assert expectation["expected_recipe"]
+            assert isinstance(expectation["fixture_plan"], dict)
 
 
 def test_dataset_selection_assertion_is_validation_only_and_reports_wrong_source():
@@ -67,21 +72,17 @@ def test_live_manifest_can_declare_a_narrow_equivalent_deterministic_mode():
 
 
 @pytest.mark.parametrize(
-    ("case_id", "route", "analysis_mode", "executor_mode", "pandas_calls"),
+    "case_id",
     [
-        (1, "fast", "deterministic_fast", "execute_fast_path_recipe", 0),
-        (5, "complex", "deterministic_contract", "merge_metric_sources", 0),
-        (8, "complex", "llm_pandas", "llm_generated_code", 1),
-        (11, "complex", "deterministic_contract", "compare_presence", 0),
+        1,
+        2,
+        3,
+        28,
     ],
 )
 def test_manifest_fixtures_execute_expected_route_submode_and_call_contract(
     route_runtime,
     case_id: int,
-    route: str,
-    analysis_mode: str,
-    executor_mode: str,
-    pandas_calls: int,
 ):
     modules, v2 = route_runtime
     cases = {int(item["id"]): item for item in base.representative_cases()}
@@ -96,10 +97,20 @@ def test_manifest_fixtures_execute_expected_route_submode_and_call_contract(
     )
 
     assert result["status"] == "ok", result["errors"]
-    assert result["actual_route"] == route
-    assert result["analysis_execution_mode"] == analysis_mode
-    assert result["execution_mode"] == executor_mode
-    assert result["pandas_model_calls"] == pandas_calls
+    assert result["actual_route"] == expectation["expected_route"]
+    assert validator._mode_matches(
+        result["analysis_execution_mode"],
+        expectation,
+        primary_key="expected_analysis_execution_mode",
+        alternatives_key="expected_analysis_execution_modes",
+    )
+    assert validator._mode_matches(
+        result["execution_mode"],
+        expectation,
+        primary_key="expected_execution_mode",
+        alternatives_key="expected_execution_modes",
+    )
+    assert result["pandas_model_calls"] == expectation["expected_model_calls"]["pandas_generation"]
 
 
 def test_manifest_route_drift_is_reported_instead_of_becoming_the_oracle(route_runtime):

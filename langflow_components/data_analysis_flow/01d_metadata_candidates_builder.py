@@ -183,6 +183,7 @@ GENERIC_CANONICAL_ALIAS_TOKENS = GENERIC_SEMANTIC_TOKENS | {
     "target",
     "plan",
     "input",
+    "lot",
 }
 RUNTIME_FUNCTION_HELPERS = [
     {
@@ -1049,6 +1050,40 @@ def _score(item: dict[str, Any], tokens: list[str]) -> int:
     return _score_details(item, tokens)[0]
 
 
+# 함수 설명: 일반 entity 명사만으로 활성화하면 안 되는 조건부 실행 규칙인지 판정합니다.
+def _has_conditional_execution_contract(item: dict[str, Any]) -> bool:
+    payload = _dict(item.get("payload"))
+    if any(payload.get(key) not in (None, "", [], {}) for key in ("conditions", "filters")):
+        return True
+    criteria = _dict(payload.get("selection_criteria"))
+    if any(
+        criteria.get(key) not in (None, "", [], {})
+        for key in (
+            "required_all_aliases",
+            "required_any_aliases",
+            "required_terms_all",
+            "required_terms_any",
+            "exclude_when",
+        )
+    ):
+        return True
+    for key, value in payload.items():
+        if not str(key).strip().casefold().endswith("_selection"):
+            continue
+        stage = _dict(value)
+        if any(stage.get(field) not in (None, "", [], {}) for field in ("filter", "filters", "conditions")):
+            return True
+    return False
+
+
+# 함수 설명: Recipe의 generic entity key는 업무 규칙 활성화 증거가 아니며 Catalog key는 기존 신호를 유지합니다.
+def _generic_technical_identity_is_weak(item: dict[str, Any], token: str) -> bool:
+    if token not in GENERIC_CANONICAL_ALIAS_TOKENS:
+        return False
+    section = str(item.get("section") or "").strip().casefold()
+    return section == "analysis_recipes" or _has_conditional_execution_contract(item)
+
+
 # 함수 설명: `_score_details()`는 details의 일치도나 건수를 계산해 후보 비교와 요약에 사용합니다.
 def _score_details(item: dict[str, Any], tokens: list[str]) -> tuple[int, int]:
     if not tokens:
@@ -1081,8 +1116,17 @@ def _score_details(item: dict[str, Any], tokens: list[str]) -> tuple[int, int]:
     strong_hits = canonical_alias_hits
     for token in tokens:
         if _contains_token(technical_identity, token):
-            score += 12
-            strong_hits += 1
+            # A technical key is useful as a tiebreaker, but a generic entity
+            # noun inside that key (for example ``lot`` in a status recipe)
+            # is not evidence that the recipe's business condition was asked
+            # for.  Registered aliases/structured contracts still provide a
+            # strong hit, and non-generic technical identifiers keep the
+            # existing behavior.
+            if _generic_technical_identity_is_weak(item, token):
+                score += 1
+            else:
+                score += 12
+                strong_hits += 1
         elif _contains_token(label_identity, token):
             if token in GENERIC_SEMANTIC_TOKENS:
                 score += 1

@@ -2087,6 +2087,8 @@ def _execute_typed_pandas_plan(
             result = input_frames[0][projection].copy()
         elif operation == "groupby_and_aggregate":
             result = _typed_groupby_and_aggregate(input_frames[0], step, pd)
+        elif operation == "derive_formula":
+            result = _typed_derive_formula(input_frames[0], step, pd)
         elif operation == "sort_and_top_n":
             result = _typed_sort_and_top_n(input_frames[0], step)
         elif operation == "join":
@@ -2231,6 +2233,32 @@ def _apply_typed_step_filters(frame: Any, step: dict[str, Any]) -> Any:
             if len(values) != 1:
                 raise OutputContractError("Typed Pandas contains filter에는 값 하나가 필요합니다.")
             mask = text.str.contains(re.escape(str(values[0]).strip()), na=False)
+        elif operator in {"gt", "ge", "lt", "le"}:
+            if len(values) != 1:
+                raise OutputContractError(
+                    "Typed Pandas 수치 비교 filter에는 값 하나가 필요합니다."
+                )
+            try:
+                target = float(values[0])
+            except (TypeError, ValueError) as exc:
+                raise OutputContractError(
+                    "Typed Pandas 수치 비교 filter 값이 올바르지 않습니다."
+                ) from exc
+            # The standalone component receives pandas as an execution-local
+            # value, while this helper intentionally has no pandas parameter.
+            # Import locally so numeric Typed filters do not rely on a module
+            # global that is absent in the generated Langflow component.
+            import pandas as pd
+
+            numeric_series = pd.to_numeric(series, errors="coerce")
+            if operator == "gt":
+                mask = numeric_series.gt(target)
+            elif operator == "ge":
+                mask = numeric_series.ge(target)
+            elif operator == "lt":
+                mask = numeric_series.lt(target)
+            else:
+                mask = numeric_series.le(target)
         elif operator in {"not_blank", "not_empty"}:
             mask = text.ne("")
         elif operator in {"is_null", "is_empty", "null_or_empty"}:
@@ -2275,6 +2303,99 @@ def _typed_groupby_and_aggregate(frame: Any, step: dict[str, Any], pd: Any) -> A
     for output_column, aggregation in named_aggregations.items():
         row[output_column] = working[str(aggregation.column)].agg(aggregation.aggfunc)
     return pd.DataFrame([row], columns=output_columns)
+
+
+# 함수 설명: `_typed_derive_formula()`는 검증된 선언형 산술 계약으로 새 결과 컬럼을 만듭니다.
+def _typed_derive_formula(frame: Any, step: dict[str, Any], pd: Any) -> Any:
+    """Evaluate one narrow, metadata-declared arithmetic formula.
+
+    This deliberately accepts no expression text or callable.  A formula is a
+    fixed operator applied to existing columns and finite constants, so a
+    Domain recipe can define derived metrics without opening an arbitrary
+    Python execution path.
+    """
+
+    formula = step.get("formula") if isinstance(step.get("formula"), dict) else {}
+    output_column = str(formula.get("output_column") or "").strip()
+    operator = str(formula.get("operator") or "").strip().lower()
+    operands = formula.get("operands")
+    allowed_operators = {"add", "subtract", "multiply", "divide"}
+    if not output_column or operator not in allowed_operators:
+        raise OutputContractError("Typed Pandas formula 출력 컬럼 또는 연산자가 올바르지 않습니다.")
+    if not isinstance(operands, list) or not 2 <= len(operands) <= 8:
+        raise OutputContractError("Typed Pandas formula에는 2개 이상 8개 이하의 operand가 필요합니다.")
+    if operator in {"subtract", "divide"} and len(operands) != 2:
+        raise OutputContractError("Typed Pandas subtract/divide formula는 operand 두 개가 필요합니다.")
+    if _find_frame_column(frame, [output_column]):
+        raise OutputContractError("Typed Pandas formula 출력 컬럼이 이미 존재합니다: " + output_column)
+
+    null_policy = str(formula.get("null_policy") or "propagate").strip().lower()
+    if null_policy not in {"zero", "propagate"}:
+        raise OutputContractError("Typed Pandas formula null_policy가 올바르지 않습니다.")
+    zero_division_policy = str(
+        formula.get("zero_division_policy") or "null"
+    ).strip().lower()
+    if operator == "divide" and zero_division_policy not in {"zero", "null"}:
+        raise OutputContractError("Typed Pandas formula zero_division_policy가 올바르지 않습니다.")
+
+    numeric_operands: list[Any] = []
+    output_key = output_column.strip().casefold().replace(" ", "_")
+    for operand in operands:
+        if not isinstance(operand, dict) or len(operand) != 1:
+            raise OutputContractError("Typed Pandas formula operand 형식이 올바르지 않습니다.")
+        if "column" in operand:
+            column = str(operand.get("column") or "").strip()
+            if not column:
+                raise OutputContractError("Typed Pandas formula operand 컬럼이 없습니다.")
+            if column.casefold().replace(" ", "_") == output_key:
+                raise OutputContractError("Typed Pandas formula는 자신의 출력 컬럼을 operand로 사용할 수 없습니다.")
+            actual_column = _find_frame_column(frame, [column])
+            if not actual_column:
+                raise OutputContractError("Typed Pandas formula operand 컬럼을 찾을 수 없습니다: " + column)
+            series = pd.to_numeric(frame[actual_column], errors="coerce")
+        elif "constant" in operand and not isinstance(operand.get("constant"), bool):
+            try:
+                constant = float(operand.get("constant"))
+            except (TypeError, ValueError) as exc:
+                raise OutputContractError("Typed Pandas formula constant가 올바르지 않습니다.") from exc
+            if not math.isfinite(constant):
+                raise OutputContractError("Typed Pandas formula constant는 유한한 숫자여야 합니다.")
+            series = pd.Series(constant, index=frame.index, dtype="float64")
+        else:
+            raise OutputContractError("Typed Pandas formula operand 형식이 올바르지 않습니다.")
+        numeric_operands.append(series.fillna(0) if null_policy == "zero" else series)
+
+    result = numeric_operands[0]
+    if operator == "add":
+        for operand in numeric_operands[1:]:
+            result = result + operand
+    elif operator == "multiply":
+        for operand in numeric_operands[1:]:
+            result = result * operand
+    elif operator == "subtract":
+        result = numeric_operands[0] - numeric_operands[1]
+    else:
+        denominator = numeric_operands[1]
+        zero_mask = denominator.eq(0)
+        result = numeric_operands[0] / denominator.mask(zero_mask)
+        if zero_division_policy == "zero":
+            result = result.mask(zero_mask, 0)
+
+    if "round_digits" in formula:
+        raw_digits = formula.get("round_digits")
+        if isinstance(raw_digits, bool):
+            raise OutputContractError("Typed Pandas formula round_digits가 올바르지 않습니다.")
+        try:
+            round_digits = int(raw_digits)
+        except (TypeError, ValueError) as exc:
+            raise OutputContractError("Typed Pandas formula round_digits가 올바르지 않습니다.") from exc
+        if float(round_digits) != float(raw_digits) or not 0 <= round_digits <= 12:
+            raise OutputContractError("Typed Pandas formula round_digits가 올바르지 않습니다.")
+        result = result.round(round_digits)
+
+    output = frame.copy()
+    output[output_column] = result
+    return output
 
 
 # 함수 설명: `_typed_sort_and_top_n()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
@@ -4092,10 +4213,10 @@ def _metric_semantics_contract_error(payload: dict[str, Any], code: str) -> str:
             for item in ast.walk(node)
             if isinstance(item, ast.Constant) and isinstance(item.value, str)
         }
-        if function_name in {"agg", "aggregate"} and "sum" in string_values:
-            matched = [metric for metric in active_metrics if metric in string_values]
-            if matched:
-                return f"비가산 metric {matched[0]}에는 sum 집계를 사용할 수 없습니다."
+        if function_name in {"agg", "aggregate"}:
+            aggregate_error = _non_additive_aggregate_call_error(node, active_metrics)
+            if aggregate_error:
+                return aggregate_error
         if function_name != "sum":
             continue
         matched = [metric for metric in active_metrics if metric in string_values]
@@ -4112,6 +4233,143 @@ def _metric_semantics_contract_error(payload: dict[str, Any], code: str) -> str:
         if has_groupby and not has_column_selection and active_metrics:
             metric = next(iter(active_metrics))
             return f"비가산 metric {metric}을 포함한 groupby 결과 전체에 sum을 사용할 수 없습니다."
+    return ""
+
+
+# 함수 설명: `.agg()`의 metric별 집계 방식을 AST에서 연결해 비가산 metric의 실제 sum 사용만 차단합니다.
+def _non_additive_aggregate_call_error(
+    node: ast.Call,
+    active_metrics: dict[str, dict[str, Any]],
+) -> str:
+    """Return an error only when a non-additive source column itself uses sum.
+
+    A single pandas ``agg`` call can legitimately contain mixed rollups, for
+    example ``{'EQP_ID_CNT': 'sum', 'UPH': 'mean'}``.  Looking at all string
+    literals in that call loses the column-to-method relationship and falsely
+    treats UPH as summed.  Parse the mapping/NamedAgg forms instead, while
+    retaining the existing conservative checks for direct ``.sum()`` calls.
+    """
+
+    for column, methods in _ast_aggregate_column_methods(node):
+        metric = column.casefold()
+        if metric not in active_metrics or "sum" not in methods:
+            continue
+        return f"비가산 metric {metric}에는 sum 집계를 사용할 수 없습니다."
+    return ""
+
+
+# 함수 설명: pandas `.agg()` 호출의 source column과 집계명 관계를 문자열 literal 범위에서 추출합니다.
+def _ast_aggregate_column_methods(node: ast.Call) -> list[tuple[str, set[str]]]:
+    """Extract statically declared pandas aggregation column/method pairs.
+
+    Dynamic aggregation dictionaries remain outside this narrow AST check, as
+    they did before.  The supported literal forms cover normal pandas syntax:
+    dict mappings, ``**{...}``, keyword named aggregation, and ``NamedAgg``.
+    """
+
+    pairs: list[tuple[str, set[str]]] = []
+
+    def append_pair(column: str, value: ast.AST) -> None:
+        source_column, methods = _ast_named_aggregation_parts(value)
+        if source_column:
+            if methods:
+                pairs.append((source_column, methods))
+            return
+        methods = _ast_aggregation_method_literals(value)
+        if column and methods:
+            pairs.append((column, methods))
+
+    def append_mapping(value: ast.AST) -> None:
+        if isinstance(value, ast.Dict):
+            for key, item in zip(value.keys, value.values, strict=False):
+                column = _ast_string_literal(key)
+                if column:
+                    append_pair(column, item)
+            return
+        # Support ``.agg(dict(UPH='mean', EQP_ID_CNT='sum'))`` without
+        # interpreting arbitrary function results as a static mapping.
+        if not (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "dict"
+        ):
+            return
+        for keyword in value.keywords:
+            if keyword.arg:
+                append_pair(keyword.arg, keyword.value)
+
+    for argument in node.args:
+        append_mapping(argument)
+    for keyword in node.keywords:
+        if keyword.arg is None:
+            append_mapping(keyword.value)
+            continue
+        source_column, methods = _ast_named_aggregation_parts(keyword.value)
+        if not source_column:
+            source_column, methods = _ast_keyword_named_aggregation_tuple(keyword.value)
+        if source_column:
+            if methods:
+                pairs.append((source_column, methods))
+            continue
+        append_pair(keyword.arg, keyword.value)
+    return pairs
+
+
+# 함수 설명: pandas NamedAgg literal에서 실제 source column과 집계명을 추출합니다.
+def _ast_named_aggregation_parts(value: ast.AST) -> tuple[str, set[str]]:
+    if not isinstance(value, ast.Call):
+        return "", set()
+    function_name = (
+        value.func.attr
+        if isinstance(value.func, ast.Attribute)
+        else value.func.id
+        if isinstance(value.func, ast.Name)
+        else ""
+    )
+    if function_name.casefold() != "namedagg":
+        return "", set()
+    source_value = value.args[0] if value.args else None
+    method_value = value.args[1] if len(value.args) > 1 else None
+    for keyword in value.keywords:
+        if keyword.arg == "column":
+            source_value = keyword.value
+        elif keyword.arg == "aggfunc":
+            method_value = keyword.value
+    source_column = _ast_string_literal(source_value)
+    methods = _ast_aggregation_method_literals(method_value)
+    return source_column, methods
+
+
+# 함수 설명: pandas keyword named aggregation tuple `(source_column, method)`을 해석합니다.
+def _ast_keyword_named_aggregation_tuple(value: ast.AST) -> tuple[str, set[str]]:
+    if not isinstance(value, ast.Tuple) or len(value.elts) != 2:
+        return "", set()
+    source_column = _ast_string_literal(value.elts[0])
+    methods = _ast_aggregation_method_literals(value.elts[1])
+    return source_column, methods
+
+
+# 함수 설명: aggregation value AST에서 명시된 문자열 집계명을 재귀적으로 수집합니다.
+def _ast_aggregation_method_literals(value: ast.AST | None) -> set[str]:
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return {str(value.value).strip().casefold()}
+    if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        methods: set[str] = set()
+        for item in value.elts:
+            methods.update(_ast_aggregation_method_literals(item))
+        return methods
+    if isinstance(value, ast.Dict):
+        methods: set[str] = set()
+        for item in value.values:
+            methods.update(_ast_aggregation_method_literals(item))
+        return methods
+    return set()
+
+
+# 함수 설명: AST literal이 문자열일 때 정리된 텍스트를 반환합니다.
+def _ast_string_literal(value: ast.AST | None) -> str:
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return str(value.value).strip()
     return ""
 
 
@@ -7211,6 +7469,10 @@ def execute_hybrid_analysis(
         )
         return _finalize_hybrid_trace(result, "blocked", started, llm_calls)
 
+    if str(contract.get("operation") or "").strip() == "complete_without_pandas":
+        result = _terminal_execution_result(payload, contract)
+        return _finalize_hybrid_trace(result, "complex", started, llm_calls)
+
     if route == "fast":
         result = execute_pandas_with_repair(
             payload,
@@ -7251,6 +7513,15 @@ def execute_hybrid_analysis(
         )
         return _finalize_hybrid_trace(result, "complex", started, llm_calls)
 
+    # Runtime defense: the resolver normally blocks this state.  Keep the
+    # check here as well because imported/stale contracts can bypass 14B.
+    # It is intentionally limited to normalized new-analysis plans with a
+    # data-shaped contract, so established source-backed Complex behavior and
+    # explanation/follow-up routes are unaffected.
+    if _new_data_request_without_runtime_source(payload):
+        result = _hybrid_source_unresolved(payload)
+        return _finalize_hybrid_trace(result, "blocked", started, llm_calls)
+
     prompt = _text_value(pandas_prompt).strip()
     fast_trace.setdefault("prompt_chars", {})["pandas_generation"] = len(prompt)
     if not prompt or model_invoker is None:
@@ -7274,6 +7545,101 @@ def execute_hybrid_analysis(
     if isinstance(repair_trace, dict) and repair_trace.get("llm_called") is True:
         llm_calls["repair"] = int(llm_calls.get("repair") or 0) + 1
     return _finalize_hybrid_trace(result, "complex", started, llm_calls)
+
+
+# 함수 설명: pandas 실행이 필요 없는 clarification/direct-answer terminal 결과를 빈 데이터 계약으로 기록합니다.
+def _terminal_execution_result(
+    payload: dict[str, Any],
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    next_payload = payload
+    terminal_kind = str(contract.get("terminal_kind") or "direct_answer").strip()
+    next_payload["analysis"] = {
+        "status": "ok",
+        "row_count": 0,
+        "columns": [],
+        "execution_mode": "terminal_response",
+        "terminal_kind": terminal_kind,
+        "outcome_kind": terminal_kind,
+    }
+    next_payload["data"] = {
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+        "data_ref": "",
+    }
+    next_payload["_full_result_rows"] = []
+    next_payload.setdefault("trace", {}).setdefault("inspection", {})[
+        "pandas_execution"
+    ] = {
+        "stage": "17_hybrid_analysis_executor",
+        "status": "skipped",
+        "reason": "terminal_response",
+        "execution_mode": "terminal_response",
+        "terminal_kind": terminal_kind,
+        "model_called": False,
+    }
+    return next_payload
+
+
+# 함수 설명: stale Complex 계약이라도 신규 데이터 요청에 runtime source가 없으면 pandas 모델 호출 전에 차단합니다.
+def _new_data_request_without_runtime_source(payload: dict[str, Any]) -> bool:
+    plan = (
+        payload.get("intent_plan")
+        if isinstance(payload.get("intent_plan"), dict)
+        else {}
+    )
+    if str(plan.get("request_scope") or "new_analysis").strip() != "new_analysis":
+        return False
+    runtime_sources = (
+        payload.get("runtime_sources")
+        if isinstance(payload.get("runtime_sources"), dict)
+        else {}
+    )
+    if runtime_sources:
+        return False
+    return True
+
+
+# 함수 설명: source 없는 신규 데이터 분석을 가짜 DataFrame 성공 대신 명시적인 blocked 결과로 변환합니다.
+def _hybrid_source_unresolved(payload: dict[str, Any]) -> dict[str, Any]:
+    next_payload = payload
+    error = {
+        "type": "analysis_source_unresolved",
+        "message": "신규 데이터 분석 요청에 사용할 실행 source를 확정하지 못했습니다.",
+    }
+    next_payload["execution_gate"] = {
+        "status": "blocked",
+        "reason": "analysis_source_unresolved",
+        "failures": [deepcopy(error)],
+    }
+    next_payload["answer_message"] = error["message"]
+    next_payload["analysis"] = {
+        "status": "error",
+        "row_count": 0,
+        "columns": [],
+        "execution_mode": "blocked",
+        "error": deepcopy(error),
+    }
+    next_payload["data"] = {
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+        "data_ref": "",
+    }
+    next_payload.setdefault("trace", {}).setdefault("errors", []).append(
+        deepcopy(error)
+    )
+    next_payload.setdefault("trace", {}).setdefault("inspection", {})[
+        "pandas_execution"
+    ] = {
+        "stage": "17_hybrid_analysis_executor",
+        "status": "skipped",
+        "error": deepcopy(error),
+        "execution_mode": "blocked",
+        "model_called": False,
+    }
+    return next_payload
 
 
 # 함수 설명: `_hybrid_model_error()`는 17 V2 Hybrid 분석 실행기 처리 중 model·오류 관련 값을 계산·변환하는 내부 helper입니다.

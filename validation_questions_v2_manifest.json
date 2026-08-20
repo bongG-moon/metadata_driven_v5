@@ -1,378 +1,51 @@
 {
   "version": 1,
-  "description": "Executable route expectations for the representative Data Analysis Flow V2 questions. Fixture plans are validation-only Typed IR inputs; production routing never reads this file.",
+  "description": "Independent V2 route expectations for the 31 representative manufacturing questions. Fixture plans are validation-only Typed IR inputs; production routing never reads this file.",
   "route_defaults": {
     "fast": {
       "expected_analysis_execution_mode": "deterministic_fast",
+      "expected_execution_mode": "execute_fast_path_recipe",
+      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
       "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 0}
     },
     "complex": {
       "expected_analysis_execution_mode": "llm_pandas",
+      "expected_execution_mode": "llm_generated_code",
+      "expected_model_calls": {"intent": 0, "pandas_generation": 1, "repair": 0, "answer_generation": 0},
       "expected_live_model_calls": {"intent": 1, "pandas_generation": 1, "repair": {"min": 0, "max": 1}, "answer_generation": 1}
     }
   },
   "cases": [
-    {
-      "id": 1,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["MCP_NO", "DEVICE"],
-        "metrics": [{"source_column": "PRODUCTION", "aggregation": "sum", "output_column": "INPUT_QTY"}]
-      }
-    },
-    {
-      "id": 2,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["OPER_NAME"],
-        "metrics": [{"source_column": "PRODUCTION", "aggregation": "sum", "output_column": "TOTAL_PRODUCTION"}],
-        "ordering": [{"column": "OPER_NAME", "direction": "asc"}]
-      }
-    },
-    {
-      "id": 3,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"],
-        "metrics": [{"source_column": "PRODUCTION", "aggregation": "sum", "output_column": "PKG_OUT_QTY"}],
-        "ordering": [{"column": "PKG_OUT_QTY", "direction": "desc"}]
-      }
-    },
-    {
-      "id": 4,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"],
-        "metrics": [{"source_column": "WIP", "aggregation": "sum", "output_column": "BOH_WIP"}],
-        "ordering": [{"column": "BOH_WIP", "direction": "desc"}]
-      }
-    },
-    {
-      "id": 5,
-      "expected_route": "complex",
-      "expected_recipe": null,
-      "expected_execution_mode": "merge_metric_sources",
-      "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"],
-      "expected_analysis_execution_mode": "deterministic_contract",
-      "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"],
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1},
-      "fixture_plan": {
-        "deterministic_operation": "merge_metric_sources",
-        "grain_columns": ["OPER_NAME"],
-        "join_type": "outer",
-        "metrics": [
-          {"source_alias": "production_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "TOTAL_PRODUCTION"},
-          {"source_alias": "wip_data", "source_column": "WIP", "aggregation": "sum", "output_column": "BOH_WIP"}
-        ]
-      }
-    },
-    {
-      "id": 6,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"],
-        "metrics": [{"source_column": "WIP", "aggregation": "sum", "output_column": "BOH_WIP"}],
-        "ordering": [{"column": "BOH_WIP", "direction": "desc"}]
-      }
-    },
-    {
-      "id": 7,
-      "expected_route": "fast",
-      "expected_recipe": "distinct_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {"group_by": ["DEVICE"], "projection": ["DEVICE"]}
-    },
-    {
-      "id": 8,
-      "expected_route": "complex",
-      "expected_recipe": null,
-      "expected_execution_mode": "llm_generated_code",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 1, "repair": 0, "answer_generation": 0}
-    },
-    {
-      "id": 9,
-      "expected_route": "complex",
-      "expected_recipe": null,
-      "expected_execution_mode": "llm_generated_code",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 1, "repair": 0, "answer_generation": 0}
-    },
-    {
-      "id": 10,
-      "expected_route": "complex",
-      "expected_recipe": null,
-      "expected_execution_mode": "compare_metrics",
-      "expected_execution_modes": ["compare_metrics", "execute_typed_pandas_plan"],
-      "expected_analysis_execution_mode": "deterministic_contract",
-      "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"],
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1},
-      "fixture_plan": {
-        "deterministic_operation": "compare_metrics",
-        "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"],
-        "join_type": "inner",
-        "lhs_metric_column": "TOTAL_WIP",
-        "comparison_operator": "gt",
-        "rhs_metric_column": "INPUT_QTY",
-        "metrics": [
-          {"source_alias": "input_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "INPUT_QTY"},
-          {"source_alias": "wip_data", "source_column": "WIP", "aggregation": "sum", "output_column": "TOTAL_WIP"}
-        ]
-      }
-    },
-    {
-      "id": 11,
-      "expected_route": "complex",
-      "expected_recipe": null,
-      "expected_execution_mode": "compare_presence",
-      "expected_analysis_execution_mode": "deterministic_contract",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1},
-      "fixture_plan": {
-        "deterministic_operation": "compare_presence",
-        "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"],
-        "metrics": [
-          {"source_alias": "input_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "INPUT_QTY"},
-          {"source_alias": "da_wip_data", "source_column": "WIP", "aggregation": "sum", "output_column": "DA_WIP"}
-        ]
-      }
-    },
-    {
-      "id": 12,
-      "expected_route": "complex",
-      "expected_recipe": null,
-      "expected_execution_mode": "merge_metric_sources",
-      "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"],
-      "expected_analysis_execution_mode": "deterministic_contract",
-      "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"],
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1},
-      "fixture_plan": {
-        "deterministic_operation": "merge_metric_sources",
-        "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"],
-        "join_type": "outer",
-        "metrics": [
-          {"source_alias": "production_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "FCB_PRODUCTION"},
-          {"source_alias": "wip_data", "source_column": "WIP", "aggregation": "sum", "output_column": "WB2_WIP"}
-        ]
-      }
-    },
-    {
-      "id": 13,
-      "expected_route": "fast",
-      "expected_recipe": "detail_query",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {"projection": ["LOT_ID", "OPER_NAME", "IN_TAT"]}
-    },
-    {
-      "id": 14,
-      "expected_route": "fast",
-      "expected_recipe": "detail_query",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {"projection": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"]}
-    },
-    {
-      "id": 15,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["OPER_SEQ", "OPER_NAME"],
-        "metrics": [{"source_column": "PRODUCTION", "aggregation": "sum", "output_column": "TOTAL_PRODUCTION"}],
-        "ordering": [{"column": "OPER_SEQ", "direction": "asc"}]
-      }
-    },
-    {
-      "id": 16,
-      "expected_route": "fast",
-      "expected_recipe": "detail_query",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {"projection": ["LOT_ID", "OPER_NAME", "HOLD_REASON"]}
-    },
-    {
-      "id": 17,
-      "expected_route": "fast",
-      "expected_recipe": "list_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["OPER_NAME"],
-        "metrics": [{"source_column": "LOT_ID", "aggregation": "collect_unique", "output_column": "LOT_LIST"}]
-      }
-    },
-    {
-      "id": 18,
-      "expected_route": "fast",
-      "expected_recipe": "list_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["OPER_NAME"],
-        "metrics": [{"source_column": "LOT_ID", "aggregation": "collect_unique", "output_column": "LOT_LIST"}]
-      }
-    },
-    {
-      "id": 19,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["OPER_NAME"],
-        "metrics": [{"source_column": "PRODUCTION", "aggregation": "sum", "output_column": "TOTAL_PRODUCTION"}],
-        "ordering": [{"column": "OPER_NAME", "direction": "asc"}]
-      }
-    },
-    {
-      "id": 20,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["OPER_NAME"],
-        "metrics": [{"source_column": "PRODUCTION", "aggregation": "sum", "output_column": "TOTAL_PRODUCTION"}],
-        "ordering": [{"column": "OPER_NAME", "direction": "asc"}]
-      }
-    },
-    {
-      "id": 21,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"],
-        "metrics": [{"source_column": "PRODUCTION", "aggregation": "sum", "output_column": "TOTAL_PRODUCTION"}]
-      }
-    },
-    {
-      "id": 22,
-      "expected_route": "complex",
-      "expected_recipe": null,
-      "expected_execution_mode": "llm_generated_code",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 1, "repair": 0, "answer_generation": 0}
-    },
-    {
-      "id": 23,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
-        "metrics": [{"source_column": "UPH", "aggregation": "mean", "output_column": "UPH"}],
-        "ordering": [{"column": "UPH", "direction": "desc"}]
-      }
-    },
-    {
-      "id": 24,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["OPER_NAME", "EQP_MODEL"],
-        "metrics": [{"source_column": "UPH", "aggregation": "mean", "output_column": "UPH"}]
-      }
-    },
-    {
-      "id": 25,
-      "expected_route": "complex",
-      "expected_recipe": null,
-      "expected_execution_mode": "llm_generated_code",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 1, "repair": 0, "answer_generation": 0}
-    },
-    {
-      "id": 26,
-      "expected_route": "fast",
-      "expected_recipe": "group_summary",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
-        "metrics": [{"source_column": "UPH", "aggregation": "mean", "output_column": "UPH"}]
-      }
-    },
-    {
-      "id": 27,
-      "expected_route": "fast",
-      "expected_recipe": null,
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "group_by": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
-        "metrics": [{"source_column": "EQP_ID", "aggregation": "collect_unique", "output_column": "EQP_LIST"}]
-      }
-    },
-    {
-      "id": 28,
-      "expected_route": "fast",
-      "expected_recipe": "detail_query",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {"projection": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON", "OPER_IN_TM"]}
-    },
-    {
-      "id": 29,
-      "expected_route": "fast",
-      "expected_recipe": "detail_query",
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {"projection": ["LOT_ID", "DEVICE", "PROD_QTY", "WF_QTY", "IN_TAT", "CUM_TAT", "HOLD_STAT", "HOLD_REASON"]}
-    },
-    {
-      "id": 30,
-      "expected_route": "complex",
-      "expected_recipe": null,
-      "expected_execution_mode": "merge_metric_sources",
-      "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"],
-      "expected_analysis_execution_mode": "deterministic_contract",
-      "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"],
-      "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0},
-      "fixture_plan": {
-        "deterministic_operation": "merge_metric_sources",
-        "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO"],
-        "metrics": [
-          {"source_alias": "production_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "PRODUCTION"},
-          {"source_alias": "equipment_data", "source_column": "EQP_ID", "aggregation": "nunique", "output_column": "EQUIP_COUNT"},
-          {"source_alias": "equipment_data", "source_column": "EQP_ID", "aggregation": "collect_unique", "output_column": "EQUIP_LIST"}
-        ],
-        "join_type": "left",
-        "sort_by": "PRODUCTION",
-        "sort_order": "desc"
-      },
-      "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}
-    },
-    {
-      "id": 31,
-      "question": "7/6 생산 계획 데이터 알려줘",
-      "expected_route": "fast",
-      "expected_recipe": null,
-      "expected_dataset_keys": ["target"],
-      "forbidden_dataset_keys": ["production"],
-      "expected_execution_mode": "execute_fast_path_recipe",
-      "expected_model_calls": {"intent": 1, "pandas_generation": 0, "repair": 0, "answer_generation": 0}
-    }
+    {"id": 1, "question": "FCB공정 R0429 RECIPE의 UPH알려줘", "expected_route": "fast", "expected_recipe": "group_summary", "expected_dataset_keys": ["eqp_uph"], "fixture_plan": {"group_by": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"], "metrics": [{"source_column": "UPH", "aggregation": "mean", "output_column": "UPH"}]}},
+    {"id": 2, "question": "M/D공정 LEAD별 장비 ASSIGN 댓수와 UPH알려줘", "expected_route": "complex", "expected_dataset_keys": ["equipment_assign", "eqp_uph"]},
+    {"id": 3, "question": "SBM공정 제품별 보유Capa 알려줘", "expected_route": "complex", "expected_dataset_keys": ["equipment_assign", "eqp_uph"]},
+    {"id": 4, "question": "D/A공정 78LEAD 제품별 장비현황과 CAPA 알려줘", "expected_route": "complex", "expected_dataset_keys": ["equipment_assign", "eqp_uph"]},
+    {"id": 5, "question": "현재 SBM공정 Down장비들 Event 알려줘", "expected_route": "fast", "expected_recipe": "detail_query", "expected_dataset_keys": ["eqp_down_list"], "fixture_plan": {"projection": ["EQP_ID", "OPER_NAME", "LAST_DOWN_TM", "LAST_EVENT_DESC", "HIST_DESC"]}},
+    {"id": 6, "question": "SBM공정 현재 보유재공중 266LEAD 제품의 LOT LIST 알려줘", "expected_route": "fast", "expected_recipe": "detail_query", "expected_dataset_keys": ["lot_status"], "fixture_plan": {"projection": ["LOT_ID", "OPER_NAME", "LEAD", "MCP_NO", "PROD_QTY"]}},
+    {"id": 7, "question": "WSD 공정 L-085 제품 몇 Lot 보유 하고 있는지 알려줘", "expected_route": "complex", "expected_dataset_keys": ["lot_status"]},
+    {"id": 8, "question": "16G SP FCBGA SDP 78 제품 S/G 공정 UPH 확인 해줘", "expected_route": "complex", "expected_dataset_keys": ["eqp_uph"]},
+    {"id": 9, "question": "8월19일 제품별 out계획 알려줘. 단, out계획이 0인 제품은 제외 해줘", "expected_route": "fast", "expected_recipe": "group_summary", "expected_dataset_keys": ["target"], "fixture_plan": {"group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "ORG", "MCP_NO"], "metrics": [{"source_column": "OUT_PLAN_QTY", "aggregation": "sum", "output_column": "OUT_PLAN_QTY"}], "ordering": [{"column": "OUT_PLAN_QTY", "direction": "desc"}]}},
+    {"id": 10, "question": "D/A1~W/B6 공정 IN TAT 1일 이상된 LOT LIST 알려줘", "expected_route": "complex", "expected_dataset_keys": ["lot_status"]},
+    {"id": 11, "question": "DA, PCO, DI 공정 HOLD LOT 알려줘", "expected_route": "fast", "expected_recipe": "detail_query", "expected_dataset_keys": ["lot_status"], "fixture_plan": {"projection": ["LOT_ID", "OPER_NAME", "HOLD_STAT", "HOLD_REASON"]}},
+    {"id": 12, "question": "어제 L-267제품 OUT계획, PKG OUT 실적 알려줘", "expected_route": "complex", "expected_dataset_keys": ["target", "production"], "expected_execution_mode": "merge_metric_sources", "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"], "expected_analysis_execution_mode": "deterministic_contract", "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"], "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0}, "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}, "fixture_plan": {"deterministic_operation": "merge_metric_sources", "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "ORG", "MCP_NO"], "join_type": "outer", "metrics": [{"source_alias": "target_data", "source_column": "OUT_PLAN_QTY", "aggregation": "sum", "output_column": "OUT_PLAN_QTY"}, {"source_alias": "pkg_out_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "PKG_OUT_QTY"}]}},
+    {"id": 13, "question": "어제 제품별 OUT 계획과 PKG OUT", "expected_route": "complex", "expected_dataset_keys": ["target", "production"], "expected_execution_mode": "merge_metric_sources", "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"], "expected_analysis_execution_mode": "deterministic_contract", "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"], "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0}, "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}, "fixture_plan": {"deterministic_operation": "merge_metric_sources", "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "ORG", "MCP_NO"], "join_type": "outer", "metrics": [{"source_alias": "target_data", "source_column": "OUT_PLAN_QTY", "aggregation": "sum", "output_column": "OUT_PLAN_QTY"}, {"source_alias": "pkg_out_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "PKG_OUT_QTY"}]}},
+    {"id": 14, "question": "TSSJQ07AH LOT Hold 이력 조회해줘", "expected_route": "fast", "expected_recipe": "detail_query", "expected_dataset_keys": ["hold_history"], "fixture_plan": {"projection": ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"]}},
+    {"id": 15, "question": "FCB공정 오늘 아침재공 제품별로 알려줘", "expected_route": "fast", "expected_recipe": "group_summary", "expected_dataset_keys": ["wip"], "fixture_plan": {"group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "ORG", "MCP_NO"], "metrics": [{"source_column": "WIP", "aggregation": "sum", "output_column": "BOH_WIP"}], "ordering": [{"column": "BOH_WIP", "direction": "desc"}]}},
+    {"id": 16, "question": "오늘 PKG 투입계획 있는 제품들에 대해 INPUT실적 알려줘", "expected_route": "complex", "expected_dataset_keys": ["target", "production_today"], "expected_execution_mode": "merge_metric_sources", "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"], "expected_analysis_execution_mode": "deterministic_contract", "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"], "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0}, "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}, "fixture_plan": {"deterministic_operation": "merge_metric_sources", "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "ORG", "MCP_NO"], "join_type": "left", "metrics": [{"source_alias": "target_data", "source_column": "INPUT_PLAN_QTY", "aggregation": "sum", "output_column": "INPUT_PLAN_QTY"}, {"source_alias": "input_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "INPUT_QTY"}]}},
+    {"id": 17, "question": "W/B공정 차수별 오늘 아침 재공 알려줘", "expected_route": "fast", "expected_recipe": "group_summary", "expected_dataset_keys": ["wip"], "fixture_plan": {"group_by": ["OPER_NAME"], "metrics": [{"source_column": "WIP", "aggregation": "sum", "output_column": "BOH_WIP"}], "ordering": [{"column": "OPER_NAME", "direction": "asc"}]}},
+    {"id": 18, "question": "S/G공정 제품별 오늘 아침 재공 알려줘", "expected_route": "fast", "expected_recipe": "group_summary", "expected_dataset_keys": ["wip"], "fixture_plan": {"group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "ORG", "MCP_NO"], "metrics": [{"source_column": "WIP", "aggregation": "sum", "output_column": "BOH_WIP"}], "ordering": [{"column": "BOH_WIP", "direction": "desc"}]}},
+    {"id": 19, "question": "W/B공정 차수별 현재 생산실적과 재공현황 알려줘", "expected_route": "complex", "expected_dataset_keys": ["production_today", "wip_today"], "expected_execution_mode": "merge_metric_sources", "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"], "expected_analysis_execution_mode": "deterministic_contract", "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"], "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0}, "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}, "fixture_plan": {"deterministic_operation": "merge_metric_sources", "grain_columns": ["OPER_NAME"], "join_type": "outer", "metrics": [{"source_alias": "production_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "PRODUCTION"}, {"source_alias": "wip_data", "source_column": "WIP", "aggregation": "sum", "output_column": "WIP"}]}},
+    {"id": 20, "question": "S/G공정 제품별 현재 생산실적과 재공현황 알려줘", "expected_route": "complex", "expected_dataset_keys": ["production_today", "wip_today"], "expected_execution_mode": "merge_metric_sources", "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"], "expected_analysis_execution_mode": "deterministic_contract", "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"], "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0}, "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}, "fixture_plan": {"deterministic_operation": "merge_metric_sources", "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "ORG", "MCP_NO"], "join_type": "outer", "metrics": [{"source_alias": "production_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "PRODUCTION"}, {"source_alias": "wip_data", "source_column": "WIP", "aggregation": "sum", "output_column": "WIP"}]}},
+    {"id": 21, "question": "SBM공정 제품별 어제 아침재공과 생산실적 그리고 오늘 아침재공 알려줘", "expected_route": "complex", "expected_dataset_keys": ["wip", "production"], "expected_execution_mode": "merge_metric_sources", "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"], "expected_analysis_execution_mode": "deterministic_contract", "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"], "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0}, "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}, "fixture_plan": {"deterministic_operation": "merge_metric_sources", "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "ORG", "MCP_NO"], "join_type": "outer", "metrics": [{"source_alias": "boh_yesterday_data", "source_column": "WIP", "aggregation": "sum", "output_column": "BOH_YESTERDAY"}, {"source_alias": "production_yesterday_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "PRODUCTION_YESTERDAY"}, {"source_alias": "boh_today_data", "source_column": "WIP", "aggregation": "sum", "output_column": "BOH_TODAY"}]}},
+    {"id": 22, "question": "DA공정 L-217제품 Assign 장비별 현재 가동율현황 조회해줘", "expected_route": "complex", "expected_dataset_keys": ["equipment_assign", "eqp_utilization_today"]},
+    {"id": 23, "question": "D/A공정 장비들 현재 작업제품들과 가동율현황 조회해줘", "expected_route": "fast", "expected_recipe": "detail_query", "expected_dataset_keys": ["eqp_utilization_today"], "fixture_plan": {"projection": ["EQP_ID", "EQP_MODEL", "OPER_NAME", "CURRENT_PRODUCT", "UTILIZATION_RATE", "EQP_STATUS"]}},
+    {"id": 24, "question": "D724장비 현재 가동율과 Event History 조회해줘", "expected_route": "complex", "expected_dataset_keys": ["eqp_utilization_today", "eqp_history_today"]},
+    {"id": 25, "question": "W/B공정 1일이상 Down된 장비 List와 Down시간, Down발생사유 알려줘", "expected_route": "fast", "expected_recipe": "detail_query", "expected_dataset_keys": ["eqp_down_list"], "fixture_plan": {"projection": ["EQP_ID", "OPER_NAME", "DOWN_TM", "LAST_DOWN_TM", "HIST_DESC"]}},
+    {"id": 26, "question": "6월 30일 FCB/H 공정 실적이 있는 Device 알려줘", "expected_route": "fast", "expected_recipe": "distinct_summary", "expected_dataset_keys": ["production"], "fixture_plan": {"projection": ["DEVICE"]}},
+    {"id": 27, "question": "6/24일 투입 실적 대비 D/S1, D/A1공정에서 WIP 많은 제품 알려줘", "expected_route": "complex", "expected_dataset_keys": ["production", "wip"], "expected_execution_mode": "compare_metrics", "expected_execution_modes": ["compare_metrics", "execute_typed_pandas_plan"], "expected_analysis_execution_mode": "deterministic_contract", "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"], "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0}, "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}, "fixture_plan": {"deterministic_operation": "compare_metrics", "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"], "lhs_metric_column": "TOTAL_WIP", "comparison_operator": "gt", "rhs_metric_column": "INPUT_QTY", "metrics": [{"source_alias": "input_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "INPUT_QTY"}, {"source_alias": "wip_data", "source_column": "WIP", "aggregation": "sum", "output_column": "TOTAL_WIP"}]}},
+    {"id": 28, "question": "현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘", "expected_route": "complex", "expected_dataset_keys": ["production_today", "wip_today"], "expected_execution_mode": "compare_presence", "expected_analysis_execution_mode": "deterministic_contract", "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0}, "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}, "fixture_plan": {"deterministic_operation": "compare_presence", "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"], "metrics": [{"source_alias": "input_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "INPUT_QTY"}, {"source_alias": "da_wip_data", "source_column": "WIP", "aggregation": "sum", "output_column": "DA_WIP"}]}},
+    {"id": 29, "question": "FCB 공정 생산 실적과 W/B2 공정 재공수량을 제품별로 비교해줘", "expected_route": "complex", "expected_dataset_keys": ["production_today", "wip_today"], "expected_execution_mode": "merge_metric_sources", "expected_execution_modes": ["merge_metric_sources", "execute_typed_pandas_plan"], "expected_analysis_execution_mode": "deterministic_contract", "expected_analysis_execution_modes": ["deterministic_contract", "deterministic_typed_plan"], "expected_model_calls": {"intent": 0, "pandas_generation": 0, "repair": 0, "answer_generation": 0}, "expected_live_model_calls": {"intent": 1, "pandas_generation": 0, "repair": {"min": 0, "max": 0}, "answer_generation": 1}, "fixture_plan": {"deterministic_operation": "merge_metric_sources", "grain_columns": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"], "join_type": "outer", "metrics": [{"source_alias": "production_data", "source_column": "PRODUCTION", "aggregation": "sum", "output_column": "FCB_PRODUCTION"}, {"source_alias": "wip_data", "source_column": "WIP", "aggregation": "sum", "output_column": "WB2_WIP"}]}},
+    {"id": 30, "question": "오늘 WBM 공정의 제품별 생산량을 알려줘. 제품 정보가 비어 있는 행도 제외하지 말고, 비어 있는 제품 정보는 빈칸으로, 생산량이 비어 있으면 0으로 보여줘.", "expected_route": "fast", "expected_recipe": "group_summary", "expected_dataset_keys": ["production_today"], "fixture_plan": {"group_by": ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2", "LEAD", "MCP_NO", "DEVICE"], "metrics": [{"source_column": "PRODUCTION", "aggregation": "sum", "output_column": "TOTAL_PRODUCTION"}], "ordering": [{"column": "TOTAL_PRODUCTION", "direction": "desc"}]}},
+    {"id": 31, "question": "현재 제품 중 TECH, DEN, PKG_TYPE2, MCP_NO는 같지만 MODE, PKG_TYPE1 또는 LEAD가 다른 제품들을 찾아서 보여줘.", "expected_route": "complex", "expected_dataset_keys": ["production_today"]}
   ]
 }

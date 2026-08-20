@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from time import perf_counter
 from typing import Any
 
@@ -128,6 +129,7 @@ COMPLEX_OPERATIONS = {
     "find_duplicate_groups",
     "apply_row_match_groups",
     "apply_pandas_function_case",
+    "derive_formula",
 }
 VALUELESS_FILTER_OPERATORS = {
     "is_null",
@@ -158,6 +160,7 @@ TYPED_DETERMINISTIC_OPERATIONS = {
     "select_columns",
     "groupby_and_aggregate",
     "sort_and_top_n",
+    "derive_formula",
     "join",
 }
 TYPED_DETERMINISTIC_AGGREGATIONS = {
@@ -173,6 +176,13 @@ TYPED_DETERMINISTIC_AGGREGATIONS = {
     "collect_unique",
 }
 TYPED_DETERMINISTIC_JOIN_TYPES = {"inner", "left", "right", "outer"}
+TYPED_FORMULA_OPERATORS = {"add", "subtract", "multiply", "divide"}
+TYPED_FORMULA_NULL_POLICIES = {"zero", "propagate"}
+TYPED_FORMULA_ZERO_DIVISION_POLICIES = {"zero", "null"}
+
+
+def _typed_formula_column_key(value: Any) -> str:
+    return str(value or "").strip().casefold().replace(" ", "_")
 
 
 # 함수 설명: `resolve_simple_analysis_contract()`는 여러 simple·분석·contract 후보와 우선순위를 검토해 실제 사용할 값을 확정합니다.
@@ -193,6 +203,17 @@ def resolve_simple_analysis_contract(
     if _execution_blocked(next_payload):
         contract = _route_contract("blocked", "execution_gate_blocked")
         return _attach_contract(next_payload, contract, trace, started)
+
+    # Clarification and trace-only explanation are terminal response modes,
+    # not data-analysis recipes.  Respect only the normalized request-scope
+    # contract here; do not infer this route from question keywords.  This
+    # keeps every ordinary Fast/Typed/Complex data path byte-for-byte on its
+    # existing branch while preventing a pandas model from manufacturing a
+    # one-row "answer" DataFrame for a request that needs no calculation.
+    terminal_contract = _terminal_response_contract(plan)
+    if terminal_contract:
+        return _attach_contract(next_payload, terminal_contract, trace, started)
+
     if not _bool(fast_path_enabled, True):
         contract = _route_contract("complex", "fast_path_disabled")
         return _attach_contract(next_payload, contract, trace, started)
@@ -205,6 +226,16 @@ def resolve_simple_analysis_contract(
     # new block.
     typed_frame_runtime_trace = _runtime_typed_frame_contract(plan, next_payload)
     trace["typed_frame_runtime_contract"] = deepcopy(typed_frame_runtime_trace)
+
+    # A weak join-only plan can still carry a complete independent-metric
+    # contract: two retrieval sources, one source-owned metric per side, one
+    # common aggregate grain, and an outer population policy.  Promote only
+    # that proven shape to the existing aggregate-before-merge executor.  The
+    # helper is deliberately runtime/schema based and leaves every
+    # row-enrichment or ambiguous join on its established Typed/Complex path.
+    plan, join_only_metric_trace = _rescue_join_only_metric_merge(plan, next_payload)
+    if join_only_metric_trace.get("status") == "applied":
+        trace["join_only_metric_merge_rescue"] = deepcopy(join_only_metric_trace)
 
     # The normalizer grounds aliases before retrieval, but a strict metric
     # merge contract can be derived or retained after that point.  Re-check it
@@ -275,6 +306,19 @@ def resolve_simple_analysis_contract(
     if not source_aliases:
         source_aliases = _external_source_aliases(next_payload)
     if len(source_aliases) != 1:
+        if not source_aliases and _new_data_request_without_runtime_source(
+            next_payload,
+            plan,
+        ):
+            failure = {
+                "type": "analysis_source_unresolved",
+                "message": "신규 데이터 분석 요청에 사용할 실행 source를 확정하지 못했습니다.",
+            }
+            contract = _route_contract("blocked", "analysis_source_unresolved")
+            contract["external_source_aliases"] = []
+            contract["validation_errors"] = [deepcopy(failure)]
+            _block_analysis_source_unresolved(next_payload, failure)
+            return _attach_contract(next_payload, contract, trace, started)
         typed_contract = _typed_pandas_plan_execution_contract(
             next_payload,
             plan,
@@ -1068,6 +1112,11 @@ def _analysis_execution_profile(
             "analysis_execution_mode": "blocked",
             "requires_pandas_llm": False,
         }
+    if str(contract.get("operation") or "").strip() == "complete_without_pandas":
+        return {
+            "analysis_execution_mode": "terminal_response",
+            "requires_pandas_llm": False,
+        }
     if route == "fast":
         return {
             "analysis_execution_mode": "deterministic_fast",
@@ -1099,6 +1148,76 @@ def _analysis_execution_profile(
     }
 
 
+# 함수 설명: 정규화기가 명시적으로 확정한 비분석 응답만 pandas 없는 terminal 계약으로 변환합니다.
+def _terminal_response_contract(plan: dict[str, Any]) -> dict[str, Any]:
+    request_scope = str(plan.get("request_scope") or "").strip()
+    reference_mode = str(plan.get("reference_mode") or "").strip()
+    reuse_strategy = str(plan.get("reuse_strategy") or "").strip()
+    # Mixed plans are not complete terminal contracts.  If a weak model emits
+    # both clarification/explanation and executable jobs or steps, preserve
+    # the established execution validation path instead of bypassing it.
+    if _list(plan.get("retrieval_jobs")) or _list(
+        plan.get("pandas_execution_plan")
+    ):
+        return {}
+    terminal_kind = ""
+    reason = ""
+    if request_scope == "clarification":
+        terminal_kind = "clarification"
+        reason = "clarification_response"
+    elif request_scope == "followup_explain" and (
+        reference_mode == "previous_trace" or reuse_strategy == "trace_only"
+    ):
+        terminal_kind = "direct_answer"
+        reason = "followup_explain_response"
+    if not terminal_kind:
+        return {}
+    # Keep the public Fast/Complex/Blocked route enum unchanged.  Terminal is
+    # an internal Complex submode so existing API builders and route labels do
+    # not need a new externally visible value.
+    contract = _route_contract("complex", reason)
+    contract.update(
+        {
+            "operation": "complete_without_pandas",
+            "terminal_kind": terminal_kind,
+        }
+    )
+    return contract
+
+
+# 함수 설명: 신규 데이터 요청이 실제 runtime source 없이 pandas 생성 경로로 흘러가는 경우만 식별합니다.
+def _new_data_request_without_runtime_source(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+) -> bool:
+    if str(plan.get("request_scope") or "new_analysis").strip() != "new_analysis":
+        return False
+    runtime_sources = _dict(payload.get("runtime_sources"))
+    if runtime_sources:
+        return False
+    # Flow 01's normalized ``new_analysis`` scope is a data-analysis request.
+    # Once explicit clarification and explanation modes have been separated,
+    # an entirely empty plan is not a valid direct-answer contract; allowing
+    # it through would recreate the constant-DataFrame success path.
+    return True
+
+
+# 함수 설명: source가 없는 신규 데이터 분석을 실행 오류로 위장하지 않고 조회 전 차단 계약으로 기록합니다.
+def _block_analysis_source_unresolved(
+    payload: dict[str, Any],
+    failure: dict[str, Any],
+) -> None:
+    payload["execution_gate"] = {
+        "status": "blocked",
+        "reason": "analysis_source_unresolved",
+        "failures": [deepcopy(failure)],
+    }
+    payload["answer_message"] = str(failure.get("message") or "")
+    payload.setdefault("trace", {}).setdefault("errors", []).append(
+        deepcopy(failure)
+    )
+
+
 # 함수 설명: `_intent_route_candidate()`는 조회 전 실행 계약만으로 Fast 후보 또는 Complex 필요 여부를 결정하며 최종 판정을 대신하지 않습니다.
 def _runtime_retrieval_source_aliases(
     payload: dict[str, Any],
@@ -1115,6 +1234,439 @@ def _runtime_retrieval_source_aliases(
         if alias and alias in runtime_sources:
             aliases.append(alias)
     return _dedupe(aliases)
+
+
+# 함수 설명: 완전한 join-only 독립 지표 계약만 기존 source별 집계 후 병합 계약으로 승격합니다.
+def _rescue_join_only_metric_merge(
+    plan_value: dict[str, Any],
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Recover a strict aggregate-before-outer-merge contract at runtime.
+
+    This is intentionally narrower than general Typed joins.  It accepts one
+    join node whose two inputs are the two retrieved sources, whose metrics are
+    uniquely owned by opposite sides, and whose declared result contains only
+    the shared grain plus those metrics.  Any enrichment signal, ambiguous
+    column ownership, or incomplete aggregate contract returns the original
+    plan unchanged so the existing executor behavior remains authoritative.
+    """
+
+    plan = deepcopy(plan_value)
+    existing = _dict(plan.get("resolved_metric_merge_plan"))
+    if (
+        existing.get("strict") is True
+        and str(existing.get("operation") or "").strip()
+        == "merge_metric_sources"
+    ):
+        return plan, {"status": "not_applicable"}
+    if _dict(plan.get("resolved_reference_join_plan")) or _list(
+        plan.get("pandas_function_cases")
+    ):
+        return plan, {"status": "not_applicable"}
+
+    steps = [
+        item
+        for item in _list(plan.get("pandas_execution_plan"))
+        if isinstance(item, dict)
+    ]
+    if len(steps) != 1:
+        return plan, {"status": "not_applicable"}
+    step = steps[0]
+    operation = _operation(step)
+    if operation not in {"join", "merge", "outer_join"}:
+        return plan, {"status": "not_applicable"}
+    join_type = str(step.get("join_type") or step.get("how") or "").strip().lower()
+    if operation == "outer_join" and not join_type:
+        join_type = "outer"
+    population_policy = str(step.get("population_policy") or "").strip().lower()
+    if (
+        join_type != "outer"
+        or population_policy != "preserve_all_metric_source_keys"
+    ):
+        return plan, {"status": "not_applicable"}
+    blank_policy = str(
+        step.get("blank_policy") or step.get("null_key_policy") or ""
+    ).strip()
+    if blank_policy and blank_policy != "normalize_blank":
+        return plan, {"status": "not_applicable"}
+
+    inputs = [item for item in _list(step.get("inputs")) if isinstance(item, dict)]
+    if (
+        len(inputs) != 2
+        or any(str(item.get("kind") or "").strip() != "external_source" for item in inputs)
+    ):
+        return plan, {"status": "not_applicable"}
+    source_aliases = [str(item.get("ref") or "").strip() for item in inputs]
+    if not all(source_aliases) or len(set(source_aliases)) != 2:
+        return plan, {"status": "not_applicable"}
+    declared_left = str(step.get("left_source_alias") or "").strip()
+    declared_right = str(step.get("right_source_alias") or "").strip()
+    if (declared_left and declared_left != source_aliases[0]) or (
+        declared_right and declared_right != source_aliases[1]
+    ):
+        return plan, {"status": "not_applicable"}
+    if set(_runtime_retrieval_source_aliases(payload, plan)) != set(source_aliases):
+        return plan, {"status": "not_applicable"}
+
+    # These fields express row enrichment or another semantic operation.  Do
+    # not erase them while rewriting the topology of the plan.
+    if any(
+        _string_list(step.get(key))
+        for key in (
+            "left_value_columns",
+            "right_value_columns",
+            "comparison_columns",
+            "projection",
+            "columns",
+        )
+    ) or _list(step.get("aggregations")) or _dict(step.get("calculation")):
+        return plan, {"status": "not_applicable"}
+    if str(step.get("multi_match_policy") or "").strip():
+        return plan, {"status": "not_applicable"}
+    for join_contract in _list(plan.get("join_plan")):
+        if not isinstance(join_contract, dict):
+            continue
+        if _string_list(join_contract.get("left_value_columns")) or _string_list(
+            join_contract.get("right_value_columns")
+        ) or str(join_contract.get("multi_match_policy") or "").strip():
+            return plan, {"status": "not_applicable"}
+
+    group_by = _string_list(step.get("group_by"))
+    group_keys = [_metric_merge_column_key(value) for value in group_by]
+    if not group_by or any(not value for value in group_keys) or len(set(group_keys)) != len(group_keys):
+        return plan, {"status": "not_applicable"}
+    # If the model redundantly supplied ordinary join keys, they must describe
+    # exactly the same grain.  A disagreement is not repaired here.
+    common_keys = _string_list(step.get("on") or step.get("join_keys"))
+    left_keys = _string_list(step.get("left_on"))
+    right_keys = _string_list(step.get("right_on"))
+    for declared_keys in (common_keys, left_keys, right_keys):
+        if declared_keys and [
+            _metric_merge_column_key(value) for value in declared_keys
+        ] != group_keys:
+            return plan, {"status": "not_applicable"}
+
+    output_contract = _dict(plan.get("output_contract"))
+    if (
+        str(output_contract.get("result_mode") or "").strip().lower() != "aggregate"
+        or output_contract.get("strict_result_columns") is not True
+    ):
+        return plan, {"status": "not_applicable"}
+    declared_grain = _string_list(output_contract.get("grain_columns"))
+    if declared_grain and [
+        _metric_merge_column_key(value) for value in declared_grain
+    ] != group_keys:
+        return plan, {"status": "not_applicable"}
+
+    jobs_by_alias: dict[str, dict[str, Any]] = {}
+    for raw_job in _list(plan.get("retrieval_jobs")):
+        if not isinstance(raw_job, dict):
+            continue
+        alias = str(raw_job.get("source_alias") or raw_job.get("dataset_key") or "").strip()
+        if not alias:
+            continue
+        if alias in jobs_by_alias:
+            return plan, {"status": "not_applicable"}
+        jobs_by_alias[alias] = raw_job
+    if set(jobs_by_alias) != set(source_aliases):
+        return plan, {"status": "not_applicable"}
+
+    columns_by_alias = {
+        alias: _metric_merge_runtime_columns(payload, alias) for alias in source_aliases
+    }
+    if any(not columns_by_alias[alias] for alias in source_aliases):
+        return plan, {"status": "not_applicable"}
+
+    grain_mappings: list[dict[str, Any]] = []
+    for output_column in group_by:
+        source_candidates: dict[str, list[str]] = {}
+        for alias in source_aliases:
+            actual = _unique_metric_merge_runtime_column(
+                output_column,
+                jobs_by_alias[alias],
+                columns_by_alias[alias],
+            )
+            if not actual:
+                return plan, {"status": "not_applicable"}
+            source_candidates[alias] = [actual]
+        grain_mappings.append(
+            {
+                "canonical_column": output_column,
+                "output_column": output_column,
+                "source_candidates": source_candidates,
+            }
+        )
+
+    raw_metrics = [
+        str(step.get("left_metric_column") or "").strip(),
+        str(step.get("right_metric_column") or "").strip(),
+    ]
+    if not all(raw_metrics) or len({_metric_merge_column_key(value) for value in raw_metrics}) != 2:
+        return plan, {"status": "not_applicable"}
+    if any(_metric_merge_column_key(value) in set(group_keys) for value in raw_metrics):
+        return plan, {"status": "not_applicable"}
+
+    raw_bindings = [
+        item
+        for item in _list(output_contract.get("metric_bindings"))
+        if isinstance(item, dict)
+    ]
+    if raw_bindings and len(raw_bindings) != 2:
+        return plan, {"status": "not_applicable"}
+    metrics: list[dict[str, Any]] = []
+    aggregation_sources: list[str] = []
+    for index, (alias, requested_metric) in enumerate(
+        zip(source_aliases, raw_metrics),
+        start=1,
+    ):
+        opposite_alias = source_aliases[1] if index == 1 else source_aliases[0]
+        binding_matches = [
+            item
+            for item in raw_bindings
+            if str(item.get("source_alias") or "").strip() == alias
+            and _metric_merge_column_key(requested_metric)
+            in {
+                _metric_merge_column_key(item.get("source_column")),
+                _metric_merge_column_key(item.get("output_column")),
+            }
+        ]
+        if raw_bindings and len(binding_matches) != 1:
+            return plan, {"status": "not_applicable"}
+        binding = binding_matches[0] if binding_matches else {}
+        declared_dataset = str(binding.get("dataset_key") or "").strip()
+        dataset_key = str(jobs_by_alias[alias].get("dataset_key") or "").strip()
+        if declared_dataset and declared_dataset.casefold() != dataset_key.casefold():
+            return plan, {"status": "not_applicable"}
+        source_column_request = str(
+            binding.get("source_column") or requested_metric
+        ).strip()
+        source_column = _unique_metric_merge_runtime_column(
+            source_column_request,
+            jobs_by_alias[alias],
+            columns_by_alias[alias],
+        )
+        # The metric must be owned by exactly this source.  A column available
+        # on both sides is not sufficient evidence for independent measures.
+        opposite_column = _unique_metric_merge_runtime_column(
+            source_column_request,
+            jobs_by_alias[opposite_alias],
+            columns_by_alias[opposite_alias],
+        )
+        if not source_column or opposite_column:
+            return plan, {"status": "not_applicable"}
+
+        output_column = str(binding.get("output_column") or requested_metric).strip()
+        if not output_column:
+            return plan, {"status": "not_applicable"}
+        side = "left" if index == 1 else "right"
+        binding_aggregation = _normalized_metric_merge_aggregation(
+            binding.get("aggregation") or binding.get("aggregation_method")
+        )
+        step_aggregation = _normalized_metric_merge_aggregation(
+            _join_only_metric_aggregation(step, side)
+        )
+        semantic_aggregation, semantic_status = (
+            _join_only_metric_semantic_aggregation(
+                jobs_by_alias[alias],
+                source_column,
+            )
+        )
+        if semantic_status == "invalid" or any(
+            value and value not in SUPPORTED_AGGREGATIONS
+            for value in (binding_aggregation, step_aggregation)
+        ):
+            return plan, {"status": "not_applicable"}
+        aggregation_evidence = [
+            ("output_contract_metric_binding", binding_aggregation),
+            ("typed_join_explicit_aggregation", step_aggregation),
+            ("trusted_retrieval_metric_semantics", semantic_aggregation),
+        ]
+        proven_aggregations = {
+            value for _, value in aggregation_evidence if value
+        }
+        if len(proven_aggregations) != 1:
+            return plan, {"status": "not_applicable"}
+        aggregation = next(iter(proven_aggregations))
+        aggregation_sources.append(
+            "+".join(source for source, value in aggregation_evidence if value)
+        )
+        metrics.append(
+            {
+                "source_alias": alias,
+                "dataset_key": dataset_key,
+                "source_column": source_column,
+                "source_candidates": [source_column],
+                "aggregation": aggregation,
+                "output_column": output_column,
+                "fill_value": "" if aggregation == "collect_unique" else 0,
+                "fill_on_absence": aggregation
+                in {"sum", "count", "nunique", "collect_unique"},
+            }
+        )
+
+    metric_outputs = [str(item.get("output_column") or "").strip() for item in metrics]
+    metric_output_keys = [_metric_merge_column_key(value) for value in metric_outputs]
+    if len(set(metric_output_keys)) != 2:
+        return plan, {"status": "not_applicable"}
+    declared_metrics = _string_list(output_contract.get("metric_columns"))
+    if (
+        len(declared_metrics) != 2
+        or {_metric_merge_column_key(value) for value in declared_metrics}
+        != set(metric_output_keys)
+    ):
+        return plan, {"status": "not_applicable"}
+    allowed_output_keys = set(group_keys) | set(metric_output_keys)
+    for field_name in ("required_columns", "result_columns"):
+        declared_columns = _string_list(output_contract.get(field_name))
+        declared_keys = {_metric_merge_column_key(value) for value in declared_columns}
+        if declared_columns and (
+            not (set(group_keys) | set(metric_output_keys)).issubset(declared_keys)
+            or not declared_keys.issubset(allowed_output_keys)
+        ):
+            return plan, {"status": "not_applicable"}
+
+    node_id = str(step.get("node_id") or "__step_1").strip()
+    merge_plan = {
+        "operation": "merge_metric_sources",
+        "join_type": "outer",
+        "population_policy": "preserve_all_metric_source_keys",
+        "selection_source": "runtime_join_only_metric_rescue",
+        "execution_shape": "output_contract_independent_metric_shape",
+        "join_node_ids": [node_id],
+        "source_transforms": [],
+        "grain_mappings": grain_mappings,
+        "metrics": metrics,
+        "fill_zero_on_success": True,
+        "strict": True,
+    }
+    plan["resolved_metric_merge_plan"] = merge_plan
+    return plan, {
+        "stage": "14b_simple_analysis_contract_resolver",
+        "status": "applied",
+        "policy": "source_local_aggregate_before_outer_metric_merge",
+        "join_node_id": node_id,
+        "source_aliases": source_aliases,
+        "grain_columns": group_by,
+        "metric_columns": metric_outputs,
+        "aggregation_sources": aggregation_sources,
+    }
+
+
+# 함수 설명: join-only metric rescue가 사용할 실제 runtime 컬럼 목록을 source별로 가져옵니다.
+def _metric_merge_runtime_columns(
+    payload: dict[str, Any],
+    source_alias: str,
+) -> list[str]:
+    rows = _dict(payload.get("runtime_sources")).get(source_alias)
+    runtime_columns: list[str] = []
+    for row in rows[:20] if isinstance(rows, list) else []:
+        if isinstance(row, dict):
+            runtime_columns.extend(str(key).strip() for key in row if str(key).strip())
+    return _dedupe(runtime_columns) or _source_columns(payload, source_alias)
+
+
+# 함수 설명: 요청 컬럼을 source runtime schema와 hydrated alias mapping에서 하나로만 확정합니다.
+def _unique_metric_merge_runtime_column(
+    requested: Any,
+    job: dict[str, Any],
+    columns: list[str],
+) -> str:
+    requested_key = _metric_merge_column_key(requested)
+    if not requested_key:
+        return ""
+    candidate_keys = {requested_key}
+    for mapping_name in ("filter_mappings", "standard_column_aliases"):
+        for canonical, raw_aliases in _dict(job.get(mapping_name)).items():
+            group = [str(canonical), *_string_list(raw_aliases)]
+            group_keys = {
+                _metric_merge_column_key(value) for value in group if str(value).strip()
+            }
+            if requested_key in group_keys:
+                candidate_keys.update(group_keys)
+    matches = _dedupe(
+        [
+            str(column).strip()
+            for column in columns
+            if _metric_merge_column_key(column) in candidate_keys
+        ]
+    )
+    return matches[0] if len(matches) == 1 else ""
+
+
+# 함수 설명: join-only plan에 명시된 side별 또는 공통 집계 방식을 읽습니다.
+def _join_only_metric_aggregation(step: dict[str, Any], side: str) -> str:
+    for key in (
+        f"{side}_aggregation",
+        f"{side}_aggregation_method",
+        f"{side}_agg_method",
+        "aggregation",
+        "aggregation_method",
+        "agg_method",
+    ):
+        value = str(step.get(key) or "").strip().lower()
+        if value:
+            return "mean" if value in {"avg", "average"} else value
+    return ""
+
+
+# 함수 설명: trusted retrieval job의 metric semantics에서 허용 집계와 일치하는 기본 집계만 확정합니다.
+def _join_only_metric_semantic_aggregation(
+    job: dict[str, Any],
+    source_column: str,
+) -> tuple[str, str]:
+    semantics = _dict(job.get("metric_semantics"))
+    if not semantics:
+        return "", "missing"
+    source_key = _metric_merge_column_key(source_column)
+    candidate_keys = {source_key}
+    for mapping_name in ("filter_mappings", "standard_column_aliases"):
+        for canonical, raw_aliases in _dict(job.get(mapping_name)).items():
+            group_keys = {
+                _metric_merge_column_key(value)
+                for value in [str(canonical), *_string_list(raw_aliases)]
+                if str(value).strip()
+            }
+            if source_key in group_keys:
+                candidate_keys.update(group_keys)
+    matches = [
+        value
+        for key, value in semantics.items()
+        if _metric_merge_column_key(key) in candidate_keys
+        and isinstance(value, dict)
+    ]
+    if not matches:
+        return "", "missing"
+    if len(matches) != 1:
+        return "", "invalid"
+    contract = matches[0]
+    default_rollup = _normalized_metric_merge_aggregation(
+        contract.get("default_rollup")
+    )
+    allowed_rollups = {
+        _normalized_metric_merge_aggregation(value)
+        for value in _string_list(contract.get("allowed_rollups"))
+        if _normalized_metric_merge_aggregation(value)
+    }
+    if (
+        not default_rollup
+        or default_rollup not in SUPPORTED_AGGREGATIONS
+        or not allowed_rollups
+        or default_rollup not in allowed_rollups
+        or not allowed_rollups.issubset(SUPPORTED_AGGREGATIONS)
+    ):
+        return "", "invalid"
+    return default_rollup, "trusted"
+
+
+# 함수 설명: metric rollup alias를 deterministic executor의 표준 집계명으로 정규화합니다.
+def _normalized_metric_merge_aggregation(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    return "mean" if normalized in {"avg", "average"} else normalized
+
+
+# 함수 설명: 컬럼 소유권 및 output 계약 비교용 대소문자 무시 key를 생성합니다.
+def _metric_merge_column_key(value: Any) -> str:
+    return str(value or "").strip().casefold()
 
 
 # 함수 설명: `_reconcile_metric_merge_runtime_aliases()`는 독립 지표 병합 계약의 소스 별칭과 실행 시점 DataFrame을 안전하게 맞춥니다.
@@ -1442,6 +1994,85 @@ def _rewrite_nested_metric_aliases(value: Any, aliases: dict[str, str]) -> Any:
     return result
 
 
+# 함수 설명: Typed formula 단계가 임의 식 실행 없이 선언형 산술 계약만 사용하는지 확인합니다.
+def _typed_formula_contract(step: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Return one normalized arithmetic contract or a compact validation reason.
+
+    The deterministic executor never evaluates expression strings.  A formula
+    consists only of existing column references and finite numeric constants,
+    which makes the same Typed-IR primitive usable for any registered derived
+    metric without admitting arbitrary Python.
+    """
+
+    formula = _dict(step.get("formula"))
+    output_column = str(formula.get("output_column") or "").strip()
+    operator = str(formula.get("operator") or "").strip().lower()
+    operands = formula.get("operands")
+    if not output_column or operator not in TYPED_FORMULA_OPERATORS:
+        return {}, "formula_output_or_operator_invalid"
+    if not isinstance(operands, list) or not 2 <= len(operands) <= 8:
+        return {}, "formula_operands_invalid"
+    if operator in {"subtract", "divide"} and len(operands) != 2:
+        return {}, "formula_operand_count_invalid"
+
+    normalized_operands: list[dict[str, Any]] = []
+    column_keys: set[str] = set()
+    for operand in operands:
+        if not isinstance(operand, dict) or len(operand) != 1:
+            return {}, "formula_operand_invalid"
+        if "column" in operand:
+            column = str(operand.get("column") or "").strip()
+            if not column:
+                return {}, "formula_operand_column_invalid"
+            normalized_operands.append({"column": column})
+            column_keys.add(_typed_formula_column_key(column))
+            continue
+        if "constant" not in operand or isinstance(operand.get("constant"), bool):
+            return {}, "formula_operand_invalid"
+        try:
+            constant = float(operand.get("constant"))
+        except (TypeError, ValueError):
+            return {}, "formula_operand_constant_invalid"
+        if not math.isfinite(constant):
+            return {}, "formula_operand_constant_invalid"
+        normalized_operands.append({"constant": operand.get("constant")})
+    if _typed_formula_column_key(output_column) in column_keys:
+        return {}, "formula_output_self_reference"
+
+    null_policy = str(formula.get("null_policy") or "propagate").strip().lower()
+    if null_policy not in TYPED_FORMULA_NULL_POLICIES:
+        return {}, "formula_null_policy_invalid"
+    normalized: dict[str, Any] = {
+        "output_column": output_column,
+        "operator": operator,
+        "operands": normalized_operands,
+        "null_policy": null_policy,
+    }
+    if operator == "divide":
+        zero_division_policy = str(
+            formula.get("zero_division_policy") or "null"
+        ).strip().lower()
+        if zero_division_policy not in TYPED_FORMULA_ZERO_DIVISION_POLICIES:
+            return {}, "formula_zero_division_policy_invalid"
+        normalized["zero_division_policy"] = zero_division_policy
+    if "round_digits" in formula:
+        raw_round_digits = formula.get("round_digits")
+        if isinstance(raw_round_digits, bool):
+            return {}, "formula_round_digits_invalid"
+        try:
+            round_digits = int(raw_round_digits)
+        except (TypeError, ValueError):
+            return {}, "formula_round_digits_invalid"
+        try:
+            is_integral = float(round_digits) == float(raw_round_digits)
+        except (TypeError, ValueError):
+            is_integral = False
+        if not is_integral or not 0 <= round_digits <= 12:
+            return {}, "formula_round_digits_invalid"
+        normalized["round_digits"] = round_digits
+    return normalized, ""
+
+
 # 함수 설명: 실제 조회 결과의 컬럼으로 Typed 단계별 frame 계약을 다시 확인합니다.
 def _runtime_typed_frame_contract(
     plan: dict[str, Any],
@@ -1592,6 +2223,41 @@ def _runtime_typed_frame_contract(
                     {"type": "typed_frame_runtime_aggregate_column_missing", "node_id": node_id, "columns": _dedupe(missing)}
                 )
             result_columns = _dedupe([*group_by, *output_columns])
+        elif operation == "derive_formula":
+            if len(states_list) != 1:
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            formula, formula_error = _typed_formula_contract(step)
+            if formula_error:
+                return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
+            source_columns = list(states_list[0]["columns"])
+            operand_columns = [
+                str(operand.get("column") or "").strip()
+                for operand in formula.get("operands", [])
+                if isinstance(operand, dict) and "column" in operand
+            ]
+            missing = [
+                column
+                for column in operand_columns
+                if not actual_column(source_columns, column)
+            ]
+            output_column = str(formula.get("output_column") or "").strip()
+            if actual_column(source_columns, output_column):
+                issues.append(
+                    {
+                        "type": "typed_frame_runtime_formula_output_conflict",
+                        "node_id": node_id,
+                        "column": output_column,
+                    }
+                )
+            if missing:
+                issues.append(
+                    {
+                        "type": "typed_frame_runtime_formula_operand_missing",
+                        "node_id": node_id,
+                        "columns": _dedupe(missing),
+                    }
+                )
+            result_columns = _dedupe([*source_columns, output_column])
         elif operation == "join":
             if len(states_list) != 2:
                 return {"status": "not_applicable", "compiled_node_count": compiled, "issues": []}
@@ -1669,6 +2335,21 @@ def _typed_pandas_plan_execution_contract(
     ]
     if not steps or len(steps) > 32:
         return {}
+    formula_indexes = [
+        index
+        for index, step in enumerate(steps)
+        if _operation(step) == "derive_formula"
+    ]
+    # Formula values are a terminal presentation calculation in the initial
+    # Typed contract.  Allow a final stable ordering only; a later projection,
+    # re-aggregation, or join needs a separately reviewed compositional rule.
+    for formula_index in formula_indexes:
+        suffix_operations = [
+            _operation(step)
+            for step in steps[formula_index + 1 :]
+        ]
+        if any(operation != "sort_and_top_n" for operation in suffix_operations):
+            return {}
     output_contract = _dict(plan.get("output_contract"))
     result_columns = _string_list(output_contract.get("result_columns"))
     if not result_columns:
@@ -1730,6 +2411,7 @@ def _typed_pandas_plan_execution_contract(
     source_transforms: list[dict[str, Any]] = []
     transform_markers: set[tuple[str, str, str, str]] = set()
     produced: set[str] = set()
+    produced_operations: dict[str, str] = {}
     used_external_aliases: list[str] = []
     for step in steps:
         operation = _operation(step)
@@ -1848,6 +2530,28 @@ def _typed_pandas_plan_execution_contract(
                     return {}
             except (TypeError, ValueError):
                 return {}
+        elif operation == "derive_formula":
+            if (
+                len(inputs) != 1
+                or str(inputs[0].get("kind") or "").strip() != "node_output"
+            ):
+                return {}
+            upstream_operation = produced_operations.get(
+                str(inputs[0].get("ref") or "").strip(),
+                "",
+            )
+            if upstream_operation not in AGGREGATE_OPERATIONS:
+                return {}
+            formula, formula_error = _typed_formula_contract(step)
+            if formula_error:
+                return {}
+            output_column = str(formula.get("output_column") or "").strip()
+            if not output_column or not any(
+                _typed_formula_column_key(column)
+                == _typed_formula_column_key(output_column)
+                for column in result_columns
+            ):
+                return {}
         elif operation == "join":
             join_type = str(step.get("join_type") or "inner").strip().lower()
             if join_type not in TYPED_DETERMINISTIC_JOIN_TYPES:
@@ -1860,6 +2564,8 @@ def _typed_pandas_plan_execution_contract(
             if not left_keys and not shared_keys:
                 return {}
         produced.update({node_id, output_alias})
+        produced_operations[node_id] = operation
+        produced_operations[output_alias] = operation
 
     return {
         "version": CONTRACT_VERSION,

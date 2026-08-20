@@ -371,6 +371,10 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         _common_component_path("04a_trusted_retrieval_job_hydrator.py"),
     )
     _set_embedded_source(
+        node_index["CustomComponent-bhiAG"],
+        _common_component_path("14_retrieval_payload_adapter.py"),
+    )
+    _set_embedded_source(
         node_index["CustomComponent-v5UpstreamBinder"],
         _common_component_path("05a_upstream_entity_parameter_binder.py"),
     )

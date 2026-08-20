@@ -88,6 +88,12 @@ field는 OPER_NAME이야.
 포함 공정은 OPER_NAME 값 D/S1 하나야.
 별칭마다 별도 item을 만들지 말고 공정그룹 하나로 저장해.
 
+MD 공정 그룹을 등록해줘.
+display_name은 M/D이고 유의어는 MD, M/D, MD공정, M/D공정, MD 공정, M/D 공정이야.
+field는 OPER_NAME이야.
+포함 공정은 OPER_NAME 값 M/D 하나야.
+별칭마다 별도 item을 만들지 말고 공정그룹 하나로 저장해.
+
 FCB 공정 그룹을 등록해줘.
 display_name은 FCB이고 유의어는 FCB, FCB공정, FCB 공정이야.
 field는 OPER_NAME이야.
@@ -313,6 +319,51 @@ selection_criteria에는 UPH는 평균형 비가산 metric이므로 합산하지
 selection_criteria에는 사용자가 별도 grouping 없이 제품별 UPH를 요청하면 장비 모델, Recipe, 공정별 개별 UPH 문맥을 유지한다는 문장을 저장해.
 selection_criteria에는 사용자가 차수별, 장비 기종별, 장비 모델별처럼 grouping을 명시하면 해당 그룹별 UPH 평균을 사용한다는 문장을 저장해.
 selection_criteria에는 장비 기종, 기종, 장비 모델은 표준 컬럼 EQP_MODEL을 뜻하고 Recipe, 레시피는 표준 컬럼 RECIPE_ID를 뜻한다는 문장을 저장해.
+
+### 운영 분석 규칙 입력 예시
+
+장비 Assign과 UPH 결합 규칙을 등록해줘.
+
+equipment_assign를 기준으로 eqp_uph를 left join해.
+조인 기준은 장비모델, RECIPE_ID, 공정이야.
+표준 컬럼명은 EQP_MODEL, RECIPE_ID, OPER_NAME이야.
+
+eqp_uph에서는 UPH 값만 가져오고,
+그 외 공통 컬럼은 equipment_assign 기준으로 사용해.
+
+### 운영 분석 규칙 입력 예시
+
+기존 보유CAPA 계산 규칙을 교체해줘.
+보유CAPA는 장비보유댓수 × 평균UPH × 24시간이야.
+장비보유댓수는 장비 Assign 현황(equipment_assign)의 EQP_ID를 중복 없이 센 값이야.
+평균UPH는 장비 UPH 데이터(eqp_uph)의 UPH 평균이야.
+보유CAPA를 물으면 장비 Assign 현황과 장비 UPH 데이터를 같이 사용해.
+공정이나 제품 조건이 있으면 두 데이터에 같이 적용해.
+같은 장비가 여러 레시피로 나오면 장비를 여러 번 세지 말고 장비별 UPH를 평균낸 뒤 계산해.
+장비보유댓수, 평균UPH, 보유CAPA는 원본 컬럼이 아니라 계산 결과야.
+결과에는 요청한 제품 또는 공정 기준과 장비보유댓수, 평균UPH, 보유CAPA를 함께 보여줘.
+
+
+현재 보유 LOT 건수 규칙을 등록해줘.
+Lot 수, 몇 Lot, 보유 Lot 수는 LOT_ID의 중복 없는 개수야.
+일반 Lot 보유 질문에는 HOLD 조건을 넣지 마.
+HOLD 또는 홀드 Lot이라고 말한 경우에만 HOLD 상태 조건을 적용해.
+공정이나 제품 조건이 있으면 같이 적용해.
+
+
+장비 Down 시간 규칙을 등록해줘.
+장비 Down 목록 데이터(eqp_down_list)의 DOWN_TM은 장비가 Down 상태로 지속된 시간이고 단위는 시간이야.
+1일 이상 Down은 DOWN_TM이 24시간 이상인 경우야.
+LAST_DOWN_TM은 Down이 시작된 시각일 뿐 지속시간 조건에 사용하지 마.
+결과에는 장비 ID, 공정, Down 시간, Down 발생 시각, Down 사유를 보여줘.
+
+
+장비 가동률 데이터가 등록된 뒤 아래 대괄호를 실제 데이터 이름과 컬럼명으로 바꿔서 입력해줘.
+장비 가동률 조회 규칙을 등록해줘.
+가동률은 [가동률 데이터]의 [가동률 컬럼] 값이야.
+장비별 요청은 원본 가동률을 보여주고, 공정별 요청은 장비별 가동률의 평균을 보여줘.
+가동률은 합산하지 마.
+공정 전체 조회에는 장비 ID를 필수 조건으로 요구하지 마.
 
 
 원본 상세 데이터 표시 규칙을 등록해줘.

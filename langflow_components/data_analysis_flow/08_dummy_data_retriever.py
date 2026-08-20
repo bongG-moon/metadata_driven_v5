@@ -163,6 +163,14 @@ PROCESSES = [
     # W/BM은 W/B1~W/B6 그룹과 다른 단일 공정이다. 기존 process index 기반 fixture 값을
     # 바꾸지 않도록 목록 끝에 두되, 실제 공정 순서는 OPER_SEQ=260으로 검증한다.
     {"OPER": "WBM", "OPER_NAME": "W/BM", "OPER_SEQ": "260"},
+    # 아래 공정은 신규 대표 질문 전용 fixture다. 기존 공정의 index 기반 수량을 바꾸지
+    # 않도록 항상 목록 끝에 둔다.
+    {"OPER": "MD", "OPER_NAME": "M/D", "OPER_SEQ": "340"},
+    {"OPER": "SG", "OPER_NAME": "S/G", "OPER_SEQ": "360"},
+    {"OPER": "PCO1", "OPER_NAME": "PCO1", "OPER_SEQ": "170"},
+    {"OPER": "DI", "OPER_NAME": "D/I", "OPER_SEQ": "180"},
+    {"OPER": "WSD1", "OPER_NAME": "WSD1", "OPER_SEQ": "600"},
+    {"OPER": "WSD2", "OPER_NAME": "WSD2", "OPER_SEQ": "610"},
 ]
 
 
@@ -252,12 +260,26 @@ def _rows_for_dataset(dataset_key: str) -> list[dict[str, Any]]:
             )
         ),
         "wip_today": _wip_rows(_unique_dates([today, "20260701"])),
-        "wip": _wip_rows(_unique_dates([yesterday, two_days_ago, "20260701", "20260630", "20260626", "20260624", "20260623"])),
+        "wip": _wip_rows(_unique_dates([yesterday, two_days_ago, "20260701", "20260630", "20260629", "20260626", "20260624", "20260623"])),
         "product_token_fixture": _product_token_fixture_rows(_unique_dates([today, "20260701"])),
-        "target": _target_rows(),
+        "target": _target_rows(
+            _unique_dates(
+                [
+                    "2026-07-01",
+                    "2026-07-06",
+                    "2026-06-30",
+                    "2026-08-19",
+                    _calendar_date(today),
+                    _calendar_date(yesterday),
+                ]
+            )
+        ),
         "equipment_assign": _equipment_assign_rows(),
         "equipment_status": _equipment_assign_rows(),
         "eqp_uph": _eqp_uph_rows(),
+        "eqp_down_list": _eqp_down_list_rows(_unique_dates([today, "20260701"])),
+        "eqp_utilization_today": _eqp_utilization_rows(_unique_dates([today, "20260701"])),
+        "eqp_history_today": _eqp_history_rows(_unique_dates([today, "20260701"])),
         "lot_status": _lot_status_rows(),
         "hold_history": _hold_history_rows(),
     }.get(dataset_key, [])
@@ -285,6 +307,14 @@ def _date_delta(date_text: str, days: int) -> str:
     except Exception:
         base = datetime.now(_korea_timezone())
     return (base + timedelta(days=days)).strftime("%Y%m%d")
+
+
+# 함수 설명: `_calendar_date()`는 YYYYMMDD 값을 target fixture에 쓰는 YYYY-MM-DD 문자열로 변환합니다.
+def _calendar_date(date_text: str) -> str:
+    text = str(date_text or "").strip()
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+    return text
 
 
 # 함수 설명: `_unique_dates()`는 dates의 중복을 제거하고 최초 등장 순서를 유지합니다.
@@ -565,6 +595,34 @@ def _validation_production_rows(work_date: str) -> list[dict[str, Any]]:
                     **_rank_identity(index),
                 )
             )
+    # OUT 계획/실적 비교 질문은 고정 회귀 기준일과 실제 현재 기준일 모두에서
+    # L-267 제품의 PKG OUT 실적을 확인할 수 있어야 한다.
+    if work_date in {"20260630", _date_delta(_korea_today(), -1)}:
+        rows.append(
+            _scenario_row(
+                work_date,
+                3,
+                "PKG OUT",
+                "PRODUCTION",
+                735,
+                DEVICE="DEV-L267-PKGOUT",
+                DEVICE_DESC="L-267 PKG OUT validation result",
+            )
+        )
+    # S/G 공정의 오늘 생산·재공 비교는 일반 생성 공정 목록과 분리된 대표 행으로
+    # 유지해 기존 수량 fixture를 바꾸지 않는다.
+    if work_date in {"20260701", _korea_today()}:
+        rows.append(
+            _scenario_row(
+                work_date,
+                6,
+                "S/G",
+                "PRODUCTION",
+                468,
+                DEVICE="DEV-SP-SG-78",
+                DEVICE_DESC="SP 16G 78 S/G validation product",
+            )
+        )
     return rows
 
 
@@ -681,6 +739,33 @@ def _validation_wip_rows(work_date: str) -> list[dict[str, Any]]:
                     SNAPSHOT_TIME="07:00",
                 ),
             ]
+        )
+        rows.append(
+            _scenario_row(
+                work_date,
+                6,
+                "S/G",
+                "WIP",
+                96,
+                LOT_ID="SG-78-CURRENT",
+                SNAPSHOT_TIME="07:00",
+                DEVICE="DEV-SP-SG-78",
+                DEVICE_DESC="SP 16G 78 S/G validation product",
+            )
+        )
+    if work_date in {"20260630", _date_delta(_korea_today(), -1)}:
+        rows.append(
+            _scenario_row(
+                work_date,
+                6,
+                "S/G",
+                "WIP",
+                88,
+                LOT_ID="SG-78-BOH",
+                SNAPSHOT_TIME="07:00",
+                DEVICE="DEV-SP-SG-78",
+                DEVICE_DESC="SP 16G 78 S/G validation product",
+            )
         )
     return rows
 
@@ -863,13 +948,13 @@ def _quantity_value(work_date: str, product_index: int, process_index: int, base
 
 
 # 함수 설명: `_target_rows()`는 행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
-def _target_rows() -> list[dict[str, Any]]:
+def _target_rows(target_dates: list[str] | None = None) -> list[dict[str, Any]]:
     rows = []
     # The dummy catalog is used by both current-day and explicitly dated plan
-    # questions.  Keep two representative dates so a valid ``7/6`` request
-    # is not mistaken for a schema or dataset-selection failure merely because
-    # a fixture contains one calendar date.
-    for target_date in ("2026-07-01", "2026-07-06"):
+    # questions.  Retain the legacy dates and accept caller-provided current /
+    # previous-day dates without changing the ordinary product fixture.
+    dates = _unique_dates(["2026-07-01", "2026-07-06", *(target_dates or [])])
+    for target_date in dates:
         for index, product in enumerate(PRODUCTS):
             rows.append(
                 {
@@ -892,6 +977,31 @@ def _target_rows() -> list[dict[str, Any]]:
                     "INPUT_PLAN": 800 - index * 100,
                     "OUT_PLAN": 1200 - index * 150,
                     "TARGET": 1200 - index * 150,
+                }
+            )
+        # 8/19 OUT 계획의 0 제외 조건이 실제로 검증되도록 같은 구조의 0값 대조 행을 둔다.
+        if target_date == "2026-08-19":
+            rows.append(
+                {
+                    "DATE": target_date,
+                    "Mode": "VALIDATION",
+                    "DEN": "8G",
+                    "TECH": "ZERO",
+                    "PKG1": "BGA",
+                    "PKG2": "OUT",
+                    "LEAD": "0",
+                    "ORG": "TEST",
+                    "MCP NO": "OUT-ZERO",
+                    "INPUT 계획": 0,
+                    "OUT 계획": 0,
+                    "MODE": "VALIDATION",
+                    "DENSITY": "8G",
+                    "PKG_TYPE1": "BGA",
+                    "PKG_TYPE2": "OUT",
+                    "MCP_NO": "OUT-ZERO",
+                    "INPUT_PLAN": 0,
+                    "OUT_PLAN": 0,
+                    "TARGET": 0,
                 }
             )
     return rows
@@ -1050,6 +1160,69 @@ def _equipment_assign_rows() -> list[dict[str, Any]]:
                 "EQP005",
                 LEAD="217",
                 MCP_NO="L-217K9B",
+            ),
+            # 대표 검증 질문의 M/D 공정 LEAD별 Assign/UPH 비교용 행이다.
+            _equipment_validation_row(
+                6,
+                "M/D",
+                "EQM-MD",
+                "RCP-MD-78-A",
+                "EQP-MD-78-A",
+            ),
+            _equipment_validation_row(
+                6,
+                "M/D",
+                "EQM-MD",
+                "RCP-MD-78-B",
+                "EQP-MD-78-B",
+            ),
+            _equipment_validation_row(
+                3,
+                "M/D",
+                "EQM-MD",
+                "RCP-MD-267-A",
+                "EQP-MD-267-A",
+            ),
+            # 보유 CAPA 계산은 Assign/UPH source의 동일 모델·Recipe·공정 조합만
+            # 결합하므로 아래 SBM과 D/A 행도 양쪽 fixture에 짝으로 둔다.
+            _equipment_validation_row(
+                0,
+                "SBM",
+                "EQM-SBM",
+                "RCP-SBM-POP-A",
+                "EQP-SBM-POP-A",
+            ),
+            _equipment_validation_row(
+                3,
+                "SBM",
+                "EQM-SBM",
+                "RCP-SBM-L267-A",
+                "EQP-SBM-L267-A",
+            ),
+            _equipment_validation_row(
+                6,
+                "D/A1",
+                "EQM-DA78",
+                "RCP-DA78-A",
+                "EQP-DA78-A",
+            ),
+            _equipment_validation_row(
+                6,
+                "D/A1",
+                "EQM-DA78",
+                "RCP-DA78-B",
+                "EQP-DA78-B",
+            ),
+            _equipment_validation_row(
+                7,
+                "D/A1",
+                "EQM-DA217",
+                "RCP-DA217-A",
+                "EQP-DA217-A",
+                LEAD="217",
+                MCP_NO="L-217K9B",
+                DEVICE="DEV-L217-DA",
+                DEVICE_DESC="L-217 D/A assigned equipment validation product",
             ),
         ]
     )
@@ -1239,6 +1412,35 @@ def _eqp_uph_rows() -> list[dict[str, Any]]:
                 LEAD="315",
                 MCP_NO="L-117A1",
             ),
+            # FCB Recipe, M/D lead, CAPA 및 S/G 제품 질문의 검증용 source rows.
+            _uph_validation_row(6, "FCB1", "EQM-FCB", "R0429", 154.2),
+            _uph_validation_row(6, "M/D", "EQM-MD", "RCP-MD-78-A", 132.0),
+            _uph_validation_row(6, "M/D", "EQM-MD", "RCP-MD-78-B", 148.0),
+            _uph_validation_row(3, "M/D", "EQM-MD", "RCP-MD-267-A", 119.0),
+            _uph_validation_row(0, "SBM", "EQM-SBM", "RCP-SBM-POP-A", 126.0),
+            _uph_validation_row(3, "SBM", "EQM-SBM", "RCP-SBM-L267-A", 142.0),
+            _uph_validation_row(6, "D/A1", "EQM-DA78", "RCP-DA78-A", 138.0),
+            _uph_validation_row(6, "D/A1", "EQM-DA78", "RCP-DA78-B", 146.0),
+            _uph_validation_row(
+                7,
+                "D/A1",
+                "EQM-DA217",
+                "RCP-DA217-A",
+                128.0,
+                LEAD="217",
+                MCP_NO="L-217K9B",
+                DEVICE="DEV-L217-DA",
+                DEVICE_DESC="L-217 D/A assigned equipment validation product",
+            ),
+            _uph_validation_row(
+                6,
+                "S/G",
+                "EQM-SG",
+                "RCP-SG-78-A",
+                151.0,
+                DEVICE="DEV-SP-SG-78",
+                DEVICE_DESC="SP 16G 78 S/G validation product",
+            ),
         ]
     )
     return rows
@@ -1298,6 +1500,122 @@ def _lot_status_rows() -> list[dict[str, Any]]:
         _lot_row(_product_process_row("20260701", 0, _process_index("D/A5")), "V-RANGE-MIDDLE-HOLD", "OnHold", "WAITING", 35, 9, 6.0, 18.0, "공정 범위 중간 HOLD"),
         _lot_row(_product_process_row("20260701", 0, _process_index("D/S1")), "V-RANGE-START-HOLD", "OnHold", "WAITING", 38, 9, 7.0, 19.0, "D/S1 HOLD"),
     ]
+    # 신규 대표 질문은 기존 기본 LOT 행을 수정하지 않고, 조건별 양성/음성 행을
+    # 별도로 추가해 product, process, TAT, HOLD 조건을 각각 검증한다.
+    rows.extend(
+        [
+            _lot_row(
+                _scenario_row("20260701", 3, "SBM", "PRODUCTION", 0, LEAD="266", MCP_NO="L-266SBM", DEVICE="DEV-SBM-266"),
+                "SBM-266-LOT-01",
+                "NotOnHold",
+                "WAITING",
+                120,
+                30,
+                4.0,
+                12.0,
+                "",
+            ),
+            _lot_row(
+                _scenario_row("20260701", 3, "SBM", "PRODUCTION", 0, LEAD="266", MCP_NO="L-266SBM", DEVICE="DEV-SBM-266"),
+                "SBM-266-LOT-02",
+                "NotOnHold",
+                "RUNNING",
+                90,
+                22,
+                6.0,
+                18.0,
+                "",
+            ),
+            _lot_row(
+                _scenario_row("20260701", 0, "WSD1", "PRODUCTION", 0, MCP_NO="L-085A1", LEAD="85", DEVICE="DEV-WSD-085"),
+                "WSD-085-LOT-01",
+                "NotOnHold",
+                "WAITING",
+                75,
+                18,
+                5.0,
+                14.0,
+                "",
+            ),
+            _lot_row(
+                _scenario_row("20260701", 0, "WSD2", "PRODUCTION", 0, MCP_NO="L-085A1", LEAD="85", DEVICE="DEV-WSD-085"),
+                "WSD-085-LOT-02",
+                "NotOnHold",
+                "RUNNING",
+                70,
+                17,
+                7.0,
+                16.0,
+                "",
+            ),
+            _lot_row(
+                _scenario_row("20260701", 0, "D/A1", "PRODUCTION", 0),
+                "RANGE-DA1-24H",
+                "NotOnHold",
+                "WAITING",
+                65,
+                15,
+                24.0,
+                30.0,
+                "",
+            ),
+            _lot_row(
+                _scenario_row("20260701", 0, "W/B6", "PRODUCTION", 0),
+                "RANGE-WB6-36H",
+                "NotOnHold",
+                "WAITING",
+                60,
+                14,
+                36.0,
+                42.0,
+                "",
+            ),
+            _lot_row(
+                _scenario_row("20260701", 0, "W/B4", "PRODUCTION", 0),
+                "RANGE-WB4-UNDER-24H",
+                "NotOnHold",
+                "RUNNING",
+                55,
+                13,
+                23.5,
+                29.0,
+                "",
+            ),
+            _lot_row(
+                _scenario_row("20260701", 0, "D/A1", "PRODUCTION", 0),
+                "HOLD-DA1-01",
+                "OnHold",
+                "WAITING",
+                42,
+                10,
+                2.0,
+                8.0,
+                "D/A HOLD validation",
+            ),
+            _lot_row(
+                _scenario_row("20260701", 0, "PCO1", "PRODUCTION", 0),
+                "HOLD-PCO1-01",
+                "OnHold",
+                "WAITING",
+                43,
+                10,
+                2.0,
+                8.0,
+                "PCO HOLD validation",
+            ),
+            _lot_row(
+                _scenario_row("20260701", 0, "D/I", "PRODUCTION", 0),
+                "HOLD-DI-01",
+                "OnHold",
+                "WAITING",
+                44,
+                10,
+                2.0,
+                8.0,
+                "D/I HOLD validation",
+            ),
+        ]
+    )
     # 현재 제품 source로 lot_status가 선택되어도 같은 기준 키 안의 MODE,
     # PKG1, LEAD 차이와 MCP_NO 대조군을 판별할 수 있게 한다.
     for index, variant in enumerate(("BASE", "MODE", "PKG1", "LEAD", "MCP_DECOY"), start=1):
@@ -1324,7 +1642,7 @@ def _lot_status_rows() -> list[dict[str, Any]]:
 
 # 함수 설명: `_hold_history_rows()`는 history·행 목록을 표준 행 목록으로 생성하거나 입력 행 중 필요한 부분만 선택합니다.
 def _hold_history_rows() -> list[dict[str, Any]]:
-    return [
+    rows = [
         {
             **_hold_row(_product_process_row("20260701", 0, _process_index("W/B1")), "T1234567GEN1", "H000", "검증용 이전 HOLD 이력"),
             "HOLD_TM": "2026-06-30 18:00:00",
@@ -1350,6 +1668,153 @@ def _hold_history_rows() -> list[dict[str, Any]]:
             "HOLD_TM": "2026-07-01 06:30:00",
         },
     ]
+    rows.extend(
+        [
+            {
+                **_hold_row(
+                    _scenario_row("20260701", 3, "D/A1", "PRODUCTION", 0),
+                    "TSSJQ07AH",
+                    "H-TSS-001",
+                    "TSSJQ07AH 초기 HOLD 이력",
+                ),
+                "HOLD_TM": "2026-07-01 05:40:00",
+            },
+            {
+                **_hold_row(
+                    _scenario_row("20260701", 3, "D/A1", "PRODUCTION", 0),
+                    "TSSJQ07AH",
+                    "H-TSS-002",
+                    "TSSJQ07AH 해제 전 HOLD 이력",
+                ),
+                "HOLD_TM": "2026-07-01 08:20:00",
+            },
+        ]
+    )
+    return rows
+
+
+# 함수 설명: `_eqp_down_list_rows()`는 Down 시간 조건과 Event 상세를 검증할 장비 상태 fixture를 생성합니다.
+def _eqp_down_list_rows(snapshot_dates: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for snapshot_date in snapshot_dates:
+        rows.extend(
+            [
+                {
+                    "DATE": snapshot_date,
+                    "EQP_ID": "EQP-SBM-DOWN-01",
+                    "EQP_MODEL": "EQM-SBM",
+                    "OPER_NUM": "SBM",
+                    "OPER_NAME": "SBM",
+                    "DOWN_TM": 9.5,
+                    "LAST_DOWN_TM": f"{_calendar_date(snapshot_date)} 03:10:00",
+                    "EQP_STAT_CD": "DOWN",
+                    "LAST_EVENT_CD": "ALM-SBM-01",
+                    "MES_EVENT_CD": "MES-DOWN",
+                    "LAST_EVENT_DESC": "SBM 장비 Down Event",
+                    "HIST_DESC": "SBM validation down event detail",
+                },
+                {
+                    "DATE": snapshot_date,
+                    "EQP_ID": "EQP-WB-DOWN-26H",
+                    "EQP_MODEL": "EQM-WB",
+                    "OPER_NUM": "WB3",
+                    "OPER_NAME": "W/B3",
+                    "DOWN_TM": 26.0,
+                    "LAST_DOWN_TM": f"{_calendar_date(snapshot_date)} 01:00:00",
+                    "EQP_STAT_CD": "DOWN",
+                    "LAST_EVENT_CD": "ALM-WB-26H",
+                    "MES_EVENT_CD": "MES-DOWN",
+                    "LAST_EVENT_DESC": "W/B 장시간 Down",
+                    "HIST_DESC": "Cooling unit alarm",
+                },
+                {
+                    "DATE": snapshot_date,
+                    "EQP_ID": "EQP-WB-DOWN-24H",
+                    "EQP_MODEL": "EQM-WB",
+                    "OPER_NUM": "WB4",
+                    "OPER_NAME": "W/B4",
+                    "DOWN_TM": 24.0,
+                    "LAST_DOWN_TM": f"{_calendar_date(snapshot_date)} 02:00:00",
+                    "EQP_STAT_CD": "DOWN",
+                    "LAST_EVENT_CD": "ALM-WB-24H",
+                    "MES_EVENT_CD": "MES-DOWN",
+                    "LAST_EVENT_DESC": "W/B 정확히 24시간 Down",
+                    "HIST_DESC": "Vacuum alarm",
+                },
+                {
+                    "DATE": snapshot_date,
+                    "EQP_ID": "EQP-WB-DOWN-12H",
+                    "EQP_MODEL": "EQM-WB",
+                    "OPER_NUM": "WB5",
+                    "OPER_NAME": "W/B5",
+                    "DOWN_TM": 12.0,
+                    "LAST_DOWN_TM": f"{_calendar_date(snapshot_date)} 06:00:00",
+                    "EQP_STAT_CD": "DOWN",
+                    "LAST_EVENT_CD": "ALM-WB-12H",
+                    "MES_EVENT_CD": "MES-DOWN",
+                    "LAST_EVENT_DESC": "W/B 단기 Down",
+                    "HIST_DESC": "Short validation control",
+                },
+            ]
+        )
+    return rows
+
+
+# 함수 설명: `_eqp_utilization_rows()`는 현재 작업 제품과 가동률을 함께 가진 장비 상태 fixture를 생성합니다.
+def _eqp_utilization_rows(snapshot_dates: list[str]) -> list[dict[str, Any]]:
+    definitions = [
+        (7, "D/A1", "EQP-DA217-A", "EQM-DA217", "RCP-DA217-A", 86.5, {"LEAD": "217", "MCP_NO": "L-217K9B", "DEVICE": "DEV-L217-DA"}),
+        (7, "D/A2", "EQP-DA217-B", "EQM-DA217", "RCP-DA217-B", 72.0, {"LEAD": "217", "MCP_NO": "L-217K9B", "DEVICE": "DEV-L217-DA"}),
+        (3, "D/A3", "EQP-DA267-A", "EQM-DA267", "RCP-DA267-A", 91.0, {}),
+        (0, "D/A4", "D724", "EQM-DA", "RCP-D724", 64.0, {"DEVICE": "DEV-D724-CURRENT"}),
+    ]
+    rows: list[dict[str, Any]] = []
+    for snapshot_date in snapshot_dates:
+        for product_index, process_name, eqp_id, eqp_model, recipe_id, rate, overrides in definitions:
+            base = _scenario_row(snapshot_date, product_index, process_name, "PRODUCTION", 0, **overrides)
+            base.update(
+                {
+                    "DATE": snapshot_date,
+                    "EQP_ID": eqp_id,
+                    "EQP_MODEL": eqp_model,
+                    "EQUIP_MODEL": eqp_model,
+                    "RECIPE_ID": recipe_id,
+                    "UTILIZATION_RATE": rate,
+                    "CURRENT_PRODUCT": str(base.get("MCP_NO") or base.get("DEVICE") or ""),
+                    "EQP_STATUS": "RUN",
+                }
+            )
+            rows.append(base)
+    return rows
+
+
+# 함수 설명: `_eqp_history_rows()`는 장비 ID 기반 Event History fixture를 생성합니다.
+def _eqp_history_rows(snapshot_dates: list[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for snapshot_date in snapshot_dates:
+        rows.extend(
+            [
+                {
+                    "DATE": snapshot_date,
+                    "EQP_ID": "D724",
+                    "OPER_NAME": "D/A4",
+                    "EVENT_TM": f"{_calendar_date(snapshot_date)} 07:15:00",
+                    "EVENT_CODE": "RUN-START",
+                    "EVENT_DESC": "D724 current production started",
+                    "HIST_DESC": "D724 가동 시작 이력",
+                },
+                {
+                    "DATE": snapshot_date,
+                    "EQP_ID": "D724",
+                    "OPER_NAME": "D/A4",
+                    "EVENT_TM": f"{_calendar_date(snapshot_date)} 05:30:00",
+                    "EVENT_CODE": "PM-DONE",
+                    "EVENT_DESC": "D724 preventive maintenance complete",
+                    "HIST_DESC": "D724 PM 완료 이력",
+                },
+            ]
+        )
+    return rows
 
 
 # 함수 설명: `_product_process_row()`는 process·행을 표 또는 API 응답에 넣을 한 행 dict로 projection합니다.

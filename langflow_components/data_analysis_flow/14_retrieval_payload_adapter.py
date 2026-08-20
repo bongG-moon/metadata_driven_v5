@@ -41,6 +41,7 @@ def build_retrieval_payload(payload_value: Any) -> dict[str, Any]:
         next_payload["runtime_sources"] = _merge_sources_by_alias(existing_sources, retrieved_sources)
     _standardize_runtime_source_columns(next_payload)
     _apply_metric_value_transforms(next_payload)
+    _reconcile_optional_direct_output_columns(next_payload)
     _validate_runtime_source_schema(next_payload)
     return next_payload
 
@@ -343,6 +344,222 @@ def _validate_runtime_source_schema(payload: dict[str, Any]) -> None:
                 ],
             }
         )
+
+
+# 함수 설명: 신뢰 Catalog가 복원된 단일 source 상세 조회에서만 LLM이 덧붙인 미지원 표시 컬럼을 실행 필수 계약과 분리합니다.
+# filter/typed step/metric/질문 명시/Catalog 선언 컬럼은 그대로 fail-closed로 유지합니다.
+def _reconcile_optional_direct_output_columns(payload: dict[str, Any]) -> None:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = [item for item in plan.get("retrieval_jobs", []) if isinstance(item, dict)] if isinstance(plan.get("retrieval_jobs"), list) else []
+    output_contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    steps = [item for item in plan.get("pandas_execution_plan", []) if isinstance(item, dict)] if isinstance(plan.get("pandas_execution_plan"), list) else []
+    operations = {str(item.get("operation") or "").strip().lower() for item in steps}
+    direct_operations = {
+        "apply_filters", "filter", "filter_rows", "select_columns",
+        "project_columns", "projection", "sort", "sort_and_top_n",
+        "top_n", "bottom_n",
+    }
+    result_mode = str(output_contract.get("result_mode") or "").strip().lower()
+    report: dict[str, Any] = {
+        "stage": "14_retrieval_payload_adapter",
+        "status": "not_needed",
+        "policy": "prune_only_unrequested_unregistered_missing_display_columns",
+        "sources": [],
+    }
+    if (
+        len(jobs) != 1
+        or result_mode not in {"detail", "entity_list"}
+        or (operations and not operations.issubset(direct_operations))
+    ):
+        _store_direct_output_reconciliation(payload, report)
+        return
+
+    job = jobs[0]
+    alias = _source_alias(job)
+    # Only a job rebuilt by 04A from the active Catalog may relax an LLM-only
+    # display suggestion.  Unhydrated/model-owned jobs keep the old strict
+    # behavior because their declared schema provenance is unknown.
+    if not alias or job.get("trusted_catalog") is not True:
+        report["reason"] = "trusted_catalog_contract_unavailable"
+        _store_direct_output_reconciliation(payload, report)
+        return
+
+    runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
+    source_results = payload.get("source_results") if isinstance(payload.get("source_results"), list) else []
+    source_result = next(
+        (
+            item
+            for item in source_results
+            if isinstance(item, dict) and _source_alias(item) == alias
+        ),
+        None,
+    )
+    runtime_columns = _runtime_columns(runtime_sources.get(alias))
+    known_columns = runtime_columns or (
+        _string_list(source_result.get("columns")) if isinstance(source_result, dict) else []
+    )
+    if not known_columns:
+        report["reason"] = "runtime_schema_unknown"
+        _store_direct_output_reconciliation(payload, report)
+        return
+
+    requested_columns = _merge_column_names(
+        output_contract.get("required_columns"),
+        output_contract.get("result_columns"),
+    )
+    if not requested_columns:
+        report["reason"] = "output_columns_not_declared"
+        _store_direct_output_reconciliation(payload, report)
+        return
+
+    critical_columns: list[str] = []
+    for field in _filter_fields(job.get("filters")):
+        _append_unique(critical_columns, field)
+    for step in steps:
+        for column in _step_direct_source_columns(step):
+            _append_unique(critical_columns, column)
+    for binding in output_contract.get("metric_bindings", []) if isinstance(output_contract.get("metric_bindings"), list) else []:
+        if isinstance(binding, dict) and str(binding.get("source_alias") or "").strip() in {"", alias}:
+            _append_unique(critical_columns, binding.get("source_column"))
+    for column in _string_list(output_contract.get("metric_columns")):
+        _append_unique(critical_columns, column)
+
+    catalog_columns = _trusted_catalog_columns(job)
+    question = _request_question(payload)
+    labels = output_contract.get("column_labels") if isinstance(output_contract.get("column_labels"), dict) else {}
+    known_keys = {_column_key(column) for column in known_columns}
+    critical_keys = {_column_key(column) for column in critical_columns}
+    catalog_keys = {_column_key(column) for column in catalog_columns}
+    optional_columns = [
+        column
+        for column in requested_columns
+        if _column_key(column) not in critical_keys
+        and _column_key(column) not in catalog_keys
+        and not _question_explicitly_requests_column(question, column, labels)
+    ]
+    dropped = [
+        column
+        for column in optional_columns
+        if _column_key(column) not in known_keys
+    ]
+    if not dropped:
+        report["reason"] = "no_missing_optional_display_columns"
+        report["sources"] = [{
+            "source_alias": alias,
+            "dataset_key": str(job.get("dataset_key") or ""),
+            "optional_display_columns": optional_columns,
+            "dropped_optional_columns": [],
+        }]
+        _store_direct_output_reconciliation(payload, report)
+        return
+
+    dropped_keys = {_column_key(column) for column in dropped}
+    remaining_result = [
+        column
+        for column in _string_list(output_contract.get("result_columns"))
+        if _column_key(column) not in dropped_keys
+    ]
+    remaining_required = [
+        column
+        for column in _string_list(output_contract.get("required_columns"))
+        if _column_key(column) not in dropped_keys
+    ]
+    # An entirely empty shape is not a safe recovery: retain the old contract
+    # so the existing schema/output gate reports the unresolved request.
+    if not remaining_result and not remaining_required:
+        report["reason"] = "reconciliation_would_remove_entire_shape"
+        _store_direct_output_reconciliation(payload, report)
+        return
+    if "result_columns" in output_contract:
+        output_contract["result_columns"] = remaining_result
+    if "required_columns" in output_contract:
+        output_contract["required_columns"] = remaining_required
+    if labels:
+        output_contract["column_labels"] = {
+            key: value
+            for key, value in labels.items()
+            if _column_key(key) not in dropped_keys
+        }
+    output_contract["display_optional_columns"] = [
+        column for column in optional_columns if _column_key(column) not in dropped_keys
+    ]
+    output_contract["contract_reconciliation"] = {
+        "status": "applied",
+        "policy": "trusted_direct_detail_optional_projection",
+        "dropped_optional_columns": dropped,
+    }
+    plan["output_contract"] = output_contract
+    payload["intent_plan"] = plan
+    report["status"] = "applied"
+    report["sources"] = [{
+        "source_alias": alias,
+        "dataset_key": str(job.get("dataset_key") or ""),
+        "known_runtime_columns": known_columns,
+        "catalog_declared_columns": catalog_columns,
+        "execution_critical_columns": critical_columns,
+        "optional_display_columns": optional_columns,
+        "dropped_optional_columns": dropped,
+    }]
+    _store_direct_output_reconciliation(payload, report)
+
+
+# 함수 설명: 상세 컬럼 완화 여부를 별도 inspection으로 남겨 schema gate 결과와 함께 원인을 추적할 수 있게 합니다.
+def _store_direct_output_reconciliation(payload: dict[str, Any], report: dict[str, Any]) -> None:
+    trace = payload.setdefault("trace", {})
+    inspection = trace.setdefault("inspection", {})
+    inspection["direct_output_column_reconciliation"] = report
+
+
+# 함수 설명: 04A가 신뢰 Catalog에서 복원한 컬럼 계약만 모으며 LLM job의 임의 columns는 신뢰하지 않습니다.
+def _trusted_catalog_columns(job: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    if job.get("trusted_catalog") is not True:
+        return result
+    for column in _string_list(job.get("catalog_columns")):
+        _append_unique(result, column)
+    for column in _string_list(job.get("default_detail_columns")):
+        _append_unique(result, column)
+    for column in _string_list(job.get("required_param_names")):
+        _append_unique(result, column)
+    for mapping_name in ("filter_mappings", "standard_column_aliases"):
+        mapping = job.get(mapping_name) if isinstance(job.get(mapping_name), dict) else {}
+        for canonical, aliases in mapping.items():
+            _append_unique(result, canonical)
+            for alias in _string_list(aliases):
+                _append_unique(result, alias)
+    semantics = job.get("metric_semantics") if isinstance(job.get("metric_semantics"), dict) else {}
+    for canonical, contract in semantics.items():
+        _append_unique(result, canonical)
+        if isinstance(contract, dict):
+            _append_unique(result, contract.get("source_column"))
+            _append_unique(result, contract.get("column"))
+    return result
+
+
+# 함수 설명: 현재 질문에서 canonical 컬럼명 또는 output label을 직접 언급했는지 보수적으로 확인합니다.
+def _question_explicitly_requests_column(
+    question: str,
+    column: str,
+    labels: dict[str, Any],
+) -> bool:
+    normalized_question = _column_key(question)
+    if not normalized_question:
+        return False
+    candidates = [column]
+    label = labels.get(column)
+    if label not in (None, ""):
+        candidates.append(label)
+    for candidate in candidates:
+        key = _column_key(candidate)
+        if len(key) >= 3 and key in normalized_question:
+            return True
+    return False
+
+
+# 함수 설명: request.question을 우선하고 레거시 최상위 question을 fallback으로 사용합니다.
+def _request_question(payload: dict[str, Any]) -> str:
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    return str(request.get("question") or payload.get("question") or "").strip()
 
 
 # 함수 설명: intent plan에서 source별로 pandas 실행 전에 존재해야 하는 직접 입력 컬럼을 수집합니다.

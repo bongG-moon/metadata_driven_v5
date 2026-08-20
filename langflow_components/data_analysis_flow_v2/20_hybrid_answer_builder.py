@@ -39,6 +39,59 @@ PRESENTATION_ROW_NUMBER_KEY = "__display_row_no__"
 PRESENTATION_ROW_NUMBER_LABEL = "No."
 PRESENTATION_CONDITION_KEY_PREFIX = "__applied_condition__"
 PRESENTATION_CONDITION_LIMIT = 12
+BLOCKED_CONFIRMATION_ITEM_LIMIT = 4
+BLOCKED_CONFIRMATION_TEXT_LIMIT = 500
+BLOCKED_CONFIRMATION_GENERIC_TEXTS = {
+    "필수 데이터 조회에 실패하여 pandas 분석을 실행하지 않았고 모델 응답도 사용하지 않았습니다.",
+    "데이터 조회 작업 검증에 실패했습니다.",
+    "필수 조회 실패로 pandas 및 repair 실행을 생략했습니다.",
+    "조건에 맞는 결과 행이 없습니다.",
+    "분석을 완료하지 못했습니다. trace의 오류를 확인해 주세요.",
+}
+BLOCKED_CONFIRMATION_SENSITIVE_PATTERN = re.compile(
+    r"(?:password|passwd|secret|api[_ -]?key|authorization|bearer|credential|mongodb(?:\+srv)?://)",
+    re.IGNORECASE,
+)
+BLOCKED_CONFIRMATION_PLANNER_FAILURE_TYPES = frozenset(
+    {
+        "catalog_hydration_failed",
+        "catalog_join_value_not_in_right_output",
+        "catalog_metric_ownership_mismatch",
+        "domain_filter_contract_unresolved",
+        "duplicate_source_alias",
+        "execution_plan_invalid",
+        "external_source_catalog_binding_unresolved",
+        "followup_dependent_catalog_unresolved",
+        "followup_result_grain_unavailable",
+        "function_case_input_unresolved",
+        "function_case_metric_lineage_unresolved",
+        "invalid_business_time_contract",
+        "invalid_metric_source_contract",
+        "invalid_reference_mode_contract",
+        "metric_comparison_contract_invalid",
+        "metric_dataset_selection_unresolved",
+        "missing_retrieval_jobs",
+        "pandas_plan_column_not_in_catalog",
+        "process_scope_incomplete",
+        "process_scope_not_supported_by_selected_sources",
+        "required_retrieval_parameter_unresolved",
+        "same_run_dependent_retrieval_unsupported",
+        "source_schema_contract_unresolved",
+        "table_catalog_metadata_unavailable",
+        "typed_frame_aggregate_column_missing",
+        "typed_frame_formula_operand_missing",
+        "typed_frame_formula_output_conflict",
+        "typed_frame_join_key_missing",
+        "typed_frame_join_value_missing",
+        "typed_frame_projection_column_missing",
+        "typed_frame_sort_column_missing",
+        "unregistered_dataset_key",
+        "unresolved_execution_input",
+    }
+)
+BLOCKED_CONFIRMATION_GENERIC_TEXT_KEYS = frozenset(
+    item.casefold() for item in BLOCKED_CONFIRMATION_GENERIC_TEXTS
+)
 PRESENTATION_SENSITIVE_FIELD_TOKENS = (
     "password",
     "secret",
@@ -884,9 +937,10 @@ def _build_answer_sections(payload: dict[str, Any], answer_message: str, section
         display_columns = priority_columns + [column for column in columns if column not in priority_columns]
     row_count = _int(data.get("row_count"), len(rows))
     evidence = _evidence(payload)
-    notices = _notices(payload, row_count, rows)
+    confirmation_required = _blocked_confirmation_required(payload)
+    notices = _notices(payload, row_count, rows, confirmation_required)
     downloads = _downloads(payload)
-    return {
+    sections = {
         "summary": {
             "headline": answer_message,
             "basis": _summary_basis(applied_criteria),
@@ -907,6 +961,13 @@ def _build_answer_sections(payload: dict[str, Any], answer_message: str, section
         "downloads": downloads,
         "next_questions": _next_questions(payload),
     }
+    # This is intentionally an optional, presentation-only section.  Existing
+    # API consumers that do not know it continue to receive the previous shape,
+    # while the answer adapter can render an actionable explanation for a
+    # retrieval gate block without treating it as an empty result.
+    if confirmation_required:
+        sections["confirmation_required"] = confirmation_required
+    return sections
 
 
 # 함수 설명: `_result_table_presentation()`은 분석·후속 상태를 바꾸지 않고 최종 표에 순번과 실제 적용 조건을 덧붙입니다.
@@ -1276,9 +1337,151 @@ def _evidence(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # 함수 설명: `_notices()`는 warnings와 errors를 사용자에게 보여 줄 중복 없는 안내 목록으로 정리합니다.
-def _notices(payload: dict[str, Any], row_count: int, rows: list[Any]) -> list[dict[str, Any]]:
+def _blocked_confirmation_required(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a small, user-safe explanation only for planning/metadata gate blocks.
+
+    Runtime source failures are intentionally excluded.  Their error text is
+    authoritative, but an intent-model rationale can be stale or unrelated to
+    a transport/runtime failure.  This helper only consumes the normalized
+    plan's decision reasons (or its normalized inspection mirror as fallback),
+    never raw model trace/error objects.
+    """
+
+    if not _blocked_planning_or_metadata_gate(payload):
+        return {}
+    items = _trusted_blocked_confirmation_reasons(payload)
+    return {"title": "확인필요사항", "items": items} if items else {}
+
+
+# 함수 설명: planner/metadata 계약 검증으로 차단된 gate만 확인사항 표시 후보로 판정합니다.
+def _blocked_planning_or_metadata_gate(payload: dict[str, Any]) -> bool:
+    gate = _dict(payload.get("execution_gate"))
+    if str(gate.get("status") or "").strip().lower() != "blocked":
+        return False
+    critical_failures = [
+        item for item in _list(gate.get("critical_failures")) if isinstance(item, dict)
+    ]
+    if not critical_failures:
+        return False
+
+    effective_failures: list[dict[str, Any]] = []
+    for failure in critical_failures:
+        failure_type = str(failure.get("type") or "").strip().lower()
+        if failure_type == "retrieval_job_validation_failed":
+            validation_errors = [
+                item
+                for item in _list(failure.get("validation_errors"))
+                if isinstance(item, dict)
+            ]
+            # A wrapper without typed validation details is not enough to prove
+            # that an intent rationale is related to the current failure.
+            if not validation_errors:
+                return False
+            effective_failures.extend(validation_errors)
+        else:
+            effective_failures.append(failure)
+
+    return bool(effective_failures) and all(
+        str(item.get("type") or "").strip().lower()
+        in BLOCKED_CONFIRMATION_PLANNER_FAILURE_TYPES
+        for item in effective_failures
+    )
+
+
+# 함수 설명: 정규화된 의도 판단 사유만 확인사항용으로 안전하게 제한합니다.
+def _trusted_blocked_confirmation_reasons(payload: dict[str, Any]) -> list[str]:
+    plan = _dict(payload.get("intent_plan"))
+    primary = _safe_blocked_confirmation_reason_list(plan.get("decision_reason"))
+    if primary:
+        return primary
+    intent_inspection = _dict(
+        _dict(_dict(payload.get("trace")).get("inspection")).get("intent")
+    )
+    return _safe_blocked_confirmation_reason_list(
+        intent_inspection.get("decision_reason")
+    )
+
+
+# 함수 설명: 객체·민감문자열·일반 오류를 제외한 짧은 단문 안내를 만듭니다.
+def _safe_blocked_confirmation_reason_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    reasons: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        # Do not stringify nested raw trace objects into a customer-facing
+        # section.  Only canonical text reasons can enter this path.
+        if not isinstance(item, str):
+            continue
+        text = _safe_blocked_confirmation_reason(item)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        reasons.append(text)
+        if len(reasons) >= BLOCKED_CONFIRMATION_ITEM_LIMIT:
+            break
+    return reasons
+
+
+# 함수 설명: 확인사항 문장을 한 줄·제한 길이·민감정보 제외 형태로 정규화합니다.
+def _safe_blocked_confirmation_reason(value: str) -> str:
+    text = str(value).replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    if (
+        (text.startswith("{") and text.endswith("}"))
+        or (text.startswith("[") and text.endswith("]"))
+        or BLOCKED_CONFIRMATION_SENSITIVE_PATTERN.search(text)
+    ):
+        return ""
+    generic_key = text.casefold()
+    if generic_key in BLOCKED_CONFIRMATION_GENERIC_TEXT_KEYS:
+        return ""
+    if len(text) > BLOCKED_CONFIRMATION_TEXT_LIMIT:
+        text = text[: BLOCKED_CONFIRMATION_TEXT_LIMIT - 1].rstrip() + "…"
+    return text
+
+
+# 함수 설명: 확인사항과 기존 참고가 같은 오류를 반복하지 않도록 비교용 키를 정규화합니다.
+def _blocked_notice_comparison_key(value: Any) -> str:
+    text = str(value or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+# 함수 설명: `_notices()`는 warnings와 errors를 사용자에게 보여 줄 중복 없는 안내 목록으로 정리합니다.
+def _notices(
+    payload: dict[str, Any],
+    row_count: int,
+    rows: list[Any],
+    confirmation_required: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     notices: list[dict[str, Any]] = []
-    if row_count == 0 and not rows:
+    confirmation_items = _string_list(_dict(confirmation_required).get("items"))
+    suppressed_messages = {
+        _blocked_notice_comparison_key(_safe_blocked_confirmation_reason(item))
+        for item in confirmation_items
+        if _safe_blocked_confirmation_reason(item)
+    }
+    if confirmation_items:
+        headline = _blocked_notice_comparison_key(payload.get("answer_message"))
+        if headline:
+            suppressed_messages.add(headline)
+    analysis_status = str(
+        _dict(payload.get("analysis")).get("status") or ""
+    ).strip().lower()
+    if (
+        row_count == 0
+        and not rows
+        and analysis_status in {"ok", "success"}
+        and not _execution_blocked(payload)
+        and not _terminal_response(payload)
+    ):
         notices.append({"type": "empty_result", "message": "조건에 맞는 결과 행이 없습니다."})
     for source in _list(payload.get("source_results")):
         if not isinstance(source, dict):
@@ -1290,10 +1493,14 @@ def _notices(payload: dict[str, Any], row_count: int, rows: list[Any]) -> list[d
     trace = _dict(payload.get("trace"))
     for item in _list(trace.get("warnings"))[:5]:
         if isinstance(item, dict):
-            notices.append({"type": str(item.get("type") or "warning"), "message": str(item.get("message") or item)})
+            message = str(item.get("message") or item)
+            if _blocked_notice_comparison_key(message) not in suppressed_messages:
+                notices.append({"type": str(item.get("type") or "warning"), "message": message})
     for item in _list(trace.get("errors"))[:5]:
         if isinstance(item, dict):
-            notices.append({"type": str(item.get("type") or "error"), "message": str(item.get("message") or item)})
+            message = str(item.get("message") or item)
+            if _blocked_notice_comparison_key(message) not in suppressed_messages:
+                notices.append({"type": str(item.get("type") or "error"), "message": message})
     return notices
 
 
@@ -1323,6 +1530,8 @@ def _summary_basis(applied_criteria: dict[str, Any]) -> list[str]:
 
 # 함수 설명: `_next_questions()`는 questions 관련 정보를 계산·선별해 후속 분석 또는 표시 단계에 전달합니다.
 def _next_questions(payload: dict[str, Any]) -> list[str]:
+    if _terminal_response(payload):
+        return []
     data = _dict(payload.get("data"))
     row_count = _int(data.get("row_count"), len(_list(data.get("rows"))))
     if row_count <= 0:
@@ -1364,6 +1573,39 @@ def _build_next_turn_state(payload: dict[str, Any]) -> dict[str, Any]:
         state["session_id"] = session_id
     state["last_question"] = _dict(payload.get("request")).get("question", "")
     state["last_answer_message"] = _clip_text(payload.get("answer_message"), 1000)
+
+    # A clarification or trace-only explanation does not produce a new data
+    # snapshot.  Preserve only the allowlisted prior analysis state so the
+    # next user turn can still refer to the last real result.  Do not copy the
+    # complete previous state: stale downloads, arbitrary keys, and runtime
+    # buffers must not leak forward.
+    if _terminal_response(payload):
+        for key in (
+            "current_data",
+            "followup_source_results",
+            "runtime_source_refs",
+            "last_intent_plan",
+            "last_applied_criteria",
+        ):
+            value = previous_state.get(key)
+            if value not in (None, "", [], {}):
+                state[key] = deepcopy(value)
+        contract = _dict(payload.get("simple_analysis_contract"))
+        if str(contract.get("terminal_kind") or "").strip() == "clarification":
+            intent_plan = _dict(payload.get("intent_plan"))
+            clarification_reason = str(
+                intent_plan.get("clarification_reason") or ""
+            ).strip()
+            decision_reasons = _string_list(intent_plan.get("decision_reason"))
+            state["pending_clarification"] = _omit_empty(
+                {
+                    "question": state.get("last_question", ""),
+                    "clarification_reason": clarification_reason,
+                    "decision_reason": decision_reasons,
+                }
+            )
+        return _omit_empty(state)
+
     state["current_data"] = _current_data_state(payload)
     followup_sources = _followup_source_results(payload)
     if followup_sources:
@@ -1723,7 +1965,21 @@ def build_answer_evidence_variables(payload_value: Any) -> dict[str, str]:
     )
     applied_scope = _omit_empty(
         {
-            "intent": _omit_empty({"analysis_kind": plan.get("analysis_kind")}),
+            "intent": _omit_empty(
+                {
+                    "analysis_kind": plan.get("analysis_kind"),
+                    "request_scope": (
+                        plan.get("request_scope")
+                        if _terminal_response(payload)
+                        else ""
+                    ),
+                    "decision_reason": (
+                        _string_list(plan.get("decision_reason"))
+                        if _terminal_response(payload)
+                        else []
+                    ),
+                }
+            ),
             "criteria": _applied_criteria(payload),
             "retrieval": _compact_source_results(_list(payload.get("source_results"))),
             "pandas_execution": _omit_empty(
@@ -1976,6 +2232,19 @@ def build_hybrid_answer_response(
                 "llm_answer_enabled": llm_answer_enabled,
             }
         )
+    elif _terminal_response(payload) and str(contract.get("terminal_kind") or "").strip() == "clarification":
+        answer_text = _terminal_answer_message(payload)
+        result = build_answer_response(payload, answer_text)
+        result.setdefault("trace", {}).setdefault("inspection", {})[
+            "answer_model_response"
+        ].update(
+            {
+                "stage": "20_hybrid_answer_builder",
+                "model_called": False,
+                "policy": "deterministic_clarification",
+                "llm_answer_enabled": llm_answer_enabled,
+            }
+        )
     elif not llm_answer_enabled:
         answer_text = (
             _authoritative_result_message(payload)
@@ -2023,6 +2292,42 @@ def build_hybrid_answer_response(
     trace["llm_calls"] = deepcopy(llm_calls)
     trace.setdefault("timing_ms", {})["answer_build"] = round((perf_counter() - started) * 1000, 3)
     return result
+
+
+# 함수 설명: terminal route 여부를 실행 계약과 분석 결과에서 공통으로 판정합니다.
+def _terminal_response(payload: dict[str, Any]) -> bool:
+    contract = _dict(payload.get("simple_analysis_contract"))
+    analysis = _dict(payload.get("analysis"))
+    return (
+        str(contract.get("operation") or "").strip()
+        == "complete_without_pandas"
+        or str(analysis.get("execution_mode") or "").strip().lower()
+        == "terminal_response"
+    )
+
+
+# 함수 설명: clarification 의도에서 보존된 사유를 데이터 행 없이 사용자 안내 문장으로 변환합니다.
+def _terminal_answer_message(payload: dict[str, Any]) -> str:
+    existing = str(payload.get("answer_message") or "").strip()
+    if existing:
+        return existing
+    plan = _dict(payload.get("intent_plan"))
+    candidates = [
+        plan.get("clarification_reason"),
+        *_string_list(plan.get("decision_reason")),
+        *_string_list(
+            _dict(
+                _dict(_dict(payload.get("trace")).get("inspection")).get(
+                    "intent"
+                )
+            ).get("decision_reason")
+        ),
+    ]
+    reason = next(
+        (str(item).strip() for item in candidates if str(item or "").strip()),
+        "요청을 실행하려면 분석 기준을 추가로 확인해야 합니다.",
+    )
+    return f"추가 확인이 필요합니다. {reason}"
 
 
 # 함수 설명: `_deterministic_fast_answer()`는 20 V2 Hybrid 답변 생성기 처리 중 FAST·답변 관련 값을 계산·변환하는 내부 helper입니다.

@@ -39,7 +39,8 @@ def build_api_response(
         payload,
         _intermediate_preview_limit(intermediate_preview_limit),
     )
-    return {
+    confirmation_items = _blocked_retrieval_confirmation_items(payload)
+    response = {
         "response_type": "data_analysis",
         "status": status,
         "stage_status": stage_status,
@@ -59,6 +60,36 @@ def build_api_response(
         "state": payload.get("state", {}),
         "trace": _without_intermediate_results(payload.get("trace")),
     }
+    # Keep the existing envelope unchanged unless the Answer Builder explicitly
+    # publishes a sanitized confirmation section. API consumers then receive a
+    # small display-ready projection and never need to parse trace internals.
+    if confirmation_items:
+        response["confirmation_items"] = confirmation_items
+    return response
+
+
+# 함수 설명: `_blocked_retrieval_confirmation_items()`는 Answer Builder가 안전하게 정제한 사용자 확인 사유만 API 최상위 계약으로 투영합니다.
+def _blocked_retrieval_confirmation_items(payload: dict[str, Any]) -> list[str]:
+    """Copy the canonical answer section without independently classifying failures.
+
+    Raw trace reasoning and retrieval errors remain diagnostic data. The
+    Answer Builder owns gate eligibility, canonicalization, filtering, and
+    wording, so this API boundary never creates a second explanation.
+    """
+    answer_sections = payload.get("answer_sections")
+    if not isinstance(answer_sections, dict):
+        return []
+    return _confirmation_items_from_section(answer_sections.get("confirmation_required"))
+
+
+# 함수 설명: `_confirmation_items_from_section()`는 Answer Builder가 정제한 confirmation_required 항목을 변경 없이 API로 전달합니다.
+def _confirmation_items_from_section(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    items = value.get("items")
+    if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+        return []
+    return deepcopy(items)
 
 
 # 주요 함수: 중간 결과 체크포인트를 웹 테이블 계약으로 투영합니다.

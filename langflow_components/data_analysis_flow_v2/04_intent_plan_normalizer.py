@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -22,6 +23,9 @@ from lfx.schema.data import Data
 
 RETIRED_JOB_DETAIL_KEYS = {"row_identity_columns", "context_columns"}
 PREVIOUS_RESULT_ALIAS = "previous_result"
+DERIVED_FORMULA_OPERATORS = {"add", "subtract", "multiply", "divide"}
+DERIVED_FORMULA_NULL_POLICIES = {"zero", "propagate"}
+DERIVED_FORMULA_ZERO_DIVISION_POLICIES = {"zero", "null"}
 REFERENCE_MODE_TO_REUSE_STRATEGY = {
     "none": "none",
     "previous_result_rows": "previous_result",
@@ -303,6 +307,16 @@ def normalize_intent_plan(
     metadata_ref_guard["removed_unmatched_execution_refs"] = (
         removed_unmatched_execution_refs
     )
+    (
+        retrieval_jobs,
+        ungrounded_domain_filter_reconciliation,
+    ) = _remove_unselected_domain_filter_conditions(
+        question,
+        retrieval_jobs,
+        metadata_candidates,
+        removed_unmatched_execution_refs,
+        domain_selection.get("locked_metadata_refs", []),
+    )
     metadata_refs = _merge_metadata_ref_lists(
         metadata_refs,
         domain_selection.get("locked_metadata_refs", []),
@@ -353,13 +367,30 @@ def normalize_intent_plan(
             metadata_candidates,
         )
     )
+    temporal_catalog_candidates = _execution_catalog_candidates(
+        metadata_envelope,
+        metadata_candidates,
+    )
     retrieval_jobs, business_time_guard = _apply_business_time_contracts(
         payload,
         retrieval_jobs,
-        metadata_candidates,
+        temporal_catalog_candidates,
         question,
         domain_selection.get("locked_metadata_refs", []),
         raw_pandas_plan,
+    )
+    (
+        metadata_candidates,
+        retrieval_jobs,
+        temporal_contract_catalog_resolution,
+    ) = _hydrate_execution_catalog_candidates(
+        metadata_candidates,
+        metadata_envelope,
+        retrieval_jobs,
+    )
+    metadata_refs = _merge_metadata_ref_lists(
+        metadata_refs,
+        temporal_contract_catalog_resolution.get("metadata_refs", []),
     )
     # A follow-up may legitimately carry an earlier condition into a different
     # Catalog dataset.  Keep that condition only when the *new* trusted
@@ -417,10 +448,14 @@ def normalize_intent_plan(
         and domain_selection.get("temporal_alias_lock") is True
     ):
         business_time_guard["selection_source"] = "metadata_alias_lock"
+    temporal_catalog_candidates = _execution_catalog_candidates(
+        metadata_envelope,
+        metadata_candidates,
+    )
     raw_pandas_plan, temporal_metric_alignment = _align_temporal_metric_columns(
         raw_pandas_plan,
         business_time_guard,
-        metadata_candidates,
+        temporal_catalog_candidates,
     )
     external_source_catalog_binding = _resolve_late_external_source_bindings(
         external_source_catalog_binding,
@@ -431,7 +466,21 @@ def normalize_intent_plan(
         payload,
         retrieval_jobs,
         pandas_plan,
+        temporal_catalog_candidates,
+        business_time_guard,
+    )
+    (
         metadata_candidates,
+        retrieval_jobs,
+        temporal_sibling_catalog_resolution,
+    ) = _hydrate_execution_catalog_candidates(
+        metadata_candidates,
+        metadata_envelope,
+        retrieval_jobs,
+    )
+    metadata_refs = _merge_metadata_ref_lists(
+        metadata_refs,
+        temporal_sibling_catalog_resolution.get("metadata_refs", []),
     )
     retrieval_jobs, source_dataset_selection = _reconcile_source_dataset_selection(
         payload,
@@ -502,7 +551,23 @@ def normalize_intent_plan(
             function_cases,
         )
     )
+    (
+        pandas_plan,
+        function_case_step_reconciliation,
+    ) = _reconcile_function_case_source_transform_steps(
+        function_cases,
+        pandas_plan,
+        retrieval_jobs,
+    )
     pandas_plan = _ensure_function_case_steps(function_cases, pandas_plan, retrieval_jobs)
+    (
+        pandas_plan,
+        function_case_terminal_lineage_reconciliation,
+    ) = _reconcile_unconsumed_function_case_terminal_lineage(
+        function_cases,
+        pandas_plan,
+        retrieval_jobs,
+    )
     (
         plan,
         retrieval_jobs,
@@ -526,6 +591,21 @@ def normalize_intent_plan(
         payload,
     )
     reuse_strategy = _reuse_strategy(reference_mode)
+    declared_processes = _declared_process_scope_from_plan(
+        plan,
+        metadata_candidates,
+    )
+    (
+        retrieval_jobs,
+        effective_declared_processes,
+        unrequested_process_scope_guard,
+    ) = _drop_unrequested_process_scope_filters(
+        retrieval_jobs,
+        metadata_candidates,
+        question,
+        reference_mode,
+        declared_processes,
+    )
     pandas_plan = _ensure_previous_result_row_match_step(
         pandas_plan,
         retrieval_jobs,
@@ -566,10 +646,24 @@ def normalize_intent_plan(
         metadata_candidates,
         question,
         pandas_plan=pandas_plan,
-        declared_processes=_declared_process_scope_from_plan(
-            plan, metadata_candidates
+        declared_processes=effective_declared_processes,
+        skip=(
+            _has_ordered_process_range_case(plan)
+            or (
+                request_scope == "clarification"
+                and not retrieval_jobs
+                and not pandas_plan
+            )
         ),
-        skip=_has_ordered_process_range_case(plan),
+        skip_reason=(
+            "clarification_has_no_execution_scope"
+            if (
+                request_scope == "clarification"
+                and not retrieval_jobs
+                and not pandas_plan
+            )
+            else "ordered_process_range_owns_scope"
+        ),
     )
     reference_mode_guard = _validate_reference_mode(
         reference_mode_resolution,
@@ -599,12 +693,25 @@ def normalize_intent_plan(
                 "issues": deepcopy(external_source_catalog_binding["unresolved"]),
             }
         )
+    # A selected analysis recipe can own a row-enrichment join more narrowly
+    # than a nearby generic product-grain reference.  Keep that preference
+    # deliberately opt-in: only a complete, Catalog-proven recipe contract is
+    # eligible, and every ambiguous or conflicting declaration remains a
+    # trace-only recommendation below.
+    selected_recipe_join_contracts = _selected_recipe_join_contracts(
+        plan,
+        metadata_refs,
+        metadata_candidates,
+        retrieval_jobs,
+        pandas_plan,
+    )
     resolved_join_plan = _resolve_join_plan(
         plan,
         metadata_refs,
         metadata_candidates,
         retrieval_jobs,
         pandas_plan,
+        selected_recipe_join_contracts.get("materializable", []),
     )
     condition_resolution = _condition_resolution(
         plan,
@@ -635,6 +742,17 @@ def normalize_intent_plan(
         function_cases,
         condition_resolution,
     )
+    pandas_plan, typed_filter_step_canonicalization = (
+        _canonicalize_typed_filter_steps(pandas_plan)
+    )
+    (
+        pandas_plan,
+        after_helper_execution_graph_reconciliation,
+    ) = _reconcile_trusted_after_helper_execution_graph(
+        pandas_plan,
+        function_cases,
+        retrieval_jobs,
+    )
     pandas_plan, pandas_column_normalization = _normalize_pandas_plan_columns(
         pandas_plan,
         metadata_candidates,
@@ -645,6 +763,7 @@ def normalize_intent_plan(
     pandas_plan, typed_join_contract_materialization = _materialize_resolved_join_steps(
         pandas_plan,
         resolved_join_plan,
+        selected_recipe_join_contracts.get("shadow_recommendations", []),
     )
     pandas_plan, derived_aggregate_join_materialization = (
         _materialize_derived_aggregate_join_keys(pandas_plan)
@@ -662,6 +781,14 @@ def normalize_intent_plan(
             metadata_candidates,
             retrieval_jobs,
             resolved_grain_plan,
+        )
+    )
+    pandas_plan, derived_formula_materialization = (
+        _materialize_selected_recipe_derived_formulas(
+            pandas_plan,
+            metadata_candidates,
+            domain_selection.get("locked_metadata_refs", []),
+            plan.get("output_contract"),
         )
     )
     # Catalog metadata describes an external source, whereas every Typed
@@ -770,6 +897,15 @@ def normalize_intent_plan(
             pandas_plan,
             resolved_execution_graph,
         )
+    )
+    (
+        output_contract,
+        implicit_ordering_reconciliation,
+    ) = _reconcile_implicit_aggregate_ordering(
+        output_contract,
+        pandas_plan,
+        question,
+        contract_plan.get("output_contract"),
     )
     resolved_presence_comparison_plan = _resolve_presence_comparison_plan(
         pandas_plan,
@@ -944,6 +1080,7 @@ def normalize_intent_plan(
         "business_time_guard": business_time_guard,
         "metadata_ref_guard": metadata_ref_guard,
         "domain_selection": domain_selection,
+        "ungrounded_domain_filter_reconciliation": ungrounded_domain_filter_reconciliation,
         "domain_metric_source_guard": domain_metric_source_guard,
         "domain_condition_guard": domain_condition_guard,
         "domain_filter_contract_guard": domain_filter_contract_guard,
@@ -954,10 +1091,15 @@ def normalize_intent_plan(
         "followup_contract_guard": followup_contract_guard,
         "function_case_input_reconciliation": function_case_input_reconciliation,
         "function_case_source_sufficiency": function_case_source_sufficiency,
+        "function_case_step_reconciliation": function_case_step_reconciliation,
+        "function_case_terminal_lineage_reconciliation": function_case_terminal_lineage_reconciliation,
         "source_sufficiency_pruning": source_sufficiency_pruning,
         "auto_function_case_selection": auto_function_case_selection,
         "function_case_execution_contracts": function_case_execution_contracts,
+        "typed_filter_step_canonicalization": typed_filter_step_canonicalization,
+        "after_helper_execution_graph_reconciliation": after_helper_execution_graph_reconciliation,
         "reference_scope_normalization": reference_scope_normalization,
+        "unrequested_process_scope_guard": unrequested_process_scope_guard,
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
         "implicit_step_input_normalization": implicit_step_input_normalization,
@@ -966,14 +1108,18 @@ def normalize_intent_plan(
         "derived_aggregate_join_materialization": derived_aggregate_join_materialization,
         "domain_execution_contracts": domain_execution_contracts,
         "aggregate_grain_alignment": aggregate_grain_alignment,
+        "derived_formula_materialization": derived_formula_materialization,
         "typed_frame_contract": typed_frame_contract,
         "required_parameter_guard": required_parameter_guard,
         "output_contract_column_normalization": output_contract_column_normalization,
         "terminal_output_contract_reconciliation": terminal_output_contract_reconciliation,
+        "implicit_ordering_reconciliation": implicit_ordering_reconciliation,
         "typed_input_binding": typed_input_binding,
         "source_alias_reconciliation": source_alias_reconciliation,
         "external_source_catalog_binding": external_source_catalog_binding,
         "execution_catalog_resolution": execution_catalog_resolution,
+        "temporal_contract_catalog_resolution": temporal_contract_catalog_resolution,
+        "temporal_sibling_catalog_resolution": temporal_sibling_catalog_resolution,
         "temporal_metric_alignment": temporal_metric_alignment,
         "metric_dataset_selection": metric_dataset_selection,
         "source_dataset_selection": source_dataset_selection,
@@ -3639,6 +3785,16 @@ def _align_temporal_metric_columns(
                 )
                 if _normalized_column_key(value)
             }
+            canonical_output_column = (
+                _temporal_aggregate_output_column(
+                    result,
+                    source_alias,
+                    source_column,
+                    registered_aliases,
+                )
+                or str(semantic.get("output_column") or "").strip()
+                or source_column
+            )
 
             # LLM은 표시용 output 이름을 source column으로 재사용할 수 있습니다.
             # 등록된 temporal source column과 이름상 관련되지만 Table Catalog에
@@ -3727,11 +3883,98 @@ def _align_temporal_metric_columns(
                             "reason": "temporal_source_column_contract",
                         }
                     )
+            # Ordering fields consume a produced frame. A registered business
+            # display alias such as BOH is not a physical source requirement;
+            # bind it to the unique aggregate output owned by this temporal
+            # source. Non-registered names and ambiguous producer outputs are
+            # left unchanged for the established validation path.
+            for field_name in ("sort_by", "order_by", "rank_by", "rank_column"):
+                raw_column = str(step.get(field_name) or "").strip()
+                # Ordering output names are corrected only for an exact alias
+                # registered by the selected temporal Domain.  The broader
+                # source-column similarity rule above remains useful for an
+                # aggregation input, but would be too permissive for a derived
+                # frame because an unrelated calculated column may merely
+                # contain the same token.
+                if (
+                    not raw_column
+                    or _normalized_column_key(raw_column) not in registered_aliases
+                    or _normalized_column_key(raw_column)
+                    == _normalized_column_key(source_column)
+                ):
+                    continue
+                step[field_name] = canonical_output_column
+                corrections.append(
+                    {
+                        "step_index": index,
+                        "source_alias": source_alias,
+                        "from_column": raw_column,
+                        "to_column": canonical_output_column,
+                        "reason": "temporal_output_alias_contract",
+                    }
+                )
             result[index] = step
     return result, {
         "status": "applied" if corrections else "not_needed",
         "corrections": corrections,
     }
+
+
+# 함수 설명: temporal source의 집계 입력과 연결된 고유 output 컬럼을 찾고 둘 이상이면 추측하지 않습니다.
+def _temporal_aggregate_output_column(
+    pandas_plan: list[Any],
+    source_alias: str,
+    source_column: str,
+    registered_alias_keys: set[str],
+) -> str:
+    source_keys = {
+        _normalized_column_key(source_column),
+        *registered_alias_keys,
+    }
+    outputs: list[str] = []
+    known_aliases = {source_alias}
+    for step in pandas_plan:
+        if not isinstance(step, dict):
+            continue
+        lineage_aliases = _step_external_source_aliases(
+            step,
+            pandas_plan,
+            known_aliases,
+        )
+        if source_alias not in lineage_aliases:
+            continue
+        aggregations = (
+            step.get("aggregations")
+            if isinstance(step.get("aggregations"), list)
+            else []
+        )
+        if not aggregations and (step.get("agg_column") or step.get("aggregate_column")):
+            aggregations = [
+                {
+                    "column": step.get("agg_column") or step.get("aggregate_column"),
+                    "output_column": step.get("output_column"),
+                }
+            ]
+        for aggregation in aggregations:
+            if not isinstance(aggregation, dict):
+                continue
+            input_column = str(
+                aggregation.get("source_column")
+                or aggregation.get("column")
+                or aggregation.get("agg_column")
+                or ""
+            ).strip()
+            if _normalized_column_key(input_column) not in source_keys:
+                continue
+            output_column = str(
+                aggregation.get("output_column")
+                or aggregation.get("alias")
+                or aggregation.get("name")
+                or input_column
+            ).strip()
+            if output_column and output_column not in outputs:
+                outputs.append(output_column)
+    return outputs[0] if len(outputs) == 1 else ""
 
 
 # 함수 설명: `_apply_business_time_contracts()`는 04 의도 계획 정규화기 처리 중 business·TIME·contracts 관련 값을 계산·변환하는 내부 helper입니다.
@@ -4789,12 +5032,18 @@ def _resolve_execution_domain_selection(
         kinds: list[str] = []
         if isinstance(payload.get("temporal_semantics"), (dict, list)):
             kinds.append("temporal")
-        if _metadata_filter_contracts(payload):
+        if _metadata_execution_filter_contracts(payload):
             kinds.append("conditions")
         if _string_list(payload.get("metric_columns")) or str(
             payload.get("column") or ""
         ).strip():
             kinds.append("metrics")
+        # A derived formula is an execution-bearing recipe even when its
+        # inputs are all upstream outputs rather than raw Catalog metrics.
+        # It is still activated only by the recipe's registered alias and
+        # materialized later only when the output contract proves its lineage.
+        if isinstance(payload.get("derived_metrics"), list) and payload.get("derived_metrics"):
+            kinds.append("derived_metrics")
         if not kinds:
             continue
         aliases = _merge_strings(
@@ -4813,7 +5062,7 @@ def _resolve_execution_domain_selection(
 
     locked: list[dict[str, str]] = []
     ambiguities: list[dict[str, Any]] = []
-    for kind in ("temporal", "conditions", "metrics"):
+    for kind in ("temporal", "conditions", "metrics", "derived_metrics"):
         kind_matches = [item for item in matches if kind in item.get("kinds", [])]
         identities = {
             (item["metadata_ref"]["section"], item["metadata_ref"]["key"])
@@ -5154,6 +5403,7 @@ def _reconcile_metric_dataset_selection(
     retrieval_jobs: list[Any],
     pandas_plan: list[Any],
     candidates: dict[str, Any],
+    business_time_guard: dict[str, Any] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Select a dataset from catalog time-scope and executable column contracts.
 
@@ -5174,16 +5424,28 @@ def _reconcile_metric_dataset_selection(
     catalog_items = [
         item
         for item in candidates.get("table_catalog_items", [])
-        if isinstance(item, dict) and str(item.get("dataset_key") or "").strip()
+        if isinstance(item, dict) and _catalog_dataset_key(item)
     ]
     corrections: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
+    domain_temporal_locks: list[dict[str, Any]] = []
     for job in jobs:
         if not isinstance(job, dict):
             continue
         alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
         metric_columns = source_columns.get(alias, [])
         current_key = str(job.get("dataset_key") or "").strip()
+        locked_binding = _exact_selected_temporal_dataset_binding(
+            job,
+            business_time_guard,
+        )
+        if locked_binding:
+            domain_temporal_locks.append(locked_binding)
+            # An exact, selected Domain temporal contract already owns this
+            # alias, dataset, and query date.  Do not let the generic
+            # current/history selector reinterpret it.  Catalog/schema
+            # validation still runs later and remains fail-closed.
+            continue
         current_item = _table_catalog_item(candidates, current_key)
         desired_scope = _job_requested_time_scope(
             job,
@@ -5203,7 +5465,7 @@ def _reconcile_metric_dataset_selection(
 
         eligible: list[dict[str, Any]] = []
         for item in catalog_items:
-            candidate_key = str(item.get("dataset_key") or "").strip()
+            candidate_key = _catalog_dataset_key(item)
             if _catalog_time_scope(item) != desired_scope:
                 continue
             candidate_family = _catalog_dataset_family(item)
@@ -5212,6 +5474,10 @@ def _reconcile_metric_dataset_selection(
             # overlap alone is insufficient because status/WIP catalogs can
             # expose common product keys while representing a different
             # source population.
+            # A declared family is a strict ownership boundary.  Older
+            # Catalog rows may not have that optional field yet, so absence
+            # must preserve the established column/time-scope selection path
+            # instead of introducing a new validation failure.
             if current_family and candidate_family != current_family:
                 continue
             if not all(
@@ -5229,14 +5495,14 @@ def _reconcile_metric_dataset_selection(
                         "metric_columns": metric_columns,
                         "requested_time_scope": desired_scope,
                         "candidate_dataset_keys": [
-                            str(item.get("dataset_key") or "").strip() for item in eligible
+                            _catalog_dataset_key(item) for item in eligible
                         ],
                         "issue": "metric_time_scope_dataset_not_unique",
                     }
                 )
             continue
         selected = eligible[0]
-        selected_key = str(selected.get("dataset_key") or "").strip()
+        selected_key = _catalog_dataset_key(selected)
         if selected_key == current_key:
             continue
         selected_payload = _metadata_payload(selected)
@@ -5255,10 +5521,77 @@ def _reconcile_metric_dataset_selection(
             }
         )
     return jobs, {
-        "status": "applied" if corrections else ("unresolved" if unresolved else "not_needed"),
+        "status": (
+            "applied"
+            if corrections or domain_temporal_locks
+            else ("unresolved" if unresolved else "not_needed")
+        ),
         "corrections": corrections,
         "unresolved": unresolved,
+        "domain_temporal_locks": domain_temporal_locks,
     }
+
+
+# 함수 설명: 선택된 Domain 시간 계약이 현재 job의 alias·dataset·query date를 정확히 소유하는지 확인합니다.
+def _exact_selected_temporal_dataset_binding(
+    job: dict[str, Any],
+    business_time_guard: dict[str, Any] | None,
+) -> dict[str, Any]:
+    guard = business_time_guard if isinstance(business_time_guard, dict) else {}
+    if (
+        guard.get("status") != "applied"
+        or str(guard.get("selection_source") or "").strip()
+        != "metadata_alias_lock"
+    ):
+        return {}
+
+    alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+    dataset_key = str(job.get("dataset_key") or "").strip()
+    required_params = (
+        job.get("required_params")
+        if isinstance(job.get("required_params"), dict)
+        else {}
+    )
+    matches: list[dict[str, Any]] = []
+    for raw in guard.get("temporal_semantics", []):
+        if not isinstance(raw, dict):
+            continue
+        domain_ref = raw.get("domain_ref") if isinstance(raw.get("domain_ref"), dict) else {}
+        semantic_alias = str(raw.get("source_alias") or "").strip()
+        semantic_dataset = str(raw.get("dataset_key") or "").strip()
+        date_param = str(raw.get("date_param") or "").strip()
+        query_date = str(raw.get("query_date") or "").strip()
+        supplied_date = next(
+            (
+                str(value or "").strip()
+                for key, value in required_params.items()
+                if _normalized_column_key(key) == _normalized_column_key(date_param)
+            ),
+            "",
+        )
+        if (
+            not domain_ref.get("section")
+            or not domain_ref.get("key")
+            or not semantic_alias
+            or semantic_alias.casefold() != alias.casefold()
+            or not semantic_dataset
+            or semantic_dataset.casefold() != dataset_key.casefold()
+            or not date_param
+            or not query_date
+            or supplied_date != query_date
+        ):
+            continue
+        matches.append(
+            {
+                "source_alias": alias,
+                "dataset_key": dataset_key,
+                "date_param": date_param,
+                "query_date": query_date,
+                "domain_ref": deepcopy(domain_ref),
+                "selection_source": "metadata_alias_lock",
+            }
+        )
+    return matches[0] if len(matches) == 1 else {}
 
 
 # 함수 설명: `_reconcile_source_dataset_selection()`은 실행 불가능한 source만 Catalog schema로 보정하고, 의미상 후보 비교는 Intent LLM 판단으로 남깁니다.
@@ -5550,6 +5883,266 @@ def _metadata_filter_contracts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+# 함수 설명: top-level 및 stage형 metadata의 실행 filter를 provenance 검사용으로만 펼칩니다.
+def _metadata_execution_filter_contracts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return metadata-owned filters without activating a recipe stage.
+
+    A stage such as ``current_selection`` may own a filter, but its presence
+    alone must never apply that filter.  This view is used only to recognize
+    an exact condition already emitted by the model and to remove it when the
+    owning recipe was rejected by the question/alias lock.
+    """
+
+    result: list[dict[str, Any]] = []
+
+    # 함수 설명: metadata 항목과 단계별 소유권 정보를 하나의 실행 필터 계약 목록으로 펼칩니다.
+    def append_contracts(
+        owner: dict[str, Any],
+        *,
+        stage_name: str,
+        dataset_keys: list[str],
+        source_hints: list[str],
+    ) -> None:
+        for contract in _metadata_filter_contracts(owner):
+            item = deepcopy(contract)
+            item["_contract_stage"] = stage_name
+            item["_contract_dataset_keys"] = _merge_strings(dataset_keys)
+            item["_contract_source_hints"] = _merge_strings(source_hints)
+            result.append(item)
+
+    append_contracts(
+        payload,
+        stage_name="root",
+        dataset_keys=_string_list(payload.get("dataset_keys") or payload.get("dataset_key")),
+        source_hints=_string_list(payload.get("data_source")),
+    )
+    root_source_hints = _merge_strings(
+        _string_list(payload.get("data_source")),
+        _string_list(payload.get("dataset_key")),
+    )
+    for stage_name, raw_stage in payload.items():
+        if not str(stage_name).strip().casefold().endswith("_selection"):
+            continue
+        stage = raw_stage if isinstance(raw_stage, dict) else {}
+        if not stage:
+            continue
+        stage_filters: list[Any] = []
+        for field_name in ("filter", "filters", "conditions"):
+            if stage.get(field_name) not in (None, "", [], {}):
+                stage_filters.append(stage.get(field_name))
+        if not stage_filters:
+            continue
+        for stage_filter in stage_filters:
+            append_contracts(
+                {"filters": stage_filter},
+                stage_name=str(stage_name),
+                dataset_keys=_string_list(
+                    stage.get("dataset_keys") or stage.get("dataset_key")
+                ),
+                source_hints=_merge_strings(
+                    _string_list(stage.get("data_source")),
+                    root_source_hints,
+                ),
+            )
+    return result
+
+
+# 함수 설명: filter의 field/operator/value를 exact provenance 비교용 불변 signature로 만듭니다.
+def _metadata_filter_contract_signature(contract: Any) -> tuple[str, str, tuple[str, ...]] | None:
+    if not isinstance(contract, dict):
+        return None
+    field = str(contract.get("column") or contract.get("field") or "").strip()
+    if not field:
+        return None
+    operator = _canonical_filter_operator(
+        contract.get("operator") or contract.get("op") or "eq"
+    )
+    if "values" in contract:
+        raw_values = contract.get("values")
+    elif "value" in contract:
+        raw_values = contract.get("value")
+    elif operator in VALUELESS_FILTER_OPERATORS:
+        raw_values = []
+    else:
+        return None
+    values = raw_values if isinstance(raw_values, list) else [raw_values]
+    normalized_values = [
+        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        for value in values
+    ]
+    if operator in {"in", "not_in"}:
+        normalized_values.sort()
+    return (
+        _normalized_column_key(field),
+        operator,
+        tuple(normalized_values),
+    )
+
+
+# 함수 설명: metadata filter가 현재 retrieval job의 dataset/source에 적용될 수 있는 소유 계약인지 확인합니다.
+def _metadata_filter_contract_applies_to_job(
+    contract: dict[str, Any],
+    job: dict[str, Any],
+    candidates: dict[str, Any],
+) -> bool:
+    dataset_key = str(job.get("dataset_key") or "").strip()
+    source_alias = str(job.get("source_alias") or dataset_key).strip()
+    scoped_datasets = {
+        str(value).strip().casefold()
+        for value in _string_list(contract.get("_contract_dataset_keys"))
+        if str(value).strip()
+    }
+    if scoped_datasets and not {
+        dataset_key.casefold(),
+        source_alias.casefold(),
+    }.intersection(scoped_datasets):
+        return False
+    source_hints = _string_list(contract.get("_contract_source_hints"))
+    if not scoped_datasets and source_hints and not any(
+        _catalog_dataset_matches_source_hint(
+            candidates,
+            dataset_key,
+            source_hint,
+        )
+        for source_hint in source_hints
+    ):
+        return False
+    return True
+
+
+# 함수 설명: 질문에 filter field/value 또는 등록 alias가 직접 있으면 자동 제거하지 않습니다.
+def _question_has_metadata_filter_evidence(
+    question: str,
+    item: dict[str, Any],
+    contract: dict[str, Any],
+) -> bool:
+    payload = _metadata_payload(item)
+    aliases = _merge_strings(
+        _string_list(payload.get("aliases")),
+        _string_list(payload.get("display_name")),
+        _string_list(contract.get("aliases")),
+        _string_list(contract.get("display_name")),
+    )
+    if any(_domain_alias_matches(question, alias) for alias in aliases):
+        return True
+    compact_question = _compact_domain_text(question)
+    field = str(contract.get("column") or contract.get("field") or "").strip()
+    compact_field = _compact_domain_text(field)
+    if len(compact_field) >= 3 and compact_field in compact_question:
+        return True
+    raw_values = (
+        contract.get("values")
+        if "values" in contract
+        else contract.get("value")
+        if "value" in contract
+        else []
+    )
+    values = raw_values if isinstance(raw_values, list) else [raw_values]
+    return any(
+        len(_compact_domain_text(value)) >= 2
+        and _compact_domain_text(value) in compact_question
+        for value in values
+        if value not in (None, "")
+    )
+
+
+# 함수 설명: 질문에 잠기지 않아 제거된 recipe가 소유한 exact filter만 삭제하고 다른 filter는 보존합니다.
+def _remove_unselected_domain_filter_conditions(
+    question: str,
+    retrieval_jobs: list[Any],
+    candidates: dict[str, Any],
+    removed_refs: list[dict[str, str]],
+    locked_refs: list[dict[str, str]],
+) -> tuple[list[Any], dict[str, Any]]:
+    if not removed_refs:
+        return retrieval_jobs, {"status": "not_needed", "removed_filters": []}
+
+    removed_owners: list[tuple[dict[str, str], dict[str, Any], dict[str, Any]]] = []
+    for raw_ref in removed_refs:
+        ref = _metadata_ref(raw_ref)
+        item = _find_metadata_item(candidates, ref)
+        for contract in _metadata_execution_filter_contracts(_metadata_payload(item)):
+            if _metadata_filter_contract_signature(contract):
+                removed_owners.append((ref, item, contract))
+    if not removed_owners:
+        return retrieval_jobs, {"status": "not_needed", "removed_filters": []}
+
+    locked_contracts: list[dict[str, Any]] = []
+    for raw_ref in locked_refs:
+        item = _find_metadata_item(candidates, _metadata_ref(raw_ref))
+        locked_contracts.extend(
+            _metadata_execution_filter_contracts(_metadata_payload(item))
+        )
+
+    jobs: list[Any] = []
+    removed_filters: list[dict[str, Any]] = []
+    for raw_job in retrieval_jobs:
+        if not isinstance(raw_job, dict) or not isinstance(raw_job.get("filters"), dict):
+            jobs.append(deepcopy(raw_job))
+            continue
+        job = deepcopy(raw_job)
+        filters = deepcopy(job.get("filters"))
+        for field in list(filters):
+            raw_condition = filters.get(field)
+            normalized_conditions = _metadata_filter_contracts(
+                {"filters": {field: raw_condition}}
+            )
+            if len(normalized_conditions) != 1:
+                continue
+            signature = _metadata_filter_contract_signature(normalized_conditions[0])
+            if not signature:
+                continue
+            matching_owners = [
+                (ref, item, contract)
+                for ref, item, contract in removed_owners
+                if _metadata_filter_contract_signature(contract) == signature
+                and _metadata_filter_contract_applies_to_job(
+                    contract,
+                    job,
+                    candidates,
+                )
+            ]
+            if not matching_owners:
+                continue
+            # A selected metadata contract that owns the same exact condition
+            # wins.  This prevents one rejected recipe from deleting a filter
+            # independently justified by another accepted rule.
+            if any(
+                _metadata_filter_contract_signature(contract) == signature
+                and _metadata_filter_contract_applies_to_job(
+                    contract,
+                    job,
+                    candidates,
+                )
+                for contract in locked_contracts
+            ):
+                continue
+            if any(
+                _question_has_metadata_filter_evidence(question, item, contract)
+                for _, item, contract in matching_owners
+            ):
+                continue
+            filters.pop(field, None)
+            removed_filters.append(
+                {
+                    "source_alias": str(
+                        job.get("source_alias") or job.get("dataset_key") or ""
+                    ).strip(),
+                    "dataset_key": str(job.get("dataset_key") or "").strip(),
+                    "field": str(field),
+                    "condition": deepcopy(raw_condition),
+                    "metadata_refs": [deepcopy(ref) for ref, _, _ in matching_owners],
+                    "reason": "unselected_metadata_exact_filter",
+                }
+            )
+        job["filters"] = filters
+        jobs.append(job)
+    return jobs, {
+        "status": "applied" if removed_filters else "not_needed",
+        "removed_filters": removed_filters,
+    }
+
+
 # 함수 설명: `_apply_selected_domain_conditions()`는 04 의도 계획 정규화기 처리 중 selected·도메인·conditions 관련 값을 계산·변환하는 내부
 #        helper입니다.
 def _apply_selected_domain_conditions(
@@ -5806,6 +6399,136 @@ def _declared_process_scope_from_plan(
     return declared
 
 
+# 함수 설명: 새 질문에 근거가 없는 공정 그룹 filter는 이전 대화 상태가 아닌 한 실행 범위로 사용하지 않습니다.
+def _drop_unrequested_process_scope_filters(
+    retrieval_jobs: list[Any],
+    metadata_candidates: dict[str, Any],
+    question: str,
+    reference_mode: str,
+    declared_processes: list[str],
+) -> tuple[list[Any], list[str], dict[str, Any]]:
+    """Remove only model-invented *registered* process scopes on a fresh turn.
+
+    A process filter is meaningful only when the user names a registered
+    process/group or a trusted previous-result contract explicitly carries the
+    scope.  This deliberately leaves unknown values and non-process filters
+    alone: the normalizer must not guess whether they are a business-specific
+    process spelling or another column's value.
+    """
+
+    contracts = _process_group_contracts(metadata_candidates)
+    requested = _requested_process_scope(question, contracts)
+    normalized_reference_mode = str(reference_mode or "none").strip()
+    if not contracts or requested or normalized_reference_mode != "none":
+        return retrieval_jobs, list(declared_processes), {
+            "status": "not_needed",
+            "reason": (
+                "question_process_scope_present"
+                if requested
+                else "trusted_reference_scope"
+                if normalized_reference_mode != "none"
+                else "process_contract_not_available"
+            ),
+            "removed": [],
+        }
+
+    process_fields = {
+        _normalized_column_key(contract.get("field") or "OPER_NAME")
+        for contract in contracts
+    }
+    registered_values = {
+        str(value).strip().casefold()
+        for contract in contracts
+        for value in _string_list(contract.get("process_values"))
+        if str(value).strip()
+    }
+    if not process_fields or not registered_values:
+        return retrieval_jobs, list(declared_processes), {
+            "status": "not_needed",
+            "reason": "registered_process_values_not_available",
+            "removed": [],
+        }
+
+    removed: list[dict[str, Any]] = []
+    removed_keys: set[str] = set()
+
+    # 함수 설명: 질문에 없는데 등록된 공정 범위를 모델이 임의로 넣은 조건인지 판별합니다.
+    def is_invented_registered_scope(field: Any, condition: Any) -> bool:
+        if _normalized_column_key(field) not in process_fields:
+            return False
+        values = _condition_scalar_values(condition)
+        return bool(values) and all(
+            str(value).strip().casefold() in registered_values for value in values
+        )
+
+    normalized_jobs: list[Any] = []
+    for raw_job in retrieval_jobs:
+        if not isinstance(raw_job, dict):
+            normalized_jobs.append(deepcopy(raw_job))
+            continue
+        job = deepcopy(raw_job)
+        source_alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        filters = job.get("filters")
+        if isinstance(filters, dict):
+            retained: dict[str, Any] = {}
+            for field, condition in filters.items():
+                if is_invented_registered_scope(field, condition):
+                    values = _condition_scalar_values(condition)
+                    removed.append(
+                        {
+                            "source_alias": source_alias,
+                            "field": str(field),
+                            "values": values,
+                            "reason": "fresh_question_has_no_matching_process_scope",
+                        }
+                    )
+                    removed_keys.update(str(value).strip().casefold() for value in values)
+                    continue
+                retained[str(field)] = deepcopy(condition)
+            job["filters"] = retained
+        elif isinstance(filters, list):
+            retained_items: list[Any] = []
+            for condition in filters:
+                field = (
+                    condition.get("field") or condition.get("column")
+                    if isinstance(condition, dict)
+                    else ""
+                )
+                if is_invented_registered_scope(field, condition):
+                    values = _condition_scalar_values(condition)
+                    removed.append(
+                        {
+                            "source_alias": source_alias,
+                            "field": str(field),
+                            "values": values,
+                            "reason": "fresh_question_has_no_matching_process_scope",
+                        }
+                    )
+                    removed_keys.update(str(value).strip().casefold() for value in values)
+                    continue
+                retained_items.append(deepcopy(condition))
+            job["filters"] = retained_items
+        normalized_jobs.append(job)
+
+    if not removed:
+        return normalized_jobs, list(declared_processes), {
+            "status": "not_needed",
+            "reason": "no_unrequested_registered_process_filter",
+            "removed": [],
+        }
+
+    effective_declared = [
+        value
+        for value in declared_processes
+        if str(value).strip().casefold() not in removed_keys
+    ]
+    return normalized_jobs, effective_declared, {
+        "status": "applied",
+        "reason": "fresh_question_has_no_matching_process_scope",
+        "removed": removed,
+    }
+
+
 # 함수 설명: `_validate_process_scope_contract()`는 process·분석 범위·contract이 실행·저장 계약을 만족하는지 검사하고 위반 내용을 명시적으로 반환합니다.
 def _validate_process_scope_contract(
     retrieval_jobs: list[Any],
@@ -5815,11 +6538,16 @@ def _validate_process_scope_contract(
     pandas_plan: list[Any] | None = None,
     declared_processes: list[str] | None = None,
     skip: bool = False,
+    skip_reason: str = "",
 ) -> dict[str, Any]:
     """Reject partial process scopes instead of returning misleading subsets."""
 
     if skip:
-        return {"status": "skipped", "validation_errors": []}
+        return {
+            "status": "skipped",
+            "reason": str(skip_reason or "caller_owned_scope"),
+            "validation_errors": [],
+        }
     contracts = _process_group_contracts(candidates)
     requested = _merge_strings(
         _requested_process_scope(question, contracts),
@@ -6702,6 +7430,7 @@ def _materialize_implicit_step_inputs(
         "sort",
         "top_n",
         "bottom_n",
+        "derive_formula",
         "distinct_values",
         "apply_pandas_function_case",
         "apply_function_case",
@@ -7530,9 +8259,14 @@ def _apply_process_group_filter_fields(
     contracts = _process_group_contracts(metadata_candidates)
     if not contracts:
         return retrieval_jobs, {"status": "not_available", "corrections": []}
+    question_requested_processes = (
+        _requested_process_scope(question, contracts)
+        if align_explicit_scope
+        else []
+    )
     requested_processes = (
         _merge_strings(
-            _requested_process_scope(question, contracts),
+            question_requested_processes,
             declared_processes or [],
         )
         if align_explicit_scope
@@ -7545,7 +8279,6 @@ def _apply_process_group_filter_fields(
     )
     alignment_scope = _process_filter_alignment_scope(retrieval_jobs)
     preserve_distinct_job_scopes = alignment_scope["has_disjoint_scopes"]
-    job_count = sum(1 for item in retrieval_jobs if isinstance(item, dict))
     process_fields = {
         str(contract.get("field") or "OPER_NAME").strip().casefold()
         for contract in contracts
@@ -7555,19 +8288,37 @@ def _apply_process_group_filter_fields(
         for index in mentioned_group_indexes
         if 0 <= index < len(contracts)
     }
-    single_source_scope_field = (
-        next(iter(scope_fields)) if job_count == 1 and len(scope_fields) == 1 else ""
-    )
-    single_source_scope_condition = (
+    completion_scope_field = ""
+    completion_processes: list[str] = []
+    completion_reason = ""
+    if len(scope_fields) == 1:
+        # Preserve the established group-alias behavior.  A declared process
+        # value is retained here because the question itself named the group.
+        completion_scope_field = next(iter(scope_fields))
+        completion_processes = list(requested_processes)
+        completion_reason = "process_group_alias"
+    elif question_requested_processes:
+        # A worker can name registered detail processes directly (for example
+        # ``D/A1, W/B6``) without naming ``DA`` or ``WB``.  Complete a missing
+        # source filter only when every named process resolves to one trusted
+        # canonical field.  This is metadata binding, not an LLM guess.
+        completion_scope_field = _unambiguous_process_scope_field_for_values(
+            question_requested_processes,
+            contracts,
+        )
+        if completion_scope_field:
+            completion_processes = list(question_requested_processes)
+            completion_reason = "direct_process_names"
+    completion_scope_condition = (
         {
-            "operator": "eq" if len(requested_processes) == 1 else "in",
+            "operator": "eq" if len(completion_processes) == 1 else "in",
             "value": (
-                requested_processes[0]
-                if len(requested_processes) == 1
-                else list(requested_processes)
+                completion_processes[0]
+                if len(completion_processes) == 1
+                else list(completion_processes)
             ),
         }
-        if single_source_scope_field and requested_processes
+        if completion_scope_field and completion_processes
         else None
     )
 
@@ -7588,37 +8339,52 @@ def _apply_process_group_filter_fields(
             continue
         job = deepcopy(item)
         alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        dataset_key = str(job.get("dataset_key") or "").strip()
         filters = job.get("filters")
         has_process_filter = any(
             str(field).strip().casefold() in process_fields
             for field, _condition in _filter_field_entries(filters)
         )
-        if single_source_scope_condition and not has_process_filter:
+        source_supports_completion_scope = bool(
+            completion_scope_field
+            and _catalog_supports_domain_column(
+                metadata_candidates,
+                dataset_key,
+                completion_scope_field,
+            )
+        )
+        if (
+            completion_scope_condition
+            and not has_process_filter
+            and not preserve_distinct_job_scopes
+            and source_supports_completion_scope
+        ):
             if isinstance(filters, dict):
                 normalized_filters = deepcopy(filters)
-                normalized_filters[single_source_scope_field] = deepcopy(
-                    single_source_scope_condition
+                normalized_filters[completion_scope_field] = deepcopy(
+                    completion_scope_condition
                 )
                 job["filters"] = normalized_filters
             elif isinstance(filters, list):
                 normalized_filters = deepcopy(filters)
                 normalized_filters.append(
                     _filter_list_condition(
-                        single_source_scope_field,
-                        single_source_scope_condition,
+                        completion_scope_field,
+                        completion_scope_condition,
                     )
                 )
                 job["filters"] = normalized_filters
             else:
                 job["filters"] = {
-                    single_source_scope_field: deepcopy(single_source_scope_condition)
+                    completion_scope_field: deepcopy(completion_scope_condition)
                 }
             corrections.append(
                 {
                     "source_alias": alias,
-                    "field": single_source_scope_field,
-                    "correction_type": "single_source_process_scope_completion",
-                    "to_values": list(requested_processes),
+                    "field": completion_scope_field,
+                    "correction_type": "process_scope_completion",
+                    "completion_reason": completion_reason,
+                    "to_values": list(completion_processes),
                 }
             )
             filters = job["filters"]
@@ -7936,6 +8702,54 @@ def _requested_process_scope(
     return result
 
 
+# 함수 설명: 질문에 직접 적힌 공정명들이 하나의 신뢰 가능한 canonical field로만 해석되는지 확인합니다.
+def _unambiguous_process_scope_field_for_values(
+    requested_processes: list[str],
+    contracts: list[dict[str, Any]],
+) -> str:
+    """Return one canonical field only when every direct process match agrees.
+
+    The normalizer may fill a missing retrieval filter from registered process
+    values, but it must never choose between different process fields.  For
+    example, ``D/A1`` and ``W/B6`` can safely become one ``OPER_NAME`` filter
+    when both registrations declare that field.  If a value is absent or the
+    values span different fields, the caller keeps the normal fail-closed path.
+    """
+
+    requested_keys = {
+        str(value or "").strip().casefold()
+        for value in requested_processes
+        if str(value or "").strip()
+    }
+    if not requested_keys:
+        return ""
+
+    field_names: dict[str, str] = {}
+    fields_by_process: dict[str, set[str]] = {
+        key: set() for key in requested_keys
+    }
+    for contract in contracts:
+        field = str(contract.get("field") or "OPER_NAME").strip()
+        field_key = _normalized_column_key(field)
+        if not field_key:
+            continue
+        field_names.setdefault(field_key, field)
+        for process in _string_list(contract.get("process_values")):
+            process_key = str(process or "").strip().casefold()
+            if process_key in fields_by_process:
+                fields_by_process[process_key].add(field_key)
+
+    resolved_field_keys: set[str] = set()
+    for process_key in requested_keys:
+        process_fields = fields_by_process.get(process_key, set())
+        if len(process_fields) != 1:
+            return ""
+        resolved_field_keys.update(process_fields)
+    if len(resolved_field_keys) != 1:
+        return ""
+    return field_names.get(next(iter(resolved_field_keys)), "")
+
+
 # 함수 설명: metadata group alias의 직접 `공정` 표현과 연결 목록 마지막의 공유 `공정` 접미사를 안전하게 찾습니다.
 def _mentioned_process_group_indexes(
     question: str,
@@ -7959,6 +8773,19 @@ def _mentioned_process_group_indexes(
             pattern = rf"(?<![0-9A-Za-z가-힣]){re.escape(base_alias)}\s*공정"
             if re.search(pattern, text, flags=re.IGNORECASE):
                 mentioned.add(index)
+                continue
+            # A compound registered alias such as ``PKG OUT`` or ``FCB/H`` is
+            # already a distinct process name in a worker's question.  Unlike a
+            # short acronym (DA/WB), it does not need the shared ``공정`` suffix
+            # to establish scope.  This keeps the later fresh-turn guard from
+            # deleting a filter that the question actually named.
+            if re.search(r"[\s/_-]", base_alias):
+                direct_pattern = (
+                    rf"(?<![0-9A-Za-z가-힣]){re.escape(base_alias)}"
+                    r"(?![0-9A-Za-z가-힣])"
+                )
+                if re.search(direct_pattern, text, flags=re.IGNORECASE):
+                    mentioned.add(index)
 
     if len(alias_values) < 2:
         return mentioned
@@ -9507,6 +10334,117 @@ def _ordering_contract(
     return result
 
 
+# 함수 설명: 질문에 없는 집계 정렬이 실제 terminal output을 가리키는지 확인하고, 생산되지 않은 임의 정렬만 제거합니다.
+def _reconcile_implicit_aggregate_ordering(
+    output_contract: dict[str, Any],
+    pandas_plan: list[Any],
+    question: str,
+    raw_output_contract: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep only an implicit aggregate ordering with a real output producer.
+
+    An LLM may attach ``sort_by`` directly to a group-by step while describing
+    a recipe whose calculation was never materialized.  On a question that did
+    not request ordering, retaining that stray key turns an otherwise valid
+    aggregation into a post-execution contract failure.  This repair is narrow:
+    explicit user ranking remains strict, and only a direct aggregate-step
+    ordering without a group/aggregate/calculation producer is removed.
+    """
+
+    normalized = deepcopy(output_contract) if isinstance(output_contract, dict) else {}
+    ordering = normalized.get("ordering") if isinstance(normalized.get("ordering"), dict) else {}
+    sort_by = str(ordering.get("sort_by") or "").strip()
+    if not sort_by:
+        return normalized, {"status": "not_needed", "reason": "no_ordering"}
+    if _question_requests_ordering(question):
+        return normalized, {
+            "status": "not_needed",
+            "reason": "explicit_question_ordering",
+            "sort_by": sort_by,
+        }
+
+    aggregate_step: dict[str, Any] | None = None
+    for raw_step in reversed(pandas_plan):
+        if not isinstance(raw_step, dict):
+            continue
+        operation = str(raw_step.get("operation") or "").strip().lower()
+        candidate = str(raw_step.get("sort_by") or "").strip()
+        if (
+            operation in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}
+            and candidate
+            and _normalized_column_key(candidate) == _normalized_column_key(sort_by)
+        ):
+            aggregate_step = raw_step
+            break
+    if aggregate_step is None:
+        return normalized, {
+            "status": "not_needed",
+            "reason": "ordering_not_from_aggregate_step",
+            "sort_by": sort_by,
+        }
+
+    produced_columns = _merge_strings(
+        _string_list(
+            aggregate_step.get("group_by")
+            or aggregate_step.get("group_by_columns")
+            or aggregate_step.get("group_columns")
+        ),
+        _string_list(
+            [
+                item.get("output_column") or item.get("result_column")
+                for item in aggregate_step.get("aggregations", [])
+                if isinstance(item, dict)
+            ]
+        ),
+        _materialized_step_calculation_outputs(aggregate_step),
+    )
+    if any(
+        _normalized_column_key(column) == _normalized_column_key(sort_by)
+        for column in produced_columns
+    ):
+        return normalized, {
+            "status": "not_needed",
+            "reason": "aggregate_sort_column_produced",
+            "sort_by": sort_by,
+            "produced_columns": produced_columns,
+        }
+
+    normalized.pop("ordering", None)
+    raw = raw_output_contract if isinstance(raw_output_contract, dict) else {}
+    raw_primary_metric = str(raw.get("primary_metric") or "").strip()
+    if (
+        not raw_primary_metric
+        and _normalized_column_key(normalized.get("primary_metric"))
+        == _normalized_column_key(sort_by)
+    ):
+        normalized.pop("primary_metric", None)
+    return normalized, {
+        "status": "applied",
+        "reason": "unproduced_implicit_aggregate_sort_column",
+        "dropped_sort_by": sort_by,
+        "produced_columns": produced_columns,
+    }
+
+
+# 함수 설명: aggregate 단계 자체가 선언하고 실제 생성할 수 있는 calculation output만 수집합니다.
+def _materialized_step_calculation_outputs(step: dict[str, Any]) -> list[str]:
+    calculation = step.get("calculation") if isinstance(step.get("calculation"), dict) else {}
+    if not calculation:
+        return []
+    operation = str(
+        calculation.get("operation")
+        or calculation.get("recipe")
+        or step.get("calculation_operation")
+        or ""
+    ).strip()
+    if not operation:
+        return []
+    return _merge_strings(
+        _string_list(calculation.get("output_column")),
+        _string_list(calculation.get("output_columns")),
+    )
+
+
 # 함수 설명: 사용자가 정렬·순위·극값을 실제로 요청했는지 한국어와 일반 영문 표현으로 판정합니다.
 def _question_requests_ordering(question: Any) -> bool:
     text = str(question or "").strip().casefold()
@@ -9519,6 +10457,7 @@ def _question_requests_ordering(question: Any) -> bool:
         "최대",
         "최소",
         "순위",
+        "순으로",
         "랭킹",
         "정렬",
         "내림차순",
@@ -9719,6 +10658,26 @@ def _execution_catalog_registry_items(
         else []
     )
     return [deepcopy(item) for item in raw_candidates if isinstance(item, dict)]
+
+
+# 함수 설명: 실행 전용 Catalog 후보에는 bounded prompt 목록 대신 신뢰 registry 전체를 사용합니다.
+def _execution_catalog_candidates(
+    envelope: dict[str, Any],
+    candidates: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose the trusted Catalog registry only to structural execution rules.
+
+    Domain and filter candidates remain the bounded model-visible selection.
+    Replacing only ``table_catalog_items`` keeps the prompt compact while
+    allowing deterministic same-family time-scope reconciliation to see a
+    registered sibling that was not among the LLM's top candidates.
+    """
+
+    result = deepcopy(candidates) if isinstance(candidates, dict) else {}
+    registry_items = _execution_catalog_registry_items(envelope, result)
+    if registry_items:
+        result["table_catalog_items"] = registry_items
+    return result
 
 
 # 함수 설명: 실행 계획이 후보 밖의 정상 등록 dataset을 선택하면 그 한 건의 Catalog 문서만
@@ -10088,7 +11047,7 @@ def _execution_compatible_metadata_refs(
         item = _find_metadata_item(candidates, ref)
         payload = _metadata_payload(item)
         execution_bearing = isinstance(payload.get("temporal_semantics"), (dict, list)) or bool(
-            _metadata_filter_contracts(payload)
+            _metadata_execution_filter_contracts(payload)
         )
         marker = (ref.get("section", ""), ref.get("key", ""))
         if execution_bearing and marker not in locked:
@@ -10652,6 +11611,525 @@ def _typed_join_declared_key_pair(
     return [], [], ""
 
 
+# 함수 설명: 선택된 analysis recipe 중 Catalog·source ownership·right value 계약이 모두 명확한 join만 별도 우선 후보로 만듭니다.
+def _selected_recipe_join_contracts(
+    plan: dict[str, Any],
+    metadata_refs: list[dict[str, str]],
+    candidates: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """Find high-confidence recipe joins without changing legacy fallback paths.
+
+    Product grain and an analysis recipe can both be present in a model plan.
+    The latter wins *only* when it is an explicit, complete row-enrichment
+    contract for exactly one Typed join.  Incomplete/unselected recipes never
+    enter this path, so the established generic join resolver remains exactly
+    as it was for every other plan.
+    """
+
+    typed_joins = _typed_join_step_source_bindings(pandas_plan, retrieval_jobs)
+    raw_join_items = _join_plan_items(plan.get("join_plan"))
+    contracts: list[dict[str, Any]] = []
+    shadow_recommendations: list[dict[str, Any]] = []
+
+    for reference in metadata_refs:
+        ref = _metadata_ref(reference)
+        if str(ref.get("section") or "").strip() != "analysis_recipes":
+            continue
+        item = _find_metadata_item(candidates, ref)
+        contract = _complete_recipe_join_contract(ref, item, candidates)
+        if not contract:
+            continue
+
+        exact_matches = [
+            binding
+            for binding in typed_joins
+            if _dataset_identity_equal(
+                binding.get("left_dataset_key"), contract.get("left_dataset_key")
+            )
+            and _dataset_identity_equal(
+                binding.get("right_dataset_key"), contract.get("right_dataset_key")
+            )
+        ]
+        reversed_matches = [
+            binding
+            for binding in typed_joins
+            if _dataset_identity_equal(
+                binding.get("left_dataset_key"), contract.get("right_dataset_key")
+            )
+            and _dataset_identity_equal(
+                binding.get("right_dataset_key"), contract.get("left_dataset_key")
+            )
+        ]
+        all_pair_matches = [*exact_matches, *reversed_matches]
+        if len(all_pair_matches) != 1:
+            if all_pair_matches:
+                shadow_recommendations.append(
+                    _recipe_join_shadow_recommendation(
+                        contract,
+                        "typed_join_source_pair_ambiguous",
+                        {
+                            "matching_node_ids": [
+                                str(item.get("node_id") or "").strip()
+                                for item in all_pair_matches
+                            ]
+                        },
+                    )
+                )
+            continue
+        if not exact_matches:
+            observed = reversed_matches[0]
+            shadow_recommendations.append(
+                _recipe_join_shadow_recommendation(
+                    contract,
+                    "source_side_ownership_conflict",
+                    {
+                        "node_id": str(observed.get("node_id") or "").strip(),
+                        "left_source_alias": observed.get("left_source_alias"),
+                        "right_source_alias": observed.get("right_source_alias"),
+                        "left_dataset_key": observed.get("left_dataset_key"),
+                        "right_dataset_key": observed.get("right_dataset_key"),
+                    },
+                )
+            )
+            continue
+
+        typed_join = exact_matches[0]
+        contract = {
+            **contract,
+            "left_source_alias": typed_join["left_source_alias"],
+            "right_source_alias": typed_join["right_source_alias"],
+            "typed_join_node_id": typed_join["node_id"],
+            "typed_join_step_index": typed_join["step_index"],
+        }
+        raw_conflicts = _recipe_join_plan_conflicts(
+            raw_join_items,
+            contract,
+            retrieval_jobs,
+            pandas_plan,
+        )
+        if raw_conflicts:
+            shadow_recommendations.append(
+                _recipe_join_shadow_recommendation(
+                    contract,
+                    "declared_join_plan_conflict",
+                    {"conflicts": raw_conflicts},
+                )
+            )
+            continue
+        contracts.append(contract)
+
+    materializable: list[dict[str, Any]] = []
+    by_step: dict[str, list[dict[str, Any]]] = {}
+    for contract in contracts:
+        node_id = str(contract.get("typed_join_node_id") or "").strip()
+        if node_id:
+            by_step.setdefault(node_id, []).append(contract)
+    for node_id, same_step_contracts in by_step.items():
+        if len(same_step_contracts) == 1:
+            materializable.append(same_step_contracts[0])
+            continue
+        for contract in same_step_contracts:
+            shadow_recommendations.append(
+                _recipe_join_shadow_recommendation(
+                    contract,
+                    "multiple_selected_recipe_contracts_match_typed_join",
+                    {
+                        "node_id": node_id,
+                        "metadata_refs": [
+                            deepcopy(item.get("metadata_ref"))
+                            for item in same_step_contracts
+                        ],
+                    },
+                )
+            )
+    return {
+        "materializable": materializable,
+        "shadow_recommendations": shadow_recommendations,
+    }
+
+
+# 함수 설명: Typed join 단계의 좌우 alias·Catalog dataset 소유권을 입력 계보 기준으로 하나씩 확정합니다.
+def _typed_join_step_source_bindings(
+    pandas_plan: list[Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, step in enumerate(pandas_plan):
+        if (
+            not isinstance(step, dict)
+            or str(step.get("operation") or step.get("step") or "").strip().lower()
+            not in {"join", "merge", "left_join", "outer_join"}
+        ):
+            continue
+        inputs = [
+            item
+            for item in step.get("inputs", [])
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip()
+            in {"external_source", "node_output"}
+            and str(item.get("ref") or "").strip()
+        ]
+        input_aliases = [str(item.get("ref") or "").strip() for item in inputs]
+        declared_left = str(
+            step.get("left_source_alias") or step.get("source_alias") or ""
+        ).strip()
+        declared_right = str(
+            step.get("right_source_alias") or step.get("reference_source_alias") or ""
+        ).strip()
+        left_alias = declared_left or (input_aliases[0] if len(input_aliases) == 2 else "")
+        right_alias = declared_right or (input_aliases[1] if len(input_aliases) == 2 else "")
+        if not left_alias or not right_alias:
+            continue
+        left_dataset = _dataset_key_for_execution_alias(
+            left_alias,
+            retrieval_jobs,
+            pandas_plan,
+        )
+        right_dataset = _dataset_key_for_execution_alias(
+            right_alias,
+            retrieval_jobs,
+            pandas_plan,
+        )
+        if not left_dataset or not right_dataset:
+            continue
+        result.append(
+            {
+                "step_index": index,
+                "node_id": str(step.get("node_id") or step.get("output_alias") or "").strip(),
+                "left_source_alias": left_alias,
+                "right_source_alias": right_alias,
+                "left_dataset_key": left_dataset,
+                "right_dataset_key": right_dataset,
+            }
+        )
+    return result
+
+
+# 함수 설명: natural authoring이 저장한 recipe 구조 필드가 모두 존재하고 Catalog로 검증되는 경우에만 실행 join 계약을 만듭니다.
+def _complete_recipe_join_contract(
+    metadata_ref: dict[str, str],
+    metadata_item: dict[str, Any],
+    candidates: dict[str, Any],
+) -> dict[str, Any]:
+    payload = _metadata_payload(metadata_item)
+    source_datasets = _string_list(payload.get("source_datasets"))
+    if len(source_datasets) != 2 or _dataset_identity_equal(
+        source_datasets[0], source_datasets[1]
+    ):
+        return {}
+    left_dataset = str(
+        payload.get("left_dataset_key")
+        or payload.get("left_dataset")
+        or payload.get("left_source_dataset")
+        or source_datasets[0]
+        or ""
+    ).strip()
+    right_dataset = str(
+        payload.get("right_dataset_key")
+        or payload.get("right_dataset")
+        or payload.get("right_source_dataset")
+        or source_datasets[1]
+        or ""
+    ).strip()
+    if (
+        not left_dataset
+        or not right_dataset
+        or not _dataset_identity_equal(left_dataset, source_datasets[0])
+        or not _dataset_identity_equal(right_dataset, source_datasets[1])
+    ):
+        return {}
+    join_type = str(payload.get("join_type") or "").strip().lower()
+    if join_type not in {"left", "inner"}:
+        return {}
+    if join_type == "left" and payload.get("preserve_left_rows") is False:
+        return {}
+    join_keys = _string_list(payload.get("join_keys"))
+    if not join_keys or len({_normalized_column_key(key) for key in join_keys}) != len(join_keys):
+        return {}
+    if not _recipe_key_mapping_is_compatible(
+        payload.get("left_key_mappings"), join_keys
+    ) or not _recipe_key_mapping_is_compatible(
+        payload.get("right_key_mappings"), join_keys
+    ):
+        return {}
+    right_value_columns = _recipe_right_value_columns(payload)
+    if not right_value_columns:
+        return {}
+    if {
+        _normalized_column_key(value) for value in right_value_columns
+    } & {_normalized_column_key(value) for value in join_keys}:
+        return {}
+    left_table = _table_catalog_item(candidates, left_dataset)
+    right_table = _table_catalog_item(candidates, right_dataset)
+    # This new path needs a proven contract.  The legacy resolver intentionally
+    # permits an older metadata envelope without its Catalog row, but it is not
+    # safe to give that older shape priority over a model-authored join.
+    if not left_table or not right_table:
+        return {}
+    if not all(
+        _catalog_supports_domain_column(candidates, left_dataset, column)
+        and _catalog_supports_domain_column(candidates, right_dataset, column)
+        for column in join_keys
+    ):
+        return {}
+    if not all(
+        _catalog_supports_domain_column(candidates, right_dataset, column)
+        for column in right_value_columns
+    ):
+        return {}
+    return {
+        "metadata_ref": deepcopy(metadata_ref),
+        "left_dataset_key": left_dataset,
+        "right_dataset_key": right_dataset,
+        "join_type": join_type,
+        "join_keys": join_keys,
+        "right_value_columns": right_value_columns,
+        "multi_match_policy": str(
+            payload.get("multi_match_policy") or "preserve_rows"
+        ).strip(),
+        "left_key_mappings": deepcopy(payload.get("left_key_mappings")),
+        "right_key_mappings": deepcopy(payload.get("right_key_mappings")),
+        "contract_origin": "selected_analysis_recipe",
+    }
+
+
+# 함수 설명: recipe가 오른쪽 source에서 가져올 값 컬럼을 명시한 기존 구조 표현을 순서대로 읽습니다.
+def _recipe_right_value_columns(payload: dict[str, Any]) -> list[str]:
+    for key in (
+        "right_value_columns",
+        "right_metric_columns",
+        "right_output_columns",
+        "right_columns",
+    ):
+        values = _string_list(payload.get(key))
+        if values:
+            return values
+    return []
+
+
+# 함수 설명: 좌우 key mapping이 명시된 경우에만 join_keys와 충돌하지 않는지 확인하고, 알 수 없는 legacy 표현은 추측하지 않습니다.
+def _recipe_key_mapping_is_compatible(raw_mapping: Any, join_keys: list[str]) -> bool:
+    if raw_mapping in (None, "", {}, []):
+        return True
+    declared_keys = _recipe_mapping_canonical_keys(raw_mapping)
+    if not declared_keys:
+        return True
+    declared = {_normalized_column_key(value) for value in declared_keys}
+    return all(_normalized_column_key(value) in declared for value in join_keys)
+
+
+# 함수 설명: dict 또는 list 형태로 저장된 left/right key mapping의 canonical key 이름만 보수적으로 읽습니다.
+def _recipe_mapping_canonical_keys(raw_mapping: Any) -> list[str]:
+    result: list[str] = []
+    if isinstance(raw_mapping, dict):
+        for key, value in raw_mapping.items():
+            if str(key or "").strip() in {
+                "canonical_key",
+                "canonical_column",
+                "standard_column",
+            }:
+                result = _merge_strings(result, _string_list(value))
+            else:
+                result = _merge_strings(result, _string_list(key))
+                if isinstance(value, dict):
+                    for field in (
+                        "canonical_key",
+                        "canonical_column",
+                        "standard_column",
+                    ):
+                        result = _merge_strings(result, _string_list(value.get(field)))
+        return result
+    for value in raw_mapping if isinstance(raw_mapping, list) else []:
+        if not isinstance(value, dict):
+            continue
+        for field in ("canonical_key", "canonical_column", "standard_column", "key"):
+            result = _merge_strings(result, _string_list(value.get(field)))
+    return result
+
+
+# 함수 설명: recipe의 source ownership과 Typed join source pair를 비교할 때 dataset key의 대소문자만 무시합니다.
+def _dataset_identity_equal(left: Any, right: Any) -> bool:
+    return str(left or "").strip().casefold() == str(right or "").strip().casefold()
+
+
+# 함수 설명: raw join plan을 목록으로 표준화해 선택 recipe와의 충돌만 별도로 검사합니다.
+def _join_plan_items(raw_join_plan: Any) -> list[dict[str, Any]]:
+    values = (
+        raw_join_plan
+        if isinstance(raw_join_plan, list)
+        else [raw_join_plan]
+        if isinstance(raw_join_plan, dict)
+        else []
+    )
+    return [deepcopy(item) for item in values if isinstance(item, dict)]
+
+
+# 함수 설명: 기존 join_plan에 실제 key·right value·join type 선언이 있으면 recipe가 덮어쓰지 않고 shadow로만 남깁니다.
+def _recipe_join_plan_conflicts(
+    raw_join_items: list[dict[str, Any]],
+    contract: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    for raw in raw_join_items:
+        if not _raw_join_item_matches_recipe_contract(
+            raw,
+            contract,
+            retrieval_jobs,
+            pandas_plan,
+        ):
+            continue
+        observed: dict[str, Any] = {}
+        left_on = _string_list(raw.get("left_on"))
+        right_on = _string_list(raw.get("right_on"))
+        shared_on = _string_list(raw.get("on"))
+        shared_grain = _string_list(raw.get("group_by"))
+        expected_keys = _string_list(contract.get("join_keys"))
+        if (left_on or right_on) and not (
+            _same_column_sequence(left_on, expected_keys)
+            and _same_column_sequence(right_on, expected_keys)
+        ):
+            observed["left_on"] = left_on
+            observed["right_on"] = right_on
+        if shared_on and not _same_column_sequence(shared_on, expected_keys):
+            observed["on"] = shared_on
+        if shared_grain and not _same_column_sequence(shared_grain, expected_keys):
+            observed["group_by"] = shared_grain
+        raw_join_type = str(raw.get("join_type") or "").strip().lower()
+        if raw_join_type and raw_join_type != str(contract.get("join_type") or "").strip().lower():
+            observed["join_type"] = raw_join_type
+        raw_right_values = _string_list(raw.get("right_value_columns"))
+        if raw_right_values and not _same_column_set(
+            raw_right_values,
+            _string_list(contract.get("right_value_columns")),
+        ):
+            observed["right_value_columns"] = raw_right_values
+        if observed:
+            conflicts.append(observed)
+    return conflicts
+
+
+# 함수 설명: raw join plan이 recipe가 소유한 정확한 source 방향을 명시한 경우에만 충돌 대상으로 봅니다.
+def _raw_join_item_matches_recipe_contract(
+    raw: dict[str, Any],
+    contract: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+) -> bool:
+    left_alias = str(raw.get("left_source_alias") or raw.get("source_alias") or "").strip()
+    right_alias = str(
+        raw.get("right_source_alias") or raw.get("reference_source_alias") or ""
+    ).strip()
+    if not left_alias or not right_alias:
+        return False
+    left_dataset = _dataset_key_for_execution_alias(left_alias, retrieval_jobs, pandas_plan)
+    right_dataset = _dataset_key_for_execution_alias(right_alias, retrieval_jobs, pandas_plan)
+    return _dataset_identity_equal(left_dataset, contract.get("left_dataset_key")) and _dataset_identity_equal(
+        right_dataset,
+        contract.get("right_dataset_key"),
+    )
+
+
+# 함수 설명: column 비교는 표기 차이만 정규화하고 key 순서와 right value ownership은 분리해 확인합니다.
+def _same_column_sequence(left: list[str], right: list[str]) -> bool:
+    return [_normalized_column_key(value) for value in left] == [
+        _normalized_column_key(value) for value in right
+    ]
+
+
+# 함수 설명: right value 목록은 순서가 실행 의미를 바꾸지 않으므로 canonical set으로 비교합니다.
+def _same_column_set(left: list[str], right: list[str]) -> bool:
+    return {_normalized_column_key(value) for value in left} == {
+        _normalized_column_key(value) for value in right
+    }
+
+
+# 함수 설명: conflict를 실행 차단 대신 trace-only shadow recommendation으로 남길 공통 형식입니다.
+def _recipe_join_shadow_recommendation(
+    contract: dict[str, Any],
+    reason: str,
+    observed: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    recommended_left_keys = _string_list(
+        contract.get("join_keys") or contract.get("left_keys")
+    )
+    recommended_right_keys = _string_list(
+        contract.get("join_keys") or contract.get("right_keys")
+    )
+    return {
+        "metadata_ref": deepcopy(contract.get("metadata_ref") or {}),
+        "reason": reason,
+        "recommended": {
+            "left_source_alias": contract.get("left_source_alias"),
+            "right_source_alias": contract.get("right_source_alias"),
+            "left_dataset_key": contract.get("left_dataset_key"),
+            "right_dataset_key": contract.get("right_dataset_key"),
+            "left_on": recommended_left_keys,
+            "right_on": recommended_right_keys,
+            "right_value_columns": _string_list(contract.get("right_value_columns")),
+            "join_type": contract.get("join_type"),
+        },
+        "observed": deepcopy(observed) if isinstance(observed, dict) else {},
+    }
+
+
+# 함수 설명: complete recipe contract를 기존 resolver가 읽는 join_plan 항목으로 변환하되 내부 origin marker를 보존합니다.
+def _selected_recipe_join_item(contract: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "metadata_ref": deepcopy(contract.get("metadata_ref") or {}),
+        "left_source_alias": contract.get("left_source_alias"),
+        "right_source_alias": contract.get("right_source_alias"),
+        "join_type": contract.get("join_type"),
+        "canonical_keys": _string_list(contract.get("join_keys")),
+        "right_value_columns": _string_list(contract.get("right_value_columns")),
+        "multi_match_policy": contract.get("multi_match_policy"),
+        "_selected_recipe_join_contract": deepcopy(contract),
+    }
+
+
+# 함수 설명: raw join plan이 같은 source pair를 명시했을 때만 complete recipe contract를 우선 적용하고 나머지는 그대로 둡니다.
+def _prioritize_selected_recipe_join_items(
+    join_items: list[dict[str, Any]],
+    contracts: list[dict[str, Any]],
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+) -> list[dict[str, Any]]:
+    if not contracts:
+        return join_items
+    rewritten: list[dict[str, Any]] = []
+    used_contract_ids: set[int] = set()
+    for raw in join_items:
+        matches = [
+            (index, contract)
+            for index, contract in enumerate(contracts)
+            if _raw_join_item_matches_recipe_contract(
+                raw,
+                contract,
+                retrieval_jobs,
+                pandas_plan,
+            )
+        ]
+        if len(matches) == 1:
+            index, contract = matches[0]
+            rewritten.append(_selected_recipe_join_item(contract))
+            used_contract_ids.add(index)
+        else:
+            rewritten.append(raw)
+    # No raw join plan means the Typed join itself is the unambiguous target.
+    # With other raw join items present, appending a new item could produce two
+    # competing contracts for the same execution graph, so preserve that plan.
+    if not join_items:
+        rewritten.extend(
+            _selected_recipe_join_item(contract)
+            for index, contract in enumerate(contracts)
+            if index not in used_contract_ids
+        )
+    return rewritten
+
+
 # 함수 설명: 카탈로그 또는 명시된 Typed 공통 grain으로 조인 키와 좌우 원천 계약을 안전하게 확정합니다.
 def _resolve_join_plan(
     plan: dict[str, Any],
@@ -10659,9 +12137,28 @@ def _resolve_join_plan(
     candidates: dict[str, Any],
     retrieval_jobs: list[dict[str, Any]],
     pandas_plan: list[Any],
+    selected_recipe_join_contracts: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     raw_joins = plan.get("join_plan")
-    join_items = raw_joins if isinstance(raw_joins, list) else [raw_joins] if isinstance(raw_joins, dict) else []
+    priority_recipe_contracts = [
+        item
+        for item in (selected_recipe_join_contracts or [])
+        if isinstance(item, dict)
+        and str(item.get("contract_origin") or "").strip()
+        == "selected_analysis_recipe"
+    ]
+    # Do not touch the legacy join-item shape unless a high-confidence recipe
+    # was selected for this exact Typed source pair.  This deliberately keeps
+    # incomplete, unselected, and older metadata on the pre-existing path.
+    if priority_recipe_contracts:
+        join_items = _prioritize_selected_recipe_join_items(
+            _join_plan_items(raw_joins),
+            priority_recipe_contracts,
+            retrieval_jobs,
+            pandas_plan,
+        )
+    else:
+        join_items = raw_joins if isinstance(raw_joins, list) else [raw_joins] if isinstance(raw_joins, dict) else []
     if not join_items:
         join_steps = [
             item
@@ -10739,12 +12236,22 @@ def _resolve_join_plan(
     for raw in join_items:
         if not isinstance(raw, dict):
             continue
+        selected_recipe_contract = (
+            raw.get("_selected_recipe_join_contract")
+            if isinstance(raw.get("_selected_recipe_join_contract"), dict)
+            else {}
+        )
         metadata_ref = _metadata_ref(raw.get("metadata_ref"))
         metadata_item = _find_metadata_item(candidates, metadata_ref)
         metadata_payload = _metadata_payload(metadata_item)
-        canonical_keys = _string_list(raw.get("canonical_keys")) or _metadata_key_columns(
-            metadata_item,
-            candidates,
+        canonical_keys = (
+            _string_list(selected_recipe_contract.get("join_keys"))
+            if selected_recipe_contract
+            else _string_list(raw.get("canonical_keys"))
+            or _metadata_key_columns(
+                metadata_item,
+                candidates,
+            )
         )
         left_alias = str(raw.get("left_source_alias") or "").strip()
         right_alias = str(raw.get("right_source_alias") or "").strip()
@@ -10800,7 +12307,11 @@ def _resolve_join_plan(
         # than a nearby metric/quantity metadata reference.  The latter can
         # describe a value to aggregate (for example an equipment identifier)
         # without being a valid key on the left source.
-        if declared_key_mappings and len(declared_key_mappings) == len(declared_left_keys):
+        if (
+            not selected_recipe_contract
+            and declared_key_mappings
+            and len(declared_key_mappings) == len(declared_left_keys)
+        ):
             key_mappings = declared_key_mappings
             left_keys = declared_left_keys
             right_keys = declared_right_keys
@@ -10823,7 +12334,12 @@ def _resolve_join_plan(
             key_source = "metadata_ref"
         if not key_mappings:
             continue
-        join_type = str(metadata_payload.get("join_type") or raw.get("join_type") or "left").strip().lower()
+        join_type = str(
+            selected_recipe_contract.get("join_type")
+            or metadata_payload.get("join_type")
+            or raw.get("join_type")
+            or "left"
+        ).strip().lower()
         if join_type not in {"left", "inner"}:
             join_type = "left"
         multi_match_policy = str(
@@ -10834,7 +12350,8 @@ def _resolve_join_plan(
         if multi_match_policy not in {"collect_unique", "preserve_rows", "first"}:
             multi_match_policy = "preserve_rows"
         canonical_right_value_columns = _string_list(
-            raw.get("right_value_columns")
+            selected_recipe_contract.get("right_value_columns")
+            or raw.get("right_value_columns")
             or metadata_payload.get("right_value_columns")
         )
         right_value_mappings = [
@@ -10852,6 +12369,15 @@ def _resolve_join_plan(
             for mapping in right_value_mappings
             if mapping.get("canonical_key") and mapping.get("source_candidates")
         ]
+        if selected_recipe_contract and not _same_column_set(
+            right_value_columns,
+            _string_list(selected_recipe_contract.get("right_value_columns")),
+        ):
+            # The high-confidence selector already proves this against the
+            # Catalog.  Keep the guard local as well so a stale/partial
+            # candidate envelope cannot turn a safe shadow rollout into an
+            # executable partial ownership contract.
+            continue
         result.append(
             {
                 "metadata_ref": metadata_ref,
@@ -10875,6 +12401,16 @@ def _resolve_join_plan(
                 ).strip(),
                 "multi_match_policy": multi_match_policy,
                 "strict": True,
+                **(
+                    {
+                        "contract_origin": "selected_analysis_recipe",
+                        "selected_recipe_join_contract": deepcopy(
+                            selected_recipe_contract
+                        ),
+                    }
+                    if selected_recipe_contract
+                    else {}
+                ),
             }
         )
     return result
@@ -13154,6 +14690,320 @@ def _align_aggregate_steps_with_resolved_grain(
     }
 
 
+# 함수 설명: 선택된 recipe의 선언형 파생 metric을 증명 가능한 aggregate 뒤에만 Typed 단계로 구체화합니다.
+def _materialize_selected_recipe_derived_formulas(
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    locked_metadata_refs: list[dict[str, str]],
+    raw_output_contract: Any,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Append one metadata-owned formula only when its complete lineage is proven.
+
+    This is deliberately an opt-in enhancement rather than a new policy gate.
+    A missing, malformed, unselected, or ambiguous recipe leaves the model plan
+    unchanged and records a trace-only reason, preserving the existing Complex
+    fallback.  The initial primitive is terminal: it consumes one aggregate
+    frame and may be followed only by the already-declared ordering suffix.
+    """
+
+    normalized = deepcopy(pandas_plan)
+    contract = raw_output_contract if isinstance(raw_output_contract, dict) else {}
+    requested_outputs = _merge_strings(
+        _string_list(contract.get("result_columns")),
+        _string_list(contract.get("required_columns")),
+        _string_list(contract.get("metric_columns")),
+        _string_list(contract.get("primary_metric")),
+    )
+    requested_keys = {_normalized_column_key(value) for value in requested_outputs}
+    if not normalized or not requested_keys:
+        return normalized, {"status": "not_needed", "applied": [], "shadow_recommendations": []}
+
+    selected: list[dict[str, Any]] = []
+    shadow: list[dict[str, Any]] = []
+    for reference in locked_metadata_refs if isinstance(locked_metadata_refs, list) else []:
+        if str(reference.get("section") or "").strip() != "analysis_recipes":
+            continue
+        item = _find_metadata_item(candidates, reference)
+        payload = _metadata_payload(item)
+        for index, raw_formula in enumerate(payload.get("derived_metrics") or []):
+            formula, reason = _normalized_derived_formula_contract(raw_formula)
+            if reason:
+                shadow.append(
+                    {
+                        "metadata_ref": deepcopy(reference),
+                        "reason": "recipe_derived_formula_invalid",
+                        "derived_metric_index": index,
+                        "detail": reason,
+                    }
+                )
+                continue
+            output_key = _normalized_column_key(formula.get("output_column"))
+            if output_key not in requested_keys:
+                continue
+            selected.append(
+                {
+                    "metadata_ref": deepcopy(reference),
+                    "derived_metric_index": index,
+                    "formula": formula,
+                }
+            )
+
+    if not selected:
+        return normalized, {
+            "status": "shadow" if shadow else "not_needed",
+            "applied": [],
+            "shadow_recommendations": shadow,
+        }
+    if len(selected) != 1:
+        shadow.append(
+            {
+                "reason": "multiple_selected_recipe_derived_formulas",
+                "output_columns": [
+                    item["formula"].get("output_column") for item in selected
+                ],
+            }
+        )
+        return normalized, {
+            "status": "shadow",
+            "applied": [],
+            "shadow_recommendations": shadow,
+        }
+
+    selected_formula = selected[0]
+    formula = selected_formula["formula"]
+    formula_output = str(formula.get("output_column") or "").strip()
+    existing_formula_outputs = {
+        _normalized_column_key(
+            _normalized_derived_formula_contract(step.get("formula"))[0].get("output_column")
+        )
+        for step in normalized
+        if isinstance(step, dict)
+        and str(step.get("operation") or step.get("step") or "").strip().lower()
+        == "derive_formula"
+        and not _normalized_derived_formula_contract(step.get("formula"))[1]
+    }
+    if _normalized_column_key(formula_output) in existing_formula_outputs:
+        return normalized, {
+            "status": "not_needed",
+            "applied": [],
+            "shadow_recommendations": shadow,
+        }
+
+    aggregate_candidates: list[tuple[int, dict[str, Any], list[str]]] = []
+    aggregate_operations = {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}
+    operand_keys = {
+        _normalized_column_key(operand.get("column"))
+        for operand in formula.get("operands", [])
+        if isinstance(operand, dict) and "column" in operand
+    }
+    for index, step in enumerate(normalized):
+        if not isinstance(step, dict) or str(
+            step.get("operation") or step.get("step") or ""
+        ).strip().lower() not in aggregate_operations:
+            continue
+        output_columns = _string_list(
+            [
+                item.get("output_column") or item.get("result_column")
+                for item in step.get("aggregations", [])
+                if isinstance(item, dict)
+            ]
+        )
+        if operand_keys.issubset({_normalized_column_key(column) for column in output_columns}):
+            aggregate_candidates.append((index, step, output_columns))
+    if len(aggregate_candidates) != 1:
+        shadow.append(
+            {
+                "metadata_ref": deepcopy(selected_formula["metadata_ref"]),
+                "reason": "formula_aggregate_lineage_not_unique",
+                "matching_aggregate_count": len(aggregate_candidates),
+            }
+        )
+        return normalized, {
+            "status": "shadow",
+            "applied": [],
+            "shadow_recommendations": shadow,
+        }
+
+    aggregate_index, aggregate_step, _ = aggregate_candidates[0]
+    aggregate_node = str(aggregate_step.get("node_id") or "").strip()
+    aggregate_alias = str(aggregate_step.get("output_alias") or aggregate_node).strip()
+    aggregate_reference = aggregate_alias or aggregate_node
+    if not aggregate_reference:
+        shadow.append(
+            {
+                "metadata_ref": deepcopy(selected_formula["metadata_ref"]),
+                "reason": "formula_aggregate_output_alias_missing",
+            }
+        )
+        return normalized, {
+            "status": "shadow",
+            "applied": [],
+            "shadow_recommendations": shadow,
+        }
+
+    # The initial deterministic executor exposes one stable ordering primitive.
+    # Other legacy sort spellings retain their existing Complex handling.
+    sort_operations = {"sort_and_top_n"}
+    trailing = normalized[aggregate_index + 1 :]
+    expected_reference = aggregate_reference
+    for step in trailing:
+        if not isinstance(step, dict) or str(
+            step.get("operation") or step.get("step") or ""
+        ).strip().lower() not in sort_operations:
+            shadow.append(
+                {
+                    "metadata_ref": deepcopy(selected_formula["metadata_ref"]),
+                    "reason": "formula_nonterminal_or_nonordering_suffix",
+                }
+            )
+            return normalized, {
+                "status": "shadow",
+                "applied": [],
+                "shadow_recommendations": shadow,
+            }
+        inputs = [item for item in step.get("inputs", []) if isinstance(item, dict)]
+        if (
+            len(inputs) != 1
+            or str(inputs[0].get("kind") or "").strip() != "node_output"
+            or str(inputs[0].get("ref") or "").strip() != expected_reference
+        ):
+            shadow.append(
+                {
+                    "metadata_ref": deepcopy(selected_formula["metadata_ref"]),
+                    "reason": "formula_ordering_lineage_not_linear",
+                }
+            )
+            return normalized, {
+                "status": "shadow",
+                "applied": [],
+                "shadow_recommendations": shadow,
+            }
+        expected_reference = str(step.get("output_alias") or step.get("node_id") or "").strip()
+        if not expected_reference:
+            return normalized, {
+                "status": "shadow",
+                "applied": [],
+                "shadow_recommendations": [
+                    *shadow,
+                    {
+                        "metadata_ref": deepcopy(selected_formula["metadata_ref"]),
+                        "reason": "formula_ordering_output_alias_missing",
+                    },
+                ],
+            }
+
+    used_references = {
+        str(step.get(key) or "").strip()
+        for step in normalized
+        if isinstance(step, dict)
+        for key in ("node_id", "output_alias")
+        if str(step.get(key) or "").strip()
+    }
+    formula_node_id = "derive_formula_1"
+    formula_index = 1
+    while formula_node_id in used_references:
+        formula_index += 1
+        formula_node_id = f"derive_formula_{formula_index}"
+    formula_alias = f"{formula_node_id}_result"
+    while formula_alias in used_references:
+        formula_index += 1
+        formula_node_id = f"derive_formula_{formula_index}"
+        formula_alias = f"{formula_node_id}_result"
+    formula_step = {
+        "node_id": formula_node_id,
+        "operation": "derive_formula",
+        "inputs": [{"kind": "node_output", "ref": aggregate_reference}],
+        "output_alias": formula_alias,
+        "formula": deepcopy(formula),
+        "metadata_ref": deepcopy(selected_formula["metadata_ref"]),
+    }
+    normalized.insert(aggregate_index + 1, formula_step)
+    if trailing:
+        first_ordering = normalized[aggregate_index + 2]
+        first_ordering["inputs"] = [{"kind": "node_output", "ref": formula_alias}]
+    return normalized, {
+        "status": "applied",
+        "applied": [
+            {
+                "metadata_ref": deepcopy(selected_formula["metadata_ref"]),
+                "derived_metric_index": selected_formula["derived_metric_index"],
+                "node_id": formula_node_id,
+                "output_column": formula_output,
+                "input_node": aggregate_reference,
+            }
+        ],
+        "shadow_recommendations": shadow,
+    }
+
+
+# 함수 설명: runtime Typed IR과 같은 좁은 선언형 산술 formula를 normalizer에서도 검증합니다.
+def _normalized_derived_formula_contract(raw_formula: Any) -> tuple[dict[str, Any], str]:
+    """Normalize one safe derived-metric object without accepting expression text."""
+
+    formula = raw_formula if isinstance(raw_formula, dict) else {}
+    output_column = str(formula.get("output_column") or "").strip()
+    operator = str(formula.get("operator") or "").strip().lower()
+    operands = formula.get("operands")
+    if not output_column or operator not in DERIVED_FORMULA_OPERATORS:
+        return {}, "output_or_operator_invalid"
+    if not isinstance(operands, list) or not 2 <= len(operands) <= 8:
+        return {}, "operands_invalid"
+    if operator in {"subtract", "divide"} and len(operands) != 2:
+        return {}, "operand_count_invalid"
+    normalized_operands: list[dict[str, Any]] = []
+    operand_keys: set[str] = set()
+    for operand in operands:
+        if not isinstance(operand, dict) or len(operand) != 1:
+            return {}, "operand_invalid"
+        if "column" in operand:
+            column = str(operand.get("column") or "").strip()
+            if not column:
+                return {}, "operand_column_invalid"
+            normalized_operands.append({"column": column})
+            operand_keys.add(_normalized_column_key(column))
+            continue
+        if "constant" not in operand or isinstance(operand.get("constant"), bool):
+            return {}, "operand_invalid"
+        try:
+            constant = float(operand.get("constant"))
+        except (TypeError, ValueError):
+            return {}, "operand_constant_invalid"
+        if not math.isfinite(constant):
+            return {}, "operand_constant_invalid"
+        normalized_operands.append({"constant": constant})
+    if _normalized_column_key(output_column) in operand_keys:
+        return {}, "output_self_reference"
+    null_policy = str(formula.get("null_policy") or "propagate").strip().lower()
+    if null_policy not in DERIVED_FORMULA_NULL_POLICIES:
+        return {}, "null_policy_invalid"
+    normalized: dict[str, Any] = {
+        "output_column": output_column,
+        "operator": operator,
+        "operands": normalized_operands,
+        "null_policy": null_policy,
+    }
+    if operator == "divide":
+        zero_division_policy = str(
+            formula.get("zero_division_policy") or "null"
+        ).strip().lower()
+        if zero_division_policy not in DERIVED_FORMULA_ZERO_DIVISION_POLICIES:
+            return {}, "zero_division_policy_invalid"
+        normalized["zero_division_policy"] = zero_division_policy
+    if "round_digits" in formula:
+        raw_digits = formula.get("round_digits")
+        if isinstance(raw_digits, bool):
+            return {}, "round_digits_invalid"
+        try:
+            digits = int(raw_digits)
+            is_integral = float(digits) == float(raw_digits)
+        except (TypeError, ValueError):
+            return {}, "round_digits_invalid"
+        if not is_integral or not 0 <= digits <= 12:
+            return {}, "round_digits_invalid"
+        normalized["round_digits"] = digits
+    return normalized, ""
+
+
 # 함수 설명: `_pandas_catalog_column_validation_errors()`는 집계 계획에 남은 미등록 source 컬럼을 실행 전에 검증 오류로 변환합니다.
 def _pandas_catalog_column_validation_errors(
     pandas_plan: list[Any],
@@ -13373,6 +15223,7 @@ def _normalize_pandas_plan_columns(
 def _materialize_resolved_join_steps(
     pandas_plan: list[Any],
     resolved_join_plan: list[dict[str, Any]],
+    shadow_recommendations: list[dict[str, Any]] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Copy a trusted catalog join key contract onto one matching Typed step.
 
@@ -13383,8 +15234,17 @@ def _materialize_resolved_join_steps(
     conflicting pairs, and ambiguous matches remain untouched.
     """
 
+    shadow = [
+        deepcopy(item)
+        for item in (shadow_recommendations or [])
+        if isinstance(item, dict)
+    ]
     if not resolved_join_plan:
-        return pandas_plan, {"status": "not_needed", "applied": []}
+        return pandas_plan, {
+            "status": "shadow" if shadow else "not_needed",
+            "applied": [],
+            "shadow_recommendations": shadow,
+        }
     normalized = deepcopy(pandas_plan)
     applied: list[dict[str, Any]] = []
     known_external_aliases = {
@@ -13450,17 +15310,69 @@ def _materialize_resolved_join_steps(
             ):
                 matches.append(step)
         if len(matches) != 1:
+            if str(resolved.get("contract_origin") or "").strip() == "selected_analysis_recipe":
+                shadow.append(
+                    _recipe_join_shadow_recommendation(
+                        resolved,
+                        "matching_typed_join_not_unique",
+                        {
+                            "matching_node_ids": [
+                                str(item.get("node_id") or "").strip()
+                                for item in matches
+                            ]
+                        },
+                    )
+                )
             continue
         step = matches[0]
         current_left = _string_list(step.get("left_on"))
         current_right = _string_list(step.get("right_on"))
         current_shared = _string_list(step.get("on"))
         declared_shared_grain = _string_list(step.get("group_by"))
+        selected_recipe_contract = str(
+            resolved.get("contract_origin") or ""
+        ).strip() == "selected_analysis_recipe"
+        conflicts: dict[str, Any] = {}
         if (current_left or current_right) and (
-            current_left != left_keys or current_right != right_keys
+            not _same_column_sequence(current_left, left_keys)
+            or not _same_column_sequence(current_right, right_keys)
         ):
-            continue
-        if current_shared and (current_shared != left_keys or left_keys != right_keys):
+            conflicts["left_on"] = current_left
+            conflicts["right_on"] = current_right
+        if current_shared and (
+            not _same_column_sequence(current_shared, left_keys)
+            or not _same_column_sequence(left_keys, right_keys)
+        ):
+            conflicts["on"] = current_shared
+        if declared_shared_grain and (
+            not _same_column_sequence(declared_shared_grain, left_keys)
+            or not _same_column_sequence(left_keys, right_keys)
+        ):
+            conflicts["group_by"] = declared_shared_grain
+        if selected_recipe_contract:
+            declared_join_type = str(step.get("join_type") or "").strip().lower()
+            if declared_join_type and declared_join_type != str(
+                resolved.get("join_type") or ""
+            ).strip().lower():
+                conflicts["join_type"] = declared_join_type
+            current_right_values = _string_list(step.get("right_value_columns"))
+            resolved_right_values = _string_list(resolved.get("right_value_columns"))
+            if current_right_values and not _same_column_set(
+                current_right_values,
+                resolved_right_values,
+            ):
+                conflicts["right_value_columns"] = current_right_values
+        if conflicts:
+            if selected_recipe_contract:
+                shadow.append(
+                    _recipe_join_shadow_recommendation(
+                        resolved,
+                        "typed_join_contract_conflict",
+                        {"node_id": str(step.get("node_id") or "").strip(), "conflicts": conflicts},
+                    )
+                )
+            # Preserve the established behavior for every non-recipe resolver
+            # entry and avoid replacing an explicit model declaration.
             continue
         # The executor accepts a join's group_by as an explicit shared key.
         # Normalize that shorthand only when it is the same Catalog-proven
@@ -13503,11 +15415,17 @@ def _materialize_resolved_join_steps(
                 "right_source_alias": right_alias,
                 "left_on": left_keys,
                 "right_on": right_keys,
+                **(
+                    {"contract_origin": "selected_analysis_recipe"}
+                    if selected_recipe_contract
+                    else {}
+                ),
             }
         )
     return normalized, {
-        "status": "applied" if applied else "not_needed",
+        "status": "applied" if applied else ("shadow" if shadow else "not_needed"),
         "applied": applied,
+        "shadow_recommendations": shadow,
     }
 
 
@@ -13887,6 +15805,59 @@ def _compile_typed_frame_contract(
                 "aggregate_outputs": aggregate_outputs,
                 "owners": owners,
             }
+        elif operation == "derive_formula":
+            if len(states_list) != 1:
+                continue
+            formula, formula_error = _normalized_derived_formula_contract(
+                step.get("formula")
+            )
+            if formula_error:
+                # An untrusted/malformed model formula remains on the existing
+                # Complex path; it is not a global planning error.
+                continue
+            input_state = states_list[0]
+            operand_columns = [
+                str(operand.get("column") or "").strip()
+                for operand in formula.get("operands", [])
+                if isinstance(operand, dict) and "column" in operand
+            ]
+            missing = [
+                column
+                for column in operand_columns
+                if input_state["known"] and not same_column(input_state["columns"], column)
+            ]
+            output_column = str(formula.get("output_column") or "").strip()
+            if input_state["known"] and same_column(input_state["columns"], output_column):
+                issues.append(
+                    {
+                        "type": "typed_frame_formula_output_conflict",
+                        "node_id": node_id,
+                        "column": output_column,
+                    }
+                )
+            if missing:
+                issues.append(
+                    {
+                        "type": "typed_frame_formula_operand_missing",
+                        "node_id": node_id,
+                        "columns": _merge_strings(missing),
+                    }
+                )
+            result_state = copy_state(input_state)
+            result_state["columns"] = _merge_strings(
+                result_state["columns"], [output_column]
+            )
+            formula_owners: set[str] = set()
+            for column in operand_columns:
+                actual = same_column(input_state["columns"], column)
+                if actual:
+                    formula_owners.update(
+                        input_state.get("owners", {}).get(
+                            _normalized_column_key(actual), set()
+                        )
+                    )
+            if output_column:
+                result_state["owners"][_normalized_column_key(output_column)] = formula_owners
         elif operation in {"join", "merge", "left_join", "outer_join"}:
             if len(states_list) != 2:
                 step.pop("_catalog_materialized_right_value_columns", None)
@@ -14114,6 +16085,54 @@ def _reconcile_terminal_typed_output_contract(
         terminal_columns = _merge_strings(group_columns, aggregation_columns)
         if not aggregation_columns:
             return contract, {"status": "not_applicable"}
+    elif terminal_operation == "derive_formula":
+        formula, formula_error = _normalized_derived_formula_contract(
+            terminal_step.get("formula")
+        )
+        inputs = [
+            item
+            for item in terminal_step.get("inputs", [])
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "node_output"
+        ]
+        source_reference = str(inputs[0].get("ref") or "").strip() if len(inputs) == 1 else ""
+        source_step = next(
+            (
+                step
+                for step in reversed(steps[:terminal_index])
+                if source_reference
+                and source_reference
+                in {
+                    str(step.get("node_id") or "").strip(),
+                    str(step.get("output_alias") or "").strip(),
+                }
+            ),
+            None,
+        )
+        source_operation = str(
+            source_step.get("operation") or source_step.get("step") or ""
+        ).strip().lower() if isinstance(source_step, dict) else ""
+        if formula_error or source_operation not in {
+            "groupby_and_aggregate",
+            "group_by_and_aggregate",
+            "aggregate",
+        }:
+            return contract, {"status": "not_applicable"}
+        group_columns = _string_list(
+            source_step.get("group_by") or source_step.get("group_by_columns")
+        )
+        aggregation_columns = _string_list(
+            [
+                item.get("output_column") or item.get("result_column")
+                for item in source_step.get("aggregations", [])
+                if isinstance(item, dict)
+            ]
+        )
+        formula_output = str(formula.get("output_column") or "").strip()
+        if not aggregation_columns or not formula_output:
+            return contract, {"status": "not_applicable"}
+        aggregation_columns = _merge_strings(aggregation_columns, [formula_output])
+        terminal_columns = _merge_strings(group_columns, aggregation_columns)
     elif terminal_operation == "select_columns":
         terminal_columns = _string_list(
             terminal_step.get("projection")
@@ -14875,7 +16894,14 @@ def _uses_previous_data_without_new_retrieval(plan: dict[str, Any]) -> bool:
     request_scope = str(plan.get("request_scope") or "").strip()
     reuse_strategy = str(plan.get("reuse_strategy") or "").strip()
     if request_scope == "clarification":
-        return True
+        pandas_plan = (
+            plan.get("pandas_execution_plan")
+            if isinstance(plan.get("pandas_execution_plan"), list)
+            else []
+        )
+        return not _retrieval_jobs(plan) and not any(
+            isinstance(item, dict) for item in pandas_plan
+        )
     if request_scope == "followup_explain" and reuse_strategy == "trace_only":
         return True
     return request_scope in {"followup_transform", "followup_expand_source"} and reuse_strategy in {"previous_result", "previous_source", "trace_only"}
@@ -15168,8 +17194,22 @@ def _attach_function_case_execution_contracts(
         source_filter_order = str(
             execution_contract.get("source_filter_order") or ""
         ).strip()
-        if source_filter_order not in {"before_helper", "after_helper"}:
+        elision_policy = str(
+            execution_contract.get("elision_policy") or ""
+        ).strip()
+        if (
+            source_filter_order not in {"before_helper", "after_helper"}
+            and elision_policy != "when_equivalent_source_filter"
+        ):
             continue
+        trusted_contract: dict[str, Any] = {}
+        if source_filter_order in {"before_helper", "after_helper"}:
+            trusted_contract["source_filter_order"] = source_filter_order
+        # A source transform is retained by default.  A Domain Function Case
+        # may opt in to removal only when its own metadata certifies that one
+        # exact source filter is equivalent to the whole helper input.
+        if elision_policy == "when_equivalent_source_filter":
+            trusted_contract["elision_policy"] = elision_policy
         contracts.append(
             {
                 "key": str(item.get("key") or "").strip(),
@@ -15178,9 +17218,7 @@ def _attach_function_case_execution_contracts(
                     or payload.get("function_name")
                     or ""
                 ).strip(),
-                "execution_contract": {
-                    "source_filter_order": source_filter_order,
-                },
+                "execution_contract": trusted_contract,
             }
         )
 
@@ -15215,11 +17253,11 @@ def _attach_function_case_execution_contracts(
     return result
 
 
-# 함수 설명: 제품 token helper가 해석할 원문 token을 같은 source의 단순 조회 filter로 중복 적용하지 않도록 실행 책임을 한 곳으로 모읍니다.
-# Function description: remove a selected helper when one typed source filter
-# already expresses its entire input literally.  This is a source-sufficiency
-# rule, not a function or column-specific exception: helpers remain required
-# whenever their input contains additional unconstrained tokens.
+# 함수 설명: 선택된 Function Case source transform은 기본적으로 보존하며, Domain
+# metadata가 명시적으로 동등성을 인증한 경우에만 같은 source filter로 대체합니다.
+# Function description: selected Function Cases are source transforms by
+# default.  They may be elided only when their own trusted Domain contract
+# explicitly allows replacement by one equivalent source filter.
 def _remove_source_filter_sufficient_function_cases(
     function_cases: list[dict[str, Any]],
     pandas_plan: list[Any],
@@ -15233,6 +17271,7 @@ def _remove_source_filter_sufficient_function_cases(
         and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
     }
     retained: list[dict[str, Any]] = []
+    retained_without_equivalence_proof: list[dict[str, str]] = []
     removed: list[dict[str, Any]] = []
     removed_markers: set[tuple[str, str, str]] = set()
     aliases_with_single_removed_case: set[str] = set()
@@ -15253,13 +17292,31 @@ def _remove_source_filter_sufficient_function_cases(
             job.get("filters") if isinstance(job, dict) else None,
             input_text,
         )
-        product_evidence = _product_token_filter_evidence(
-            case,
-            job,
-            metadata_candidates or {},
+        execution_contract = (
+            case.get("execution_contract")
+            if isinstance(case.get("execution_contract"), dict)
+            else {}
         )
-        if not matched_filter and not product_evidence.get("removable"):
+        elision_policy = str(
+            execution_contract.get("elision_policy") or ""
+        ).strip()
+        if (
+            elision_policy != "when_equivalent_source_filter"
+            or not matched_filter
+        ):
             retained.append(deepcopy(case))
+            retained_without_equivalence_proof.append(
+                {
+                    "source_alias": alias,
+                    "function_case_key": str(case.get("key") or "").strip(),
+                    "function_name": str(case.get("function_name") or "").strip(),
+                    "reason": (
+                        "source_transform_default_retained"
+                        if elision_policy != "when_equivalent_source_filter"
+                        else "equivalent_source_filter_not_proven"
+                    ),
+                }
+            )
             continue
         marker = (
             str(case.get("key") or "").strip(),
@@ -15274,20 +17331,17 @@ def _remove_source_filter_sufficient_function_cases(
                 "source_alias": alias,
                 "function_case_key": marker[0],
                 "function_name": marker[1],
-                "filter_field": matched_filter
-                or ", ".join(_string_list(product_evidence.get("filter_fields"))),
-                "reason": (
-                    "typed_source_filter_covers_entire_function_input"
-                    if matched_filter
-                    else str(product_evidence.get("reason") or "")
-                ),
-                "structured_tokens": _string_list(product_evidence.get("structured_tokens")),
-                "covered_tokens": _string_list(product_evidence.get("covered_tokens")),
+                "filter_field": matched_filter,
+                "reason": "declared_equivalent_source_filter",
             }
         )
 
     if not removed:
-        return function_cases, pandas_plan, {"status": "not_needed", "removed": []}
+        return function_cases, pandas_plan, {
+            "status": "not_needed",
+            "removed": [],
+            "retained": retained_without_equivalence_proof,
+        }
 
     normalized_plan: list[Any] = []
     removed_output_providers: dict[str, str] = {}
@@ -15342,6 +17396,7 @@ def _remove_source_filter_sufficient_function_cases(
         "status": "applied",
         "removed": removed,
         "rewired_inputs": rewired_inputs,
+        "retained": retained_without_equivalence_proof,
     }
 
 
@@ -15531,126 +17586,36 @@ def _direct_filter_covering_function_input(filters: Any, input_text: str) -> str
     return ""
 
 
-# 함수 설명: 선택 Function Case의 특화 filter 의미를 공통 정규화기에서 변경하지 않습니다.
+# 함수 설명: 특화 Function Case가 선택되었더라도 조회 filter는 Domain metadata가
+# 명시적으로 동등성을 인증하지 않는 한 보존합니다. 공통 정규화기는 제품·공정 등
+# 업무별 컬럼 소유권을 알지 않습니다.
 def _remove_function_owned_retrieval_filters(
     retrieval_jobs: list[dict[str, Any]],
     function_cases: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    product_filter_fields = {
-        "TECH",
-        "DEN",
-        "DENSITY",
-        "MODE",
-        "PKGTYPE1",
-        "PKG1",
-        "PKGTYP1",
-        "PKGTYPE2",
-        "PKG2",
-        "PKGTYP2",
-        "LEAD",
-        "MCPNO",
-        "MCPSALESNO",
-        "MCPSALECD",
-        "DEVICE",
-        "DEVICEDESC",
-        "ORG",
-        "ORGANIZCD",
-    }
-    owned_cases = [
+    selected = [
         item
         for item in function_cases
-        if str(item.get("function_name") or "").strip() == "match_product_tokens"
-        and str(item.get("input_text") or "").strip()
+        if isinstance(item, dict)
+        and str(item.get("function_name") or item.get("key") or "").strip()
     ]
-    if not owned_cases:
-        return retrieval_jobs, {"removed": []}
-
-    normalized_jobs = deepcopy(retrieval_jobs)
-    removed: list[dict[str, Any]] = []
-    for job in normalized_jobs:
-        if not isinstance(job, dict):
-            continue
-        source_alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
-        matching_cases = [
-            item
-            for item in owned_cases
-            if not str(item.get("source_alias") or "").strip()
-            or str(item.get("source_alias") or "").strip() == source_alias
-        ]
-        filters = job.get("filters")
-        if not matching_cases or not isinstance(filters, dict):
-            continue
-        retained_filters: dict[str, Any] = {}
-        for field, condition in filters.items():
-            normalized_field = _normalized_column_key(field)
-            owner = next(
-                (
-                    item
-                    for item in matching_cases
-                    if normalized_field in product_filter_fields
-                    and _function_case_owns_filter_value(
-                        normalized_field,
-                        condition,
-                        str(item.get("input_text") or ""),
-                    )
-                ),
-                None,
-            )
-            if owner is None:
-                retained_filters[field] = condition
-                continue
-            removed.append(
-                {
-                    "source_alias": source_alias,
-                    "field": str(field),
-                    "function_name": "match_product_tokens",
-                    "function_case_key": str(owner.get("key") or ""),
-                }
-            )
-        job["filters"] = retained_filters
-    return normalized_jobs, {"removed": removed}
-
-
-# 함수 설명: filter 값이 helper input에 직접 포함된 제품 token인지 판정하며, domain이 소유한 별도 조건은 유지합니다.
-def _function_case_owns_filter_value(
-    normalized_field: str,
-    condition: Any,
-    input_text: str,
-) -> bool:
-    if isinstance(condition, dict):
-        operator = str(condition.get("operator") or "eq").strip().casefold()
-        raw_value = (
-            condition.get("values")
-            if condition.get("values") is not None
-            else condition.get("value")
-        )
-    else:
-        operator = "eq"
-        raw_value = condition
-    if operator not in {"eq", "in", "contains", "starts_with", "startswith"}:
-        return False
-    raw_values = raw_value if isinstance(raw_value, (list, tuple, set)) else [raw_value]
-    values = [_function_token(item) for item in raw_values]
-    values = [item for item in values if item]
-    if not values:
-        return False
-    input_tokens = {
-        _function_token(item)
-        for item in re.findall(r"[A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)*", input_text)
+    return deepcopy(retrieval_jobs), {
+        "removed": [],
+        "status": "not_needed",
+        "reason": (
+            "no_selected_source_transform"
+            if not selected
+            else "source_transform_preserves_retrieval_filters"
+        ),
+        "selected_function_cases": [
+            {
+                "source_alias": str(item.get("source_alias") or "").strip(),
+                "function_case_key": str(item.get("key") or "").strip(),
+                "function_name": str(item.get("function_name") or "").strip(),
+            }
+            for item in selected
+        ],
     }
-    input_tokens.discard("")
-    if not input_tokens:
-        return False
-
-    for value in values:
-        candidates = {value}
-        if normalized_field == "LEAD":
-            candidates.update({f"F{value}", f"FC{value}", f"{value}LEAD", f"{value}BALL"})
-        elif normalized_field in {"ORG", "ORGANIZCD"}:
-            candidates.add(f"X{value}")
-        if not candidates.intersection(input_tokens):
-            return False
-    return True
 
 
 # 함수 설명: 제품 token과 filter 값을 공백·구분자·대소문자 차이 없이 비교할 최소 형태로 정규화합니다.
@@ -15694,6 +17659,177 @@ def _dedupe_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(marker)
         deduped.append(item)
     return deduped
+
+
+# 함수 설명: source filter의 빈 alias bridge 뒤에 중복 선언된 Function Case를 원본 source transform 하나로 정리합니다.
+def _reconcile_function_case_source_transform_steps(
+    function_cases: list[dict[str, Any]],
+    pandas_plan: list[Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Normalize one safe source-transform representation for a Function Case.
+
+    The Flow executes selected Function Cases as trusted source transforms. A
+    weak plan can additionally place the same case after an ``apply_filters``
+    node that contains no local predicate because the real filter already lives
+    in the retrieval contract.  That creates two competing helper paths and
+    prevents the Typed DAG from being selected.  Collapse only the unambiguous
+    bridge shape; a real local filter, a second consumer, or uncertain helper
+    identity remains untouched.
+    """
+
+    if not function_cases or not pandas_plan:
+        return pandas_plan, {"status": "not_needed", "repairs": []}
+
+    source_aliases = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in retrieval_jobs
+        if isinstance(job, dict)
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+    }
+    if not source_aliases:
+        return pandas_plan, {"status": "not_needed", "repairs": []}
+
+    normalized = deepcopy(pandas_plan)
+    providers: dict[str, int] = {}
+    consumers: dict[str, list[int]] = {}
+    for index, step in enumerate(normalized):
+        if not isinstance(step, dict):
+            continue
+        for identifier in _merge_strings(
+            _string_list(step.get("node_id")),
+            _string_list(step.get("output_alias") or step.get("result_alias")),
+        ):
+            providers.setdefault(identifier, index)
+        for item in step.get("inputs", []) if isinstance(step.get("inputs"), list) else []:
+            if not isinstance(item, dict) or str(item.get("kind") or "").strip() != "node_output":
+                continue
+            reference = str(item.get("ref") or "").strip()
+            if reference:
+                consumers.setdefault(reference, []).append(index)
+
+    removed_indexes: set[int] = set()
+    repairs: list[dict[str, Any]] = []
+    used_case_indexes: set[int] = set()
+    for index, step in enumerate(normalized):
+        if (
+            not isinstance(step, dict)
+            or str(step.get("operation") or "").strip() != "apply_pandas_function_case"
+        ):
+            continue
+        matching_cases = [
+            (case_index, case)
+            for case_index, case in enumerate(function_cases)
+            if case_index not in used_case_indexes
+            and isinstance(case, dict)
+            and _function_case_step_identity_matches(step, case)
+        ]
+        if len(matching_cases) != 1:
+            continue
+        case_index, case = matching_cases[0]
+        source_alias = str(case.get("source_alias") or "").strip()
+        if source_alias not in source_aliases:
+            continue
+        inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        node_inputs = [
+            item
+            for item in inputs
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "node_output"
+            and str(item.get("ref") or "").strip()
+        ]
+        if len(inputs) != 1 or len(node_inputs) != 1:
+            continue
+        bridge_ref = str(node_inputs[0].get("ref") or "").strip()
+        bridge_index = providers.get(bridge_ref)
+        if bridge_index is None or bridge_index == index:
+            continue
+        bridge = normalized[bridge_index]
+        if not _is_empty_source_filter_bridge(bridge, source_alias):
+            continue
+        bridge_identifiers = _merge_strings(
+            _string_list(bridge.get("node_id")),
+            _string_list(bridge.get("output_alias") or bridge.get("result_alias")),
+        )
+        if not bridge_identifiers or any(
+            any(consumer != index for consumer in consumers.get(identifier, []))
+            for identifier in bridge_identifiers
+        ):
+            continue
+
+        rebased = normalized[index]
+        rebased["source_alias"] = source_alias
+        rebased["inputs"] = [{"kind": "external_source", "ref": source_alias}]
+        for key, value in case.items():
+            target_key = "function_case_key" if key == "key" else key
+            if target_key in {"source_alias", "inputs", "output_alias", "result_alias", "node_id"}:
+                continue
+            if rebased.get(target_key) in (None, "", [], {}):
+                rebased[target_key] = deepcopy(value)
+        removed_indexes.add(bridge_index)
+        used_case_indexes.add(case_index)
+        repairs.append(
+            {
+                "function_case_key": str(case.get("key") or "").strip(),
+                "function_name": str(case.get("function_name") or "").strip(),
+                "source_alias": source_alias,
+                "removed_filter_bridge": bridge_ref,
+                "function_step": str(rebased.get("node_id") or rebased.get("output_alias") or "").strip(),
+                "reason": "selected_source_transform_replaces_empty_filter_bridge",
+            }
+        )
+
+    if not removed_indexes:
+        return normalized, {"status": "not_needed", "repairs": []}
+    return [
+        step for index, step in enumerate(normalized) if index not in removed_indexes
+    ], {"status": "applied", "repairs": repairs}
+
+
+# 함수 설명: 선택된 Function Case와 plan 단계가 source alias를 제외한 식별 계약에서 동일한지 확인합니다.
+def _function_case_step_identity_matches(
+    step: dict[str, Any],
+    case: dict[str, Any],
+) -> bool:
+    step_key = str(step.get("function_case_key") or step.get("key") or "").strip()
+    case_key = str(case.get("key") or "").strip()
+    step_function = str(step.get("function_name") or "").strip()
+    case_function = str(case.get("function_name") or "").strip()
+    step_input = str(step.get("input_text") or "")
+    case_input = str(case.get("input_text") or "")
+    if step_key and case_key and step_key != case_key:
+        return False
+    if step_function and case_function and step_function != case_function:
+        return False
+    if step_input and case_input and step_input != case_input:
+        return False
+    return bool((step_key and case_key) or (step_function and case_function))
+
+
+# 함수 설명: retrieval 단계의 filter가 이미 적용되는 빈 apply_filters alias bridge만 source transform으로 접습니다.
+def _is_empty_source_filter_bridge(step: Any, source_alias: str) -> bool:
+    if (
+        not isinstance(step, dict)
+        or str(step.get("operation") or "").strip()
+        not in {"apply_filters", "filter", "filter_rows"}
+    ):
+        return False
+    if any(
+        step.get(key) not in (None, "", [], {})
+        for key in ("filters", "field", "condition", "value", "values", "operator")
+    ):
+        return False
+    inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+    external = [
+        str(item.get("ref") or "").strip()
+        for item in inputs
+        if isinstance(item, dict)
+        and str(item.get("kind") or "").strip() == "external_source"
+    ]
+    if external != [source_alias]:
+        return False
+    declared_alias = str(step.get("source_alias") or "").strip()
+    return not declared_alias or declared_alias == source_alias
 
 
 # 함수 설명: `_ensure_function_case_steps()`는 함수·Function Case·steps이 실행·저장 계약을 만족하는지 검사하고 위반 내용을 명시적으로 반환합니다.
@@ -15911,6 +18047,151 @@ def _materialize_function_case_step_edges(
     return normalized
 
 
+# 함수 설명: 유일한 source-transform helper의 미소비 출력을 같은 source의 단일 terminal 단계에 연결합니다.
+def _reconcile_unconsumed_function_case_terminal_lineage(
+    function_cases: list[dict[str, Any]],
+    pandas_plan: list[Any],
+    retrieval_jobs: list[dict[str, Any]],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Repair only one linear helper-to-terminal edge.
+
+    The executor historically applies a selected helper as a source mutation,
+    so a weak plan can appear to work while its displayed DAG still bypasses
+    the helper.  Rewire that implicit side effect only when the graph proves a
+    single source, a single selected helper, no existing helper consumer, and
+    one terminal unary consumer of the same external source.  Branches,
+    multiple helpers, and already connected plans are left byte-for-byte on
+    their established path.
+    """
+
+    normalized = deepcopy(pandas_plan)
+    source_aliases = {
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in retrieval_jobs
+        if isinstance(job, dict)
+        and str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+    }
+    selected_cases = [
+        item
+        for item in function_cases
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or "").strip() in source_aliases
+    ]
+    if len(selected_cases) != 1:
+        return normalized, {"status": "not_needed", "repairs": []}
+    selected_case = selected_cases[0]
+    source_alias = str(selected_case.get("source_alias") or "").strip()
+    helper_indexes = [
+        index
+        for index, step in enumerate(normalized)
+        if isinstance(step, dict)
+        and str(step.get("operation") or "").strip()
+        == "apply_pandas_function_case"
+        and _function_case_step_identity_matches(step, selected_case)
+        and str(step.get("source_alias") or "").strip() == source_alias
+    ]
+    if len(helper_indexes) != 1:
+        return normalized, {"status": "not_needed", "repairs": []}
+    helper_index = helper_indexes[0]
+    helper = normalized[helper_index]
+    helper_inputs = helper.get("inputs") if isinstance(helper.get("inputs"), list) else []
+    if (
+        len(helper_inputs) != 1
+        or not isinstance(helper_inputs[0], dict)
+        or str(helper_inputs[0].get("kind") or "").strip() != "external_source"
+        or str(helper_inputs[0].get("ref") or "").strip() != source_alias
+    ):
+        return normalized, {"status": "not_needed", "repairs": []}
+    helper_node_id = str(helper.get("node_id") or "").strip()
+    helper_output_alias = str(
+        helper.get("output_alias") or helper.get("result_alias") or ""
+    ).strip()
+    helper_refs = {value for value in (helper_node_id, helper_output_alias) if value}
+    if not helper_node_id or not helper_refs:
+        return normalized, {"status": "not_needed", "repairs": []}
+
+    # 함수 설명: pandas 단계의 명시적 입력 중 유효한 dict 계약만 반환합니다.
+    def inputs_of(step: Any) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in (
+                step.get("inputs")
+                if isinstance(step, dict) and isinstance(step.get("inputs"), list)
+                else []
+            )
+            if isinstance(item, dict)
+        ]
+
+    # Any existing consumer means the helper is already represented in the
+    # DAG.  Do not manufacture a second branch.
+    if any(
+        str(item.get("kind") or "").strip() == "node_output"
+        and str(item.get("ref") or "").strip() in helper_refs
+        for index, step in enumerate(normalized)
+        if index != helper_index
+        for item in inputs_of(step)
+    ):
+        return normalized, {"status": "not_needed", "repairs": []}
+
+    direct_consumers: list[int] = []
+    for index, step in enumerate(normalized):
+        if index == helper_index or not isinstance(step, dict):
+            continue
+        inputs = inputs_of(step)
+        if (
+            len(inputs) == 1
+            and str(inputs[0].get("kind") or "").strip() == "external_source"
+            and str(inputs[0].get("ref") or "").strip() == source_alias
+        ):
+            direct_consumers.append(index)
+    if len(direct_consumers) != 1:
+        return normalized, {"status": "not_needed", "repairs": []}
+    consumer_index = direct_consumers[0]
+    if consumer_index <= helper_index:
+        return normalized, {"status": "not_needed", "repairs": []}
+    consumer = normalized[consumer_index]
+    consumer_refs = {
+        str(consumer.get("node_id") or "").strip(),
+        str(consumer.get("output_alias") or consumer.get("result_alias") or "").strip(),
+    } - {""}
+    if not consumer_refs:
+        return normalized, {"status": "not_needed", "repairs": []}
+    if any(
+        str(item.get("kind") or "").strip() == "node_output"
+        and str(item.get("ref") or "").strip() in consumer_refs
+        for index, step in enumerate(normalized)
+        if index != consumer_index
+        for item in inputs_of(step)
+    ):
+        return normalized, {"status": "not_needed", "repairs": []}
+    # A second helper for the source, even if it was not selected, makes
+    # transform order ambiguous and therefore remains unchanged.
+    if sum(
+        1
+        for step in normalized
+        if isinstance(step, dict)
+        and str(step.get("operation") or "").strip()
+        == "apply_pandas_function_case"
+        and str(step.get("source_alias") or "").strip() == source_alias
+    ) != 1:
+        return normalized, {"status": "not_needed", "repairs": []}
+
+    consumer["inputs"] = [{"kind": "node_output", "ref": helper_node_id}]
+    return normalized, {
+        "status": "applied",
+        "repairs": [
+            {
+                "source_alias": source_alias,
+                "function_case_key": str(selected_case.get("key") or "").strip(),
+                "function_name": str(selected_case.get("function_name") or "").strip(),
+                "helper_node_id": helper_node_id,
+                "consumer_node_id": str(consumer.get("node_id") or "").strip(),
+                "reason": "single_unconsumed_source_transform_before_terminal",
+            }
+        ],
+    }
+
+
 # 함수 설명: Domain Function Case가 선언한 공통 실행 순서에 따라 source filter를 helper 뒤 단계로 이동합니다.
 def _apply_function_case_execution_contracts(
     retrieval_jobs: list[dict[str, Any]],
@@ -16010,6 +18291,331 @@ def _apply_function_case_execution_contracts(
         normalized_condition,
         {"applied": applied},
     )
+
+
+# 함수 설명: 축약형 apply_filters 표현을 Typed executor가 소비하는 단일 filters 계약으로 정규화합니다.
+def _canonicalize_typed_filter_steps(
+    pandas_plan: list[Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Add a lossless ``filters`` mapping for one-field Typed filter steps.
+
+    Legacy plans often spell an ``apply_filters`` step as ``field`` /
+    ``operator`` /
+    ``value``.  The deterministic Typed executor consumes a mapping instead.
+    This adapter does not choose a field, operator, or value: it copies the
+    complete declared condition only when no mapping has already been given.
+    A populated mapping or an incomplete shorthand remains authoritative and
+    unchanged, preserving the established Complex/validation path.
+    """
+
+    normalized = deepcopy(pandas_plan)
+    changes: list[dict[str, Any]] = []
+    valueless_operators = {
+        "is_null",
+        "is_empty",
+        "null_or_empty",
+        "not_null",
+        "not_empty",
+        "not_blank",
+    }
+    for step in normalized:
+        if (
+            not isinstance(step, dict)
+            or str(step.get("operation") or "").strip() != "apply_filters"
+        ):
+            continue
+        existing_filters = step.get("filters")
+        if existing_filters not in (None, "", [], {}):
+            continue
+        field = str(step.get("field") or "").strip()
+        if not field:
+            continue
+        raw_condition = (
+            deepcopy(step.get("condition"))
+            if isinstance(step.get("condition"), dict)
+            else {}
+        )
+        raw_operator = str(
+            raw_condition.get("operator") or step.get("operator") or "eq"
+        ).strip()
+        operator = FILTER_OPERATOR_ALIASES.get(
+            raw_operator.lower().replace("-", "_"), raw_operator
+        )
+        if not operator:
+            continue
+        condition: dict[str, Any] = {"operator": operator}
+        if "values" in raw_condition:
+            condition["values"] = deepcopy(raw_condition["values"])
+        elif "value" in raw_condition:
+            condition["value"] = deepcopy(raw_condition["value"])
+        elif "values" in step:
+            condition["values"] = deepcopy(step["values"])
+        elif "value" in step:
+            condition["value"] = deepcopy(step["value"])
+        elif operator.strip().lower().replace("-", "_") not in valueless_operators:
+            continue
+        step["filters"] = {field: condition}
+        changes.append(
+            {
+                "node_id": str(step.get("node_id") or "").strip(),
+                "field": field,
+                "operator": operator,
+                "reason": "legacy_single_filter_shorthand",
+            }
+        )
+    return normalized, {
+        "status": "applied" if changes else "not_needed",
+        "changes": changes,
+    }
+
+
+# 함수 설명: Domain Function Case가 인증한 after-helper 순서에서만 누락된 Typed-DAG 연결을 복구합니다.
+def _reconcile_trusted_after_helper_execution_graph(
+    pandas_plan: list[Any],
+    function_cases: list[dict[str, Any]],
+    retrieval_jobs: list[dict[str, Any]],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Repair one unambiguous ``helper -> filter -> consumer`` typed chain.
+
+    A Function Case can require its source rows before ordinary filters run.
+    Weak intent output occasionally expresses that policy backwards: it gives
+    the helper one unresolved node-output input, then emits a loose filter
+    step, and finally consumes the helper's original output.  The policy is
+    trustworthy only when it comes from the selected Domain Function Case,
+    never from the model's step payload.  In that exact, linear shape this
+    helper restores the declared chain without inferring a business filter,
+    source, or branch:
+
+    ``external source -> Function Case -> declared filter -> next consumer``.
+
+    Anything with a competing producer, branch, helper, or explicit unrelated
+    input stays unchanged and is handled by the existing graph validator.
+    """
+
+    trusted_cases = [
+        item
+        for item in function_cases
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or "").strip()
+        and isinstance(item.get("execution_contract"), dict)
+        and str(
+            item["execution_contract"].get("source_filter_order") or ""
+        ).strip()
+        == "after_helper"
+    ]
+    source_aliases = {
+        str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+        for item in retrieval_jobs
+        if isinstance(item, dict)
+        and str(item.get("source_alias") or item.get("dataset_key") or "").strip()
+    }
+    if not trusted_cases or not source_aliases:
+        return pandas_plan, {"status": "not_needed", "repairs": []}
+
+    normalized = deepcopy(pandas_plan)
+    used_node_ids = {
+        str(item.get("node_id") or "").strip()
+        for item in normalized
+        if isinstance(item, dict) and str(item.get("node_id") or "").strip()
+    }
+    used_output_aliases = {
+        str(item.get("output_alias") or item.get("result_alias") or "").strip()
+        for item in normalized
+        if isinstance(item, dict)
+        and str(item.get("output_alias") or item.get("result_alias") or "").strip()
+    }
+
+    # 함수 설명: `unique_identifier()`는 Typed 노드/출력 alias가 기존 계획과 충돌하지 않게 생성합니다.
+    def unique_identifier(base: str, used: set[str]) -> str:
+        normalized_base = re.sub(r"[^0-9a-zA-Z_]+", "_", base).strip("_") or "step"
+        candidate = normalized_base
+        suffix = 2
+        while candidate in used:
+            candidate = f"{normalized_base}_{suffix}"
+            suffix += 1
+        used.add(candidate)
+        return candidate
+
+    # 함수 설명: 한 pandas 단계가 제공자로 노출하는 node 및 output 식별자를 수집합니다.
+    def step_identifiers(step: Any) -> set[str]:
+        if not isinstance(step, dict):
+            return set()
+        return {
+            str(value or "").strip()
+            for value in (
+                step.get("node_id"),
+                step.get("output_alias"),
+                step.get("result_alias"),
+            )
+            if str(value or "").strip()
+        }
+
+    declared_providers = {
+        identifier
+        for step in normalized
+        for identifier in step_identifiers(step)
+    }
+    repairs: list[dict[str, Any]] = []
+
+    for case in trusted_cases:
+        source_alias = str(case.get("source_alias") or "").strip()
+        if source_alias not in source_aliases:
+            continue
+        matching_helpers = [
+            index
+            for index, step in enumerate(normalized)
+            if isinstance(step, dict)
+            and str(step.get("operation") or "").strip()
+            == "apply_pandas_function_case"
+            and _function_step_matches_case(step, case)
+        ]
+        if len(matching_helpers) != 1:
+            continue
+        helper_index = matching_helpers[0]
+        helper = normalized[helper_index]
+        helper_node_id = str(helper.get("node_id") or "").strip()
+        if not helper_node_id:
+            # `_ensure_function_case_steps()` normally creates this already.
+            # Retain the no-guess policy if this invariant was not met.
+            continue
+        helper_identifiers = step_identifiers(helper)
+        if not helper_identifiers:
+            continue
+
+        helper_inputs = (
+            helper.get("inputs") if isinstance(helper.get("inputs"), list) else []
+        )
+        dangling_inputs = [
+            str(item.get("ref") or "").strip()
+            for item in helper_inputs
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "node_output"
+            and str(item.get("ref") or "").strip()
+            and str(item.get("ref") or "").strip() not in declared_providers
+            and str(item.get("ref") or "").strip() not in source_aliases
+        ]
+        has_trusted_source_input = (
+            len(helper_inputs) == 1
+            and isinstance(helper_inputs[0], dict)
+            and str(helper_inputs[0].get("kind") or "").strip()
+            == "external_source"
+            and str(helper_inputs[0].get("ref") or "").strip() == source_alias
+        )
+        repair_dangling_input = len(helper_inputs) == 1 and len(dangling_inputs) == 1
+        if not has_trusted_source_input and not repair_dangling_input:
+            continue
+
+        # `_apply_function_case_execution_contracts()` has already moved the
+        # Domain-owned filters directly after the helper.  Only this contiguous
+        # linear segment can be made into a Typed chain without guessing a
+        # branch or inventing a business predicate.
+        filter_indexes: list[int] = []
+        for index in range(helper_index + 1, len(normalized)):
+            step = normalized[index]
+            if (
+                isinstance(step, dict)
+                and str(step.get("operation") or "").strip() == "apply_filters"
+                and str(step.get("source_alias") or "").strip() == source_alias
+                and any(
+                    step.get(key) not in (None, "", [], {})
+                    for key in ("field", "filters", "condition", "value", "values", "operator")
+                )
+            ):
+                filter_indexes.append(index)
+                continue
+            break
+        if not filter_indexes:
+            continue
+
+        consumer_index = filter_indexes[-1] + 1
+        if consumer_index >= len(normalized) or not isinstance(
+            normalized[consumer_index], dict
+        ):
+            continue
+        consumer = normalized[consumer_index]
+        consumer_inputs = (
+            consumer.get("inputs") if isinstance(consumer.get("inputs"), list) else []
+        )
+        if len(consumer_inputs) != 1 or not isinstance(consumer_inputs[0], dict):
+            continue
+        consumer_input = consumer_inputs[0]
+        if (
+            str(consumer_input.get("kind") or "").strip() != "node_output"
+            or str(consumer_input.get("ref") or "").strip()
+            not in helper_identifiers
+        ):
+            continue
+
+        previous_node_id = helper_node_id
+        chain_is_safe = True
+        for filter_index in filter_indexes:
+            filter_step = normalized[filter_index]
+            filter_inputs = (
+                filter_step.get("inputs")
+                if isinstance(filter_step.get("inputs"), list)
+                else []
+            )
+            if filter_inputs:
+                if len(filter_inputs) != 1 or not isinstance(filter_inputs[0], dict):
+                    chain_is_safe = False
+                    break
+                filter_input = filter_inputs[0]
+                filter_kind = str(filter_input.get("kind") or "").strip()
+                filter_ref = str(filter_input.get("ref") or "").strip()
+                if not (
+                    (filter_kind == "external_source" and filter_ref == source_alias)
+                    or (filter_kind == "node_output" and filter_ref == previous_node_id)
+                ):
+                    chain_is_safe = False
+                    break
+            filter_node_id = str(filter_step.get("node_id") or "").strip()
+            if not filter_node_id:
+                filter_node_id = unique_identifier(
+                    f"{helper_node_id}_after_filter",
+                    used_node_ids,
+                )
+                filter_step["node_id"] = filter_node_id
+            previous_node_id = filter_node_id
+        if not chain_is_safe:
+            continue
+
+        if repair_dangling_input:
+            helper["inputs"] = [{"kind": "external_source", "ref": source_alias}]
+        previous_node_id = helper_node_id
+        filter_node_ids: list[str] = []
+        for sequence, filter_index in enumerate(filter_indexes, start=1):
+            filter_step = normalized[filter_index]
+            filter_node_id = str(filter_step.get("node_id") or "").strip()
+            filter_step["inputs"] = [
+                {"kind": "node_output", "ref": previous_node_id}
+            ]
+            if not str(filter_step.get("output_alias") or filter_step.get("result_alias") or "").strip():
+                filter_step["output_alias"] = unique_identifier(
+                    f"{helper_node_id}_after_filter_{sequence}_output",
+                    used_output_aliases,
+                )
+            previous_node_id = filter_node_id
+            filter_node_ids.append(filter_node_id)
+        consumer["inputs"] = [{"kind": "node_output", "ref": previous_node_id}]
+        repairs.append(
+            {
+                "function_case_key": str(case.get("key") or "").strip(),
+                "function_name": str(case.get("function_name") or "").strip(),
+                "source_alias": source_alias,
+                "helper_node_id": helper_node_id,
+                "repaired_unresolved_helper_input": dangling_inputs[0]
+                if repair_dangling_input
+                else "",
+                "after_filter_node_ids": filter_node_ids,
+                "consumer_node_id": str(consumer.get("node_id") or "").strip(),
+                "reason": "trusted_after_helper_linear_chain",
+            }
+        )
+
+    return normalized, {
+        "status": "applied" if repairs else "not_needed",
+        "repairs": repairs,
+    }
 
 
 # 함수 설명: 조회·effective filter 구조를 helper 뒤에서 실행할 명시적 apply_filters 단계로 바꿉니다.

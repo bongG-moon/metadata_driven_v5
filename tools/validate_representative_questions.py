@@ -369,7 +369,7 @@ def summarize_validation_result(
     return json_safe(result)
 
 
-def representative_cases() -> list[dict[str, Any]]:
+def _legacy_representative_cases() -> list[dict[str, Any]]:
     return [
         case(
             1,
@@ -895,6 +895,336 @@ def representative_cases() -> list[dict[str, Any]]:
     ]
 
 
+def representative_cases() -> list[dict[str, Any]]:
+    """Return the current 25 operational questions plus six unrelated legacy checks.
+
+    The fixture plans are intentionally explicit test inputs.  They verify that
+    the dummy sources can answer each representative question; they do not
+    become production routing or Domain rules.
+    """
+
+    legacy_by_id = {int(item["id"]): item for item in _legacy_representative_cases()}
+    retained: list[dict[str, Any]] = []
+    for new_id, legacy_id in ((26, 7), (27, 10), (28, 11), (29, 12), (30, 21), (31, 22)):
+        item = deepcopy(legacy_by_id[legacy_id])
+        item["id"] = new_id
+        retained.append(item)
+    # The first retained question is also used as a multi-turn fixture, so its
+    # original wording stays unchanged.  Correct the two display-only labels
+    # that were historically written without the D/A slash.
+    retained[1]["question"] = "6/24일 투입 실적 대비 D/S1, D/A1공정에서 WIP 많은 제품 알려줘"
+    retained[2]["question"] = "현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘"
+
+    return [
+        case(
+            1,
+            "FCB공정 R0429 RECIPE의 UPH알려줘",
+            "fcb_recipe_uph",
+            [job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("FCB1"), "RECIPE_ID": eq("R0429")})],
+            "df = sources['uph_data'].copy()\nresult = df[['OPER_NAME', 'RECIPE_ID', 'UPH']].sort_values(['OPER_NAME', 'RECIPE_ID'])",
+            ["OPER_NAME", "RECIPE_ID", "UPH"],
+            expected_row_count=1,
+            expected_first_row={"OPER_NAME": "FCB1", "RECIPE_ID": "R0429", "UPH": 154.2},
+        ),
+        case(
+            2,
+            "M/D공정 LEAD별 장비 ASSIGN 댓수와 UPH알려줘",
+            "md_equipment_assign_count_and_uph_by_lead",
+            [
+                job("equipment_assign", "assign_data", filters={"OPER_NAME": eq("M/D")}),
+                job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("M/D")}),
+            ],
+            (
+                "join_keys = ['EQP_MODEL', 'RECIPE_ID', 'OPER_NAME']\n"
+                "assign = sources['assign_data'].copy()\n"
+                "uph = sources['uph_data'][join_keys + ['UPH']].copy()\n"
+                "merged = assign.merge(uph, on=join_keys, how='left', validate='one_to_one')\n"
+                "result = merged.groupby('LEAD', as_index=False).agg(ASSIGN_COUNT=('EQP_ID', 'nunique'), AVG_UPH=('UPH', 'mean')).sort_values('LEAD')"
+            ),
+            ["LEAD", "ASSIGN_COUNT", "AVG_UPH"],
+            expected_rows=[{"LEAD": "78", "ASSIGN_COUNT": 2}, {"LEAD": "267", "ASSIGN_COUNT": 1}],
+        ),
+        case(
+            3,
+            "SBM공정 제품별 보유Capa 알려줘",
+            "sbm_available_capacity_by_product",
+            [
+                job("equipment_assign", "assign_data", filters={"OPER_NAME": eq("SBM")}),
+                job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("SBM")}),
+            ],
+            _capacity_by_product_code("assign_data", "uph_data"),
+            [*TARGET_PRODUCT_KEYS, "EQP_COUNT", "AVG_UPH", "AVAILABLE_CAPA"],
+            min_rows=2,
+            expected_rows=[{"LEAD": "200", "EQP_COUNT": 1, "AVAILABLE_CAPA": 3024.0}],
+        ),
+        case(
+            4,
+            "D/A공정 78LEAD 제품별 장비현황과 CAPA 알려줘",
+            "da_lead_78_equipment_status_and_capacity",
+            [
+                job("equipment_assign", "assign_data", filters={"OPER_NAME": in_values(DA_PROCESSES), "LEAD": eq("78")}),
+                job("eqp_uph", "uph_data", filters={"OPER_NAME": in_values(DA_PROCESSES), "LEAD": eq("78")}),
+            ],
+            _capacity_by_equipment_code("assign_data", "uph_data"),
+            ["OPER_NAME", "EQP_ID", "EQP_MODEL", "RECIPE_ID", "LEAD", "UPH", "AVAILABLE_CAPA"],
+            min_rows=2,
+            expected_rows=[{"EQP_ID": "EQP-DA78-A", "LEAD": "78", "AVAILABLE_CAPA": 3312.0}],
+        ),
+        case(
+            5,
+            "현재 SBM공정 Down장비들 Event 알려줘",
+            "sbm_current_down_equipment_events",
+            [job("eqp_down_list", "down_data", "20260701", {"OPER_NAME": eq("SBM"), "EQP_STAT_CD": eq("DOWN")})],
+            "df = sources['down_data'].copy()\nresult = df[['EQP_ID', 'OPER_NAME', 'DOWN_TM', 'LAST_EVENT_DESC', 'HIST_DESC']].sort_values('EQP_ID')",
+            ["EQP_ID", "OPER_NAME", "DOWN_TM", "LAST_EVENT_DESC", "HIST_DESC"],
+            expected_row_count=1,
+            expected_first_row={"EQP_ID": "EQP-SBM-DOWN-01", "OPER_NAME": "SBM"},
+        ),
+        case(
+            6,
+            "SBM공정 현재 보유재공중 266LEAD 제품의 LOT LIST 알려줘",
+            "sbm_lead_266_lot_list",
+            [job("lot_status", "lot_data", filters={"OPER_NAME": eq("SBM"), "LEAD": eq("266")})],
+            "df = sources['lot_data'].copy()\nresult = df[['LOT_ID', 'OPER_NAME', 'LEAD', 'MCP_NO', 'LOT_STAT']].drop_duplicates().sort_values('LOT_ID')",
+            ["LOT_ID", "OPER_NAME", "LEAD", "MCP_NO", "LOT_STAT"],
+            expected_row_count=2,
+            expected_rows=[{"LOT_ID": "SBM-266-LOT-01"}, {"LOT_ID": "SBM-266-LOT-02"}],
+        ),
+        case(
+            7,
+            "WSD 공정 L-085 제품 몇 Lot 보유 하고 있는지 알려줘",
+            "wsd_l085_distinct_lot_count",
+            [job("lot_status", "lot_data", filters={"OPER_NAME": in_values(["WSD1", "WSD2"]), "MCP_NO": {"operator": "contains", "value": "L-085"}})],
+            "df = sources['lot_data'].copy()\nresult = df.groupby('MCP_NO', as_index=False).agg(LOT_COUNT=('LOT_ID', 'nunique')).sort_values('MCP_NO')",
+            ["MCP_NO", "LOT_COUNT"],
+            expected_row_count=1,
+            expected_first_row={"MCP_NO": "L-085A1", "LOT_COUNT": 2},
+        ),
+        case(
+            8,
+            "16G SP FCBGA SDP 78 제품 S/G 공정 UPH 확인 해줘",
+            "sg_sp_16g_fcbga_sdp_78_uph",
+            [job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("S/G")})],
+            (
+                "df = sources['uph_data'].copy()\n"
+                "df = df[(df['TECH'].eq('SP')) & (df['DEN'].eq('16G')) & (df['PKG_TYPE1'].eq('FCBGA')) & (df['PKG_TYPE2'].eq('SDP')) & (df['LEAD'].astype(str).eq('78'))]\n"
+                "result = df[['OPER_NAME', 'EQP_MODEL', 'RECIPE_ID', 'UPH']].sort_values('RECIPE_ID')"
+            ),
+            ["OPER_NAME", "EQP_MODEL", "RECIPE_ID", "UPH"],
+            expected_row_count=1,
+            expected_first_row={"OPER_NAME": "S/G", "RECIPE_ID": "RCP-SG-78-A", "UPH": 151.0},
+        ),
+        case(
+            9,
+            "8월19일 제품별 out계획 알려줘. 단, out계획이 0인 제품은 제외 해줘",
+            "august_19_product_out_plan_excluding_zero",
+            [job("target", "target_data", "2026-08-19")],
+            (
+                "df = sources['target_data'].copy()\n"
+                "df = df[df['DATE'].astype(str).eq('2026-08-19')].copy()\n"
+                "df['OUT_PLAN'] = pd.to_numeric(df['OUT_PLAN'], errors='coerce').fillna(0)\n"
+                "result = df[df['OUT_PLAN'].gt(0)][['TECH', 'DEN', 'MODE', 'PKG_TYPE1', 'PKG_TYPE2', 'LEAD', 'MCP_NO', 'OUT_PLAN']].sort_values('OUT_PLAN', ascending=False)"
+            ),
+            [*TARGET_PRODUCT_KEYS, "OUT_PLAN"],
+            min_rows=1,
+            forbidden_values={"MCP_NO": ["OUT-ZERO"]},
+        ),
+        ordered_range_case(
+            10,
+            "D/A1~W/B6 공정 IN TAT 1일 이상된 LOT LIST 알려줘",
+            "ordered_process_range_lot_in_tat_one_day",
+            "D/A1~W/B6",
+            "lot_data",
+            [job("lot_status", "lot_data")],
+            (
+                "df = filter_ordered_range('D/A1~W/B6', sources['lot_data']).copy()\n"
+                "df['IN_TAT'] = pd.to_numeric(df['IN_TAT'], errors='coerce')\n"
+                "result = df[df['IN_TAT'].ge(24)][['LOT_ID', 'OPER_NAME', 'IN_TAT']].sort_values(['OPER_NAME', 'LOT_ID'])"
+            ),
+            ["LOT_ID", "OPER_NAME", "IN_TAT"],
+            expected_rows=[{"LOT_ID": "RANGE-DA1-24H", "IN_TAT": 24.0}, {"LOT_ID": "RANGE-WB6-36H", "IN_TAT": 36.0}],
+            forbidden_values={"LOT_ID": ["RANGE-WB4-UNDER-24H"]},
+        ),
+        case(
+            11,
+            "DA, PCO, DI 공정 HOLD LOT 알려줘",
+            "da_pco_di_hold_lots",
+            [job("lot_status", "lot_data", filters={"OPER_NAME": in_values([*DA_PROCESSES, "PCO1", "D/I"]), "HOLD_STAT": eq("OnHold")})],
+            "df = sources['lot_data'].copy()\nresult = df[['LOT_ID', 'OPER_NAME', 'HOLD_REASON']].sort_values(['OPER_NAME', 'LOT_ID'])",
+            ["LOT_ID", "OPER_NAME", "HOLD_REASON"],
+            expected_rows=[{"LOT_ID": "HOLD-DA1-01"}, {"LOT_ID": "HOLD-PCO1-01"}, {"LOT_ID": "HOLD-DI-01"}],
+        ),
+        case(
+            12,
+            "어제 L-267제품 OUT계획, PKG OUT 실적 알려줘",
+            "yesterday_l267_out_plan_and_pkg_out_actual",
+            [
+                job("target", "target_data", "2026-06-30"),
+                job("production", "pkg_out_data", "20260630", {"OPER_NAME": eq("PKG OUT"), "MCP_NO": eq("L-267A1")}),
+            ],
+            _target_and_production_code("target_data", "pkg_out_data", target_date="2026-06-30", mcp_no="L-267A1"),
+            [*TARGET_PRODUCT_KEYS, "OUT_PLAN", "PKG_OUT_QTY"],
+            expected_rows=[{"MCP_NO": "L-267A1", "PKG_OUT_QTY": 735}],
+        ),
+        case(
+            13,
+            "어제 제품별 OUT 계획과 PKG OUT",
+            "yesterday_product_out_plan_and_pkg_out_actual",
+            [
+                job("target", "target_data", "2026-06-30"),
+                job("production", "pkg_out_data", "20260630", {"OPER_NAME": eq("PKG OUT")}),
+            ],
+            _target_and_production_code("target_data", "pkg_out_data", target_date="2026-06-30"),
+            [*TARGET_PRODUCT_KEYS, "OUT_PLAN", "PKG_OUT_QTY"],
+            min_rows=1,
+            expected_rows=[{"MCP_NO": "L-267A1", "PKG_OUT_QTY": 735}],
+        ),
+        case(
+            14,
+            "TSSJQ07AH LOT Hold 이력 조회해줘",
+            "hold_history_by_lot_id",
+            [job("hold_history", "history_data", required_params={"LOT_ID": "TSSJQ07AH"})],
+            "df = sources['history_data'].copy()\nresult = df[['LOT_ID', 'OPER_NAME', 'HOLD_TM', 'HOLD_CD', 'HOLD_DESC']].sort_values('HOLD_TM')",
+            ["LOT_ID", "OPER_NAME", "HOLD_TM", "HOLD_CD", "HOLD_DESC"],
+            expected_row_count=2,
+            expected_rows=[{"HOLD_CD": "H-TSS-001"}, {"HOLD_CD": "H-TSS-002"}],
+        ),
+        case(
+            15,
+            "FCB공정 오늘 아침재공 제품별로 알려줘",
+            "fcb_product_boh_wip",
+            [job("wip", "wip_data", "20260630", {"OPER_NAME": in_values(FCB_PROCESSES)})],
+            code_group_sum("wip_data", PRODUCT_KEYS, "WIP", "BOH_WIP"),
+            [*PRODUCT_KEYS, "BOH_WIP"],
+            min_rows=1,
+        ),
+        case(
+            16,
+            "오늘 PKG 투입계획 있는 제품들에 대해 INPUT실적 알려줘",
+            "today_planned_products_input_actual",
+            [
+                job("target", "target_data", "2026-07-01"),
+                job("production_today", "input_data", "20260701", {"OPER_NAME": eq("INPUT")}),
+            ],
+            _target_and_input_code("target_data", "input_data", target_date="2026-07-01"),
+            [*TARGET_PRODUCT_KEYS, "INPUT_PLAN", "INPUT_QTY"],
+            min_rows=1,
+        ),
+        case(
+            17,
+            "W/B공정 차수별 오늘 아침 재공 알려줘",
+            "wb_stage_today_boh_wip",
+            [job("wip", "wip_data", "20260630", {"OPER_NAME": in_values(WB_PROCESSES)})],
+            "df = sources['wip_data'].copy()\nresult = df.groupby('OPER_NAME', as_index=False)['WIP'].sum().rename(columns={'WIP': 'BOH_WIP'}).sort_values('OPER_NAME')",
+            ["OPER_NAME", "BOH_WIP"],
+            min_rows=6,
+        ),
+        case(
+            18,
+            "S/G공정 제품별 오늘 아침 재공 알려줘",
+            "sg_product_today_boh_wip",
+            [job("wip", "wip_data", "20260630", {"OPER_NAME": eq("S/G")})],
+            code_group_sum("wip_data", PRODUCT_KEYS, "WIP", "BOH_WIP"),
+            [*PRODUCT_KEYS, "BOH_WIP"],
+            expected_rows=[{"DEVICE": "DEV-SP-SG-78", "BOH_WIP": 88}],
+        ),
+        case(
+            19,
+            "W/B공정 차수별 현재 생산실적과 재공현황 알려줘",
+            "wb_stage_current_production_and_wip",
+            [
+                job("production_today", "production_data", "20260701", {"OPER_NAME": in_values(WB_PROCESSES)}),
+                job("wip_today", "wip_data", "20260701", {"OPER_NAME": in_values(WB_PROCESSES)}),
+            ],
+            _production_and_wip_by_grain_code("production_data", "wip_data", ["OPER_NAME"]),
+            ["OPER_NAME", "PRODUCTION_QTY", "WIP_QTY"],
+            min_rows=6,
+        ),
+        case(
+            20,
+            "S/G공정 제품별 현재 생산실적과 재공현황 알려줘",
+            "sg_product_current_production_and_wip",
+            [
+                job("production_today", "production_data", "20260701", {"OPER_NAME": eq("S/G")}),
+                job("wip_today", "wip_data", "20260701", {"OPER_NAME": eq("S/G")}),
+            ],
+            _production_and_wip_by_grain_code("production_data", "wip_data", PRODUCT_KEYS),
+            [*PRODUCT_KEYS, "PRODUCTION_QTY", "WIP_QTY"],
+            expected_rows=[{"DEVICE": "DEV-SP-SG-78", "PRODUCTION_QTY": 468, "WIP_QTY": 96}],
+        ),
+        case(
+            21,
+            "SBM공정 제품별 어제 아침재공과 생산실적 그리고 오늘 아침재공 알려줘",
+            "sbm_product_yesterday_boh_production_today_boh",
+            [
+                job("wip", "boh_yesterday_data", "20260629", {"OPER_NAME": eq("SBM")}),
+                job("production", "production_yesterday_data", "20260630", {"OPER_NAME": eq("SBM")}),
+                job("wip", "boh_today_data", "20260630", {"OPER_NAME": eq("SBM")}),
+            ],
+            _three_way_boh_production_code("boh_yesterday_data", "production_yesterday_data", "boh_today_data"),
+            [*TARGET_PRODUCT_KEYS, "BOH_YESTERDAY", "PRODUCTION_YESTERDAY", "BOH_TODAY"],
+            min_rows=1,
+        ),
+        case(
+            22,
+            "DA공정 L-217제품 Assign 장비별 현재 가동율현황 조회해줘",
+            "da_l217_assigned_equipment_utilization",
+            [
+                job("equipment_assign", "assign_data", filters={"OPER_NAME": in_values(DA_PROCESSES), "MCP_NO": eq("L-217K9B")}),
+                job("eqp_utilization_today", "utilization_data", "20260701", {"OPER_NAME": in_values(DA_PROCESSES), "MCP_NO": eq("L-217K9B")}),
+            ],
+            (
+                "assign = sources['assign_data'].copy()\n"
+                "util = sources['utilization_data'][['EQP_ID', 'UTILIZATION_RATE', 'CURRENT_PRODUCT', 'EQP_STATUS']].copy()\n"
+                "result = assign.merge(util, on='EQP_ID', how='left', validate='one_to_one')[['EQP_ID', 'OPER_NAME', 'MCP_NO', 'CURRENT_PRODUCT', 'UTILIZATION_RATE', 'EQP_STATUS']].sort_values('EQP_ID')"
+            ),
+            ["EQP_ID", "OPER_NAME", "MCP_NO", "CURRENT_PRODUCT", "UTILIZATION_RATE", "EQP_STATUS"],
+            expected_rows=[{"EQP_ID": "EQP-DA217-A", "UTILIZATION_RATE": 86.5}],
+        ),
+        case(
+            23,
+            "D/A공정 장비들 현재 작업제품들과 가동율현황 조회해줘",
+            "da_current_equipment_product_and_utilization",
+            [job("eqp_utilization_today", "utilization_data", "20260701", {"OPER_NAME": in_values(DA_PROCESSES)})],
+            "df = sources['utilization_data'].copy()\nresult = df[['EQP_ID', 'EQP_MODEL', 'OPER_NAME', 'CURRENT_PRODUCT', 'UTILIZATION_RATE', 'EQP_STATUS']].sort_values('EQP_ID')",
+            ["EQP_ID", "EQP_MODEL", "OPER_NAME", "CURRENT_PRODUCT", "UTILIZATION_RATE", "EQP_STATUS"],
+            min_rows=3,
+            expected_rows=[{"EQP_ID": "D724", "UTILIZATION_RATE": 64.0}],
+        ),
+        case(
+            24,
+            "D724장비 현재 가동율과 Event History 조회해줘",
+            "equipment_utilization_and_event_history",
+            [
+                job("eqp_utilization_today", "utilization_data", "20260701", {"EQP_ID": eq("D724")}),
+                job("eqp_history_today", "event_data", "20260701", {"EQP_ID": eq("D724")}),
+            ],
+            (
+                "util = sources['utilization_data'][['EQP_ID', 'OPER_NAME', 'UTILIZATION_RATE', 'CURRENT_PRODUCT']].drop_duplicates()\n"
+                "events = sources['event_data'][['EQP_ID', 'EVENT_TM', 'EVENT_CODE', 'EVENT_DESC', 'HIST_DESC']]\n"
+                "result = util.merge(events, on='EQP_ID', how='left', validate='one_to_many').sort_values('EVENT_TM', ascending=False)"
+            ),
+            ["EQP_ID", "OPER_NAME", "UTILIZATION_RATE", "CURRENT_PRODUCT", "EVENT_TM", "EVENT_CODE", "EVENT_DESC", "HIST_DESC"],
+            expected_rows=[{"EQP_ID": "D724", "EVENT_CODE": "RUN-START"}],
+        ),
+        case(
+            25,
+            "W/B공정 1일이상 Down된 장비 List와 Down시간, Down발생사유 알려줘",
+            "wb_equipment_down_at_least_one_day",
+            [job("eqp_down_list", "down_data", "20260701", {"OPER_NAME": in_values(WB_PROCESSES), "DOWN_TM": {"operator": "ge", "value": 24}})],
+            (
+                "df = sources['down_data'].copy()\n"
+                "df['DOWN_TM'] = pd.to_numeric(df['DOWN_TM'], errors='coerce')\n"
+                "result = df[df['DOWN_TM'].ge(24)][['EQP_ID', 'OPER_NAME', 'DOWN_TM', 'LAST_EVENT_DESC', 'HIST_DESC']].sort_values(['DOWN_TM', 'EQP_ID'], ascending=[False, True])"
+            ),
+            ["EQP_ID", "OPER_NAME", "DOWN_TM", "LAST_EVENT_DESC", "HIST_DESC"],
+            expected_rows=[{"EQP_ID": "EQP-WB-DOWN-26H", "DOWN_TM": 26.0}, {"EQP_ID": "EQP-WB-DOWN-24H", "DOWN_TM": 24.0}],
+            forbidden_values={"EQP_ID": ["EQP-WB-DOWN-12H"]},
+        ),
+        *retained,
+    ]
+
+
 def case(
     case_id: int,
     question: str,
@@ -1037,7 +1367,15 @@ def job(
     params = deepcopy(required_params or {})
     pandas_filters = deepcopy(filters or {})
     if date:
-        if dataset_key in {"production_today", "production", "wip_today", "wip"}:
+        if dataset_key in {
+            "production_today",
+            "production",
+            "wip_today",
+            "wip",
+            "eqp_down_list",
+            "eqp_utilization_today",
+            "eqp_history_today",
+        }:
             params.setdefault("DATE", date)
         else:
             pandas_filters.setdefault("DATE", eq(date))
@@ -1062,6 +1400,99 @@ def code_group_sum(alias: str, keys: list[str], value_column: str, output_column
     return (
         f"result = sources[{alias!r}].groupby({keys!r}, as_index=False)[{value_column!r}].sum()"
         f".rename(columns={{{value_column!r}: {output_column!r}}})"
+    )
+
+
+def _capacity_by_product_code(assign_alias: str, uph_alias: str) -> str:
+    """Build a validation-only CAPA calculation after the trusted join keys."""
+
+    join_keys = ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"]
+    return (
+        f"join_keys = {join_keys!r}\n"
+        f"assign = sources[{assign_alias!r}].copy()\n"
+        f"uph = sources[{uph_alias!r}][join_keys + ['UPH']].copy()\n"
+        "merged = assign.merge(uph, on=join_keys, how='left', validate='one_to_one')\n"
+        f"result = merged.groupby({TARGET_PRODUCT_KEYS!r}, dropna=False, as_index=False).agg(EQP_COUNT=('EQP_ID', 'nunique'), AVG_UPH=('UPH', 'mean'))\n"
+        "result['AVAILABLE_CAPA'] = (result['EQP_COUNT'] * result['AVG_UPH'] * 24).round(2)\n"
+        "result = result.sort_values(['TECH', 'LEAD', 'MCP_NO'])"
+    )
+
+
+def _capacity_by_equipment_code(assign_alias: str, uph_alias: str) -> str:
+    join_keys = ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"]
+    return (
+        f"join_keys = {join_keys!r}\n"
+        f"assign = sources[{assign_alias!r}].copy()\n"
+        f"uph = sources[{uph_alias!r}][join_keys + ['UPH']].copy()\n"
+        "result = assign.merge(uph, on=join_keys, how='left', validate='one_to_one')\n"
+        "result['AVAILABLE_CAPA'] = (result['UPH'] * 24).round(2)\n"
+        "result = result[['OPER_NAME', 'EQP_ID', 'EQP_MODEL', 'RECIPE_ID', 'LEAD', 'UPH', 'AVAILABLE_CAPA']].sort_values(['OPER_NAME', 'EQP_ID'])"
+    )
+
+
+def _target_and_production_code(
+    target_alias: str,
+    production_alias: str,
+    *,
+    target_date: str,
+    mcp_no: str = "",
+) -> str:
+    extra_filter = (
+        f"\ntarget = target[target['MCP_NO'].astype(str).eq({mcp_no!r})]\n"
+        f"prod = prod[prod['MCP_NO'].astype(str).eq({mcp_no!r})]"
+        if mcp_no
+        else ""
+    )
+    return (
+        f"keys = {TARGET_PRODUCT_KEYS!r}\n"
+        f"target = sources[{target_alias!r}].copy()\n"
+        f"target = target[target['DATE'].astype(str).eq({target_date!r})]\n"
+        f"prod = sources[{production_alias!r}].copy()"
+        f"{extra_filter}\n"
+        "target = target.groupby(keys, dropna=False, as_index=False)['OUT_PLAN'].sum()\n"
+        "prod = prod.groupby(keys, dropna=False, as_index=False)['PRODUCTION'].sum().rename(columns={'PRODUCTION': 'PKG_OUT_QTY'})\n"
+        "result = target.merge(prod, on=keys, how='left')\n"
+        "result['PKG_OUT_QTY'] = result['PKG_OUT_QTY'].fillna(0)\n"
+        "result = result.sort_values(['OUT_PLAN', 'MCP_NO'], ascending=[False, True])"
+    )
+
+
+def _target_and_input_code(target_alias: str, input_alias: str, *, target_date: str) -> str:
+    return (
+        f"keys = {TARGET_PRODUCT_KEYS!r}\n"
+        f"target = sources[{target_alias!r}].copy()\n"
+        f"target = target[target['DATE'].astype(str).eq({target_date!r})].copy()\n"
+        "target['INPUT_PLAN'] = pd.to_numeric(target['INPUT_PLAN'], errors='coerce').fillna(0)\n"
+        "target = target[target['INPUT_PLAN'].gt(0)].groupby(keys, dropna=False, as_index=False)['INPUT_PLAN'].sum()\n"
+        f"actual = sources[{input_alias!r}].groupby(keys, dropna=False, as_index=False)['PRODUCTION'].sum().rename(columns={{'PRODUCTION': 'INPUT_QTY'}})\n"
+        "result = target.merge(actual, on=keys, how='left')\n"
+        "result['INPUT_QTY'] = result['INPUT_QTY'].fillna(0)\n"
+        "result = result.sort_values(['INPUT_PLAN', 'MCP_NO'], ascending=[False, True])"
+    )
+
+
+def _production_and_wip_by_grain_code(production_alias: str, wip_alias: str, grain: list[str]) -> str:
+    return (
+        f"grain = {grain!r}\n"
+        f"prod = sources[{production_alias!r}].groupby(grain, dropna=False, as_index=False)['PRODUCTION'].sum().rename(columns={{'PRODUCTION': 'PRODUCTION_QTY'}})\n"
+        f"wip = sources[{wip_alias!r}].groupby(grain, dropna=False, as_index=False)['WIP'].sum().rename(columns={{'WIP': 'WIP_QTY'}})\n"
+        "result = prod.merge(wip, on=grain, how='outer')\n"
+        "result['PRODUCTION_QTY'] = result['PRODUCTION_QTY'].fillna(0)\n"
+        "result['WIP_QTY'] = result['WIP_QTY'].fillna(0)\n"
+        "result = result.sort_values(grain)"
+    )
+
+
+def _three_way_boh_production_code(boh_yesterday_alias: str, production_alias: str, boh_today_alias: str) -> str:
+    return (
+        f"keys = {TARGET_PRODUCT_KEYS!r}\n"
+        f"boh_yesterday = sources[{boh_yesterday_alias!r}].groupby(keys, dropna=False, as_index=False)['WIP'].sum().rename(columns={{'WIP': 'BOH_YESTERDAY'}})\n"
+        f"production = sources[{production_alias!r}].groupby(keys, dropna=False, as_index=False)['PRODUCTION'].sum().rename(columns={{'PRODUCTION': 'PRODUCTION_YESTERDAY'}})\n"
+        f"boh_today = sources[{boh_today_alias!r}].groupby(keys, dropna=False, as_index=False)['WIP'].sum().rename(columns={{'WIP': 'BOH_TODAY'}})\n"
+        "result = boh_yesterday.merge(production, on=keys, how='outer').merge(boh_today, on=keys, how='outer')\n"
+        "for column in ['BOH_YESTERDAY', 'PRODUCTION_YESTERDAY', 'BOH_TODAY']:\n"
+        "    result[column] = result[column].fillna(0)\n"
+        "result = result.sort_values(keys)"
     )
 
 
@@ -1150,17 +1581,92 @@ def validation_catalog(case: dict[str, Any]) -> dict[str, Any]:
         if not dataset_key or dataset_key in seen:
             continue
         seen.add(dataset_key)
-        required_param_names = ["DATE"] if dataset_key in {"production_today", "production", "wip_today", "wip"} else []
+        required_param_names = ["DATE"] if dataset_key in {
+            "production_today",
+            "production",
+            "wip_today",
+            "wip",
+            "eqp_down_list",
+            "eqp_utilization_today",
+            "eqp_history_today",
+        } else []
         query_template = "SELECT * FROM DUMMY"
         if required_param_names:
             predicates = " AND ".join(f"{name} = {{{name}}}" for name in required_param_names)
             query_template = f"SELECT * FROM DUMMY WHERE {predicates}"
         if dataset_key == "target":
-            filter_mappings = {"DATE": ["DATE"], "INPUT_PLAN_QTY": ["INPUT 계획"], "OUT_PLAN_QTY": ["OUT 계획"]}
+            # Keep the validation catalog aligned with the product grain used
+            # by the representative reconciliation questions.  These are
+            # canonical mappings for the synthetic target source, not a new
+            # production metadata contract.
+            filter_mappings = {
+                "DATE": ["DATE"],
+                "TECH": ["TECH"],
+                "DEN": ["DEN"],
+                "MODE": ["MODE"],
+                "ORG": ["ORG"],
+                "PKG_TYPE1": ["PKG_TYPE1"],
+                "PKG_TYPE2": ["PKG_TYPE2"],
+                "LEAD": ["LEAD"],
+                "MCP_NO": ["MCP_NO"],
+                "INPUT_PLAN_QTY": ["INPUT 계획"],
+                "OUT_PLAN_QTY": ["OUT 계획"],
+            }
         elif dataset_key == "eqp_uph":
-            filter_mappings = {"EQP_MODEL": ["EQUIP_MODEL"], "OPER_NAME": ["OPER_NAME"], "UPH": ["UPH"]}
+            filter_mappings = {
+                "EQP_MODEL": ["EQUIP_MODEL"],
+                "OPER_NAME": ["OPER_NAME"],
+                "RECIPE_ID": ["RECIPE_ID"],
+                "LEAD": ["LEAD"],
+                "MCP_NO": ["MCP_NO"],
+                "UPH": ["UPH"],
+            }
         elif dataset_key == "equipment_assign":
-            filter_mappings = {"EQP_ID": ["EQUIP_ID"], "EQP_MODEL": ["EQUIP_MODEL"], "OPER_NAME": ["OPER_NM"], "RECIPE_ID": ["RECIPE_ID"]}
+            filter_mappings = {
+                "EQP_ID": ["EQUIP_ID"],
+                "EQP_MODEL": ["EQUIP_MODEL"],
+                "OPER_NAME": ["OPER_NM"],
+                "RECIPE_ID": ["RECIPE_ID"],
+                "LEAD": ["LEAD"],
+                "MCP_NO": ["MCP_NO"],
+            }
+        elif dataset_key == "eqp_down_list":
+            filter_mappings = {
+                "DATE": ["DATE"],
+                "EQP_ID": ["EQP_ID"],
+                "OPER_NAME": ["OPER_NAME"],
+                "DOWN_TM": ["DOWN_TM"],
+                "EQP_STAT_CD": ["EQP_STAT_CD"],
+            }
+        elif dataset_key == "eqp_utilization_today":
+            filter_mappings = {
+                "DATE": ["DATE"],
+                "EQP_ID": ["EQP_ID"],
+                "EQP_MODEL": ["EQP_MODEL"],
+                "OPER_NAME": ["OPER_NAME"],
+                "RECIPE_ID": ["RECIPE_ID"],
+                "LEAD": ["LEAD"],
+                "MCP_NO": ["MCP_NO"],
+                "UTILIZATION_RATE": ["UTILIZATION_RATE"],
+            }
+        elif dataset_key == "eqp_history_today":
+            filter_mappings = {
+                "DATE": ["DATE"],
+                "EQP_ID": ["EQP_ID"],
+                "OPER_NAME": ["OPER_NAME"],
+                "EVENT_CODE": ["EVENT_CODE"],
+            }
+        elif dataset_key == "lot_status":
+            filter_mappings = {
+                "LOT_ID": ["LOT_ID"],
+                "OPER_NAME": ["OPER_NAME"],
+                "MCP_NO": ["MCP_NO"],
+                "LEAD": ["LEAD"],
+                "IN_TAT": ["IN_TAT"],
+                "HOLD_STAT": ["HOLD_STAT"],
+            }
+        elif dataset_key == "hold_history":
+            filter_mappings = {"LOT_ID": ["LOT_ID"], "OPER_NAME": ["OPER_NAME"]}
         elif required_param_names:
             filter_mappings = {"DATE": ["WORK_DATE"]}
         else:

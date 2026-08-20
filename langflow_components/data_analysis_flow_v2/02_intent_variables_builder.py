@@ -203,7 +203,7 @@ def _schema() -> dict[str, Any]:
             "pandas_execution_plan": [
                 {
                     "node_id": "선택적 고유 pandas 단계 ID",
-                    "operation": "apply_filters|select_columns|groupby_and_aggregate|sort_and_top_n|count_rows|value_counts|distinct_values|latest_earliest|percent_of_total|rank_within_group|threshold_after_aggregate|time_bucket_summary|period_change|running_total|moving_aggregate|percentile_summary|pivot_summary|join|compare_presence|compare_group_attributes|find_duplicate_groups|apply_row_match_groups|apply_pandas_function_case",
+                    "operation": "apply_filters|select_columns|groupby_and_aggregate|sort_and_top_n|count_rows|value_counts|distinct_values|latest_earliest|percent_of_total|rank_within_group|threshold_after_aggregate|time_bucket_summary|period_change|running_total|moving_aggregate|percentile_summary|pivot_summary|derive_formula|join|compare_presence|compare_group_attributes|find_duplicate_groups|apply_row_match_groups|apply_pandas_function_case",
                     "inputs": [
                         {
                             "kind": "external_source|node_output",
@@ -269,6 +269,17 @@ def _schema() -> dict[str, Any]:
                         "pivot_aggregation": "sum|mean|min|max|count|nunique",
                         "pivot_fill_value": 0,
                         "max_pivot_columns": 50,
+                    },
+                    "formula": {
+                        "output_column": "새로 생성할 결과 metric 컬럼",
+                        "operator": "add|subtract|multiply|divide",
+                        "operands": [
+                            {"column": "앞 단계에서 이미 생성된 numeric 결과 컬럼"},
+                            {"constant": 24}
+                        ],
+                        "null_policy": "zero|propagate",
+                        "zero_division_policy": "zero|null",
+                        "round_digits": "선택: 0~12 정수",
                     },
                 }
             ],

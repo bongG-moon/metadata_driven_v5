@@ -8,28 +8,17 @@
 # 유지보수 포인트: helper는 원본 DataFrame을 변경하지 않고, 누락·모호한 범위 입력은 추측하지 않으며, 실행 근거를 기록해야 합니다.
 # =============================================================================
 
-try:
-    record_function_case_result
-except NameError:
-    _function_case_results = []
+# 함수 설명: `record_function_case_result()`는 standalone helper의 선택 실행을 부작용 없이 통과시킵니다.
+def record_function_case_result(function_name, input_text, result_value, description=""):
+    """Keep Function Case helpers standalone without module-level setup code.
 
-    # 함수 설명: `record_function_case_result()`는 선택 helper 실행 결과의 함수명·입력·행 수를 분석 근거로 기록합니다.
-    def record_function_case_result(function_name, input_text, result_value, description=""):
-        # 17 pandas executor가 아닌 로컬/단독 검증에서만 사용하는 fallback이다.
-        # Langflow 실행 중에는 executor가 주입한 같은 이름의 함수를 그대로 사용한다.
-        try:
-            matched_count = len(result_value)
-        except Exception:
-            matched_count = 0
-        _function_case_results.append(
-            {
-                "function_name": str(function_name or ""),
-                "input_text": str(input_text or ""),
-                "description": str(description or ""),
-                "matched_count": int(matched_count),
-            }
-        )
-        return result_value
+    The executor records the trusted transform in its own execution trace.  A
+    local helper import therefore needs only an inert fallback; keeping it as a
+    function (rather than a top-level try/except initializer) preserves the
+    executor's strict function-only helper safety contract.
+    """
+
+    return result_value
 
 # 주요 함수: 질문의 제품 토큰을 표준 제품 컬럼에 역할별로 매칭해 DataFrame을 필터링합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.

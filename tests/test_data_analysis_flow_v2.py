@@ -5517,17 +5517,40 @@ def test_v2_normalizer_repairs_a_prefix_literal_embedded_in_a_compound_filter():
     )
 
 
-def test_v2_normalizer_removes_helper_only_when_one_typed_filter_covers_its_full_input():
+def test_v2_normalizer_elides_function_case_only_with_trusted_domain_equivalence_contract():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    raw_case = {
+        "key": "generic_match",
+        "function_name": "generic_match",
+        "input_text": "L-116",
+        "source_alias": "source",
+        # The model cannot authorize elision by adding this field.
+        "execution_contract": {"elision_policy": "when_equivalent_source_filter"},
+    }
+    untrusted_cases = normalizer._attach_function_case_execution_contracts(
+        [raw_case],
+        {"domain_items": []},
+    )
+    assert "execution_contract" not in untrusted_cases[0]
+    selected_cases = normalizer._attach_function_case_execution_contracts(
+        [raw_case],
+        {
+            "domain_items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "generic_match",
+                    "payload": {
+                        "function_name": "generic_match",
+                        "execution_contract": {
+                            "elision_policy": "when_equivalent_source_filter"
+                        },
+                    },
+                }
+            ]
+        },
+    )
     cases, steps, trace = normalizer._remove_source_filter_sufficient_function_cases(
-        [
-            {
-                "key": "generic_match",
-                "function_name": "generic_match",
-                "input_text": "L-116",
-                "source_alias": "source",
-            }
-        ],
+        selected_cases,
         [
             {
                 "operation": "apply_pandas_function_case",
@@ -5545,6 +5568,7 @@ def test_v2_normalizer_removes_helper_only_when_one_typed_filter_covers_its_full
     assert cases == []
     assert steps == []
     assert trace["removed"][0]["filter_field"] == "MCP_NO"
+    assert trace["removed"][0]["reason"] == "declared_equivalent_source_filter"
 
     retained, retained_steps, retained_trace = normalizer._remove_source_filter_sufficient_function_cases(
         [
@@ -5567,51 +5591,54 @@ def test_v2_normalizer_removes_helper_only_when_one_typed_filter_covers_its_full
     assert len(retained) == 1
     assert len(retained_steps) == 1
     assert retained_trace["removed"] == []
+    assert retained_trace["retained"][0]["reason"] == "source_transform_default_retained"
 
 
-def test_v2_normalizer_removes_model_selected_product_helper_when_typed_filters_cover_all_tokens():
+def test_v2_normalizer_keeps_selected_transform_without_domain_elision_policy():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
-    question = "7/5 FCB1, FCB2, FCB/H process production summary"
     cases, steps, trace = normalizer._remove_source_filter_sufficient_function_cases(
         [
             {
                 "key": "match_product_tokens",
                 "function_name": "match_product_tokens",
-                "input_text": question,
-                "source_alias": "production_source",
+                "input_text": "L-256K9B",
+                "source_alias": "assign",
             }
         ],
         [
             {
                 "operation": "apply_pandas_function_case",
                 "function_name": "match_product_tokens",
-                "source_alias": "production_source",
+                "source_alias": "assign",
             },
-            {"operation": "groupby_and_aggregate", "source_alias": "production_source"},
+            {"operation": "groupby_and_aggregate", "source_alias": "assign"},
         ],
         [
             {
-                "dataset_key": "production",
-                "source_alias": "production_source",
+                "dataset_key": "equipment_assign",
+                "source_alias": "assign",
                 "filters": {
-                    "OPER_NAME": {
-                        "operator": "in",
-                        "value": ["FCB1", "FCB2", "FCB/H"],
-                    },
-                    "DATE": {"operator": "eq", "value": "20260705"},
+                    "MCP_NO": {"operator": "starts_with", "value": "L-256K9B"},
                 },
             }
         ],
         {},
     )
 
-    assert cases == []
-    assert [step["operation"] for step in steps] == ["groupby_and_aggregate"]
-    assert trace["status"] == "applied"
-    assert trace["removed"][0]["reason"] == (
-        "typed_source_filters_cover_all_structured_product_tokens"
-    )
-    assert trace["removed"][0]["covered_tokens"] == ["FCB1", "FCB2"]
+    assert len(cases) == 1
+    assert [step["operation"] for step in steps] == [
+        "apply_pandas_function_case",
+        "groupby_and_aggregate",
+    ]
+    assert trace["status"] == "not_needed"
+    assert trace["retained"] == [
+        {
+            "source_alias": "assign",
+            "function_case_key": "match_product_tokens",
+            "function_name": "match_product_tokens",
+            "reason": "source_transform_default_retained",
+        }
+    ]
 
 
 def test_v2_normalizer_keeps_product_helper_when_a_product_token_is_not_in_typed_filters():
@@ -5644,7 +5671,39 @@ def test_v2_normalizer_keeps_product_helper_when_a_product_token_is_not_in_typed
     assert trace["removed"] == []
 
 
-def test_v2_pruned_product_helper_rewires_unique_downstream_alias_to_source():
+def test_v2_normalizer_preserves_retrieval_filters_for_any_selected_source_transform():
+    """The common normalizer must not own domain-specific filter columns."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    jobs = [
+        {
+            "dataset_key": "sample",
+            "source_alias": "sample_source",
+            "filters": {
+                "DOMAIN_KEY": {"operator": "eq", "value": "A-100"},
+                "SCOPE": {"operator": "in", "value": ["S1", "S2"]},
+            },
+        }
+    ]
+    normalized_jobs, trace = normalizer._remove_function_owned_retrieval_filters(
+        jobs,
+        [
+            {
+                "key": "domain_helper",
+                "function_name": "domain_helper",
+                "input_text": "A-100",
+                "source_alias": "sample_source",
+            }
+        ],
+    )
+
+    assert normalized_jobs == jobs
+    assert normalized_jobs is not jobs
+    assert trace["removed"] == []
+    assert trace["reason"] == "source_transform_preserves_retrieval_filters"
+
+
+def test_v2_pruned_domain_opt_in_transform_rewires_unique_downstream_alias_to_source():
     """Removing a source-equivalent helper must not leave a dangling DAG edge."""
 
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
@@ -5652,16 +5711,19 @@ def test_v2_pruned_product_helper_rewires_unique_downstream_alias_to_source():
         {
             "dataset_key": "equipment_assign",
             "source_alias": "equipment_assign",
-            "filters": {"DEVICE": {"operator": "eq", "value": "L-256K9B"}},
+            "filters": {"MCP_NO": {"operator": "eq", "value": "L-256K9B"}},
         }
     ]
     cases, steps, trace = normalizer._remove_source_filter_sufficient_function_cases(
         [
             {
-                "key": "product_token_match",
-                "function_name": "match_product_tokens",
+                "key": "generic_match",
+                "function_name": "generic_match",
                 "input_text": "L-256K9B",
                 "source_alias": "equipment_assign",
+                "execution_contract": {
+                    "elision_policy": "when_equivalent_source_filter"
+                },
             }
         ],
         [
@@ -5733,7 +5795,7 @@ def test_v2_auto_product_helper_skips_process_tokens_already_covered_by_typed_fi
     assert trace["reason"] == "no_uncovered_structured_product_tokens"
 
 
-def test_v2_process_summary_executes_fast_after_product_helper_is_pruned():
+def test_v2_process_summary_executes_fast_after_domain_opt_in_transform_is_pruned():
     normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
     rows = [
         {"DATE": "20260705", "OPER_NAME": "FCB1", "PRODUCTION": 10},
@@ -5780,10 +5842,13 @@ def test_v2_process_summary_executes_fast_after_product_helper_is_pruned():
     cases, normalized_steps, trace = normalizer._remove_source_filter_sufficient_function_cases(
         [
             {
-                "key": "match_product_tokens",
-                "function_name": "match_product_tokens",
-                "input_text": "7/5 FCB1, FCB2, FCB/H process production summary",
+                "key": "date_match",
+                "function_name": "date_match",
+                "input_text": "20260705",
                 "source_alias": "production_source",
+                "execution_contract": {
+                    "elision_policy": "when_equivalent_source_filter"
+                },
             }
         ],
         [
@@ -5805,6 +5870,816 @@ def test_v2_process_summary_executes_fast_after_product_helper_is_pruned():
         {"OPER_NAME": "FCB/H", "PRODUCTION_SUM": 30.0},
         {"OPER_NAME": "FCB1", "PRODUCTION_SUM": 10.0},
         {"OPER_NAME": "FCB2", "PRODUCTION_SUM": 20.0},
+    ]
+
+
+def test_v2_selected_function_case_is_a_deterministic_source_transform_for_equipment_assign():
+    """A selected transform must not silently fall back to the raw source.
+
+    This is deliberately a generic Function Case path: the normalizer does
+    not know product columns or product syntax.  The selected Domain function
+    owns the source transformation, and the Typed executor applies it before
+    the equipment aggregation without calling the pandas LLM.
+    """
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    resolver, executor, _ = _modules()
+    jobs = [
+        {
+            "dataset_key": "equipment_assign",
+            "source_alias": "assign",
+            "filters": {},
+        }
+    ]
+    function_cases = [
+        {
+            "key": "product_token_match",
+            "function_name": "match_product_tokens",
+            "input_text": "L-256K9B",
+            "source_alias": "assign",
+        }
+    ]
+    aggregate = {
+        "node_id": "step_2_process_aggregate",
+        "operation": "groupby_and_aggregate",
+        "inputs": [{"kind": "node_output", "ref": "assign_matched"}],
+        "output_alias": "assign_process_result",
+        "source_alias": "assign_matched",
+        "group_by": ["OPER_NAME"],
+        "aggregations": [
+            {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"}
+        ],
+    }
+
+    retained_cases, retained_steps, sufficiency = (
+        normalizer._remove_source_filter_sufficient_function_cases(
+            function_cases,
+            [aggregate],
+            jobs,
+            {},
+        )
+    )
+    assert retained_cases == function_cases
+    assert sufficiency["status"] == "not_needed"
+    assert sufficiency["retained"][0]["reason"] == "source_transform_default_retained"
+
+    materialized_steps = normalizer._ensure_function_case_steps(
+        retained_cases,
+        retained_steps,
+        jobs,
+    )
+    helper_step = materialized_steps[0]
+    assert helper_step["operation"] == "apply_pandas_function_case"
+    assert helper_step["inputs"] == [{"kind": "external_source", "ref": "assign"}]
+    assert helper_step["output_alias"] == "assign_matched"
+    graph = normalizer._compile_execution_graph(materialized_steps, jobs, {}, "none")
+    assert graph["validation_errors"] == []
+
+    payload = _single_source_payload(
+        rows=[
+            {"MCP_NO": "L-256K9B-A", "OPER_NAME": "D/A1", "EQP_ID": "D701"},
+            {"MCP_NO": "L-256K9B-B", "OPER_NAME": "D/A1", "EQP_ID": "D702"},
+            {"MCP_NO": "L-256K9B-A", "OPER_NAME": "D/A2", "EQP_ID": "D701"},
+            {"MCP_NO": "OTHER", "OPER_NAME": "D/A1", "EQP_ID": "D799"},
+        ],
+        steps=materialized_steps,
+        source_alias="assign",
+        dataset_key="equipment_assign",
+        output_contract={
+            "result_mode": "aggregate",
+            "grain_columns": ["OPER_NAME"],
+            "metric_columns": ["EQP_COUNT"],
+            "required_columns": ["OPER_NAME", "EQP_COUNT"],
+            "result_columns": ["OPER_NAME", "EQP_COUNT"],
+            "strict_result_columns": True,
+        },
+    )
+    payload["question"] = "L-256K9B 제품에 ASSIGN된 공정별 장비 현황 알려줘"
+    payload["intent_plan"]["pandas_function_cases"] = function_cases
+    payload["intent_plan"]["resolved_execution_graph"] = graph
+
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    contract = resolved["simple_analysis_contract"]
+    assert contract["route"] == "complex"
+    assert contract["operation"] == "execute_typed_pandas_plan"
+    assert contract["requires_pandas_llm"] is False
+
+    helper_library = (
+        ROOT
+        / "langflow_components"
+        / "data_analysis_flow"
+        / "function_case_helper_code_input_example.py"
+    ).read_text(encoding="utf-8")
+    model_calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "",
+        model_invoker=lambda prompt: model_calls.append(prompt),
+        repair_prompt_template="repair",
+        function_case_helper_code=helper_library,
+    )
+
+    assert model_calls == []
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"OPER_NAME": "D/A1", "EQP_COUNT": 2},
+        {"OPER_NAME": "D/A2", "EQP_COUNT": 1},
+    ]
+    transforms = executed["trace"]["inspection"]["pandas_execution"][
+        "deterministic_source_transforms"
+    ]
+    assert transforms[0]["function_name"] == "match_product_tokens"
+
+
+def test_v2_normalizer_removes_unproduced_implicit_aggregate_ordering():
+    """A recipe label must not make an unproduced sort column executable."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    output, trace = normalizer._reconcile_implicit_aggregate_ordering(
+        {
+            "result_mode": "aggregate",
+            "primary_metric": "보유CAPA",
+            "ordering": {"sort_by": "보유CAPA", "order": "desc"},
+        },
+        [
+            {
+                "operation": "groupby_and_aggregate",
+                "group_by": ["OPER_NAME"],
+                "aggregations": [
+                    {
+                        "column": "EQP_ID",
+                        "method": "nunique",
+                        "output_column": "장비보유댓수",
+                    }
+                ],
+                "calculation": {},
+                "sort_by": "보유CAPA",
+            }
+        ],
+        "L-256K9B 제품에 ASSIGN된 공정별 장비 현황 알려줘",
+        {"result_mode": "aggregate"},
+    )
+
+    assert "ordering" not in output
+    assert "primary_metric" not in output
+    assert trace == {
+        "status": "applied",
+        "reason": "unproduced_implicit_aggregate_sort_column",
+        "dropped_sort_by": "보유CAPA",
+        "produced_columns": ["OPER_NAME", "장비보유댓수"],
+    }
+
+
+def test_v2_normalizer_keeps_explicit_requested_aggregate_ordering_strict():
+    """When the worker requested an order, an unknown metric must not be remapped."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    output, trace = normalizer._reconcile_implicit_aggregate_ordering(
+        {"ordering": {"sort_by": "보유CAPA", "order": "desc"}},
+        [
+            {
+                "operation": "groupby_and_aggregate",
+                "group_by": ["OPER_NAME"],
+                "aggregations": [
+                    {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"}
+                ],
+                "sort_by": "보유CAPA",
+            }
+        ],
+        "공정별 보유CAPA 순으로 알려줘",
+        {},
+    )
+
+    assert output["ordering"] == {"sort_by": "보유CAPA", "order": "desc"}
+    assert trace["reason"] == "explicit_question_ordering"
+
+
+def test_v2_normalizer_drops_fresh_unrequested_registered_process_scope_only():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "WB",
+                "payload": {
+                    "aliases": ["WB", "WB공정"],
+                    "field": "OPER_NAME",
+                    "processes": ["W/B1", "W/B2"],
+                },
+            }
+        ]
+    }
+    jobs = [
+        {
+            "dataset_key": "equipment_assign",
+            "source_alias": "equipment_assign",
+            "filters": {"OPER_NAME": {"operator": "in", "value": ["W/B1", "W/B2"]}},
+        }
+    ]
+
+    cleaned, effective, trace = normalizer._drop_unrequested_process_scope_filters(
+        jobs,
+        candidates,
+        "L-256K9B 제품에 ASSIGN된 공정별 장비 현황 알려줘",
+        "none",
+        ["W/B1", "W/B2"],
+    )
+
+    assert cleaned[0]["filters"] == {}
+    assert effective == []
+    assert trace["status"] == "applied"
+    retained, retained_declared, retained_trace = (
+        normalizer._drop_unrequested_process_scope_filters(
+            jobs,
+            candidates,
+            "WB공정 L-256K9B 제품 장비 현황 알려줘",
+            "none",
+            ["W/B1", "W/B2"],
+        )
+    )
+    assert retained == jobs
+    assert retained_declared == ["W/B1", "W/B2"]
+    assert retained_trace["reason"] == "question_process_scope_present"
+
+
+def test_v2_normalizer_rebases_empty_filter_bridge_to_one_selected_source_transform():
+    """An LLM bridge must not duplicate a selected source-local Function Case."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    cases = [
+        {
+            "key": "product_token_match",
+            "function_name": "match_product_tokens",
+            "input_text": "L-256",
+            "source_alias": "equipment_assign",
+        }
+    ]
+    jobs = [{"dataset_key": "equipment_assign", "source_alias": "equipment_assign", "filters": {}}]
+    raw_plan = [
+        {
+            "node_id": "step1_filter",
+            "operation": "apply_filters",
+            "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+            "output_alias": "eqp_proc_filtered",
+            "source_alias": "equipment_assign",
+        },
+        {
+            "node_id": "step2_match",
+            "operation": "apply_pandas_function_case",
+            "inputs": [{"kind": "node_output", "ref": "step1_filter"}],
+            "output_alias": "eqp_matched",
+            "source_alias": "eqp_proc_filtered",
+            "function_case_key": "product_token_match",
+            "input_text": "L-256",
+        },
+        {
+            "node_id": "step3_aggregate",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "node_output", "ref": "step2_match"}],
+            "output_alias": "final_result",
+            "source_alias": "eqp_matched",
+            "group_by": ["OPER_NAME"],
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "EQP_COUNT"}
+            ],
+        },
+    ]
+
+    rebased, trace = normalizer._reconcile_function_case_source_transform_steps(
+        cases,
+        raw_plan,
+        jobs,
+    )
+    materialized = normalizer._ensure_function_case_steps(cases, rebased, jobs)
+
+    assert trace["status"] == "applied"
+    assert [item["node_id"] for item in materialized] == ["step2_match", "step3_aggregate"]
+    helper = materialized[0]
+    assert helper["source_alias"] == "equipment_assign"
+    assert helper["inputs"] == [{"kind": "external_source", "ref": "equipment_assign"}]
+    assert helper["function_name"] == "match_product_tokens"
+    graph = normalizer._compile_execution_graph(materialized, jobs, {}, "none")
+    assert graph["validation_errors"] == []
+
+
+def test_v2_normalizer_keeps_function_case_after_real_filter_bridge():
+    """A local typed filter is semantic work and must never be folded away."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    cases = [
+        {
+            "key": "product_token_match",
+            "function_name": "match_product_tokens",
+            "input_text": "L-256",
+            "source_alias": "equipment_assign",
+        }
+    ]
+    jobs = [{"dataset_key": "equipment_assign", "source_alias": "equipment_assign"}]
+    raw_plan = [
+        {
+            "node_id": "step1_filter",
+            "operation": "apply_filters",
+            "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+            "output_alias": "eqp_proc_filtered",
+            "source_alias": "equipment_assign",
+            "filters": {"OPER_NAME": {"operator": "eq", "value": "D/A1"}},
+        },
+        {
+            "node_id": "step2_match",
+            "operation": "apply_pandas_function_case",
+            "inputs": [{"kind": "node_output", "ref": "step1_filter"}],
+            "output_alias": "eqp_matched",
+            "source_alias": "eqp_proc_filtered",
+            "function_case_key": "product_token_match",
+            "input_text": "L-256",
+        },
+    ]
+
+    reconciled, trace = normalizer._reconcile_function_case_source_transform_steps(
+        cases,
+        raw_plan,
+        jobs,
+    )
+
+    assert reconciled == raw_plan
+    assert trace == {"status": "not_needed", "repairs": []}
+
+
+def test_v2_equipment_source_transform_plan_executes_without_llm_or_ghost_ordering():
+    """Regression for the live L-256 ASSIGN failure shape."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    resolver, executor, _ = _modules()
+    response = {
+        "intent_plan": {
+            "analysis_kind": "equipment_capacity_by_product_process",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "equipment_assign",
+                    "source_alias": "equipment_assign",
+                    "source_type": "oracle",
+                    "filters": {
+                        "OPER_NAME": {"operator": "in", "value": ["W/B1", "W/B2"]}
+                    },
+                }
+            ],
+            "pandas_function_cases": [
+                {
+                    "key": "product_token_match",
+                    "function_name": "match_product_tokens",
+                    "input_text": "L-256",
+                    "source_alias": "equipment_assign",
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "step1_filter",
+                    "operation": "apply_filters",
+                    "inputs": [{"kind": "external_source", "ref": "equipment_assign"}],
+                    "output_alias": "eqp_proc_filtered",
+                    "source_alias": "equipment_assign",
+                },
+                {
+                    "node_id": "step2_match",
+                    "operation": "apply_pandas_function_case",
+                    "inputs": [{"kind": "node_output", "ref": "step1_filter"}],
+                    "output_alias": "eqp_matched",
+                    "source_alias": "eqp_proc_filtered",
+                    "function_case_key": "product_token_match",
+                    "input_text": "L-256",
+                },
+                {
+                    "node_id": "step3_aggregate",
+                    "operation": "groupby_and_aggregate",
+                    "inputs": [{"kind": "node_output", "ref": "step2_match"}],
+                    "output_alias": "final_result",
+                    "source_alias": "eqp_matched",
+                    "group_by": ["OPER_NAME"],
+                    "aggregations": [
+                        {
+                            "column": "EQP_ID",
+                            "method": "nunique",
+                            "output_column": "장비보유댓수",
+                        }
+                    ],
+                    "calculation": {},
+                    "sort_by": "보유CAPA",
+                    "order": "desc",
+                },
+            ],
+            "output_contract": {
+                "result_mode": "aggregate",
+                "grain_columns": ["OPER_NAME"],
+                "metric_columns": ["장비보유댓수"],
+                "result_columns": ["OPER_NAME", "장비보유댓수"],
+                "strict_result_columns": True,
+            },
+        }
+    }
+    candidates = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "WB",
+                "payload": {
+                    "aliases": ["WB", "WB공정"],
+                    "field": "OPER_NAME",
+                    "processes": ["W/B1", "W/B2"],
+                },
+            }
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "source_type": "oracle",
+                "columns": ["MCP_NO", "OPER_NAME", "EQP_ID"],
+            }
+        ],
+        "main_flow_filters": [],
+    }
+    payload = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "L-256K9B 제품에 ASSIGN된 공정별 장비 현황 알려줘"
+            },
+            "trace": {"inspection": {}},
+        },
+        json.dumps(response, ensure_ascii=False),
+        candidates,
+    )
+    plan = payload["intent_plan"]
+
+    assert plan["retrieval_jobs"][0]["filters"] == {}
+    assert "ordering" not in plan["output_contract"]
+    assert [step["node_id"] for step in plan["pandas_execution_plan"]] == [
+        "step2_match",
+        "step3_aggregate",
+    ]
+    assert plan["pandas_execution_plan"][0]["inputs"] == [
+        {"kind": "external_source", "ref": "equipment_assign"}
+    ]
+    assert payload["trace"]["inspection"]["intent"][
+        "unrequested_process_scope_guard"
+    ]["status"] == "applied"
+    assert payload["trace"]["inspection"]["intent"][
+        "implicit_ordering_reconciliation"
+    ]["status"] == "applied"
+
+    payload["runtime_sources"] = {
+        "equipment_assign": [
+            {"MCP_NO": "L-256K9B-A", "OPER_NAME": "D/A1", "EQP_ID": "E1"},
+            {"MCP_NO": "L-256K9B-A", "OPER_NAME": "D/A1", "EQP_ID": "E2"},
+            {"MCP_NO": "L-256K9B-B", "OPER_NAME": "D/A2", "EQP_ID": "E1"},
+            {"MCP_NO": "OTHER", "OPER_NAME": "W/B1", "EQP_ID": "E9"},
+        ]
+    }
+    payload["source_results"] = [
+        {
+            "source_alias": "equipment_assign",
+            "dataset_key": "equipment_assign",
+            "status": "ok",
+            "columns": ["MCP_NO", "OPER_NAME", "EQP_ID"],
+            "row_count": 4,
+        }
+    ]
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    assert resolved["simple_analysis_contract"]["operation"] == "execute_typed_pandas_plan"
+    assert resolved["simple_analysis_contract"]["requires_pandas_llm"] is False
+    calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "pandas prompt must not be used",
+        model_invoker=lambda prompt: calls.append(prompt) or "{}",
+        repair_prompt_template="repair",
+        function_case_helper_code=(
+            "def match_product_tokens(input_text, frame):\n"
+            "    return frame[frame['MCP_NO'].astype(str).str.startswith(input_text)].copy()\n"
+        ),
+    )
+
+    assert calls == []
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"OPER_NAME": "D/A1", "장비보유댓수": 2},
+        {"OPER_NAME": "D/A2", "장비보유댓수": 1},
+    ]
+
+
+def test_v2_normalizer_repairs_only_trusted_after_helper_function_case_chain():
+    """Regression for a live ordered-process-range plan with a missing provider."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    retrieval_jobs = [{"dataset_key": "lot_status", "source_alias": "lot_status"}]
+    raw_case = {
+        "key": "ordered_process_range",
+        "function_name": "filter_ordered_range",
+        "input_text": "D/A1~W/B6",
+        "source_alias": "lot_status",
+        # This model-supplied field must not authorize the repair by itself.
+        "execution_contract": {"source_filter_order": "after_helper"},
+    }
+    function_cases = normalizer._attach_function_case_execution_contracts(
+        [raw_case],
+        {
+            "domain_items": [
+                {
+                    "section": "pandas_function_cases",
+                    "key": "ordered_process_range",
+                    "payload": {
+                        "function_name": "filter_ordered_range",
+                        "execution_contract": {
+                            "source_filter_order": "after_helper"
+                        },
+                    },
+                }
+            ]
+        },
+    )
+    raw_plan = [
+        {
+            "node_id": "filter_process_range",
+            "operation": "apply_pandas_function_case",
+            "inputs": [{"kind": "node_output", "ref": "filtered_by_tat"}],
+            "output_alias": "final_filtered",
+            "source_alias": "lot_status",
+            "function_name": "filter_ordered_range",
+            "input_text": "D/A1~W/B6",
+        },
+        {
+            "step": "Function Case 이후 필터 적용",
+            "operation": "apply_filters",
+            "source_alias": "lot_status",
+            "field": "IN_TAT",
+            "operator": "ge",
+            "value": 1,
+        },
+        {
+            "node_id": "select_columns",
+            "operation": "select_columns",
+            "inputs": [{"kind": "node_output", "ref": "final_filtered"}],
+            "output_alias": "result",
+            "source_alias": "lot_status",
+        },
+    ]
+
+    jobs, ordered_plan, _, _ = normalizer._apply_function_case_execution_contracts(
+        retrieval_jobs,
+        raw_plan,
+        function_cases,
+        {},
+    )
+    repaired_plan, repair_trace = (
+        normalizer._reconcile_trusted_after_helper_execution_graph(
+            ordered_plan,
+            function_cases,
+            jobs,
+        )
+    )
+    graph = normalizer._compile_execution_graph(repaired_plan, jobs, {}, "none")
+
+    assert repair_trace["status"] == "applied"
+    assert repair_trace["repairs"][0]["reason"] == "trusted_after_helper_linear_chain"
+    assert repair_trace["repairs"][0]["repaired_unresolved_helper_input"] == "filtered_by_tat"
+    assert repaired_plan[0]["inputs"] == [
+        {"kind": "external_source", "ref": "lot_status"}
+    ]
+    assert repaired_plan[1]["inputs"] == [
+        {"kind": "node_output", "ref": "filter_process_range"}
+    ]
+    assert repaired_plan[2]["inputs"] == [
+        {"kind": "node_output", "ref": repaired_plan[1]["node_id"]}
+    ]
+    assert graph["validation_errors"] == []
+
+
+def test_v2_normalizer_keeps_untrusted_after_helper_dangling_input_blocked():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    function_cases = normalizer._attach_function_case_execution_contracts(
+        [
+            {
+                "key": "ordered_process_range",
+                "function_name": "filter_ordered_range",
+                "input_text": "D/A1~W/B6",
+                "source_alias": "lot_status",
+                "execution_contract": {"source_filter_order": "after_helper"},
+            }
+        ],
+        {"domain_items": []},
+    )
+    raw_plan = [
+        {
+            "node_id": "filter_process_range",
+            "operation": "apply_pandas_function_case",
+            "inputs": [{"kind": "node_output", "ref": "filtered_by_tat"}],
+            "output_alias": "final_filtered",
+            "source_alias": "lot_status",
+            "function_name": "filter_ordered_range",
+        }
+    ]
+    repaired_plan, repair_trace = (
+        normalizer._reconcile_trusted_after_helper_execution_graph(
+            raw_plan,
+            function_cases,
+            [{"dataset_key": "lot_status", "source_alias": "lot_status"}],
+        )
+    )
+    graph = normalizer._compile_execution_graph(
+        repaired_plan,
+        [{"dataset_key": "lot_status", "source_alias": "lot_status"}],
+        {},
+        "none",
+    )
+
+    assert repair_trace == {"status": "not_needed", "repairs": []}
+    assert repaired_plan == raw_plan
+    assert graph["validation_errors"][0]["type"] == "unresolved_execution_input"
+
+
+def test_v2_normalizer_canonicalizes_filter_shorthand_without_overriding_mapping():
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    normalized, trace = normalizer._canonicalize_typed_filter_steps(
+        [
+            {
+                "operation": "apply_filters",
+                "field": "IN_TAT",
+                "operator": "ge",
+                "value": 1,
+            },
+            {
+                "operation": "apply_filters",
+                "field": "IN_TAT",
+                "operator": "ge",
+                "value": 1,
+                "filters": {"IN_TAT": {"operator": "gt", "value": 2}},
+            },
+        ]
+    )
+
+    assert normalized[0]["filters"] == {
+        "IN_TAT": {"operator": "ge", "value": 1}
+    }
+    assert normalized[1]["filters"] == {
+        "IN_TAT": {"operator": "gt", "value": 2}
+    }
+    assert trace["status"] == "applied"
+    assert len(trace["changes"]) == 1
+
+
+def test_v2_normalizer_recovers_live_ordered_range_plan_before_retrieval_gate():
+    """The reported lot/TAT plan must reach a fully typed linear graph."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    response = {
+        "intent_plan": {
+            "analysis_kind": "lot_in_tat_exceeding_one_day_by_process_range",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "lot_status",
+                    "source_alias": "lot_status",
+                    "source_type": "oracle",
+                }
+            ],
+            "pandas_function_cases": [
+                {
+                    "key": "ordered_process_range",
+                    "function_name": "filter_ordered_range",
+                    "input_text": "D/A1~W/B6",
+                    "source_alias": "lot_status",
+                    "execution_contract": {"source_filter_order": "after_helper"},
+                }
+            ],
+            "pandas_execution_plan": [
+                {
+                    "node_id": "filter_process_range",
+                    "operation": "apply_pandas_function_case",
+                    "inputs": [
+                        {"kind": "node_output", "ref": "filtered_by_tat"}
+                    ],
+                    "output_alias": "final_filtered",
+                    "source_alias": "lot_status",
+                    "function_name": "filter_ordered_range",
+                    "input_text": "D/A1~W/B6",
+                },
+                {
+                    "step": "Function Case 이후 필터 적용",
+                    "operation": "apply_filters",
+                    "source_alias": "lot_status",
+                    "field": "IN_TAT",
+                    "operator": "ge",
+                    "value": 1,
+                },
+                {
+                    "node_id": "select_columns",
+                    "operation": "select_columns",
+                    "inputs": [{"kind": "node_output", "ref": "final_filtered"}],
+                    "output_alias": "result",
+                    "source_alias": "lot_status",
+                    "columns": ["LOT_ID", "IN_TAT"],
+                },
+            ],
+            "output_contract": {
+                "result_mode": "detail",
+                "required_columns": ["LOT_ID", "IN_TAT"],
+                "result_columns": ["LOT_ID", "IN_TAT"],
+                "strict_result_columns": True,
+            },
+        }
+    }
+    candidates = {
+        "domain_items": [
+            {
+                "section": "pandas_function_cases",
+                "key": "ordered_process_range",
+                "payload": {
+                    "function_name": "filter_ordered_range",
+                    "required_columns": ["OPER_NAME", "OPER_SEQ"],
+                    "execution_contract": {"source_filter_order": "after_helper"},
+                },
+            }
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "lot_status",
+                "source_type": "oracle",
+                "columns": ["LOT_ID", "OPER_NAME", "OPER_SEQ", "IN_TAT"],
+                "filter_mappings": {"IN_TAT": ["IN_TAT"]},
+            }
+        ],
+        "main_flow_filters": [],
+    }
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {"question": "D/A1~W/B6 공정 구간에서 TAT 1일 이상 LOT 알려줘"},
+            "trace": {"inspection": {}},
+        },
+        response,
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+    graph = plan["resolved_execution_graph"]
+    steps = plan["pandas_execution_plan"]
+    repair_trace = normalized["trace"]["inspection"]["intent"][
+        "after_helper_execution_graph_reconciliation"
+    ]
+
+    assert repair_trace["status"] == "applied"
+    assert graph["validation_errors"] == []
+    assert not any(
+        item.get("type") == "unresolved_execution_input"
+        for item in plan.get("validation_errors", [])
+    )
+    assert steps[0]["inputs"] == [
+        {"kind": "external_source", "ref": "lot_status"}
+    ]
+    assert steps[1]["inputs"] == [
+        {"kind": "node_output", "ref": "filter_process_range"}
+    ]
+    assert steps[2]["inputs"] == [
+        {"kind": "node_output", "ref": steps[1]["node_id"]}
+    ]
+
+    normalized["runtime_sources"] = {
+        "lot_status": [
+            {"LOT_ID": "LOT-1", "OPER_NAME": "D/A1", "OPER_SEQ": 1, "IN_TAT": 0},
+            {"LOT_ID": "LOT-2", "OPER_NAME": "D/A2", "OPER_SEQ": 2, "IN_TAT": 1},
+            {"LOT_ID": "LOT-3", "OPER_NAME": "W/B6", "OPER_SEQ": 3, "IN_TAT": 2},
+            {"LOT_ID": "LOT-4", "OPER_NAME": "W/B7", "OPER_SEQ": 4, "IN_TAT": 3},
+        ]
+    }
+    normalized["source_results"] = [
+        {
+            "source_alias": "lot_status",
+            "dataset_key": "lot_status",
+            "status": "ok",
+            "columns": ["LOT_ID", "OPER_NAME", "OPER_SEQ", "IN_TAT"],
+            "row_count": 4,
+        }
+    ]
+    resolver, executor, _ = _modules()
+    resolved = resolver.resolve_simple_analysis_contract(normalized)
+    calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "pandas prompt must not be used",
+        model_invoker=lambda prompt: calls.append(prompt) or "{}",
+        repair_prompt_template="repair",
+        function_case_helper_code=(
+            "def filter_ordered_range(input_text, frame):\n"
+            "    return frame[frame['OPER_SEQ'].between(1, 3)].copy()\n"
+        ),
+    )
+
+    assert resolved["simple_analysis_contract"]["operation"] == "execute_typed_pandas_plan"
+    assert resolved["simple_analysis_contract"]["requires_pandas_llm"] is False
+    assert calls == []
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["data"]["rows"] == [
+        {"LOT_ID": "LOT-2", "IN_TAT": 1},
+        {"LOT_ID": "LOT-3", "IN_TAT": 2},
     ]
 
 
@@ -8051,6 +8926,322 @@ def test_process_scope_is_applied_only_to_catalog_sources_that_support_its_field
         "operator": "eq",
         "value": "SHIP PKT",
     }
+
+
+def test_md_process_group_expands_assignment_uph_validation_question():
+    """The single-stage M/D group must remain selectable and executable for the validation question."""
+
+    candidates_builder = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "01d_metadata_candidates_builder.py"
+    )
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    question = "M/D공정 LEAD별 장비 ASSIGN 댓수와 UPH알려줘"
+    candidates = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "MD",
+                "payload": {
+                    "display_name": "M/D",
+                    "aliases": ["MD", "M/D", "MD공정", "M/D공정", "MD 공정", "M/D 공정"],
+                    "field": "OPER_NAME",
+                    "processes": ["M/D"],
+                },
+            }
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {
+                    "columns": ["OPER_NAME", "EQP_ID", "LEAD"],
+                    "filter_mappings": {"OPER_NAME": ["OPER_NAME"]},
+                },
+            },
+            {
+                "dataset_key": "eqp_uph",
+                "payload": {
+                    "columns": ["OPER_NAME", "EQP_ID", "LEAD", "UPH"],
+                    "filter_mappings": {"OPER_NAME": ["OPER_NAME"]},
+                },
+            },
+        ],
+    }
+
+    selected = candidates_builder.build_metadata_candidates(
+        {"request": {"question": question}},
+        candidates["domain_items"],
+        candidates["table_catalog_items"],
+        [],
+    )["metadata_candidates"]["domain_items"]
+    assert [(item["section"], item["key"]) for item in selected] == [
+        ("process_groups", "MD")
+    ]
+
+    jobs = [
+        {"dataset_key": "equipment_assign", "source_alias": "assign_data", "filters": {}},
+        {"dataset_key": "eqp_uph", "source_alias": "uph_data", "filters": {}},
+    ]
+    normalized_jobs, guard = normalizer._apply_process_group_filter_fields(
+        jobs,
+        candidates,
+        question,
+    )
+
+    assert [job["filters"]["OPER_NAME"] for job in normalized_jobs] == [
+        {"operator": "eq", "value": "M/D"},
+        {"operator": "eq", "value": "M/D"},
+    ]
+    assert guard["corrections"] == [
+        {
+            "source_alias": "assign_data",
+            "field": "OPER_NAME",
+            "correction_type": "process_scope_completion",
+            "completion_reason": "process_group_alias",
+            "to_values": ["M/D"],
+        },
+        {
+            "source_alias": "uph_data",
+            "field": "OPER_NAME",
+            "correction_type": "process_scope_completion",
+            "completion_reason": "process_group_alias",
+            "to_values": ["M/D"],
+        },
+    ]
+    assert normalizer._validate_process_scope_contract(
+        normalized_jobs,
+        candidates,
+        question,
+    )["status"] == "complete"
+
+
+def test_direct_registered_process_names_complete_a_single_source_filter_before_gate():
+    """Direct process codes must receive the same safe completion as DA/WB aliases."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    validator = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "06_retrieval_job_validator.py"
+    )
+    candidates = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "payload": {
+                    "aliases": ["DA", "DA공정"],
+                    "field": "OPER_NAME",
+                    "processes": ["D/A1", "D/A2"],
+                },
+            },
+            {
+                "section": "process_groups",
+                "key": "WB",
+                "payload": {
+                    "aliases": ["WB", "WB공정"],
+                    "field": "OPER_NAME",
+                    "processes": ["W/B5", "W/B6"],
+                },
+            },
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "columns": ["DATE", "OPER_NAME", "PRODUCTION"],
+                    "filter_mappings": {
+                        "DATE": ["DATE"],
+                        "OPER_NAME": ["OPER_NAME"],
+                    },
+                },
+            }
+        ],
+    }
+    question = "D/A1과 W/B6 공정 생산량 알려줘"
+    jobs = [
+        {
+            "dataset_key": "production_today",
+            "source_alias": "production_src",
+            "source_type": "oracle",
+            "filters": {"DATE": {"operator": "eq", "value": "20260820"}},
+        }
+    ]
+
+    normalized_jobs, guard = normalizer._apply_process_group_filter_fields(
+        jobs,
+        candidates,
+        question,
+    )
+    assert normalized_jobs[0]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": ["D/A1", "W/B6"],
+    }
+    assert guard["corrections"] == [
+        {
+            "source_alias": "production_src",
+            "field": "OPER_NAME",
+            "correction_type": "process_scope_completion",
+            "completion_reason": "direct_process_names",
+            "to_values": ["D/A1", "W/B6"],
+        }
+    ]
+    assert normalizer._validate_process_scope_contract(
+        normalized_jobs,
+        candidates,
+        question,
+    )["status"] == "complete"
+
+    integrated = normalizer.normalize_intent_plan(
+        {"request": {"question": question, "reference_date": "20260820"}},
+        {"intent_plan": {"retrieval_jobs": jobs, "pandas_execution_plan": []}},
+        candidates,
+    )
+    validated = validator.validate_retrieval_payload(integrated)
+    assert validated["intent_plan"]["retrieval_jobs"][0]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": ["D/A1", "W/B6"],
+    }
+    assert validated["trace"]["inspection"]["data_retrieval"]["job_validation"] == {
+        "input_job_count": 1,
+        "valid_job_count": 1,
+        "error_count": 0,
+        "intent_error_count": 0,
+        "errors": [],
+    }
+
+
+def test_direct_process_scope_completion_only_touches_catalog_capable_sources():
+    """A direct scope must not invent OPER_NAME on an unrelated target source."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "payload": {
+                    "aliases": ["DA", "DA공정"],
+                    "field": "OPER_NAME",
+                    "processes": ["D/A1"],
+                },
+            },
+            {
+                "section": "process_groups",
+                "key": "WB",
+                "payload": {
+                    "aliases": ["WB", "WB공정"],
+                    "field": "OPER_NAME",
+                    "processes": ["W/B6"],
+                },
+            },
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "target",
+                "payload": {"columns": ["DATE", "TARGET_QTY"]},
+            },
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "columns": ["DATE", "OPER_NAME", "PRODUCTION"],
+                    "filter_mappings": {"OPER_NAME": ["OPER_NAME"]},
+                },
+            },
+        ],
+    }
+    jobs = [
+        {
+            "dataset_key": "target",
+            "source_alias": "target_src",
+            "filters": {"DATE": {"operator": "eq", "value": "20260820"}},
+        },
+        {
+            "dataset_key": "production_today",
+            "source_alias": "production_src",
+            "filters": {"DATE": {"operator": "eq", "value": "20260820"}},
+        },
+    ]
+    question = "D/A1과 W/B6 공정 목표와 생산량을 비교해줘"
+
+    normalized_jobs, _guard = normalizer._apply_process_group_filter_fields(
+        jobs,
+        candidates,
+        question,
+    )
+    by_alias = {job["source_alias"]: job for job in normalized_jobs}
+    assert "OPER_NAME" not in by_alias["target_src"]["filters"]
+    assert by_alias["production_src"]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": ["D/A1", "W/B6"],
+    }
+    scope = normalizer._validate_process_scope_contract(
+        normalized_jobs,
+        candidates,
+        question,
+    )
+    assert scope["status"] == "complete"
+    assert scope["non_applicable_sources"] == ["target_src"]
+
+
+def test_direct_process_scope_completion_keeps_ambiguous_process_fields_blocked():
+    """Direct codes spanning different canonical fields must not be guessed."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    candidates = {
+        "domain_items": [
+            {
+                "section": "process_groups",
+                "key": "DA",
+                "payload": {
+                    "aliases": ["DA", "DA공정"],
+                    "field": "OPER_NAME",
+                    "processes": ["D/A1"],
+                },
+            },
+            {
+                "section": "process_groups",
+                "key": "WB",
+                "payload": {
+                    "aliases": ["WB", "WB공정"],
+                    "field": "OPER_NUM",
+                    "processes": ["W/B6"],
+                },
+            },
+        ],
+        "table_catalog_items": [
+            {
+                "dataset_key": "production_today",
+                "payload": {
+                    "columns": ["OPER_NAME", "OPER_NUM", "PRODUCTION"],
+                    "filter_mappings": {
+                        "OPER_NAME": ["OPER_NAME"],
+                        "OPER_NUM": ["OPER_NUM"],
+                    },
+                },
+            }
+        ],
+    }
+    question = "D/A1과 W/B6 공정 생산량 알려줘"
+    jobs = [
+        {
+            "dataset_key": "production_today",
+            "source_alias": "production_src",
+            "filters": {},
+        }
+    ]
+
+    normalized_jobs, guard = normalizer._apply_process_group_filter_fields(
+        jobs,
+        candidates,
+        question,
+    )
+    assert normalized_jobs == jobs
+    assert guard["corrections"] == []
+    scope = normalizer._validate_process_scope_contract(
+        normalized_jobs,
+        candidates,
+        question,
+    )
+    assert scope["status"] == "error"
+    assert scope["validation_errors"][0]["type"] == "process_scope_incomplete"
 
 
 def test_process_scope_stays_blocked_when_no_selected_source_supports_it():
@@ -10362,3 +11553,260 @@ def test_v2_today_da_production_raw_legacy_shorthand_executes_fast_without_panda
         {"OPER_NAME": "D/A1", "PRODUCTION": 30},
         {"OPER_NAME": "D/A2", "PRODUCTION": 5},
     ]
+
+
+def test_v2_explicit_clarification_is_not_overwritten_by_process_scope_failure():
+    """An already-clarified process request has no executable filter contract to validate."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    normalized = normalizer.normalize_intent_plan(
+        {
+            "request": {
+                "question": "DA공정 장비 가동율 현황을 알려줘",
+                "reference_date": "20260820",
+            },
+            "trace": {"inspection": {}, "warnings": [], "errors": []},
+        },
+        {
+            "intent_plan": {
+                "analysis_kind": "clarification",
+                "request_scope": "clarification",
+                "reference_mode": "none",
+                "retrieval_jobs": [],
+                "pandas_execution_plan": [],
+                "output_contract": {
+                    "result_mode": "explanation",
+                    "result_columns": [],
+                    "required_columns": [],
+                },
+            },
+            "trace": {
+                "decision_reason": [
+                    "가동율 계산 기준이 등록되지 않아 필요한 지표를 확인해야 합니다."
+                ]
+            },
+        },
+        _today_da_legacy_aggregate_candidates(),
+    )
+
+    plan = normalized["intent_plan"]
+    process_scope = normalized["trace"]["inspection"]["intent"][
+        "process_scope_guard"
+    ]
+    assert plan["request_scope"] == "clarification"
+    assert plan["retrieval_jobs"] == []
+    assert plan["pandas_execution_plan"] == []
+    assert not any(
+        item.get("type") == "process_scope_incomplete"
+        for item in plan.get("validation_errors", [])
+        if isinstance(item, dict)
+    )
+    assert process_scope == {
+        "status": "skipped",
+        "reason": "clarification_has_no_execution_scope",
+        "validation_errors": [],
+    }
+
+
+def test_v2_clarification_terminates_without_pandas_or_result_table():
+    resolver, executor, answer = _modules()
+    payload = {
+        "request": {"question": "DA공정 장비 가동율 현황을 알려줘"},
+        "state": {
+            "current_data": {
+                "columns": ["OPER_NAME", "PRODUCTION"],
+                "rows": [{"OPER_NAME": "D/A1", "PRODUCTION": 30}],
+                "row_count": 1,
+            },
+            "runtime_source_refs": [{"source_alias": "production_today"}],
+            "last_intent_plan": {"analysis_kind": "previous_production"},
+            "last_applied_criteria": {"analysis_filters": {"OPER_NAME": "D/A1"}},
+            "untrusted_transient_key": "must-not-be-copied",
+        },
+        "intent_plan": {
+            "analysis_kind": "clarification",
+            "request_scope": "clarification",
+            "reference_mode": "none",
+            "reuse_strategy": "none",
+            "decision_reason": [
+                "가동율 계산 기준이 등록되지 않아 필요한 지표를 확인해야 합니다."
+            ],
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "explanation",
+                "required_columns": [],
+                "result_columns": [],
+            },
+        },
+        "trace": {"inspection": {}, "warnings": [], "errors": []},
+    }
+    resolved = resolver.resolve_simple_analysis_contract(payload)
+    pandas_calls: list[str] = []
+    executed = executor.execute_hybrid_analysis(
+        resolved,
+        "pandas prompt must not be used",
+        model_invoker=lambda prompt: pandas_calls.append(prompt),
+        repair_prompt_template="repair",
+    )
+    answer_calls: list[str] = []
+    answered = answer.build_hybrid_answer_response(
+        executed,
+        "answer prompt must not be used",
+        model_invoker=lambda prompt: answer_calls.append(prompt),
+        use_llm_answer=True,
+    )
+
+    contract = resolved["simple_analysis_contract"]
+    assert contract["route"] == "complex"
+    assert contract["operation"] == "complete_without_pandas"
+    assert contract["terminal_kind"] == "clarification"
+    assert contract["analysis_execution_mode"] == "terminal_response"
+    assert contract["requires_pandas_llm"] is False
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["analysis"]["execution_route"] == "complex"
+    assert executed["analysis"]["execution_mode"] == "terminal_response"
+    assert executed["data"] == {
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+        "data_ref": "",
+    }
+    assert pandas_calls == []
+    assert answer_calls == []
+    assert "추가 확인이 필요합니다" in answered["answer_message"]
+    assert "가동율 계산 기준" in answered["answer_message"]
+    assert not any(
+        item.get("type") == "empty_result"
+        for item in answered.get("answer_sections", {}).get("notices", [])
+        if isinstance(item, dict)
+    )
+    assert answered["answer_sections"]["next_questions"] == []
+    assert answered["state"]["current_data"] == payload["state"]["current_data"]
+    assert answered["state"]["runtime_source_refs"] == payload["state"]["runtime_source_refs"]
+    assert answered["state"]["last_intent_plan"] == payload["state"]["last_intent_plan"]
+    assert answered["state"]["last_applied_criteria"] == payload["state"]["last_applied_criteria"]
+    assert "untrusted_transient_key" not in answered["state"]
+    assert answered["state"]["pending_clarification"]["question"] == payload["request"]["question"]
+
+    api = load_module(ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py")
+    api_response = api.build_api_response(answered)
+    assert api_response["status"] == "ok"
+
+
+def test_v2_source_less_new_data_request_blocks_before_pandas_model():
+    payload = {
+        "request": {"question": "D724장비 현재 가동율과 Event History 조회해줘"},
+        "intent_plan": {
+            "analysis_kind": "equipment_utilization_and_event_history",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "detail",
+                "required_columns": ["EQP_ID", "EVENT_DESC"],
+                "result_columns": ["EQP_ID", "EVENT_DESC"],
+            },
+        },
+        "trace": {"inspection": {}, "warnings": [], "errors": []},
+    }
+
+    resolved, executed, model_calls = _resolve_and_execute(payload)
+
+    contract = resolved["simple_analysis_contract"]
+    assert contract["route"] == "blocked"
+    assert contract["eligibility"]["reason_codes"] == [
+        "analysis_source_unresolved"
+    ]
+    assert contract["requires_pandas_llm"] is False
+    assert model_calls == []
+    assert executed["analysis"]["status"] == "error"
+    assert executed["execution_gate"]["reason"] == "analysis_source_unresolved"
+    assert executed["data"]["rows"] == []
+    assert not any(
+        row.get("RESULT_COLUMN")
+        for row in executed["data"]["rows"]
+        if isinstance(row, dict)
+    )
+
+    answer = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow_v2" / "20_hybrid_answer_builder.py"
+    )
+    answered = answer.build_hybrid_answer_response(
+        executed,
+        "answer model must not be used",
+        model_invoker=lambda prompt: (_ for _ in ()).throw(
+            AssertionError(f"unexpected answer model call: {prompt}")
+        ),
+        use_llm_answer=True,
+    )
+    message_adapter = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow_v2" / "21_v2_answer_message_adapter.py"
+    )
+    message = message_adapter.build_message(answered)
+    assert "실행 source를 확정하지 못했습니다" in message
+    assert "조건에 맞는 결과 행이 없습니다" not in message
+    assert "### 결과 테이블" not in message
+    assert "RESULT_COLUMN" not in message
+
+    api = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "22_api_response_builder.py"
+    )
+    api_response = api.build_api_response(answered)
+    assert api_response["status"] == "error"
+
+
+def test_v2_source_less_empty_new_analysis_plan_also_blocks_before_model():
+    payload = {
+        "request": {"question": "D724장비 Event History 조회해줘"},
+        "intent_plan": {
+            "analysis_kind": "equipment_event_history",
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [],
+            "output_contract": {},
+        },
+        "trace": {"inspection": {}, "warnings": [], "errors": []},
+    }
+
+    resolved, executed, model_calls = _resolve_and_execute(payload)
+
+    assert resolved["simple_analysis_contract"]["route"] == "blocked"
+    assert resolved["simple_analysis_contract"]["eligibility"][
+        "reason_codes"
+    ] == ["analysis_source_unresolved"]
+    assert model_calls == []
+    assert executed["execution_gate"]["reason"] == "analysis_source_unresolved"
+    assert executed["data"]["rows"] == []
+
+
+def test_v2_source_less_followup_explanation_skips_pandas_without_blocking():
+    payload = {
+        "intent_plan": {
+            "analysis_kind": "explain_previous_result",
+            "request_scope": "followup_explain",
+            "reference_mode": "previous_trace",
+            "reuse_strategy": "trace_only",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [],
+            "output_contract": {
+                "result_mode": "explanation",
+                "required_columns": [],
+                "result_columns": [],
+            },
+        },
+        "trace": {"inspection": {}, "warnings": [], "errors": []},
+    }
+
+    resolved, executed, model_calls = _resolve_and_execute(payload)
+
+    assert resolved["simple_analysis_contract"]["route"] == "complex"
+    assert resolved["simple_analysis_contract"]["operation"] == "complete_without_pandas"
+    assert resolved["simple_analysis_contract"]["terminal_kind"] == "direct_answer"
+    assert executed["analysis"]["status"] == "ok"
+    assert executed["analysis"]["execution_route"] == "complex"
+    assert executed["analysis"]["execution_mode"] == "terminal_response"
+    assert executed.get("execution_gate", {}).get("status") != "blocked"
+    assert model_calls == []

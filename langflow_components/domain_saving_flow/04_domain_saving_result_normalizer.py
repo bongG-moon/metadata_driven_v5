@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from copy import deepcopy
 from typing import Any
@@ -85,6 +86,9 @@ WORKER_RECIPE_KEY_PATTERN = re.compile(
 )
 WORKER_NUNIQUE_CUES = ("중복 없이", "중복제거", "중복 제거", "고유", "unique", "nunique")
 WORKER_SUM_CUES = ("합계", "합을", "합산", "합계로", "sum")
+DERIVED_FORMULA_OPERATORS = {"add", "subtract", "multiply", "divide"}
+DERIVED_FORMULA_NULL_POLICIES = {"zero", "propagate"}
+DERIVED_FORMULA_ZERO_DIVISION_POLICIES = {"zero", "null"}
 
 
 # 주요 함수: LLM 등록 후보 JSON을 추출·검증해 저장 전 표준 items 배열로 정리합니다.
@@ -113,6 +117,12 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
             f"items[{index}].payload",
         )
         errors.extend(operator_errors)
+        if item.get("section") == "analysis_recipes":
+            item["payload"], formula_errors = _normalize_derived_metric_contracts(
+                item["payload"],
+                f"items[{index}].payload.derived_metrics",
+            )
+            errors.extend(formula_errors)
         if item.get("section") == "pandas_function_cases":
             item["payload"], execution_contract_errors = (
                 _normalize_function_case_execution_contract(
@@ -633,6 +643,198 @@ def _unique_text(values: list[Any]) -> list[str]:
             seen.add(text)
             result.append(text)
     return result
+
+
+# 함수 설명: analysis recipe의 안전한 산술 파생 metric 계약만 정규화해 저장 전 검증합니다.
+def _normalize_derived_metric_contracts(
+    payload: dict[str, Any],
+    path: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Validate a small declarative arithmetic contract without expression evaluation.
+
+    Recipes may describe a calculation such as ``A * B * 24``.  The runtime
+    accepts only column references and finite numeric constants, so this
+    normalizer deliberately rejects arbitrary expression strings, nested
+    formulas, and unknown policies before an item can be written to MongoDB.
+    Recipes without ``derived_metrics`` remain unchanged for compatibility.
+    """
+
+    normalized = deepcopy(payload)
+    raw_metrics = normalized.get("derived_metrics")
+    if raw_metrics in (None, "", []):
+        normalized.pop("derived_metrics", None)
+        return normalized, []
+    if not isinstance(raw_metrics, list):
+        return normalized, [
+            {
+                "type": "invalid_derived_metrics",
+                "message": "analysis recipe의 derived_metrics는 배열이어야 합니다.",
+                "path": path,
+            }
+        ]
+
+    errors: list[dict[str, Any]] = []
+    derived_metrics: list[dict[str, Any]] = []
+    output_names: set[str] = set()
+    for index, raw_metric in enumerate(raw_metrics):
+        item_path = f"{path}[{index}]"
+        if not isinstance(raw_metric, dict):
+            errors.append(
+                {
+                    "type": "invalid_derived_metric",
+                    "message": "파생 metric 항목은 object여야 합니다.",
+                    "path": item_path,
+                }
+            )
+            continue
+        output_column = str(raw_metric.get("output_column") or "").strip()
+        operator = str(raw_metric.get("operator") or "").strip().lower()
+        operands = raw_metric.get("operands")
+        if not output_column:
+            errors.append(
+                {
+                    "type": "derived_metric_output_column_missing",
+                    "message": "파생 metric에는 output_column이 필요합니다.",
+                    "path": item_path,
+                }
+            )
+            continue
+        output_key = output_column.casefold()
+        if output_key in output_names:
+            errors.append(
+                {
+                    "type": "duplicate_derived_metric_output_column",
+                    "message": "파생 metric output_column은 recipe 안에서 고유해야 합니다.",
+                    "path": f"{item_path}.output_column",
+                }
+            )
+            continue
+        output_names.add(output_key)
+        if operator not in DERIVED_FORMULA_OPERATORS:
+            errors.append(
+                {
+                    "type": "unsupported_derived_metric_operator",
+                    "message": "파생 metric operator는 add, subtract, multiply, divide만 사용할 수 있습니다.",
+                    "path": f"{item_path}.operator",
+                }
+            )
+            continue
+        if not isinstance(operands, list) or not 2 <= len(operands) <= 8:
+            errors.append(
+                {
+                    "type": "invalid_derived_metric_operands",
+                    "message": "파생 metric operands는 2개 이상 8개 이하의 배열이어야 합니다.",
+                    "path": f"{item_path}.operands",
+                }
+            )
+            continue
+        if operator in {"subtract", "divide"} and len(operands) != 2:
+            errors.append(
+                {
+                    "type": "invalid_derived_metric_operand_count",
+                    "message": "subtract와 divide는 operands를 정확히 2개 사용해야 합니다.",
+                    "path": f"{item_path}.operands",
+                }
+            )
+            continue
+
+        normalized_operands: list[dict[str, Any]] = []
+        valid_operands = True
+        for operand_index, raw_operand in enumerate(operands):
+            operand_path = f"{item_path}.operands[{operand_index}]"
+            if not isinstance(raw_operand, dict) or len(raw_operand) != 1:
+                valid_operands = False
+            elif "column" in raw_operand:
+                column = str(raw_operand.get("column") or "").strip()
+                if column:
+                    normalized_operands.append({"column": column})
+                    continue
+                valid_operands = False
+            elif "constant" in raw_operand:
+                constant = raw_operand.get("constant")
+                if isinstance(constant, bool):
+                    valid_operands = False
+                else:
+                    try:
+                        numeric = float(constant)
+                    except (TypeError, ValueError):
+                        valid_operands = False
+                    else:
+                        if math.isfinite(numeric):
+                            normalized_operands.append({"constant": constant})
+                            continue
+                        valid_operands = False
+            else:
+                valid_operands = False
+            if not valid_operands:
+                errors.append(
+                    {
+                        "type": "invalid_derived_metric_operand",
+                        "message": "operand는 column 또는 유한한 numeric constant 하나만 가져야 합니다.",
+                        "path": operand_path,
+                    }
+                )
+                break
+        if not valid_operands:
+            continue
+
+        null_policy = str(raw_metric.get("null_policy") or "propagate").strip().lower()
+        if null_policy not in DERIVED_FORMULA_NULL_POLICIES:
+            errors.append(
+                {
+                    "type": "invalid_derived_metric_null_policy",
+                    "message": "null_policy는 zero 또는 propagate만 사용할 수 있습니다.",
+                    "path": f"{item_path}.null_policy",
+                }
+            )
+            continue
+        result: dict[str, Any] = {
+            "output_column": output_column,
+            "operator": operator,
+            "operands": normalized_operands,
+            "null_policy": null_policy,
+        }
+        if operator == "divide":
+            zero_division_policy = str(
+                raw_metric.get("zero_division_policy") or "null"
+            ).strip().lower()
+            if zero_division_policy not in DERIVED_FORMULA_ZERO_DIVISION_POLICIES:
+                errors.append(
+                    {
+                        "type": "invalid_derived_metric_zero_division_policy",
+                        "message": "divide의 zero_division_policy는 zero 또는 null만 사용할 수 있습니다.",
+                        "path": f"{item_path}.zero_division_policy",
+                    }
+                )
+                continue
+            result["zero_division_policy"] = zero_division_policy
+        if "round_digits" in raw_metric:
+            raw_round_digits = raw_metric.get("round_digits")
+            if isinstance(raw_round_digits, bool):
+                round_digits = -1
+            else:
+                try:
+                    round_digits = int(raw_round_digits)
+                except (TypeError, ValueError):
+                    round_digits = -1
+            try:
+                is_integral = float(round_digits) == float(raw_round_digits)
+            except (TypeError, ValueError):
+                is_integral = False
+            if not is_integral or not 0 <= round_digits <= 12:
+                errors.append(
+                    {
+                        "type": "invalid_derived_metric_round_digits",
+                        "message": "round_digits는 0 이상 12 이하의 정수여야 합니다.",
+                        "path": f"{item_path}.round_digits",
+                    }
+                )
+                continue
+            result["round_digits"] = round_digits
+        derived_metrics.append(result)
+    if not errors:
+        normalized["derived_metrics"] = derived_metrics
+    return normalized, errors
 
 
 # 함수 설명: Domain payload 내부의 filter operator 표현을 실행 계약의 canonical 형태로 정규화합니다.
