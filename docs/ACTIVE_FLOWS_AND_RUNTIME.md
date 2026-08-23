@@ -32,7 +32,7 @@ Direct compatibility run ──> 07 Legacy Realtime Production Report
 
 | Flow | Use it when | Key output |
 | --- | --- | --- |
-| 01 Data Analysis | A question can be answered from registered metadata and one analysis request | Answer, result rows, result/download reference, optional curated intermediate data |
+| 01 Data Analysis | A question can be answered from registered metadata and one analysis request | Answer, result rows, result/download reference, optional curated intermediate data, execution-process HTML link |
 | 02 Domain Saving | A work owner wants to register business-language rules | Normalized Domain item; `dry_run` is on by default |
 | 03 Table Catalog Saving | A data owner wants to register a dataset, physical columns, filters, and retrieval configuration | Normalized Table Catalog item |
 | 04 Main Flow Filter Saving | A shared filter rule is needed across questions | Main filter item |
@@ -77,6 +77,16 @@ The final-result table keeps its preview rows in data.rows and exposes only disp
 
 This preserves a compact answer message and prevents a browser client from parsing trace or evidence objects to create a table. Intermediate preview rows are removed from the public analysis, trace, and answer evidence copies, leaving `intermediate_tables[n].rows` as their only API location. The client can render each intermediate table from that field, show the preview notice only when `preview_only` is true, and use the optional download object for the full CSV. The 22 API node exposes an advanced `중간 결과 미리보기 행 수` input; values are limited to the same 1–5 range as the answer-message adapter.
 
+### Execution-process HTML artifact
+
+Flow 01 node `25 분석 처리 과정 HTML 발행기` runs only after analysis execution, result/session persistence, and runtime cleanup. It creates a separate static HTML artifact that summarizes the selected domain metadata, actual retrieval conditions and row counts, processing steps, final-result facts, and any user-safe blocked/error explanation. The ordinary chat answer remains compact and shows only `분석 과정 보기` and `HTML 다운로드` links when publication succeeds.
+
+The report keeps original data, curated intermediate data, and the final result in one same-page data workbench. Its tabs switch tables without opening `/view` or another report page. A table first renders its bounded preview, then lazily requests the approved complete rows from the same-origin `/download.json` URL when that table is selected. The workbench provides full-text or selected-column filtering, sortable columns, page-size/page navigation, and a complete CSV download. If the JSON reference is unavailable, expired, or too large to load, the bounded preview and CSV link remain available; this browser-side convenience never changes the analysis result or stored-data contract.
+
+The publisher is a best-effort sidecar: render or API publication failure is recorded only as an internal warning, never changes the analysis status or result table. Node 04 creates a small credential-free projection of only the selected domain definitions; it is not part of intent, retrieval, or execution decisions. Node 24 moves that projection and the bounded data previews to the Node 25 sidecar, and Node 25 consumes then removes them before chat/API/session output. The report displays each applied domain as an expandable card with its safe registered detail. The preview is limited to at most eight source tables, four intermediate tables, one final table, 20 columns per table, 10 source/intermediate rows, 30 final rows, and 3,000 cells total. Generated pandas code, raw traces, connection/query details, credentials, and sensitive columns are excluded. When its `발행 대상 HTML Report API 주소` input is blank, it targets `API_SERVER_REPORT_API_URL`, then `API_SERVER_PUBLIC_BASE_URL`, then `http://127.0.0.1:5000/reports`; a nonblank input is an explicit override. It uses a one-hour link TTL and gives the API call a two-second bound.
+
+For a shared production server, set `REPORT_USE_ACCESS_TOKEN=true` and configure `API_SERVER_PUBLIC_BASE_URL` to the browser-reachable API base URL. Configure Node 23's `다운로드 링크 Base URL` to the same public origin as the report URL so the report's in-page `/download.json` request remains same-origin. The report CSP permits `connect-src 'self'` only; it deliberately does not open an external browser data connection. This protects each report link without changing the analysis Flow itself; the default remains compatible with a local developer run.
+
 ## Required runtime services
 
 ### Langflow
@@ -96,10 +106,11 @@ python API_SERVER\app.py
 It serves:
 
 - `/download.csv` and `/download.json` for data-result references;
-- `/reports` and `/reports/view/{report_id}` for the Flow 07 and 07-1 HTML report lifecycle;
+- `/view` for a standalone data-reference explorer when one is needed outside the report;
+- `/reports` and `/reports/view/{report_id}` for Flow 01 execution-process HTML and the Flow 07/07-1 HTML report lifecycle;
 - `/health` for an operational health check.
 
-The default local URL is `http://127.0.0.1:5000`. Keep the listen address and public link address separate through `API_SERVER/.env`; do not expose `0.0.0.0` as a user-facing URL.
+`API_SERVER_PORT` controls the local bind port for both data downloads and HTML reports; `API_SERVER_PUBLIC_BASE_URL` controls the browser-facing report links. For a single local server, set both to the same port, such as `8765` and `http://127.0.0.1:8765`. Keep the listen address and public link address separate when a reverse proxy is used; do not expose `0.0.0.0` as a user-facing URL.
 
 ## Import and update
 

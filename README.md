@@ -26,6 +26,7 @@ Langflow standalone 환경에서 실행하는 메타데이터 기반 제조 데�
 - 개별 Flow와 import 방법: [README_IMPORT.md](import_ready_flows/README_IMPORT.md)
 - 기본 Data Analysis: [01_data_analysis_flow_v2_standalone.json](import_ready_flows/01_data_analysis_flow_v2_standalone.json)
 - 변경 전 Report: [07_realtime_production_report_legacy_flow_v5_standalone.json](import_ready_flows/07_realtime_production_report_legacy_flow_v5_standalone.json)
+- 기존 저장 Flow와 분리된 rev_2 3종: [rev_2/README_IMPORT.md](import_ready_flows/rev_2/README_IMPORT.md)
 
 Import 후에는 Langflow Provider 설정과 `MONGO_URL` Credential Global Variable을 설정합니다. 이미 저장된 Router의 `flow_id_selected`가 있으면, 해당 Tool의 대상 Flow를 한 번 다시 선택해 현재 import Flow ID로 갱신합니다.
 
@@ -56,16 +57,19 @@ $lf = "$env:LOCALAPPDATA\com.LangflowDesktop\.langflow-venv\Scripts\python.exe"
 & $lf tools\build_v5_auxiliary_flows.py
 & $lf tools\build_data_analysis_flow_v2.py
 & $lf tools\build_import_ready_bundle.py
+& $lf tools\build_metadata_saving_rev_2_flows.py
 ```
 
 ## 검증
 
 ```powershell
 $lf = "$env:LOCALAPPDATA\com.LangflowDesktop\.langflow-venv\Scripts\python.exe"
-& $lf -m pytest tests/test_data_analysis_flow_v2.py tests/test_v5_flow_export.py -q --basetemp=.pytest-tmp
+& $lf -m pytest tests/test_data_analysis_flow_v2.py tests/test_v5_flow_export.py tests/test_metadata_saving_rev_2.py -q --basetemp=.pytest-tmp
 & $lf tools\validate_flow_component_sources.py
 & $lf tools\validate_langflow_runtime.py --all-flows
 ```
+
+`--all-flows`는 기존 canonical 9개 export를 검사합니다. 저장 Flow rev_2는 별도 파일 3개를 `--flow flow_exports\rev_2\...json`으로 각각 검사합니다. 설계·입력/응답 예시와 운영 전환 조건은 [METADATA_SAVING_REV_2.md](docs/METADATA_SAVING_REV_2.md)를 참고하세요.
 
 실제 Provider·MongoDB·원천 데이터 연결이 필요한 검증은 해당 운영 환경의 인증정보와 네트워크가 준비된 뒤 수행합니다. 연결 실패 시에는 모델이 데이터셋을 추측하지 않고, 메타데이터 연결 또는 등록 상태를 오류 원인으로 반환하도록 설계되어 있습니다.
 

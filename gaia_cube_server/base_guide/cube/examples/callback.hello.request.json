@@ -1,0 +1,17 @@
+{
+  "richnotificationmessage": {
+    "header": {
+      "from": {
+        "uniquename": "EMPLOYEE_ID_EXAMPLE"
+      },
+      "to": {
+        "channelid": [
+          "CHANNEL_ID_EXAMPLE"
+        ]
+      }
+    },
+    "process": {
+      "processdata": "!@#HelloChatBot#@!"
+    }
+  }
+}

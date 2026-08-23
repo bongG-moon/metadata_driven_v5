@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
+from urllib.parse import urlsplit
 
 from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, IntInput, MessageTextInput, Output
@@ -20,6 +21,14 @@ from lfx.schema.data import Data
 MAX_INTERMEDIATE_TABLE_COUNT = 8
 DEFAULT_INTERMEDIATE_PREVIEW_ROWS = 5
 MAX_INTERMEDIATE_PREVIEW_ROWS = 5
+MAX_PUBLIC_ARTIFACTS = 8
+MAX_ARTIFACT_TEXT_LENGTH = 500
+
+# The execution-trace publisher owns creation of this descriptor.  The API
+# boundary only passes through the safe, display-ready metadata, never HTML,
+# source rows, trace payloads, or publisher internals.
+ANALYSIS_EXECUTION_REPORT_TYPE = "analysis_execution_report"
+ANALYSIS_EXECUTION_HTML_ARTIFACT_TYPE = "analysis_execution_html"
 
 # API contract: final rows remain in data.rows; curated checkpoints are projected
 # into intermediate_tables so a web client can render them without parsing the message.
@@ -57,6 +66,7 @@ def build_api_response(
         "intermediate_tables": intermediate_tables,
         "data_refs": payload.get("data_refs", []),
         "download_manifest": payload.get("download_manifest", []),
+        "artifacts": _public_artifacts(payload),
         "state": payload.get("state", {}),
         "trace": _without_intermediate_results(payload.get("trace")),
     }
@@ -394,6 +404,128 @@ def _payload(value: Any) -> dict[str, Any]:
         return {}
     excluded = {"runtime_sources", "_runtime_rows_by_alias", "_full_result_rows", "_runtime_result_rows"}
     return {key: deepcopy(item) for key, item in data.items() if key not in excluded}
+
+
+# 함수 설명: `_public_artifacts()`는 API가 안전하게 전달할 수 있는 분석 과정 HTML
+# artifact만 독립 필드로 투영합니다. data_refs나 download_manifest에 합치지 않아
+# 데이터 파일과 실행 설명서를 클라이언트가 명확히 구분할 수 있게 합니다.
+def _public_artifacts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    values = payload.get("artifacts")
+    if not isinstance(values, list):
+        return []
+
+    artifacts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        descriptor = _public_analysis_execution_artifact(value)
+        if not descriptor:
+            continue
+        signature = "|".join(
+            (
+                _text(descriptor.get("report_id")),
+                _text(descriptor.get("view_url")),
+                _text(descriptor.get("download_url")),
+            )
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        artifacts.append(descriptor)
+        if len(artifacts) >= MAX_PUBLIC_ARTIFACTS:
+            break
+    return artifacts
+
+
+# 함수 설명: `_public_analysis_execution_artifact()`는 실행 과정 HTML descriptor의
+# 허용 필드만 복사합니다. publisher 오류·raw HTML·진단 원문처럼 API에 불필요한
+# 내부 값은 포함하지 않습니다.
+def _public_analysis_execution_artifact(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not _is_analysis_execution_artifact(value):
+        return {}
+
+    status = _artifact_text(value.get("status"), 40).lower()
+    if status in {"error", "failed", "failure", "unavailable", "disabled", "skipped"}:
+        return {}
+    view_url = _public_artifact_url(value.get("view_url"))
+    download_url = _public_artifact_url(value.get("download_url"))
+    if not view_url and not download_url:
+        return {}
+
+    descriptor = {
+        "artifact_type": ANALYSIS_EXECUTION_HTML_ARTIFACT_TYPE,
+        "type": ANALYSIS_EXECUTION_REPORT_TYPE,
+        "status": status or "ok",
+        "title": _artifact_text(value.get("title"), 200) or "분석 처리 과정",
+        "label": _artifact_text(value.get("label"), 200) or "분석 처리 과정 HTML",
+        "mime_type": _artifact_text(value.get("mime_type"), 120) or "text/html",
+    }
+    for key in ("report_id", "expires_at", "storage_backend"):
+        text = _artifact_text(value.get(key), MAX_ARTIFACT_TEXT_LENGTH)
+        if text:
+            descriptor[key] = text
+    if view_url:
+        descriptor["view_url"] = view_url
+    if download_url:
+        descriptor["download_url"] = download_url
+    ttl_hours = _artifact_ttl_hours(value.get("ttl_hours"))
+    if ttl_hours:
+        descriptor["ttl_hours"] = ttl_hours
+    return descriptor
+
+
+# 함수 설명: type 또는 artifact_type 중 하나가 발행기 계약과 일치할 때만 분석
+# 과정 HTML artifact로 인식합니다. 임의 URL 객체가 API 링크로 노출되는 것을 막습니다.
+def _is_analysis_execution_artifact(value: dict[str, Any]) -> bool:
+    descriptor_type = _artifact_text(value.get("type"), 80).lower()
+    artifact_type = _artifact_text(value.get("artifact_type"), 80).lower()
+    return (
+        descriptor_type == ANALYSIS_EXECUTION_REPORT_TYPE
+        or artifact_type == ANALYSIS_EXECUTION_HTML_ARTIFACT_TYPE
+    )
+
+
+# 함수 설명: `_public_artifact_url()`는 report API가 반환한 public HTTP(S) URL만
+# 허용합니다. 인증 정보, 제어문자, fragment는 API 응답과 클라이언트 링크에서 제외합니다.
+def _public_artifact_url(value: Any) -> str:
+    raw_url = str(value or "").strip()
+    if any(ord(character) < 32 for character in raw_url):
+        return ""
+    url = _artifact_text(raw_url, 4_096)
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        return ""
+    return url
+
+
+# 함수 설명: `_artifact_text()`는 descriptor의 사용자/API 표시 텍스트에서 제어문자와
+# 과도한 길이를 제거합니다. URL은 `_public_artifact_url()`에서 추가 검증합니다.
+def _artifact_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = "".join(character for character in text if ord(character) >= 32)
+    return text[:limit].strip()
+
+
+# 함수 설명: `_artifact_ttl_hours()`는 실행 과정 Report의 보관 시간을 API 숫자
+# 계약으로 제한합니다. 0·음수·비숫자 값은 생략합니다.
+def _artifact_ttl_hours(value: Any) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return resolved if 0 < resolved <= 24 * 7 else 0
 
 
 # 함수 설명: `_text()`는 Message나 일반 값을 앞뒤 공백이 정리된 문자열로 변환합니다.

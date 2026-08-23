@@ -1,0 +1,22 @@
+{
+  "richnotificationmessage": {
+    "header": {
+      "from": {
+        "uniquename": "EMPLOYEE_ID_EXAMPLE",
+        "username": "USER_NAME_EXAMPLE"
+      },
+      "to": {
+        "channelid": [
+          "CHANNEL_ID_EXAMPLE"
+        ]
+      }
+    },
+    "process": {
+      "processdata": "",
+      "userId": "EMPLOYEE_ID_EXAMPLE",
+      "channelId": "CHANNEL_ID_EXAMPLE",
+      "UserSelection": "2",
+      "SendBtn": "submit"
+    }
+  }
+}

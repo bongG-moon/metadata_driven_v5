@@ -1,0 +1,50 @@
+{
+  "richnotification": {
+    "header": {
+      "from": "YOUR_BOT_ID",
+      "token": "YOUR_BOT_TOKEN",
+      "to": {
+        "uniquename": [
+          "TARGET_USER_ID"
+        ],
+        "channelid": [
+          "TARGET_CHANNEL"
+        ]
+      }
+    },
+    "content": [
+      {
+        "header": {},
+        "body": {
+          "bodystyle": "none",
+          "row": [
+            {
+              "bgcolor": "#ffffff",
+              "border": false,
+              "align": "",
+              "width": "",
+              "column": [
+                {
+                  "bgcolor": "#ffffff",
+                  "border": false,
+                  "align": "",
+                  "valign": "middle",
+                  "width": "100%",
+                  "type": "label",
+                  "control": {
+                    "active": true,
+                    "text": [
+                      "안녕하세요! Python 봇이 보낸 테스트 메시지입니다."
+                    ],
+                    "color": "#000000"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "process": {}
+      }
+    ]
+  }
+}

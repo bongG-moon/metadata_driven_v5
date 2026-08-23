@@ -1,0 +1,283 @@
+CUBE개발 관련 코드
+
+메세지 발송
+
+
+
+1. 메시지 발송 JSON 데이터 구조 분석
+서버로 보낼 데이터는 크게 헤더 (Header)와 내용 (Content) 두 부분으로 나뉩니다. 마치 메일의 "수신/발송자 정보"와 "메일 내용"과 같습니다.
+
+
+주요 요소 설명
+구분
+키 (Key)
+설명
+예시 값
+전체
+richnotification
+메시지 전체를 감싸는 최상위 이름
+헤더
+header
+누가, 누구에게 보내는지에 대한 정보
+
+├─ from
+(필수) 메시지를 보내는 봇의 사번 (ID)
+"12345"
+
+├─ token
+(필수) 봇의 인증 키 (비밀번호)
+"abcde-token"
+
+└─ to
+수신자 정보 (대상과 채널)
+
+├─ uniquename
+(필수) 메시지를 받을 사용자 사번 목록
+["12345", "67890"]
+
+└─ channelid
+(필수) 메시지를 보낼 채널 ID 목록
+["channel_01"]
+내용
+content
+실제로 보여줄 메시지 내용 목록
+
+└─ (배열 내부)
+메시지 블록 단위 (여기서는 텍스트)
+
+├─ body
+메시지 본문 디자인 및 내용
+
+└─ row > column
+실제 텍스트가 들어가는 곳
+
+├─ type
+요소 종류 (텍스트는 "label")
+"label"
+
+└─ control > text
+(필수) 보낼 메시지 문구
+["안녕하세요"]
+
+💡 핵심 포인트:
+
+uniquename 과 channelid 는 반드시 목록 (배열, [ ]) 형태여야 합니다. 한 명에게 보낼 때도 ["사번"] 으로 감싸야 합니다.
+메시지 내용 (text) 도 마찬가지로 목록 형태 ["문구"] 로 입력합니다.
+
+
+Python 코드 구현
+위 JSON 구조를 그대로 만들어서 서버로 보내는 Python 코드입니다.
+
+미리 설치 필요: pip install requests
+
+
+python
+
+import requests
+import json
+
+--- 설정 정보 (문서에 있는 값으로 교체 필요) ---
+API_URL = "http://cube.example.internal/legacy/richnotification" # Cube 개발 서버 URL
+BOT_ID = "YOUR_BOT_ID" # 봇 사번 (예: "12345")
+BOT_TOKEN = "YOUR_BOT_TOKEN" # 봇 인증 토큰
+RECEIVER_ID = "TARGET_USER_ID" # 받을 사람 사번
+CHANNEL_ID = "TARGET_CHANNEL" # 보낼 채널 ID
+MESSAGE_TEXT = "안녕하세요! Python 봇이 보낸 테스트 메시지입니다."
+
+def send_chatops_message():
+# 1. 헤더 (Header) 구성
+# 받는 사람 (uniquename) 과 채널 (channelid) 은 반드시 리스트 (배열) 로 감싸야 합니다.
+header_data = {
+"from": BOT_ID,
+"token": BOT_TOKEN,
+"to": {
+"uniquename": [RECEIVER_ID],
+"channelid": [CHANNEL_ID]
+}
+}
+
+# 2. 내용 (Content) 구성
+# 문서의 구조에 맞춰 nested(중첩) 된 형태로 만듭니다.
+content_data = [
+{
+"header": {}, # 본문 헤더는 비워둬도 무방
+"body": {
+"bodystyle": "none",
+"row": [
+{
+"bgcolor": "#ffffff",
+"border": False,
+"align": "",
+"width": "",
+"column": [
+{
+"bgcolor": "#ffffff",
+"border": False,
+"align": "",
+"valign": "middle",
+"width": "100%",
+"type": "label", # 텍스트 타입
+"control": {
+"active": True,
+"text": [MESSAGE_TEXT], # 메시지 내용은 리스트 형태
+"color": "#000000"
+}
+}
+]
+}
+]
+},
+"process": {} # 추가 처리 사항이 없다면 빈 객체
+}
+]
+
+# 3. 최종 JSON 데이터 조립
+payload = {
+"richnotification": {
+"header": header_data,
+"content": content_data
+}
+}
+
+# 4. HTTP 요청 헤더 설정
+headers = {
+"Content-Type": "application/json"
+}
+
+try:
+# 5. POST 요청 보내기
+print(f"🚀 {RECEIVER_ID} 님에게 메시지를 전송합니다...")
+response = requests.post(API_URL, data=json.dumps(payload), headers=headers)
+
+# 6. 결과 확인
+if response.status_code == 200:
+print("✅ 메시지 전송 성공!")
+print(f"서버 응답: {response.text}")
+else:
+print(f"❌ 전송 실패 (상태코드: {response.status_code})")
+print(f"응답 내용: {response.text}")
+
+except Exception as e:
+print(f"⚠️ 오류 발생: {str(e)}")
+
+
+
+
+🔍 코드 실행 전 체크리스트
+URL 확인: 운영 담당자가 제공한 내부 주소가 현재 환경과 일치하는지 확인하세요. (방화벽 등으로 접근 불가할 수 있음)
+인증 정보: BOT_ID 와 BOT_TOKEN 은 실제 ChatOps 관리자 페이지에서 발급받은 값으로 채워야 합니다.
+수신자 형식: uniquename 과 channelid 가 문자열 하나가 아니라 반드시 대괄호 [] 로 감싼 리스트 형태여야 합니다. (예: "12345" (X) → ["12345"] (O))
+메시지 형식: text 항목도 ["안녕하세요"] 처럼 리스트 안에 문자열을 넣어야 정상적으로 노출됩니다.
+
+
+
+====================================================================================================
+CUBE메세지 수신 및 CALL BACK
+
+
+구현 가이드: 메시지 수신 및 동작 수행
+
+이제 Cube에 보내진 메시지를 다시 받아 Action을 수행해보도록 하겠습니다.
+
+
+개념 상기 : 콜백 (Callback) 이란?
+사용자가 챗봇에게 메시지를 보냈을 때, Cube 시스템이 해당 이벤트를 전달할 수신 엔드포인트 (Endpoint) URL입니다.
+
+
+Request/Response Json 가이드
+Callback API 에서 받는 Json 포맷을 정의합니다.
+
+요청 (Request Body)
+ChatOps 나 외부 시스템에서 POST 로 날려주는 데이터 구조입니다.
+
+json
+{
+"richnotificationmessage": {
+"process": {
+"processdata": "#점심 뭐 먹을까?",
+"userId": "user_12345",
+"channelId": "channel_general"
+}
+}
+}
+
+
+
+핵심 필드: richnotificationmessage.process.processdata (사용자가 입력한 문자열)
+
+응답 (Response Body)
+컨트롤러에서 처리 후 반환하는 데이터 구조입니다. 해당 위치에서 status만 넘기고, 이전 가이드와 같이 원하는 메시지를 send할 수 있습니다.
+
+json
+{
+"status": "success",
+"message": "🍽 오늘의 추천: 비빔밥",
+"targetUser": "user_12345"
+}
+
+
+
+status: success, ignore, error
+message: 사용자에게 보낼 실제 텍스트 내용
+
+
+[가이드] API 요청/응답 및 처리 절차
+처리 절차 (Flow)
+API Controller 는 다음 4 단계로 요청을 처리합니다.
+
+Request Body 파싱: 들어온 JSON 에서 사용자 메시지 (processdata) 를 추출합니다.
+메시지 분석: 메시지가 분석하여 처리합니다.
+비즈니스 로직 수행: 분석된 명령어에 따라 실제 기능 (점심 추천 등) 을 실행하고 응답 문구를 생성합니다.
+결과 반환 및 발송: 생성된 문구를 사용자에게 발송 (send_message) 한 후, HTTP 응답 (Status, Message) 을 반환합니다.
+
+
+PYTHON CODE
+
+from flask import Flask, request, jsonify
+사내 Spring Boot 환경이라면:
+import org.springframework.web.bind.annotation.*
+import org.springframework.http.ResponseEntity
+
+app = Flask(name)
+
+@app.route('/api/chatops/callback', methods=['POST'])
+def handle_chatops_callback():
+"""
+[진입점] 외부 ChatOps 시스템으로부터 요청을 수신하는 API
+"""
+try:
+# 1. Request Body 파싱
+req_body = request.get_json()
+if not req_body:
+return jsonify({"status": "error", "message": "Empty body"}), 400
+
+# 2. 사용자 메시지 추출 (가이드 참조)
+user_msg = ""
+try:
+user_msg = req_body['richnotificationmessage']['process']['processdata']
+except KeyError:
+return jsonify({"status": "error", "message": "Invalid format"}), 400
+
+# 3. 비즈니스 로직 수행 (Block 2~4 함수 호출)
+cmd, param = parse_cmd(user_msg)
+
+if not cmd:
+# 명령어가 아니면 무시
+return jsonify({"status": "ignore", "message": "Not a command"}), 200
+
+reply_text = run_logic(cmd, param)
+
+# 4. 결과 반환
+if reply_text:
+# 구현 가이드: 텍스트 메시지 발송 함수 호출 (블록 5 참조)
+send_message_to_user(req_body, reply_text)
+return jsonify({"status": "success", "message": reply_text}), 200
+else:
+return jsonify({"status": "not_found", "message": "Unknown command"}), 200
+
+except Exception as e:
+return jsonify({"status": "error", "message": str(e)}), 500
+
+
+
+====================================================================================================

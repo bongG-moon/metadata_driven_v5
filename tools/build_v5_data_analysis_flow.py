@@ -107,9 +107,10 @@ DATA_ANALYSIS_V2_LAYOUT_OVERRIDES = {
     "CustomComponent-BVItv": (7950.0, 100.0),
     "CustomComponent-fXdS4": (8400.0, 100.0),
     "CustomComponent-v5RuntimeCleanup": (8850.0, 100.0),
-    "CustomComponent-A5y0b": (9300.0, 100.0),
-    "ChatOutput-rwbTs": (10200.0, 100.0),
-    "CustomComponent-3eVde": (9750.0, 700.0),
+    "CustomComponent-v5ExecutionTraceArtifact": (9300.0, 100.0),
+    "CustomComponent-A5y0b": (9750.0, 100.0),
+    "ChatOutput-rwbTs": (10650.0, 100.0),
+    "CustomComponent-3eVde": (10200.0, 700.0),
 }
 
 COMPONENT_FILES = {

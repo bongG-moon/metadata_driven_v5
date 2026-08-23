@@ -57,20 +57,25 @@ $env:LANGFLOW_COMPONENT_INDEX_PATH = "$env:LOCALAPPDATA\com.LangflowDesktop\.lan
 & $lf tools\build_v5_auxiliary_flows.py
 & $lf tools\build_data_analysis_flow_v2.py
 & $lf tools\build_import_ready_bundle.py
+& $lf tools\build_metadata_saving_rev_2_flows.py
 ```
 
 그 다음 아래 검증을 모두 통과해야 합니다.
 
 ```powershell
-& $lf -m pytest tests/test_data_analysis_flow_v2.py tests/test_v5_flow_export.py -q --basetemp=.pytest-tmp
+& $lf -m pytest tests/test_data_analysis_flow_v2.py tests/test_v5_flow_export.py tests/test_metadata_saving_rev_2.py -q --basetemp=.pytest-tmp
 & $lf tools\validate_flow_component_sources.py
+& $lf tools\validate_flow_component_sources.py --rev-2-only
 & $lf tools\validate_langflow_runtime.py --all-flows
+& $lf tools\validate_langflow_runtime.py --flow flow_exports\rev_2\02_domain_saving_flow_v5_rev_2_standalone.json
+& $lf tools\validate_langflow_runtime.py --flow flow_exports\rev_2\03_table_catalog_saving_flow_v5_rev_2_standalone.json
+& $lf tools\validate_langflow_runtime.py --flow flow_exports\rev_2\04_main_flow_filter_saving_flow_v5_rev_2_standalone.json
 ```
 
 마지막 명령은 다음을 함께 확인합니다.
 
 - 실행 Python과 `langflow`, `langflow-base`, `lfx`의 정확한 1.11.0 조합
-- 모든 9개 export의 `last_tested_version` 및 모든 직렬화 node의 `lf_version=1.11.0`
+- canonical 9개 export와 격리된 저장 rev_2 3개 export의 `last_tested_version` 및 모든 직렬화 node의 `lf_version=1.11.0`
 - 모든 standalone custom component의 source/template parse와 입출력 선언 동기화
 - LFX native component upgrade 상태. `SAFE`/native `BLOCKED`는 실패이고, embedded standalone custom component의 `BLOCKED`는 별도 parser 검증 대상으로 기록합니다.
 

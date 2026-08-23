@@ -1,0 +1,96 @@
+{
+  "session_id": "SESSION_ID_EXAMPLE",
+  "outputs": [
+    {
+      "inputs": {},
+      "outputs": [
+        {
+          "results": {
+            "message": {
+              "text_key": "text",
+              "data": {
+                "sender": "Machine",
+                "sender_name": "AI",
+                "session_id": "SESSION_ID_EXAMPLE",
+                "text": "최종 답변 예시입니다.",
+                "error": false,
+                "flow_id": "FLOW_ID_EXAMPLE",
+                "run_id": "RUN_ID_EXAMPLE",
+                "gaia_response": {
+                  "answer": "최종 답변 예시입니다.",
+                  "metadata": {
+                    "docs": [],
+                    "images": [],
+                    "knowhows": [],
+                    "followup_questions": [],
+                    "urls": [],
+                    "trace_id": "",
+                    "usage": []
+                  }
+                },
+                "session_metadata": {
+                  "graph_run_id": "RUN_ID_EXAMPLE"
+                }
+              }
+            },
+            "gaia_response": {
+              "text_key": "text",
+              "data": {
+                "answer": "최종 답변 예시입니다.",
+                "metadata": {
+                  "docs": [],
+                  "images": [],
+                  "knowhows": [],
+                  "followup_questions": [],
+                  "urls": [],
+                  "trace_id": "",
+                  "usage": []
+                }
+              },
+              "default_value": ""
+            }
+          },
+          "artifacts": {
+            "message": "최종 답변 예시입니다.",
+            "files": [],
+            "type": "object"
+          },
+          "outputs": {
+            "message": {
+              "message": "최종 답변 예시입니다.",
+              "type": "text"
+            },
+            "gaia_response": {
+              "message": {
+                "answer": "최종 답변 예시입니다.",
+                "metadata": {
+                  "docs": [],
+                  "images": [],
+                  "knowhows": [],
+                  "followup_questions": [],
+                  "urls": [],
+                  "trace_id": "",
+                  "usage": []
+                }
+              },
+              "type": "object"
+            }
+          },
+          "messages": [
+            {
+              "message": "최종 답변 예시입니다.",
+              "sender": "Machine",
+              "sender_name": "AI",
+              "session_id": "SESSION_ID_EXAMPLE",
+              "component_id": "ChatOutput-EXAMPLE",
+              "files": [],
+              "type": "text"
+            }
+          ],
+          "component_display_name": "Chat Output",
+          "component_id": "ChatOutput-EXAMPLE"
+        }
+      ]
+    }
+  ]
+}

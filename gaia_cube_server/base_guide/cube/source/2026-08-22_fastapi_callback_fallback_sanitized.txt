@@ -1,0 +1,381 @@
+[저장본 안내] 사용자 제공 원문의 들여쓰기와 내용을 유지하되 실제처럼 보이는 사번과 사용자 이름은 placeholder로 치환했습니다.
+
+FAST API기반 샘플 코드
+
+
+FastAPI 챗봇 연동 코드 예시 (src/api/callback.py)
+사용자가 챗봇에 메시지를 보내면 Cube 가 Callback URL 로 POST 요청을 보냅니다. 이를 받아 처리한 후, Rich Message(이미지 + 4 개 라디오 버튼)를 다시 사용자에게 보내는 로직입니다.
+
+rom fastapi import APIRouter, Request, HTTPException
+from typing import Dict, Any
+import requests
+import json
+from hcp.framework.logger import get_logger
+
+logger = get_logger(name)
+router = APIRouter()
+
+--- 설정 정보 (실제 환경에 맞게 수정) ---
+CUBE_API_URL = "http://{챗봇도메인}/legacy/richnotification" # Cube 메시지 발송 API
+BOT_ID = "C0000xxx" # 챗봇 사번
+BOT_TOKEN = "your_token" # 챗봇 토큰
+----------------------------------------
+
+@router.post("/qna", summary="Cube Callback 수신 및 처리")
+async def qna(payload: Dict[str, Any]):
+"""
+Cube 시스템으로부터 사용자 메시지를 수신(Callback)하고,
+로직 처리 후 Rich Message 를 사용자에게 발송합니다.
+"""
+try:
+# 1. 요청 데이터 파싱
+if "richnotificationmessage" not in payload:
+raise HTTPException(status_code=400, detail="Invalid Payload Format")
+
+msg_data = payload["richnotificationmessage"]
+header = msg_data.get("header", {})
+process = msg_data.get("process", {})
+
+user_id = header.get("from", {}).get("uniquename", "")
+channel_id = header.get("to", {}).get("channelid", [""])[0]
+user_input = process.get("processdata", "")
+
+logger.info(f"📥 [Callback 수신] User: {user_id}, Input: {user_input}")
+
+# 2. 비즈니스 로직 처리 (예시)
+# 최초 진입 인사말 처리
+if user_input == "!@#HelloChatBot#@!":
+return {"status": "ignored"} # Cube 가 추가 동작 안 함
+
+# 3. 응답 메시지 생성 (Rich Message: 이미지 + 라디오 4 개)
+# 사용자에게 보낼 Rich Message JSON 구조
+rich_message_content = create_radio_rich_message(user_input)
+
+# 4. Cube API 를 통해 메시지 발송 (sendMessage 로직)
+send_success = send_cube_message(user_id, channel_id, rich_message_content)
+
+if send_success:
+logger.info(f"📤 [메시지 발송 완료] User: {user_id}")
+# Cube 에게 처리 성공 응답 반환 (상태만 반환, 실제 메시지는 위 API 로 발송됨)
+return {
+"status": "success",
+"message": "메시지가 전송되었습니다.",
+"targetUser": user_id
+}
+else:
+raise Exception("Message sending failed")
+
+except Exception as exc:
+logger.error(f"❌ [오류 발생] {exc}", exc_info=True)
+# 에러 시 사용자에게 텍스트 메시지 발송 (선택사항)
+send_cube_message(user_id, channel_id, [{"type": "label", "text": "죄송합니다. 오류가 발생했습니다."}])
+return {
+"status": "error",
+"message": str(exc)
+}
+
+def create_radio_rich_message(user_query: str) -> list:
+"""
+이미지와 4 개 라디오 버튼이 포함된 Rich Message 본문 생성
+"""
+return [
+{
+"header": {},
+"body": {
+"bodystyle": "none",
+"row": [
+# [Row 1] 이미지 (중앙 정렬)
+{
+"bgcolor": "#ffffff", "border": False, "align": "center", "width": "100%",
+"column": [{
+"bgcolor": "#ffffff", "border": False, "align": "center", "valign": "middle", "width": "100%",
+"type": "image",
+"control": {
+"active": True,
+"text": ["안내 이미지"],
+"sourceurl": "http://assets.example.internal/Resource/Image/chatbot1.png", # 실제 이미지 URL
+"width": "200", "height": "200"
+}
+}]
+},
+# [Row 2~5] 라디오 버튼 4 개 (processid 동일하게 설정 필수)
+*[
+{
+"bgcolor": "#ffffff", "border": False, "align": "left", "width": "100%",
+"column": [{
+"bgcolor": "#ffffff", "border": False, "align": "left", "valign": "middle", "width": "100%",
+"type": "radio",
+"control": {
+"processid": "UserSelection", # 수집될 키 값
+"active": True,
+"text": [f"{i+1}번 옵션: {user_query} 관련 답변"],
+"value": str(i+1),
+"checked": False
+}
+}]
+} for i in range(4)
+],
+# [Row 6] 전송 버튼
+{
+"bgcolor": "#ffffff", "border": False, "align": "center", "width": "100%",
+"column": [{
+"bgcolor": "#ffffff", "border": False, "align": "center", "valign": "middle", "width": "100%",
+"type": "button",
+"control": {
+"processid": "SendBtn",
+"active": True,
+"text": ["선택하기"],
+"value": "submit"
+}
+}]
+}
+]
+},
+"process": {
+"callbacktype": "url",
+"callbackaddress": "http://your-server-ip:port/api/qna", # 사용자 선택 후 다시 호출될 URL
+"mandatory": [{"processid": "UserSelection", "alertmsg": ["옵션을 선택해주세요!"]}],
+"requestid": ["UserSelection", "cubeuniquename", "cubechannelid"]
+}
+}
+]
+
+def send_cube_message(user_id: str, channel_id: str, content: list) -> bool:
+"""
+Cube API 를 호출하여 실제로 메시지를 발송하는 함수
+"""
+payload = {
+"richnotification": {
+"header": {
+"from": BOT_ID,
+"token": BOT_TOKEN,
+"to": {"uniquename": [user_id], "channelid": [channel_id]}
+},
+"content": content
+}
+}
+headers = {"Content-Type": "application/json"}
+
+try:
+response = requests.post(CUBE_API_URL, data=json.dumps(payload), headers=headers, timeout=5)
+if response.status_code == 200:
+return True
+else:
+logger.error(f"Cube API Error: {response.text}")
+return False
+except Exception as e:
+logger.error(f"Request Failed: {e}")
+return False
+
+
+
+
+테스트 가이드 (API Tool 활용)
+
+서버 배포 전, Postman이나 curl을 사용하여 내 API 가 정상적으로 동작하는지, 그리고 내가 직접 메시지를 받아볼 수 있는지 테스트하는 방법입니다.
+
+
+단계 1: Callback 수신 테스트 (Cube → API 시뮬레이션)
+Cube 가 보내주는 것과 동일한 JSON 을 Postman 으로 내 API 에 전송하여 로직이 작동하는지 확인합니다.
+
+
+
+
+Method: POST
+URL: http://<내서버IP>:<포트>/api/qna
+**Body **(JSON)
+json
+{
+"richnotificationmessage": {
+"header": {
+"from": { "uniquename": "EMPLOYEE_ID_EXAMPLE" },
+"to": { "channelid": ["500008005"] }
+},
+"process": {
+"processdata": "!@#HelloChatBot#@!"
+}
+}
+}
+
+processdata 를 "메뉴 추천해줘" 등으로 변경하여 Rich Message 가 생성되는지 로그를 확인하세요.
+
+
+Method: POST
+URL: http://{cubedomin}/legacy/richnotification (개발서버 기준)
+Cube 개발/운영 서버 정보
+Headers: Content-Type: application/json
+**Body **(JSON) 아래 내용을 복사하여 uniquename 을 본인 사번으로, channelid를 본인 채널 ID 로 수정하세요.
+json
+{
+"richnotification": {
+"header": {
+"from": "C0000xxx",
+"token": "발급받은토큰",
+"to": {
+"uniquename": ["EMPLOYEE_ID_EXAMPLE"],
+"channelid": ["500008005"]
+}
+},
+"content": [
+{
+"header": {},
+"body": {
+"bodystyle": "none",
+"row": [
+{
+"bgcolor": "#ffffff", "border": false, "align": "center", "width": "100%",
+"column": [{
+"type": "label",
+"control": { "active": true, "text": ["🧪 테스트 메시지입니다."], "color": "#000000" }
+}]
+},
+{
+"bgcolor": "#ffffff", "border": false, "align": "center", "width": "100%",
+"column": [{
+"type": "button",
+"control": { "processid": "TestBtn", "active": true, "text": ["확인"], "value": "ok" }
+}]
+}
+]
+},
+"process": {
+"callbacktype": "url",
+"callbackaddress": "http://<내서버IP>/api/qna",
+"requestid": ["TestBtn", "cubeuniquename"]
+}
+}
+]
+}
+}
+
+성공 기준: Cube 앱 (또는 웹) 에서 위 메시지가 도착하고, [확인] 버튼을 누르면 다시 내 API 로 Callback 이 들어와야 합니다.
+
+핵심 체크리스트
+ProcessID 일치: Rich Message 의 processid 와 requestid, 그리고 mandatory 설정이 일치해야 사용자 입력값을 제대로 받을 수 있습니다.
+이미지 URL: 사내망에서만 접근 가능한 이미지 URL 을 사용해야 하며, 외부 URL 은 노출되지 않을 수 있습니다.
+
+가이드를 바탕으로 src/api/callback.py 에 로직을 구현하시고, Postman 으로 테스트 후 Cube 에 연동
+
+=================================================================
+
+
+
+Cube 챗봇 사용자 입력 데이터 확인 및 로직 개발 가이드
+
+1. 핵심 원리: 데이터는 payload 에 담겨 옵니다
+사용자가 ChatOps(Cube) 에서 메시지를 보내거나, Rich Message 의 버튼을 클릭하면, Cube 시스템은 등록해둔 Callback URL로 HTTP POST 요청을 보냅니다. 이때 사용자가 선택한 모든 데이터는 요청 본문인 payload (JSON) 안에 포함되어 있습니다.
+
+
+확인 위치: payload['richnotificationmessage']['process'] 내부
+주요 필드:
+processdata: 사용자가 입력한 텍스트 또는 선택한 버튼의 값
+requestid 에 정의된 키들: 예) UserSelection, SendBtn 등
+
+2. 단계별 개발 및 확인 절차
+Step 1. 로깅 코드 삽입 (Payload 전체 출력)아직 데이터 구조를 정확히 모를 때는, 들어오는 payload 전체를 로그로 찍어보는 것이 가장 빠릅니다. 아래 코드를 엔드포인트 최상단에 추가하세요.
+
+
+python
+
+@router.post("/qna", summary="Cube Callback 수신 및 처리")
+async def qna(payload: Dict[str, Any]):
+# [중요] 들어오는 원본 데이터를 전체 로그로 출력
+import json
+logger.info(f"📥 [RAW Payload] {json.dumps(payload, ensure_ascii=False, indent=2)}")
+
+# ... 이하 로직 ...
+
+
+
+
+
+
+Step 2. HCP 서버 로그 확인코드를 배포 (또는 로컬 실행) 한 후, Cube 챗봇에서 실제로 메시지를 보내거나 버튼을 클릭해 봅니다. 그다음 HCP 대시보드에서 로그를 확인합니다.
+
+
+HCP 메인 → 해당 App Service 선택 → Log 탭 클릭
+조회 기간을 '최근 1 시간' 등으로 설정하고 로그 조회 버튼 클릭
+STD Out 로그 스트림에서 방금 추가한 📥 [RAW Payload] 로그를 찾습니다.
+
+Step 3. 실제 전달되는 데이터 예시 (사용자가 2 번 옵션 선택 시)로그를 보면 다음과 같은 구조로 데이터가 와있는 것을 확인할 수 있습니다.
+
+
+json
+{
+"richnotificationmessage": {
+"header": {
+"from": { "uniquename": "EMPLOYEE_ID_EXAMPLE", "username": "USER_NAME_EXAMPLE" },
+"to": { "channelid": ["500008005"] }
+},
+"process": {
+"processdata": "",
+"userId": "EMPLOYEE_ID_EXAMPLE",
+"channelId": "500008005",
+"UserSelection": "2", // ✅ 사용자가 선택한 라디오 버튼의 value
+"SendBtn": "submit" // ✅ 사용자가 클릭한 버튼의 value
+}
+}
+}
+
+
+
+핵심: 우리가 Rich Message 에서 정의한 processid ("UserSelection") 가 키 (Key) 로 생성되고, 선택한 값 ("2") 이 벨류 (Value) 로 들어옵니다.
+
+Step 4. 확인된 데이터로 로직 구현로그를 통해 키 값을 확인했다면, 이제 그 키를 사용하여 조건문을 작성합니다.
+
+
+python
+# 로그 확인 후 구현한 실제 로직
+process_data = payload["richnotificationmessage"]["process"]
+
+# 사용자가 선택한 라디오 버튼 값 추출 (키 이름은 로그에서 확인한 것 사용)
+selected_option = process_data.get("UserSelection")
+
+if selected_option == "1":
+answer_text = "1 번 옵션에 대한 상세 설명입니다."
+elif selected_option == "2":
+answer_text = "2 번 옵션에 대한 상세 설명입니다."
+else:
+answer_text = "알 수 없는 옵션이 선택되었습니다."
+
+# 이후 answer_text 를 포함하여 다시 sendMessage 호출...
+
+
+
+
+💡 팁: 디버깅을 위한 체크리스트
+로그가 안 보인다면? HCP 의 STD Out 과 STD Error 둘 다 확인해보세요. 방화벽이 막혀서 아예 요청이 안 들어오는 경우일 수 있습니다.
+키 이름이 다르다면? Rich Message JSON 의 processid 와 실제 넘어오는 키 이름은 대소문자를 포함해 정확히 일치해야 합니다.
+테스트용 더미 데이터: 실제 사용자에게 배포하기 전, Postman 으로 위 예시 JSON 을 직접 만들어 내 API 로 쏴보며 로직이 잘 작동하는지 검증하세요.
+
+
+참고
+
+서비스 동작 흐름 flowchart 코드
+
+sequenceDiagram
+participant User as 사용자 (Cube)
+participant Cube as Cube 시스템
+participant API as 내 API 서버 (FastAPI)
+participant DB as 외부 DB/로직
+
+Note over User, API: 1. 초기 메시지 발송
+User->>Cube: "메뉴 추천해줘" 입력
+Cube->>API: POST Callback (URL: /api/qna)
+Note right of API: payload: { processdata: "메뉴 추천해줘" }
+
+API->>API: 로직 처리 (메뉴 데이터 조회)
+API->>API: Rich Message JSON 생성 (이미지+라디오)
+API->>Cube: POST sendMessage API 호출
+Note right of API: Content: Image + 4 Radio Buttons
+Cube->>User: Rich Message 화면 노출
+
+Note over User, API: 2. 사용자 선택 및 응답
+User->>Cube: 라디오 버튼 선택 후 [전송] 클릭
+Cube->>API: POST Callback (2 차 호출)
+Note right of API: payload: { UserSelection: "2 번 옵션" }
+
+API->>DB: 선택된 값에 따른 상세 정보 조회
+API->>Cube: POST sendMessage API 호출
+Note right of API: Content: "선택하신 메뉴의 상세 정보입니다..."
+Cube->>User: 결과 메시지 노출

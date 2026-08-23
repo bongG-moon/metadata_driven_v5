@@ -1,0 +1,193 @@
+{
+  "richnotification": {
+    "header": {
+      "from": "YOUR_BOT_ID",
+      "token": "YOUR_BOT_TOKEN",
+      "to": {
+        "uniquename": [
+          "EMPLOYEE_ID_EXAMPLE"
+        ],
+        "channelid": [
+          "CHANNEL_ID_EXAMPLE"
+        ]
+      }
+    },
+    "content": [
+      {
+        "header": {},
+        "body": {
+          "bodystyle": "none",
+          "row": [
+            {
+              "bgcolor": "#ffffff",
+              "border": false,
+              "align": "center",
+              "width": "100%",
+              "column": [
+                {
+                  "bgcolor": "#ffffff",
+                  "border": false,
+                  "align": "center",
+                  "valign": "middle",
+                  "width": "100%",
+                  "type": "image",
+                  "control": {
+                    "active": true,
+                    "text": [
+                      "안내 이미지"
+                    ],
+                    "sourceurl": "http://INTERNAL_RESOURCE_HOST/Resource/Image/chatbot1.png",
+                    "width": "200",
+                    "height": "200"
+                  }
+                }
+              ]
+            },
+            {
+              "bgcolor": "#ffffff",
+              "border": false,
+              "align": "left",
+              "width": "100%",
+              "column": [
+                {
+                  "bgcolor": "#ffffff",
+                  "border": false,
+                  "align": "left",
+                  "valign": "middle",
+                  "width": "100%",
+                  "type": "radio",
+                  "control": {
+                    "processid": "UserSelection",
+                    "active": true,
+                    "text": [
+                      "1번 옵션"
+                    ],
+                    "value": "1",
+                    "checked": false
+                  }
+                }
+              ]
+            },
+            {
+              "bgcolor": "#ffffff",
+              "border": false,
+              "align": "left",
+              "width": "100%",
+              "column": [
+                {
+                  "bgcolor": "#ffffff",
+                  "border": false,
+                  "align": "left",
+                  "valign": "middle",
+                  "width": "100%",
+                  "type": "radio",
+                  "control": {
+                    "processid": "UserSelection",
+                    "active": true,
+                    "text": [
+                      "2번 옵션"
+                    ],
+                    "value": "2",
+                    "checked": false
+                  }
+                }
+              ]
+            },
+            {
+              "bgcolor": "#ffffff",
+              "border": false,
+              "align": "left",
+              "width": "100%",
+              "column": [
+                {
+                  "bgcolor": "#ffffff",
+                  "border": false,
+                  "align": "left",
+                  "valign": "middle",
+                  "width": "100%",
+                  "type": "radio",
+                  "control": {
+                    "processid": "UserSelection",
+                    "active": true,
+                    "text": [
+                      "3번 옵션"
+                    ],
+                    "value": "3",
+                    "checked": false
+                  }
+                }
+              ]
+            },
+            {
+              "bgcolor": "#ffffff",
+              "border": false,
+              "align": "left",
+              "width": "100%",
+              "column": [
+                {
+                  "bgcolor": "#ffffff",
+                  "border": false,
+                  "align": "left",
+                  "valign": "middle",
+                  "width": "100%",
+                  "type": "radio",
+                  "control": {
+                    "processid": "UserSelection",
+                    "active": true,
+                    "text": [
+                      "4번 옵션"
+                    ],
+                    "value": "4",
+                    "checked": false
+                  }
+                }
+              ]
+            },
+            {
+              "bgcolor": "#ffffff",
+              "border": false,
+              "align": "center",
+              "width": "100%",
+              "column": [
+                {
+                  "bgcolor": "#ffffff",
+                  "border": false,
+                  "align": "center",
+                  "valign": "middle",
+                  "width": "100%",
+                  "type": "button",
+                  "control": {
+                    "processid": "SendBtn",
+                    "active": true,
+                    "text": [
+                      "선택하기"
+                    ],
+                    "value": "submit"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "process": {
+          "callbacktype": "url",
+          "callbackaddress": "http://YOUR_SERVER/api/qna",
+          "mandatory": [
+            {
+              "processid": "UserSelection",
+              "alertmsg": [
+                "옵션을 선택해주세요!"
+              ]
+            }
+          ],
+          "requestid": [
+            "UserSelection",
+            "SendBtn",
+            "cubeuniquename",
+            "cubechannelid"
+          ]
+        }
+      }
+    ]
+  }
+}

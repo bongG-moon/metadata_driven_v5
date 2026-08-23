@@ -22,6 +22,7 @@ def load_data_ref_rows(
     default_database: str = DEFAULT_DATABASE,
     default_collection: str = DEFAULT_RESULT_COLLECTION,
     limit: int | None = None,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """Load one approved data_ref from the configured MongoDB result store."""
     if not isinstance(data_ref, dict):
@@ -57,6 +58,7 @@ def load_data_ref_rows(
         loaded = rows_from_data_ref_document(
             document,
             limit=limit,
+            offset=offset,
             path=data_ref_path(data_ref),
         )
         loaded.update(
@@ -76,6 +78,7 @@ def load_data_ref_rows(
 def rows_from_data_ref_document(
     document: dict[str, Any],
     limit: int | None = None,
+    offset: int = 0,
     path: str = "",
 ) -> dict[str, Any]:
     """Extract rows, columns, and expiry information from a result-store document."""
@@ -129,9 +132,14 @@ def rows_from_data_ref_document(
         or _string_list(document.get("columns"))
         or _rows_columns(rows)
     )
-    visible_rows = deepcopy(rows)
+    try:
+        start = max(int(offset), 0)
+    except (TypeError, ValueError):
+        start = 0
     if isinstance(limit, int) and limit >= 0:
-        visible_rows = visible_rows[:limit]
+        visible_rows = deepcopy(rows[start : start + limit])
+    else:
+        visible_rows = deepcopy(rows[start:])
 
     return {
         "ok": True,

@@ -419,18 +419,21 @@ def resolve_simple_analysis_contract(
         calculation,
         detail_row_limit,
     )
-    schema_error_types = {
+    # Only columns that are required to *perform* the calculation are hard
+    # execution inputs.  Result projection and ordering are downstream Fast
+    # contract concerns: retrieval has already succeeded at this point, so a
+    # stale display/order column must fall back to the ordinary Complex path
+    # instead of overwriting the upstream retrieval gate as Blocked.
+    execution_input_error_types = {
         "missing_source_column",
         "missing_metric_source_column",
-        "unresolved_result_column",
-        "unresolved_ordering_column",
     }
-    schema_errors = [
+    execution_input_errors = [
         item
         for item in validation_errors
-        if str(item.get("type") or "") in schema_error_types
+        if str(item.get("type") or "") in execution_input_error_types
     ]
-    if schema_errors:
+    if execution_input_errors:
         contract = _route_contract("blocked", "source_schema_contract_invalid")
         contract.update(
             {
@@ -445,7 +448,7 @@ def resolve_simple_analysis_contract(
             next_payload,
             "필수 표준 컬럼이 실제 source schema에 없어 분석을 실행할 수 없습니다.",
             source_alias,
-            schema_errors,
+            execution_input_errors,
         )
         return _attach_contract(next_payload, contract, trace, started)
     if validation_errors:
@@ -494,16 +497,29 @@ def resolve_simple_analysis_contract(
 
 # 함수 설명: `_recipe()`는 14B V2 단순 분석 계약 결정기 처리 중 recipe 관련 값을 계산·변환하는 내부 helper입니다.
 def _recipe(steps: list[dict[str, Any]], output_contract: dict[str, Any]) -> str:
+    operations = [_operation(step) for step in steps]
+    has_aggregation = any(operation in AGGREGATE_OPERATIONS for operation in operations)
+    mode = str(output_contract.get("result_mode") or "").strip().lower()
     explicit = str(output_contract.get("fast_path_recipe") or "").strip().lower()
     if explicit in SUPPORTED_RECIPES:
-        return explicit
-    operations = [_operation(step) for step in steps]
+        # A model/domain hint may call a sorted detail list a ranked summary.
+        # Ranking is an aggregate output shape in this executor.  When the
+        # actual plan has no aggregate producer and explicitly declares a
+        # detail/entity-list result, trust the executable shape rather than the
+        # stale recipe label.  Specialized row operations such as
+        # ``latest_earliest`` are still selected from RECIPE_OPERATIONS below.
+        if not (
+            mode in {"detail", "entity_list"}
+            and not has_aggregation
+            and explicit in AGGREGATE_RESULT_RECIPES
+        ):
+            return explicit
     for operation in reversed(operations):
         mapped = RECIPE_OPERATIONS.get(operation)
         if mapped:
             return mapped
     ordering = _ordering(steps, output_contract)
-    if any(operation in AGGREGATE_OPERATIONS for operation in operations):
+    if has_aggregation:
         aggregations = _list(_last_step(steps, AGGREGATE_OPERATIONS).get("aggregations"))
         methods = {str(_dict(item).get("method") or "").strip().lower() for item in aggregations}
         if "collect_unique" in methods:
@@ -512,12 +528,9 @@ def _recipe(steps: list[dict[str, Any]], output_contract: dict[str, Any]) -> str
             return "ranked_summary"
         group_by = _group_by(_last_step(steps, AGGREGATE_OPERATIONS), output_contract)
         return "group_summary" if group_by else "scalar_summary"
-    mode = str(output_contract.get("result_mode") or "").strip().lower()
     if mode == "scalar":
         return "scalar_summary"
     if mode in {"detail", "entity_list"}:
-        if ordering and _limit(steps, output_contract, 0) > 0:
-            return "ranked_summary"
         return "detail_query"
     return "detail_query" if not steps or all(op in FILTER_ONLY_OPERATIONS | SORT_OPERATIONS | SELECT_OPERATIONS for op in operations) else ""
 

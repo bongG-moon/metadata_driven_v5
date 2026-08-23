@@ -155,6 +155,39 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
             raise ValueError("Removed answer-body display options remain in Flow 01 template.")
         if "show_intermediate_results" not in field_order:
             raise ValueError("Flow 01 must retain the curated intermediate-results display option.")
+        publisher = next(
+            (node for node in nodes if node.get("id") == "CustomComponent-v5ExecutionTraceArtifact"),
+            None,
+        )
+        if publisher is None:
+            raise ValueError("Data Analysis execution-trace HTML publisher is missing.")
+        publisher_template = publisher.get("data", {}).get("node", {}).get("template", {})
+        if publisher_template.get("enabled", {}).get("value") is not True:
+            raise ValueError("Data Analysis execution-trace HTML publisher must be enabled by default.")
+        if publisher_template.get("timeout_seconds", {}).get("value") != 2:
+            raise ValueError("Data Analysis execution-trace publisher timeout must stay at the 2-second soft-fail bound.")
+        edge_ports = {
+            (
+                str(edge.get("source") or ""),
+                str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
+                str(edge.get("target") or ""),
+                str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
+            )
+            for edge in edges
+        }
+        required_trace_path = {
+            ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-v5ExecutionTraceArtifact", "payload"),
+            ("CustomComponent-v5ExecutionTraceArtifact", "payload_out", "CustomComponent-A5y0b", "payload"),
+            ("CustomComponent-v5ExecutionTraceArtifact", "payload_out", "CustomComponent-3eVde", "payload"),
+        }
+        if not required_trace_path.issubset(edge_ports):
+            raise ValueError("Data Analysis execution-trace HTML publisher must stay after cleanup and before chat/API adapters.")
+        removed_direct_path = {
+            ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-A5y0b", "payload"),
+            ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-3eVde", "payload"),
+        }
+        if removed_direct_path & edge_ports:
+            raise ValueError("Data Analysis adapters must not bypass the execution-trace HTML publisher.")
 
     if item["name"] == FLOW_DISPLAY_NAMES["agent_tool_router"]:
         edge_pairs = {(str(edge.get("source") or ""), str(edge.get("target") or "")) for edge in edges}
@@ -315,6 +348,7 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_{BUNDLE_VERSION}_ALL_FLOW
 - 같은 세션의 Report Snapshot 또는 Report가 미리 만든 집계 View에 대한 컬럼 선택·필터·정렬·순위는 `07-2. v5_report_followup`이 담당합니다. 새 groupby 계산, 최신 데이터나 다른 데이터셋이 필요한 질문은 `01. v5_data_analysis`로 보냅니다.
 - `07. v5_realtime_production_report_legacy`는 변경 전 직접 응답 구조를 보존한 호환 Flow이며 Router가 자동 선택하지 않습니다. `07-1. v5_realtime_production_report`가 후속분석 Context를 저장하는 현재 Router 대상 Report입니다.
 - 결과 CSV/JSON 다운로드와 실시간 Report HTML 발행은 API_SERVER(`python API_SERVER\\app.py`, bind `0.0.0.0:5000`)가 담당합니다. Report HTML과 메타데이터는 API_SERVER의 단일 MongoDB 컬렉션에 저장되므로 Flow의 Report API 주소를 접근 가능한 API URL로 설정합니다.
+- Flow 01의 `25 분석 처리 과정 HTML 발행기`는 분석·저장·세션 처리 뒤에 best-effort로 실행됩니다. API_SERVER가 일시적으로 사용할 수 없으면 분석 결과는 그대로 반환되고 HTML 링크만 생략됩니다. 기본 링크 유효시간은 1시간, 발행 요청 제한은 2초입니다.
 - 기존 Router Tool에 저장된 `flow_id_selected`가 있으면, import 뒤 대상 Flow를 한 번 다시 선택해 현재 Flow ID로 갱신합니다.
 
 ## 생성 시 구조 검증

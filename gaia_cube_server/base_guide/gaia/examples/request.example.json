@@ -1,0 +1,5 @@
+{
+  "message": "전송할 메시지",
+  "user_id": "AUTHORIZED_USER_ID",
+  "session_id": "SESSION_ID_EXAMPLE"
+}

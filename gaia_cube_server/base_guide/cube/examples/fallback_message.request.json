@@ -1,0 +1,50 @@
+{
+  "richnotification": {
+    "header": {
+      "from": "YOUR_BOT_ID",
+      "token": "YOUR_BOT_TOKEN",
+      "to": {
+        "uniquename": [
+          "EMPLOYEE_ID_EXAMPLE"
+        ],
+        "channelid": [
+          "CHANNEL_ID_EXAMPLE"
+        ]
+      }
+    },
+    "content": [
+      {
+        "header": {},
+        "body": {
+          "bodystyle": "none",
+          "row": [
+            {
+              "bgcolor": "#ffffff",
+              "border": false,
+              "align": "left",
+              "width": "100%",
+              "column": [
+                {
+                  "bgcolor": "#ffffff",
+                  "border": false,
+                  "align": "left",
+                  "valign": "middle",
+                  "width": "100%",
+                  "type": "label",
+                  "control": {
+                    "active": true,
+                    "text": [
+                      "요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."
+                    ],
+                    "color": "#000000"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "process": {}
+      }
+    ]
+  }
+}

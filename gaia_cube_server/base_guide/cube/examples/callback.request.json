@@ -1,0 +1,9 @@
+{
+  "richnotificationmessage": {
+    "process": {
+      "processdata": "#점심 뭐 먹을까?",
+      "userId": "user_12345",
+      "channelId": "channel_general"
+    }
+  }
+}

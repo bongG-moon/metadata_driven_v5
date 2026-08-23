@@ -19,8 +19,12 @@ COMPONENT_ROOT = ROOT / "langflow_components"
 FLOW_EXPORT_ROOT = ROOT / "flow_exports"
 IMPORT_READY_ROOT = ROOT / "import_ready_flows"
 COMBINED_IMPORT = IMPORT_READY_ROOT / "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json"
+REV2_FLOW_EXPORT_ROOT = FLOW_EXPORT_ROOT / "rev_2"
+REV2_IMPORT_READY_ROOT = IMPORT_READY_ROOT / "rev_2"
+REV2_COMBINED_IMPORT = REV2_IMPORT_READY_ROOT / "00_metadata_saving_rev_2_ALL_FLOWS.json"
 CUSTOM_MODULE_PREFIXES = ("custom_components.", "v5_auxiliary.")
 EXPECTED_FLOW_COUNT = 9
+REV2_EXPECTED_FLOW_COUNT = 3
 SUPPORT_SOURCE_FILES = {
     "langflow_components/data_analysis_flow/function_case_helper_code_input_example.py",
     # V2 Node 20 now owns lazy AnswerEvidence rendering so this generated
@@ -89,7 +93,12 @@ def _version_contract_errors(label: str, flows: list[dict[str, Any]]) -> list[di
     return errors
 
 
-def _audit_flows(label: str, flows: list[dict[str, Any]], source_by_code: dict[str, list[Path]]) -> dict[str, Any]:
+def _audit_flows(
+    label: str,
+    flows: list[dict[str, Any]],
+    source_by_code: dict[str, list[Path]],
+    expected_flow_count: int = EXPECTED_FLOW_COUNT,
+) -> dict[str, Any]:
     errors = _version_contract_errors(label, flows)
     source_paths: set[str] = set()
     node_count = 0
@@ -137,8 +146,8 @@ def _audit_flows(label: str, flows: list[dict[str, Any]], source_by_code: dict[s
                 )
         mapping.append(flow_mapping)
 
-    if len(flows) != EXPECTED_FLOW_COUNT:
-        errors.append({"type": "flow_count_mismatch", "expected": EXPECTED_FLOW_COUNT, "actual": len(flows)})
+    if len(flows) != expected_flow_count:
+        errors.append({"type": "flow_count_mismatch", "expected": expected_flow_count, "actual": len(flows)})
     return {
         "label": label,
         "flow_count": len(flows),
@@ -168,6 +177,18 @@ def _combined_import_flows() -> list[dict[str, Any]]:
     return flows
 
 
+def _rev2_individual_import_flows() -> list[dict[str, Any]]:
+    return [_load_json(path) for path in sorted(REV2_IMPORT_READY_ROOT.glob("*_rev_2_standalone.json"))]
+
+
+def _rev2_combined_import_flows() -> list[dict[str, Any]]:
+    payload = _load_json(REV2_COMBINED_IMPORT)
+    flows = payload.get("flows") if isinstance(payload, dict) else None
+    if not isinstance(flows, list):
+        raise ValueError(f"rev_2 combined import does not contain a flows list: {REV2_COMBINED_IMPORT}")
+    return flows
+
+
 def _flow_exports() -> list[dict[str, Any]]:
     paths = sorted(
         {
@@ -178,22 +199,33 @@ def _flow_exports() -> list[dict[str, Any]]:
     return [_load_json(path) for path in paths]
 
 
+def _rev2_flow_exports() -> list[dict[str, Any]]:
+    return [_load_json(path) for path in sorted(REV2_FLOW_EXPORT_ROOT.glob("*_rev_2_standalone.json"))]
+
+
 def audit_repository() -> dict[str, Any]:
     source_by_code, all_source_paths = _source_index()
-    reports = [
+    canonical_reports = [
         _audit_flows("flow_exports", _flow_exports(), source_by_code),
         _audit_flows("import_ready_individual", _individual_import_flows(), source_by_code),
         _audit_flows("import_ready_bundle", _combined_import_flows(), source_by_code),
     ]
-    baseline = reports[0]
+    rev2_reports = [
+        _audit_flows("rev_2_flow_exports", _rev2_flow_exports(), source_by_code, REV2_EXPECTED_FLOW_COUNT),
+        _audit_flows("rev_2_import_ready_individual", _rev2_individual_import_flows(), source_by_code, REV2_EXPECTED_FLOW_COUNT),
+        _audit_flows("rev_2_import_ready_bundle", _rev2_combined_import_flows(), source_by_code, REV2_EXPECTED_FLOW_COUNT),
+    ]
+    reports = [*canonical_reports, *rev2_reports]
     parity_errors: list[dict[str, Any]] = []
-    baseline_signatures = sorted(json.dumps(item, sort_keys=True) for item in baseline["mapping"])
-    for report in reports[1:]:
-        report_signatures = sorted(json.dumps(item, sort_keys=True) for item in report["mapping"])
-        if report_signatures != baseline_signatures:
-            parity_errors.append({"type": "artifact_mapping_mismatch", "left": baseline["label"], "right": report["label"]})
+    for family_reports in (canonical_reports, rev2_reports):
+        baseline = family_reports[0]
+        baseline_signatures = sorted(json.dumps(item, sort_keys=True) for item in baseline["mapping"])
+        for report in family_reports[1:]:
+            report_signatures = sorted(json.dumps(item, sort_keys=True) for item in report["mapping"])
+            if report_signatures != baseline_signatures:
+                parity_errors.append({"type": "artifact_mapping_mismatch", "left": baseline["label"], "right": report["label"]})
 
-    used = set(baseline["source_paths"])
+    used = set(canonical_reports[0]["source_paths"]) | set(rev2_reports[0]["source_paths"])
     all_relative = {path.relative_to(ROOT).as_posix() for path in all_source_paths}
     support_sources = sorted(all_relative.intersection(SUPPORT_SOURCE_FILES))
     route_errors: list[dict[str, Any]] = []
@@ -228,10 +260,39 @@ def audit_repository() -> dict[str, Any]:
     }
 
 
+def audit_rev2_repository() -> dict[str, Any]:
+    """Validate only the isolated rev_2 artifacts without masking canonical worktree drift."""
+
+    source_by_code, _ = _source_index()
+    reports = [
+        _audit_flows("rev_2_flow_exports", _rev2_flow_exports(), source_by_code, REV2_EXPECTED_FLOW_COUNT),
+        _audit_flows("rev_2_import_ready_individual", _rev2_individual_import_flows(), source_by_code, REV2_EXPECTED_FLOW_COUNT),
+        _audit_flows("rev_2_import_ready_bundle", _rev2_combined_import_flows(), source_by_code, REV2_EXPECTED_FLOW_COUNT),
+    ]
+    baseline_signatures = sorted(json.dumps(item, sort_keys=True) for item in reports[0]["mapping"])
+    parity_errors = []
+    for report in reports[1:]:
+        signatures = sorted(json.dumps(item, sort_keys=True) for item in report["mapping"])
+        if signatures != baseline_signatures:
+            parity_errors.append({"type": "artifact_mapping_mismatch", "left": reports[0]["label"], "right": report["label"]})
+    errors = [error for report in reports for error in report["errors"]] + parity_errors
+    return {
+        "status": "ok" if not errors else "error",
+        "scope": "rev_2_only",
+        "reports": [
+            {key: value for key, value in report.items() if key not in {"mapping", "source_paths"}}
+            for report in reports
+        ],
+        "active_unique_source_files": len(set(reports[0]["source_paths"])),
+        "errors": errors,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate that every exported local custom node has one real .py source.")
-    parser.parse_args()
-    result = audit_repository()
+    parser.add_argument("--rev-2-only", action="store_true", help="Validate only the isolated metadata saving rev_2 artifacts.")
+    args = parser.parse_args()
+    result = audit_rev2_repository() if args.rev_2_only else audit_repository()
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if result["status"] != "ok":
         raise SystemExit(1)

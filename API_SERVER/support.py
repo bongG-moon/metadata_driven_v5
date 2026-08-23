@@ -419,6 +419,7 @@ def resolve_request(
     query: str,
     config: ServerConfig,
     limit: int | None,
+    offset: int = 0,
 ) -> dict[str, Any]:
     try:
         ref = data_ref_from_query(query)
@@ -455,6 +456,7 @@ def resolve_request(
             default_database=config.mongo_database,
             default_collection=config.result_collection,
             limit=limit,
+            offset=offset,
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -603,6 +605,8 @@ def render_data_page(
     csv_url: str,
     json_url: str,
     preview_limit: int,
+    offset: int = 0,
+    view_url: str = "",
 ) -> str:
     row_count = int_or_zero(loaded.get("row_count")) or len(rows)
     title = ref_label(ref)
@@ -621,28 +625,233 @@ def render_data_page(
         for label, value in summary
         if value not in (None, "", [])
     )
+    try:
+        page_offset = max(int(offset), 0)
+    except (TypeError, ValueError):
+        page_offset = 0
+    page_size = max(int(preview_limit), 0)
+    page_start = page_offset + 1 if rows else 0
+    page_end = min(page_offset + len(rows), row_count)
+    pagination = _render_data_pagination(
+        view_url,
+        offset=page_offset,
+        page_size=page_size,
+        row_count=row_count,
+        shown_count=len(rows),
+    )
+    range_note = (
+        f"총 {row_count:,}건 중 {page_start:,}–{page_end:,}행을 표시합니다. "
+        if rows
+        else f"이 페이지에는 표시할 행이 없습니다 (전체 {row_count:,}건). "
+    )
+    filter_options = "".join(
+        f'<option value="{escape(column, quote=True)}">{escape(column)}</option>'
+        for column in columns
+    )
     return page_shell(
         title,
         f"""
+        <section class="page-hero">
+          <p class="eyebrow">DATA EXPLORER</p>
+          <h2>전체 데이터 탐색</h2>
+          <p>표에서 원하는 컬럼을 필터·정렬하고 페이지 단위로 모든 저장 행을 확인할 수 있습니다.</p>
+        </section>
         <section class="toolbar">
-          <a class="button primary" href="{escape(csv_url)}">Download CSV</a>
-          <a class="button" href="{escape(json_url)}">Download JSON</a>
+          <a class="button primary" href="{escape(csv_url, quote=True)}">전체 CSV 다운로드</a>
+          <a class="button" href="{escape(json_url, quote=True)}">전체 JSON 다운로드</a>
         </section>
         <dl class="summary">{summary_html}</dl>
-        <p class="note">Showing up to {preview_limit:,} rows. Downloads contain the complete result.</p>
-        {render_table(rows[:preview_limit], columns)}
+        <section id="data-explorer" class="data-explorer" data-json-url="{escape(json_url, quote=True)}" data-page-size="100">
+          <div class="explorer-head">
+            <div><h2>테이블</h2><p id="explorer-status">전체 데이터를 준비하는 중입니다.</p></div>
+            <span class="explorer-badge">필터 · 정렬 · 페이지</span>
+          </div>
+          <div class="explorer-controls" aria-label="데이터 필터 및 정렬">
+            <label>필터 컬럼<select id="filter-column"><option value="__all__">전체 컬럼</option>{filter_options}</select></label>
+            <label class="filter-value">검색어<input id="filter-value" type="search" placeholder="포함할 값 입력"></label>
+            <label>정렬 컬럼<select id="sort-column"><option value="">정렬 안 함</option>{filter_options}</select></label>
+            <label>정렬 방향<select id="sort-direction"><option value="asc">오름차순</option><option value="desc">내림차순</option></select></label>
+            <button id="reset-data-explorer" type="button" class="button">초기화</button>
+          </div>
+          <div id="explorer-table" class="table-wrap explorer-table" aria-live="polite"></div>
+          <nav id="explorer-pagination" class="toolbar pagination" aria-label="데이터 페이지"></nav>
+        </section>
+        <section id="server-preview" class="server-preview">
+          <p class="note">{range_note}브라우저에서 전체 데이터를 불러오지 못하면 아래 서버 미리보기가 표시됩니다. CSV 다운로드에는 전체 결과가 포함됩니다.</p>
+          {render_table(rows, columns, start=page_offset)}
+          {pagination}
+        </section>
+        <noscript><p class="note">필터·정렬 기능은 브라우저 JavaScript가 필요합니다. 아래 미리보기와 CSV 다운로드는 계속 사용할 수 있습니다.</p></noscript>
+        <script>{_data_explorer_script()}</script>
         """,
     )
 
 
-def render_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
+def _render_data_pagination(
+    view_url: str,
+    *,
+    offset: int,
+    page_size: int,
+    row_count: int,
+    shown_count: int,
+) -> str:
+    if not view_url or row_count <= 0 or page_size <= 0:
+        return ""
+    previous_offset = max(offset - page_size, 0)
+    has_previous = offset > 0
+    has_next = offset + shown_count < row_count
+    if not has_previous and not has_next:
+        return ""
+    links = []
+    if has_previous:
+        links.append(
+            f'<a class="button" href="{escape(_page_url(view_url, previous_offset), quote=True)}">이전 페이지</a>'
+        )
+    if has_next:
+        links.append(
+            f'<a class="button primary" href="{escape(_page_url(view_url, offset + page_size), quote=True)}">다음 페이지</a>'
+        )
+    return '<nav class="toolbar pagination" aria-label="데이터 페이지">' + "".join(links) + "</nav>"
+
+
+def _page_url(view_url: str, offset: int) -> str:
+    separator = "&" if "?" in view_url else "?"
+    return f"{view_url}{separator}offset={max(int(offset), 0)}"
+
+
+def _data_explorer_script() -> str:
+    """Return static client code; all row values are assigned with textContent."""
+
+    return r"""
+(() => {
+  const root = document.getElementById('data-explorer');
+  if (!root || !window.fetch) return;
+  const controls = {
+    filterColumn: document.getElementById('filter-column'),
+    filterValue: document.getElementById('filter-value'),
+    sortColumn: document.getElementById('sort-column'),
+    sortDirection: document.getElementById('sort-direction'),
+    reset: document.getElementById('reset-data-explorer'),
+  };
+  const tableHost = document.getElementById('explorer-table');
+  const paginationHost = document.getElementById('explorer-pagination');
+  const status = document.getElementById('explorer-status');
+  const fallback = document.getElementById('server-preview');
+  const pageSize = Math.max(Number(root.dataset.pageSize) || 100, 1);
+  const state = { rows: [], columns: [], page: 0, ready: false };
+
+  const text = (value) => value === null || value === undefined ? '' : String(value);
+  const normalized = (value) => text(value).trim().toLocaleLowerCase();
+  const numeric = (value) => {
+    const number = Number(text(value).replace(/,/g, ''));
+    return Number.isFinite(number) ? number : null;
+  };
+  const clear = (node) => { while (node.firstChild) node.removeChild(node.firstChild); };
+  const make = (tag, value, className = '') => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (value !== undefined) node.textContent = value;
+    return node;
+  };
+  const filteredRows = () => {
+    const needle = normalized(controls.filterValue.value);
+    const field = controls.filterColumn.value;
+    let rows = state.rows;
+    if (needle) {
+      rows = rows.filter((row) => {
+        if (field === '__all__') return state.columns.some((column) => normalized(row[column]).includes(needle));
+        return normalized(row[field]).includes(needle);
+      });
+    }
+    const sortColumn = controls.sortColumn.value;
+    if (sortColumn) {
+      const direction = controls.sortDirection.value === 'desc' ? -1 : 1;
+      rows = [...rows].sort((left, right) => {
+        const leftNumber = numeric(left[sortColumn]);
+        const rightNumber = numeric(right[sortColumn]);
+        if (leftNumber !== null && rightNumber !== null) return (leftNumber - rightNumber) * direction;
+        return text(left[sortColumn]).localeCompare(text(right[sortColumn]), 'ko', { numeric: true, sensitivity: 'base' }) * direction;
+      });
+    }
+    return rows;
+  };
+  const render = () => {
+    const rows = filteredRows();
+    const pageCount = Math.max(Math.ceil(rows.length / pageSize), 1);
+    state.page = Math.min(Math.max(state.page, 0), pageCount - 1);
+    const start = state.page * pageSize;
+    const visible = rows.slice(start, start + pageSize);
+    clear(tableHost);
+    clear(paginationHost);
+    status.textContent = `전체 ${state.rows.length.toLocaleString()}건 중 필터 결과 ${rows.length.toLocaleString()}건 · ${start + (visible.length ? 1 : 0)}–${start + visible.length}행 표시`;
+    if (!visible.length) {
+      tableHost.appendChild(make('p', '조건에 맞는 데이터가 없습니다.', 'empty'));
+    } else {
+      const table = document.createElement('table');
+      const head = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      headRow.appendChild(make('th', 'No.'));
+      state.columns.forEach((column) => headRow.appendChild(make('th', column)));
+      head.appendChild(headRow);
+      table.appendChild(head);
+      const body = document.createElement('tbody');
+      visible.forEach((row, index) => {
+        const tr = document.createElement('tr');
+        tr.appendChild(make('td', String(start + index + 1), 'row-number'));
+        state.columns.forEach((column) => tr.appendChild(make('td', text(row[column]))));
+        body.appendChild(tr);
+      });
+      table.appendChild(body);
+      tableHost.appendChild(table);
+    }
+    if (pageCount > 1) {
+      const previous = make('button', '이전 페이지', 'button');
+      previous.type = 'button'; previous.disabled = state.page === 0;
+      previous.addEventListener('click', () => { state.page -= 1; render(); });
+      const current = make('span', `${state.page + 1} / ${pageCount} 페이지`, 'page-state');
+      const next = make('button', '다음 페이지', 'button primary');
+      next.type = 'button'; next.disabled = state.page >= pageCount - 1;
+      next.addEventListener('click', () => { state.page += 1; render(); });
+      paginationHost.append(previous, current, next);
+    }
+  };
+  const refresh = () => { state.page = 0; render(); };
+  [controls.filterColumn, controls.filterValue, controls.sortColumn, controls.sortDirection].forEach((control) => {
+    control.addEventListener('input', refresh);
+    control.addEventListener('change', refresh);
+  });
+  controls.reset.addEventListener('click', () => {
+    controls.filterColumn.value = '__all__'; controls.filterValue.value = '';
+    controls.sortColumn.value = ''; controls.sortDirection.value = 'asc'; refresh();
+  });
+  fetch(root.dataset.jsonUrl, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+    .then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
+    .then((payload) => {
+      const loaded = payload && payload.loaded && typeof payload.loaded === 'object' ? payload.loaded : {};
+      const rows = Array.isArray(loaded.rows) ? loaded.rows.filter((row) => row && typeof row === 'object') : [];
+      const columns = Array.isArray(loaded.columns) ? loaded.columns.map(text).filter(Boolean) : [];
+      state.rows = rows;
+      state.columns = columns.length ? columns : [...new Set(rows.flatMap((row) => Object.keys(row)))];
+      state.ready = true;
+      if (fallback) fallback.hidden = true;
+      render();
+    })
+    .catch(() => {
+      status.textContent = '전체 데이터를 브라우저에 불러오지 못했습니다. 아래 미리보기 또는 CSV 다운로드를 이용해 주세요.';
+      root.classList.add('explorer-unavailable');
+    });
+})();
+"""
+
+
+def render_table(rows: list[dict[str, Any]], columns: list[str], start: int = 0) -> str:
     if not rows:
         return '<p class="empty">No rows are available for preview.</p>'
-    head = "".join(f"<th>{escape(column)}</th>" for column in columns)
+    head = '<th scope="col">No.</th>' + "".join(f"<th scope=\"col\">{escape(column)}</th>" for column in columns)
     body_rows = []
-    for row in rows:
+    for index, row in enumerate(rows, start=max(int_or_zero(start), 0) + 1):
         cells = "".join(f"<td>{escape(row.get(column, ''))}</td>" for column in columns)
-        body_rows.append(f"<tr>{cells}</tr>")
+        body_rows.append(f'<tr><td class="row-number">{index}</td>{cells}</tr>')
     return (
         '<div class="table-wrap"><table><thead><tr>'
         f"{head}</tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>"
@@ -658,28 +867,53 @@ def error_page(title: str, message: str) -> str:
 
 def page_shell(title: str, body: str) -> str:
     return f"""<!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{escape(title)}</title>
   <style>
-    body {{ margin: 0; font-family: Arial, sans-serif; color: #17202a; background: #f6f7f9; }}
-    main {{ max-width: 1180px; margin: 0 auto; padding: 28px; }}
+    :root {{ --ink:#182230; --muted:#5f6f85; --line:#dbe5f0; --blue:#1e64d0; --blue-soft:#eaf2ff; --surface:#fff; --background:#f4f7fb; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; font-family: "Malgun Gothic", "Apple SD Gothic Neo", Arial, sans-serif; color: var(--ink); background: var(--background); line-height: 1.5; }}
+    main {{ max-width: 1320px; margin: 0 auto; padding: 30px; }}
     h1 {{ margin: 0 0 18px; font-size: 22px; }}
-    .toolbar {{ display: flex; gap: 8px; margin: 0 0 18px; flex-wrap: wrap; }}
-    .button {{ display: inline-block; padding: 9px 13px; border-radius: 6px; border: 1px solid #b9c0ca; color: #17202a; text-decoration: none; background: white; }}
-    .button.primary {{ background: #1f6feb; color: white; border-color: #1f6feb; }}
-    .summary {{ display: grid; grid-template-columns: 150px 1fr; gap: 6px 12px; background: white; padding: 14px; border: 1px solid #d8dee8; border-radius: 8px; }}
-    .summary dt {{ font-weight: 700; color: #56606f; }}
+    h2 {{ margin: 0; letter-spacing: -.02em; }}
+    .page-hero {{ margin: 0 0 18px; padding: 24px 26px; border-radius: 17px; color: #fff; background: linear-gradient(128deg, #14375f 0%, #2164c7 66%, #3c8cef 100%); box-shadow: 0 10px 24px rgba(30,49,76,.12); }}
+    .page-hero h2 {{ font-size: 25px; }}
+    .page-hero p {{ margin: 7px 0 0; color: #e7f1ff; font-size: 14px; }}
+    .eyebrow {{ margin: 0 !important; color: #cfe3ff !important; font-size: 11px !important; font-weight: 800; letter-spacing: .08em; }}
+    .toolbar {{ display: flex; align-items: center; gap: 8px; margin: 0 0 18px; flex-wrap: wrap; }}
+    .button {{ display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 8px 13px; border: 1px solid #b9c8d9; border-radius: 8px; color: #24466f; font: inherit; font-size: 13px; font-weight: 800; text-decoration: none; background: white; cursor: pointer; }}
+    .button:hover {{ border-color: #7da7df; background: #f7fbff; }}
+    .button:disabled {{ cursor: not-allowed; opacity: .48; }}
+    .button.primary {{ background: var(--blue); color: white; border-color: var(--blue); }}
+    .summary {{ display: grid; grid-template-columns: 150px 1fr; gap: 6px 12px; margin: 0 0 18px; background: white; padding: 15px; border: 1px solid var(--line); border-radius: 11px; }}
+    .summary dt {{ font-weight: 800; color: #566f8c; }}
     .summary dd {{ margin: 0; overflow-wrap: anywhere; }}
-    .note {{ color: #5d6878; font-size: 13px; }}
+    .note {{ color: var(--muted); font-size: 13px; }}
     .error {{ background: #fff1f0; border: 1px solid #ffccc7; color: #a8071a; padding: 14px; border-radius: 8px; }}
-    .table-wrap {{ overflow: auto; border: 1px solid #d8dee8; border-radius: 8px; background: white; }}
+    .data-explorer {{ margin: 0 0 20px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 5px 16px rgba(21,47,83,.04); }}
+    .explorer-head {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 16px; }}
+    .explorer-head h2 {{ font-size: 19px; }}
+    .explorer-head p {{ margin: 4px 0 0; color: var(--muted); font-size: 13px; }}
+    .explorer-badge {{ flex: 0 0 auto; padding: 4px 9px; border-radius: 999px; color: #28518a; background: var(--blue-soft); font-size: 12px; font-weight: 800; }}
+    .explorer-controls {{ display: grid; grid-template-columns: minmax(130px,.8fr) minmax(180px,1.3fr) minmax(130px,.8fr) minmax(120px,.65fr) auto; gap: 10px; align-items: end; margin-bottom: 14px; }}
+    .explorer-controls label {{ display: grid; gap: 5px; color: #52637b; font-size: 12px; font-weight: 800; }}
+    .explorer-controls select, .explorer-controls input {{ width: 100%; min-height: 36px; padding: 7px 9px; border: 1px solid #cbd8e7; border-radius: 8px; color: var(--ink); background: #fff; font: inherit; font-size: 13px; }}
+    .table-wrap {{ overflow: auto; max-height: 660px; border: 1px solid var(--line); border-radius: 10px; background: white; }}
     table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
-    th, td {{ padding: 8px 10px; border-bottom: 1px solid #e7ebf0; text-align: left; white-space: nowrap; }}
-    th {{ position: sticky; top: 0; background: #eef2f7; z-index: 1; }}
-    .empty {{ background: white; border: 1px solid #d8dee8; border-radius: 8px; padding: 14px; }}
+    th, td {{ padding: 9px 11px; border-bottom: 1px solid #e9eef4; text-align: left; vertical-align: top; white-space: nowrap; }}
+    th {{ position: sticky; top: 0; background: #f1f6fc; color: #435c77; z-index: 1; font-weight: 800; }}
+    tr:last-child td {{ border-bottom: 0; }}
+    .row-number {{ color: var(--muted); font-variant-numeric: tabular-nums; }}
+    .pagination {{ justify-content: center; margin: 14px 0 0; }}
+    .page-state {{ padding: 7px 9px; color: var(--muted); font-size: 13px; font-weight: 800; }}
+    .server-preview {{ margin: 0 0 20px; }}
+    .server-preview .note {{ margin: 0 0 10px; }}
+    .empty {{ margin: 0; background: white; border: 1px dashed #c7d4e3; border-radius: 8px; padding: 14px; color: var(--muted); }}
+    @media (max-width: 960px) {{ main {{ padding: 16px; }} .explorer-controls {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} .explorer-controls .filter-value {{ grid-column: span 2; }} }}
+    @media (max-width: 620px) {{ .page-hero {{ padding: 20px; }} .explorer-head {{ display: block; }} .explorer-badge {{ display: inline-flex; margin-top: 9px; }} .explorer-controls {{ grid-template-columns: 1fr; }} .explorer-controls .filter-value {{ grid-column: auto; }} .summary {{ grid-template-columns: 1fr; gap: 2px; }} .summary dd {{ margin-bottom: 8px; }} }}
   </style>
 </head>
 <body><main><h1>{escape(title)}</h1>{body}</main></body>
@@ -706,5 +940,5 @@ def int_or_zero(value: Any) -> int:
         return 0
 
 
-def escape(value: Any) -> str:
-    return html.escape(str(value if value is not None else ""), quote=True)
+def escape(value: Any, quote: bool = True) -> str:
+    return html.escape(str(value if value is not None else ""), quote=quote)

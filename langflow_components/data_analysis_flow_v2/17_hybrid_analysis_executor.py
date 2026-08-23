@@ -192,6 +192,7 @@ def execute_pandas_code(
     # checkpoint remains a bounded preview and is never sent to an answer LLM.
     checkpoint_values: dict[str, Any] = {}
     intermediate_results: list[dict[str, Any]] = []
+    runtime_intermediate_frames: dict[str, Any] = {}
     sources: dict[str, Any] = {}
     llm_code, response_parse = _parse_pandas_llm_response(llm_response)
     normalized_llm_code, safe_imports = _normalize_safe_imports(llm_code)
@@ -470,6 +471,27 @@ def execute_pandas_code(
             intermediate_results.append(item)
             return item
 
+        # 함수 설명: deterministic 함수 내부에서 계약 오류가 발생해 반환되지 못한
+        # 검증 완료 frame을 일반 checkpoint 구조로 옮깁니다. 원본 source는 포함하지
+        # 않고, 실제 필터/Typed 단계/계산 완료 frame만 부분 결과 후보가 됩니다.
+        def flush_runtime_checkpoints() -> None:
+            for checkpoint_key, frame in runtime_intermediate_frames.items():
+                marker = str(checkpoint_key or "").strip()
+                if not marker or marker in checkpoint_values:
+                    continue
+                if marker == "computed_result":
+                    description = "최종 계약 적용 전 계산 결과"
+                    role = "computed_result"
+                elif marker.startswith("typed_step:"):
+                    description = "Typed 실행 계획 단계 결과"
+                    role = "step_output"
+                elif marker.startswith("filtered:"):
+                    description = "필터 적용 후 원본 데이터"
+                    role = "filtered_source"
+                else:
+                    continue
+                record_checkpoint(marker, frame, description, role)
+
         # 함수 설명: `publish_checkpoint()`는 여러 후보 중 하나만 현재 payload에
         # 노출하고, 전체 행은 답변 모델에 전달하지 않는 runtime buffer로 저장합니다.
         def publish_checkpoint(
@@ -574,12 +596,11 @@ def execute_pandas_code(
             helper_trace["helper_sources"] = deepcopy(
                 deterministic_transform_execution
             )
-            fast_intermediate_frames: dict[str, Any] = {}
             deterministic_result = _execute_deterministic_contract(
                 deterministic_execution,
                 sources,
                 pd,
-                runtime_intermediate_frames=fast_intermediate_frames,
+                runtime_intermediate_frames=runtime_intermediate_frames,
             )
             if (
                 isinstance(deterministic_result, tuple)
@@ -593,24 +614,18 @@ def execute_pandas_code(
             # declared quantity missing-value policy.  Raw source checkpoints
             # intentionally remain unchanged for audit/download purposes.
             result = _zero_fill_declared_metric_frame_values(result, next_payload)
-            for checkpoint_key, frame in fast_intermediate_frames.items():
-                is_typed_step = str(checkpoint_key).startswith("typed_step:")
-                record_checkpoint(
-                    checkpoint_key,
-                    frame,
-                    "Typed 실행 계획 단계 결과" if is_typed_step else "필터 적용 후 원본 데이터",
-                    "step_output" if is_typed_step else "filtered_source",
-                )
+            flush_runtime_checkpoints()
             if fast_execution:
                 # The Fast result-contract reconciler can reject missing
                 # display columns.  Capture its input first so that rejection
                 # still exposes the real calculation immediately before it.
-                record_checkpoint(
-                    "computed_result",
-                    result,
-                    "최종 계약 적용 전 계산 결과",
-                    "computed_result",
-                )
+                if "computed_result" not in checkpoint_values:
+                    record_checkpoint(
+                        "computed_result",
+                        result,
+                        "최종 계약 적용 전 계산 결과",
+                        "computed_result",
+                    )
                 publish_checkpoint()
                 next_payload = _apply_fast_result_contract(next_payload, result, semantic_execution_certificate)
             else:
@@ -758,6 +773,8 @@ def execute_pandas_code(
         }
         return next_payload
     except PartialExecutionError as exc:
+        if callable(locals().get("flush_runtime_checkpoints")):
+            flush_runtime_checkpoints()
         if exc.intermediate_results and not intermediate_results:
             intermediate_results.extend(
                 item for item in exc.intermediate_results if isinstance(item, dict)
@@ -780,6 +797,8 @@ def execute_pandas_code(
             intermediate_results=next_payload.get("intermediate_results"),
         )
     except OutputContractError as exc:
+        if callable(locals().get("flush_runtime_checkpoints")):
+            flush_runtime_checkpoints()
         if intermediate_results:
             publish_checkpoint()
         return _analysis_error(
@@ -1423,7 +1442,7 @@ def _execute_fast_path_recipe(
         for item in retrieval_filters
     ] + filter_execution
     filtered_row_count = int(len(working))
-    if runtime_intermediate_frames is not None:
+    if runtime_intermediate_frames is not None and all_filters:
         runtime_intermediate_frames[f"filtered:{source_alias}"] = working.copy()
     if not post_retrieval_filters:
         intermediate_results.append(
@@ -1509,7 +1528,14 @@ def _execute_fast_path_recipe(
     else:
         raise OutputContractError(f"지원하지 않는 Fast Path recipe입니다: {recipe}")
 
+    # Ordering/result projection belongs to the final contract.  Preserve the
+    # successfully calculated frame first so a stale sort/display column can
+    # return a truthful partial result without exposing the raw source.
+    if runtime_intermediate_frames is not None:
+        runtime_intermediate_frames["computed_result"] = result.copy()
     result = _apply_fast_ordering_and_limit(result, contract)
+    if runtime_intermediate_frames is not None:
+        runtime_intermediate_frames["computed_result"] = result.copy()
     intermediate_results.append(
         _recorded_output(
             "computed_result",

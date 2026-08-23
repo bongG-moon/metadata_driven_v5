@@ -36,6 +36,12 @@ MAX_INTERMEDIATE_TABLE_COUNT = 8
 MAX_CAPTURED_INTERMEDIATE_PREVIEW_ROWS = 5
 CELL_TEXT_LIMIT = 120
 VALUE_TEXT_LIMIT = 900
+MAX_ANALYSIS_EXECUTION_ARTIFACTS = 3
+
+# HTML 분석 과정 Report는 결과 CSV(data_refs)와 다른 전달물이다. 이 어댑터는
+# 발행기가 만든 명시적 artifact descriptor만 사용자에게 노출한다.
+ANALYSIS_EXECUTION_REPORT_TYPE = "analysis_execution_report"
+ANALYSIS_EXECUTION_HTML_ARTIFACT_TYPE = "analysis_execution_html"
 
 
 # 함수 설명: 실행에 필요한 Python 모듈이 없을 때 사내 Nexus를 통해 패키지를 설치합니다.
@@ -126,6 +132,7 @@ def build_message(
     optional_sections.append(result_table_section)
     if options["download_links"]:
         optional_sections.append(_download_links_section(payload))
+    optional_sections.append(_analysis_execution_report_section(payload))
     if options["notices"]:
         optional_sections.append(_notice_section(payload))
     for section in optional_sections:
@@ -238,6 +245,7 @@ def _message_sections_from_answer_sections(
         optional_sections.append(_intermediate_results_section(payload, intermediate_preview_limit))
     if options["download_links"]:
         optional_sections.append(_download_links_section(payload))
+    optional_sections.append(_analysis_execution_report_section(payload))
     if options["notices"]:
         optional_sections.append(_notice_section_from_answer_sections(answer_sections))
     for section in optional_sections:
@@ -398,13 +406,15 @@ def _notice_section_from_answer_sections(answer_sections: dict[str, Any]) -> str
     if not notices:
         return ""
     lines = ["### 참고"]
-    for item in notices[:8]:
+    for item in (item for item in notices if _is_user_visible_notice(item)):
         if isinstance(item, dict):
             message = str(item.get("message") or item.get("type") or "").strip()
         else:
             message = str(item or "").strip()
         if message:
             lines.append(f"- {_escape_markdown_tilde(message)}")
+        if len(lines) >= 9:
+            break
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
@@ -1125,8 +1135,16 @@ def _collapse_function_case_helper_definitions(code: str, used_helpers: list[str
 # 함수 설명: `_notice_section()`는 응답 section을 최종 Message에 넣을 독립 Markdown section으로 렌더링합니다.
 def _notice_section(payload: dict[str, Any]) -> str:
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
-    warnings = _list_value(trace.get("warnings")) + _list_value(payload.get("warnings"))
-    errors = _list_value(trace.get("errors")) + _list_value(payload.get("errors"))
+    warnings = [
+        item
+        for item in (_list_value(trace.get("warnings")) + _list_value(payload.get("warnings")))
+        if _is_user_visible_notice(item)
+    ]
+    errors = [
+        item
+        for item in (_list_value(trace.get("errors")) + _list_value(payload.get("errors")))
+        if _is_user_visible_notice(item)
+    ]
     if not warnings and not errors:
         return ""
 
@@ -1140,6 +1158,15 @@ def _notice_section(payload: dict[str, Any]) -> str:
         for item in errors[:12]:
             lines.append(f"  - {_display_value(item)}")
     return "\n".join(lines)
+
+
+# 함수 설명: `_is_user_visible_notice()`는 내부 best-effort 동작의 경고가 일반 답변에
+# 노출되지 않도록, 명시적으로 `user_visible=false`인 항목만 숨깁니다. 개발자 진단은
+# 원본 trace를 그대로 사용하므로 이 필터의 영향을 받지 않습니다.
+def _is_user_visible_notice(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return True
+    return item.get("user_visible") is not False
 
 
 # 함수 설명: `_download_links_section()`는 다운로드 링크를 새 탭에서 여는 HTML anchor로 렌더링합니다.
@@ -1165,16 +1192,92 @@ def _download_links_section(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# 함수 설명: `_analysis_execution_report_section()`는 분석 실행 과정을 설명하는 HTML
+# artifact 링크만 별도 section으로 렌더링합니다. 결과 CSV 다운로드 목록과 섞지 않아
+# 사용자가 데이터와 설명서를 구분할 수 있게 합니다.
+def _analysis_execution_report_section(payload: dict[str, Any]) -> str:
+    artifacts = _analysis_execution_report_artifacts(payload)
+    if not artifacts:
+        return ""
+
+    lines = ["### 분석 처리 과정"]
+    for artifact in artifacts:
+        links: list[str] = []
+        view_url = _artifact_url(artifact.get("view_url"))
+        download_url = _artifact_url(artifact.get("download_url"))
+        if view_url:
+            links.append(_artifact_anchor("🧭", "분석 과정 보기", view_url))
+        if download_url:
+            links.append(_artifact_anchor("📥", "HTML 다운로드", download_url))
+        if not links:
+            continue
+        lines.append(f"- {' · '.join(links)}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+# 함수 설명: `_analysis_execution_report_artifacts()`는 발행기가 만든 분석 과정
+# HTML descriptor만 확인합니다. data_refs·download_manifest는 의도적으로 보지 않아
+# CSV 결과를 HTML Report 링크로 오인하지 않습니다.
+def _analysis_execution_report_artifacts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_artifacts = payload.get("artifacts")
+    if not isinstance(raw_artifacts, list):
+        return []
+
+    artifacts: list[dict[str, Any]] = []
+    signatures: set[str] = set()
+    for item in raw_artifacts:
+        if not isinstance(item, dict) or not _is_analysis_execution_report_artifact(item):
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        if status in {"error", "failed", "failure", "unavailable", "disabled", "skipped"}:
+            continue
+        view_url = _artifact_url(item.get("view_url"))
+        download_url = _artifact_url(item.get("download_url"))
+        if not view_url and not download_url:
+            continue
+        signature = "|".join(
+            (
+                str(item.get("report_id") or "").strip(),
+                view_url,
+                download_url,
+            )
+        )
+        if signature in signatures:
+            continue
+        signatures.add(signature)
+        artifacts.append(item)
+        if len(artifacts) >= MAX_ANALYSIS_EXECUTION_ARTIFACTS:
+            break
+    return artifacts
+
+
+# 함수 설명: 분석 실행 HTML Report의 type 계약을 확인합니다. 두 type 필드는
+# 발행기의 상하위 호환 표기로, 둘 중 하나가 정확히 일치하면 됩니다.
+def _is_analysis_execution_report_artifact(item: dict[str, Any]) -> bool:
+    artifact_type = str(item.get("artifact_type") or "").strip().lower()
+    descriptor_type = str(item.get("type") or "").strip().lower()
+    return (
+        descriptor_type == ANALYSIS_EXECUTION_REPORT_TYPE
+        or artifact_type == ANALYSIS_EXECUTION_HTML_ARTIFACT_TYPE
+    )
+
+
 # 함수 설명: 검증된 외부 다운로드 URL을 현재 채팅 화면과 분리된 새 탭에서 여는 안전한 HTML 링크로 만듭니다.
 # 파일 다운로드 여부는 23번이 발급한 URL과 다운로드 서버의 Content-Disposition 응답 헤더가 결정합니다.
 def _download_anchor(label: Any, url: Any) -> str:
+    return _artifact_anchor("📥", label or "CSV 다운로드", url)
+
+
+# 함수 설명: `_artifact_anchor()`는 분석 과정 HTML과 CSV 다운로드가 공통으로 쓰는
+# 새 탭 링크를 렌더링합니다. URL은 호출 전에 각각의 계약 helper에서 검증됩니다.
+def _artifact_anchor(icon: str, label: Any, url: Any) -> str:
     ensure_package("html")
     from html import escape
 
-    safe_label = escape(str(label or "CSV 다운로드"), quote=False)
+    safe_label = escape(str(label or "다운로드"), quote=False)
     safe_url = escape(str(url or ""), quote=True)
     return (
-        f'📥 <a href="{safe_url}" target="_blank" rel="noopener noreferrer">'
+        f'{icon} <a href="{safe_url}" target="_blank" rel="noopener noreferrer">'
         f"<strong>{safe_label}</strong></a>"
     )
 
@@ -1227,6 +1330,28 @@ def _download_url(ref: dict[str, Any]) -> str:
     except ValueError:
         return ""
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return ""
+    return url
+
+
+# 함수 설명: `_artifact_url()`는 HTML 분석 과정 artifact가 가진 보기·다운로드 URL만
+# 허용합니다. Javascript URL·인증 정보·fragment를 제외해 채팅 Markdown 링크에
+# 안전하게 넣을 수 있는 public HTTP(S) URL만 반환합니다.
+def _artifact_url(value: Any) -> str:
+    url = str(value or "").strip()
+    if not url or any(ord(character) < 32 for character in url):
+        return ""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
         return ""
     return url
 

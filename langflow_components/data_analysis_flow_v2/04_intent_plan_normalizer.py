@@ -23,6 +23,44 @@ from lfx.schema.data import Data
 
 RETIRED_JOB_DETAIL_KEYS = {"row_identity_columns", "context_columns"}
 PREVIOUS_RESULT_ALIAS = "previous_result"
+EXECUTION_REPORT_DOMAIN_DETAILS_KEY = "_execution_report_domain_details"
+# This is a deliberately small, report-only projection.  It carries the
+# selected metadata definitions across the main payload path without changing
+# any planning or execution contract.  Node 24 consumes it and removes it
+# before normal answer/API/session output.
+MAX_EXECUTION_REPORT_DOMAIN_DETAILS = 24
+MAX_EXECUTION_REPORT_DOMAIN_FIELDS = 28
+MAX_EXECUTION_REPORT_DOMAIN_LIST_ITEMS = 16
+MAX_EXECUTION_REPORT_DOMAIN_DEPTH = 4
+MAX_EXECUTION_REPORT_DOMAIN_TEXT = 500
+EXECUTION_REPORT_DOMAIN_HIDDEN_KEYS = {
+    "_id",
+    "api_key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "credentials",
+    "connection",
+    "connection_string",
+    "connectionstring",
+    "database_url",
+    "dsn",
+    "endpoint",
+    "headers",
+    "password",
+    "passwd",
+    "proxy_url",
+    "query",
+    "query_template",
+    "secret",
+    "source_config",
+    "source_url",
+    "sql",
+    "sql_template",
+    "token",
+    "url",
+}
 DERIVED_FORMULA_OPERATORS = {"add", "subtract", "multiply", "divide"}
 DERIVED_FORMULA_NULL_POLICIES = {"zero", "propagate"}
 DERIVED_FORMULA_ZERO_DIVISION_POLICIES = {"zero", "null"}
@@ -299,6 +337,33 @@ def normalize_intent_plan(
         metadata_candidates,
         metadata_refs,
     )
+    (
+        plan,
+        retrieval_jobs,
+        raw_pandas_plan,
+        dependent_recipe_stage_selection,
+    ) = _reconcile_selected_dependent_recipe_stage(
+        question,
+        plan,
+        retrieval_jobs,
+        raw_pandas_plan,
+        _execution_catalog_candidates(metadata_envelope, metadata_candidates),
+        domain_selection.get("locked_metadata_refs", []),
+    )
+    (
+        metadata_candidates,
+        retrieval_jobs,
+        dependent_stage_catalog_resolution,
+    ) = _hydrate_execution_catalog_candidates(
+        metadata_candidates,
+        metadata_envelope,
+        retrieval_jobs,
+    )
+    metadata_refs = _merge_metadata_ref_lists(
+        metadata_refs,
+        dependent_recipe_stage_selection.get("metadata_refs", []),
+        dependent_stage_catalog_resolution.get("metadata_refs", []),
+    )
     metadata_refs, removed_unmatched_execution_refs = _execution_compatible_metadata_refs(
         metadata_refs,
         metadata_candidates,
@@ -510,7 +575,21 @@ def normalize_intent_plan(
         metadata_candidates,
         domain_selection.get("locked_metadata_refs", []),
         plan,
+        dependent_recipe_stage_selection.get("active_stage_by_ref", {}),
     )
+    if dependent_recipe_stage_selection.get("corrections"):
+        source_dataset_selection = deepcopy(source_dataset_selection)
+        source_dataset_selection["corrections"] = [
+            *deepcopy(dependent_recipe_stage_selection["corrections"]),
+            *deepcopy(source_dataset_selection.get("corrections", [])),
+        ]
+        source_dataset_selection["status"] = "applied"
+        source_dataset_selection["dependent_recipe_stage_selection"] = {
+            "status": dependent_recipe_stage_selection.get("status"),
+            "active_stages": deepcopy(
+                dependent_recipe_stage_selection.get("active_stages", [])
+            ),
+        }
     plan, detail_grain_metric_projection = (
         _reconcile_detail_grain_optional_metrics(
             plan,
@@ -554,6 +633,9 @@ def normalize_intent_plan(
         retrieval_jobs,
         metadata_candidates,
         question=question,
+        active_stage_by_ref=dependent_recipe_stage_selection.get(
+            "active_stage_by_ref", {}
+        ),
     )
     plan = deepcopy(plan)
     plan["metadata_refs"] = deepcopy(metadata_refs)
@@ -894,6 +976,22 @@ def normalize_intent_plan(
             plan.get("output_contract"),
         )
     )
+    # A detail/entity-list request may legitimately be sorted without asking
+    # for a single/latest/Top-N row.  Remove only an LLM-added row limit that
+    # has no question evidence; keep the ordering, filters, retrieval jobs and
+    # the node's global detail safety cap unchanged.  This is a shape repair,
+    # not a new validation gate.
+    (
+        pandas_plan,
+        reconciled_detail_output_contract,
+        detail_row_selection_reconciliation,
+    ) = _reconcile_unrequested_detail_row_limit(
+        pandas_plan,
+        plan.get("output_contract"),
+        question,
+    )
+    if reconciled_detail_output_contract:
+        plan["output_contract"] = reconciled_detail_output_contract
     # Catalog metadata describes an external source, whereas every Typed
     # Pandas step describes a new frame.  Compile the latter boundary before
     # catalog validation or execution: a raw source field such as ``EQP_ID``
@@ -1184,6 +1282,18 @@ def normalize_intent_plan(
             _plan_metadata_refs(normalized_plan),
         ),
     )
+    # The normal payload intentionally contains only metadata references.  A
+    # compact selected-item projection is retained solely until Node 24/25 can
+    # publish the human-readable execution Report; it never influences this
+    # plan and is released before answer/API/session projection.
+    report_domain_details = _selected_execution_report_domain_details(
+        metadata_candidates,
+        next_payload["metadata_refs"],
+    )
+    if report_domain_details:
+        next_payload[EXECUTION_REPORT_DOMAIN_DETAILS_KEY] = report_domain_details
+    else:
+        next_payload.pop(EXECUTION_REPORT_DOMAIN_DETAILS_KEY, None)
     previous_data_reuse = _uses_previous_data_without_new_retrieval(normalized_plan)
     next_payload.setdefault("trace", {}).setdefault("inspection", {})["intent"] = {
         "stage": "04_intent_plan_normalizer",
@@ -1209,6 +1319,7 @@ def normalize_intent_plan(
         "business_time_guard": business_time_guard,
         "metadata_ref_guard": metadata_ref_guard,
         "domain_selection": domain_selection,
+        "dependent_recipe_stage_selection": dependent_recipe_stage_selection,
         "selected_recipe_plan_rescue": selected_recipe_plan_rescue,
         "ungrounded_domain_filter_reconciliation": ungrounded_domain_filter_reconciliation,
         "domain_metric_source_guard": domain_metric_source_guard,
@@ -1244,6 +1355,7 @@ def normalize_intent_plan(
         "derived_formula_materialization": derived_formula_materialization,
         "terminal_detail_join_projection": terminal_detail_join_projection,
         "proven_nonadditive_join_rollup_repair": proven_nonadditive_join_rollup_repair,
+        "detail_row_selection_reconciliation": detail_row_selection_reconciliation,
         "typed_frame_contract": typed_frame_contract,
         "required_parameter_guard": required_parameter_guard,
         "output_contract_column_normalization": output_contract_column_normalization,
@@ -1253,6 +1365,7 @@ def normalize_intent_plan(
         "source_alias_reconciliation": source_alias_reconciliation,
         "external_source_catalog_binding": external_source_catalog_binding,
         "execution_catalog_resolution": execution_catalog_resolution,
+        "dependent_stage_catalog_resolution": dependent_stage_catalog_resolution,
         "temporal_contract_catalog_resolution": temporal_contract_catalog_resolution,
         "temporal_sibling_catalog_resolution": temporal_sibling_catalog_resolution,
         "temporal_metric_alignment": temporal_metric_alignment,
@@ -4726,6 +4839,7 @@ def _filter_incompatible_recipe_contracts(
     retrieval_jobs: list[Any],
     candidates: dict[str, Any],
     question: str = "",
+    active_stage_by_ref: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]], dict[str, Any]]:
     """Drop recipes whose source or selection contract is not satisfied.
 
@@ -4772,7 +4886,21 @@ def _filter_incompatible_recipe_contracts(
                 }
             )
             return False
-        required_sources = set(_string_list(payload.get("source_datasets")))
+        active = (
+            active_stage_by_ref.get(_metadata_reference_identity_key(ref))
+            if isinstance(active_stage_by_ref, dict)
+            else None
+        )
+        active_dataset = (
+            str(active.get("dataset_key") or "").strip()
+            if isinstance(active, dict)
+            else ""
+        )
+        required_sources = (
+            {active_dataset}
+            if active_dataset
+            else set(_string_list(payload.get("source_datasets")))
+        )
         if not required_sources or required_sources.issubset(selected_datasets):
             return True
         removed.append(
@@ -5610,6 +5738,658 @@ def _append_catalog_metric_aggregate_merge(
 
 
 # 함수 설명: `_resolve_execution_domain_selection()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
+def _reconcile_selected_dependent_recipe_stage(
+    question: str,
+    plan: dict[str, Any],
+    retrieval_jobs: list[Any],
+    pandas_plan: list[Any],
+    candidates: dict[str, Any],
+    locked_metadata_refs: list[dict[str, str]],
+) -> tuple[dict[str, Any], list[Any], list[Any], dict[str, Any]]:
+    """Activate one metadata-declared dependent selection when it is executable.
+
+    A recipe may declare a current stage and a dependent history/detail stage.
+    The LLM still chooses the initial plan, but an exact structured trigger is
+    stronger than a prose interpretation.  This rescue is deliberately
+    fail-soft: it changes the source only when one recipe/stage is selected,
+    the target Catalog is active, every required parameter is present in the
+    current question, and the existing plan can be projected on the target
+    schema.  Any ambiguity preserves the original plan and adds only trace.
+    """
+
+    next_plan = deepcopy(plan)
+    jobs = [deepcopy(item) for item in retrieval_jobs]
+    steps = [deepcopy(item) for item in pandas_plan]
+    advisories: list[dict[str, Any]] = []
+    activations: list[dict[str, Any]] = []
+
+    for raw_ref in locked_metadata_refs:
+        ref = _metadata_ref(raw_ref)
+        if str(ref.get("section") or "").strip() != "analysis_recipes":
+            continue
+        item = _find_metadata_item(candidates, ref)
+        recipe = _metadata_payload(item)
+        dependent = (
+            recipe.get("dependent_selection")
+            if isinstance(recipe.get("dependent_selection"), dict)
+            else {}
+        )
+        triggers = _string_list(dependent.get("when_question_includes_any"))
+        matched_triggers = [
+            trigger
+            for trigger in triggers
+            if _domain_alias_matches(question, trigger)
+        ]
+        if not matched_triggers:
+            continue
+        current_stage_name = str(dependent.get("current_stage") or "").strip()
+        target_stage_name = str(dependent.get("next_stage") or "").strip()
+        current_stage = (
+            recipe.get(current_stage_name)
+            if current_stage_name and isinstance(recipe.get(current_stage_name), dict)
+            else {}
+        )
+        target_stage = (
+            recipe.get(target_stage_name)
+            if target_stage_name and isinstance(recipe.get(target_stage_name), dict)
+            else {}
+        )
+        target_dataset_key = str(target_stage.get("dataset_key") or "").strip()
+        current_dataset_key = str(current_stage.get("dataset_key") or "").strip()
+        declared_datasets = _string_list(recipe.get("source_datasets"))
+        if (
+            not current_stage_name
+            or not target_stage_name
+            or not target_dataset_key
+            or (declared_datasets and target_dataset_key not in declared_datasets)
+        ):
+            advisories.append(
+                {
+                    "metadata_ref": deepcopy(ref),
+                    "reason": "dependent_stage_contract_incomplete",
+                    "matched_triggers": matched_triggers,
+                }
+            )
+            continue
+        activations.append(
+            {
+                "metadata_ref": deepcopy(ref),
+                "matched_triggers": matched_triggers,
+                "current_stage_name": current_stage_name,
+                "target_stage_name": target_stage_name,
+                "current_stage": deepcopy(current_stage),
+                "target_stage": deepcopy(target_stage),
+                "current_dataset_key": current_dataset_key,
+                "target_dataset_key": target_dataset_key,
+                "declared_datasets": declared_datasets,
+            }
+        )
+
+    if len(activations) != 1:
+        if len(activations) > 1:
+            advisories.append(
+                {
+                    "reason": "dependent_stage_activation_not_unique",
+                    "candidate_count": len(activations),
+                    "candidate_refs": [
+                        deepcopy(item.get("metadata_ref")) for item in activations
+                    ],
+                }
+            )
+        return next_plan, jobs, steps, {
+            "status": "advisory" if advisories else "not_needed",
+            "corrections": [],
+            "active_stages": [],
+            "active_stage_by_ref": {},
+            "metadata_refs": [],
+            "advisories": advisories,
+        }
+
+    activation = activations[0]
+    target_dataset_key = activation["target_dataset_key"]
+    current_dataset_key = activation["current_dataset_key"]
+    matching_jobs = [
+        (index, item)
+        for index, item in enumerate(jobs)
+        if isinstance(item, dict)
+        and str(item.get("dataset_key") or "").strip()
+        in {current_dataset_key, target_dataset_key}
+    ]
+    if len(jobs) != 1 or len(matching_jobs) != 1:
+        advisories.append(
+            {
+                "metadata_ref": deepcopy(activation["metadata_ref"]),
+                "reason": "dependent_stage_source_not_unique",
+                "retrieval_job_count": len(jobs),
+                "matching_job_count": len(matching_jobs),
+            }
+        )
+        return next_plan, jobs, steps, {
+            "status": "advisory",
+            "corrections": [],
+            "active_stages": [],
+            "active_stage_by_ref": {},
+            "metadata_refs": [],
+            "advisories": advisories,
+        }
+
+    job_index, source_job = matching_jobs[0]
+    source_alias = str(
+        source_job.get("source_alias") or source_job.get("dataset_key") or ""
+    ).strip()
+    target_item = _table_catalog_item(candidates, target_dataset_key)
+    target_payload = _metadata_payload(target_item)
+    explicit_status = str(
+        target_item.get("status")
+        or target_payload.get("status")
+        or ""
+    ).strip().casefold()
+    target_inactive = (
+        not target_item
+        or target_item.get("is_active") is False
+        or target_payload.get("is_active") is False
+        or explicit_status in {"inactive", "disabled", "deleted", "archived", "draft"}
+    )
+    expected_scope = _dependent_stage_expected_time_scope(
+        activation["target_stage_name"],
+        activation["target_stage"],
+    )
+    actual_scope = _catalog_time_scope(target_item)
+    if target_inactive or (expected_scope and actual_scope != expected_scope):
+        advisories.append(
+            {
+                "metadata_ref": deepcopy(activation["metadata_ref"]),
+                "reason": (
+                    "dependent_stage_catalog_inactive"
+                    if target_inactive
+                    else "dependent_stage_time_scope_mismatch"
+                ),
+                "target_dataset_key": target_dataset_key,
+                "expected_time_scope": expected_scope,
+                "actual_time_scope": actual_scope,
+            }
+        )
+        return next_plan, jobs, steps, {
+            "status": "advisory",
+            "corrections": [],
+            "active_stages": [],
+            "active_stage_by_ref": {},
+            "metadata_refs": [],
+            "advisories": advisories,
+        }
+
+    target_columns = _string_list(
+        activation["target_stage"].get("result_columns")
+    )
+    if not target_columns:
+        target_columns = _string_list(target_payload.get("default_detail_columns"))
+    if not target_columns or not all(
+        _catalog_supports_domain_column(candidates, target_dataset_key, column)
+        for column in target_columns
+    ):
+        advisories.append(
+            {
+                "metadata_ref": deepcopy(activation["metadata_ref"]),
+                "reason": "dependent_stage_result_schema_unresolved",
+                "target_dataset_key": target_dataset_key,
+            }
+        )
+        return next_plan, jobs, steps, {
+            "status": "advisory",
+            "corrections": [],
+            "active_stages": [],
+            "active_stage_by_ref": {},
+            "metadata_refs": [],
+            "advisories": advisories,
+        }
+
+    current_columns = _string_list(
+        activation["current_stage"].get("result_columns")
+    )
+    output_contract = (
+        next_plan.get("output_contract")
+        if isinstance(next_plan.get("output_contract"), dict)
+        else {}
+    )
+    existing_output_columns = _merge_strings(
+        _string_list(output_contract.get("result_columns")),
+        _string_list(output_contract.get("required_columns")),
+    )
+    current_column_keys = {
+        _normalized_column_key(column) for column in current_columns
+    }
+    target_column_keys = {
+        _normalized_column_key(column) for column in target_columns
+    }
+    output_owned_by_current_stage = bool(current_column_keys) and all(
+        _normalized_column_key(column) in current_column_keys
+        for column in existing_output_columns
+    )
+    output_owned_by_target_stage = bool(target_column_keys) and all(
+        _normalized_column_key(column) in target_column_keys
+        for column in existing_output_columns
+    )
+    if existing_output_columns and (
+        not output_owned_by_current_stage and not output_owned_by_target_stage
+    ):
+        advisories.append(
+            {
+                "metadata_ref": deepcopy(activation["metadata_ref"]),
+                "reason": "output_contract_not_owned_by_current_stage",
+                "target_dataset_key": target_dataset_key,
+            }
+        )
+        return next_plan, jobs, steps, {
+            "status": "advisory",
+            "corrections": [],
+            "active_stages": [],
+            "active_stage_by_ref": {},
+            "metadata_refs": [],
+            "advisories": advisories,
+        }
+
+    rewritten_steps = _rewrite_stage_owned_projection_columns(
+        steps,
+        current_columns,
+        target_columns,
+    )
+    required_step_columns = _aggregation_source_columns_by_alias(
+        rewritten_steps,
+        {source_alias},
+    ).get(source_alias, [])
+    if any(
+        not _catalog_supports_domain_column(
+            candidates, target_dataset_key, column
+        )
+        for column in required_step_columns
+    ):
+        advisories.append(
+            {
+                "metadata_ref": deepcopy(activation["metadata_ref"]),
+                "reason": "dependent_stage_typed_plan_schema_incompatible",
+                "target_dataset_key": target_dataset_key,
+                "required_columns": required_step_columns,
+            }
+        )
+        return next_plan, jobs, steps, {
+            "status": "advisory",
+            "corrections": [],
+            "active_stages": [],
+            "active_stage_by_ref": {},
+            "metadata_refs": [],
+            "advisories": advisories,
+        }
+
+    filters = (
+        deepcopy(source_job.get("filters"))
+        if isinstance(source_job.get("filters"), dict)
+        else {}
+    )
+    current_stage_filters = _selection_stage_filter_contracts(
+        activation["current_stage"]
+    )
+    removed_filters: list[dict[str, Any]] = []
+    target_filters: dict[str, Any] = {}
+    for field, condition in filters.items():
+        if _catalog_supports_domain_column(
+            candidates, target_dataset_key, str(field)
+        ):
+            target_filters[str(field)] = deepcopy(condition)
+            continue
+        normalized = _metadata_filter_contracts(
+            {"filters": {str(field): condition}}
+        )
+        signature = (
+            _metadata_filter_contract_signature(normalized[0])
+            if len(normalized) == 1
+            else None
+        )
+        owner = next(
+            (
+                contract
+                for contract in current_stage_filters
+                if _metadata_filter_contract_signature(contract) == signature
+            ),
+            None,
+        )
+        if owner and not _question_has_direct_filter_literal(question, owner):
+            removed_filters.append(
+                {
+                    "field": str(field),
+                    "reason": "inactive_recipe_stage_filter",
+                }
+            )
+            continue
+        advisories.append(
+            {
+                "metadata_ref": deepcopy(activation["metadata_ref"]),
+                "reason": "unsupported_user_or_unowned_filter_preserved",
+                "target_dataset_key": target_dataset_key,
+                "field": str(field),
+            }
+        )
+        return next_plan, jobs, steps, {
+            "status": "advisory",
+            "corrections": [],
+            "active_stages": [],
+            "active_stage_by_ref": {},
+            "metadata_refs": [],
+            "advisories": advisories,
+        }
+
+    for contract in _selection_stage_filter_contracts(activation["target_stage"]):
+        field = str(contract.get("column") or contract.get("field") or "").strip()
+        if not field or not _catalog_supports_domain_column(
+            candidates, target_dataset_key, field
+        ):
+            continue
+        existing_key = next(
+            (
+                key
+                for key in target_filters
+                if _normalized_column_key(key) == _normalized_column_key(field)
+            ),
+            "",
+        )
+        condition: dict[str, Any] = {
+            "operator": _canonical_filter_operator(
+                contract.get("operator") or contract.get("op") or "eq"
+            )
+        }
+        if "value" in contract:
+            condition["value"] = deepcopy(contract.get("value"))
+        elif "values" in contract:
+            condition["value"] = deepcopy(contract.get("values"))
+        if existing_key and target_filters.get(existing_key) != condition:
+            advisories.append(
+                {
+                    "metadata_ref": deepcopy(activation["metadata_ref"]),
+                    "reason": "dependent_stage_filter_conflict",
+                    "field": field,
+                }
+            )
+            return next_plan, jobs, steps, {
+                "status": "advisory",
+                "corrections": [],
+                "active_stages": [],
+                "active_stage_by_ref": {},
+                "metadata_refs": [],
+                "advisories": advisories,
+            }
+        target_filters[existing_key or field] = condition
+
+    required_names = _merge_strings(
+        _selection_stage_required_param_names(activation["target_stage"]),
+        _catalog_required_params(candidates, target_dataset_key),
+    )
+    resolved_required_params: dict[str, Any] = {}
+    missing_required_params: list[str] = []
+    for param_name in required_names:
+        value = _direct_stage_parameter_value(
+            param_name,
+            activation["target_stage"],
+            source_job,
+            target_filters,
+        )
+        if (
+            not _is_nonblank_direct_parameter(value)
+            or not _question_confirms_required_parameter(question, value)
+        ):
+            missing_required_params.append(param_name)
+            continue
+        resolved_required_params[param_name] = deepcopy(value)
+    if missing_required_params:
+        advisories.append(
+            {
+                "metadata_ref": deepcopy(activation["metadata_ref"]),
+                "reason": "dependent_stage_direct_required_params_unresolved",
+                "target_dataset_key": target_dataset_key,
+                "missing_required_params": missing_required_params,
+            }
+        )
+        return next_plan, jobs, steps, {
+            "status": "advisory",
+            "corrections": [],
+            "active_stages": [],
+            "active_stage_by_ref": {},
+            "metadata_refs": [],
+            "advisories": advisories,
+        }
+
+    previous_dataset_key = str(source_job.get("dataset_key") or "").strip()
+    target_job = deepcopy(source_job)
+    target_job["dataset_key"] = target_dataset_key
+    target_job["source_alias"] = source_alias
+    target_job["filters"] = target_filters
+    if required_names:
+        target_job["required_params"] = resolved_required_params
+    else:
+        target_job.pop("required_params", None)
+        target_job.pop("params", None)
+    if previous_dataset_key != target_dataset_key:
+        for field in (
+            "source_config",
+            "filter_mappings",
+            "default_detail_columns",
+            "metric_semantics",
+            "catalog_columns",
+            "required_param_names",
+            "trusted_catalog",
+            "catalog_ref",
+        ):
+            target_job.pop(field, None)
+    source_type = str(target_payload.get("source_type") or "").strip()
+    if source_type:
+        target_job["source_type"] = source_type
+    jobs[job_index] = target_job
+
+    next_output_contract = _detail_output_contract(target_columns, output_contract)
+    target_grain_columns = _merge_strings(
+        _string_list(
+            activation["target_stage"].get("grain_columns")
+            or activation["target_stage"].get("detail_grain")
+        ),
+        _string_list(
+            target_payload.get("grain_columns")
+            or target_payload.get("detail_grain")
+        ),
+    )
+    # A history/detail Catalog may legitimately contain several rows for the
+    # same entity.  When it does not declare a narrower unique row grain, the
+    # displayed row itself is the only safe identity contract.  Reusing the
+    # first identifier column would incorrectly flag valid history rows as
+    # duplicates and could encourage an unintended latest-row reduction.
+    next_output_contract["grain_columns"] = (
+        target_grain_columns or deepcopy(target_columns)
+    )
+    target_keys = target_column_keys
+    existing_labels = (
+        next_output_contract.get("column_labels")
+        if isinstance(next_output_contract.get("column_labels"), dict)
+        else {}
+    )
+    target_labels = (
+        activation["target_stage"].get("column_labels")
+        if isinstance(activation["target_stage"].get("column_labels"), dict)
+        else {}
+    )
+    labels = {
+        str(key): value
+        for key, value in {**existing_labels, **target_labels}.items()
+        if _normalized_column_key(key) in target_keys
+    }
+    if labels:
+        next_output_contract["column_labels"] = labels
+    else:
+        next_output_contract.pop("column_labels", None)
+    if next_output_contract.get("metric_columns"):
+        metric_columns = [
+            column
+            for column in _string_list(next_output_contract.get("metric_columns"))
+            if _normalized_column_key(column) in target_keys
+        ]
+        if metric_columns:
+            next_output_contract["metric_columns"] = metric_columns
+        else:
+            next_output_contract.pop("metric_columns", None)
+    next_plan["output_contract"] = next_output_contract
+    next_plan["retrieval_jobs"] = deepcopy(jobs)
+    next_plan["pandas_execution_plan"] = deepcopy(rewritten_steps)
+
+    ref_key = _metadata_reference_identity_key(activation["metadata_ref"])
+    active_stage = {
+        "metadata_ref": deepcopy(activation["metadata_ref"]),
+        "stage_name": activation["target_stage_name"],
+        "dataset_key": target_dataset_key,
+        "source_alias": source_alias,
+        "matched_triggers": deepcopy(activation["matched_triggers"]),
+        "required_param_names": required_names,
+        "selection_source": "analysis_recipe.dependent_selection",
+    }
+    correction = {
+        "source_alias": source_alias,
+        "from_dataset_key": previous_dataset_key,
+        "to_dataset_key": target_dataset_key,
+        "selection_source": "analysis_recipe.dependent_selection",
+        "metadata_ref": deepcopy(activation["metadata_ref"]),
+        "active_stage": activation["target_stage_name"],
+        "removed_stage_filters": removed_filters,
+    }
+    return next_plan, jobs, rewritten_steps, {
+        "status": "applied",
+        "corrections": [correction],
+        "active_stages": [active_stage],
+        "active_stage_by_ref": {ref_key: active_stage} if ref_key else {},
+        "metadata_refs": [
+            {"section": "table_catalog", "key": target_dataset_key}
+        ],
+        "advisories": advisories,
+    }
+
+
+def _dependent_stage_expected_time_scope(
+    stage_name: str,
+    stage: dict[str, Any],
+) -> str:
+    raw = str(stage.get("time_scope") or "").strip().casefold()
+    if raw in {"current", "current_day", "today", "snapshot"}:
+        return "current_day"
+    if raw in {"history", "historical", "past", "as_of_date"}:
+        return "history"
+    normalized_name = str(stage_name or "").strip().casefold()
+    if normalized_name.startswith("current_"):
+        return "current_day"
+    if normalized_name.startswith("history_"):
+        return "history"
+    return ""
+
+
+def _selection_stage_filter_contracts(stage: dict[str, Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for field_name in ("filter", "filters", "conditions"):
+        raw = stage.get(field_name)
+        if raw in (None, "", [], {}):
+            continue
+        result.extend(_metadata_filter_contracts({"filters": raw}))
+    return result
+
+
+def _selection_stage_required_param_names(stage: dict[str, Any]) -> list[str]:
+    raw = stage.get("required_params") or stage.get("required_parameters")
+    if isinstance(raw, dict):
+        return _string_list(list(raw))
+    return _string_list(raw)
+
+
+def _direct_stage_parameter_value(
+    param_name: str,
+    stage: dict[str, Any],
+    source_job: dict[str, Any],
+    filters: dict[str, Any],
+) -> Any:
+    stage_params = (
+        stage.get("required_params")
+        if isinstance(stage.get("required_params"), dict)
+        else {}
+    )
+    mappings = [
+        stage_params,
+        source_job.get("required_params")
+        if isinstance(source_job.get("required_params"), dict)
+        else {},
+        source_job.get("params")
+        if isinstance(source_job.get("params"), dict)
+        else {},
+        filters,
+    ]
+    for mapping in mappings:
+        value = _normalized_mapping_value(mapping, param_name)
+        if isinstance(value, dict):
+            value = value.get("values") if "values" in value else value.get("value")
+        if _is_nonblank_direct_parameter(value):
+            return value
+    return None
+
+
+def _question_has_direct_filter_literal(
+    question: str,
+    contract: dict[str, Any],
+) -> bool:
+    compact_question = _compact_domain_text(question)
+    field = str(contract.get("column") or contract.get("field") or "").strip()
+    compact_field = _compact_domain_text(field)
+    if len(compact_field) >= 3 and compact_field in compact_question:
+        return True
+    raw_values = (
+        contract.get("values")
+        if "values" in contract
+        else contract.get("value")
+        if "value" in contract
+        else []
+    )
+    values = raw_values if isinstance(raw_values, list) else [raw_values]
+    return any(
+        len(_compact_domain_text(value)) >= 2
+        and _compact_domain_text(value) in compact_question
+        for value in values
+        if value not in (None, "")
+    )
+
+
+def _rewrite_stage_owned_projection_columns(
+    pandas_plan: list[Any],
+    current_columns: list[str],
+    target_columns: list[str],
+) -> list[Any]:
+    current_keys = {
+        _normalized_column_key(column) for column in current_columns
+    }
+    result: list[Any] = []
+    for raw_step in pandas_plan:
+        if not isinstance(raw_step, dict):
+            result.append(deepcopy(raw_step))
+            continue
+        step = deepcopy(raw_step)
+        operation = str(step.get("operation") or step.get("step") or "").strip().casefold()
+        if operation in {"select_columns", "projection", "project"}:
+            for field_name in ("columns", "projection", "result_columns", "output_columns"):
+                columns = _string_list(step.get(field_name))
+                if columns and current_keys and all(
+                    _normalized_column_key(column) in current_keys
+                    for column in columns
+                ):
+                    step[field_name] = deepcopy(target_columns)
+        result.append(step)
+    return result
+
+
+def _metadata_reference_identity_key(ref: dict[str, Any]) -> str:
+    normalized = _metadata_ref(ref)
+    section = str(normalized.get("section") or "").strip()
+    key = str(normalized.get("key") or "").strip()
+    return f"{section}:{key}" if section and key else ""
+
+
 def _resolve_execution_domain_selection(
     question: str,
     candidates: dict[str, Any],
@@ -6304,6 +7084,7 @@ def _reconcile_source_dataset_selection(
     candidates: dict[str, Any],
     locked_metadata_refs: list[dict[str, str]] | None = None,
     intent_plan: dict[str, Any] | None = None,
+    active_stage_by_ref: dict[str, Any] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Keep the model's semantic dataset choice unless its schema is impossible.
 
@@ -6367,7 +7148,12 @@ def _reconcile_source_dataset_selection(
         )
         if not alias or not current_key or not required_columns:
             continue
-        if _dataset_locked_by_recipe(current_key, locked, candidates):
+        if _dataset_locked_by_recipe(
+            current_key,
+            locked,
+            candidates,
+            active_stage_by_ref,
+        ):
             skipped.append({"source_alias": alias, "dataset_key": current_key, "reason": "explicit_recipe_source"})
             continue
         current_item = _table_catalog_item(candidates, current_key)
@@ -6873,11 +7659,21 @@ def _dataset_locked_by_recipe(
     dataset_key: str,
     locked_metadata_refs: list[dict[str, str]],
     candidates: dict[str, Any],
+    active_stage_by_ref: dict[str, Any] | None = None,
 ) -> bool:
     """Return whether a selected dataset belongs to an explicit recipe source contract."""
 
     for ref in locked_metadata_refs:
         if str(ref.get("section") or "").strip() != "analysis_recipes":
+            continue
+        active = (
+            active_stage_by_ref.get(_metadata_reference_identity_key(ref))
+            if isinstance(active_stage_by_ref, dict)
+            else None
+        )
+        if isinstance(active, dict) and str(active.get("dataset_key") or "").strip():
+            if dataset_key == str(active.get("dataset_key") or "").strip():
+                return True
             continue
         item = _find_metadata_item(candidates, ref)
         recipe = _metadata_payload(item)
@@ -12777,6 +13573,140 @@ def _question_requests_ordering(question: Any) -> bool:
     if any(marker in text for marker in markers):
         return True
     return bool(re.search(r"(?<![가-힣])(많은|적은|높은|낮은)", text))
+
+
+# 함수 설명: 상세 목록의 명시적 최신·극값·Top-N·행 수 선택 표현만 판정합니다.
+def _question_requests_row_selection(question: Any) -> bool:
+    text = str(question or "").strip().casefold()
+    if not text:
+        return False
+    markers = (
+        "최신",
+        "최근",
+        "마지막",
+        "최초",
+        "처음",
+        "상위",
+        "하위",
+        "가장 많은",
+        "가장 적은",
+        "가장 높은",
+        "가장 낮은",
+        "latest",
+        "recent",
+        "newest",
+        "earliest",
+        "oldest",
+        "highest",
+        "lowest",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    if re.search(r"\b(?:top|bottom|first|last)\s*\d*\b", text):
+        return True
+    return bool(
+        re.search(
+            r"(?:첫\s*)?(?:\d+|한|두|세|네)\s*(?:건|개|행|lots?|lot)\s*(?:만|까지)?",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+# 함수 설명: 집계 없는 상세 목록에 질문 근거 없이 붙은 행 제한만 제거하고 정렬은 보존합니다.
+def _reconcile_unrequested_detail_row_limit(
+    pandas_plan: list[Any],
+    raw_output_contract: Any,
+    question: Any,
+) -> tuple[list[Any], dict[str, Any], dict[str, Any]]:
+    steps = deepcopy(pandas_plan) if isinstance(pandas_plan, list) else []
+    output_contract = (
+        deepcopy(raw_output_contract) if isinstance(raw_output_contract, dict) else {}
+    )
+    result_mode = str(output_contract.get("result_mode") or "").strip().lower()
+    if result_mode not in {"detail", "entity_list"}:
+        return steps, output_contract, {
+            "status": "not_needed",
+            "reason": "non_detail_result_mode",
+            "result_mode": result_mode,
+        }
+
+    aggregate_operations = {
+        "groupby_and_aggregate",
+        "group_by_and_aggregate",
+        "aggregate",
+    }
+    if any(
+        str(step.get("operation") or "").strip().lower() in aggregate_operations
+        for step in steps
+        if isinstance(step, dict)
+    ):
+        return steps, output_contract, {
+            "status": "not_needed",
+            "reason": "aggregate_plan",
+            "result_mode": result_mode,
+        }
+
+    limit_locations: list[str] = []
+    step_limit_keys = ("limit", "n", "top_n", "bottom_n")
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        for key in step_limit_keys:
+            if _positive_int(step.get(key)):
+                limit_locations.append(f"pandas_execution_plan[{index}].{key}")
+    ordering = (
+        output_contract.get("ordering")
+        if isinstance(output_contract.get("ordering"), dict)
+        else {}
+    )
+    for key in step_limit_keys:
+        if _positive_int(ordering.get(key)):
+            limit_locations.append(f"output_contract.ordering.{key}")
+        if _positive_int(output_contract.get(key)):
+            limit_locations.append(f"output_contract.{key}")
+    if not limit_locations:
+        return steps, output_contract, {
+            "status": "not_needed",
+            "reason": "no_positive_row_limit",
+            "result_mode": result_mode,
+        }
+    if _question_requests_row_selection(question):
+        return steps, output_contract, {
+            "status": "not_needed",
+            "reason": "explicit_question_row_selection",
+            "result_mode": result_mode,
+            "preserved_locations": limit_locations,
+        }
+
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        for key in step_limit_keys:
+            if _positive_int(step.get(key)):
+                step.pop(key, None)
+    if ordering:
+        normalized_ordering = deepcopy(ordering)
+        for key in step_limit_keys:
+            if _positive_int(normalized_ordering.get(key)):
+                normalized_ordering.pop(key, None)
+        if normalized_ordering:
+            output_contract["ordering"] = normalized_ordering
+        else:
+            output_contract.pop("ordering", None)
+    for key in step_limit_keys:
+        if _positive_int(output_contract.get(key)):
+            output_contract.pop(key, None)
+    if str(output_contract.get("fast_path_recipe") or "").strip().lower() == "ranked_summary":
+        output_contract.pop("fast_path_recipe", None)
+
+    return steps, output_contract, {
+        "status": "applied",
+        "reason": "implicit_detail_row_limit_removed",
+        "result_mode": result_mode,
+        "removed_locations": limit_locations,
+        "ordering_preserved": bool(ordering),
+    }
 
 
 # 함수 설명: LLM이 선언한 결과 컬럼 표시명 중 유효한 문자열 매핑만 보존합니다.
@@ -20094,6 +21024,134 @@ def _metadata_payload(item: dict[str, Any]) -> dict[str, Any]:
         return {}
     payload = item.get("payload")
     return payload if isinstance(payload, dict) else item
+
+
+# 함수 설명: 선택된 도메인의 사람이 읽을 수 있는 정의만 HTML Report 경로에 전달합니다.
+# 실행 계약에는 전혀 관여하지 않으며, Node 24가 이 transient key를 sidecar로 옮긴 뒤
+# 일반 답변/API/session payload에서 제거합니다.
+def _selected_execution_report_domain_details(
+    metadata_candidates: dict[str, Any],
+    metadata_refs: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    requested_refs: list[tuple[str, str, str, str]] = []
+    for raw_ref in metadata_refs if isinstance(metadata_refs, list) else []:
+        reference = _metadata_ref(raw_ref)
+        section = str(reference.get("section") or "").strip()
+        key = str(reference.get("key") or "").strip()
+        identity = (section.casefold(), key.casefold())
+        if section and key and not any(item[:2] == identity for item in requested_refs):
+            requested_refs.append((identity[0], identity[1], section, key))
+    if not requested_refs:
+        return []
+
+    candidates_by_ref: dict[tuple[str, str], dict[str, Any]] = {}
+    for collection_key, default_section in (
+        ("domain_items", ""),
+        ("table_catalog_items", "table_catalog"),
+        ("main_flow_filters", "main_flow_filters"),
+    ):
+        items = metadata_candidates.get(collection_key)
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            metadata = _metadata_payload(item)
+            section = str(
+                item.get("section")
+                or item.get("type")
+                or metadata.get("section")
+                or metadata.get("type")
+                or default_section
+                or ""
+            ).strip()
+            key = str(
+                item.get("key")
+                or item.get("dataset_key")
+                or metadata.get("key")
+                or metadata.get("dataset_key")
+                or ""
+            ).strip()
+            if section and key:
+                candidates_by_ref.setdefault((section.casefold(), key.casefold()), item)
+
+    details: list[dict[str, Any]] = []
+    for section_key, key_key, section, key in requested_refs[:MAX_EXECUTION_REPORT_DOMAIN_DETAILS]:
+        item = candidates_by_ref.get((section_key, key_key))
+        if not item:
+            details.append(
+                {
+                    "section": section,
+                    "key": key,
+                    "title": key,
+                    "summary": "선택된 도메인 참조입니다.",
+                    "details": {},
+                }
+            )
+            continue
+        metadata = _metadata_payload(item)
+        title = _execution_report_domain_text(
+            metadata.get("display_name")
+            or item.get("display_name")
+            or metadata.get("name")
+            or item.get("name")
+            or key,
+            180,
+        )
+        summary = _execution_report_domain_text(
+            metadata.get("description")
+            or metadata.get("definition")
+            or metadata.get("purpose")
+            or metadata.get("usage_rule")
+            or item.get("description"),
+            MAX_EXECUTION_REPORT_DOMAIN_TEXT,
+        )
+        details.append(
+            {
+                "section": section,
+                "key": key,
+                "title": title or key,
+                "summary": summary,
+                "details": _execution_report_safe_domain_mapping(metadata),
+            }
+        )
+    return details
+
+
+# 함수 설명: 영구 HTML Report에 표시 가능한 도메인 정의만 재귀적으로 축약합니다.
+def _execution_report_safe_domain_mapping(value: Any, depth: int = 0) -> Any:
+    if depth > MAX_EXECUTION_REPORT_DOMAIN_DEPTH:
+        return "…"
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for raw_key, item in list(value.items())[:MAX_EXECUTION_REPORT_DOMAIN_FIELDS]:
+            key = _execution_report_domain_text(raw_key, 120)
+            if not key or _execution_report_domain_hidden_key(key):
+                continue
+            result[key] = _execution_report_safe_domain_mapping(item, depth + 1)
+        return result
+    if isinstance(value, list):
+        return [
+            _execution_report_safe_domain_mapping(item, depth + 1)
+            for item in value[:MAX_EXECUTION_REPORT_DOMAIN_LIST_ITEMS]
+        ]
+    return _execution_report_domain_text(value, MAX_EXECUTION_REPORT_DOMAIN_TEXT)
+
+
+# 함수 설명: key 이름만으로 credential·접속 정보·실행 query가 Report에 노출되지 않게 합니다.
+def _execution_report_domain_hidden_key(value: Any) -> bool:
+    compact = re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+    if not compact:
+        return True
+    return compact in {
+        re.sub(r"[^a-z0-9]+", "", item.casefold())
+        for item in EXECUTION_REPORT_DOMAIN_HIDDEN_KEYS
+    }
+
+
+def _execution_report_domain_text(value: Any, limit: int) -> str:
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    return text[:limit].rstrip() + ("…" if len(text) > limit else "")
 
 
 # 함수 설명: product key 또는 recipe metadata에서 canonical grain key 목록을 읽되 source별 join key mapping은 제외합니다.

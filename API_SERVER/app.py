@@ -2,8 +2,8 @@
 
 Run this file directly from the API_SERVER folder with: python app.py
 
-It deliberately uses the same Uvicorn form as the existing deployment:
-uvicorn.run("__main__:application", host="0.0.0.0", port=5000, reload=False)
+It binds to ``API_SERVER_PORT`` (default ``5000``) so the data-download and
+HTML-report routes can share one configured API address.
 """
 
 from __future__ import annotations
@@ -33,10 +33,12 @@ from pydantic import BaseModel, ConfigDict, Field
 try:  # Supports both "python app.py" and "import API_SERVER.app".
     from .data_ref_store import DEFAULT_DATABASE, DEFAULT_RESULT_COLLECTION
     from .support import (
+        DEFAULT_HOST,
         DEFAULT_MAX_DOWNLOAD_BYTES,
         DEFAULT_MAX_REPORT_HTML_BYTES,
         DEFAULT_MAX_REPORT_STORAGE_BYTES,
         DEFAULT_MAX_REPORT_TTL_HOURS,
+        DEFAULT_PORT,
         DEFAULT_PREVIEW_LIMIT,
         DEFAULT_REPORT_COLLECTION,
         DEFAULT_REPORT_TTL_HOURS,
@@ -65,10 +67,12 @@ try:  # Supports both "python app.py" and "import API_SERVER.app".
 except ImportError:  # pragma: no cover - exercised by direct script execution.
     from data_ref_store import DEFAULT_DATABASE, DEFAULT_RESULT_COLLECTION  # type: ignore[no-redef]
     from support import (  # type: ignore[no-redef]
+        DEFAULT_HOST,
         DEFAULT_MAX_DOWNLOAD_BYTES,
         DEFAULT_MAX_REPORT_HTML_BYTES,
         DEFAULT_MAX_REPORT_STORAGE_BYTES,
         DEFAULT_MAX_REPORT_TTL_HOURS,
+        DEFAULT_PORT,
         DEFAULT_PREVIEW_LIMIT,
         DEFAULT_REPORT_COLLECTION,
         DEFAULT_REPORT_TTL_HOURS,
@@ -112,7 +116,10 @@ REPORT_HEADERS = {
 }
 REPORT_VIEW_CONTENT_SECURITY_POLICY = (
     "default-src 'none'; img-src 'self' data: blob:; style-src 'unsafe-inline'; "
-    "script-src 'unsafe-inline'; font-src 'self' data:; connect-src 'none'; "
+    # Report-internal data tabs fetch only same-origin /download.json data-ref
+    # URLs.  Keep external network access forbidden while allowing the report
+    # to load its own already-authorized stored rows in the same page.
+    "script-src 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; "
     "media-src 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; "
     "base-uri 'none'; form-action 'none'"
 )
@@ -149,6 +156,23 @@ def _int_env(name: str, default: int, minimum: int = 0) -> int:
     except ValueError:
         LOGGER.warning("Ignoring invalid integer environment value: %s", name)
         return default
+
+
+def _port_env() -> int:
+    """Read a valid TCP port without silently accepting an unusable value."""
+
+    raw_value = os.getenv("API_SERVER_PORT")
+    if raw_value is None or not raw_value.strip():
+        return DEFAULT_PORT
+    try:
+        port = int(raw_value)
+    except ValueError:
+        LOGGER.warning("Ignoring invalid TCP port environment value: API_SERVER_PORT")
+        return DEFAULT_PORT
+    if not 1 <= port <= 65535:
+        LOGGER.warning("Ignoring out-of-range TCP port environment value: API_SERVER_PORT")
+        return DEFAULT_PORT
+    return port
 
 
 def config_from_env() -> ServerConfig:
@@ -199,8 +223,8 @@ def config_from_env() -> ServerConfig:
             _int_env("DATA_REF_DOWNLOAD_MAX_BYTES", DEFAULT_MAX_DOWNLOAD_BYTES, 1024),
             1024,
         ),
-        host="0.0.0.0",
-        port=5000,
+        host=DEFAULT_HOST,
+        port=_port_env(),
         report_mongo_uri=report_mongo_uri,
         report_database=report_mongo_database,
         report_collection=(
@@ -405,6 +429,10 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         return {
             "ok": True,
             "service": "metadata-driven-v5-artifact-api-server",
+            "listen": {
+                "host": config_value.host,
+                "port": config_value.port,
+            },
             "features": {
                 "data_ref_csv": True,
                 "html_reports": True,
@@ -512,12 +540,14 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             )
 
     @application.get("/view", response_class=HTMLResponse)
-    def view_data(request: Request) -> Response:
+    def view_data(request: Request, offset: int = Query(default=0, ge=0)) -> Response:
         config_value = active_config(request)
+        page_size = max(int(config_value.preview_limit), 1)
         resolved = resolve_request(
             request.url.query,
             config_value,
-            limit=config_value.preview_limit,
+            limit=page_size,
+            offset=offset,
         )
         if not resolved["ok"]:
             return HTMLResponse(
@@ -535,6 +565,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         )
         csv_url = "/download.csv?download_ref=" + encode_data_ref(ref)
         json_url = "/download.json?download_ref=" + encode_data_ref(ref)
+        view_url = "/view?download_ref=" + encode_data_ref(ref)
         return HTMLResponse(
             render_data_page(
                 ref,
@@ -543,7 +574,9 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                 columns,
                 csv_url,
                 json_url,
-                config_value.preview_limit,
+                page_size,
+                offset=offset,
+                view_url=view_url,
             ),
             headers=COMMON_HEADERS,
         )
@@ -621,5 +654,17 @@ application = create_app()
 app = application
 
 
+def run_server(config: ServerConfig | None = None) -> None:
+    """Run this API deployment on the configured shared artifact port."""
+
+    runtime_config = config or config_from_env()
+    uvicorn.run(
+        "__main__:application",
+        host=runtime_config.host,
+        port=runtime_config.port,
+        reload=False,
+    )
+
+
 if __name__ == "__main__":
-    uvicorn.run("__main__:application", host="0.0.0.0", port=5000, reload=False)
+    run_server()

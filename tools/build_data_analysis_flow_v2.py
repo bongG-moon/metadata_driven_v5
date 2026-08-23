@@ -65,6 +65,7 @@ PANDAS_PROMPT_NODE_ID = "Prompt Template-xtzD5"
 HYBRID_EXECUTOR_NODE_ID = "CustomComponent-s3mf1"
 RESULT_STORE_NODE_ID = "CustomComponent-AUrFb"
 RUNTIME_CLEANUP_NODE_ID = "CustomComponent-v5RuntimeCleanup"
+EXECUTION_TRACE_PUBLISHER_NODE_ID = "CustomComponent-v5ExecutionTraceArtifact"
 ANSWER_VARIABLES_NODE_ID = "CustomComponent-aKrkH"
 ANSWER_PROMPT_NODE_ID = "Prompt Template-ELVKc"
 HYBRID_ANSWER_NODE_ID = "CustomComponent-BVItv"
@@ -405,6 +406,56 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         node_index[RUNTIME_CLEANUP_NODE_ID],
         _common_component_path("24_runtime_payload_cleanup.py"),
     )
+    # Node 25 is deliberately created after the runtime cleanup boundary.
+    # Node 24 supplies a bounded, HTML-only original/intermediate/final
+    # preview and Node 25 consumes then removes it, so publication cannot
+    # retain full source rows or change executor/result/session contracts.
+    execution_trace_publisher = deepcopy(node_index[RUNTIME_CLEANUP_NODE_ID])
+    execution_trace_publisher["id"] = EXECUTION_TRACE_PUBLISHER_NODE_ID
+    execution_trace_publisher["data"]["id"] = EXECUTION_TRACE_PUBLISHER_NODE_ID
+    execution_trace_publisher["position"] = {"x": 9300.0, "y": 100.0}
+    execution_trace_publisher["selected"] = False
+    _set_embedded_source(
+        execution_trace_publisher,
+        _component_path("25_execution_trace_artifact_publisher.py"),
+    )
+    _apply_extended_component_spec(
+        execution_trace_publisher,
+        [
+            ("data", "payload", "정리된 응답 페이로드", True, None),
+            ("bool", "enabled", "분석 과정 HTML 발행", False, True),
+            ("message", "report_api_url", "발행 대상 HTML Report API 주소", False, ""),
+            ("int", "ttl_hours", "HTML 링크 유효시간(시간)", False, 1),
+            # A report is optional sidecar output; leave enough time for the
+            # local API_SERVER but never make an unavailable service delay the
+            # analysis answer for several seconds.
+            ("int", "timeout_seconds", "발행 요청 제한 시간(초)", False, 2),
+        ],
+        [("Data", "payload_out", "Report 링크 포함 페이로드", "build_payload")],
+        node_index,
+    )
+    publisher_template = execution_trace_publisher["data"]["node"]["template"]
+    publisher_template["enabled"]["advanced"] = False
+    publisher_template["ttl_hours"]["advanced"] = False
+    publisher_template["report_api_url"].update(
+        {
+            "info": (
+                "비워두면 Langflow 환경의 API_SERVER_REPORT_API_URL, "
+                "API_SERVER_PUBLIC_BASE_URL, http://127.0.0.1:5000 순으로 "
+                "발행합니다. API_SERVER가 반환하는 보기·다운로드 링크는 "
+                "API_SERVER_PUBLIC_BASE_URL을 따릅니다."
+            ),
+            "placeholder": "자동: API_SERVER_REPORT_API_URL → API_SERVER_PUBLIC_BASE_URL → localhost:5000",
+        }
+    )
+    execution_trace_publisher["data"]["node"].update(
+        {
+            "display_name": "25 분석 처리 과정 HTML 발행기",
+            "description": "최종 분석 과정과 제한된 원본·중간·최종 데이터 미리보기를 사용자용 HTML로 API_SERVER에 발행하고 보기·다운로드 링크를 추가합니다. 발행 실패는 분석 결과에 영향을 주지 않습니다.",
+        }
+    )
+    nodes.append(execution_trace_publisher)
+    node_index[EXECUTION_TRACE_PUBLISHER_NODE_ID] = execution_trace_publisher
     # The API response node owns the public table contract. Refresh it with
     # the shared result store and cleanup sources so the standalone source,
     # Flow export, and import-ready bundle stay byte-for-byte synchronized.
@@ -633,8 +684,17 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     # their own display switch below.
     for obsolete_field in ("show_analysis_evidence", "show_next_questions"):
         adapter_template.pop(obsolete_field, None)
-    if isinstance(adapter_template.get("show_pandas_code"), dict):
-        adapter_template["show_pandas_code"]["value"] = True
+    # The execution-report artifact becomes the default diagnostic path for
+    # regular users.  Keep the existing developer toggles available, but make
+    # every verbose section opt-in in a fresh export.
+    for diagnostic_field in (
+        "include_diagnostics",
+        "show_intent_analysis",
+        "show_data_retrieval",
+        "show_pandas_code",
+    ):
+        if isinstance(adapter_template.get(diagnostic_field), dict):
+            adapter_template[diagnostic_field]["value"] = False
     if not isinstance(adapter_template.get("show_intermediate_results"), dict):
         # Older donor exports predate the optional intermediate-preview input.
         # Add the schema from the existing BoolInput template so the source
@@ -746,6 +806,8 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         (PANDAS_VARIABLES_NODE_ID, "function_case_selection_json", PANDAS_PROMPT_NODE_ID, "function_case_selection_json"),
         ("CustomComponent-v5Helper", "selected_helper_code", PANDAS_PROMPT_NODE_ID, "function_case_helper_code"),
         (PANDAS_PROMPT_NODE_ID, "prompt", HYBRID_EXECUTOR_NODE_ID, "pandas_prompt"),
+        (RUNTIME_CLEANUP_NODE_ID, "payload_out", MESSAGE_ADAPTER_NODE_ID, "payload"),
+        (RUNTIME_CLEANUP_NODE_ID, "payload_out", API_RESPONSE_NODE_ID, "payload"),
     }
     edges[:] = [edge for edge in edges if _edge_key(edge) not in removals]
 
@@ -760,6 +822,9 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         ("CustomComponent-v5Helper", "selected_helper_code", PANDAS_PROMPT_NODE_ID, "function_case_helper_code"),
         (PANDAS_PROMPT_NODE_ID, "pandas_prompt", HYBRID_EXECUTOR_NODE_ID, "pandas_prompt"),
         ("TextInput-VFbHh", "text", HYBRID_ANSWER_NODE_ID, "domain_answer_guidance"),
+        (RUNTIME_CLEANUP_NODE_ID, "payload_out", EXECUTION_TRACE_PUBLISHER_NODE_ID, "payload"),
+        (EXECUTION_TRACE_PUBLISHER_NODE_ID, "payload_out", MESSAGE_ADAPTER_NODE_ID, "payload"),
+        (EXECUTION_TRACE_PUBLISHER_NODE_ID, "payload_out", API_RESPONSE_NODE_ID, "payload"),
     ]
     existing = {_edge_key(edge) for edge in edges}
     for source_id, source_name, target_id, target_name in additions:

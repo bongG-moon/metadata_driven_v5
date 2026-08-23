@@ -1,0 +1,43 @@
+{
+  "bundle": "metadata_saving_rev_2",
+  "contract_version": "metadata_authoring.rev_2.v1",
+  "langflow_version": "1.11.0",
+  "flow_count": 3,
+  "single_file_ui_import": "00_metadata_saving_rev_2_ALL_FLOWS.json",
+  "single_file_ui_import_sha256": "33c20d9a4dbd86b56eafb5a54e18c95be9a66fe9954ce5ad046646e7251cc8a3",
+  "canonical_bundle_unchanged": true,
+  "router_targets_rev_2": false,
+  "mongodb_document_shape": "unchanged_existing_writer_contract",
+  "flows": [
+    {
+      "order": 1,
+      "display_order": "02",
+      "file": "02_domain_saving_flow_v5_rev_2_standalone.json",
+      "name": "02. v5_domain_saving_rev_2",
+      "endpoint_name": "metadata-driven-v5-domain-saving-rev-2",
+      "nodes": 20,
+      "edges": 28,
+      "sha256": "d0c72896fecb4b1d77f04896c0a80650caf1fb222a909e7c21e80940d01d4ae3"
+    },
+    {
+      "order": 2,
+      "display_order": "03",
+      "file": "03_table_catalog_saving_flow_v5_rev_2_standalone.json",
+      "name": "03. v5_table_catalog_saving_rev_2",
+      "endpoint_name": "metadata-driven-v5-table-catalog-saving-rev-2",
+      "nodes": 20,
+      "edges": 28,
+      "sha256": "07b7ddc039889cf869a74d2fc8935bc2011d9165eb8c59be2e2c45ff2d899df7"
+    },
+    {
+      "order": 3,
+      "display_order": "04",
+      "file": "04_main_flow_filter_saving_flow_v5_rev_2_standalone.json",
+      "name": "04. v5_main_flow_filter_saving_rev_2",
+      "endpoint_name": "metadata-driven-v5-main-flow-filter-saving-rev-2",
+      "nodes": 20,
+      "edges": 28,
+      "sha256": "11f308c245fc9c1e4f0f6347be4bfcbe835268ca7bb6ceebb6319cdb3457ec1d"
+    }
+  ]
+}

@@ -134,7 +134,7 @@ def test_v2_flow_export_matches_current_native_graph():
     assert flow["endpoint_name"] == "metadata-driven-v5-data-analysis"
     assert flow["name"] == "01. v5_data_analysis"
     assert flow["last_tested_version"] == "1.11.0"
-    assert len(flow["data"]["nodes"]) == 51
+    assert len(flow["data"]["nodes"]) == 52
 
     node_ids = {node["id"] for node in flow["data"]["nodes"]}
     node_index = {node["id"]: node for node in flow["data"]["nodes"]}
@@ -148,6 +148,16 @@ def test_v2_flow_export_matches_current_native_graph():
     assert node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]["code"]["value"] == (
         V2_ROOT / "21_v2_answer_message_adapter.py"
     ).read_text(encoding="utf-8")
+    assert node_index["CustomComponent-v5ExecutionTraceArtifact"]["data"]["node"]["template"]["code"]["value"] == (
+        V2_ROOT / "25_execution_trace_artifact_publisher.py"
+    ).read_text(encoding="utf-8")
+    trace_publisher_template = node_index["CustomComponent-v5ExecutionTraceArtifact"]["data"]["node"]["template"]
+    assert trace_publisher_template["enabled"]["value"] is True
+    assert trace_publisher_template["report_api_url"]["value"] == ""
+    assert "API_SERVER_PUBLIC_BASE_URL" in trace_publisher_template["report_api_url"]["info"]
+    assert trace_publisher_template["report_api_url"]["placeholder"].startswith("자동:")
+    assert trace_publisher_template["ttl_hours"]["value"] == 1
+    assert trace_publisher_template["timeout_seconds"]["value"] == 2
     helper_library = (
         ROOT
         / "langflow_components"
@@ -159,6 +169,9 @@ def test_v2_flow_export_matches_current_native_graph():
         == helper_library
     )
     assert "excluded_tokens=None" in helper_library
+    adapter_template = node_index["CustomComponent-A5y0b"]["data"]["node"]["template"]
+    for field_name in ("include_diagnostics", "show_intent_analysis", "show_data_retrieval", "show_pandas_code"):
+        assert adapter_template[field_name]["value"] is False
     assert node_index["CustomComponent-A5y0b"]["data"]["node"]["field_order"] == [
         "payload",
         "include_diagnostics",
@@ -196,6 +209,11 @@ def test_v2_flow_export_matches_current_native_graph():
     assert ("CustomComponent-HFsYn", "payload_out", "LanguageModel-intent", "payload") in edge_keys
     assert ("CustomComponent-DXrpf", "metadata_candidates", "LanguageModel-intent", "metadata_candidates") in edge_keys
     assert ("Prompt Template-AUpQz", "prompt", "LanguageModel-intent", "intent_prompt") in edge_keys
+    assert ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-v5ExecutionTraceArtifact", "payload") in edge_keys
+    assert ("CustomComponent-v5ExecutionTraceArtifact", "payload_out", "CustomComponent-A5y0b", "payload") in edge_keys
+    assert ("CustomComponent-v5ExecutionTraceArtifact", "payload_out", "CustomComponent-3eVde", "payload") in edge_keys
+    assert ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-A5y0b", "payload") not in edge_keys
+    assert ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-3eVde", "payload") not in edge_keys
     assert node_index["Prompt Template-xtzD5"]["data"]["node"]["display_name"] == "16 V2 경로 인식 pandas Prompt 생성기"
     answer_template = node_index["CustomComponent-BVItv"]["data"]["node"]["template"]
     assert answer_template["answer_prompt_template"]["value"]
