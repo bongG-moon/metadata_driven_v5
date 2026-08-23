@@ -34,6 +34,13 @@ FCB_PROCESSES = ["FCB1", "FCB2", "FCB/H"]
 BG_PROCESSES = ["B/G1", "B/G2"]
 MOBILE_PKGS = ["LFBGA", "TFBGA", "UFBGA", "VFBGA", "WFBGA"]
 
+# These operational questions depend on source datasets that are intentionally
+# not registered in the current production Table Catalog.  Keep their stable
+# IDs in the source fixture for historical comparison, but do not include them
+# in the active representative run until the corresponding Catalog contracts
+# are registered again.
+EXCLUDED_OPERATIONAL_CASE_IDS = {5, 24, 25}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Langflow-like validation for the representative manufacturing question set.")
@@ -140,7 +147,9 @@ def run_llm_case(
     )
     metadata_candidates = candidates_payload.get("metadata_candidates", candidates_payload)
     intent_vars = with_specialized_prompt(modules["intent_vars"].build_variables(payload, metadata_candidates))
-    intent_prompt = render_prompt(FLOW / "03_intent_prompt_template_ko.md", intent_vars)
+    # Match the active V2 Flow: shared execution templates remain under FLOW,
+    # while intent planning is owned by the V2 prompt.
+    intent_prompt = render_prompt(V2_FLOW / "03_intent_prompt_template_ko.md", intent_vars)
     intent_response = call_llm(intent_prompt, llm_config)
     payload = modules["intent"].normalize_intent_plan(
         payload,
@@ -153,6 +162,12 @@ def run_llm_case(
     dummy_result = modules["dummy"].retrieve_dummy_data(dummy_bundle)
     payload = modules["merger"].merge_source_retrieval_payloads(payload, dummy_result)
     payload = modules["adapter"].build_retrieval_payload(payload)
+    # Match the production Flow order: the 14B resolver decides whether the
+    # trusted Fast/Typed contract can execute before any pandas model output is
+    # considered.  The live harness still calls the model for replay coverage,
+    # while the executor must ignore that code when the resolved contract says
+    # the deterministic path is sufficient.
+    payload = modules["fast_resolver"].resolve_simple_analysis_contract(payload)
 
     pandas_vars = modules["pandas_vars"].build_variables(payload)
     pandas_vars = with_selected_helper_code(modules, pandas_vars)
@@ -320,7 +335,11 @@ def summarize_validation_result(
         pandas_variables=pandas_vars,
     )
     expectation_errors = (
-        semantic_validator.validate_case_expectation(case, payload)
+        semantic_validator.validate_case_expectation(
+            case,
+            payload,
+            pandas_variables=pandas_vars,
+        )
         if profile == semantic_validator.SEMANTIC_LIVE
         else []
     )
@@ -896,11 +915,15 @@ def _legacy_representative_cases() -> list[dict[str, Any]]:
 
 
 def representative_cases() -> list[dict[str, Any]]:
-    """Return the current 25 operational questions plus six unrelated legacy checks.
+    """Return 22 active operational questions plus six unrelated legacy checks.
 
     The fixture plans are intentionally explicit test inputs.  They verify that
     the dummy sources can answer each representative question; they do not
     become production routing or Domain rules.
+
+    Operational IDs remain stable.  Questions that need an unavailable source
+    stay defined below for audit history but are filtered from active runs via
+    ``EXCLUDED_OPERATIONAL_CASE_IDS``.
     """
 
     legacy_by_id = {int(item["id"]): item for item in _legacy_representative_cases()}
@@ -915,15 +938,24 @@ def representative_cases() -> list[dict[str, Any]]:
     retained[1]["question"] = "6/24일 투입 실적 대비 D/S1, D/A1공정에서 WIP 많은 제품 알려줘"
     retained[2]["question"] = "현시간 기준 INPUT실적은 있으나 D/A공정 WIP 없는 제품 확인해줘"
 
-    return [
+    operational = [
         case(
             1,
             "FCB공정 R0429 RECIPE의 UPH알려줘",
             "fcb_recipe_uph",
-            [job("eqp_uph", "uph_data", filters={"OPER_NAME": eq("FCB1"), "RECIPE_ID": eq("R0429")})],
+            [
+                job(
+                    "eqp_uph",
+                    "uph_data",
+                    filters={
+                        "OPER_NAME": in_values(FCB_PROCESSES),
+                        "RECIPE_ID": {"operator": "starts_with", "value": "R0429"},
+                    },
+                )
+            ],
             "df = sources['uph_data'].copy()\nresult = df[['OPER_NAME', 'RECIPE_ID', 'UPH']].sort_values(['OPER_NAME', 'RECIPE_ID'])",
             ["OPER_NAME", "RECIPE_ID", "UPH"],
-            expected_row_count=1,
+            expected_row_count=3,
             expected_first_row={"OPER_NAME": "FCB1", "RECIPE_ID": "R0429", "UPH": 154.2},
         ),
         case(
@@ -1060,7 +1092,9 @@ def representative_cases() -> list[dict[str, Any]]:
             "yesterday_l267_out_plan_and_pkg_out_actual",
             [
                 job("target", "target_data", "2026-06-30"),
-                job("production", "pkg_out_data", "20260630", {"OPER_NAME": eq("PKG OUT"), "MCP_NO": eq("L-267A1")}),
+                # L-267은 등록된 product-token helper가 source별로 적용하므로
+                # retrieval filter 계약에는 PKG OUT 공정 조건만 요구한다.
+                job("production", "pkg_out_data", "20260630", {"OPER_NAME": eq("PKG OUT")}),
             ],
             _target_and_production_code("target_data", "pkg_out_data", target_date="2026-06-30", mcp_no="L-267A1"),
             [*TARGET_PRODUCT_KEYS, "OUT_PLAN", "PKG_OUT_QTY"],
@@ -1165,31 +1199,55 @@ def representative_cases() -> list[dict[str, Any]]:
             [*TARGET_PRODUCT_KEYS, "BOH_YESTERDAY", "PRODUCTION_YESTERDAY", "BOH_TODAY"],
             min_rows=1,
         ),
-        case(
+        product_case(
             22,
             "DA공정 L-217제품 Assign 장비별 현재 가동율현황 조회해줘",
             "da_l217_assigned_equipment_utilization",
+            "L-217",
             [
-                job("equipment_assign", "assign_data", filters={"OPER_NAME": in_values(DA_PROCESSES), "MCP_NO": eq("L-217K9B")}),
-                job("eqp_utilization_today", "utilization_data", "20260701", {"OPER_NAME": in_values(DA_PROCESSES), "MCP_NO": eq("L-217K9B")}),
+                job("equipment_assign", "assign_data", filters={"OPER_NAME": in_values(DA_PROCESSES)}),
+                job("operation_rate_today", "operation_rate_data", "20260701"),
             ],
             (
-                "assign = sources['assign_data'].copy()\n"
-                "util = sources['utilization_data'][['EQP_ID', 'UTILIZATION_RATE', 'CURRENT_PRODUCT', 'EQP_STATUS']].copy()\n"
-                "result = assign.merge(util, on='EQP_ID', how='left', validate='one_to_one')[['EQP_ID', 'OPER_NAME', 'MCP_NO', 'CURRENT_PRODUCT', 'UTILIZATION_RATE', 'EQP_STATUS']].sort_values('EQP_ID')"
+                "assign = match_product_tokens('L-217', sources['assign_data']).copy()\n"
+                "rate = sources['operation_rate_data'][['EQP_ID', 'EQP_EFFIC_CD', 'TOTAL_INTERVAL_RATE']].copy()\n"
+                "result = assign.merge(rate, on='EQP_ID', how='left', validate='many_to_one')[['EQP_ID', 'EQP_MODEL', 'RECIPE_ID', 'OPER_NAME', 'MCP_NO', 'EQP_EFFIC_CD', 'TOTAL_INTERVAL_RATE']].sort_values('EQP_ID')"
             ),
-            ["EQP_ID", "OPER_NAME", "MCP_NO", "CURRENT_PRODUCT", "UTILIZATION_RATE", "EQP_STATUS"],
-            expected_rows=[{"EQP_ID": "EQP-DA217-A", "UTILIZATION_RATE": 86.5}],
+            ["EQP_ID", "EQP_MODEL", "RECIPE_ID", "OPER_NAME", "MCP_NO", "EQP_EFFIC_CD", "TOTAL_INTERVAL_RATE"],
+            expected_rows=[{"EQP_ID": "EQP-DA217-A", "TOTAL_INTERVAL_RATE": 86.5}],
         ),
         case(
             23,
             "D/A공정 장비들 현재 작업제품들과 가동율현황 조회해줘",
             "da_current_equipment_product_and_utilization",
-            [job("eqp_utilization_today", "utilization_data", "20260701", {"OPER_NAME": in_values(DA_PROCESSES)})],
-            "df = sources['utilization_data'].copy()\nresult = df[['EQP_ID', 'EQP_MODEL', 'OPER_NAME', 'CURRENT_PRODUCT', 'UTILIZATION_RATE', 'EQP_STATUS']].sort_values('EQP_ID')",
-            ["EQP_ID", "EQP_MODEL", "OPER_NAME", "CURRENT_PRODUCT", "UTILIZATION_RATE", "EQP_STATUS"],
+            [
+                job("equipment_assign", "assign_data", filters={"OPER_NAME": in_values(DA_PROCESSES)}),
+                job("operation_rate_today", "operation_rate_data", "20260701"),
+            ],
+            (
+                "assign = sources['assign_data'].copy()\n"
+                "rate = sources['operation_rate_data'][['EQP_ID', 'EQP_EFFIC_CD', 'TOTAL_INTERVAL_RATE']].copy()\n"
+                "result = assign.merge(rate, on='EQP_ID', how='left', validate='many_to_one')\n"
+                "result = result[['EQP_ID', 'EQP_MODEL', 'OPER_NAME', 'TECH', 'DEN', 'MODE', 'PKG_TYPE1', 'PKG_TYPE2', 'LEAD', 'ORG', 'MCP_NO', 'DEVICE', 'EQP_EFFIC_CD', 'TOTAL_INTERVAL_RATE']].sort_values('EQP_ID')"
+            ),
+            [
+                "EQP_ID",
+                "EQP_MODEL",
+                "OPER_NAME",
+                "TECH",
+                "DEN",
+                "MODE",
+                "PKG_TYPE1",
+                "PKG_TYPE2",
+                "LEAD",
+                "ORG",
+                "MCP_NO",
+                "DEVICE",
+                "EQP_EFFIC_CD",
+                "TOTAL_INTERVAL_RATE",
+            ],
             min_rows=3,
-            expected_rows=[{"EQP_ID": "D724", "UTILIZATION_RATE": 64.0}],
+            expected_rows=[{"EQP_ID": "EQP002", "OPER_NAME": "D/A1", "TOTAL_INTERVAL_RATE": 81.5}],
         ),
         case(
             24,
@@ -1221,8 +1279,13 @@ def representative_cases() -> list[dict[str, Any]]:
             expected_rows=[{"EQP_ID": "EQP-WB-DOWN-26H", "DOWN_TM": 26.0}, {"EQP_ID": "EQP-WB-DOWN-24H", "DOWN_TM": 24.0}],
             forbidden_values={"EQP_ID": ["EQP-WB-DOWN-12H"]},
         ),
-        *retained,
     ]
+    active_operational = [
+        item
+        for item in operational
+        if int(item.get("id") or 0) not in EXCLUDED_OPERATIONAL_CASE_IDS
+    ]
+    return [*active_operational, *retained]
 
 
 def case(
@@ -1374,6 +1437,7 @@ def job(
             "wip",
             "eqp_down_list",
             "eqp_utilization_today",
+            "operation_rate_today",
             "eqp_history_today",
         }:
             params.setdefault("DATE", date)
@@ -1511,6 +1575,7 @@ def load_flow_modules() -> dict[str, Any]:
         "dummy": load_module(FLOW / "08_dummy_data_retriever.py"),
         "merger": load_module(FLOW / "13_source_retrieval_merger.py"),
         "adapter": load_module(FLOW / "14_retrieval_payload_adapter.py"),
+        "fast_resolver": load_module(V2_FLOW / "14b_simple_analysis_contract_resolver.py"),
         "pandas_vars": load_module(V2_FLOW / "16_route_aware_pandas_prompt_builder.py"),
         "helper_builder": load_module(FLOW / "15a_selected_helper_code_builder.py"),
         "executor": load_module(V2_FLOW / "17_hybrid_analysis_executor.py"),
@@ -1588,6 +1653,7 @@ def validation_catalog(case: dict[str, Any]) -> dict[str, Any]:
             "wip",
             "eqp_down_list",
             "eqp_utilization_today",
+            "operation_rate_today",
             "eqp_history_today",
         } else []
         query_template = "SELECT * FROM DUMMY"
@@ -1648,6 +1714,14 @@ def validation_catalog(case: dict[str, Any]) -> dict[str, Any]:
                 "LEAD": ["LEAD"],
                 "MCP_NO": ["MCP_NO"],
                 "UTILIZATION_RATE": ["UTILIZATION_RATE"],
+            }
+        elif dataset_key == "operation_rate_today":
+            filter_mappings = {
+                "DATE": ["WORK_DT"],
+                "EQP_ID": ["EQP_ID"],
+                "EQP_MODEL": ["EQP_MODEL_CD"],
+                "EQP_EFFIC_CD": ["EQP_EFFIC_CD"],
+                "TOTAL_INTERVAL_RATE": ["TOTAL_INTERVAL_RATE"],
             }
         elif dataset_key == "eqp_history_today":
             filter_mappings = {

@@ -322,7 +322,9 @@ def test_join_only_runtime_rescue_uses_trusted_non_additive_mean():
     assert executed["data"]["rows"] == [
         {"OPER_NAME": "W/B1", "UPH": 15.0, "PRODUCTION": 7},
         {"OPER_NAME": "W/B2", "UPH": 5.0, "PRODUCTION": 0},
-        {"OPER_NAME": "W/B3", "UPH": 0.0, "PRODUCTION": 7},
+        # A missing non-additive mean is not an observed zero.  Preserve the
+        # absence so downstream answers do not understate an average/rate.
+        {"OPER_NAME": "W/B3", "UPH": None, "PRODUCTION": 7},
     ]
 
 

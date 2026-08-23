@@ -279,6 +279,10 @@ def _rows_for_dataset(dataset_key: str) -> list[dict[str, Any]]:
         "eqp_uph": _eqp_uph_rows(),
         "eqp_down_list": _eqp_down_list_rows(_unique_dates([today, "20260701"])),
         "eqp_utilization_today": _eqp_utilization_rows(_unique_dates([today, "20260701"])),
+        # 운영 catalog의 가동률 source는 공정·제품 속성을 함께 가진 통합
+        # fixture가 아니라 EQP_ID와 가동률 지표만 소유한다.  공정별 장비
+        # 질문은 equipment_assign과의 명시적 결합으로 검증한다.
+        "operation_rate_today": _operation_rate_rows(_unique_dates([today, "20260701"])),
         "eqp_history_today": _eqp_history_rows(_unique_dates([today, "20260701"])),
         "lot_status": _lot_status_rows(),
         "hold_history": _hold_history_rows(),
@@ -1183,6 +1187,31 @@ def _equipment_assign_rows() -> list[dict[str, Any]]:
                 "RCP-MD-267-A",
                 "EQP-MD-267-A",
             ),
+            # M/D 공정 LEAD별 Assign/UPH 조회는 둘 이상의 제품군과 복수
+            # 장비 조합을 보여 주어야 한다.  266 LEAD 행은 78/267과 별개인
+            # 동일 공정·모델의 Recipe pair로 추가해 조인/집계 예시를 넓힌다.
+            _equipment_validation_row(
+                3,
+                "M/D",
+                "EQM-MD",
+                "RCP-MD-266-A",
+                "EQP-MD-266-A",
+                LEAD="266",
+                MCP_NO="L-266MD",
+                DEVICE="DEV-MD-266",
+                DEVICE_DESC="M/D LEAD 266 assigned equipment validation product",
+            ),
+            _equipment_validation_row(
+                3,
+                "M/D",
+                "EQM-MD",
+                "RCP-MD-266-B",
+                "EQP-MD-266-B",
+                LEAD="266",
+                MCP_NO="L-266MD",
+                DEVICE="DEV-MD-266",
+                DEVICE_DESC="M/D LEAD 266 assigned equipment validation product",
+            ),
             # 보유 CAPA 계산은 Assign/UPH source의 동일 모델·Recipe·공정 조합만
             # 결합하므로 아래 SBM과 D/A 행도 양쪽 fixture에 짝으로 둔다.
             _equipment_validation_row(
@@ -1219,6 +1248,17 @@ def _equipment_assign_rows() -> list[dict[str, Any]]:
                 "EQM-DA217",
                 "RCP-DA217-A",
                 "EQP-DA217-A",
+                LEAD="217",
+                MCP_NO="L-217K9B",
+                DEVICE="DEV-L217-DA",
+                DEVICE_DESC="L-217 D/A assigned equipment validation product",
+            ),
+            _equipment_validation_row(
+                7,
+                "D/A2",
+                "EQM-DA217",
+                "RCP-DA217-B",
+                "EQP-DA217-B",
                 LEAD="217",
                 MCP_NO="L-217K9B",
                 DEVICE="DEV-L217-DA",
@@ -1412,11 +1452,38 @@ def _eqp_uph_rows() -> list[dict[str, Any]]:
                 LEAD="315",
                 MCP_NO="L-117A1",
             ),
-            # FCB Recipe, M/D lead, CAPA 및 S/G 제품 질문의 검증용 source rows.
+            # FCB RECIPE 조회는 완전 일치와 prefix 조회를 실제 결과 행으로
+            # 구분한다.  R0429 계열 세 행과 무관한 대조 행을 함께 둔다.
             _uph_validation_row(6, "FCB1", "EQM-FCB", "R0429", 154.2),
+            _uph_validation_row(6, "FCB1", "EQM-FCB", "R0429-A", 150.0),
+            _uph_validation_row(6, "FCB1", "EQM-FCB", "R0429-01", 151.5),
+            _uph_validation_row(6, "FCB1", "EQM-FCB", "R0428-DECOY", 999.0),
+            # M/D lead, CAPA 및 S/G 제품 질문의 검증용 source rows.
             _uph_validation_row(6, "M/D", "EQM-MD", "RCP-MD-78-A", 132.0),
             _uph_validation_row(6, "M/D", "EQM-MD", "RCP-MD-78-B", 148.0),
             _uph_validation_row(3, "M/D", "EQM-MD", "RCP-MD-267-A", 119.0),
+            _uph_validation_row(
+                3,
+                "M/D",
+                "EQM-MD",
+                "RCP-MD-266-A",
+                124.0,
+                LEAD="266",
+                MCP_NO="L-266MD",
+                DEVICE="DEV-MD-266",
+                DEVICE_DESC="M/D LEAD 266 UPH validation product",
+            ),
+            _uph_validation_row(
+                3,
+                "M/D",
+                "EQM-MD",
+                "RCP-MD-266-B",
+                136.0,
+                LEAD="266",
+                MCP_NO="L-266MD",
+                DEVICE="DEV-MD-266",
+                DEVICE_DESC="M/D LEAD 266 UPH validation product",
+            ),
             _uph_validation_row(0, "SBM", "EQM-SBM", "RCP-SBM-POP-A", 126.0),
             _uph_validation_row(3, "SBM", "EQM-SBM", "RCP-SBM-L267-A", 142.0),
             _uph_validation_row(6, "D/A1", "EQM-DA78", "RCP-DA78-A", 138.0),
@@ -1785,6 +1852,33 @@ def _eqp_utilization_rows(snapshot_dates: list[str]) -> list[dict[str, Any]]:
                 }
             )
             rows.append(base)
+    return rows
+
+
+# 함수 설명: `_operation_rate_rows()`는 운영 operation_rate_today와 같은 분리형 장비 가동률 fixture를 생성합니다.
+def _operation_rate_rows(snapshot_dates: list[str]) -> list[dict[str, Any]]:
+    definitions = [
+        ("EQP002", "EQM-HBM", "RUN", 3600.0, 2934.0, 81.5),
+        ("EQP003", "EQM-MOBILE", "RUN", 3600.0, 3204.0, 89.0),
+        ("EQP004", "EQM-FCB", "IDLE", 3600.0, 1800.0, 50.0),
+        ("D724", "EQM-DA", "RUN", 3600.0, 2304.0, 64.0),
+        ("EQP-DA217-A", "EQM-DA217", "RUN", 3600.0, 3114.0, 86.5),
+        ("EQP-DA217-B", "EQM-DA217", "RUN", 3600.0, 2592.0, 72.0),
+    ]
+    rows: list[dict[str, Any]] = []
+    for snapshot_date in snapshot_dates:
+        for eqp_id, model_code, status_code, total_time, flow_time, rate in definitions:
+            rows.append(
+                {
+                    "WORK_DT": snapshot_date,
+                    "EQP_MODEL_CD": model_code,
+                    "EQP_ID": eqp_id,
+                    "EQP_EFFIC_CD": status_code,
+                    "TOTAL_INTERVAL_TM": total_time,
+                    "FLOW_TM": flow_time,
+                    "TOTAL_INTERVAL_RATE": rate,
+                }
+            )
     return rows
 
 

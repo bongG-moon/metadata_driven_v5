@@ -70,7 +70,12 @@ def validate_semantic_payload(
     }
 
 
-def validate_case_expectation(case: Any, payload: Any) -> list[dict[str, Any]]:
+def validate_case_expectation(
+    case: Any,
+    payload: Any,
+    *,
+    pandas_variables: Any = None,
+) -> list[dict[str, Any]]:
     """Validate stable case semantics while ignoring aliases, fixture values and order."""
 
     expected = case if isinstance(case, dict) else {}
@@ -104,7 +109,15 @@ def validate_case_expectation(case: Any, payload: Any) -> list[dict[str, Any]]:
         expected_filters = _dict(expected_job.get("filters"))
         if not expected_filters:
             continue
-        if not any(_job_covers_expected_filters(job, expected_filters) for job in candidates):
+        if not any(
+            _job_covers_expected_filters(
+                job,
+                expected_filters,
+                plan=plan,
+                pandas_variables=pandas_variables,
+            )
+            for job in candidates
+        ):
             errors.append(
                 {
                     "type": "missing_expected_filter_contract",
@@ -118,7 +131,13 @@ def validate_case_expectation(case: Any, payload: Any) -> list[dict[str, Any]]:
     return _unique_dicts(errors)
 
 
-def _job_covers_expected_filters(job: dict[str, Any], expected_filters: dict[str, Any]) -> bool:
+def _job_covers_expected_filters(
+    job: dict[str, Any],
+    expected_filters: dict[str, Any],
+    *,
+    plan: dict[str, Any] | None = None,
+    pandas_variables: Any = None,
+) -> bool:
     """Accept an equivalent catalog-required query parameter as a filter contract.
 
     Catalogs commonly expose date as a required query parameter while a fixture
@@ -129,30 +148,104 @@ def _job_covers_expected_filters(job: dict[str, Any], expected_filters: dict[str
     """
 
     actual_filters = _dict(job.get("filters"))
-    if _filters_cover(actual_filters, expected_filters):
-        return True
+    effective_filters = _effective_filter_contracts_for_job(plan or {}, job)
     required_params = _dict(job.get("required_params"))
-    if not required_params:
-        return False
     for field, expected in expected_filters.items():
         expected_contract = _dict(expected)
-        if field in actual_filters and _filters_cover({field: actual_filters[field]}, {field: expected_contract}):
+        if any(
+            _filters_cover(filters, {field: expected_contract})
+            for filters in [actual_filters, *effective_filters]
+        ):
             continue
         operator = str(expected_contract.get("operator") or "eq").strip().lower()
-        if operator not in {"eq", "in"}:
-            return False
-        actual_value = _case_insensitive_value(required_params, field)
-        if actual_value in (None, "", []):
-            return False
-        expected_values = _values(expected_contract.get("value", expected_contract.get("values")))
-        actual_values = _values(actual_value)
-        if not expected_values or not actual_values:
-            return False
-        if operator == "eq" and not all(value in actual_values for value in expected_values):
-            return False
-        if operator == "in" and not any(value in actual_values for value in expected_values):
-            return False
+        if operator in {"eq", "in"}:
+            actual_value = _case_insensitive_value(required_params, field)
+            expected_values = _condition_value_set(
+                expected_contract.get("value", expected_contract.get("values"))
+            )
+            actual_values = _condition_value_set(actual_value)
+            if expected_values and actual_values:
+                if operator == "eq" and all(value in actual_values for value in expected_values):
+                    continue
+                if operator == "in" and any(value in actual_values for value in expected_values):
+                    continue
+        if _selected_function_case_covers_filter(
+            plan or {},
+            job,
+            expected_contract,
+            pandas_variables,
+        ):
+            continue
+        return False
     return True
+
+
+def _effective_filter_contracts_for_job(
+    plan: dict[str, Any],
+    job: dict[str, Any],
+) -> list[dict[str, Any]]:
+    condition_resolution = _dict(plan.get("condition_resolution"))
+    effective = _dict(condition_resolution.get("effective_filters"))
+    source_alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+    dataset_key = str(job.get("dataset_key") or "").strip()
+    result: list[dict[str, Any]] = []
+    for raw_alias, raw_item in effective.items():
+        item = _dict(raw_item)
+        item_dataset = str(item.get("dataset_key") or "").strip()
+        if not (
+            str(raw_alias or "").strip() in {source_alias, dataset_key}
+            or (dataset_key and item_dataset == dataset_key)
+        ):
+            continue
+        filters = _dict(item.get("filters"))
+        if filters:
+            result.append(filters)
+    return result
+
+
+def _selected_function_case_covers_filter(
+    plan: dict[str, Any],
+    job: dict[str, Any],
+    expected_condition: dict[str, Any],
+    pandas_variables: Any,
+) -> bool:
+    """Accept only a proven lossy-filter replacement executed for this source."""
+
+    operator = _normalized_operator(expected_condition.get("operator"))
+    if operator not in {"eq", "contains", "starts_with"}:
+        return False
+    expected_values = _condition_value_set(
+        expected_condition.get("value", expected_condition.get("values"))
+    )
+    if len(expected_values) != 1:
+        return False
+    source_alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+    steps = _dict_items(plan.get("pandas_execution_plan"))
+    context = pandas_variables if isinstance(pandas_variables, dict) else {}
+    helper_text = "\n".join(
+        str(context.get(key) or "")
+        for key in ("function_case_selection_json", "function_case_helper_code")
+    )
+    for case in _dict_items(plan.get("pandas_function_cases")):
+        if str(case.get("selection_source") or "").strip() != "metadata_lossy_exact_filter_rescue":
+            continue
+        if str(case.get("source_alias") or "").strip() != source_alias:
+            continue
+        if _normalized_value(case.get("input_text")) not in expected_values:
+            continue
+        function_name = str(case.get("function_name") or "").strip()
+        function_key = str(case.get("function_case_key") or case.get("key") or "").strip()
+        if context and function_name and function_name not in helper_text:
+            continue
+        if any(
+            str(step.get("operation") or "").strip() == "apply_pandas_function_case"
+            and (not function_name or str(step.get("function_name") or "").strip() == function_name)
+            and (not function_key or str(step.get("function_case_key") or step.get("key") or "").strip() == function_key)
+            and str(step.get("source_alias") or "").strip() == source_alias
+            for step in steps
+        ):
+            return True
+    return False
 
 
 def _case_insensitive_value(mapping: dict[str, Any], key: Any) -> Any:
@@ -439,7 +532,10 @@ def _result_shape_errors(
     # EQP_ID entity list).  Treat the resolved grain as a fallback only when the
     # output contract did not declare its own grain; otherwise valid projected
     # results are reported as missing unrelated source dimensions.
-    if "grain_columns" in contract:
+    result_mode = str(contract.get("result_mode") or contract.get("mode") or "").strip().lower()
+    if result_mode == "scalar":
+        grain = []
+    elif "grain_columns" in contract:
         grain = _unique_text(contract.get("grain_columns"))
     else:
         grain = _unique_text(

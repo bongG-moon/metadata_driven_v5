@@ -118,8 +118,15 @@ def build_answer_response(payload_value: Any, answer_text: Any = "") -> dict[str
         else _answer_text(answer_text)
     ).strip()
     blocked = _execution_blocked(payload)
-    structured_answer = {} if blocked else received_structured_answer
-    message = str(payload.get("answer_message") or "").strip() if blocked else received_message
+    partial = _partial_result_available(payload)
+    structured_answer = {} if blocked or partial else received_structured_answer
+    message = (
+        _partial_result_message(payload)
+        if partial
+        else str(payload.get("answer_message") or "").strip()
+        if blocked
+        else received_message
+    )
     if not message:
         message = str(payload.get("answer_message") or "").strip()
     if not message:
@@ -129,9 +136,9 @@ def build_answer_response(payload_value: Any, answer_text: Any = "") -> dict[str
     next_payload.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"] = {
         "stage": "20_answer_response_builder",
         "received": bool(received_message or received_structured_answer),
-        "used": not blocked and bool(received_message or received_structured_answer),
-        "ignored": blocked and bool(received_message or received_structured_answer),
-        "policy": "ignore" if blocked else "use",
+        "used": not blocked and not partial and bool(received_message or received_structured_answer),
+        "ignored": (blocked or partial) and bool(received_message or received_structured_answer),
+        "policy": "use_partial_checkpoint" if partial else "ignore" if blocked else "use",
     }
     message, grounding = _ground_answer_message(next_payload, message)
     if grounding:
@@ -153,6 +160,33 @@ def build_answer_response(payload_value: Any, answer_text: Any = "") -> dict[str
 def _execution_blocked(payload: dict[str, Any]) -> bool:
     gate = _dict(payload.get("execution_gate"))
     return str(gate.get("status") or "").strip().lower() == "blocked"
+
+
+# 함수 설명: 직전 정상 체크포인트에서 실제 행을 복구한 부분 실행 결과인지 판정합니다.
+def _partial_result_available(payload: dict[str, Any]) -> bool:
+    analysis = _dict(payload.get("analysis"))
+    data = _dict(payload.get("data"))
+    recovered = _dict(analysis.get("recovered_result"))
+    if str(analysis.get("status") or "").strip().lower() != "partial":
+        return False
+    if not (recovered.get("available") or data.get("partial")):
+        return False
+    checkpoint_role = str(recovered.get("checkpoint_role") or "").strip()
+    allowed_roles = {"computed_result", "step_output", "filtered_source"}
+    if checkpoint_role not in allowed_roles:
+        return False
+    return bool(_list(data.get("rows")) or _int(data.get("row_count"), 0) > 0 or data.get("data_ref"))
+
+
+# 함수 설명: 부분 실행에서는 모델 추측 없이 복구된 행 수와 최종 계약 미완료 사실만 안내합니다.
+def _partial_result_message(payload: dict[str, Any]) -> str:
+    data = _dict(payload.get("data"))
+    row_count = _int(data.get("row_count"), len(_list(data.get("rows"))))
+    return (
+        "최종 분석 계약을 완성하지 못했지만, "
+        f"직전 정상 단계에서 확인된 결과 {row_count}건을 표시합니다. "
+        "아래 표는 부분 실행 결과입니다."
+    )
 
 
 # 함수 설명: `_ground_answer_message()`는 LLM 문장에 결과 행으로 확인되지 않는 수치가 있을 때 재호출 없이 결정론적으로 교정합니다.
@@ -1091,7 +1125,7 @@ def _presentation_display_columns(
 # 함수 설명: `_verified_display_conditions()`는 성공한 실제 조회 결과가 보유한 파라미터·필터만 답변 표 후보로 수집합니다.
 def _verified_display_conditions(payload: dict[str, Any]) -> list[dict[str, Any]]:
     analysis = _dict(payload.get("analysis"))
-    if str(analysis.get("status") or "").strip().lower() != "ok":
+    if str(analysis.get("status") or "").strip().lower() not in {"ok", "partial"}:
         return []
 
     conditions: list[dict[str, Any]] = []
@@ -2211,7 +2245,17 @@ def build_hybrid_answer_response(
         {"intent": 1, "pandas_generation": 0, "repair": 0, "answer": 0},
     )
     llm_calls["answer"] = 0
-    if route == "fast":
+    if _partial_result_available(payload):
+        result = build_answer_response(payload, "")
+        result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(
+            {
+                "stage": "20_hybrid_answer_builder",
+                "model_called": False,
+                "policy": "partial_checkpoint_without_model",
+                "llm_answer_enabled": llm_answer_enabled,
+            }
+        )
+    elif route == "fast":
         answer_text = _deterministic_fast_answer(payload, contract)
         result = build_answer_response(payload, answer_text)
         result.setdefault("trace", {}).setdefault("inspection", {})["answer_model_response"].update(

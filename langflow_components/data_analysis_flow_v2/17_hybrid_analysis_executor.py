@@ -266,6 +266,10 @@ def execute_pandas_code(
                     if str(alias).strip()
                 ),
             )
+            if function_case_rewrite_trace:
+                safe_imports["selected_function_case_pre_transform"] = deepcopy(
+                    function_case_rewrite_trace
+                )
             if rewrite_error:
                 return _analysis_error(
                     next_payload,
@@ -287,10 +291,6 @@ def execute_pandas_code(
                 function_case_helper_code,
                 include_helper_code=False,
             )
-            if function_case_rewrite_trace:
-                safe_imports["selected_function_case_pre_transform"] = deepcopy(
-                    function_case_rewrite_trace
-                )
         safe_imports["normalized_llm_code"] = normalized_llm_code
     code = normalized_llm_code
     if not normalized_llm_code.strip() and not deterministic_execution:
@@ -423,10 +423,10 @@ def execute_pandas_code(
             row_match_preamble,
             response_parse,
         )
-    metric_semantics_error = (
-        ""
-        if deterministic_execution
-        else _metric_semantics_contract_error(next_payload, code)
+    metric_semantics_error = _metric_semantics_contract_error(
+        next_payload,
+        code,
+        deterministic_contract=deterministic_execution,
     )
     if metric_semantics_error:
         return _analysis_error(
@@ -687,6 +687,15 @@ def execute_pandas_code(
         # still return and download the last successful calculation.
         publish_checkpoint()
         rows, columns = _result_to_rows(result, next_payload)
+        missing_metric_columns = _missing_metric_output_columns(
+            next_payload,
+            columns,
+        )
+        if missing_metric_columns:
+            raise OutputContractError(
+                "결과 계약에 필요한 metric 컬럼이 누락되었습니다: "
+                + ", ".join(missing_metric_columns)
+            )
         rows, columns = _apply_strict_result_columns(
             rows,
             columns,
@@ -870,12 +879,10 @@ def _deterministic_execution_contract(payload: dict[str, Any]) -> dict[str, Any]
     return _single_source_execution_contract(payload)
 
 
-# 함수 설명: pandas 단계가 비어 있는 단일 source 조회는 표준 output contract와 hydrated job만으로 projection/aggregate 계약을 구성합니다.
+# 함수 설명: pandas 단계가 비었거나 안전한 filter/select-only인 단일 source 조회를 표준 projection/aggregate 계약으로 구성합니다.
 def _single_source_execution_contract(payload: dict[str, Any]) -> dict[str, Any]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
-    if steps:
-        return {}
     contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
     result_mode = str(contract.get("result_mode") or "").strip().lower()
     result_columns = _string_list(contract.get("result_columns"))
@@ -911,6 +918,8 @@ def _single_source_execution_contract(payload: dict[str, Any]) -> dict[str, Any]
         return {}
 
     if result_mode in {"detail", "entity_list"}:
+        if steps and not _projection_only_single_source_steps(steps, source_alias):
+            return {}
         if any(column.casefold() not in available for column in result_columns):
             return {}
         return {
@@ -919,6 +928,9 @@ def _single_source_execution_contract(payload: dict[str, Any]) -> dict[str, Any]
             "source_alias": source_alias,
             "result_columns": result_columns,
         }
+
+    if steps:
+        return {}
 
     grain_columns = _string_list(contract.get("grain_columns"))
     if any(column.casefold() not in available for column in grain_columns):
@@ -977,6 +989,82 @@ def _single_source_execution_contract(payload: dict[str, Any]) -> dict[str, Any]
         "grain_columns": grain_columns,
         "metrics": metrics,
     }
+
+
+# 함수 설명: 단일 source 상세 계획이 조회 filter 적용과 결과 projection만 포함하는지 보수적으로 확인합니다.
+def _projection_only_single_source_steps(
+    steps: list[Any],
+    source_alias: str,
+) -> bool:
+    """Accept only no-extra-semantics filter/select DAGs for deterministic projection.
+
+    Retrieval/effective filters are already applied by the executor preamble.
+    A model may restate those filters in generated pandas with incompatible
+    Python literal types (for example ``'266'`` versus ``266``).  Plans made
+    only of source filtering and column selection can therefore use the same
+    trusted projection path as an empty-step detail query.  Any step-local
+    predicate, helper, calculation, aggregation, join, or unresolved input
+    keeps the existing LLM/Typed execution path.
+    """
+
+    if not steps or not str(source_alias or "").strip():
+        return False
+    produced_refs: set[str] = set()
+    filter_semantic_keys = {
+        "filter",
+        "filters",
+        "filter_conditions",
+        "conditions",
+        "condition",
+        "column_filters",
+        "field",
+        "column",
+        "operator",
+        "predicate",
+        "where",
+        "value",
+        "values",
+    }
+    for step in steps:
+        if not isinstance(step, dict):
+            return False
+        operation = str(step.get("operation") or "").strip().lower()
+        if operation not in {"apply_filters", "select_columns"}:
+            return False
+        if operation == "apply_filters" and any(
+            step.get(key) not in (None, "", [], {})
+            for key in filter_semantic_keys
+        ):
+            return False
+        step_source = str(step.get("source_alias") or "").strip()
+        if step_source and step_source != source_alias and step_source not in produced_refs:
+            return False
+        inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        if not inputs and not step_source:
+            return False
+        for item in inputs:
+            if not isinstance(item, dict):
+                return False
+            kind = str(item.get("kind") or "").strip().lower()
+            ref = str(item.get("ref") or "").strip()
+            if kind == "external_source":
+                if ref != source_alias:
+                    return False
+                continue
+            if kind == "node_output":
+                if ref not in produced_refs:
+                    return False
+                continue
+            return False
+        produced_refs.update(
+            text
+            for text in (
+                str(step.get("node_id") or "").strip(),
+                str(step.get("output_alias") or "").strip(),
+            )
+            if text
+        )
+    return True
 
 
 # 함수 설명: 내부 결정론적 executor가 실제 적용하는 join 이후 조건을 생성 코드 영역의 안전한 주석으로 표시합니다.
@@ -1164,6 +1252,7 @@ def _deterministic_function_case_preamble(
     for index, transform in enumerate(transforms, start=1):
         function_name = str(transform.get("function_name") or "").strip()
         source_alias = str(transform.get("source_alias") or "").strip()
+        output_alias = str(transform.get("output_alias") or "").strip()
         node_id = str(transform.get("node_id") or f"transform_{index}").strip()
         input_text = str(transform.get("input_text") or "")
         if not function_name.isidentifier() or function_name not in defined_names:
@@ -1196,6 +1285,8 @@ def _deterministic_function_case_preamble(
         call_suffix = (", " + ", ".join(rendered_arguments)) if rendered_arguments else ""
         source_var = f"_function_case_source_{index}"
         result_var = f"_function_case_result_{index}"
+        output_existing_var = f"_function_case_output_existing_{index}"
+        output_published_var = f"_function_case_output_published_{index}"
         lines.extend(
             [
                 f"{source_var} = sources.get({source_alias!r})",
@@ -1205,9 +1296,26 @@ def _deterministic_function_case_preamble(
                 f"if not hasattr({result_var}, 'columns'):",
                 f"    raise Exception({('Function Case 결과가 DataFrame이 아닙니다: ' + function_name)!r})",
                 f"sources[{source_alias!r}] = {result_var}",
+            ]
+        )
+        if output_alias and output_alias != source_alias:
+            lines.extend(
+                [
+                    f"{output_existing_var} = sources.get({output_alias!r})",
+                    f"{output_published_var} = {output_alias!r} not in sources or {output_existing_var} is {source_var}",
+                    f"if {output_published_var}:",
+                    f"    sources[{output_alias!r}] = {result_var}",
+                ]
+            )
+        else:
+            lines.append(f"{output_published_var} = {bool(output_alias)!r}")
+        lines.extend(
+            [
                 "_deterministic_function_case_execution.append({",
                 f"    'node_id': {node_id!r},",
                 f"    'source_alias': {source_alias!r},",
+                f"    'output_alias': {output_alias!r},",
+                f"    'output_alias_published': {output_published_var},",
                 f"    'function_name': {function_name!r},",
                 f"    'input_text': {input_text!r},",
                 f"    'input_row_count': len({source_var}),",
@@ -2279,7 +2387,14 @@ def _typed_groupby_and_aggregate(frame: Any, step: dict[str, Any], pd: Any) -> A
         raise OutputContractError("Typed Pandas group_by 컬럼을 찾을 수 없습니다: " + ", ".join(missing_group))
     aggregations = [item for item in step.get("aggregations", []) if isinstance(item, dict)]
     if not aggregations:
-        raise OutputContractError("Typed Pandas 집계 정의가 없습니다.")
+        # A non-empty group_by with no metrics is the Typed-IR representation
+        # of a deterministic distinct/project frame.  It is useful before a
+        # later aggregate (for example, de-duplicating equipment assignments
+        # before ``nunique``) and does not invent any calculation semantics.
+        # An entirely empty aggregate remains invalid as before.
+        if not group_by or step.get("_typed_distinct_group_only") is not True:
+            raise OutputContractError("Typed Pandas 집계 정의가 없습니다.")
+        return frame[group_by].drop_duplicates().reset_index(drop=True)
     working = frame.copy()
     named_aggregations: dict[str, Any] = {}
     for aggregation in aggregations:
@@ -2289,7 +2404,8 @@ def _typed_groupby_and_aggregate(frame: Any, step: dict[str, Any], pd: Any) -> A
         if not source_column or source_column not in working.columns or not output_column:
             raise OutputContractError("Typed Pandas 집계 컬럼 또는 출력명이 올바르지 않습니다.")
         if method in {"sum", "mean", "median", "min", "max"}:
-            working[source_column] = pd.to_numeric(working[source_column], errors="coerce").fillna(0)
+            numeric = pd.to_numeric(working[source_column], errors="coerce")
+            working[source_column] = numeric.fillna(0) if method == "sum" else numeric
         named_aggregations[output_column] = pd.NamedAgg(
             column=source_column,
             aggfunc=_pandas_aggregation_method(method),
@@ -2497,6 +2613,14 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
         # merge key.  An outer/right join can contain rows that exist only on
         # the right, where the left canonical key is necessarily null.
         right_working[right_display] = right_working[right_key]
+    if str(step.get("multi_match_policy") or "preserve_rows").strip().lower() == "first":
+        # Only an explicit `first` contract may reduce right-side cardinality.
+        # pandas preserves source order here, so the selected row is stable;
+        # default/preserve_rows keeps every same-key state row unchanged.
+        right_working = right_working.drop_duplicates(
+            subset=temporary_keys,
+            keep="first",
+        ).copy()
     if aggregations:
         # A join that declares aggregate outputs is a grouped enrichment, not
         # a raw many-to-many merge.  Aggregate the right side on the declared
@@ -2514,7 +2638,7 @@ def _typed_join_frames(left: Any, right: Any, step: dict[str, Any], pd: Any) -> 
             how=join_type,
         )
         for output_column, default in fill_defaults.items():
-            if output_column in result.columns:
+            if output_column in result.columns and default is not None:
                 result[output_column] = result[output_column].fillna(default)
         result = _coalesce_typed_outer_join_keys(
             result,
@@ -2817,14 +2941,19 @@ def _typed_aggregate_join_right(
         ):
             raise OutputContractError("Typed Pandas join 집계 컬럼 또는 출력명이 올바르지 않습니다.")
         if method in {"sum", "mean", "median", "min", "max"}:
-            working[source_column] = pd.to_numeric(
-                working[source_column], errors="coerce"
-            ).fillna(0)
+            numeric = pd.to_numeric(working[source_column], errors="coerce")
+            working[source_column] = numeric.fillna(0) if method == "sum" else numeric
         named_aggregations[output_column] = pd.NamedAgg(
             column=source_column,
             aggfunc=_pandas_aggregation_method(method),
         )
-        fill_defaults[output_column] = "" if method == "collect_unique" else 0
+        fill_defaults[output_column] = (
+            ""
+            if method == "collect_unique"
+            else 0
+            if method in {"sum", "count", "nunique"}
+            else None
+        )
     if working.empty:
         return pd.DataFrame(columns=[*group_columns, *named_aggregations]), fill_defaults
     return (
@@ -3746,16 +3875,20 @@ def _selected_function_case_source_transforms(
     """
 
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
-    raw_cases: list[dict[str, Any]] = []
+    raw_cases: list[tuple[dict[str, Any], bool]] = []
     for key in ("pandas_function_cases", "pandas_function_case"):
         value = plan.get(key)
         if isinstance(value, dict):
-            raw_cases.append(deepcopy(value))
+            raw_cases.append((deepcopy(value), False))
         elif isinstance(value, list):
-            raw_cases.extend(deepcopy(item) for item in value if isinstance(item, dict))
+            raw_cases.extend(
+                (deepcopy(item), False)
+                for item in value
+                if isinstance(item, dict)
+            )
     steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
     raw_cases.extend(
-        deepcopy(item)
+        (deepcopy(item), True)
         for item in steps
         if isinstance(item, dict)
         and str(item.get("operation") or item.get("step") or "").strip()
@@ -3763,8 +3896,8 @@ def _selected_function_case_source_transforms(
     )
 
     result: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for index, item in enumerate(raw_cases, start=1):
+    result_index_by_marker: dict[str, int] = {}
+    for index, (item, is_typed_step) in enumerate(raw_cases, start=1):
         function_name = str(item.get("function_name") or "").strip()
         source_alias = str(item.get("source_alias") or "").strip()
         if not function_name or not function_name.isidentifier() or not source_alias:
@@ -3783,6 +3916,11 @@ def _selected_function_case_source_transforms(
             "function_name": function_name,
             "input_text": str(item.get("input_text") or ""),
             "arguments": arguments,
+            "output_alias": (
+                str(item.get("output_alias") or "").strip()
+                if is_typed_step
+                else ""
+            ),
         }
         # A normalized plan stores the same selected helper both in the
         # semantic case list and in its typed pandas step.  Node ids differ
@@ -3806,10 +3944,66 @@ def _selected_function_case_source_transforms(
             sort_keys=True,
             default=str,
         )
-        if marker in seen:
+        if marker in result_index_by_marker:
+            existing = result[result_index_by_marker[marker]]
+            output_alias = transform["output_alias"]
+            if output_alias:
+                declared_aliases = existing.setdefault(
+                    "_typed_output_aliases",
+                    [],
+                )
+                if output_alias not in declared_aliases:
+                    declared_aliases.append(output_alias)
+                existing["output_alias"] = (
+                    declared_aliases[0] if len(declared_aliases) == 1 else ""
+                )
             continue
-        seen.add(marker)
+        transform["_typed_output_aliases"] = (
+            [transform["output_alias"]] if transform["output_alias"] else []
+        )
+        result_index_by_marker[marker] = len(result)
         result.append(transform)
+
+    # Publish only one unambiguous typed output alias.  A declared alias that
+    # is already owned by another external source or by another transform is
+    # left unpublished rather than overwriting a frame or guessing ownership.
+    external_source_aliases = {
+        str(job.get("source_alias") or "").strip()
+        for job in (
+            plan.get("retrieval_jobs")
+            if isinstance(plan.get("retrieval_jobs"), list)
+            else []
+        )
+        if isinstance(job, dict) and str(job.get("source_alias") or "").strip()
+    }
+    external_source_aliases.update(
+        str(alias).strip()
+        for alias in (
+            payload.get("runtime_sources")
+            if isinstance(payload.get("runtime_sources"), dict)
+            else {}
+        )
+        if str(alias).strip()
+    )
+    output_alias_owners: dict[str, list[int]] = {}
+    for index, transform in enumerate(result):
+        output_alias = str(transform.get("output_alias") or "").strip()
+        source_alias = str(transform.get("source_alias") or "").strip()
+        if (
+            output_alias
+            and output_alias in external_source_aliases
+            and output_alias != source_alias
+        ):
+            transform["output_alias"] = ""
+            continue
+        if output_alias:
+            output_alias_owners.setdefault(output_alias, []).append(index)
+    for owners in output_alias_owners.values():
+        if len(owners) > 1:
+            for owner in owners:
+                result[owner]["output_alias"] = ""
+    for transform in result:
+        transform.pop("_typed_output_aliases", None)
     return result
 
 
@@ -3840,6 +4034,18 @@ def _replace_selected_function_case_calls(
     active_source_aliases: set[str] | None = None,
     runtime_source_aliases: set[str] | None = None,
 ) -> tuple[str, dict[str, Any], str]:
+    """Bind generated helper calls to their selected source-local transforms.
+
+    A trusted helper can legitimately be selected for more than one retrieval
+    source.  The binding identity is therefore ``(function_name,
+    source_alias)``, not only the function name.  A generated call is replaced
+    only when a literal ``sources['alias']`` reference or its still-immutable
+    direct local alias identifies a selected pair. An explicit literal
+    ``source_alias`` may corroborate or conflict-check that proof, but cannot
+    establish frame lineage alone. Calls that target an unselected source are
+    preserved, while ambiguous calls stay fail-closed.
+    """
+
     aliases_by_function: dict[str, set[str]] = {}
     for item in transforms:
         if not isinstance(item, dict):
@@ -3862,23 +4068,6 @@ def _replace_selected_function_case_calls(
         and isinstance(node.func, ast.Name)
         and node.func.id in aliases_by_function
     }
-    ambiguous = sorted(
-        name
-        for name in called_functions
-        if len(aliases_by_function.get(name, set())) != 1
-    )
-    if ambiguous:
-        return (
-            generated_code,
-            {},
-            "같은 Function Case helper가 여러 source에 선택되어 생성 코드 호출을 하나로 연결할 수 없습니다: "
-            + ", ".join(ambiguous),
-        )
-    source_by_function = {
-        name: next(iter(aliases))
-        for name, aliases in aliases_by_function.items()
-        if len(aliases) == 1
-    }
     active_aliases = {
         str(alias).strip()
         for alias in (active_source_aliases or set())
@@ -3896,12 +4085,19 @@ def _replace_selected_function_case_calls(
     fallback_source_alias = ""
     if len(active_aliases) == 1:
         only_alias = next(iter(active_aliases))
-        transform_aliases = set(source_by_function.values())
+        transform_aliases = {
+            alias
+            for aliases in aliases_by_function.values()
+            for alias in aliases
+        }
         if transform_aliases == {only_alias}:
             fallback_source_alias = only_alias
 
-    # 함수 설명: `source_alias_from_expression()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
-    def source_alias_from_expression(node: ast.AST) -> str:
+    # 함수 설명: `source_alias_from_expression()`는 직접 source 참조와 현재까지 재바인딩되지 않은 단순 local alias의 source를 반환합니다.
+    def source_alias_from_expression(
+        node: ast.AST,
+        local_source_aliases: dict[str, str] | None = None,
+    ) -> str:
         """Return a literal ``sources['alias']`` reference through harmless wrappers."""
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "sources":
             key = node.slice
@@ -3911,24 +4107,227 @@ def _replace_selected_function_case_calls(
         # argument.  Preserve that source identity without trying to resolve
         # arbitrary variables or expressions.
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "copy":
-            return source_alias_from_expression(node.func.value)
+            return source_alias_from_expression(node.func.value, local_source_aliases)
+        if isinstance(node, ast.Name) and isinstance(local_source_aliases, dict):
+            return str(local_source_aliases.get(node.id) or "").strip()
         return ""
 
     # 함수 설명: `source_alias_from_call()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
-    def source_alias_from_call(node: ast.Call) -> str:
-        aliases = {
+    def source_aliases_from_call(
+        node: ast.Call,
+        local_source_aliases: dict[str, str] | None = None,
+    ) -> set[str]:
+        return {
             alias
             for value in [*node.args, *(item.value for item in node.keywords)]
-            if (alias := source_alias_from_expression(value))
+            if (alias := source_alias_from_expression(value, local_source_aliases))
         }
-        return next(iter(aliases)) if len(aliases) == 1 else ""
+
+    # 함수 설명: 생성 코드가 Function Case 호출에 명시한 literal source_alias를 추출합니다.
+    def declared_source_aliases_from_call(node: ast.Call) -> set[str]:
+        return {
+            str(item.value.value).strip()
+            for item in node.keywords
+            if item.arg == "source_alias"
+            and isinstance(item.value, ast.Constant)
+            and isinstance(item.value.value, str)
+            and str(item.value.value).strip()
+        }
+
+    # 함수 설명: 단순 대입문의 오른쪽이 sources['alias'] 또는 그 copy인지 확인합니다.
+    def direct_source_assignment(statement: ast.stmt) -> tuple[str, str]:
+        target: ast.AST | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target = statement.target
+            value = statement.value
+        if not isinstance(target, ast.Name) or value is None:
+            return "", ""
+        source_alias = source_alias_from_expression(value)
+        return (target.id, source_alias) if source_alias else ("", "")
+
+    # 함수 설명: statement가 기존 local source alias를 재바인딩하거나 명시적으로 변경하는 이름을 수집합니다.
+    def invalidated_local_aliases(
+        statement: ast.stmt,
+        local_source_aliases: dict[str, str],
+    ) -> set[str]:
+        tracked_names = set(local_source_aliases)
+        invalidated = {
+            node.id
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and node.id in tracked_names
+        }
+
+        # ``df[col] = ...`` and ``df.attr = ...`` mutate the frame without a
+        # Store context on the root Name, so invalidate those aliases too.
+        for node in ast.walk(statement):
+            targets: list[ast.AST] = []
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                if isinstance(node, ast.Assign):
+                    targets.extend(node.targets)
+                else:
+                    targets.append(node.target)
+            elif isinstance(node, ast.Delete):
+                targets.extend(node.targets)
+            for target in targets:
+                root = target
+                while isinstance(root, (ast.Subscript, ast.Attribute)):
+                    root = root.value
+                if isinstance(root, ast.Name) and root.id in tracked_names:
+                    invalidated.add(root.id)
+
+        # Only calls with an explicit mutation signal invalidate a method
+        # receiver.  Arbitrary functions receiving a tracked frame are also
+        # treated conservatively because their side effects are unknown.
+        always_mutating_methods = {"__setitem__", "insert", "pop", "update"}
+        selected_function_names = set(aliases_by_function)
+        for node in ast.walk(statement):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute):
+                receiver = node.func.value
+                while isinstance(receiver, (ast.Subscript, ast.Attribute)):
+                    receiver = receiver.value
+                inplace = any(
+                    item.arg == "inplace"
+                    and isinstance(item.value, ast.Constant)
+                    and item.value.value is True
+                    for item in node.keywords
+                )
+                if (
+                    isinstance(receiver, ast.Name)
+                    and receiver.id in tracked_names
+                    and (node.func.attr in always_mutating_methods or inplace)
+                ):
+                    invalidated.add(receiver.id)
+            elif isinstance(node.func, ast.Name) and node.func.id not in selected_function_names:
+                for value in [*node.args, *(item.value for item in node.keywords)]:
+                    if isinstance(value, ast.Name) and value.id in tracked_names:
+                        invalidated.add(value.id)
+        return invalidated
 
     class FunctionCaseCallRewriter(ast.NodeTransformer):
         # 함수 설명: `__init__()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
         def __init__(self) -> None:
             self.replaced: list[str] = []
+            self.replaced_bindings: list[tuple[str, str]] = []
             self.replaced_unknown_source_refs: list[str] = []
             self.replaced_unbound_calls: list[str] = []
+            self.preserved_unselected_bindings: list[tuple[str, str]] = []
+            self.ambiguous_calls: list[dict[str, Any]] = []
+            self.local_source_aliases: dict[str, str] = {}
+
+        # 함수 설명: module statement 순서대로 직접 source alias를 추적하며 재바인딩·변경 뒤에는 추론하지 않습니다.
+        def visit_Module(self, node: ast.Module) -> ast.AST:
+            next_body: list[ast.stmt] = []
+            for statement in node.body:
+                unknown_ref_count = len(self.replaced_unknown_source_refs)
+                transformed = self.visit(statement)
+                transformed_items = transformed if isinstance(transformed, list) else [transformed]
+                next_body.extend(
+                    item for item in transformed_items if isinstance(item, ast.stmt)
+                )
+                for name in invalidated_local_aliases(
+                    statement,
+                    self.local_source_aliases,
+                ):
+                    self.local_source_aliases.pop(name, None)
+                # A source reference repaired only by the legacy one-source
+                # fallback is not direct evidence supplied by generated code.
+                # Keep that downstream helper call on the existing unbound
+                # fallback path instead of promoting the rewritten name to a
+                # proven multi-source local binding.
+                if (
+                    isinstance(transformed, ast.stmt)
+                    and len(self.replaced_unknown_source_refs) == unknown_ref_count
+                ):
+                    local_name, source_alias = direct_source_assignment(transformed)
+                    if local_name and source_alias:
+                        self.local_source_aliases[local_name] = source_alias
+            node.body = next_body
+            return node
+
+        # 함수 설명: 함수·클래스 내부에서는 module local source alias를 상속해 추론하지 않습니다.
+        def _visit_nested_scope(self, node: ast.AST) -> ast.AST:
+            previous_aliases = self.local_source_aliases
+            self.local_source_aliases = {}
+            try:
+                return self.generic_visit(node)
+            finally:
+                self.local_source_aliases = previous_aliases
+
+        # 함수 설명: 동기 함수 내부를 독립 scope로 방문합니다.
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: 비동기 함수 내부를 독립 scope로 방문합니다.
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: 클래스 내부를 독립 scope로 방문합니다.
+        def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: lambda 내부를 독립 scope로 방문합니다.
+        def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: 조건문 내부를 독립 scope로 방문합니다.
+        def visit_If(self, node: ast.If) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: 반복문 내부를 독립 scope로 방문합니다.
+        def visit_For(self, node: ast.For) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: 비동기 반복문 내부를 독립 scope로 방문합니다.
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: while 반복문 내부를 독립 scope로 방문합니다.
+        def visit_While(self, node: ast.While) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: try 블록 내부를 독립 scope로 방문합니다.
+        def visit_Try(self, node: ast.Try) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: exception group try 블록 내부를 독립 scope로 방문합니다.
+        def visit_TryStar(self, node: ast.TryStar) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: with 블록 내부를 독립 scope로 방문합니다.
+        def visit_With(self, node: ast.With) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: 비동기 with 블록 내부를 독립 scope로 방문합니다.
+        def visit_AsyncWith(self, node: ast.AsyncWith) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: match 블록 내부를 독립 scope로 방문합니다.
+        def visit_Match(self, node: ast.Match) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: list comprehension 내부를 독립 scope로 방문합니다.
+        def visit_ListComp(self, node: ast.ListComp) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: set comprehension 내부를 독립 scope로 방문합니다.
+        def visit_SetComp(self, node: ast.SetComp) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: dict comprehension 내부를 독립 scope로 방문합니다.
+        def visit_DictComp(self, node: ast.DictComp) -> ast.AST:
+            return self._visit_nested_scope(node)
+
+        # 함수 설명: generator expression 내부를 독립 scope로 방문합니다.
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> ast.AST:
+            return self._visit_nested_scope(node)
 
         # 함수 설명: `visit_Subscript()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.
         def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
@@ -3955,18 +4354,60 @@ def _replace_selected_function_case_calls(
             if not isinstance(node.func, ast.Name):
                 return node
             function_name = node.func.id
-            source_alias = source_by_function.get(function_name)
-            if not source_alias or function_name not in called_functions:
+            selected_aliases = aliases_by_function.get(function_name, set())
+            if not selected_aliases or function_name not in called_functions:
                 return node
-            # The selected Function Case owns only its declared source.  The
-            # same trusted helper may legitimately be called for another
-            # source in a multi-source analysis; redirecting that call would
-            # silently replace its schema and cause missing-column failures.
-            call_source_alias = source_alias_from_call(node)
-            if call_source_alias != source_alias:
-                if not (fallback_source_alias == source_alias and not call_source_alias):
+
+            call_source_aliases = source_aliases_from_call(
+                node,
+                self.local_source_aliases,
+            )
+            # A model-provided source_alias keyword is not frame lineage.  It
+            # may only corroborate or conflict-check a source already proven
+            # by a literal frame reference or its still-valid direct alias.
+            if call_source_aliases:
+                call_source_aliases.update(declared_source_aliases_from_call(node))
+            if len(call_source_aliases) > 1:
+                self.ambiguous_calls.append(
+                    {
+                        "function_name": function_name,
+                        "source_aliases": sorted(call_source_aliases),
+                        "reason": "multiple_literal_sources",
+                    }
+                )
+                return node
+
+            call_source_alias = (
+                next(iter(call_source_aliases)) if call_source_aliases else ""
+            )
+            if call_source_alias:
+                # The selected Function Case owns only its declared source.
+                # A call for an explicit third source remains executable as
+                # generated; silently redirecting it would cross schemas.
+                if call_source_alias not in selected_aliases:
+                    self.preserved_unselected_bindings.append(
+                        (function_name, call_source_alias)
+                    )
+                    return node
+                source_alias = call_source_alias
+            else:
+                # Preserve the existing one-source compatibility repair.  If
+                # the same helper owns multiple sources, an unbound variable
+                # call cannot be associated safely and must remain blocked.
+                if len(selected_aliases) > 1:
+                    self.ambiguous_calls.append(
+                        {
+                            "function_name": function_name,
+                            "source_aliases": sorted(selected_aliases),
+                            "reason": "source_not_identified",
+                        }
+                    )
+                    return node
+                source_alias = next(iter(selected_aliases))
+                if fallback_source_alias != source_alias:
                     return node
                 self.replaced_unbound_calls.append(function_name)
+
             replacement = ast.Call(
                 func=ast.Attribute(
                     value=ast.Subscript(
@@ -3981,27 +4422,67 @@ def _replace_selected_function_case_calls(
                 keywords=[],
             )
             self.replaced.append(function_name)
+            self.replaced_bindings.append((function_name, source_alias))
             return ast.copy_location(replacement, node)
 
     rewriter = FunctionCaseCallRewriter()
     rewritten = rewriter.visit(tree)
     ast.fix_missing_locations(rewritten)
+    binding_counts: dict[tuple[str, str], int] = {}
+    for binding in rewriter.replaced_bindings:
+        binding_counts[binding] = binding_counts.get(binding, 0) + 1
+    rewrite_trace = {
+        "policy": "selected_function_case_pretransform_replaces_generated_calls",
+        "selected_source_bindings": [
+            {"function_name": function_name, "source_alias": source_alias}
+            for function_name in sorted(aliases_by_function)
+            for source_alias in sorted(aliases_by_function[function_name])
+        ],
+        "replaced_function_names": list(dict.fromkeys(rewriter.replaced)),
+        "replacement_count": len(rewriter.replaced),
+        "replacements_by_source": [
+            {
+                "function_name": function_name,
+                "source_alias": source_alias,
+                "replacement_count": count,
+            }
+            for (function_name, source_alias), count in sorted(binding_counts.items())
+        ],
+        "preserved_unselected_source_calls": [
+            {"function_name": function_name, "source_alias": source_alias}
+            for function_name, source_alias in dict.fromkeys(
+                rewriter.preserved_unselected_bindings
+            )
+        ],
+        "replaced_unknown_source_refs": list(
+            dict.fromkeys(rewriter.replaced_unknown_source_refs)
+        ),
+        "replaced_unbound_function_names": list(
+            dict.fromkeys(rewriter.replaced_unbound_calls)
+        ),
+        "ambiguous_calls": deepcopy(rewriter.ambiguous_calls),
+    }
+    if rewriter.ambiguous_calls:
+        descriptions = []
+        for item in rewriter.ambiguous_calls:
+            aliases = ", ".join(item.get("source_aliases") or []) or "미확정"
+            descriptions.append(
+                f"{item.get('function_name')}({item.get('reason')}: {aliases})"
+            )
+        return (
+            generated_code,
+            rewrite_trace,
+            "Function Case helper 호출의 source를 하나로 확정할 수 없습니다: "
+            + "; ".join(descriptions),
+        )
     if not rewriter.replaced:
         if not rewriter.replaced_unknown_source_refs:
-            return generated_code, {}, ""
+            # Keep source-local selection information visible even when the
+            # generated code intentionally calls only an unselected source.
+            return generated_code, rewrite_trace, ""
     return (
         ast.unparse(rewritten),
-        {
-            "policy": "selected_function_case_pretransform_replaces_generated_calls",
-            "replaced_function_names": list(dict.fromkeys(rewriter.replaced)),
-            "replacement_count": len(rewriter.replaced),
-            "replaced_unknown_source_refs": list(
-                dict.fromkeys(rewriter.replaced_unknown_source_refs)
-            ),
-            "replaced_unbound_function_names": list(
-                dict.fromkeys(rewriter.replaced_unbound_calls)
-            ),
-        },
+        rewrite_trace,
         "",
     )
 
@@ -4138,7 +4619,12 @@ def _guard_code(code: str) -> str:
 
 
 # 함수 설명: trusted catalog의 비가산 metric 계약과 pandas 계획·코드의 집계 방식이 충돌하는지 검사합니다.
-def _metric_semantics_contract_error(payload: dict[str, Any], code: str) -> str:
+def _metric_semantics_contract_error(
+    payload: dict[str, Any],
+    code: str,
+    *,
+    deterministic_contract: dict[str, Any] | None = None,
+) -> str:
     lineage_error = _cross_metric_copy_contract_error(payload, code)
     if lineage_error:
         return lineage_error
@@ -4147,42 +4633,51 @@ def _metric_semantics_contract_error(payload: dict[str, Any], code: str) -> str:
         return ""
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     steps = plan.get("pandas_execution_plan") if isinstance(plan.get("pandas_execution_plan"), list) else []
-    for step in steps:
-        if not isinstance(step, dict):
+    aggregation_specs: list[dict[str, Any]] = []
+    if isinstance(deterministic_contract, dict) and deterministic_contract:
+        aggregation_specs.extend(
+            _declared_metric_aggregation_specs(deterministic_contract)
+        )
+        for step in deterministic_contract.get("steps", []):
+            if isinstance(step, dict):
+                aggregation_specs.extend(_declared_metric_aggregation_specs(step))
+        merge_plan = deterministic_contract.get("merge_plan")
+        if isinstance(merge_plan, dict):
+            aggregation_specs.extend(_declared_metric_aggregation_specs(merge_plan))
+    else:
+        for step in steps:
+            if isinstance(step, dict):
+                aggregation_specs.extend(_declared_metric_aggregation_specs(step))
+    for spec in aggregation_specs:
+        metric_candidates: list[str] = []
+        for raw_metric in (
+            spec.get("column"),
+            spec.get("source_column"),
+            spec.get("output_column"),
+        ):
+            metric = str(raw_metric or "").strip()
+            if metric and metric.casefold() not in {
+                item.casefold() for item in metric_candidates
+            }:
+                metric_candidates.append(metric)
+        method = str(spec.get("method") or spec.get("aggregation") or "").strip().lower()
+        matched_metric = next(
+            (
+                metric
+                for metric in metric_candidates
+                if metric.casefold() in semantics
+            ),
+            "",
+        )
+        contract = semantics.get(matched_metric.casefold()) if matched_metric else None
+        # collect_unique produces an identifier/list projection, not a
+        # numeric rollup of the source metric. Its validity is governed by
+        # the aggregation/output contract and must not be rejected by a
+        # non-additive numeric metric policy such as EQP_ID/nunique.
+        if method == "collect_unique":
             continue
-        aggregation_specs = [
-            {
-                "column": (
-                    step.get("agg_column")
-                    or step.get("aggregate_column")
-                    or step.get("aggregation_column")
-                    or step.get("metric_column")
-                ),
-                "method": (
-                    step.get("agg_method")
-                    or step.get("aggregate_method")
-                    or step.get("aggregation")
-                ),
-            }
-        ]
-        if isinstance(step.get("aggregations"), list):
-            aggregation_specs.extend(
-                item
-                for item in step["aggregations"]
-                if isinstance(item, dict)
-            )
-        for spec in aggregation_specs:
-            metric = str(spec.get("column") or "").strip()
-            method = str(spec.get("method") or "").strip().lower()
-            contract = semantics.get(metric.casefold())
-            # collect_unique produces an identifier/list projection, not a
-            # numeric rollup of the source metric. Its validity is governed by
-            # the aggregation/output contract and must not be rejected by a
-            # non-additive numeric metric policy such as EQP_ID/nunique.
-            if method == "collect_unique":
-                continue
-            if contract and method and method not in contract["allowed_rollups"]:
-                return f"비가산 metric {metric}에는 {method} 집계를 사용할 수 없습니다."
+        if contract and method and method not in contract["allowed_rollups"]:
+            return f"비가산 metric {matched_metric}에는 {method} 집계를 사용할 수 없습니다."
     try:
         tree = ast.parse(code or "")
     except SyntaxError:
@@ -4236,6 +4731,56 @@ def _metric_semantics_contract_error(payload: dict[str, Any], code: str) -> str:
     return ""
 
 
+# 함수 설명: pandas 단계와 결정론적 실행 계약의 명시적 metric-집계 쌍만 동일한 형태로 추출합니다.
+def _declared_metric_aggregation_specs(value: dict[str, Any]) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    singular = {
+        "column": (
+            value.get("agg_column")
+            or value.get("aggregate_column")
+            or value.get("aggregation_column")
+            or value.get("metric_column")
+            or value.get("source_column")
+        ),
+        "source_column": value.get("source_column"),
+        "output_column": value.get("output_column"),
+        "method": (
+            value.get("agg_method")
+            or value.get("aggregate_method")
+            or value.get("aggregation")
+        ),
+    }
+    if singular["column"] or singular["output_column"]:
+        specs.append(singular)
+    for key in ("aggregations", "metrics"):
+        raw_specs = value.get(key)
+        if not isinstance(raw_specs, list):
+            continue
+        specs.extend(
+            {
+                "column": item.get("column") or item.get("source_column"),
+                "source_column": item.get("source_column") or item.get("column"),
+                "output_column": item.get("output_column"),
+                "method": item.get("method") or item.get("aggregation"),
+            }
+            for item in raw_specs
+            if isinstance(item, dict)
+        )
+    for side in ("left", "right"):
+        column = value.get(f"{side}_metric_column")
+        method = value.get(f"{side}_aggregation")
+        if column or method:
+            specs.append(
+                {
+                    "column": column,
+                    "source_column": column,
+                    "output_column": column,
+                    "method": method,
+                }
+            )
+    return specs
+
+
 # 함수 설명: `.agg()`의 metric별 집계 방식을 AST에서 연결해 비가산 metric의 실제 sum 사용만 차단합니다.
 def _non_additive_aggregate_call_error(
     node: ast.Call,
@@ -4269,6 +4814,7 @@ def _ast_aggregate_column_methods(node: ast.Call) -> list[tuple[str, set[str]]]:
 
     pairs: list[tuple[str, set[str]]] = []
 
+    # 함수 설명: 단일 집계 선언에서 source column과 집계 방식 쌍을 수집합니다.
     def append_pair(column: str, value: ast.AST) -> None:
         source_column, methods = _ast_named_aggregation_parts(value)
         if source_column:
@@ -4279,6 +4825,7 @@ def _ast_aggregate_column_methods(node: ast.Call) -> list[tuple[str, set[str]]]:
         if column and methods:
             pairs.append((column, methods))
 
+    # 함수 설명: dict 형태의 pandas 집계 선언을 순회해 정적 집계 쌍을 수집합니다.
     def append_mapping(value: ast.AST) -> None:
         if isinstance(value, ast.Dict):
             for key, item in zip(value.keys, value.values, strict=False):
@@ -4517,9 +5064,15 @@ def _normalize_missing_metric_values(rows: list[dict[str, Any]], payload: dict[s
     columns = _ordered_columns(rows)
     dimensions = {column.casefold() for column in _dimension_output_columns(payload)}
     metrics = _metric_output_columns(rows, payload, columns)
+    preserve_missing = _metric_columns_preserving_missing_values(payload)
     for row in rows:
         for column in metrics:
             if column.casefold() in dimensions or column not in row:
+                continue
+            if _metric_column_preserves_missing_values(
+                column,
+                preserve_missing,
+            ):
                 continue
             if _is_missing_display_value(row.get(column)):
                 row[column] = 0
@@ -4544,6 +5097,7 @@ def _zero_fill_declared_metric_frame_values(result: Any, payload: dict[str, Any]
     if not declared_metrics:
         return result
     working = result.copy()
+    preserve_missing = _metric_columns_preserving_missing_values(payload)
     handled_columns: set[str] = set()
     for metric in declared_metrics:
         actual_column = _find_frame_column(
@@ -4553,6 +5107,14 @@ def _zero_fill_declared_metric_frame_values(result: Any, payload: dict[str, Any]
         if not actual_column or actual_column in handled_columns:
             continue
         handled_columns.add(actual_column)
+        if _metric_column_preserves_missing_values(
+            metric,
+            preserve_missing,
+        ) or _metric_column_preserves_missing_values(
+            actual_column,
+            preserve_missing,
+        ):
+            continue
         series = working[actual_column]
         try:
             missing = series.isna() | series.astype(str).str.strip().str.casefold().isin(
@@ -4562,6 +5124,154 @@ def _zero_fill_declared_metric_frame_values(result: Any, payload: dict[str, Any]
             continue
         working.loc[missing, actual_column] = 0
     return working
+
+
+# 함수 설명: 비가산 metadata와 실제 non-zero-fill 집계 계약에서 결측을 관측값 0으로 바꾸면 안 되는 metric 이름을 모읍니다.
+def _metric_columns_preserving_missing_values(payload: dict[str, Any]) -> set[str]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    preserve_rollups = {"mean", "median", "min", "max"}
+    preserved: set[str] = set()
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    job_records: list[dict[str, Any]] = []
+
+    # 함수 설명: 한 retrieval job 내부에서만 canonical metric과 물리 alias identity를 연결합니다.
+    def scoped_metric_names(job: dict[str, Any], metric: Any) -> set[str]:
+        names = {str(metric or "").strip().casefold()}
+        names.discard("")
+        changed = True
+        while changed:
+            changed = False
+            for mapping_key in ("standard_column_aliases", "filter_mappings"):
+                mapping = job.get(mapping_key) if isinstance(job.get(mapping_key), dict) else {}
+                for standard, aliases in mapping.items():
+                    group = {
+                        str(item or "").strip().casefold()
+                        for item in [standard, *_string_list(aliases)]
+                        if str(item or "").strip()
+                    }
+                    if names.intersection(group) and not group.issubset(names):
+                        names.update(group)
+                        changed = True
+        return names
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        record = {
+            "source_alias": str(job.get("source_alias") or "").strip().casefold(),
+            "dataset_key": str(job.get("dataset_key") or "").strip().casefold(),
+            "job": job,
+            "all_metric_groups": [],
+            "non_additive_groups": [],
+        }
+        semantics = job.get("metric_semantics") if isinstance(job.get("metric_semantics"), dict) else {}
+        for metric, raw_semantics in semantics.items():
+            group = scoped_metric_names(job, metric)
+            record["all_metric_groups"].append(group)
+            if isinstance(raw_semantics, dict) and raw_semantics.get("additive") is False:
+                record["non_additive_groups"].append(group)
+        job_records.append(record)
+
+    # A name can be published without a binding only when exactly one source
+    # owns it. Shared physical aliases remain source-local and therefore never
+    # leak a missing-value policy into another metric.
+    for record in job_records:
+        for group in record["non_additive_groups"]:
+            for name in group:
+                owners = [
+                    owner
+                    for owner in job_records
+                    if any(
+                        name in candidate_group
+                        for candidate_group in owner["all_metric_groups"]
+                    )
+                ]
+                if len(owners) == 1:
+                    preserved.add(name)
+
+    for binding in contract.get("metric_bindings", []):
+        if not isinstance(binding, dict):
+            continue
+        method = str(binding.get("aggregation") or "").strip().lower()
+        if method in {"avg", "average"}:
+            method = "mean"
+        output_column = str(binding.get("output_column") or "").strip()
+        if method in preserve_rollups and output_column:
+            preserved.add(output_column.casefold())
+
+        binding_alias = str(binding.get("source_alias") or "").strip().casefold()
+        binding_dataset = str(binding.get("dataset_key") or "").strip().casefold()
+        matching_jobs = [
+            record
+            for record in job_records
+            if (not binding_alias or record["source_alias"] == binding_alias)
+            and (not binding_dataset or record["dataset_key"] == binding_dataset)
+        ]
+        if not binding_alias and not binding_dataset:
+            matching_jobs = matching_jobs if len(matching_jobs) == 1 else []
+        if len(matching_jobs) != 1:
+            continue
+        source_column = str(binding.get("source_column") or "").strip().casefold()
+        if not source_column:
+            continue
+        if any(
+            source_column in group
+            for group in matching_jobs[0]["non_additive_groups"]
+        ):
+            # Only the output owned by this exact source binding inherits the
+            # non-additive missing-value policy. Never publish a physical alias
+            # globally because another source may use the same raw name.
+            if output_column:
+                preserved.add(output_column.casefold())
+
+    deterministic_contract = _deterministic_execution_contract(payload)
+    execution_containers: list[dict[str, Any]] = []
+    if deterministic_contract:
+        execution_containers.append(deterministic_contract)
+        execution_containers.extend(
+            step
+            for step in deterministic_contract.get("steps", [])
+            if isinstance(step, dict)
+        )
+        merge_plan = deterministic_contract.get("merge_plan")
+        if isinstance(merge_plan, dict):
+            execution_containers.append(merge_plan)
+    else:
+        execution_containers.extend(
+            step
+            for step in plan.get("pandas_execution_plan", [])
+            if isinstance(step, dict)
+        )
+    for container in execution_containers:
+        for spec in _declared_metric_aggregation_specs(container):
+            method = str(spec.get("method") or spec.get("aggregation") or "").strip().lower()
+            if method in {"avg", "average"}:
+                method = "mean"
+            if method not in preserve_rollups:
+                continue
+            output_column = str(spec.get("output_column") or "").strip()
+            actual_output = output_column or str(
+                spec.get("column") or spec.get("source_column") or ""
+            ).strip()
+            if actual_output:
+                preserved.add(actual_output.casefold())
+
+    labels = contract.get("column_labels") if isinstance(contract.get("column_labels"), dict) else {}
+    for canonical, label in labels.items():
+        canonical_key = str(canonical or "").strip().casefold()
+        label_key = str(label or "").strip().casefold()
+        if canonical_key in preserved and label_key:
+            preserved.add(label_key)
+    return preserved
+
+
+# 함수 설명: 한 결과 컬럼이 결측 보존 metric identity에 속하는지 catalog alias까지 포함해 판정합니다.
+def _metric_column_preserves_missing_values(
+    column: str,
+    preserved: set[str],
+) -> bool:
+    return str(column or "").strip().casefold() in preserved
 
 
 # 함수 설명: `_metric_output_columns()`는 계약 우선, 이름·실제 숫자 값 차선으로 metric 컬럼을 보수적으로 선택합니다.
@@ -4739,6 +5449,200 @@ def _missing_required_output_columns(payload: dict[str, Any], result_columns: li
         if not _has_equivalent_column(result_columns, equivalents):
             missing.append(required_column)
     return missing
+
+
+# 함수 설명: 집계 또는 strict 결과 계약이 명시한 metric이 실제 계산 결과에 존재하는지 source 범위 alias까지 확인합니다.
+def _missing_metric_output_columns(
+    payload: dict[str, Any],
+    result_columns: list[str],
+) -> list[str]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    metrics = _string_list(contract.get("metric_columns"))
+    if not metrics:
+        return []
+    result_mode = str(contract.get("result_mode") or "").strip().lower()
+    if result_mode != "aggregate" and contract.get("strict_result_columns") is not True:
+        return []
+
+    missing: list[str] = []
+    for metric in metrics:
+        equivalents = _metric_output_equivalent_names(metric, payload)
+        if not _has_equivalent_column(result_columns, equivalents):
+            missing.append(metric)
+    return missing
+
+
+# 함수 설명: metric 출력의 canonical 이름과 명시 binding/단일 source catalog의 물리 alias만 같은 결과 컬럼으로 취급합니다.
+def _metric_output_equivalent_names(column: str, payload: dict[str, Any]) -> list[str]:
+    target = str(column or "").strip()
+    if not target:
+        return []
+    target_key = target.casefold()
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    contract = plan.get("output_contract") if isinstance(plan.get("output_contract"), dict) else {}
+    jobs = [
+        item
+        for item in (
+            plan.get("retrieval_jobs")
+            if isinstance(plan.get("retrieval_jobs"), list)
+            else []
+        )
+        if isinstance(item, dict)
+    ]
+
+    candidates: set[str] = {target_key}
+    display_names: dict[str, str] = {target_key: target}
+
+    # A presentation label is equivalent only when the output contract assigns
+    # it to exactly one canonical column.
+    labels = contract.get("column_labels") if isinstance(contract.get("column_labels"), dict) else {}
+    label_owners: dict[str, list[str]] = {}
+    for canonical, raw_label in labels.items():
+        canonical_name = str(canonical or "").strip()
+        label = str(raw_label or "").strip()
+        if canonical_name and label:
+            label_owners.setdefault(label.casefold(), []).append(canonical_name)
+    for label_key, owners in label_owners.items():
+        if len(owners) == 1 and owners[0].casefold() == target_key:
+            candidates.add(label_key)
+            display_names.setdefault(label_key, str(labels.get(owners[0]) or "").strip())
+
+    binding_groups: list[set[str]] = []
+    binding_output_keys: set[str] = set()
+    for binding in contract.get("metric_bindings", []):
+        if not isinstance(binding, dict):
+            continue
+        binding_names = {
+            str(binding.get(key) or "").strip().casefold()
+            for key in ("source_column", "output_column")
+            if str(binding.get(key) or "").strip()
+        }
+        binding_alias = str(binding.get("source_alias") or "").strip().casefold()
+        binding_dataset = str(binding.get("dataset_key") or "").strip().casefold()
+        matching_jobs = [
+            job
+            for job in jobs
+            if (
+                not binding_alias
+                or str(job.get("source_alias") or "").strip().casefold() == binding_alias
+            )
+            and (
+                not binding_dataset
+                or str(job.get("dataset_key") or "").strip().casefold() == binding_dataset
+            )
+        ]
+        if not binding_alias and not binding_dataset and len(matching_jobs) != 1:
+            matching_jobs = []
+        for job in matching_jobs:
+            binding_names = _job_scoped_equivalent_column_keys(job, binding_names)
+        if target_key in binding_names:
+            binding_groups.append(binding_names)
+            output_name = str(binding.get("output_column") or "").strip()
+            if output_name:
+                binding_output_keys.add(output_name.casefold())
+            for key in ("source_column", "output_column"):
+                name = str(binding.get(key) or "").strip()
+                if name:
+                    display_names.setdefault(name.casefold(), name)
+
+    if binding_groups:
+        # Multiple sources may use the same physical alias for unrelated
+        # metrics. Only aliases common to every binding are unambiguous in the
+        # final source-less DataFrame.
+        unambiguous = (
+            set(binding_groups[0])
+            if len(binding_groups) == 1
+            else set.intersection(*binding_groups)
+        )
+        for name in unambiguous:
+            owners = [
+                job
+                for job in jobs
+                if _job_declares_column_identity(job, name)
+            ]
+            # A binding proves its canonical/output name, but it does not add
+            # source lineage to a final source-less DataFrame. A physical name
+            # shared by another retrieval source therefore remains ambiguous.
+            if (
+                name == target_key
+                or name in binding_output_keys
+                or len(owners) == 1
+            ):
+                candidates.add(name)
+    else:
+        job_groups: list[set[str]] = []
+        for job in jobs:
+            group = _job_scoped_equivalent_column_keys(job, {target_key})
+            if _job_declares_column_identity(job, target_key):
+                job_groups.append(group)
+                for mapping_key in ("standard_column_aliases", "filter_mappings"):
+                    mapping = job.get(mapping_key) if isinstance(job.get(mapping_key), dict) else {}
+                    for standard, aliases in mapping.items():
+                        for name in [standard, *_string_list(aliases)]:
+                            text = str(name or "").strip()
+                            if text:
+                                display_names.setdefault(text.casefold(), text)
+        if job_groups:
+            unambiguous = (
+                set(job_groups[0])
+                if len(job_groups) == 1
+                else set.intersection(*job_groups)
+            )
+            for name in unambiguous:
+                owners = [
+                    job
+                    for job in jobs
+                    if _job_declares_column_identity(job, name)
+                ]
+                # A shared physical alias cannot prove which source-owned
+                # metric reached the final DataFrame. The canonical target is
+                # always safe; other names require unique source ownership.
+                if name == target_key or len(owners) == 1:
+                    candidates.add(name)
+
+    return [display_names.get(key, key) for key in sorted(candidates)]
+
+
+# 함수 설명: 한 retrieval source 안에서만 표준 컬럼과 물리 alias의 전이적 identity를 확장합니다.
+def _job_scoped_equivalent_column_keys(
+    job: dict[str, Any],
+    seeds: set[str],
+) -> set[str]:
+    names = {str(item or "").strip().casefold() for item in seeds if str(item or "").strip()}
+    changed = True
+    while changed:
+        changed = False
+        for mapping_key in ("standard_column_aliases", "filter_mappings"):
+            mapping = job.get(mapping_key) if isinstance(job.get(mapping_key), dict) else {}
+            for standard, aliases in mapping.items():
+                group = {
+                    str(item or "").strip().casefold()
+                    for item in [standard, *_string_list(aliases)]
+                    if str(item or "").strip()
+                }
+                if names.intersection(group) and not group.issubset(names):
+                    names.update(group)
+                    changed = True
+    return names
+
+
+# 함수 설명: source metadata가 해당 canonical/physical 컬럼 identity를 실제로 소유하는지 확인합니다.
+def _job_declares_column_identity(job: dict[str, Any], target_key: str) -> bool:
+    semantics = job.get("metric_semantics") if isinstance(job.get("metric_semantics"), dict) else {}
+    if any(str(metric or "").strip().casefold() == target_key for metric in semantics):
+        return True
+    for mapping_key in ("standard_column_aliases", "filter_mappings"):
+        mapping = job.get(mapping_key) if isinstance(job.get(mapping_key), dict) else {}
+        for standard, aliases in mapping.items():
+            group = {
+                str(item or "").strip().casefold()
+                for item in [standard, *_string_list(aliases)]
+                if str(item or "").strip()
+            }
+            if target_key in group:
+                return True
+    return False
 
 
 # 함수 설명: 집계 결과가 선언된 분석 grain을 잃고 전체 한 행으로 축약되지 않았는지 검증합니다.
@@ -5716,18 +6620,42 @@ def _analysis_error(
         )
         if isinstance(item, dict)
     ][-1:]
+    recoverable_roles = {"computed_result", "step_output", "filtered_source"}
+    recoverable_intermediate_results = [
+        item
+        for item in bounded_intermediate_results
+        if str(item.get("role") or "").strip()
+        in recoverable_roles
+    ]
     if bounded_intermediate_results:
         payload["intermediate_results"] = bounded_intermediate_results
         if not isinstance(payload.get("data"), dict) or not payload.get("data", {}).get("rows"):
-            partial_data = _partial_data_from_intermediate(bounded_intermediate_results)
+            partial_data = _partial_data_from_intermediate(recoverable_intermediate_results)
             if partial_data:
                 payload["data"] = partial_data
     result_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    recovered_result = _recovered_result_metadata(result_data, bounded_intermediate_results)
+    recovered_result = _recovered_result_metadata(
+        result_data,
+        recoverable_intermediate_results,
+    )
+    partial_available = bool(recovered_result.get("available"))
+    recovered_rows = result_data.get("rows") if isinstance(result_data.get("rows"), list) else []
+    recovered_columns = [
+        str(column)
+        for column in result_data.get("columns", [])
+        if str(column or "").strip()
+    ] if isinstance(result_data.get("columns"), list) else []
+    if not recovered_columns and recovered_rows and isinstance(recovered_rows[0], dict):
+        recovered_columns = [str(column) for column in recovered_rows[0]]
+    try:
+        recovered_row_count = int(result_data.get("row_count") or len(recovered_rows))
+    except (TypeError, ValueError):
+        recovered_row_count = len(recovered_rows)
+    analysis_status = "partial" if partial_available else "error"
     payload["analysis"] = {
-        "status": "error",
-        "row_count": 0,
-        "columns": [],
+        "status": analysis_status,
+        "row_count": max(0, recovered_row_count) if partial_available else 0,
+        "columns": recovered_columns if partial_available else [],
         "error": {"type": error_type, "message": message},
         "errors": [message],
         "repairable_errors": [message],
@@ -5740,7 +6668,7 @@ def _analysis_error(
     payload.setdefault("trace", {}).setdefault("errors", []).append({"type": error_type, "message": message})
     payload.setdefault("trace", {}).setdefault("inspection", {})["pandas_execution"] = {
         "stage": "17_pandas_code_executor",
-        "status": "error",
+        "status": analysis_status,
         "generated_code": code,
         "llm_generated_code": llm_code or code,
         "llm_response_parse": deepcopy(response_parse) if isinstance(response_parse, dict) else {},

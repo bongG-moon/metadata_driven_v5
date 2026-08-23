@@ -333,15 +333,29 @@ eqp_uph에서는 UPH 값만 가져오고,
 
 ### 운영 분석 규칙 입력 예시
 
-기존 보유CAPA 계산 규칙을 교체해줘.
+
 보유CAPA는 장비보유댓수 × 평균UPH × 24시간이야.
-장비보유댓수는 장비 Assign 현황(equipment_assign)의 EQP_ID를 중복 없이 센 값이야.
-평균UPH는 장비 UPH 데이터(eqp_uph)의 UPH 평균이야.
+장비보유댓수는 장비 Assign 현황(equipment_assign 테이블)의 EQP_ID를 중복 없이 센 값이야.
+평균UPH는 장비 UPH 데이터(eqp_uph 테이블)의 UPH 평균이야.
 보유CAPA를 물으면 장비 Assign 현황과 장비 UPH 데이터를 같이 사용해.
 공정이나 제품 조건이 있으면 두 데이터에 같이 적용해.
 같은 장비가 여러 레시피로 나오면 장비를 여러 번 세지 말고 장비별 UPH를 평균낸 뒤 계산해.
 장비보유댓수, 평균UPH, 보유CAPA는 원본 컬럼이 아니라 계산 결과야.
 결과에는 요청한 제품 또는 공정 기준과 장비보유댓수, 평균UPH, 보유CAPA를 함께 보여줘.
+
+#도메인 저장 내용 변환
+보유CAPA는 장비모델, RECIPE_ID, 공정별로 먼저 계산한 뒤 제품별로 합산해.
+장비 Assign 대수는 equipment_assign의 EQP_ID를 제품, 공정, 장비모델, RECIPE_ID 기준으로 중복 없이 센 값이야.
+평균UPH는 eqp_uph의 UPH를 제품, 공정, 장비모델, RECIPE_ID 기준으로 평균낸 값이야.
+equipment_assign와 eqp_uph는 EQP_MODEL, RECIPE_ID, OPER_NAME 기준으로 결합해.
+장비모델/RECIPE별 보유CAPA는 장비 Assign 대수 × 평균UPH × 24시간이야.
+제품별 보유CAPA는 장비모델/RECIPE별 보유CAPA를 합산해.
+같은 EQP_ID가 같은 제품, 공정, 장비모델, RECIPE_ID에 중복 등록돼도 장비는 한 번만 세.
+결과에는 요청한 제품 또는 공정 기준과 장비보유댓수, 평균UPH, 보유CAPA를 함께 보여줘.
+평균, 합계, 중복제거는 산술식이 아니라 집계 기준으로 저장하고, 보유CAPA 계산식만 산술식으로 저장해.
+평균, 합계, 중복제거는 산술식이 아니라 집계 기준으로 저장하고, 보유CAPA 계산식만 산술식으로 저장해.
+
+
 
 
 현재 보유 LOT 건수 규칙을 등록해줘.
@@ -358,12 +372,15 @@ LAST_DOWN_TM은 Down이 시작된 시각일 뿐 지속시간 조건에 사용하
 결과에는 장비 ID, 공정, Down 시간, Down 발생 시각, Down 사유를 보여줘.
 
 
-장비 가동률 데이터가 등록된 뒤 아래 대괄호를 실제 데이터 이름과 컬럼명으로 바꿔서 입력해줘.
 장비 가동률 조회 규칙을 등록해줘.
-가동률은 [가동률 데이터]의 [가동률 컬럼] 값이야.
-장비별 요청은 원본 가동률을 보여주고, 공정별 요청은 장비별 가동률의 평균을 보여줘.
-가동률은 합산하지 마.
+장비별 가동률은 operation_rate_today 의 EQP_EFFIC_CD컬럼이 RUN인 행의 TOTAL_INTERVAL_RATE컬럼의 값이야.
+NOWIP율은 EQP_EFFIC_CD컬럼이 NO WIP인 행의 TOTAL_INTERVAL_RATE컬럼의 값이야.
+LOSS율은 EQP_EFFIC_CD컬럼이 RUN, NO WIP이 아닌 나머지 값을 가지는 행의 TOTAL_INTERVAL_RATE컬럼의 값을 합산한 값이야.
+장비 가동 현황에 대해 물어봤을때는 가동률, NOWIP율, LOSS율 3가지를 모두 보여줘.(ex:MD공정 장비별 가동 현황 알려줘)
+장비별 요청은 각 장비별 가동율 보여주고, 공정별 요청은 장비별 가동률을 계산한 뒤 그 평균값을 보여줘.
+(NOWIP율과 LOSS율도 동일하게 반영해줘)
 공정 전체 조회에는 장비 ID를 필수 조건으로 요구하지 마.
+
 
 
 원본 상세 데이터 표시 규칙을 등록해줘.
@@ -390,6 +407,12 @@ HOLD LOT와 HOLD 이력 조회 규칙을 등록해줘.
 HOLD 이력이 없는 LOT는 임의의 다른 사유를 보여주지 말고 이력이 없다고 표시해줘.
 질문에 HOLD라는 단어가 있다고 해서 무조건 HOLD 이력을 조회하지 말고, 단순 LOT 목록·현재 상태·HOLD 코드 요청인지, 상세 사유·발생 시각·이력 요청인지 구분해줘.
 
+
+
+equipment_assign를 기준으로 eqp_uph를 left join한다.
+조인 기준은 EQP_MODEL, RECIPE_ID, OPER_NAME이다.
+eqp_uph에서는 UPH 컬럼을 결합 결과로 가져온다.
+equipment_assign 기준 행은 유지한다.
 
 
 

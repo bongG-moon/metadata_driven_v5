@@ -77,6 +77,60 @@ def _catalog():
     }
 
 
+def _recipe_starts_with_domain():
+    return {
+        "section": "analysis_recipes",
+        "key": "recipe_id_starts_with",
+        "payload": {
+            "display_name": "RECIPE 번호 시작값 조회 규칙",
+            "aliases": ["RECIPE", "레시피", "RECIPE 번호", "레시피 번호"],
+            "selection_criteria": {
+                "field": "RECIPE_ID",
+                "operator": "starts_with",
+            },
+        },
+    }
+
+
+def _equipment_product_operation_rate_recipe():
+    return {
+        "section": "analysis_recipes",
+        "key": "equipment_product_operation_rate_merge",
+        "payload": {
+            "display_name": "장비 작업제품 가동률 결합 규칙",
+            "aliases": ["장비 작업제품 가동률"],
+            "dataset_keys": ["equipment_assign", "operation_rate_today"],
+            "join_keys": ["EQP_ID"],
+        },
+    }
+
+
+def _equipment_assignment_uph_recipe():
+    return {
+        "section": "analysis_recipes",
+        "key": "equipment_assignment_uph_join",
+        "payload": {
+            "display_name": "장비 ASSIGN 및 UPH 결합 규칙",
+            "aliases": ["장비 ASSIGN UPH"],
+            "dataset_keys": ["equipment_assign", "eqp_uph"],
+            "join_keys": ["EQP_MODEL", "RECIPE_ID", "OPER_NAME"],
+        },
+    }
+
+
+def _table_catalog(dataset_key: str):
+    return {
+        "section": "table_catalog",
+        "key": dataset_key,
+        "dataset_key": dataset_key,
+        "payload": {
+            "dataset_key": dataset_key,
+            "display_name": dataset_key,
+            "columns": ["EQP_ID"],
+        },
+    }
+
+
 def _selected_domain_keys(question: str) -> list[str]:
     module = _load_module()
     result = module.build_metadata_candidates(
@@ -147,6 +201,303 @@ def test_generic_dataset_identity_keeps_existing_strong_candidate_signal():
 
     assert score >= 12
     assert strong_hits == 1
+
+
+def test_section_taxonomy_is_not_a_strong_recipe_identity_signal():
+    module = _load_module()
+    score, strong_hits = module._score_details(
+        {
+            "section": "analysis_recipes",
+            "key": "unrelated_capacity_rule",
+            "payload": {"display_name": "보유 CAPA 계산"},
+        },
+        ["recipe"],
+    )
+
+    assert score < module.DOMAIN_MIN_SCORE
+    assert strong_hits == 0
+
+
+def test_exact_recipe_alias_is_protected_through_byte_trimming():
+    module = _load_module()
+    noisy_domains = [
+        {
+            "section": "analysis_recipes",
+            "key": f"noise_rule_{index:02d}",
+            "payload": {
+                "aliases": [f"RECIPE 보조 규칙 {index}"],
+                "description": "x" * 1400,
+            },
+        }
+        for index in range(15)
+    ]
+    result = module.build_metadata_candidates(
+        {"request": {"question": "FCB공정 R0429 RECIPE의 UPH알려줘"}},
+        [*noisy_domains, _recipe_starts_with_domain()],
+        [],
+        [],
+        max_domain_items=20,
+        min_table_items=1,
+        max_table_items=1,
+        max_bytes=4096,
+    )
+
+    candidates = result["metadata_candidates"]
+    selected_keys = [item.get("key") for item in candidates["domain_items"]]
+    protected_trace = result["metadata_load"]["protected_domain_candidates"]
+
+    assert "recipe_id_starts_with" in selected_keys
+    assert module._json_bytes(candidates) <= 4096
+    assert result["metadata_load"]["truncated_by_bytes"] is True
+    assert {
+        "section": "analysis_recipes",
+        "key": "recipe_id_starts_with",
+        "matched_aliases": ["RECIPE"],
+        "retained_after_byte_fit": True,
+    } in protected_trace
+
+
+def test_generic_single_alias_is_not_protected():
+    module = _load_module()
+    result = module.build_metadata_candidates(
+        {"request": {"question": "WSD 공정 제품별 현황 알려줘"}},
+        [
+            {
+                "section": "analysis_recipes",
+                "key": "generic_product_rule",
+                "payload": {
+                    "display_name": "무관한 일반 규칙",
+                    "aliases": ["제품", "제품별"],
+                },
+            }
+        ],
+        [],
+        [],
+        min_table_items=1,
+        max_table_items=1,
+    )
+
+    assert result["metadata_load"]["protected_domain_candidates"] == []
+
+
+def test_non_selectable_function_case_exact_alias_is_not_protected_or_quota_promoted():
+    module = _load_module()
+    non_selectable = {
+        "section": "pandas_function_cases",
+        "key": "sample_passthrough_helper",
+        "payload": {
+            "display_name": "검증 전용 helper",
+            "aliases": ["FCB공정 R0429 RECIPE"],
+            "function_name": "sample_passthrough_helper",
+        },
+    }
+    result = module.build_metadata_candidates(
+        {"request": {"question": "FCB공정 R0429 RECIPE의 UPH알려줘"}},
+        [non_selectable, _recipe_starts_with_domain()],
+        [],
+        [],
+        max_domain_items=1,
+        min_table_items=1,
+        max_table_items=1,
+    )
+
+    selected_keys = [
+        item.get("key")
+        for item in result["metadata_candidates"]["domain_items"]
+    ]
+    protected_keys = [
+        item.get("key")
+        for item in result["metadata_load"]["protected_domain_candidates"]
+    ]
+
+    assert selected_keys == ["recipe_id_starts_with"]
+    assert protected_keys == ["recipe_id_starts_with"]
+
+
+def test_direct_phrase_rescue_does_not_displace_existing_dataset_dependency():
+    module = _load_module()
+    result = module.build_metadata_candidates(
+        {"request": {"question": "장비 RECIPE 현황 알려줘"}},
+        [
+            {
+                "section": "quantity_terms",
+                "key": "equipment_count",
+                "payload": {
+                    "aliases": ["장비"],
+                    "data_source": "equipment_assign",
+                },
+            },
+            _recipe_starts_with_domain(),
+        ],
+        [],
+        [],
+        max_domain_items=1,
+        min_table_items=1,
+        max_table_items=1,
+    )
+
+    assert [
+        item.get("key")
+        for item in result["metadata_candidates"]["domain_items"]
+    ] == ["equipment_count"]
+
+
+def test_shared_non_generic_alias_remains_ranked_but_is_not_protected():
+    module = _load_module()
+    result = module.build_metadata_candidates(
+        {"request": {"question": "공정 UPH 알려줘"}},
+        [
+            {
+                "section": "quantity_terms",
+                "key": "uph_metric",
+                "payload": {"aliases": ["UPH"]},
+            },
+            {
+                "section": "analysis_recipes",
+                "key": "uph_summary",
+                "payload": {"aliases": ["UPH"]},
+            },
+        ],
+        [],
+        [],
+        min_table_items=1,
+        max_table_items=1,
+    )
+
+    assert result["metadata_load"]["protected_domain_candidates"] == []
+
+
+def test_registered_multiword_alias_matches_plural_query_suffix_and_rate_spelling():
+    module = _load_module()
+
+    assert module._registered_phrase_matches(
+        "D/A공정 장비들 현재 작업제품들과 가동율현황 조회해줘",
+        "장비 작업제품 가동률",
+    )
+
+
+def test_relaxed_alias_match_does_not_cross_single_letter_process_codes():
+    module = _load_module()
+    question = "D/A공정 장비들 현재 작업제품들과 가동율현황 조회해줘"
+    process_domains = [
+        {
+            "section": "process_groups",
+            "key": key,
+            "payload": {"aliases": [alias], "processes": [alias]},
+        }
+        for key, alias in (
+            ("DA", "D/A공정"),
+            ("DC", "D/C공정"),
+            ("DI", "D/I공정"),
+            ("DP", "D/P공정"),
+            ("DS", "D/S공정"),
+        )
+    ]
+
+    matches = module._question_matched_domain_phrases(question, process_domains)
+
+    assert [match["item"]["key"] for match in matches] == ["DA"]
+
+
+def test_operation_rate_recipe_alias_recalls_its_registered_source_datasets():
+    module = _load_module()
+    result = module.build_metadata_candidates(
+        {
+            "request": {
+                "question": "D/A공정 장비들 현재 작업제품들과 가동율현황 조회해줘"
+            }
+        },
+        [_recipe_starts_with_domain(), _equipment_product_operation_rate_recipe()],
+        [
+            _table_catalog("lot_status"),
+            _table_catalog("equipment_assign"),
+            _table_catalog("operation_rate_today"),
+        ],
+        [],
+        max_domain_items=1,
+        min_table_items=1,
+        max_table_items=2,
+    )
+
+    selected_domain_keys = [
+        item.get("key")
+        for item in result["metadata_candidates"]["domain_items"]
+    ]
+    selected_dataset_keys = {
+        item.get("dataset_key")
+        for item in result["metadata_candidates"]["table_catalog_items"]
+    }
+
+    assert selected_domain_keys == ["equipment_product_operation_rate_merge"]
+    assert selected_dataset_keys == {"equipment_assign", "operation_rate_today"}
+
+
+def test_operation_rate_question_does_not_recall_uph_recipe_or_source_from_generic_eqp_tokens():
+    module = _load_module()
+    domain_items = [
+        _equipment_assignment_uph_recipe(),
+        _equipment_product_operation_rate_recipe(),
+    ]
+    table_items = [
+        _table_catalog("equipment_assign"),
+        _table_catalog("eqp_uph"),
+        _table_catalog("operation_rate_today"),
+    ]
+
+    operation_result = module.build_metadata_candidates(
+        {
+            "request": {
+                "question": "D/A공정 장비들 현재 작업제품들과 가동율현황 조회해줘"
+            }
+        },
+        domain_items,
+        table_items,
+        [],
+        max_domain_items=2,
+        min_table_items=1,
+        max_table_items=2,
+    )
+    operation_domain_keys = {
+        item.get("key")
+        for item in operation_result["metadata_candidates"]["domain_items"]
+    }
+    operation_dataset_keys = {
+        item.get("dataset_key")
+        for item in operation_result["metadata_candidates"]["table_catalog_items"]
+    }
+
+    assert operation_domain_keys == {"equipment_product_operation_rate_merge"}
+    assert operation_dataset_keys == {"equipment_assign", "operation_rate_today"}
+
+    uph_result = module.build_metadata_candidates(
+        {"request": {"question": "M/D공정 장비 ASSIGN 댓수와 UPH 알려줘"}},
+        domain_items,
+        table_items,
+        [],
+        max_domain_items=2,
+        min_table_items=1,
+        max_table_items=2,
+    )
+    uph_domain_keys = {
+        item.get("key")
+        for item in uph_result["metadata_candidates"]["domain_items"]
+    }
+    uph_dataset_keys = {
+        item.get("dataset_key")
+        for item in uph_result["metadata_candidates"]["table_catalog_items"]
+    }
+
+    assert "equipment_assignment_uph_join" in uph_domain_keys
+    assert "eqp_uph" in uph_dataset_keys
+
+
+def test_multiword_alias_rescue_does_not_match_only_generic_entity_overlap():
+    module = _load_module()
+
+    assert not module._registered_phrase_matches(
+        "장비 목록 조회해줘",
+        "장비 작업제품 가동률",
+    )
 
 
 def test_rejected_stage_recipe_removes_only_its_exact_unrequested_filter():

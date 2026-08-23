@@ -95,12 +95,14 @@ def apply_retrieval_execution_gate(payload_value: Any) -> dict[str, Any]:
             critical_failures.append(failure)
 
     blocked = bool(critical_failures)
+    validation_warnings = _validation_warnings(payload)
     gate = {
         "stage": "14a_retrieval_execution_gate",
         "status": "blocked" if blocked else "continue",
         "required_source_policy": "required_by_default",
         "critical_failures": critical_failures,
         "optional_failures": optional_failures,
+        "recoverable_warnings": validation_warnings,
         "pandas_execution_allowed": not blocked,
         "model_response_policy": "ignore" if blocked else "use",
     }
@@ -265,6 +267,19 @@ def _validation_failures(payload: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return failures
+
+
+# 함수 설명: 조회 작업 검증기가 비차단으로 분류한 경고를 실행 게이트 trace에 보존합니다.
+def _validation_warnings(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    inspection = trace.get("inspection") if isinstance(trace.get("inspection"), dict) else {}
+    retrieval = inspection.get("data_retrieval") if isinstance(inspection.get("data_retrieval"), dict) else {}
+    validation = retrieval.get("job_validation") if isinstance(retrieval.get("job_validation"), dict) else {}
+    return [
+        deepcopy(item)
+        for item in validation.get("warnings", [])
+        if isinstance(item, dict)
+    ] if isinstance(validation.get("warnings"), list) else []
 
 
 # 함수 설명: `_source_failure()`는 job에 대응하는 source result의 누락·명시 오류를 표준 실패 정보로 만듭니다.

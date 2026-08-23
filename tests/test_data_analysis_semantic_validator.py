@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib.util
 import sys
 from pathlib import Path
@@ -134,6 +135,33 @@ def test_declared_scalar_empty_grain_does_not_inherit_source_grain():
     )
     payload["analysis"]["columns"] = ["TOTAL_PRODUCTION"]
     payload["analysis"]["row_count"] = 1
+    payload["data"]["rows"] = [{"TOTAL_PRODUCTION": 30}]
+
+    result = validator.validate_semantic_payload(payload)
+
+    assert result["status"] == "ok"
+    assert not any(
+        item.get("type") == "missing_result_grain_columns"
+        for item in result["errors"]
+    )
+
+
+def test_scalar_without_explicit_grain_does_not_inherit_source_grain():
+    validator = load_module(ROOT / "tools" / "data_analysis_semantic_validator.py")
+    payload = base_payload()
+    payload["intent_plan"]["resolved_output_grain_plan"] = {
+        "grain_columns": ["PRODUCT"]
+    }
+    contract = payload["intent_plan"]["output_contract"]
+    contract.update(
+        {
+            "result_mode": "scalar",
+            "required_columns": ["TOTAL_PRODUCTION"],
+            "metric_columns": ["TOTAL_PRODUCTION"],
+        }
+    )
+    contract.pop("grain_columns", None)
+    payload["analysis"].update({"columns": ["TOTAL_PRODUCTION"], "row_count": 1})
     payload["data"]["rows"] = [{"TOTAL_PRODUCTION": 30}]
 
     result = validator.validate_semantic_payload(payload)
@@ -385,6 +413,104 @@ def test_required_query_parameter_is_equivalent_to_expected_eq_filter():
     }
 
     assert validator.validate_case_expectation(case, payload) == []
+
+
+def test_effective_filter_execution_contract_satisfies_case_expectation():
+    validator = load_module(ROOT / "tools" / "data_analysis_semantic_validator.py")
+    payload = base_payload()
+    job = payload["intent_plan"]["retrieval_jobs"][0]
+    job["filters"] = {"OPER_NAME": {"operator": "eq", "value": "INPUT"}}
+    payload["intent_plan"]["condition_resolution"] = {
+        "effective_filters": {
+            "production_source": {
+                "dataset_key": "production_today",
+                "filters": {
+                    "OPER_NAME": {"operator": "eq", "value": "INPUT"},
+                    "STATUS": {"operator": "eq", "value": "ACTIVE"},
+                },
+            }
+        }
+    }
+    case = {
+        "intent_response": {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "filters": {
+                            "OPER_NAME": {"operator": "eq", "value": "INPUT"},
+                            "STATUS": {"operator": "eq", "value": "ACTIVE"},
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+    assert validator.validate_case_expectation(case, payload) == []
+
+
+def test_executed_lossy_filter_rescue_helper_satisfies_matching_literal_only():
+    validator = load_module(ROOT / "tools" / "data_analysis_semantic_validator.py")
+    payload = base_payload()
+    job = payload["intent_plan"]["retrieval_jobs"][0]
+    job["filters"] = {"OPER_NAME": {"operator": "eq", "value": "INPUT"}}
+    payload["intent_plan"]["pandas_function_cases"] = [
+        {
+            "function_case_key": "registered_matcher",
+            "function_name": "match_registered_tokens",
+            "input_text": "L-085",
+            "source_alias": "production_source",
+            "selection_source": "metadata_lossy_exact_filter_rescue",
+        }
+    ]
+    payload["intent_plan"]["pandas_execution_plan"].insert(
+        0,
+        {
+            "operation": "apply_pandas_function_case",
+            "function_case_key": "registered_matcher",
+            "function_name": "match_registered_tokens",
+            "source_alias": "production_source",
+        },
+    )
+    case = {
+        "intent_response": {
+            "intent_plan": {
+                "retrieval_jobs": [
+                    {
+                        "dataset_key": "production_today",
+                        "filters": {
+                            "OPER_NAME": {"operator": "eq", "value": "INPUT"},
+                            "PRODUCT_TOKEN": {"operator": "contains", "value": "L-085"},
+                        },
+                    }
+                ]
+            }
+        }
+    }
+    pandas_variables = {
+        "function_case_selection_json": "match_registered_tokens",
+        "function_case_helper_code": "def match_registered_tokens(...): ...",
+    }
+
+    assert validator.validate_case_expectation(
+        case,
+        payload,
+        pandas_variables=pandas_variables,
+    ) == []
+
+    mismatched = deepcopy(case)
+    mismatched["intent_response"]["intent_plan"]["retrieval_jobs"][0]["filters"][
+        "PRODUCT_TOKEN"
+    ]["value"] = "L-999"
+    assert [
+        item["type"]
+        for item in validator.validate_case_expectation(
+            mismatched,
+            payload,
+            pandas_variables=pandas_variables,
+        )
+    ] == ["missing_expected_filter_contract"]
 
 
 def test_temporal_query_date_mismatch_is_a_semantic_error():

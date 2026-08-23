@@ -181,6 +181,7 @@ TYPED_FORMULA_NULL_POLICIES = {"zero", "propagate"}
 TYPED_FORMULA_ZERO_DIVISION_POLICIES = {"zero", "null"}
 
 
+# 함수 설명: Typed formula 컬럼명을 공백과 대소문자 차이 없이 비교할 표준 키로 변환합니다.
 def _typed_formula_column_key(value: Any) -> str:
     return str(value or "").strip().casefold().replace(" ", "_")
 

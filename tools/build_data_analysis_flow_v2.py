@@ -58,6 +58,7 @@ INTENT_MODEL_NODE_ID = "LanguageModel-intent"
 INTENT_NORMALIZER_NODE_ID = "CustomComponent-5o0CN"
 METADATA_CANDIDATES_NODE_ID = "CustomComponent-DXrpf"
 EXECUTION_GATE_NODE_ID = "CustomComponent-v5ExecutionGate"
+RETRIEVAL_VALIDATOR_NODE_ID = "CustomComponent-vVkhs"
 DUMMY_RETRIEVER_NODE_ID = "CustomComponent-Pp7d0"
 PANDAS_VARIABLES_NODE_ID = "CustomComponent-fc0Vb"
 PANDAS_PROMPT_NODE_ID = "Prompt Template-xtzD5"
@@ -377,6 +378,10 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
     _set_embedded_source(
         node_index["CustomComponent-v5UpstreamBinder"],
         _common_component_path("05a_upstream_entity_parameter_binder.py"),
+    )
+    _set_embedded_source(
+        node_index[RETRIEVAL_VALIDATOR_NODE_ID],
+        _common_component_path("06_retrieval_job_validator.py"),
     )
     _set_embedded_source(
         node_index[EXECUTION_GATE_NODE_ID],

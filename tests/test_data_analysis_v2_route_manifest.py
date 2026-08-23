@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
 import sys
 
 import pytest
@@ -19,20 +21,51 @@ def route_runtime():
 def test_route_manifest_has_independent_expectations_for_every_representative_case():
     manifest = validator.load_route_manifest()
     fixture_cases = {int(item["id"]): item for item in base.representative_cases()}
+    manifest_document = json.loads(Path(validator.MANIFEST_PATH).read_text(encoding="utf-8"))
+    excluded_cases = {
+        int(item["id"]): item
+        for item in manifest_document.get("excluded_cases", [])
+    }
+    active_fixture_cases = {
+        case_id: item
+        for case_id, item in fixture_cases.items()
+        if case_id not in excluded_cases
+    }
 
-    assert set(manifest) == set(fixture_cases)
-    assert len(manifest) == 31
+    assert set(excluded_cases) == {5, 24, 25}
+    assert set(manifest).isdisjoint(excluded_cases)
+    assert set(manifest) == set(active_fixture_cases)
+    assert set(manifest) | set(excluded_cases) == set(range(1, 32))
+    assert len(manifest) == 28
     assert {item["expected_route"] for item in manifest.values()} == {"fast", "complex"}
-    assert sum(item["expected_route"] == "fast" for item in manifest.values()) == 13
+    assert sum(item["expected_route"] == "fast" for item in manifest.values()) == 10
     assert sum(item["expected_route"] == "complex" for item in manifest.values()) == 18
 
-    for case_id, fixture_case in fixture_cases.items():
+    for case_id, fixture_case in active_fixture_cases.items():
         expectation = manifest[case_id]
         assert expectation["question"] == fixture_case["question"]
         assert expectation["expected_dataset_keys"]
         if expectation["expected_route"] == "fast":
             assert expectation["expected_recipe"]
             assert isinstance(expectation["fixture_plan"], dict)
+
+    assert manifest[22]["expected_route"] == "complex"
+    assert manifest[22]["expected_dataset_keys"] == [
+        "equipment_assign",
+        "operation_rate_today",
+    ]
+    assert manifest[23]["expected_route"] == "complex"
+    assert manifest[23]["expected_dataset_keys"] == [
+        "equipment_assign",
+        "operation_rate_today",
+    ]
+
+
+def test_live_representative_validator_uses_active_v2_intent_prompt():
+    source = Path(base.__file__).read_text(encoding="utf-8")
+
+    assert 'render_prompt(V2_FLOW / "03_intent_prompt_template_ko.md", intent_vars)' in source
+    assert 'render_prompt(FLOW / "03_intent_prompt_template_ko.md", intent_vars)' not in source
 
 
 def test_dataset_selection_assertion_is_validation_only_and_reports_wrong_source():

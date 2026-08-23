@@ -34,12 +34,25 @@ def validate_retrieval_payload(payload_value: Any) -> dict[str, Any]:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
     valid_jobs = []
-    intent_errors = [
+    plan_validation_items = [
         deepcopy(item)
         for item in plan.get("validation_errors", [])
         if isinstance(item, dict)
     ] if isinstance(plan.get("validation_errors"), list) else []
-    errors = intent_errors
+    explicit_warnings = [
+        {**deepcopy(item), "severity": "warning"}
+        for item in plan.get("validation_warnings", [])
+        if isinstance(item, dict)
+    ] if isinstance(plan.get("validation_warnings"), list) else []
+    intent_warnings = [
+        item for item in plan_validation_items if _validation_severity(item) == "warning"
+    ]
+    intent_warnings.extend(explicit_warnings)
+    intent_errors = [
+        item for item in plan_validation_items if _validation_severity(item) != "warning"
+    ]
+    errors = list(intent_errors)
+    warnings = list(intent_warnings)
     if not intent_errors:
         aliases = [
             str(job.get("source_alias") or "").strip()
@@ -81,13 +94,23 @@ def validate_retrieval_payload(payload_value: Any) -> dict[str, Any]:
     next_payload.setdefault("intent_plan", {})["retrieval_jobs"] = valid_jobs
     trace = next_payload.setdefault("trace", {})
     trace.setdefault("errors", []).extend(errors)
-    trace.setdefault("inspection", {}).setdefault("data_retrieval", {})["job_validation"] = {
+    trace.setdefault("warnings", []).extend(warnings)
+    job_validation = {
         "input_job_count": len(jobs),
         "valid_job_count": len(valid_jobs),
         "error_count": len(errors),
         "intent_error_count": len(intent_errors),
         "errors": deepcopy(errors),
     }
+    if warnings:
+        job_validation.update(
+            {
+                "warning_count": len(warnings),
+                "intent_warning_count": len(intent_warnings),
+                "warnings": deepcopy(warnings),
+            }
+        )
+    trace.setdefault("inspection", {}).setdefault("data_retrieval", {})["job_validation"] = job_validation
     return next_payload
 
 
@@ -112,6 +135,16 @@ def _error(error_type: str, message: str, **extra: Any) -> dict[str, Any]:
     error = {"type": error_type, "message": message}
     error.update(extra)
     return error
+
+
+# 함수 설명: 명시적으로 recoverable/warning으로 분류된 계획 검증 항목만 비차단 경고로 인식합니다. 분류가 없으면 기존처럼 차단합니다.
+def _validation_severity(item: dict[str, Any]) -> str:
+    severity = str(item.get("severity") or "").strip().lower()
+    if severity in {"warning", "warn", "recoverable"}:
+        return "warning"
+    if item.get("blocking") is False or item.get("recoverable") is True:
+        return "warning"
+    return "blocking"
 
 
 # Langflow 컴포넌트 클래스: inputs/outputs가 캔버스 포트와 JSON edge 계약을 정의합니다.

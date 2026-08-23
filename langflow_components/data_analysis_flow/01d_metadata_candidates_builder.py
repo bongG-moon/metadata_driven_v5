@@ -32,7 +32,12 @@ INTENT_SELECTION_HINT_MAX_PHRASES = 3
 INTENT_SELECTION_HINT_MAX_METRICS = 8
 INTENT_SELECTION_HINT_MAX_TEXT = 120
 
-TECHNICAL_IDENTITY_KEYS = ("section", "key", "dataset_key", "filter_key", "function_name")
+# ``section`` is a taxonomy shared by many unrelated records (for example every
+# analysis recipe).  Treating it as a strong identity made the question token
+# ``recipe`` score every item in ``analysis_recipes`` equally, which could push
+# an exact registered alias out of the bounded candidate view.  The section is
+# still present in the weak full-body score and in the stable reference key.
+TECHNICAL_IDENTITY_KEYS = ("key", "dataset_key", "filter_key", "function_name")
 LABEL_KEYS = ("display_name", "label")
 STRUCTURED_SEARCH_KEYS = {
     "aliases",
@@ -97,6 +102,12 @@ FILTER_OPERATOR_ALIASES = {
 }
 DEPRECATED_TABLE_CATALOG_KEYS = {"row_identity_columns", "context_columns"}
 KOREAN_SUFFIXES = (
+    "조회해주세요",
+    "알려주세요",
+    "보여주세요",
+    "조회해줘",
+    "알려줘",
+    "보여줘",
     "으로부터",
     "에게서",
     "에서는",
@@ -112,7 +123,9 @@ KOREAN_SUFFIXES = (
     "이며",
     "이고",
     "이랑",
+    "현황",
     "된",
+    "들",
     "은",
     "는",
     "이",
@@ -325,12 +338,35 @@ def build_metadata_candidates(
         )
         if str(value or "").strip()
     }
+    protected_domain_identities = {
+        str(item.get("identity") or "")
+        for item in selection_stats.get("protected_domain_candidates", [])
+        if str(item.get("identity") or "")
+    }
     candidates, byte_fit = _fit_bytes(
         candidates,
         byte_limit,
         table_minimum,
         protected_table_dataset_keys=protected_table_dataset_keys,
+        protected_domain_identities=protected_domain_identities,
     )
+
+    retained_domain_identities = {
+        _stable_identity(item)
+        for item in _list(candidates.get("domain_items"))
+        if isinstance(item, dict)
+    }
+    protected_domain_trace = [
+        {
+            "section": str(item.get("section") or ""),
+            "key": str(item.get("key") or ""),
+            "matched_aliases": list(item.get("matched_aliases") or []),
+            "retained_after_byte_fit": str(item.get("identity") or "")
+            in retained_domain_identities,
+        }
+        for item in selection_stats.get("protected_domain_candidates", [])
+        if isinstance(item, dict)
+    ]
 
     loads = {
         "domain_items": domain_load,
@@ -398,6 +434,7 @@ def build_metadata_candidates(
             "domain_dataset_dependencies": selection_stats.get(
                 "domain_dataset_dependencies", {}
             ),
+            "protected_domain_candidates": protected_domain_trace,
             "candidate_bytes_by_pool": {
                 key: _json_bytes(value)
                 for key, value in candidates.items()
@@ -477,13 +514,19 @@ def _select_candidates(
     selected_domain: list[dict[str, Any]] = []
     selected_domain_ids: set[str] = set()
     non_runtime_function_cases = 0
+    direct_phrase_matches = _question_matched_domain_phrases(
+        search_text,
+        domain_items,
+    )
     dependency_matches = _question_matched_dataset_domains(
         search_text,
         domain_items,
     )
     # A domain that explicitly names its backing dataset is an execution
     # dependency, not merely prompt context. Keep exact registered alias
-    # matches ahead of the relevance quota.
+    # matches ahead of the relevance quota. Preserve this established priority
+    # before applying the new direct-phrase rescue so an existing executable
+    # dependency is never displaced by the additive candidate protection.
     for item in dependency_matches:
         identity = _stable_identity(item)
         if identity in selected_domain_ids:
@@ -492,6 +535,19 @@ def _select_candidates(
         selected_domain_ids.add(identity)
         if len(selected_domain) >= max_domain_items:
             break
+    # A worker-written alias/display name that occurs verbatim in the question
+    # is stronger evidence than taxonomy or body keyword overlap.  Add only
+    # non-generic phrases here: a lone alias such as ``제품``/``장비``/``LOT``
+    # must not activate or protect an unrelated business rule.
+    for match in direct_phrase_matches:
+        if len(selected_domain) >= max_domain_items:
+            break
+        item = match["item"]
+        identity = _stable_identity(item)
+        if identity in selected_domain_ids:
+            continue
+        selected_domain.append(item)
+        selected_domain_ids.add(identity)
     # canonical condition/process mapping과 직접 alias가 함께 일치한 후보를 먼저 보존합니다.
     # 이후 일반 점수 후보로 남은 자리를 채우므로 max_domain_items를 늘리지 않아도 실행 조건이 유실되지 않습니다.
     for _, _, _, _, item in ranked["domain_items"]:
@@ -572,6 +628,16 @@ def _select_candidates(
         "table_catalog_items": selected_tables,
         "main_flow_filters": [entry[4] for entry in ranked["main_flow_filters"]],
     }
+    protected_domain_candidates = [
+        {
+            "identity": _stable_identity(match["item"]),
+            "section": str(match["item"].get("section") or ""),
+            "key": str(match["item"].get("key") or ""),
+            "matched_aliases": list(match["matched_aliases"]),
+        }
+        for match in direct_phrase_matches
+        if _stable_identity(match["item"]) in selected_domain_ids
+    ]
     return selected, {
         "matched_counts": {
             key: sum(1 for _, strong_hits, _, _, _ in values if strong_hits > 0)
@@ -592,6 +658,7 @@ def _select_candidates(
                 for item in dependency_matches
             ],
         },
+        "protected_domain_candidates": protected_domain_candidates,
     }
 
 
@@ -628,6 +695,117 @@ def _question_matched_dataset_domains(
     return [item for _, _, item in matches]
 
 
+# 함수 설명: `_question_matched_domain_phrases()`는 질문에 직접 등장한 비일반 등록 alias/display name을 찾습니다.
+def _question_matched_domain_phrases(
+    question: str,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return exact, non-generic Domain phrases together with their items."""
+
+    matches: list[tuple[int, str, dict[str, Any], list[str]]] = []
+    for item in items:
+        # A Function Case explicitly marked as non-selectable may remain in
+        # the ordinary ranked pool for legacy compatibility, but an exact
+        # alias must not promote it ahead of normal Domain candidates or make
+        # it byte-trim protected.
+        if _is_non_runtime_function_case(item):
+            continue
+        payload = _dict(item.get("payload"))
+        phrases = _list(payload.get("aliases"))
+        phrases.extend(
+            value
+            for value in (
+                payload.get("display_name"),
+                item.get("display_name"),
+            )
+            if value not in (None, "")
+        )
+        matched_aliases: list[str] = []
+        seen: set[str] = set()
+        for phrase in phrases:
+            phrase_text = str(phrase or "").strip()
+            normalized = _normalized_match_text(phrase_text)
+            if (
+                not normalized
+                or normalized in seen
+                or not _protectable_registered_phrase(phrase_text)
+                or not _registered_phrase_matches(question, phrase_text)
+            ):
+                continue
+            seen.add(normalized)
+            matched_aliases.append(phrase_text)
+        if matched_aliases:
+            matches.append(
+                (
+                    max(len(_normalized_match_text(value)) for value in matched_aliases),
+                    _stable_identity(item),
+                    item,
+                    matched_aliases,
+                )
+            )
+    # A phrase shared by multiple Domain documents is still useful for normal
+    # relevance scoring, but it is not strong enough to receive protected
+    # quota/byte priority.  Protect only phrases that identify one item in the
+    # current metadata view so common terms such as ``UPH`` cannot crowd out
+    # established execution dependencies.
+    phrase_owner_counts: dict[str, int] = {}
+    for _, _, _, matched_aliases in matches:
+        for value in {
+            _normalized_match_text(alias)
+            for alias in matched_aliases
+            if _normalized_match_text(alias)
+        }:
+            phrase_owner_counts[value] = phrase_owner_counts.get(value, 0) + 1
+    unique_matches: list[tuple[int, str, dict[str, Any], list[str]]] = []
+    for _, identity, item, matched_aliases in matches:
+        unique_aliases = [
+            alias
+            for alias in matched_aliases
+            if phrase_owner_counts.get(_normalized_match_text(alias), 0) == 1
+        ]
+        if not unique_aliases:
+            continue
+        unique_matches.append(
+            (
+                max(len(_normalized_match_text(value)) for value in unique_aliases),
+                identity,
+                item,
+                unique_aliases,
+            )
+        )
+    unique_matches.sort(key=lambda value: (-value[0], value[1]))
+    return [
+        {"item": item, "matched_aliases": matched_aliases}
+        for _, _, item, matched_aliases in unique_matches
+    ]
+
+
+# 함수 설명: `_protectable_registered_phrase()`는 일반 단일 entity alias가 후보 보호 신호가 되지 않게 합니다.
+def _protectable_registered_phrase(phrase: str) -> bool:
+    normalized = _normalized_match_text(phrase)
+    if not normalized:
+        return False
+    generic_phrases = {
+        _normalized_match_text(value)
+        for value in GENERIC_CANONICAL_ALIAS_TOKENS
+        if _normalized_match_text(value)
+    }
+    if normalized in generic_phrases:
+        return False
+    lexical_tokens = re.findall(r"[0-9A-Za-z가-힣_]+", str(phrase or "").casefold())
+    if len(lexical_tokens) == 1:
+        variants = set(_token_variants(lexical_tokens[0]))
+        generic_variants = variants.intersection(GENERIC_CANONICAL_ALIAS_TOKENS)
+        non_generic_variants = variants.difference(GENERIC_CANONICAL_ALIAS_TOKENS)
+        # Korean suffix forms such as ``제품별`` retain the original surface
+        # token alongside the generic stem (``제품``/``product``).  The surface
+        # form alone does not make the phrase specific.  A second meaningful
+        # token (for example ``제품UPH`` -> ``uph``) still remains protectable.
+        if generic_variants and non_generic_variants.issubset({lexical_tokens[0]}):
+            return False
+    return True
+
+
 # 함수 설명: `_registered_phrase_matches()`는 등록된 표현이 질문에 경계를 지켜 포함되는지 판정합니다.
 def _registered_phrase_matches(question: str, phrase: str) -> bool:
     target = _normalized_match_text(phrase)
@@ -636,7 +814,31 @@ def _registered_phrase_matches(question: str, phrase: str) -> bool:
         return False
     if target.isascii() and target.replace("_", "").isalnum() and len(target) <= 3:
         return target in re.findall(r"[a-z0-9_]+", source)
-    return target in source
+    if target in source:
+        return True
+
+    # 등록 alias의 단어가 질문에서 복수형·조사·조회 표현과 결합되어도 동일한
+    # 의미 표현으로 회수한다. 단일 token은 기존 exact 정책을 유지하고, 두 단어
+    # 이상의 alias가 모두 일치할 때만 허용하여 일반 명사 하나가 규칙을 과도하게
+    # 활성화하지 않게 한다.
+    phrase_tokens = re.findall(r"[0-9A-Za-z가-힣_]+", str(phrase or "").casefold())
+    # Slash로 구분된 짧은 공정 코드는 ``D/C공정`` -> ``D`` + ``C공정``처럼
+    # 분리된다. 한 글자 token을 느슨하게 비교하면 질문의 ``D/A공정``이 다른
+    # D 계열 공정 alias까지 활성화할 수 있으므로 이 경우에는 위 exact compact
+    # 비교만 허용한다.
+    if len(phrase_tokens) < 2 or any(len(token) < 2 for token in phrase_tokens):
+        return False
+    question_variants = {
+        variant
+        for token in re.findall(r"[0-9A-Za-z가-힣_]+", str(question or "").casefold())
+        for variant in _token_variants(token)
+    }
+    if not question_variants:
+        return False
+    return all(
+        any(variant in question_variants for variant in _token_variants(token))
+        for token in phrase_tokens
+    )
 
 
 # 함수 설명: `_normalized_match_text()`는 공백과 구분자 차이를 제거해 등록 표현 비교용 문자열을 만듭니다.
@@ -1128,13 +1330,13 @@ def _score_details(item: dict[str, Any], tokens: list[str]) -> tuple[int, int]:
                 score += 12
                 strong_hits += 1
         elif _contains_token(label_identity, token):
-            if token in GENERIC_SEMANTIC_TOKENS:
+            if token in GENERIC_SEMANTIC_TOKENS or _generic_technical_identity_is_weak(item, token):
                 score += 1
             else:
                 score += 12
                 strong_hits += 1
         elif _contains_token(structured, token):
-            if token in GENERIC_SEMANTIC_TOKENS:
+            if token in GENERIC_SEMANTIC_TOKENS or _generic_technical_identity_is_weak(item, token):
                 score += 1
             else:
                 score += 6
@@ -1179,6 +1381,7 @@ def _fit_bytes(
     min_table_items: int,
     *,
     protected_table_dataset_keys: set[str] | None = None,
+    protected_domain_identities: set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     fitted = deepcopy(candidates)
     trimmed_counts = {"domain_items": 0, "table_catalog_items": 0, "main_flow_filters": 0}
@@ -1197,26 +1400,41 @@ def _fit_bytes(
         for value in (protected_table_dataset_keys or set())
         if str(value or "").strip()
     }
+    protected_domain_keys = {
+        str(value).strip()
+        for value in (protected_domain_identities or set())
+        if str(value or "").strip()
+    }
 
     # 함수 설명: 바이트 제한 시 실행에 필요한 Domain 연결 카탈로그는 마지막까지 보존할 삭제 위치를 계산합니다.
     def removable_index(key: str, values: list[Any]) -> int:
         """Prefer dropping a non-dependency catalog candidate under the byte cap."""
 
-        if key != "table_catalog_items" or not protected_keys:
+        if key == "domain_items" and protected_domain_keys:
+            for index in range(len(values) - 1, -1, -1):
+                item = values[index]
+                identity = _stable_identity(item) if isinstance(item, dict) else ""
+                if identity not in protected_domain_keys:
+                    return index
+            # Every remaining Domain candidate is protected. The hard byte
+            # ceiling still wins, so the bounded legacy fallback below may
+            # remove one only when no unprotected option remains.
             return len(values) - 1
-        for index in range(len(values) - 1, -1, -1):
-            item = values[index]
-            dataset_key = (
-                _table_catalog_dataset_key(item).casefold()
-                if isinstance(item, dict)
-                else ""
-            )
-            if dataset_key not in protected_keys:
-                return index
-        # The caller may still need to satisfy a hard byte cap when every
-        # remaining candidate is execution-critical.  In that exceptional
-        # case retain the existing bounded behaviour rather than exceeding the
-        # token budget.
+        if key == "table_catalog_items" and protected_keys:
+            for index in range(len(values) - 1, -1, -1):
+                item = values[index]
+                dataset_key = (
+                    _table_catalog_dataset_key(item).casefold()
+                    if isinstance(item, dict)
+                    else ""
+                )
+                if dataset_key not in protected_keys:
+                    return index
+            # The caller may still need to satisfy a hard byte cap when every
+            # remaining candidate is execution-critical.  In that exceptional
+            # case retain the existing bounded behaviour rather than exceeding the
+            # token budget.
+            return len(values) - 1
         return len(values) - 1
 
     for key, floor in phases:
@@ -1669,6 +1887,13 @@ def _token_variants(token: str) -> list[str]:
     expanded = list(variants)
     for value in variants:
         expanded.extend(TOKEN_EXPANSIONS.get(value, ()))
+        # 현업 질문에는 표준 맞춤법인 ``가동률``과 관용 표기인 ``가동율``이
+        # 혼용된다. 어느 한쪽을 특정 metric으로 하드코딩하지 않고 두 표기를
+        # 같은 한국어 token의 철자 변형으로만 제공한다.
+        if "율" in value:
+            expanded.append(value.replace("율", "률"))
+        if "률" in value:
+            expanded.append(value.replace("률", "율"))
     return list(dict.fromkeys(expanded))
 
 
