@@ -323,8 +323,7 @@ def _result_table_section_from_answer_sections(
         columns = _columns_from_rows(rows)
     columns = _display_columns(columns, rows, display_columns)
     if not rows:
-        column_text = ", ".join(str(column) for column in columns) if columns else "없음"
-        return "### 결과 테이블\n표시할 결과 행이 없습니다.\n\n- 컬럼: `" + column_text + "`"
+        return "### 결과 테이블\n표시할 결과 행이 없습니다."
 
     preview_rows = rows[:preview_limit]
     note = f"\n\n총 {row_count}건 중 {len(preview_rows)}건을 표시했습니다."
@@ -587,8 +586,7 @@ def _result_table_section(
         columns = _columns_from_rows(rows)
     columns = _display_columns(columns, rows, display_columns)
     if not rows:
-        column_text = ", ".join(str(column) for column in columns) if columns else "없음"
-        return "### 결과 테이블\n표시할 결과 행이 없습니다.\n\n- 컬럼: `" + column_text + "`"
+        return "### 결과 테이블\n표시할 결과 행이 없습니다."
 
     preview_limit = _positive_int(table_preview_limit, DEFAULT_TABLE_PREVIEW_LIMIT)
     preview_rows = rows[:preview_limit]
@@ -664,8 +662,6 @@ def _intermediate_results_section(
             )
         else:
             lines.append("표시할 행이 없습니다.")
-            if columns:
-                lines.append("컬럼: `" + ", ".join(str(column) for column in columns) + "`")
     return "\n".join(lines) if displayed else ""
 
 
