@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -11,7 +12,6 @@ from API_SERVER.app import (
     _iter_csv_bytes,
     config_from_env,
     create_app,
-    run_server,
 )
 from API_SERVER.data_ref_store import rows_from_data_ref_document
 from API_SERVER.support import ServerConfig, encode_data_ref
@@ -146,7 +146,7 @@ def test_default_report_storage_name_does_not_use_artifact_prefix() -> None:
     assert config.report_collection == "report_save_db"
 
 
-def test_config_from_env_uses_valid_api_server_port_and_rejects_invalid_value(monkeypatch, tmp_path) -> None:
+def test_config_from_env_keeps_fixed_port_and_public_url_independent(monkeypatch, tmp_path) -> None:
     env_file = tmp_path / "api-server.env"
     env_file.write_text(
         "API_SERVER_PORT=8765\nAPI_SERVER_PUBLIC_BASE_URL=http://127.0.0.1:8765\n",
@@ -158,35 +158,20 @@ def test_config_from_env_uses_valid_api_server_port_and_rejects_invalid_value(mo
 
     configured = config_from_env()
 
-    assert configured.port == 8765
+    assert configured.host == "0.0.0.0"
+    assert configured.port == 5000
     assert configured.report_base_url == "http://127.0.0.1:8765"
 
-    monkeypatch.setenv("API_SERVER_PORT", "70000")
-    assert config_from_env().port == 5000
 
-    monkeypatch.setenv("API_SERVER_PORT", "0")
-    assert config_from_env().port == 5000
+def test_direct_entrypoint_keeps_fixed_production_uvicorn_contract() -> None:
+    source = Path(__file__).with_name("app.py").read_text(encoding="utf-8")
+    expected_entrypoint = (
+        'if __name__ == "__main__":\n'
+        '    uvicorn.run("__main__:application", host="0.0.0.0", port=5000, reload=False)'
+    )
 
-
-def test_run_server_binds_the_configured_api_server_port(monkeypatch) -> None:
-    captured: dict[str, Any] = {}
-
-    def fake_run(*args: Any, **kwargs: Any) -> None:
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-
-    monkeypatch.setattr("API_SERVER.app.uvicorn.run", fake_run)
-    config = make_config()
-    config.port = 8765
-
-    run_server(config)
-
-    assert captured["args"] == ("__main__:application",)
-    assert captured["kwargs"] == {
-        "host": "0.0.0.0",
-        "port": 8765,
-        "reload": False,
-    }
+    assert expected_entrypoint in source
+    assert "def run_server(" not in source
 
 
 def test_root_redirects_to_docs_and_hello_is_not_exposed(monkeypatch) -> None:

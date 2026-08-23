@@ -2,8 +2,8 @@
 
 Run this file directly from the API_SERVER folder with: python app.py
 
-It binds to ``API_SERVER_PORT`` (default ``5000``) so the data-download and
-HTML-report routes can share one configured API address.
+It deliberately uses the same Uvicorn form as the existing deployment:
+uvicorn.run("__main__:application", host="0.0.0.0", port=5000, reload=False)
 """
 
 from __future__ import annotations
@@ -33,12 +33,10 @@ from pydantic import BaseModel, ConfigDict, Field
 try:  # Supports both "python app.py" and "import API_SERVER.app".
     from .data_ref_store import DEFAULT_DATABASE, DEFAULT_RESULT_COLLECTION
     from .support import (
-        DEFAULT_HOST,
         DEFAULT_MAX_DOWNLOAD_BYTES,
         DEFAULT_MAX_REPORT_HTML_BYTES,
         DEFAULT_MAX_REPORT_STORAGE_BYTES,
         DEFAULT_MAX_REPORT_TTL_HOURS,
-        DEFAULT_PORT,
         DEFAULT_PREVIEW_LIMIT,
         DEFAULT_REPORT_COLLECTION,
         DEFAULT_REPORT_TTL_HOURS,
@@ -67,12 +65,10 @@ try:  # Supports both "python app.py" and "import API_SERVER.app".
 except ImportError:  # pragma: no cover - exercised by direct script execution.
     from data_ref_store import DEFAULT_DATABASE, DEFAULT_RESULT_COLLECTION  # type: ignore[no-redef]
     from support import (  # type: ignore[no-redef]
-        DEFAULT_HOST,
         DEFAULT_MAX_DOWNLOAD_BYTES,
         DEFAULT_MAX_REPORT_HTML_BYTES,
         DEFAULT_MAX_REPORT_STORAGE_BYTES,
         DEFAULT_MAX_REPORT_TTL_HOURS,
-        DEFAULT_PORT,
         DEFAULT_PREVIEW_LIMIT,
         DEFAULT_REPORT_COLLECTION,
         DEFAULT_REPORT_TTL_HOURS,
@@ -158,23 +154,6 @@ def _int_env(name: str, default: int, minimum: int = 0) -> int:
         return default
 
 
-def _port_env() -> int:
-    """Read a valid TCP port without silently accepting an unusable value."""
-
-    raw_value = os.getenv("API_SERVER_PORT")
-    if raw_value is None or not raw_value.strip():
-        return DEFAULT_PORT
-    try:
-        port = int(raw_value)
-    except ValueError:
-        LOGGER.warning("Ignoring invalid TCP port environment value: API_SERVER_PORT")
-        return DEFAULT_PORT
-    if not 1 <= port <= 65535:
-        LOGGER.warning("Ignoring out-of-range TCP port environment value: API_SERVER_PORT")
-        return DEFAULT_PORT
-    return port
-
-
 def config_from_env() -> ServerConfig:
     """Build runtime settings from API_SERVER's own .env file and environment."""
     env_file = os.getenv("API_SERVER_ENV_FILE") or str(ROOT / ".env")
@@ -223,8 +202,8 @@ def config_from_env() -> ServerConfig:
             _int_env("DATA_REF_DOWNLOAD_MAX_BYTES", DEFAULT_MAX_DOWNLOAD_BYTES, 1024),
             1024,
         ),
-        host=DEFAULT_HOST,
-        port=_port_env(),
+        host="0.0.0.0",
+        port=5000,
         report_mongo_uri=report_mongo_uri,
         report_database=report_mongo_database,
         report_collection=(
@@ -654,17 +633,5 @@ application = create_app()
 app = application
 
 
-def run_server(config: ServerConfig | None = None) -> None:
-    """Run this API deployment on the configured shared artifact port."""
-
-    runtime_config = config or config_from_env()
-    uvicorn.run(
-        "__main__:application",
-        host=runtime_config.host,
-        port=runtime_config.port,
-        reload=False,
-    )
-
-
 if __name__ == "__main__":
-    run_server()
+    uvicorn.run("__main__:application", host="0.0.0.0", port=5000, reload=False)

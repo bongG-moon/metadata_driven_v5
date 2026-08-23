@@ -110,7 +110,7 @@ It serves:
 - `/reports` and `/reports/view/{report_id}` for Flow 01 execution-process HTML and the Flow 07/07-1 HTML report lifecycle;
 - `/health` for an operational health check.
 
-`API_SERVER_PORT` controls the local bind port for both data downloads and HTML reports; `API_SERVER_PUBLIC_BASE_URL` controls the browser-facing report links. For a single local server, set both to the same port, such as `8765` and `http://127.0.0.1:8765`. Keep the listen address and public link address separate when a reverse proxy is used; do not expose `0.0.0.0` as a user-facing URL.
+`API_SERVER/app.py` binds to `0.0.0.0:5000` using the existing fixed deployment contract. `API_SERVER_PUBLIC_BASE_URL` controls only the browser-facing report links and may point to a reverse proxy or public DNS address; never expose `0.0.0.0` as a user-facing URL.
 
 ## Import and update
 
