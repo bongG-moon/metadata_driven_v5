@@ -1,37 +1,42 @@
 # GAIA-CUBE Server
 
-이 디렉터리는 CUBE 사용자의 질문을 GAIA에서 실행되는 Langflow Agent로 전달하고, 최종 Agent 답변을 원래 CUBE 사용자와 채널에 다시 발송하는 FastAPI 서버를 구현하기 위한 작업 공간이다.
+이 폴더는 CUBE 질문을 GAIA로 전달하고, GAIA 답변을 CUBE로 되돌려 보내는 HCP callback 서버다.
 
-## 현재 상태
+```text
+CUBE → HCP callback server → GAIA → CUBE
+```
 
-- 사용자 제공 GAIA/CUBE API 가이드를 `base_guide/`에 정리했다.
-- 현재 구현 기준은 사용자 제공 API 예시와 `BEGINNER_GUIDE.md`의 기본 동기 연동 흐름이다.
-- 외부 API를 호출하지 않는 더미 callback 서버와, `.env` 설정으로 실행하는 운영용 callback 서버를 구현했다.
+현재 실제 callback 주소:
 
-## 실행 가능한 기본 서버
+```text
+POST http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/api/v1/receiver
+```
 
-- [`dummy_callback_server/`](dummy_callback_server/): GAIA·CUBE를 실제 호출하지 않고 callback → session → 답변 추출 → CUBE payload 생성을 로컬에서 검증한다. 처음 실행하는 경우 [단계별 실행 가이드](dummy_callback_server/DUMMY_SERVER_RUN_GUIDE.md)를 사용한다.
-- [`production_callback_server/`](production_callback_server/): GAIA 인증 키, Agent `svc_id`, CUBE 봇 ID·토큰과 발송 URL을 `.env`에 입력하면 실제 기본 동기 흐름을 실행한다. 실제 CUBE 연동 전에는 [상세 실행 가이드](production_callback_server/PRODUCTION_SERVER_RUN_GUIDE.md)를 따른다.
+## 먼저 읽을 문서
 
-각 폴더의 `README.md`에 설치, 설정, 실행 방법을 적었다. 현재 범위에는 MongoDB, worker, outbox, 재시도 큐와 스케줄러가 포함되지 않는다.
+- 처음 개념을 이해하려면: [START_HERE_CALLBACK_FLOW_GUIDE.md](START_HERE_CALLBACK_FLOW_GUIDE.md)
+- HCP 설정, 직접 질문 입력으로 하는 GAIA→CUBE 발송 시험, callback 연동 시험: [production_callback_server/PRODUCTION_SERVER_RUN_GUIDE.md](production_callback_server/PRODUCTION_SERVER_RUN_GUIDE.md)
+- 서버 폴더의 간단한 안내: [production_callback_server/README.md](production_callback_server/README.md)
+- 제공받은 GAIA/CUBE 원본 가이드와 정리 자료: [base_guide/README.md](base_guide/README.md)
 
-## 현재 구현 기준 문서
+## 현재 구성
 
-- [`BEGINNER_GUIDE.md`](BEGINNER_GUIDE.md): 제공 API 예시와 현재 합의된 기본 연동 설명
-- [`base_guide/README.md`](base_guide/README.md): 사용자 제공 가이드 인덱스
-- [`base_guide/gaia/`](base_guide/gaia/): GAIA 호출 및 최종 응답 추출 계약
-- [`base_guide/cube/`](base_guide/cube/): CUBE callback, 발송, Rich Message와 fallback 계약
+| 위치 | 역할 |
+| --- | --- |
+| `production_callback_server/app.py` | HCP에서 실행되는 FastAPI callback 서버 |
+| `production_callback_server/.env.example` | 실제 키 없이 설정 형식만 제공하는 템플릿 |
+| `production_callback_server/manual_gaia_cube_send.py` | callback 없이 직접 입력한 질문을 GAIA에 보내고 CUBE로 답변을 발송하는 사람용 시험 도구 |
+| `production_callback_server/test_app.py` | GAIA/CUBE HTTP 호출을 mock으로 바꾼 흐름 테스트 |
+| `base_guide/` | 사용자가 제공한 API 계약과 참고 자료 |
 
-## 현재 합의된 기본 원칙
+운영 서버에는 하나의 callback 경로만 있으며, 공개 메시지 발송 endpoint는 없다. `GAIA_API_URL`에는 GAIA Agent까지 포함한 전체 URL을 직접 설정한다.
 
-1. CUBE 채널 하나는 서버 설정으로 하나의 GAIA Agent에 연결한다.
-2. 사용자·CUBE 채널/thread으로 GAIA `session_id`를 구분한다.
-3. 질문은 CUBE callback으로 받고, 최종 답변은 CUBE Rich Notification API로 보낸다.
-4. 실제 API 정보를 받기 전에는 더미 연동으로 기본 흐름을 검증할 수 있다.
+개발자가 실제 GAIA→CUBE 흐름만 확인할 때는 `production_callback_server/manual_gaia_cube_send.py` 파일 맨 위에 `MESSAGE`, `RECEIVER_ID`를 입력한다. `CHANNEL_ID`는 채널에도 보내야 할 때만 입력하고, 사번으로만 발송할 때는 비워 둔다. 필요할 때만 `GAIA_USER_ID`, `SESSION_ID`도 입력한다. 인증 키와 토큰은 코드가 아니라 `.env` 또는 HCP Secret/환경변수에만 둔다.
 
-## 보류된 향후 설계 메모
+값을 저장한 뒤 HCP 실행 환경의 서버 폴더에서 아래 한 줄을 실행한다. 이 시험은 실제 외부 호출과 실제 CUBE 메시지 발송을 수행하므로 승인된 수신자와 채널만 사용한다.
 
-아래 문서는 현재 구현 범위가 아니다. 저장소, worker, 재시도, 운영 복구처럼 나중에 필요해질 항목을 검토할 때만 다시 사용한다.
+```powershell
+python manual_gaia_cube_send.py
+```
 
-- [`IMPLEMENTATION_BLUEPRINT.md`](IMPLEMENTATION_BLUEPRINT.md): 향후 운영 구조 검토 메모
-- [`base_guide/common/`](base_guide/common/): 향후 세션·최근 대화 운영 계약 메모
+실제 키, 토큰, 사번은 `.env` 또는 HCP Secret/환경변수에만 넣고 Git이나 문서에 남기지 않는다.

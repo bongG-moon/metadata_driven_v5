@@ -1,262 +1,181 @@
-# 실제 GAIA-CUBE 서버 실행 및 CUBE 연동 가이드
+# HCP에서 GAIA-CUBE 서버 실행하기
 
-이 문서는 `production_callback_server`를 실제 GAIA와 CUBE에 연결해 시험하는 절차다. 더미 서버와 달리 이 서버는 설정이 완료된 뒤 질문을 받으면 **실제 GAIA API와 실제 CUBE Rich Notification API를 호출한다.**
-
-처음에는 반드시 본인 또는 허가받은 테스트 CUBE 채널과 테스트용 GAIA Agent로 시험한다. 실제 키, 봇 토큰, 사용자 사번은 문서·Git·채팅·로그에 남기지 않는다.
-
-## 1. 이 서버가 실제로 하는 일
+이 안내는 CUBE 메시지 한 건이 GAIA를 실행하고, 생성된 답변이 다시 CUBE로 발송되는 전체 흐름을 시험하는 방법이다. 별도의 로컬/운영 모드 선택은 없다. 이 서버는 등록된 HCP callback URL 하나를 사용한다.
 
 ```text
-사용자가 CUBE 채널에 질문
-  → CUBE가 우리 서버의 POST /api/qna 주소로 callback JSON 전송
-  → 서버가 사용자 ID, 채널 ID, 질문을 읽음
-  → 채널에 고정된 GAIA Agent(svc_id)를 선택
-  → GAIA external API 호출
-  → GAIA 응답의 마지막 유효 Chat Output에서 답변만 추출
-  → CUBE Rich Notification API로 답변 발송
-  → CUBE 채팅창에 답변 표시
+CUBE 또는 수동 callback 요청
+  → HCP 서버의 POST /api/v1/receiver
+  → GAIA 호출
+  → CUBE 답변 발송
 ```
 
-서버가 CUBE에 반환하는 callback 응답과 사용자가 CUBE 채팅창에서 보는 답변은 다르다.
-
-| 구분 | 누가 받는가 | 현재 서버의 예 |
-| --- | --- | --- |
-| callback 응답 | CUBE 시스템 | `{ "status": "success", "message": "GAIA answer was sent to CUBE." }` |
-| Rich Notification 발송 | 원래 질문자와 채널 | GAIA에서 추출한 최종 답변 텍스트 |
-
-## 2. 내일 준비해야 할 값
-
-아래 표에서 **실제 값**을 확보해야 한다. 값은 `.env` 파일에만 넣는다.
-
-| 설정 이름 | 무엇을 넣는가 | 어디에서 받는가 | 비밀값인가 |
-| --- | --- | --- | --- |
-| `GAIA_BASE_URL` | GAIA API의 기본 주소 | 제공된 GAIA 가이드 또는 GAIA 담당자 | 아니오 |
-| `GAIA_AUTH_KEY` | GAIA에서 발급한 인증 키 | GAIA 담당자 | 예 |
-| `GAIA_SERVICE_ID` | 호출할 GAIA Agent의 `svc_id` | GAIA Agent 설정 | 보통 아니오 |
-| `CUBE_SEND_URL` | CUBE Rich Notification 발송 API의 정확한 주소 | CUBE 담당자 | 아니오 |
-| `CUBE_BOT_ID` | 메시지를 보내는 CUBE 봇 ID | CUBE 담당자 | 내부값 |
-| `CUBE_BOT_TOKEN` | CUBE 봇 인증 토큰 | CUBE 담당자 | 예 |
-| `CUBE_CHANNEL_GAIA_SERVICE_MAP_JSON` | 채널별 GAIA Agent 매핑 | 직접 결정 | 아니오 |
-
-추가로 CUBE 담당자에게 아래 항목을 확인해야 한다. 현재 제공된 코드와 문서만으로는 확정할 수 없다.
-
-- CUBE에 등록할 callback URL의 설정 위치와 등록 권한
-- callback 인증/서명 또는 허용 송신 IP 정책
-- callback timeout, 재전송, message/event ID 정책
-- callback 응답의 공식 `status` 값 (`success`, `ignored` 등이 맞는지)
-- 실제 테스트/운영용 `CUBE_SEND_URL`과 네트워크 접근 허용 여부
-- CUBE `userId` 또는 `header.from.uniquename`이 GAIA 권한 확인에 사용할 사번과 같은 값인지
-
-제공된 CUBE 발송 주소는 개발 서버 예시다. `.env.example`에 들어 있는 값을 그대로 운영값이라고 가정하지 말고, 내일 사용할 테스트 환경의 주소인지 CUBE 담당자에게 확인한다.
-
-## 3. 주소를 세 가지로 구분하기
-
-주소가 헷갈리지 않도록 아래 세 가지를 분리해서 생각한다.
-
-| 이름 | 예시 | 누가 호출하는가 | 설정 위치 |
-| --- | --- | --- | --- |
-| 우리 서버의 listen 주소 | `0.0.0.0:8000` | 없음. 서버가 대기하는 방식 | Uvicorn 실행 명령 |
-| CUBE가 호출할 callback URL | `http://<사내-서버이름>:8000/api/qna` | CUBE → 우리 서버 | CUBE 봇/채널 설정 |
-| CUBE가 답변을 받는 발송 URL | `http://<CUBE-서버>/legacy/richnotification` | 우리 서버 → CUBE | `.env`의 `CUBE_SEND_URL` |
-
-`0.0.0.0`은 모든 네트워크 인터페이스에서 서버가 듣도록 하는 listen 주소일 뿐이다. CUBE에 `http://0.0.0.0:8000/api/qna`를 등록하면 안 된다.
-
-현재 코드의 서버 endpoint는 아래와 같이 고정되어 있다.
-
-| HTTP 방식 | 주소 | 용도 |
-| --- | --- | --- |
-| `GET` | `/health` | 서버가 기동했고 설정을 읽었는지 확인 |
-| `POST` | `/api/qna` | CUBE callback을 받는 실제 주소 |
-| `GET` | `/docs` | FastAPI API 문서 화면 |
-
-따라서 CUBE에 등록할 주소 형식은 다음이다.
+등록된 URL은 다음과 같다.
 
 ```text
-http://<CUBE에서-접근-가능한-사내-DNS-이름-또는-IP>:8000/api/qna
+http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/api/v1/receiver
 ```
 
-코드 자체는 HTTP로 동작한다. HTTPS가 필요하다면 사내 운영 기준에 따라 승인된 reverse proxy 또는 배포 플랫폼에서 TLS를 종료해야 하며, 임의의 HTTPS URL을 등록해서는 안 된다.
+## 1. 준비할 값
 
-## 4. 서버를 설치할 PC 또는 사내 서버에서 준비하기
+아래 값은 실제 값으로 바꿔 HCP Secret/환경변수 또는 서버 폴더의 `.env`에 입력한다. 비밀값을 채팅, 문서, Git에 적지 않는다.
 
-아래 명령은 서버를 실행할 Windows PC에서 PowerShell로 실행한다.
+| 환경변수 | 입력할 값 |
+| --- | --- |
+| `GAIA_API_URL` | Agent ID까지 포함한 **완성된** GAIA API URL |
+| `GAIA_AUTH_KEY` | GAIA 인증 키 |
+| `GAIA_TIMEOUT_SECONDS` | GAIA 응답 대기 시간(초), 기본 10 |
+| `CUBE_SEND_URL` | CUBE Rich Notification 발송 전체 URL |
+| `CUBE_BOT_ID` | CUBE 봇 ID |
+| `CUBE_BOT_TOKEN` | CUBE 봇 토큰 |
+| `CUBE_BOT_FROMUSERNAME_JSON` | 봇 표시 이름 5개 JSON 배열 |
+| `CUBE_TIMEOUT_SECONDS` | CUBE 발송 응답 대기 시간(초), 기본 20 |
+| `USER_ERROR_MESSAGE` | GAIA 처리 실패 시 원인 안내 뒤에 붙일 재시도 안내문 |
+
+HCP에 배포할 프로젝트 폴더에서 `.env.example`을 `.env`로 복사할 때는 다음과 같이 한다.
 
 ```powershell
-cd C:\Users\qkekt\Desktop\metadata_driven_v5\gaia_cube_server\production_callback_server
-py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env
 notepad .env
 ```
 
-마지막 `notepad .env`가 열리면 다음 절에서 설명하는 실제 값을 입력하고 저장한다.
-
-`.env` 파일이 이미 있다면 `Copy-Item`으로 덮어쓰지 않는다. 기존 `.env`의 값이 맞는지 확인한 뒤 필요한 값만 수정한다.
-
-## 5. `.env`에 어떤 값을 넣는가
-
-### 가장 간단한 경우: 테스트 채널 하나 → GAIA Agent 하나
-
-아래는 형태를 보여 주는 예시다. `<...>` 부분은 실제 값으로 바꿔야 하며, 그대로 저장하면 안 된다.
+핵심은 `GAIA_API_URL`에 기본 주소가 아니라 **바로 호출 가능한 전체 주소**를 넣는 것이다.
 
 ```dotenv
-# GAIA
-GAIA_BASE_URL=http://gaia.example.internal
-GAIA_AUTH_KEY=<GAIA에서-발급받은-인증키>
-GAIA_SERVICE_ID=<테스트할-GAIA-Agent-svc_id>
-GAIA_TIMEOUT_SECONDS=10
+GAIA_API_URL=http://gaia.api.skhynix.com/v2/agents/<GAIA_AGENT_ID>/external
+GAIA_AUTH_KEY=<GAIA_AUTH_KEY>
 
-# CUBE 발송
-CUBE_SEND_URL=<CUBE-담당자가-확인한-Rich-Notification-발송-URL>
-CUBE_BOT_ID=<CUBE-봇-ID>
-CUBE_BOT_TOKEN=<CUBE-봇-토큰>
-CUBE_TIMEOUT_SECONDS=20
-
-# CUBE callback 응답값: CUBE 공식 가이드에서 다른 값이 확인되면 그때만 변경
-CUBE_CALLBACK_SUCCESS_STATUS=success
-CUBE_CALLBACK_IGNORED_STATUS=ignored
-
-# GAIA 실패 또는 최종 답변 추출 실패 때 사용자에게 한 번 보낼 안전한 문구
-USER_ERROR_MESSAGE=요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.
+CUBE_SEND_URL=http://cube.skhynix.com:8888/legacy/richnotification
+CUBE_BOT_ID=<CUBE_BOT_ID>
+CUBE_BOT_TOKEN=<CUBE_BOT_TOKEN>
+CUBE_BOT_FROMUSERNAME_JSON=["<한글 이름>","<일본어 이름>","<영어 이름>","<중문 이름>","<기타 이름>"]
 ```
 
-이 경우 `CUBE_CHANNEL_GAIA_SERVICE_MAP_JSON`은 비워 두거나 주석 상태로 둔다. 어떤 CUBE 채널에서 질문하더라도 `GAIA_SERVICE_ID`의 Agent로 간다.
+`GAIA_API_URL` 안에 Agent 식별자가 이미 들어 있으므로 서버는 다른 주소 조합이나 채널별 Agent 선택을 하지 않는다.
 
-### 여러 CUBE 채널을 서로 다른 GAIA Agent에 연결하는 경우
+## 2. HCP에 올릴 때 확인할 것
 
-채널 하나가 Agent 하나에 고정되는 현재 정책을 여러 채널에 적용하려면 아래처럼 한 줄 JSON을 넣는다.
+HCP의 배포 설정에서 다음 두 항목을 확인한다.
 
-```dotenv
-CUBE_CHANNEL_GAIA_SERVICE_MAP_JSON={"TEST_CHANNEL_A":"GAIA_SERVICE_ID_A","TEST_CHANNEL_B":"GAIA_SERVICE_ID_B"}
+1. HCP 서비스가 위 callback URL의 `/api/v1/receiver` 요청을 이 앱으로 전달하는지
+2. HCP ingress의 backend/target port가 앱의 고정 포트 `5000`인지
+
+앱의 고정 실행 코드는 바꾸지 않는다.
+
+```python
+if __name__ == "__main__":
+    uvicorn.run("__main__:application", host="0.0.0.0", port=5000, reload=False)
 ```
 
-매핑의 동작은 아래와 같다.
+HCP 실행 명령은 다음과 같다.
 
-| callback의 채널 ID | `GAIA_SERVICE_ID` | 채널 매핑 | 실제 선택 Agent |
-| --- | --- | --- | --- |
-| `TEST_CHANNEL_A` | 있음 | `TEST_CHANNEL_A` 있음 | 매핑의 `GAIA_SERVICE_ID_A` |
-| 매핑에 없는 채널 | 있음 | 없음 | 기본 `GAIA_SERVICE_ID` |
-| 매핑에 없는 채널 | 비어 있음 | 없음 | 400 오류, GAIA 호출 안 함 |
+```powershell
+python app.py
+```
 
-알 수 없는 채널을 기본 Agent로 보내고 싶지 않다면 `GAIA_SERVICE_ID=`처럼 빈 값으로 두고, 테스트할 모든 채널을 JSON 매핑에 넣는다.
+HCP의 실행 환경에서 `python` 명령을 지정하는 방식은 배포 화면의 기준을 따른다. 로컬에서 이 명령을 실행해도 HCP URL이 자동으로 생성되지는 않는다.
 
-`GAIA_SERVICE_ID=PASTE_DEFAULT_GAIA_SERVICE_ID_HERE`처럼 예제 placeholder를 남겨 두면 안 된다. 실제 `svc_id`로 바꾸거나 엄격한 채널 매핑을 쓸 경우 값 전체를 비운다.
+## 3. 서버가 켜졌는지 확인하기
 
-### 설정값과 실제 API 요청의 연결
+브라우저 또는 PowerShell에서 다음 주소를 호출한다.
 
-질문이 들어오면 서버는 아래처럼 값을 사용한다.
+```powershell
+Invoke-RestMethod "http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/health"
+```
 
-| 들어온 값 또는 설정 | 서버가 하는 일 |
+정상이라면 다음과 비슷한 JSON을 받는다.
+
+```json
+{
+  "status": "ok",
+  "callback_path": "/api/v1/receiver"
+}
+```
+
+이 확인은 GAIA나 CUBE에 메시지를 보내지 않는다.
+
+## 4. 내가 질문을 직접 입력해 GAIA와 CUBE 발송을 시험하기
+
+CUBE callback을 흉내 내지 않고, 개발자가 질문·수신자·채널을 코드에 직접 입력해 전체 발송을 시험할 수 있다. `manual_gaia_cube_send.py`는 HTTP API가 아니며, 외부에 공개되는 `/send` 주소도 만들지 않는다.
+
+HCP의 실행 환경에서 `production_callback_server/manual_gaia_cube_send.py`를 연다. 파일 맨 위에서 아래 다섯 값을 확인하고 실제 허가된 시험 값으로 바꾼다.
+
+```python
+MESSAGE = "GAIA-CUBE 실제 연동 테스트입니다. 한 줄로 인사해 주세요."
+RECEIVER_ID = "AUTHORIZED_EMPLOYEE_ID"
+# 사번으로만 발송할 때는 비워 둔다.
+CHANNEL_ID = ""
+
+# GAIA 권한 사번이 수신자와 다를 때만 입력한다.
+GAIA_USER_ID = ""
+
+# 빈 문자열이면 새 대화를 시작한다.
+SESSION_ID = ""
+```
+
+`MESSAGE`와 `RECEIVER_ID`는 반드시 입력한다. `CHANNEL_ID`는 선택 사항이며, 사번으로만 발송할 때는 비워 둔다. `GAIA_USER_ID`를 비워 두면 `RECEIVER_ID`를 GAIA 사용자 ID로 사용한다. `SESSION_ID`를 비워 두면 매번 새 GAIA 대화를 시작한다. 이 도구는 `app.py`와 같은 `.env`/환경변수 설정을 사용하며, 키와 토큰은 이 파일이 아니라 `.env` 또는 HCP Secret/환경변수에만 둔다.
+
+값을 저장한 뒤 HCP 실행 환경의 `production_callback_server` 폴더에서 아래 한 줄을 실행한다.
+
+```powershell
+python manual_gaia_cube_send.py
+```
+
+이 명령은 현재 폴더의 `.env` 또는 HCP 환경변수에서 `GAIA_API_URL`, `GAIA_AUTH_KEY`, CUBE 봇 설정을 읽어 다음 순서로 **실제 외부 호출**을 수행한다.
+
+```text
+직접 입력한 질문
+  → GAIA_API_URL 호출
+  → GAIA 최종 답변 추출
+  → CUBE Rich Notification 발송
+  → 지정한 수신자 사번의 CUBE에서 답변 확인
+```
+
+실행 결과는 GAIA session ID와 답변을 PowerShell에 출력한다. 그래도 실제 발송 성공은 수신자 사번의 CUBE에 답변이 도착했는지까지 확인해야 한다. 이 시험은 실제 메시지를 전송하므로, 본인 또는 허가된 테스트 수신자만 사용한다.
+
+## 5. CUBE가 등록 URL을 호출할 때의 처리 순서
+
+CUBE callback에는 사용자, 채널, 질문이 들어 있다. 서버는 아래 값을 읽는다.
+
+| 필요한 정보 | CUBE callback 위치 |
 | --- | --- |
-| CUBE 사용자 ID | GAIA 요청 header의 `X-Gaia-User-Id`와 body의 `user_id`에 같은 값으로 넣음 |
-| CUBE 채널 ID | GAIA Agent 매핑 선택 및 CUBE 답변의 `channelid[0]`에 사용 |
-| CUBE `processdata` | GAIA body의 `input_value`에 사용 |
-| 서버가 만든 `gc_<UUID>` 또는 GAIA가 반환한 값 | GAIA body의 `session_id`에 사용 |
-| `GAIA_SERVICE_ID` 또는 채널 매핑 값 | `POST /v2/agents/{svc_id}/external`의 `{svc_id}`에 사용 |
-| GAIA 최종 답변 | CUBE Rich Notification의 `control.text[0]`에 사용 |
+| 사용자 ID | `richnotificationmessage.process.userId` 또는 `header.from.uniquename` |
+| 채널 ID | `richnotificationmessage.process.channelId` 또는 `header.to.channelid[0]` |
+| 질문 | `richnotificationmessage.process.processdata` |
 
-중요한 점은 `GAIA_USER_ID` 같은 별도 설정값이 없다는 것이다. 현재 구현은 callback을 보낸 CUBE 사용자의 ID를 그대로 GAIA 권한 header와 body에 넣는다. 따라서 CUBE의 사용자 ID가 GAIA에서 권한 있는 사번과 다르면 실제 실행은 실패할 수 있다. 이 경우 ID 매핑 규칙을 GAIA/CUBE 담당자에게 먼저 확인한다.
+header와 process에 같은 ID가 모두 들어 있으면 둘은 반드시 일치해야 한다. 불일치하면 잘못된 요청으로 처리하고 GAIA에 보내지 않는다.
 
-## 6. 실제 호출 없이 설정만 검사하기
+정상 요청의 내부 흐름은 다음과 같다.
 
-아래 검사는 `.env` 형식과 필수값을 읽기만 하며 GAIA나 CUBE에 요청을 보내지 않는다.
+1. `사용자 ID + 채널 ID`로 현재 GAIA session ID를 찾거나 새로 만든다.
+2. GAIA에 아래 형식으로 요청한다.
 
-```powershell
-.\.venv\Scripts\python.exe -c "from app import Settings; s=Settings.from_env(); print('Configuration parsed successfully.'); print('default_agent_configured=', bool(s.default_gaia_service_id)); print('channel_map_count=', len(s.channel_service_map))"
-```
+   ```json
+   {
+     "input_value": "CUBE에서 받은 질문",
+     "user_id": "CUBE 사용자 ID",
+     "session_id": "현재 세션 ID"
+   }
+   ```
 
-성공하면 다음처럼 설정이 읽혔다는 결과만 나온다.
+3. GAIA 응답의 마지막 Chat Output에서 `results.gaia_response.data.answer`를 우선 읽는다.
+4. 추출한 답변을 CUBE Rich Notification API로 보낸다. 이 payload의 `content[0].process`는 비어 있지 않게 구성된다.
+5. callback을 보낸 쪽에는 처리 결과 JSON을 돌려준다.
 
-```text
-Configuration parsed successfully.
-default_agent_configured= True
-channel_map_count= 0
-```
+같은 사용자와 같은 채널의 다음 질문은 GAIA가 돌려준 session ID를 재사용한다. 단, 이 정보는 메모리에만 있으므로 HCP 앱 재시작 뒤에는 새 대화가 시작된다.
 
-오류가 나오면 서버를 시작하거나 실제 callback을 보내지 말고 `.env`를 먼저 고친다. 특히 `GAIA_AUTH_KEY`, `CUBE_SEND_URL`, `CUBE_BOT_ID`, `CUBE_BOT_TOKEN`은 비어 있거나 `PASTE_...` 값이면 시작에 실패한다.
+## 6. callback 형식 전체 흐름 시험 (선택)
 
-## 7. 먼저 내 PC에서 서버 기동 확인하기
+아직 CUBE 등록을 기다리는 동안에도, PowerShell에서 CUBE callback과 같은 형태의 JSON을 HCP URL로 보내 전체 흐름을 시험할 수 있다. 이 요청은 **실제 GAIA를 호출하고 실제 CUBE 채널에 답변을 보낸다.** 반드시 본인 또는 허가받은 테스트 사용자와 채널을 사용한다. 다만 직접 질문을 입력해 발송만 확인하려면 앞 절의 `manual_gaia_cube_send.py`가 더 단순하다.
 
-처음에는 다른 시스템이 접근하지 못하게 localhost에서 기동한다.
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000
-```
-
-이 PowerShell 창은 서버가 실행 중이므로 열어 둔다. 새 PowerShell 창에서 다음을 실행한다.
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
-```
-
-다음처럼 나오면 서버가 `.env`를 읽고 정상 기동한 것이다.
-
-```text
-status mode       configured_default_agent
------- ----       ------------------------
-ok     production yes
-```
-
-이 단계의 `/health` 호출은 GAIA나 CUBE를 호출하지 않는다.
-
-기동을 마쳤으면 서버 실행 창에서 `Ctrl+C`로 종료한다.
-
-## 8. CUBE가 접근할 수 있게 서버 실행하기
-
-CUBE 연동 시험 직전에 서버를 아래처럼 다시 시작한다.
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn app:app --host 0.0.0.0 --port 8000
-```
-
-이 명령은 서버 PC의 네트워크 인터페이스에서 8000 포트를 듣게 한다. CUBE에 등록할 실제 주소를 찾을 때는 사내에서 승인된 DNS 이름을 우선 사용한다.
-
-```powershell
-hostname
-ipconfig
-```
-
-`hostname` 결과 또는 사내 운영자가 알려 준 내부 DNS 이름을 사용해, 예를 들어 다음과 같은 callback URL을 만든다.
-
-```text
-http://MY-SERVER-NAME:8000/api/qna
-```
-
-같은 PC에서 `127.0.0.1`로 health가 된다고 CUBE 서버에서도 접속되는 것은 아니다. CUBE와 같은 사내망의 다른 PC에서 아래처럼 포트 접근을 확인한다.
-
-```powershell
-Test-NetConnection -ComputerName MY-SERVER-NAME -Port 8000
-```
-
-`TcpTestSucceeded : True`가 나와야 한다. 실패하면 서버 주소, Windows 방화벽, 사내망 방화벽 또는 CUBE 측 접근 허용을 확인한다. 다른 프로그램을 임의로 종료하거나 포트를 강제로 열지 않는다.
-
-## 9. CUBE에 callback URL을 등록하기
-
-CUBE의 봇 또는 채널 설정 화면에서 callback URL을 등록할 때 아래 값을 사용한다.
-
-```text
-HTTP method: POST
-Callback URL: http://MY-SERVER-NAME:8000/api/qna
-Content-Type: application/json
-```
-
-제공된 문서에는 CUBE 관리 화면의 정확한 메뉴와 callback 인증 설정 방법이 없다. 따라서 CUBE 담당자에게 등록을 요청하거나, 제공받은 봇 설정 절차에서 `callbackaddress` 또는 callback URL 항목을 찾는다.
-
-일반 텍스트 질문을 먼저 시험한다. 현재 운영 서버는 Rich Message의 동적 선택값 중 `UserSelection`과 `SendBtn`만 처리한다. 다른 `processid`를 사용하는 버튼/라디오는 실제 계약에 맞춰 코드 확장이 끝난 뒤 시험한다.
-
-## 10. CUBE 등록 전에 서버 → GAIA → CUBE를 한 번 시험하기
-
-아래 테스트는 CUBE가 보내는 callback을 PowerShell로 흉내 낸다. **실제 GAIA와 실제 CUBE 발송 API를 호출하므로**, 본인 또는 허가받은 테스트 사용자·테스트 채널 값만 넣는다.
-
-서버가 8단계의 PowerShell 창에서 실행 중인 상태에서, 새 PowerShell 창을 열어 다음을 실행한다.
+새 PowerShell 창에서 아래를 실행한다. `AUTHORIZED_EMPLOYEE_ID`와 `APPROVED_CUBE_TEST_CHANNEL_ID`만 실제 승인된 값으로 바꾼다.
 
 ```powershell
 $callback = @{
   richnotificationmessage = @{
     process = @{
       processdata = "GAIA-CUBE 실제 연동 테스트입니다. 한 줄로 인사해 주세요."
-      userId = "<GAIA-권한이-있는-테스트-사번>"
-      channelId = "<허가받은-CUBE-테스트-채널-ID>"
+      userId = "AUTHORIZED_EMPLOYEE_ID"
+      channelId = "APPROVED_CUBE_TEST_CHANNEL_ID"
     }
   }
 }
@@ -265,78 +184,40 @@ $body = $callback | ConvertTo-Json -Depth 8
 
 Invoke-RestMethod `
   -Method Post `
-  -Uri "http://127.0.0.1:8000/api/qna" `
+  -Uri "http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/api/v1/receiver" `
   -ContentType "application/json" `
   -Body $body
 ```
 
-성공하면 PowerShell에는 다음과 비슷한 callback 처리 결과가 나온다.
+성공 시 PowerShell에는 다음과 비슷한 처리 결과가 보인다.
 
-```text
-status  : success
-message : GAIA answer was sent to CUBE.
+```json
+{
+  "status": "success",
+  "message": "GAIA answer was sent to CUBE."
+}
 ```
 
-그리고 지정한 테스트 CUBE 채널에는 GAIA Agent의 실제 답변이 나타나야 한다. PowerShell의 `message`는 사용자에게 보일 Agent 답변 자체가 아니다.
+이 JSON은 CUBE 시스템에 돌려주는 **처리 결과 확인(ACK)** 이며 GAIA의 답변 본문이 아니다. 현재 최소 구현은 worker 없이 한 요청 안에서 GAIA 호출과 CUBE 발송까지 마친 뒤 이 결과를 반환한다. 실제 답변은 `APPROVED_CUBE_TEST_CHANNEL_ID`의 CUBE 채팅창에 도착해야 한다. 즉, PowerShell 응답과 CUBE 채팅창을 모두 확인한다.
 
-위 수동 요청에는 `header`를 넣지 않았는데, 이는 제공된 일반 텍스트 callback 예시에 맞춘 것이다. CUBE가 실제로 `header`와 `process` 값을 모두 보내는 경우 서버는 둘을 비교하며, 사용자 또는 채널 값이 다르면 HTTP 400으로 요청을 거부한다.
+## 7. CUBE 등록 후에는 무엇이 달라지는가
 
-## 11. 실제 CUBE 채팅에서 시험하기
+수동 PowerShell 요청 대신 CUBE가 같은 URL로 POST 요청을 보낸다는 점만 다르다. 사용자가 CUBE 채널에 입력하면 자동으로 아래가 실행된다.
 
-callback URL 등록과 10단계의 수동 시험이 성공한 뒤에만 진행한다.
+```text
+사용자 질문 → CUBE callback → HCP 서버 → GAIA → CUBE 답변
+```
 
-1. 서버 PowerShell 창이 계속 실행 중인지 확인한다.
-2. 등록한 CUBE 테스트 채널에서 일반 텍스트 질문을 보낸다.
-3. 서버 PowerShell 창에 `POST /api/qna` 요청이 보이는지 확인한다.
-4. 같은 CUBE 채널에서 봇의 답변이 오는지 확인한다.
-5. 서버를 종료하지 않은 상태에서 이어지는 질문을 한 번 더 보낸다.
+서버에는 사용자가 직접 호출할 공개 `/send` endpoint가 없다. `manual_gaia_cube_send.py`는 서버 내부에서 사람이 실행하는 시험 도구일 뿐 HTTP endpoint가 아니다.
 
-두 번째 질문은 첫 답변을 알아야 답할 수 있는 내용으로 보내면 세션 동작을 쉽게 확인할 수 있다. 예를 들면 첫 질문 뒤에 “방금 답변을 한 문장으로 다시 요약해줘”라고 보낸다.
+## 8. 문제를 확인하는 순서
 
-현재 구현은 같은 `사용자 ID + CUBE 채널 ID`에 대해 실행 중인 서버 메모리 안에서 GAIA session ID를 재사용한다. 첫 요청에는 `gc_<UUID>`를 만들고, GAIA가 루트 `session_id`를 반환하면 이후 요청에는 그 반환값을 사용한다. 서버를 재시작하면 새 session ID가 만들어진다. 운영 서버에는 현재 세션 목록 또는 과거 대화를 조회하는 endpoint가 없고, 영구 저장도 하지 않는다.
+| 증상 | 먼저 확인할 것 |
+| --- | --- |
+| `/health`가 안 열림 | HCP 서비스 기동 여부와 ingress의 5000 포트 연결 |
+| callback이 HCP에 도착하지 않음 | CUBE 등록 URL, CUBE → HCP 방화벽/허용 IP |
+| callback은 왔지만 답변이 없음 | `GAIA_API_URL`, GAIA 권한 키, callback 사용자 ID가 GAIA 권한 사번인지 |
+| GAIA는 성공했는데 CUBE 답변이 없음 | `CUBE_SEND_URL`, 봇 ID·토큰, 서비스 → CUBE 방화벽 |
+| 앱 재시작 뒤 앞 대화를 잊음 | 현재 구현은 session ID를 메모리에만 저장함 |
 
-## 12. 성공·실패 때 무엇을 보면 되는가
-
-| 상황 | callback HTTP 결과 | CUBE 채팅창 | 먼저 확인할 것 |
-| --- | --- | --- | --- |
-| 정상 | 200, `status=success` | GAIA 답변 표시 | 정상 |
-| 최초 진입 sentinel | 200, `status=ignored` | 답변 없음 | `!@#HelloChatBot#@!`는 제어 메시지라 정상 |
-| callback JSON 오류 또는 ID 불일치 | 400 | 답변 없음 | CUBE payload의 `header`/`process` 값 |
-| GAIA 호출 또는 최종 답변 추출 실패 | 502 | `USER_ERROR_MESSAGE`가 보일 수 있음 | GAIA 키, `svc_id`, 사용자 권한, GAIA 네트워크 |
-| CUBE 답변 발송 실패 | 502 | 답변 없음 | `CUBE_SEND_URL`, 봇 ID/토큰, CUBE 네트워크 |
-
-서버는 실제 키와 전체 사용자 질문을 로그에 남기지 않는다. 터미널의 오류 분류를 확인하되, 오류 메시지나 `.env` 내용을 다른 곳에 복사하지 않는다.
-
-## 13. 내일 시험 체크리스트
-
-- [ ] 테스트할 CUBE 채널 ID를 받았다.
-- [ ] 테스트할 GAIA Agent의 `svc_id`와 `GAIA_AUTH_KEY`를 받았다.
-- [ ] CUBE 봇 ID·봇 토큰·실제 `CUBE_SEND_URL`을 받았다.
-- [ ] CUBE 사용자의 ID가 GAIA 권한용 사번과 같은지 확인했다.
-- [ ] `.env`에 실제 값을 입력했고 Git에 추가하지 않았다.
-- [ ] 설정 파싱 검사와 `GET /health`가 성공했다.
-- [ ] 서버에서 GAIA와 CUBE 발송 URL로 나가는 사내망 연결이 허용된다.
-- [ ] CUBE가 `http://<서버이름>:8000/api/qna`에 들어올 수 있다.
-- [ ] 먼저 PowerShell 수동 callback 테스트를 테스트 채널에서 성공했다.
-- [ ] 그 뒤 CUBE 채팅에서 일반 텍스트 질문을 성공했다.
-
-## 14. 현재 구현의 범위와 주의점
-
-이 서버는 내일의 기본 연동 시험을 위한 동기형 구현이다. 다음 기능은 아직 포함하지 않는다.
-
-- callback 서명/인증 검증
-- 메시지 중복 방지와 재전송 처리
-- MongoDB 같은 영구 세션·대화 기록 저장
-- 세션 또는 대화 내용 조회 API
-- worker, outbox, 재시도 큐, 스케줄러
-- `UserSelection`, `SendBtn` 이외의 동적 Rich Message 선택값 처리
-
-따라서 callback 인증 규칙과 timeout·재전송 정책을 확인하기 전에는 이 서버를 인터넷에 공개하지 않는다. 사내 테스트 채널에서 기본 연결을 검증한 뒤, 운영 정책이 확정되면 그 계약에 맞춰 보완한다.
-
-## 참고 문서
-
-- [운영 서버 README](README.md)
-- [GAIA 외부 Langflow 실행 API](../base_guide/gaia/01_external_langflow_api.md)
-- [GAIA 응답 최종 답변 추출 규칙](../base_guide/gaia/02_response_extraction.md)
-- [CUBE callback 계약](../base_guide/cube/02_callback_api.md)
-- [CUBE Rich Notification 발송 계약](../base_guide/cube/01_message_send_api.md)
+callback 인증/서명, CUBE 재전송, CUBE 메시지 중복 방지 정책은 제공된 계약에서 확정되지 않았다. 실제 사용자 범위를 넓히기 전에는 CUBE 담당자와 이 정책 및 방화벽 설정을 확인한다.

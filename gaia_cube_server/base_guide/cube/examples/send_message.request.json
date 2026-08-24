@@ -3,6 +3,13 @@
     "header": {
       "from": "YOUR_BOT_ID",
       "token": "YOUR_BOT_TOKEN",
+      "fromusername": [
+        "BOT_NAME_KOREAN",
+        "BOT_NAME_JAPANESE",
+        "BOT_NAME_ENGLISH",
+        "BOT_NAME_CHINESE",
+        "BOT_NAME_OTHER"
+      ],
       "to": {
         "uniquename": [
           "TARGET_USER_ID"
@@ -20,19 +27,19 @@
           "row": [
             {
               "bgcolor": "#ffffff",
-              "border": false,
+              "border": "false",
               "align": "",
               "width": "",
               "column": [
                 {
                   "bgcolor": "#ffffff",
-                  "border": false,
-                  "align": "",
+                  "border": "false",
+                  "align": "left",
                   "valign": "middle",
                   "width": "100%",
                   "type": "label",
                   "control": {
-                    "active": true,
+                    "active": "true",
                     "text": [
                       "안녕하세요! Python 봇이 보낸 테스트 메시지입니다."
                     ],
@@ -43,8 +50,21 @@
             }
           ]
         },
-        "process": {}
+        "process": {
+          "callbacktype": "url",
+          "callbackaddress": "",
+          "processdata": "",
+          "processtype": "",
+          "summary": ["", "", "", "", ""],
+          "session": {
+            "sessionid": "",
+            "sequence": "1"
+          },
+          "mandatory": [],
+          "requestid": ["request_cond_change_main"]
+        }
       }
-    ]
+    ],
+    "result": ""
   }
 }

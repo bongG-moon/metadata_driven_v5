@@ -171,7 +171,7 @@
         },
         "process": {
           "callbacktype": "url",
-          "callbackaddress": "http://YOUR_SERVER/api/qna",
+          "callbackaddress": "http://YOUR_SERVER/api/v1/receiver",
           "mandatory": [
             {
               "processid": "UserSelection",

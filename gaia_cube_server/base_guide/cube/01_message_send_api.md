@@ -6,16 +6,19 @@
 - 수신일: 2026-08-22
 - 용도: 봇이 한 명 이상의 CUBE 사용자와 채널에 텍스트 메시지를 발송한다.
 - 원문의 들여쓰기는 복원했지만 필드명과 계층은 제공된 예시를 유지했다.
+- 2026-08-24 정정: 일반 텍스트 답변의 `content[0].process`를 `{}`로 비우면 CUBE 메시지 발송이 동작하지 않는 것을 실제로 확인했다. 현재 서버는 사용자가 제공한 동작 확인 payload의 채워진 process 구조를 사용한다.
 
 ## Endpoint
 
 ```text
-POST http://cube.example.internal/legacy/richnotification
+POST <CUBE_SEND_URL>
 Content-Type: application/json
 ```
 
-- 제공된 값은 **CUBE 개발 서버 주소**다.
-- 운영 주소, DNS, HTTPS 지원 여부와 네트워크 접근 정책은 구현 전에 별도로 확인한다.
+- 새 네트워크 안내에서 확인된 CUBE 개발 host:port는 `10.158.122.139:8888`이다.
+- 운영 host:port는 `cube.skhynix.com:8888`이다.
+- 사용자가 실제 발송에 성공했다고 제공한 운영 endpoint는 `http://cube.skhynix.com:8888/legacy/richnotification`이다. 운영 환경의 `.env`에는 이 전체 URL을 사용한다.
+- 개발 host `10.158.122.139:8888`에서도 같은 `/legacy/richnotification` path를 쓰는지는 아직 별도 확인해야 한다. 개발 환경에는 담당자가 확인한 전체 URL을 입력한다.
 
 ## 요청 구조
 
@@ -24,17 +27,19 @@ richnotification
 ├─ header
 │  ├─ from
 │  ├─ token
+│  ├─ fromusername[5]
 │  └─ to
 │     ├─ uniquename[]
 │     └─ channelid[]
-└─ content[]
+├─ content[]
    ├─ header
    ├─ body
    │  └─ row[]
    │     └─ column[]
    │        ├─ type = "label"
    │        └─ control.text[]
-   └─ process
+   └─ process (빈 객체 금지)
+└─ result = ""
 ```
 
 ## 주요 필드
@@ -43,12 +48,14 @@ richnotification
 | --- | --- | --- | --- |
 | `richnotification.header.from` | string | 예 | 메시지를 보내는 봇 사번/ID |
 | `richnotification.header.token` | string | 예 | 봇 인증 토큰 |
+| `richnotification.header.fromusername` | string[5] | 예 | 한글·일본어·영어·중문·기타 순서의 봇 표시 이름 |
 | `richnotification.header.to.uniquename` | string[] | 예 | 메시지를 받을 사용자 사번 목록 |
 | `richnotification.header.to.channelid` | string[] | 예 | 메시지를 보낼 채널 ID 목록 |
 | `richnotification.content` | object[] | 예 | 표시할 메시지 블록 목록 |
 | `content[].body.row[].column[].type` | string | 예 | 텍스트 예시는 `label` |
 | `content[].body.row[].column[].control.text` | string[] | 예 | 표시할 텍스트 목록 |
-| `content[].process` | object | 예시상 포함 | 추가 동작이 없으면 빈 객체 |
+| `content[].process` | object | 예 | 일반 텍스트 답변용 필수 process 메타데이터. 빈 객체로 보내면 안 됨 |
+| `richnotification.result` | string | 예 | 실제 동작한 예시와 같은 빈 문자열 |
 
 추가 FastAPI 예시에서 `column[].type`으로 `image`, `radio`, `button`도 확인되었다. 상호작용형 메시지의 `process` 계약은 `03_fastapi_rich_message_and_fallback.md`를 따른다.
 
@@ -59,6 +66,31 @@ richnotification
 - `uniquename`: `["12345"]`
 - `channelid`: `["channel_01"]`
 - `control.text`: `["안녕하세요"]`
+- `fromusername`: `["한글 이름", "일본어 이름", "영어 이름", "중문 이름", "기타 이름"]`
+- `summary`: `["", "", "", "", ""]`
+- `requestid`: `["request_cond_change_main"]`
+
+## 일반 텍스트 답변용 필수 `process`
+
+사용자가 실제 발송에 성공했다고 제공한 코드에서는 아래 process를 `content[0]`에 넣는다. 이는 버튼·라디오 상호작용 process와 구분되는, GAIA 답변을 일반 텍스트로 보낼 때의 고정 구조다.
+
+```json
+{
+  "callbacktype": "url",
+  "callbackaddress": "",
+  "processdata": "",
+  "processtype": "",
+  "summary": ["", "", "", "", ""],
+  "session": {
+    "sessionid": "",
+    "sequence": "1"
+  },
+  "mandatory": [],
+  "requestid": ["request_cond_change_main"]
+}
+```
+
+`callbacktype`가 `url`이면서 `callbackaddress`가 빈 문자열인 형태도 확인된 동작 코드와 동일하게 유지한다. `process`를 `{}`로 바꾸지 않는다.
 
 ## 정규화한 JSON 예시
 
@@ -70,6 +102,13 @@ richnotification
     "header": {
       "from": "YOUR_BOT_ID",
       "token": "YOUR_BOT_TOKEN",
+      "fromusername": [
+        "BOT_NAME_KOREAN",
+        "BOT_NAME_JAPANESE",
+        "BOT_NAME_ENGLISH",
+        "BOT_NAME_CHINESE",
+        "BOT_NAME_OTHER"
+      ],
       "to": {
         "uniquename": ["TARGET_USER_ID"],
         "channelid": ["TARGET_CHANNEL"]
@@ -83,19 +122,19 @@ richnotification
           "row": [
             {
               "bgcolor": "#ffffff",
-              "border": false,
+              "border": "false",
               "align": "",
               "width": "",
               "column": [
                 {
                   "bgcolor": "#ffffff",
-                  "border": false,
-                  "align": "",
+                  "border": "false",
+                  "align": "left",
                   "valign": "middle",
                   "width": "100%",
                   "type": "label",
                   "control": {
-                    "active": true,
+                    "active": "true",
                     "text": ["안녕하세요! Python 봇이 보낸 테스트 메시지입니다."],
                     "color": "#000000"
                   }
@@ -104,16 +143,28 @@ richnotification
             }
           ]
         },
-        "process": {}
+        "process": {
+          "callbacktype": "url",
+          "callbackaddress": "",
+          "processdata": "",
+          "processtype": "",
+          "summary": ["", "", "", "", ""],
+          "session": {"sessionid": "", "sequence": "1"},
+          "mandatory": [],
+          "requestid": ["request_cond_change_main"]
+        }
       }
-    ]
+    ],
+    "result": ""
   }
 }
 ```
 
+`border`와 `active`는 Python Boolean이 아니라 동작 확인 코드와 같은 문자열 `"false"`, `"true"`로 유지한다.
+
 ## 들여쓰기를 복원한 Python 예시
 
-아래 코드는 제공된 예시를 읽기 쉬운 형태로 복원한 참고 코드다. 실제 서버 구현은 설정 객체와 실제/더미 CUBE 어댑터를 분리한다.
+아래 코드는 새로 제공된 동작 확인 예시를 일반화한 참고 코드다. 현재 HCP callback 서버는 같은 JSON 구조를 만들어 실제 CUBE 발송 API를 호출한다.
 
 ```python
 import requests
@@ -124,15 +175,20 @@ def send_chatops_message(
     api_url: str,
     bot_id: str,
     bot_token: str,
+    bot_fromusername: list[str],
     receiver_id: str,
     channel_id: str,
     message_text: str,
 ) -> requests.Response:
+    if len(bot_fromusername) != 5 or not all(bot_fromusername):
+        raise ValueError("bot_fromusername must contain five display names")
+
     payload = {
         "richnotification": {
             "header": {
                 "from": bot_id,
                 "token": bot_token,
+                "fromusername": bot_fromusername,
                 "to": {
                     "uniquename": [receiver_id],
                     "channelid": [channel_id],
@@ -146,19 +202,19 @@ def send_chatops_message(
                         "row": [
                             {
                                 "bgcolor": "#ffffff",
-                                "border": False,
+                                "border": "false",
                                 "align": "",
                                 "width": "",
                                 "column": [
                                     {
                                         "bgcolor": "#ffffff",
-                                        "border": False,
-                                        "align": "",
+                                        "border": "false",
+                                        "align": "left",
                                         "valign": "middle",
                                         "width": "100%",
                                         "type": "label",
                                         "control": {
-                                            "active": True,
+                                            "active": "true",
                                             "text": [message_text],
                                             "color": "#000000",
                                         },
@@ -167,22 +223,25 @@ def send_chatops_message(
                             }
                         ],
                     },
-                    "process": {},
+                    "process": {
+                        "callbacktype": "url",
+                        "callbackaddress": "",
+                        "processdata": "",
+                        "processtype": "",
+                        "summary": ["", "", "", "", ""],
+                        "session": {"sessionid": "", "sequence": "1"},
+                        "mandatory": [],
+                        "requestid": ["request_cond_change_main"],
+                    },
                 }
             ],
+            "result": "",
         }
     }
-    response = requests.post(
-        api_url,
-        json=payload,
-        headers={"Content-Type": "application/json"},
-        timeout=(5, 20),
-    )
+    response = requests.post(api_url, json=payload, timeout=15)
     response.raise_for_status()
     return response
 ```
-
-원문은 `data=json.dumps(payload)`를 사용한다. 구현에서는 같은 JSON을 보내는 `json=payload`를 사용할 수 있다.
 
 ## callback 요청자에게 답변할 때의 매핑
 

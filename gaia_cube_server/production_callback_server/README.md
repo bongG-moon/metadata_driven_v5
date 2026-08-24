@@ -1,95 +1,99 @@
-# 운영용 GAIA-CUBE Callback Server
+# HCP GAIA-CUBE Callback Server
 
-이 폴더는 현재 합의된 **기본 동기 흐름**만 실행한다.
-
-처음 실제 연동을 시험한다면 [PRODUCTION_SERVER_RUN_GUIDE.md](PRODUCTION_SERVER_RUN_GUIDE.md)의 단계별 실행 가이드를 먼저 따른다.
+이 폴더는 HCP에서 실행되는 하나의 콜백 서버다. 사용자가 CUBE 채널에 질문하면 서버가 GAIA에 질문을 전달하고, GAIA의 최종 답변을 다시 CUBE 채팅창으로 보낸다.
 
 ```text
-CUBE callback 수신
-→ 사용자·채널·질문 추출
-→ 채널에 고정된 GAIA Agent 선택
-→ 같은 사용자·채널의 GAIA session_id 사용
-→ GAIA API 호출 및 최종 Chat Output 답변 추출
-→ CUBE Rich Notification 발송
-→ callback 처리 결과 반환
+CUBE 사용자 질문
+  → HCP의 POST /api/v1/receiver
+  → GAIA_API_URL 호출
+  → GAIA 최종 답변 추출
+  → CUBE Rich Notification 발송
 ```
 
-MongoDB, worker, outbox, 재시도 큐, 스케줄러는 포함하지 않는다. 세션 매핑은 프로세스 메모리에만 있으므로 서버를 재시작하면 새 GAIA `session_id`가 만들어진다.
+## 고정 주소
 
-## 준비
+서버가 받는 실제 callback 경로는 하나뿐이다.
 
-PowerShell에서 이 폴더로 이동한 뒤 실행한다.
+```text
+POST /api/v1/receiver
+```
+
+등록된 HCP callback URL:
+
+```text
+http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/api/v1/receiver
+```
+
+별도의 공개 메시지 발송 endpoint는 제공하지 않는다. 임의의 외부 요청이 봇을 메시지 중계기로 사용하는 일을 막기 위한 것이다. 대신 개발자가 직접 질문을 넣어 GAIA 실행과 CUBE 발송만 시험할 때는 명령줄 도구 `manual_gaia_cube_send.py`를 사용한다. 이 도구는 HTTP endpoint가 아니며, HCP 실행 환경의 서버 폴더에서 사람이 실행한다.
+
+## 필요한 설정
+
+`.env.example`을 복사하거나 HCP Secret/환경변수에 아래 값을 넣는다.
+
+| 설정 | 의미 |
+| --- | --- |
+| `GAIA_API_URL` | **완성된** GAIA Agent API URL. Agent 식별자까지 포함한 전체 주소를 그대로 넣는다. |
+| `GAIA_AUTH_KEY` | GAIA 인증 키 |
+| `CUBE_SEND_URL` | CUBE Rich Notification 발송 전체 URL |
+| `CUBE_BOT_ID`, `CUBE_BOT_TOKEN` | CUBE 봇 인증 정보 |
+| `CUBE_BOT_FROMUSERNAME_JSON` | 한글·일본어·영어·중문·기타 순서의 봇 이름 5개 JSON 배열 |
+
+예를 들어 `GAIA_API_URL`에는 다음처럼 전체 URL을 넣는다.
+
+```dotenv
+GAIA_API_URL=http://gaia.api.skhynix.com/v2/agents/<GAIA_AGENT_ID>/external
+```
+
+서버는 이 값을 조합하거나 변경하지 않고 그대로 호출한다.
+
+## 실행과 확인
+
+HCP에서는 `app.py`를 실행한다. 앱의 실행 설정은 아래처럼 고정되어 있다.
+
+```python
+if __name__ == "__main__":
+    uvicorn.run("__main__:application", host="0.0.0.0", port=5000, reload=False)
+```
+
+`0.0.0.0:5000`은 HCP 컨테이너 내부의 listen 주소다. CUBE에 등록하는 주소는 위의 HCP URL이며, HCP ingress가 그 요청을 컨테이너의 5000 포트로 전달해야 한다.
+
+기동 상태는 다음 URL로 확인한다.
+
+```text
+http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/health
+```
+
+처음 실제 연동하는 순서는 [PRODUCTION_SERVER_RUN_GUIDE.md](PRODUCTION_SERVER_RUN_GUIDE.md)를 따른다. 이 문서에는 HCP 설정, 직접 질문 입력으로 하는 GAIA→CUBE 발송 시험, 수동 callback 시험, ACK와 실제 CUBE 답변의 차이가 순서대로 설명되어 있다.
+
+## 직접 GAIA→CUBE 발송 시험
+
+HCP의 `.env`/환경변수 설정이 준비된 뒤 `manual_gaia_cube_send.py`를 연다. 파일 맨 위의 `MESSAGE`, `RECEIVER_ID`를 실제 시험 값으로 바꾼다. `CHANNEL_ID`는 채널에도 보내야 할 때만 입력하고, 사번으로만 발송할 때는 비워 둔다. GAIA 권한 사번이 다를 때만 `GAIA_USER_ID`를 입력하고, 이전 직접 시험의 대화를 이어갈 때만 `SESSION_ID`를 입력한다.
+
+인증 키와 토큰은 코드에 적지 않고 `.env` 또는 HCP Secret/환경변수에만 둔다. 값 입력 후 HCP 실행 환경의 이 폴더에서 다음 한 줄을 실행한다.
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
+python manual_gaia_cube_send.py
 ```
 
-`.env`를 열어 다음 실제 값을 입력한다.
+이 시험은 callback을 받지 않는다. 입력한 질문으로 GAIA를 실제 호출한 뒤, 나온 답변을 지정한 CUBE 수신자 사번으로 실제 발송한다. `CHANNEL_ID`를 입력한 경우에는 해당 채널도 사용한다. 따라서 허가된 테스트 대상만 사용하고, 결과는 PowerShell 출력뿐 아니라 수신자 CUBE에서 확인한다. 세부 안내는 [MANUAL_SEND_TOOL_README.md](MANUAL_SEND_TOOL_README.md)를 따른다.
 
-- `GAIA_AUTH_KEY`: GAIA에서 발급받은 인증 키
-- `GAIA_SERVICE_ID`: 기본으로 연결할 GAIA Agent의 `svc_id`
-- `CUBE_SEND_URL`: 실제 사용할 CUBE 발송 API 주소
-- `CUBE_BOT_ID`: CUBE 봇 ID
-- `CUBE_BOT_TOKEN`: CUBE 봇 토큰
+## GAIA 답변의 Rich Notification 변환 미리보기
 
-채널마다 다른 GAIA Agent를 쓸 때만 `CUBE_CHANNEL_GAIA_SERVICE_MAP_JSON`에 채널 ID와 `svc_id` 매핑을 입력한다. 채널 매핑이 있으면 그 값이 기본 `GAIA_SERVICE_ID`보다 우선한다.
-
-## 실행
+GAIA 답변의 제목, 목록, Markdown 표, 링크가 CUBE의 `label`, `Grid`, `hypertext`로 어떻게 바뀌는지 먼저 확인하려면 아래 명령을 실행한다. 외부 API를 호출하지 않으며, 키·토큰도 사용하지 않는다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app:app --host 0.0.0.0 --port 8000
+python rich_notification_preview.py
 ```
 
-`0.0.0.0`은 서버가 모든 네트워크 인터페이스에서 듣게 하는 **listen 주소**일 뿐, CUBE에 등록할 주소가 아니다. CUBE에는 실제 사내 접근 가능한 서버 이름 또는 IP를 사용한 주소를 등록한다.
+생성되는 `preview_output\gaia_to_cube_rich_notification_preview.html`을 브라우저로 열면 화면 모양을, `.json` 파일을 열면 CUBE로 보낼 `body` JSON을 볼 수 있다. 변환 규칙과 실제 발송 범위는 [RICH_NOTIFICATION_RENDERING_GUIDE.md](RICH_NOTIFICATION_RENDERING_GUIDE.md)를 따른다.
 
-```text
-http://<서버-이름-또는-내부-IP>:8000/api/qna
-```
+## 현재 최소 구현의 범위
 
-정상 기동 확인 주소는 다음과 같다.
+- 같은 `사용자 ID + CUBE 채널 ID`에는 같은 GAIA `session_id`를 재사용한다.
+- 세션 ID는 서버 메모리에만 보관한다. HCP 앱이 재시작되면 새 세션이 시작된다.
+- GAIA 처리 실패 후 CUBE fallback 안내문에는 `GAIA 응답 시간 초과`, `GAIA API 연결/응답 오류`, `Langflow 최종 답변 없음`처럼 안전하게 분류한 원인과 재시도 안내를 함께 보낸다. 내부 URL·HTTP 상세 오류·예외 원문은 보내지 않는다.
+- CUBE fallback 안내문 발송이 HTTP 성공으로 끝나면 callback에는 `200 {"status": "fallback_sent"}`를 반환한다. fallback 발송도 실패했을 때만 `502`를 반환한다. 이 HTTP 상태는 CUBE API 호출 결과일 뿐, 사용자 화면 표시 여부를 단독으로 보장하지는 않는다.
+- 최근 대화 전문, MongoDB, 작업 큐, 자동 재시도, 스케줄러, 대화 조회 API는 이 최소 서버에 포함하지 않는다.
+- callback 인증 방식, 재전송 정책, CUBE 발송 성공 body는 담당 가이드가 확인되면 추가해야 한다.
 
-```text
-http://<서버-이름-또는-내부-IP>:8000/health
-```
-
-## CUBE 채널과 GAIA Agent의 연결
-
-현재 정책은 CUBE 채널 하나가 GAIA Agent 하나에 고정되는 방식이다. callback payload가 `svc_id`를 정하지 않는다.
-
-```text
-CUBE channel ID
-  → .env의 채널-대-GAIA 매핑 또는 기본 GAIA_SERVICE_ID
-  → GAIA external Agent API
-```
-
-세션은 `사용자 + CUBE 채널`을 기준으로 구분한다. 같은 그룹 채널에 여러 사람이 있어도 각 사용자의 GAIA 대화 문맥이 섞이지 않는다.
-
-## 실제 요청 처리
-
-`POST /api/qna`는 제공된 CUBE callback 구조에서 다음 값을 읽는다.
-
-| 값 | 우선 경로 | 보조 경로 |
-| --- | --- | --- |
-| 사용자 | `header.from.uniquename` | `process.userId` |
-| 채널 | `header.to.channelid[0]` | `process.channelId` |
-| 질문 | `process.processdata` | `UserSelection` 또는 `SendBtn` |
-
-header와 process에 사용자·채널 값이 모두 있으면 값이 같아야 한다. `!@#HelloChatBot#@!`는 제어 메시지이므로 GAIA와 CUBE 발송을 호출하지 않고 `ignored` 상태를 반환한다.
-
-현재 확인된 GAIA Agent에는 CUBE 질문을 `input_value`로 전송한다. GAIA 응답에서는 마지막 `Chat Output`만 찾고, 우선 `results.gaia_response.data.answer`를 CUBE로 보낸다. GAIA가 루트 `session_id`를 반환하면 다음 같은 사용자·채널 요청에 그 값을 재사용한다. 답변이 없거나 GAIA 호출이 실패하면 `.env`의 `USER_ERROR_MESSAGE`를 CUBE에 한 번 보낸 뒤 callback에는 안전한 오류 상태를 반환한다.
-
-## 테스트와 주의사항
-
-이 폴더의 운영용 서버는 실제 URL과 키가 있어야 한다. 외부 API를 호출하지 않는 테스트는 상위의 `dummy_callback_server/`를 사용한다.
-
-운영용 코드 자체의 callback → GAIA → CUBE payload 흐름은 실제 네트워크 없이 아래 테스트로 확인할 수 있다.
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest test_app.py -q
-```
-
-현재 제공된 자료에는 callback 인증/서명, 공식 callback `status`, timeout, 재전송 및 event ID 정책이 없다. 따라서 CUBE 담당 가이드가 확보되기 전에는 인터넷에 이 서버를 공개하지 말고, 사내 테스트 채널에서만 사용한다. 실제 인증 규칙을 받으면 callback 인증 검증을 추가해야 한다.
-
-`.env`에는 실제 인증 키와 토큰이 들어가므로 절대 Git에 추가하거나 로그에 출력하지 않는다.
+실제 키와 토큰은 `.env`, HCP Secret 또는 환경변수에만 보관하고 Git, 로그, 문서에 넣지 않는다.

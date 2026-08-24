@@ -1,38 +1,30 @@
 # GAIA-CUBE Base Guide
 
-이 디렉터리는 `gaia_cube_server` 구현의 기준이 되는 사용자 제공 API 가이드를 보관한다.
+이 디렉터리는 `gaia_cube_server` 구현에 사용한 사용자 제공 API 가이드와 정리 문서를 보관한다.
 
 ## 문서 구성
 
-- `gaia/`: GAIA 환경 및 Langflow 실행·응답 API 가이드
-- `cube/`: CUBE 메시지 수신·발송 API 가이드
-- `common/`: 향후 세션·최근 대화 운영을 위한 보류 메모. 현재 기본 API 연동의 확정 가이드는 아님
+- `gaia/`: GAIA Agent 호출과 최종 답변 추출 방법
+- `cube/`: CUBE callback 수신과 Rich Notification 발송 형식
+- `common/`: 향후 세션·최근 대화 운영을 위한 보류 메모. 현재 최소 서버의 구현 범위는 아님
 
-실제 가이드를 전달받으면 원문의 의미와 필드명을 임의로 바꾸지 않고, 기능과 버전별 파일로 나누어 이 디렉터리에서 관리한다.
+## 현재 구현 기준
 
-## 구현 기준
+현재 HCP callback 서버는 아래의 한 가지 동기 흐름을 구현한다.
 
-전체 실행 흐름은 다음 계약을 따른다.
+```text
+CUBE callback POST /api/v1/receiver
+  -> .env의 GAIA_API_URL 호출
+  -> 최종 Chat Output 답변 추출
+  -> CUBE Rich Notification 발송
+  -> callback ACK 반환
+```
 
-1. CUBE의 사용자 요청 또는 스케줄 실행 요청을 서버가 받는다.
-2. 서버가 GAIA API를 호출하여 대상 Langflow를 실행한다.
-3. 서버가 GAIA의 실행 결과를 수신한다.
-4. 서버가 CUBE API를 호출하여 원래 요청자에게 결과를 전달한다.
+- `GAIA_API_URL`에는 Agent까지 포함한 전체 URL을 직접 설정한다.
+- CUBE 발송 payload의 `content[0].process`는 비워 두지 않는다.
+- 같은 사용자와 같은 CUBE 채널은 GAIA session ID를 메모리에서 재사용한다.
+- 현재는 별도 실행 모드, 데이터베이스, 작업 큐, 스케줄러, 최근 대화 조회 API를 포함하지 않는다.
 
-대화형 요청과 스케줄 요청은 가능한 한 동일한 GAIA 실행 및 CUBE 응답 전달 파이프라인을 사용한다.
+현재 실행과 실제 전체 흐름 시험 절차는 [production_callback_server/PRODUCTION_SERVER_RUN_GUIDE.md](../production_callback_server/PRODUCTION_SERVER_RUN_GUIDE.md)를 따른다.
 
-## 운영 코드와 더미 코드 분리
-
-- 운영 서버에서만 사용할 GAIA·CUBE 실제 API 어댑터와 로컬·테스트용 더미 어댑터를 서로 다른 모듈로 구현한다.
-- 공통 서비스 로직은 어댑터 인터페이스에만 의존하고, 실행 환경의 명시적인 설정 또는 의존성 주입으로 실제/더미 구현을 선택한다.
-- 운영 설정이나 자격 증명이 없을 때 더미 구현으로 자동 전환하지 않는다. 운영 모드는 안전하게 실패해야 한다.
-- 실제 어댑터와 더미 어댑터는 같은 입력·출력 계약을 사용한다.
-- 단위 테스트와 로컬 검증은 기본적으로 외부 운영 API를 호출하지 않는 더미 구현을 사용한다.
-- 비밀값, 인증 토큰 및 민감한 메시지 원문은 코드, 테스트 데이터 또는 로그에 남기지 않는다.
-
-## 현재 상태
-
-- GAIA 외부 Agent/Langflow 실행 API의 호출 예시와 응답 예시를 수신하여 `gaia/`에 정리했다.
-- 사용자별 CUBE 채팅과 GAIA `session_id`의 매핑 및 최근 대화 보존에 대한 향후 검토 메모를 `common/`에 정리했다. 현재는 기본 세션 구분만 적용한다.
-- CUBE Rich Notification 발송, FastAPI callback, Rich Message 상호작용과 fallback 예시를 수신하여 `cube/`에 정리했다.
-- 실제 서버 코드는 아직 구현하지 않았다.
+`cube/source/` 아래 파일은 당시 제공된 원문 보관본이다. 원문 안의 과거 endpoint는 현재 실행 경로가 아니다.
