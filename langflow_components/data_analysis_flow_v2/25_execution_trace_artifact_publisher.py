@@ -10,12 +10,17 @@
 
 from __future__ import annotations
 
+import ast
+import builtins
 from copy import deepcopy
 from datetime import datetime, timezone
 from html import escape
+from io import StringIO
 import json
+import keyword
 import os
 import re
+import tokenize
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
@@ -26,7 +31,7 @@ from lfx.io import BoolInput, DataInput, IntInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
 
-EXPLANATION_VERSION = "analysis.execution.explanation.v1"
+EXPLANATION_VERSION = "analysis.execution.explanation.v2"
 ARTIFACT_TYPE = "analysis_execution_html"
 DESCRIPTOR_TYPE = "analysis_execution_report"
 DEFAULT_REPORT_API_URL = "http://127.0.0.1:5000"
@@ -53,6 +58,17 @@ MAX_RETRIEVALS = 12
 MAX_STEPS = 16
 MAX_ISSUES = 8
 MAX_DOMAINS = 24
+# Pandas execution code is useful for diagnosis, but a report is not a raw
+# trace dump.  Keep the human-facing analysis body/contract bounded even when
+# a model or helper produced a very large program.
+MAX_EXECUTION_CODE_CHARACTERS = 32_000
+MAX_EXECUTION_CODE_LINES = 600
+MAX_EXECUTION_CODE_HELPERS = 16
+MAX_EXECUTION_CODE_SCAN_CHARACTERS = 128_000
+MAX_EXECUTION_CODE_SCAN_LINES = 2_000
+MAX_HIGHLIGHTED_CODE_TOKENS = 5_000
+MAX_HIGHLIGHTED_CODE_HTML_CHARACTERS = 240_000
+PYTHON_BUILTIN_NAMES = frozenset(dir(builtins))
 # Node 24 creates this short-lived sidecar before releasing large runtime row
 # buffers.  Node 25 must consume and remove it before any answer/API/session
 # projection so row previews never enlarge normal analysis payloads.
@@ -103,14 +119,35 @@ SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
 SENSITIVE_QUERY_VALUE_PATTERN = re.compile(
     r"(?i)([?&](?:api[_-]?key|authorization|cookie|password|passwd|secret|"
     r"(?:access|refresh)[_-]?token|token|credential(?:s)?|"
-    r"connection(?:[_-]?string)?|dsn)=)[^&#\s]+"
+    r'''connection(?:[_-]?string)?|dsn)=)[^&#\s"']+'''
 )
 SENSITIVE_AUTH_SCHEME_PATTERN = re.compile(r"(?i)\b(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}")
 CONNECTION_URI_PATTERN = re.compile(
-    r"(?i)(?:mongodb(?:\+srv)?|postgres(?:ql)?|oracle|mysql|mariadb|mssql|redis)://[^\s]+"
+    r'''(?i)(?:mongodb(?:\+srv)?|postgres(?:ql)?|oracle|mysql|mariadb|mssql|redis)://[^\s"'<>]+'''
 )
 CREDENTIAL_URL_PATTERN = re.compile(
-    r"(?i)(?:[a-z][a-z0-9+.-]*://)[^/\s:@]+:[^@/\s]+@[^\s]+"
+    r'''(?i)(?:[a-z][a-z0-9+.-]*://)[^/\s:@"']+:[^@/\s"']+@[^\s"'<>]+'''
+)
+SENSITIVE_CODE_VALUE_PATTERN = re.compile(
+    r'''(?ix)
+    (?P<prefix>
+        ["']?
+        (?:
+            api[_ -]?key|authorization|cookie|password|passwd|secret|
+            (?:access|refresh|oauth)[_ -]?token|token|credential(?:s)?|
+            connection(?:[_ -]?string)?|dsn|database[_ -]?url|proxy[_ -]?url|
+            query(?:[_ -]?template)?|sql(?:[_ -]?template)?|source[_ -]?config|uri|url
+        )
+        ["']?\s*[:=]\s*
+    )
+    (?P<value>[^,;\}\]]+)
+    '''
+)
+PRIVATE_KEY_BLOCK_PATTERN = re.compile(
+    r"(?is)-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----"
+)
+HIGH_CONFIDENCE_SECRET_PATTERN = re.compile(
+    r"(?i)(?:\bsk-[a-z0-9_-]{16,}\b|\bAKIA[A-Z0-9]{16}\b|\beyJ[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\b)"
 )
 
 SECTION_LABELS = {
@@ -274,6 +311,7 @@ def build_execution_explanation(
         "domain_reasons": _domain_reasons(plan, inspection),
         "retrievals": _retrieval_items(plan, payload.get("source_results")),
         "processing_steps": _processing_steps(plan, payload, inspection, data),
+        "execution_code": _execution_code_projection(payload, inspection),
         "result": {
             "row_count": result_rows,
             "columns": result_columns[:MAX_COLUMNS_PER_SOURCE],
@@ -326,8 +364,11 @@ def render_execution_report_html(explanation_value: Any) -> str:
             _timeline_item(
                 "03",
                 "데이터 처리 과정",
-                "조건·집계·결합·계산 순서와 각 단계의 실행 사실을 보여줍니다.",
-                _processing_html(explanation.get("processing_steps")),
+                "조건·집계·결합·계산 순서와 실행에 사용된 pandas 코드·고정 계약을 보여줍니다.",
+                _processing_html(
+                    explanation.get("processing_steps"),
+                    explanation.get("execution_code"),
+                ),
                 "processing",
             ),
             _timeline_item(
@@ -442,6 +483,32 @@ def render_execution_report_html(explanation_value: Any) -> str:
     .step-number {{ display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; background: #dfe7ff; color: var(--blue-deep); font-size: 12px; font-weight: 800; }}
     .step h4 {{ margin: 0 0 4px; font-size: 15px; }}
     .step p {{ margin: 0; color: var(--muted); font-size: 13px; }}
+    .code-panel {{ margin-top: 14px; overflow: hidden; border: 1px solid #dce4f6; border-radius: 12px; background: #fff; box-shadow: 0 7px 18px rgba(48, 59, 106, .035); }}
+    .code-panel summary {{ display: flex; align-items: center; gap: 12px; padding: 14px; cursor: pointer; list-style: none; background: linear-gradient(180deg, #fbfcff 0%, #f6f8ff 100%); }}
+    .code-panel summary::-webkit-details-marker {{ display: none; }}
+    .code-panel summary::before {{ content: ""; display: block; flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px; background: linear-gradient(var(--blue-deep), var(--blue-deep)) center / 10px 1.8px no-repeat, linear-gradient(var(--blue-deep), var(--blue-deep)) center / 1.8px 10px no-repeat, var(--blue-soft); }}
+    .code-panel[open] summary::before {{ background: linear-gradient(var(--blue-deep), var(--blue-deep)) center / 10px 1.8px no-repeat, var(--blue-soft); }}
+    .code-summary-main {{ display: grid; flex: 1; min-width: 0; gap: 2px; }}
+    .code-summary-main strong {{ color: var(--ink); font-size: 14px; overflow-wrap: anywhere; }}
+    .code-summary-main > span {{ color: var(--muted); font-size: 12px; }}
+    .code-badges {{ display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }}
+    .code-panel-body {{ padding: 14px; border-top: 1px solid #e8edf7; }}
+    .code-note, .code-helper-note {{ margin: 0 0 10px; color: var(--muted); font-size: 12px; }}
+    .code-helper-note strong {{ margin-right: 6px; color: var(--ink); }}
+    .code-helper-note span {{ color: #8b92a6; }}
+    .execution-code {{ max-height: 520px; margin: 0; padding: 16px 18px; overflow: auto; border: 1px solid #30363d; border-radius: 10px; color: #d4d4d4; background: #0d1117; font: 12px/1.65 Consolas, "SFMono-Regular", "Cascadia Code", "Courier New", monospace; white-space: pre; tab-size: 4; scrollbar-color: #58637a #161b22; text-shadow: none; }}
+    .execution-code code {{ font: inherit; }}
+    .syntax-keyword {{ color: #569cd6; font-weight: 650; }}
+    .syntax-string {{ color: #ce9178; }}
+    .syntax-number {{ color: #b5cea8; }}
+    .syntax-comment {{ color: #6a9955; font-style: italic; }}
+    .syntax-builtin {{ color: #4ec9b0; }}
+    .syntax-function {{ color: #dcdcaa; }}
+    .syntax-class {{ color: #4ec9b0; font-weight: 650; }}
+    .syntax-decorator {{ color: #c586c0; }}
+    .syntax-attribute {{ color: #9cdcfe; }}
+    .syntax-name {{ color: #9cdcfe; }}
+    .syntax-operator {{ color: #d4d4d4; }}
     .data-workbench {{ overflow: hidden; border: 1px solid #e1e6f1; border-radius: 16px; background: #fff; box-shadow: 0 12px 27px rgba(45, 57, 102, .045); }}
     .data-tabs {{ position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid #e7ebf4; background: rgba(247,248,255,.96); backdrop-filter: blur(12px); overflow-x: auto; }}
     .data-tab {{ display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 7px 12px; border: 1px solid #dce3f3; border-radius: 8px; color: #656f8d; background: rgba(255,255,255,.88); font-size: 13px; font-weight: 800; white-space: nowrap; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease, transform .16s ease; }}
@@ -497,9 +564,9 @@ def render_execution_report_html(explanation_value: Any) -> str:
     .issue.warning h3 {{ color: var(--amber); }}
     .issue p {{ margin: 0; font-size: 14px; overflow-wrap: anywhere; }}
     .footer {{ margin: 30px 0 0; color: var(--muted); font-size: 12px; text-align: center; }}
-    .data-tab:focus-visible, .data-sort-direction:focus-visible, .data-pagination button:focus-visible, .data-link:focus-visible, .data-column-sort:focus-visible, .domain-card summary:focus-visible {{ outline: 3px solid rgba(88,120,239,.35); outline-offset: 2px; }}
+    .data-tab:focus-visible, .data-sort-direction:focus-visible, .data-pagination button:focus-visible, .data-link:focus-visible, .data-column-sort:focus-visible, .domain-card summary:focus-visible, .code-panel summary:focus-visible {{ outline: 3px solid rgba(88,120,239,.35); outline-offset: 2px; }}
     @media (max-width: 860px) {{ .data-toolbar {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} .data-download-link {{ grid-column: span 2; }} }}
-    @media (max-width: 760px) {{ .page {{ width: min(100% - 24px, 1120px); margin-top: 12px; }} .hero {{ padding: 24px; border-radius: 17px; }} .hero-grid {{ grid-template-columns: 1fr; }} .summary-grid {{ grid-template-columns: 1fr; }} .timeline {{ margin-left: 10px; padding-left: 25px; }} .timeline-dot {{ left: -40px; }} .timeline-head {{ display: block; }} .timeline-head p {{ margin-top: 5px; text-align: left; }} .kv-grid, .domain-detail-grid {{ grid-template-columns: 1fr; gap: 2px; }} .kv-grid dd {{ margin-bottom: 8px; }} .domain-detail-grid dd {{ margin-bottom: 9px; }} .data-workbench-head, .data-workbench-meta {{ display: block; }} .data-group-count {{ display: inline-flex; margin-top: 8px; }} .data-workbench-expiry {{ margin-top: 4px; text-align: left; }} .data-toolbar {{ grid-template-columns: 1fr; }} .data-download-link {{ grid-column: auto; }} .data-pagination {{ flex-wrap: wrap; justify-content: flex-start; }} .data-table summary {{ align-items: flex-start; }} .data-table-meta {{ white-space: normal; text-align: right; }} }}
+    @media (max-width: 760px) {{ .page {{ width: min(100% - 24px, 1120px); margin-top: 12px; }} .hero {{ padding: 24px; border-radius: 17px; }} .hero-grid {{ grid-template-columns: 1fr; }} .summary-grid {{ grid-template-columns: 1fr; }} .timeline {{ margin-left: 10px; padding-left: 25px; }} .timeline-dot {{ left: -40px; }} .timeline-head {{ display: block; }} .timeline-head p {{ margin-top: 5px; text-align: left; }} .kv-grid, .domain-detail-grid {{ grid-template-columns: 1fr; gap: 2px; }} .kv-grid dd {{ margin-bottom: 8px; }} .domain-detail-grid dd {{ margin-bottom: 9px; }} .code-panel summary {{ align-items: flex-start; flex-wrap: wrap; }} .code-badges {{ width: 100%; padding-left: 32px; justify-content: flex-start; }} .execution-code {{ max-height: 430px; padding: 14px; }} .data-workbench-head, .data-workbench-meta {{ display: block; }} .data-group-count {{ display: inline-flex; margin-top: 8px; }} .data-workbench-expiry {{ margin-top: 4px; text-align: left; }} .data-toolbar {{ grid-template-columns: 1fr; }} .data-download-link {{ grid-column: auto; }} .data-pagination {{ flex-wrap: wrap; justify-content: flex-start; }} .data-table summary {{ align-items: flex-start; }} .data-table-meta {{ white-space: normal; text-align: right; }} }}
   </style>
 </head>
 <body>
@@ -525,7 +592,7 @@ def render_execution_report_html(explanation_value: Any) -> str:
     </section>
 
     {issues}
-    <p class="footer">추적 ID: {trace_id} · 이 문서는 실행 사실과 제한된 데이터 미리보기를 담은 안내용 Report입니다. 데이터 탭에서는 전체 저장 데이터를 같은 화면에서 검색·정렬·페이지 이동할 수 있으며, CSV 다운로드도 유지됩니다. 코드·인증 정보는 포함하지 않습니다.</p>
+    <p class="footer">추적 ID: {trace_id} · 이 문서는 실행 사실과 제한된 데이터 미리보기, 마스킹된 실행 코드를 담은 안내용 Report입니다. 데이터 탭에서는 전체 저장 데이터를 같은 화면에서 검색·정렬·페이지 이동할 수 있으며, CSV 다운로드도 유지됩니다. 인증 정보·raw trace·helper 내부 구현은 포함하지 않습니다.</p>
   </main>
   {data_workbench_script}
 </body>
@@ -780,6 +847,104 @@ def _processing_steps(
             recipe = _safe_text(fast_contract.get("recipe"), 100) or "고정 분석 규칙"
             steps.append({"number": "1", "title": "고정 분석 규칙 실행", "detail": f"{recipe} 계약으로 결과를 생성했습니다."})
     return steps
+
+
+# 함수 설명: `_execution_code_projection()`은 실제 pandas 실행 trace에서 사용자에게
+# 의미 있는 분석 본문 또는 deterministic 계약만 골라 제한·마스킹된 report 모델로 만듭니다.
+# helper 원문, raw LLM 응답, traceback, 연결 설정은 이 projection에 포함하지 않습니다.
+def _execution_code_projection(
+    payload: dict[str, Any],
+    inspection: dict[str, Any],
+) -> dict[str, Any]:
+    pandas_execution = _dict(inspection.get("pandas_execution"))
+    analysis = _dict(payload.get("analysis"))
+    status = _safe_text(
+        pandas_execution.get("status") or analysis.get("status"),
+        40,
+    ).casefold()
+    # 조회 전 차단, terminal response, unsafe guard 이전 실패에는 실제로 실행된
+    # pandas 코드가 없으므로 code panel을 만들지 않습니다. Runtime에 진입한
+    # 뒤 발생한 error는 명시적인 실행 증거가 있을 때만 진단용으로 허용합니다.
+    if status not in {"ok", "partial", "error"}:
+        return {}
+
+    execution_mode = _safe_text(
+        pandas_execution.get("execution_mode")
+        or analysis.get("execution_mode"),
+        120,
+    ).casefold()
+    deterministic_code = _execution_code_candidate(
+        pandas_execution.get("deterministic_logic_code")
+    )
+    llm_code = _execution_code_candidate(pandas_execution.get("llm_generated_code"))
+
+    kind = ""
+    label = ""
+    note = ""
+    source_field = ""
+    raw_code = ""
+    if (
+        deterministic_code
+        and pandas_execution.get("deterministic_contract_started") is True
+    ):
+        deterministic_function = _dict(pandas_execution.get("deterministic_function"))
+        recipe = _safe_text(deterministic_function.get("recipe"), 100)
+        if execution_mode == "execute_fast_path_recipe" or recipe:
+            kind = "fast_deterministic"
+            label = "Fast 고정 실행 계약"
+            note = "LLM 생성 코드가 아니라 등록된 Fast recipe와 고정 실행 함수 계약입니다."
+        else:
+            kind = "typed_deterministic"
+            label = "Typed deterministic 실행 계약"
+            note = "LLM 생성 코드가 아니라 Typed 실행 계획에서 만든 고정 실행 계약입니다."
+        source_field = "deterministic_logic_code"
+        raw_code = deterministic_code
+    elif llm_code and pandas_execution.get("llm_code_executed") is True:
+        kind = "llm_pandas"
+        label = "LLM 생성 pandas 분석 코드"
+        note = "실행에 사용된 pandas 분석 본문입니다. 자동 필터·검증·helper 내부 구현은 별도로 표시하지 않습니다."
+        source_field = "llm_generated_code"
+        raw_code = llm_code
+    if not raw_code:
+        return {}
+
+    code, truncated, redacted, original_count, shown_count = _safe_execution_code_text(raw_code)
+    if not code:
+        return {}
+    used_helpers = []
+    for helper in _string_list(pandas_execution.get("used_helpers"))[:MAX_EXECUTION_CODE_HELPERS]:
+        safe_helper = _safe_text(helper, 120)
+        if safe_helper and safe_helper not in used_helpers:
+            used_helpers.append(safe_helper)
+    return {
+        "available": True,
+        "kind": kind,
+        "label": label,
+        "execution_status": (
+            "partial"
+            if status == "partial"
+            else "error"
+            if status == "error"
+            else "executed"
+        ),
+        "language": "text" if kind == "typed_deterministic" else "python",
+        "source_field": source_field,
+        "code": code,
+        "note": note,
+        "used_helpers": used_helpers,
+        "helpers_included": False,
+        "omitted_sections": ["trusted helper definitions", "runtime instrumentation"],
+        "truncated": truncated,
+        "redacted": redacted,
+        "original_char_count": original_count,
+        "shown_char_count": shown_count,
+    }
+
+
+def _execution_code_candidate(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value if value and not value.isspace() else ""
 
 
 # 함수 설명: 실제 실행 checkpoint와 source 결과에서 알려진 행 수만 인덱싱합니다.
@@ -1258,10 +1423,8 @@ def _retrievals_html(value: Any) -> str:
     return "".join(cards) if cards else '<p class="empty">표시할 데이터 조회 정보가 없습니다.</p>'
 
 
-def _processing_html(value: Any) -> str:
+def _processing_html(value: Any, execution_code_value: Any = None) -> str:
     steps = value if isinstance(value, list) else []
-    if not steps:
-        return '<p class="empty">처리 계획이 확정되기 전에 분석이 중단되었거나, 별도 처리 단계가 필요하지 않았습니다.</p>'
     items = []
     for index, step in enumerate(steps, start=1):
         if not isinstance(step, dict):
@@ -1270,7 +1433,184 @@ def _processing_html(value: Any) -> str:
   <span class="step-number">{index:02d}</span>
   <div><h4>{_html_text(step.get('title'), 180)}</h4><p>{_html_text(step.get('detail'), 900)}</p></div>
 </article>""")
-    return '<div class="step-list">' + "".join(items) + "</div>" if items else '<p class="empty">표시할 처리 단계가 없습니다.</p>'
+    step_html = (
+        '<div class="step-list">' + "".join(items) + "</div>"
+        if items
+        else '<p class="empty">처리 계획이 확정되기 전에 분석이 중단되었거나, 별도 처리 단계가 필요하지 않았습니다.</p>'
+    )
+    return step_html + _execution_code_html(execution_code_value)
+
+
+def _execution_code_html(value: Any) -> str:
+    code_info = _dict(value)
+    code_text = str(code_info.get("code") or "")
+    if not code_info.get("available") or not code_text.strip():
+        return ""
+    label = _html_text(code_info.get("label"), 180) or "pandas 실행 코드"
+    kind = _safe_text(code_info.get("kind"), 80).casefold()
+    disclosure = "실행 계약 펼쳐서 보기" if kind in {"fast_deterministic", "typed_deterministic"} else "실행 코드 펼쳐서 보기"
+    note = _html_text(code_info.get("note"), 500)
+    status = _safe_text(code_info.get("execution_status"), 40).casefold()
+    status_label = (
+        "부분 실행"
+        if status == "partial"
+        else "실행 중 오류"
+        if status == "error"
+        else "실행됨"
+    )
+    status_class = "pending" if status == "partial" else "error" if status == "error" else ""
+    helpers = _string_list(code_info.get("used_helpers"))[:MAX_EXECUTION_CODE_HELPERS]
+    helper_text = ", ".join(_html_text(helper, 120) for helper in helpers)
+    badges = [f'<span class="badge {status_class}">{status_label}</span>']
+    if code_info.get("redacted"):
+        badges.append('<span class="badge pending">민감정보 마스킹</span>')
+    if code_info.get("truncated"):
+        badges.append('<span class="badge pending">일부 생략</span>')
+    metadata = ""
+    if helper_text:
+        metadata = f'<p class="code-helper-note"><strong>사용 helper</strong> {helper_text} <span>· 내부 구현은 제외</span></p>'
+    language = _safe_text(code_info.get("language"), 40).casefold()
+    escaped_code = (
+        _highlight_python_code_html(code_text)
+        if language == "python"
+        else escape(code_text, quote=False)
+    )
+    return f'''<details class="code-panel">
+  <summary>
+    <span class="code-summary-main"><strong>{label}</strong><span>{disclosure}</span></span>
+    <span class="code-badges">{"".join(badges)}</span>
+  </summary>
+  <div class="code-panel-body">
+    {f'<p class="code-note">{note}</p>' if note else ''}
+    {metadata}
+    <pre class="execution-code"><code>{escaped_code}</code></pre>
+  </div>
+</details>'''
+
+
+# 함수 설명: 마스킹이 끝난 Python 코드만 표준 tokenizer로 분리해 정적 span을
+# 생성합니다. 모든 원문 조각은 HTML escape하며, 불완전 코드면 plain text로
+# 되돌아가므로 syntax highlight가 보고서 생성 실패 원인이 되지 않습니다.
+def _highlight_python_code_html(value: Any) -> str:
+    source = str(value or "")
+    if not source:
+        return ""
+    try:
+        tokens = list(tokenize.generate_tokens(StringIO(source).readline))
+    except (
+        tokenize.TokenError,
+        IndentationError,
+        SyntaxError,
+        UnicodeError,
+        ValueError,
+    ):
+        return escape(source, quote=False)
+    if len(tokens) > MAX_HIGHLIGHTED_CODE_TOKENS:
+        return escape(source, quote=False)
+
+    line_offsets = [0]
+    for line in source.splitlines(keepends=True):
+        line_offsets.append(line_offsets[-1] + len(line))
+
+    def absolute_position(position: tuple[int, int]) -> int:
+        row, column = position
+        if row <= 0:
+            return 0
+        if row > len(line_offsets):
+            return len(source)
+        line_start = line_offsets[min(row - 1, len(line_offsets) - 1)]
+        return min(len(source), line_start + max(0, column))
+
+    ignored_types = {
+        tokenize.ENCODING,
+        tokenize.ENDMARKER,
+        tokenize.INDENT,
+        tokenize.DEDENT,
+        tokenize.NEWLINE,
+        tokenize.NL,
+    }
+    next_significant: list[tokenize.TokenInfo | None] = [None] * len(tokens)
+    next_token: tokenize.TokenInfo | None = None
+    for index in range(len(tokens) - 1, -1, -1):
+        next_significant[index] = next_token
+        candidate = tokens[index]
+        if candidate.type not in ignored_types and candidate.type != tokenize.COMMENT:
+            next_token = candidate
+
+    pieces: list[str] = []
+    cursor = 0
+    previous_significant: tokenize.TokenInfo | None = None
+    for index, token_info in enumerate(tokens):
+        if token_info.type in {tokenize.ENCODING, tokenize.ENDMARKER}:
+            continue
+        start = max(cursor, absolute_position(token_info.start))
+        end = max(start, absolute_position(token_info.end))
+        if start > cursor:
+            pieces.append(escape(source[cursor:start], quote=False))
+        fragment = source[start:end]
+        css_class = _python_token_css_class(
+            token_info,
+            previous_significant,
+            next_significant[index],
+        )
+        escaped_fragment = escape(fragment, quote=False)
+        pieces.append(
+            f'<span class="{css_class}">{escaped_fragment}</span>'
+            if css_class and fragment
+            else escaped_fragment
+        )
+        cursor = end
+        if token_info.type not in ignored_types and token_info.type != tokenize.COMMENT:
+            previous_significant = token_info
+    if cursor < len(source):
+        pieces.append(escape(source[cursor:], quote=False))
+    highlighted = "".join(pieces)
+    if len(highlighted) > MAX_HIGHLIGHTED_CODE_HTML_CHARACTERS:
+        return escape(source, quote=False)
+    return highlighted
+
+
+def _python_token_css_class(
+    token_info: tokenize.TokenInfo,
+    previous: tokenize.TokenInfo | None,
+    following: tokenize.TokenInfo | None,
+) -> str:
+    token_type = token_info.type
+    text = token_info.string
+    if token_type == tokenize.COMMENT:
+        return "syntax-comment"
+    if token_type == tokenize.STRING:
+        return "syntax-string"
+    fstring_types = {
+        getattr(tokenize, "FSTRING_START", -1),
+        getattr(tokenize, "FSTRING_MIDDLE", -1),
+        getattr(tokenize, "FSTRING_END", -1),
+    }
+    if token_type in fstring_types:
+        return "syntax-string"
+    if token_type == tokenize.NUMBER:
+        return "syntax-number"
+    if token_type == tokenize.OP:
+        return "syntax-operator"
+    if token_type != tokenize.NAME:
+        return ""
+    if keyword.iskeyword(text):
+        return "syntax-keyword"
+    previous_text = previous.string if previous is not None else ""
+    following_text = following.string if following is not None else ""
+    if previous_text == "def":
+        return "syntax-function"
+    if previous_text == "class":
+        return "syntax-class"
+    if previous_text == "@":
+        return "syntax-decorator"
+    if text in PYTHON_BUILTIN_NAMES:
+        return "syntax-builtin"
+    if following_text == "(":
+        return "syntax-function"
+    if previous_text == ".":
+        return "syntax-attribute"
+    return "syntax-name"
 
 
 def _result_html(value: Any) -> str:
@@ -2422,6 +2762,261 @@ def _safe_exception_message(exc: Exception) -> str:
     return _safe_text(str(exc), MAX_TEXT_LENGTH)
 
 
+# 함수 설명: 실행 코드의 줄바꿈·들여쓰기는 보존하되 민감 assignment/URI/auth 값을
+# 먼저 제거하고, report 전용 크기 상한을 적용합니다. raw code는 반환하지 않습니다.
+def _safe_execution_code_text(value: Any) -> tuple[str, bool, bool, int, int]:
+    raw = str(value or "")
+    original_count = len(raw)
+    if not raw or raw.isspace():
+        return "", False, False, original_count, 0
+    scan_truncated = len(raw) > MAX_EXECUTION_CODE_SCAN_CHARACTERS
+    scan_text = raw[:MAX_EXECUTION_CODE_SCAN_CHARACTERS]
+    normalized = scan_text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", normalized)
+    line_end = 0
+    for _ in range(MAX_EXECUTION_CODE_SCAN_LINES):
+        next_end = normalized.find("\n", line_end)
+        if next_end < 0:
+            break
+        line_end = next_end + 1
+    if line_end and normalized.find("\n", line_end) >= 0:
+        normalized = normalized[:line_end]
+        scan_truncated = True
+    redacted_text, ast_redacted, parsed = _redact_sensitive_code_statements(normalized)
+    if not parsed and _contains_sensitive_code_assignment(normalized):
+        # Invalid Python plus a multi-line credential assignment cannot be
+        # redacted with reliable statement boundaries.  Fail closed for this
+        # optional report section while leaving the analysis result untouched.
+        return "", False, True, original_count, 0
+
+    redacted = ast_redacted
+    replacements = (
+        (PRIVATE_KEY_BLOCK_PATTERN, "# [개인 키 숨김]"),
+        (CONNECTION_URI_PATTERN, "[연결 정보 숨김]"),
+        (CREDENTIAL_URL_PATTERN, "[연결 정보 숨김]"),
+        (SENSITIVE_QUERY_VALUE_PATTERN, r"\1[숨김]"),
+        (SENSITIVE_AUTH_SCHEME_PATTERN, "인증 정보 [숨김]"),
+        (HIGH_CONFIDENCE_SECRET_PATTERN, "[인증 정보 숨김]"),
+    )
+    for pattern, replacement in replacements:
+        next_text = pattern.sub(replacement, redacted_text)
+        if next_text != redacted_text:
+            redacted = True
+        redacted_text = next_text
+
+    if "-----BEGIN" in redacted_text.upper() and "PRIVATE KEY" in redacted_text.upper():
+        return "", False, True, original_count, 0
+
+    # Only use the line fallback when AST parsing was impossible.  Parsed
+    # Python is handled by statement boundaries above; applying the broad text
+    # regex again would misread valid result columns such as TOKEN/URL/URI as
+    # runtime credentials.
+    if not parsed:
+        safe_lines: list[str] = []
+        for line in redacted_text.split("\n"):
+            next_line = SENSITIVE_CODE_VALUE_PATTERN.sub(
+                lambda match: match.group("prefix") + "'[숨김]'",
+                line,
+            )
+            if next_line != line:
+                redacted = True
+            safe_lines.append(next_line)
+        redacted_text = "\n".join(safe_lines)
+    redacted_text = redacted_text.strip("\n")
+    if not redacted_text.strip():
+        return "", False, redacted, original_count, 0
+
+    lines = redacted_text.split("\n")
+    truncated = scan_truncated or len(lines) > MAX_EXECUTION_CODE_LINES
+    if truncated:
+        lines = lines[:MAX_EXECUTION_CODE_LINES]
+    bounded = "\n".join(lines)
+    if len(bounded) > MAX_EXECUTION_CODE_CHARACTERS:
+        bounded = bounded[:MAX_EXECUTION_CODE_CHARACTERS]
+        truncated = True
+    bounded = bounded.rstrip()
+    shown_count = len(bounded)
+    if truncated:
+        bounded += (
+            "\n\n# … 보고서 표시 한도로 이후 코드를 생략했습니다. "
+            f"(원문 {original_count:,}자)"
+        )
+    return bounded, truncated, redacted, original_count, shown_count
+
+
+def _redact_sensitive_code_statements(value: str) -> tuple[str, bool, bool]:
+    try:
+        tree = ast.parse(value)
+    except (SyntaxError, ValueError, TypeError):
+        return value, False, False
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    sensitive_nodes: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(_sensitive_code_key(name) for target in targets for name in _assignment_target_names(target)):
+                sensitive_nodes.append(node)
+        elif isinstance(node, ast.Dict):
+            keys = [key.value for key in node.keys if isinstance(key, ast.Constant) and isinstance(key.value, str)]
+            if any(_sensitive_code_mapping_literal_key(key) for key in keys):
+                sensitive_nodes.append(node)
+        elif isinstance(node, (ast.List, ast.Tuple, ast.Set)) and _contains_sensitive_transport_pair(node):
+            sensitive_nodes.append(node)
+        elif isinstance(node, ast.keyword) and node.arg and _sensitive_code_key(node.arg):
+            sensitive_nodes.append(node)
+    ranges: set[tuple[int, int]] = set()
+    for node in sensitive_nodes:
+        statement = node
+        while not isinstance(statement, ast.stmt) and statement in parents:
+            statement = parents[statement]
+        start = getattr(statement, "lineno", None)
+        end = getattr(statement, "end_lineno", start)
+        if isinstance(start, int) and isinstance(end, int):
+            ranges.add((max(start, 1), max(end, start)))
+    if not ranges:
+        return value, False, True
+    lines = value.split("\n")
+    hidden: set[int] = set()
+    markers: dict[int, str] = {}
+    for start, end in sorted(ranges):
+        hidden.update(range(start, end + 1))
+        indent_source = lines[start - 1] if start - 1 < len(lines) else ""
+        indent = indent_source[: len(indent_source) - len(indent_source.lstrip())]
+        markers.setdefault(start, indent + "pass  # [민감 실행 설정 숨김]")
+    output = []
+    for number, line in enumerate(lines, start=1):
+        if number in markers:
+            output.append(markers[number])
+        if number not in hidden:
+            output.append(line)
+    return "\n".join(output), True, True
+
+
+def _assignment_target_names(value: ast.AST) -> list[str]:
+    if isinstance(value, ast.Name):
+        return [value.id]
+    if isinstance(value, ast.Attribute):
+        return [value.attr]
+    if isinstance(value, ast.Subscript):
+        slice_value = value.slice
+        if isinstance(slice_value, ast.Constant) and isinstance(slice_value.value, str):
+            return [slice_value.value]
+        return []
+    if isinstance(value, (ast.Tuple, ast.List)):
+        return [name for item in value.elts for name in _assignment_target_names(item)]
+    return []
+
+
+def _sensitive_code_key(value: Any) -> bool:
+    text = str(value or "")
+    compact = re.sub(r"[^a-z0-9]+", "", text.casefold())
+    if _is_sensitive_mapping_key(text):
+        return True
+    if any(
+        marker in compact
+        for marker in (
+            "apikey",
+            "password",
+            "passwd",
+            "secret",
+            "credential",
+            "cookie",
+            "connectionstring",
+            "privatekey",
+        )
+    ):
+        return True
+    if any(
+        marker in compact
+        for marker in (
+            "accesstoken",
+            "refreshtoken",
+            "idtoken",
+            "authtoken",
+            "oauthtoken",
+            "bearertoken",
+            "sessiontoken",
+            "securitytoken",
+        )
+    ) and not compact.startswith(("producttoken", "processtoken")):
+        return True
+    if compact.startswith(("auth", "oauth", "privatekey")):
+        return True
+    if compact.startswith("dsn"):
+        return True
+    return compact in {
+        "auth",
+        "authentication",
+        "creds",
+        "headers",
+        "privatekey",
+        "query",
+        "querytemplate",
+        "sql",
+        "sqltemplate",
+        "sourceconfig",
+    }
+
+
+def _sensitive_code_mapping_literal_key(value: Any) -> bool:
+    compact = re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+    # TOKEN/URL/URI are valid manufacturing result-column names.  A variable
+    # assignment with those names is still treated conservatively, but a row
+    # literal such as {"TOKEN": "A"} must remain inspectable.
+    if compact in {"token", "url", "uri"}:
+        return False
+    return _sensitive_code_key(value)
+
+
+def _sensitive_transport_key(value: Any) -> bool:
+    compact = re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+    if not compact:
+        return False
+    return (
+        "authorization" in compact
+        or "apikey" in compact
+        or "cookie" in compact
+        or compact.startswith(("xauth", "httpauth", "oauth"))
+        or compact in {"proxyauthorization", "wwwauthenticate"}
+    )
+
+
+def _contains_sensitive_transport_pair(value: ast.List | ast.Tuple | ast.Set) -> bool:
+    candidates: list[ast.AST] = [value]
+    candidates.extend(
+        item
+        for item in value.elts
+        if isinstance(item, (ast.List, ast.Tuple))
+    )
+    for pair in candidates:
+        if not isinstance(pair, (ast.List, ast.Tuple)) or len(pair.elts) != 2:
+            continue
+        key = pair.elts[0]
+        if (
+            isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and _sensitive_transport_key(key.value)
+        ):
+            return True
+    return False
+
+
+def _contains_sensitive_code_assignment(value: str) -> bool:
+    if SENSITIVE_CODE_VALUE_PATTERN.search(value) or SENSITIVE_ASSIGNMENT_PATTERN.search(value):
+        return True
+    for line in value.splitlines():
+        match = re.match(
+            r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=",
+            line,
+        )
+        if match and _sensitive_code_key(match.group(1)):
+            return True
+    return False
+
+
 def _safe_text(value: Any, limit: int) -> str:
     text = str(value or "")
     text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
@@ -2703,7 +3298,7 @@ def _safe_int(value: Any, default: int = 0) -> int:
 # Langflow 컴포넌트 클래스: 결과·세션·런타임 정리 뒤에만 연결해 분석 실행 경로와 분리합니다.
 class ExecutionTraceArtifactPublisher(Component):
     display_name = "25 분석 처리 과정 HTML 발행기"
-    description = "분석 실행 과정과 제한된 원본·중간·최종 데이터 미리보기를 사용자용 HTML로 발행하고 보기·다운로드 링크를 추가합니다."
+    description = "분석 실행 과정, 마스킹된 pandas 실행 코드, 제한된 원본·중간·최종 데이터 미리보기를 사용자용 HTML로 발행하고 보기·다운로드 링크를 추가합니다."
     icon = "Map"
     name = "ExecutionTraceArtifactPublisher"
     inputs = [

@@ -26,23 +26,34 @@ def _settings() -> Settings:
     )
 
 
-def _gaia_response(answer: str) -> dict[str, Any]:
-    return {
+def _gaia_response(
+    answer: str,
+    *,
+    session_id: str | None = None,
+    message_text: str = "fallback message text",
+) -> dict[str, Any]:
+    response: dict[str, Any] = {
         "outputs": [
             {
+                "inputs": {"input_value": "생산량을 알려줘"},
                 "outputs": [
                     {
                         "component_display_name": "Chat Output",
                         "component_id": "ChatOutput-test",
                         "results": {
                             "gaia_response": {"data": {"answer": answer}},
-                            "message": {"data": {"error": False}},
+                            "message": {
+                                "data": {"error": False, "text": message_text}
+                            },
                         },
                     }
                 ]
             }
         ]
     }
+    if session_id is not None:
+        response["session_id"] = session_id
+    return response
 
 
 def test_callback_calls_gaia_then_sends_cube_answer() -> None:
@@ -55,12 +66,19 @@ def test_callback_calls_gaia_then_sends_cube_answer() -> None:
             assert request.url.path == "/v2/agents/service-A/external"
             payload = json.loads(request.content)
             assert payload == {
-                "message": "생산량을 알려줘",
+                "input_value": "생산량을 알려줘",
                 "user_id": "employee-1",
                 "session_id": payload["session_id"],
             }
             assert payload["session_id"].startswith("gc_")
-            return httpx.Response(200, json=_gaia_response("GAIA 답변"))
+            return httpx.Response(
+                200,
+                json=_gaia_response(
+                    "GAIA 정규화 답변",
+                    session_id="gaia-returned-session",
+                    message_text="이 fallback 텍스트를 CUBE로 보내면 안 됩니다.",
+                ),
+            )
         if request.url.host == "cube.test":
             payload = json.loads(request.content)
             assert payload["richnotification"]["header"]["to"] == {
@@ -70,7 +88,7 @@ def test_callback_calls_gaia_then_sends_cube_answer() -> None:
             assert (
                 payload["richnotification"]["content"][0]["body"]["row"][0]["column"][0]
                 ["control"]["text"]
-                == ["GAIA 답변"]
+                == ["GAIA 정규화 답변"]
             )
             return httpx.Response(200, json={"ok": True})
         raise AssertionError(f"unexpected request: {request.url}")
@@ -116,13 +134,16 @@ def test_hello_callback_does_not_call_external_apis() -> None:
     assert response.json() == {"status": "ignored"}
 
 
-def test_same_user_and_channel_reuse_the_same_gaia_session() -> None:
+def test_same_user_and_channel_reuses_the_gaia_returned_session() -> None:
     gaia_session_ids: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "gaia.test":
             gaia_session_ids.append(json.loads(request.content)["session_id"])
-            return httpx.Response(200, json=_gaia_response("answer"))
+            return httpx.Response(
+                200,
+                json=_gaia_response("answer", session_id="GAIA_SESSION_FROM_RESPONSE"),
+            )
         if request.url.host == "cube.test":
             return httpx.Response(200, json={"ok": True})
         raise AssertionError(f"unexpected request: {request.url}")
@@ -143,7 +164,8 @@ def test_same_user_and_channel_reuse_the_same_gaia_session() -> None:
         assert client.post("/api/qna", json=payload).status_code == 200
 
     assert len(gaia_session_ids) == 2
-    assert gaia_session_ids[0] == gaia_session_ids[1]
+    assert gaia_session_ids[0].startswith("gc_")
+    assert gaia_session_ids[1] == "GAIA_SESSION_FROM_RESPONSE"
 
 
 def test_mismatched_callback_identity_is_rejected() -> None:

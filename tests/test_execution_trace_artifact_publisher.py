@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from html import unescape
+import re
+
+import pytest
 
 from component_test_support import ROOT, load_module
 
@@ -10,6 +14,10 @@ PUBLISHER_PATH = ROOT / "langflow_components" / "data_analysis_flow_v2" / "25_ex
 
 def _module():
     return load_module(PUBLISHER_PATH)
+
+
+def _plain_html_text(value: str) -> str:
+    return unescape(re.sub(r"<[^>]+>", "", value))
 
 
 def _payload(*, status: str = "ok") -> dict:
@@ -105,7 +113,12 @@ def _payload(*, status: str = "ok") -> dict:
             "inspection": {
                 "pandas_execution": {
                     "status": "ok",
-                    "generated_code": "api_key='do-not-publish'\nresult = sources['assign']",
+                    "generated_code": "def internal_runtime_helper():\n    return 'must-not-publish-helper'\n\nresult = sources['assign']",
+                    "llm_generated_code": "api_key='do-not-publish'\nresult = sources['assign']",
+                    "code_generation_type": "llm_generated",
+                    "execution_mode": "llm_generated_code",
+                    "llm_code_executed": True,
+                    "used_helpers": ["match_product_tokens"],
                 }
             },
         },
@@ -141,6 +154,430 @@ def test_execution_report_html_is_user_facing_and_does_not_leak_raw_trace_or_row
     assert "do-not-publish" not in document
     assert "api_key" not in document
     assert "holding_capacity\": 5760" not in document
+    assert '<details class="code-panel">' in document
+    assert '<details class="code-panel" open>' not in document
+    assert "LLM 생성 pandas 분석 코드" in document
+    assert "result = sources['assign']" in _plain_html_text(document)
+    assert "match_product_tokens" in document
+    assert "must-not-publish-helper" not in document
+
+
+def test_execution_code_projection_preserves_multiline_body_and_escapes_html_without_helper_source():
+    publisher = _module()
+    payload = _payload()
+    pandas_execution = payload["trace"]["inspection"]["pandas_execution"]
+    pandas_execution["generated_code"] = "def trusted_helper():\n    return 'helper-body-must-not-render'"
+    pandas_execution["llm_generated_code"] = (
+        "df = sources['assign'].copy()\n"
+        "df['LABEL'] = \"</code></pre><script>alert('xss')</script>\"\n"
+        "result = df[['LEAD', 'LABEL']]"
+    )
+
+    explanation = publisher.build_execution_explanation(payload)
+    document = publisher.render_execution_report_html(explanation)
+    code = explanation["execution_code"]
+
+    assert code["kind"] == "llm_pandas"
+    assert code["source_field"] == "llm_generated_code"
+    assert "\n" in code["code"]
+    assert "helper-body-must-not-render" not in repr(explanation)
+    assert "helper-body-must-not-render" not in document
+    assert "<script>alert('xss')</script>" not in document
+    assert "&lt;script&gt;alert('xss')&lt;/script&gt;" in document
+    assert "df = sources['assign'].copy()\n" in _plain_html_text(document)
+
+
+def test_python_execution_code_uses_safe_tokenized_syntax_highlighting():
+    publisher = _module()
+    source = (
+        "def calculate(value=24):\n"
+        "    # capacity calculation\n"
+        "    label = '<script>alert(1)</script>'\n"
+        "    return round(value * 1.5)\n"
+        "result = calculate()"
+    )
+
+    highlighted = publisher._highlight_python_code_html(source)
+
+    assert '<span class="syntax-keyword">def</span>' in highlighted
+    assert '<span class="syntax-function">calculate</span>' in highlighted
+    assert '<span class="syntax-number">24</span>' in highlighted
+    assert '<span class="syntax-comment"># capacity calculation</span>' in highlighted
+    assert '<span class="syntax-string">' in highlighted
+    assert '<span class="syntax-builtin">round</span>' in highlighted
+    assert "<script>alert(1)</script>" not in highlighted
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in highlighted
+
+
+def test_python_highlighter_preserves_source_text_and_falls_back_for_incomplete_code():
+    publisher = _module()
+    source = "df = sources['assign'].copy()\nresult = df.groupby('LEAD').sum()"
+    highlighted = publisher._highlight_python_code_html(source)
+    restored = unescape(publisher.re.sub(r"<[^>]+>", "", highlighted))
+
+    assert restored == source
+    assert '<span class="syntax-attribute">groupby</span>' not in highlighted
+    assert '<span class="syntax-function">groupby</span>' in highlighted
+
+    incomplete = "result = '''unterminated <script>"
+    fallback = publisher._highlight_python_code_html(incomplete)
+    assert "syntax-" not in fallback
+    assert "<script>" not in fallback
+    assert "&lt;script&gt;" in fallback
+
+
+def test_python_highlighter_round_trip_preserves_tabs_blank_lines_korean_and_fstring():
+    publisher = _module()
+    source = (
+        "def greet(name):\n"
+        "\t# 한글 주석\n"
+        "\tmessage = f\"\"\"안녕하세요 {name}\n두 번째 줄\"\"\"\n"
+        "\n"
+        "\treturn message"
+    )
+
+    highlighted = publisher._highlight_python_code_html(source)
+    restored = unescape(re.sub(r"<[^>]+>", "", highlighted))
+
+    assert restored == source
+    assert '<span class="syntax-comment"># 한글 주석</span>' in highlighted
+    assert "syntax-string" in highlighted
+    assert "\t" in restored
+    assert "\n\n" in restored
+
+
+def test_python_highlighter_falls_back_when_token_or_markup_limit_is_exceeded():
+    publisher = _module()
+    source = "+".join("x" for _ in range(3_001))
+
+    highlighted = publisher._highlight_python_code_html(source)
+
+    assert len(source) < publisher.MAX_EXECUTION_CODE_CHARACTERS
+    assert "syntax-" not in highlighted
+    assert unescape(highlighted) == source
+
+
+def test_typed_deterministic_text_is_escaped_without_python_highlighting():
+    publisher = _module()
+    html = publisher._execution_code_html(
+        {
+            "available": True,
+            "kind": "typed_deterministic",
+            "label": "Typed deterministic 실행 계약",
+            "language": "text",
+            "execution_status": "executed",
+            "code": "typed_plan = <unsafe>",
+        }
+    )
+
+    assert "syntax-" not in html
+    assert "<unsafe>" not in html
+    assert "&lt;unsafe&gt;" in html
+
+
+def test_execution_report_contains_dark_editor_palette_without_external_highlighter():
+    publisher = _module()
+    payload = _payload()
+    payload["trace"]["inspection"]["pandas_execution"]["llm_generated_code"] = (
+        "result = sources['assign'].groupby('LEAD').sum()"
+    )
+
+    document = publisher.render_execution_report_html(
+        publisher.build_execution_explanation(payload)
+    )
+
+    assert "background: #0d1117" in document
+    assert ".syntax-keyword" in document
+    assert '<span class="syntax-function">groupby</span>' in document
+    assert "prism.js" not in document.casefold()
+    assert "highlight.js" not in document.casefold()
+    assert "cdnjs" not in document.casefold()
+
+
+def test_fast_and_typed_execution_are_labeled_as_deterministic_contracts():
+    publisher = _module()
+    fast_payload = _payload()
+    fast_payload["trace"]["inspection"]["pandas_execution"] = {
+        "status": "ok",
+        "code_generation_type": "deterministic_function",
+        "execution_mode": "execute_fast_path_recipe",
+        "deterministic_function": {"recipe": "group_summary"},
+        "deterministic_logic_code": "result, certificate = _execute_fast_path_recipe(contract, sources, pd)",
+        "generated_code": "must_not_win = True",
+        "llm_generated_code": "",
+        "llm_code_executed": False,
+        "execution_started": True,
+        "deterministic_contract_started": True,
+    }
+    typed_payload = _payload()
+    typed_payload["trace"]["inspection"]["pandas_execution"] = {
+        "status": "ok",
+        "code_generation_type": "deterministic_function",
+        "execution_mode": "execute_typed_pandas_plan",
+        "deterministic_logic_code": "result = _execute_typed_pandas_plan(typed_plan, sources, pd)",
+        "generated_code": "must_not_win = True",
+        "llm_generated_code": "",
+        "llm_code_executed": False,
+        "execution_started": True,
+        "deterministic_contract_started": True,
+    }
+
+    fast = publisher.build_execution_explanation(fast_payload)["execution_code"]
+    typed = publisher.build_execution_explanation(typed_payload)["execution_code"]
+    fast_html = publisher.render_execution_report_html(
+        publisher.build_execution_explanation(fast_payload)
+    )
+    typed_html = publisher.render_execution_report_html(
+        publisher.build_execution_explanation(typed_payload)
+    )
+
+    assert fast["kind"] == "fast_deterministic"
+    assert fast["label"] == "Fast 고정 실행 계약"
+    assert "_execute_fast_path_recipe" in fast["code"]
+    assert "must_not_win" not in fast["code"]
+    assert "LLM 생성 코드가 아니라" in fast_html
+    assert typed["kind"] == "typed_deterministic"
+    assert typed["label"] == "Typed deterministic 실행 계약"
+    assert "_execute_typed_pandas_plan" in typed["code"]
+    assert "LLM 생성 코드가 아니라" in typed_html
+
+
+def test_execution_code_redacts_credentials_and_is_bounded_before_report_post():
+    publisher = _module()
+    payload = _payload()
+    secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+    long_body = "\n".join(f"value_{index} = {index}" for index in range(900))
+    payload["trace"]["inspection"]["pandas_execution"]["llm_generated_code"] = (
+        f"api_key = '{secret}'\n"
+        "headers = {'Authorization': 'Bearer abcdefghijklmnop'}\n"
+        "database_url = 'postgresql://alice:Passw0rd@example.invalid/db'\n"
+        "result = sources['assign'].copy()\n"
+        + long_body
+    )
+
+    explanation = publisher.build_execution_explanation(payload)
+    document = publisher.render_execution_report_html(explanation)
+    body = publisher._report_request_body(explanation, document, 1)
+    code = explanation["execution_code"]
+    serialized = repr(body)
+
+    assert code["truncated"] is True
+    assert code["redacted"] is True
+    assert code["shown_char_count"] <= publisher.MAX_EXECUTION_CODE_CHARACTERS
+    assert "보고서 표시 한도로 이후 코드를 생략했습니다" in code["code"]
+    assert "result = sources['assign'].copy()" in code["code"]
+    assert secret not in repr(explanation)
+    assert "abcdefghijklmnop" not in serialized
+    assert "Passw0rd" not in serialized
+    assert "api_key" not in code["code"]
+    assert "Authorization" not in code["code"]
+    assert "database_url" not in code["code"]
+
+
+def test_skipped_execution_does_not_create_an_empty_code_panel():
+    publisher = _module()
+    payload = _payload(status="blocked")
+    payload["trace"]["inspection"]["pandas_execution"] = {
+        "status": "skipped",
+        "reason": "required_source_retrieval_failed",
+        "generated_code": "result = must_not_render",
+    }
+
+    explanation = publisher.build_execution_explanation(payload)
+    document = publisher.render_execution_report_html(explanation)
+
+    assert explanation["execution_code"] == {}
+    assert 'class="code-panel"' not in document
+    assert "must_not_render" not in document
+
+
+def test_partial_or_legacy_trace_without_explicit_execution_proof_does_not_publish_code():
+    publisher = _module()
+    partial_payload = _payload(status="partial")
+    partial_payload["trace"]["inspection"]["pandas_execution"] = {
+        "status": "partial",
+        "llm_generated_code": "unsafe_code = open('must-not-run')",
+        "generated_code": "unsafe_code = open('must-not-run')",
+        "error": {"type": "unsafe_code", "message": "guard rejected code"},
+        "intermediate_results": [{"key": "source:assign", "row_count": 8}],
+    }
+    legacy_payload = _payload()
+    legacy_payload["trace"]["inspection"]["pandas_execution"] = {
+        "status": "ok",
+        "generated_code": "def trusted_helper():\n    return 'helper-body-must-not-render'",
+    }
+
+    partial_explanation = publisher.build_execution_explanation(partial_payload)
+    legacy_explanation = publisher.build_execution_explanation(legacy_payload)
+    partial_html = publisher.render_execution_report_html(partial_explanation)
+    legacy_html = publisher.render_execution_report_html(legacy_explanation)
+
+    assert partial_explanation["execution_code"] == {}
+    assert legacy_explanation["execution_code"] == {}
+    assert "must-not-run" not in partial_html
+    assert "helper-body-must-not-render" not in legacy_html
+    assert 'class="code-panel"' not in partial_html
+    assert 'class="code-panel"' not in legacy_html
+
+
+def test_partial_trace_with_explicit_execution_proof_can_show_selected_analysis_body():
+    publisher = _module()
+    payload = _payload(status="partial")
+    payload["trace"]["inspection"]["pandas_execution"].update(
+        {
+            "status": "partial",
+            "llm_code_executed": True,
+            "llm_generated_code": "result = sources['assign'].head(1)",
+        }
+    )
+
+    explanation = publisher.build_execution_explanation(payload)
+    document = publisher.render_execution_report_html(explanation)
+
+    assert explanation["execution_code"]["execution_status"] == "partial"
+    assert "result = sources['assign'].head(1)" in _plain_html_text(document)
+    assert "부분 실행" in document
+
+
+def test_runtime_error_with_execution_proof_shows_diagnostic_code_but_pre_execution_error_does_not():
+    publisher = _module()
+    runtime_payload = _payload(status="error")
+    runtime_payload["trace"]["inspection"]["pandas_execution"] = {
+        "status": "error",
+        "execution_started": True,
+        "llm_code_executed": True,
+        "llm_generated_code": "result = 1 / 0",
+    }
+    pre_execution_payload = _payload(status="error")
+    pre_execution_payload["trace"]["inspection"]["pandas_execution"] = {
+        "status": "error",
+        "execution_started": False,
+        "llm_code_executed": False,
+        "llm_generated_code": "result = open('must-not-run')",
+    }
+
+    runtime_explanation = publisher.build_execution_explanation(runtime_payload)
+    runtime_html = publisher.render_execution_report_html(runtime_explanation)
+    pre_execution_explanation = publisher.build_execution_explanation(pre_execution_payload)
+
+    assert runtime_explanation["execution_code"]["execution_status"] == "error"
+    assert "result = 1 / 0" in _plain_html_text(runtime_html)
+    assert "실행 중 오류" in runtime_html
+    assert pre_execution_explanation["execution_code"] == {}
+
+
+def test_code_sanitizer_removes_nested_auth_forms_and_keeps_valid_suite_shape():
+    publisher = _module()
+    source = (
+        "if ready:\n"
+        "    api_key = 'first-secret'\n"
+        "headers = dict([('Authorization', 'opaque-secret-value')])\n"
+        "client = fn(auth=('alice', 'Passw0rd'))\n"
+        "creds = ('bob', 'another-password')\n"
+        "client_secret_value = 'opaque-secret-value-2'\n"
+        "auth_tuple = ('carol', 'SecondPass!')\n"
+        "result = sources['assign']"
+    )
+
+    code, truncated, redacted, _, _ = publisher._safe_execution_code_text(source)
+
+    assert truncated is False
+    assert redacted is True
+    assert "first-secret" not in code
+    assert "opaque-secret-value" not in code
+    assert "Passw0rd" not in code
+    assert "another-password" not in code
+    assert "opaque-secret-value-2" not in code
+    assert "SecondPass" not in code
+    assert "Authorization" not in code
+    assert "pass  # [민감 실행 설정 숨김]" in code
+    assert "result = sources['assign']" in code
+    compile(code, "<report-code>", "exec")
+
+
+def test_code_sanitizer_keeps_normal_token_and_url_column_references():
+    publisher = _module()
+    source = (
+        'result = df[df["TOKEN"] == "A"]\n'
+        'result = result[["URL", "LEAD"]]'
+    )
+
+    code, truncated, redacted, _, _ = publisher._safe_execution_code_text(source)
+
+    assert truncated is False
+    assert redacted is False
+    assert 'df["TOKEN"] == "A"' in code
+    assert 'result[["URL", "LEAD"]]' in code
+
+
+def test_code_sanitizer_redacts_sensitive_suffix_variables_and_transport_pairs():
+    publisher = _module()
+    source = (
+        "access_token_value = 'opaque-access-token'\n"
+        "session_cookie_value = 'opaque-cookie'\n"
+        "connection_string_value = 'Server=db;User=x;Password=y'\n"
+        "header_pairs = [('Authorization', 'opaque-header-secret')]\n"
+        "config.update([('X-API-Key', 'opaque-api-secret')])\n"
+        "result = sources['assign']"
+    )
+
+    code, truncated, redacted, _, _ = publisher._safe_execution_code_text(source)
+
+    assert truncated is False
+    assert redacted is True
+    assert "opaque-access-token" not in code
+    assert "opaque-cookie" not in code
+    assert "Server=db" not in code
+    assert "opaque-header-secret" not in code
+    assert "opaque-api-secret" not in code
+    assert "result = sources['assign']" in code
+    compile(code, "<report-code>", "exec")
+
+
+def test_code_sanitizer_keeps_token_url_uri_result_row_literals():
+    publisher = _module()
+    source = "result = pd.DataFrame([{'TOKEN': 'A', 'URL': 'factory', 'URI': 'line'}])"
+
+    code, truncated, redacted, _, _ = publisher._safe_execution_code_text(source)
+
+    assert truncated is False
+    assert redacted is False
+    assert "'TOKEN': 'A'" in code
+    assert "'URL': 'factory'" in code
+    assert "'URI': 'line'" in code
+
+
+@pytest.mark.parametrize(
+    ("source", "secret"),
+    [
+        ('endpoint = "mongodb://alice:Passw0rd@db.invalid/app"\nresult = 1', "Passw0rd"),
+        ('endpoint = "https://alice:Passw0rd@example.invalid/path"\nresult = 1', "Passw0rd"),
+        ('endpoint = "https://example.invalid/?token=abcdef123456"\nresult = 1', "abcdef123456"),
+    ],
+)
+def test_code_sanitizer_preserves_python_quotes_when_redacting_urls(source, secret):
+    publisher = _module()
+
+    code, truncated, redacted, _, _ = publisher._safe_execution_code_text(source)
+
+    assert truncated is False
+    assert redacted is True
+    assert secret not in code
+    assert "result = 1" in code
+    compile(code, "<report-code>", "exec")
+
+
+def test_code_sanitizer_caps_scan_work_before_ast_and_marks_large_source_truncated():
+    publisher = _module()
+    source = "\n".join(f"value_{index} = {index}" for index in range(20_000))
+
+    code, truncated, _, original_count, shown_count = publisher._safe_execution_code_text(source)
+
+    assert original_count == len(source)
+    assert original_count > publisher.MAX_EXECUTION_CODE_SCAN_CHARACTERS
+    assert truncated is True
+    assert shown_count <= publisher.MAX_EXECUTION_CODE_CHARACTERS
+    assert len(code) < publisher.MAX_EXECUTION_CODE_CHARACTERS + 200
 
 
 def test_execution_report_uses_local_noto_sans_kr_and_blue_card_design_tokens():

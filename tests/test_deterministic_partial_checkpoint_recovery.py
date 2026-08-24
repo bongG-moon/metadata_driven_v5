@@ -115,6 +115,12 @@ def test_fast_aggregate_contract_failure_recovers_computed_checkpoint(executor):
         {"GROUP": "A", "QTY_SUM": 5},
         {"GROUP": "B", "QTY_SUM": 7},
     ]
+    pandas_execution = executed["trace"]["inspection"]["pandas_execution"]
+    assert pandas_execution["execution_started"] is True
+    assert pandas_execution["llm_code_executed"] is False
+    assert pandas_execution["deterministic_contract_started"] is True
+    assert pandas_execution["execution_mode"] == "execute_fast_path_recipe"
+    assert pandas_execution["deterministic_logic_code"]
 
 
 def test_typed_late_sort_failure_recovers_completed_aggregate_step(executor):
@@ -179,6 +185,12 @@ def test_typed_late_sort_failure_recovers_completed_aggregate_step(executor):
         {"GROUP": "A", "QTY_SUM": 5},
         {"GROUP": "B", "QTY_SUM": 7},
     ]
+    pandas_execution = executed["trace"]["inspection"]["pandas_execution"]
+    assert pandas_execution["execution_started"] is True
+    assert pandas_execution["llm_code_executed"] is False
+    assert pandas_execution["deterministic_contract_started"] is True
+    assert pandas_execution["execution_mode"] == "execute_typed_pandas_plan"
+    assert pandas_execution["deterministic_logic_code"]
 
 
 def test_failure_before_safe_checkpoint_does_not_expose_raw_source_as_partial(executor):
@@ -232,3 +244,7 @@ def test_failure_before_safe_checkpoint_does_not_expose_raw_source_as_partial(ex
         checkpoint.get("role") == "source_input"
         for checkpoint in executed.get("intermediate_results", [])
     )
+    pandas_execution = executed["trace"]["inspection"]["pandas_execution"]
+    assert pandas_execution["execution_started"] is True
+    assert pandas_execution["llm_code_executed"] is False
+    assert pandas_execution["deterministic_contract_started"] is True

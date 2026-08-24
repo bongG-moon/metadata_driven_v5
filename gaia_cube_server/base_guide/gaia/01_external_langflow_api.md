@@ -23,11 +23,13 @@ POST http://gaia.example.internal/v2/agents/{svc_id}/external
 | `X-Gaia-Auth-Key` | GAIA에서 발급받은 키 | 예 | 코드·문서·로그에 실제 값을 저장하지 않는다. |
 | `X-Gaia-User-Id` | 권한이 있는 사용자 사번 | 예 | 본문의 `user_id`와 같은 값을 사용한다. |
 
-## JSON Body
+## 현재 Agent에서 확인된 JSON Body
+
+초기 제공 코드 예시는 질문 key로 `message`를 사용했다. 그러나 2026-08-24 실제 Agent 호출에서는 `input_value`를 전송했을 때 정상적으로 Flow 입력과 응답이 확인되었다. 따라서 현재 `production_callback_server`는 **`input_value`만** 전송한다. 같은 요청에 이전 `message`와 `input_value`를 함께 넣지 않는다.
 
 | 필드 | 형식 | 필수 | 의미 |
 | --- | --- | --- | --- |
-| `message` | string | 예 | Langflow에 전달할 사용자 메시지 |
+| `input_value` | string | 예 | 현재 확인된 Langflow Agent의 사용자 질문 입력 |
 | `user_id` | string | 예 | 권한 있는 사용자 ID. `X-Gaia-User-Id`와 동일해야 한다. |
 | `session_id` | string | 예 | Chat completion을 묶는 대화 단위 식별자 |
 
@@ -47,7 +49,7 @@ headers = {
     "X-Gaia-User-Id": user_id,
 }
 payload = {
-    "message": "전송할 메시지",
+    "input_value": "전송할 메시지",
     "user_id": user_id,
     "session_id": "Chat completion 단위",
 }
@@ -62,10 +64,11 @@ body = response.json()
 ## 구현 시 확정된 규칙
 
 1. `svc_id`, 인증 키와 사용자 ID는 코드에 하드코딩하지 않는다.
-2. `X-Gaia-User-Id`와 `user_id`는 항상 같은 값으로 보낸다.
-3. 대화 연속성이 필요한 요청은 동일한 `session_id`를 재사용한다.
-4. HTTP 성공 여부와 JSON 파싱 성공 여부를 각각 검사한다.
-5. 응답 전체 JSON을 CUBE 메시지로 전달하지 않는다. 최종 답변 문자열 추출 계약은 `02_response_extraction.md`를 따른다.
+2. 현재 확인된 Agent에는 질문을 `input_value`로 보낸다. 다른 입력 key를 요구하는 Agent를 추가할 때만 그 Agent의 실제 계약을 확인해 변경한다.
+3. `X-Gaia-User-Id`와 `user_id`는 항상 같은 값으로 보낸다.
+4. 대화 연속성이 필요한 요청은 동일한 `session_id`를 재사용하고, GAIA가 루트 `session_id`를 돌려주면 다음 요청에 그 값을 사용한다.
+5. HTTP 성공 여부와 JSON 파싱 성공 여부를 각각 검사한다.
+6. 응답 전체 JSON을 CUBE 메시지로 전달하지 않는다. 최종 답변 문자열 추출 계약은 `02_response_extraction.md`를 따른다.
 
 ## 사용자 실행으로 확인된 동작
 

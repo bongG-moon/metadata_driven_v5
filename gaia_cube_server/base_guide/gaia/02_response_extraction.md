@@ -4,6 +4,24 @@
 
 CUBE로 전달할 값은 GAIA 응답 전체가 아니라 **가장 마지막의 유효한 Chat Output에 포함된 최종 답변 문자열**이다.
 
+2026-08-24에 확인한 실제 응답에서는 아래 경로가 정규화된 최종 답변이다.
+
+```python
+data = response.json()
+result = data["outputs"][0]["outputs"][0]["results"]
+
+answer = result["gaia_response"]["data"]["answer"]
+metadata = result["gaia_response"]["data"].get("metadata", {})
+session_id = data.get("session_id")
+graph_run_id = (
+    result["message"]["data"]
+    .get("session_metadata", {})
+    .get("graph_run_id")
+)
+```
+
+운영 서버는 Flow의 출력 순서가 바뀌어도 오래된 답변을 보내지 않도록 마지막 `Chat Output`을 먼저 찾은 뒤, 그 안의 `results.gaia_response.data.answer`를 우선 사용한다. `metadata`, `graph_run_id`, `session_id`는 CUBE 메시지 본문에 넣지 않는다.
+
 단순히 루트 배열의 마지막 원소만 고정 경로로 읽으면 Flow 구성 변화에 취약하다. 다음 순서로 처리한다.
 
 1. 루트 `outputs`를 뒤에서부터 순회한다.

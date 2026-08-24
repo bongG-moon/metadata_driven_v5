@@ -78,7 +78,7 @@ CUBE channel ID
 
 header와 process에 사용자·채널 값이 모두 있으면 값이 같아야 한다. `!@#HelloChatBot#@!`는 제어 메시지이므로 GAIA와 CUBE 발송을 호출하지 않고 `ignored` 상태를 반환한다.
 
-GAIA 응답에서는 마지막 `Chat Output`만 찾고, 우선 `results.gaia_response.data.answer`를 CUBE로 보낸다. 답변이 없거나 GAIA 호출이 실패하면 `.env`의 `USER_ERROR_MESSAGE`를 CUBE에 한 번 보낸 뒤 callback에는 안전한 오류 상태를 반환한다.
+현재 확인된 GAIA Agent에는 CUBE 질문을 `input_value`로 전송한다. GAIA 응답에서는 마지막 `Chat Output`만 찾고, 우선 `results.gaia_response.data.answer`를 CUBE로 보낸다. GAIA가 루트 `session_id`를 반환하면 다음 같은 사용자·채널 요청에 그 값을 재사용한다. 답변이 없거나 GAIA 호출이 실패하면 `.env`의 `USER_ERROR_MESSAGE`를 CUBE에 한 번 보낸 뒤 callback에는 안전한 오류 상태를 반환한다.
 
 ## 테스트와 주의사항
 

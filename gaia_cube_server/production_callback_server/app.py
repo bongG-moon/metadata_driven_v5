@@ -168,6 +168,15 @@ class InMemorySessionStore:
                 self._sessions[key] = session_id
             return session_id
 
+    async def replace(
+        self, *, user_id: str, channel_id: str, gaia_session_id: str
+    ) -> None:
+        """Keep GAIA's returned opaque session ID for the next callback."""
+
+        key = (user_id, channel_id)
+        async with self._lock:
+            self._sessions[key] = gaia_session_id
+
 
 def _nonempty_text(value: Any) -> str | None:
     if not isinstance(value, str):
@@ -340,6 +349,12 @@ def extract_final_answer(payload: Mapping[str, Any]) -> str:
     raise GaiaResponseError("The final GAIA Chat Output has no answer text.")
 
 
+def extract_returned_session_id(payload: Mapping[str, Any]) -> str | None:
+    """Read the top-level GAIA session token without exposing it to CUBE."""
+
+    return _nonempty_text(payload.get("session_id"))
+
+
 def build_cube_rich_notification(
     *,
     settings: Settings,
@@ -402,7 +417,7 @@ async def call_gaia(
     service_id: str,
     user_id: str,
     session_id: str,
-    message: str,
+    input_value: str,
 ) -> dict[str, Any]:
     url = f"{settings.gaia_base_url}/v2/agents/{quote(service_id, safe='')}/external"
     try:
@@ -414,7 +429,9 @@ async def call_gaia(
                 "X-Gaia-User-Id": user_id,
             },
             json={
-                "message": message,
+                # The deployed GAIA Agent was verified with this input field.
+                # Do not send the older sample's `message` field alongside it.
+                "input_value": input_value,
                 "user_id": user_id,
                 "session_id": session_id,
             },
@@ -533,9 +550,16 @@ def create_app(
                 service_id=service_id,
                 user_id=event.user_id,
                 session_id=session_id,
-                message=event.message,
+                input_value=event.message,
             )
             answer = extract_final_answer(gaia_body)
+            returned_session_id = extract_returned_session_id(gaia_body)
+            if returned_session_id is not None:
+                await sessions.replace(
+                    user_id=event.user_id,
+                    channel_id=event.channel_id,
+                    gaia_session_id=returned_session_id,
+                )
         except (CallbackValidationError, ExternalApiError, GaiaResponseError) as exc:
             LOGGER.warning("GAIA callback processing failed: %s", type(exc).__name__)
             try:

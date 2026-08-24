@@ -79,6 +79,13 @@ def test_missing_aggregate_metric_fails_after_computation_and_recovers_partial_r
     assert executed["data"]["columns"] == ["OPER_NAME"]
     assert executed["data"]["rows"] == [{"OPER_NAME": "D/A1"}]
     assert executed["intermediate_results"][0]["role"] == "computed_result"
+    pandas_execution = executed["trace"]["inspection"]["pandas_execution"]
+    assert pandas_execution["execution_started"] is True
+    assert pandas_execution["llm_code_executed"] is True
+    assert pandas_execution["deterministic_contract_started"] is False
+    assert pandas_execution["llm_generated_code"] == (
+        "result = pd.DataFrame([{'OPER_NAME': 'D/A1'}])"
+    )
 
     message = adapter.build_message(
         executed,
@@ -107,6 +114,36 @@ def test_missing_code_with_only_raw_source_checkpoint_remains_error(executor):
     assert executed["analysis"]["error"]["type"] == "missing_code"
     assert not executed["analysis"].get("recovered_result")
     assert not executed.get("data", {}).get("partial")
+    pandas_execution = executed["trace"]["inspection"]["pandas_execution"]
+    assert pandas_execution["execution_started"] is False
+    assert pandas_execution["llm_code_executed"] is False
+
+
+def test_unsafe_code_is_not_marked_as_executed(executor):
+    executed = executor.execute_pandas_code(
+        _payload(result_mode="detail", strict_result_columns=False, metric_columns=[]),
+        "result = open('must-not-run.txt')",
+    )
+
+    assert executed["analysis"]["status"] == "error"
+    assert executed["analysis"]["error"]["type"] == "unsafe_code"
+    pandas_execution = executed["trace"]["inspection"]["pandas_execution"]
+    assert pandas_execution["execution_started"] is False
+    assert pandas_execution["llm_code_executed"] is False
+
+
+def test_runtime_exception_is_marked_as_started_for_diagnostic_report(executor):
+    executed = executor.execute_pandas_code(
+        _payload(result_mode="detail", strict_result_columns=False, metric_columns=[]),
+        "result = 1 / 0",
+    )
+
+    assert executed["analysis"]["status"] == "error"
+    assert executed["analysis"]["error"]["type"] == "pandas_execution_error"
+    pandas_execution = executed["trace"]["inspection"]["pandas_execution"]
+    assert pandas_execution["execution_started"] is True
+    assert pandas_execution["llm_code_executed"] is True
+    assert pandas_execution["llm_generated_code"] == "result = 1 / 0"
 
 
 def test_missing_metric_is_also_checked_for_strict_detail_contract(executor):

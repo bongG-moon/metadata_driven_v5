@@ -120,6 +120,15 @@ def test_cleanup_builds_bounded_html_preview_with_existing_csv_refs_and_releases
                 },
             }
         ],
+        "trace": {
+            "inspection": {
+                "pandas_execution": {
+                    "status": "ok",
+                    "llm_code_executed": True,
+                    "llm_generated_code": "result = sources['assign']",
+                }
+            }
+        },
     }
 
     cleaned = cleanup.release_runtime_payload(payload, gc_mode="disabled")
@@ -157,6 +166,7 @@ def test_cleanup_builds_bounded_html_preview_with_existing_csv_refs_and_releases
     assert "_execution_report_domain_details" not in cleaned
 
     assert cleaned["data"]["rows"] == expected_display_rows
+    assert cleaned["trace"]["inspection"]["pandas_execution"]["llm_generated_code"] == "result = sources['assign']"
     for key in cleanup.RUNTIME_BUFFER_KEYS:
         assert key not in cleaned
     assert payload["runtime_sources"] == {}

@@ -444,6 +444,12 @@ def execute_pandas_code(
             row_match_preamble,
             response_parse,
         )
+    # Report only code that entered the corresponding analysis runtime.  A
+    # guard or compile failure can still retain the normalized body for repair,
+    # but it must not be presented to users as executed pandas code.
+    execution_started = False
+    llm_code_executed = False
+    deterministic_contract_started = False
     try:
         import pandas as pd  # type: ignore
 
@@ -578,7 +584,13 @@ def execute_pandas_code(
             exec_ns["np"] = _safe_numpy_namespace()
         if deterministic_execution:
             if code.strip():
-                exec(compile(code, "<pandas_filter_preamble>", "exec"), exec_ns, exec_ns)
+                compiled_preamble = compile(
+                    code,
+                    "<pandas_filter_preamble>",
+                    "exec",
+                )
+                execution_started = True
+                exec(compiled_preamble, exec_ns, exec_ns)
                 sources = (
                     exec_ns.get("sources")
                     if isinstance(exec_ns.get("sources"), dict)
@@ -596,6 +608,8 @@ def execute_pandas_code(
             helper_trace["helper_sources"] = deepcopy(
                 deterministic_transform_execution
             )
+            execution_started = True
+            deterministic_contract_started = True
             deterministic_result = _execute_deterministic_contract(
                 deterministic_execution,
                 sources,
@@ -635,7 +649,10 @@ def execute_pandas_code(
                 )
             row_match_execution = []
         else:
-            exec(compile(code, "<pandas_code>", "exec"), exec_ns, exec_ns)
+            compiled_analysis = compile(code, "<pandas_code>", "exec")
+            execution_started = True
+            llm_code_executed = True
+            exec(compiled_analysis, exec_ns, exec_ns)
             sources = (
                 exec_ns.get("sources")
                 if isinstance(exec_ns.get("sources"), dict)
@@ -756,7 +773,9 @@ def execute_pandas_code(
             "code_generation_type": "deterministic_function" if deterministic_execution else "llm_generated",
             "deterministic_function": deepcopy(deterministic_function),
             "execution_mode": execution_mode,
-            "llm_code_executed": not bool(deterministic_execution),
+            "execution_started": bool(execution_started),
+            "llm_code_executed": bool(llm_code_executed),
+            "deterministic_contract_started": bool(deterministic_contract_started),
             "llm_response_parse": response_parse,
             "safe_import_normalization": _safe_import_trace(safe_imports),
             "used_helpers": helper_trace["used_helpers"],
@@ -795,6 +814,13 @@ def execute_pandas_code(
             row_match_preamble,
             response_parse,
             intermediate_results=next_payload.get("intermediate_results"),
+            normalized_llm_code=normalized_llm_code,
+            deterministic_logic_code=deterministic_logic_code,
+            deterministic_function=deterministic_function,
+            execution_mode=execution_mode,
+            execution_started=execution_started,
+            llm_code_executed=llm_code_executed,
+            deterministic_contract_started=deterministic_contract_started,
         )
     except OutputContractError as exc:
         if callable(locals().get("flush_runtime_checkpoints")):
@@ -815,6 +841,13 @@ def execute_pandas_code(
             row_match_preamble,
             response_parse,
             intermediate_results=next_payload.get("intermediate_results"),
+            normalized_llm_code=normalized_llm_code,
+            deterministic_logic_code=deterministic_logic_code,
+            deterministic_function=deterministic_function,
+            execution_mode=execution_mode,
+            execution_started=execution_started,
+            llm_code_executed=llm_code_executed,
+            deterministic_contract_started=deterministic_contract_started,
         )
     except Exception as exc:
         # A generated code error can happen after source filters have been
@@ -844,6 +877,13 @@ def execute_pandas_code(
             row_match_preamble,
             response_parse,
             intermediate_results=next_payload.get("intermediate_results"),
+            normalized_llm_code=normalized_llm_code,
+            deterministic_logic_code=deterministic_logic_code,
+            deterministic_function=deterministic_function,
+            execution_mode=execution_mode,
+            execution_started=execution_started,
+            llm_code_executed=llm_code_executed,
+            deterministic_contract_started=deterministic_contract_started,
         )
 
 
@@ -6632,6 +6672,13 @@ def _analysis_error(
     row_match_preamble: str = "",
     response_parse: dict[str, Any] | None = None,
     intermediate_results: Any = None,
+    normalized_llm_code: str | None = None,
+    deterministic_logic_code: str = "",
+    deterministic_function: dict[str, Any] | None = None,
+    execution_mode: str = "",
+    execution_started: bool = False,
+    llm_code_executed: bool = False,
+    deterministic_contract_started: bool = False,
 ) -> dict[str, Any]:
     safe_import_info = safe_imports if isinstance(safe_imports, dict) else {}
     helper_trace = _runtime_helper_trace(code)
@@ -6692,11 +6739,29 @@ def _analysis_error(
         "recovered_result": recovered_result,
     }
     payload.setdefault("trace", {}).setdefault("errors", []).append({"type": error_type, "message": message})
+    normalized_code = (
+        str(normalized_llm_code)
+        if normalized_llm_code is not None
+        else str(safe_import_info.get("normalized_llm_code") or llm_code or "")
+    )
     payload.setdefault("trace", {}).setdefault("inspection", {})["pandas_execution"] = {
         "stage": "17_pandas_code_executor",
         "status": analysis_status,
         "generated_code": code,
-        "llm_generated_code": llm_code or code,
+        "llm_generated_code": normalized_code,
+        "deterministic_logic_code": (
+            deterministic_logic_code if deterministic_contract_started else ""
+        ),
+        "code_generation_type": (
+            "deterministic_function"
+            if deterministic_logic_code
+            else "llm_generated"
+        ),
+        "deterministic_function": deepcopy(deterministic_function or {}),
+        "execution_mode": execution_mode,
+        "execution_started": bool(execution_started),
+        "llm_code_executed": bool(llm_code_executed),
+        "deterministic_contract_started": bool(deterministic_contract_started),
         "llm_response_parse": deepcopy(response_parse) if isinstance(response_parse, dict) else {},
         "safe_import_normalization": _safe_import_trace(safe_import_info),
         "row_match_preamble": row_match_preamble,

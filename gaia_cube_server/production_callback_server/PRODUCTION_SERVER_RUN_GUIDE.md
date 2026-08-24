@@ -150,8 +150,8 @@ CUBE_CHANNEL_GAIA_SERVICE_MAP_JSON={"TEST_CHANNEL_A":"GAIA_SERVICE_ID_A","TEST_C
 | --- | --- |
 | CUBE 사용자 ID | GAIA 요청 header의 `X-Gaia-User-Id`와 body의 `user_id`에 같은 값으로 넣음 |
 | CUBE 채널 ID | GAIA Agent 매핑 선택 및 CUBE 답변의 `channelid[0]`에 사용 |
-| CUBE `processdata` | GAIA body의 `message`에 사용 |
-| 서버가 만든 `gc_<UUID>` | GAIA body의 `session_id`에 사용 |
+| CUBE `processdata` | GAIA body의 `input_value`에 사용 |
+| 서버가 만든 `gc_<UUID>` 또는 GAIA가 반환한 값 | GAIA body의 `session_id`에 사용 |
 | `GAIA_SERVICE_ID` 또는 채널 매핑 값 | `POST /v2/agents/{svc_id}/external`의 `{svc_id}`에 사용 |
 | GAIA 최종 답변 | CUBE Rich Notification의 `control.text[0]`에 사용 |
 
@@ -293,7 +293,7 @@ callback URL 등록과 10단계의 수동 시험이 성공한 뒤에만 진행�
 
 두 번째 질문은 첫 답변을 알아야 답할 수 있는 내용으로 보내면 세션 동작을 쉽게 확인할 수 있다. 예를 들면 첫 질문 뒤에 “방금 답변을 한 문장으로 다시 요약해줘”라고 보낸다.
 
-현재 구현은 같은 `사용자 ID + CUBE 채널 ID`에 대해 실행 중인 서버 메모리 안에서 같은 `gc_<UUID>` GAIA session ID를 재사용한다. 서버를 재시작하면 새 session ID가 만들어진다. 운영 서버에는 현재 세션 목록 또는 과거 대화를 조회하는 endpoint가 없고, 영구 저장도 하지 않는다.
+현재 구현은 같은 `사용자 ID + CUBE 채널 ID`에 대해 실행 중인 서버 메모리 안에서 GAIA session ID를 재사용한다. 첫 요청에는 `gc_<UUID>`를 만들고, GAIA가 루트 `session_id`를 반환하면 이후 요청에는 그 반환값을 사용한다. 서버를 재시작하면 새 session ID가 만들어진다. 운영 서버에는 현재 세션 목록 또는 과거 대화를 조회하는 endpoint가 없고, 영구 저장도 하지 않는다.
 
 ## 12. 성공·실패 때 무엇을 보면 되는가
 
