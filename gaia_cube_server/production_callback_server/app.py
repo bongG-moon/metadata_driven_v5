@@ -1,11 +1,12 @@
 """HCP-only GAIA-CUBE callback server.
 
 One request follows one simple path:
-    CUBE callback -> GAIA API -> CUBE Rich Notification
+    CUBE callback -> immediate ACK -> GAIA API -> CUBE Rich Notification
 
 The server intentionally keeps only the current in-memory GAIA session ID for
-each user and CUBE channel. It does not add workers, databases, schedulers,
-retry queues, or a second callback route.
+each user and CUBE channel. GAIA and CUBE delivery run in FastAPI's in-process
+background task after the ACK. It does not add external workers, databases,
+schedulers, retry queues, or a second callback route.
 """
 
 from __future__ import annotations
@@ -14,13 +15,10 @@ import asyncio
 import json
 import logging
 import os
-import re
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from html import unescape
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -28,8 +26,10 @@ from urllib.parse import urlparse
 import httpx
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
+
+from markdown_rich_notification import render_markdown_to_cube_body
 
 
 LOGGER = logging.getLogger("gaia_cube_callback")
@@ -38,6 +38,7 @@ HELLO_CHATBOT_SENTINEL = "!@#HelloChatBot#@!"
 INTERACTION_KEYS = ("UserSelection", "SendBtn")
 CUBE_REPLY_REQUEST_ID = "request_cond_change_main"
 CUBE_BOT_FROMUSERNAME_COUNT = 5
+CubeBodyRenderer = Callable[[str], dict[str, Any]]
 
 
 class SettingsError(RuntimeError):
@@ -197,20 +198,69 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _first_text(value: Any) -> str | None:
-    if isinstance(value, list):
-        return next((text for item in value if (text := _text(item))), None)
-    return _text(value)
+def _single_text(value: Any, label: str) -> str | None:
+    """Read one ID from a CUBE string or an array of identical strings.
+
+    CUBE examples use both scalar and array ``channelid`` fields. A callback
+    with two different non-empty IDs is unsafe: replying to the first one
+    could expose the answer in the wrong chat, so reject it instead.
+    """
+
+    if isinstance(value, str):
+        return _text(value)
+    if not isinstance(value, list):
+        return None
+
+    values = [text for item in value if (text := _text(item))]
+    if len(set(values)) > 1:
+        raise CallbackValidationError(
+            f"CUBE {label} must contain exactly one unique value."
+        )
+    return values[0] if values else None
 
 
-def _matching_value(
-    first: str | None, second: str | None, label: str
-) -> str | None:
-    """Use either CUBE field, but reject a callback whose two IDs disagree."""
+def _matching_values(*values: str | None, label: str) -> str | None:
+    """Use any documented CUBE field, but reject conflicting IDs."""
 
-    if first and second and first != second:
+    present_values = [value for value in values if value]
+    if len(set(present_values)) > 1:
         raise CallbackValidationError(f"CUBE {label} values do not match.")
-    return first or second
+    return present_values[0] if present_values else None
+
+
+def _selection_values(value: Any) -> list[str]:
+    """Keep only non-empty text selection values; never stringify objects."""
+
+    if isinstance(value, str):
+        return [text] if (text := _text(value)) else []
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := _text(item))]
+
+
+def _resultdata_message(envelope: Mapping[str, Any]) -> str | None:
+    """Read a Rich Message selection from ``result.resultdata[].value``.
+
+    The working CUBE callback example uses this shape after a button or radio
+    selection.  It is only a fallback: normal free-text ``processdata`` and
+    the documented process keys keep priority.
+    """
+
+    resultdata = _mapping(envelope.get("result")).get("resultdata")
+    if isinstance(resultdata, Mapping):
+        resultdata = [resultdata]
+    if not isinstance(resultdata, list):
+        return None
+
+    values: list[str] = []
+    for item in resultdata:
+        values.extend(_selection_values(_mapping(item).get("value")))
+
+    # A radio button normally produces one value. If a future Rich Message
+    # returns multiple checkbox values, preserve every distinct value instead
+    # of silently sending only the first one to GAIA.
+    distinct_values = list(dict.fromkeys(values))
+    return "\n".join(distinct_values) if distinct_values else None
 
 
 def parse_cube_callback(payload: Mapping[str, Any]) -> CubeCallbackEvent | None:
@@ -220,27 +270,33 @@ def parse_cube_callback(payload: Mapping[str, Any]) -> CubeCallbackEvent | None:
     if not isinstance(envelope, Mapping):
         raise CallbackValidationError("richnotificationmessage is required.")
 
-    header = _mapping(envelope.get("header"))
     process = _mapping(envelope.get("process"))
-    user_id = _matching_value(
-        _text(_mapping(header.get("from")).get("uniquename")),
-        _text(process.get("userId")),
-        "user ID",
-    )
-    channel_id = _matching_value(
-        _first_text(_mapping(header.get("to")).get("channelid")),
-        _text(process.get("channelId")),
-        "channel ID",
-    )
     message = _text(process.get("processdata"))
 
     if message == HELLO_CHATBOT_SENTINEL:
         return None
+
+    header = _mapping(envelope.get("header"))
+    header_from = _mapping(header.get("from"))
+    header_to = _mapping(header.get("to"))
+    user_id = _matching_values(
+        _single_text(header_from.get("uniquename"), "user ID"),
+        _single_text(process.get("userId"), "user ID"),
+        label="user ID",
+    )
+    channel_id = _matching_values(
+        _single_text(header_from.get("channelid"), "channel ID"),
+        _single_text(header_to.get("channelid"), "channel ID"),
+        _single_text(process.get("channelId"), "channel ID"),
+        label="channel ID",
+    )
     if message is None:
         message = next(
             (_text(process.get(key)) for key in INTERACTION_KEYS if _text(process.get(key))),
             None,
         )
+    if message is None:
+        message = _resultdata_message(envelope)
     if not user_id or not channel_id or not message:
         raise CallbackValidationError(
             "A CUBE user ID, channel ID, and processdata or selection value are required."
@@ -294,552 +350,31 @@ def _returned_session_id(payload: Mapping[str, Any]) -> str | None:
     return _text(payload.get("session_id"))
 
 
-_MARKDOWN_HEADING_RE = re.compile(
-    r"^\s{0,3}#{1,6}\s+(?P<text>.*?)(?:\s+#+\s*)?$"
-)
-_MARKDOWN_BULLET_RE = re.compile(
-    r"^\s*(?P<marker>[-*+•]|\d+[.)])\s+(?P<text>.+?)\s*$"
-)
-_MARKDOWN_BLOCKQUOTE_RE = re.compile(r"^\s*>\s?(?P<text>.+?)\s*$")
-_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
-_INCOMPLETE_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^<>\n]*$")
-_HTML_BLOCK_TAG_RE = re.compile(
-    r"<\s*/?\s*(?:br|p|div|li|h[1-6]|blockquote|pre)\b[^>]*>",
-    re.IGNORECASE,
-)
-_MARKDOWN_LINK_TEXT_RE = re.compile(r"!?\[([^\]\n]*)\]\([^\n)]*\)")
-_MARKDOWN_RICH_LINK_RE = re.compile(
-    r"(?<!\!)\[(?P<label>[^\]\n]+)\]\((?P<href>[^\s)]+)\)"
-)
-CUBE_MAX_SOURCE_CHARACTERS = 100_000
-CUBE_MAX_RENDERED_ROWS = 200
-CUBE_MAX_TABLE_COLUMNS = 12
-CUBE_MAX_DISPLAY_TEXT_CHARACTERS = 1_000
-CUBE_MAX_LINK_URL_CHARACTERS = 4_096
-CUBE_TRUNCATION_MESSAGE = "일부 응답은 CUBE 표시 한도로 생략되었습니다."
-CUBE_TRUNCATED_TABLE_CELL = "…"
-CUBE_ROW_STYLES = {
-    "normal": {"bgcolor": "#ffffff", "border": "false", "color": "#000000"},
-    "heading": {"bgcolor": "#ffffff", "border": "false", "color": "#1f4e79"},
-    "warning": {"bgcolor": "#fff8e6", "border": "true", "color": "#9a6700"},
-    "error": {"bgcolor": "#fff1f1", "border": "true", "color": "#b42318"},
-    "confirmation": {"bgcolor": "#eef6ff", "border": "true", "color": "#1f4e79"},
-}
-
-
-class _RichHtmlFragmentParser(HTMLParser):
-    """Keep visible text and complete anchors while discarding executable HTML."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.fragments: list[tuple[str, str, str | None]] = []
-        self._ignored_depth = 0
-        self._anchor_open = False
-        self._anchor_href: str | None = None
-        self._anchor_text: list[str] = []
-
-    def _append(self, kind: str, text: str, url: str | None = None) -> None:
-        if not text:
-            return
-        if kind == "text" and self.fragments and self.fragments[-1][0] == "text":
-            previous_kind, previous_text, previous_url = self.fragments[-1]
-            self.fragments[-1] = (previous_kind, previous_text + text, previous_url)
-            return
-        self.fragments.append((kind, text, url))
-
-    def _finish_anchor(self, *, completed: bool) -> None:
-        if not self._anchor_open:
-            return
-        text = "".join(self._anchor_text)
-        self._append("anchor" if completed else "text", text, self._anchor_href)
-        self._anchor_open = False
-        self._anchor_href = None
-        self._anchor_text = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style"}:
-            self._ignored_depth += 1
-            return
-        if self._ignored_depth:
-            return
-        if tag == "a":
-            # Nested anchors are malformed; the unfinished one remains plain text.
-            self._finish_anchor(completed=False)
-            self._anchor_open = True
-            self._anchor_href = next(
-                (value for name, value in attrs if name.lower() == "href"), None
-            )
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style"}:
-            if self._ignored_depth:
-                self._ignored_depth -= 1
-            return
-        if self._ignored_depth:
-            return
-        if tag == "a":
-            self._finish_anchor(completed=True)
-
-    def handle_data(self, data: str) -> None:
-        if self._ignored_depth:
-            return
-        if self._anchor_open:
-            self._anchor_text.append(data)
-        else:
-            self._append("text", data)
-
-    def finish(self) -> list[tuple[str, str, str | None]]:
-        self.close()
-        # A missing closing </a> is not a trustworthy interactive target.
-        self._finish_anchor(completed=False)
-        return self.fragments
-
-
-def _html_fragments(text: str) -> list[tuple[str, str, str | None]]:
-    """Parse HTML with the stdlib parser so quoted attributes stay intact."""
-
-    parser = _RichHtmlFragmentParser()
-    try:
-        parser.feed(text)
-        return parser.finish()
-    except (AssertionError, ValueError):
-        # Keep unexpected malformed text readable; downstream cleaning removes tags.
-        return [("text", text, None)]
-
-
-def _preserve_html_line_breaks(text: str) -> str:
-    """Turn common HTML block tags into renderer rows before tags are removed.
-
-    The later HTML parser intentionally removes markup.  Without this step,
-    ``<p>첫 문단</p><p>둘째 문단</p>`` would become one joined label.
-    """
-
-    return _HTML_BLOCK_TAG_RE.sub("\n", text)
-
-
-def _clean_rich_text(value: Any) -> str:
-    """Flatten display text so CUBE never receives raw Markdown or HTML tags."""
-
-    if not isinstance(value, str):
-        return ""
-
-    text = "".join(fragment[1] for fragment in _html_fragments(value))
-    # A second pass also removes tags that arrived HTML-entity encoded.
-    text = "".join(fragment[1] for fragment in _html_fragments(unescape(text)))
-    text = unescape(text).replace("\x00", "")
-    # A malformed trailing tag is not useful to the user and must not be sent as text.
-    text = _INCOMPLETE_HTML_TAG_RE.sub("", text)
-    text = _MARKDOWN_LINK_TEXT_RE.sub(r"\1", text)
-    text = re.sub(r"!\[([^\]\n]*)\]\([^\n)]*\)", r"\1", text)
-    text = re.sub(r"(`{1,3})(.*?)\1", r"\2", text)
-    text = re.sub(r"(\*\*|__)(.*?)\1", r"\2", text)
-    text = re.sub(r"~~(.*?)~~", r"\1", text)
-    text = text.replace("\\*", "*").replace("\\_", "_").replace("\\`", "`")
-    text = " ".join(text.split())
-    text = text.strip()
-    if len(text) > CUBE_MAX_DISPLAY_TEXT_CHARACTERS:
-        return text[: CUBE_MAX_DISPLAY_TEXT_CHARACTERS - 1].rstrip() + "…"
-    return text
-
-
-def _safe_http_url(value: Any) -> str | None:
-    """Return only complete http(s) URLs for CUBE's clickable controls."""
-
-    if not isinstance(value, str):
-        return None
-    decoded_url = unescape(value)
-    if decoded_url != decoded_url.strip():
-        return None
-    url = decoded_url
-    if (
-        not url
-        or len(url) > CUBE_MAX_LINK_URL_CHARACTERS
-        or any(character.isspace() for character in url)
-        or any(ord(character) < 32 for character in url)
-    ):
-        return None
-    try:
-        parsed = urlparse(url)
-        hostname = parsed.hostname
-        _ = parsed.port
-    except ValueError:
-        return None
-    if (
-        parsed.scheme.lower() not in {"http", "https"}
-        or not parsed.netloc
-        or not hostname
-        or parsed.username is not None
-        or parsed.password is not None
-    ):
-        return None
-    return url
-
-
-def _guidance_kind(text: str) -> str | None:
-    """Classify only explicit user-facing guidance; avoid broad word guesses.
-
-    A phrase such as ``필수 조건이 있는 데이터셋`` is ordinary information,
-    while ``추가 조건 필요: 날짜를 입력해 주세요`` needs visual emphasis.
-    """
-
-    normalized = _clean_rich_text(text)
-    normalized = re.sub(r"^(?:[•>*-]+\s*)+", "", normalized)
-    normalized = re.sub(r"^(?:[⚠❗❌ℹ️]+\s*)+", "", normalized).strip()
-
-    if re.match(
-        r"^(?:(?:오류|에러|실패)(?=$|\s|[:：]|[가이은는]|했|하)|(?:처리|조회|요청|실행|연결)\s*(?:불가|실패|오류))",
-        normalized,
-    ):
-        return "error"
-    if re.match(r"^(?:주의(?:사항)?|경고|유의)(?=$|\s|[:：]|[가이은는])", normalized):
-        return "warning"
-    if re.match(
-        r"^(?:추가\s*(?:조건|정보)|(?:사용자\s*)?(?:확인|입력|선택|승인)|필수\s*(?:값|입력)|조건\s*입력)\s*(?:이|가|을|를)?\s*(?:필요|요청)(?:합니다|됩니다|됨|해요)?",
-        normalized,
-    ):
-        return "confirmation"
-    return None
-
-
-def _label_style(text: str, *, heading: bool) -> dict[str, str]:
-    """Give explicit warning/error/confirmation text a readable CUBE row style."""
-
-    kind = _guidance_kind(text)
-    if kind:
-        return CUBE_ROW_STYLES[kind]
-    return CUBE_ROW_STYLES["heading" if heading else "normal"]
-
-
-def _split_markdown_links(text: str) -> list[tuple[str, str, str | None]]:
-    """Split one plain-text HTML fragment into Markdown links and labels."""
-
-    fragments: list[tuple[str, str, str | None]] = []
-    position = 0
-    for match in _MARKDOWN_RICH_LINK_RE.finditer(text):
-        if match.start() > position:
-            fragments.append(("text", text[position : match.start()], None))
-        label = _clean_rich_text(match.group("label"))
-        safe_url = _safe_http_url(match.group("href"))
-        if safe_url and label:
-            fragments.append(("link", label, safe_url))
-        else:
-            fragments.append(("text", label or _clean_rich_text(match.group(0)), None))
-        position = match.end()
-
-    if position < len(text):
-        fragments.append(("text", text[position:], None))
-    return fragments or [("text", text, None)]
-
-
-def _split_rich_links(text: str) -> list[tuple[str, str, str | None]]:
-    """Split HTML and Markdown links into safe display text and controls."""
-
-    fragments: list[tuple[str, str, str | None]] = []
-    for kind, value, href in _html_fragments(text):
-        if kind == "text":
-            fragments.extend(_split_markdown_links(value))
-            continue
-
-        label = _clean_rich_text(value)
-        safe_url = _safe_http_url(href)
-        if safe_url and label:
-            fragments.append(("link", label, safe_url))
-        else:
-            # An unsafe or malformed anchor remains readable but cannot be clicked.
-            fragments.append(("text", label, None))
-    return fragments or [("text", text, None)]
-
-
-def _split_markdown_table_row(line: str) -> list[str] | None:
-    """Read one GFM pipe row without inferring a table from arbitrary prose."""
-
-    if "|" not in line:
-        return None
-    row = line.strip()
-    if row.startswith("|"):
-        row = row[1:]
-    if row.endswith("|") and not row.endswith("\\|"):
-        row = row[:-1]
-    cells = [cell.replace("\\|", "|").strip() for cell in re.split(r"(?<!\\)\|", row)]
-    return cells if cells and any(cells) else None
-
-
-def _read_markdown_table(
-    lines: list[str], start: int
-) -> tuple[list[str], list[list[str]], int, bool] | None:
-    """Recognize only a complete pipe table with its required separator row."""
-
-    if start + 1 >= len(lines):
-        return None
-    header = _split_markdown_table_row(lines[start])
-    separator = _split_markdown_table_row(lines[start + 1])
-    if (
-        not header
-        or not separator
-        or len(header) != len(separator)
-        or not all(_TABLE_SEPARATOR_CELL_RE.fullmatch(cell) for cell in separator)
-    ):
-        return None
-
-    data_rows: list[list[str]] = []
-    truncated = len(header) > CUBE_MAX_TABLE_COLUMNS
-    position = start + 2
-    while position < len(lines):
-        row = _split_markdown_table_row(lines[position])
-        if row is None or len(row) != len(header):
-            break
-        if len(data_rows) < CUBE_MAX_RENDERED_ROWS:
-            data_rows.append(row)
-        else:
-            truncated = True
-        position += 1
-    return header, data_rows, position, truncated
-
-
-def _rich_row(
-    columns: list[dict[str, Any]], *, bgcolor: str = "#ffffff", border: str = "false"
-) -> dict[str, Any]:
-    return {
-        "bgcolor": bgcolor,
-        "border": border,
-        "align": "",
-        "width": "",
-        "column": columns,
-    }
-
-
-def _label_column(
-    text: str,
-    *,
-    width: str = "100%",
-    bgcolor: str = "#ffffff",
-    border: str = "false",
-    color: str = "#000000",
-) -> dict[str, Any]:
-    return {
-        "bgcolor": bgcolor,
-        "border": border,
-        "align": "left",
-        "valign": "middle",
-        "width": width,
-        "type": "label",
-        "control": {"active": "true", "text": [text], "color": color},
-    }
-
-
-def _hypertext_column(text: str, url: str) -> dict[str, Any]:
-    return {
-        "bgcolor": "#ffffff",
-        "border": "false",
-        "align": "left",
-        "valign": "middle",
-        "width": "100%",
-        "type": "hypertext",
-        "control": {
-            "active": "true",
-            "text": [text],
-            "linkurl": url,
-            "opengraph": "false",
-        },
-    }
-
-
-def _is_link_decoration(text: str) -> bool:
-    """Keep bullets and download/report icons attached to the following link."""
-
-    return bool(text) and not any(character.isalnum() for character in text)
-
-
-def _join_rich_text(prefix: str, text: str) -> str:
-    return " ".join(part for part in (prefix.strip(), text.strip()) if part)
-
-
-def _inline_rich_rows(
-    text: str, *, prefix: str = "", heading: bool = False
-) -> list[dict[str, Any]]:
-    """Render ordinary text and valid links as one safe CUBE row per control."""
-
-    rows: list[dict[str, Any]] = []
-    pending_prefix = prefix
-    fragments = _split_rich_links(text)
-    for index, (kind, value, url) in enumerate(fragments):
-        if kind == "link" and url:
-            label = _join_rich_text(pending_prefix, value)
-            pending_prefix = ""
-            if label:
-                rows.append(_rich_row([_hypertext_column(label, url)]))
-            continue
-
-        display_text = _clean_rich_text(value)
-        if not display_text:
-            continue
-        next_is_link = index + 1 < len(fragments) and fragments[index + 1][0] == "link"
-        if next_is_link and _is_link_decoration(display_text):
-            pending_prefix = _join_rich_text(pending_prefix, display_text)
-            continue
-
-        label = _join_rich_text(pending_prefix, display_text)
-        pending_prefix = ""
-        if label:
-            style = _label_style(label, heading=heading)
-            rows.append(
-                _rich_row(
-                    [
-                        _label_column(
-                            label,
-                            bgcolor=style["bgcolor"],
-                            border=style["border"],
-                            color=style["color"],
-                        )
-                    ],
-                    bgcolor=style["bgcolor"],
-                    border=style["border"],
-                )
-            )
-
-    if pending_prefix:
-        style = _label_style(pending_prefix, heading=heading)
-        rows.append(
-            _rich_row(
-                [
-                    _label_column(
-                        pending_prefix,
-                        bgcolor=style["bgcolor"],
-                        border=style["border"],
-                        color=style["color"],
-                    )
-                ],
-                bgcolor=style["bgcolor"],
-                border=style["border"],
-            )
-        )
-    return rows
-
-
-def _grid_table_rows(header: list[str], data_rows: list[list[str]]) -> list[dict[str, Any]]:
-    """Render a validated Markdown table as CUBE Grid rows and label columns."""
-
-    if len(header) > CUBE_MAX_TABLE_COLUMNS:
-        header = header[: CUBE_MAX_TABLE_COLUMNS - 1] + [CUBE_TRUNCATED_TABLE_CELL]
-        data_rows = [
-            row[: CUBE_MAX_TABLE_COLUMNS - 1] + [CUBE_TRUNCATED_TABLE_CELL]
-            for row in data_rows
-        ]
-    width = f"{100 / len(header):.6g}%"
-
-    def grid_row(cells: list[str], *, is_header: bool) -> dict[str, Any]:
-        bgcolor = "#f2f2f2" if is_header else "#ffffff"
-        return _rich_row(
-            [
-                _label_column(
-                    _clean_rich_text(cell),
-                    width=width,
-                    bgcolor=bgcolor,
-                    border="true",
-                    color="#1f4e79" if is_header else "#000000",
-                )
-                for cell in cells
-            ],
-            bgcolor=bgcolor,
-            border="true",
-        )
-
-    return [grid_row(header, is_header=True)] + [
-        grid_row(row, is_header=False) for row in data_rows
-    ]
-
-
 def render_gaia_answer_to_cube_body(message_text: str) -> dict[str, Any]:
-    """Convert GAIA's Markdown/HTML answer into a deterministic CUBE body.
+    """Turn GAIA Markdown into CUBE rows using the supplied production shape.
 
-    Headings, paragraphs, and bullets become label rows.  Only a valid GFM
-    pipe table with a separator row is rendered as a Grid, and only complete
-    http(s) HTML or Markdown links become clickable hypertext controls.
+    This adapter owns only ``richnotification.content[0].body``. The existing
+    bot header, CUBE ``process`` object, and outbound HTTP request remain
+    unchanged.
     """
 
-    source = message_text if isinstance(message_text, str) else str(message_text or "")
-    source_truncated = len(source) > CUBE_MAX_SOURCE_CHARACTERS
-    if source_truncated:
-        source = source[:CUBE_MAX_SOURCE_CHARACTERS]
-    source = _preserve_html_line_breaks(source)
-    lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    rows: list[dict[str, Any]] = []
-    has_table = False
-    truncated = source_truncated
-    position = 0
-    max_content_rows = CUBE_MAX_RENDERED_ROWS - 1
-
-    def append_rows(rendered_rows: list[dict[str, Any]]) -> bool:
-        """Append only the rows that leave space for one readable truncation note."""
-
-        remaining = max_content_rows - len(rows)
-        if remaining <= 0:
-            return bool(rendered_rows)
-        rows.extend(rendered_rows[:remaining])
-        return len(rendered_rows) > remaining
-
-    while position < len(lines):
-        if len(rows) >= max_content_rows:
-            truncated = True
-            break
-        line = lines[position]
-        if not line.strip():
-            position += 1
-            continue
-
-        table = _read_markdown_table(lines, position)
-        if table:
-            header, data_rows, position, table_truncated = table
-            has_table = True
-            if append_rows(_grid_table_rows(header, data_rows)):
-                truncated = True
-                break
-            truncated = truncated or table_truncated
-            continue
-
-        if heading := _MARKDOWN_HEADING_RE.match(line):
-            if append_rows(_inline_rich_rows(heading.group("text"), heading=True)):
-                truncated = True
-                break
-            position += 1
-            continue
-
-        if blockquote := _MARKDOWN_BLOCKQUOTE_RE.match(line):
-            if append_rows(_inline_rich_rows(blockquote.group("text"))):
-                truncated = True
-                break
-            position += 1
-            continue
-
-        if bullet := _MARKDOWN_BULLET_RE.match(line):
-            marker = bullet.group("marker")
-            prefix = marker if marker[0].isdigit() else "•"
-            if append_rows(_inline_rich_rows(bullet.group("text"), prefix=prefix)):
-                truncated = True
-                break
-            position += 1
-            continue
-
-        if append_rows(_inline_rich_rows(line)):
-            truncated = True
-            break
-        position += 1
-
-    if not rows:
-        fallback = _clean_rich_text(source) or "응답 내용을 표시할 수 없습니다."
-        rows = [_rich_row([_label_column(fallback)])]
-    elif truncated:
-        rows.append(_rich_row([_label_column(CUBE_TRUNCATION_MESSAGE)]))
-
-    return {"bodystyle": "Grid" if has_table else "none", "row": rows}
+    return render_markdown_to_cube_body(message_text)
 
 
 def build_cube_rich_notification(
-    settings: Settings, receiver_id: str, channel_id: str, message_text: str
+    settings: Settings,
+    receiver_id: str,
+    channel_id: str,
+    message_text: str,
+    *,
+    body_renderer: CubeBodyRenderer = render_gaia_answer_to_cube_body,
 ) -> dict[str, Any]:
-    """Build the CUBE text payload proven to work with a populated process."""
+    """Build the CUBE payload with one explicitly selected body renderer.
+
+    The default remains the current production parser.  Case-specific app
+    files pass their renderer directly in code; there is no renderer setting
+    in `.env` and no change to the CUBE header/process contract.
+    """
 
     return {
         "richnotification": {
@@ -855,7 +390,7 @@ def build_cube_rich_notification(
             "content": [
                 {
                     "header": {},
-                    "body": render_gaia_answer_to_cube_body(message_text),
+                    "body": body_renderer(message_text),
                     # CUBE did not deliver messages when this object was empty.
                     "process": {
                         "callbacktype": "url",
@@ -945,6 +480,8 @@ async def send_cube_message(
     receiver_id: str,
     channel_id: str,
     message_text: str,
+    *,
+    body_renderer: CubeBodyRenderer = render_gaia_answer_to_cube_body,
 ) -> None:
     """Send one GAIA answer (or the safe fallback) to CUBE."""
 
@@ -953,7 +490,11 @@ async def send_cube_message(
             settings.cube_send_url,
             headers={"Content-Type": "application/json"},
             json=build_cube_rich_notification(
-                settings, receiver_id, channel_id, message_text
+                settings,
+                receiver_id,
+                channel_id,
+                message_text,
+                body_renderer=body_renderer,
             ),
             timeout=settings.cube_timeout_seconds,
         )
@@ -962,12 +503,79 @@ async def send_cube_message(
         raise ExternalApiError("CUBE message request failed.") from exc
 
 
+async def process_gaia_and_send(
+    event: CubeCallbackEvent,
+    settings: Settings,
+    sessions: InMemorySessionStore,
+    client: httpx.AsyncClient,
+    *,
+    body_renderer: CubeBodyRenderer = render_gaia_answer_to_cube_body,
+) -> None:
+    """Finish an accepted CUBE request after its HTTP ACK has been returned.
+
+    CUBE must not wait for Langflow/GAIA execution. Delivery failures cannot
+    change the already-returned ACK, so they are logged and use the existing
+    visible CUBE fallback when possible.
+    """
+
+    session_id = await sessions.get_or_create(event.user_id, event.channel_id)
+    try:
+        gaia_response = await call_gaia(
+            client, settings, event.user_id, session_id, event.message
+        )
+        answer = extract_final_answer(gaia_response)
+        if returned_session_id := _returned_session_id(gaia_response):
+            await sessions.save(event.user_id, event.channel_id, returned_session_id)
+    except (ExternalApiError, GaiaResponseError) as exc:
+        LOGGER.warning("GAIA processing failed: %s", type(exc).__name__)
+        try:
+            await send_cube_message(
+                client,
+                settings,
+                event.user_id,
+                event.channel_id,
+                _gaia_fallback_message(settings, exc),
+                body_renderer=body_renderer,
+            )
+        except ExternalApiError as fallback_exc:
+            LOGGER.warning(
+                "CUBE fallback delivery failed after ACK: %s",
+                type(fallback_exc).__name__,
+            )
+        return
+
+    try:
+        await send_cube_message(
+            client,
+            settings,
+            event.user_id,
+            event.channel_id,
+            answer,
+            body_renderer=body_renderer,
+        )
+    except ExternalApiError:
+        LOGGER.warning("CUBE answer delivery failed after ACK.")
+        return
+
+    LOGGER.info(
+        "GAIA answer delivered to CUBE: user=%s channel=%s",
+        event.user_id,
+        event.channel_id,
+    )
+
+
 def create_application(
     settings: Settings | None = None,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    body_renderer: CubeBodyRenderer = render_gaia_answer_to_cube_body,
 ) -> FastAPI:
-    """Create the HCP application; tests inject a mock HTTP transport."""
+    """Create one HCP app for a fixed renderer case.
+
+    The chosen renderer is a Python function supplied by the case's app file,
+    not an environment setting.  Both cases otherwise use the same callback,
+    GAIA, session, CUBE send, and fallback path.
+    """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -1000,9 +608,9 @@ def create_application(
 
     @app.post(CUBE_CALLBACK_PATH)
     async def receive_cube_callback(
-        payload: dict[str, Any], request: Request
+        payload: dict[str, Any], request: Request, background_tasks: BackgroundTasks
     ) -> JSONResponse:
-        """Run the same full flow for a CUBE callback or a manual test POST."""
+        """Validate the callback, ACK it immediately, then run GAIA in-process."""
 
         try:
             event = parse_cube_callback(payload)
@@ -1014,58 +622,19 @@ def create_application(
         active_settings: Settings = request.app.state.settings
         sessions: InMemorySessionStore = request.app.state.sessions
         client: httpx.AsyncClient = request.app.state.http_client
-        session_id = await sessions.get_or_create(event.user_id, event.channel_id)
-
-        try:
-            gaia_response = await call_gaia(
-                client, active_settings, event.user_id, session_id, event.message
-            )
-            answer = extract_final_answer(gaia_response)
-            if returned_session_id := _returned_session_id(gaia_response):
-                await sessions.save(event.user_id, event.channel_id, returned_session_id)
-        except (ExternalApiError, GaiaResponseError) as exc:
-            LOGGER.warning("GAIA processing failed: %s", type(exc).__name__)
-            try:
-                await send_cube_message(
-                    client,
-                    active_settings,
-                    event.user_id,
-                    event.channel_id,
-                    _gaia_fallback_message(active_settings, exc),
-                )
-            except ExternalApiError as fallback_exc:
-                LOGGER.warning(
-                    "CUBE fallback delivery failed: %s", type(fallback_exc).__name__
-                )
-                # No visible fallback reached CUBE, so report the callback failure.
-                return JSONResponse(
-                    status_code=502,
-                    content={
-                        "status": "error",
-                        "message": "Unable to deliver the fallback message.",
-                    },
-                )
-
-            # A fallback was handed to CUBE.  Do not return 502 here: a caller
-            # that retries non-2xx callbacks could otherwise send it repeatedly.
-            return JSONResponse(
-                content={"status": "fallback_sent"},
-            )
-
-        try:
-            await send_cube_message(
-                client, active_settings, event.user_id, event.channel_id, answer
-            )
-        except ExternalApiError:
-            LOGGER.warning("CUBE answer delivery failed.")
-            return JSONResponse(
-                status_code=502,
-                content={"status": "error", "message": "Unable to deliver the answer."},
-            )
-
-        return JSONResponse(
-            content={"status": "success", "message": "GAIA answer was sent to CUBE."}
+        background_tasks.add_task(
+            process_gaia_and_send,
+            event,
+            active_settings,
+            sessions,
+            client,
+            body_renderer=body_renderer,
         )
+
+        # Match the supplied working FastAPI pattern: a valid callback receives
+        # HTTP 200 with a JSON null body. The user-visible answer is sent later
+        # through CUBE Rich Notification, not in this callback response.
+        return JSONResponse(content=None, status_code=200)
 
     return app
 

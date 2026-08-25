@@ -5,6 +5,7 @@
 ```text
 CUBE 사용자 질문
   → HCP의 POST /api/v1/receiver
+  → 즉시 HTTP 200 + JSON null ACK
   → GAIA_API_URL 호출
   → GAIA 최종 답변 추출
   → CUBE Rich Notification 발송
@@ -48,7 +49,7 @@ GAIA_API_URL=http://gaia.api.skhynix.com/v2/agents/<GAIA_AGENT_ID>/external
 
 ## 실행과 확인
 
-HCP에서는 `app.py`를 실행한다. 앱의 실행 설정은 아래처럼 고정되어 있다.
+HCP에서는 `app.py`를 실행한다. 이때 같은 폴더의 `markdown_rich_notification.py`도 함께 배포해야 한다. 이 파일이 GAIA Markdown을 CUBE Rich Notification의 `body.row`로 바꾸며, 봇 정보·수신자·`process`·CUBE 전송 API는 계속 `app.py`가 담당한다. 앱의 실행 설정은 아래처럼 고정되어 있다.
 
 ```python
 if __name__ == "__main__":
@@ -79,7 +80,7 @@ python manual_gaia_cube_send.py
 
 ## GAIA 답변의 Rich Notification 변환 미리보기
 
-GAIA 답변의 제목, 목록, Markdown 표, 링크가 CUBE의 `label`, `Grid`, `hypertext`로 어떻게 바뀌는지 먼저 확인하려면 아래 명령을 실행한다. 외부 API를 호출하지 않으며, 키·토큰도 사용하지 않는다.
+GAIA 답변의 제목, 목록, Markdown 표, 이미지, 링크가 CUBE의 `label`, `grid`, `image`, `hypertext`로 어떻게 바뀌는지 먼저 확인하려면 아래 명령을 실행한다. 외부 API를 호출하지 않으며, 키·토큰도 사용하지 않는다.
 
 ```powershell
 python rich_notification_preview.py
@@ -87,13 +88,17 @@ python rich_notification_preview.py
 
 생성되는 `preview_output\gaia_to_cube_rich_notification_preview.html`을 브라우저로 열면 화면 모양을, `.json` 파일을 열면 CUBE로 보낼 `body` JSON을 볼 수 있다. 변환 규칙과 실제 발송 범위는 [RICH_NOTIFICATION_RENDERING_GUIDE.md](RICH_NOTIFICATION_RENDERING_GUIDE.md)를 따른다.
 
+이전 변환 방식과 현재 방식의 차이를 같은 Markdown 입력으로 비교하려면 `python markdown_renderer_comparison.py`를 실행하고, 생성된 `preview_output\markdown_renderer_comparison.html`을 연다.
+
+두 변환기를 실제 callback 서버로 각각 시험하려면 [RENDERER_CASES_GUIDE.md](RENDERER_CASES_GUIDE.md)를 따른다. 환경설정으로 고르지 않고 `app_case_legacy.py` 또는 `app_case_production.py` 중 하나만 실행한다.
+
 ## 현재 최소 구현의 범위
 
 - 같은 `사용자 ID + CUBE 채널 ID`에는 같은 GAIA `session_id`를 재사용한다.
 - 세션 ID는 서버 메모리에만 보관한다. HCP 앱이 재시작되면 새 세션이 시작된다.
 - GAIA 처리 실패 후 CUBE fallback 안내문에는 `GAIA 응답 시간 초과`, `GAIA API 연결/응답 오류`, `Langflow 최종 답변 없음`처럼 안전하게 분류한 원인과 재시도 안내를 함께 보낸다. 내부 URL·HTTP 상세 오류·예외 원문은 보내지 않는다.
-- CUBE fallback 안내문 발송이 HTTP 성공으로 끝나면 callback에는 `200 {"status": "fallback_sent"}`를 반환한다. fallback 발송도 실패했을 때만 `502`를 반환한다. 이 HTTP 상태는 CUBE API 호출 결과일 뿐, 사용자 화면 표시 여부를 단독으로 보장하지는 않는다.
-- 최근 대화 전문, MongoDB, 작업 큐, 자동 재시도, 스케줄러, 대화 조회 API는 이 최소 서버에 포함하지 않는다.
+- 유효한 callback은 GAIA 실행 전에 `200`과 JSON `null`을 즉시 반환한다. 이후 GAIA 답변·fallback 발송 실패는 서버 로그에서 확인한다. 이 구조는 CUBE가 오래 기다리다 기본 안내를 표시하는 일을 줄이기 위한 것이다.
+- 최근 대화 전문, MongoDB, 별도 작업 큐, 자동 재시도, 스케줄러, 대화 조회 API는 이 최소 서버에 포함하지 않는다. GAIA/CUBE 처리는 FastAPI의 프로세스 내 백그라운드 작업으로 실행되므로 HCP 앱이 재시작되면 진행 중이던 요청은 보장되지 않는다.
 - callback 인증 방식, 재전송 정책, CUBE 발송 성공 body는 담당 가이드가 확인되면 추가해야 한다.
 
 실제 키와 토큰은 `.env`, HCP Secret 또는 환경변수에만 보관하고 Git, 로그, 문서에 넣지 않는다.

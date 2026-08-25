@@ -89,6 +89,17 @@ def preview_examples() -> list[dict[str, Any]]:
 <p>추가 조건 필요: 조회 날짜를 입력해 주세요.</p>
 <p>오류: 조회 서버에 연결할 수 없습니다.</p>""",
         },
+        {
+            "id": "markdown_image",
+            "title": "Markdown 이미지 답변",
+            "source": "GAIA answer의 Markdown 이미지가 CUBE image 행으로 바뀌는 경우",
+            "answer": """### 생산 추이
+아래 그래프를 확인해 주세요.
+
+![오늘 생산 추이](https://example.test/reports/production-trend.png)
+
+그래프 기준 시각은 오전 10시입니다.""",
+        },
     ]
 
     examples: list[dict[str, Any]] = []
@@ -119,6 +130,9 @@ def _render_row(row: dict[str, Any]) -> str:
         return ""
     column = columns[0]
     text = html.escape(_control_text(column))
+    if column.get("type") == "image":
+        url = html.escape(str(column.get("control", {}).get("sourceurl", "")), quote=True)
+        return f'<figure class="image-row"><img src="{url}" alt="CUBE 이미지 미리보기"></figure>'
     if column.get("type") == "hypertext":
         url = html.escape(str(column.get("control", {}).get("linkurl", "")), quote=True)
         return f'<p class="link-row"><a href="{url}" target="_blank" rel="noreferrer">{text}</a></p>'
@@ -206,8 +220,9 @@ def build_preview_html(examples: list[dict[str, Any]]) -> str:
     h2 { color:#1f4e79; margin-top:0; } h3 { font-size:15px; margin:25px 0 8px; }
     pre { background:#17202a; color:#eaf2f8; border-radius:8px; padding:14px; overflow:auto; white-space:pre-wrap; line-height:1.55; }
     .cube { border:1px solid #ccd6df; border-radius:8px; padding:10px 16px; background:#fff; }
-    .label-row, .link-row { border-bottom:1px solid #edf1f4; margin:0; padding:10px 2px; line-height:1.45; }
+    .label-row, .link-row { border-bottom:1px solid #edf1f4; margin:0; padding:10px 2px; line-height:1.45; white-space:pre-wrap; }
     .link-row a { color:#1264a3; font-weight:600; } table { border-collapse:collapse; width:100%; margin:10px 0; } th, td { border:1px solid #bac6d1; text-align:left; padding:8px; } th { background:#f2f2f2; color:#1f4e79; }
+    .image-row { margin:12px 0; text-align:center; } .image-row img { max-width:70%; border:1px solid #dbe3ea; border-radius:6px; }
   </style>
 </head>
 <body>

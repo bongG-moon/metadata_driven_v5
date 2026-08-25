@@ -7,14 +7,14 @@
 ```text
 POST /api/v1/receiver
   → CUBE callback 파싱
-  → 현재 GAIA session ID 조회
+  → 즉시 HTTP 200 + JSON null ACK 반환
+  → FastAPI 백그라운드에서 현재 GAIA session ID 조회
   → GAIA_API_URL 호출
   → 최종 답변 추출
   → CUBE Rich Notification 발송
-  → callback 처리 결과 반환
 ```
 
-현재는 worker 없이 위 순서를 한 HTTP 요청 안에서 동기적으로 처리한다.
+현재는 별도 worker 없이 FastAPI의 프로세스 내 백그라운드 작업으로 GAIA/CUBE 처리를 실행한다. ACK는 먼저 반환되므로, ACK 뒤의 발송 실패는 서버 로그와 CUBE fallback 발송 결과로 확인한다.
 
 등록된 HCP callback URL:
 
@@ -93,7 +93,7 @@ CUBE_SEND_URL=http://cube.skhynix.com:8888/legacy/richnotification
 
 발송 대상은 callback의 사용자와 채널이다. Rich Notification 본문의 답변은 `content[0].body...control.text[0]`에 넣는다. 현재 확인된 발송 형식에 맞춰 `content[0].process`도 빈 객체로 보내지 않는다.
 
-GAIA 호출이나 답변 추출이 실패하면 `USER_ERROR_MESSAGE`를 같은 CUBE 대상에게 한 번 보내려고 시도하고, callback 요청에는 오류 상태를 반환한다. CUBE 발송 자체의 timeout/중복 발송 정책은 아직 확정되지 않아 자동 재시도를 하지 않는다.
+GAIA 호출이나 답변 추출이 실패하면 `USER_ERROR_MESSAGE`를 같은 CUBE 대상에게 한 번 보내려고 시도한다. callback ACK는 이미 반환되므로 이후 오류 상태를 callback에 다시 반환하지 않는다. CUBE 발송 자체의 timeout/중복 발송 정책은 아직 확정되지 않아 자동 재시도를 하지 않는다.
 
 ## 6. HTTP 경로
 

@@ -54,6 +54,8 @@ CUBE_BOT_FROMUSERNAME_JSON=["<한글 이름>","<일본어 이름>","<영어 이�
 
 ## 2. HCP에 올릴 때 확인할 것
 
+`app.py`만 단독으로 올리지 말고 `production_callback_server` 폴더 전체를 배포한다. 특히 `markdown_rich_notification.py`는 GAIA의 Markdown 답변을 CUBE `body.row`로 바꾸는 변환 모듈이므로 반드시 함께 있어야 한다. 봇 ID·토큰·수신자·CUBE 발송 URL을 다루는 부분은 기존 `app.py`에 그대로 남아 있다.
+
 HCP의 배포 설정에서 다음 두 항목을 확인한다.
 
 1. HCP 서비스가 위 callback URL의 `/api/v1/receiver` 요청을 이 앱으로 전달하는지
@@ -139,10 +141,10 @@ CUBE callback에는 사용자, 채널, 질문이 들어 있다. 서버는 아래
 | 필요한 정보 | CUBE callback 위치 |
 | --- | --- |
 | 사용자 ID | `richnotificationmessage.process.userId` 또는 `header.from.uniquename` |
-| 채널 ID | `richnotificationmessage.process.channelId` 또는 `header.to.channelid[0]` |
-| 질문 | `richnotificationmessage.process.processdata` |
+| 채널 ID | `header.from.channelid`, `header.to.channelid`, 또는 `process.channelId` |
+| 질문 | `process.processdata` → `process.UserSelection`/`SendBtn` → `result.resultdata[].value` |
 
-header와 process에 같은 ID가 모두 들어 있으면 둘은 반드시 일치해야 한다. 불일치하면 잘못된 요청으로 처리하고 GAIA에 보내지 않는다.
+실제 CUBE callback은 `header.from.channelid`에 채널을 넣을 수 있으므로 이 위치도 지원한다. `channelid`가 배열일 때 서로 다른 값이 들어 있거나, header/process의 같은 의미 ID가 서로 다르면 잘못된 요청으로 처리하고 GAIA에 보내지 않는다. 서버는 첫 채널을 임의로 선택하지 않는다. `resultdata[].value`에 여러 텍스트 선택값이 있으면 모두 줄바꿈으로 이어 GAIA에 전달하며, 일반 `processdata`가 있으면 그것을 우선 사용한다.
 
 정상 요청의 내부 흐름은 다음과 같다.
 
@@ -189,16 +191,13 @@ Invoke-RestMethod `
   -Body $body
 ```
 
-성공 시 PowerShell에는 다음과 비슷한 처리 결과가 보인다.
+성공 시 PowerShell에는 다음과 같이 JSON `null`이 보인다.
 
 ```json
-{
-  "status": "success",
-  "message": "GAIA answer was sent to CUBE."
-}
+null
 ```
 
-이 JSON은 CUBE 시스템에 돌려주는 **처리 결과 확인(ACK)** 이며 GAIA의 답변 본문이 아니다. 현재 최소 구현은 worker 없이 한 요청 안에서 GAIA 호출과 CUBE 발송까지 마친 뒤 이 결과를 반환한다. 실제 답변은 `APPROVED_CUBE_TEST_CHANNEL_ID`의 CUBE 채팅창에 도착해야 한다. 즉, PowerShell 응답과 CUBE 채팅창을 모두 확인한다.
+이 값은 CUBE 시스템에 돌려주는 **빠른 접수 확인(ACK)** 이며 GAIA의 답변 본문이 아니다. 서버는 ACK를 먼저 반환한 뒤 FastAPI 백그라운드 작업에서 GAIA 호출과 CUBE 발송을 실행한다. 실제 답변은 잠시 뒤 `APPROVED_CUBE_TEST_CHANNEL_ID`의 CUBE 채팅창에 도착해야 한다. 즉, PowerShell의 `null`과 CUBE 채팅창의 실제 답변을 모두 확인한다.
 
 ## 7. CUBE 등록 후에는 무엇이 달라지는가
 

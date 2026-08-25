@@ -12,30 +12,28 @@ GAIA 응답 JSON
                  └─ CUBE richnotification.content[0].body
 ```
 
-`extract_final_answer()`는 우선 `results.gaia_response.data.answer`를 읽습니다. 이 값이 없을 때만 `results.message.data.text`를 대체값으로 사용합니다.
+`extract_final_answer()`는 우선 `results.gaia_response.data.answer`를 읽습니다. 이 값이 없을 때만 `results.message.data.text`를 대체값으로 사용합니다. 실제 Markdown 변환 코드는 같은 폴더의 `markdown_rich_notification.py`에 있고, `app.py`는 그 결과 body를 기존 CUBE 발송 payload에 끼워 넣기만 합니다.
 
 ## 변환 규칙
 
 | GAIA answer 내용 | CUBE body 결과 |
 | --- | --- |
-| 일반 문장/문단 | 한 줄당 `label` 행 |
-| `### 제목` | `#` 기호를 뺀 파란색 `label` 행 |
-| `- 항목` 또는 `1. 항목` | `• 항목` 또는 `1.`을 붙인 `label` 행 |
-| 완전한 Markdown 표 (`헤더` 다음에 `---` 구분 행 포함) | `bodystyle: "Grid"`와 여러 `label` 열 |
+| 일반 문장/문단 | 연속된 일반 줄을 줄바꿈을 유지한 하나의 `label` 행 |
+| `### 제목` | `#` 기호를 뺀 일반 `label` 텍스트 |
+| `- 항목` 또는 `1. 항목` | 원래 목록 표기를 유지한 `label` 텍스트 |
+| 완전한 Markdown 표 (`헤더` 다음에 `---` 구분 행, 그 뒤 본문 1행 이상) | `bodystyle: "grid"`, 회색 헤더와 문자 길이 기반 열 폭을 가진 여러 `label` 열 |
+| `![설명](https://...)` | 독립된 `image` 행 (`sourceurl`, 표시 폭 `70%`) |
 | `📥 [표시 문구](https://...)` | `📥`를 보존한 클릭 가능한 `hypertext` |
 | `🔗 <a href="https://...">표시 문구</a>` | `🔗`를 보존한 클릭 가능한 `hypertext` |
-| `<p>문단</p>`, `<div>문단</div>`, `<br>` | 각 문단/줄을 별도의 `label` 행 |
-| `주의: ...`, `경고: ...` | 주황색 안내 행 |
-| `오류: ...`, `실패: ...` | 빨간색 안내 행 |
-| `추가 조건 필요: ...`, `확인 필요: ...` | 파란색 확인 안내 행 |
+| `<p>문단</p>`, `<div>문단</div>`, `<br>` | 보이는 문장과 줄바꿈을 보존한 `label` 텍스트 |
 | `javascript:`, `data:`, 공백 URL, 사용자정보 포함 URL | 링크로 만들지 않고 일반 `label` |
 | 알 수 없는 HTML/Markdown | 사람이 읽을 수 있는 일반 `label` |
 
 표를 판단할 때는 파이프(`|`)뿐 아니라 바로 다음 줄의 표 구분 행도 확인합니다. 그래서 우연히 파이프가 들어간 일반 문장을 표로 오인하지 않습니다.
 
-다운로드/상세 화면처럼 이모지를 표시하려면 Markdown 목록 기호(`-`) 대신 이모지를 링크 바로 앞에 둡니다. 예를 들면 `📥 [CSV 다운로드](https://...)`는 CUBE에서 `📥 CSV 다운로드`라는 클릭 가능한 링크가 됩니다.
+이 구현은 전달받은 운영 서버의 `parser.py`/`builder.py` 구조를 따릅니다. 즉, Markdown을 직접 CUBE의 `body.row` 배열로 바꾸고, 표의 각 열 폭도 내용 길이에 따라 계산합니다. 단, 기존에 확인한 다운로드/상세화면 링크가 사라지지 않도록 안전한 HTTP(S) 링크는 `hypertext`로 유지하는 호환 확장을 추가했습니다.
 
-안내 색상은 문장 첫 부분이 명확히 `주의`, `경고`, `오류`, `실패`, `추가 조건 필요`, `확인 필요`처럼 시작할 때만 적용합니다. 그래서 `필수 조건이 있는 데이터셋은 1개입니다` 같은 일반 설명은 경고로 오인하지 않습니다.
+다운로드/상세 화면처럼 이모지를 표시하려면 Markdown 목록 기호(`-`) 대신 이모지를 링크 바로 앞에 둡니다. 예를 들면 `📥 [CSV 다운로드](https://...)`는 CUBE에서 `📥 CSV 다운로드`라는 클릭 가능한 링크가 됩니다.
 
 ## 내 PC에서 변환 결과 보기
 
@@ -55,6 +53,17 @@ python rich_notification_preview.py
 
 1. 데이터셋 목록: 제목, 불릿, Markdown 표
 2. 보고서/다운로드: Markdown 링크와 HTML 링크
+3. 생산 추이: Markdown 이미지
+
+## 이전 방식과 현재 방식의 화면 비교
+
+같은 Markdown 입력이 이전 변환 규칙과 현재 운영 parser 규칙에서 어떻게 달라지는지 한 화면에서 보려면 아래 명령을 실행합니다.
+
+```powershell
+python markdown_renderer_comparison.py
+```
+
+`preview_output\markdown_renderer_comparison.html`이 생성됩니다. 왼쪽은 `markdown_legacy_rich_notification.py`의 이전 방식, 오른쪽은 `markdown_rich_notification.py`의 현재 방식이 실제로 생성한 CUBE `body`입니다. 이 도구는 GAIA와 CUBE API를 호출하지 않습니다. 두 CASE를 callback 서버에서 각각 실행하는 방법은 [RENDERER_CASES_GUIDE.md](RENDERER_CASES_GUIDE.md)를 따릅니다.
 
 ## 실제 callback 발송에서는 무엇이 달라지나
 

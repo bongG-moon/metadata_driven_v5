@@ -28,10 +28,10 @@ POST http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/api/v1/recei
 
 ## callback과 답변은 다르다
 
-CUBE가 질문을 전달하면 서버는 callback 호출에 처리 결과를 돌려준다. 이것을 ACK, 즉 “요청을 받았고 처리했다”는 확인으로 이해하면 된다. 현재 최소 구현은 한 요청 안에서 GAIA 호출과 CUBE 발송까지 처리한 뒤 ACK를 반환한다.
+CUBE가 질문을 전달하면 서버는 callback 호출에 처리 결과를 돌려준다. 이것을 ACK, 즉 “요청을 접수했다”는 확인으로 이해하면 된다. 현재 최소 구현은 유효한 callback에 `200/null`을 먼저 반환하고, 그 뒤 FastAPI 백그라운드 작업에서 GAIA 호출과 CUBE 발송을 처리한다.
 
 ```text
-callback HTTP 응답 = CUBE 시스템에 주는 처리 확인
+callback HTTP 응답 = CUBE 시스템에 주는 빠른 접수 확인
 CUBE Rich Notification = 사용자가 실제로 보는 GAIA 답변
 ```
 
@@ -41,13 +41,13 @@ CUBE Rich Notification = 사용자가 실제로 보는 GAIA 답변
 
 서버는 CUBE callback의 다음 정보를 사용한다.
 
-| 정보 | 대표 위치 |
+| 정보 | 읽는 위치 |
 | --- | --- |
-| 누가 질문했는지 | `richnotificationmessage.process.userId` |
-| 어느 채널인지 | `richnotificationmessage.process.channelId` |
-| 질문 내용 | `richnotificationmessage.process.processdata` |
+| 누가 질문했는지 | `process.userId` 또는 `header.from.uniquename` |
+| 어느 채널인지 | `header.from.channelid`, `header.to.channelid`, 또는 `process.channelId` |
+| 질문 내용 | `process.processdata` → `UserSelection`/`SendBtn` → `result.resultdata[].value` |
 
-제공된 callback에 header 정보도 있으면 사용자·채널 ID를 서로 확인한다. 두 값이 다르면 질문을 GAIA에 보내지 않는다.
+실제 callback은 채널을 `header.from.channelid`에 넣을 수 있다. 서버는 들어온 사용자·채널 후보가 모두 같은 값인지 확인하고, 채널 배열 안에 서로 다른 값이 있어도 첫 값으로 답장하지 않는다. 버튼·라디오 결과는 `result.resultdata[].value`에도 올 수 있으며, 일반 `processdata`가 있으면 그것이 우선한다.
 
 ## GAIA에는 무엇을 보내는가
 

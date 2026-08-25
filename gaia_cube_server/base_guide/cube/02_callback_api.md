@@ -15,14 +15,15 @@ POST /api/v1/receiver
 
 ## CUBE가 전달하는 값
 
-제공받은 예시에서는 사용자·채널 정보가 `header`와 `process` 양쪽에 올 수 있다.
+제공받은 예시와 실제 실행 중인 CUBE callback 코드에서는 사용자·채널 정보가 `header`와 `process`의 여러 위치에 올 수 있다.
 
 ```json
 {
   "richnotificationmessage": {
     "header": {
       "from": {
-        "uniquename": "EMPLOYEE_ID_EXAMPLE"
+        "uniquename": "EMPLOYEE_ID_EXAMPLE",
+        "channelid": "CHANNEL_ID_EXAMPLE"
       },
       "to": {
         "channelid": ["CHANNEL_ID_EXAMPLE"]
@@ -37,40 +38,38 @@ POST /api/v1/receiver
 }
 ```
 
-| 의미 | 우선 확인 경로 | 함께 있으면 하는 확인 |
+| 의미 | 읽는 위치 | 처리 규칙 |
 | --- | --- | --- |
-| 질문 | `richnotificationmessage.process.processdata` | 빈 값이면 `UserSelection`, `SendBtn` 확인 |
-| 사용자 사번/ID | `header.from.uniquename` | `process.userId`와 같은지 확인 |
-| CUBE 채널 ID | `header.to.channelid[0]` | `process.channelId`와 같은지 확인 |
+| 질문 | `process.processdata` | 비어 있으면 `process.UserSelection`, `process.SendBtn`, `result.resultdata[].value` 순서로 확인 |
+| 사용자 사번/ID | `header.from.uniquename`, `process.userId` | 둘 다 있으면 같은 값이어야 함 |
+| CUBE 채널 ID | `header.from.channelid`, `header.to.channelid`, `process.channelId` | 들어온 모든 값이 같은 하나의 채널이어야 함 |
 
-header와 process의 사용자 또는 채널 값이 서로 다르면 서버는 질문을 GAIA에 보내지 않고 HTTP 400을 반환한다.
+`channelid`는 문자열 또는 배열로 올 수 있다. 배열 안에 서로 다른 채널 ID가 있거나, `header`와 `process`의 사용자·채널 값이 서로 다르면 서버는 질문을 GAIA에 보내지 않고 HTTP 400을 반환한다. 첫 번째 값만 골라 답장하지 않는 이유는 다른 CUBE 채팅방으로 답변이 갈 위험을 막기 위해서다.
+
+`result.resultdata[].value`는 버튼·라디오·체크박스의 선택 결과가 들어오는 실제 callback 형태다. 일반 텍스트 `processdata`가 있으면 그것이 항상 우선한다. `value`에 여러 개의 텍스트 선택값이 있으면 서버는 중복을 제거한 뒤 줄바꿈으로 연결해 GAIA에 전달하며, 숫자나 JSON 객체를 임의로 문자열로 바꾸지 않는다.
 
 ## 서버의 처리 순서
 
 ```text
 1. CUBE가 POST /api/v1/receiver 호출
 2. 서버가 질문·사용자·채널 값을 확인
-3. 사용자 + 채널의 GAIA session_id를 메모리에서 찾거나 새로 생성
-4. .env의 GAIA_API_URL로 질문 전달
-5. GAIA 응답의 최종 answer 추출
-6. CUBE 발송 API로 답변 전송
-7. callback 요청에는 ACK JSON 반환
+3. 유효한 요청이면 callback에 즉시 HTTP 200 + JSON null ACK 반환
+4. 응답 뒤 FastAPI 백그라운드 작업이 사용자 + 채널의 GAIA session_id를 찾거나 새로 생성
+5. .env의 GAIA_API_URL로 질문 전달하고 최종 answer 추출
+6. CUBE 발송 API로 실제 답변 또는 fallback 안내를 전송
 ```
 
 동일한 사용자와 동일한 채널은 GAIA가 반환한 `session_id`를 다음 질문에 다시 사용한다. 서버를 재시작하면 이 메모리 세션은 초기화된다.
 
 ## ACK와 실제 답변의 차이
 
-callback HTTP 응답은 CUBE 시스템에 “처리가 끝났다”라고 알려 주는 ACK다.
+callback HTTP 응답은 CUBE 시스템에 “요청을 접수했다”라고 알려 주는 ACK다. GAIA 실행과 CUBE 발송 완료를 기다리지 않는다.
 
 ```json
-{
-  "status": "success",
-  "message": "GAIA answer was sent to CUBE."
-}
+null
 ```
 
-이 JSON의 `message`가 사용자 채팅창에 보이는 답변은 아니다. 실제 답변은 서버가 CUBE Rich Notification 발송 API를 별도로 호출해 표시한다.
+이 `null`은 사용자 채팅창에 보이는 답변이 아니다. 실제 답변은 ACK 뒤에 서버가 CUBE Rich Notification 발송 API를 별도로 호출해 표시한다. 따라서 GAIA 또는 CUBE 발송 오류는 이미 반환한 callback HTTP 상태를 바꾸지 못하며, 서버 로그와 CUBE fallback 발송 결과로 확인한다.
 
 ## Hello 제어 요청
 
