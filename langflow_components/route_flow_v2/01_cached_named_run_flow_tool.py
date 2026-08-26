@@ -61,6 +61,26 @@ def _as_iso_text(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
+# 함수 설명: 연결된 MessageTextInput/Message/문자열에서 canonical session ID text만 추출합니다.
+def _session_text(value: Any) -> str:
+    """Accept a Context Loader Message without serializing the whole object."""
+
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    text = getattr(value, "text", None)
+    if text is not None and text is not value:
+        return _session_text(text)
+    data = getattr(value, "data", None)
+    if isinstance(data, dict):
+        for key in ("session_id", "text"):
+            candidate = _session_text(data.get(key))
+            if candidate:
+                return candidate
+    return str(value).strip()
+
+
 # 함수 설명: vertex가 native Chat Input 또는 Chat Output 역할인지 type/display/node ID로 판정합니다.
 def _is_io_vertex(vertex: Any, role: str) -> bool:
     data = getattr(vertex, "data", {}) or {}
@@ -650,9 +670,9 @@ class CachedNamedRunFlowTool(RunFlowBaseComponent):
     # 함수 설명: `_inherit_runtime_session()`은 Tool wrapper 경로에서도 부모 실행 세션을 하위 Flow에 상속합니다.
     def _inherit_runtime_session(self) -> str:
         """Resolve the child-flow session even when the LFX Tool wrapper skips setup hooks."""
-        explicit = str(getattr(self, "session_id", "") or "").strip()
-        configured = str(getattr(self, "_session_id", "") or "").strip()
-        parent_session = str(getattr(getattr(self, "graph", None), "session_id", "") or "").strip()
+        explicit = _session_text(getattr(self, "session_id", ""))
+        configured = _session_text(getattr(self, "_session_id", ""))
+        parent_session = _session_text(getattr(getattr(self, "graph", None), "session_id", ""))
         inherited = explicit or configured or parent_session
         if inherited:
             self.session_id = inherited

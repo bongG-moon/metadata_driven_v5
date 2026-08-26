@@ -3,10 +3,11 @@
 One request follows one simple path:
     CUBE callback -> immediate ACK -> GAIA API -> CUBE Rich Notification
 
-The server intentionally keeps only the current in-memory GAIA session ID for
-each user and CUBE channel. GAIA and CUBE delivery run in FastAPI's in-process
-background task after the ACK. It does not add external workers, databases,
-schedulers, retry queues, or a second callback route.
+The server keeps the current in-memory GAIA session ID and a short successful
+conversation history for each user and CUBE channel. GAIA and CUBE delivery
+run in FastAPI's in-process background task after the ACK. It does not add
+external workers, databases, schedulers, retry queues, or a second callback
+route.
 """
 
 from __future__ import annotations
@@ -38,6 +39,9 @@ HELLO_CHATBOT_SENTINEL = "!@#HelloChatBot#@!"
 INTERACTION_KEYS = ("UserSelection", "SendBtn")
 CUBE_REPLY_REQUEST_ID = "request_cond_change_main"
 CUBE_BOT_FROMUSERNAME_COUNT = 5
+# Keep only the latest three question/answer pairs in the callback server.
+MAX_CONVERSATION_HISTORY_MESSAGES = 6
+CUBE_SESSION_ID_NAMESPACE = "gaia-cube-session-v1"
 CubeBodyRenderer = Callable[[str], dict[str, Any]]
 
 
@@ -172,20 +176,94 @@ class CubeCallbackEvent:
 
 
 class InMemorySessionStore:
-    """Reuse GAIA's session ID for the same user and CUBE channel."""
+    """Reuse one GAIA session and a short visible history per CUBE chat."""
 
     def __init__(self) -> None:
         self._sessions: dict[tuple[str, str], str] = {}
+        self._histories: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
 
-    async def get_or_create(self, user_id: str, channel_id: str) -> str:
+    async def get_or_create_with_history(
+        self, user_id: str, channel_id: str
+    ) -> tuple[str, list[dict[str, Any]]]:
         key = (user_id, channel_id)
         async with self._lock:
-            return self._sessions.setdefault(key, f"gc_{uuid.uuid4()}")
+            # A deterministic ID lets the GAIA server/Phoenix associate this
+            # CUBE chat with the same session even after this HCP app restarts.
+            session_id = self._sessions.setdefault(
+                key,
+                f"gc_{uuid.uuid5(uuid.NAMESPACE_URL, f'{CUBE_SESSION_ID_NAMESPACE}:{user_id}:{channel_id}')}",
+            )
+            # The stored values are deliberately simple JSON-safe chat turns.
+            # Return a copy so a request cannot mutate another request's history.
+            history = [
+                {
+                    "role": turn["role"],
+                    "content": turn["content"],
+                    "files": list(turn["files"]),
+                }
+                for turn in self._histories.get(key, [])
+            ]
+            return session_id, history
 
     async def save(self, user_id: str, channel_id: str, session_id: str) -> None:
         async with self._lock:
             self._sessions[(user_id, channel_id)] = session_id
+
+    async def append_completed_turn(
+        self,
+        user_id: str,
+        channel_id: str,
+        question: str,
+        answer: str,
+    ) -> None:
+        """Remember only an answer that was successfully sent to CUBE."""
+
+        key = (user_id, channel_id)
+        async with self._lock:
+            history = self._histories.setdefault(key, [])
+            history.extend(
+                [
+                    {"role": "user", "content": question, "files": []},
+                    {"role": "assistant", "content": answer, "files": []},
+                ]
+            )
+            if len(history) > MAX_CONVERSATION_HISTORY_MESSAGES:
+                del history[:-MAX_CONVERSATION_HISTORY_MESSAGES]
+
+
+def build_gaia_context(
+    *,
+    message: str,
+    user_id: str,
+    channel_id: str,
+    session_id: str,
+    conversation_history: list[dict[str, Any]] | None = None,
+    cube_user_id: str | None = None,
+) -> tuple[str, str]:
+    """Build the JSON-string ``data`` and ``metadata`` Flow inputs.
+
+    These values describe the real CUBE callback context. GAIA-internal UI
+    fields such as ``super_agent_id`` are intentionally not fabricated here.
+    """
+
+    history = [dict(turn) for turn in (conversation_history or [])]
+    history.append({"role": "user", "content": message, "files": []})
+    metadata = {
+        "platform": "CUBE",
+        "user_id": user_id,
+        "session_id": session_id,
+        "cube_user_id": cube_user_id or user_id,
+    }
+    if channel_id:
+        metadata["cube_channel_id"] = channel_id
+    try:
+        return (
+            json.dumps({"conversation_history": history}, ensure_ascii=False),
+            json.dumps(metadata, ensure_ascii=False),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("CUBE conversation context must be JSON-serializable.") from exc
 
 
 def _text(value: Any) -> str | None:
@@ -415,8 +493,26 @@ async def call_gaia(
     user_id: str,
     session_id: str,
     message: str,
+    *,
+    data: str | None = None,
+    metadata: str | None = None,
 ) -> dict[str, Any]:
-    """Call the exact GAIA_API_URL supplied in the environment."""
+    """Call the exact GAIA_API_URL supplied in the environment.
+
+    ``data`` and ``metadata`` are JSON strings for Flow inputs exposed by the
+    GAIA Agent. The callback path fills both with real CUBE context; callers
+    that omit them retain the basic three-field GAIA request shape.
+    """
+
+    request_payload: dict[str, str] = {
+        "input_value": message,
+        "user_id": user_id,
+        "session_id": session_id,
+    }
+    if data is not None:
+        request_payload["data"] = data
+    if metadata is not None:
+        request_payload["metadata"] = metadata
 
     try:
         response = await client.post(
@@ -426,7 +522,7 @@ async def call_gaia(
                 "X-Gaia-Auth-Key": settings.gaia_auth_key,
                 "X-Gaia-User-Id": user_id,
             },
-            json={"input_value": message, "user_id": user_id, "session_id": session_id},
+            json=request_payload,
             timeout=settings.gaia_timeout_seconds,
         )
         response.raise_for_status()
@@ -518,14 +614,52 @@ async def process_gaia_and_send(
     visible CUBE fallback when possible.
     """
 
-    session_id = await sessions.get_or_create(event.user_id, event.channel_id)
+    session_id, history = await sessions.get_or_create_with_history(
+        event.user_id, event.channel_id
+    )
+    data, metadata = build_gaia_context(
+        message=event.message,
+        user_id=event.user_id,
+        channel_id=event.channel_id,
+        session_id=session_id,
+        conversation_history=history,
+    )
+    LOGGER.info(
+        "GAIA CUBE context prepared: user=%s channel=%s session=%s history_messages=%d",
+        event.user_id,
+        event.channel_id,
+        session_id,
+        len(history),
+    )
     try:
         gaia_response = await call_gaia(
-            client, settings, event.user_id, session_id, event.message
+            client,
+            settings,
+            event.user_id,
+            session_id,
+            event.message,
+            data=data,
+            metadata=metadata,
         )
         answer = extract_final_answer(gaia_response)
         if returned_session_id := _returned_session_id(gaia_response):
-            await sessions.save(event.user_id, event.channel_id, returned_session_id)
+            LOGGER.info(
+                "GAIA session observed: sent=%s returned=%s same=%s",
+                session_id,
+                returned_session_id,
+                returned_session_id == session_id,
+            )
+            if returned_session_id == session_id:
+                await sessions.save(event.user_id, event.channel_id, returned_session_id)
+            else:
+                # Do not replace the deterministic CUBE identity with an
+                # unverified GAIA-generated value. The log above tells the
+                # operator that GAIA did not echo the supplied session ID.
+                LOGGER.warning(
+                    "GAIA returned a different session ID; keeping the stable CUBE session."
+                )
+        else:
+            LOGGER.info("GAIA session observed: sent=%s returned=<missing>", session_id)
     except (ExternalApiError, GaiaResponseError) as exc:
         LOGGER.warning("GAIA processing failed: %s", type(exc).__name__)
         try:
@@ -556,6 +690,13 @@ async def process_gaia_and_send(
     except ExternalApiError:
         LOGGER.warning("CUBE answer delivery failed after ACK.")
         return
+
+    await sessions.append_completed_turn(
+        event.user_id,
+        event.channel_id,
+        event.message,
+        answer,
+    )
 
     LOGGER.info(
         "GAIA answer delivered to CUBE: user=%s channel=%s",

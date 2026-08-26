@@ -114,6 +114,33 @@ def test_keeps_existing_safe_download_links_as_hypertext_extensions() -> None:
     ]
 
 
+def test_does_not_duplicate_report_text_before_markdown_links() -> None:
+    """A normal report paragraph before links must become one label only."""
+
+    body = render_markdown_to_cube_body(
+        "### 실시간 생산 분석이 완료되었습니다.\n\n"
+        "- 기준: `2026-08-26` / 공정그룹 `D/A` / 세부 공정 D/A1, D/A2\n"
+        "- 생산실적: 정상/초과 100건, Abnormal 10건, 생산부족 10건\n\n"
+        "우선 확인 대상은 장비필요 3건과 교체필요 2건입니다.\n\n"
+        "[상세 HTML Report 보기](https://example.test/reports/view) · "
+        "[HTML 다운로드](https://example.test/reports/download)"
+    )
+
+    labels = _labels(body)
+    links = [column for column in _columns(body) if column["type"] == "hypertext"]
+
+    assert labels == [
+        "실시간 생산 분석이 완료되었습니다.\n\n"
+        "- 기준: 2026-08-26 / 공정그룹 D/A / 세부 공정 D/A1, D/A2\n"
+        "- 생산실적: 정상/초과 100건, Abnormal 10건, 생산부족 10건\n\n"
+        "우선 확인 대상은 장비필요 3건과 교체필요 2건입니다."
+    ]
+    assert [column["control"]["text"][0] for column in links] == [
+        "상세 HTML Report 보기",
+        "· HTML 다운로드",
+    ]
+
+
 def test_unsafe_html_is_visible_as_text_but_never_becomes_a_control() -> None:
     body = render_markdown_to_cube_body(
         "표시 전"

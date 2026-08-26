@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -17,6 +18,7 @@ from app import (
     GaiaResponseError,
     Settings,
     SettingsError,
+    build_gaia_context,
     call_gaia,
     extract_final_answer,
     send_cube_message,
@@ -39,6 +41,10 @@ GAIA_USER_ID = ""
 # Leave blank to start a new GAIA conversation for this test.
 SESSION_ID = ""
 
+# Optional: enter only completed turns that happened before ``MESSAGE``.
+# The current MESSAGE is appended as the final user message automatically.
+RECENT_CONVERSATION_HISTORY: list[dict[str, Any]] = []
+
 
 @dataclass(frozen=True)
 class ManualSendResult:
@@ -46,6 +52,8 @@ class ManualSendResult:
 
     answer: str
     session_id: str
+    data: str
+    metadata: str
 
 
 def _required(value: str, label: str) -> str:
@@ -75,6 +83,7 @@ async def run_manual_send(
     gaia_user_id: str,
     session_id: str,
     client: httpx.AsyncClient,
+    conversation_history: list[dict[str, Any]] | None = None,
 ) -> ManualSendResult:
     """Run exactly one direct GAIA call followed by one CUBE send."""
 
@@ -82,10 +91,25 @@ async def run_manual_send(
     receiver_id = _required(receiver_id, "receiver ID")
     gaia_user_id = _required(gaia_user_id, "GAIA user ID")
     session_id = _required(session_id, "session ID")
+    data, metadata = build_gaia_context(
+        message=message,
+        user_id=gaia_user_id,
+        channel_id=channel_id.strip(),
+        session_id=session_id,
+        conversation_history=conversation_history,
+        cube_user_id=receiver_id,
+    )
 
-    # The same GAIA request and CUBE payload functions are used by the callback server.
+    # This direct tool uses the same optional GAIA context fields as the
+    # callback server, while letting an operator supply a test history by hand.
     gaia_response = await call_gaia(
-        client, settings, gaia_user_id, session_id, message
+        client,
+        settings,
+        gaia_user_id,
+        session_id,
+        message,
+        data=data,
+        metadata=metadata,
     )
     answer = extract_final_answer(gaia_response)
     returned_session_id = gaia_response.get("session_id")
@@ -94,7 +118,12 @@ async def run_manual_send(
 
     # An empty channel ID is allowed for the direct-send shape supplied by the user.
     await send_cube_message(client, settings, receiver_id, channel_id.strip(), answer)
-    return ManualSendResult(answer=answer, session_id=session_id)
+    return ManualSendResult(
+        answer=answer,
+        session_id=session_id,
+        data=data,
+        metadata=metadata,
+    )
 
 
 async def _main() -> int:
@@ -113,6 +142,7 @@ async def _main() -> int:
                 gaia_user_id=gaia_user_id,
                 session_id=session_id,
                 client=client,
+                conversation_history=RECENT_CONVERSATION_HISTORY,
             )
     except (SettingsError, ExternalApiError, GaiaResponseError, ValueError) as exc:
         print(f"Manual GAIA-CUBE test failed: {exc}")
@@ -120,6 +150,8 @@ async def _main() -> int:
 
     print("CUBE send request was accepted.")
     print(f"GAIA session ID: {result.session_id}")
+    print(f"GAIA data input: {result.data}")
+    print(f"GAIA metadata input: {result.metadata}")
     print("GAIA answer sent to CUBE:")
     print(result.answer)
     return 0

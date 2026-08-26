@@ -90,14 +90,54 @@ def test_native_boundaries_keep_analysis_direct_and_clean_agent_tool_results() -
     assert ("CustomComponent-A5y0b", "ChatOutput-rwbTs") in analysis_edges
 
     agent_edges = {(edge["source"], edge["target"]) for edge in agent["data"]["edges"]}
-    assert ("ChatInput-agent-tool-router", "Agent-agent-tool-router") in agent_edges
+    assert ("ChatInput-agent-tool-router", "RouterSessionContext-agent-tool-router") in agent_edges
+    assert ("RouterSessionContext-agent-tool-router", "Agent-agent-tool-router") in agent_edges
     assert ("Agent-agent-tool-router", "DirectToolResultAdapter-agent-tool-router") in agent_edges
-    assert ("DirectToolResultAdapter-agent-tool-router", "ChatOutput-agent-tool-router") in agent_edges
+    assert ("DirectToolResultAdapter-agent-tool-router", "RouterSessionStateWriter-agent-tool-router") in agent_edges
+    assert ("RouterSessionStateWriter-agent-tool-router", "ChatOutput-agent-tool-router") in agent_edges
     router_agent = next(node for node in agent["data"]["nodes"] if node["id"] == "Agent-agent-tool-router")
     assert router_agent["data"]["type"] == "SilentDirectReturnRouterAgent"
     router_template = router_agent["data"]["node"]["template"]
     assert router_template["add_calculator_tool"]["value"] is False
+    assert router_template["n_messages"]["value"] == 1
     assert "add_calculator_tool" in router_agent["data"]["node"]["field_order"]
+    context_loader = next(node for node in agent["data"]["nodes"] if node["id"] == "RouterSessionContext-agent-tool-router")
+    writer = next(node for node in agent["data"]["nodes"] if node["id"] == "RouterSessionStateWriter-agent-tool-router")
+    assert context_loader["data"]["type"] == "RouterSessionContextLoader"
+    assert writer["data"]["type"] == "RouterSessionStateWriter"
+    for node in (context_loader, writer):
+        template = node["data"]["node"]["template"]
+        assert template["mongo_database"]["value"] == "datagov"
+        assert template["session_collection_name"]["value"] == "router_session_states"
+        assert template["mongo_uri"]["value"] == "MONGO_URL"
+        assert template["mongo_uri"]["load_from_db"] is True
+    context_template = context_loader["data"]["node"]["template"]
+    assert context_template["enabled"]["value"] is True
+    assert "history_limit" not in context_template
+    assert "history_limit" not in writer["data"]["node"]["template"]
+    for input_name in ("input_message", "session_id", "data", "metadata", "mongo_uri"):
+        assert input_name in context_template
+    edge_ports = {
+        (
+            edge["source"],
+            edge["data"]["sourceHandle"]["name"],
+            edge["target"],
+            edge["data"]["targetHandle"]["fieldName"],
+        )
+        for edge in agent["data"]["edges"]
+    }
+    assert (
+        "ChatInput-agent-tool-router",
+        "message",
+        "RouterSessionContext-agent-tool-router",
+        "input_message",
+    ) in edge_ports
+    assert (
+        "RouterSessionContext-agent-tool-router",
+        "message",
+        "Agent-agent-tool-router",
+        "input_value",
+    ) in edge_ports
 
 
 def test_default_router_exposes_one_dedicated_report_followup_tool() -> None:
@@ -141,6 +181,22 @@ def test_default_router_exposes_one_dedicated_report_followup_tool() -> None:
         != "07. v5_realtime_production_report_legacy"
         for node in tool_nodes
     )
+    edge_ports = {
+        (
+            edge["source"],
+            edge["data"]["sourceHandle"]["name"],
+            edge["target"],
+            edge["data"]["targetHandle"]["fieldName"],
+        )
+        for edge in flow["data"]["edges"]
+    }
+    for tool in tool_nodes:
+        assert (
+            "RouterSessionContext-agent-tool-router",
+            "canonical_session_id",
+            tool["id"],
+            "session_id",
+        ) in edge_ports
 
 
 def test_router_freshness_phrases_do_not_treat_report_column_names_as_refresh() -> None:

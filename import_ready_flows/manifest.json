@@ -6,7 +6,7 @@
   "flow_count": 9,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "d4ef8e41305f9989ff2b416ba27a0f31688c861e23a9864e7cc4e5e42ee498c9",
+  "single_file_ui_import_sha256": "d4557cc294a67a73a212febca2ce7c6e5c132a5613fbfe0df354c548cd0d37a3",
   "mongodb_contract": {
     "configuration_source": "Langflow node input / MONGO_URL Credential Global Variable",
     "database": "datagov",
@@ -14,7 +14,8 @@
     "table_catalog": "agent_v4_table_catalog_items",
     "main_flow_filter": "agent_v4_main_flow_filters",
     "result": "agent_v4_result_store",
-    "session_state": "agent_v4_session_states"
+    "session_state": "agent_v4_session_states",
+    "router_session_state": "router_session_states"
   },
   "data_analysis_routing_contract": {
     "canonical_route": "data_analysis",
@@ -35,8 +36,8 @@
   },
   "validation": {
     "bundle_structure": "native Chat boundaries, version stamps, Flow names, endpoints and active adapter inputs are verified while building",
-    "langflow_frontend_edge_handles": "336/336 structural handles",
-    "langflow_lfx_node_templates": "133/133 custom component templates across 9 base flows",
+    "langflow_frontend_edge_handles": "358/358 structural handles",
+    "langflow_lfx_node_templates": "135/135 custom component templates across 9 base flows",
     "runtime_parse": "Run tools/validate_langflow_runtime.py after changing custom component source."
   },
   "flows": [
@@ -96,9 +97,9 @@
       "file": "06_agent_tool_router_flow_v5_standalone.json",
       "name": "06. v5_agent_tool_router",
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
-      "nodes": 11,
-      "edges": 10,
-      "sha256": "60eaa14f1025a48c96c614f5b86f47da088d7d99f3c030b29d51265f1e80ce71"
+      "nodes": 13,
+      "edges": 21,
+      "sha256": "078e3e3bdf6c7f91add4894243a5609aff2b5bbb85946ee9d3335a30e656fad2"
     },
     {
       "order": 7,

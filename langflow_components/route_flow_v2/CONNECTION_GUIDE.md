@@ -5,16 +5,23 @@
 ## 구성
 
 ```text
-Chat Input.message -> Agent.input_value
+Chat Input.message -> Router Session Context Loader.input_message
+Router Session Context Loader.message -> Agent.input_value
+Router Session Context Loader.canonical_session_id -> Cached Flow Tool 7종.session_id
 Cached Flow Tool 7종.component_as_tool -> Agent.tools
 Agent.response -> Direct Tool Result Adapter.agent_message
-Direct Tool Result Adapter.message -> Chat Output.input_value
+Router Session Context Loader.message -> Router Session State Writer.context_message
+Agent.response -> Router Session State Writer.agent_message
+Direct Tool Result Adapter.message -> Router Session State Writer.answer_message
+Router Session State Writer.message -> Chat Output.input_value
 ```
 
 - Chat Output은 정확히 하나입니다.
-- Chat Input은 Agent에만 한 번 연결합니다. Tool 7개는 LFX Tool wrapper가 `_pre_run_setup()`을 건너뛰는 경로에서도 실행 직전에 부모 runtime/graph `session_id`를 확정하므로 별도 세션 Message edge가 없습니다.
+- Router Session Context Loader는 `datagov.router_session_states`에서 **직전 사용자 질문, 직전 최종 답변, 직전 선택 Flow** 한 세트만 읽습니다. 이 컬렉션은 Data Analysis의 `agent_v4_session_states`와 별도입니다. 전체 대화 transcript는 Router에 전달하지 않습니다.
+- Tool 7개는 Context Loader가 확정한 canonical 세션 ID를 직접 받습니다. 따라서 외부 Gateway가 매 요청마다 새 Langflow graph를 만들더라도 선택된 하위 Flow가 같은 세션의 분석 상태를 복원할 수 있습니다.
+- Router Session State Writer는 직접 Tool 오류 없이 완료된 Tool 선택 뒤에만 직전 질문·최종 답변·선택 Flow를 저장합니다. 하위 Flow의 정상 clarification/Blocked 응답은 현재 Router 선택 문맥으로 유지하되, Tool 실행 오류는 이전 상태를 덮어쓰지 않습니다. MongoDB 연결·조회·저장이 실패하거나 세션 ID가 없으면 현재 질문은 기존 단일턴 경로로 그대로 실행됩니다.
 - 각 Tool의 `cache_flow`와 `return_direct`는 `true`입니다.
-- Router Agent의 `n_messages`는 `5`, `max_iterations`는 `1`입니다. 이 값은 현재 저장 메시지 1개와 이전 사용자/응답 2턴 4개를 조회합니다. Native Chat Input Message ID를 기준으로 현재 입력을 history에서 제거하므로, 모델에는 현재 질문이 중복되지 않은 이전 2턴만 전달됩니다. 선택된 Data Analysis Flow는 같은 부모 세션으로 저장된 분석 상태도 함께 복원합니다.
+- Router Agent의 `n_messages`는 `1`, `max_iterations`는 `1`입니다. Context Loader가 제공하는 직전 질문·답변·선택 Flow만 system prompt의 보조 문맥으로 사용하고, native Chat history는 Router 판단에 섞지 않습니다. 현재 질문이 완결된 새 요청이면 이 보조 문맥을 무시하고 현재 질문 기준으로 라우팅합니다. 선택된 Data Analysis Flow는 같은 canonical 세션으로 저장된 분석 상태를 자체적으로 복원합니다.
 - `flow_name_selected`는 기본 Run Flow처럼 새로고침 가능한 Flow 선택 드롭다운입니다. 실제 환경에서는 하위 Flow를 import한 뒤 각 Tool 노드에서 목록을 새로고침하고 대상을 다시 선택하면 현재 Flow ID가 `flow_id_selected`에 저장됩니다.
 - 기본 `Flow 해석 방식=Flow ID 우선`은 선택된 실제 ID를 먼저 확인합니다. 해당 ID가 현재 프로젝트에 있으면 최신 이름과 `updated_at`으로 실행하고, Flow 재import 등으로 ID가 사라졌을 때만 저장된 이름으로 현재 Flow를 다시 찾습니다.
 - 이름 검색을 완전히 금지하려면 각 Tool 노드에서 `Flow 해석 방식=선택한 Flow ID만`을 선택합니다. 이 모드에서 ID가 비어 있으면 잘못된 Flow를 실행하지 않고 대상 Flow 재선택 안내 오류를 반환합니다.
@@ -69,5 +76,20 @@ Direct Tool Result Adapter.message -> Chat Output.input_value
 - Router Agent의 `handle_parsing_errors`는 `false`입니다. Langflow 1.11에서 이 입력은 `ToolRetryMiddleware(max_retries=2, retry_on=Exception)`를 추가하므로, 저장 Flow까지 포함한 상위 Router에서는 사용하지 않습니다.
 - Tool 입력 검증 또는 실행 예외는 하위 Flow를 재실행하지 않고 `status=error`인 안전한 안내로 한 번 반환합니다. 정상적으로 반환된 Blocked·clarification 답변은 그대로 전달합니다.
 - 저장 요청이 오류로 끝났다면 자동 재시도하지 말고 MongoDB 반영 상태를 먼저 확인합니다.
+
+## 외부 GAIA/CUBE 세션 연결
+
+Router의 native Message history만으로는 외부 호출마다 새 graph가 생성되는 환경을 보장할 수 없습니다. GAIA Agent 설정에서 다음 입력 매핑을 추가합니다.
+
+| 외부 요청 필드 | Flow 06 입력 |
+| --- | --- |
+| `input_value` | Native Chat Input의 `input_value` |
+| `session_id` | `00 Router 세션 문맥 로더.session_id` |
+| `data` | `00 Router 세션 문맥 로더.data` |
+| `metadata` | `00 Router 세션 문맥 로더.metadata` |
+
+- `data`에는 선택적으로 `{"conversation_history":[...]}`를 보냅니다. Router Mongo 상태가 없을 때에도 Context Loader는 여기서 직전 완료 질문·답변 한 쌍만 보조 문맥으로 사용합니다.
+- `metadata.session_id`도 세션 후보로 읽습니다. 실행 trace에서 CUBE 요청, GAIA 요청, Context Loader의 canonical 세션 ID, 하위 Flow 세션 ID가 같은지 한 번 확인합니다.
+- 이 Flow에는 GaiA 전용 boundary node를 넣지 않습니다. 외부 플랫폼의 field mapping만 사용하므로 Playground와 일반 Langflow import 경로는 그대로 유지됩니다.
 
 분류만 필요한 운영 기본 경로에서는 API Smart Router가 더 빠를 수 있습니다. Agent Tool Router는 복합적인 자연어 분류 완성도와 관리 편의성을 비교 검증하기 위한 대안입니다.

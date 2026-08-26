@@ -155,15 +155,19 @@ CUBE callback에는 사용자, 채널, 질문이 들어 있다. 서버는 아래
    {
      "input_value": "CUBE에서 받은 질문",
      "user_id": "CUBE 사용자 ID",
-     "session_id": "현재 세션 ID"
+     "session_id": "현재 세션 ID",
+     "data": "{\"conversation_history\":[{\"role\":\"user\",\"content\":\"CUBE에서 받은 질문\",\"files\":[]}]}",
+     "metadata": "{\"platform\":\"CUBE\",\"user_id\":\"CUBE 사용자 ID\",\"session_id\":\"현재 세션 ID\",\"cube_user_id\":\"CUBE 사용자 ID\",\"cube_channel_id\":\"CUBE 채널 ID\"}"
    }
    ```
 
+   `data`와 `metadata`의 값은 중첩 객체가 아니라 **JSON 문자열**이다. 첫 질문의 `data`에는 현재 사용자 질문 1개가 들어가며, 다음 질문부터는 CUBE에 성공적으로 발송된 최근 3개 문답과 현재 질문이 들어간다. `metadata`에는 실제 CUBE 사용자·채널·세션만 넣고, GAIA 내부 화면에서만 나오는 `super_agent_id`, `super_agent_trace_id`, `platform=GaiA_Internal` 값은 임의로 넣지 않는다.
+
 3. GAIA 응답의 마지막 Chat Output에서 `results.gaia_response.data.answer`를 우선 읽는다.
 4. 추출한 답변을 CUBE Rich Notification API로 보낸다. 이 payload의 `content[0].process`는 비어 있지 않게 구성된다.
-5. callback을 보낸 쪽에는 처리 결과 JSON을 돌려준다.
+5. callback을 보낸 쪽에는 즉시 HTTP `200`과 JSON `null`을 돌려준다. 실제 답변은 이후 CUBE Rich Notification 발송으로 표시된다.
 
-같은 사용자와 같은 채널의 다음 질문은 GAIA가 돌려준 session ID를 재사용한다. 단, 이 정보는 메모리에만 있으므로 HCP 앱 재시작 뒤에는 새 대화가 시작된다.
+같은 사용자와 같은 채널의 다음 질문은 사용자 ID와 채널 ID에서 결정적으로 만든 같은 session ID를 사용한다. HCP 앱이 재시작돼도 이 session ID는 바뀌지 않는다. 최근 CUBE 발송 성공 문답 최대 3쌍만 이 HCP 앱 메모리에 있어 재시작 시 비워진다. GAIA가 같은 session ID로 Phoenix 이력을 복원하는지는 GAIA 서버 구현에 달려 있다. 서버 로그의 `GAIA session observed: sent=... returned=... same=...`에서 GAIA가 보낸 session ID를 그대로 돌려주는지도 확인할 수 있다.
 
 ## 6. callback 형식 전체 흐름 시험 (선택)
 
@@ -217,6 +221,6 @@ null
 | callback이 HCP에 도착하지 않음 | CUBE 등록 URL, CUBE → HCP 방화벽/허용 IP |
 | callback은 왔지만 답변이 없음 | `GAIA_API_URL`, GAIA 권한 키, callback 사용자 ID가 GAIA 권한 사번인지 |
 | GAIA는 성공했는데 CUBE 답변이 없음 | `CUBE_SEND_URL`, 봇 ID·토큰, 서비스 → CUBE 방화벽 |
-| 앱 재시작 뒤 앞 대화를 잊음 | 현재 구현은 session ID를 메모리에만 저장함 |
+| 앱 재시작 뒤 앞 대화를 잊음 | CUBE session ID는 유지되지만, GAIA 서버가 같은 ID로 Phoenix 이력을 복원하도록 구현되어 있는지 확인 |
 
 callback 인증/서명, CUBE 재전송, CUBE 메시지 중복 방지 정책은 제공된 계약에서 확정되지 않았다. 실제 사용자 범위를 넓히기 전에는 CUBE 담당자와 이 정책 및 방화벽 설정을 확인한다.

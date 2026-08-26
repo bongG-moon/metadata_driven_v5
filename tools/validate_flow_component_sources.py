@@ -230,9 +230,11 @@ def audit_repository() -> dict[str, Any]:
     support_sources = sorted(all_relative.intersection(SUPPORT_SOURCE_FILES))
     route_errors: list[dict[str, Any]] = []
     expected_route_sources = {
+        "langflow_components/route_flow_v2/00_router_session_context_loader.py",
         "langflow_components/route_flow_v2/01_cached_named_run_flow_tool.py",
         "langflow_components/route_flow_v2/02_agent_direct_tool_result_adapter.py",
         "langflow_components/route_flow_v2/03_silent_direct_return_router_agent.py",
+        "langflow_components/route_flow_v2/04_router_session_state_writer.py",
     }
     for path in sorted(expected_route_sources):
         if path not in used:

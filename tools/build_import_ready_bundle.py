@@ -28,6 +28,7 @@ MONGODB_CONTRACT = {
     "main_flow_filter": "agent_v4_main_flow_filters",
     "result": "agent_v4_result_store",
     "session_state": "agent_v4_session_states",
+    "router_session_state": "router_session_states",
 }
 
 # The public route and tool name stay stable while the graph behind Flow 01 is
@@ -192,12 +193,96 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
     if item["name"] == FLOW_DISPLAY_NAMES["agent_tool_router"]:
         edge_pairs = {(str(edge.get("source") or ""), str(edge.get("target") or "")) for edge in edges}
         required = {
-            ("ChatInput-agent-tool-router", "Agent-agent-tool-router"),
+            ("ChatInput-agent-tool-router", "RouterSessionContext-agent-tool-router"),
+            ("RouterSessionContext-agent-tool-router", "Agent-agent-tool-router"),
             ("Agent-agent-tool-router", "DirectToolResultAdapter-agent-tool-router"),
-            ("DirectToolResultAdapter-agent-tool-router", "ChatOutput-agent-tool-router"),
+            ("RouterSessionContext-agent-tool-router", "RouterSessionStateWriter-agent-tool-router"),
+            ("Agent-agent-tool-router", "RouterSessionStateWriter-agent-tool-router"),
+            ("DirectToolResultAdapter-agent-tool-router", "RouterSessionStateWriter-agent-tool-router"),
+            ("RouterSessionStateWriter-agent-tool-router", "ChatOutput-agent-tool-router"),
         }
         if not required.issubset(edge_pairs):
-            raise ValueError("Agent Tool Router must route the direct Tool result through its result adapter before Chat Output.")
+            raise ValueError("Agent Tool Router must load/write Router session context around its direct Tool result before Chat Output.")
+        context_loader = next(
+            (node for node in nodes if node.get("id") == "RouterSessionContext-agent-tool-router"),
+            None,
+        )
+        session_writer = next(
+            (node for node in nodes if node.get("id") == "RouterSessionStateWriter-agent-tool-router"),
+            None,
+        )
+        if context_loader is None or context_loader.get("data", {}).get("type") != "RouterSessionContextLoader":
+            raise ValueError("Agent Tool Router must use the Router-specific session context loader.")
+        if session_writer is None or session_writer.get("data", {}).get("type") != "RouterSessionStateWriter":
+            raise ValueError("Agent Tool Router must use the Router-specific session state writer.")
+        for node in (context_loader, session_writer):
+            template = node.get("data", {}).get("node", {}).get("template", {})
+            if template.get("mongo_database", {}).get("value") != "datagov":
+                raise ValueError("Router session components must use the datagov database by default.")
+            if template.get("session_collection_name", {}).get("value") != "router_session_states":
+                raise ValueError("Router session components must not share the Data Analysis session collection.")
+        context_template = context_loader.get("data", {}).get("node", {}).get("template", {})
+        if context_template.get("enabled", {}).get("value") is not True:
+            raise ValueError("Router session context loader must remain enabled by default.")
+        if "history_limit" in context_template:
+            raise ValueError("Router session context loader must retain only one prior exchange, not a transcript history limit.")
+        writer_template = session_writer.get("data", {}).get("node", {}).get("template", {})
+        if "history_limit" in writer_template:
+            raise ValueError("Router session state writer must retain only one prior exchange, not a transcript history limit.")
+        for input_name in ("input_message", "session_id", "data", "metadata", "mongo_uri"):
+            if input_name not in context_template:
+                raise ValueError(f"Router session context loader input is missing: {input_name}")
+        for node in (context_loader, session_writer):
+            mongo_uri = node.get("data", {}).get("node", {}).get("template", {}).get("mongo_uri", {})
+            if mongo_uri.get("value") != MONGO_GLOBAL_VARIABLE or mongo_uri.get("load_from_db") is not True:
+                raise ValueError("Router session components must use the visible MONGO_URL Credential Global Variable.")
+        edge_ports = {
+            (
+                str(edge.get("source") or ""),
+                str(edge.get("data", {}).get("sourceHandle", {}).get("name") or ""),
+                str(edge.get("target") or ""),
+                str(edge.get("data", {}).get("targetHandle", {}).get("fieldName") or ""),
+            )
+            for edge in edges
+        }
+        required_port_edges = {
+            (
+                "ChatInput-agent-tool-router",
+                "message",
+                "RouterSessionContext-agent-tool-router",
+                "input_message",
+            ),
+            (
+                "RouterSessionContext-agent-tool-router",
+                "message",
+                "Agent-agent-tool-router",
+                "input_value",
+            ),
+            (
+                "RouterSessionContext-agent-tool-router",
+                "message",
+                "RouterSessionStateWriter-agent-tool-router",
+                "context_message",
+            ),
+        }
+        if not required_port_edges.issubset(edge_ports):
+            raise ValueError("Router session context edges must keep their exact source and target ports.")
+        router_tool_ids = [
+            str(node.get("id") or "")
+            for node in nodes
+            if str(node.get("id") or "").startswith("CachedFlowTool-")
+        ]
+        if len(router_tool_ids) != 7:
+            raise ValueError("Agent Tool Router must retain exactly seven child Flow Tools.")
+        for tool_id in router_tool_ids:
+            required_session_edge = (
+                "RouterSessionContext-agent-tool-router",
+                "canonical_session_id",
+                tool_id,
+                "session_id",
+            )
+            if required_session_edge not in edge_ports:
+                raise ValueError("Every Router child Flow Tool must receive the canonical Router session ID.")
         agent = next((node for node in nodes if node.get("id") == "Agent-agent-tool-router"), None)
         if agent is None or agent.get("data", {}).get("type") != "SilentDirectReturnRouterAgent":
             raise ValueError("Agent Tool Router must use the silent direct-return Agent to suppress child Flow event leakage.")
@@ -347,6 +432,7 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_{BUNDLE_VERSION}_ALL_FLOW
 - 모든 일반 Data Analysis와 일반 분석 후속 질문은 `01. v5_data_analysis`가 담당합니다.
 - 같은 세션의 Report Snapshot 또는 Report가 미리 만든 집계 View에 대한 컬럼 선택·필터·정렬·순위는 `07-2. v5_report_followup`이 담당합니다. 새 groupby 계산, 최신 데이터나 다른 데이터셋이 필요한 질문은 `01. v5_data_analysis`로 보냅니다.
 - `07. v5_realtime_production_report_legacy`는 변경 전 직접 응답 구조를 보존한 호환 Flow이며 Router가 자동 선택하지 않습니다. `07-1. v5_realtime_production_report`가 후속분석 Context를 저장하는 현재 Router 대상 Report입니다.
+- Flow 06은 `datagov.router_session_states`에 직전 사용자 질문, 직전 최종 답변, 직전 선택 Flow 한 세트만 저장합니다. 이는 Flow 01/07-2의 `agent_v4_session_states`와 별도 컬렉션이며, MongoDB 또는 외부 문맥이 없으면 현재 질문만으로 기존 단일턴 Router 경로를 계속 실행합니다. 외부 GAIA 실행에서는 `session_id`, `data`, `metadata`를 Flow 06의 `00 Router 세션 문맥 로더` 입력에 매핑해야 합니다.
 - 결과 CSV/JSON 다운로드와 실시간 Report HTML 발행은 API_SERVER(`python API_SERVER\\app.py`, bind `0.0.0.0:5000`)가 담당합니다. Report HTML과 메타데이터는 API_SERVER의 단일 MongoDB 컬렉션에 저장되므로 Flow의 Report API 주소를 접근 가능한 API URL로 설정합니다.
 - Flow 01의 `25 분석 처리 과정 HTML 발행기`는 분석·저장·세션 처리 뒤에 best-effort로 실행됩니다. API_SERVER가 일시적으로 사용할 수 없으면 분석 결과는 그대로 반환되고 HTML 링크만 생략됩니다. 기본 링크 유효시간은 1시간, 발행 요청 제한은 2초입니다.
 - 기존 Router Tool에 저장된 `flow_id_selected`가 있으면, import 뒤 대상 Flow를 한 번 다시 선택해 현재 Flow ID로 갱신합니다.

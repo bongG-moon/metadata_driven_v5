@@ -51,10 +51,41 @@ def test_manual_send_calls_gaia_then_sends_its_answer_to_cube() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.url.host == "gaia.test":
-            assert json.loads(request.content) == {
+            payload = json.loads(request.content)
+            assert {
+                key: value
+                for key, value in payload.items()
+                if key not in {"data", "metadata"}
+            } == {
                 "input_value": "직접 입력한 질문",
                 "user_id": "gaia-authorized-user",
                 "session_id": "manual-start",
+            }
+            assert json.loads(payload["data"]) == {
+                "conversation_history": [
+                    {
+                        "role": "user",
+                        "content": "이전 질문",
+                        "files": [],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "이전 답변",
+                        "files": [],
+                    },
+                    {
+                        "role": "user",
+                        "content": "직접 입력한 질문",
+                        "files": [],
+                    },
+                ]
+            }
+            assert json.loads(payload["metadata"]) == {
+                "platform": "CUBE",
+                "user_id": "gaia-authorized-user",
+                "session_id": "manual-start",
+                "cube_user_id": "receiver-user",
+                "cube_channel_id": "channel-A",
             }
             return httpx.Response(200, json=_gaia_response())
 
@@ -62,7 +93,7 @@ def test_manual_send_calls_gaia_then_sends_its_answer_to_cube() -> None:
             payload = json.loads(request.content)["richnotification"]
             assert payload["header"]["to"] == {
                 "uniquename": ["receiver-user"],
-                "channelid": [""],
+                "channelid": ["channel-A"],
             }
             assert (
                 payload["content"][0]["body"]["row"][0]["column"][0]["control"][
@@ -83,10 +114,14 @@ def test_manual_send_calls_gaia_then_sends_its_answer_to_cube() -> None:
                 settings=_settings(),
                 message="직접 입력한 질문",
                 receiver_id="receiver-user",
-                channel_id="",
+                channel_id="channel-A",
                 gaia_user_id="gaia-authorized-user",
                 session_id="manual-start",
                 client=client,
+                conversation_history=[
+                    {"role": "user", "content": "이전 질문", "files": []},
+                    {"role": "assistant", "content": "이전 답변", "files": []},
+                ],
             )
         return result, requests
 
@@ -94,4 +129,6 @@ def test_manual_send_calls_gaia_then_sends_its_answer_to_cube() -> None:
 
     assert result.answer == "직접 입력한 질문의 답변"
     assert result.session_id == "GAIA_MANUAL_SESSION"
+    assert json.loads(result.data)["conversation_history"][-1]["content"] == "직접 입력한 질문"
+    assert json.loads(result.metadata)["platform"] == "CUBE"
     assert len(sent_requests) == 2

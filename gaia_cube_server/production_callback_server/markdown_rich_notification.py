@@ -388,10 +388,13 @@ def _make_text_rows(text: str) -> list[dict[str, Any]]:
                 pending_prefix = ""
             if decoration:
                 pending_prefix = _join_link_text(pending_prefix, decoration)
-                continue
-            if _is_link_decoration(display_text):
+            elif _is_link_decoration(display_text):
                 pending_prefix = _join_link_text(pending_prefix, display_text)
-                continue
+            # The text before a following link has already become a label
+            # above.  Do not fall through and append that same label again.
+            # This is especially important for report answers whose normal
+            # prose is followed by Markdown download/report links.
+            continue
 
         label = _join_link_text(pending_prefix, display_text)
         pending_prefix = ""

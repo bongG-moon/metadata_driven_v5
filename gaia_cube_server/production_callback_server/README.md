@@ -95,10 +95,11 @@ python rich_notification_preview.py
 ## 현재 최소 구현의 범위
 
 - 같은 `사용자 ID + CUBE 채널 ID`에는 같은 GAIA `session_id`를 재사용한다.
-- 세션 ID는 서버 메모리에만 보관한다. HCP 앱이 재시작되면 새 세션이 시작된다.
+- callback으로 GAIA를 호출할 때 `data`에는 현재 질문과 최근 CUBE 발송 성공 문답 최대 3쌍을 JSON 문자열로 넣고, `metadata`에는 `platform=CUBE`, 사용자 ID, 세션 ID, 채널 ID를 JSON 문자열로 넣는다. GAIA 내부 화면 전용 ID는 만들지 않는다.
+- CUBE가 GAIA에 보내는 session ID는 `사용자 ID + 채널 ID`에서 결정적으로 만든 값이므로 HCP 앱 재시작 뒤에도 같다. 최근 3쌍의 로컬 문답 cache만 메모리에 있어 재시작 시 비워진다. GAIA가 같은 session ID로 Phoenix 이력을 복원하는지는 GAIA 서버의 구현에 달려 있다.
 - GAIA 처리 실패 후 CUBE fallback 안내문에는 `GAIA 응답 시간 초과`, `GAIA API 연결/응답 오류`, `Langflow 최종 답변 없음`처럼 안전하게 분류한 원인과 재시도 안내를 함께 보낸다. 내부 URL·HTTP 상세 오류·예외 원문은 보내지 않는다.
 - 유효한 callback은 GAIA 실행 전에 `200`과 JSON `null`을 즉시 반환한다. 이후 GAIA 답변·fallback 발송 실패는 서버 로그에서 확인한다. 이 구조는 CUBE가 오래 기다리다 기본 안내를 표시하는 일을 줄이기 위한 것이다.
-- 최근 대화 전문, MongoDB, 별도 작업 큐, 자동 재시도, 스케줄러, 대화 조회 API는 이 최소 서버에 포함하지 않는다. GAIA/CUBE 처리는 FastAPI의 프로세스 내 백그라운드 작업으로 실행되므로 HCP 앱이 재시작되면 진행 중이던 요청은 보장되지 않는다.
+- 전체 대화 전문, MongoDB, 별도 작업 큐, 자동 재시도, 스케줄러, 대화 조회 API는 이 최소 서버에 포함하지 않는다. GAIA/CUBE 처리는 FastAPI의 프로세스 내 백그라운드 작업으로 실행되므로 HCP 앱이 재시작되면 진행 중이던 요청은 보장되지 않는다.
 - callback 인증 방식, 재전송 정책, CUBE 발송 성공 body는 담당 가이드가 확인되면 추가해야 한다.
 
 실제 키와 토큰은 `.env`, HCP Secret 또는 환경변수에만 보관하고 Git, 로그, 문서에 넣지 않는다.

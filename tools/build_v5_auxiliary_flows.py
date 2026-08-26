@@ -7,6 +7,7 @@ import re
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version as package_version
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,37 @@ FLOW_DISPLAY_NAMES = {
     "realtime_production_report": "07-1. v5_realtime_production_report",
     "report_followup": "07-2. v5_report_followup",
 }
+
+
+def _require_target_runtime() -> None:
+    """Refuse to stamp 1.11 Flow JSON from a different installed runtime."""
+
+    expected = {
+        "langflow": TARGET_LANGFLOW_VERSION,
+        "langflow-base": "0.11.0",
+        "lfx": TARGET_LANGFLOW_VERSION,
+    }
+    actual: dict[str, str] = {}
+    for package, expected_version in expected.items():
+        try:
+            actual[package] = package_version(package)
+        except PackageNotFoundError as exc:
+            raise RuntimeError(
+                f"Langflow 1.11 Flow builder requires {package}=={expected_version}, but it is not installed."
+            ) from exc
+    mismatches = {
+        package: {"expected": expected[package], "actual": actual[package]}
+        for package in expected
+        if actual[package] != expected[package]
+    }
+    if mismatches:
+        raise RuntimeError(
+            "Langflow 1.11 Flow builder must run with the exact target runtime: "
+            f"{mismatches}. Use the Langflow Desktop 1.11 managed Python."
+        )
+
+
+_require_target_runtime()
 
 
 def _resolve_component_index() -> Path:
@@ -665,32 +697,45 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["agent_tool_router"],
-        "LLM Agent router with seven compact selected-ID-first cached Flow tools, a dedicated same-session Report follow-up path, deterministic realtime-analysis keyword gating, name fallback for standalone imports, shared session propagation, a silent direct-return Agent, a direct-result adapter that removes nested child events, and one final Chat Output.",
+        "LLM Agent router with a Router-specific one-turn MongoDB continuation context, seven compact selected-ID-first cached Flow tools, a dedicated same-session Report follow-up path, deterministic realtime-analysis keyword gating, name fallback for standalone imports, explicit canonical session propagation, a silent direct-return Agent, a direct-result adapter that removes nested child events, and one final Chat Output.",
         "metadata-driven-v5-agent-tool-router",
-        ["v5", "standalone", "agent-router", "tool-mode", "selected-flow-id", "cached-flow", "direct-result-adapter", "optimized"],
+        ["v5", "standalone", "agent-router", "router-session-state", "tool-mode", "selected-flow-id", "cached-flow", "direct-result-adapter", "optimized"],
     )
     system_prompt = (COMPONENT_ROOT / "route_flow_v2" / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
+    context_loader_path = COMPONENT_ROOT / "route_flow_v2" / "00_router_session_context_loader.py"
     tool_path = COMPONENT_ROOT / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
     result_adapter_path = COMPONENT_ROOT / "route_flow_v2" / "02_agent_direct_tool_result_adapter.py"
     silent_agent_path = COMPONENT_ROOT / "route_flow_v2" / "03_silent_direct_return_router_agent.py"
+    session_writer_path = COMPONENT_ROOT / "route_flow_v2" / "04_router_session_state_writer.py"
 
     chat = native_node(proto["chat_input"], "ChatInput-agent-tool-router", 0, 0)
     _set_message_storage(chat, True)
+    context_loader = custom_node(
+        proto["custom"],
+        "RouterSessionContext-agent-tool-router",
+        context_loader_path,
+        300,
+        0,
+    )
+    context_template = context_loader["data"]["node"]["template"]
+    _set_value(context_template, "mongo_database", "datagov")
+    _set_value(context_template, "session_collection_name", "router_session_states")
+    _set_value(context_template, "enabled", True)
+    _set_value(context_template, "message_char_limit", "1200")
     agent = silent_router_agent_node(
         proto["custom"],
         "Agent-agent-tool-router",
         silent_agent_path,
-        850,
+        1120,
         0,
         system_prompt,
     )
     agent_template = agent["data"]["node"]["template"]
-    # Chat Input이 현재 사용자 Message를 먼저 저장하므로 5개 메시지를 조회합니다.
-    # LFX Agent는 input_value와 ID가 같은 현재 Message를 제거하고, 이전 4개 메시지
-    # (사용자/응답 2턴)만 history로 유지합니다. Native Chat Input Message가 원본
-    # ID를 그대로 전달하므로 이 ID 기반 중복 제거가 동작합니다.
+    # Router Session Context Loader가 직전 질문·답변·선택 Flow만 system prompt에
+    # 전달합니다. Silent Router Agent는 native full transcript를 사용하지 않으므로
+    # 이 값은 Context Loader 없이 단독 배치했을 때의 최소 fallback입니다.
     _set_value(agent_template, "max_iterations", 1)
-    _set_value(agent_template, "n_messages", 5)
+    _set_value(agent_template, "n_messages", 1)
     _set_value(agent_template, "add_current_date_tool", False)
     # LFX 1.11 maps this legacy-looking option to a broad
     # ToolRetryMiddleware(max_retries=2).  The Router also exposes metadata
@@ -703,18 +748,32 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         proto["custom"],
         "DirectToolResultAdapter-agent-tool-router",
         result_adapter_path,
-        1120,
+        1450,
         0,
     )
     _set_value(result_adapter["data"]["node"]["template"], "prefer_tool_result", True)
-    output = native_node(proto["chat_output"], "ChatOutput-agent-tool-router", 1420, 0)
+    session_writer = custom_node(
+        proto["custom"],
+        "RouterSessionStateWriter-agent-tool-router",
+        session_writer_path,
+        1760,
+        0,
+    )
+    writer_template = session_writer["data"]["node"]["template"]
+    _set_value(writer_template, "mongo_database", "datagov")
+    _set_value(writer_template, "session_collection_name", "router_session_states")
+    _set_value(writer_template, "enabled", True)
+    _set_value(writer_template, "message_char_limit", "1200")
+    _set_value(writer_template, "ttl_hours", "24")
+    output = native_node(proto["chat_output"], "ChatOutput-agent-tool-router", 2070, 0)
     _set_message_storage(output, True)
-    flow["data"]["nodes"].extend([chat, agent, result_adapter, output])
-    add_edge(flow, chat, "message", agent, "input_value")
+    flow["data"]["nodes"].extend([chat, context_loader, agent, result_adapter, session_writer, output])
+    add_edge(flow, chat, "message", context_loader, "input_message")
+    add_edge(flow, context_loader, "message", agent, "input_value")
 
     y_positions = (-780, -520, -260, 0, 260, 520, 780)
     for spec, y in zip(TOOL_ROUTE_SPECS, y_positions, strict=True):
-        tool = custom_node(proto["custom"], f"CachedFlowTool-{spec.route_name}", tool_path, 350, y)
+        tool = custom_node(proto["custom"], f"CachedFlowTool-{spec.route_name}", tool_path, 690, y)
         tool_config = tool["data"]["node"]
         tool_config["tool_mode"] = True
         template = tool_config["template"]
@@ -729,12 +788,18 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         _set_value(template, "keyword_gate_message", spec.keyword_gate_message)
         _set_value(template, "return_direct", True)
         flow["data"]["nodes"].append(tool)
+        # Explicit canonical session propagation makes child Flow state work
+        # even when an external gateway starts a fresh parent graph session.
+        add_edge(flow, context_loader, "canonical_session_id", tool, "session_id")
         add_edge(flow, tool, "component_as_tool", agent, "tools")
 
     # Langflow 1.11 forwards nested child-flow LLM events into the Agent message.
     # Keep return_direct on the Tools, but publish only their successful final output.
     add_edge(flow, agent, "response", result_adapter, "agent_message")
-    add_edge(flow, result_adapter, "message", output, "input_value")
+    add_edge(flow, context_loader, "message", session_writer, "context_message")
+    add_edge(flow, agent, "response", session_writer, "agent_message")
+    add_edge(flow, result_adapter, "message", session_writer, "answer_message")
+    add_edge(flow, session_writer, "message", output, "input_value")
     return flow
 
 

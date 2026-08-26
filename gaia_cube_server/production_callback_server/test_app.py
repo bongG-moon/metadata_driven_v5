@@ -96,10 +96,31 @@ def test_receiver_runs_full_gaia_to_cube_flow() -> None:
         if request.url.host == "gaia.test":
             assert str(request.url) == "http://gaia.test/v2/agents/agent-a/external"
             assert request.headers["X-Gaia-Auth-Key"] == "test-key"
-            assert json.loads(request.content) == {
+            payload = json.loads(request.content)
+            assert {
+                key: value
+                for key, value in payload.items()
+                if key not in {"data", "metadata"}
+            } == {
                 "input_value": "생산량을 알려줘",
                 "user_id": "employee-1",
-                "session_id": json.loads(request.content)["session_id"],
+                "session_id": payload["session_id"],
+            }
+            assert json.loads(payload["data"]) == {
+                "conversation_history": [
+                    {
+                        "role": "user",
+                        "content": "생산량을 알려줘",
+                        "files": [],
+                    }
+                ]
+            }
+            assert json.loads(payload["metadata"]) == {
+                "platform": "CUBE",
+                "user_id": "employee-1",
+                "session_id": payload["session_id"],
+                "cube_user_id": "employee-1",
+                "cube_channel_id": "channel-A",
             }
             return httpx.Response(200, json=_gaia_response("GAIA 정규화 답변"))
 
@@ -209,6 +230,43 @@ def test_receiver_accepts_actual_from_channel_and_resultdata_shapes() -> None:
         "엑셀 Export",
     ]
     assert all(request["user_id"] == "employee-from" for request in gaia_requests)
+    first_data = json.loads(gaia_requests[0]["data"])
+    second_data = json.loads(gaia_requests[1]["data"])
+    assert first_data == {
+        "conversation_history": [
+            {
+                "role": "user",
+                "content": "header.from 채널 질문",
+                "files": [],
+            }
+        ]
+    }
+    assert second_data == {
+        "conversation_history": [
+            {
+                "role": "user",
+                "content": "header.from 채널 질문",
+                "files": [],
+            },
+            {
+                "role": "assistant",
+                "content": "실제 callback 답변",
+                "files": [],
+            },
+            {
+                "role": "user",
+                "content": "엑셀 Export",
+                "files": [],
+            },
+        ]
+    }
+    assert json.loads(gaia_requests[1]["metadata"]) == {
+        "platform": "CUBE",
+        "user_id": "employee-from",
+        "session_id": gaia_requests[1]["session_id"],
+        "cube_user_id": "employee-from",
+        "cube_channel_id": "channel-from",
+    }
     assert cube_targets == [
         {"uniquename": ["employee-from"], "channelid": ["channel-from"]},
         {"uniquename": ["employee-from"], "channelid": ["channel-from"]},
@@ -311,7 +369,69 @@ def test_same_user_and_channel_reuses_gaia_returned_session() -> None:
         assert client.post(CUBE_CALLBACK_PATH, json=_callback(message="두 번째 질문")).status_code == 200
 
     assert gaia_session_ids[0].startswith("gc_")
-    assert gaia_session_ids[1] == "GAIA_SESSION"
+    assert gaia_session_ids[1] == gaia_session_ids[0]
+
+
+def test_same_user_and_channel_uses_the_same_session_after_app_restart() -> None:
+    gaia_session_ids: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "gaia.test":
+            gaia_session_ids.append(json.loads(request.content)["session_id"])
+            return httpx.Response(200, json=_gaia_response("answer"))
+        if request.url.host == "cube.test":
+            return httpx.Response(200, json={"ok": True})
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    first_app = create_application(_settings(), transport=httpx.MockTransport(handler))
+    with TestClient(first_app) as client:
+        assert client.post(CUBE_CALLBACK_PATH, json=_callback()).status_code == 200
+
+    restarted_app = create_application(
+        _settings(), transport=httpx.MockTransport(handler)
+    )
+    with TestClient(restarted_app) as client:
+        assert client.post(CUBE_CALLBACK_PATH, json=_callback()).status_code == 200
+
+    assert gaia_session_ids[0] == gaia_session_ids[1]
+
+
+def test_callback_history_keeps_only_the_last_three_completed_pairs() -> None:
+    gaia_payloads: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "gaia.test":
+            payload = json.loads(request.content)
+            gaia_payloads.append(payload)
+            return httpx.Response(
+                200,
+                json=_gaia_response(
+                    f"답변 {payload['input_value']}", "GAIA_HISTORY_SESSION"
+                ),
+            )
+        if request.url.host == "cube.test":
+            return httpx.Response(200, json={"ok": True})
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    app = create_application(_settings(), transport=httpx.MockTransport(handler))
+    with TestClient(app) as client:
+        for number in range(1, 6):
+            response = client.post(
+                CUBE_CALLBACK_PATH,
+                json=_callback(message=f"질문 {number}"),
+            )
+            assert response.status_code == 200
+
+    latest_history = json.loads(gaia_payloads[-1]["data"])["conversation_history"]
+    assert [(turn["role"], turn["content"]) for turn in latest_history] == [
+        ("user", "질문 2"),
+        ("assistant", "답변 질문 2"),
+        ("user", "질문 3"),
+        ("assistant", "답변 질문 3"),
+        ("user", "질문 4"),
+        ("assistant", "답변 질문 4"),
+        ("user", "질문 5"),
+    ]
 
 
 def test_gaia_failure_sends_the_safe_fallback_once() -> None:
