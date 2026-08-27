@@ -40,7 +40,22 @@ def _flow_export_paths() -> list[Path]:
 def _is_local_custom_node(node: dict[str, Any]) -> bool:
     metadata = node.get("data", {}).get("node", {}).get("metadata", {})
     module = metadata.get("module") if isinstance(metadata, dict) else ""
-    return isinstance(module, str) and module.startswith(("custom_components.", "v5_auxiliary."))
+    if isinstance(module, str) and module.startswith(("custom_components.", "v5_auxiliary.")):
+        return True
+
+    # Some standalone ingress components deliberately use a native interface
+    # type (for example ``ChatInput``) so Langflow exposes them as a /run
+    # input.  Their execution source is still embedded custom code, not the
+    # native component implementation, therefore their LFX migration status
+    # must be evaluated through the custom-template parser path below.
+    template = node.get("data", {}).get("node", {}).get("template", {})
+    code_field = template.get("code") if isinstance(template, dict) else None
+    return (
+        isinstance(template, dict)
+        and template.get("_type") == "Component"
+        and isinstance(code_field, dict)
+        and bool(str(code_field.get("value") or "").strip())
+    )
 
 
 def validate_runtime_versions() -> dict[str, Any]:
@@ -163,12 +178,18 @@ def validate_lfx_upgrade(flow_path: Path, flow: dict[str, Any]) -> dict[str, Any
     output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
     statuses = [match.groupdict() for match in UPGRADE_STATUS_PATTERN.finditer(output)]
     errors: list[dict[str, Any]] = []
-    ignored_custom_blocks: list[str] = []
+    ignored_custom_statuses: list[dict[str, str]] = []
     for item in statuses:
         status = item["status"]
         node_id = item["id"]
-        if status == "BLOCKED" and node_id in custom_node_ids:
-            ignored_custom_blocks.append(node_id)
+        if status != "OK" and node_id in custom_node_ids:
+            # Standalone custom code has already been parsed and compared with
+            # its serialized template by ``validate_node_templates``.  LFX's
+            # native migration classifier may label it BLOCKED, BREAKING, or a
+            # newer non-OK state simply because it cannot map that source to a
+            # built-in migration.  It must not turn a valid custom Flow into a
+            # native-upgrade failure.
+            ignored_custom_statuses.append({"node": node_id, "status": status})
         elif status in {"SAFE", "BLOCKED"}:
             errors.append({"type": "native_component_upgrade_required", "status": status, "node": node_id})
         elif status != "OK":
@@ -193,7 +214,7 @@ def validate_lfx_upgrade(flow_path: Path, flow: dict[str, Any]) -> dict[str, Any
         "checked": True,
         "returncode": completed.returncode,
         "status_count": len(statuses),
-        "ignored_custom_blocked": sorted(ignored_custom_blocks),
+        "ignored_custom_statuses": sorted(ignored_custom_statuses, key=lambda item: (item["node"], item["status"])),
         "errors": errors,
     }
 

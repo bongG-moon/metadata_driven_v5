@@ -100,8 +100,8 @@ async def run_manual_send(
         cube_user_id=receiver_id,
     )
 
-    # This direct tool uses the same optional GAIA context fields as the
-    # callback server, while letting an operator supply a test history by hand.
+    # The callback server and this manual tool both place these values inside
+    # GAIA's configured Chat Input ``tweaks`` object.
     gaia_response = await call_gaia(
         client,
         settings,

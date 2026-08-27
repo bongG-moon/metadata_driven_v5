@@ -97,16 +97,16 @@ def test_receiver_runs_full_gaia_to_cube_flow() -> None:
             assert str(request.url) == "http://gaia.test/v2/agents/agent-a/external"
             assert request.headers["X-Gaia-Auth-Key"] == "test-key"
             payload = json.loads(request.content)
+            assert set(payload) == {"input_value", "user_id", "session_id", "tweaks"}
             assert {
-                key: value
-                for key, value in payload.items()
-                if key not in {"data", "metadata"}
+                key: value for key, value in payload.items() if key != "tweaks"
             } == {
                 "input_value": "생산량을 알려줘",
                 "user_id": "employee-1",
                 "session_id": payload["session_id"],
             }
-            assert json.loads(payload["data"]) == {
+            chat_input = payload["tweaks"][callback_app.GAIA_INPUT_TWEAK_NAME]
+            assert json.loads(chat_input["data"]) == {
                 "conversation_history": [
                     {
                         "role": "user",
@@ -115,7 +115,7 @@ def test_receiver_runs_full_gaia_to_cube_flow() -> None:
                     }
                 ]
             }
-            assert json.loads(payload["metadata"]) == {
+            assert json.loads(chat_input["metadata"]) == {
                 "platform": "CUBE",
                 "user_id": "employee-1",
                 "session_id": payload["session_id"],
@@ -230,8 +230,10 @@ def test_receiver_accepts_actual_from_channel_and_resultdata_shapes() -> None:
         "엑셀 Export",
     ]
     assert all(request["user_id"] == "employee-from" for request in gaia_requests)
-    first_data = json.loads(gaia_requests[0]["data"])
-    second_data = json.loads(gaia_requests[1]["data"])
+    first_chat_input = gaia_requests[0]["tweaks"][callback_app.GAIA_INPUT_TWEAK_NAME]
+    second_chat_input = gaia_requests[1]["tweaks"][callback_app.GAIA_INPUT_TWEAK_NAME]
+    first_data = json.loads(first_chat_input["data"])
+    second_data = json.loads(second_chat_input["data"])
     assert first_data == {
         "conversation_history": [
             {
@@ -260,7 +262,7 @@ def test_receiver_accepts_actual_from_channel_and_resultdata_shapes() -> None:
             },
         ]
     }
-    assert json.loads(gaia_requests[1]["metadata"]) == {
+    assert json.loads(second_chat_input["metadata"]) == {
         "platform": "CUBE",
         "user_id": "employee-from",
         "session_id": gaia_requests[1]["session_id"],
@@ -422,7 +424,9 @@ def test_callback_history_keeps_only_the_last_three_completed_pairs() -> None:
             )
             assert response.status_code == 200
 
-    latest_history = json.loads(gaia_payloads[-1]["data"])["conversation_history"]
+    latest_history = json.loads(
+        gaia_payloads[-1]["tweaks"][callback_app.GAIA_INPUT_TWEAK_NAME]["data"]
+    )["conversation_history"]
     assert [(turn["role"], turn["content"]) for turn in latest_history] == [
         ("user", "질문 2"),
         ("assistant", "답변 질문 2"),
@@ -459,6 +463,45 @@ def test_gaia_failure_sends_the_safe_fallback_once() -> None:
     assert "오류: GAIA API가 요청을 정상 처리하지 못했습니다." in rendered
     assert "temporary failure" in rendered
     assert cube_bodies[0]["row"][0]["column"][0]["control"]["color"] == ""
+
+
+def test_gaia_forbidden_sends_the_agent_permission_link() -> None:
+    cube_bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "gaia.test":
+            return httpx.Response(
+                403,
+                json={
+                    "errorCode": 403,
+                    "errorName": "Auth-server-Forbidden",
+                    "errorMessage": "권한이 없는 사용자입니다.",
+                },
+            )
+        if request.url.host == "cube.test":
+            cube_bodies.append(
+                json.loads(request.content)["richnotification"]["content"][0]["body"]
+            )
+            return httpx.Response(200, json={"ok": True})
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    app = create_application(_settings(), transport=httpx.MockTransport(handler))
+    with TestClient(app) as client:
+        response = client.post(CUBE_CALLBACK_PATH, json=_callback())
+
+    rendered = json.dumps(cube_bodies[0], ensure_ascii=False)
+    assert response.status_code == 200
+    assert response.json() is None
+    assert "권한이 없는 사용자입니다." in rendered
+    assert "PTMORE PKG Agent 권한 신청" in rendered
+    assert "http://aimarket.skhynix.com/apps/gaia-market-web/market/agent" in rendered
+    assert "temporary failure" not in rendered
+    assert any(
+        column["type"] == "hypertext"
+        and column["control"]["linkurl"]
+        == "http://aimarket.skhynix.com/apps/gaia-market-web/market/agent"
+        for column in _all_columns(cube_bodies[0])
+    )
 
 
 def test_gaia_timeout_sends_a_safe_timeout_reason_without_raw_error_details() -> None:

@@ -69,16 +69,26 @@ def test_selected_flow_manifest_contains_only_supported_flows() -> None:
     assert endpoint_by_name["07-2. v5_report_followup"].endswith("-report-followup")
 
 
-def test_active_exports_and_imports_have_no_gaia_boundary_nodes() -> None:
+def test_active_exports_keep_native_boundaries_and_router_has_gaia_ingress_and_session_extractor() -> None:
     for flow in _all_active_flows():
         nodes = flow["data"]["nodes"]
-        assert not [node for node in nodes if "GaiA" in str(node.get("data", {}).get("type", ""))]
-        assert sum(node.get("data", {}).get("type") == "ChatInput" for node in nodes) == 1
+        if flow["name"] == "06. v5_agent_tool_router":
+            gaia_input = next(node for node in nodes if node["id"] == "GaiAInput-agent-tool-router")
+            gaia_session_extractor = next(
+                node for node in nodes if node["id"] == "GaiAExternalSessionIdExtractor-agent-tool-router"
+            )
+            # Langflow only routes a top-level /run input_value to the
+            # ChatInput runtime type. The custom node's display/source prove
+            # that this is the operating GaiA Input, not the native node.
+            assert gaia_input["data"]["type"] == "ChatInput"
+            assert gaia_input["data"]["node"]["display_name"] == "GaiA Input"
+            assert "class GaiAInput" in gaia_input["data"]["node"]["template"]["code"]["value"]
+            assert gaia_session_extractor["data"]["type"] == "GaiAExternalSessionIdExtractor"
+            assert sum(node.get("data", {}).get("type") == "ChatInput" for node in nodes) == 1
+            assert not any(node["id"] == "ChatInput-agent-tool-router" for node in nodes)
+        else:
+            assert sum(node.get("data", {}).get("type") == "ChatInput" for node in nodes) == 1
         assert sum(node.get("data", {}).get("type") == "ChatOutput" for node in nodes) == 1
-
-        for edge in flow["data"]["edges"]:
-            assert "GaiA" not in str(edge.get("source", ""))
-            assert "GaiA" not in str(edge.get("target", ""))
 
 
 def test_native_boundaries_keep_analysis_direct_and_clean_agent_tool_results() -> None:
@@ -90,7 +100,8 @@ def test_native_boundaries_keep_analysis_direct_and_clean_agent_tool_results() -
     assert ("CustomComponent-A5y0b", "ChatOutput-rwbTs") in analysis_edges
 
     agent_edges = {(edge["source"], edge["target"]) for edge in agent["data"]["edges"]}
-    assert ("ChatInput-agent-tool-router", "RouterSessionContext-agent-tool-router") in agent_edges
+    assert ("GaiAInput-agent-tool-router", "GaiAExternalSessionIdExtractor-agent-tool-router") in agent_edges
+    assert ("GaiAInput-agent-tool-router", "RouterSessionContext-agent-tool-router") in agent_edges
     assert ("RouterSessionContext-agent-tool-router", "Agent-agent-tool-router") in agent_edges
     assert ("Agent-agent-tool-router", "DirectToolResultAdapter-agent-tool-router") in agent_edges
     assert ("DirectToolResultAdapter-agent-tool-router", "RouterSessionStateWriter-agent-tool-router") in agent_edges
@@ -102,8 +113,15 @@ def test_native_boundaries_keep_analysis_direct_and_clean_agent_tool_results() -
     assert router_template["n_messages"]["value"] == 1
     assert "add_calculator_tool" in router_agent["data"]["node"]["field_order"]
     context_loader = next(node for node in agent["data"]["nodes"] if node["id"] == "RouterSessionContext-agent-tool-router")
+    gaia_input = next(node for node in agent["data"]["nodes"] if node["id"] == "GaiAInput-agent-tool-router")
+    gaia_session_extractor = next(
+        node for node in agent["data"]["nodes"] if node["id"] == "GaiAExternalSessionIdExtractor-agent-tool-router"
+    )
     writer = next(node for node in agent["data"]["nodes"] if node["id"] == "RouterSessionStateWriter-agent-tool-router")
     assert context_loader["data"]["type"] == "RouterSessionContextLoader"
+    assert gaia_input["data"]["type"] == "ChatInput"
+    assert gaia_input["data"]["node"]["display_name"] == "GaiA Input"
+    assert gaia_session_extractor["data"]["type"] == "GaiAExternalSessionIdExtractor"
     assert writer["data"]["type"] == "RouterSessionStateWriter"
     for node in (context_loader, writer):
         template = node["data"]["node"]["template"]
@@ -127,11 +145,29 @@ def test_native_boundaries_keep_analysis_direct_and_clean_agent_tool_results() -
         for edge in agent["data"]["edges"]
     }
     assert (
-        "ChatInput-agent-tool-router",
+        "GaiAInput-agent-tool-router",
+        "message",
+        "GaiAExternalSessionIdExtractor-agent-tool-router",
+        "input_message",
+    ) in edge_ports
+    assert (
+        "GaiAInput-agent-tool-router",
         "message",
         "RouterSessionContext-agent-tool-router",
         "input_message",
     ) in edge_ports
+    assert (
+        "GaiAExternalSessionIdExtractor-agent-tool-router",
+        "external_session_id",
+        "RouterSessionContext-agent-tool-router",
+        "session_id",
+    ) in edge_ports
+    assert (
+        "GaiAInput-agent-tool-router",
+        "message",
+        "RouterSessionContext-agent-tool-router",
+        "session_id",
+    ) not in edge_ports
     assert (
         "RouterSessionContext-agent-tool-router",
         "message",
@@ -140,7 +176,45 @@ def test_native_boundaries_keep_analysis_direct_and_clean_agent_tool_results() -
     ) in edge_ports
 
 
-def test_default_router_exposes_one_dedicated_report_followup_tool() -> None:
+def test_router_gaia_ingress_receives_external_input_and_session_edge_uses_message_type() -> None:
+    """Protect the actual GAIA ingress/type contract, not only JSON wiring."""
+
+    from lfx.graph.graph.base import Graph
+
+    flow = _load(EXPORT_ROOT / "06_agent_tool_router_flow_v5_standalone.json")
+    graph = Graph.from_payload(flow["data"], flow_id="router-gaia-input-test", user_id=None, flow_name=flow["name"])
+    ingress = graph.get_vertex("GaiAInput-agent-tool-router")
+    assert ingress.vertex_type == "ChatInput"
+    assert ingress.is_input is True
+    assert ingress.display_name == "GaiA Input"
+
+    # This is the same top-level input_value path GAIA sends to the Flow.
+    question = "WB공정은?"
+    graph._set_inputs([], {"input_value": question}, "chat")
+    assert ingress.params["input_value"] == question
+
+    edges = {
+        (
+            edge["source"],
+            edge["data"]["sourceHandle"]["name"],
+            edge["target"],
+            edge["data"]["targetHandle"]["fieldName"],
+            tuple(edge["data"]["sourceHandle"]["output_types"]),
+            tuple(edge["data"]["targetHandle"]["inputTypes"]),
+        )
+        for edge in flow["data"]["edges"]
+    }
+    assert (
+        "GaiAExternalSessionIdExtractor-agent-tool-router",
+        "external_session_id",
+        "RouterSessionContext-agent-tool-router",
+        "session_id",
+        ("Message",),
+        ("Message",),
+    ) in edges
+
+
+def test_default_router_exposes_six_supported_tools_without_report_followup() -> None:
     flow = build_agent_tool_router_flow(load_donor())
     nodes = flow["data"]["nodes"]
     router_agent = next(node for node in nodes if node["id"] == "Agent-agent-tool-router")
@@ -153,19 +227,20 @@ def test_default_router_exposes_one_dedicated_report_followup_tool() -> None:
         for node in nodes
         if str(node.get("id") or "").startswith("CachedFlowTool-")
     ]
-    assert len(tool_nodes) == 7
-
-    report_tool = next(
-        node for node in tool_nodes if node["id"] == "CachedFlowTool-report_followup"
-    )
-    template = report_tool["data"]["node"]["template"]
-    assert template["flow_name_selected"]["value"] == "07-2. v5_report_followup"
-    assert template["flow_id_selected"]["value"] == ""
-    assert template["tool_name"]["value"] == "run_report_followup"
-    assert template["return_direct"]["value"] is True
-    assert template["required_all_keywords"]["value"] == ""
-    assert template["required_any_phrases"]["value"] == ""
-    assert "새 groupby 집계" in template["tool_description"]["value"]
+    assert len(tool_nodes) == 6
+    assert "CachedFlowTool-report_followup" not in {node["id"] for node in tool_nodes}
+    tool_names = {
+        node["data"]["node"]["template"]["tool_name"]["value"]
+        for node in tool_nodes
+    }
+    assert tool_names == {
+        "run_data_analysis",
+        "run_metadata_qa",
+        "save_domain_metadata",
+        "save_table_catalog_metadata",
+        "save_main_flow_filter_metadata",
+        "run_realtime_production_report",
+    }
 
     data_template = next(
         node for node in tool_nodes if node["id"] == "CachedFlowTool-data_analysis"
@@ -178,7 +253,10 @@ def test_default_router_exposes_one_dedicated_report_followup_tool() -> None:
     assert realtime_template["flow_name_selected"]["value"] == "07-1. v5_realtime_production_report"
     assert all(
         node["data"]["node"]["template"]["flow_name_selected"]["value"]
-        != "07. v5_realtime_production_report_legacy"
+        not in {
+            "07. v5_realtime_production_report_legacy",
+            "07-2. v5_report_followup",
+        }
         for node in tool_nodes
     )
     edge_ports = {
@@ -199,15 +277,18 @@ def test_default_router_exposes_one_dedicated_report_followup_tool() -> None:
         ) in edge_ports
 
 
-def test_router_freshness_phrases_do_not_treat_report_column_names_as_refresh() -> None:
+def test_router_prompt_supports_general_followups_without_report_followup_tool() -> None:
     system_prompt = (
         ROOT / "langflow_components" / "route_flow_v2" / "SYSTEM_PROMPT_KO.md"
     ).read_text(encoding="utf-8")
 
-    for phrase in ("현재 기준", "현재 데이터", "지금 시점", "최신 데이터", "다시 조회", "새로 조회"):
-        assert phrase in system_prompt
-    assert "`현재작업재공`, `현재고`, `현재수량`" in system_prompt
-    assert "새 groupby 집계" in system_prompt
+    assert "직전 질문·답변·선택 Flow" in system_prompt
+    assert "후속 질문" in system_prompt
+    assert "run_data_analysis" in system_prompt
+    assert "현재 질문 원문만 전달" in system_prompt
+    assert "run_report_followup" not in system_prompt
+    assert "Report Snapshot" not in system_prompt
+    assert "Flow 07-2" not in system_prompt
 
 
 def test_base_data_analysis_hides_explicit_upstream_result_reference() -> None:

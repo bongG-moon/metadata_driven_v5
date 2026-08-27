@@ -63,9 +63,17 @@ GAIA_API_URL=http://gaia.api.skhynix.com/v2/agents/<GAIA_AGENT_ID>/external
 {
   "input_value": "사용자의 질문",
   "user_id": "CUBE 사용자 ID",
-  "session_id": "현재 대화 세션 ID"
+  "session_id": "현재 대화 세션 ID",
+  "tweaks": {
+    "GaiA Input": {
+      "data": "{\"conversation_history\":[...]}",
+      "metadata": "{\"platform\":\"CUBE\",\"user_id\":\"CUBE 사용자 ID\",\"session_id\":\"현재 대화 세션 ID\",\"cube_channel_id\":\"CUBE 채널 ID\"}"
+    }
+  }
 }
 ```
+
+`data`와 `metadata`는 GAIA Flow의 `GaiA Input`에 직접 넣기 위해 고정된 `tweaks["GaiA Input"]` 아래에 전달한다. `metadata`에는 반드시 CUBE 사용자 사번과 현재 GAIA 세션 ID가 들어간다.
 
 GAIA 응답에서는 마지막 Chat Output을 찾고, 그 안의 `results.gaia_response.data.answer`를 우선 답변으로 사용한다.
 

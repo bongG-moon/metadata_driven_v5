@@ -616,7 +616,6 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
 
 ROUTE_ENDPOINTS = {
     "data_analysis": "metadata-driven-v5-data-analysis",
-    "report_followup": "metadata-driven-v5-report-followup",
     "metadata_qa": "metadata-driven-v5-metadata-qa",
     "domain_saving": "metadata-driven-v5-domain-saving",
     "table_catalog_saving": "metadata-driven-v5-table-catalog-saving",
@@ -630,12 +629,6 @@ TOOL_ROUTE_SPECS = [
         FLOW_DISPLAY_NAMES["data_analysis"],
         "run_data_analysis",
         "실제 제조 데이터 값의 조회와 계산에 사용합니다. 생산량, 재공, 투입/산출, HOLD, 장비 배정, UPH, 제품별 집계와 비교 질문이 대상입니다. 메타데이터 정의 설명이나 등록 요청에는 사용하지 않습니다.",
-    ),
-    ToolRouteSpec(
-        "report_followup",
-        FLOW_DISPLAY_NAMES["report_followup"],
-        "run_report_followup",
-        "같은 세션의 직전 Report Snapshot 또는 Report가 미리 만든 집계 View를 대상으로 컬럼 선택, 필터, 정렬, 상위/하위 N을 수행할 때 사용합니다. 새 groupby 집계, 현재 기준·최신 데이터·다시/새로 조회하거나 다른 데이터셋을 결합하는 요청에는 사용하지 않습니다.",
     ),
     ToolRouteSpec(
         "metadata_qa",
@@ -697,24 +690,43 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     flow = empty_flow(
         donor,
         FLOW_DISPLAY_NAMES["agent_tool_router"],
-        "LLM Agent router with a Router-specific one-turn MongoDB continuation context, seven compact selected-ID-first cached Flow tools, a dedicated same-session Report follow-up path, deterministic realtime-analysis keyword gating, name fallback for standalone imports, explicit canonical session propagation, a silent direct-return Agent, a direct-result adapter that removes nested child events, and one final Chat Output.",
+        "LLM Agent router with the production GaiA A2A ingress, a dedicated metadata-derived external session ID extractor, a Router-specific one-turn MongoDB continuation context, six compact selected-ID-first cached Flow tools, deterministic realtime-analysis keyword gating, name fallback for standalone imports, explicit canonical session propagation, a silent direct-return Agent, a direct-result adapter that removes nested child events, and one final Chat Output.",
         "metadata-driven-v5-agent-tool-router",
-        ["v5", "standalone", "agent-router", "router-session-state", "tool-mode", "selected-flow-id", "cached-flow", "direct-result-adapter", "optimized"],
+        ["v5", "standalone", "agent-router", "gaia-a2a", "router-session-state", "tool-mode", "selected-flow-id", "cached-flow", "direct-result-adapter", "optimized"],
     )
     system_prompt = (COMPONENT_ROOT / "route_flow_v2" / "SYSTEM_PROMPT_KO.md").read_text(encoding="utf-8")
+    gaia_input_path = COMPONENT_ROOT / "gaia_io" / "00_gaia_input.py"
+    gaia_session_extractor_path = COMPONENT_ROOT / "gaia_io" / "01_gaia_external_session_id_extractor.py"
     context_loader_path = COMPONENT_ROOT / "route_flow_v2" / "00_router_session_context_loader.py"
     tool_path = COMPONENT_ROOT / "route_flow_v2" / "01_cached_named_run_flow_tool.py"
     result_adapter_path = COMPONENT_ROOT / "route_flow_v2" / "02_agent_direct_tool_result_adapter.py"
     silent_agent_path = COMPONENT_ROOT / "route_flow_v2" / "03_silent_direct_return_router_agent.py"
     session_writer_path = COMPONENT_ROOT / "route_flow_v2" / "04_router_session_state_writer.py"
 
-    chat = native_node(proto["chat_input"], "ChatInput-agent-tool-router", 0, 0)
-    _set_message_storage(chat, True)
+    gaia_input = custom_node(
+        proto["custom"],
+        "GaiAInput-agent-tool-router",
+        gaia_input_path,
+        0,
+        0,
+    )
+    # GaiA Input is a custom component, but Langflow's external /run router
+    # injects top-level input_value only into the ChatInput interface type.
+    # Keep the custom source and GaiA display name; make its graph vertex the
+    # ChatInput interface so GAIA's real ingress can start this Flow.
+    gaia_input["data"]["type"] = "ChatInput"
+    gaia_session_extractor = custom_node(
+        proto["custom"],
+        "GaiAExternalSessionIdExtractor-agent-tool-router",
+        gaia_session_extractor_path,
+        290,
+        180,
+    )
     context_loader = custom_node(
         proto["custom"],
         "RouterSessionContext-agent-tool-router",
         context_loader_path,
-        300,
+        580,
         0,
     )
     context_template = context_loader["data"]["node"]["template"]
@@ -726,7 +738,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         proto["custom"],
         "Agent-agent-tool-router",
         silent_agent_path,
-        1120,
+        1400,
         0,
         system_prompt,
     )
@@ -748,7 +760,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         proto["custom"],
         "DirectToolResultAdapter-agent-tool-router",
         result_adapter_path,
-        1450,
+        1730,
         0,
     )
     _set_value(result_adapter["data"]["node"]["template"], "prefer_tool_result", True)
@@ -756,7 +768,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
         proto["custom"],
         "RouterSessionStateWriter-agent-tool-router",
         session_writer_path,
-        1760,
+        2040,
         0,
     )
     writer_template = session_writer["data"]["node"]["template"]
@@ -765,15 +777,24 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     _set_value(writer_template, "enabled", True)
     _set_value(writer_template, "message_char_limit", "1200")
     _set_value(writer_template, "ttl_hours", "24")
-    output = native_node(proto["chat_output"], "ChatOutput-agent-tool-router", 2070, 0)
+    output = native_node(proto["chat_output"], "ChatOutput-agent-tool-router", 2350, 0)
     _set_message_storage(output, True)
-    flow["data"]["nodes"].extend([chat, context_loader, agent, result_adapter, session_writer, output])
-    add_edge(flow, chat, "message", context_loader, "input_message")
+    flow["data"]["nodes"].extend(
+        [gaia_input, gaia_session_extractor, context_loader, agent, result_adapter, session_writer, output]
+    )
+    # Production GAIA calls this GaiA Input directly.  Its Message drives the
+    # Router question/context path, while a separate extractor supplies the
+    # metadata.session_id-only Message required by Router 00's MessageTextInput.
+    add_edge(flow, gaia_input, "message", gaia_session_extractor, "input_message")
+    add_edge(flow, gaia_input, "message", context_loader, "input_message")
+    # Do not connect GaiA's user Message to a MessageTextInput: that would
+    # pass the question text. The dedicated extractor output contains only ID.
+    add_edge(flow, gaia_session_extractor, "external_session_id", context_loader, "session_id")
     add_edge(flow, context_loader, "message", agent, "input_value")
 
-    y_positions = (-780, -520, -260, 0, 260, 520, 780)
+    y_positions = (-650, -390, -130, 130, 390, 650)
     for spec, y in zip(TOOL_ROUTE_SPECS, y_positions, strict=True):
-        tool = custom_node(proto["custom"], f"CachedFlowTool-{spec.route_name}", tool_path, 690, y)
+        tool = custom_node(proto["custom"], f"CachedFlowTool-{spec.route_name}", tool_path, 970, y)
         tool_config = tool["data"]["node"]
         tool_config["tool_mode"] = True
         template = tool_config["template"]

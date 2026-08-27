@@ -39,6 +39,16 @@ HELLO_CHATBOT_SENTINEL = "!@#HelloChatBot#@!"
 INTERACTION_KEYS = ("UserSelection", "SendBtn")
 CUBE_REPLY_REQUEST_ID = "request_cond_change_main"
 CUBE_BOT_FROMUSERNAME_COUNT = 5
+# GAIA's Flow exposes this stable input name for external API tweaks.  It must
+# exactly match the Router Flow's custom component display name.
+GAIA_INPUT_TWEAK_NAME = "GaiA Input"
+GAIA_PERMISSION_REQUEST_URL = (
+    "http://aimarket.skhynix.com/apps/gaia-market-web/market/agent"
+)
+GAIA_FORBIDDEN_MESSAGE = (
+    "권한이 없는 사용자입니다. 아래 링크를 통해 PTMORE PKG Agent 권한 신청 부탁드립니다."
+    f"\n[{GAIA_PERMISSION_REQUEST_URL}]({GAIA_PERMISSION_REQUEST_URL})"
+)
 # Keep only the latest three question/answer pairs in the callback server.
 MAX_CONVERSATION_HISTORY_MESSAGES = 6
 CUBE_SESSION_ID_NAMESPACE = "gaia-cube-session-v1"
@@ -494,25 +504,29 @@ async def call_gaia(
     session_id: str,
     message: str,
     *,
-    data: str | None = None,
-    metadata: str | None = None,
+    data: str,
+    metadata: str,
 ) -> dict[str, Any]:
     """Call the exact GAIA_API_URL supplied in the environment.
 
-    ``data`` and ``metadata`` are JSON strings for Flow inputs exposed by the
-    GAIA Agent. The callback path fills both with real CUBE context; callers
-    that omit them retain the basic three-field GAIA request shape.
+    GAIA's external API delivers GaiA Input values through ``tweaks``. Both
+    JSON strings are therefore placed under the configured Chat Input
+    component instead of as top-level API fields.  ``metadata`` always comes
+    from :func:`build_gaia_context`, which includes the CUBE user and GAIA
+    session IDs.
     """
 
-    request_payload: dict[str, str] = {
+    request_payload: dict[str, Any] = {
         "input_value": message,
         "user_id": user_id,
         "session_id": session_id,
+        "tweaks": {
+            GAIA_INPUT_TWEAK_NAME: {
+                "data": data,
+                "metadata": metadata,
+            }
+        },
     }
-    if data is not None:
-        request_payload["data"] = data
-    if metadata is not None:
-        request_payload["metadata"] = metadata
 
     try:
         response = await client.post(
@@ -530,6 +544,8 @@ async def call_gaia(
     except httpx.TimeoutException as exc:
         raise GaiaRequestError("timeout") from exc
     except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 403:
+            raise GaiaRequestError("forbidden") from exc
         raise GaiaRequestError("http_error") from exc
     except httpx.RequestError as exc:
         raise GaiaRequestError("connection") from exc
@@ -549,6 +565,7 @@ def _gaia_fallback_message(settings: Settings, error: Exception) -> str:
 
     if isinstance(error, GaiaRequestError):
         causes = {
+            "forbidden": GAIA_FORBIDDEN_MESSAGE,
             "timeout": "주의: GAIA 응답 시간이 초과되었습니다.",
             "http_error": "오류: GAIA API가 요청을 정상 처리하지 못했습니다.",
             "connection": "오류: GAIA API 연결에 실패했습니다.",
@@ -567,6 +584,8 @@ def _gaia_fallback_message(settings: Settings, error: Exception) -> str:
     else:
         cause = "오류: GAIA 요청 처리 중 오류가 발생했습니다."
 
+    if isinstance(error, GaiaRequestError) and error.reason == "forbidden":
+        return cause
     return f"{cause}\n{settings.user_error_message}"
 
 

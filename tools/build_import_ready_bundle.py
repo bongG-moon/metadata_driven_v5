@@ -130,10 +130,34 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
     edges = flow.get("data", {}).get("edges", [])
     file_name = str(item["file"])
 
-    if any("GaiA" in str(node.get("data", {}).get("type") or "") for node in nodes):
-        raise ValueError(f"Active flow still contains a removed GaiA boundary node: {file_name}")
-    if sum(node.get("data", {}).get("type") == "ChatInput" for node in nodes) != 1:
-        raise ValueError(f"Active flow must contain exactly one native Chat Input: {file_name}")
+    is_router = item["name"] == FLOW_DISPLAY_NAMES["agent_tool_router"]
+    gaia_input = next((node for node in nodes if node.get("id") == "GaiAInput-agent-tool-router"), None)
+    gaia_session_extractor = next(
+        (node for node in nodes if node.get("id") == "GaiAExternalSessionIdExtractor-agent-tool-router"),
+        None,
+    )
+    if is_router:
+        gaia_display_name = str(gaia_input.get("data", {}).get("node", {}).get("display_name") or "") if gaia_input else ""
+        if (
+            gaia_input is None
+            or gaia_input.get("data", {}).get("type") != "ChatInput"
+            or gaia_display_name != "GaiA Input"
+            or gaia_session_extractor is None
+            or gaia_session_extractor.get("data", {}).get("type") != "GaiAExternalSessionIdExtractor"
+        ):
+            raise ValueError(
+                f"Agent Tool Router must contain the production GaiA Input and its session extractor: {file_name}"
+            )
+    elif gaia_input is not None or gaia_session_extractor is not None:
+        raise ValueError(f"Only Agent Tool Router may contain a GaiA ingress node: {file_name}")
+    # GaiA Input deliberately carries the ChatInput runtime type so Langflow's
+    # external /run input_value injection reaches this custom ingress. It is
+    # still not a native Chat Input node: its display name and embedded source
+    # are GaiA-specific.
+    expected_chat_input_count = 1
+    if sum(node.get("data", {}).get("type") == "ChatInput" for node in nodes) != expected_chat_input_count:
+        boundary_label = "one GaiA Input carrying the ChatInput runtime type" if is_router else "exactly one native Chat Input"
+        raise ValueError(f"Active flow must contain {boundary_label}: {file_name}")
     if sum(node.get("data", {}).get("type") == "ChatOutput" for node in nodes) != 1:
         raise ValueError(f"Active flow must contain exactly one native Chat Output: {file_name}")
     for node in _component_nodes(flow):
@@ -190,10 +214,11 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
         if removed_direct_path & edge_ports:
             raise ValueError("Data Analysis adapters must not bypass the execution-trace HTML publisher.")
 
-    if item["name"] == FLOW_DISPLAY_NAMES["agent_tool_router"]:
+    if is_router:
         edge_pairs = {(str(edge.get("source") or ""), str(edge.get("target") or "")) for edge in edges}
         required = {
-            ("ChatInput-agent-tool-router", "RouterSessionContext-agent-tool-router"),
+            ("GaiAInput-agent-tool-router", "GaiAExternalSessionIdExtractor-agent-tool-router"),
+            ("GaiAInput-agent-tool-router", "RouterSessionContext-agent-tool-router"),
             ("RouterSessionContext-agent-tool-router", "Agent-agent-tool-router"),
             ("Agent-agent-tool-router", "DirectToolResultAdapter-agent-tool-router"),
             ("RouterSessionContext-agent-tool-router", "RouterSessionStateWriter-agent-tool-router"),
@@ -213,6 +238,17 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
         )
         if context_loader is None or context_loader.get("data", {}).get("type") != "RouterSessionContextLoader":
             raise ValueError("Agent Tool Router must use the Router-specific session context loader.")
+        if (
+            gaia_input is None
+            or gaia_input.get("data", {}).get("type") != "ChatInput"
+            or str(gaia_input.get("data", {}).get("node", {}).get("display_name") or "") != "GaiA Input"
+        ):
+            raise ValueError("Agent Tool Router must start from the production GaiA Input component.")
+        if (
+            gaia_session_extractor is None
+            or gaia_session_extractor.get("data", {}).get("type") != "GaiAExternalSessionIdExtractor"
+        ):
+            raise ValueError("Agent Tool Router must use the dedicated GaiA external-session extractor.")
         if session_writer is None or session_writer.get("data", {}).get("type") != "RouterSessionStateWriter":
             raise ValueError("Agent Tool Router must use the Router-specific session state writer.")
         for node in (context_loader, session_writer):
@@ -247,10 +283,22 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
         }
         required_port_edges = {
             (
-                "ChatInput-agent-tool-router",
+                "GaiAInput-agent-tool-router",
+                "message",
+                "GaiAExternalSessionIdExtractor-agent-tool-router",
+                "input_message",
+            ),
+            (
+                "GaiAInput-agent-tool-router",
                 "message",
                 "RouterSessionContext-agent-tool-router",
                 "input_message",
+            ),
+            (
+                "GaiAExternalSessionIdExtractor-agent-tool-router",
+                "external_session_id",
+                "RouterSessionContext-agent-tool-router",
+                "session_id",
             ),
             (
                 "RouterSessionContext-agent-tool-router",
@@ -267,13 +315,21 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
         }
         if not required_port_edges.issubset(edge_ports):
             raise ValueError("Router session context edges must keep their exact source and target ports.")
+        direct_question_to_session = (
+            "GaiAInput-agent-tool-router",
+            "message",
+            "RouterSessionContext-agent-tool-router",
+            "session_id",
+        )
+        if direct_question_to_session in edge_ports:
+            raise ValueError("Router external session input must receive GaiA's dedicated session output, not the user Message.")
         router_tool_ids = [
             str(node.get("id") or "")
             for node in nodes
             if str(node.get("id") or "").startswith("CachedFlowTool-")
         ]
-        if len(router_tool_ids) != 7:
-            raise ValueError("Agent Tool Router must retain exactly seven child Flow Tools.")
+        if len(router_tool_ids) != 6:
+            raise ValueError("Agent Tool Router must retain exactly six child Flow Tools.")
         for tool_id in router_tool_ids:
             required_session_edge = (
                 "RouterSessionContext-agent-tool-router",
@@ -286,19 +342,8 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
         agent = next((node for node in nodes if node.get("id") == "Agent-agent-tool-router"), None)
         if agent is None or agent.get("data", {}).get("type") != "SilentDirectReturnRouterAgent":
             raise ValueError("Agent Tool Router must use the silent direct-return Agent to suppress child Flow event leakage.")
-        report_tool = next(
-            (node for node in nodes if node.get("id") == "CachedFlowTool-report_followup"),
-            None,
-        )
-        if report_tool is None:
-            raise ValueError("Agent Tool Router must expose the dedicated Report follow-up Tool.")
-        report_template = report_tool.get("data", {}).get("node", {}).get("template", {})
-        if report_template.get("flow_name_selected", {}).get("value") != FLOW_DISPLAY_NAMES["report_followup"]:
-            raise ValueError("Report follow-up Tool must target Flow 07-2.")
-        if report_template.get("tool_name", {}).get("value") != "run_report_followup":
-            raise ValueError("Report follow-up Tool public name is inconsistent.")
-        if report_template.get("return_direct", {}).get("value") is not True:
-            raise ValueError("Report follow-up Tool must return the child Flow answer directly.")
+        if "CachedFlowTool-report_followup" in router_tool_ids:
+            raise ValueError("Agent Tool Router must not expose the unfinished Report follow-up Flow.")
         data_tool = next(
             (node for node in nodes if node.get("id") == "CachedFlowTool-data_analysis"),
             None,
@@ -314,7 +359,7 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
         )
         realtime_template = (realtime_tool or {}).get("data", {}).get("node", {}).get("template", {})
         if realtime_template.get("flow_name_selected", {}).get("value") != FLOW_DISPLAY_NAMES["realtime_production_report"]:
-            raise ValueError("Router realtime Report Tool must target the follow-up-enabled Flow 07-1.")
+            raise ValueError("Router realtime Report Tool must target Flow 07-1.")
 
     if item["name"] == FLOW_DISPLAY_NAMES["report_followup"]:
         edge_ports = {
@@ -430,17 +475,16 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_{BUNDLE_VERSION}_ALL_FLOW
 
 - Langflow 모델 Provider와 `MONGO_URL` Credential Global Variable을 import 후 설정합니다.
 - 모든 일반 Data Analysis와 일반 분석 후속 질문은 `01. v5_data_analysis`가 담당합니다.
-- 같은 세션의 Report Snapshot 또는 Report가 미리 만든 집계 View에 대한 컬럼 선택·필터·정렬·순위는 `07-2. v5_report_followup`이 담당합니다. 새 groupby 계산, 최신 데이터나 다른 데이터셋이 필요한 질문은 `01. v5_data_analysis`로 보냅니다.
-- `07. v5_realtime_production_report_legacy`는 변경 전 직접 응답 구조를 보존한 호환 Flow이며 Router가 자동 선택하지 않습니다. `07-1. v5_realtime_production_report`가 후속분석 Context를 저장하는 현재 Router 대상 Report입니다.
-- Flow 06은 `datagov.router_session_states`에 직전 사용자 질문, 직전 최종 답변, 직전 선택 Flow 한 세트만 저장합니다. 이는 Flow 01/07-2의 `agent_v4_session_states`와 별도 컬렉션이며, MongoDB 또는 외부 문맥이 없으면 현재 질문만으로 기존 단일턴 Router 경로를 계속 실행합니다. 외부 GAIA 실행에서는 `session_id`, `data`, `metadata`를 Flow 06의 `00 Router 세션 문맥 로더` 입력에 매핑해야 합니다.
+- `07-2. v5_report_followup`은 독립 검증·개발용 artifact로 보존하지만, 현재 Flow 06 Router의 Tool 목록에는 노출하지 않습니다. Report 후속 분석을 운영 경로로 채택하기 전까지 관련 질문은 일반 `01. v5_data_analysis` 또는 필요한 확인 질문으로 처리합니다.
+- `07. v5_realtime_production_report_legacy`는 변경 전 직접 응답 구조를 보존한 호환 Flow이며 Router가 자동 선택하지 않습니다. `07-1. v5_realtime_production_report`는 현재 Router 대상 Report입니다.
+- Flow 06은 `datagov.router_session_states`에 직전 사용자 질문, 직전 최종 답변, 직전 선택 Flow 한 세트만 저장합니다. 이는 Flow 01의 `agent_v4_session_states`와 별도 컬렉션이며, MongoDB 또는 외부 문맥이 없으면 현재 질문만으로 기존 단일턴 Router 경로를 계속 실행합니다. 외부 GAIA 실행에서는 `tweaks["GaiA Input"]`의 `data`와 `metadata`를 사용합니다. `GaiA Input`은 `metadata.session_id`만 담은 전용 출력으로 `00 Router 세션 문맥 로더`의 `외부 세션 ID`에 연결하므로, 사용자 질문이 세션 ID로 오인되지 않습니다.
 - 결과 CSV/JSON 다운로드와 실시간 Report HTML 발행은 API_SERVER(`python API_SERVER\\app.py`, bind `0.0.0.0:5000`)가 담당합니다. Report HTML과 메타데이터는 API_SERVER의 단일 MongoDB 컬렉션에 저장되므로 Flow의 Report API 주소를 접근 가능한 API URL로 설정합니다.
 - Flow 01의 `25 분석 처리 과정 HTML 발행기`는 분석·저장·세션 처리 뒤에 best-effort로 실행됩니다. API_SERVER가 일시적으로 사용할 수 없으면 분석 결과는 그대로 반환되고 HTML 링크만 생략됩니다. 기본 링크 유효시간은 1시간, 발행 요청 제한은 2초입니다.
 - 기존 Router Tool에 저장된 `flow_id_selected`가 있으면, import 뒤 대상 Flow를 한 번 다시 선택해 현재 Flow ID로 갱신합니다.
 
 ## 생성 시 구조 검증
 
-- GaiA Input/Output boundary node 없음
-- 각 Flow의 native Chat Input/Chat Output 각각 1개
+- Flow 06에만 GaiA Input ingress adapter 1개, 모든 Flow에 native Chat Input/Chat Output 각각 1개
 - 모든 node `lf_version={TARGET_LANGFLOW_VERSION}`
 - edge handle {edge_handle_count}/{edge_handle_count}, custom component template {component_count}/{component_count}
 """
@@ -505,18 +549,14 @@ def build_bundle(output_dir: Path = DEFAULT_OUTPUT_DIR) -> dict[str, Any]:
             "canonical_endpoint_name": f"{ENDPOINT_PREFIX}-data-analysis",
             "external_tool_name": "run_data_analysis",
         },
-        "report_followup_routing_contract": {
-            "strategy": "isolated_report_snapshot_followup",
-            "report_source_flow": FLOW_DISPLAY_NAMES["realtime_production_report"],
+        "report_followup_exposure": {
+            "router_exposed": False,
+            "flow_retained": True,
             "report_followup_flow": FLOW_DISPLAY_NAMES["report_followup"],
-            "router_flow": FLOW_DISPLAY_NAMES["agent_tool_router"],
-            "external_tool_name": "run_report_followup",
-            "fresh_or_cross_source_route": FLOW_DISPLAY_NAMES["data_analysis"],
-            "legacy_report_flow": FLOW_DISPLAY_NAMES["realtime_production_report_legacy"],
-            "legacy_report_router_exposed": False,
+            "note": "Flow 07-2 is retained for standalone/development validation and is not a Flow 06 Router Tool.",
         },
         "validation": {
-            "bundle_structure": "native Chat boundaries, version stamps, Flow names, endpoints and active adapter inputs are verified while building",
+            "bundle_structure": "native/GaiA ingress boundaries, version stamps, Flow names, endpoints and active ingress inputs are verified while building",
             "langflow_frontend_edge_handles": f"{edge_handle_count}/{edge_handle_count} structural handles",
             "langflow_lfx_node_templates": f"{component_count}/{component_count} custom component templates across {len(flows)} base flows",
             "runtime_parse": "Run tools/validate_langflow_runtime.py after changing custom component source.",

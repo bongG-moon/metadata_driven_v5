@@ -6,7 +6,7 @@
   "flow_count": 9,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "d4557cc294a67a73a212febca2ce7c6e5c132a5613fbfe0df354c548cd0d37a3",
+  "single_file_ui_import_sha256": "fa7d3fe79794cae93895bf4556081563378d3e29d955b8ab7463a7f77113614e",
   "mongodb_contract": {
     "configuration_source": "Langflow node input / MONGO_URL Credential Global Variable",
     "database": "datagov",
@@ -24,18 +24,14 @@
     "canonical_endpoint_name": "metadata-driven-v5-complete-20260710-data-analysis",
     "external_tool_name": "run_data_analysis"
   },
-  "report_followup_routing_contract": {
-    "strategy": "isolated_report_snapshot_followup",
-    "report_source_flow": "07-1. v5_realtime_production_report",
+  "report_followup_exposure": {
+    "router_exposed": false,
+    "flow_retained": true,
     "report_followup_flow": "07-2. v5_report_followup",
-    "router_flow": "06. v5_agent_tool_router",
-    "external_tool_name": "run_report_followup",
-    "fresh_or_cross_source_route": "01. v5_data_analysis",
-    "legacy_report_flow": "07. v5_realtime_production_report_legacy",
-    "legacy_report_router_exposed": false
+    "note": "Flow 07-2 is retained for standalone/development validation and is not a Flow 06 Router Tool."
   },
   "validation": {
-    "bundle_structure": "native Chat boundaries, version stamps, Flow names, endpoints and active adapter inputs are verified while building",
+    "bundle_structure": "native/GaiA ingress boundaries, version stamps, Flow names, endpoints and active ingress inputs are verified while building",
     "langflow_frontend_edge_handles": "358/358 structural handles",
     "langflow_lfx_node_templates": "135/135 custom component templates across 9 base flows",
     "runtime_parse": "Run tools/validate_langflow_runtime.py after changing custom component source."
@@ -99,7 +95,7 @@
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
       "nodes": 13,
       "edges": 21,
-      "sha256": "078e3e3bdf6c7f91add4894243a5609aff2b5bbb85946ee9d3335a30e656fad2"
+      "sha256": "c257af44203f13d6be898ade2fa7a1e07c48f4525d53220b0027b0108d314f5a"
     },
     {
       "order": 7,

@@ -24,11 +24,17 @@ X-Gaia-User-Id: <CUBE에서 받은 사용자 ID>
 {
   "input_value": "사용자가 CUBE에 입력한 질문",
   "user_id": "CUBE에서 받은 사용자 ID",
-  "session_id": "현재 사용자와 채널의 GAIA 세션 ID"
+  "session_id": "현재 사용자와 채널의 GAIA 세션 ID",
+  "tweaks": {
+    "GaiA Input": {
+      "data": "{\"conversation_history\":[{\"role\":\"user\",\"content\":\"사용자가 CUBE에 입력한 질문\",\"files\":[]}]}",
+      "metadata": "{\"platform\":\"CUBE\",\"user_id\":\"CUBE에서 받은 사용자 ID\",\"session_id\":\"현재 사용자와 채널의 GAIA 세션 ID\",\"cube_channel_id\":\"CUBE 채널 ID\"}"
+    }
+  }
 }
 ```
 
-현재 실제 Agent에서 `input_value`가 정상 전달되는 것을 확인했으므로 서버는 질문을 이 key로만 보낸다. `X-Gaia-User-Id`와 JSON의 `user_id`에는 같은 값을 넣는다.
+현재 실제 Agent에서 `input_value`가 정상 전달되는 것을 확인했으므로 서버는 질문을 이 key로 보낸다. `X-Gaia-User-Id`와 JSON의 `user_id`에는 같은 값을 넣는다. `data`와 `metadata`는 최상위 body가 아니라 고정된 **`tweaks["GaiA Input"]`**에 넣어야 GaiA Input 값으로 들어간다. `metadata.user_id`, `metadata.session_id`는 CUBE 연동의 필수 값이다.
 
 ## Python 최소 예시
 
@@ -46,6 +52,31 @@ response = requests.post(
         "input_value": "오늘 생산 현황을 알려줘",
         "user_id": "권한이_있는_사번",
         "session_id": "TEST_0824",
+        "tweaks": {
+            "GaiA Input": {
+                "data": json.dumps(
+                    {
+                        "conversation_history": [
+                            {
+                                "role": "user",
+                                "content": "오늘 생산 현황을 알려줘",
+                                "files": [],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                "metadata": json.dumps(
+                    {
+                        "platform": "CUBE",
+                        "user_id": "권한이_있는_사번",
+                        "session_id": "TEST_0824",
+                        "cube_channel_id": "CUBE_채널_ID",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        },
     },
     timeout=10,
 )

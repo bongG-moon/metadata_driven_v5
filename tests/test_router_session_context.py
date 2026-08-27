@@ -13,6 +13,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 LOADER_PATH = ROOT / "langflow_components" / "route_flow_v2" / "00_router_session_context_loader.py"
 WRITER_PATH = ROOT / "langflow_components" / "route_flow_v2" / "04_router_session_state_writer.py"
+GAIA_INPUT_PATH = ROOT / "langflow_components" / "gaia_io" / "00_gaia_input.py"
+GAIA_SESSION_EXTRACTOR_PATH = ROOT / "langflow_components" / "gaia_io" / "01_gaia_external_session_id_extractor.py"
 
 
 def _install_lfx_stubs() -> None:
@@ -43,6 +45,7 @@ def _install_lfx_stubs() -> None:
             context_id="",
             flow_id=None,
             session_metadata=None,
+            metadata=None,
             **_kwargs,
         ):
             self.text = text
@@ -54,6 +57,7 @@ def _install_lfx_stubs() -> None:
             self.context_id = context_id
             self.flow_id = flow_id
             self.session_metadata = session_metadata
+            self.metadata = metadata if isinstance(metadata, dict) else {}
 
     for name in (
         "lfx",
@@ -64,11 +68,18 @@ def _install_lfx_stubs() -> None:
         "lfx.schema",
         "lfx.schema.data",
         "lfx.schema.message",
+        "lfx.base",
+        "lfx.base.io",
+        "lfx.base.io.chat",
+        "lfx.inputs",
+        "lfx.inputs.inputs",
     ):
         sys.modules.setdefault(name, types.ModuleType(name))
     sys.modules["lfx.custom.custom_component.component"].Component = Component
     for name in ("BoolInput", "HandleInput", "MessageTextInput", "MultilineInput", "Output"):
         setattr(sys.modules["lfx.io"], name, InputBase)
+    sys.modules["lfx.base.io.chat"].ChatComponent = Component
+    sys.modules["lfx.inputs.inputs"].HandleInput = InputBase
     sys.modules["lfx.schema.data"].Data = Data
     sys.modules["lfx.schema.message"].Message = Message
 
@@ -77,6 +88,9 @@ def _load_component(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # Langflow's Component base resolves class source through sys.modules when
+    # a real custom component instance is created in the target runtime.
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -84,6 +98,8 @@ def _load_component(name: str, path: Path):
 _install_lfx_stubs()
 loader = _load_component("test_router_session_context_loader", LOADER_PATH)
 writer = _load_component("test_router_session_state_writer", WRITER_PATH)
+gaia_input = _load_component("test_gaia_input", GAIA_INPUT_PATH)
+gaia_session_extractor = _load_component("test_gaia_session_extractor", GAIA_SESSION_EXTRACTOR_PATH)
 
 
 @dataclass
@@ -232,6 +248,172 @@ def test_context_loader_keeps_message_identity_and_uses_only_one_completed_excha
     assert result["context"]["state_status"] == "disabled"
     assert result["context"]["last_user_question"] == "WB공정 생산량 알려줘"
     assert result["context"]["last_assistant_answer"] == "WB공정 생산량은 6건입니다."
+
+
+def test_gaia_input_session_extractor_emits_session_only_message_and_loader_restores_history() -> None:
+    session_id = "d0d8cc6e-851d-492c-9572-4d767eaaf49f"
+    question = "WB공정은?"
+    ingress = gaia_input.GaiAInput()
+    ingress.input_value = question
+    ingress.data = json.dumps(
+        {
+            "conversation_history": [
+                {"role": "user", "content": "WB공정 생산량 알려줘"},
+                {"role": "assistant", "content": "WB공정 생산량은 6건입니다."},
+                {"role": "user", "content": question},
+            ]
+        },
+        ensure_ascii=False,
+    )
+    ingress.metadata = json.dumps(
+        {
+            "super_agent_id": "S010201",
+            "session_id": session_id,
+            "platform": "GaiA_Internal",
+            "user_id": "2042725",
+            "super_agent_trace_id": "a585478d-e7ad-426a-981e-84711705454a",
+            "super_agent_service_id": "S010201",
+        },
+        ensure_ascii=False,
+    )
+
+    gaia_message = ingress.message_response()
+    extractor = gaia_session_extractor.GaiAExternalSessionIdExtractor()
+    extractor.input_message = gaia_message
+    external_session_message = extractor.build_external_session_id()
+
+    assert gaia_message.text == question
+    assert gaia_message.session_id == session_id
+    assert gaia_message.metadata["session_id"] == session_id
+    assert isinstance(gaia_message.data["conversation_history"], str)
+    assert external_session_message.text == session_id
+    assert external_session_message.text != question
+
+    # This mirrors the dedicated extractor -> 00.session_id edge.  The target
+    # is a MessageTextInput, so it receives this Message's text (the UUID),
+    # never the user question.
+    result = loader.load_router_context(
+        gaia_message,
+        session_id=external_session_message,
+        enabled=False,
+    )
+
+    assert result["session_id"] == session_id
+    assert result["context"]["session_source"] == "explicit"
+    assert result["context"]["last_user_question"] == "WB공정 생산량 알려줘"
+    assert result["context"]["last_assistant_answer"] == "WB공정 생산량은 6건입니다."
+
+
+def test_gaia_external_session_id_is_used_for_the_router_state_lookup(monkeypatch) -> None:
+    """Exercise the actual GaiA extractor -> Router 00 session input path."""
+
+    session_id = "d0d8cc6e-851d-492c-9572-4d767eaaf49f"
+    ingress = gaia_input.GaiAInput()
+    ingress.input_value = "그 제품은?"
+    ingress.data = "{}"
+    ingress.metadata = json.dumps({"session_id": session_id}, ensure_ascii=False)
+    gaia_message = ingress.message_response()
+
+    extractor = gaia_session_extractor.GaiAExternalSessionIdExtractor()
+    extractor.input_message = gaia_message
+    external_session_message = extractor.build_external_session_id()
+    observed: dict[str, Any] = {}
+    stored = {
+        "last_selected_flow": "run_data_analysis",
+        "last_user_question": "WB공정 생산량 알려줘",
+        "last_assistant_answer": "WB공정 생산량은 6건입니다.",
+    }
+
+    def _read_state(**kwargs: Any):
+        observed.update(kwargs)
+        return stored, []
+
+    monkeypatch.setattr(loader, "_load_router_document", _read_state)
+    result = loader.load_router_context(
+        gaia_message,
+        session_id=external_session_message,
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        session_collection_name="router_session_states",
+    )
+
+    assert external_session_message.text == session_id
+    assert observed == {
+        "mongo_uri": "mongodb://fake",
+        "mongo_database": "datagov",
+        "collection_name": "router_session_states",
+        "session_id": session_id,
+    }
+    assert result["message"].session_id == session_id
+    assert result["context"]["session_source"] == "explicit"
+    assert result["context"]["state_status"] == "loaded"
+    assert result["context"]["state_lookup"] == "document_id"
+    assert result["context"]["last_selected_flow"] == "run_data_analysis"
+
+
+def test_context_loader_keeps_mongo_read_failure_distinct_from_no_saved_state(monkeypatch) -> None:
+    incoming = loader.Message(text="WB공정은?", session_id="stable-session", data={"text": "WB공정은?"})
+    monkeypatch.setattr(
+        loader,
+        "_load_router_document",
+        lambda **_kwargs: ({}, ["Router 세션 상태를 읽지 못해 현재 질문만으로 라우팅합니다."]),
+    )
+
+    result = loader.load_router_context(incoming, mongo_uri="mongodb://fake")
+
+    assert result["context"]["state_status"] == "load_failed"
+    assert result["context"]["state_lookup"] == "load_failed"
+    assert result["message"].text == "WB공정은?"
+
+
+def test_router_state_loader_recovers_a_legacy_document_by_stable_session_id(monkeypatch) -> None:
+    session_id = "gaia-stable-session"
+
+    class _ReadCollection:
+        def __init__(self) -> None:
+            self.queries: list[dict[str, Any]] = []
+
+        def find_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
+            self.queries.append(deepcopy(query))
+            if query == {"session_id": session_id}:
+                return {
+                    "session_id": session_id,
+                    "last_selected_flow": "run_data_analysis",
+                    "last_user_question": "WB공정 생산량 알려줘",
+                    "last_assistant_answer": "WB공정 생산량은 6건입니다.",
+                }
+            return None
+
+    class _ReadClient:
+        def __init__(self, collection: _ReadCollection) -> None:
+            self.collection = collection
+            self.closed = False
+
+        def __getitem__(self, _database: str):
+            return {"router_session_states": self.collection}
+
+        def close(self) -> None:
+            self.closed = True
+
+    collection = _ReadCollection()
+    client = _ReadClient(collection)
+    fake_pymongo = types.SimpleNamespace(MongoClient=lambda *_args, **_kwargs: client)
+    monkeypatch.setattr(loader, "import_module", lambda _name: fake_pymongo)
+
+    document, warnings = loader._load_router_document(
+        mongo_uri="mongodb://fake",
+        mongo_database="datagov",
+        collection_name="router_session_states",
+        session_id=session_id,
+    )
+
+    assert collection.queries == [
+        {"_id": "router_session:gaia-stable-session"},
+        {"session_id": "gaia-stable-session"},
+    ]
+    assert document["last_selected_flow"] == "run_data_analysis"
+    assert any("기존 session_id 필드" in warning for warning in warnings)
+    assert client.closed is True
 
 
 def test_external_session_reads_v1_router_state_as_a_one_turn_migration_fallback(monkeypatch) -> None:

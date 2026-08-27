@@ -67,7 +67,7 @@
    - `SESSION_ID`: 이전 직접 시험 대화를 이어갈 때만 입력
    - `RECENT_CONVERSATION_HISTORY`: 선택 사항. 이전 질문·답변만 순서대로 입력한다. 이번 `MESSAGE`는 자동으로 마지막 사용자 질문으로 추가된다.
 
-   이 도구는 GAIA 호출 시 아래 두 값을 **JSON 문자열**로 함께 보낸다. 직접 GAIA 화면에서 보인 Flow 입력과 같은 형태인지 확인하기 위한 시험이다.
+   이 도구는 GAIA 호출 시 아래 두 값을 **JSON 문자열**로 만들어 고정된 `tweaks["GaiA Input"]` 안에 넣는다. 직접 GAIA 화면에서 보인 Flow 입력과 같은 형태인지 확인하기 위한 시험이다.
 
    - `data`: `{"conversation_history": [...]}`
    - `metadata`: `platform=CUBE`, GAIA 사용자 ID, GAIA session ID, CUBE 수신자 ID, 입력한 경우 CUBE 채널 ID

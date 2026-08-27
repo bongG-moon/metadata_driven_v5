@@ -5,7 +5,7 @@ import json
 
 import httpx
 
-from app import Settings
+from app import GAIA_INPUT_TWEAK_NAME, Settings
 from manual_gaia_cube_send import run_manual_send
 
 
@@ -52,16 +52,16 @@ def test_manual_send_calls_gaia_then_sends_its_answer_to_cube() -> None:
         requests.append(request)
         if request.url.host == "gaia.test":
             payload = json.loads(request.content)
+            assert set(payload) == {"input_value", "user_id", "session_id", "tweaks"}
             assert {
-                key: value
-                for key, value in payload.items()
-                if key not in {"data", "metadata"}
+                key: value for key, value in payload.items() if key != "tweaks"
             } == {
                 "input_value": "직접 입력한 질문",
                 "user_id": "gaia-authorized-user",
                 "session_id": "manual-start",
             }
-            assert json.loads(payload["data"]) == {
+            chat_input = payload["tweaks"][GAIA_INPUT_TWEAK_NAME]
+            assert json.loads(chat_input["data"]) == {
                 "conversation_history": [
                     {
                         "role": "user",
@@ -80,7 +80,7 @@ def test_manual_send_calls_gaia_then_sends_its_answer_to_cube() -> None:
                     },
                 ]
             }
-            assert json.loads(payload["metadata"]) == {
+            assert json.loads(chat_input["metadata"]) == {
                 "platform": "CUBE",
                 "user_id": "gaia-authorized-user",
                 "session_id": "manual-start",

@@ -100,6 +100,25 @@ def _json_object(value: Any, field_name: str) -> tuple[dict[str, Any], str]:
     return deepcopy(parsed), ""
 
 
+# 함수 설명: GaiA Input이 Message.data에 JSON 문자열로 보존한 list를 제한적으로 복원합니다.
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return deepcopy(value)
+    if not isinstance(value, str):
+        return []
+    text = value.strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        try:
+            parsed = json.loads(text, strict=False)
+        except (TypeError, ValueError):
+            return []
+    return deepcopy(parsed) if isinstance(parsed, list) else []
+
+
 # 함수 설명: metadata/data의 공통 세션 키 표현을 우선순위대로 읽습니다.
 def _session_from_mapping(value: Any) -> str:
     if not isinstance(value, dict):
@@ -195,7 +214,18 @@ def _load_router_document(
         pymongo = import_module("pymongo")
         client = pymongo.MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
         collection = client[mongo_database][collection_name]
+        # The writer's canonical contract uses ``router_session:<session_id>``
+        # as the document ID.  Always prefer that exact key so one external
+        # GaiA/CUBE session maps to one Router state document.  Older/manual
+        # deployments may have stored the same stable ID only as a regular
+        # ``session_id`` field, so retain a read-only fallback for migration.
+        # It is deliberately additive: normal v2 documents keep the single
+        # exact lookup and no new validation/gate is introduced.
         document = collection.find_one({"_id": _document_id(session_id)}) or {}
+        recovered_by_session_field = False
+        if not document:
+            document = collection.find_one({"session_id": session_id}) or {}
+            recovered_by_session_field = bool(document)
         if not isinstance(document, dict):
             return {}, ["Router 세션 상태 형식이 올바르지 않아 무시했습니다."]
         expiry = document.get("expires_at")
@@ -203,7 +233,8 @@ def _load_router_document(
             expiry = expiry.replace(tzinfo=timezone.utc)
         if isinstance(expiry, datetime) and expiry <= datetime.now(timezone.utc):
             return {}, ["만료된 Router 세션 상태를 사용하지 않았습니다."]
-        return deepcopy(document), []
+        warnings = ["Router 세션 상태를 기존 session_id 필드 기준으로 복원했습니다."] if recovered_by_session_field else []
+        return deepcopy(document), warnings
     except Exception:
         # URI/DB 상세를 답변과 trace에 노출하지 않습니다. 현재 질문은 계속 실행합니다.
         return {}, ["Router 세션 상태를 읽지 못해 현재 질문만으로 라우팅합니다."]
@@ -284,17 +315,21 @@ def load_router_context(
 
     state_document: dict[str, Any] = {}
     state_status = "skipped"
+    state_lookup = "not_attempted"
     mongo_enabled = _truthy(enabled)
     uri = _text(mongo_uri)
     database = _text(mongo_database) or DEFAULT_DATABASE
     collection = _text(session_collection_name) or DEFAULT_COLLECTION
     if not mongo_enabled:
         state_status = "disabled"
+        state_lookup = "disabled"
     elif not resolved_session:
         state_status = "missing_session_id"
+        state_lookup = "missing_session_id"
         warnings.append("세션 ID가 없어 Router 이전 문맥을 불러오지 않았습니다.")
     elif not uri:
         state_status = "missing_mongo_uri"
+        state_lookup = "missing_mongo_uri"
         warnings.append("MongoDB 연결 정보가 없어 Router 이전 문맥 없이 실행합니다.")
     else:
         state_document, load_warnings = _load_router_document(
@@ -304,11 +339,31 @@ def load_router_context(
             session_id=resolved_session,
         )
         warnings.extend(load_warnings)
-        state_status = "loaded" if state_document else "not_found"
+        if state_document:
+            state_status = "loaded"
+        elif any("만료된 Router 세션 상태" in warning for warning in load_warnings):
+            # Keep the current request fail-open, but do not make an expired
+            # record indistinguishable from a session that was never written.
+            state_status = "expired"
+        elif any("Router 세션 상태를 읽지 못해" in warning for warning in load_warnings):
+            # Connection/auth/network failures used to be presented as
+            # ``not_found``.  This status is diagnostic only and never
+            # blocks routing from the current question.
+            state_status = "load_failed"
+        elif any("상태 형식이 올바르지" in warning for warning in load_warnings):
+            state_status = "invalid_state"
+        else:
+            state_status = "not_found"
+        if state_document:
+            state_lookup = "session_id_fallback" if any(
+                "기존 session_id 필드" in warning for warning in load_warnings
+            ) else "document_id"
+        else:
+            state_lookup = state_status
 
-    ingress_history = parsed_data.get("conversation_history") if isinstance(parsed_data, dict) else []
-    if not isinstance(ingress_history, list):
-        ingress_history = parsed_metadata.get("conversation_history") if isinstance(parsed_metadata, dict) else []
+    ingress_history = _json_list(parsed_data.get("conversation_history")) if isinstance(parsed_data, dict) else []
+    if not ingress_history:
+        ingress_history = _json_list(parsed_metadata.get("conversation_history")) if isinstance(parsed_metadata, dict) else []
     # Router state v2 intentionally carries exactly one completed exchange
     # and one selected Flow.  Keep v1 fields as read-only migration fallbacks
     # so a deployment can upgrade without losing its immediately previous
@@ -349,6 +404,7 @@ def load_router_context(
         "last_user_question": last_user_question,
         "last_assistant_answer": last_assistant_answer,
         "state_status": state_status,
+        "state_lookup": state_lookup,
         "database": database,
         "collection_name": collection,
         # Router routing needs only the three compact values above.  The Agent
@@ -400,7 +456,7 @@ class RouterSessionContextLoader(Component):
         HandleInput(
             name="input_message",
             display_name="사용자 Message",
-            info="Native Chat Input의 Message를 연결합니다.",
+            info="운영 GaiA Input 또는 Native Chat Input의 Message를 연결합니다.",
             input_types=["Message"],
             required=True,
         ),

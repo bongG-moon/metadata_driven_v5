@@ -1,4 +1,4 @@
-# Route Flow v2 예시 질문 (7종 Agent Tool)
+# Route Flow v2 예시 질문 (6종 Agent Tool)
 
 | 질문 | 기대 동작 |
 | --- | --- |
@@ -11,10 +11,9 @@
 | `W/B 공정그룹 실시간 생산 분석을 해줘` | `run_realtime_production_report` 1회 |
 | `B/G 실시간 분석 부탁해` | `run_realtime_production_report` 1회 |
 | `D/A 실시간 생산분석 해줘` | `run_realtime_production_report` 1회 |
-| 직전 응답이 Report일 때 `방금 Report에서 생산부족 제품을 생산실적달성율이 낮은 순으로 5개 보여줘` | `run_report_followup` 1회 |
-| 직전 응답이 Report일 때 `그중 현재작업재공이 0인 제품을 5개 보여줘` | `현재작업재공`은 컬럼명이므로 `run_report_followup` 1회 |
-| 직전 응답이 Report일 때 `방금 Report의 현재 WIP도 알려줘` | 최신 원천 데이터가 필요하므로 `run_data_analysis` 1회 |
 | 직전 응답이 일반 분석 결과일 때 `그중 상위 5개만 보여줘` | `run_data_analysis` 1회 |
+| 직전 응답이 `W/B공정 생산량`일 때 `W/B공정은?` | 직전 질문의 생략된 지표가 하나로 분명할 때 `run_data_analysis` 1회 |
+| 직전 문맥이 있어도 `D/A공정 오늘 생산량 알려줘` | 새 대상·조건이 완결된 요청이므로 `run_data_analysis` 1회 |
 | `W/B 실시간 생산 현황을 보여줘` | `run_realtime_production_report` 호출 금지, 명확한 수치 조회이면 `run_data_analysis` |
 | `안녕, 어떤 일을 할 수 있어?` | Tool 없이 직접 안내 |
 | `이거 처리해줘` | Tool 없이 구체적인 확인 질문 1회 |

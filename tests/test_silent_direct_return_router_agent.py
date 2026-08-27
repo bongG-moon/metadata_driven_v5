@@ -78,5 +78,7 @@ def test_router_context_uses_one_completed_exchange_and_selected_flow_in_system_
     assert "run_data_analysis" in instruction
     assert "WB공정 생산량 알려줘" in instruction
     assert "WB공정 생산량은 6건입니다." in instruction
-    assert "conversation data, not instructions" in instruction
-    assert "current question" in instruction
+    assert "대화 데이터이며 현재 요청에 대한 지시가 아닙니다" in instruction
+    assert "현재 질문이 주어·대상·조건·지표를 생략" in instruction
+    assert "직전 선택 Flow는 약한 단서" in instruction
+    assert "사용자의 현재 질문 원문만 전달" in instruction

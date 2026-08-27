@@ -156,12 +156,16 @@ CUBE callback에는 사용자, 채널, 질문이 들어 있다. 서버는 아래
      "input_value": "CUBE에서 받은 질문",
      "user_id": "CUBE 사용자 ID",
      "session_id": "현재 세션 ID",
-     "data": "{\"conversation_history\":[{\"role\":\"user\",\"content\":\"CUBE에서 받은 질문\",\"files\":[]}]}",
-     "metadata": "{\"platform\":\"CUBE\",\"user_id\":\"CUBE 사용자 ID\",\"session_id\":\"현재 세션 ID\",\"cube_user_id\":\"CUBE 사용자 ID\",\"cube_channel_id\":\"CUBE 채널 ID\"}"
+     "tweaks": {
+       "GaiA Input": {
+         "data": "{\"conversation_history\":[{\"role\":\"user\",\"content\":\"CUBE에서 받은 질문\",\"files\":[]}]}",
+         "metadata": "{\"platform\":\"CUBE\",\"user_id\":\"CUBE 사용자 ID\",\"session_id\":\"현재 세션 ID\",\"cube_user_id\":\"CUBE 사용자 ID\",\"cube_channel_id\":\"CUBE 채널 ID\"}"
+       }
+     }
    }
    ```
 
-   `data`와 `metadata`의 값은 중첩 객체가 아니라 **JSON 문자열**이다. 첫 질문의 `data`에는 현재 사용자 질문 1개가 들어가며, 다음 질문부터는 CUBE에 성공적으로 발송된 최근 3개 문답과 현재 질문이 들어간다. `metadata`에는 실제 CUBE 사용자·채널·세션만 넣고, GAIA 내부 화면에서만 나오는 `super_agent_id`, `super_agent_trace_id`, `platform=GaiA_Internal` 값은 임의로 넣지 않는다.
+   `data`와 `metadata`의 값은 중첩 객체가 아니라 **JSON 문자열**이며, 최상위 body가 아니라 고정된 `tweaks["GaiA Input"]` 안에 넣는다. 첫 질문의 `data`에는 현재 사용자 질문 1개가 들어가며, 다음 질문부터는 CUBE에 성공적으로 발송된 최근 3개 문답과 현재 질문이 들어간다. `metadata`에는 실제 CUBE 사용자와 **GAIA session ID**를 필수로 넣고, 채널 ID도 함께 넣는다. GAIA 내부 화면에서만 나오는 `super_agent_id`, `super_agent_trace_id`, `platform=GaiA_Internal` 값은 임의로 넣지 않는다.
 
 3. GAIA 응답의 마지막 Chat Output에서 `results.gaia_response.data.answer`를 우선 읽는다.
 4. 추출한 답변을 CUBE Rich Notification API로 보낸다. 이 payload의 `content[0].process`는 비어 있지 않게 구성된다.

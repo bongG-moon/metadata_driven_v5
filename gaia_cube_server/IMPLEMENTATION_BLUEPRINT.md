@@ -71,9 +71,17 @@ X-Gaia-User-Id: <CUBE 사용자 ID>
 {
   "input_value": "CUBE에서 받은 질문",
   "user_id": "CUBE 사용자 ID",
-  "session_id": "현재 session ID"
+  "session_id": "현재 session ID",
+  "tweaks": {
+    "GaiA Input": {
+      "data": "{\"conversation_history\":[...]}",
+      "metadata": "{\"platform\":\"CUBE\",\"user_id\":\"CUBE 사용자 ID\",\"session_id\":\"현재 session ID\",\"cube_channel_id\":\"CUBE 채널 ID\"}"
+    }
+  }
 }
 ```
+
+`data`와 `metadata`는 최상위 요청값이 아니라 고정된 `tweaks["GaiA Input"]`으로 전달한다. `metadata.user_id`, `metadata.session_id`는 필수다.
 
 GAIA 응답은 마지막 Chat Output을 찾는다. 답변은 아래 경로를 우선 사용한다.
 

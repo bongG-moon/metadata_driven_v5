@@ -2,20 +2,20 @@
 
 ## Scope
 
-This guide describes only the nine Flow artifacts in `import_ready_flows/` and the runtime needed by them. Retired continuation orchestration, visualization-only, CUBE scheduling, and GaiA boundary adapters are not part of the current product scope.
+This guide describes only the nine Flow artifacts in `import_ready_flows/` and the runtime needed by them. Report Snapshot continuation, visualization-only, and CUBE scheduling are not part of the current Router product scope. Flow 06 starts from the production GaiA Input and uses a dedicated extractor so its external A2A `metadata.session_id` is safely propagated into Router state.
 
 ## Flow topology
 
 ```text
 User question
   └─ 06 Agent Tool Router
-       ├─ new data question ───────> 01 Data Analysis
+       ├─ new or continued data question ─> 01 Data Analysis
        ├─ fixed report request ─────> 07-1 Realtime Production Report
-       │                                └─ snapshot + report.context.v1 stored
-       ├─ report snapshot follow-up ──> 07-2 Report Follow-up
-       │                                └─ restore and analyze the same snapshot only
-       └─ report current/cross-source ─> 01 Data Analysis
-                                        └─ explicit current/latest: new retrieval
+       │                                └─ report answer and artifact links
+       └─ metadata authoring/inquiry ──> 02–05 Metadata Flows
+
+07-2 Report Follow-up ────────────────> standalone/development artifact
+                                          └─ not exposed as a Flow 06 Router Tool
 
 Metadata authoring
   ├─ 02 Domain Saving
@@ -38,22 +38,15 @@ Direct compatibility run ──> 07 Legacy Realtime Production Report
 | 04 Main Flow Filter Saving | A shared filter rule is needed across questions | Main filter item |
 | 05 Metadata QA | The user asks what is registered or how a dataset is interpreted | Metadata-grounded answer |
 | 06 Agent Tool Router | A normal chat entry point should select one supported Flow | Direct child Flow answer |
-| 07 Legacy Realtime Production Report | The pre-follow-up Report response and graph must be reproduced | Direct Report answer and artifact links; no snapshot/session context |
-| 07-1 Realtime Production Report | A fixed end-to-end production report is requested | Compact answer, HTML/CSV links, and a session-bound snapshot context for Flow 07-2 |
-| 07-2 Report Follow-up | A same-session question selects columns, filters, sorts, or ranks the last Report snapshot or a pre-aggregated Report view | Snapshot-only answer; no metadata catalog, groupby, join, or source retrieval |
+| 07 Legacy Realtime Production Report | The legacy direct Report response and graph must be reproduced | Direct Report answer and artifact links; no snapshot/session context |
+| 07-1 Realtime Production Report | A fixed end-to-end production report is requested | Compact answer and HTML/CSV links |
+| 07-2 Report Follow-up | Retained standalone/development artifact for separately tested Report snapshot behavior | Not exposed as a Flow 06 Router Tool in the current product path |
 
-## Report follow-up contract
+## Report follow-up artifact status
 
-Flow 07-1 stores the selected process-group dataset in the shared Result Store and publishes its available Report views through `report.context.v1`. Flow 07-2 restores only the referenced Report snapshot/view after validating the same session, expiry, completeness, declared columns, metrics, grain, predicates, and allowed operations. The Report API and Agent receive only compact references and KPI facts; raw rows and HTML are not copied into chat history or the Router prompt.
+Flow 07-2 remains in the nine-flow bundle for standalone/development validation, but Flow 06 deliberately does not expose `run_report_followup` and does not route any user request to it. Until Report Snapshot continuation is adopted as a separate operating capability, a normal manufacturing-data follow-up is routed to Flow 01 Data Analysis and uses that Flow's own session-state contract.
 
-| Follow-up wording | Data source | Retrieval behavior |
-| --- | --- | --- |
-| `그중 생산부족 제품만 보여줘` | Report creation snapshot | Flow 07-2 restores the declared Report view; no source query |
-| `그중 현재작업재공이 0인 제품을 5개 보여줘` | Report creation snapshot | `현재작업재공` is treated as a Report column, then Flow 07-2 filters and limits the stored view |
-| `방금 Report의 현재 WIP도 알려줘` | Current registered source | Flow 01 performs a new retrieval |
-| Explicit Report reference without a valid context | None | Clarify or return a context error; never silently run a new query |
-
-The boundary is enforced by routing and again inside Flow 07-2. Flow 06 sends snapshot-only Report questions to Flow 07-2 and explicit current/latest or cross-source requests to Flow 01. Flow 07-2 contains no source retriever, validates the Report query-source contract before execution, and never falls back to Flow 01. Its guarded planner does not call the LLM for missing/expired context, clarification, or live-query handoff states. Its result loader also checks the same session, reference expiry, and complete row storage before restoring data.
+This does not remove Flow 07-2 or change its independent contracts. It only prevents an unfinished Report follow-up capability from being selected by the operating Router.
 
 ## Data Analysis display contract
 
@@ -116,7 +109,7 @@ It serves:
 
 1. Import `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json`.
 2. Set the Provider credential and `MONGO_URL`.
-3. Re-select `대상 Flow` in any persisted Router tool that already has a `flow_id_selected` from an older import. In Flow 06, verify that `run_realtime_production_report` selects `07-1. v5_realtime_production_report` and `run_report_followup` selects `07-2. v5_report_followup`.
+3. Re-select `대상 Flow` in any persisted Router Tool that already has a `flow_id_selected` from an older import. In Flow 06, verify that `run_realtime_production_report` selects `07-1. v5_realtime_production_report`; no Router Tool should select `07-2. v5_report_followup`.
 4. Set `04A 신뢰 카탈로그 조회 작업 구성기.retrieval_mode` to `live` only after a source-level smoke test. The default is `dummy`.
 
 When custom component source changes, regenerate artifacts in this order:
@@ -130,6 +123,6 @@ python tools\build_import_ready_bundle.py
 ## Failure behavior
 
 - If MongoDB metadata cannot be loaded, the analysis must stop with the metadata connection/registration reason. It must not invent a dataset key or column contract.
-- If the Report context is missing, expired, cross-session, incomplete, or does not declare the requested operation, Flow 07-2 returns a bounded context/clarification error and does not query a live source.
+- If Flow 07-2 is run separately and its Report context is missing, expired, cross-session, incomplete, or does not declare the requested operation, it returns a bounded context/clarification error and does not query a live source. Flow 06 does not select this path.
 - If an output contract fails after retrieval or filtering, the answer remains an error but exposes the last successful curated intermediate result and its download link when one exists.
-- Flow 07 never writes Report follow-up Context. Use Flow 07-1 when a later Flow 07-2 question is required.
+- Flow 07 never writes Report follow-up Context. Flow 07-2 remains a standalone artifact and is not part of the current Router operating path.
