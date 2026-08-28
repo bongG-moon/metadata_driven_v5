@@ -285,6 +285,17 @@ def test_router_prompt_supports_general_followups_without_report_followup_tool()
     assert "직전 질문·답변·선택 Flow" in system_prompt
     assert "후속 질문" in system_prompt
     assert "run_data_analysis" in system_prompt
+    assert "WB공정은?" in system_prompt
+    assert "어떤 제품은?" in system_prompt
+    assert "자재는?" in system_prompt
+    assert "OPER에서는?" in system_prompt
+    assert "어제 일자는?" in system_prompt
+    assert "세부 제품별로 보여줘" in system_prompt
+    assert "후속 분석 우선 판별" in system_prompt
+    assert "run_metadata_qa` 선택보다 먼저 수행" in system_prompt
+    assert "WB 공정의 정의를 묻는 질문으로 바꾸어 해석하지 않습니다" in system_prompt
+    assert "공정·제품·OPER·자재라는 단어만으로 `run_metadata_qa`를 선택하지 않습니다" in system_prompt
+    assert "짧은 변경형 질문에 대상 또는 시점이 새로 들어갔다는 사실만으로는 독립 신규 요청으로 보지 않습니다" in system_prompt
     assert "현재 질문 원문만 전달" in system_prompt
     assert "run_report_followup" not in system_prompt
     assert "Report Snapshot" not in system_prompt

@@ -8,6 +8,8 @@
 CUBE
   ↓ callback HTTP POST
 HCP GAIA-CUBE 서버
+  ↓ HTTP 200/null ACK 반환
+  ↓ CUBE 처리 안내 Rich Notification 발송
   ↓ GAIA API 호출
 GAIA Agent
   ↓ 최종 답변
@@ -28,14 +30,15 @@ POST http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/api/v1/recei
 
 ## callback과 답변은 다르다
 
-CUBE가 질문을 전달하면 서버는 callback 호출에 처리 결과를 돌려준다. 이것을 ACK, 즉 “요청을 접수했다”는 확인으로 이해하면 된다. 현재 최소 구현은 유효한 callback에 `200/null`을 먼저 반환하고, 그 뒤 FastAPI 백그라운드 작업에서 GAIA 호출과 CUBE 발송을 처리한다.
+CUBE가 질문을 전달하면 서버는 callback 호출에 처리 결과를 돌려준다. 이것을 ACK, 즉 “요청을 접수했다”는 확인으로 이해하면 된다. 현재 최소 구현은 유효한 callback에 `200/null`을 먼저 반환하고, 그 뒤 FastAPI 백그라운드 작업에서 처리 안내 발송, GAIA 호출, 최종 CUBE 발송을 처리한다.
 
 ```text
 callback HTTP 응답 = CUBE 시스템에 주는 빠른 접수 확인
-CUBE Rich Notification = 사용자가 실제로 보는 GAIA 답변
+첫 번째 CUBE Rich Notification = 사용자가 보는 처리 안내
+두 번째 CUBE Rich Notification = 사용자가 보는 GAIA 최종 답변 또는 오류 안내
 ```
 
-따라서 PowerShell이나 CUBE 시스템에서 `success` JSON을 봤더라도, 실제 답변이 CUBE 채팅창에 나타나는지 별도로 확인해야 한다.
+처리 안내 문구는 `요청하신 내용을 처리중입니다. 잠시만 기다려주십시오.😀`다. 따라서 PowerShell이나 CUBE 시스템에서 `success` JSON을 봤더라도, CUBE 채팅창에 처리 안내와 실제 답변(또는 오류 안내)이 차례로 나타나는지 별도로 확인해야 한다.
 
 ## 서버가 읽는 CUBE 정보
 
@@ -118,7 +121,7 @@ python manual_gaia_cube_send.py
 실제 CUBE 등록 전에도 HCP callback URL에 CUBE 형식의 POST를 보내면 다음 전체 흐름을 시험할 수 있다.
 
 ```text
-PowerShell POST → HCP callback → GAIA → CUBE 답변 발송
+PowerShell POST → HCP callback ACK → CUBE 처리 안내 → GAIA → CUBE 최종 답변 발송
 ```
 
 이 시험은 실제 CUBE 채널에 메시지를 보낸다. 따라서 승인된 사용자 ID와 테스트 채널만 사용해야 한다. 이는 CUBE가 보내는 callback 형식을 확인할 때만 사용한다. 복사해 실행할 PowerShell 명령과 확인 방법은 [production_callback_server/PRODUCTION_SERVER_RUN_GUIDE.md](production_callback_server/PRODUCTION_SERVER_RUN_GUIDE.md)의 “callback 형식 전체 흐름 시험”에 있다.

@@ -1,7 +1,7 @@
 """HCP-only GAIA-CUBE callback server.
 
 One request follows one simple path:
-    CUBE callback -> immediate ACK -> GAIA API -> CUBE Rich Notification
+    CUBE callback -> immediate ACK -> processing notice -> GAIA API -> CUBE Rich Notification
 
 The server keeps the current in-memory GAIA session ID and a short successful
 conversation history for each user and CUBE channel. GAIA and CUBE delivery
@@ -39,6 +39,7 @@ HELLO_CHATBOT_SENTINEL = "!@#HelloChatBot#@!"
 INTERACTION_KEYS = ("UserSelection", "SendBtn")
 CUBE_REPLY_REQUEST_ID = "request_cond_change_main"
 CUBE_BOT_FROMUSERNAME_COUNT = 5
+PROCESSING_MESSAGE = "요청하신 내용을 처리중입니다. 잠시만 기다려주십시오.😀"
 # GAIA's Flow exposes this stable input name for external API tweaks.  It must
 # exactly match the Router Flow's custom component display name.
 GAIA_INPUT_TWEAK_NAME = "GaiA Input"
@@ -598,7 +599,7 @@ async def send_cube_message(
     *,
     body_renderer: CubeBodyRenderer = render_gaia_answer_to_cube_body,
 ) -> None:
-    """Send one GAIA answer (or the safe fallback) to CUBE."""
+    """Send one user-visible CUBE Rich Notification message."""
 
     try:
         response = await client.post(
@@ -650,6 +651,24 @@ async def process_gaia_and_send(
         session_id,
         len(history),
     )
+
+    # This is a user-visible Rich Notification, not the callback ACK.  Send it
+    # before the GAIA request so the user knows the same PTMORE bot accepted
+    # the work while GAIA is preparing the final response.
+    try:
+        await send_cube_message(
+            client,
+            settings,
+            event.user_id,
+            event.channel_id,
+            PROCESSING_MESSAGE,
+            body_renderer=body_renderer,
+        )
+    except ExternalApiError:
+        # A temporary CUBE send failure must not prevent GAIA processing or
+        # the later final-answer/fallback delivery attempt.
+        LOGGER.warning("CUBE processing notice delivery failed after ACK.")
+
     try:
         gaia_response = await call_gaia(
             client,

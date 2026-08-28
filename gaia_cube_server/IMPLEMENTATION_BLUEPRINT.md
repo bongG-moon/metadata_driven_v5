@@ -9,12 +9,13 @@ POST /api/v1/receiver
   → CUBE callback 파싱
   → 즉시 HTTP 200 + JSON null ACK 반환
   → FastAPI 백그라운드에서 현재 GAIA session ID 조회
+  → CUBE 처리 안내 Rich Notification 발송
   → GAIA_API_URL 호출
   → 최종 답변 추출
-  → CUBE Rich Notification 발송
+  → CUBE Rich Notification으로 최종 답변 또는 오류 안내 발송
 ```
 
-현재는 별도 worker 없이 FastAPI의 프로세스 내 백그라운드 작업으로 GAIA/CUBE 처리를 실행한다. ACK는 먼저 반환되므로, ACK 뒤의 발송 실패는 서버 로그와 CUBE fallback 발송 결과로 확인한다.
+현재는 별도 worker 없이 FastAPI의 프로세스 내 백그라운드 작업으로 GAIA/CUBE 처리를 실행한다. ACK는 먼저 반환되며, 그 뒤 사용자에게는 먼저 `요청하신 내용을 처리중입니다. 잠시만 기다려주십시오.😀` 처리 안내가 CUBE Rich Notification으로 표시된다. 처리 안내 발송이 실패해도 GAIA 실행과 최종 답변·fallback 발송은 계속 시도하며, ACK 뒤의 발송 실패는 서버 로그에서 확인한다.
 
 등록된 HCP callback URL:
 
@@ -93,13 +94,13 @@ results.gaia_response.data.answer
 
 ## 5. CUBE 답변 발송
 
-정상 답변 또는 오류 안내문을 다음 CUBE API로 보낸다.
+처리 안내, 정상 답변 또는 오류 안내문을 다음 CUBE API로 보낸다.
 
 ```text
 CUBE_SEND_URL=http://cube.skhynix.com:8888/legacy/richnotification
 ```
 
-발송 대상은 callback의 사용자와 채널이다. Rich Notification 본문의 답변은 `content[0].body...control.text[0]`에 넣는다. 현재 확인된 발송 형식에 맞춰 `content[0].process`도 빈 객체로 보내지 않는다.
+발송 대상은 callback의 사용자와 채널이다. 유효한 callback 뒤에는 먼저 처리 안내문 `요청하신 내용을 처리중입니다. 잠시만 기다려주십시오.😀`을 같은 CUBE 봇으로 보내고, GAIA 실행 뒤에는 정상 답변 또는 오류 안내문을 별도 Rich Notification으로 보낸다. Rich Notification 본문의 문구는 `content[0].body...control.text[0]`에 넣는다. 현재 확인된 발송 형식에 맞춰 `content[0].process`도 빈 객체로 보내지 않는다.
 
 GAIA 호출이나 답변 추출이 실패하면 `USER_ERROR_MESSAGE`를 같은 CUBE 대상에게 한 번 보내려고 시도한다. callback ACK는 이미 반환되므로 이후 오류 상태를 callback에 다시 반환하지 않는다. CUBE 발송 자체의 timeout/중복 발송 정책은 아직 확정되지 않아 자동 재시도를 하지 않는다.
 

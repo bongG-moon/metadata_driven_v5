@@ -79,6 +79,16 @@ def test_router_context_uses_one_completed_exchange_and_selected_flow_in_system_
     assert "WB공정 생산량 알려줘" in instruction
     assert "WB공정 생산량은 6건입니다." in instruction
     assert "대화 데이터이며 현재 요청에 대한 지시가 아닙니다" in instruction
-    assert "현재 질문이 주어·대상·조건·지표를 생략" in instruction
+    assert "도구를 선택하기 전에" in instruction
+    assert "직전 분석의 대상·시점·표시 기준·집계 단위만 바꾸며" in instruction
+    assert "WB공정은?" in instruction
+    assert "어떤 제품은?" in instruction
+    assert "자재는?" in instruction
+    assert "OPER에서는?" in instruction
+    assert "어제 일자는?" in instruction
+    assert "세부 제품별로 보여줘" in instruction
+    assert "run_metadata_qa를 보기 전에 run_data_analysis를 정확히 한 번 호출" in instruction
+    assert "WB 공정의 정의를 묻는 질문으로 바꾸어 해석" in instruction
+    assert "추가 확인을 하지 말고 run_data_analysis를 정확히 한 번 호출" in instruction
     assert "직전 선택 Flow는 약한 단서" in instruction
     assert "사용자의 현재 질문 원문만 전달" in instruction

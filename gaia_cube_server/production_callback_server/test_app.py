@@ -20,6 +20,9 @@ from app import (
 )
 
 
+PROCESSING_NOTICE = "요청하신 내용을 처리중입니다. 잠시만 기다려주십시오.😀"
+
+
 def _settings() -> Settings:
     return Settings(
         # The complete path is configured once; the server must use it unchanged.
@@ -90,10 +93,13 @@ def _label_texts(body: dict[str, Any]) -> list[str]:
 
 def test_receiver_runs_full_gaia_to_cube_flow() -> None:
     requests: list[httpx.Request] = []
+    outbound_steps: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.url.host == "gaia.test":
+            outbound_steps.append("gaia")
+            assert outbound_steps == ["cube:processing", "gaia"]
             assert str(request.url) == "http://gaia.test/v2/agents/agent-a/external"
             assert request.headers["X-Gaia-Auth-Key"] == "test-key"
             payload = json.loads(request.content)
@@ -138,7 +144,13 @@ def test_receiver_runs_full_gaia_to_cube_flow() -> None:
                 "Bot Other",
             ]
             column = payload["content"][0]["body"]["row"][0]["column"][0]
-            assert column["control"]["text"] == ["GAIA 정규화 답변"]
+            message_text = column["control"]["text"]
+            if message_text == [PROCESSING_NOTICE]:
+                outbound_steps.append("cube:processing")
+            elif message_text == ["GAIA 정규화 답변"]:
+                outbound_steps.append("cube:answer")
+            else:
+                raise AssertionError(f"unexpected CUBE message: {message_text!r}")
             assert column["control"]["active"] == "true"
             assert payload["content"][0]["process"] == {
                 "callbacktype": "url",
@@ -164,20 +176,24 @@ def test_receiver_runs_full_gaia_to_cube_flow() -> None:
     # waits for FastAPI background tasks, so the external mock calls are also
     # complete by the time this assertion runs.
     assert response.json() is None
-    assert len(requests) == 2
+    assert outbound_steps == ["cube:processing", "gaia", "cube:answer"]
+    assert len(requests) == 3
 
 
 def test_receiver_accepts_actual_from_channel_and_resultdata_shapes() -> None:
     gaia_requests: list[dict[str, Any]] = []
     cube_targets: list[dict[str, Any]] = []
+    cube_messages: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "gaia.test":
             gaia_requests.append(json.loads(request.content))
             return httpx.Response(200, json=_gaia_response("실제 callback 답변"))
         if request.url.host == "cube.test":
-            cube_targets.append(
-                json.loads(request.content)["richnotification"]["header"]["to"]
+            richnotification = json.loads(request.content)["richnotification"]
+            cube_targets.append(richnotification["header"]["to"])
+            cube_messages.append(
+                "\n".join(_label_texts(richnotification["content"][0]["body"]))
             )
             return httpx.Response(200, json={"ok": True})
         raise AssertionError(f"unexpected request: {request.url}")
@@ -272,6 +288,14 @@ def test_receiver_accepts_actual_from_channel_and_resultdata_shapes() -> None:
     assert cube_targets == [
         {"uniquename": ["employee-from"], "channelid": ["channel-from"]},
         {"uniquename": ["employee-from"], "channelid": ["channel-from"]},
+        {"uniquename": ["employee-from"], "channelid": ["channel-from"]},
+        {"uniquename": ["employee-from"], "channelid": ["channel-from"]},
+    ]
+    assert cube_messages == [
+        PROCESSING_NOTICE,
+        "실제 callback 답변",
+        PROCESSING_NOTICE,
+        "실제 callback 답변",
     ]
 
 
@@ -351,7 +375,7 @@ def test_manual_post_to_receiver_uses_same_full_flow() -> None:
 
     assert response.status_code == 200
     assert response.json() is None
-    assert sent_messages == ["수동 테스트 답변"]
+    assert sent_messages == [PROCESSING_NOTICE, "수동 테스트 답변"]
 
 
 def test_same_user_and_channel_reuses_gaia_returned_session() -> None:
@@ -458,11 +482,12 @@ def test_gaia_failure_sends_the_safe_fallback_once() -> None:
 
     assert response.status_code == 200
     assert response.json() is None
-    assert len(cube_bodies) == 1
-    rendered = "\n".join(_label_texts(cube_bodies[0]))
+    assert len(cube_bodies) == 2
+    assert _label_texts(cube_bodies[0]) == [PROCESSING_NOTICE]
+    rendered = "\n".join(_label_texts(cube_bodies[1]))
     assert "오류: GAIA API가 요청을 정상 처리하지 못했습니다." in rendered
     assert "temporary failure" in rendered
-    assert cube_bodies[0]["row"][0]["column"][0]["control"]["color"] == ""
+    assert cube_bodies[1]["row"][0]["column"][0]["control"]["color"] == ""
 
 
 def test_gaia_forbidden_sends_the_agent_permission_link() -> None:
@@ -489,7 +514,9 @@ def test_gaia_forbidden_sends_the_agent_permission_link() -> None:
     with TestClient(app) as client:
         response = client.post(CUBE_CALLBACK_PATH, json=_callback())
 
-    rendered = json.dumps(cube_bodies[0], ensure_ascii=False)
+    assert len(cube_bodies) == 2
+    assert _label_texts(cube_bodies[0]) == [PROCESSING_NOTICE]
+    rendered = json.dumps(cube_bodies[1], ensure_ascii=False)
     assert response.status_code == 200
     assert response.json() is None
     assert "권한이 없는 사용자입니다." in rendered
@@ -500,7 +527,7 @@ def test_gaia_forbidden_sends_the_agent_permission_link() -> None:
         column["type"] == "hypertext"
         and column["control"]["linkurl"]
         == "http://aimarket.skhynix.com/apps/gaia-market-web/market/agent"
-        for column in _all_columns(cube_bodies[0])
+        for column in _all_columns(cube_bodies[1])
     )
 
 
@@ -520,12 +547,14 @@ def test_gaia_timeout_sends_a_safe_timeout_reason_without_raw_error_details() ->
     with TestClient(app) as client:
         response = client.post(CUBE_CALLBACK_PATH, json=_callback())
 
-    rendered = "\n".join(_label_texts(cube_bodies[0]))
+    assert len(cube_bodies) == 2
+    assert _label_texts(cube_bodies[0]) == [PROCESSING_NOTICE]
+    rendered = "\n".join(_label_texts(cube_bodies[1]))
     assert response.status_code == 200
     assert response.json() is None
     assert "주의: GAIA 응답 시간이 초과되었습니다." in rendered
     assert "private GAIA host details" not in rendered
-    assert cube_bodies[0]["row"][0]["column"][0]["control"]["color"] == ""
+    assert cube_bodies[1]["row"][0]["column"][0]["control"]["color"] == ""
 
 
 def test_gaia_response_without_final_answer_describes_that_cause() -> None:
@@ -546,20 +575,25 @@ def test_gaia_response_without_final_answer_describes_that_cause() -> None:
 
     assert response.status_code == 200
     assert response.json() is None
-    rendered = "\n".join(_label_texts(cube_bodies[0]))
+    assert len(cube_bodies) == 2
+    assert _label_texts(cube_bodies[0]) == [PROCESSING_NOTICE]
+    rendered = "\n".join(_label_texts(cube_bodies[1]))
     assert "오류: GAIA/Langflow 응답에서 최종 답변을 찾지 못했습니다." in rendered
     assert "temporary failure" in rendered
 
 
 def test_gaia_failure_keeps_the_ack_when_cube_fallback_delivery_fails() -> None:
     cube_attempts = 0
+    outbound_steps: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal cube_attempts
         if request.url.host == "gaia.test":
+            outbound_steps.append("gaia")
             return httpx.Response(500, json={"error": "failed"})
         if request.url.host == "cube.test":
             cube_attempts += 1
+            outbound_steps.append("cube")
             return httpx.Response(500, json={"error": "fallback failed"})
         raise AssertionError(f"unexpected request: {request.url}")
 
@@ -571,7 +605,10 @@ def test_gaia_failure_keeps_the_ack_when_cube_fallback_delivery_fails() -> None:
     # failure, so CUBE does not receive a delayed non-2xx response.
     assert response.status_code == 200
     assert response.json() is None
-    assert cube_attempts == 1
+    # A processing notice failure must not prevent the GAIA call or the
+    # later fallback attempt. Both deliveries happen after the HTTP ACK.
+    assert outbound_steps == ["cube", "gaia", "cube"]
+    assert cube_attempts == 2
 
 
 def test_receiver_rejects_mismatched_identity_and_ignores_hello() -> None:

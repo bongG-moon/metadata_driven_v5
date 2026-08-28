@@ -5,8 +5,10 @@
 ```text
 CUBE 또는 수동 callback 요청
   → HCP 서버의 POST /api/v1/receiver
+  → 즉시 HTTP 200 + JSON null ACK
+  → CUBE 처리 안내 발송
   → GAIA 호출
-  → CUBE 답변 발송
+  → CUBE 최종 답변 또는 오류 안내 발송
 ```
 
 등록된 URL은 다음과 같다.
@@ -148,8 +150,16 @@ CUBE callback에는 사용자, 채널, 질문이 들어 있다. 서버는 아래
 
 정상 요청의 내부 흐름은 다음과 같다.
 
-1. `사용자 ID + 채널 ID`로 현재 GAIA session ID를 찾거나 새로 만든다.
-2. GAIA에 아래 형식으로 요청한다.
+1. 유효한 callback에는 HTTP `200`과 JSON `null`을 먼저 반환한다. 이 값은 CUBE 시스템에 주는 접수 확인(ACK)이며, 사용자 채팅창에 보이는 답변이 아니다.
+2. ACK 뒤 FastAPI 백그라운드 작업이 `사용자 ID + 채널 ID`로 현재 GAIA session ID를 찾거나 새로 만든다.
+3. 같은 CUBE 봇이 사용자 채팅창에 아래 처리 안내 Rich Notification을 먼저 발송한다.
+
+   ```text
+   요청하신 내용을 처리중입니다. 잠시만 기다려주십시오.😀
+   ```
+
+   처리 안내 발송 자체가 실패해도 GAIA 실행과 최종 답변·오류 안내 발송은 계속 시도한다.
+4. GAIA에 아래 형식으로 요청한다.
 
    ```json
    {
@@ -167,9 +177,8 @@ CUBE callback에는 사용자, 채널, 질문이 들어 있다. 서버는 아래
 
    `data`와 `metadata`의 값은 중첩 객체가 아니라 **JSON 문자열**이며, 최상위 body가 아니라 고정된 `tweaks["GaiA Input"]` 안에 넣는다. 첫 질문의 `data`에는 현재 사용자 질문 1개가 들어가며, 다음 질문부터는 CUBE에 성공적으로 발송된 최근 3개 문답과 현재 질문이 들어간다. `metadata`에는 실제 CUBE 사용자와 **GAIA session ID**를 필수로 넣고, 채널 ID도 함께 넣는다. GAIA 내부 화면에서만 나오는 `super_agent_id`, `super_agent_trace_id`, `platform=GaiA_Internal` 값은 임의로 넣지 않는다.
 
-3. GAIA 응답의 마지막 Chat Output에서 `results.gaia_response.data.answer`를 우선 읽는다.
-4. 추출한 답변을 CUBE Rich Notification API로 보낸다. 이 payload의 `content[0].process`는 비어 있지 않게 구성된다.
-5. callback을 보낸 쪽에는 즉시 HTTP `200`과 JSON `null`을 돌려준다. 실제 답변은 이후 CUBE Rich Notification 발송으로 표시된다.
+5. GAIA 응답의 마지막 Chat Output에서 `results.gaia_response.data.answer`를 우선 읽는다.
+6. 추출한 답변을 CUBE Rich Notification API로 보낸다. GAIA 실행·답변 추출이 실패하면 같은 대상에게 안전한 오류 안내를 보낸다. 이 payload의 `content[0].process`는 비어 있지 않게 구성된다.
 
 같은 사용자와 같은 채널의 다음 질문은 사용자 ID와 채널 ID에서 결정적으로 만든 같은 session ID를 사용한다. HCP 앱이 재시작돼도 이 session ID는 바뀌지 않는다. 최근 CUBE 발송 성공 문답 최대 3쌍만 이 HCP 앱 메모리에 있어 재시작 시 비워진다. GAIA가 같은 session ID로 Phoenix 이력을 복원하는지는 GAIA 서버 구현에 달려 있다. 서버 로그의 `GAIA session observed: sent=... returned=... same=...`에서 GAIA가 보낸 session ID를 그대로 돌려주는지도 확인할 수 있다.
 
@@ -205,14 +214,14 @@ Invoke-RestMethod `
 null
 ```
 
-이 값은 CUBE 시스템에 돌려주는 **빠른 접수 확인(ACK)** 이며 GAIA의 답변 본문이 아니다. 서버는 ACK를 먼저 반환한 뒤 FastAPI 백그라운드 작업에서 GAIA 호출과 CUBE 발송을 실행한다. 실제 답변은 잠시 뒤 `APPROVED_CUBE_TEST_CHANNEL_ID`의 CUBE 채팅창에 도착해야 한다. 즉, PowerShell의 `null`과 CUBE 채팅창의 실제 답변을 모두 확인한다.
+이 값은 CUBE 시스템에 돌려주는 **빠른 접수 확인(ACK)** 이며 GAIA의 답변 본문이 아니다. 서버는 ACK를 먼저 반환한 뒤 FastAPI 백그라운드 작업에서 CUBE 처리 안내, GAIA 호출, 최종 CUBE 발송을 실행한다. 따라서 `APPROVED_CUBE_TEST_CHANNEL_ID`의 CUBE 채팅창에는 먼저 `요청하신 내용을 처리중입니다. 잠시만 기다려주십시오.😀`가 보이고, 잠시 뒤 최종 답변 또는 오류 안내가 도착해야 한다. PowerShell의 `null`과 CUBE의 두 사용자 표시 메시지를 모두 확인한다.
 
 ## 7. CUBE 등록 후에는 무엇이 달라지는가
 
 수동 PowerShell 요청 대신 CUBE가 같은 URL로 POST 요청을 보낸다는 점만 다르다. 사용자가 CUBE 채널에 입력하면 자동으로 아래가 실행된다.
 
 ```text
-사용자 질문 → CUBE callback → HCP 서버 → GAIA → CUBE 답변
+사용자 질문 → CUBE callback → HCP 서버 ACK → CUBE 처리 안내 → GAIA → CUBE 최종 답변
 ```
 
 서버에는 사용자가 직접 호출할 공개 `/send` endpoint가 없다. `manual_gaia_cube_send.py`는 서버 내부에서 사람이 실행하는 시험 도구일 뿐 HTTP endpoint가 아니다.
