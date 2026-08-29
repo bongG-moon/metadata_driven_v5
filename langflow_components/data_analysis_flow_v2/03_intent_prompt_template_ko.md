@@ -38,6 +38,7 @@ Table Catalog 후보 비교:
 - `followup_hint`는 후보 신호일 뿐 현재 질문, 직전 질문, 직전 결과 schema, 필요한 dataset을 함께 확인한다.
 - 독립 질문은 `new_analysis + none`, 후속은 실제 재사용 방식에 맞는 `request_scope`와 `reference_mode`를 함께 작성한다.
 - 이전 결과 행을 새 source에 매칭하면 `previous_result_rows`와 `apply_row_match_groups`, 이전 결과를 재분석하면 `previous_result_transform`, 저장 원본 재사용은 `previous_source`, 조건만 상속한 새 조회는 `previous_filters`를 사용한다.
+- `followup_hint.requested_columns_hint`가 있고 질문이 세부/별/분리 기준을 바꾸는 형태이면, 이는 직전 분석의 metric·날짜·조건을 새로 묻는 것이 아니라 결과 분해 기준을 추가하라는 신호다. 현재 `group_by`를 유지하면서 해당 canonical column을 추가하고, 직전 집계 결과에 그 컬럼이 없으면 저장 원본을 사용하거나 동일한 직전 조건으로 새 조회한다. 현재 질문이 명시한 새 metric·dataset·필수 파라미터가 있으면 그 명시 조건을 우선한다.
 - 후속 질문의 대상 컬럼이나 상세 이력이 직전 결과에 없으면 직전 집계 결과를 억지로 재가공하지 않는다. Catalog의 required/upstream binding이 있으면 dependent retrieval job과 `previous_result_rows`를 만들고, 없으면 재사용 가능한 원본 source 또는 직전 filter를 명시한다. 후속 재조회에서 `reference_mode=none`을 남기지 않는다.
 - Catalog의 upstream binding은 dataset을 후속 전용으로 만드는 규칙이 아니다. 현재 질문에 Catalog 필수 파라미터 값(예: LOT_ID)이 직접 있으면 해당 값을 `retrieval_jobs[].required_params`에 넣고 `new_analysis + none`으로 조회한다. 이전 결과 binding은 필수 파라미터 값이 질문에 없고, 직전 결과로만 채워야 할 때에만 사용한다.
 - 필수 파라미터가 여러 값이면 Catalog query의 `IN` 계약에 맞게 하나 이상의 값을 그대로 전달한다. 직접 입력한 값은 이전 결과 값으로 바꾸거나 제거하지 않는다.

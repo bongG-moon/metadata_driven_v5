@@ -37,6 +37,11 @@ def followup_hint_builder():
 
 
 @pytest.fixture(scope="module")
+def intent_variables_builder():
+    return load_module(V2_ROOT / "02_intent_variables_builder.py")
+
+
+@pytest.fixture(scope="module")
 def hydrator():
     return load_module(
         ROOT
@@ -87,7 +92,7 @@ def _candidates() -> dict:
                 "dataset_key": "production_today",
                 "source_type": "oracle",
                 "payload": {
-                    "columns": ["DATE", "OPER_NAME", "LEAD", "PRODUCTION"],
+                    "columns": ["DATE", "OPER_NAME", "LEAD", "DEVICE", "PRODUCTION"],
                     "required_params": ["DATE"],
                     "filter_mappings": {
                         "DATE": ["DATE"],
@@ -423,6 +428,196 @@ def test_bare_process_followup_emits_explicit_condition_only_signal(followup_hin
     assert hinted["condition_only_followup_candidate"] is True
     assert hinted["source_reuse_candidate"] is True
     assert hinted["matched_cues"]["entity_switch_detected"] == ["condition_only"]
+
+
+def test_breakdown_column_followup_keeps_prior_analysis_context(
+    followup_hint_builder,
+    intent_variables_builder,
+):
+    """A source-column breakdown must not discard the prior metric/source.
+
+    This mirrors ``오늘 DA공정 생산량`` -> ``WB공정은?`` ->
+    ``세부 DEVICE별로 보여줄래?``.  DEVICE is intentionally only present
+    in the retained source schema, not in the immediately preceding aggregate
+    result, so the next turn must be allowed to use the prior source or fall
+    back to the same retrieval shape.
+    """
+
+    previous = _production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="세부 DEVICE별로 보여줄래?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={
+            "prod_src": ["DATE", "OPER_NAME", "DEVICE", "PRODUCTION"]
+        },
+    )
+    payload.pop("followup_hint")
+
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+    hint = hinted_payload["followup_hint"]
+
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "followup_expand_source"
+    assert hint["reuse_strategy_hint"] == "previous_source"
+    assert hint["requested_columns_hint"] == ["DEVICE"]
+    # Source reuse is only a candidate here. 04A still verifies source
+    # completeness plus required-parameter/filter containment before it
+    # permits reuse; otherwise the same plan is queried fresh.
+    assert hint["source_reuse_candidate"] is True
+
+    variables = intent_variables_builder.build_variables(hinted_payload)
+    state_summary = json.loads(variables["state_summary"])
+    prior_state = state_summary["state"]
+    assert prior_state["last_intent_plan"]["retrieval_jobs"][0]["dataset_key"] == "production_today"
+    assert prior_state["last_intent_plan"]["output_contract"]["metric_columns"] == ["PRODUCTION"]
+    assert prior_state["current_data"]["source_columns_by_alias"]["prod_src"] == [
+        "DATE",
+        "OPER_NAME",
+        "DEVICE",
+        "PRODUCTION",
+    ]
+
+
+def test_complete_breakdown_question_does_not_hijack_prior_analysis(
+    followup_hint_builder,
+):
+    """An explicit new metric remains a new analysis despite a known column."""
+
+    previous = _production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="오늘 세부 DEVICE별 재공 알려줘",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={
+            "prod_src": ["DATE", "OPER_NAME", "DEVICE", "PRODUCTION"]
+        },
+    )
+    payload.pop("followup_hint")
+
+    hint = followup_hint_builder.build_followup_hint(payload)["followup_hint"]
+
+    assert hint["followup_candidate"] is False
+    assert hint["request_scope_hint"] == "new_analysis"
+    assert hint["source_reuse_candidate"] is False
+
+
+def test_breakdown_column_followup_recovers_clarification_with_prior_blueprint(
+    followup_hint_builder,
+    normalizer,
+    hydrator,
+    retrieval_router,
+):
+    """A weak clarification must not discard an unambiguous source breakdown."""
+
+    previous = _production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="세부 DEVICE별로 보여줄래?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={
+            "prod_src": ["DATE", "OPER_NAME", "DEVICE", "PRODUCTION"]
+        },
+    )
+    payload.pop("followup_hint")
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+
+    clarification = {
+        "intent_plan": {
+            "analysis_kind": "group_by_oper_name_detailed_process",
+            "request_scope": "clarification",
+            "reference_mode": "none",
+            "clarification_needed": True,
+            "clarification_reason": "dataset and metric are ambiguous",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [],
+            "output_contract": {},
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        hinted_payload,
+        json.dumps(clarification, ensure_ascii=False),
+        _candidates(),
+    )
+    plan = normalized["intent_plan"]
+
+    assert plan["request_scope"] == "followup_expand_source"
+    assert plan["reference_mode"] == "previous_source"
+    assert plan["reuse_strategy"] == "previous_source"
+    assert plan["retrieval_jobs"][0]["dataset_key"] == "production_today"
+    assert plan["retrieval_jobs"][0]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": ["W/B1", "W/B2"],
+    }
+    aggregate = plan["pandas_execution_plan"][0]
+    assert aggregate["group_by"] == ["OPER_NAME", "DEVICE"]
+    assert plan["output_contract"]["result_columns"] == [
+        "OPER_NAME",
+        "DEVICE",
+        "PRODUCTION",
+    ]
+
+    hydrated = hydrator.hydrate_retrieval_jobs(
+        normalized,
+        _candidates(),
+        retrieval_mode="dummy",
+    )
+    _assert_previous_source_reuse(
+        hydrated,
+        retrieval_router,
+        expected_aliases=["prod_src"],
+    )
+
+
+def test_breakdown_column_followup_falls_back_fresh_when_source_is_incomplete(
+    followup_hint_builder,
+    normalizer,
+    hydrator,
+):
+    """A breakdown follow-up must never be blocked by an incomplete cache."""
+
+    previous = _production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="세부 DEVICE별로 보여줄래?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={
+            "prod_src": ["DATE", "OPER_NAME", "DEVICE", "PRODUCTION"]
+        },
+        source_ref_complete=False,
+    )
+    payload.pop("followup_hint")
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+
+    clarification = {
+        "intent_plan": {
+            "analysis_kind": "group_by_oper_name_detailed_process",
+            "request_scope": "clarification",
+            "reference_mode": "none",
+            "clarification_needed": True,
+            "clarification_reason": "dataset and metric are ambiguous",
+            "retrieval_jobs": [],
+            "pandas_execution_plan": [],
+            "output_contract": {},
+        }
+    }
+    normalized = normalizer.normalize_intent_plan(
+        hinted_payload,
+        json.dumps(clarification, ensure_ascii=False),
+        _candidates(),
+    )
+    hydrated = hydrator.hydrate_retrieval_jobs(
+        normalized,
+        _candidates(),
+        retrieval_mode="dummy",
+    )
+
+    _assert_fresh_followup(hydrated, expected_aliases=["prod_src"])
+    decision = hydrated["trace"]["inspection"]["catalog_hydration"][
+        "followup_source_reuse_decision"
+    ]
+    assert decision["decision"] == "fresh_retrieval"
+    assert decision["sources"][0]["reason"] == "previous_source_ref_missing_or_incomplete"
 
 
 def test_followup_process_scope_expansion_requeries_previous_analysis_shape(normalizer, hydrator):

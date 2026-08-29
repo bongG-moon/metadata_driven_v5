@@ -354,9 +354,29 @@ def normalize_intent_plan(
         skip=followup_contract_guard.get("kind")
         in {"direct_required_parameter", "dependent_retrieval"},
     )
+    # A column-level breakdown follow-up can be unambiguous even when the
+    # model returned clarification: 01E has already matched the requested
+    # column against the prior source schema.  Restore only a single-source,
+    # aggregate blueprint in that narrow case.  This is deliberately separate
+    # from condition-only inheritance because it changes the result grain,
+    # not retrieval filters.
+    (
+        plan,
+        retrieval_jobs,
+        raw_pandas_plan,
+        breakdown_followup_blueprint_guard,
+    ) = _inherit_breakdown_column_followup_blueprint(
+        payload,
+        plan,
+        retrieval_jobs,
+        raw_pandas_plan,
+        skip=followup_contract_guard.get("kind")
+        in {"direct_required_parameter", "dependent_retrieval"},
+    )
     if (
         unknown_dataset_error
         and condition_only_followup_blueprint_guard.get("status") != "applied"
+        and breakdown_followup_blueprint_guard.get("status") != "applied"
     ):
         return _blocked_catalog_metadata_payload(payload, unknown_dataset_error)
     if followup_contract_guard.get("metadata_ref"):
@@ -1926,6 +1946,167 @@ def _inherit_condition_only_followup_blueprint(
             [str(job.get("dataset_key") or "").strip() for job in retrieval_jobs]
         ),
         "applied_explicit_filter_overrides": applied_overrides,
+        "source_reuse": "deferred_to_catalog_hydration",
+    }
+
+
+# 함수 설명: 직전 원본 schema에 있는 컬럼으로 세부 분해를 요청했는데 LLM이 clarification을 반환한 경우에만 기존 집계 형식을 안전하게 확장합니다.
+def _inherit_breakdown_column_followup_blueprint(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+    *,
+    skip: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[Any], dict[str, Any]]:
+    """Recover one safe source-column breakdown from a clarification plan.
+
+    The deterministic precondition is intentionally strict: the requested
+    dimension must already be present in the stored *source* schema, and the
+    prior plan must be one source with exactly one aggregate step.  More
+    complex joins/calculations remain model-planned so this recovery cannot
+    change established multi-source behavior.
+    """
+
+    hint = (
+        payload.get("followup_hint")
+        if isinstance(payload.get("followup_hint"), dict)
+        else {}
+    )
+    requested_columns = _string_list(hint.get("requested_columns_hint"))
+    if skip:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "higher_priority_followup_contract",
+        }
+    if hint.get("followup_candidate") is not True or not requested_columns:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "no_schema_matched_breakdown_column",
+        }
+
+    request_scope = str(plan.get("request_scope") or "").strip()
+    clarification_needed = plan.get("clarification_needed") is True
+    # A normal executable model plan remains authoritative.  Recover only
+    # when the model returned an explicit clarification or no retrieval plan.
+    if retrieval_jobs and not clarification_needed and request_scope != "clarification":
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "model_supplied_executable_plan",
+        }
+
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    previous_plan = (
+        state.get("last_intent_plan")
+        if isinstance(state.get("last_intent_plan"), dict)
+        else {}
+    )
+    previous_jobs = _retrieval_jobs(previous_plan)
+    previous_steps = (
+        previous_plan.get("pandas_execution_plan")
+        if isinstance(previous_plan.get("pandas_execution_plan"), list)
+        else []
+    )
+    previous_contract = (
+        previous_plan.get("output_contract")
+        if isinstance(previous_plan.get("output_contract"), dict)
+        else {}
+    )
+    if len(previous_jobs) != 1 or not previous_steps or not previous_contract:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "previous_plan_is_not_single_source_aggregate",
+        }
+
+    aggregate_indexes = [
+        index
+        for index, step in enumerate(previous_steps)
+        if isinstance(step, dict)
+        and str(step.get("operation") or "").strip().lower()
+        in {"groupby_and_aggregate", "group_by_and_aggregate", "aggregate"}
+        and (
+            bool(step.get("aggregations") if isinstance(step.get("aggregations"), list) else [])
+            or (
+                str(step.get("agg_column") or "").strip()
+                and str(step.get("agg_method") or "").strip()
+            )
+        )
+    ]
+    if len(aggregate_indexes) != 1:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "previous_plan_is_not_single_aggregate_step",
+        }
+
+    previous_job = previous_jobs[0]
+    source_alias = str(
+        previous_job.get("source_alias") or previous_job.get("dataset_key") or ""
+    ).strip()
+    current_data = state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    source_columns_by_alias = (
+        current_data.get("source_columns_by_alias")
+        if isinstance(current_data.get("source_columns_by_alias"), dict)
+        else {}
+    )
+    source_columns = _string_list(source_columns_by_alias.get(source_alias))
+    resolved_columns: list[str] = []
+    for requested in requested_columns:
+        requested_key = _normalized_column_key(requested)
+        source_column = next(
+            (
+                candidate
+                for candidate in source_columns
+                if _normalized_column_key(candidate) == requested_key
+            ),
+            "",
+        )
+        if not source_column:
+            return plan, retrieval_jobs, pandas_plan, {
+                "status": "not_needed",
+                "reason": "requested_breakdown_column_not_in_previous_source",
+                "requested_columns": requested_columns,
+                "source_alias": source_alias,
+            }
+        if source_column not in resolved_columns:
+            resolved_columns.append(source_column)
+
+    next_steps = deepcopy(previous_steps)
+    aggregate_step = next_steps[aggregate_indexes[0]]
+    existing_group_by = _string_list(
+        aggregate_step.get("group_by") or aggregate_step.get("group_by_columns")
+    )
+    expanded_group_by = _merge_strings(existing_group_by, resolved_columns)
+    aggregate_step["group_by"] = expanded_group_by
+    aggregate_step.pop("group_by_columns", None)
+
+    next_contract = deepcopy(previous_contract)
+    existing_grain = _string_list(next_contract.get("grain_columns"))
+    expanded_grain = _merge_strings(existing_grain, resolved_columns)
+    next_contract["grain_columns"] = expanded_grain
+    for field_name in ("result_columns", "required_columns"):
+        existing_columns = _string_list(next_contract.get(field_name))
+        tail_columns = [
+            column
+            for column in existing_columns
+            if _normalized_column_key(column)
+            not in {_normalized_column_key(item) for item in expanded_grain}
+        ]
+        next_contract[field_name] = _merge_strings(expanded_grain, tail_columns)
+
+    next_plan = deepcopy(previous_plan)
+    next_plan["retrieval_jobs"] = deepcopy(previous_jobs)
+    next_plan["pandas_execution_plan"] = next_steps
+    next_plan["output_contract"] = next_contract
+    next_plan["request_scope"] = "followup_expand_source"
+    next_plan["reference_mode"] = "previous_source"
+    next_plan["reuse_strategy"] = _reuse_strategy("previous_source")
+    return next_plan, deepcopy(previous_jobs), next_steps, {
+        "status": "applied",
+        "kind": "schema_breakdown_blueprint",
+        "reason": "clarification_recovered_from_previous_source_schema",
+        "source_alias": source_alias,
+        "requested_columns": resolved_columns,
+        "group_by": expanded_group_by,
         "source_reuse": "deferred_to_catalog_hydration",
     }
 

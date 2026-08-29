@@ -101,7 +101,17 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     matched_expand = _matched_cues(question, EXPAND_CUES)
     matched_change = _matched_cues(question, CHANGE_CUES)
     matched_entity_switch = _matched_cues(question, ENTITY_SWITCH_CUES)
-    requested_columns = _matched_previous_columns(question, _available_previous_columns(state), matched_expand)
+    # ``세부 DEVICE별``처럼 사용자가 이전 원본의 컬럼을 새 분해 기준으로
+    # 말할 수 있습니다. 이 표현은 "포함" 같은 열 추가 cue가 아니라
+    # "세부/제품별/공정별" 변환 cue를 쓰는 경우가 많으므로, 두 cue 집합을
+    # 함께 사용해야 직전 분석 문맥을 의도 LLM에 전달할 수 있습니다.
+    # 여기서 후보로 표시할 뿐, 실제 재사용/재조회 승인은 뒤의 Catalog
+    # hydration 단계가 필수 파라미터와 source 범위를 보고 결정합니다.
+    requested_columns = _matched_previous_columns(
+        question,
+        _available_previous_columns(state),
+        [*matched_expand, *matched_transform],
+    )
     entity_continuation_columns = _matched_previous_entity_identifiers(question, state)
     context_dependent = _looks_context_dependent(question)
     entity_switch_followup = _looks_entity_switch_followup(question, matched_entity_switch)
@@ -137,6 +147,20 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     )
     if entity_continuation_columns:
         complete_independent_request = False
+    # 직전 집계 결과에는 없지만 저장한 원본 schema에는 있는 컬럼으로
+    # "세부 DEVICE별"처럼 다시 분해하는 *후속* 요청은, 같은 원본을
+    # 재사용할 수 있는 후보입니다. 단순히 세부/상세라는 단어만으로
+    # 승인하지 않고, 실제 이전 source 컬럼과 일치해야 하며 새 지표와
+    # 요청 동사를 갖춘 완결 독립 질문은 제외합니다. complete 여부·필수
+    # 파라미터 동일성·필터 포함 관계는 04A가 다시 증명하고, 하나라도
+    # 불명확하면 여기서 차단하지 않고 fresh query로 전환합니다.
+    source_schema_breakdown_candidate = bool(
+        has_previous
+        and requested_columns
+        and not complete_independent_request
+        and not explicit_requery_requested
+        and not report_reference
+    )
 
     scope_hint = "new_analysis"
     reuse_strategy_hint = "none"
@@ -183,7 +207,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
                 else ["previous_result", "previous_intent_plan", "report_context"]
             )
             inheritance_candidates = ["required_params", "analysis_filters", "pandas_function_cases"]
-        elif requested_columns:
+        elif requested_columns and not complete_independent_request:
             scope_hint = "followup_expand_source"
             reuse_strategy_hint = "previous_source"
             confidence = "high" if requested_columns or matched_references else "medium"
@@ -242,7 +266,10 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             "followup_candidate": scope_hint != "new_analysis",
             "source_reuse_candidate": bool(
                 has_previous
-                and condition_only_followup
+                and (
+                    condition_only_followup
+                    or source_schema_breakdown_candidate
+                )
                 and not explicit_requery_requested
                 and not report_reference
             ),
@@ -551,9 +578,9 @@ def _parse_reference_date(value: Any) -> datetime | None:
         return None
 
 
-# 함수 설명: `_matched_previous_columns()`는 입력 조건과 일치하는 이전 값·컬럼을 찾아 비교·필터 결과로 반환합니다.
-def _matched_previous_columns(question: str, columns: list[str], expand_cues: list[str]) -> list[str]:
-    if not columns or not expand_cues:
+# 함수 설명: `_matched_previous_columns()`는 열 추가·분해 요청 안에서 이전 원본 컬럼을 찾아 후속 후보로 반환합니다.
+def _matched_previous_columns(question: str, columns: list[str], selection_cues: list[str]) -> list[str]:
+    if not columns or not selection_cues:
         return []
     normalized_question = _normalize(question)
     result = []
