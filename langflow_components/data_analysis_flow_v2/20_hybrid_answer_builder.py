@@ -35,6 +35,7 @@ ANSWER_EVIDENCE_COLUMN_LIMIT = 16
 ANSWER_EVIDENCE_CELL_LIMIT = 160
 ANSWER_EVIDENCE_ITEM_LIMIT = 4
 ANSWER_EVIDENCE_MESSAGE_LIMIT = 600
+LLM_TEMPERATURE = 0.0
 PRESENTATION_ROW_NUMBER_KEY = "__display_row_no__"
 PRESENTATION_ROW_NUMBER_LABEL = "No."
 PRESENTATION_CONDITION_KEY_PREFIX = "__applied_condition__"
@@ -2533,6 +2534,7 @@ class HybridAnswerBuilder(Component):
             model=getattr(self, "model", None),
             user_id=getattr(self, "user_id", None),
             api_key=getattr(self, "api_key", None),
+            temperature=LLM_TEMPERATURE,
         )
         if llm is None or not hasattr(llm, "invoke"):
             raise RuntimeError("Answer Language Model이 연결되지 않았습니다.")

@@ -65,6 +65,7 @@ STANDALONE_REQUEST_CUES = (
 ANALYSIS_SUBJECT_CUES = (
     "재공", "wip", "생산량", "생산 실적", "실적", "production", "uph", "장비", "설비",
     "equipment", "eqp", "계획", "target", "hold", "홀드", "lot", "랏", "로트",
+    "가동율", "가동률", "capa", "capacity", "보유capa", "보유 capa",
 )
 DATE_CUE_PATTERN = re.compile(
     r"(\b20\d{6}\b|(?<!\d)\d{1,2}/\d{1,2}(?:일)?(?!\d)|(?<!\d)\d{1,2}월\s*\d{1,2}일(?!\d)|"
@@ -118,17 +119,15 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     )
     fresh_data_requested = bool(matched_fresh)
     explicit_requery_requested = fresh_data_requested
-    filter_change_can_reuse_source = bool(
-        reusable_source_aliases
-        and (matched_change or entity_switch_followup)
-        and not explicit_requery_requested
-        and (
-            not date_hint
-            or (
-                date_hint.get("source") == "previous_context"
-                and date_hint.get("requires_clarification") is not True
-            )
-        )
+    # 01E는 문맥상 "조건만 바꾼 후속 질문"인지만 표시합니다. 이전 원본이
+    # 실제로 새 조건을 포함하는지(또는 저장 원본이 완전한지)는 이 단계에서
+    # 알 수 없으므로 previous_source를 확정하지 않습니다. 04A가 Catalog로
+    # 정규화된 required_params/filter를 비교한 뒤에만 재사용을 승인합니다.
+    condition_only_followup = _looks_condition_only_followup(
+        question,
+        entity_switch_followup=entity_switch_followup,
+        matched_change=matched_change,
+        date_hint=date_hint,
     )
     complete_independent_request = _looks_complete_independent_request(
         question,
@@ -208,12 +207,15 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             confidence = "high" if matched_references else "medium"
             required_artifacts = ["previous_source", "previous_result", "previous_intent_plan"]
             inheritance_candidates = ["metric", "required_params", "analysis_filters", "group_by", "pandas_function_cases"]
-        elif filter_change_can_reuse_source:
-            scope_hint = "followup_transform"
-            reuse_strategy_hint = "previous_source"
-            confidence = "medium"
-            required_artifacts = ["previous_source", "previous_intent_plan", "previous_applied_criteria"]
-            inheritance_candidates = ["metric", "required_params", "group_by", "pandas_function_cases", "output_contract"]
+        elif condition_only_followup:
+            # 실행 형식은 이전 분석을 참고하되, 원본 데이터는 기본적으로 새
+            # 조회로 둡니다. 이후 04A가 모든 source의 범위 포함을 입증할 때만
+            # previous_source로 바꿉니다.
+            scope_hint = "followup_requery"
+            reuse_strategy_hint = "previous_intent_with_new_retrieval"
+            confidence = "high" if entity_switch_followup or date_hint else "medium"
+            required_artifacts = ["previous_intent_plan", "previous_applied_criteria"]
+            inheritance_candidates = ["metric", "analysis_filters", "group_by", "pandas_function_cases", "output_contract"]
         elif matched_change or (
             date_hint
             and (matched_references or context_dependent)
@@ -238,6 +240,15 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     hint = _omit_empty(
         {
             "followup_candidate": scope_hint != "new_analysis",
+            "source_reuse_candidate": bool(
+                has_previous
+                and condition_only_followup
+                and not explicit_requery_requested
+                and not report_reference
+            ),
+            "condition_only_followup_candidate": bool(
+                has_previous and condition_only_followup
+            ),
             "request_scope_hint": scope_hint,
             "reuse_strategy_hint": reuse_strategy_hint,
             "confidence": confidence,
@@ -253,6 +264,11 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
                     "expand": matched_expand,
                     "change": matched_change,
                     "entity_switch": matched_entity_switch,
+                    # `WB공정은?`처럼 entity 전환은 분명하지만 등록 cue 문자와
+                    # 직접 일치하지 않는 짧은 질문도 있습니다. 이 표시는 이전
+                    # 분석 형식 상속 후보를 판정하는 용도이며, 원본 재사용 승인은
+                    # 이후 04A의 Catalog/범위 비교에서만 결정됩니다.
+                    "entity_switch_detected": ["condition_only"] if entity_switch_followup else [],
                     "previous_entity_identifiers": entity_continuation_columns,
                 }
             ),
@@ -614,15 +630,67 @@ def _looks_context_dependent(question: str) -> bool:
 def _looks_entity_switch_followup(question: str, matched_entity_switch: list[str]) -> bool:
     text = str(question or "")
     normalized = _normalize(text)
-    if not normalized or not matched_entity_switch:
+    if not normalized:
         return False
     has_entity = any(_normalize(token) in normalized for token in ("공정", "제품", "장비", "설비", "lot", "랏", "로트"))
     has_open_question = any(_normalize(token) in normalized for token in ("어때", "어땠", "어떻게", "어떤가"))
     has_new_analysis_subject = any(_normalize(cue) in normalized for cue in ANALYSIS_SUBJECT_CUES)
     has_request = any(_normalize(cue) in normalized for cue in STANDALONE_REQUEST_CUES)
+    # "WB공정은?"처럼 지표·동사 없이 범위만 바꾼 짧은 표현은 명시적인
+    # entity-switch cue가 없더라도 앞선 분석의 조건 변경 후보입니다.
+    bare_entity_question = bool(
+        re.search(
+            r"(?:공정|제품|장비|설비|lot|랏|로트)(?:은|는|은요|는요)?(?:\?|$)",
+            str(text).strip(),
+            flags=re.IGNORECASE,
+        )
+    )
+    # `OPER에서는?`, `자재는?`처럼 도메인 명사를 사전에 열거하지 않아도
+    # 조건만 바꾼 짧은 후속 질문일 수 있습니다. 지표·요청 동사가 없는 경우에만
+    # 이 문장 형태를 인정하므로, 완결된 신규 분석 질문은 기존처럼 새 분석으로
+    # 남습니다.
+    bare_condition_question = bool(
+        len(normalized) <= 40
+        and re.search(
+            r"[A-Za-z0-9가-힣_./-]+(?:에서는|에선|은요|는요|은|는)\??$",
+            str(text).strip(),
+            flags=re.IGNORECASE,
+        )
+    )
     # 지표와 요청 동사가 모두 명시된 완결 질문은 새 분석 후보로 남기고,
     # 엔티티와 비교 표현만 있는 짧은 질문만 이전 조건을 상속하도록 힌트를 줍니다.
-    return has_entity and has_open_question and not (has_new_analysis_subject and has_request)
+    return (
+        (has_entity or bool(matched_entity_switch) or bare_condition_question)
+        and (bool(matched_entity_switch) or has_open_question or bare_entity_question or bare_condition_question)
+        and not has_new_analysis_subject
+        and not has_request
+    )
+
+
+# 함수 설명: 조건만 바뀐 짧은 후속 질문을 감지해 분석 형식 상속 후보로 표시합니다.
+def _looks_condition_only_followup(
+    question: str,
+    *,
+    entity_switch_followup: bool,
+    matched_change: list[str],
+    date_hint: dict[str, Any],
+) -> bool:
+    normalized = _normalize(question)
+    if not normalized:
+        return False
+    if any(_normalize(cue) in normalized for cue in ENTITY_DETAIL_CUES):
+        return False
+    # 지표와 요청 동사가 모두 있으면 독립 분석일 수 있으므로 기존 LLM 계획을
+    # 존중합니다. 한쪽만 있는 짧은 표현은 아직 문맥 의존 후보로 남깁니다.
+    has_subject = any(_normalize(cue) in normalized for cue in ANALYSIS_SUBJECT_CUES)
+    has_request = any(_normalize(cue) in normalized for cue in STANDALONE_REQUEST_CUES)
+    if has_subject and has_request:
+        return False
+    if entity_switch_followup or date_hint:
+        return True
+    # "다른 제품은?"처럼 명시적인 변경 표현은 source 재사용 승인 대상은
+    # 아니지만, 상위 계획을 참고해 새 조회를 구성할 수 있는 후속 후보입니다.
+    return bool(matched_change and len(normalized) <= 40 and not has_subject)
 
 
 # 함수 설명: 날짜가 있어도 지표와 요청 동사가 모두 명시된 완결 질문은 이전 세션에 의존하지 않는 새 분석으로 판정합니다.

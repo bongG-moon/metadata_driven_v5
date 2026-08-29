@@ -34,6 +34,7 @@ DEFAULT_SYSTEM_MESSAGE = (
     "Plan only from the supplied Report query-source contract. Return exactly one JSON object "
     "and never request, infer, or join a live source."
 )
+LLM_TEMPERATURE = 0.0
 NON_READY_STATUSES = {"blocked", "handoff_required", "clarification_required"}
 
 
@@ -159,7 +160,7 @@ class ReportFollowupGuardedPlanRouter(Component):
             advanced=False,
         ),
         BoolInput(name="stream", display_name="Stream", value=False, advanced=True),
-        SliderInput(name="temperature", display_name="Temperature", value=0.1, advanced=True),
+        SliderInput(name="temperature", display_name="Temperature", value=LLM_TEMPERATURE, advanced=True),
         IntInput(name="max_tokens", display_name="Max Tokens", value=1800, advanced=True),
     ]
     outputs = [Output(name="text_output", display_name="Report 후속 계획 응답", method="build_response", types=["Message"])]
@@ -191,7 +192,7 @@ class ReportFollowupGuardedPlanRouter(Component):
             model=model,
             user_id=getattr(self, "user_id", None),
             api_key=getattr(self, "api_key", None),
-            temperature=getattr(self, "temperature", 0.1),
+            temperature=getattr(self, "temperature", LLM_TEMPERATURE),
             stream=getattr(self, "stream", False),
             max_tokens=getattr(self, "max_tokens", 1800),
         )

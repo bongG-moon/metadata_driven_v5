@@ -594,10 +594,28 @@ def _build_data_refs(
     runtime_sources = payload.get("runtime_sources") if isinstance(payload.get("runtime_sources"), dict) else {}
     included_source_aliases = _runtime_source_aliases_for_store(payload, runtime_sources)
     source_result_by_alias = _source_result_by_alias(payload.get("source_results"))
+    source_manifest = (
+        storage_manifest.get("runtime_sources")
+        if isinstance(storage_manifest, dict)
+        and isinstance(storage_manifest.get("runtime_sources"), dict)
+        else {}
+    )
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    retrieval_mode = str(request.get("retrieval_mode") or "").strip().lower()
     for alias, rows in runtime_sources.items():
         if not isinstance(rows, list) or str(alias) not in included_source_aliases:
             continue
         source_result = source_result_by_alias.get(str(alias), {})
+        manifest_item = (
+            source_manifest.get(str(alias))
+            if isinstance(source_manifest.get(str(alias)), dict)
+            else {}
+        )
+        source_execution = (
+            source_result.get("source_execution")
+            if isinstance(source_result.get("source_execution"), dict)
+            else {}
+        )
         refs.append(
             _data_ref_object(
                 ref_id,
@@ -611,6 +629,16 @@ def _build_data_refs(
                 source_alias=str(alias),
                 dataset_key=source_result.get("dataset_key"),
                 source_type=source_result.get("source_type"),
+                # The next-turn source-reuse policy must know whether the
+                # persisted raw rows are complete.  This is metadata only;
+                # absent/false values safely fall back to a fresh query.
+                complete=manifest_item.get("complete"),
+                # A raw dummy fixture must not be silently reused after the
+                # caller has switched the same session to live retrieval (or
+                # vice versa).  04A treats an absent/mismatched marker as a
+                # normal fresh-query decision, never as an execution block.
+                retrieval_mode=retrieval_mode,
+                used_dummy_data=source_execution.get("used_dummy_data"),
             )
         )
     intermediate_artifacts = _intermediate_artifacts_for_store(payload)

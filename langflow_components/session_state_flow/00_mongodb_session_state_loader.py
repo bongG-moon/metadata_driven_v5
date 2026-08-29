@@ -292,6 +292,22 @@ def _compact_source_result(source: dict[str, Any], preview_limit: int) -> dict[s
     ):
         if source.get(key) not in (None, "", [], {}):
             result[key] = deepcopy(source[key])
+    execution = (
+        source.get("source_execution")
+        if isinstance(source.get("source_execution"), dict)
+        else {}
+    )
+    compact_execution = {
+        key: deepcopy(execution[key])
+        for key in (
+            "params_applied_in_retriever",
+            "filters_applied_in_retriever",
+            "applied_filter_fields",
+        )
+        if execution.get(key) not in (None, "", [], {})
+    }
+    if compact_execution:
+        result["source_execution"] = compact_execution
     rows = _rows_from(source)
     if rows and not isinstance(result.get("data_ref"), dict):
         result["rows"] = deepcopy(rows[:preview_limit])

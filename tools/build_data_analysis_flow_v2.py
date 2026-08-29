@@ -384,6 +384,13 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         node_index[RETRIEVAL_VALIDATOR_NODE_ID],
         _common_component_path("06_retrieval_job_validator.py"),
     )
+    # 07 receives hydrated execution-provider tags from 04A.  Refresh it
+    # alongside the validator so an imported Flow does not re-dispatch a
+    # prior-source placeholder and overwrite Mongo-restored rows.
+    _set_embedded_source(
+        node_index["CustomComponent-x6NXu"],
+        _common_component_path("07_retrieval_job_router.py"),
+    )
     _set_embedded_source(
         node_index[EXECUTION_GATE_NODE_ID],
         _common_component_path("14a_retrieval_execution_gate.py"),

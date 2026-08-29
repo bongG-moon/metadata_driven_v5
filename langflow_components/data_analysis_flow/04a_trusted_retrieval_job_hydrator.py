@@ -35,6 +35,9 @@ UNTRUSTED_JOB_KEYS = {
     "row_identity_columns",
     "default_detail_columns",
     "context_columns",
+    # This marker is written only below after Catalog hydration verifies a
+    # complete previous-source contract.  A model must never select it.
+    "execution_provider",
 }
 SECRET_KEYS = {
     "password",
@@ -56,6 +59,8 @@ SAFE_CATALOG_JOB_KEYS = (
     "metric_semantics",
 )
 RETIRED_OUTPUT_CONTRACT_KEYS = {"row_identity_columns", "context_columns", "default_detail_columns"}
+PREVIOUS_SOURCE_PROVIDER = "previous_source"
+FRESH_RETRIEVAL_PROVIDER = "retrieval_job"
 
 
 # 주요 함수: 활성 카탈로그를 기준으로 조회 작업의 source 설정을 다시 구성합니다.
@@ -244,6 +249,16 @@ def hydrate_retrieval_jobs(
         plan,
         hydrated,
     )
+    (
+        plan,
+        hydrated,
+        followup_source_reuse_decision,
+    ) = _resolve_followup_source_reuse(
+        next_payload,
+        plan,
+        hydrated,
+    )
+    plan["retrieval_jobs"] = hydrated
     next_payload["intent_plan"] = plan
     next_payload["metadata_refs"] = _merge_refs(_list(next_payload.get("metadata_refs")), used_refs)
     trace = next_payload.setdefault("trace", {})
@@ -261,6 +276,7 @@ def hydrate_retrieval_jobs(
         "deferred_upstream_params": deferred_upstream_params,
         "condition_reconciliation": condition_reconciliation,
         "execution_contract_normalization": execution_contract_normalization,
+        "followup_source_reuse_decision": followup_source_reuse_decision,
     }
     return next_payload
 
@@ -883,6 +899,515 @@ def _normalize_hydrated_execution_contracts(
         "changes": changes,
         "conflicts": conflicts,
     }
+
+
+# 함수 설명: Catalog로 정규화된 조건과 이전 source 범위를 비교해 원본 재사용 여부를 한 번만 결정합니다.
+def _resolve_followup_source_reuse(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    hydrated_jobs: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """Approve source reuse only when every participating source is proven safe.
+
+    This is intentionally a *routing optimisation*, not another execution
+    gate.  Any uncertainty keeps the trusted retrieval jobs and therefore
+    falls back to the normal fresh-query path.
+    """
+
+    hint = _dict(payload.get("followup_hint"))
+    if hint.get("source_reuse_candidate") is not True:
+        return plan, hydrated_jobs, {
+            "status": "not_needed",
+            "decision": "not_applicable",
+            "reason": "not_condition_only_followup",
+        }
+    if hint.get("report_reference") is True:
+        return plan, hydrated_jobs, {
+            "status": "not_needed",
+            "decision": "not_applicable",
+            "reason": "report_reference_uses_its_own_snapshot_contract",
+        }
+    if not hydrated_jobs:
+        return plan, hydrated_jobs, {
+            "status": "not_needed",
+            "decision": "fresh_retrieval",
+            "reason": "no_hydrated_retrieval_jobs",
+        }
+
+    raw_reference_mode = str(plan.get("reference_mode") or "").strip()
+    if raw_reference_mode in {
+        "previous_result",
+        "previous_result_rows",
+        "previous_result_transform",
+        "previous_trace",
+    }:
+        return plan, hydrated_jobs, {
+            "status": "not_needed",
+            "decision": "not_applicable",
+            "reason": "previous_result_contract",
+        }
+
+    state = _dict(payload.get("state"))
+    previous_plan = _dict(state.get("last_intent_plan"))
+    previous_jobs = _list(previous_plan.get("retrieval_jobs"))
+    if not previous_jobs:
+        return _apply_fresh_followup_retrieval(
+            plan,
+            hydrated_jobs,
+            {
+                "status": "fresh",
+                "decision": "fresh_retrieval",
+                "reason": "previous_retrieval_contract_missing",
+                "sources": [],
+            },
+        )
+
+    if _list(plan.get("pandas_function_cases")) or _list(previous_plan.get("pandas_function_cases")):
+        return _apply_fresh_followup_retrieval(
+            plan,
+            hydrated_jobs,
+            {
+                "status": "fresh",
+                "decision": "fresh_retrieval",
+                "reason": "function_case_scope_not_provable",
+                "sources": [],
+            },
+        )
+
+    source_refs = _dict(state.get("runtime_source_refs"))
+    criteria = _dict(state.get("last_applied_criteria"))
+    current_retrieval_mode = _mode(
+        _dict(payload.get("request")).get("retrieval_mode")
+    )
+    current_aliases: set[str] = set()
+    matched_previous_sources: set[tuple[str, str]] = set()
+    expected_previous_sources: set[tuple[str, str]] = {
+        (
+            _source_alias(item),
+            str(item.get("dataset_key") or "").strip(),
+        )
+        for item in previous_jobs
+        if isinstance(item, dict)
+        and _source_alias(item)
+        and str(item.get("dataset_key") or "").strip()
+    }
+    source_decisions: list[dict[str, Any]] = []
+    # Do not let a weak abbreviated plan reuse only one side of a prior join.
+    # Exact alias spelling may change, but every old source must map once and
+    # only once to a current hydrated job before any raw row is reused.
+    eligible = bool(expected_previous_sources) and len(hydrated_jobs) == len(expected_previous_sources)
+    if not eligible:
+        source_decisions.append(
+            {
+                "decision": "fresh_retrieval",
+                "reason": "current_and_previous_source_sets_do_not_match",
+                "current_job_count": len(hydrated_jobs),
+                "previous_source_count": len(expected_previous_sources),
+            }
+        )
+    for job in hydrated_jobs:
+        alias = _source_alias(job)
+        if not alias or alias in current_aliases:
+            eligible = False
+            source_decisions.append(
+                {
+                    "source_alias": alias,
+                    "decision": "fresh_retrieval",
+                    "reason": "current_source_alias_missing_or_duplicated",
+                }
+            )
+            continue
+        current_aliases.add(alias)
+        previous_job, match_reason = _match_previous_retrieval_job(job, previous_jobs)
+        if not previous_job:
+            eligible = False
+            source_decisions.append(
+                {
+                    "source_alias": alias,
+                    "dataset_key": str(job.get("dataset_key") or ""),
+                    "decision": "fresh_retrieval",
+                    "reason": match_reason,
+                }
+            )
+            continue
+        previous_marker = (
+            _source_alias(previous_job),
+            str(previous_job.get("dataset_key") or "").strip(),
+        )
+        if not all(previous_marker):
+            eligible = False
+            source_decisions.append(
+                {
+                    "source_alias": alias,
+                    "decision": "fresh_retrieval",
+                    "reason": "previous_source_identity_missing",
+                }
+            )
+            continue
+        if previous_marker in matched_previous_sources:
+            eligible = False
+            source_decisions.append(
+                {
+                    "source_alias": alias,
+                    "dataset_key": str(job.get("dataset_key") or ""),
+                    "decision": "fresh_retrieval",
+                    "reason": "previous_source_matched_more_than_once",
+                }
+            )
+            continue
+        matched_previous_sources.add(previous_marker)
+        comparison = _compare_previous_source_scope(
+            job,
+            previous_job,
+            criteria,
+            source_refs,
+            current_retrieval_mode,
+        )
+        source_decisions.append(comparison)
+        if comparison.get("decision") != "reuse_previous_source":
+            eligible = False
+
+    if matched_previous_sources != expected_previous_sources:
+        eligible = False
+        source_decisions.append(
+            {
+                "decision": "fresh_retrieval",
+                "reason": "current_and_previous_source_sets_do_not_match",
+                "matched_previous_sources": sorted(
+                    {f"{alias}:{dataset}" for alias, dataset in matched_previous_sources}
+                ),
+                "expected_previous_sources": sorted(
+                    {f"{alias}:{dataset}" for alias, dataset in expected_previous_sources}
+                ),
+            }
+        )
+
+    decision = {
+        "status": "reused" if eligible else "fresh",
+        "decision": "reuse_previous_source" if eligible else "fresh_retrieval",
+        "policy": "all_sources_must_be_proven",
+        "reason": (
+            "all_source_required_params_and_filters_are_proven_contained"
+            if eligible
+            else "one_or_more_sources_are_not_proven_reusable"
+        ),
+        "sources": source_decisions,
+    }
+    if eligible:
+        return _apply_previous_source_reuse(plan, hydrated_jobs, decision)
+    return _apply_fresh_followup_retrieval(plan, hydrated_jobs, decision)
+
+
+# 함수 설명: 이전 job은 alias를 우선하고, dataset이 유일할 때만 fallback으로 연결합니다.
+def _match_previous_retrieval_job(
+    current_job: dict[str, Any],
+    previous_jobs: list[Any],
+) -> tuple[dict[str, Any], str]:
+    alias = _source_alias(current_job)
+    dataset_key = str(current_job.get("dataset_key") or "").strip()
+    exact_alias = [
+        item
+        for item in previous_jobs
+        if isinstance(item, dict) and _source_alias(item) == alias
+    ]
+    if len(exact_alias) == 1:
+        return deepcopy(exact_alias[0]), "source_alias_match"
+    if len(exact_alias) > 1:
+        return {}, "previous_source_alias_ambiguous"
+    same_dataset = [
+        item
+        for item in previous_jobs
+        if isinstance(item, dict)
+        and str(item.get("dataset_key") or "").strip() == dataset_key
+    ]
+    if len(same_dataset) == 1:
+        return deepcopy(same_dataset[0]), "unique_dataset_match"
+    if len(same_dataset) > 1:
+        return {}, "previous_dataset_match_ambiguous"
+    return {}, "previous_dataset_not_found"
+
+
+# 함수 설명: 하나의 source에 대해 dataset·필수 조건·filter 범위·저장 완전성을 보수적으로 비교합니다.
+def _compare_previous_source_scope(
+    current_job: dict[str, Any],
+    previous_job: dict[str, Any],
+    criteria: dict[str, Any],
+    source_refs: dict[str, Any],
+    current_retrieval_mode: str,
+) -> dict[str, Any]:
+    alias = _source_alias(current_job)
+    dataset_key = str(current_job.get("dataset_key") or "").strip()
+    previous_alias = _source_alias(previous_job)
+    previous_dataset = str(previous_job.get("dataset_key") or "").strip()
+    result: dict[str, Any] = {
+        "source_alias": alias,
+        "dataset_key": dataset_key,
+        "previous_source_alias": previous_alias,
+        "previous_dataset_key": previous_dataset,
+        "decision": "fresh_retrieval",
+    }
+    if not dataset_key or dataset_key != previous_dataset:
+        result["reason"] = "dataset_changed"
+        return result
+
+    source_ref = _dict(source_refs.get(previous_alias)) or _dict(source_refs.get(alias))
+    if (
+        str(source_ref.get("ref_id") or "").strip()
+        and str(source_ref.get("role") or "").strip() == "source_rows"
+        and source_ref.get("complete") is True
+    ):
+        result["source_ref_complete"] = True
+    else:
+        result["reason"] = "previous_source_ref_missing_or_incomplete"
+        return result
+
+    stored_retrieval_mode = str(source_ref.get("retrieval_mode") or "").strip().lower()
+    if not stored_retrieval_mode:
+        result["reason"] = "previous_source_retrieval_mode_unproven"
+        return result
+    if stored_retrieval_mode != current_retrieval_mode:
+        result["reason"] = "previous_source_retrieval_mode_changed"
+        result["previous_retrieval_mode"] = stored_retrieval_mode
+        result["current_retrieval_mode"] = current_retrieval_mode
+        return result
+
+    previous_params = _previous_source_criteria(
+        criteria,
+        "required_params",
+        previous_alias,
+        previous_dataset,
+    ) or _dict(previous_job.get("required_params"))
+    current_params = _dict(current_job.get("required_params"))
+    required_names = _string_list(current_job.get("required_param_names"))
+    missing_or_changed_params: list[str] = []
+    for name in required_names:
+        current_value = _casefold_dict_value(current_params, name)
+        previous_value = _casefold_dict_value(previous_params, name)
+        if _blank_required_param_value(current_value) or _blank_required_param_value(previous_value):
+            missing_or_changed_params.append(str(name))
+            continue
+        if _condition_value_signature(current_value) != _condition_value_signature(previous_value):
+            missing_or_changed_params.append(str(name))
+    if missing_or_changed_params:
+        result["reason"] = "required_params_changed_or_unproven"
+        result["required_params"] = missing_or_changed_params
+        return result
+
+    previous_filters = _previous_source_criteria(
+        criteria,
+        "analysis_filters",
+        previous_alias,
+        previous_dataset,
+    ) or _dict(previous_job.get("filters"))
+    current_filters = _dict(current_job.get("filters"))
+    filters_contained, filter_reason, filter_fields = _filters_are_proven_subset(
+        current_filters,
+        previous_filters,
+    )
+    if not filters_contained:
+        result["reason"] = filter_reason
+        result["filter_fields"] = filter_fields
+        return result
+
+    result["decision"] = "reuse_previous_source"
+    result["reason"] = "required_params_equal_and_filters_subset"
+    result["required_params"] = required_names
+    result["filter_fields"] = filter_fields
+    return result
+
+
+# 함수 설명: alias/dataset 기준으로 저장된 실제 적용 조건을 찾고 legacy 평면 구조도 읽습니다.
+def _previous_source_criteria(
+    criteria: dict[str, Any],
+    section: str,
+    alias: str,
+    dataset_key: str,
+) -> dict[str, Any]:
+    container = _dict(criteria.get(section))
+    for key in (alias, dataset_key):
+        value = container.get(key)
+        if isinstance(value, dict):
+            return deepcopy(value)
+    # Legacy state may contain one source's values directly, e.g.
+    # {"DATE": "20260829"} or {"OPER_NAME": {"operator": "in", ...}}.
+    if container and not any(isinstance(value, dict) and _looks_like_source_scope(value) for value in container.values()):
+        return deepcopy(container)
+    return {}
+
+
+# 함수 설명: source alias가 아니라 조건 field map인지 구분하기 위한 작은 구조 판별기입니다.
+def _looks_like_source_scope(value: dict[str, Any]) -> bool:
+    if not value:
+        return False
+    return any(
+        isinstance(item, dict)
+        for item in value.values()
+    ) and not any(key in value for key in ("operator", "op", "value", "values"))
+
+
+# 함수 설명: filter dict를 canonical field별 eq/in 값 집합으로만 해석합니다.
+def _filters_are_proven_subset(
+    current_filters: dict[str, Any],
+    previous_filters: dict[str, Any],
+) -> tuple[bool, str, list[str]]:
+    current, current_error = _normalized_filter_map(current_filters)
+    previous, previous_error = _normalized_filter_map(previous_filters)
+    if current_error:
+        return False, "current_filter_operator_or_shape_unproven", current_error
+    if previous_error:
+        return False, "previous_filter_operator_or_shape_unproven", previous_error
+    compared_fields: list[str] = []
+    for field, previous_values in previous.items():
+        current_values = current.get(field)
+        if current_values is None:
+            return False, "previous_filter_removed_or_widened", [field]
+        compared_fields.append(field)
+        if not current_values.issubset(previous_values):
+            return False, "current_filter_outside_previous_scope", [field]
+    for field, current_values in current.items():
+        if field not in previous:
+            compared_fields.append(field)
+    return True, "filters_subset", sorted(set(compared_fields))
+
+
+# 함수 설명: filter value/operator의 불확실성을 안전한 fresh-query 신호로 바꿉니다.
+def _normalized_filter_map(filters: dict[str, Any]) -> tuple[dict[str, set[str]], list[str]]:
+    result: dict[str, set[str]] = {}
+    errors: list[str] = []
+    for raw_field, raw_condition in filters.items():
+        field = _contract_key(raw_field)
+        if not field:
+            errors.append(str(raw_field))
+            continue
+        condition = raw_condition if isinstance(raw_condition, dict) else {"operator": "eq", "value": raw_condition}
+        operator = str(condition.get("operator") or condition.get("op") or "eq").strip().lower()
+        if operator in {"=", "=="}:
+            operator = "eq"
+        if operator not in {"eq", "in"}:
+            errors.append(field)
+            continue
+        raw_values = condition.get("values", condition.get("value"))
+        values = raw_values if isinstance(raw_values, (list, tuple, set)) else [raw_values]
+        normalized_values: set[str] = set()
+        for value in values:
+            if isinstance(value, (dict, list, tuple, set)) or value is None:
+                errors.append(field)
+                normalized_values = set()
+                break
+            text = str(value).strip().casefold()
+            if not text:
+                errors.append(field)
+                normalized_values = set()
+                break
+            normalized_values.add(text)
+        if not normalized_values:
+            continue
+        existing = result.get(field)
+        if existing is not None and existing != normalized_values:
+            errors.append(field)
+            continue
+        result[field] = normalized_values
+    return result, sorted(set(errors))
+
+
+# 함수 설명: required parameter의 문자열·숫자 표기 차이를 비교 가능한 작은 값 집합으로 정규화합니다.
+def _condition_value_signature(value: Any) -> tuple[str, ...]:
+    if isinstance(value, dict):
+        if "values" in value:
+            value = value.get("values")
+        elif "value" in value:
+            value = value.get("value")
+        else:
+            return ()
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for item in values:
+        if isinstance(item, (dict, list, tuple, set)) or item is None:
+            return ()
+        text = str(item).strip().casefold()
+        if not text:
+            return ()
+        if text not in result:
+            result.append(text)
+    return tuple(sorted(result))
+
+
+# 함수 설명: 승인된 모든 source를 동일하게 previous_source로 표시해 fresh/old 혼합 join을 막습니다.
+def _apply_previous_source_reuse(
+    plan: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    decision: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    next_plan = deepcopy(plan)
+    next_jobs = []
+    aliases: list[str] = []
+    for job in jobs:
+        next_job = deepcopy(job)
+        next_job["execution_provider"] = PREVIOUS_SOURCE_PROVIDER
+        next_jobs.append(next_job)
+        alias = _source_alias(next_job)
+        if alias:
+            aliases.append(alias)
+    next_plan["reference_mode"] = "previous_source"
+    next_plan["request_scope"] = "followup_transform"
+    next_plan["reuse_strategy"] = "previous_source"
+    next_plan["followup_source_reuse"] = {
+        "managed_by": "04a_trusted_retrieval_job_hydrator",
+        "decision": "reuse_previous_source",
+        "source_aliases": aliases,
+        "fresh_fallback": True,
+    }
+    _patch_execution_graph_providers(next_plan, set(aliases), PREVIOUS_SOURCE_PROVIDER)
+    return next_plan, next_jobs, decision
+
+
+# 함수 설명: 재사용 근거가 부족하면 normal fresh retrieval 상태를 명시적으로 복원합니다.
+def _apply_fresh_followup_retrieval(
+    plan: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    decision: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    next_plan = deepcopy(plan)
+    next_jobs: list[dict[str, Any]] = []
+    aliases: set[str] = set()
+    for job in jobs:
+        next_job = deepcopy(job)
+        next_job.pop("execution_provider", None)
+        next_jobs.append(next_job)
+        alias = _source_alias(next_job)
+        if alias:
+            aliases.add(alias)
+    next_plan["reference_mode"] = "previous_filters"
+    next_plan["request_scope"] = "followup_requery"
+    next_plan["reuse_strategy"] = "previous_intent_with_new_retrieval"
+    next_plan["followup_source_reuse"] = {
+        "managed_by": "04a_trusted_retrieval_job_hydrator",
+        "decision": "fresh_retrieval",
+        "source_aliases": sorted(aliases),
+        "fresh_fallback": False,
+    }
+    _patch_execution_graph_providers(next_plan, aliases, FRESH_RETRIEVAL_PROVIDER)
+    return next_plan, next_jobs, decision
+
+
+# 함수 설명: Typed execution graph의 leaf provider를 job 실행 방식과 동기화합니다.
+def _patch_execution_graph_providers(
+    plan: dict[str, Any],
+    aliases: set[str],
+    provider: str,
+) -> None:
+    graph = plan.get("resolved_execution_graph")
+    if not isinstance(graph, dict) or not aliases:
+        return
+    next_graph = deepcopy(graph)
+    requirements = next_graph.get("external_source_requirements")
+    if isinstance(requirements, list):
+        for item in requirements:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("source_alias") or "").strip() in aliases:
+                item["provider"] = provider
+    plan["resolved_execution_graph"] = next_graph
 
 
 # 함수 설명: Table Catalog의 canonical→physical mapping을 역전해 유일하게 확정되는 physical alias만 표준 key로 연결합니다.

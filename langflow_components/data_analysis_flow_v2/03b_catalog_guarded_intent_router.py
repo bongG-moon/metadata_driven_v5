@@ -25,6 +25,9 @@ from lfx.io import DataInput, MessageTextInput, ModelInput, Output, SecretStrInp
 from lfx.schema.message import Message
 
 
+LLM_TEMPERATURE = 0.0
+
+
 # 함수 설명: Table Catalog가 유효한 경우에만 의도 모델을 호출하고, 오류면 모델 호출 없이 차단 계획을 반환합니다.
 def route_intent_response(
     payload_value: Any,
@@ -275,6 +278,7 @@ class CatalogGuardedIntentRouter(Component):
             model=getattr(self, "model", None),
             user_id=getattr(self, "user_id", None),
             api_key=getattr(self, "api_key", None),
+            temperature=LLM_TEMPERATURE,
         )
         if llm is None or not hasattr(llm, "invoke"):
             raise RuntimeError("Intent analysis language model is not connected.")

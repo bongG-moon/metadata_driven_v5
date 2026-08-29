@@ -40,6 +40,7 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
     report_reference = bool(report_context_ref)
     mongo_uri, mongo_database, collection_name = _resolve_config(mongo_uri, mongo_database, collection_name)
     next_payload = payload
+    automatic_source_reuse = _automatic_source_reuse_fallback_enabled(next_payload)
 
     if not explicit_orchestration and _report_reference_unresolved(next_payload):
         return _mark_error(
@@ -62,6 +63,15 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
 
     requested_aliases = _requested_source_aliases(next_payload) if reuse_strategy == "previous_source" else []
     if reuse_strategy == "previous_source" and not requested_aliases:
+        if automatic_source_reuse:
+            return _fallback_to_fresh_retrieval(
+                next_payload,
+                mongo_database,
+                collection_name,
+                "",
+                "missing_previous_source_alias",
+                "이전 원본 alias를 확인하지 못해 새 데이터 조회로 전환했습니다.",
+            )
         return _mark_error(
             next_payload,
             mongo_database,
@@ -75,6 +85,15 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
 
     ref = explicit_ref or report_context_ref or _find_data_ref(payload)
     if not ref:
+        if automatic_source_reuse:
+            return _fallback_to_fresh_retrieval(
+                next_payload,
+                mongo_database,
+                collection_name,
+                "",
+                "missing_data_ref",
+                "이전 원본 참조가 없어 새 데이터 조회로 전환했습니다.",
+            )
         return _mark_error(
             next_payload,
             mongo_database,
@@ -83,6 +102,15 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
             [{"type": "missing_data_ref", "message": "후속 분석에 필요한 이전 data_ref가 없습니다."}],
         )
     if not mongo_uri:
+        if automatic_source_reuse:
+            return _fallback_to_fresh_retrieval(
+                next_payload,
+                mongo_database,
+                collection_name,
+                ref,
+                "missing_mongo_uri",
+                "이전 원본 저장소 연결을 사용할 수 없어 새 데이터 조회로 전환했습니다.",
+            )
         return _mark_error(
             next_payload,
             mongo_database,
@@ -98,6 +126,15 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
         projection = _mongo_projection(explicit_orchestration, reuse_strategy, requested_aliases)
         doc = client[mongo_database][collection_name].find_one({"_id": ref}, projection) or {}
         if not doc:
+            if automatic_source_reuse:
+                return _fallback_to_fresh_retrieval(
+                    next_payload,
+                    mongo_database,
+                    collection_name,
+                    ref,
+                    "previous_source_not_found",
+                    "이전 원본이 저장소에 없어 새 데이터 조회로 전환했습니다.",
+                )
             if explicit_orchestration:
                 return _mark_error(
                     next_payload,
@@ -123,6 +160,15 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
             report_reference=report_reference,
         )
         if session_error:
+            if automatic_source_reuse:
+                return _fallback_to_fresh_retrieval(
+                    next_payload,
+                    mongo_database,
+                    collection_name,
+                    ref,
+                    str(session_error.get("type") or "previous_source_session_unavailable"),
+                    "이전 원본 세션을 확인할 수 없어 새 데이터 조회로 전환했습니다.",
+                )
             return _mark_error(next_payload, mongo_database, collection_name, ref, [session_error])
         if report_reference:
             expiry_error = _report_context_expiry_error(doc)
@@ -152,8 +198,18 @@ def load_previous_result(payload_value: Any, mongo_uri: str = "", mongo_database
             ref,
             mongo_database,
             collection_name,
+            allow_fresh_fallback=automatic_source_reuse,
         )
     except Exception as exc:
+        if automatic_source_reuse:
+            return _fallback_to_fresh_retrieval(
+                next_payload,
+                mongo_database,
+                collection_name,
+                ref,
+                "previous_source_load_error",
+                "이전 원본을 복원하지 못해 새 데이터 조회로 전환했습니다.",
+            )
         return _mark_error(next_payload, mongo_database, collection_name, ref, [{"type": "mongo_load_error", "message": str(exc)}])
     finally:
         if client is not None:
@@ -173,6 +229,89 @@ def _resolve_config(mongo_uri: str = "", mongo_database: str = "", collection_na
 def _reuse_strategy(payload: dict[str, Any]) -> str:
     plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
     return str(plan.get("reuse_strategy") or "none").strip()
+
+
+# 함수 설명: 04A가 승인한 자동 source 재사용만 복원 실패 시 fresh retrieval로 전환합니다.
+def _automatic_source_reuse_fallback_enabled(payload: dict[str, Any]) -> bool:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    decision = (
+        plan.get("followup_source_reuse")
+        if isinstance(plan.get("followup_source_reuse"), dict)
+        else {}
+    )
+    return bool(
+        decision.get("managed_by") == "04a_trusted_retrieval_job_hydrator"
+        and decision.get("decision") == "reuse_previous_source"
+        and decision.get("fresh_fallback") is True
+    )
+
+
+# 함수 설명: 이전 원본 복원 실패를 실행 차단으로 만들지 않고 모든 job의 정상 새 조회를 복원합니다.
+def _fallback_to_fresh_retrieval(
+    payload: dict[str, Any],
+    database: str,
+    collection_name: str,
+    ref_id: str,
+    reason: str,
+    message: str,
+) -> dict[str, Any]:
+    plan = payload.get("intent_plan") if isinstance(payload.get("intent_plan"), dict) else {}
+    jobs = plan.get("retrieval_jobs") if isinstance(plan.get("retrieval_jobs"), list) else []
+    aliases: set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job.pop("execution_provider", None)
+        alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        if alias:
+            aliases.add(alias)
+    plan["request_scope"] = "followup_requery"
+    plan["reference_mode"] = "previous_filters"
+    plan["reuse_strategy"] = "previous_intent_with_new_retrieval"
+    prior_decision = (
+        plan.get("followup_source_reuse")
+        if isinstance(plan.get("followup_source_reuse"), dict)
+        else {}
+    )
+    plan["followup_source_reuse"] = {
+        **deepcopy(prior_decision),
+        "decision": "fresh_retrieval",
+        "source_aliases": sorted(aliases),
+        "fresh_fallback": False,
+        "fallback_reason": reason,
+    }
+    graph = plan.get("resolved_execution_graph") if isinstance(plan.get("resolved_execution_graph"), dict) else {}
+    requirements = graph.get("external_source_requirements") if isinstance(graph.get("external_source_requirements"), list) else []
+    for item in requirements:
+        if isinstance(item, dict) and str(item.get("source_alias") or "").strip() in aliases:
+            item["provider"] = "retrieval_job"
+    payload["intent_plan"] = plan
+    # 05 runs before retrievers.  Remove only stale restored buffers so the
+    # subsequent 07→14 fresh path owns the source aliases unambiguously.
+    payload.pop("runtime_sources", None)
+    payload.pop("_runtime_rows_by_alias", None)
+    trace = payload.setdefault("trace", {})
+    trace.setdefault("warnings", []).append(
+        {
+            "type": "previous_source_reuse_fallback",
+            "message": message,
+            "reason": reason,
+            "data_ref": ref_id,
+        }
+    )
+    trace.setdefault("inspection", {})["result_loader"] = {
+        "stage": "05_mongodb_result_loader",
+        "status": "fallback",
+        "mode": "fresh_retrieval",
+        "database": database,
+        "collection_name": collection_name,
+        "data_ref": ref_id,
+        "fallback_reason": reason,
+        "loaded_source_aliases": [],
+        "fresh_source_aliases": sorted(aliases),
+        "errors": [],
+    }
+    return payload
 
 
 # 함수 설명: `_requested_source_aliases()`는 현재 pandas 계획에서 실제 참조한 이전 source alias만 추출합니다.
@@ -478,6 +617,8 @@ def _restore_previous_sources(
     ref_id: str,
     database: str,
     collection_name: str,
+    *,
+    allow_fresh_fallback: bool = False,
 ) -> dict[str, Any]:
     stored_sources = stored_payload.get("runtime_sources") if isinstance(stored_payload.get("runtime_sources"), dict) else {}
     source_summaries = _source_result_by_alias(stored_payload.get("source_results"))
@@ -490,6 +631,15 @@ def _restore_previous_sources(
         elif isinstance(source_manifest.get(alias), dict) and source_manifest[alias].get("complete") is False:
             errors.append({"type": "previous_source_incomplete", "message": f"이전 source_alias={alias!r} 행이 저장 상한으로 잘려 있습니다."})
     if errors:
+        if allow_fresh_fallback:
+            return _fallback_to_fresh_retrieval(
+                payload,
+                database,
+                collection_name,
+                ref_id,
+                str(errors[0].get("type") or "previous_source_unavailable"),
+                "이전 원본이 없거나 저장 상한으로 잘려 있어 새 데이터 조회로 전환했습니다.",
+            )
         return _mark_error(payload, database, collection_name, ref_id, errors)
 
     runtime_sources: dict[str, list[Any]] = {}
@@ -511,6 +661,11 @@ def _restore_previous_sources(
             source_alias=alias,
             dataset_key=summary.get("dataset_key"),
             source_type=summary.get("source_type"),
+            complete=(
+                source_manifest.get(alias, {}).get("complete", True)
+                if isinstance(source_manifest.get(alias), dict)
+                else True
+            ),
         )
         runtime_sources[alias] = deepcopy(rows)
         summary.update(

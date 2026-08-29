@@ -44,6 +44,7 @@ TRACE_PREVIEW_LIMIT = 5
 DEFAULT_MAX_REPAIR_ATTEMPTS = 1
 REPAIR_CODE_PREVIEW_LIMIT = 1000
 LLM_RESPONSE_PREVIEW_LIMIT = 500
+LLM_TEMPERATURE = 0.0
 PRESENTATION_ROW_NUMBER_KEY = "__display_row_no__"
 PRESENTATION_ROW_NUMBER_LABEL = "No."
 SAFE_IMPORT_POLICY = "exact pandas/numpy aliases are removed and trusted namespaces are injected"
@@ -8767,6 +8768,7 @@ class HybridAnalysisExecutor(Component):
             model=getattr(self, "model", None),
             user_id=getattr(self, "user_id", None),
             api_key=getattr(self, "api_key", None),
+            temperature=LLM_TEMPERATURE,
         )
         if llm is None or not hasattr(llm, "invoke"):
             raise RuntimeError("Pandas Language Model이 연결되지 않았습니다.")

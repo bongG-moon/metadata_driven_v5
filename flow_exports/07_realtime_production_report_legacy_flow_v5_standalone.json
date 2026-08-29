@@ -1099,7 +1099,7 @@
                 "tool_mode": false,
                 "track_in_telemetry": false,
                 "type": "slider",
-                "value": 0.1
+                "value": 0.0
               }
             },
             "tool_mode": false,

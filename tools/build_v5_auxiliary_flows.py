@@ -25,6 +25,7 @@ ROUTER_READ_TIMEOUT_SECONDS = "240"
 MONGO_GLOBAL_VARIABLE = "MONGO_URL"
 TARGET_LANGFLOW_VERSION = "1.11.0"
 DEFAULT_LANGUAGE_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_LLM_TEMPERATURE = 0.0
 FLOW_DISPLAY_NAMES = {
     # Stable external target. The import bundle binds this name to the V2
     # hybrid graph; router Tool names and client contracts do not change.
@@ -313,6 +314,7 @@ def _configure_agent_template(template: dict[str, Any], system_prompt: str) -> N
     _set_value(template, "add_current_date_tool", False)
     _set_value(template, "add_calculator_tool", False)
     _set_value(template, "max_tokens", 8192)
+    _set_value(template, "temperature", DEFAULT_LLM_TEMPERATURE)
     _set_value(template, "verbose", False)
     _set_value(template, "tools", "")
 
@@ -332,7 +334,7 @@ def language_model_node(
     _set_value(template, "api_key", "")
     _set_value(template, "system_message", system_message)
     _set_value(template, "stream", False)
-    _set_value(template, "temperature", 0.1)
+    _set_value(template, "temperature", DEFAULT_LLM_TEMPERATURE)
     _set_value(template, "max_tokens", 8192)
     return node
 

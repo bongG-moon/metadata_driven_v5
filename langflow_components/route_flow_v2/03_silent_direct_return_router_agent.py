@@ -30,6 +30,7 @@ from lfx.schema.message import Message
 
 
 CONTEXT_KEY = "router_session_context"
+LLM_TEMPERATURE = 0.0
 
 
 # 함수 설명: dict/Pydantic Message에서 같은 방식으로 값을 읽습니다.
@@ -136,6 +137,24 @@ class SilentDirectReturnRouterAgent(AgentComponent):
     icon = "Bot"
     name = "SilentDirectReturnRouterAgent"
     inputs = _router_agent_inputs()
+
+    # 함수 설명: Router Agent가 선택 모델을 만들 때 temperature=0을 명시해 같은 세션 문맥과 질문에서의 라우팅 흔들림을 줄입니다.
+    def _get_llm(self):
+        """Build the native Agent model with the Flow-wide deterministic setting."""
+
+        from lfx.base.models.unified_models import get_llm
+
+        return get_llm(
+            model=self.model,
+            user_id=self.user_id,
+            api_key=getattr(self, "api_key", None),
+            temperature=LLM_TEMPERATURE,
+            stream=True,
+            max_tokens=self._get_max_tokens_value(),
+            watsonx_url=getattr(self, "base_url_ibm_watsonx", None),
+            watsonx_project_id=getattr(self, "project_id", None),
+            overrides=getattr(self, "_model_overrides", None),
+        )
 
     # Langflow 메시지 전송 함수: Agent의 부분 응답과 중간 Tool 이벤트를 DB·Playground에 기록하지 않습니다.
     # 함수 설명: `send_message()`는 입력 계약을 검증하고 해당 단계의 값을 안전하게 계산합니다.

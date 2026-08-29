@@ -32,12 +32,30 @@ def route_retrieval_jobs(payload_value: Any, target_source_type: str) -> dict[st
 def _route_retrieval_jobs_from_payload(payload: dict[str, Any], target_source_type: str) -> dict[str, Any]:
     jobs = payload.get("intent_plan", {}).get("retrieval_jobs", [])
     jobs = jobs if isinstance(jobs, list) else []
+    # 04A can approve a complete prior raw source for every participating
+    # alias.  Retain those jobs in the plan for an automatic fresh-query
+    # fallback, but never dispatch them here or their fresh result would
+    # overwrite the Mongo-restored runtime source in 14.
+    previous_source_aliases = [
+        str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        for job in jobs
+        if isinstance(job, dict)
+        and str(job.get("execution_provider") or "").strip()
+        == "previous_source"
+    ]
+    executable_jobs = [
+        job
+        for job in jobs
+        if isinstance(job, dict)
+        and str(job.get("execution_provider") or "").strip()
+        != "previous_source"
+    ]
     retrieval_mode = _retrieval_mode(payload)
     live_enabled = retrieval_mode == "live"
     if not live_enabled:
-        selected = [deepcopy(job) for job in jobs if isinstance(job, dict)] if target_source_type == "dummy" else []
+        selected = [deepcopy(job) for job in executable_jobs] if target_source_type == "dummy" else []
     else:
-        selected = [deepcopy(job) for job in jobs if isinstance(job, dict) and job.get("source_type") == target_source_type]
+        selected = [deepcopy(job) for job in executable_jobs if job.get("source_type") == target_source_type]
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     return {
         "retrieval_job_bundle": {
@@ -52,9 +70,11 @@ def _route_retrieval_jobs_from_payload(payload: dict[str, Any], target_source_ty
         },
         "routing_trace": {
             "input_job_count": len(jobs),
+            "fresh_job_count": len(executable_jobs),
             "selected_job_count": len(selected),
             "source_type": target_source_type,
             "retrieval_mode": retrieval_mode,
+            "skipped_previous_source_aliases": previous_source_aliases,
         },
     }
 

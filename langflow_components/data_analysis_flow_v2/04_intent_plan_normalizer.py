@@ -270,7 +270,21 @@ def normalize_intent_plan(
         metadata_envelope,
         metadata_candidates,
     )
-    if unknown_dataset_error:
+    followup_hint = (
+        payload.get("followup_hint")
+        if isinstance(payload.get("followup_hint"), dict)
+        else {}
+    )
+    # A terse, condition-only follow-up may receive an invented dataset from a
+    # weak model even though the previous valid analysis blueprint is enough
+    # to build a fresh query.  Defer this one error until that blueprint has
+    # had a chance to replace the untrusted job; ordinary new analysis still
+    # keeps the existing immediate catalog block.
+    defer_unknown_dataset_for_condition_followup = bool(
+        unknown_dataset_error
+        and followup_hint.get("condition_only_followup_candidate") is True
+    )
+    if unknown_dataset_error and not defer_unknown_dataset_for_condition_followup:
         return _blocked_catalog_metadata_payload(payload, unknown_dataset_error)
     metadata_refs = _metadata_refs(parsed, plan)
     metadata_refs = _merge_metadata_ref_lists(
@@ -318,6 +332,33 @@ def normalize_intent_plan(
         metadata_candidates,
         question,
     )
+    # A terse condition-only follow-up (for example ``WB공정은?`` or
+    # ``어제는?``) should preserve the prior metric/grain plan when the model
+    # happened to choose an unrelated dataset.  This only inherits the
+    # *analysis blueprint*; actual raw-source reuse is decided later in 04A
+    # after Catalog hydration proves the required-parameter and filter range
+    # contract.  If no proof is available the unchanged jobs run as a normal
+    # fresh retrieval.
+    (
+        plan,
+        retrieval_jobs,
+        raw_pandas_plan,
+        condition_only_followup_blueprint_guard,
+    ) = _inherit_condition_only_followup_blueprint(
+        payload,
+        plan,
+        retrieval_jobs,
+        raw_pandas_plan,
+        metadata_candidates,
+        question,
+        skip=followup_contract_guard.get("kind")
+        in {"direct_required_parameter", "dependent_retrieval"},
+    )
+    if (
+        unknown_dataset_error
+        and condition_only_followup_blueprint_guard.get("status") != "applied"
+    ):
+        return _blocked_catalog_metadata_payload(payload, unknown_dataset_error)
     if followup_contract_guard.get("metadata_ref"):
         followup_ref = _metadata_ref(followup_contract_guard["metadata_ref"])
         if followup_ref and followup_ref not in metadata_refs:
@@ -1333,6 +1374,7 @@ def normalize_intent_plan(
         "self_referential_condition_resolution_guard": self_referential_condition_resolution_guard,
         "function_owned_filter_normalization": function_owned_filter_normalization,
         "followup_contract_guard": followup_contract_guard,
+        "condition_only_followup_blueprint": condition_only_followup_blueprint_guard,
         "function_case_input_reconciliation": function_case_input_reconciliation,
         "function_case_source_sufficiency": function_case_source_sufficiency,
         "function_case_step_reconciliation": function_case_step_reconciliation,
@@ -1656,6 +1698,11 @@ def _reconcile_followup_execution_contract(
             or reusable_aliases
         )
         if jobs:
+            # A pure result-shape expansion does not change the source scope.
+            # Keep the established source-reuse path for this legacy case;
+            # condition-changing follow-ups are separately reset to fresh
+            # retrieval by `_inherit_condition_only_followup_blueprint` below
+            # and only regain source reuse after 04A proves containment.
             mode = "previous_source" if has_reusable_source else "previous_filters"
             scope = "followup_expand_source" if has_reusable_source else "followup_requery"
             next_plan["reference_mode"] = mode
@@ -1729,7 +1776,7 @@ def _reconcile_followup_execution_contract(
         return next_plan, jobs, steps, {
             "status": "applied",
             "kind": "generic_followup_reference_completion",
-            "reason": "followup_requery_requires_explicit_previous_reference",
+                "reason": "followup_requery_requires_explicit_previous_reference",
             "reference_contract": {
                 "mode": mode,
                 "scope": scope,
@@ -1744,6 +1791,238 @@ def _reconcile_followup_execution_contract(
         "status": "not_needed",
         "reason": "no_catalog_proven_dependent_or_grain_conflict",
     }
+
+
+# 함수 설명: 짧은 조건 변경 후속 질문에는 직전 분석의 dataset·metric·grain 형식만 상속합니다.
+def _inherit_condition_only_followup_blueprint(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    pandas_plan: list[Any],
+    metadata_candidates: dict[str, Any],
+    question: str,
+    *,
+    skip: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[Any], dict[str, Any]]:
+    """Restore a proven previous *analysis shape*, never its rows.
+
+    The model can lose the prior metric and choose an unrelated table for a
+    terse turn such as ``WB공정은?``.  The previous intent supplies the stable
+    analysis blueprint; process/date guards later apply the newly mentioned
+    condition.  Raw source reuse remains a separate, conservative decision in
+    04A after trusted Catalog hydration.
+    """
+
+    hint = (
+        payload.get("followup_hint")
+        if isinstance(payload.get("followup_hint"), dict)
+        else {}
+    )
+    if skip:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "higher_priority_followup_contract",
+        }
+    if hint.get("condition_only_followup_candidate") is not True:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "not_condition_only_followup",
+        }
+    if hint.get("report_reference") is True:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "report_reference_uses_its_own_contract",
+        }
+
+    raw_reference_mode = str(plan.get("reference_mode") or "").strip()
+    if raw_reference_mode in {
+        "previous_result",
+        "previous_result_rows",
+        "previous_result_transform",
+        "previous_trace",
+    }:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "explicit_previous_result_contract",
+        }
+
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    previous_plan = (
+        state.get("last_intent_plan")
+        if isinstance(state.get("last_intent_plan"), dict)
+        else {}
+    )
+    previous_jobs = _retrieval_jobs(previous_plan)
+    if not previous_jobs:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "previous_analysis_blueprint_missing",
+        }
+
+    # A direct required identifier (for example a newly supplied LOT_ID or
+    # EQP_ID) is a new retrieval by definition.  Do not overwrite the model's
+    # new Catalog choice with the previous analysis shape.
+    direct_required = _direct_required_parameter_evidence(
+        retrieval_jobs,
+        metadata_candidates,
+        question,
+    )
+    if direct_required:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "direct_required_parameter_requires_new_analysis",
+            "direct_jobs": direct_required,
+        }
+
+    current_overrides = _explicit_followup_filter_overrides(
+        retrieval_jobs,
+        question,
+    )
+    matched = hint.get("matched_cues") if isinstance(hint.get("matched_cues"), dict) else {}
+    has_scope_signal = bool(
+        _context_date_hint(payload)
+        or _string_list(matched.get("entity_switch"))
+        or _string_list(matched.get("entity_switch_detected"))
+        or current_overrides
+    )
+    if not has_scope_signal:
+        return plan, retrieval_jobs, pandas_plan, {
+            "status": "not_needed",
+            "reason": "condition_change_not_proven",
+        }
+
+    inherited_jobs, applied_overrides = _overlay_followup_filter_overrides(
+        previous_jobs,
+        current_overrides,
+        metadata_candidates,
+    )
+    next_plan = deepcopy(plan)
+    previous_analysis_kind = str(previous_plan.get("analysis_kind") or "").strip()
+    if previous_analysis_kind:
+        next_plan["analysis_kind"] = previous_analysis_kind
+    next_plan["retrieval_jobs"] = inherited_jobs
+    previous_steps = previous_plan.get("pandas_execution_plan")
+    if isinstance(previous_steps, list) and previous_steps:
+        next_plan["pandas_execution_plan"] = deepcopy(previous_steps)
+        pandas_plan = deepcopy(previous_steps)
+    previous_cases = previous_plan.get("pandas_function_cases")
+    if isinstance(previous_cases, list) and previous_cases:
+        next_plan["pandas_function_cases"] = deepcopy(previous_cases)
+    previous_contract = previous_plan.get("output_contract")
+    if isinstance(previous_contract, dict) and previous_contract:
+        next_plan["output_contract"] = deepcopy(previous_contract)
+    # The initial source/ref mode must remain a fresh retrieval until the
+    # authoritative hydrator can prove complete prior-source coverage.
+    next_plan["request_scope"] = "followup_requery"
+    next_plan["reference_mode"] = "previous_filters"
+    next_plan["reuse_strategy"] = _reuse_strategy("previous_filters")
+    return next_plan, inherited_jobs, pandas_plan, {
+        "status": "applied",
+        "reason": "condition_only_followup_inherited_previous_analysis_shape",
+        "previous_dataset_keys": _merge_strings(
+            [str(job.get("dataset_key") or "").strip() for job in previous_jobs]
+        ),
+        "replaced_model_dataset_keys": _merge_strings(
+            [str(job.get("dataset_key") or "").strip() for job in retrieval_jobs]
+        ),
+        "applied_explicit_filter_overrides": applied_overrides,
+        "source_reuse": "deferred_to_catalog_hydration",
+    }
+
+
+# 함수 설명: 현재 질문에 실제로 등장한 filter literal만 analysis blueprint에 덮어씁니다.
+def _explicit_followup_filter_overrides(
+    retrieval_jobs: list[dict[str, Any]],
+    question: str,
+) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    conflicts: set[str] = set()
+    for job in retrieval_jobs:
+        if not isinstance(job, dict):
+            continue
+        filters = job.get("filters") if isinstance(job.get("filters"), dict) else {}
+        for raw_field, condition in filters.items():
+            field = str(raw_field or "").strip()
+            field_key = _normalized_column_key(field)
+            # DATE and process scope are normalized later from the user
+            # question and Domain contracts.  Copying an LLM's abbreviated
+            # source-specific value here would weaken those existing guards.
+            if field_key in {"DATE", "OPER", "OPERNUM", "OPERNAME", "OPERNM"}:
+                continue
+            if not _question_confirms_filter_condition(question, field, condition):
+                continue
+            existing_key = next(
+                (
+                    key
+                    for key in overrides
+                    if _normalized_column_key(key) == field_key
+                ),
+                "",
+            )
+            if not existing_key:
+                overrides[field] = deepcopy(condition)
+            elif overrides[existing_key] != condition:
+                conflicts.add(field_key)
+    if conflicts:
+        return {
+            key: value
+            for key, value in overrides.items()
+            if _normalized_column_key(key) not in conflicts
+        }
+    return overrides
+
+
+# 함수 설명: 짧은 수치도 field명이 함께 있을 때만 현재 질문의 명시 조건으로 인정합니다.
+def _question_confirms_filter_condition(
+    question: str,
+    field: str,
+    condition: Any,
+) -> bool:
+    question_key = re.sub(r"[^0-9A-Za-z가-힣]+", "", str(question or "")).upper()
+    field_key = re.sub(r"[^0-9A-Za-z가-힣]+", "", str(field or "")).upper()
+    if not question_key:
+        return False
+    values = _condition_scalar_values(condition)
+    if not values:
+        return False
+    for value in values:
+        value_key = re.sub(r"[^0-9A-Za-z가-힣]+", "", str(value or "")).upper()
+        if not value_key or value_key not in question_key:
+            return False
+        if len(value_key) < 3 and field_key not in question_key:
+            return False
+    return True
+
+
+# 함수 설명: 직전 source별 안전한 Catalog 컬럼에만 새 명시 filter를 덮어씁니다.
+def _overlay_followup_filter_overrides(
+    previous_jobs: list[dict[str, Any]],
+    overrides: dict[str, Any],
+    metadata_candidates: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    jobs: list[dict[str, Any]] = []
+    applied: list[dict[str, Any]] = []
+    for raw_job in previous_jobs:
+        job = deepcopy(raw_job)
+        filters = deepcopy(job.get("filters")) if isinstance(job.get("filters"), dict) else {}
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        alias = str(job.get("source_alias") or dataset_key).strip()
+        for field, condition in overrides.items():
+            if not _catalog_supports_domain_column(metadata_candidates, dataset_key, field):
+                continue
+            target_field = next(
+                (
+                    existing
+                    for existing in filters
+                    if _normalized_column_key(existing) == _normalized_column_key(field)
+                ),
+                field,
+            )
+            filters[target_field] = deepcopy(condition)
+            applied.append({"source_alias": alias, "field": target_field})
+        job["filters"] = filters
+        jobs.append(job)
+    return jobs, applied
 
 
 # 함수 설명: 후속 상태에 남은 식별 컬럼 중 Catalog upstream binding과 연결 가능한 컬럼만 반환합니다.
@@ -2509,7 +2788,7 @@ def _context_date_hint(payload: dict[str, Any] | None) -> dict[str, Any]:
     return date_hint
 
 
-# 함수 설명: `_apply_context_date_guard()`는 `이날/이 일자`를 오늘로 바꾼 LLM DATE 값을 직전 분석의 단일 DATE로 교정합니다.
+# 함수 설명: `_apply_context_date_guard()`는 후속 날짜 표현이 있을 때 DATE 필수 조건을 현재 질문 기준으로 확정합니다.
 def _apply_context_date_guard(
     payload: dict[str, Any],
     retrieval_jobs: list[Any],
@@ -2517,6 +2796,20 @@ def _apply_context_date_guard(
 ) -> tuple[list[Any], dict[str, Any]]:
     date_hint = _context_date_hint(payload)
     inherited_date = str(date_hint.get("resolved_value") or "").strip()
+    followup_hint = (
+        payload.get("followup_hint")
+        if isinstance(payload.get("followup_hint"), dict)
+        else {}
+    )
+    # `어제는?`처럼 명시된 상대 날짜는 analysis blueprint를 상속한 뒤에도
+    # 이전 DATE가 아니라 현재 질문이 해석한 DATE를 써야 합니다. `이날`처럼
+    # 이전 DATE를 가리키는 기존 경로와 구분하되, 둘 다 사용자 질문에서
+    # 확정된 resolved_value만 적용합니다.
+    condition_only_date_change = bool(
+        followup_hint.get("condition_only_followup_candidate") is True
+        and date_hint
+        and date_hint.get("source") != "previous_context"
+    )
     result: list[Any] = []
     corrected_aliases: list[str] = []
     populated_aliases: list[str] = []
@@ -2537,16 +2830,33 @@ def _apply_context_date_guard(
             else {}
         )
         alias = str(job.get("source_alias") or job.get("dataset_key") or "").strip()
+        dataset_key = str(job.get("dataset_key") or "").strip()
+        catalog_date_keys = _catalog_required_date_param_keys(
+            metadata_candidates or {},
+            dataset_key,
+        )
+        date_param_fields = [
+            field
+            for field in required_params
+            if (
+                _normalized_column_key(field) in (catalog_date_keys or set())
+                or _is_date_filter_field(field)
+            )
+        ]
         if (
-            date_hint.get("source") == "previous_context"
+            (date_hint.get("source") == "previous_context" or condition_only_date_change)
             and re.fullmatch(r"20\d{6}", inherited_date)
-            and "DATE" in required_params
-            and str(required_params.get("DATE") or "").strip() != inherited_date
+            and date_param_fields
         ):
-            required_params["DATE"] = inherited_date
-            job["required_params"] = required_params
-            if alias and alias not in corrected_aliases:
-                corrected_aliases.append(alias)
+            changed = False
+            for field in date_param_fields:
+                if str(required_params.get(field) or "").strip() != inherited_date:
+                    required_params[field] = inherited_date
+                    changed = True
+            if changed:
+                job["required_params"] = required_params
+                if alias and alias not in corrected_aliases:
+                    corrected_aliases.append(alias)
         elif (
             current_date_requested
             and re.fullmatch(r"20\d{6}", reference_date)
@@ -8313,7 +8623,21 @@ def _declared_process_scope_from_plan(
             for child in value:
                 visit(child)
 
-    visit(plan.get("condition_resolution"))
+    condition_resolution = (
+        plan.get("condition_resolution")
+        if isinstance(plan.get("condition_resolution"), dict)
+        else {}
+    )
+    # ``dropped`` is audit information about a scope that the follow-up
+    # explicitly replaced.  It must never contribute an executable process
+    # value; otherwise a switch such as D/A -> W/B is reconstructed as the
+    # union of both groups later in the process-scope completion step.
+    active_condition_resolution = {
+        key: value
+        for key, value in condition_resolution.items()
+        if str(key or "").strip().casefold() != "dropped"
+    }
+    visit(active_condition_resolution)
     return declared
 
 
@@ -11041,14 +11365,16 @@ def _apply_process_group_filter_fields(
         if align_explicit_scope
         else []
     )
+    # An explicit process scope in the current question is a replacement
+    # scope, not an additional scope inherited from the prior analysis.  The
+    # latter is only a fallback for short follow-ups without a named process.
+    # This preserves a question such as "WB공정은?" as W/B-only rather than
+    # expanding it to the prior D/A scope plus W/B.
     requested_processes = (
-        _merge_strings(
-            question_requested_processes,
-            declared_processes or [],
-        )
-        if align_explicit_scope
-        else []
-    )
+        list(question_requested_processes)
+        if question_requested_processes
+        else _merge_strings(declared_processes or [])
+    ) if align_explicit_scope else []
     mentioned_group_indexes = (
         _mentioned_process_group_indexes(question, contracts)
         if align_explicit_scope
