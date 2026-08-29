@@ -162,6 +162,60 @@ def test_execution_report_html_is_user_facing_and_does_not_leak_raw_trace_or_row
     assert "must-not-publish-helper" not in document
 
 
+def test_execution_report_renders_answer_intent_analysis_as_closed_html5_disclosure():
+    publisher = _module()
+    payload = _payload()
+    payload["intent_plan"].update(
+        {
+            "analysis_kind": "held_capacity_by_product",
+            "route_resolution": {
+                "intent_candidate": "fast_candidate",
+                "final_route": "complex",
+                "candidate_recipe": "group_summary",
+                "final_reason_codes": ["typed_plan_contract_resolved"],
+            },
+            "decision_reason": [
+                "계획 원문보다 intent trace의 사용자 안전 근거가 우선됩니다."
+            ],
+        }
+    )
+    payload["intent_plan"]["retrieval_jobs"][0]["query"] = "select password from do_not_publish"
+    payload["trace"]["inspection"]["intent"] = {
+        "analysis_kind": "ignored_by_plan",
+        "retrieval_job_count": 2,
+        "pandas_step_count": 4,
+        "decision_reason": ["D/A 공정과 78 LEAD 조건으로 CAPA를 계산하도록 분석했습니다."],
+    }
+
+    explanation = publisher.build_execution_explanation(payload)
+    document = publisher.render_execution_report_html(explanation)
+    intent = explanation["intent_analysis"]
+
+    assert document.startswith("<!doctype html>")
+    assert '<details class="intent-analysis-panel">' in document
+    assert '<details class="intent-analysis-panel" open>' not in document
+    assert "의도 분석" in document
+    assert "ANALYSIS PLAN" in document
+    assert 'class="intent-summary-icon"' in document
+    assert 'class="intent-route-pill">Complex</span>' in document
+    assert 'class="intent-summary-stat"' in document
+    assert "세부 계획" in document
+    assert "Fast 후보" in document
+    assert "Complex" in document
+    assert "의도 판단 근거" in document
+    assert "조회 계획" in document
+    assert "pandas 실행 계획" in document
+    assert "typed_plan_contract_resolved" in document
+    assert "D/A 공정과 78 LEAD 조건으로 CAPA를 계산하도록 분석했습니다." in document
+    assert "select password from do_not_publish" not in document
+    assert intent["analysis_type"] == "held_capacity_by_product"
+    assert intent["retrieval_job_count"] == 2
+    assert intent["pandas_step_count"] == 4
+    assert "query" not in intent["retrieval_plan"][0]
+    assert ".intent-analysis-panel::before" in document
+    assert ".intent-overview-card.primary" in document
+
+
 def test_execution_code_projection_preserves_multiline_body_and_escapes_html_without_helper_source():
     publisher = _module()
     payload = _payload()
@@ -668,6 +722,10 @@ def test_publisher_renders_bounded_original_intermediate_and_final_tables_then_c
     assert "data-data-filter-column" in document
     assert "data-data-sort-header" in document
     assert "data-data-page-next" in document
+    assert document.index('class="intent-analysis-panel"') < document.index('id="data-confirmation-title"')
+    assert document.index('id="data-confirmation-title"') < document.index('id="timeline-title"')
+    assert document.count('class="timeline-dot"') == 4
+    assert '<span class="timeline-dot">05</span>' not in document
     assert "https://api.example/download.json?download_ref=ref-final" in document
     assert "https://api.example/view?download_ref=ref-final" not in document
     assert "must-not-publish" not in document

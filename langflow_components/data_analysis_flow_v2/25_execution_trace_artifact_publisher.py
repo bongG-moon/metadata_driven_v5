@@ -31,7 +31,7 @@ from lfx.io import BoolInput, DataInput, IntInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
 
-EXPLANATION_VERSION = "analysis.execution.explanation.v2"
+EXPLANATION_VERSION = "analysis.execution.explanation.v3"
 ARTIFACT_TYPE = "analysis_execution_html"
 DESCRIPTOR_TYPE = "analysis_execution_report"
 DEFAULT_REPORT_API_URL = "http://127.0.0.1:5000"
@@ -309,6 +309,10 @@ def build_execution_explanation(
         },
         "domains": _domain_items(payload, plan, report_preview.get("domains")),
         "domain_reasons": _domain_reasons(plan, inspection),
+        # The answer adapter can optionally show a verbose intent-analysis
+        # section.  The report carries the same user-safe planning facts as a
+        # separate disclosure, never as a raw trace dump.
+        "intent_analysis": _intent_analysis_projection(payload, plan, inspection),
         "retrievals": _retrieval_items(plan, payload.get("source_results")),
         "processing_steps": _processing_steps(plan, payload, inspection, data),
         "execution_code": _execution_code_projection(payload, inspection),
@@ -344,6 +348,8 @@ def render_execution_report_html(explanation_value: Any) -> str:
     generated_at = _format_timestamp(explanation.get("generated_at"))
     trace_id = _html_text(explanation.get("trace_id"), 160) or "-"
     data_workbench_script = _data_workbench_script()
+    intent_analysis = _intent_analysis_html(explanation.get("intent_analysis"))
+    data_confirmation = _data_tables_html(explanation.get("data_tables"))
 
     timeline = "\n".join(
         [
@@ -377,13 +383,6 @@ def render_execution_report_html(explanation_value: Any) -> str:
                 "최종 결과의 건수와 표시 기준입니다.",
                 _result_html(explanation.get("result")),
                 "result",
-            ),
-            _timeline_item(
-                "05",
-                "데이터 확인",
-                "원본·중간·최종 데이터의 제한된 미리보기와 전체 데이터 경로입니다.",
-                _data_tables_html(explanation.get("data_tables")),
-                "data",
             ),
         ]
     )
@@ -434,6 +433,53 @@ def render_execution_report_html(explanation_value: Any) -> str:
     .summary-card .label {{ margin: 0 0 8px; color: var(--muted); font-size: 13px; }}
     .summary-card .value {{ margin: 0; color: var(--ink); font-size: 21px; font-weight: 800; letter-spacing: -.02em; }}
     .summary-card .sub {{ margin: 4px 0 0; color: var(--muted); font-size: 13px; }}
+    .intent-analysis-panel {{ position: relative; overflow: hidden; margin: 0 0 30px; border: 1px solid #dce5fa; border-radius: 17px; background: #fff; box-shadow: 0 13px 28px rgba(47, 62, 122, .055); }}
+    .intent-analysis-panel::before {{ content: ""; position: absolute; z-index: 0; top: 0; right: 0; left: 0; height: 3px; background: linear-gradient(90deg, #5274eb 0%, #7994f7 50%, #d8e2ff 100%); }}
+    .intent-analysis-panel summary {{ position: relative; z-index: 1; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto auto; align-items: center; gap: 13px; padding: 19px 20px 18px; cursor: pointer; list-style: none; background: linear-gradient(135deg, #fcfdff 0%, #f5f7ff 74%, #f1f4ff 100%); }}
+    .intent-analysis-panel summary::-webkit-details-marker {{ display: none; }}
+    .intent-summary-icon {{ display: grid; grid-template-columns: repeat(3, 1fr); align-items: end; gap: 3px; width: 34px; height: 34px; padding: 8px; border: 1px solid #cbd8fb; border-radius: 10px; background: linear-gradient(145deg, #eef2ff, #dfe8ff); box-shadow: inset 0 1px 0 rgba(255,255,255,.72); }}
+    .intent-summary-icon i {{ display: block; border-radius: 3px 3px 2px 2px; background: linear-gradient(180deg, #6e8bf3, #4e6dde); }}
+    .intent-summary-icon i:nth-child(1) {{ height: 42%; }}
+    .intent-summary-icon i:nth-child(2) {{ height: 76%; }}
+    .intent-summary-icon i:nth-child(3) {{ height: 58%; }}
+    .intent-summary-main {{ display: grid; min-width: 0; gap: 2px; }}
+    .intent-summary-eyebrow {{ color: #7784a4; font-size: 10px; font-weight: 900; letter-spacing: .105em; line-height: 1.25; }}
+    .intent-summary-title-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }}
+    .intent-summary-main strong {{ color: var(--ink); font-size: 17px; font-weight: 850; letter-spacing: -.022em; }}
+    .intent-summary-subtitle {{ min-width: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }}
+    .intent-route-pill {{ display: inline-flex; align-items: center; min-height: 21px; padding: 3px 8px; border: 1px solid #cbd9fb; border-radius: 999px; color: var(--blue-deep); background: rgba(237,241,255,.9); font-size: 11px; font-weight: 850; line-height: 1; white-space: nowrap; }}
+    .intent-summary-stat {{ display: grid; flex: 0 0 auto; gap: 1px; min-width: 98px; padding: 7px 10px; border: 1px solid #e1e7f7; border-radius: 10px; color: var(--muted); background: rgba(255,255,255,.72); font-size: 11px; line-height: 1.35; text-align: right; }}
+    .intent-summary-stat b {{ color: #485576; font-size: 12px; font-weight: 850; }}
+    .intent-disclosure {{ display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; color: var(--blue-deep); font-size: 12px; font-weight: 850; white-space: nowrap; }}
+    .intent-disclosure::after {{ content: ""; width: 7px; height: 7px; border-right: 1.8px solid currentColor; border-bottom: 1.8px solid currentColor; transform: rotate(45deg) translateY(-2px); transition: transform .18s ease; }}
+    .intent-analysis-panel[open] .intent-disclosure::after {{ transform: rotate(225deg) translate(-2px, -2px); }}
+    .intent-analysis-panel[open] summary {{ border-bottom: 1px solid #e7ecf8; }}
+    .intent-analysis-body {{ padding: 20px; background: linear-gradient(180deg, #fbfcff 0%, #fff 250px); }}
+    .intent-overview-grid {{ display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 9px; }}
+    .intent-overview-card {{ grid-column: span 3; min-width: 0; padding: 13px 14px; border: 1px solid #e2e8f7; border-radius: 11px; background: rgba(255,255,255,.86); box-shadow: 0 4px 12px rgba(56, 73, 130, .026); }}
+    .intent-overview-card.primary {{ grid-column: span 4; border-color: #d4defa; background: linear-gradient(145deg, #f3f6ff, #fff); }}
+    .intent-overview-card.route {{ grid-column: span 3; }}
+    .intent-overview-card.scope {{ grid-column: span 3; }}
+    .intent-overview-card.recipe {{ grid-column: span 2; }}
+    .intent-overview-card span {{ display: block; color: #7a85a1; font-size: 10px; font-weight: 850; letter-spacing: .025em; }}
+    .intent-overview-card strong {{ display: block; margin-top: 5px; color: var(--ink); font-size: 13px; font-weight: 800; line-height: 1.42; overflow-wrap: anywhere; }}
+    .intent-overview-card.primary strong {{ color: #314eae; }}
+    .intent-section {{ margin-top: 19px; }}
+    .intent-section h4 {{ display: flex; align-items: center; gap: 7px; margin: 0 0 9px; color: #4a5674; font-size: 12px; font-weight: 850; letter-spacing: -.01em; }}
+    .intent-section h4::before {{ content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 4px var(--blue-soft); }}
+    .intent-reason-list {{ display: grid; gap: 7px; margin: 0; padding: 14px 16px 14px 34px; border: 1px solid #e3e8f5; border-radius: 11px; color: #5c667e; background: rgba(255,255,255,.9); font-size: 13px; }}
+    .intent-reason-list li::marker {{ color: var(--blue-deep); font-weight: 800; }}
+    .intent-meta-list {{ display: flex; flex-wrap: wrap; gap: 7px; }}
+    .intent-meta-chip {{ display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 5px 9px; border: 1px solid #dfe6f6; border-radius: 999px; color: #596583; background: rgba(255,255,255,.88); font-size: 12px; overflow-wrap: anywhere; }}
+    .intent-meta-chip b {{ color: var(--blue-deep); font-weight: 850; }}
+    .intent-plan-list {{ display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }}
+    .intent-plan-item {{ position: relative; padding: 13px 14px 13px 16px; border: 1px solid #e3e9f6; border-radius: 11px; background: rgba(255,255,255,.92); }}
+    .intent-plan-item::before {{ content: ""; position: absolute; top: 14px; bottom: 14px; left: 0; width: 3px; border-radius: 0 3px 3px 0; background: #b9cafc; }}
+    .intent-plan-item-head {{ display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; }}
+    .intent-plan-item-head strong {{ color: var(--ink); font-size: 13px; font-weight: 800; }}
+    .intent-plan-item-head span {{ color: #7a849b; font-size: 12px; }}
+    .intent-plan-detail {{ margin: 7px 0 0; color: #5d687f; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }}
+    .data-confirmation-section {{ margin: 0 0 30px; }}
     .section-title {{ display: flex; align-items: center; gap: 9px; margin: 0 0 16px; color: #292d3a; font-size: 21px; font-weight: 800; letter-spacing: -.035em; }}
     .section-title::before {{ content: ""; width: 5px; height: 23px; border-radius: 6px; background: var(--blue); box-shadow: 0 3px 8px rgba(88,120,239,.28); }}
     .timeline {{ position: relative; margin-left: 13px; padding-left: 33px; border-left: 2px solid #dce4ff; }}
@@ -564,9 +610,9 @@ def render_execution_report_html(explanation_value: Any) -> str:
     .issue.warning h3 {{ color: var(--amber); }}
     .issue p {{ margin: 0; font-size: 14px; overflow-wrap: anywhere; }}
     .footer {{ margin: 30px 0 0; color: var(--muted); font-size: 12px; text-align: center; }}
-    .data-tab:focus-visible, .data-sort-direction:focus-visible, .data-pagination button:focus-visible, .data-link:focus-visible, .data-column-sort:focus-visible, .domain-card summary:focus-visible, .code-panel summary:focus-visible {{ outline: 3px solid rgba(88,120,239,.35); outline-offset: 2px; }}
+    .data-tab:focus-visible, .data-sort-direction:focus-visible, .data-pagination button:focus-visible, .data-link:focus-visible, .data-column-sort:focus-visible, .domain-card summary:focus-visible, .code-panel summary:focus-visible, .intent-analysis-panel summary:focus-visible {{ outline: 3px solid rgba(88,120,239,.35); outline-offset: 2px; }}
     @media (max-width: 860px) {{ .data-toolbar {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} .data-download-link {{ grid-column: span 2; }} }}
-    @media (max-width: 760px) {{ .page {{ width: min(100% - 24px, 1120px); margin-top: 12px; }} .hero {{ padding: 24px; border-radius: 17px; }} .hero-grid {{ grid-template-columns: 1fr; }} .summary-grid {{ grid-template-columns: 1fr; }} .timeline {{ margin-left: 10px; padding-left: 25px; }} .timeline-dot {{ left: -40px; }} .timeline-head {{ display: block; }} .timeline-head p {{ margin-top: 5px; text-align: left; }} .kv-grid, .domain-detail-grid {{ grid-template-columns: 1fr; gap: 2px; }} .kv-grid dd {{ margin-bottom: 8px; }} .domain-detail-grid dd {{ margin-bottom: 9px; }} .code-panel summary {{ align-items: flex-start; flex-wrap: wrap; }} .code-badges {{ width: 100%; padding-left: 32px; justify-content: flex-start; }} .execution-code {{ max-height: 430px; padding: 14px; }} .data-workbench-head, .data-workbench-meta {{ display: block; }} .data-group-count {{ display: inline-flex; margin-top: 8px; }} .data-workbench-expiry {{ margin-top: 4px; text-align: left; }} .data-toolbar {{ grid-template-columns: 1fr; }} .data-download-link {{ grid-column: auto; }} .data-pagination {{ flex-wrap: wrap; justify-content: flex-start; }} .data-table summary {{ align-items: flex-start; }} .data-table-meta {{ white-space: normal; text-align: right; }} }}
+    @media (max-width: 760px) {{ .page {{ width: min(100% - 24px, 1120px); margin-top: 12px; }} .hero {{ padding: 24px; border-radius: 17px; }} .hero-grid, .summary-grid, .intent-overview-grid {{ grid-template-columns: 1fr; }} .intent-analysis-panel summary {{ grid-template-columns: 34px minmax(0, 1fr) auto; align-items: start; padding: 17px 16px; }} .intent-summary-stat {{ grid-column: 2 / 3; grid-row: 2; justify-self: start; min-width: 0; grid-auto-flow: column; align-items: center; gap: 7px; padding: 5px 8px; text-align: left; }} .intent-disclosure {{ grid-column: 3; grid-row: 1; white-space: nowrap; }} .intent-overview-card, .intent-overview-card.primary, .intent-overview-card.route, .intent-overview-card.scope, .intent-overview-card.recipe {{ grid-column: 1; }} .timeline {{ margin-left: 10px; padding-left: 25px; }} .timeline-dot {{ left: -40px; }} .timeline-head {{ display: block; }} .timeline-head p {{ margin-top: 5px; text-align: left; }} .kv-grid, .domain-detail-grid {{ grid-template-columns: 1fr; gap: 2px; }} .kv-grid dd {{ margin-bottom: 8px; }} .domain-detail-grid dd {{ margin-bottom: 9px; }} .code-panel summary {{ align-items: flex-start; flex-wrap: wrap; }} .code-badges {{ width: 100%; padding-left: 32px; justify-content: flex-start; }} .execution-code {{ max-height: 430px; padding: 14px; }} .data-workbench-head, .data-workbench-meta {{ display: block; }} .data-group-count {{ display: inline-flex; margin-top: 8px; }} .data-workbench-expiry {{ margin-top: 4px; text-align: left; }} .data-toolbar {{ grid-template-columns: 1fr; }} .data-download-link {{ grid-column: auto; }} .data-pagination {{ flex-wrap: wrap; justify-content: flex-start; }} .data-table summary {{ align-items: flex-start; }} .data-table-meta {{ white-space: normal; text-align: right; }} }}
   </style>
 </head>
 <body>
@@ -584,6 +630,13 @@ def render_execution_report_html(explanation_value: Any) -> str:
       <article class="summary-card"><p class="label">실행 경로</p><p class="value">{route_label}</p><p class="sub">질문에 맞춰 선택된 처리 방식</p></article>
       <article class="summary-card"><p class="label">최종 결과</p><p class="value">{row_count}건</p><p class="sub">{partial_note}</p></article>
       <article class="summary-card"><p class="label">분석 유형</p><p class="value">{_html_text(summary.get("analysis_type"), 120) or "일반 데이터 분석"}</p><p class="sub">생성 시각: {generated_at}</p></article>
+    </section>
+
+    {intent_analysis}
+
+    <section class="data-confirmation-section" aria-labelledby="data-confirmation-title">
+      <h2 id="data-confirmation-title" class="section-title">데이터 확인</h2>
+      {data_confirmation}
     </section>
 
     <section aria-labelledby="timeline-title">
@@ -726,6 +779,166 @@ def _domain_reasons(plan: dict[str, Any], inspection: dict[str, Any]) -> list[st
         intent = _dict(inspection.get("intent"))
         reasons = _safe_reason_list(intent.get("decision_reason"))
     return reasons[:4]
+
+
+# 함수 설명: 21번 답변 노드의 의도 분석과 같은 planning 사실을 Report용 제한 구조로 정리합니다.
+def _intent_analysis_projection(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    inspection: dict[str, Any],
+) -> dict[str, Any]:
+    """Project the user-safe subset of the answer adapter's intent section.
+
+    The report already explains applied retrievals and processing later in the
+    timeline.  This projection deliberately captures the *plan* separately so
+    an operator can compare what was intended with what later executed,
+    without serializing raw trace, connection, query, or code fields.
+    """
+
+    intent_trace = _dict(inspection.get("intent"))
+    route_resolution = _dict(plan.get("route_resolution"))
+    analysis = _dict(payload.get("analysis"))
+    retrieval_jobs = [
+        item
+        for item in _list(plan.get("retrieval_jobs"))[:MAX_RETRIEVALS]
+        if isinstance(item, dict)
+    ]
+    # Use the same actual-over-planned projection as the main retrieval
+    # timeline.  A report must not show a stale planned DATE/filter in the
+    # intent disclosure once execution records the value actually applied.
+    retrieval_plan_items = _retrieval_items(plan, payload.get("source_results"))
+    pandas_steps = [
+        item
+        for item in _list(plan.get("pandas_execution_plan"))[:MAX_STEPS]
+        if isinstance(item, dict)
+    ]
+    metadata_refs = _intent_metadata_refs(payload, plan)
+    analysis_type = _safe_text(
+        plan.get("analysis_kind")
+        or plan.get("analysis_type")
+        or plan.get("intent_type")
+        or intent_trace.get("analysis_kind"),
+        160,
+    )
+    expected_route = _intent_route_label(route_resolution.get("intent_candidate"))
+    final_route = _intent_route_label(
+        route_resolution.get("final_route")
+        or plan.get("execution_path")
+        or analysis.get("execution_path")
+    )
+    recipe = _safe_text(
+        route_resolution.get("final_recipe")
+        or route_resolution.get("candidate_recipe")
+        or plan.get("fast_recipe"),
+        160,
+    )
+    route_reasons = _string_list(
+        route_resolution.get("final_reason_codes")
+        or route_resolution.get("candidate_reason_codes")
+    )[:MAX_ISSUES]
+    reasons = _safe_reason_list(
+        intent_trace.get("decision_reason") or plan.get("decision_reason")
+    )
+    result = {
+        "analysis_type": analysis_type,
+        "expected_route": expected_route,
+        "final_route": final_route,
+        "recipe": recipe,
+        "route_reasons": route_reasons,
+        "retrieval_job_count": _safe_int(
+            intent_trace.get("retrieval_job_count"), len(retrieval_jobs)
+        ),
+        "pandas_step_count": _safe_int(
+            intent_trace.get("pandas_step_count"), len(pandas_steps)
+        ),
+        "metadata_refs": metadata_refs,
+        "decision_reasons": reasons,
+        "retrieval_plan": [
+            _intent_retrieval_plan_item(item) for item in retrieval_plan_items
+        ],
+        "pandas_plan": [_intent_pandas_plan_item(item) for item in pandas_steps],
+    }
+    return {
+        key: value
+        for key, value in result.items()
+        if value not in (None, "", [], {})
+    }
+
+
+# 함수 설명: 선택된 metadata ref를 21번 답변의 참조 메타데이터처럼 짧게 노출합니다.
+def _intent_metadata_refs(payload: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for values in (payload.get("metadata_refs"), plan.get("metadata_refs")):
+        for item in _list(values):
+            if not isinstance(item, dict):
+                continue
+            section = _safe_text(item.get("section") or item.get("type"), 100)
+            key = _safe_text(item.get("key") or item.get("dataset_key"), 180)
+            signature = f"{section.casefold()}|{key.casefold()}"
+            if not key or signature in seen:
+                continue
+            seen.add(signature)
+            result.append(
+                {
+                    "label": SECTION_LABELS.get(section.casefold(), section or "메타데이터"),
+                    "key": key,
+                }
+            )
+            if len(result) >= MAX_DOMAINS:
+                return result
+    return result
+
+
+# 함수 설명: 조회 계획은 사용자에게 필요한 dataset, alias, params, filters만 안전하게 보입니다.
+def _intent_retrieval_plan_item(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "dataset": _safe_text(job.get("dataset") or job.get("dataset_key"), 180) or "데이터셋",
+        "alias": _safe_text(job.get("alias") or job.get("source_alias"), 180),
+        "source_type": _safe_text(job.get("source_type"), 80),
+        "required_params": _safe_mapping(job.get("required_params") or job.get("params")),
+        "filters": _safe_mapping(job.get("filters") or job.get("filter_mappings")),
+        "params_label": "실제 적용 파라미터" if job.get("params_origin") == "actual" else "계획 파라미터",
+        "filters_label": "실제 적용 조건" if job.get("filters_origin") == "actual" else "계획 조건",
+    }
+
+
+# 함수 설명: pandas 계획은 raw dict가 아닌 operation/grain/formula 등 실행 의도만 안전하게 보여줍니다.
+def _intent_pandas_plan_item(step: dict[str, Any]) -> dict[str, Any]:
+    operation = _safe_text(step.get("operation"), 100)
+    source = _safe_text(
+        step.get("source_alias")
+        or step.get("left_source_alias")
+        or step.get("input_alias"),
+        180,
+    )
+    return {
+        "operation": operation,
+        "operation_label": OPERATION_LABELS.get(operation, _humanize_operation(operation) or "처리 단계"),
+        "node_id": _safe_text(step.get("node_id"), 180),
+        "source": source,
+        "output": _safe_text(step.get("output_alias"), 180),
+        "group_by": _string_list(step.get("group_by"))[:MAX_COLUMNS_PER_SOURCE],
+        "aggregations": _safe_value(step.get("aggregations")),
+        "formula": _safe_mapping(step.get("formula")),
+        "sort_by": _safe_text(step.get("sort_by"), 120),
+        "order": _safe_text(step.get("order"), 40),
+        "limit": _safe_int(step.get("limit"), 0),
+    }
+
+
+# 함수 설명: intent route 내부값은 21번 답변과 같은 Fast/Complex/Blocked 표기로 통일합니다.
+def _intent_route_label(value: Any) -> str:
+    labels = {
+        "fast_candidate": "Fast 후보",
+        "complex_candidate": "Complex 후보",
+        "complex_required": "Complex 필요",
+        "fast": "Fast",
+        "complex": "Complex",
+        "blocked": "Blocked",
+    }
+    text = _safe_text(value, 80).casefold()
+    return labels.get(text, _safe_text(value, 80))
 
 
 # 함수 설명: `_retrieval_items()`는 계획과 실제 source 결과를 합쳐 조회 단계를 표시합니다.
@@ -1391,6 +1604,144 @@ def _domain_detail_html(value: Any, depth: int = 0) -> str:
         ]
         return '<ul class="domain-detail-list">' + "".join(items) + "</ul>" if items else '<span class="domain-value">없음</span>'
     return f'<span class="domain-value">{_html_text(value, MAX_TEXT_LENGTH) or "-"}</span>'
+
+
+def _intent_analysis_html(value: Any) -> str:
+    """Render the answer adapter's intent facts as a closed HTML5 disclosure."""
+
+    intent = _dict(value)
+    if not intent:
+        return ""
+    retrieval_count = _safe_int(intent.get("retrieval_job_count"), 0)
+    pandas_count = _safe_int(intent.get("pandas_step_count"), 0)
+    analysis_type = _html_text(intent.get("analysis_type"), 160) or "분석 계획"
+    expected_route = _html_text(intent.get("expected_route"), 100)
+    final_route = _html_text(intent.get("final_route"), 100)
+    route_label = final_route or expected_route
+    route_detail = " → ".join(item for item in (expected_route, final_route) if item)
+    summary_cards = []
+    for label, raw_value, card_class in (
+        ("분석 유형", intent.get("analysis_type"), "primary"),
+        ("실행 경로", route_detail, "route"),
+        ("실행 규모", f"조회 {retrieval_count}개 · pandas {pandas_count}단계", "scope"),
+        ("Fast 레시피", intent.get("recipe"), "recipe"),
+    ):
+        text = _html_text(raw_value, 200)
+        if text:
+            summary_cards.append(
+                f'<article class="intent-overview-card {card_class}"><span>{escape(label)}</span><strong>{text}</strong></article>'
+            )
+
+    sections = []
+    reasons = _safe_reason_list(intent.get("decision_reasons"))
+    if reasons:
+        items = "".join(f"<li>{_html_text(reason, MAX_TEXT_LENGTH)}</li>" for reason in reasons)
+        sections.append(f'<section class="intent-section"><h4>의도 판단 근거</h4><ol class="intent-reason-list">{items}</ol></section>')
+
+    route_reasons = _string_list(intent.get("route_reasons"))
+    if route_reasons:
+        items = "".join(
+            f'<span class="intent-meta-chip"><b>경로</b>{_html_text(reason, 160)}</span>'
+            for reason in route_reasons
+        )
+        sections.append(f'<section class="intent-section"><h4>경로 결정 근거</h4><div class="intent-meta-list">{items}</div></section>')
+
+    refs = intent.get("metadata_refs") if isinstance(intent.get("metadata_refs"), list) else []
+    if refs:
+        items = "".join(
+            f'<span class="intent-meta-chip"><b>{_html_text(_dict(item).get("label"), 100)}</b>{_html_text(_dict(item).get("key"), 180)}</span>'
+            for item in refs
+            if isinstance(item, dict)
+        )
+        if items:
+            sections.append(f'<section class="intent-section"><h4>참조 메타데이터</h4><div class="intent-meta-list">{items}</div></section>')
+
+    retrieval_plan = intent.get("retrieval_plan") if isinstance(intent.get("retrieval_plan"), list) else []
+    if retrieval_plan:
+        items = "".join(
+            _intent_retrieval_plan_html(_dict(item), index)
+            for index, item in enumerate(retrieval_plan, start=1)
+            if isinstance(item, dict)
+        )
+        if items:
+            sections.append(f'<section class="intent-section"><h4>조회 계획</h4><ol class="intent-plan-list">{items}</ol></section>')
+
+    pandas_plan = intent.get("pandas_plan") if isinstance(intent.get("pandas_plan"), list) else []
+    if pandas_plan:
+        items = "".join(
+            _intent_pandas_plan_html(_dict(item), index)
+            for index, item in enumerate(pandas_plan, start=1)
+            if isinstance(item, dict)
+        )
+        if items:
+            sections.append(f'<section class="intent-section"><h4>pandas 실행 계획</h4><ol class="intent-plan-list">{items}</ol></section>')
+
+    route_pill = f'<span class="intent-route-pill">{route_label}</span>' if route_label else ""
+    return f'''<details class="intent-analysis-panel">
+  <summary>
+    <span class="intent-summary-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="intent-summary-main">
+      <span class="intent-summary-eyebrow">ANALYSIS PLAN</span>
+      <span class="intent-summary-title-row"><strong>의도 분석</strong>{route_pill}</span>
+      <span class="intent-summary-subtitle">{analysis_type}</span>
+    </span>
+    <span class="intent-summary-stat"><b>조회 {retrieval_count}개</b><span>pandas {pandas_count}단계</span></span>
+    <span class="intent-disclosure"><span>세부 계획</span></span>
+  </summary>
+  <div class="intent-analysis-body">
+    {f'<div class="intent-overview-grid">{"".join(summary_cards)}</div>' if summary_cards else ''}
+    {"".join(sections) if sections else '<p class="empty">표시할 의도 분석 정보가 없습니다.</p>'}
+  </div>
+</details>'''
+
+
+def _intent_retrieval_plan_html(item: dict[str, Any], index: int) -> str:
+    dataset = _safe_text(item.get("dataset"), 180) or "데이터셋"
+    alias = _safe_text(item.get("alias"), 180)
+    source_type = _safe_text(item.get("source_type"), 80)
+    params = _mapping_text(item.get("required_params")) or "없음"
+    filters = _mapping_text(item.get("filters")) or "없음"
+    params_label = _safe_text(item.get("params_label"), 80) or "계획 파라미터"
+    filters_label = _safe_text(item.get("filters_label"), 80) or "계획 조건"
+    labels = [f"별칭: {alias}" if alias else "", source_type]
+    labels = [label for label in labels if label]
+    details = [f"{params_label}: {params}", f"{filters_label}: {filters}"]
+    return f'''<li class="intent-plan-item">
+  <div class="intent-plan-item-head"><strong>{index}. {_html_text(dataset, 180)}</strong><span>{_html_text(' · '.join(labels), 300)}</span></div>
+  <p class="intent-plan-detail">{_html_text(' · '.join(details), 900)}</p>
+</li>'''
+
+
+def _intent_pandas_plan_html(item: dict[str, Any], index: int) -> str:
+    operation = _safe_text(item.get("operation_label"), 160) or "처리 단계"
+    node_id = _safe_text(item.get("node_id"), 180)
+    source = _safe_text(item.get("source"), 180)
+    output = _safe_text(item.get("output"), 180)
+    group_by = ", ".join(_safe_text(column, 100) for column in _string_list(item.get("group_by")))
+    aggregations = _safe_value_text(item.get("aggregations"), 500)
+    formula = _mapping_text(item.get("formula"))
+    sort_by = _safe_text(item.get("sort_by"), 120)
+    order = _safe_text(item.get("order"), 40)
+    detail_parts = []
+    if source:
+        detail_parts.append(f"입력: {source}")
+    if output:
+        detail_parts.append(f"출력: {output}")
+    if group_by:
+        detail_parts.append(f"기준: {group_by}")
+    if aggregations:
+        detail_parts.append(f"집계: {aggregations}")
+    if formula:
+        detail_parts.append(f"계산: {formula}")
+    if sort_by:
+        detail_parts.append(f"정렬: {sort_by}{(' ' + order) if order else ''}")
+    if item.get("limit"):
+        detail_parts.append(f"표시 상한: {_format_number(item.get('limit'))}")
+    title_suffix = f" · {node_id}" if node_id else ""
+    return f'''<li class="intent-plan-item">
+  <div class="intent-plan-item-head"><strong>{index}. {_html_text(operation, 160)}</strong><span>{_html_text(title_suffix, 220)}</span></div>
+  <p class="intent-plan-detail">{_html_text(' · '.join(detail_parts) or '계획 상세 정보가 없습니다.', 1_500)}</p>
+</li>'''
 
 
 def _retrievals_html(value: Any) -> str:
