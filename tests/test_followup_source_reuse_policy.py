@@ -210,6 +210,31 @@ def _production_plan(
     }
 
 
+def _group_key_production_plan(
+    *,
+    processes: list[str],
+    date: str = "20260828",
+) -> dict:
+    """A prior aggregate whose row identity includes a generic result key.
+
+    ``GROUP_KEY`` is deliberately not one of the application-specific product,
+    process, or equipment names.  It keeps the regression focused on the
+    generic "deictic reference + prior *result* column" contract.
+    """
+
+    plan = _production_plan(processes=processes, date=date)
+    plan["pandas_execution_plan"][0]["group_by"] = ["OPER_NAME", "GROUP_KEY"]
+    plan["output_contract"] = {
+        "result_mode": "aggregate",
+        "grain_columns": ["OPER_NAME", "GROUP_KEY"],
+        "metric_columns": ["PRODUCTION"],
+        "result_columns": ["OPER_NAME", "GROUP_KEY", "PRODUCTION"],
+        "required_columns": ["OPER_NAME", "GROUP_KEY", "PRODUCTION"],
+        "strict_result_columns": True,
+    }
+    return plan
+
+
 def _simple_plan(
     *,
     dataset_key: str,
@@ -253,10 +278,12 @@ def _followup_payload(
     date_hint: dict | None = None,
     source_ref_complete: bool = True,
     entity_switch_detected: bool = False,
+    previous_result_rows: list[dict] | None = None,
 ) -> dict:
     current_data = {
         "columns": list(previous_plan["output_contract"]["result_columns"]),
         "result_columns": list(previous_plan["output_contract"]["result_columns"]),
+        "preview_rows": deepcopy(previous_result_rows or []),
         "source_aliases": list(reusable_aliases),
         "source_dataset_keys": [
             job["dataset_key"] for job in previous_plan["retrieval_jobs"]
@@ -500,6 +527,700 @@ def test_complete_breakdown_question_does_not_hijack_prior_analysis(
     assert hint["followup_candidate"] is False
     assert hint["request_scope_hint"] == "new_analysis"
     assert hint["source_reuse_candidate"] is False
+
+
+def test_new_analysis_intent_prompt_is_state_isolated(
+    followup_hint_builder,
+    intent_variables_builder,
+):
+    """A new query must not expose prior aliases or results to the intent LLM."""
+
+    previous = _production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="오늘 세부 DEVICE별 재공 알려줘",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "DEVICE", "PRODUCTION"]},
+        previous_result_rows=[{"OPER_NAME": "W/B1", "DEVICE": "D724", "PRODUCTION": 100}],
+    )
+    payload.pop("followup_hint")
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+    assert hinted_payload["followup_hint"]["followup_candidate"] is False
+
+    # Deliberately change the retained session state after 01E.  The raw
+    # payload can still carry it for Nodes 04+, but Node 02's model-facing
+    # projection must remain identical for this complete independent request.
+    different_state_payload = deepcopy(hinted_payload)
+    different_state_payload["state"]["last_question"] = "완전히 다른 이전 질문"
+    different_state_payload["state"]["last_answer_message"] = "이전 답변 내용"
+    different_state_payload["state"]["current_data"]["source_aliases"] = ["other_src"]
+    different_state_payload["state"]["current_data"]["preview_rows"] = [
+        {"OPER_NAME": "D/A1", "DEVICE": "OTHER", "PRODUCTION": 999}
+    ]
+
+    variables = intent_variables_builder.build_variables(hinted_payload)
+    changed_variables = intent_variables_builder.build_variables(different_state_payload)
+    state_summary = json.loads(variables["state_summary"])
+
+    assert state_summary["state"] == {}
+    model_hint = state_summary["followup_hint"]
+    assert {
+        "followup_candidate": False,
+        "request_scope_hint": "new_analysis",
+        "reuse_strategy_hint": "none",
+    }.items() <= model_hint.items()
+    # `오늘` is explicit in the new question, so its date hint may remain;
+    # no source alias, prior result, or reuse-only field may survive.
+    assert set(model_hint) <= {
+        "followup_candidate",
+        "request_scope_hint",
+        "reuse_strategy_hint",
+        "fresh_data_requested",
+        "changed_conditions_hint",
+    }
+    assert variables["state_summary"] == changed_variables["state_summary"]
+    assert variables["intent_input_diagnostics"] == changed_variables["intent_input_diagnostics"]
+    assert variables["intent_input_diagnostics"]["history_visibility"] == "none"
+    assert variables["intent_input_diagnostics"]["history_state_included"] is False
+    assert len(variables["intent_input_diagnostics"]["intent_variables_sha256"]) == 64
+
+
+def test_new_analysis_keeps_explicit_date_but_drops_previous_context_date(
+    intent_variables_builder,
+):
+    """Only date evidence expressed in the current question reaches a new prompt."""
+
+    base_payload = {
+        "request": {"question": "어제 생산량 알려줘", "reference_date": "20260828"},
+        "state": {"last_question": "오늘 생산량 알려줘"},
+    }
+    explicit = deepcopy(base_payload)
+    explicit["followup_hint"] = {
+        "followup_candidate": False,
+        "fresh_data_requested": True,
+        "changed_conditions_hint": {
+            "date": {"expression": "어제", "resolved_value": "20260827"}
+        },
+        "reusable_previous_source_aliases": ["prod_src"],
+    }
+    context_derived = deepcopy(base_payload)
+    context_derived["followup_hint"] = {
+        "followup_candidate": False,
+        "changed_conditions_hint": {
+            "date": {
+                "expression": "그날",
+                "resolved_value": "20260826",
+                "source": "previous_context",
+                "inherit": True,
+            }
+        },
+        "reusable_previous_source_aliases": ["prod_src"],
+    }
+
+    explicit_summary = json.loads(
+        intent_variables_builder.build_variables(explicit)["state_summary"]
+    )
+    context_summary = json.loads(
+        intent_variables_builder.build_variables(context_derived)["state_summary"]
+    )
+
+    assert explicit_summary["followup_hint"]["fresh_data_requested"] is True
+    assert explicit_summary["followup_hint"]["changed_conditions_hint"]["date"] == {
+        "expression": "어제",
+        "resolved_value": "20260827",
+    }
+    assert "changed_conditions_hint" not in context_summary["followup_hint"]
+
+
+def test_normalizer_preserves_intent_input_diagnostics_in_trace(normalizer):
+    """Node 04 must publish Node 02's actual prompt fingerprint unchanged."""
+
+    payload = {
+        "request": {"question": "오늘 DA공정 생산량 알려줘", "reference_date": "20260828"},
+        "followup_hint": {"followup_candidate": False},
+        "trace": {"inspection": {}, "warnings": [], "errors": []},
+    }
+    diagnostics = {
+        "history_visibility": "none",
+        "history_state_included": False,
+        "followup_candidate": False,
+        "intent_variables_sha256": "a" * 64,
+        "fingerprint_scope": "intent_dynamic_variables.v1",
+    }
+
+    normalized = normalizer.normalize_intent_plan(
+        payload,
+        json.dumps({"intent_plan": _production_plan(processes=["D/A1", "D/A2"])}),
+        _candidates(),
+        diagnostics,
+    )
+
+    assert normalized["trace"]["inspection"]["intent"]["intent_input"] == {
+        "status": "available",
+        **diagnostics,
+    }
+
+
+def test_deictic_prior_result_column_alias_opens_generic_row_reference_path(
+    followup_hint_builder,
+    intent_variables_builder,
+):
+    """A result-column alias can be a row reference without a special case.
+
+    The prior result has both ``OPER_NAME`` and ``GROUP_KEY`` in its grain.
+    The wording explicitly points to only GROUP_KEY, so the hint must carry
+    that one result-column identity for Node 04 to validate later.  It must
+    not require a DEVICE/product/process name in the component code.
+    """
+
+    previous = _group_key_production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="위 GROUP KEY들의 D/A공정 실적은?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        # Keep the prior *raw-source* schema intentionally narrower than the
+        # displayed result.  The cue is about a prior result row, not an
+        # arbitrary source-schema field.
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "GROUP_KEY": "G-A", "PRODUCTION": 100},
+            {"OPER_NAME": "W/B2", "GROUP_KEY": "G-B", "PRODUCTION": 200},
+        ],
+    )
+    payload.pop("followup_hint")
+
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+    hint = hinted_payload["followup_hint"]
+
+    assert hint["followup_candidate"] is True
+    assert hint["request_scope_hint"] == "followup_requery"
+    assert hint["reuse_strategy_hint"] == "previous_result"
+    assert hint["previous_result_row_reference_columns"] == ["GROUP_KEY"]
+    assert hint["matched_cues"]["previous_result_column_references"] == [
+        "GROUP_KEY"
+    ]
+
+    # Node 02 remains the existing transport: a generic row-reference
+    # candidate must cause the compact prior result/plan state to reach the
+    # intent model without introducing a new state store or pipeline.
+    variables = intent_variables_builder.build_variables(hinted_payload)
+    prior_state = json.loads(variables["state_summary"])["state"]
+    assert prior_state["current_data"]["preview_rows"] == [
+        {"OPER_NAME": "W/B1", "GROUP_KEY": "G-A", "PRODUCTION": 100},
+        {"OPER_NAME": "W/B2", "GROUP_KEY": "G-B", "PRODUCTION": 200},
+    ]
+
+
+def test_complete_question_with_prior_result_column_name_is_not_row_reference(
+    followup_hint_builder,
+):
+    """A column name alone must not turn an independent request into reuse."""
+
+    previous = _group_key_production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="GROUP KEY별 오늘 재공 알려줘",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "GROUP_KEY", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "GROUP_KEY": "G-A", "PRODUCTION": 100},
+        ],
+    )
+    payload.pop("followup_hint")
+
+    hint = followup_hint_builder.build_followup_hint(payload)["followup_hint"]
+
+    assert hint["followup_candidate"] is False
+    assert hint["request_scope_hint"] == "new_analysis"
+    assert hint["source_reuse_candidate"] is False
+    assert not hint.get("previous_result_row_reference_columns")
+    assert not hint.get("matched_cues", {}).get("previous_result_column_references")
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "상위 DEVICE별 오늘 재공 알려줘",
+        "차이 DEVICE별 오늘 재공 알려줘",
+        "위 DEVICE_STATUS별 오늘 재공 알려줘",
+        "위 DEVICE_STATE별 오늘 재공 알려줘",
+    ],
+)
+def test_non_deictic_word_suffixes_do_not_open_result_row_reference(
+    followup_hint_builder,
+    question,
+):
+    """A deictic suffix inside another word must stay an independent query."""
+
+    previous = _production_plan(processes=["W/B1", "W/B2"])
+    previous["pandas_execution_plan"][0]["group_by"] = ["OPER_NAME", "DEVICE"]
+    previous["output_contract"] = {
+        "result_mode": "aggregate",
+        "grain_columns": ["OPER_NAME", "DEVICE"],
+        "metric_columns": ["PRODUCTION"],
+        "result_columns": ["OPER_NAME", "DEVICE", "PRODUCTION"],
+        "required_columns": ["OPER_NAME", "DEVICE", "PRODUCTION"],
+        "strict_result_columns": True,
+    }
+    payload = _followup_payload(
+        question=question,
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "DEVICE", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "DEVICE": "D-01", "PRODUCTION": 100},
+        ],
+    )
+    payload.pop("followup_hint")
+
+    hint = followup_hint_builder.build_followup_hint(payload)["followup_hint"]
+
+    assert not hint.get("previous_result_row_reference_columns")
+    assert not hint.get("matched_cues", {}).get("previous_result_column_references")
+
+
+def test_deictic_english_plural_result_column_alias_is_still_supported(
+    followup_hint_builder,
+):
+    """Plural English wording stays valid without treating compound names as a match."""
+
+    previous = _production_plan(processes=["W/B1", "W/B2"])
+    previous["pandas_execution_plan"][0]["group_by"] = ["OPER_NAME", "DEVICE"]
+    previous["output_contract"] = {
+        "result_mode": "aggregate",
+        "grain_columns": ["OPER_NAME", "DEVICE"],
+        "metric_columns": ["PRODUCTION"],
+        "result_columns": ["OPER_NAME", "DEVICE", "PRODUCTION"],
+        "required_columns": ["OPER_NAME", "DEVICE", "PRODUCTION"],
+        "strict_result_columns": True,
+    }
+    payload = _followup_payload(
+        question="위 DEVICES별 오늘 재공 알려줘",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "DEVICE", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "DEVICE": "D-01", "PRODUCTION": 100},
+        ],
+    )
+    payload.pop("followup_hint")
+
+    hint = followup_hint_builder.build_followup_hint(payload)["followup_hint"]
+
+    assert hint["previous_result_row_reference_columns"] == ["DEVICE"]
+
+
+def test_deictic_column_postfix_does_not_treat_compound_korean_word_as_particle(
+    followup_hint_builder,
+):
+    """A particle needs a real boundary, so `수량이상` is not `수량` rows."""
+
+    assert not followup_hint_builder._has_deictic_column_reference(
+        "위 수량이상 제품 알려줘",
+        "수량",
+    )
+    assert followup_hint_builder._has_deictic_column_reference(
+        "위 수량은 어떻게 됐어?",
+        "수량",
+    )
+
+
+def test_generic_result_row_reference_repairs_missing_llm_row_mode(
+    followup_hint_builder,
+    normalizer,
+):
+    """A verified generic hint repairs an omitted LLM row-reference mode."""
+
+    previous = _group_key_production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="위 GROUP KEY들의 D/A공정 실적은?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "GROUP_KEY", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "GROUP_KEY": "G-A", "PRODUCTION": 100},
+            {"OPER_NAME": "W/B2", "GROUP_KEY": "G-B", "PRODUCTION": 200},
+        ],
+    )
+    payload.pop("followup_hint")
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+
+    # A weak planner found the fresh production source but omitted the row
+    # reference.  04 may repair this only because the candidate is a single
+    # verified final-result grain field and the target catalog supports it.
+    current = _group_key_production_plan(processes=["D/A1", "D/A2"])
+    current.update(
+        {
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "reuse_strategy": "none",
+        }
+    )
+    candidates = _candidates()
+    production_catalog = next(
+        item
+        for item in candidates["table_catalog_items"]
+        if item["dataset_key"] == "production_today"
+    )
+    production_catalog["payload"]["columns"].append("GROUP_KEY")
+
+    normalized = normalizer.normalize_intent_plan(
+        hinted_payload,
+        json.dumps({"intent_plan": current}, ensure_ascii=False),
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+    row_match = next(
+        step
+        for step in plan["pandas_execution_plan"]
+        if step.get("operation") == "apply_row_match_groups"
+    )
+    aggregate = next(
+        step
+        for step in plan["pandas_execution_plan"]
+        if step.get("node_id") == "aggregate_production"
+    )
+
+    assert plan["request_scope"] == "followup_requery"
+    assert plan["reference_mode"] == "previous_result_rows"
+    assert plan["reuse_strategy"] == "previous_result"
+    assert row_match["node_id"] == "previous_result_row_match"
+    assert row_match["output_alias"] == "previous_result_row_match"
+    assert row_match["source_alias"] == "prod_src"
+    assert row_match["reference_source_alias"] == "previous_result"
+    assert row_match["match_columns"] == ["GROUP_KEY"]
+    assert aggregate["inputs"] == [
+        {"kind": "node_output", "ref": "previous_result_row_match"}
+    ]
+    assert not plan.get("validation_errors")
+
+
+def test_generic_result_row_reference_never_satisfies_missing_process_scope(
+    followup_hint_builder,
+    normalizer,
+):
+    """A prior result key narrows rows but cannot replace a requested process filter."""
+
+    previous = _group_key_production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="위 GROUP KEY들의 D/A공정 실적은?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "GROUP_KEY", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "GROUP_KEY": "G-A", "PRODUCTION": 100},
+        ],
+    )
+    payload.pop("followup_hint")
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+
+    current = _group_key_production_plan(processes=["D/A1", "D/A2"])
+    current.update(
+        {
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "reuse_strategy": "none",
+        }
+    )
+    # Simulate a weak planner that recognized the source but omitted its
+    # requested process filter. Domain normalization may restore the filter;
+    # if it cannot, the ordinary process validator must still reject the plan.
+    current["retrieval_jobs"][0]["filters"] = {}
+    candidates = _candidates()
+    production_catalog = next(
+        item
+        for item in candidates["table_catalog_items"]
+        if item["dataset_key"] == "production_today"
+    )
+    production_catalog["payload"]["columns"].append("GROUP_KEY")
+
+    normalized = normalizer.normalize_intent_plan(
+        hinted_payload,
+        json.dumps({"intent_plan": current}, ensure_ascii=False),
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+    row_match = next(
+        step
+        for step in plan["pandas_execution_plan"]
+        if step.get("operation") == "apply_row_match_groups"
+    )
+
+    assert row_match.get("scope_propagation") == "selection_only"
+    process_guard = normalized["trace"]["inspection"]["intent"][
+        "process_scope_guard"
+    ]
+    assert process_guard["status"] != "dependent_scope_allowed"
+    assert (
+        plan["retrieval_jobs"][0]["filters"].get("OPER_NAME")
+        == {"operator": "in", "value": ["D/A1", "D/A2"]}
+        or any(
+            error.get("type") == "process_scope_incomplete"
+            for error in plan.get("validation_errors", [])
+            if isinstance(error, dict)
+        )
+    )
+
+
+def test_explicit_generic_result_row_reference_matches_only_explicit_prior_column(
+    followup_hint_builder,
+    normalizer,
+):
+    """04 binds only the explicitly referenced final-result identity.
+
+    The new D/A retrieval must not inherit the previous W/B OPER_NAME value.
+    Existing row-match machinery is reused; this regression only proves that
+    its contract receives GROUP_KEY rather than the whole prior grain.
+    """
+
+    previous = _group_key_production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="위 GROUP KEY들의 D/A공정 실적은?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "GROUP_KEY", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "GROUP_KEY": "G-A", "PRODUCTION": 100},
+            {"OPER_NAME": "W/B2", "GROUP_KEY": "G-B", "PRODUCTION": 200},
+        ],
+    )
+    payload.pop("followup_hint")
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+
+    current = _group_key_production_plan(processes=["D/A1", "D/A2"])
+    current.update(
+        {
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_result_rows",
+            "reuse_strategy": "previous_result",
+        }
+    )
+    candidates = _candidates()
+    production_catalog = next(
+        item
+        for item in candidates["table_catalog_items"]
+        if item["dataset_key"] == "production_today"
+    )
+    production_catalog["payload"]["columns"].append("GROUP_KEY")
+
+    normalized = normalizer.normalize_intent_plan(
+        hinted_payload,
+        json.dumps({"intent_plan": current}, ensure_ascii=False),
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+    row_match = next(
+        step
+        for step in plan["pandas_execution_plan"]
+        if step.get("operation") == "apply_row_match_groups"
+    )
+
+    assert plan["request_scope"] == "followup_requery"
+    assert plan["reference_mode"] == "previous_result_rows"
+    assert plan["retrieval_jobs"][0]["filters"]["OPER_NAME"] == {
+        "operator": "in",
+        "value": ["D/A1", "D/A2"],
+    }
+    assert row_match["source_alias"] == "prod_src"
+    assert row_match["reference_source_alias"] == "previous_result"
+    assert row_match["match_columns"] == ["GROUP_KEY"]
+    assert not plan.get("validation_errors")
+
+
+def test_unprovable_generic_row_reference_keeps_fresh_plan_unblocked(
+    followup_hint_builder,
+    normalizer,
+):
+    """An unsupported candidate must be ignored, never become a new gate."""
+
+    previous = _group_key_production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="위 GROUP KEY들의 D/A공정 실적은?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "GROUP_KEY", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "GROUP_KEY": "G-A", "PRODUCTION": 100},
+        ],
+    )
+    payload.pop("followup_hint")
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+
+    # A weak LLM omitted the row-reference mode.  The selected catalog below
+    # deliberately has no GROUP_KEY, so 04 must leave the new query
+    # executable without injecting a non-runnable row-match step.
+    current = _production_plan(processes=["D/A1", "D/A2"])
+    current.update(
+        {
+            "request_scope": "followup_requery",
+            "reference_mode": "none",
+            "reuse_strategy": "none",
+        }
+    )
+    normalized = normalizer.normalize_intent_plan(
+        hinted_payload,
+        json.dumps({"intent_plan": current}, ensure_ascii=False),
+        _candidates(),
+    )
+    plan = normalized["intent_plan"]
+
+    assert not any(
+        step.get("operation") == "apply_row_match_groups"
+        for step in plan["pandas_execution_plan"]
+        if isinstance(step, dict)
+    )
+    assert not plan.get("validation_errors")
+
+
+def test_generic_row_reference_never_overwrites_explicit_legacy_reuse_mode(
+    followup_hint_builder,
+    normalizer,
+):
+    """The optional repair must leave a supported legacy mode model-owned."""
+
+    previous = _group_key_production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="위 GROUP KEY들의 D/A공정 실적은?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "GROUP_KEY", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "GROUP_KEY": "G-A", "PRODUCTION": 100},
+        ],
+    )
+    payload.pop("followup_hint")
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+
+    current = _group_key_production_plan(processes=["D/A1", "D/A2"])
+    current.update(
+        {
+            "request_scope": "",
+            "reference_mode": "",
+            "reuse_strategy": "previous_source",
+        }
+    )
+    candidates = _candidates()
+    production_catalog = next(
+        item
+        for item in candidates["table_catalog_items"]
+        if item["dataset_key"] == "production_today"
+    )
+    production_catalog["payload"]["columns"].append("GROUP_KEY")
+
+    normalized = normalizer.normalize_intent_plan(
+        hinted_payload,
+        json.dumps({"intent_plan": current}, ensure_ascii=False),
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+
+    assert plan["reference_mode"] != "previous_result_rows"
+    assert not any(
+        step.get("operation") == "apply_row_match_groups"
+        for step in plan["pandas_execution_plan"]
+        if isinstance(step, dict)
+    )
+
+
+def test_generic_row_reference_keeps_malformed_existing_match_recoverable(
+    followup_hint_builder,
+    normalizer,
+):
+    """An existing bad row-match stays on the normal new-analysis recovery path."""
+
+    previous = _group_key_production_plan(processes=["W/B1", "W/B2"])
+    payload = _followup_payload(
+        question="위 GROUP KEY들의 D/A공정 실적은?",
+        previous_plan=previous,
+        reusable_aliases=["prod_src"],
+        source_columns={"prod_src": ["DATE", "OPER_NAME", "GROUP_KEY", "PRODUCTION"]},
+        previous_result_rows=[
+            {"OPER_NAME": "W/B1", "GROUP_KEY": "G-A", "PRODUCTION": 100},
+        ],
+    )
+    payload.pop("followup_hint")
+    hinted_payload = followup_hint_builder.build_followup_hint(payload)
+
+    current = _group_key_production_plan(processes=["D/A1", "D/A2"])
+    current.update(
+        {
+            "request_scope": "new_analysis",
+            "reference_mode": "none",
+            "reuse_strategy": "none",
+        }
+    )
+    current["pandas_execution_plan"].insert(
+        0,
+        {
+            "node_id": "bad_row_match",
+            "operation": "apply_row_match_groups",
+            "inputs": [{"kind": "external_source", "ref": "prod_src"}],
+            "source_alias": "prod_src",
+            "reference_source_alias": "prod_src",
+        },
+    )
+    candidates = _candidates()
+    production_catalog = next(
+        item
+        for item in candidates["table_catalog_items"]
+        if item["dataset_key"] == "production_today"
+    )
+    production_catalog["payload"]["columns"].append("GROUP_KEY")
+
+    normalized = normalizer.normalize_intent_plan(
+        hinted_payload,
+        json.dumps({"intent_plan": current}, ensure_ascii=False),
+        candidates,
+    )
+    plan = normalized["intent_plan"]
+
+    assert plan["reference_mode"] != "previous_result_rows"
+    assert not any(
+        step.get("operation") == "apply_row_match_groups"
+        for step in plan["pandas_execution_plan"]
+        if isinstance(step, dict)
+    )
+    assert not plan.get("validation_errors")
+
+
+def test_auto_row_reference_never_rewires_both_inputs_of_same_source_join(
+    normalizer,
+):
+    """One join node with two identical source edges is not an automatic target."""
+
+    join = {
+        "node_id": "self_join",
+        "operation": "join",
+        "inputs": [
+            {"kind": "external_source", "ref": "prod_src"},
+            {"kind": "external_source", "ref": "prod_src"},
+        ],
+    }
+    consumer_contract = normalizer._single_direct_row_match_consumer_contract(
+        [join],
+        "prod_src",
+    )
+    rewired, reconciliation = (
+        normalizer._reconcile_detached_previous_result_row_match_consumer(
+            [
+                {
+                    "node_id": "previous_result_row_match",
+                    "output_alias": "previous_result_row_match",
+                    "operation": "apply_row_match_groups",
+                    "source_alias": "prod_src",
+                    "reference_source_alias": "previous_result",
+                },
+                join,
+            ],
+            "previous_result_rows",
+        )
+    )
+
+    assert consumer_contract["status"] == "skipped"
+    assert consumer_contract["consumer_edge_count"] == 2
+    assert reconciliation["status"] == "skipped"
+    assert reconciliation["consumer_edge_count"] == 2
+    assert rewired[1]["inputs"] == join["inputs"]
 
 
 def test_breakdown_column_followup_recovers_clarification_with_prior_blueprint(

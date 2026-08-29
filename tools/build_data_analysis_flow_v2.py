@@ -352,6 +352,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
             ("Message", "state_summary", "상태/요청 컨텍스트 JSON", "build_state_summary"),
             ("Message", "metadata_candidates", "메타데이터 후보 JSON", "build_metadata_candidates"),
             ("Message", "output_schema", "출력 스키마 JSON", "build_output_schema"),
+            ("Data", "intent_input_diagnostics", "의도 입력 진단", "build_intent_input_diagnostics"),
         ],
         node_index,
     )
@@ -361,6 +362,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
             ("data", "payload", "페이로드", True, None),
             ("message", "llm_response", "의도 LLM 응답", True, ""),
             ("data", "metadata_candidates", "메타데이터 후보", False, None),
+            ("data", "intent_input_diagnostics", "의도 입력 진단", False, None),
         ],
         [("Data", "payload_out", "페이로드 출력", "build_payload")],
         node_index,
@@ -822,6 +824,7 @@ def build_flow(source: Path = DEFAULT_SOURCE) -> dict[str, Any]:
         ("CustomComponent-HFsYn", "payload_out", INTENT_MODEL_NODE_ID, "payload"),
         (METADATA_CANDIDATES_NODE_ID, "metadata_candidates", INTENT_MODEL_NODE_ID, "metadata_candidates"),
         (INTENT_PROMPT_NODE_ID, "prompt", INTENT_MODEL_NODE_ID, "intent_prompt"),
+        (INTENT_VARIABLES_NODE_ID, "intent_input_diagnostics", INTENT_NORMALIZER_NODE_ID, "intent_input_diagnostics"),
         (EXECUTION_GATE_NODE_ID, "payload_out", RESOLVER_NODE_ID, "payload"),
         (RESOLVER_NODE_ID, "payload_out", PANDAS_VARIABLES_NODE_ID, "payload"),
         (RESOLVER_NODE_ID, "payload_out", PANDAS_PROMPT_NODE_ID, "payload"),

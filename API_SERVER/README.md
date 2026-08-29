@@ -1,8 +1,8 @@
 # API_SERVER
 
-API_SERVER is a self-contained FastAPI deployment folder for the existing
-artifact service. It has no runtime import from artifact_server, tools, or any
-other parent-repository directory.
+API_SERVER is a self-contained FastAPI deployment folder for CSV/JSON
+downloads and HTML Report storage. It has no runtime import from parent-
+repository directories.
 
 ## Start
 

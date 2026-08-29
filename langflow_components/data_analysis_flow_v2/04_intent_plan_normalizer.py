@@ -238,8 +238,13 @@ def normalize_intent_plan(
     payload_value: Any,
     llm_response: Any,
     metadata_candidates_value: Any = None,
+    intent_input_diagnostics_value: Any = None,
 ) -> dict[str, Any]:
     payload = _payload(payload_value)
+    intent_input_diagnostics = _intent_input_trace_diagnostics(
+        intent_input_diagnostics_value,
+        payload,
+    )
     parsed = _json(llm_response)
     plan = parsed.get("intent_plan") if isinstance(parsed.get("intent_plan"), dict) else parsed
     plan = deepcopy(plan) if isinstance(plan, dict) else {}
@@ -249,7 +254,11 @@ def normalize_intent_plan(
     if not catalog_error:
         catalog_error = _catalog_error_from_plan(plan)
     if catalog_error:
-        return _blocked_catalog_metadata_payload(payload, catalog_error)
+        return _blocked_catalog_metadata_payload(
+            payload,
+            catalog_error,
+            intent_input_diagnostics,
+        )
     retrieval_jobs = _retrieval_jobs(plan)
     (
         plan,
@@ -285,7 +294,11 @@ def normalize_intent_plan(
         and followup_hint.get("condition_only_followup_candidate") is True
     )
     if unknown_dataset_error and not defer_unknown_dataset_for_condition_followup:
-        return _blocked_catalog_metadata_payload(payload, unknown_dataset_error)
+        return _blocked_catalog_metadata_payload(
+            payload,
+            unknown_dataset_error,
+            intent_input_diagnostics,
+        )
     metadata_refs = _metadata_refs(parsed, plan)
     metadata_refs = _merge_metadata_ref_lists(
         metadata_refs,
@@ -352,7 +365,11 @@ def normalize_intent_plan(
         metadata_candidates,
         question,
         skip=followup_contract_guard.get("kind")
-        in {"direct_required_parameter", "dependent_retrieval"},
+        in {
+            "direct_required_parameter",
+            "dependent_retrieval",
+            "previous_result_row_reference",
+        },
     )
     # A column-level breakdown follow-up can be unambiguous even when the
     # model returned clarification: 01E has already matched the requested
@@ -371,14 +388,22 @@ def normalize_intent_plan(
         retrieval_jobs,
         raw_pandas_plan,
         skip=followup_contract_guard.get("kind")
-        in {"direct_required_parameter", "dependent_retrieval"},
+        in {
+            "direct_required_parameter",
+            "dependent_retrieval",
+            "previous_result_row_reference",
+        },
     )
     if (
         unknown_dataset_error
         and condition_only_followup_blueprint_guard.get("status") != "applied"
         and breakdown_followup_blueprint_guard.get("status") != "applied"
     ):
-        return _blocked_catalog_metadata_payload(payload, unknown_dataset_error)
+        return _blocked_catalog_metadata_payload(
+            payload,
+            unknown_dataset_error,
+            intent_input_diagnostics,
+        )
     if followup_contract_guard.get("metadata_ref"):
         followup_ref = _metadata_ref(followup_contract_guard["metadata_ref"])
         if followup_ref and followup_ref not in metadata_refs:
@@ -829,6 +854,13 @@ def normalize_intent_plan(
         reference_mode,
         payload,
     )
+    (
+        pandas_plan,
+        row_match_consumer_reconciliation,
+    ) = _reconcile_detached_previous_result_row_match_consumer(
+        pandas_plan,
+        reference_mode,
+    )
     # Validate process scope only after the normalizer has materialized the
     # trusted previous/upstream row-match step. A dependent history source
     # may inherit the parent's scope through those rows rather than repeat
@@ -983,6 +1015,8 @@ def normalize_intent_plan(
         pandas_plan,
         resolved_join_plan,
         selected_recipe_join_contracts.get("shadow_recommendations", []),
+        metadata_candidates,
+        retrieval_jobs,
     )
     pandas_plan, derived_aggregate_join_materialization = (
         _materialize_derived_aggregate_join_keys(pandas_plan)
@@ -1008,6 +1042,20 @@ def normalize_intent_plan(
             metadata_candidates,
             domain_selection.get("locked_metadata_refs", []),
             plan.get("output_contract"),
+        )
+    )
+    # ``column_labels`` belongs to presentation, but the intent model can
+    # occasionally use a unique display label (for example an aggregated
+    # metric label) inside a Typed formula.  Reconcile that spelling only
+    # when the output contract explicitly declares a one-to-one label and the
+    # direct upstream Typed frame proves the underlying working column.
+    # This does not infer business synonyms or introduce a new validation
+    # gate for plans that do not declare labels.
+    pandas_plan, formula_operand_label_reconciliation = (
+        _reconcile_formula_operand_display_labels(
+            pandas_plan,
+            plan.get("output_contract"),
+            metadata_candidates,
         )
     )
     # A terminal select step with no declared columns is not executable as a
@@ -1231,6 +1279,8 @@ def normalize_intent_plan(
         business_time_guard,
         resolved_execution_graph,
         metadata_candidates,
+        pandas_plan,
+        typed_frame_contract,
     )
     validation_errors.extend(resolved_execution_graph.get("validation_errors", []))
     if metric_source_errors:
@@ -1409,12 +1459,14 @@ def normalize_intent_plan(
         "reference_mode_guard": reference_mode_guard,
         "row_match_guard": row_match_guard,
         "implicit_step_input_normalization": implicit_step_input_normalization,
+        "row_match_consumer_reconciliation": row_match_consumer_reconciliation,
         "pandas_column_normalization": pandas_column_normalization,
         "typed_join_contract_materialization": typed_join_contract_materialization,
         "derived_aggregate_join_materialization": derived_aggregate_join_materialization,
         "domain_execution_contracts": domain_execution_contracts,
         "aggregate_grain_alignment": aggregate_grain_alignment,
         "derived_formula_materialization": derived_formula_materialization,
+        "formula_operand_label_reconciliation": formula_operand_label_reconciliation,
         "terminal_detail_join_projection": terminal_detail_join_projection,
         "proven_nonadditive_join_rollup_repair": proven_nonadditive_join_rollup_repair,
         "detail_row_selection_reconciliation": detail_row_selection_reconciliation,
@@ -1445,6 +1497,7 @@ def normalize_intent_plan(
         "resolved_metric_comparison": bool(resolved_metric_comparison_plan),
         "metric_source_validation_errors": metric_source_errors,
         "intent_ir": deepcopy(intent_ir),
+        "intent_input": intent_input_diagnostics,
     }
     if not retrieval_jobs and not previous_data_reuse and not validation_errors:
         next_payload.setdefault("trace", {}).setdefault("warnings", []).append({"type": "missing_retrieval_jobs", "message": "intent_plan.retrieval_jobs가 비어 있습니다."})
@@ -1587,6 +1640,26 @@ def _reconcile_followup_execution_contract(
     if hint.get("followup_candidate") is not True:
         return next_plan, jobs, steps, {"status": "not_needed", "reason": "not_followup"}
 
+    # 01E가 찾은 "위 <직전 결과 컬럼>"은 아직 실행 계약이 아닙니다. 여기서
+    # prior result의 안정 grain, session preview, 현재 단일 Catalog source를 모두
+    # 확인한 경우에만 새 조회 뒤의 row match로 승격합니다. 하나라도 불명확하면
+    # 기존 신규/후속 조회 경로를 그대로 두며 validation error를 추가하지 않습니다.
+    automatic_row_reference = _automatic_previous_result_row_reference_contract(
+        payload,
+        jobs,
+        metadata_candidates,
+        steps,
+    )
+    raw_reference_mode = str(plan.get("reference_mode") or "").strip()
+    raw_request_scope = str(plan.get("request_scope") or "").strip()
+    raw_reuse_strategy = str(plan.get("reuse_strategy") or "").strip()
+    automatic_row_reference_can_repair_omission = (
+        automatic_row_reference.get("status") == "applied"
+        and raw_reference_mode in {"", "none"}
+        and raw_request_scope in {"", "new_analysis", "followup_requery"}
+        and raw_reuse_strategy in {"", "none"}
+    )
+
     # An upstream binding is a fallback for a required parameter that is not
     # present in the current question.  If the intent already supplies every
     # catalog-required parameter, keep this as an independent retrieval even
@@ -1605,6 +1678,7 @@ def _reconcile_followup_execution_contract(
             "kind": "direct_required_parameter",
             "reason": "explicit_required_parameter_precedes_previous_result_binding",
             "direct_jobs": direct_required_jobs,
+            "automatic_row_reference": automatic_row_reference,
             "llm_request_scope": str(plan.get("request_scope") or ""),
             "llm_reference_mode": str(plan.get("reference_mode") or ""),
         }
@@ -1656,6 +1730,7 @@ def _reconcile_followup_execution_contract(
             for job in jobs
             if isinstance(job, dict)
         }
+
         target_job = _build_dependent_retrieval_job(
             target_item,
             metadata_candidates,
@@ -1696,6 +1771,34 @@ def _reconcile_followup_execution_contract(
             "reference_contract": reference_contract,
             "llm_request_scope": str(plan.get("request_scope") or ""),
             "llm_reference_mode": str(plan.get("reference_mode") or ""),
+        }
+
+    # A model can understand the new metric/source but omit the row-reference
+    # mode.  Promote only the fully verified single-column/single-source shape;
+    # explicit previous-source/filter/result modes remain model-owned and are
+    # never overwritten here.
+    if (
+        automatic_row_reference_can_repair_omission
+        and jobs
+    ):
+        next_plan["request_scope"] = "followup_requery"
+        next_plan["reference_mode"] = "previous_result_rows"
+        next_plan["reuse_strategy"] = "previous_result"
+        return next_plan, jobs, steps, {
+            "status": "applied",
+            "kind": "previous_result_row_reference",
+            "reason": "verified_result_column_reference_repairs_missing_row_match_mode",
+            "reference_contract": {
+                "mode": "previous_result_rows",
+                "scope": "followup_requery",
+                "source_alias": automatic_row_reference.get("source_alias"),
+                "dataset_key": automatic_row_reference.get("dataset_key"),
+                "match_columns": automatic_row_reference.get("match_columns"),
+                "selection_source": "followup_result_column_reference",
+            },
+            "automatic_row_reference": automatic_row_reference,
+            "llm_request_scope": raw_request_scope,
+            "llm_reference_mode": raw_reference_mode,
         }
 
     # 2) 제품별·공정별 등 새 grain이 이전 결과에 없으면 결과 재변환이 아닙니다.
@@ -1796,13 +1899,14 @@ def _reconcile_followup_execution_contract(
         return next_plan, jobs, steps, {
             "status": "applied",
             "kind": "generic_followup_reference_completion",
-                "reason": "followup_requery_requires_explicit_previous_reference",
+            "reason": "followup_requery_requires_explicit_previous_reference",
             "reference_contract": {
                 "mode": mode,
                 "scope": scope,
                 "source_aliases": sorted(reusable_aliases),
                 "filter_inheritance": mode == "previous_filters",
             },
+            "automatic_row_reference": automatic_row_reference,
             "llm_request_scope": str(plan.get("request_scope") or ""),
             "llm_reference_mode": str(plan.get("reference_mode") or ""),
         }
@@ -1810,6 +1914,7 @@ def _reconcile_followup_execution_contract(
     return next_plan, jobs, steps, {
         "status": "not_needed",
         "reason": "no_catalog_proven_dependent_or_grain_conflict",
+        "automatic_row_reference": automatic_row_reference,
     }
 
 
@@ -9131,6 +9236,12 @@ def _dependent_process_scope_aliases(pandas_plan: list[Any]) -> set[str]:
             or step.get("reference_alias")
             or ""
         ).strip().casefold()
+        # A generated deictic result-column match is a post-retrieval row
+        # selection, not proof that the current question's process range was
+        # applied to the fresh source. Preserve the older dependent-source
+        # exemption for all other row matches.
+        if str(step.get("scope_propagation") or "").strip() == "selection_only":
+            continue
         if source_alias and reference_alias in {"previous_result", "upstream_result"}:
             aliases.add(source_alias)
     return aliases
@@ -9541,14 +9652,22 @@ def _ensure_previous_result_row_match_step(
     contract = _previous_result_match_contract(payload or {})
     if not _string_list(contract.get("match_columns")):
         return items
-    return [
-        {
-            "operation": "apply_row_match_groups",
-            "source_alias": aliases[0],
-            "reference_source_alias": PREVIOUS_RESULT_ALIAS,
-        },
-        *items,
-    ]
+    row_match_step = {
+        # Give the generated node a stable provider identity.  This lets
+        # the Typed DAG consume the matched rows rather than independently
+        # reading the same retrieval source in the next step.
+        "node_id": "previous_result_row_match",
+        "output_alias": "previous_result_row_match",
+        "operation": "apply_row_match_groups",
+        "source_alias": aliases[0],
+        "reference_source_alias": PREVIOUS_RESULT_ALIAS,
+    }
+    # A result-column deictic reference (for example, "위 DEVICE들") narrows
+    # only that displayed key. It must not stand in for the current question's
+    # explicit process filter. Older dependent-history matches are unchanged.
+    if _previous_result_row_reference_hint_columns(payload or {}):
+        row_match_step["scope_propagation"] = "selection_only"
+    return [row_match_step, *items]
 
 
 # 함수 설명: `_normalize_row_match_steps()`는 참조 source의 여러 행을 행 내부 AND·행 사이 OR로 적용할 범용 실행 단계를 표준화합니다.
@@ -9935,8 +10054,141 @@ def _materialize_implicit_step_inputs(
     }
 
 
-# 함수 설명: `_previous_result_match_contract()`는 직전 결과를 만든 grain 계약을 후속 row match의 유일한 identity로 재사용합니다.
-def _previous_result_match_contract(payload: dict[str, Any]) -> dict[str, Any]:
+# 함수 설명: 자동 삽입된 previous-result row match가 고립되지 않도록 단일 소비자 입력만 안전하게 연결합니다.
+def _reconcile_detached_previous_result_row_match_consumer(
+    items: list[Any],
+    reference_mode: str,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Connect an otherwise detached row-match output without changing its source contract.
+
+    A Typed row-match node is useful only when a later Typed node consumes its
+    output.  We repair one mechanically provable shape: exactly one restored
+    previous-result row-match node and exactly one later direct consumer of its
+    physical retrieval source.  Multiple consumers, branches, and already
+    connected plans remain untouched so this best-effort repair never chooses
+    a business branch or removes a helper.
+    """
+
+    if reference_mode != "previous_result_rows":
+        return items, {"status": "not_needed", "reason": "reference_mode_is_not_previous_result_rows"}
+    normalized_items = [deepcopy(item) for item in items]
+    row_matches = [
+        (index, item)
+        for index, item in enumerate(normalized_items)
+        if isinstance(item, dict)
+        and str(item.get("operation") or "").strip().lower()
+        == "apply_row_match_groups"
+        and str(item.get("reference_source_alias") or "").strip()
+        == PREVIOUS_RESULT_ALIAS
+    ]
+    if len(row_matches) != 1:
+        return normalized_items, {
+            "status": "not_needed",
+            "reason": "row_match_count_is_not_one",
+            "row_match_count": len(row_matches),
+        }
+    row_index, row_match = row_matches[0]
+    source_alias = str(row_match.get("source_alias") or "").strip()
+    row_match_output = str(
+        row_match.get("output_alias") or row_match.get("node_id") or ""
+    ).strip()
+    if not source_alias or not row_match_output:
+        return normalized_items, {
+            "status": "not_needed",
+            "reason": "row_match_output_not_materialized",
+        }
+
+    direct_consumers: list[tuple[int, int]] = []
+    for index, item in enumerate(normalized_items[row_index + 1 :], start=row_index + 1):
+        if not isinstance(item, dict):
+            continue
+        inputs = item.get("inputs") if isinstance(item.get("inputs"), list) else []
+        if any(
+            isinstance(raw_input, dict)
+            and str(raw_input.get("kind") or "").strip() == "node_output"
+            and str(raw_input.get("ref") or "").strip() == row_match_output
+            for raw_input in inputs
+        ):
+            return normalized_items, {
+                "status": "already_connected",
+                "reason": "row_match_output_is_already_consumed",
+                "row_match_output": row_match_output,
+            }
+        for input_index, raw_input in enumerate(inputs):
+            if (
+                isinstance(raw_input, dict)
+                and str(raw_input.get("kind") or "").strip() == "external_source"
+                and str(raw_input.get("ref") or "").strip() == source_alias
+            ):
+                direct_consumers.append((index, input_index))
+    if not direct_consumers:
+        return normalized_items, {
+            "status": "not_needed",
+            "reason": "no_detached_row_match_consumer",
+            "row_match_output": row_match_output,
+        }
+    consumer_nodes = {index for index, _ in direct_consumers}
+    if len(direct_consumers) != 1 or len(consumer_nodes) != 1:
+        return normalized_items, {
+            "status": "skipped",
+            "reason": "ambiguous_direct_row_match_consumer_edges",
+            "row_match_output": row_match_output,
+            "consumer_edge_count": len(direct_consumers),
+            "consumer_count": len(consumer_nodes),
+        }
+    consumer_index = next(iter(consumer_nodes))
+    consumer = normalized_items[consumer_index]
+    if not isinstance(consumer, dict):
+        return normalized_items, {"status": "not_needed", "reason": "consumer_not_a_typed_step"}
+    rewritten_inputs: list[Any] = []
+    rewritten_count = 0
+    for raw_input in consumer.get("inputs") if isinstance(consumer.get("inputs"), list) else []:
+        rewritten = deepcopy(raw_input)
+        if (
+            isinstance(rewritten, dict)
+            and str(rewritten.get("kind") or "").strip() == "external_source"
+            and str(rewritten.get("ref") or "").strip() == source_alias
+        ):
+            rewritten["kind"] = "node_output"
+            rewritten["ref"] = row_match_output
+            rewritten_count += 1
+        rewritten_inputs.append(rewritten)
+    if not rewritten_count:
+        return normalized_items, {"status": "not_needed", "reason": "consumer_input_changed_before_reconciliation"}
+    consumer["inputs"] = rewritten_inputs
+    normalized_items[consumer_index] = consumer
+    return normalized_items, {
+        "status": "applied",
+        "reason": "single_direct_consumer_rewired_to_row_match_output",
+        "source_alias": source_alias,
+        "row_match_output": row_match_output,
+        "consumer_node_id": str(consumer.get("node_id") or "").strip(),
+        "rewritten_input_count": rewritten_count,
+    }
+
+
+# 함수 설명: 01E가 감지한 직전 결과 컬럼 참조를 하나의 안정적인 grain key로만 좁힙니다.
+def _previous_result_row_reference_hint_columns(payload: dict[str, Any]) -> list[str]:
+    followup_hint = (
+        payload.get("followup_hint")
+        if isinstance(payload.get("followup_hint"), dict)
+        else {}
+    )
+    matched_cues = (
+        followup_hint.get("matched_cues")
+        if isinstance(followup_hint.get("matched_cues"), dict)
+        else {}
+    )
+    return _merge_strings(
+        _string_list(followup_hint.get("previous_result_row_reference_columns")),
+        _string_list(matched_cues.get("previous_result_column_references")),
+    )
+
+
+# 함수 설명: 직전 결과의 이미 확정된 grain 후보만 순서대로 반환합니다.
+def _previous_result_grain_candidates(
+    payload: dict[str, Any],
+) -> list[tuple[str, list[str]]]:
     state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
     previous_plan = (
         state.get("last_intent_plan")
@@ -9948,26 +10200,271 @@ def _previous_result_match_contract(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(previous_plan.get("resolved_grain_plan"), dict)
         else {}
     )
-    candidates = (
-        (
-            "previous_result_resolved_grain",
-            resolved_grain.get("canonical_columns"),
-        ),
-        (
-            "previous_result_resolved_source_grain",
-            resolved_grain.get("grain_columns"),
-        ),
-        (
-            "previous_result_output_contract",
-            (
-                previous_plan.get("output_contract")
-                if isinstance(previous_plan.get("output_contract"), dict)
-                else {}
-            ).get("grain_columns"),
-        ),
+    output_contract = (
+        previous_plan.get("output_contract")
+        if isinstance(previous_plan.get("output_contract"), dict)
+        else {}
     )
-    for source, raw_columns in candidates:
-        columns = _string_list(raw_columns)
+    return [
+        ("previous_result_resolved_grain", _string_list(resolved_grain.get("canonical_columns"))),
+        ("previous_result_resolved_source_grain", _string_list(resolved_grain.get("grain_columns"))),
+        ("previous_result_output_contract", _string_list(output_contract.get("grain_columns"))),
+    ]
+
+
+# 함수 설명: 지시어로 언급된 컬럼이 실제 prior result grain에 있을 때만 단일 match key로 확정합니다.
+def _previous_result_row_reference_match_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    hinted_columns = _previous_result_row_reference_hint_columns(payload)
+    if len(hinted_columns) != 1:
+        return {}
+    hinted_key = _normalized_column_key(hinted_columns[0])
+    previous_columns = _previous_result_columns(payload)
+    if not hinted_key or not any(
+        _normalized_column_key(column) == hinted_key for column in previous_columns
+    ):
+        return {}
+    for source, grain_columns in _previous_result_grain_candidates(payload):
+        matched_columns = [
+            column
+            for column in grain_columns
+            if _normalized_column_key(column) == hinted_key
+        ]
+        if len(matched_columns) == 1:
+            return {
+                "source": "followup_hint_previous_result_column_reference",
+                "match_columns": matched_columns,
+                "hinted_columns": hinted_columns,
+                "grain_source": source,
+            }
+    return {}
+
+
+# 함수 설명: 자동 행 매칭 전에 session preview에 실제 결과 key 값이 남았는지 확인합니다.
+def _previous_result_row_reference_preview_available(
+    payload: dict[str, Any],
+    match_columns: list[str],
+) -> bool:
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    current_data = (
+        state.get("current_data") if isinstance(state.get("current_data"), dict) else {}
+    )
+    rows = (
+        current_data.get("preview_rows")
+        if isinstance(current_data.get("preview_rows"), list)
+        else current_data.get("rows")
+        if isinstance(current_data.get("rows"), list)
+        else []
+    )
+    if not rows or not match_columns:
+        return False
+    expected = {_normalized_column_key(column) for column in match_columns}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        normalized_row = {
+            _normalized_column_key(key): value
+            for key, value in row.items()
+            if _normalized_column_key(key)
+        }
+        if expected.issubset(normalized_row) and all(
+            str(normalized_row[key] if normalized_row[key] is not None else "").strip()
+            for key in expected
+        ):
+            return True
+    return False
+
+
+# 함수 설명: 새 단일 Catalog source에 적용 가능한 경우에만 previous-result 행 매칭을 자동 보정합니다.
+def _automatic_previous_result_row_reference_contract(
+    payload: dict[str, Any],
+    retrieval_jobs: list[dict[str, Any]],
+    candidates: dict[str, Any],
+    pandas_plan: list[Any],
+) -> dict[str, Any]:
+    hinted_columns = _previous_result_row_reference_hint_columns(payload)
+    if not hinted_columns:
+        return {"status": "not_needed", "reason": "no_previous_result_column_reference"}
+    if len(hinted_columns) != 1:
+        return {
+            "status": "skipped",
+            "reason": "ambiguous_previous_result_column_reference",
+            "hinted_columns": hinted_columns,
+        }
+    # An existing row-match step is model-owned.  Do not reinterpret an
+    # incomplete/self-referential one as a prior-result reference: in a normal
+    # new-analysis plan the established recovery path can safely drop it,
+    # while forcing `previous_result_rows` here would turn that recoverable
+    # shape into a validation block.
+    existing_row_matches = [
+        index
+        for index, item in enumerate(pandas_plan)
+        if isinstance(item, dict)
+        and str(item.get("operation") or item.get("step") or "").strip().lower()
+        == "apply_row_match_groups"
+    ]
+    if existing_row_matches:
+        return {
+            "status": "skipped",
+            "reason": "existing_row_match_step_remains_model_owned",
+            "hinted_columns": hinted_columns,
+            "existing_row_match_indexes": existing_row_matches[:6],
+        }
+    match_contract = _previous_result_row_reference_match_contract(payload)
+    match_columns = _string_list(match_contract.get("match_columns"))
+    if len(match_columns) != 1:
+        return {
+            "status": "skipped",
+            "reason": "referenced_column_is_not_a_verified_previous_result_grain",
+            "hinted_columns": hinted_columns,
+        }
+    if not _previous_result_row_reference_preview_available(payload, match_columns):
+        return {
+            "status": "skipped",
+            "reason": "previous_result_row_values_unavailable",
+            "hinted_columns": hinted_columns,
+            "match_columns": match_columns,
+        }
+    jobs = [item for item in retrieval_jobs if isinstance(item, dict)]
+    if len(jobs) != 1:
+        return {
+            "status": "skipped",
+            "reason": "row_match_requires_single_fresh_retrieval",
+            "hinted_columns": hinted_columns,
+            "match_columns": match_columns,
+            "retrieval_job_count": len(jobs),
+        }
+    job = jobs[0]
+    dataset_key = str(job.get("dataset_key") or "").strip()
+    source_alias = str(job.get("source_alias") or dataset_key).strip()
+    table_item = _table_catalog_item(candidates, dataset_key)
+    if not dataset_key or not source_alias or not table_item:
+        return {
+            "status": "skipped",
+            "reason": "target_catalog_not_resolved",
+            "hinted_columns": hinted_columns,
+            "match_columns": match_columns,
+            "dataset_key": dataset_key,
+        }
+    unsupported = [
+        column
+        for column in match_columns
+        if not _catalog_supports_domain_column(candidates, dataset_key, column)
+    ]
+    if unsupported:
+        return {
+            "status": "skipped",
+            "reason": "target_catalog_missing_referenced_result_column",
+            "hinted_columns": hinted_columns,
+            "match_columns": match_columns,
+            "dataset_key": dataset_key,
+            "unsupported_columns": unsupported,
+        }
+    consumer_contract = _single_direct_row_match_consumer_contract(
+        pandas_plan,
+        source_alias,
+    )
+    if consumer_contract.get("status") != "applied":
+        return {
+            "status": "skipped",
+            "reason": "row_match_consumer_not_unambiguous",
+            "hinted_columns": hinted_columns,
+            "match_columns": match_columns,
+            "dataset_key": dataset_key,
+            "consumer_contract": consumer_contract,
+        }
+    return {
+        "status": "applied",
+        "reason": "single_verified_result_grain_column_on_single_fresh_retrieval",
+        "hinted_columns": hinted_columns,
+        "match_columns": match_columns,
+        "source_alias": source_alias,
+        "dataset_key": dataset_key,
+        "match_contract_source": str(match_contract.get("source") or ""),
+        "grain_source": str(match_contract.get("grain_source") or ""),
+        "consumer_contract": consumer_contract,
+    }
+
+
+# 함수 설명: 자동 행 매칭은 단일 source 입력 edge를 기계적으로 증명할 수 있을 때만 활성화합니다.
+def _single_direct_row_match_consumer_contract(
+    items: list[Any],
+    source_alias: str,
+) -> dict[str, Any]:
+    """Prove one rewritable target edge before enabling an automatic match.
+
+    The dynamic deictic feature must not choose a branch of a join or rewrite
+    two inputs of a self-join.  Explicit model-supplied row-match plans keep
+    their existing behavior; this guard governs only the optional automatic
+    upgrade from an omitted reference mode.
+    """
+
+    target = str(source_alias or "").strip()
+    if not target:
+        return {"status": "skipped", "reason": "missing_source_alias"}
+    direct_edges: list[dict[str, Any]] = []
+    join_operations = {"join", "merge", "outer_join", "left_join", "compare_presence"}
+    for index, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        operation = str(raw.get("operation") or raw.get("step") or "").strip().lower()
+        inputs = raw.get("inputs") if isinstance(raw.get("inputs"), list) else []
+        if inputs:
+            for input_index, value in enumerate(inputs):
+                if (
+                    isinstance(value, dict)
+                    and str(value.get("kind") or "").strip() == "external_source"
+                    and str(value.get("ref") or "").strip() == target
+                ):
+                    direct_edges.append(
+                        {
+                            "step_index": index,
+                            "node_id": str(raw.get("node_id") or "").strip(),
+                            "operation": operation,
+                            "input_index": input_index,
+                            "input_mode": "explicit",
+                        }
+                    )
+            continue
+        if operation in join_operations:
+            references = [
+                raw.get("left_source_alias") or raw.get("source_alias"),
+                raw.get("right_source_alias") or raw.get("reference_source_alias"),
+            ]
+        else:
+            references = [raw.get("source_alias")]
+        for input_index, reference in enumerate(references):
+            if str(reference or "").strip() == target:
+                direct_edges.append(
+                    {
+                        "step_index": index,
+                        "node_id": str(raw.get("node_id") or "").strip(),
+                        "operation": operation,
+                        "input_index": input_index,
+                        "input_mode": "implicit",
+                    }
+                )
+    if len(direct_edges) != 1:
+        return {
+            "status": "skipped",
+            "reason": "direct_source_consumer_edge_count_is_not_one",
+            "source_alias": target,
+            "consumer_edge_count": len(direct_edges),
+            "consumer_edges": direct_edges[:6],
+        }
+    return {
+        "status": "applied",
+        "source_alias": target,
+        "consumer_edge": direct_edges[0],
+    }
+
+
+# 함수 설명: `_previous_result_match_contract()`는 직전 결과를 만든 grain 계약을 후속 row match의 유일한 identity로 재사용합니다.
+def _previous_result_match_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    row_reference_contract = _previous_result_row_reference_match_contract(payload)
+    if row_reference_contract:
+        return row_reference_contract
+    state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
+    for source, columns in _previous_result_grain_candidates(payload):
         if columns:
             return {
                 "source": source,
@@ -12342,6 +12839,8 @@ def _metric_source_validation_errors(
     business_time_guard: dict[str, Any],
     resolved_execution_graph: dict[str, Any] | None = None,
     metadata_candidates: dict[str, Any] | None = None,
+    pandas_plan: list[Any] | None = None,
+    typed_frame_contract: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     aliases = [
@@ -12420,7 +12919,17 @@ def _metric_source_validation_errors(
                             "source_column": source_column,
                             "actual_dataset_key": provider_dataset,
                         }
-                    )
+                )
+                continue
+            if _is_verified_typed_node_metric_binding(
+                binding,
+                pandas_plan,
+                typed_frame_contract,
+            ):
+                # A Typed node output is a materialized calculation frame, not
+                # another retrieval source.  Its upstream Catalog ownership
+                # is still checked by the Typed DAG; do not demand a fake
+                # retrieval job for a proven downstream re-aggregation.
                 continue
             binding_issues.append(
                 {
@@ -12563,6 +13072,133 @@ def _metric_source_validation_errors(
             }
         )
     return errors
+
+
+# 함수 설명: 파생 Typed node의 출력 metric이 원본 retrieval source로 오인되지 않도록 실제 DAG 계보만 제한적으로 인정합니다.
+def _is_verified_typed_node_metric_binding(
+    binding: dict[str, Any],
+    pandas_plan: list[Any] | None,
+    typed_frame_contract: dict[str, Any] | None,
+) -> bool:
+    """Return whether one metric binding is proven to consume a Typed node.
+
+    ``metric_bindings`` intentionally retain non-equivalent re-aggregations
+    (for example mean followed by sum).  Such a binding has no retrieval job
+    of its own, but it must not be accepted merely because its alias resembles
+    a node name.  Accept it only when its direct consumer, producer schema and
+    compiled Typed lineage all agree.  Unknown aliases and unsupported DAGs
+    keep the established retrieval-source validation behavior.
+    """
+
+    if not isinstance(binding, dict) or not isinstance(pandas_plan, list):
+        return False
+    alias = str(binding.get("source_alias") or "").strip()
+    dataset_key = str(binding.get("dataset_key") or "").strip()
+    source_column = str(binding.get("source_column") or "").strip()
+    output_column = str(binding.get("output_column") or "").strip()
+    if not alias or dataset_key or not source_column or not output_column:
+        return False
+    steps = [item for item in pandas_plan if isinstance(item, dict)]
+    producer_matches = [
+        step
+        for step in steps
+        if alias
+        in {
+            str(step.get("node_id") or "").strip(),
+            str(step.get("output_alias") or step.get("result_alias") or "").strip(),
+        }
+    ]
+    if len(producer_matches) != 1:
+        return False
+    producer = producer_matches[0]
+    producer_references = {
+        value
+        for value in (
+            str(producer.get("node_id") or "").strip(),
+            str(producer.get("output_alias") or producer.get("result_alias") or "").strip(),
+        )
+        if value
+    }
+    if not producer_references:
+        return False
+
+    # The binding must correspond to exactly one aggregation that directly
+    # consumes this node output.  This excludes stale aliases from sibling
+    # branches and output-only metric declarations.
+    consumers: list[dict[str, Any]] = []
+    for step in steps:
+        inputs = step.get("inputs") if isinstance(step.get("inputs"), list) else []
+        direct_node_input = any(
+            isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "node_output"
+            and str(item.get("ref") or "").strip() in producer_references
+            for item in inputs
+        )
+        if not direct_node_input:
+            continue
+        aggregations = step.get("aggregations") if isinstance(step.get("aggregations"), list) else []
+        if any(
+            isinstance(aggregation, dict)
+            and _normalized_column_key(
+                aggregation.get("source_column")
+                or aggregation.get("column")
+                or aggregation.get("agg_column")
+                or aggregation.get("aggregate_column")
+            )
+            == _normalized_column_key(source_column)
+            and _normalized_column_key(
+                aggregation.get("output_column")
+                or aggregation.get("result_column")
+            )
+            == _normalized_column_key(output_column)
+            for aggregation in aggregations
+        ):
+            consumers.append(step)
+    if len(consumers) != 1:
+        return False
+
+    declared_columns = _typed_node_declared_output_columns(producer, steps)
+    if not any(
+        _normalized_column_key(column) == _normalized_column_key(source_column)
+        for column in declared_columns
+    ):
+        return False
+
+    # A compiled frame issue on the producer or any of its node-output
+    # ancestors means the derived frame itself is not trustworthy.  Preserve
+    # the existing block in that situation instead of masking a bad join or
+    # formula with this ownership exemption.
+    if isinstance(typed_frame_contract, dict):
+        issue_nodes = {
+            str(item.get("node_id") or "").strip()
+            for item in typed_frame_contract.get("issues", [])
+            if isinstance(item, dict) and str(item.get("node_id") or "").strip()
+        }
+        if issue_nodes:
+            nodes_by_id, output_aliases = _pandas_plan_lineage(steps)
+            lineage_nodes: set[str] = set()
+            pending = [str(producer.get("node_id") or "").strip()]
+            while pending:
+                node_id = pending.pop()
+                if not node_id or node_id in lineage_nodes:
+                    continue
+                lineage_nodes.add(node_id)
+                node = nodes_by_id.get(node_id)
+                if not isinstance(node, dict):
+                    continue
+                pending.extend(
+                    reference
+                    if reference in nodes_by_id
+                    else output_aliases.get(reference, "")
+                    for item in node.get("inputs", [])
+                    if isinstance(item, dict)
+                    and str(item.get("kind") or "").strip() == "node_output"
+                    for reference in [str(item.get("ref") or "").strip()]
+                    if reference
+                )
+            if issue_nodes.intersection(lineage_nodes):
+                return False
+    return True
 
 
 # 함수 설명: `_catalog_metric_ownership_issues()`는 서로 다른 Catalog metric 이름으로 단순 재라벨링하는 계획을 차단합니다.
@@ -14669,6 +15305,7 @@ def _catalog_error_from_plan(plan: dict[str, Any]) -> dict[str, Any]:
 def _blocked_catalog_metadata_payload(
     payload: dict[str, Any],
     error: dict[str, Any],
+    intent_input_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a typed terminal plan without inventing sources or columns."""
 
@@ -14720,6 +15357,7 @@ def _blocked_catalog_metadata_payload(
         "metadata_ref_guard": {"status": "unavailable", "removed_unknown_refs": []},
         "metadata_catalog_guard": deepcopy(error),
         "llm_plan_accepted": False,
+        "intent_input": deepcopy(intent_input_diagnostics or {}),
     }
     next_payload["analysis"] = {
         "status": "error",
@@ -15705,6 +16343,116 @@ def _selected_recipe_join_contracts(
             continue
         contracts.append(contract)
 
+    # A capacity/enrichment recipe can legitimately select the calculation
+    # rule without also naming its lower-level join recipe.  Do not turn every
+    # catalog join into an implicit choice: use one only as a repair when the
+    # model already declared the exact source pair *and* its own typed key is
+    # impossible in one of those two Catalog schemas.  In that situation a
+    # single active, fully Catalog-proven recipe is stronger evidence than a
+    # key that cannot execute at all.  Valid model keys, ambiguous candidates,
+    # explicit join_plan conflicts, and plans with no selected analysis
+    # context all retain the existing path untouched.
+    selected_analysis_context = any(
+        str(_metadata_ref(reference).get("section") or "").strip()
+        == "analysis_recipes"
+        for reference in metadata_refs
+    )
+    contract_node_ids = {
+        str(contract.get("typed_join_node_id") or "").strip()
+        for contract in contracts
+        if str(contract.get("typed_join_node_id") or "").strip()
+    }
+    if selected_analysis_context:
+        candidate_items = (
+            candidates.get("domain_items")
+            if isinstance(candidates.get("domain_items"), list)
+            else []
+        )
+        for typed_join in typed_joins:
+            typed_node_id = str(typed_join.get("node_id") or "").strip()
+            if not typed_node_id or typed_node_id in contract_node_ids:
+                continue
+            impossible_keys = _typed_join_catalog_impossible_key_details(
+                typed_join,
+                candidates,
+                pandas_plan,
+            )
+            if not impossible_keys:
+                continue
+
+            compatible_candidates: list[dict[str, Any]] = []
+            for item in candidate_items:
+                if (
+                    not isinstance(item, dict)
+                    or str(item.get("section") or "").strip()
+                    != "analysis_recipes"
+                    or _metadata_item_is_explicitly_inactive(item)
+                ):
+                    continue
+                ref = {
+                    "section": "analysis_recipes",
+                    "key": str(item.get("key") or "").strip(),
+                }
+                if not ref["key"]:
+                    continue
+                candidate_contract = _complete_recipe_join_contract(
+                    ref,
+                    item,
+                    candidates,
+                )
+                if not candidate_contract:
+                    continue
+                if not (
+                    _dataset_identity_equal(
+                        typed_join.get("left_dataset_key"),
+                        candidate_contract.get("left_dataset_key"),
+                    )
+                    and _dataset_identity_equal(
+                        typed_join.get("right_dataset_key"),
+                        candidate_contract.get("right_dataset_key"),
+                    )
+                ):
+                    continue
+                candidate_contract = {
+                    **candidate_contract,
+                    "left_source_alias": typed_join["left_source_alias"],
+                    "right_source_alias": typed_join["right_source_alias"],
+                    "typed_join_node_id": typed_node_id,
+                    "typed_join_step_index": typed_join["step_index"],
+                }
+                if _recipe_join_plan_conflicts(
+                    raw_join_items,
+                    candidate_contract,
+                    retrieval_jobs,
+                    pandas_plan,
+                ):
+                    continue
+                compatible_candidates.append(candidate_contract)
+
+            if len(compatible_candidates) == 1:
+                repair_contract = {
+                    **compatible_candidates[0],
+                    "contract_origin": "catalog_proven_invalid_typed_join_repair",
+                    "repair_evidence": {
+                        "invalid_declared_keys": impossible_keys,
+                        "selected_analysis_context": True,
+                    },
+                }
+                contracts.append(repair_contract)
+                contract_node_ids.add(typed_node_id)
+            elif len(compatible_candidates) > 1:
+                shadow_recommendations.append(
+                    {
+                        "reason": "ambiguous_catalog_proven_invalid_typed_join_repair",
+                        "node_id": typed_node_id,
+                        "invalid_declared_keys": impossible_keys,
+                        "metadata_refs": [
+                            deepcopy(item.get("metadata_ref") or {})
+                            for item in compatible_candidates
+                        ],
+                    }
+                )
+
     materializable: list[dict[str, Any]] = []
     by_step: dict[str, list[dict[str, Any]]] = {}
     for contract in contracts:
@@ -15733,6 +16481,68 @@ def _selected_recipe_join_contracts(
         "materializable": materializable,
         "shadow_recommendations": shadow_recommendations,
     }
+
+
+# 함수 설명: 명시된 Typed join key 중 실제 좌우 Table Catalog가 소유하지 않는 key만 증거로 반환합니다.
+def _typed_join_catalog_impossible_key_details(
+    typed_join: dict[str, Any],
+    candidates: dict[str, Any],
+    pandas_plan: list[Any],
+) -> list[dict[str, str]]:
+    if not isinstance(typed_join, dict):
+        return []
+    left_alias = str(typed_join.get("left_source_alias") or "").strip()
+    right_alias = str(typed_join.get("right_source_alias") or "").strip()
+    left_dataset = str(typed_join.get("left_dataset_key") or "").strip()
+    right_dataset = str(typed_join.get("right_dataset_key") or "").strip()
+    if not left_alias or not right_alias or not left_dataset or not right_dataset:
+        return []
+    left_keys, right_keys, key_source = _typed_join_declared_key_pair(
+        pandas_plan,
+        left_alias,
+        right_alias,
+    )
+    if not left_keys or len(left_keys) != len(right_keys):
+        return []
+    issues: list[dict[str, str]] = []
+    for left_key, right_key in zip(left_keys, right_keys):
+        left_supported = _catalog_supports_domain_column(
+            candidates,
+            left_dataset,
+            left_key,
+        )
+        right_supported = _catalog_supports_domain_column(
+            candidates,
+            right_dataset,
+            right_key,
+        )
+        if left_supported and right_supported:
+            continue
+        issues.append(
+            {
+                "key_source": key_source,
+                "left_key": left_key,
+                "right_key": right_key,
+                "left_dataset_key": left_dataset,
+                "right_dataset_key": right_dataset,
+                "left_catalog_supported": str(bool(left_supported)).lower(),
+                "right_catalog_supported": str(bool(right_supported)).lower(),
+            }
+        )
+    return issues
+
+
+# 함수 설명: 비활성·삭제 상태의 도메인 recipe는 자동 repair 후보에서 제외합니다.
+def _metadata_item_is_explicitly_inactive(item: dict[str, Any]) -> bool:
+    payload = _metadata_payload(item)
+    status = str(
+        item.get("status") or payload.get("status") or ""
+    ).strip().casefold()
+    return bool(
+        item.get("is_active") is False
+        or payload.get("is_active") is False
+        or status in {"inactive", "disabled", "deleted", "archived", "draft"}
+    )
 
 
 # 함수 설명: Typed join 단계의 좌우 alias·Catalog dataset 소유권을 입력 계보 기준으로 하나씩 확정합니다.
@@ -15880,6 +16690,7 @@ def _complete_recipe_join_contract(
         "left_dataset_key": left_dataset,
         "right_dataset_key": right_dataset,
         "join_type": join_type,
+        "preserve_left_rows": bool(payload.get("preserve_left_rows") is True),
         # Keep ``join_keys`` list-shaped for established consumers while
         # retaining the independently owned source-side keys explicitly.
         "join_keys": list(left_join_keys),
@@ -16223,7 +17034,10 @@ def _resolve_join_plan(
         for item in (selected_recipe_join_contracts or [])
         if isinstance(item, dict)
         and str(item.get("contract_origin") or "").strip()
-        == "selected_analysis_recipe"
+        in {
+            "selected_analysis_recipe",
+            "catalog_proven_invalid_typed_join_repair",
+        }
     ]
     # Do not touch the legacy join-item shape unless a high-confidence recipe
     # was selected for this exact Typed source pair.  This deliberately keeps
@@ -16513,7 +17327,10 @@ def _resolve_join_plan(
                 "strict": True,
                 **(
                     {
-                        "contract_origin": "selected_analysis_recipe",
+                        "contract_origin": str(
+                            selected_recipe_contract.get("contract_origin")
+                            or "selected_analysis_recipe"
+                        ),
                         "selected_recipe_join_contract": deepcopy(
                             selected_recipe_contract
                         ),
@@ -19046,6 +19863,168 @@ def _materialize_selected_recipe_derived_formulas(
     }
 
 
+# 함수 설명: 출력 계약의 명시적 표시명을 Typed formula의 작업 컬럼으로 되돌릴 수 있는 경우만 보정합니다.
+def _reconcile_formula_operand_display_labels(
+    pandas_plan: list[Any],
+    raw_output_contract: Any,
+    metadata_candidates: dict[str, Any] | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Replace a formula display label only with an explicit contract mapping.
+
+    Formula operands are execution columns.  ``column_labels`` is normally
+    presentation-only, but an intent model can emit a label such as
+    ``평균UPH`` where the preceding aggregate deliberately keeps the working
+    column as ``UPH``.  There is no safe natural-language synonym rule here:
+    a replacement requires exactly one reverse label mapping (or an explicit
+    single-column metric/quantity alias) *and* that canonical working column
+    must appear in the direct upstream Typed node schema.
+    """
+
+    contract = raw_output_contract if isinstance(raw_output_contract, dict) else {}
+    labels = _column_labels(contract.get("column_labels"))
+    candidates = (
+        metadata_candidates if isinstance(metadata_candidates, dict) else {}
+    )
+    metadata_aliases = _formula_operand_metric_alias_map(candidates)
+    if not labels and not metadata_aliases:
+        return deepcopy(pandas_plan), {"status": "not_needed", "changes": []}
+
+    reverse_labels: dict[str, set[str]] = {}
+    for column, label in labels.items():
+        column_text = str(column or "").strip()
+        label_key = _normalized_column_key(label)
+        if column_text and label_key:
+            reverse_labels.setdefault(label_key, set()).add(column_text)
+    unambiguous = {
+        label_key: next(iter(columns))
+        for label_key, columns in reverse_labels.items()
+        if len(columns) == 1
+    }
+    for alias_key, columns in metadata_aliases.items():
+        if len(columns) != 1:
+            continue
+        # An explicit output label has higher presentation authority.  Only
+        # fill a gap from a metric-term alias; never overwrite a conflicting
+        # label mapping.
+        unambiguous.setdefault(alias_key, next(iter(columns)))
+    if not unambiguous:
+        return deepcopy(pandas_plan), {"status": "not_needed", "changes": []}
+
+    normalized = deepcopy(pandas_plan)
+    steps = [item for item in normalized if isinstance(item, dict)]
+    nodes_by_id, output_aliases = _pandas_plan_lineage(steps)
+    schema_cache: dict[str, list[str]] = {}
+    changes: list[dict[str, Any]] = []
+    for step in normalized:
+        if not isinstance(step, dict):
+            continue
+        operation = str(step.get("operation") or step.get("step") or "").strip().lower()
+        if operation != "derive_formula" or not isinstance(step.get("formula"), dict):
+            continue
+        node_inputs = [
+            str(item.get("ref") or "").strip()
+            for item in step.get("inputs", [])
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip() == "node_output"
+            and str(item.get("ref") or "").strip()
+        ] if isinstance(step.get("inputs"), list) else []
+        if len(node_inputs) != 1:
+            continue
+        parent_id = (
+            node_inputs[0]
+            if node_inputs[0] in nodes_by_id
+            else output_aliases.get(node_inputs[0], "")
+        )
+        parent = nodes_by_id.get(parent_id)
+        if not isinstance(parent, dict):
+            continue
+        upstream_columns = _typed_node_declared_output_columns(
+            parent,
+            steps,
+            schema_cache,
+        )
+        if not upstream_columns:
+            continue
+        formula = deepcopy(step["formula"])
+        operands = formula.get("operands") if isinstance(formula.get("operands"), list) else []
+        changed_operands: list[dict[str, str]] = []
+        changed_sources: set[str] = set()
+        for operand in operands:
+            if not isinstance(operand, dict) or "column" not in operand:
+                continue
+            display_column = str(operand.get("column") or "").strip()
+            operand_key = _normalized_column_key(display_column)
+            mapped_column = unambiguous.get(operand_key, "")
+            if (
+                not display_column
+                or not mapped_column
+                or _normalized_column_key(display_column)
+                == _normalized_column_key(mapped_column)
+                or not any(
+                    _normalized_column_key(column)
+                    == _normalized_column_key(mapped_column)
+                    for column in upstream_columns
+                )
+            ):
+                continue
+            operand["column"] = mapped_column
+            changed_operands.append({"from": display_column, "to": mapped_column})
+            changed_sources.add(
+                "output_contract.column_labels"
+                if operand_key in reverse_labels
+                else "metric_term.explicit_alias"
+            )
+        if changed_operands:
+            step["formula"] = formula
+            changes.append(
+                {
+                    "node_id": str(step.get("node_id") or "").strip(),
+                    "input_ref": node_inputs[0],
+                    "changes": changed_operands,
+                    "sources": sorted(changed_sources),
+                }
+            )
+    return normalized, {
+        "status": "applied" if changes else "not_needed",
+        "changes": changes,
+    }
+
+
+# 함수 설명: metric·quantity 도메인이 명시한 alias와 단일 원본 컬럼만 formula 표시명 보정 후보로 사용합니다.
+def _formula_operand_metric_alias_map(
+    candidates: dict[str, Any],
+) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    items = candidates.get("domain_items") if isinstance(candidates, dict) else []
+    for item in items if isinstance(items, list) else []:
+        if (
+            not isinstance(item, dict)
+            or str(item.get("section") or "").strip()
+            not in {"metric_terms", "quantity_terms"}
+            or _metadata_item_is_explicitly_inactive(item)
+        ):
+            continue
+        payload = _metadata_payload(item)
+        owned_columns = _merge_strings(
+            _string_list(payload.get("column")),
+            _string_list(payload.get("columns")),
+            _string_list(payload.get("source_column")),
+            _string_list(payload.get("metric_columns")),
+        )
+        if len(owned_columns) != 1:
+            continue
+        aliases = _merge_strings(
+            _string_list(payload.get("aliases")),
+            _string_list(payload.get("display_name")),
+            _string_list(item.get("display_name")),
+        )
+        for alias in aliases:
+            alias_key = _normalized_column_key(alias)
+            if alias_key:
+                result.setdefault(alias_key, set()).add(owned_columns[0])
+    return result
+
+
 # 함수 설명: runtime Typed IR과 같은 좁은 선언형 산술 formula를 normalizer에서도 검증합니다.
 def _normalized_derived_formula_contract(raw_formula: Any) -> tuple[dict[str, Any], str]:
     """Normalize one safe derived-metric object without accepting expression text."""
@@ -19334,6 +20313,8 @@ def _materialize_resolved_join_steps(
     pandas_plan: list[Any],
     resolved_join_plan: list[dict[str, Any]],
     shadow_recommendations: list[dict[str, Any]] | None = None,
+    metadata_candidates: dict[str, Any] | None = None,
+    retrieval_jobs: list[dict[str, Any]] | None = None,
 ) -> tuple[list[Any], dict[str, Any]]:
     """Copy a trusted catalog join key contract onto one matching Typed step.
 
@@ -19341,7 +20322,9 @@ def _materialize_resolved_join_steps(
     catalog owns the executable key lineage.  A Typed executor cannot safely
     infer that lineage from column names at runtime, so this fills only absent
     key fields on one unambiguous matching join step.  Existing explicit keys,
-    conflicting pairs, and ambiguous matches remain untouched.
+    conflicting pairs, and ambiguous matches remain untouched, except a
+    complete Catalog recipe may replace a key that the current Typed plan
+    proves impossible on one source schema.
     """
 
     shadow = [
@@ -19420,7 +20403,10 @@ def _materialize_resolved_join_steps(
             ):
                 matches.append(step)
         if len(matches) != 1:
-            if str(resolved.get("contract_origin") or "").strip() == "selected_analysis_recipe":
+            if str(resolved.get("contract_origin") or "").strip() in {
+                "selected_analysis_recipe",
+                "catalog_proven_invalid_typed_join_repair",
+            }:
                 shadow.append(
                     _recipe_join_shadow_recommendation(
                         resolved,
@@ -19439,9 +20425,13 @@ def _materialize_resolved_join_steps(
         current_right = _string_list(step.get("right_on"))
         current_shared = _string_list(step.get("on"))
         declared_shared_grain = _string_list(step.get("group_by"))
-        selected_recipe_contract = str(
+        recipe_contract_origin = str(
             resolved.get("contract_origin") or ""
-        ).strip() == "selected_analysis_recipe"
+        ).strip()
+        selected_recipe_contract = recipe_contract_origin in {
+            "selected_analysis_recipe",
+            "catalog_proven_invalid_typed_join_repair",
+        }
         conflicts: dict[str, Any] = {}
         if (current_left or current_right) and (
             not _same_column_sequence(current_left, left_keys)
@@ -19473,6 +20463,51 @@ def _materialize_resolved_join_steps(
             ):
                 conflicts["right_value_columns"] = current_right_values
         if conflicts:
+            if selected_recipe_contract and _typed_join_conflict_has_catalog_impossible_key(
+                step,
+                resolved,
+                metadata_candidates,
+            ):
+                # The model key cannot run against the declared source pair,
+                # while the recipe key was already proven against both Catalog
+                # schemas.  This is a repair of an impossible declaration, not
+                # a preference between two executable business joins.
+                repaired_conflicts = deepcopy(conflicts)
+                step["left_on"] = list(left_keys)
+                step["right_on"] = list(right_keys)
+                step.pop("on", None)
+                step.pop("group_by", None)
+                if str(resolved.get("join_type") or "").strip():
+                    step["join_type"] = str(resolved.get("join_type") or "").strip()
+                selected_contract = (
+                    resolved.get("selected_recipe_join_contract")
+                    if isinstance(resolved.get("selected_recipe_join_contract"), dict)
+                    else {}
+                )
+                if (
+                    str(resolved.get("join_type") or "").strip().lower() == "left"
+                    and selected_contract.get("preserve_left_rows") is True
+                ):
+                    step["population_policy"] = "preserve_left_rows"
+                right_values = _string_list(resolved.get("right_value_columns"))
+                if right_values:
+                    step["right_value_columns"] = right_values
+                    step["_catalog_materialized_right_value_columns"] = list(
+                        right_values
+                    )
+                applied.append(
+                    {
+                        "node_id": str(step.get("node_id") or "").strip(),
+                        "left_source_alias": left_alias,
+                        "right_source_alias": right_alias,
+                        "left_on": left_keys,
+                        "right_on": right_keys,
+                        "contract_origin": recipe_contract_origin,
+                        "repair_kind": "catalog_proven_impossible_typed_join_key",
+                        "replaced": repaired_conflicts,
+                    }
+                )
+                continue
             if selected_recipe_contract:
                 shadow.append(
                     _recipe_join_shadow_recommendation(
@@ -19526,7 +20561,7 @@ def _materialize_resolved_join_steps(
                 "left_on": left_keys,
                 "right_on": right_keys,
                 **(
-                    {"contract_origin": "selected_analysis_recipe"}
+                    {"contract_origin": recipe_contract_origin}
                     if selected_recipe_contract
                     else {}
                 ),
@@ -19537,6 +20572,31 @@ def _materialize_resolved_join_steps(
         "applied": applied,
         "shadow_recommendations": shadow,
     }
+
+
+# 함수 설명: recipe가 기존 Typed join을 덮어쓸 수 있는 유일한 경우는 현재 key가 좌우 Catalog에 존재하지 않을 때입니다.
+def _typed_join_conflict_has_catalog_impossible_key(
+    step: dict[str, Any],
+    resolved: dict[str, Any],
+    metadata_candidates: dict[str, Any] | None,
+) -> bool:
+    candidates = metadata_candidates if isinstance(metadata_candidates, dict) else {}
+    if not candidates:
+        return False
+    left_dataset = str(resolved.get("left_dataset_key") or "").strip()
+    right_dataset = str(resolved.get("right_dataset_key") or "").strip()
+    if not left_dataset or not right_dataset:
+        return False
+    common_keys = _string_list(step.get("on") or step.get("group_by"))
+    left_keys = _string_list(step.get("left_on") or common_keys)
+    right_keys = _string_list(step.get("right_on") or common_keys)
+    if not left_keys or len(left_keys) != len(right_keys):
+        return False
+    return any(
+        not _catalog_supports_domain_column(candidates, left_dataset, left_key)
+        or not _catalog_supports_domain_column(candidates, right_dataset, right_key)
+        for left_key, right_key in zip(left_keys, right_keys)
+    )
 
 
 # 함수 설명: 검증된 다중 source 집계의 최종 스키마를 표시 계약으로 확정하고 중간 컬럼은 실행 계약으로 분리합니다.
@@ -24291,6 +25351,54 @@ def _has_function_case_step(steps: list[Any], function_name: str, case_key: str,
     return False
 
 
+# 함수 설명: 02가 실제 intent prompt에 사용한 입력 지문을 실행 trace용으로만 보존합니다.
+def _intent_input_trace_diagnostics(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep Node 02 diagnostics without rebuilding or exposing prompt content.
+
+    The diagnostics input is optional so older Flow imports and direct unit
+    calls retain their existing behavior.  A fallback visibility marker is
+    useful when the optional edge is absent, but the fingerprint itself is
+    intentionally never recomputed here: Node 02 owns the prompt projection.
+    """
+
+    raw = _payload(value)
+    raw_hint = (
+        payload.get("followup_hint")
+        if isinstance(payload.get("followup_hint"), dict)
+        else {}
+    )
+    fallback_visibility = (
+        "followup_compact"
+        if raw_hint.get("followup_candidate") is True
+        else "none"
+    )
+    if not raw:
+        return {
+            "status": "unavailable",
+            "history_visibility": fallback_visibility,
+            "fingerprint_scope": "intent_dynamic_variables.v1",
+        }
+
+    visibility = str(raw.get("history_visibility") or "").strip()
+    if visibility not in {"none", "followup_compact"}:
+        visibility = fallback_visibility
+    result = {
+        "status": "available",
+        "history_visibility": visibility,
+        "fingerprint_scope": str(
+            raw.get("fingerprint_scope") or "intent_dynamic_variables.v1"
+        ),
+    }
+    for key in (
+        "history_state_included",
+        "followup_candidate",
+        "intent_variables_sha256",
+    ):
+        if raw.get(key) not in (None, ""):
+            result[key] = deepcopy(raw[key])
+    return result
+
+
 # 함수 설명: `_payload()`는 Langflow Data/Message 또는 일반 dict 입력에서 안전한 dict 페이로드 복사본을 꺼냅니다.
 def _payload(value: Any) -> dict[str, Any]:
     data = getattr(value, "data", value)
@@ -24420,6 +25528,11 @@ class IntentPlanNormalizer(Component):
             display_name="메타데이터 후보",
             required=False,
         ),
+        DataInput(
+            name="intent_input_diagnostics",
+            display_name="의도 입력 진단",
+            required=False,
+        ),
     ]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
@@ -24431,5 +25544,6 @@ class IntentPlanNormalizer(Component):
                 getattr(self, "payload", None),
                 getattr(self, "llm_response", ""),
                 getattr(self, "metadata_candidates", None),
+                getattr(self, "intent_input_diagnostics", None),
             )
         )

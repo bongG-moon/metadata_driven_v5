@@ -101,7 +101,7 @@ def _summary(status: str, write_result: dict[str, Any], items: list[Any]) -> str
     if status == "saved":
         return f"{METADATA_LABEL} 메타데이터 {saved_count}건 저장이 완료되었습니다."
     if status == "dry_run":
-        return f"{METADATA_LABEL} 메타데이터 {would_save_count}건을 저장 전 검토했습니다. 현재 Dry Run이라 MongoDB에는 반영하지 않았습니다."
+        return f"{METADATA_LABEL} 메타데이터 {would_save_count}건을 저장 전 검토했습니다. 현재는 테스트 실행 결과이므로 MongoDB에는 반영하지 않았습니다."
     if status == "needs_input":
         return "도메인 메타데이터 저장 전 보완이 필요한 항목이 있습니다."
     if status == "skipped":
@@ -117,7 +117,7 @@ def _key_points(status: str, write_result: dict[str, Any], review: dict[str, Any
     if status == "saved":
         points.append(f"MongoDB에 {_int(write_result.get('saved_count'), 0)}건을 저장했습니다.")
     if status == "dry_run":
-        points.append("Dry Run 모드라 실제 MongoDB 저장은 수행하지 않았습니다.")
+        points.append("테스트 실행 모드라 실제 MongoDB 저장은 수행하지 않았습니다.")
     operation_summary = _operation_summary(write_result)
     if operation_summary:
         points.append(f"처리 구분: {operation_summary}")
@@ -230,7 +230,7 @@ def _notices(write_result: dict[str, Any], review: dict[str, Any], payload: dict
 # 함수 설명: `_next_steps()`는 현재 상태와 오류 여부에 맞는 사용자 다음 단계 안내를 구성합니다.
 def _next_steps(status: str, write_result: dict[str, Any]) -> list[str]:
     if status == "dry_run":
-        return ["저장 결과가 맞으면 Dry Run을 false로 바꿔 다시 실행하세요.", "저장 후 Metadata QA에서 등록 내용을 확인하세요."]
+        return ["저장 결과가 맞으면 테스트 실행을 해제한 뒤 다시 실행하세요.", "저장 후 Metadata QA에서 등록 내용을 확인하세요."]
     if status == "saved":
         return ["Metadata QA에서 등록된 도메인 정보를 확인하세요.", "분석 flow에서 관련 질문을 테스트하세요."]
     if status == "needs_input":

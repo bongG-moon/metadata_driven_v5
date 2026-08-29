@@ -7,6 +7,7 @@ __pycache__/
 .pytest_tmp/
 .pytest_tmp*/
 .pytest-tmp*/
+.pytest-temp*/
 .bundle_tmp_validation*/
 .bundle_tmp_validation*.zip
 .validation_live*.json
@@ -36,8 +37,8 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
-artifact_server/storage/
 artifacts/
+delivery_archives/
 .validation_tmp/
 validation_runs/
 benchmark_results/

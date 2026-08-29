@@ -14,7 +14,7 @@ Request + Agent -> 04 Normalizer -> 05 동일 Key 조회기
 
 - `05`는 후보가 확정된 뒤 해당 `filter_key`만 MongoDB에서 정확 조회한다. 선행 전체 문서 loader는 사용하지 않는다.
 - `05`는 중복 판정용 읽기, `07`은 live 저장과 쓰기 직전 재확인 역할이므로 두 노드의 MongoDB 입력은 유지한다.
-- Dry Run과 Live 모두 metadata 추출 LLM 1회만 호출하며, Writer가 스키마·credential을 결정론적으로 검증한다.
+- 테스트 실행(dry_run)과 실제 저장 모두 metadata 추출 LLM 1회만 호출하며, Writer가 스키마·credential을 결정론적으로 검증한다.
 - 그래프 분기가 없으므로 Playground용 Chat Output은 하나다.
 
 ## 중복 처리

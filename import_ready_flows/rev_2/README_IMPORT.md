@@ -14,7 +14,7 @@ Langflow Desktop 1.11.0에서 `00_metadata_saving_rev_2_ALL_FLOWS.json` 하나�
 
 ## 동작 계약
 
-- 기본값은 기존과 동일하게 Dry Run입니다.
+- 기본값은 기존과 동일하게 테스트 실행입니다. 테스트 실행 중에는 MongoDB에 저장하지 않습니다.
 - `MONGO_URL` Credential Global Variable과 기존 `datagov` 컬렉션 3종을 읽어 활성 계약을 확인합니다.
 - 사용자 원문, Flow 정제안, 확정된 dataset/표준 컬럼 변환은 응답에 분리되어 표시됩니다.
 - 모호하거나 등록되지 않은 참조는 `needs_input`으로 저장 0건 처리하고 복사 가능한 재입력 예시를 반환합니다.

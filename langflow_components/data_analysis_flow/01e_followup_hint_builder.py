@@ -101,6 +101,17 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
     matched_expand = _matched_cues(question, EXPAND_CUES)
     matched_change = _matched_cues(question, CHANGE_CUES)
     matched_entity_switch = _matched_cues(question, ENTITY_SWITCH_CUES)
+    # ``위 Device들``처럼 결과 표의 실제 컬럼을 가리키는 표현은 제품/항목
+    # 고정 cue와 다릅니다. 이 단계에서는 *직전 최종 결과*의 표시 컬럼만
+    # 후보로 사용합니다. 원본 source schema에만 있던 컬럼은 행 참조 key로
+    # 추측하지 않으며, 실제 match 가능 여부는 04에서 Catalog·grain·행 값으로
+    # 다시 확인합니다.
+    previous_result_row_reference_columns = (
+        _matched_previous_result_row_reference_columns(question, state)
+    )
+    has_row_reference = bool(
+        matched_row_references or previous_result_row_reference_columns
+    )
     # ``세부 DEVICE별``처럼 사용자가 이전 원본의 컬럼을 새 분해 기준으로
     # 말할 수 있습니다. 이 표현은 "포함" 같은 열 추가 cue가 아니라
     # "세부/제품별/공정별" 변환 cue를 쓰는 경우가 많으므로, 두 cue 집합을
@@ -145,7 +156,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
         matched_change=matched_change,
         date_hint=date_hint,
     )
-    if entity_continuation_columns:
+    if entity_continuation_columns or previous_result_row_reference_columns:
         complete_independent_request = False
     # 직전 집계 결과에는 없지만 저장한 원본 schema에는 있는 컬럼으로
     # "세부 DEVICE별"처럼 다시 분해하는 *후속* 요청은, 같은 원본을
@@ -175,7 +186,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
         confidence = "high"
         required_artifacts = ["report_context"]
     elif has_previous:
-        if fresh_data_requested and (report_reference or matched_row_references):
+        if fresh_data_requested and (report_reference or has_row_reference):
             # Report/직전 결과가 가리키는 대상 key만 재사용하고, 요청 metric은 반드시 새 조회에서 가져옵니다.
             scope_hint = "followup_requery"
             reuse_strategy_hint = "previous_result"
@@ -219,7 +230,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             confidence = "medium"
             required_artifacts = ["previous_result", "previous_intent_plan", "previous_applied_criteria"]
             inheritance_candidates = ["required_params", "analysis_filters", "pandas_function_cases"]
-        elif matched_row_references:
+        elif has_row_reference:
             scope_hint = "followup_requery"
             reuse_strategy_hint = "previous_result"
             confidence = "high"
@@ -254,10 +265,10 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             scope_hint = "followup_requery"
             reuse_strategy_hint = (
                 "previous_result"
-                if matched_row_references
+                if has_row_reference
                 else "previous_intent_with_new_retrieval"
             )
-            confidence = "high" if matched_row_references else "medium"
+            confidence = "high" if has_row_reference else "medium"
             required_artifacts = ["previous_result", "previous_intent_plan", "previous_applied_criteria"]
             inheritance_candidates = ["metric", "required_params", "analysis_filters", "group_by", "pandas_function_cases"]
 
@@ -284,6 +295,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
                 {
                     "reference": matched_references,
                     "reference_rows": matched_row_references,
+                    "previous_result_column_references": previous_result_row_reference_columns,
                     "report_reference": matched_report_references,
                     "fresh_data": matched_fresh,
                     "explain": matched_explain,
@@ -300,6 +312,7 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
                 }
             ),
             "requested_columns_hint": requested_columns,
+            "previous_result_row_reference_columns": previous_result_row_reference_columns,
             "reusable_previous_source_aliases": reusable_source_aliases,
             "report_context_available": has_report_context,
             "report_context_status": report_context_status,
@@ -309,7 +322,13 @@ def build_followup_hint(payload_value: Any) -> dict[str, Any]:
             "required_previous_artifacts": required_artifacts,
             "inheritance_candidates": inheritance_candidates,
             "complete_independent_request": complete_independent_request,
-            "notes": _notes(scope_hint, reuse_strategy_hint, requested_columns, date_hint),
+            "notes": _notes(
+                scope_hint,
+                reuse_strategy_hint,
+                requested_columns,
+                date_hint,
+                previous_result_row_reference_columns,
+            ),
         }
     )
     next_payload = payload
@@ -578,6 +597,128 @@ def _parse_reference_date(value: Any) -> datetime | None:
         return None
 
 
+# 함수 설명: 지시어와 직전 *최종 결과*의 표시 컬럼 별칭이 함께 있을 때만 행 참조 후보를 반환합니다.
+def _matched_previous_result_row_reference_columns(
+    question: str,
+    state: dict[str, Any],
+) -> list[str]:
+    normalized_question = _normalize(question)
+    if not normalized_question:
+        return []
+    result: list[str] = []
+    for column in _previous_result_display_columns(state):
+        if any(
+            _has_deictic_column_reference(question, alias)
+            for alias in _previous_result_column_aliases(state, column)
+        ):
+            _extend_unique(result, [column])
+    return result
+
+
+# 함수 설명: 직전 최종 projection에 실제 표시된 컬럼만 행 참조 후보로 사용합니다.
+def _previous_result_display_columns(state: dict[str, Any]) -> list[str]:
+    current_data = _dict(state.get("current_data"))
+    columns = _string_list(current_data.get("columns")) or _string_list(
+        current_data.get("result_columns")
+    )
+    if columns:
+        return columns
+    result: list[str] = []
+    for row in _list(current_data.get("preview_rows"))[:20]:
+        if isinstance(row, dict):
+            _extend_unique(result, _string_list(list(row)))
+    return result
+
+
+# 함수 설명: 결과 컬럼의 canonical 표기와 output 계약의 표시 label을 함께 별칭으로 사용합니다.
+def _previous_result_column_aliases(state: dict[str, Any], column: str) -> list[str]:
+    aliases = _column_aliases(column)
+    previous_plan = _dict(state.get("last_intent_plan"))
+    output_contract = _dict(previous_plan.get("output_contract"))
+    labels = _dict(output_contract.get("column_labels"))
+    column_key = _normalize(column)
+    for raw_column, label in labels.items():
+        if _normalize(raw_column) == column_key:
+            aliases.extend(_column_aliases(str(label)))
+    return sorted({alias for alias in aliases if _normalize(alias)}, key=len, reverse=True)
+
+
+# 함수 설명: `위/해당/그/이전/이 + 결과 컬럼`의 직접 결합만 행 참조로 인정합니다.
+def _has_deictic_column_reference(question: str, alias: str) -> bool:
+    normalized_alias = _normalize(alias)
+    # 한 글자 표기는 조사/일반어와 겹칠 가능성이 높으므로 자동 행 참조로 쓰지 않습니다.
+    if len(normalized_alias) < 2:
+        return False
+    text = str(question or "")
+    # ``상위 DEVICE``의 '위', ``차이 DEVICE``의 '이'처럼 다른 단어의 끝을
+    # 지시어로 오인하지 않습니다. 시작/공백/구두점 뒤에 독립적으로 놓인
+    # 지시어만 후보로 삼고, 그 직후 텍스트가 실제 표시 컬럼 별칭으로 시작하는지
+    # 확인합니다. 공정/장비 등 업무 컬럼명은 열거하지 않습니다.
+    for match in re.finditer(
+        r"(?<![0-9A-Za-z가-힣_])(?:이전|해당|위|그|이)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        remainder = text[match.end() :]
+        alias_end = _normalized_prefix_end(remainder, normalized_alias)
+        if alias_end is None:
+            continue
+        suffix = remainder[alias_end:]
+        # 컬럼명 뒤에는 조사·복수·정렬/분해 표현 또는 문장 끝만 허용합니다.
+        # 이 조건이 ``위 DEVICE_MODEL``이나 ``위 DEVICE_STATUS``를 DEVICE
+        # 행 참조로 잘못 잡는 것도 막습니다. 조사/복수 자체가 아니라
+        # raw postfix의 경계를 확인해 ``위 수량이상``도 수량 행 참조로
+        # 오인하지 않습니다.
+        if _is_allowed_deictic_column_postfix(suffix):
+            return True
+    return False
+
+
+# 함수 설명: 결과 컬럼의 정규화 표기가 raw 텍스트 앞부분에서 끝나는 위치를 반환합니다.
+def _normalized_prefix_end(text: str, normalized_prefix: str) -> int | None:
+    matched = ""
+    for index, char in enumerate(str(text or "")):
+        normalized_char = _normalize(char)
+        if not normalized_char:
+            continue
+        candidate = matched + normalized_char
+        if not normalized_prefix.startswith(candidate):
+            return None
+        matched = candidate
+        if matched == normalized_prefix:
+            return index + 1
+    return None
+
+
+# 함수 설명: 컬럼명 뒤의 안전한 지시 행 참조 postfix만 인정합니다.
+def _is_allowed_deictic_column_postfix(suffix: str) -> bool:
+    value = str(suffix or "")
+    if not value:
+        return True
+    if re.match(r"^[\s,.;:!?…\)\]\}>\"'”’]+", value):
+        return True
+    first = value[0]
+    # 복수/분해 표현은 뒤에 다른 문장이 와도 명확한 행 참조입니다.
+    if first in {"들", "별"}:
+        return True
+    particle_initials = {"의", "은", "는", "이", "가", "을", "를", "와", "과", "로", "에", "만", "도"}
+    if first in particle_initials:
+        return len(value) == 1 or bool(
+            re.match(r"^[\s,.;:!?…\)\]\}>\"'”’]+", value[1:])
+        )
+    # English plural remains supported, but must end or be followed by the
+    # same safe postfix boundary. ``DEVICE_STATUS`` and ``DEVICE_STATE`` do
+    # not satisfy this condition.
+    if first.casefold() == "s":
+        tail = value[1:]
+        return (
+            not tail
+            or tail[0] in {"들", "별"}
+            or bool(re.match(r"^[\s,.;:!?…\)\]\}>\"'”’]+", tail))
+        )
+    return False
+
+
 # 함수 설명: `_matched_previous_columns()`는 열 추가·분해 요청 안에서 이전 원본 컬럼을 찾아 후속 후보로 반환합니다.
 def _matched_previous_columns(question: str, columns: list[str], selection_cues: list[str]) -> list[str]:
     if not columns or not selection_cues:
@@ -776,7 +917,13 @@ def _report_context_expiry_status(context: dict[str, Any]) -> str:
 
 
 # 함수 설명: `_notes()`는 후속 질문 해석에서 사용자에게 알릴 조건 상속·변경 주의사항을 구성합니다.
-def _notes(scope_hint: str, reuse_strategy: str, requested_columns: list[str], date_hint: dict[str, Any]) -> list[str]:
+def _notes(
+    scope_hint: str,
+    reuse_strategy: str,
+    requested_columns: list[str],
+    date_hint: dict[str, Any],
+    previous_result_row_reference_columns: list[str],
+) -> list[str]:
     notes = []
     if scope_hint == "new_analysis":
         notes.append("독립 질문으로 보이며 이전 조건 상속은 필수로 판단하지 않았습니다.")
@@ -790,6 +937,11 @@ def _notes(scope_hint: str, reuse_strategy: str, requested_columns: list[str], d
         )
     if requested_columns:
         notes.append("이전 데이터 컬럼에서 사용자가 다시 보고 싶어 하는 컬럼 후보를 찾았습니다: " + ", ".join(requested_columns))
+    if previous_result_row_reference_columns:
+        notes.append(
+            "직전 결과 행을 가리키는 컬럼 후보를 찾았습니다: "
+            + ", ".join(previous_result_row_reference_columns)
+        )
     if date_hint:
         if date_hint.get("source") == "previous_context":
             notes.append("'이날/이 일자' 표현은 오늘이 아니라 직전 분석의 DATE 조건을 상속합니다.")

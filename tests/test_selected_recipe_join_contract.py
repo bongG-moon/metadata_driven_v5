@@ -445,8 +445,8 @@ def test_recipe_key_conflict_is_shadowed_without_overwriting_existing_typed_join
     assert shadow[0]["observed"]["conflicts"]["on"] == ["PRODUCT_CODE"]
 
 
-def test_normalizer_exposes_recipe_conflict_as_trace_only_shadow():
-    """The end-to-end normalizer keeps the existing join and does not add a gate error."""
+def test_normalizer_repairs_catalog_impossible_recipe_key_without_new_gate():
+    """An impossible typed key yields to one selected Catalog-proven recipe."""
 
     normalizer = load_module(NORMALIZER_PATH)
     metadata = _metadata(right_value_columns=["RATE_PER_HOUR"])
@@ -470,13 +470,87 @@ def test_normalizer_exposes_recipe_conflict_as_trace_only_shadow():
     )
 
     join_step = normalized["intent_plan"]["pandas_execution_plan"][0]
-    shadow = normalized["trace"]["inspection"]["intent"][
+    materialization = normalized["trace"]["inspection"]["intent"][
         "typed_join_contract_materialization"
-    ]["shadow_recommendations"]
-    assert join_step["on"] == ["PRODUCT_CODE"]
-    assert "left_on" not in join_step
-    assert shadow[0]["reason"] == "typed_join_contract_conflict"
+    ]
+    assert join_step["left_on"] == ["MODEL_KEY", "ROUTE_KEY", "STEP_NAME"]
+    assert join_step["right_on"] == ["MODEL_KEY", "ROUTE_KEY", "STEP_NAME"]
+    assert "on" not in join_step
+    assert materialization["applied"][0]["repair_kind"] == (
+        "catalog_proven_impossible_typed_join_key"
+    )
     assert not normalized["intent_plan"].get("validation_errors")
+
+
+def test_selected_analysis_context_can_rescue_unique_catalog_join_for_impossible_key():
+    """A calculation recipe may safely reuse its one registered join contract.
+
+    This mirrors CAPA plans where the LLM selects the calculation recipe but
+    omits the lower-level enrichment recipe from ``metadata_refs``.  It is
+    intentionally limited to a Catalog-impossible key and one exact source
+    pair; an executable model key remains untouched.
+    """
+
+    normalizer = load_module(NORMALIZER_PATH)
+    metadata = _metadata(right_value_columns=["RATE_PER_HOUR"])
+    metadata["domain_items"].append(
+        {
+            "section": "analysis_recipes",
+            "key": "capacity_calculation",
+            "payload": {"selection_criteria": ["calculate capacity"]},
+        }
+    )
+    capacity_ref = {"section": "analysis_recipes", "key": "capacity_calculation"}
+    steps = [_join_step(on=["PRODUCT_CODE"])]
+
+    selection = normalizer._selected_recipe_join_contracts(
+        {}, [capacity_ref], metadata, _jobs(), steps
+    )
+
+    assert len(selection["materializable"]) == 1
+    contract = selection["materializable"][0]
+    assert contract["metadata_ref"] == _recipe_ref()
+    assert contract["contract_origin"] == "catalog_proven_invalid_typed_join_repair"
+
+    resolved = normalizer._resolve_join_plan(
+        {}, [capacity_ref], metadata, _jobs(), steps, selection["materializable"]
+    )
+    materialized, trace = normalizer._materialize_resolved_join_steps(
+        steps,
+        resolved,
+        selection["shadow_recommendations"],
+        metadata,
+        _jobs(),
+    )
+
+    assert materialized[0]["left_on"] == ["MODEL_KEY", "ROUTE_KEY", "STEP_NAME"]
+    assert materialized[0]["right_on"] == ["MODEL_KEY", "ROUTE_KEY", "STEP_NAME"]
+    assert materialized[0]["right_value_columns"] == ["RATE_PER_HOUR"]
+    assert trace["applied"][0]["contract_origin"] == (
+        "catalog_proven_invalid_typed_join_repair"
+    )
+
+
+def test_catalog_join_rescue_does_not_replace_an_executable_model_key():
+    """A valid key has no reason to trigger a non-selected recipe rescue."""
+
+    normalizer = load_module(NORMALIZER_PATH)
+    metadata = _metadata(right_value_columns=["RATE_PER_HOUR"])
+    metadata["domain_items"].append(
+        {
+            "section": "analysis_recipes",
+            "key": "capacity_calculation",
+            "payload": {"selection_criteria": ["calculate capacity"]},
+        }
+    )
+    capacity_ref = {"section": "analysis_recipes", "key": "capacity_calculation"}
+    steps = [_join_step(on=["MODEL_KEY"])]
+
+    selection = normalizer._selected_recipe_join_contracts(
+        {}, [capacity_ref], metadata, _jobs(), steps
+    )
+
+    assert selection == {"materializable": [], "shadow_recommendations": []}
 
 
 def test_multiple_selected_recipes_for_one_typed_join_stay_shadow_only():

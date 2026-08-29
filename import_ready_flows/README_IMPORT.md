@@ -8,7 +8,7 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 
 
 | 번호 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
-| 01 | `01_data_analysis_flow_v2_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 52 | 60 |
+| 01 | `01_data_analysis_flow_v2_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 52 | 61 |
 | 02 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 12 | 13 |
 | 03 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 12 | 13 |
 | 04 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 12 | 13 |
@@ -33,4 +33,4 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 
 
 - Flow 06에만 GaiA Input ingress adapter 1개, 모든 Flow에 native Chat Input/Chat Output 각각 1개
 - 모든 node `lf_version=1.11.0`
-- edge handle 358/358, custom component template 135/135
+- edge handle 360/360, custom component template 135/135

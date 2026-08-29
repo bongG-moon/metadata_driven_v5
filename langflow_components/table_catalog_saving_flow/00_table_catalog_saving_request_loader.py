@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 # 컴포넌트 개요: 00 테이블 카탈로그 등록 요청 로더
-# 역할: 자연어 테이블 카탈로그 등록 요청을 시작합니다. 기본값은 드라이런입니다.
-# 주요 입력: 원문 텍스트 (raw_text) · 필수, 중복 처리 방식 (duplicate_action), 드라이런 (dry_run)
+# 역할: 자연어 테이블 카탈로그 등록 요청을 시작합니다. 기본값은 테스트 실행입니다.
+# 주요 입력: 원문 텍스트 (raw_text) · 필수, 중복 처리 방식 (duplicate_action), 테스트 실행 (dry_run)
 # 주요 출력: 페이로드 출력 (payload_out)
-# 처리 흐름: 자연어 테이블 카탈로그 등록 요청을 duplicate action과 기본 dry-run이 포함된 안전한 표준 페이로드로 초기화합니다.
+# 처리 흐름: 자연어 테이블 카탈로그 등록 요청을 duplicate action과 기본 테스트 실행(dry_run)이 포함된 안전한 표준 페이로드로 초기화합니다.
 # 유지보수 포인트: LLM은 후보 작성에만 사용하고 key 충돌·필수 필드·비밀값·실제 저장 여부는 Python에서 결정론적으로 판정합니다.
 # =============================================================================
 
@@ -61,8 +61,8 @@ def _bool(value: Any, default: bool) -> bool:
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class TableCatalogSavingRequestLoader(Component):
     display_name = "00 테이블 카탈로그 등록 요청 로더"
-    description = "자연어 테이블 카탈로그 등록 요청을 시작합니다. 기본값은 드라이런입니다."
-    inputs = [MessageTextInput(name="raw_text", display_name="원문 텍스트", required=True, tool_mode=True), DropdownInput(name="duplicate_action", display_name="중복 처리 방식", options=["skip", "merge", "replace", "create_new"], value="skip"), BoolInput(name="dry_run", display_name="드라이런", value=True)]
+    description = "자연어 테이블 카탈로그 등록 요청을 시작합니다. 기본값은 테스트 실행입니다."
+    inputs = [MessageTextInput(name="raw_text", display_name="원문 텍스트", required=True, tool_mode=True), DropdownInput(name="duplicate_action", display_name="중복 처리 방식", options=["skip", "merge", "replace", "create_new"], value="skip"), BoolInput(name="dry_run", display_name="테스트 실행 (저장하지 않음)", value=True)]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload")]
 
     # Langflow 출력 함수: '페이로드 출력 (payload_out)' 포트가 요청될 때 실행됩니다.

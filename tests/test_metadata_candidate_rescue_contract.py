@@ -118,6 +118,18 @@ def _equipment_assignment_uph_recipe():
     }
 
 
+def _holding_capacity_recipe():
+    return {
+        "section": "analysis_recipes",
+        "key": "holding_capacity_calculation",
+        "payload": {
+            "display_name": "보유 CAPA 계산 규칙",
+            "aliases": ["보유 CAPA", "보유Capa"],
+            "source_datasets": ["equipment_assign", "eqp_uph"],
+        },
+    }
+
+
 def _table_catalog(dataset_key: str):
     return {
         "section": "table_catalog",
@@ -489,6 +501,43 @@ def test_operation_rate_question_does_not_recall_uph_recipe_or_source_from_gener
 
     assert "equipment_assignment_uph_join" in uph_domain_keys
     assert "eqp_uph" in uph_dataset_keys
+
+
+def test_capacity_recipe_includes_exact_pair_join_recipe_as_dependency_context():
+    """A selected calculation recipe exposes its registered execution join.
+
+    This is pair-based metadata closure, so the question need not repeat the
+    lower-level "ASSIGN + UPH" wording and unrelated equipment joins remain
+    absent.
+    """
+
+    module = _load_module()
+    result = module.build_metadata_candidates(
+        {"request": {"question": "SBM공정 제품별 보유Capa 알려줘"}},
+        [_holding_capacity_recipe(), _equipment_assignment_uph_recipe()],
+        [_table_catalog("equipment_assign"), _table_catalog("eqp_uph")],
+        [],
+        max_domain_items=2,
+        min_table_items=1,
+        max_table_items=2,
+    )
+
+    candidate_keys = {
+        item.get("key")
+        for item in result["metadata_candidates"]["domain_items"]
+    }
+    dependencies = result["metadata_load"]["auto_join_recipe_dependencies"]
+
+    assert candidate_keys == {
+        "holding_capacity_calculation",
+        "equipment_assignment_uph_join",
+    }
+    assert dependencies == [
+        {
+            "section": "analysis_recipes",
+            "key": "equipment_assignment_uph_join",
+        }
+    ]
 
 
 def test_multiword_alias_rescue_does_not_match_only_generic_entity_overlap():

@@ -28,6 +28,7 @@ DEFAULT_MAX_BYTES = 32 * 1024
 DOMAIN_MIN_SCORE = 6
 NON_RUNTIME_FUNCTION_CASE_MIN_SCORE = 12
 MAX_NON_RUNTIME_FUNCTION_CASES = 2
+MAX_AUTO_JOIN_RECIPE_DEPENDENCIES = 4
 INTENT_SELECTION_HINT_MAX_PHRASES = 3
 INTENT_SELECTION_HINT_MAX_METRICS = 8
 INTENT_SELECTION_HINT_MAX_TEXT = 120
@@ -434,6 +435,9 @@ def build_metadata_candidates(
             "domain_dataset_dependencies": selection_stats.get(
                 "domain_dataset_dependencies", {}
             ),
+            "auto_join_recipe_dependencies": selection_stats.get(
+                "auto_join_recipe_dependencies", []
+            ),
             "protected_domain_candidates": protected_domain_trace,
             "candidate_bytes_by_pool": {
                 key: _json_bytes(value)
@@ -563,6 +567,25 @@ def _select_candidates(
         if len(selected_domain) >= max_domain_items:
             break
 
+    # A calculation recipe can own a two-source analysis while a separate
+    # registered recipe owns the executable row-enrichment join.  Keep that
+    # join recipe in the bounded prompt view when (and only when) both recipes
+    # declare the same exact two-dataset pair.  This is metadata dependency
+    # closure, not keyword expansion: no unrelated recipe is promoted and the
+    # ordinary quota remains in force.
+    auto_join_recipe_dependencies = _join_recipe_dependencies_for_selected_domains(
+        selected_domain,
+        domain_items,
+    )
+    for item in auto_join_recipe_dependencies:
+        if len(selected_domain) >= max_domain_items:
+            break
+        identity = _stable_identity(item)
+        if identity in selected_domain_ids:
+            continue
+        selected_domain.append(item)
+        selected_domain_ids.add(identity)
+
     for score, strong_hits, _, _, item in ranked["domain_items"]:
         if len(selected_domain) >= max_domain_items:
             break
@@ -658,8 +681,89 @@ def _select_candidates(
                 for item in dependency_matches
             ],
         },
+        "auto_join_recipe_dependencies": [
+            {
+                "section": str(item.get("section") or ""),
+                "key": str(item.get("key") or ""),
+            }
+            for item in auto_join_recipe_dependencies
+            if _stable_identity(item) in selected_domain_ids
+        ],
         "protected_domain_candidates": protected_domain_candidates,
     }
+
+
+# 함수 설명: 선택된 분석 recipe의 정확한 두 source pair를 실행하는 join recipe만 후보 의존성으로 보강합니다.
+def _join_recipe_dependencies_for_selected_domains(
+    selected_items: list[dict[str, Any]],
+    all_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return bounded, exact-pair join recipe dependencies in stable order.
+
+    A generic source-pair relation such as ``equipment_assign`` + ``eqp_uph``
+    is useful only after another selected recipe has explicitly declared that
+    same pair.  We do not infer joins from table families, field names, or a
+    question token.  This keeps the candidate builder permissive for existing
+    requests while exposing the reusable contract needed by a downstream
+    normalizer when a model emits an impossible join key.
+    """
+
+    selected_ids = {
+        _stable_identity(item)
+        for item in selected_items
+        if isinstance(item, dict)
+    }
+    selected_pairs = {
+        _domain_two_source_pair(item)
+        for item in selected_items
+        if isinstance(item, dict) and _domain_two_source_pair(item)
+    }
+    if not selected_pairs:
+        return []
+
+    result: list[dict[str, Any]] = []
+    for item in all_items:
+        if not isinstance(item, dict):
+            continue
+        if _stable_identity(item) in selected_ids:
+            continue
+        if str(item.get("section") or "").strip() != "analysis_recipes":
+            continue
+        payload = _dict(item.get("payload"))
+        if _domain_item_is_explicitly_inactive(item):
+            continue
+        if not _list(payload.get("join_keys")):
+            continue
+        pair = _domain_two_source_pair(item)
+        if not pair or pair not in selected_pairs:
+            continue
+        result.append(item)
+        if len(result) >= MAX_AUTO_JOIN_RECIPE_DEPENDENCIES:
+            break
+    return result
+
+
+# 함수 설명: source_datasets 또는 legacy dataset_keys에서 순서와 무관한 정확한 두 dataset pair를 읽습니다.
+def _domain_two_source_pair(item: dict[str, Any]) -> tuple[str, str] | tuple[()]:
+    payload = _dict(item.get("payload"))
+    values = _list(payload.get("source_datasets")) or _list(
+        payload.get("dataset_keys")
+    )
+    datasets = [str(value or "").strip() for value in values if str(value or "").strip()]
+    if len(datasets) != 2 or datasets[0].casefold() == datasets[1].casefold():
+        return ()
+    return tuple(sorted((datasets[0].casefold(), datasets[1].casefold())))
+
+
+# 함수 설명: 비활성 상태의 domain은 후보 의존성으로 다시 살리지 않습니다.
+def _domain_item_is_explicitly_inactive(item: dict[str, Any]) -> bool:
+    payload = _dict(item.get("payload"))
+    status = str(item.get("status") or payload.get("status") or "").strip().casefold()
+    return bool(
+        item.get("is_active") is False
+        or payload.get("is_active") is False
+        or status in {"inactive", "disabled", "deleted", "archived", "draft"}
+    )
 
 
 # 함수 설명: `_domain_dataset_references()`는 데이터셋·references 정보를 현재 질문과 응답 계약에 맞는 dict 또는 행으로 구성합니다.

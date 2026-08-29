@@ -191,6 +191,10 @@ def test_v2_flow_export_matches_current_native_graph():
         V2_ROOT / "03b_catalog_guarded_intent_router.py"
     ).read_text(encoding="utf-8")
     assert {"payload", "metadata_candidates", "intent_prompt", "model", "api_key"}.issubset(intent_template)
+    intent_variables_outputs = node_index["CustomComponent-B1hbh"]["data"]["node"]["outputs"]
+    normalizer_template = node_index["CustomComponent-5o0CN"]["data"]["node"]["template"]
+    assert any(output["name"] == "intent_input_diagnostics" for output in intent_variables_outputs)
+    assert "intent_input_diagnostics" in normalizer_template
 
     edge_keys = {
         (
@@ -209,6 +213,7 @@ def test_v2_flow_export_matches_current_native_graph():
     assert ("CustomComponent-HFsYn", "payload_out", "LanguageModel-intent", "payload") in edge_keys
     assert ("CustomComponent-DXrpf", "metadata_candidates", "LanguageModel-intent", "metadata_candidates") in edge_keys
     assert ("Prompt Template-AUpQz", "prompt", "LanguageModel-intent", "intent_prompt") in edge_keys
+    assert ("CustomComponent-B1hbh", "intent_input_diagnostics", "CustomComponent-5o0CN", "intent_input_diagnostics") in edge_keys
     assert ("CustomComponent-v5RuntimeCleanup", "payload_out", "CustomComponent-v5ExecutionTraceArtifact", "payload") in edge_keys
     assert ("CustomComponent-v5ExecutionTraceArtifact", "payload_out", "CustomComponent-A5y0b", "payload") in edge_keys
     assert ("CustomComponent-v5ExecutionTraceArtifact", "payload_out", "CustomComponent-3eVde", "payload") in edge_keys
@@ -11494,6 +11499,194 @@ def test_metric_binding_lineage_drops_reaggregation_with_stale_external_alias():
         {"external_source_requirements": []},
         {"table_catalog_items": [{"dataset_key": "eqp_uph", "payload": {"columns": ["UPH"]}}]},
     )
+
+
+def test_verified_derived_node_metric_binding_does_not_require_fake_retrieval_job():
+    """A final aggregation may consume a formula frame produced inside Typed DAG."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    steps = [
+        {
+            "node_id": "recipe_metrics",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "assign_source"}],
+            "output_alias": "recipe_metrics",
+            "group_by": ["PRODUCT"],
+            "aggregations": [
+                {"column": "EQP_ID", "method": "nunique", "output_column": "equipment_count"},
+                {"column": "UPH", "method": "mean", "output_column": "avg_uph"},
+            ],
+        },
+        {
+            "node_id": "derive_capacity",
+            "operation": "derive_formula",
+            "inputs": [{"kind": "node_output", "ref": "recipe_metrics"}],
+            "output_alias": "derive_capacity",
+            "formula": {
+                "output_column": "holding_capacity",
+                "operator": "multiply",
+                "operands": [
+                    {"column": "equipment_count"},
+                    {"column": "avg_uph"},
+                    {"constant": 24},
+                ],
+            },
+        },
+        {
+            "node_id": "product_summary",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "node_output", "ref": "derive_capacity"}],
+            "output_alias": "product_summary",
+            "group_by": ["PRODUCT"],
+            "aggregations": [
+                {
+                    "column": "equipment_count",
+                    "method": "sum",
+                    "output_column": "total_equipment_count",
+                },
+                {
+                    "column": "holding_capacity",
+                    "method": "sum",
+                    "output_column": "total_holding_capacity",
+                },
+            ],
+        },
+    ]
+    candidates = {
+        "table_catalog_items": [
+            {
+                "dataset_key": "equipment_assign",
+                "payload": {"columns": ["PRODUCT", "EQP_ID", "UPH"]},
+            }
+        ]
+    }
+    jobs = [{"dataset_key": "equipment_assign", "source_alias": "assign_source"}]
+    compiled, typed_trace = normalizer._compile_typed_frame_contract(
+        steps,
+        candidates,
+        jobs,
+    )
+
+    errors = normalizer._metric_source_validation_errors(
+        {
+            "metric_bindings": [
+                {
+                    "source_alias": "derive_capacity",
+                    "dataset_key": "",
+                    "source_column": "equipment_count",
+                    "aggregation": "sum",
+                    "output_column": "total_equipment_count",
+                },
+                {
+                    "source_alias": "derive_capacity",
+                    "dataset_key": "",
+                    "source_column": "holding_capacity",
+                    "aggregation": "sum",
+                    "output_column": "total_holding_capacity",
+                },
+            ]
+        },
+        jobs,
+        {},
+        {"external_source_requirements": []},
+        candidates,
+        compiled,
+        typed_trace,
+    )
+
+    assert typed_trace["status"] == "verified"
+    assert not errors
+
+
+def test_unverified_derived_metric_binding_keeps_missing_retrieval_job_guard():
+    """A node-like alias cannot bypass source validation without Typed lineage."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    errors = normalizer._metric_source_validation_errors(
+        {
+            "metric_bindings": [
+                {
+                    "source_alias": "derive_capacity",
+                    "dataset_key": "",
+                    "source_column": "holding_capacity",
+                    "aggregation": "sum",
+                    "output_column": "total_holding_capacity",
+                }
+            ]
+        },
+        [],
+        {},
+        {"external_source_requirements": []},
+        {},
+        [],
+        {"issues": []},
+    )
+
+    assert errors[0]["type"] == "invalid_metric_source_contract"
+    assert errors[0]["issues"][0]["issue"] == "missing_retrieval_job"
+
+
+def test_formula_operand_display_label_reconciliation_requires_explicit_contract_map():
+    """The normalizer may use a declared label but never guesses a synonym."""
+
+    normalizer = load_module(V2_ROOT / "04_intent_plan_normalizer.py")
+    steps = [
+        {
+            "node_id": "aggregate_uph",
+            "operation": "groupby_and_aggregate",
+            "inputs": [{"kind": "external_source", "ref": "uph_source"}],
+            "output_alias": "aggregate_uph",
+            "group_by": ["PRODUCT"],
+            "aggregations": [
+                {"column": "UPH", "method": "mean", "output_column": "UPH"}
+            ],
+        },
+        {
+            "node_id": "derive_capacity",
+            "operation": "derive_formula",
+            "inputs": [{"kind": "node_output", "ref": "aggregate_uph"}],
+            "formula": {
+                "output_column": "holding_capacity",
+                "operator": "multiply",
+                "operands": [{"column": "평균UPH"}, {"constant": 24}],
+            },
+        },
+    ]
+
+    repaired, trace = normalizer._reconcile_formula_operand_display_labels(
+        steps,
+        {"column_labels": {"UPH": "평균UPH"}},
+    )
+    repaired_by_metric_term, metric_term_trace = (
+        normalizer._reconcile_formula_operand_display_labels(
+            steps,
+            {},
+            {
+                "domain_items": [
+                    {
+                        "section": "metric_terms",
+                        "key": "average_uph",
+                        "payload": {"aliases": ["평균UPH"], "column": "UPH"},
+                    }
+                ]
+            },
+        )
+    )
+    untouched, no_map_trace = normalizer._reconcile_formula_operand_display_labels(
+        steps,
+        {},
+    )
+
+    assert repaired[1]["formula"]["operands"][0] == {"column": "UPH"}
+    assert trace["status"] == "applied"
+    assert repaired_by_metric_term[1]["formula"]["operands"][0] == {
+        "column": "UPH"
+    }
+    assert metric_term_trace["changes"][0]["sources"] == [
+        "metric_term.explicit_alias"
+    ]
+    assert untouched == steps
+    assert no_map_trace["status"] == "not_needed"
 
 
 def test_terminal_formula_after_join_uses_joined_aggregate_schema():

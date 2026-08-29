@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 # 컴포넌트 개요: 07 도메인 검수/저장 처리기
-# 역할: 스키마·credential·중복 action을 결정론적으로 검증한 뒤 드라이런 또는 MongoDB 저장을 실행합니다.
+# 역할: 스키마·credential·중복 action을 결정론적으로 검증한 뒤 테스트 실행 또는 MongoDB 저장을 실행합니다.
 # 주요 입력: 페이로드 (payload) · 필수, MongoDB 연결 URI (mongo_uri), MongoDB 데이터베이스 (mongo_database), 컬렉션 이름 (collection_name)
 # 주요 출력: 페이로드 출력 (payload_out)
-# 처리 흐름: 도메인 필수 필드·비밀값·중복 정책을 결정론적으로 검증하고 dry-run 계획 또는 MongoDB 저장을 수행합니다.
+# 처리 흐름: 도메인 필수 필드·비밀값·중복 정책을 결정론적으로 검증하고 테스트 실행 계획 또는 MongoDB 저장을 수행합니다.
 # 유지보수 포인트: 연결 설정은 노드 입력→환경변수→기본값 순으로 해석하며, 오류는 숨기지 않고 trace/status에 남기고 연결은 반드시 닫습니다.
 # =============================================================================
 
@@ -34,7 +34,7 @@ TOKEN_CREDENTIAL_QUALIFIERS = {"access", "refresh", "api", "auth", "authorizatio
 QA_SNAPSHOT_CACHE_REGISTRY = "_metadata_driven_v5_qa_snapshot_cache_v1"
 
 
-# 주요 함수: 결정론적 검증과 duplicate 정책을 적용하고 dry-run 계획 또는 실제 저장을 수행합니다.
+# 주요 함수: 결정론적 검증과 duplicate 정책을 적용하고 테스트 실행 계획 또는 실제 저장을 수행합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
 def review_and_write(payload_value: Any, review_response: Any = "", mongo_uri: str = "", mongo_database: str = "", collection_name: str = "") -> dict[str, Any]:
     payload = _payload(payload_value)
@@ -197,7 +197,7 @@ def _unique_text_items(values: list[Any]) -> list[Any]:
     return result
 
 
-# 함수 설명: `_dry_run_result()`는 실제 DB를 변경하지 않고 실행 예정 작업만 보여 주는 dry-run 결과를 만듭니다.
+# 함수 설명: `_dry_run_result()`는 실제 DB를 변경하지 않고 실행 예정 작업만 보여 주는 테스트 실행 결과를 만듭니다.
 def _dry_run_result(payload: dict[str, Any], action: str) -> dict[str, Any]:
     matched = _match_groups(payload)
     operations = []
@@ -233,7 +233,7 @@ def _dry_run_result(payload: dict[str, Any], action: str) -> dict[str, Any]:
             "errors": errors,
         }
     would_save = sum(1 for item in operations if item["operation"] != "skipped")
-    return {"success": True, "ready_to_save": True, "dry_run": True, "saved_count": 0, "would_save_count": would_save, "skipped_count": len(operations) - would_save, "operation_by_key": operations, "message": "드라이런입니다. MongoDB에는 저장하지 않았습니다.", "keys": [item["key"] for item in operations], "errors": []}
+    return {"success": True, "ready_to_save": True, "dry_run": True, "saved_count": 0, "would_save_count": would_save, "skipped_count": len(operations) - would_save, "operation_by_key": operations, "message": "테스트 실행입니다. MongoDB에는 저장하지 않았습니다.", "keys": [item["key"] for item in operations], "errors": []}
 
 
 # 함수 설명: `_write_to_mongodb()`는 검증을 통과한 작업만 duplicate action에 맞춰 MongoDB에 저장하고 결과를 기록합니다.
@@ -538,7 +538,7 @@ def _list(value: Any) -> list[Any]:
 # 실제 업무 규칙은 위의 주요 함수에 두어 UI 실행과 단위 테스트가 같은 로직을 사용합니다.
 class DomainReviewWriter(Component):
     display_name = "07 도메인 검수/저장 처리기"
-    description = "스키마·credential·중복 action을 결정론적으로 검증한 뒤 드라이런 또는 MongoDB 저장을 실행합니다."
+    description = "스키마·credential·중복 action을 결정론적으로 검증한 뒤 테스트 실행 또는 MongoDB 저장을 실행합니다."
     inputs = [DataInput(name="payload", display_name="페이로드", required=True), MessageTextInput(name="mongo_uri", display_name="MongoDB 연결 URI", required=False, advanced=True), MessageTextInput(name="mongo_database", display_name="MongoDB 데이터베이스", required=False, value=DEFAULT_DATABASE, advanced=True), MessageTextInput(name="collection_name", display_name="컬렉션 이름", required=False, value=DEFAULT_COLLECTION, advanced=True)]
     outputs = [Output(name="payload_out", display_name="페이로드 출력", method="build_payload", types=["Data"])]
 

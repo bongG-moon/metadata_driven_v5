@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -18,6 +19,7 @@ from typing import Any
 
 from lfx.custom.custom_component.component import Component
 from lfx.io import DataInput, Output
+from lfx.schema.data import Data
 from lfx.schema.message import Message
 
 RETIRED_DETAIL_CONTRACT_KEYS = {"row_identity_columns", "context_columns"}
@@ -45,11 +47,27 @@ def build_variables(payload_value: Any, metadata_candidates_value: Any = None) -
             _compact_metadata_candidates(_payload(metadata_candidates_value) or {})
         )
     )
+    question = payload.get("request", {}).get("question", "")
+    # Keep the exact prompt-facing projection as a named value so the
+    # diagnostic fingerprint hashes the same dynamic state JSON that the
+    # intent model receives.
+    state_summary = _without_retired_intent_contract(_state_summary(payload))
+    output_schema = _schema()
     return {
-        "question": payload.get("request", {}).get("question", ""),
-        "state_summary": _compact_json(_without_retired_intent_contract(_state_summary(payload))),
+        "question": question,
+        "state_summary": _compact_json(state_summary),
         "metadata_candidates": _compact_json(metadata_candidates),
-        "output_schema": _compact_json(_schema()),
+        "output_schema": _compact_json(output_schema),
+        # This diagnostics object is not interpolated into the intent prompt.
+        # Node 04 receives it over a separate optional edge and preserves it in
+        # trace, allowing operators to compare two calls without exposing the
+        # compact session contents that a follow-up request is allowed to use.
+        "intent_input_diagnostics": _intent_input_diagnostics(
+            question,
+            state_summary,
+            metadata_candidates,
+            output_schema,
+        ),
     }
 
 
@@ -61,7 +79,12 @@ def _compact_json(value: Any) -> str:
 # 함수 설명: `_state_summary()`는 요약의 건수·조건·상태를 진단과 답변에 쓸 짧은 요약으로 만듭니다.
 def _state_summary(payload: dict[str, Any]) -> dict[str, Any]:
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
-    followup_hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    raw_followup_hint = payload.get("followup_hint") if isinstance(payload.get("followup_hint"), dict) else {}
+    # Preserve the original payload hint for Nodes 04+; this is only the
+    # prompt-facing projection.  A new analysis must not receive aliases,
+    # prior result columns, or source-reuse signals that were derived from a
+    # preceding session state.
+    followup_hint = _followup_hint_for_intent_model(raw_followup_hint)
     previous_state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
     # 독립 질문에는 직전 retrieval job·source alias·data_ref를 모델에 노출하지 않습니다.
     # 세션 상태는 실제 후속 후보일 때만 전달해 이전 데이터셋의 무의미한 재조회를 차단합니다.
@@ -82,6 +105,88 @@ def _state_summary(payload: dict[str, Any]) -> dict[str, Any]:
     if orchestration:
         summary["orchestration"] = orchestration
     return summary
+
+
+# 함수 설명: `_followup_hint_for_intent_model()`은 신규 분석에서 이전 state로부터 유래한 힌트를 제거합니다.
+def _followup_hint_for_intent_model(followup_hint: dict[str, Any]) -> dict[str, Any]:
+    """Return the narrow hint that is safe to interpolate into the intent prompt.
+
+    The raw follow-up hint remains on the payload because the normalizer uses
+    it later to implement validated follow-up behavior.  This projection
+    separates that execution policy from what an independent LLM request may
+    observe.  Only current-question date/freshness signals survive for a new
+    analysis.
+    """
+
+    if followup_hint.get("followup_candidate") is True:
+        return deepcopy(followup_hint)
+
+    result: dict[str, Any] = {
+        "followup_candidate": False,
+        "request_scope_hint": "new_analysis",
+        "reuse_strategy_hint": "none",
+    }
+    if followup_hint.get("fresh_data_requested") is True:
+        result["fresh_data_requested"] = True
+    date_hint = _stateless_date_hint(followup_hint)
+    if date_hint:
+        result["changed_conditions_hint"] = {"date": date_hint}
+    return result
+
+
+# 함수 설명: 신규 질문의 날짜 힌트 중 직전 상태를 참조한 값은 prompt에 전달하지 않습니다.
+def _stateless_date_hint(followup_hint: dict[str, Any]) -> dict[str, Any]:
+    changed = (
+        followup_hint.get("changed_conditions_hint")
+        if isinstance(followup_hint.get("changed_conditions_hint"), dict)
+        else {}
+    )
+    date_hint = changed.get("date") if isinstance(changed.get("date"), dict) else {}
+    if not date_hint:
+        return {}
+    if str(date_hint.get("source") or "").strip() == "previous_context":
+        return {}
+    if date_hint.get("inherit") is True:
+        return {}
+    return deepcopy(date_hint)
+
+
+# 함수 설명: 실제 intent prompt 동적 입력을 비교할 수 있도록 민감정보 없는 지문을 계산합니다.
+def _intent_input_diagnostics(
+    question: Any,
+    state_summary: dict[str, Any],
+    metadata_candidates: dict[str, Any],
+    output_schema: dict[str, Any],
+) -> dict[str, Any]:
+    prompt_state = state_summary.get("state") if isinstance(state_summary.get("state"), dict) else {}
+    prompt_hint = (
+        state_summary.get("followup_hint")
+        if isinstance(state_summary.get("followup_hint"), dict)
+        else {}
+    )
+    followup_candidate = prompt_hint.get("followup_candidate") is True
+    fingerprint_input = {
+        "question": str(question or ""),
+        "state_summary": state_summary,
+        "metadata_candidates": metadata_candidates,
+        "output_schema": output_schema,
+    }
+    fingerprint_text = json.dumps(
+        fingerprint_input,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return {
+        "history_visibility": "followup_compact" if followup_candidate else "none",
+        "history_state_included": bool(prompt_state),
+        "followup_candidate": followup_candidate,
+        "intent_variables_sha256": hashlib.sha256(
+            fingerprint_text.encode("utf-8")
+        ).hexdigest(),
+        "fingerprint_scope": "intent_dynamic_variables.v1",
+    }
 
 
 # 함수 설명: 기준일이 유효한 YYYYMMDD일 때 LLM이 날짜 산술을 추정하지 않도록 전일을 함께 제공합니다.
@@ -612,6 +717,7 @@ class IntentVariablesBuilder(Component):
         Output(name="state_summary", display_name="상태/요청 컨텍스트 JSON", method="build_state_summary", types=["Message"], group_outputs=True),
         Output(name="metadata_candidates", display_name="메타데이터 후보 JSON", method="build_metadata_candidates", types=["Message"], group_outputs=True),
         Output(name="output_schema", display_name="출력 스키마 JSON", method="build_output_schema", types=["Message"], group_outputs=True),
+        Output(name="intent_input_diagnostics", display_name="의도 입력 진단", method="build_intent_input_diagnostics", types=["Data"], group_outputs=True),
     ]
 
     # 함수 설명: `_variables_once()`는 한 vertex 실행에서 여러 group output이 같은 payload를 반복 직렬화하지 않도록 결과를 재사용합니다.
@@ -643,3 +749,7 @@ class IntentVariablesBuilder(Component):
     # 핵심 처리 결과를 Langflow Data/Message 형식으로 감싸 다음 노드에 전달합니다.
     def build_output_schema(self) -> Message:
         return Message(text=self._variables_once()["output_schema"])
+
+    # Langflow 출력 함수: 의도 LLM에 전달한 동적 입력의 fingerprint를 trace용 Data로 전달합니다.
+    def build_intent_input_diagnostics(self) -> Data:
+        return Data(data=self._variables_once()["intent_input_diagnostics"])
