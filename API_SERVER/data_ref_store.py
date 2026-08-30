@@ -7,13 +7,14 @@ API_SERVER folder, so the folder can be copied to a deployment host as-is.
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import Any
 
 
 DEFAULT_DATABASE = "datagov"
 DEFAULT_RESULT_COLLECTION = "agent_v4_result_store"
+KST = timezone(timedelta(hours=9), "KST")
 
 
 def load_data_ref_rows(
@@ -260,4 +261,4 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def _to_iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat()
+    return value.astimezone(KST).isoformat()

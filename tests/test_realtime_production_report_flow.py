@@ -1151,8 +1151,10 @@ def test_new_failed_report_replaces_older_followup_context_in_same_session():
             "agent_v4_session_states",
         )
         assert first["session_state_write"]["saved"] is True
-        stored_first = documents["session_state:session-report"]["state"]
+        stored_document = documents["session_state:session-report"]
+        stored_first = stored_document["state"]
         assert stored_first["current_data"]["report_context"]["context_ref"]
+        assert stored_document["updated_at"].endswith("+09:00")
 
         second = session_writer.write_session_state(
             clarification,

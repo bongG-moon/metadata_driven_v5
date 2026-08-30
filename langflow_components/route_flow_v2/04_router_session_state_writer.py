@@ -41,6 +41,7 @@ MAX_TTL_HOURS = 24 * 30
 CONTEXT_KEY = "router_session_context"
 STATE_VERSION = "router-session-state-v2"
 FAILED_STATUSES = {"error", "failed", "failure", "cancelled", "canceled"}
+KST = timezone(timedelta(hours=9), "KST")
 
 
 # 함수 설명: dict/Pydantic 객체에서 같은 방식으로 속성을 읽습니다.
@@ -81,6 +82,20 @@ def _bounded_int(value: Any, default: int, maximum: int) -> int:
 # 함수 설명: 원본 긴 답변·줄바꿈을 Router 문맥용 짧은 문자열로 정리합니다.
 def _compact_text(value: Any, char_limit: int) -> str:
     return " ".join(_text(value).split())[:char_limit]
+
+
+# 함수 설명: TTL·정렬용 UTC BSON Date와 별도로 MongoDB에서 바로 확인할 KST ISO 시각을 만듭니다.
+def _kst_iso(value: Any) -> str:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(KST).isoformat()
 
 
 # 함수 설명: 현재 Router 문맥 Message의 structured data에서 canonical 세션과 최소 라우팅 문맥을 꺼냅니다.
@@ -272,6 +287,7 @@ def write_router_session_state(
     max_chars = _bounded_int(message_char_limit, DEFAULT_MESSAGE_CHAR_LIMIT, MAX_MESSAGE_CHAR_LIMIT)
     max_ttl = _bounded_int(ttl_hours, DEFAULT_TTL_HOURS, MAX_TTL_HOURS)
     now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=max_ttl)
     client = None
     try:
         client, collection = _connect_collection(uri, database, collection_name)
@@ -293,8 +309,11 @@ def write_router_session_state(
             "last_user_question": _compact_text(question, max_chars),
             "last_assistant_answer": _compact_text(_value(message, "text", ""), max_chars),
             "created_at": previous.get("created_at") or now,
+            "created_at_kst": str(previous.get("created_at_kst") or _kst_iso(previous.get("created_at")) or _kst_iso(now)),
             "updated_at": now,
-            "expires_at": now + timedelta(hours=max_ttl),
+            "updated_at_kst": _kst_iso(now),
+            "expires_at": expires_at,
+            "expires_at_kst": _kst_iso(expires_at),
         }
         if not _write_document(collection, document, previous):
             status["reason"] = "stale_router_state"

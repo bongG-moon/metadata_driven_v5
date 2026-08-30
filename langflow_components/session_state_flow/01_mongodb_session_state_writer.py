@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import Any
 
@@ -34,6 +34,7 @@ RUNTIME_BUFFER_KEYS = {
     "_full_result_rows",
     "_runtime_result_rows",
 }
+KST = timezone(timedelta(hours=9), "KST")
 
 
 # 주요 함수: 현재 응답의 next state를 세션 문서에 원자적으로 갱신합니다.
@@ -124,7 +125,7 @@ def write_session_state(
             "last_question": _question_from_payload(payload, response),
             "last_response_type": str(response.get("response_type") or payload.get("response_type") or ""),
             "turn_count": previous_turn_count + 1,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(KST).isoformat(),
         }
         if state_guard:
             conditional_filter = {

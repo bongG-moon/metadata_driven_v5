@@ -15,7 +15,7 @@ import json
 import os
 import re
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from typing import Any
 
@@ -32,6 +32,7 @@ SECRET_KEY_SEGMENTS = {"password", "passwd", "secret", "apikey", "authorization"
 SECRET_KEY_PHRASES = {("api", "key"), ("access", "key"), ("private", "key")}
 TOKEN_CREDENTIAL_QUALIFIERS = {"access", "refresh", "api", "auth", "authorization", "bearer", "session", "secret", "credential", "value"}
 QA_SNAPSHOT_CACHE_REGISTRY = "_metadata_driven_v5_qa_snapshot_cache_v1"
+KST = timezone(timedelta(hours=9), "KST")
 
 
 # 주요 함수: 결정론적 검증과 duplicate 정책을 적용하고 테스트 실행 계획 또는 실제 저장을 수행합니다.
@@ -246,7 +247,7 @@ def _write_to_mongodb(payload: dict[str, Any], action: str, mongo_uri: str, mong
     try:
         client = getattr(import_module("pymongo"), "MongoClient")(mongo_uri, serverSelectionTimeoutMS=5000)
         collection = client[mongo_database][collection_name]
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(KST).isoformat()
         raw_text = _redact_raw_text(str(_dict(payload.get("request")).get("raw_text") or ""))
         matched = _match_groups(payload)
         plans = []

@@ -71,6 +71,7 @@ MAX_REPORT_DATASET_REFS = 100
 REPORT_ID_PATTERN = re.compile(r"[0-9]{14}_[a-f0-9]{32}")
 REPORT_TOKEN_PATTERN = re.compile(r"[a-f0-9]{32,128}")
 REPORT_STORE_LOCK = threading.RLock()
+KST = timezone(timedelta(hours=9), "KST")
 WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -251,7 +252,11 @@ def create_html_report(payload: dict[str, Any], config: ServerConfig) -> dict[st
 
     ttl_hours = report_ttl_hours(payload.get("ttl_hours"), config)
     now = datetime.now(timezone.utc)
-    report_id = now.strftime("%Y%m%d%H%M%S") + "_" + secrets.token_hex(16)
+    expires_at = now + timedelta(hours=ttl_hours)
+    # MongoDB BSON Date values are normalized to UTC for TTL and comparisons.
+    # Keep those technical fields intact and store explicit KST mirrors for
+    # operators and the browser/API response.
+    report_id = now.astimezone(KST).strftime("%Y%m%d%H%M%S") + "_" + secrets.token_hex(16)
     access_token = secrets.token_hex(16) if config.use_report_access_token else ""
     metadata: dict[str, Any] = {
         "report_id": report_id,
@@ -263,7 +268,9 @@ def create_html_report(payload: dict[str, Any], config: ServerConfig) -> dict[st
         "html_bytes": len(html_bytes),
         "download_filename": safe_report_filename(filename_hint or title or report_id),
         "created_at": now,
-        "expires_at": now + timedelta(hours=ttl_hours),
+        "created_at_kst": report_iso(now),
+        "expires_at": expires_at,
+        "expires_at_kst": report_iso(expires_at),
         "ttl_hours": ttl_hours,
     }
     if access_token:
@@ -299,7 +306,8 @@ def create_html_report(payload: dict[str, Any], config: ServerConfig) -> dict[st
         "title": title,
         "view_url": f"{config.report_base_url}/reports/view/{report_id}{suffix}",
         "download_url": f"{config.report_base_url}/reports/download/{report_id}{suffix}",
-        "expires_at": report_iso(now + timedelta(hours=ttl_hours)),
+        "created_at": report_iso(now),
+        "expires_at": report_iso(expires_at),
         "ttl_hours": ttl_hours,
         "storage": storage_descriptor(config),
     }
@@ -412,7 +420,7 @@ def hash_report_token(token: str) -> str:
 
 
 def report_iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat()
+    return value.astimezone(KST).isoformat()
 
 
 def resolve_request(

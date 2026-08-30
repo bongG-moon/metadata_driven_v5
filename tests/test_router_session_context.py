@@ -501,6 +501,11 @@ def test_writer_persists_only_one_question_answer_and_selected_flow(monkeypatch)
     assert "recent_turns" not in collection.document
     assert "last_answer_summary" not in collection.document
     assert collection.document["expires_at"] > collection.document["updated_at"]
+    assert collection.document["created_at_kst"].endswith("+09:00")
+    assert collection.document["updated_at_kst"].endswith("+09:00")
+    assert collection.document["expires_at_kst"].endswith("+09:00")
+    assert collection.document["created_at"].utcoffset().total_seconds() == 0
+    assert collection.document["updated_at"].utcoffset().total_seconds() == 0
 
 
 def test_writer_does_not_replace_route_for_explicit_tool_failure_or_false_string() -> None:

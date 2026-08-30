@@ -125,6 +125,68 @@ def _payload(*, status: str = "ok") -> dict:
     }
 
 
+def test_execution_report_uses_kst_for_generated_and_displayed_timestamps():
+    publisher = _module()
+
+    explanation = publisher.build_execution_explanation(_payload())
+
+    assert explanation["generated_at"].endswith("+09:00")
+    assert publisher._format_timestamp("2026-08-29T15:33:22.314110+00:00") == "2026-08-30 00:33:22 KST"
+    assert publisher._format_timestamp("2026-08-30T00:33:22+09:00") == "2026-08-30 00:33:22 KST"
+
+
+@pytest.mark.parametrize(
+    ("final_route", "gate_status", "expected_route", "expected_label"),
+    [
+        ("fast", "", "fast", "Fast 처리"),
+        ("complex", "", "complex", "Complex 처리"),
+        # A blocked execution gate takes precedence over a route selected
+        # during planning because no pandas route was actually started.
+        ("complex", "blocked", "blocked", "실행 차단"),
+    ],
+)
+def test_execution_report_summary_uses_canonical_route_resolution(
+    final_route: str,
+    gate_status: str,
+    expected_route: str,
+    expected_label: str,
+):
+    publisher = _module()
+    payload = _payload()
+    payload["intent_plan"] = {
+        "analysis_kind": "production_quantity_by_process",
+        "route_resolution": {"final_route": final_route},
+    }
+    payload["analysis"] = {"status": "ok"}
+    if gate_status:
+        payload["execution_gate"] = {"status": gate_status}
+
+    explanation = publisher.build_execution_explanation(payload)
+    document = publisher.render_execution_report_html(explanation)
+
+    assert explanation["summary"]["route"] == expected_route
+    assert explanation["summary"]["route_label"] == expected_label
+    assert explanation["summary"]["analysis_type"] == "production_quantity_by_process"
+    assert expected_label in document
+    assert "처리 경로 미확정" not in document
+    assert "일반 데이터 분석" not in document
+
+
+def test_execution_report_summary_prefers_actual_executor_route_over_planned_route():
+    publisher = _module()
+    payload = _payload()
+    payload["intent_plan"] = {
+        "analysis_kind": "production_quantity_by_process",
+        "route_resolution": {"final_route": "fast"},
+    }
+    payload["analysis"] = {"status": "ok", "execution_path": "Complex"}
+
+    explanation = publisher.build_execution_explanation(payload)
+
+    assert explanation["summary"]["route"] == "complex"
+    assert explanation["summary"]["route_label"] == "Complex 처리"
+
+
 def test_execution_report_html_is_user_facing_and_does_not_leak_raw_trace_or_rows():
     publisher = _module()
     payload = _payload()
@@ -148,6 +210,8 @@ def test_execution_report_html_is_user_facing_and_does_not_leak_raw_trace_or_row
     assert "계산식 적용" in document
     assert "equipment_assign" in document
     assert "<script>alert('xss')</script>" not in document
+    assert '<p class="question"><span class="question-quote" aria-hidden="true">&ldquo;</span>' in document
+    assert '&rdquo;</span></p>' in document
     assert "\\u003cscript\\u003e" in publisher._json_for_script(
         {"value": "<script>alert('xss')</script>"}
     )

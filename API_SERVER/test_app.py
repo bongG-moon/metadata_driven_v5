@@ -328,6 +328,14 @@ def test_report_lifecycle_uses_one_mongodb_collection(monkeypatch) -> None:
         stored_report = cluster.reports.documents[0]
         assert stored_report["storage_backend"] == "mongodb_collection"
         assert stored_report["html"] == "<html><body>normal</body></html>"
+        # Public report metadata is Korea Standard Time, while the BSON date
+        # used by MongoDB TTL remains an actual UTC datetime.
+        assert body["created_at"].endswith("+09:00")
+        assert body["expires_at"].endswith("+09:00")
+        assert stored_report["created_at_kst"].endswith("+09:00")
+        assert stored_report["expires_at_kst"].endswith("+09:00")
+        assert stored_report["created_at"].utcoffset().total_seconds() == 0
+        assert stored_report["expires_at"].utcoffset().total_seconds() == 0
 
         view_path = body["view_url"].removeprefix("http://aaa.test.com")
         view = client.get(view_path)

@@ -46,6 +46,7 @@ DEFAULT_MAX_SOURCE_ROWS_PER_ALIAS = 10000
 DEFAULT_MAX_DOCUMENT_BYTES = 8 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 14 * 1024 * 1024
 SAFE_INTERMEDIATE_ARTIFACT_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+KST = timezone(timedelta(hours=9), "KST")
 
 
 # 주요 함수: 후속 질문 재사용에 필요한 결과를 MongoDB에 저장하고 data_ref를 발급합니다.
@@ -280,9 +281,10 @@ def _ensure_ttl_index(collection: Any) -> str:
     return ""
 
 
-# 함수 설명: `_to_iso()`는 datetime 또는 문자열 시간을 UTC ISO 형식으로 변환합니다.
+# 함수 설명: `_to_iso()`는 사용자·운영자에게 노출되는 시간을 KST ISO 형식으로 변환합니다.
+# TTL에 쓰이는 `expires_at` BSON Date는 아래 호출부에서 UTC aware datetime으로 유지합니다.
 def _to_iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat()
+    return value.astimezone(KST).isoformat()
 
 
 # 함수 설명: `_json_ready()`는 datetime·Decimal·NaN 등 JSON이 직접 표현하지 못하는 값을 안전한 기본형으로 재귀 변환합니다.

@@ -13,7 +13,7 @@ from __future__ import annotations
 import ast
 import builtins
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from io import StringIO
 import json
@@ -31,7 +31,7 @@ from lfx.io import BoolInput, DataInput, IntInput, MessageTextInput, Output
 from lfx.schema.data import Data
 
 
-EXPLANATION_VERSION = "analysis.execution.explanation.v3"
+EXPLANATION_VERSION = "analysis.execution.explanation.v4"
 ARTIFACT_TYPE = "analysis_execution_html"
 DESCRIPTOR_TYPE = "analysis_execution_report"
 DEFAULT_REPORT_API_URL = "http://127.0.0.1:5000"
@@ -82,6 +82,7 @@ MAX_PREVIEW_INTERMEDIATE_ROWS = 10
 MAX_PREVIEW_FINAL_ROWS = 30
 MAX_PREVIEW_CELL_CHARACTERS = 160
 MAX_PREVIEW_CELLS = 3_000
+KST = timezone(timedelta(hours=9), "KST")
 
 # The report is persisted by API_SERVER.  Treat anything that looks like a
 # credential, connection detail, or executable query as non-reportable at the
@@ -282,7 +283,7 @@ def build_execution_explanation(
     data = _dict(payload.get("data"))
     inspection = _inspection(payload)
     execution_gate = _dict(payload.get("execution_gate"))
-    route = _route_value(payload, plan, analysis)
+    route = _route_value(payload, plan, analysis, inspection, execution_gate)
     status = _status_value(payload, analysis, execution_gate)
     result_rows = _safe_int(data.get("row_count"), len(data.get("rows", [])) if isinstance(data.get("rows"), list) else 0)
     result_columns = _string_list(data.get("columns"))
@@ -292,7 +293,7 @@ def build_execution_explanation(
 
     explanation = {
         "contract_version": EXPLANATION_VERSION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(KST).isoformat(),
         "trace_id": _trace_id(payload),
         "question": _question(payload),
         "summary": {
@@ -302,10 +303,7 @@ def build_execution_explanation(
             "route_label": _route_label(route),
             "result_row_count": result_rows,
             "partial": _is_partial_result(analysis, data),
-            "analysis_type": _safe_text(
-                plan.get("analysis_type") or plan.get("intent_type") or analysis.get("analysis_type"),
-                160,
-            ),
+            "analysis_type": _analysis_type_value(plan, analysis, inspection),
         },
         "domains": _domain_items(payload, plan, report_preview.get("domains")),
         "domain_reasons": _domain_reasons(plan, inspection),
@@ -424,14 +422,16 @@ def render_execution_report_html(explanation_value: Any) -> str:
     .eyebrow {{ margin: 0 0 8px; color: rgba(255,255,255,.77); font-size: 11px; font-weight: 800; letter-spacing: .095em; }}
     h1 {{ margin: 0; font-size: clamp(27px, 4vw, 37px); font-weight: 800; letter-spacing: -.045em; }}
     .hero-grid {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 22px; align-items: end; margin-top: 24px; }}
-    .question {{ margin: 0; max-width: 760px; color: rgba(255,255,255,.93); font-size: 16px; font-weight: 500; word-break: break-word; }}
+    .question {{ display: flex; align-items: flex-start; gap: .15em; margin: 0; max-width: 760px; color: rgba(255,255,255,.96); font-size: clamp(18px, 2vw, 20px); font-weight: 650; line-height: 1.5; letter-spacing: -.025em; word-break: break-word; }}
+    .question-quote {{ flex: 0 0 auto; color: rgba(255,255,255,.72); font-family: Georgia, "Times New Roman", serif; font-size: 1.18em; font-weight: 700; line-height: 1.16; }}
+    .question > span:not(.question-quote) {{ min-width: 0; }}
     .status-chip {{ display: inline-flex; align-items: center; justify-content: center; min-width: 106px; min-height: 40px; padding: 7px 14px; border: 1px solid rgba(255,255,255,.38); border-radius: 9px; background: rgba(255,255,255,.16); color: #fff; font-size: 13px; font-weight: 800; box-shadow: 0 8px 18px rgba(48, 69, 169, .12); }}
     .status-chip.blocked, .status-chip.error {{ background: rgba(132, 24, 36, .48); }}
     .status-chip.partial {{ background: rgba(143, 91, 0, .55); }}
     .summary-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 18px 0 30px; }}
     .summary-card {{ min-height: 114px; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: 0 9px 22px rgba(47, 58, 102, .045); }}
     .summary-card .label {{ margin: 0 0 8px; color: var(--muted); font-size: 13px; }}
-    .summary-card .value {{ margin: 0; color: var(--ink); font-size: 21px; font-weight: 800; letter-spacing: -.02em; }}
+    .summary-card .value {{ margin: 0; color: var(--ink); font-size: clamp(17px, 1.45vw, 19px); font-weight: 800; line-height: 1.38; letter-spacing: -.02em; overflow-wrap: anywhere; }}
     .summary-card .sub {{ margin: 4px 0 0; color: var(--muted); font-size: 13px; }}
     .intent-analysis-panel {{ position: relative; overflow: hidden; margin: 0 0 30px; border: 1px solid #dce5fa; border-radius: 17px; background: #fff; box-shadow: 0 13px 28px rgba(47, 62, 122, .055); }}
     .intent-analysis-panel::before {{ content: ""; position: absolute; z-index: 0; top: 0; right: 0; left: 0; height: 3px; background: linear-gradient(90deg, #5274eb 0%, #7994f7 50%, #d8e2ff 100%); }}
@@ -621,7 +621,7 @@ def render_execution_report_html(explanation_value: Any) -> str:
       <p class="eyebrow">DATA ANALYSIS · EXECUTION TRACE</p>
       <h1>분석 처리 과정</h1>
       <div class="hero-grid">
-        <p class="question">{question}</p>
+        <p class="question"><span class="question-quote" aria-hidden="true">&ldquo;</span><span>{question}</span><span class="question-quote" aria-hidden="true">&rdquo;</span></p>
         <span class="status-chip {status_class}">{status_label}</span>
       </div>
     </header>
@@ -3516,16 +3516,54 @@ def _columns_from_rows(value: Any) -> list[str]:
     return columns
 
 
-def _route_value(payload: dict[str, Any], plan: dict[str, Any], analysis: dict[str, Any]) -> str:
+def _route_value(
+    payload: dict[str, Any],
+    plan: dict[str, Any],
+    analysis: dict[str, Any],
+    inspection: dict[str, Any] | None = None,
+    execution_gate: dict[str, Any] | None = None,
+) -> str:
+    """Resolve the actual route using the canonical post-resolver contract.
+
+    ``route_resolution.final_route`` is the normal V2 field written after the
+    Fast/Complex resolver.  The older flat ``execution_path`` values remain
+    supported because they can carry a later executor result.  A blocked gate
+    is authoritative: no planned route was actually allowed to execute.
+    """
+    gate = execution_gate if isinstance(execution_gate, dict) else _dict(payload.get("execution_gate"))
+    if _safe_text(gate.get("status"), 80).casefold() == "blocked":
+        return "blocked"
+    route_resolution = _dict(plan.get("route_resolution"))
+    inspection = inspection if isinstance(inspection, dict) else _inspection(payload)
+    pandas_execution = _dict(inspection.get("pandas_execution"))
     routing = _dict(payload.get("routing"))
     return _safe_text(
         analysis.get("execution_path")
+        or analysis.get("final_execution_path")
+        or pandas_execution.get("execution_path")
+        or route_resolution.get("final_route")
         or plan.get("execution_path")
+        or _dict(payload.get("simple_analysis_contract")).get("route")
         or routing.get("final_execution_path")
         or routing.get("route")
         or payload.get("execution_path"),
         80,
     ).lower()
+
+
+def _analysis_type_value(plan: dict[str, Any], analysis: dict[str, Any], inspection: dict[str, Any]) -> str:
+    """Read the canonical analysis kind before legacy display aliases."""
+    intent_trace = _dict(inspection.get("intent"))
+    return _safe_text(
+        plan.get("analysis_kind")
+        or plan.get("analysis_type")
+        or plan.get("intent_type")
+        or analysis.get("analysis_kind")
+        or analysis.get("analysis_type")
+        or intent_trace.get("analysis_kind")
+        or intent_trace.get("analysis_type"),
+        160,
+    )
 
 
 def _status_value(payload: dict[str, Any], analysis: dict[str, Any], execution_gate: dict[str, Any]) -> str:
@@ -3613,7 +3651,15 @@ def _format_number(value: Any) -> str:
 
 def _format_timestamp(value: Any) -> str:
     text = _safe_text(value, 100)
-    return text.replace("T", " ").replace("+00:00", " UTC") if text else "-"
+    if not text:
+        return "-"
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text.replace("T", " ")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S KST")
 
 
 def _html_text(value: Any, limit: int) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -5264,6 +5265,16 @@ def test_result_store_creates_one_download_ref_per_multi_source_checkpoint():
         "payload.intermediate_rows.source_eqp_uph_src",
         "payload.intermediate_rows.pre_contract_result",
     }
+
+
+def test_result_store_exposes_kst_timestamps_while_ttl_date_stays_utc():
+    store = load_module(
+        ROOT / "langflow_components" / "data_analysis_flow" / "23_mongodb_result_store.py"
+    )
+    instant = datetime(2026, 8, 29, 15, 33, 22, tzinfo=timezone.utc)
+
+    assert store._to_iso(instant) == "2026-08-30T00:33:22+09:00"
+    assert instant.utcoffset().total_seconds() == 0
 
 
 def test_v2_contract_error_after_calculation_keeps_computed_checkpoint():
