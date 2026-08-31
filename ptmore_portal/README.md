@@ -3,9 +3,9 @@
 이 포털은 메타데이터 등록을 외부 rev_2 Flow API로 실행할 수 있으며, 대시보드는 선택적으로 Phoenix의 실제 사용 이력을 조회할 수 있습니다.
 
 - 대시보드 사용 이력은 기본적으로 더미 미리보기이며, Phoenix 모드를 명시적으로 켜면 최근 3주 실제 이력을 조회합니다.
-- 사번/권한 미리보기와 스케줄 화면은 현재 더미 로직을 사용합니다.
+- 로그인 사용자는 운영 HCP SSO 또는 로컬 고정 사용자로 구분합니다. 운영 권한은 사번을 기준으로 Portal MongoDB 설정에서 확인하며, 로컬 고정 사용자는 개발 편의를 위해 관리자입니다.
 - 메타데이터 등록 요청은 포털 서버가 외부 API로 전달합니다. 브라우저에는 API 키나 MongoDB URI가 내려가지 않습니다.
-- CUBE callback 서버와는 별도입니다. 이 포털은 CUBE 메시지를 직접 수신하거나 발송하지 않습니다.
+- 스케줄 등록 정보는 Portal MongoDB에 저장하고, 별도 Scheduler Worker가 GAIA 실행과 CUBE 개인 DM 발송을 처리합니다.
 
 ## 동작 흐름
 
@@ -27,19 +27,35 @@ cd C:\Users\qkekt\Desktop\metadata_driven_v5\ptmore_portal
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 
-# 로컬 테스트: 운영 진입점은 바꾸지 않고 포트만 8002로 사용합니다.
-python -m uvicorn app:application --host 127.0.0.1 --port 8002
+# 로컬 테스트: HCP SSO 없이 고정 사용자(2011111 / 문봉건)로 실행합니다.
+python -m uvicorn app_local:application --host 127.0.0.1 --port 8002
 ```
 
 브라우저에서 `http://127.0.0.1:8002`를 엽니다.
 
-운영 서버에서는 아래 고정 진입점을 사용합니다. 이 경우 포트는 `5000`입니다.
+운영 서버에서는 아래 고정 진입점을 사용합니다. 이 경우 포트는 `5000`입니다. 실행 전에 HCP Secret에 `PTMORE_SSO_SESSION_SECRET`을 입력하고, `.env`의 `PTMORE_PORTAL_AUTH_MODE=production`을 유지합니다.
 
 ```powershell
 python app.py
 ```
 
 초기 `.env`는 `PTMORE_METADATA_API_MODE=preview`이므로 안전한 미리보기 결과만 보여 줍니다. 외부 API나 MongoDB에는 연결하지 않습니다.
+
+## 사번·이름 로그인 방식
+
+- 운영 `app.py`: HCP에서 제공하는 `hcputil.auth.sso.SSO`로 SSO 쿠키를 확인합니다. 성공하면 `emp_no`, `emp_name`만 서명된 Portal 세션에 저장합니다.
+- 로컬 `app_local.py`: HCP SSO 모듈을 불러오지 않으며 항상 `2011111 / 문봉건` 로컬 관리자로 실행합니다.
+- 브라우저가 보내는 `X-PTMORE-Employee-Id`, `X-PTMORE-Employee-Name` 헤더는 운영·로컬 모두 사용자 식별에 사용하지 않습니다.
+
+운영 환경에는 아래 두 값이 필요합니다. 세션 Secret은 충분히 긴 임의 문자열로 만들고 HCP Secret으로 관리합니다.
+
+```dotenv
+PTMORE_PORTAL_AUTH_MODE=production
+PTMORE_SSO_SESSION_SECRET=<HCP-Secret-세션-서명값>
+PTMORE_SSO_SESSION_HTTPS_ONLY=true
+```
+
+실제 SSO 모듈과 로그인 리다이렉트는 HCP 운영 환경에서만 확인할 수 있습니다. 로컬 PC에서는 `app_local.py`로만 화면을 확인하세요.
 
 ## Phoenix 실제 사용 이력 연결
 
@@ -132,10 +148,22 @@ PTMORE_SCHEDULE_RUN_COLLECTION=portal_schedule_runs
 
 - `PTMORE_PORTAL_SETTINGS_COLLECTION`: 관리자 설정
 - `PTMORE_PORTAL_AUDIT_COLLECTION`: 관리자 설정 변경 이력
-- `PTMORE_SCHEDULE_COLLECTION`: 스케줄 등록 정보
-- `PTMORE_SCHEDULE_RUN_COLLECTION`: 스케줄 실행 이력
+- `PTMORE_SCHEDULE_COLLECTION`: Portal이 등록·수정·활성화·삭제하는 스케줄 원본
+- `PTMORE_SCHEDULE_RUN_COLLECTION`: Worker가 남기는 실행 성공·실패 이력
 
-현재 스케줄 화면은 더미 데이터 단계입니다. 따라서 `PTMORE_SCHEDULE_COLLECTION`과 `PTMORE_SCHEDULE_RUN_COLLECTION`은 **향후 MongoDB 저장 구현에서 사용할 대상 이름만 정하는 값**이며, 지금 설정해도 스케줄 등록·수정·삭제가 MongoDB에 기록되지는 않습니다.
+`MONGODB_URI`, `MONGODB_DATABASE`와 위 두 컬렉션을 설정하면 스케줄 화면은 더미를 사용하지 않고 실제 MongoDB를 조회합니다. 모든 로그인 사용자는 전체 목록을 볼 수 있지만, 수정·활성화/일시중지·삭제는 등록자 본인 또는 활성 관리자만 할 수 있습니다. MongoDB를 설정하지 않았거나 연결하지 못하면 스케줄 API는 더미로 대체하지 않고 `503`을 반환합니다.
+
+### Scheduler Worker 실행
+
+Portal 웹 서버는 스케줄을 **저장만** 합니다. 실제 정기 실행은 callback 서버와 독립 배포되는 Worker가 담당합니다. Portal과 Worker는 같은 MongoDB의 위 두 컬렉션 이름을 사용해야 합니다.
+
+```powershell
+cd C:\Users\qkekt\Desktop\metadata_driven_v5\gaia_cube_server\scheduler_worker_server
+python -m pip install -r requirements.txt
+python app.py
+```
+
+Worker는 due 상태의 활성 스케줄을 원자적으로 선점한 뒤, 등록자 개인 DM으로만 결과를 보냅니다. 일반 채팅의 처리중 안내 문구는 보내지 않으며, 매 실행마다 `cube_scheduling_<사번>_<UUID>` 세션과 `platform=CUBE_SCHEDULING`을 사용합니다. Worker는 자체 `app.py`를 Uvicorn으로 실행하며 `/health`, `/ready`로 HCP 상태를 확인합니다. 운영 환경에서는 Portal, CUBE callback `app.py`, Scheduler Worker를 각각 독립적으로 재시작 가능한 프로세스/서비스로 운영하세요. Worker는 callback `app.py`를 import하지 않으며 필요한 GAIA·CUBE·Markdown 변환 코드를 자체 포함합니다. 자세한 환경 변수와 일회성 점검 방법은 [독립 Scheduler Worker 안내](../gaia_cube_server/scheduler_worker_server/README.md)를 참조하세요.
 
 `PTMORE_METADATA_SEND_MONGODB_TWEAKS=true`이면 포털은 신뢰된 내부 API 요청에만 다음 rev_2 노드 값을 `tweaks`로 전달합니다.
 
@@ -194,12 +222,20 @@ Flow JSON이나 Custom Component는 변경하지 않았습니다. 기존 Canvas 
 
 포털은 API 호출할 때만 Langflow의 `tweaks`를 이용해 요청 로더의 `duplicate_action`, `dry_run` 및 필요 시 MongoDB 입력을 덮어씁니다. 기본값은 rev_2의 고유한 한국어 노드 표시명을 사용하므로 재-import로 ID가 바뀌어도 수정할 필요가 없습니다. 운영자가 표시명까지 바꾼 경우에만 `PTMORE_METADATA_FLOW_COMPONENT_MAP_JSON`에 새 표시명 또는 node ID를 지정하면 됩니다.
 
+`03. v5_table_catalog_saving_rev_2`는 Snapshot Loader 없이 기존 Writer 경로를 재사용합니다. `PTMORE_METADATA_SEND_MONGODB_TWEAKS=true`인 환경에서는 Portal이 없는 노드에 tweak를 보내지 않도록 Table Catalog의 `snapshot_loader`를 비워 둡니다. 현재 기본값도 비어 있으며, 운영 설정을 명시할 때는 아래처럼 입력합니다.
+
+```dotenv
+PTMORE_METADATA_FLOW_COMPONENT_MAP_JSON={"table_catalog":{"snapshot_loader":""}}
+```
+
+`null`도 같은 의미입니다. 키를 아예 생략하면 기존 기본값을 유지하므로, Flow variant별 전환은 환경 설정으로만 조정할 수 있습니다. 이 설정은 Writer와 API terminal의 ID/표시명, 저장 정책, Portal 응답 계약을 바꾸지 않습니다.
+
 ## 화면 확인
 
-- 관리자 화면: `http://127.0.0.1:8002`
-- 일반 사용자 권한 미리보기: `http://127.0.0.1:8002/?preview_role=user`
+- 로컬 화면: `http://127.0.0.1:8002`
+- 운영 화면: 배포된 HCP Portal URL
 
-일반 사용자는 메타데이터 메뉴 또는 등록 버튼을 눌러도 `관리자만 등록 가능합니다` 안내만 보게 됩니다. 현재 이 권한 표시는 디자인 검증용이며, 실제 사번/SSO 연동은 이후 기존 로직을 교체하지 않고 별도 인증 어댑터로 연결할 예정입니다.
+로컬 고정 사용자 `2011111 / 문봉건`은 `app_local.py`에서만 활성 관리자로 처리됩니다. 이 권한은 MongoDB에 저장되지 않으며, 운영 HCP SSO 사용자의 관리자 권한에는 영향을 주지 않습니다.
 
 ## 관리자 권한과 설정 저장
 
@@ -207,4 +243,4 @@ Flow JSON이나 Custom Component는 변경하지 않았습니다. 기존 Canvas 
 - 설정 화면의 `GAIA API 호출 권한 사번`과 활성 사용자 기준은 MongoDB의 고정 `portal_settings` 컬렉션에 저장됩니다. 변경 시점·변경 관리자·변경 전후 값은 `portal_audit_log`에 기록됩니다.
 - GAIA API Key, Bearer Token, MongoDB URI와 같은 비밀값은 계속 `.env` 또는 Secret 관리 도구에서만 관리합니다. 관리자 설정 API는 이 값들을 반환하지 않습니다.
 
-현재 화면 미리보기는 사번 조회 로직이 확정되기 전이므로 `X-PTMORE-Employee-Id` 헤더를 임시 사용자 식별 어댑터로 사용합니다. 운영 배포 시에는 이 헤더를 브라우저가 임의로 보내게 두면 안 되며, SSO 또는 신뢰된 사내 프록시가 사번을 주입하고 외부에서 보낸 동일 헤더를 제거해야 합니다. 사번 조회 방식이 정해지면 이 어댑터만 교체하면 됩니다.
+운영 Portal은 SSO 로그인 뒤 서버 세션에 저장된 사번·이름만 사용합니다. 따라서 브라우저 개발자 도구로 임의 사번 헤더를 추가해도 관리자 권한을 얻을 수 없습니다.

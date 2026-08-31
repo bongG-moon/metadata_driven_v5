@@ -8,7 +8,12 @@ from langchain_core.prompts import PromptTemplate
 from lfx.base.prompts.api_utils import validate_prompt
 
 from component_test_support import ROOT, load_module
-from tools.build_metadata_saving_rev_2_flows import REV2_DISPLAY_NAMES, write_rev_2_flows
+from tools.build_metadata_saving_rev_2_flows import (
+    REV2_DISPLAY_NAMES,
+    REV2_NOTE_COUNT,
+    REV2_NOTE_PREFIX,
+    write_rev_2_flows,
+)
 from tools.validate_flow_component_sources import audit_rev2_repository
 
 
@@ -487,7 +492,7 @@ UPH를 함께 요청하지 않은 경우에는 장비 Assign 현황 데이터만
     ]
 
 
-def test_retry_guidance_is_full_copy_ready_natural_text_and_candidates_are_separate() -> None:
+def test_retry_guidance_is_one_full_copy_ready_natural_text() -> None:
     _, refinement_normalizer, _, candidate_repair, guard, response_enricher, message_adapter = _modules()
     raw = """장비 대수 계산 기준을 도메인 메타데이터로 등록해줘.
 section은 quantity_terms이고 key는 equipment_count이며 status는 active야.
@@ -532,13 +537,13 @@ section은 quantity_terms이고 key는 equipment_count이며 status는 active야
 
     guarded = guard.guard_metadata_contract(attempted["payload"])
     examples = guarded["metadata_authoring_draft"]["retry_examples"]
-    assert len(examples) == 2
+    assert len(examples) == 1
     assert all(example.startswith(raw) for example in examples)
     assert all("key는 equipment_count" in example for example in examples)
     assert all("equipment_assign_count" not in example for example in examples)
     assert all("은(는)" not in example and "아래 미확정 정보" not in example for example in examples)
-    assert any("실제 dataset_key는 equipment_assign이야" in example for example in examples)
-    assert any("실제 dataset_key는 equipment_assign_archive이야" in example for example in examples)
+    assert "실제 dataset_key는 equipment_assign이야" in examples[0]
+    assert "equipment_assign_archive" not in examples[0]
     assert guarded["items"] == []
 
     response = {
@@ -555,8 +560,8 @@ section은 quantity_terms이고 key는 equipment_count이며 status는 active야
     message = message_adapter.build_message(enriched)
     assert enriched["metadata_authoring"]["retry_example"] == examples[0]
     assert enriched["metadata_authoring"]["retry_examples"] == examples
-    assert "#### 선택안 1" in message
-    assert "#### 선택안 2" in message
+    assert "### 이렇게 다시 입력해 보세요" in message
+    assert "#### 선택안" not in message
 
 
 def test_contract_guard_canonicalizes_domain_references_without_adding_item_schema_fields() -> None:
@@ -1416,6 +1421,181 @@ def test_contract_guard_canonicalizes_table_mapping_and_main_filter_key() -> Non
     assert guarded_filter["errors"] == []
 
 
+def test_table_catalog_equivalent_physical_and_canonical_metric_aliases_are_coalesced() -> None:
+    *_, guard, _, _ = _modules()
+    writer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "07_table_catalog_review_writer.py"
+    )
+    payload = _table_context(
+        "EQUIP_ID는 표준 EQP_ID이고, 장비 대수는 EQUIP_ID의 중복 제거 건수야."
+    )
+    payload["metadata_authoring_draft"] = {
+        "original_text": payload["request"]["raw_text"],
+        "refined_text": payload["request"]["raw_text"],
+        "resolved_references": [],
+        "unresolved_references": [],
+        "missing_information": [],
+        "assumptions": [],
+        "needs_more_input": False,
+    }
+    count_contract = {
+        "semantic_type": "count",
+        "additive": False,
+        "default_rollup": "nunique",
+        "allowed_rollups": ["nunique"],
+        "source_already_aggregated": False,
+    }
+    payload["items"] = [
+        {
+            "dataset_key": "equipment_assign_new",
+            "status": "active",
+            "payload": {
+                "source_type": "oracle",
+                "source_config": {
+                    "source_type": "oracle",
+                    "query_template": "SELECT EQUIP_ID FROM EQP_TABLE",
+                },
+                "filter_mappings": {"EQP_ID": ["EQUIP_ID"]},
+                "columns": ["EQUIP_ID"],
+                # Weak extraction models can emit both keys.  They describe
+                # the same declared execution column and must not block save.
+                "metric_semantics": {},
+            },
+        }
+    ]
+
+    for semantics in (
+        {"EQP_ID": count_contract, "EQUIP_ID": dict(count_contract)},
+        {"EQUIP_ID": dict(count_contract), "EQP_ID": count_contract},
+    ):
+        payload["items"][0]["payload"]["metric_semantics"] = semantics
+        guarded = guard.guard_metadata_contract(payload)
+        body = guarded["items"][0]["payload"]
+        assert guarded["errors"] == []
+        assert body["metric_semantics"] == {"EQP_ID": count_contract}
+        assert any(
+            warning["type"] == "coalesced_equivalent_canonical_metric_semantics"
+            for warning in guarded["warnings"]
+        )
+
+        reviewed = writer.review_and_write(guarded)
+        assert reviewed["write_result"]["success"] is True
+        assert reviewed["write_result"]["would_save_count"] == 1
+
+
+def test_table_catalog_conflicting_physical_and_canonical_metric_aliases_remain_blocked() -> None:
+    *_, guard, _, _ = _modules()
+    payload = _table_context("EQUIP_ID는 표준 EQP_ID야.")
+    payload["metadata_authoring_draft"] = {
+        "original_text": payload["request"]["raw_text"],
+        "refined_text": payload["request"]["raw_text"],
+        "resolved_references": [],
+        "unresolved_references": [],
+        "missing_information": [],
+        "assumptions": [],
+        "needs_more_input": False,
+    }
+    payload["items"] = [
+        {
+            "dataset_key": "equipment_assign_conflict",
+            "status": "active",
+            "payload": {
+                "filter_mappings": {"EQP_ID": ["EQUIP_ID"]},
+                "columns": ["EQUIP_ID"],
+                "metric_semantics": {
+                    "EQP_ID": {"semantic_type": "count", "default_rollup": "nunique"},
+                    "EQUIP_ID": {"semantic_type": "quantity", "default_rollup": "sum"},
+                },
+            },
+        }
+    ]
+
+    guarded = guard.guard_metadata_contract(payload)
+    assert any(error["type"] == "conflicting_canonical_mapping" for error in guarded["errors"])
+    # A model conflict is preserved for review; it is not presented as a
+    # request for the user to repeat the same otherwise-clear text.
+    assert guarded["metadata_authoring_draft"]["contract_validation"]["status"] == "error"
+
+
+def test_self_contained_table_catalog_survives_refinement_only_missing_information() -> None:
+    _, _, _, candidate_repair, guard, *_ = _modules()
+    writer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "07_table_catalog_review_writer.py"
+    )
+    payload = _table_context("신규 장비 테이블을 등록해줘.")
+    payload["metadata_authoring_draft"] = {
+        "original_text": payload["request"]["raw_text"],
+        "refined_text": payload["request"]["raw_text"],
+        "resolved_references": [],
+        "unresolved_references": [],
+        "missing_information": ["사용 목적을 조금 더 자세히 적어 주세요."],
+        "assumptions": [],
+        "needs_more_input": True,
+    }
+    payload["refinement"] = {
+        "refined_text": payload["request"]["raw_text"],
+        "missing_information": ["사용 목적을 조금 더 자세히 적어 주세요."],
+        "needs_more_input": True,
+    }
+    extraction = {
+        "items": [
+            {
+                "dataset_key": "self_contained_equipment",
+                "status": "active",
+                "payload": {
+                    "source_type": "oracle",
+                    "source_config": {
+                        "source_type": "oracle",
+                        "query_template": "SELECT EQUIP_ID FROM EQP_TABLE",
+                    },
+                    "columns": ["EQUIP_ID"],
+                    "filter_mappings": {"EQP_ID": ["EQUIP_ID"]},
+                },
+            }
+        ]
+    }
+
+    repaired = candidate_repair.repair_candidate_response(payload, extraction)
+    assert json.loads(repaired["llm_response"])["items"]
+    assert repaired["payload"]["metadata_authoring_draft"]["needs_more_input"] is False
+    assert any(
+        warning["type"] == "table_catalog_refinement_missing_deferred"
+        for warning in repaired["payload"]["warnings"]
+    )
+
+    table_normalizer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "04_table_catalog_saving_result_normalizer.py"
+    )
+    guarded = guard.guard_metadata_contract(
+        table_normalizer.normalize_authoring(repaired["payload"], repaired["llm_response"])
+    )
+    assert guarded["errors"] == []
+    assert writer.review_and_write(guarded)["write_result"]["success"] is True
+
+
+def test_table_catalog_context_snapshot_failure_is_warning_not_preemptive_save_block() -> None:
+    context_builder, *_ = _modules()
+    result = context_builder.build_authoring_context(
+        {
+            "metadata_type": "table_catalog",
+            "request": {"raw_text": "신규 장비 테이블을 등록해줘.", "dry_run": True},
+            "errors": [],
+            "warnings": [],
+            "refinement": {},
+        },
+        None,
+        None,
+        None,
+    )
+    payload = result["payload"]
+    assert payload["errors"] == []
+    assert payload["metadata_authoring_context"]["status"] == "error"
+    assert any(
+        warning["type"] == "metadata_authoring_context_unavailable"
+        for warning in payload["warnings"]
+    )
+
+
 def test_contract_guard_blocks_unregistered_domain_dataset_and_returns_retry_example() -> None:
     *_, guard, _, _ = _modules()
     payload = _context("등록되지 않은 장비 집계 테이블을 사용해 장비 수를 계산해.")
@@ -1444,6 +1624,192 @@ def test_contract_guard_blocks_unregistered_domain_dataset_and_returns_retry_exa
     assert "실제 dataset_key를 명시" in guarded["metadata_authoring_draft"]["retry_example"]
 
 
+def test_table_catalog_local_mapping_beats_legacy_physical_aliases_and_optional_filter_refs() -> None:
+    context_builder, refinement_normalizer, _, candidate_repair, guard, *_ = _modules()
+    table_normalizer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "04_table_catalog_saving_result_normalizer.py"
+    )
+    writer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "07_table_catalog_review_writer.py"
+    )
+    raw = """당일 생산 실적 데이터를 Table Catalog 메타데이터로 등록해줘.
+
+dataset_key는 production_today이고 status는 active야.
+조회 SQL은 아래와 같아.
+
+SELECT WORK_DATE, DENSITY, PKG1, PKG2, DEVICE, OPER
+FROM PROD_TODAY
+WHERE WORK_DATE = {DATE}
+
+DATE는 실제 WORK_DATE 컬럼에 매핑해.
+DEN은 DENSITY, PKG_TYPE1은 PKG1, PKG_TYPE2는 PKG2, DEVICE는 DEVICE, OPER_NUM은 OPER에 매핑해."""
+    legacy_tables = [
+        {
+            "dataset_key": "legacy_daily",
+            "status": "active",
+            "payload": {
+                "display_name": "기존 일자 데이터",
+                "filter_mappings": {"DATE": ["WORK_DT"], "LOAD_DT": ["WORK_DT"]},
+                "columns": ["WORK_DT"],
+            },
+        }
+    ]
+    legacy_filters = [
+        {
+            "filter_key": "DATE",
+            "status": "active",
+            "payload": {"display_name": "날짜", "aliases": ["일자"], "column_candidates": ["WORK_DT"]},
+        },
+        {
+            "filter_key": "LOAD_DT",
+            "status": "active",
+            "payload": {"display_name": "적재일", "aliases": ["로딩 일자"], "column_candidates": ["WORK_DT"]},
+        },
+    ]
+    context_result = context_builder.build_authoring_context(
+        {
+            "metadata_type": "table_catalog",
+            "request": {"raw_text": raw, "duplicate_action": "skip", "dry_run": True},
+            "refinement": {},
+            "errors": [],
+            "warnings": [],
+            "trace": {},
+        },
+        _snapshot("domain_items", _domains()),
+        _snapshot("table_catalog_items", legacy_tables),
+        _snapshot("main_flow_filters", legacy_filters),
+    )
+    payload = context_result["payload"]
+    scoped_columns = payload["metadata_authoring_context"]["registry"]["table_catalog_canonical_columns"]
+    assert "WORK_DT" not in scoped_columns["DATE"]["aliases"]
+    assert "WORK_DT" not in scoped_columns["LOAD_DT"]["aliases"]
+
+    refined = refinement_normalizer.normalize_refinement(
+        payload,
+        {
+            "refined_text": raw,
+            # These emulate a weak refinement model treating source-local
+            # values as active global contracts.  They must be advisory only.
+            "resolved_references": [
+                {"kind": "canonical_column", "input": "WORK_DT", "target": "DATE"},
+                {"kind": "main_filter", "input": "DENSITY", "target": "DEN"},
+                {"kind": "main_filter", "input": "PKG1", "target": "PKG_TYPE1"},
+                {"kind": "main_filter", "input": "OPER", "target": "OPER_NUM"},
+            ],
+            "unresolved_references": [
+                {
+                    "kind": "canonical_column",
+                    "input": "WORK_DT",
+                    "candidates": ["DATE", "LOAD_DT"],
+                    "reason": "기존 canonical alias가 둘 이상입니다.",
+                }
+            ],
+            "missing_information": ["WORK_DT의 활성 canonical 계약을 하나로 선택해 주세요."],
+            "assumptions": [],
+            "needs_more_input": True,
+        },
+    )
+    assert refined["metadata_authoring_draft"]["needs_more_input"] is False
+    assert refined["metadata_authoring_draft"]["unresolved_references"] == []
+    assert refined["errors"] == []
+    assert {
+        warning["type"] for warning in refined["warnings"]
+    } >= {"table_catalog_source_column_reference", "table_catalog_optional_main_filter_reference"}
+
+    extraction_response = {
+        "items": [
+            {
+                "dataset_key": "production_today",
+                "status": "active",
+                "payload": {
+                    "source_type": "oracle",
+                    "source_config": {
+                        "source_type": "oracle",
+                        "query_template": "SELECT WORK_DATE, DENSITY, PKG1, PKG2, DEVICE, OPER FROM PROD_TODAY WHERE WORK_DATE = {DATE}",
+                    },
+                    "required_params": ["DATE"],
+                    "required_param_mappings": {"DATE": ["WORK_DATE"]},
+                    "filter_mappings": {
+                        "DATE": ["WORK_DATE"],
+                        "DEN": ["DENSITY"],
+                        "PKG_TYPE1": ["PKG1"],
+                        "PKG_TYPE2": ["PKG2"],
+                        "DEVICE": ["DEVICE"],
+                        "OPER_NUM": ["OPER"],
+                    },
+                    "columns": ["WORK_DATE", "DENSITY", "PKG1", "PKG2", "DEVICE", "OPER"],
+                },
+            }
+        ]
+    }
+    repaired = candidate_repair.repair_candidate_response(refined, extraction_response)
+    normalized = table_normalizer.normalize_authoring(repaired["payload"], repaired["llm_response"])
+    guarded = guard.guard_metadata_contract(normalized)
+    assert guarded["errors"] == []
+    body = guarded["items"][0]["payload"]
+    assert body["filter_mappings"]["DATE"] == ["WORK_DATE"]
+    assert body["filter_mappings"]["DEN"] == ["DENSITY"]
+    assert body["filter_mappings"]["PKG_TYPE1"] == ["PKG1"]
+    assert body["filter_mappings"]["PKG_TYPE2"] == ["PKG2"]
+    assert body["filter_mappings"]["DEVICE"] == ["DEVICE"]
+    assert body["filter_mappings"]["OPER_NUM"] == ["OPER"]
+    reviewed = writer.review_and_write(guarded)
+    assert reviewed["write_result"]["success"] is True
+    assert reviewed["write_result"]["dry_run"] is True
+
+
+def test_table_catalog_explicit_main_filter_reference_and_duplicate_source_mapping_stay_blocked() -> None:
+    _, refinement_normalizer, _, _, _, _, _ = _modules()
+    writer = load_module(
+        ROOT / "langflow_components" / "table_catalog_saving_flow" / "07_table_catalog_review_writer.py"
+    )
+    explicit_filter_payload = refinement_normalizer.normalize_refinement(
+        _table_context("기존 메인 필터를 참조해 검증 테이블을 등록해줘."),
+        {
+            "refined_text": "기존 메인 필터 UNKNOWN_FILTER를 참조해 검증 테이블을 등록한다.",
+            "resolved_references": [
+                {"kind": "main_filter", "input": "기존 메인 필터", "target": "UNKNOWN_FILTER"}
+            ],
+            "unresolved_references": [],
+            "missing_information": [],
+            "assumptions": [],
+            "needs_more_input": False,
+        },
+    )
+    assert explicit_filter_payload["metadata_authoring_draft"]["needs_more_input"] is True
+    assert any(error["type"] == "unknown_metadata_reference" for error in explicit_filter_payload["errors"])
+    assert not any(
+        warning["type"] == "table_catalog_optional_main_filter_reference"
+        for warning in explicit_filter_payload["warnings"]
+    )
+
+    duplicate_mapping_payload = {
+        "request": {"dry_run": True, "duplicate_action": "skip"},
+        "errors": [],
+        "items": [
+            {
+                "dataset_key": "invalid_duplicate_mapping",
+                "status": "active",
+                "payload": {
+                    "source_type": "oracle",
+                    "source_config": {
+                        "source_type": "oracle",
+                        "query_template": "SELECT WORK_DATE FROM PROD_TODAY",
+                    },
+                    "columns": ["WORK_DATE"],
+                    "filter_mappings": {"DATE": ["WORK_DATE"], "LOAD_DT": ["WORK_DATE"]},
+                },
+            }
+        ],
+    }
+    reviewed = writer.review_and_write(duplicate_mapping_payload)
+    assert reviewed["write_result"]["success"] is False
+    assert any(
+        error["type"] == "ambiguous_execution_column_mapping"
+        for error in reviewed["write_result"]["errors"]
+    )
+
+
 def test_rev_2_builder_is_isolated_and_preserves_original_flow_files(tmp_path: Path) -> None:
     before = {path: _sha256(path) for path in ORIGINAL_FLOW_PATHS}
     result = write_rev_2_flows(tmp_path / "exports", tmp_path / "imports", tmp_path / "rev_2.zip")
@@ -1455,19 +1821,80 @@ def test_rev_2_builder_is_isolated_and_preserves_original_flow_files(tmp_path: P
     assert result["router_targets_rev_2"] is False
     manifest = json.loads((tmp_path / "imports" / "manifest.json").read_text(encoding="utf-8"))
     assert [item["name"] for item in manifest["flows"]] == list(REV2_DISPLAY_NAMES.values())
-    assert all(item["nodes"] == 20 and item["edges"] == 28 for item in manifest["flows"])
+    expected_graph_sizes = {
+        "02_domain_saving_flow_v5_rev_2_standalone.json": {"nodes": 20, "edges": 28},
+        # Table Catalog intentionally reuses the legacy 03 write path.  Its
+        # rev_2 additions are a non-blocking initial text transformer and a
+        # final Portal-only response adapter; neither changes Writer decisions.
+        "03_table_catalog_saving_flow_v5_rev_2_standalone.json": {"nodes": 17, "edges": 20},
+        "04_main_flow_filter_saving_flow_v5_rev_2_standalone.json": {"nodes": 20, "edges": 28},
+    }
+    for item in manifest["flows"]:
+        expected = expected_graph_sizes[item["file"]]
+        assert item["nodes"] == expected["nodes"]
+        assert item["note_nodes"] == REV2_NOTE_COUNT
+        assert item["canvas_nodes"] == expected["nodes"] + REV2_NOTE_COUNT
+        assert item["edges"] == expected["edges"]
 
     for item in manifest["flows"]:
         flow = json.loads((tmp_path / "imports" / item["file"]).read_text(encoding="utf-8"))
         assert flow["last_tested_version"] == "1.11.0"
         assert all(node["data"]["node"]["lf_version"] == "1.11.0" for node in flow["data"]["nodes"])
         node_ids = {node["id"] for node in flow["data"]["nodes"]}
-        assert any(node_id.startswith("MetadataSnapshot-") for node_id in node_ids)
-        assert any(node_id.startswith("RefinementNormalizer-") for node_id in node_ids)
-        assert any(node_id.startswith("CandidateRepair-") for node_id in node_ids)
-        assert any(node_id.startswith("ContractGuard-") for node_id in node_ids)
-        assert any(node_id.startswith("ResponseEnricher-") for node_id in node_ids)
         slug = next(key for key, name in REV2_DISPLAY_NAMES.items() if name == item["name"])
+        if slug == "table_catalog":
+            initial_transformer = next(node for node in flow["data"]["nodes"] if node["id"].startswith("InitialTransformer-"))
+            initial_source = next(node for node in flow["data"]["nodes"] if node["id"].startswith("InitialSource-"))
+            assert initial_transformer["data"]["selected_output"] == "payload_out"
+            assert initial_source["data"]["selected_output"] == "source_text"
+            transformer_payload_edges = [
+                edge
+                for edge in flow["data"]["edges"]
+                if edge["source"] == initial_transformer["id"]
+            ]
+            assert {
+                (
+                    edge["data"]["sourceHandle"]["name"],
+                    edge["target"],
+                    edge["data"]["targetHandle"]["fieldName"],
+                )
+                for edge in transformer_payload_edges
+            } == {
+                ("payload_out", f"Variables-{slug}-rev-2", "payload"),
+                ("payload_out", f"Normalizer-{slug}-rev-2", "payload"),
+            }
+            assert any(node_id.startswith("PortalContract-") for node_id in node_ids)
+            assert not any(
+                node_id.startswith(
+                    (
+                        "MetadataSnapshot-",
+                        "AuthoringContext-",
+                        "RefinementNormalizer-",
+                        "ExtractionVariables-",
+                        "CandidateRepair-",
+                        "ContractGuard-",
+                        "ResponseEnricher-",
+                    )
+                )
+                for node_id in node_ids
+            )
+        else:
+            assert any(node_id.startswith("MetadataSnapshot-") for node_id in node_ids)
+            assert any(node_id.startswith("RefinementNormalizer-") for node_id in node_ids)
+            assert any(node_id.startswith("CandidateRepair-") for node_id in node_ids)
+            assert any(node_id.startswith("ContractGuard-") for node_id in node_ids)
+            assert any(node_id.startswith("ResponseEnricher-") for node_id in node_ids)
+        notes = [node for node in flow["data"]["nodes"] if node.get("type") == "noteNode"]
+        note_ids = {node["id"] for node in notes}
+        assert len(notes) == REV2_NOTE_COUNT
+        assert len(note_ids) == REV2_NOTE_COUNT
+        assert all(node_id.startswith(f"{REV2_NOTE_PREFIX}{slug}-") for node_id in note_ids)
+        assert all(node["data"]["type"] == "note" for node in notes)
+        assert all(node["data"]["node"]["description"].startswith("## ") for node in notes)
+        assert all(node["position"] == node["positionAbsolute"] for node in notes)
+        assert all(node["width"] > 0 and node["height"] > 0 for node in notes)
+        assert [node["position"]["x"] for node in notes] == sorted(node["position"]["x"] for node in notes)
+        assert all(edge["source"] not in note_ids and edge["target"] not in note_ids for edge in flow["data"]["edges"])
         source_folder = {
             "domain": ROOT / "langflow_components" / "domain_saving_flow",
             "table_catalog": ROOT / "langflow_components" / "table_catalog_saving_flow",
@@ -1481,6 +1908,34 @@ def test_rev_2_builder_is_isolated_and_preserves_original_flow_files(tmp_path: P
         writer = next(node for node in flow["data"]["nodes"] if node["id"] == f"Writer-{slug}-rev-2")
         embedded_writer = writer["data"]["node"]["template"]["code"]["value"]
         assert embedded_writer == (source_folder / writer_file).read_text(encoding="utf-8")
+        if slug == "table_catalog":
+            portal_contract = next(
+                node for node in flow["data"]["nodes"] if node["id"] == f"PortalContract-{slug}-rev-2"
+            )
+            embedded_portal_contract = portal_contract["data"]["node"]["template"]["code"]["value"]
+            assert embedded_portal_contract == (
+                source_folder / "08a_table_catalog_portal_contract_enricher.py"
+            ).read_text(encoding="utf-8")
+            portal_contract_edges = [
+                edge
+                for edge in flow["data"]["edges"]
+                if edge["source"] == f"PortalContract-{slug}-rev-2"
+                or edge["target"] == f"PortalContract-{slug}-rev-2"
+            ]
+            assert {
+                (
+                    edge["source"],
+                    edge["data"]["sourceHandle"]["name"],
+                    edge["target"],
+                    edge["data"]["targetHandle"]["fieldName"],
+                )
+                for edge in portal_contract_edges
+            } == {
+                (f"Response-{slug}-rev-2", "payload_out", f"PortalContract-{slug}-rev-2", "payload"),
+                (f"Writer-{slug}-rev-2", "payload_out", f"PortalContract-{slug}-rev-2", "authoring_payload"),
+                (f"PortalContract-{slug}-rev-2", "payload_out", f"Message-{slug}-rev-2", "payload"),
+                (f"PortalContract-{slug}-rev-2", "payload_out", f"Api-{slug}-rev-2", "payload"),
+            }
 
 
 def test_rev_2_source_export_and_import_artifacts_are_synchronized() -> None:

@@ -820,6 +820,7 @@ def create_application(
 
 # HCP runs this exact ASGI object and fixed Uvicorn entrypoint.
 application = create_application()
+app = application
 
 
 if __name__ == "__main__":

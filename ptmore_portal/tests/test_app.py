@@ -1,6 +1,7 @@
 from collections import defaultdict
 import copy
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -14,6 +15,10 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+# The production app accepts only a server-side SSO identity.  Existing Portal
+# contract tests intentionally exercise multiple synthetic employees, so they
+# use the explicit test-only adapter instead of browser headers in production.
+os.environ.setdefault("PTMORE_PORTAL_AUTH_MODE", "test")
 import app as portal_app
 
 
@@ -544,14 +549,13 @@ def test_metadata_authoring_status_defaults_to_safe_preview_mode(monkeypatch) ->
         "role": "schedule_authoring_and_run_history",
         "configured": False,
         "storage_enabled": False,
-        "storage_status": "not_implemented",
+        "storage_status": "not_configured",
         "database": None,
         "schedule_collection": "portal_schedules",
         "schedule_run_collection": "portal_schedule_runs",
         "collection_configuration_errors": [],
         "message": (
-            "스케줄 컬렉션 이름은 준비되어 있지만, 현재 Portal의 스케줄 등록·수정·삭제는 "
-            "더미 화면 상태입니다. MongoDB 저장과 Scheduler Worker 실행은 아직 활성화되지 않았습니다."
+            "스케줄 저장을 사용하려면 MongoDB 연결 정보와 컬렉션 이름 설정을 확인해 주세요."
         ),
     }
     assert payload["portal_mongodb_connection"] == {
@@ -760,7 +764,7 @@ def test_metadata_status_separates_portal_settings_from_external_flow_runtime(
 def test_portal_collection_names_are_configurable_and_schedule_storage_is_declared(
     monkeypatch,
 ) -> None:
-    """Portal settings/audit and future schedules use separate env-backed names."""
+    """Portal settings/audit and persisted schedule sources use separate names."""
 
     monkeypatch.setenv("MONGODB_URI", "mongodb://example.test:27017")
     monkeypatch.setenv("MONGODB_DATABASE", "datagov_test")
@@ -788,15 +792,15 @@ def test_portal_collection_names_are_configurable_and_schedule_storage_is_declar
     assert payload["portal_schedule_mongodb"] == {
         "role": "schedule_authoring_and_run_history",
         "configured": True,
-        "storage_enabled": False,
-        "storage_status": "not_implemented",
+        "storage_enabled": True,
+        "storage_status": "configured",
         "database": "datagov_test",
         "schedule_collection": "ptmore_test_schedules",
         "schedule_run_collection": "ptmore_test_schedule_runs",
         "collection_configuration_errors": [],
         "message": (
-            "스케줄 컬렉션 이름은 준비되어 있지만, 현재 Portal의 스케줄 등록·수정·삭제는 "
-            "더미 화면 상태입니다. MongoDB 저장과 Scheduler Worker 실행은 아직 활성화되지 않았습니다."
+            "스케줄 등록 정보는 Portal MongoDB에 저장됩니다. 실제 실행과 실행 이력 기록은 "
+            "별도 Scheduler Worker가 처리합니다."
         ),
     }
 
@@ -1739,13 +1743,9 @@ def test_metadata_authoring_api_calls_external_flow_and_normalizes_result(
         "mongo_database": "datagov",
         "collection_name": "agent_v4_table_catalog_items",
     }
-    assert tweaks["01 메타데이터 QA 통합 Snapshot 로더"] == {
-        "mongo_uri": "mongodb://example.test:27017",
-        "mongo_database": "datagov",
-        "table_collection_name": "agent_v4_table_catalog_items",
-        "filter_collection_name": "agent_v4_main_flow_filters",
-        "domain_collection_name": "agent_v4_domain_items",
-    }
+    # Legacy and lightweight Table Catalog Flows both omit a Snapshot node.
+    # Do not send a tweak to a component that does not exist in this variant.
+    assert "01 메타데이터 QA 통합 Snapshot 로더" not in tweaks
 
     status_response = client.get("/api/metadata-authoring/status", headers=ADMIN_HEADERS)
     assert status_response.status_code == 200
@@ -1844,6 +1844,47 @@ def test_metadata_mongo_values_are_not_sent_without_explicit_opt_in(monkeypatch)
             "dry_run": True,
         }
     }
+
+
+def test_table_catalog_lightweight_flow_skips_removed_snapshot_tweak(monkeypatch) -> None:
+    """A configured blank component must clear the default rather than revive it."""
+
+    monkeypatch.setenv("PTMORE_METADATA_API_MODE", "api")
+    monkeypatch.setenv("MONGODB_URI", "mongodb://metadata.example.test:27017")
+    monkeypatch.setenv("MONGODB_DATABASE", "datagov")
+    monkeypatch.setenv("PTMORE_METADATA_SEND_MONGODB_TWEAKS", "true")
+    monkeypatch.setenv(
+        "PTMORE_METADATA_FLOW_COMPONENT_MAP_JSON",
+        json.dumps({"table_catalog": {"snapshot_loader": ""}}),
+    )
+
+    settings = portal_app._metadata_settings_from_env()
+    payload = portal_app._metadata_api_payload(
+        settings,
+        metadata_type="table_catalog",
+        raw_text="dataset_key는 equipment_assign입니다.",
+        duplicate_action="skip",
+        dry_run=True,
+    )
+
+    assert settings.component_for("table_catalog", "snapshot_loader") == ""
+    assert payload["tweaks"] == {
+        "00 테이블 카탈로그 등록 요청 로더": {
+            "duplicate_action": "skip",
+            "dry_run": True,
+        },
+        "07 테이블 카탈로그 검수/저장 처리기": {
+            "mongo_uri": "mongodb://metadata.example.test:27017",
+            "mongo_database": "datagov",
+            "collection_name": "agent_v4_table_catalog_items",
+        },
+    }
+
+    monkeypatch.setenv(
+        "PTMORE_METADATA_FLOW_COMPONENT_MAP_JSON",
+        json.dumps({"table_catalog": {"snapshot_loader": None}}),
+    )
+    assert portal_app._metadata_settings_from_env().component_for("table_catalog", "snapshot_loader") == ""
 
 
 def test_metadata_mongo_tweak_mode_requires_configured_mongo_values(monkeypatch) -> None:

@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 import unicodedata
 from copy import deepcopy
-from itertools import product
 from typing import Any
 
 from lfx.custom.custom_component.component import Component
@@ -36,7 +35,10 @@ COLUMN_LIST_KEYS = {
 JOIN_PAIR_LEFT_KEYS = ("left_key", "left_on", "left_column")
 JOIN_PAIR_RIGHT_KEYS = ("right_key", "right_on", "right_column")
 JOIN_PAIR_CANONICAL_KEYS = ("canonical_key", "join_key", "key")
-MAX_RETRY_VARIANTS = 4
+# 실패·보완 응답은 실제로 실행할 수 있는 가장 우선순위가 높은 한 가지
+# 재입력안을 제공합니다. 여러 후보를 한꺼번에 노출하면 사용자가 임의의
+# 계약을 선택하게 되어 오히려 재시도 실패를 늘릴 수 있습니다.
+MAX_RETRY_RECOMMENDATIONS = 1
 USER_INPUT_ERROR_TYPES = {
     "unknown_dataset_reference",
     "ambiguous_dataset_reference",
@@ -76,7 +78,7 @@ def guard_metadata_contract(payload_value: Any) -> dict[str, Any]:
         if metadata_type == "domain":
             guarded = _guard_domain_item(item, registry, f"items[{index}]", errors, warnings, resolutions)
         elif metadata_type == "table_catalog":
-            guarded = _guard_table_item(item, registry, f"items[{index}]", errors, resolutions)
+            guarded = _guard_table_item(item, registry, f"items[{index}]", errors, warnings, resolutions)
         elif metadata_type == "main_flow_filter":
             guarded = _guard_filter_item(item, registry, f"items[{index}]", errors, resolutions)
         else:
@@ -486,35 +488,199 @@ def _guard_table_item(
     registry: dict[str, Any],
     path: str,
     errors: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
     resolutions: list[dict[str, Any]],
 ) -> dict[str, Any]:
     result = deepcopy(item)
     body = deepcopy(_dict(result.get("payload")))
+    # A new Table Catalog declares its own physical-to-canonical execution
+    # mappings.  Resolve metric/detail keys through that local contract before
+    # consulting broad active-metadata aliases.  This makes an explicit
+    # ``EQP_ID -> EQUIP_ID`` mapping authoritative for the source being saved.
+    execution_aliases = _table_execution_aliases(body, registry, path, errors, resolutions)
     for field in ("filter_mappings", "standard_column_aliases", "required_param_mappings", "metric_semantics"):
         if not isinstance(body.get(field), dict):
             continue
         normalized: dict[str, Any] = {}
+        normalized_origins: dict[str, str] = {}
         for source_key, source_value in body[field].items():
-            target_key = _resolve_column(source_key, registry, f"{path}.payload.{field}.{source_key}", errors, resolutions, allow_unknown=True)
-            if target_key in normalized and str(target_key) != str(source_key):
-                errors.append(
+            source_text = str(source_key or "").strip()
+            target_key = (
+                execution_aliases.get(_compact(source_text))
+                if field == "metric_semantics"
+                else ""
+            ) or _resolve_column(
+                source_key,
+                registry,
+                f"{path}.payload.{field}.{source_key}",
+                errors,
+                resolutions,
+                allow_unknown=True,
+            )
+            target_text = str(target_key or "").strip()
+            if target_text not in normalized:
+                normalized[target_text] = deepcopy(source_value)
+                normalized_origins[target_text] = source_text
+                continue
+
+            existing_value = normalized[target_text]
+            existing_origin = normalized_origins.get(target_text, target_text)
+            if field == "metric_semantics":
+                merged, compatible = _merge_equivalent_metric_semantics(
+                    existing_value,
+                    source_value,
+                    existing_is_canonical=_same_column_key(existing_origin, target_text),
+                    incoming_is_canonical=_same_column_key(source_text, target_text),
+                )
+                if compatible:
+                    normalized[target_text] = merged
+                    if _same_column_key(source_text, target_text):
+                        normalized_origins[target_text] = source_text
+                    warnings.append(
+                        {
+                            "type": "coalesced_equivalent_canonical_metric_semantics",
+                            "message": (
+                                f"동일한 실행 컬럼의 물리/표준 metric 계약을 '{target_text}' 하나로 정리했습니다."
+                            ),
+                            "path": f"{path}.payload.{field}",
+                            "canonical_column": target_text,
+                            "source_keys": _unique_text([existing_origin, source_text]),
+                        }
+                    )
+                    continue
+
+            if _equivalent_table_mapping_value(existing_value, source_value):
+                # Exact duplicate aliases are an LLM presentation artifact,
+                # not an ambiguous execution contract.  Prefer an explicitly
+                # canonical key when it is present, but keep one value only.
+                if _same_column_key(source_text, target_text):
+                    normalized[target_text] = deepcopy(source_value)
+                    normalized_origins[target_text] = source_text
+                warnings.append(
                     {
-                        "type": "duplicate_canonical_mapping",
-                        "message": f"'{source_key}'를 '{target_key}'로 바꾸면 {field} 안에서 key가 중복됩니다.",
+                        "type": "coalesced_equivalent_canonical_mapping",
+                        "message": f"동일한 '{target_text}' 계약의 중복 별칭을 하나로 정리했습니다.",
                         "path": f"{path}.payload.{field}",
+                        "field": field,
+                        "canonical_column": target_text,
+                        "source_keys": _unique_text([existing_origin, source_text]),
                     }
                 )
-            else:
-                normalized[str(target_key)] = deepcopy(source_value)
+                continue
+
+            errors.append(
+                {
+                    "type": "conflicting_canonical_mapping",
+                    "message": (
+                        f"'{existing_origin}'와 '{source_text}'가 같은 표준 컬럼 '{target_text}'으로 "
+                        f"정규화되지만 {field} 계약 값이 서로 다릅니다."
+                    ),
+                    "path": f"{path}.payload.{field}",
+                    "field": field,
+                    "canonical_column": target_text,
+                    "source_keys": _unique_text([existing_origin, source_text]),
+                }
+            )
         body[field] = normalized
     for field in ("required_params", "default_detail_columns"):
         if isinstance(body.get(field), list):
             body[field] = [
-                _resolve_column(value, registry, f"{path}.payload.{field}[{index}]", errors, resolutions, allow_unknown=True)
+                execution_aliases.get(_compact(value))
+                or _resolve_column(value, registry, f"{path}.payload.{field}[{index}]", errors, resolutions, allow_unknown=True)
                 for index, value in enumerate(body[field])
             ]
     result["payload"] = body
     return result
+
+
+def _table_execution_aliases(
+    body: dict[str, Any],
+    registry: dict[str, Any],
+    path: str,
+    errors: list[dict[str, Any]],
+    resolutions: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Return only unambiguous physical-to-canonical mappings for this item."""
+
+    mappings = body.get("filter_mappings")
+    if not isinstance(mappings, dict):
+        return {}
+    aliases: dict[str, str] = {}
+    conflicting: set[str] = set()
+    for raw_canonical, raw_values in mappings.items():
+        canonical = _resolve_column(
+            raw_canonical,
+            registry,
+            f"{path}.payload.filter_mappings.{raw_canonical}",
+            errors,
+            resolutions,
+            allow_unknown=True,
+        )
+        canonical_text = str(canonical or "").strip()
+        if not canonical_text:
+            continue
+        for raw_alias in _string_list(raw_values):
+            marker = _compact(raw_alias)
+            if not marker:
+                continue
+            owner = aliases.get(marker)
+            if owner and not _same_column_key(owner, canonical_text):
+                conflicting.add(marker)
+                continue
+            aliases[marker] = canonical_text
+    for marker in conflicting:
+        aliases.pop(marker, None)
+    return aliases
+
+
+def _merge_equivalent_metric_semantics(
+    existing: Any,
+    incoming: Any,
+    *,
+    existing_is_canonical: bool,
+    incoming_is_canonical: bool,
+) -> tuple[Any, bool]:
+    """Merge same-column metric aliases only when their declared meaning agrees."""
+
+    if not isinstance(existing, dict) or not isinstance(incoming, dict):
+        return deepcopy(existing), _equivalent_table_mapping_value(existing, incoming)
+
+    preferred = incoming if incoming_is_canonical and not existing_is_canonical else existing
+    secondary = existing if preferred is incoming else incoming
+    merged = deepcopy(preferred)
+    for key, value in secondary.items():
+        if key not in merged or _empty_contract_value(merged.get(key)):
+            merged[key] = deepcopy(value)
+            continue
+        if _empty_contract_value(value) or _equivalent_metric_contract_value(key, merged[key], value):
+            continue
+        return deepcopy(existing), False
+    return merged, True
+
+
+def _equivalent_metric_contract_value(key: Any, left: Any, right: Any) -> bool:
+    field = str(key or "")
+    if field in {"semantic_type", "default_rollup"}:
+        return str(left or "").strip().casefold() == str(right or "").strip().casefold()
+    if field == "allowed_rollups":
+        left_values = {str(value).strip().casefold() for value in _string_list(left)}
+        right_values = {str(value).strip().casefold() for value in _string_list(right)}
+        return left_values == right_values
+    return _equivalent_table_mapping_value(left, right)
+
+
+def _equivalent_table_mapping_value(left: Any, right: Any) -> bool:
+    if isinstance(left, (list, tuple, set)) or isinstance(right, (list, tuple, set)):
+        return _unique_text(_string_list(left)) == _unique_text(_string_list(right))
+    return left == right
+
+
+def _empty_contract_value(value: Any) -> bool:
+    return value in (None, "", [], {}, ())
+
+
+def _same_column_key(left: Any, right: Any) -> bool:
+    return bool(_compact(left)) and _compact(left) == _compact(right)
 
 
 def _guard_filter_item(
@@ -665,16 +831,18 @@ def _retry_examples(
 
     base = _retry_base_text(metadata_type, payload, items, resolutions)
     specs = _retry_reference_specs(unresolved, errors)
-    option_groups: list[list[str]] = []
+    selected_reference_lines: list[str] = []
     unresolved_without_candidates: list[dict[str, Any]] = []
     for spec in specs:
         candidates = _ordered_retry_candidates(spec)
         if candidates:
-            option_groups.append([_retry_reference_line(spec, target) for target in candidates[:MAX_RETRY_VARIANTS]])
+            # suggested_target(있는 경우)를 먼저 쓰고, 없으면 활성 계약의
+            # 안정적인 후보 순서에서 첫 값을 선택한다. 이 선택은 응답 표현에만
+            # 적용되며 저장·계약 검증 결과에는 영향을 주지 않는다.
+            selected_reference_lines.append(_retry_reference_line(spec, candidates[0]))
         else:
             unresolved_without_candidates.append(spec)
 
-    combinations = list(product(*option_groups))[:MAX_RETRY_VARIANTS] if option_groups else [tuple()]
     guidance = _retry_error_guidance(errors, unresolved_without_candidates)
     covered_missing = {_compact(spec.get("input")) for spec in specs if str(spec.get("input") or "").strip()}
     residual_missing = [
@@ -686,14 +854,11 @@ def _retry_examples(
     if residual_missing:
         guidance.extend(f"등록할 때 다음 정보도 구체적인 값으로 포함해줘: {item}" for item in residual_missing[:3])
 
-    examples = []
-    for choice in combinations:
-        additions = _retry_additions_not_in_base(base, _unique_text([*choice, *guidance]))
-        text = base.rstrip()
-        if additions:
-            text += "\n\n" + "\n".join(additions)
-        examples.append(text[:4000])
-    return _unique_text(examples)
+    additions = _retry_additions_not_in_base(base, _unique_text([*selected_reference_lines, *guidance]))
+    text = base.rstrip()
+    if additions:
+        text += "\n\n" + "\n".join(additions)
+    return _unique_text([text[:4000]])[:MAX_RETRY_RECOMMENDATIONS]
 
 
 def _retry_additions_not_in_base(base: str, additions: list[str]) -> list[str]:
@@ -928,7 +1093,13 @@ def _unique_text(values: Any) -> list[str]:
 
 
 def _string_list(value: Any) -> list[str]:
-    return [str(item).strip() for item in value if str(item or "").strip()] if isinstance(value, list) else []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = []
+    return [str(item).strip() for item in values if str(item or "").strip()]
 
 
 def _payload(value: Any) -> dict[str, Any]:

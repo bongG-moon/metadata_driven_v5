@@ -40,9 +40,12 @@ def enrich_response(response_value: Any, authoring_payload_value: Any) -> dict[s
     missing = _unique_text([*_string_list(draft.get("missing_information")), *_string_list(refinement.get("missing_information"))])
     assumptions = _unique_text([*_string_list(draft.get("assumptions")), *_string_list(refinement.get("assumptions"))])
     retry_example = _redact(str(draft.get("retry_example") or ""), 4000)
-    retry_examples = [_redact(item, 4000) for item in _string_list(draft.get("retry_examples"))]
-    if retry_example and not retry_examples:
-        retry_examples = [retry_example]
+    retry_candidates = [_redact(item, 4000) for item in _string_list(draft.get("retry_examples"))]
+    # 이전 Flow 출력처럼 복수 예시가 들어와도 사용자 응답에는 가장 우선순위가
+    # 높은 한 건만 전달한다. guard가 만든 retry_example이 항상 우선이다.
+    primary_retry_example = retry_example or (retry_candidates[0] if retry_candidates else "")
+    retry_examples = [primary_retry_example] if primary_retry_example else []
+    retry_example = primary_retry_example
     needs_input = bool(draft.get("needs_more_input")) or bool(missing) or bool(unresolved)
 
     metadata_authoring = deepcopy(_dict(response.get("metadata_authoring")))
@@ -93,8 +96,14 @@ def enrich_response(response_value: Any, authoring_payload_value: Any) -> dict[s
             "생성된 저장 후보가 메타데이터 계약 검증을 통과하지 못했습니다. 같은 원문을 반복 입력하지 말고 오류 내용을 확인하세요.",
         )
     if retry_examples:
-        next_steps.insert(0, "응답의 완성된 '다시 입력 예시' 중 실제 계약과 맞는 내용을 그대로 복사해 다시 실행하세요.")
-    sections["next_steps"] = _unique_text(next_steps)
+        next_steps.insert(0, "위 '다시 입력 예시'를 그대로 복사해 다시 실행하세요.")
+    next_steps = _unique_text(next_steps)
+    if _is_failure_or_input_status(response.get("status")):
+        # 실패·보완 응답은 한 번에 하나의 행동만 권장한다. 오류와 검수
+        # 진단은 notices/trace에 유지하되, 사용자가 선택해야 할 다음 단계는
+        # 가장 우선순위가 높은 한 문장으로 제한한다.
+        next_steps = next_steps[:1] or [_fallback_primary_action(response.get("status"))]
+    sections["next_steps"] = next_steps
     response["answer_sections"] = sections
 
     response_trace = deepcopy(_dict(response.get("trace")))
@@ -136,6 +145,16 @@ def _error_types(response: dict[str, Any], authoring: dict[str, Any]) -> set[str
 
 def _has_mongodb_error(error_types: set[str]) -> bool:
     return any(error_type in MONGODB_ERROR_TYPES or error_type.startswith("mongo_") for error_type in error_types)
+
+
+def _is_failure_or_input_status(value: Any) -> bool:
+    return str(value or "").strip().casefold() in {"error", "needs_input", "not_saved"}
+
+
+def _fallback_primary_action(status: Any) -> str:
+    if str(status or "").strip().casefold() == "needs_input":
+        return "확인할 점의 미확정 계약 하나를 보완한 뒤 다시 실행하세요."
+    return "확인할 점의 오류를 수정한 뒤 다시 실행하세요."
 
 
 def _unique_text(values: Any) -> list[str]:

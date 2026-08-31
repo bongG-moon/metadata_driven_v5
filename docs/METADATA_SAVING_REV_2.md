@@ -11,20 +11,34 @@
 
 ## 처리 흐름
 
+`02` Domain과 `04` Main Flow Filter는 기존 rev_2의 계약 인지형 흐름을 유지합니다.
+
 ```text
 사용자 원문
   -> 활성 Domain/Table Catalog/Main Filter snapshot
   -> 자연어 정제 LLM
   -> 문구별 활성 계약 검증과 명시 identity 잠금
   -> 기존 형식의 저장 후보 추출 LLM
-  -> 집계 연산과 산술 derived metric의 결정론적 분리
-  -> dataset/표준 컬럼 계약 검증 및 canonicalize
-  -> 기존 duplicate matcher
-  -> 기존 writer
-  -> 원문/정제안/변환/재입력 예시가 포함된 응답
+  -> 계약 검증 및 기존 writer
 ```
 
-정제 LLM은 snapshot에 포함된 후보를 설명에 사용하지만, 최종 승인은 Python 검증기가 수행합니다. 한 문장에 서로 다른 dataset·컬럼이 여러 개 등장하는 것은 모호성으로 보지 않고 각 표현을 따로 검증합니다. 같은 표현이 둘 이상의 활성 계약에 정확히 매칭되거나 등록된 후보가 없을 때만 저장을 보류합니다.
+반면 `03. v5_table_catalog_saving_rev_2`는 **기존 03 Table Catalog 저장 Flow를 기준으로** 아래처럼 단순화했습니다.
+
+```text
+사용자 원문
+  -> 비차단 초기 문장 변환 LLM
+  -> 기존 03 Variables / 후보 추출 LLM / 결과 정규화기
+  -> 기존 duplicate matcher
+  -> 기존 writer
+  -> 기존 응답
+  -> Portal API 계약 보강(출력 전용)
+```
+
+초기 변환기는 설명 문장만 정돈합니다. `query_template`, SQL placeholder, `filter_mappings`, `required_param_mappings`, 기본 표시 컬럼처럼 사용자가 직접 쓴 실행 계약은 원문을 그대로 다음 단계에 전달합니다. 초기 변환 LLM의 응답이 비어 있거나 형식이 달라도 원문으로 되돌아갈 뿐 저장을 차단하지 않습니다. 따라서 Table Catalog의 저장 가능 여부는 기존 03번처럼 결과 정규화기와 Writer의 실제 필수 계약만으로 결정합니다.
+
+마지막 Portal 계약 보강기는 이미 결정된 기존 Writer 결과 뒤에서만 동작합니다. Portal이 사용하는 `metadata_authoring.original_text`, `metadata_authoring.refined_text`, `metadata_authoring.contract_validation`, `data`, `write_result`, `trace`를 보완하지만, `status`, `success`, `message`, `answer_sections`, 후보 표와 저장 결과는 절대 바꾸지 않습니다. 따라서 Portal의 처리 과정·후보·저장 처리 탭을 유지하면서도 초기 변환 또는 API 표시용 필드 때문에 저장이 차단되지는 않습니다.
+
+Domain/Main Flow Filter의 정제 LLM은 snapshot에 포함된 후보를 설명에 사용하지만, 최종 승인은 Python 검증기가 수행합니다. 한 문장에 서로 다른 dataset·컬럼이 여러 개 등장하는 것은 모호성으로 보지 않고 각 표현을 따로 검증합니다. 같은 표현이 둘 이상의 활성 계약에 정확히 매칭되거나 등록된 후보가 없을 때만 저장을 보류합니다.
 
 사용자가 `section`, `key`, `dataset_key`, `filter_key`, `status`를 직접 적은 경우에는 해당 값을 등록 identity로 잠급니다. 후단 LLM이 비슷한 새 key를 만들더라도 원문 값을 복원하므로 기존 항목과의 중복을 피하기 위한 임의 이름 변경이 저장으로 이어지지 않습니다. 등록 대상 자체에 대한 domain 참조, 입력과 target이 같은 no-op 변환, 조건문에 단지 언급된 용어는 확정 변환 목록에서 제외합니다.
 
@@ -32,7 +46,7 @@
 
 산술 `derived_metrics.null_policy`는 사용자 원문이 결측값을 0으로 계산하라고 명시한 경우에만 `zero`를 사용합니다. 사용자가 결측값 처리 방식을 말하지 않았으면 추출 모델이 만든 값과 관계없이 `propagate`로 정규화합니다. 따라서 모델이 `null`, `preserve` 같은 비표준 값을 생성해도 사용자 원문에 별도 정책이 없는 CAPA 요청은 저장 계약 오류로 중단되지 않습니다.
 
-Table Catalog 등록에서 정제 단계가 `OPER_NM`을 활성 표준 컬럼 `OPER_NAME`으로 유일하게 확정했고 사용자 원문이 두 컬럼의 연결을 명시했다면, rev_2는 저장 후보의 `filter_mappings`에 canonical `OPER_NAME`에서 실제 조회 컬럼 `OPER_NM`으로 향하는 mapping을 보완합니다. 실제 SQL 결과 `columns`에 없는 물리 컬럼이나 원문에 연결 근거가 없는 mapping은 만들지 않습니다. 또한 사용 시점·조회 목적 문장을 기본 표시 컬럼 요청으로 간주하지 않으며, 사용자가 기본 상세·표시·출력 컬럼을 직접 요청하지 않았다면 모델이 임의 생성한 `default_detail_columns`를 제거합니다.
+Table Catalog의 물리/표준 컬럼 보정은 기존 결과 정규화기 안의 source-local 규칙만 사용합니다. 예를 들어 원문과 최종 `SELECT`에 `OPER_NAME -> OPER_NM`이 명시되어 있고 약한 추출 후보가 `OPER_NAME -> OPER_NAME`으로 복사했다면, 원문과 SQL projection이 함께 증명하는 경우에만 `OPER_NM`으로 복원합니다. snapshot 기반 참조 확인, Candidate Repair, 공통 Contract Guard는 `03` 그래프에 연결하지 않습니다. 실제 SQL에 없는 매핑이나 같은 물리 컬럼의 상충 mapping처럼 기존 Writer가 판단해야 하는 오류만 기존 경로에서 안내합니다.
 
 하나의 `section/key`가 명시된 요청은 최종 저장 item도 한 건이어야 합니다. 예를 들어 CAPA recipe 안의 장비 대수와 평균 UPH를 추출 모델이 별도 `quantity_terms`·`metric_terms`로 분해하더라도, rev_2는 명시된 recipe item을 선택하고 보조 item을 저장 대상에서 제외합니다. 기존 domain normalizer가 문장 속 일반적인 `Recipe`·`번호` 표현으로 별도 규칙을 추가한 경우에도 마지막 계약 가드에서 명시 identity 한 건만 유지합니다. 이 복구가 불가능한 경우는 사용자 입력 부족이 아니라 내부 후보 형태 오류로 처리하므로 같은 원문을 재입력 예시로 반복하지 않습니다.
 
@@ -108,7 +122,7 @@ equipment_assign에서 EQP_ID의 고유 개수를 장비 보유 대수로 계산
 
 위 문장은 가능한 결과의 한 예일 뿐 고정 템플릿이 아닙니다. 같은 원문이라도 빠뜨리면 안 되는 계약과 업무 의미는 같게 유지하면서, 정제 LLM이 더 자연스럽고 명확한 문장 구조를 선택할 수 있습니다. 정제안과 재입력 안내는 기존 MongoDB item schema에 별도 필드로 추가되지 않습니다.
 
-같은 표현이 실제로 둘 이상의 활성 계약과 정확히 일치하면 `retry_examples`에 후보별 완성 문장을 최대 4개까지 분리합니다. Chat Output에서는 각 선택안을 독립된 코드 블록으로 표시하므로 실제 계약과 맞는 하나를 통째로 복사할 수 있습니다. 등록 후보가 전혀 없어 실제 key를 알 수 없는 경우에만 해당 key를 명시해 달라는 보완 문장이 남습니다.
+같은 표현이 실제로 둘 이상의 활성 계약과 일치하더라도 `retry_examples`에는 우선순위가 가장 높은 완성 문장 1건만 제공합니다. 정제 단계가 명시한 target이 있으면 이를 우선하고, 없으면 활성 계약의 안정적인 후보 순서에서 첫 값을 사용합니다. `needs_input`, `error`, `not_saved` 응답의 다음 단계 안내도 같은 원칙으로 1건만 표시합니다. 이 선택은 사용자 재입력 안내에만 적용되며 계약 검증 오류와 전체 후보 진단은 그대로 보존합니다. 등록 후보가 전혀 없어 실제 key를 알 수 없는 경우에만 해당 key를 명시해 달라는 보완 문장이 남습니다.
 
 재입력 원문에 같은 보완 문장이 이미 있으면 다시 덧붙이지 않으며, 동일 문장이 여러 번 들어온 경우에도 한 번만 남깁니다.
 
@@ -124,7 +138,7 @@ mean, sum, nunique는 산술식이 아니라 각 입력 지표의 집계 기준�
 
 rev_2는 Sub Agent 내부 checkpoint/resume HITL을 사용하지 않습니다.
 
-1. 모호한 참조나 누락 정보가 있으면 writer 앞에서 fail-closed 처리합니다.
+1. 기존 metadata를 명시적으로 참조하는 모호성, 필수 source/query 누락, 실제 실행 컬럼 충돌은 writer 앞에서 fail-closed 처리합니다. 다만 self-contained Table Catalog의 모델 생성 별칭 중복·선택 설명 누락·활성 snapshot 읽기 실패는 자동 정리 또는 경고로 남기고 writer의 실제 계약 검증까지 진행합니다.
 2. Flow는 `needs_input`과 원문을 보존한 완성형 재입력 예시를 반환합니다.
 3. 후보가 여러 개면 사용자가 실제 계약과 맞는 완성 예시 하나를 그대로 복사합니다.
 4. 보완된 텍스트를 새 요청으로 다시 실행합니다.

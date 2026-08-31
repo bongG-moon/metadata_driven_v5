@@ -183,6 +183,18 @@ def _item_status(write_result: dict[str, Any]) -> str:
 # 함수 설명: `_notices()`는 warnings와 errors를 사용자에게 보여 줄 중복 없는 안내 목록으로 정리합니다.
 def _notices(write_result: dict[str, Any], review: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, str]]:
     notices = []
+    for warning in _list(payload.get("warnings")):
+        warning_data = _dict(warning)
+        message = str(warning_data.get("message") or warning).strip()
+        if not message:
+            continue
+        warning_type = str(warning_data.get("type") or "").strip()
+        title = (
+            "자동 정리"
+            if warning_type.startswith("coalesced_")
+            else "참고"
+        )
+        notices.append({"type": "info", "title": title, "message": message})
     for error in _list(write_result.get("errors")) + _list(review.get("errors")):
         message = str(_dict(error).get("message") or error).strip()
         if message:

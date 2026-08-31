@@ -1,6 +1,6 @@
 # GAIA-CUBE Server
 
-이 폴더는 CUBE 질문을 GAIA로 전달하고, GAIA 답변을 CUBE로 되돌려 보내는 HCP callback 서버다.
+이 폴더는 CUBE 질문을 GAIA로 전달하고, GAIA 답변을 CUBE로 되돌려 보내는 HCP callback 서버와 별도 배포용 스케줄 Worker를 함께 관리한다.
 
 ```text
 CUBE → HCP callback server → GAIA → CUBE
@@ -17,6 +17,7 @@ POST http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/api/v1/recei
 - 처음 개념을 이해하려면: [START_HERE_CALLBACK_FLOW_GUIDE.md](START_HERE_CALLBACK_FLOW_GUIDE.md)
 - HCP 설정, 직접 질문 입력으로 하는 GAIA→CUBE 발송 시험, callback 연동 시험: [production_callback_server/PRODUCTION_SERVER_RUN_GUIDE.md](production_callback_server/PRODUCTION_SERVER_RUN_GUIDE.md)
 - 서버 폴더의 간단한 안내: [production_callback_server/README.md](production_callback_server/README.md)
+- Portal에 등록된 스케줄을 별도 서버에서 실행하려면: [scheduler_worker_server/README.md](scheduler_worker_server/README.md)
 - GAIA를 거치지 않고 CUBE callback·재발송만 먼저 검증하려면: [callback_validation_server/README.md](callback_validation_server/README.md)
 - 제공받은 GAIA/CUBE 원본 가이드와 정리 자료: [base_guide/README.md](base_guide/README.md)
 
@@ -28,10 +29,16 @@ POST http://aiu-pkg-prod-ai-api001-basic-dev.api.hcpd03.skhynix.com/api/v1/recei
 | `production_callback_server/.env.example` | 실제 키 없이 설정 형식만 제공하는 템플릿 |
 | `production_callback_server/manual_gaia_cube_send.py` | callback 없이 직접 입력한 질문을 GAIA에 보내고 CUBE로 답변을 발송하는 사람용 시험 도구 |
 | `production_callback_server/test_app.py` | GAIA/CUBE HTTP 호출을 mock으로 바꾼 흐름 테스트 |
+| `scheduler_worker_server/app.py` | HCP에서 실행하는 Uvicorn Worker 앱. 시작 시 MongoDB 스케줄 polling 작업을 백그라운드로 기동 |
+| `scheduler_worker_server/` | callback 서버를 import하지 않고 별도 서버에서 실행하는 MongoDB 기반 스케줄 Worker 패키지 |
+| `scheduler_worker_server/cube_runtime.py` | Worker 자체의 GAIA 요청·CUBE Rich Notification 발송 코드 |
+| `scheduler_worker_server/markdown_rich_notification.py` | Worker 자체의 Markdown → Rich Notification 변환기 |
 | `callback_validation_server/app.py` | GAIA 호출 없이 CUBE callback을 받으면 고정 답변만 CUBE로 되돌리는 HCP 임시 검증 서버 |
 | `base_guide/` | 사용자가 제공한 API 계약과 참고 자료 |
 
 운영 서버에는 하나의 callback 경로만 있으며, 공개 메시지 발송 endpoint는 없다. `GAIA_API_URL`에는 GAIA Agent까지 포함한 전체 URL을 직접 설정한다.
+
+스케줄 Worker는 Portal 웹 서버나 callback 서버에 HTTP 요청하지 않는다. Portal과 같은 MongoDB에서 실행 예정 스케줄을 읽은 뒤, Worker 폴더 안에 포함된 GAIA/CUBE 코드로 직접 발송한다. 따라서 callback 서버와 Worker 서버가 서로 다른 HCP 배포 환경이어도 된다.
 
 개발자가 실제 GAIA→CUBE 흐름만 확인할 때는 `production_callback_server/manual_gaia_cube_send.py` 파일 맨 위에 `MESSAGE`, `RECEIVER_ID`를 입력한다. `CHANNEL_ID`는 채널에도 보내야 할 때만 입력하고, 사번으로만 발송할 때는 비워 둔다. 필요할 때만 `GAIA_USER_ID`, `SESSION_ID`도 입력한다. 인증 키와 토큰은 코드가 아니라 `.env` 또는 HCP Secret/환경변수에만 둔다.
 

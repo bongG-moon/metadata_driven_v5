@@ -1,7 +1,8 @@
 """PTMORE PKG Agent management portal.
 
-The dashboard can explicitly read recent Phoenix usage history when configured;
-employee and scheduling screens remain local design preview data for now.
+The dashboard can explicitly read recent Phoenix usage history when configured.
+Schedule source documents are persisted to a dedicated Portal MongoDB
+collection; their actual execution is handled by a separate worker.
 Metadata authoring can call a separately configured external Flow API; this
 portal never connects to CUBE or GAIA directly.
 """
@@ -22,15 +23,16 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Protocol
 from urllib import error as url_error
 from urllib import request as url_request
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from starlette.middleware.sessions import SessionMiddleware
 
 
 ROOT = Path(__file__).parent
@@ -56,8 +58,9 @@ _METADATA_COLLECTION_SUFFIXES = {
 
 # Portal-owned MongoDB collections are intentionally separate from the
 # Langflow metadata collections above.  Operators can use a test prefix or a
-# production-specific name without changing application code.  The schedule
-# collections are declared now, but schedule CRUD is not enabled yet.
+# production-specific name without changing application code.  The Portal
+# owns source-schedule CRUD here; the separate Scheduler Worker owns execution
+# and the schedule run-history collection.
 _DEFAULT_PORTAL_SETTINGS_COLLECTION = "portal_settings"
 _DEFAULT_PORTAL_AUDIT_COLLECTION = "portal_audit_log"
 _DEFAULT_SCHEDULE_COLLECTION = "portal_schedules"
@@ -107,9 +110,45 @@ _PORTAL_EMPLOYEE_ID_HEADER = "X-PTMORE-Employee-Id"
 _PORTAL_EMPLOYEE_NAME_HEADER = "X-PTMORE-Employee-Name"
 _PORTAL_SETTINGS_DOCUMENT_ID = "global"
 
+# ``app.py`` is the production entry point.  ``app_local.py`` selects the
+# local adapter before importing this module.  ``test`` is intentionally only
+# for the automated test suite, where request headers remain useful fixtures.
+_PORTAL_AUTH_MODES = {"production", "local", "test"}
+_PORTAL_SESSION_IDENTITY_KEY = "ptmore_portal_identity"
+_PORTAL_SESSION_COOKIE_NAME = "ptmore_portal_session"
+_PORTAL_UNCONFIGURED_SESSION_SECRET = "ptmore-portal-session-not-configured"
+_PORTAL_LOCAL_EMPLOYEE_ID = "2069026"
+_PORTAL_LOCAL_EMPLOYEE_NAME = "문봉건"
+# This administrator exists only in the local identity adapter.  It is never
+# written into the production MongoDB administrator list and therefore cannot
+# grant a production SSO user additional authority.
+_PORTAL_LOCAL_ADMINISTRATOR = {
+    "employee_id": _PORTAL_LOCAL_EMPLOYEE_ID,
+    "name": _PORTAL_LOCAL_EMPLOYEE_NAME,
+    "role": "Local Admin",
+    "scope": "로컬 개발 전용 전체 권한",
+    "status": "활성",
+}
+
+# Narrow test seam: production code always resolves the mode from its
+# environment, while focused unit tests can verify all three adapters without
+# importing HCP-only modules.
+_portal_auth_mode_override: str | None = None
+
 # 스케줄 실행 결과는 현재 스케줄을 등록한 사용자에게만 개인 DM으로
 # 전달한다. 채널 발송은 이 Portal의 스케줄 계약에 포함하지 않는다.
 _SCHEDULE_DELIVERY_TARGET = "개인 DM"
+_SCHEDULE_TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+_SCHEDULE_REPEAT_VALUES = {"평일", "매일", "매주", "매월", "한 번만", "interval"}
+_SCHEDULE_STATUS_ALIASES = {
+    "active": "active",
+    "활성": "active",
+    "inactive": "inactive",
+    "비활성": "inactive",
+    "일시중지": "inactive",
+}
+_SCHEDULE_STATUS_LABELS = {"active": "활성", "inactive": "일시중지"}
+_SCHEDULE_ID_PATTERN = re.compile(r"^SCH-[0-9a-f]{8}-[0-9a-f-]{27}$", re.IGNORECASE)
 
 # Dashboard usage data is intentionally independent of the metadata-authoring
 # Flow adapter.  ``phoenix`` must be explicitly selected in the environment;
@@ -127,7 +166,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_METADATA_COMPONENT_MAP = {
     "table_catalog": {
         "request_loader": "00 테이블 카탈로그 등록 요청 로더",
-        "snapshot_loader": "01 메타데이터 QA 통합 Snapshot 로더",
+        # Legacy 03 and the lightweight rev_2 03 have no Snapshot node.  Keep
+        # this blank by default so Mongo tweaks never target a nonexistent
+        # component when the Portal calls a Table Catalog Flow.
+        "snapshot_loader": "",
         "writer": "07 테이블 카탈로그 검수/저장 처리기",
         "api_terminal": "10 테이블 카탈로그 등록 API 응답 생성기",
     },
@@ -178,6 +220,51 @@ class PortalSettingsUpdateRequest(BaseModel):
 
     gaia_api_caller_employee_id: str | None = Field(default=None, max_length=64)
     usage_policy: ActiveUserPolicyUpdate | None = None
+
+
+class ScheduleCreateRequest(BaseModel):
+    """The safe, user-editable source fields for one Portal schedule.
+
+    Owner, delivery target, execution lease, and run-history fields are all
+    assigned by the server or Scheduler Worker.  They are deliberately not
+    accepted from a browser request.
+    """
+
+    title: str = Field(..., min_length=1, max_length=200)
+    question: str = Field(..., min_length=1, max_length=20_000)
+    repeat: str = Field(..., min_length=1, max_length=32)
+    time: str | None = Field(default=None, max_length=5)
+    interval_minutes: int | None = Field(default=None, ge=1, le=1_440)
+    start_time: str | None = Field(default=None, max_length=5)
+    end_time: str | None = Field(default=None, max_length=5)
+    # The current UI does not expose this yet, but keeping it optional makes a
+    # one-time schedule deterministic instead of requiring a hidden date.
+    run_date: str | None = Field(default=None, max_length=10)
+    status: str | None = Field(default=None, max_length=16)
+
+
+class ScheduleUpdateRequest(BaseModel):
+    """Partial editable fields for an existing schedule.
+
+    The owner identity and CUBE delivery target are intentionally absent.  A
+    client cannot transfer or redirect someone else's schedule by editing it.
+    """
+
+    title: str | None = Field(default=None, max_length=200)
+    question: str | None = Field(default=None, max_length=20_000)
+    repeat: str | None = Field(default=None, max_length=32)
+    time: str | None = Field(default=None, max_length=5)
+    interval_minutes: int | None = Field(default=None, ge=1, le=1_440)
+    start_time: str | None = Field(default=None, max_length=5)
+    end_time: str | None = Field(default=None, max_length=5)
+    run_date: str | None = Field(default=None, max_length=10)
+    status: str | None = Field(default=None, max_length=16)
+
+
+class ScheduleStatusUpdateRequest(BaseModel):
+    """Small dedicated status request used by the pause/resume UI."""
+
+    status: str = Field(..., min_length=1, max_length=16)
 
 
 class MetadataApiClient(Protocol):
@@ -625,9 +712,14 @@ def _metadata_settings_from_env() -> MetadataAuthoringSettings:
         if metadata_type not in component_map or not isinstance(configured_value, Mapping):
             continue
         for component_name in ("request_loader", "snapshot_loader", "writer", "api_terminal"):
+            # An omitted key means "use the default".  An explicitly supplied
+            # null/empty value means "this Flow has no such node".  This lets
+            # the Portal switch between Flow variants without hard-coding an
+            # endpoint or accidentally sending a tweak to a removed node.
+            if component_name not in configured_value:
+                continue
             value = configured_value.get(component_name)
-            if value:
-                component_map[metadata_type][component_name] = str(value)
+            component_map[metadata_type][component_name] = "" if value is None else str(value).strip()
 
     configured_collections, collection_errors = _json_object_from_environment(
         "PTMORE_METADATA_MONGODB_COLLECTION_MAP_JSON"
@@ -2132,7 +2224,8 @@ def _metadata_api_status(
     The portal has two deliberately separate MongoDB roles:
 
     * Portal settings/audit collections are used by this FastAPI app.
-    * declared schedule collections are reserved for future scheduler storage.
+    * Portal source schedules and Scheduler run history use their own
+      dedicated collections, separate from Flow metadata.
     * the three metadata collections belong to the external Langflow Flows.
 
     This function does not open a Flow metadata collection or claim that a
@@ -2357,11 +2450,12 @@ def _portal_settings_mongodb_status(
 def _portal_schedule_mongodb_status(
     settings: MetadataAuthoringSettings,
 ) -> dict[str, Any]:
-    """Describe declared schedule storage without claiming CRUD is available.
+    """Describe Portal schedule source storage without exposing credentials.
 
-    The collection names are visible to administrators so they can configure
-    MongoDB before the separate scheduler service is introduced.  This Portal
-    does not open, read, write, or create either collection at this stage.
+    The Portal writes only source schedules to ``schedule_collection``.  A
+    separate Scheduler Worker claims due work and writes execution history to
+    ``schedule_run_collection``; this status call does not claim that worker
+    is currently running.
     """
 
     collections = _portal_mongodb_collection_settings_from_env()
@@ -2369,8 +2463,10 @@ def _portal_schedule_mongodb_status(
     return {
         "role": "schedule_authoring_and_run_history",
         "configured": bool(mongo_connection_configured and collections.ready),
-        "storage_enabled": False,
-        "storage_status": "not_implemented",
+        "storage_enabled": bool(mongo_connection_configured and collections.ready),
+        "storage_status": (
+            "configured" if mongo_connection_configured and collections.ready else "not_configured"
+        ),
         "database": settings.mongo_database or None,
         "schedule_collection": (
             collections.schedule_collection if collections.ready else None
@@ -2380,8 +2476,10 @@ def _portal_schedule_mongodb_status(
         ),
         "collection_configuration_errors": list(collections.configuration_errors),
         "message": (
-            "스케줄 컬렉션 이름은 준비되어 있지만, 현재 Portal의 스케줄 등록·수정·삭제는 "
-            "더미 화면 상태입니다. MongoDB 저장과 Scheduler Worker 실행은 아직 활성화되지 않았습니다."
+            "스케줄 등록 정보는 Portal MongoDB에 저장됩니다. 실제 실행과 실행 이력 기록은 "
+            "별도 Scheduler Worker가 처리합니다."
+            if mongo_connection_configured and collections.ready
+            else "스케줄 저장을 사용하려면 MongoDB 연결 정보와 컬렉션 이름 설정을 확인해 주세요."
         ),
     }
 
@@ -2619,6 +2717,23 @@ class PortalAccess:
     settings: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class PortalIdentity:
+    """Minimal server-verified identity used by Portal authorization.
+
+    Only the employee number and Korean display name are retained in the
+    Portal session.  Department, email, and the raw SSO cookie remain outside
+    this application because the current Portal authorization rules do not
+    need them.
+    """
+
+    employee_id: str
+    name: str
+
+    def as_session_value(self) -> dict[str, str]:
+        return {"employee_id": self.employee_id, "name": self.name}
+
+
 class PortalSettingsStoreError(RuntimeError):
     """Raised when the portal cannot safely read or write its settings store."""
 
@@ -2641,6 +2756,615 @@ class PortalSettingsStore(Protocol):
         details: Mapping[str, Any],
     ) -> None:
         ...
+
+
+class PortalScheduleStoreError(RuntimeError):
+    """Raised when the Portal cannot safely use its schedule collection."""
+
+
+class ScheduleValidationError(ValueError):
+    """A user-correctable schedule field or timing validation error."""
+
+
+class PortalScheduleStore(Protocol):
+    """Small, dedicated schedule source boundary.
+
+    Scheduler leases and run-history writes belong to the separate worker. The
+    Portal owns only the source schedule document and never receives arbitrary
+    MongoDB queries from a browser.
+    """
+
+    persistent: bool
+
+    def list_schedules(self) -> list[dict[str, Any]]:
+        ...
+
+    def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        ...
+
+    def create_schedule(self, document: Mapping[str, Any]) -> dict[str, Any]:
+        ...
+
+    def update_schedule(
+        self,
+        schedule_id: str,
+        update: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        ...
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        ...
+
+    def close(self) -> None:
+        ...
+
+
+_SCHEDULE_DOCUMENT_PROJECTION = {
+    "_id": 1,
+    "title": 1,
+    "question": 1,
+    "repeat": 1,
+    "time": 1,
+    "interval_minutes": 1,
+    "start_time": 1,
+    "end_time": 1,
+    "run_date": 1,
+    "target": 1,
+    "status": 1,
+    "owner_id": 1,
+    "owner_name": 1,
+    "created_at": 1,
+    "updated_at": 1,
+    "updated_by": 1,
+    "next_run_at": 1,
+    "timezone": 1,
+    # The worker may update these safe, compact summary fields.  It must keep
+    # its execution leases, request payloads, and diagnostics out of this
+    # projection and therefore out of the Portal response.
+    "last_run_at": 1,
+    "last_run_status": 1,
+}
+
+
+class MongoPortalScheduleStore:
+    """Persist source schedules in the dedicated Portal MongoDB collection."""
+
+    persistent = True
+
+    def __init__(
+        self,
+        *,
+        uri: str,
+        database: str,
+        collections: PortalMongoCollectionSettings,
+    ) -> None:
+        if not collections.ready:
+            raise PortalScheduleStoreError(
+                "Portal MongoDB 컬렉션 이름 설정을 확인해 주세요."
+            )
+        try:
+            from pymongo import MongoClient
+            from pymongo.errors import PyMongoError
+        except ImportError as exc:
+            raise PortalScheduleStoreError(
+                "스케줄 저장을 위해 pymongo 패키지가 필요합니다."
+            ) from exc
+
+        self._mongo_error = PyMongoError
+        try:
+            self._client = MongoClient(
+                uri,
+                serverSelectionTimeoutMS=3_000,
+                connectTimeoutMS=3_000,
+                socketTimeoutMS=5_000,
+            )
+            self._schedules = self._client[database][collections.schedule_collection]
+        except PyMongoError as exc:
+            raise PortalScheduleStoreError(
+                "MongoDB 스케줄 저장소를 초기화할 수 없습니다."
+            ) from exc
+        self._ensure_indexes()
+
+    def _run(self, operation: Callable[[], Any]) -> Any:
+        try:
+            return operation()
+        except self._mongo_error as exc:
+            raise PortalScheduleStoreError(
+                "MongoDB 스케줄 저장소에 연결할 수 없습니다."
+            ) from exc
+
+    def _ensure_indexes(self) -> None:
+        """Create only query-supporting indexes; lack of DDL permission is nonfatal.
+
+        A restricted runtime account may be permitted to read/write documents
+        but not create indexes.  CRUD remains available in that deployment and
+        the operator can create the documented indexes separately.
+        """
+
+        try:
+            self._schedules.create_index(
+                [("status", 1), ("next_run_at", 1)],
+                name="portal_schedule_due_lookup",
+            )
+            self._schedules.create_index(
+                [("owner_id", 1), ("updated_at", -1)],
+                name="portal_schedule_owner_lookup",
+            )
+        except self._mongo_error:
+            logger.warning(
+                "Portal schedule indexes could not be ensured; schedule CRUD continues."
+            )
+
+    def list_schedules(self) -> list[dict[str, Any]]:
+        documents = self._run(
+            lambda: list(
+                self._schedules.find({}, _SCHEDULE_DOCUMENT_PROJECTION).sort(
+                    [("updated_at", -1), ("_id", 1)]
+                )
+            )
+        )
+        return [dict(document) for document in documents if isinstance(document, Mapping)]
+
+    def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
+        document = self._run(
+            lambda: self._schedules.find_one(
+                {"_id": schedule_id}, _SCHEDULE_DOCUMENT_PROJECTION
+            )
+        )
+        return dict(document) if isinstance(document, Mapping) else None
+
+    def create_schedule(self, document: Mapping[str, Any]) -> dict[str, Any]:
+        value = copy.deepcopy(dict(document))
+        self._run(lambda: self._schedules.insert_one(value))
+        return value
+
+    def update_schedule(
+        self,
+        schedule_id: str,
+        update: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        value = copy.deepcopy(dict(update))
+        # A worker finalizes with its claim token in the MongoDB filter.  When
+        # a Portal user edits/pause-resumes a schedule, invalidate that token
+        # atomically with the new source fields so an older worker completion
+        # cannot overwrite this newer ``next_run_at`` or ``status`` value.
+        mutation = {
+            "$set": value,
+            "$unset": {
+                "scheduler_claim_token": "",
+                "scheduler_claimed_at": "",
+                "scheduler_claim_until": "",
+            },
+        }
+        result = self._run(
+            lambda: self._schedules.update_one({"_id": schedule_id}, mutation)
+        )
+        if not bool(getattr(result, "matched_count", 0)):
+            return None
+        return self.get_schedule(schedule_id)
+
+    def delete_schedule(self, schedule_id: str) -> bool:
+        result = self._run(lambda: self._schedules.delete_one({"_id": schedule_id}))
+        return bool(getattr(result, "deleted_count", 0))
+
+    def close(self) -> None:
+        try:
+            self._client.close()
+        except Exception:  # pragma: no cover - cleanup must not hide a result
+            pass
+
+
+_portal_schedule_store_factory: Callable[[], PortalScheduleStore] | None = None
+
+
+def _get_portal_schedule_store() -> PortalScheduleStore:
+    """Return only a real MongoDB schedule store; never a preview fallback."""
+
+    if _portal_schedule_store_factory is not None:
+        return _portal_schedule_store_factory()
+
+    settings = _metadata_settings_from_env()
+    collections = _portal_mongodb_collection_settings_from_env()
+    if not settings.mongo_uri or not settings.mongo_database:
+        raise PortalScheduleStoreError(
+            "스케줄 저장을 위한 MongoDB 연결 정보가 설정되지 않았습니다."
+        )
+    if not collections.ready:
+        raise PortalScheduleStoreError(
+            "Portal MongoDB 컬렉션 이름 설정을 확인해 주세요."
+        )
+    return MongoPortalScheduleStore(
+        uri=settings.mongo_uri,
+        database=settings.mongo_database,
+        collections=collections,
+    )
+
+
+def _close_portal_schedule_store(store: PortalScheduleStore) -> None:
+    """Close request-scoped Mongo clients without constraining test doubles."""
+
+    closer = getattr(store, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:  # pragma: no cover - cleanup must not hide a response
+            logger.warning("Portal schedule store did not close cleanly.")
+
+
+def _schedule_status_code(value: Any, *, default: str = "active") -> str:
+    normalized = str(value or default).strip().lower()
+    status_code = _SCHEDULE_STATUS_ALIASES.get(normalized)
+    if status_code is None:
+        raise ScheduleValidationError("스케줄 상태는 활성 또는 일시중지로 입력해 주세요.")
+    return status_code
+
+
+def _schedule_repeat(value: Any) -> str:
+    repeat = str(value or "").strip()
+    aliases = {"매주 월요일": "매주", "매월 1일": "매월"}
+    repeat = aliases.get(repeat, repeat)
+    if repeat not in _SCHEDULE_REPEAT_VALUES:
+        raise ScheduleValidationError(
+            "반복 방식은 평일, 매일, 매주, 매월, 한 번만, interval 중 하나여야 합니다."
+        )
+    return repeat
+
+
+def _schedule_text(value: Any, *, field_label: str, maximum: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ScheduleValidationError(f"{field_label}을 입력해 주세요.")
+    if len(text) > maximum:
+        raise ScheduleValidationError(f"{field_label}은 {maximum:,}자 이내로 입력해 주세요.")
+    return text
+
+
+def _schedule_optional_time(value: Any, *, field_label: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not _SCHEDULE_TIME_PATTERN.fullmatch(text):
+        raise ScheduleValidationError(f"{field_label}은 HH:MM 형식으로 입력해 주세요.")
+    return text
+
+
+def _schedule_time_minutes(value: str) -> int:
+    hour, minute = value.split(":", 1)
+    return int(hour) * 60 + int(minute)
+
+
+def _schedule_run_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError as exc:
+        raise ScheduleValidationError("한 번만 실행 날짜는 YYYY-MM-DD 형식으로 입력해 주세요.") from exc
+
+
+def _schedule_at_kst(day: date, clock: str) -> datetime:
+    hour, minute = (int(part) for part in clock.split(":", 1))
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=_KST)
+
+
+def _next_month_start(day: date) -> date:
+    if day.month == 12:
+        return date(day.year + 1, 1, 1)
+    return date(day.year, day.month + 1, 1)
+
+
+def _as_kst_datetime(value: datetime | None = None) -> datetime:
+    now = value or datetime.now(_KST)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_KST)
+    return now.astimezone(_KST)
+
+
+def _next_schedule_run_kst(
+    *,
+    repeat: str,
+    time_value: str,
+    interval_minutes: int | None,
+    start_time: str,
+    end_time: str,
+    run_date: str,
+    now: datetime | None = None,
+) -> datetime:
+    """Calculate the next future execution in KST for one validated schedule."""
+
+    current = _as_kst_datetime(now)
+    today = current.date()
+
+    if repeat == "interval":
+        window_start = _schedule_at_kst(today, start_time)
+        window_end = _schedule_at_kst(today, end_time)
+        interval = timedelta(minutes=int(interval_minutes or 0))
+        if current < window_start:
+            return window_start
+        if current >= window_end:
+            return _schedule_at_kst(today + timedelta(days=1), start_time)
+        elapsed_seconds = (current - window_start).total_seconds()
+        step = int(elapsed_seconds // interval.total_seconds()) + 1
+        candidate = window_start + step * interval
+        if candidate <= window_end:
+            return candidate
+        return _schedule_at_kst(today + timedelta(days=1), start_time)
+
+    if repeat == "평일":
+        candidate_day = today
+        candidate = _schedule_at_kst(candidate_day, time_value)
+        if candidate <= current or candidate_day.weekday() >= 5:
+            candidate_day += timedelta(days=1)
+        while candidate_day.weekday() >= 5:
+            candidate_day += timedelta(days=1)
+        return _schedule_at_kst(candidate_day, time_value)
+
+    if repeat == "매일":
+        candidate = _schedule_at_kst(today, time_value)
+        if candidate <= current:
+            candidate = _schedule_at_kst(today + timedelta(days=1), time_value)
+        return candidate
+
+    if repeat == "매주":
+        candidate_day = today + timedelta(days=(0 - today.weekday()) % 7)
+        candidate = _schedule_at_kst(candidate_day, time_value)
+        if candidate <= current:
+            candidate = _schedule_at_kst(candidate_day + timedelta(days=7), time_value)
+        return candidate
+
+    if repeat == "매월":
+        candidate = _schedule_at_kst(date(today.year, today.month, 1), time_value)
+        if candidate <= current:
+            next_month = _next_month_start(today)
+            candidate = _schedule_at_kst(next_month, time_value)
+        return candidate
+
+    # ``한 번만`` defaults to the next available day only when the user has
+    # not provided a date.  An explicitly supplied past moment is rejected so
+    # the user does not believe an already missed execution will occur.
+    if run_date:
+        candidate_day = date.fromisoformat(run_date)
+        candidate = _schedule_at_kst(candidate_day, time_value)
+        if candidate <= current:
+            raise ScheduleValidationError("한 번만 실행 시간은 현재 시각 이후로 지정해 주세요.")
+        return candidate
+    candidate = _schedule_at_kst(today, time_value)
+    return candidate if candidate > current else _schedule_at_kst(today + timedelta(days=1), time_value)
+
+
+def _schedule_rule_label(values: Mapping[str, Any]) -> str:
+    repeat = str(values.get("repeat") or "")
+    if repeat == "interval":
+        minutes = int(values.get("interval_minutes") or 0)
+        interval_label = "1시간마다" if minutes == 60 else f"{minutes}분마다"
+        return f"{interval_label} · {values.get('start_time')} ~ {values.get('end_time')}"
+    if repeat == "매주":
+        return f"매주 월요일 · {values.get('time')}"
+    if repeat == "매월":
+        return f"매월 1일 · {values.get('time')}"
+    if repeat == "한 번만" and values.get("run_date"):
+        return f"한 번만 · {values.get('run_date')} {values.get('time')}"
+    return f"{repeat} · {values.get('time')}"
+
+
+def _utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _schedule_storage_fields(
+    values: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Validate editable fields and return the exact source fields to persist."""
+
+    title = _schedule_text(values.get("title"), field_label="스케줄 이름", maximum=200)
+    question = _schedule_text(values.get("question"), field_label="실행 질문", maximum=20_000)
+    repeat = _schedule_repeat(values.get("repeat"))
+    status_code = _schedule_status_code(values.get("status"), default="active")
+    time_value = _schedule_optional_time(values.get("time"), field_label="실행 시간")
+    start_time = _schedule_optional_time(values.get("start_time"), field_label="시작 시간")
+    end_time = _schedule_optional_time(values.get("end_time"), field_label="종료 시간")
+    run_date = _schedule_run_date(values.get("run_date"))
+
+    if repeat == "interval":
+        raw_interval = values.get("interval_minutes")
+        try:
+            interval_minutes = int(raw_interval)
+        except (TypeError, ValueError) as exc:
+            raise ScheduleValidationError("간격 반복 시간(분)을 입력해 주세요.") from exc
+        if not 1 <= interval_minutes <= 1_440:
+            raise ScheduleValidationError("간격 반복 시간은 1~1,440분 사이여야 합니다.")
+        if not start_time or not end_time:
+            raise ScheduleValidationError("간격 반복은 시작 시간과 종료 시간을 모두 입력해 주세요.")
+        if _schedule_time_minutes(start_time) >= _schedule_time_minutes(end_time):
+            raise ScheduleValidationError("종료 시간은 시작 시간보다 늦어야 합니다.")
+        time_value = ""
+        run_date = ""
+    else:
+        if not time_value:
+            raise ScheduleValidationError("반복 실행 시간은 HH:MM 형식으로 입력해 주세요.")
+        interval_minutes = None
+        start_time = ""
+        end_time = ""
+        if repeat != "한 번만":
+            run_date = ""
+
+    next_run_at: str | None = None
+    if status_code == "active":
+        next_run = _next_schedule_run_kst(
+            repeat=repeat,
+            time_value=time_value,
+            interval_minutes=interval_minutes,
+            start_time=start_time,
+            end_time=end_time,
+            run_date=run_date,
+            now=now,
+        )
+        next_run_at = _utc_iso(next_run)
+
+    return {
+        "title": title,
+        "question": question,
+        "repeat": repeat,
+        "time": time_value,
+        "interval_minutes": interval_minutes,
+        "start_time": start_time,
+        "end_time": end_time,
+        "run_date": run_date,
+        "target": _SCHEDULE_DELIVERY_TARGET,
+        "status": status_code,
+        "next_run_at": next_run_at,
+        "timezone": "Asia/Seoul",
+    }
+
+
+def _schedule_editable_values(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract only fields that a Portal user is allowed to edit."""
+
+    return {
+        "title": document.get("title"),
+        "question": document.get("question"),
+        "repeat": document.get("repeat"),
+        "time": document.get("time"),
+        "interval_minutes": document.get("interval_minutes"),
+        "start_time": document.get("start_time"),
+        "end_time": document.get("end_time"),
+        "run_date": document.get("run_date"),
+        "status": document.get("status"),
+    }
+
+
+def _schedule_id(value: Any) -> str:
+    schedule_id = str(value or "").strip()
+    if not _SCHEDULE_ID_PATTERN.fullmatch(schedule_id):
+        raise ScheduleValidationError("유효하지 않은 스케줄 식별자입니다.")
+    return schedule_id
+
+
+def _new_schedule_id() -> str:
+    return f"SCH-{uuid4()}"
+
+
+def _parse_schedule_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _display_schedule_timestamp(value: Any, *, now: datetime | None = None) -> str:
+    parsed = _parse_schedule_timestamp(value)
+    if parsed is None:
+        return ""
+    local = parsed.astimezone(_KST)
+    current = _as_kst_datetime(now)
+    if local.date() == current.date():
+        return f"오늘 {local:%H:%M}"
+    if local.date() == current.date() + timedelta(days=1):
+        return f"내일 {local:%H:%M}"
+    if local.year == current.year:
+        return f"{local.month}월 {local.day}일 {local:%H:%M}"
+    return f"{local.year}년 {local.month}월 {local.day}일 {local:%H:%M}"
+
+
+def _schedule_last_run_label(document: Mapping[str, Any]) -> str:
+    rendered = _display_schedule_timestamp(document.get("last_run_at"))
+    if not rendered:
+        return "실행 이력 없음"
+    raw_status = str(document.get("last_run_status") or "success").strip().lower()
+    status_label = {
+        "success": "성공",
+        "성공": "성공",
+        "failed": "실패",
+        "failure": "실패",
+        "실패": "실패",
+        "skipped": "건너뜀",
+        "건너뜀": "건너뜀",
+    }.get(raw_status, "완료")
+    return f"{rendered} · {status_label}"
+
+
+def _schedule_response(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a schedule into the public Portal contract with no worker fields."""
+
+    schedule_id = _schedule_id(document.get("_id") or document.get("id"))
+    values = _schedule_editable_values(document)
+    # Existing documents should already be validated.  This normalisation is
+    # still defensive, so a malformed legacy record cannot leak raw MongoDB
+    # content or crash the complete schedule list.
+    normalized = _schedule_storage_fields(values)
+    status_code = normalized["status"]
+    next_run_at = normalized["next_run_at"]
+    stored_next = _parse_schedule_timestamp(document.get("next_run_at"))
+    if status_code == "active" and stored_next is not None:
+        next_run_at = _utc_iso(stored_next)
+    if status_code == "inactive":
+        next_run_at = None
+
+    owner_id = _schedule_text(
+        document.get("owner_id"), field_label="등록자 사번", maximum=64
+    )
+    owner_name = _schedule_text(
+        document.get("owner_name"), field_label="등록자 이름", maximum=200
+    )
+    created_at = _parse_schedule_timestamp(document.get("created_at"))
+    updated_at = _parse_schedule_timestamp(document.get("updated_at"))
+    return {
+        "id": schedule_id,
+        "title": normalized["title"],
+        "question": normalized["question"],
+        "repeat": normalized["repeat"],
+        "time": normalized["time"],
+        "interval_minutes": normalized["interval_minutes"],
+        "start_time": normalized["start_time"],
+        "end_time": normalized["end_time"],
+        "run_date": normalized["run_date"] or None,
+        "rule_label": _schedule_rule_label(normalized),
+        "target": _SCHEDULE_DELIVERY_TARGET,
+        "status": _SCHEDULE_STATUS_LABELS[status_code],
+        "status_code": status_code,
+        "owner": owner_id,
+        "owner_id": owner_id,
+        "owner_name": owner_name,
+        "created_at": _utc_iso(created_at) if created_at is not None else "",
+        "updated_at": _utc_iso(updated_at) if updated_at is not None else "",
+        "next_run_at": next_run_at,
+        "timezone": "Asia/Seoul",
+        "next_run": (
+            "일시중지됨"
+            if status_code == "inactive"
+            else _display_schedule_timestamp(next_run_at) or "다음 실행 계산 필요"
+        ),
+        "last_run": _schedule_last_run_label(document),
+    }
+
+
+def _schedule_owner_or_admin(access: PortalAccess, document: Mapping[str, Any]) -> None:
+    """Allow schedule mutation only to the owner or an active administrator."""
+
+    owner_id = str(document.get("owner_id") or "").strip()
+    if access.viewer.is_admin or owner_id == access.viewer.employee_id:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": "schedule_owner_or_admin_required",
+            "message": "본인이 등록한 스케줄 또는 관리자 스케줄만 변경할 수 있습니다.",
+        },
+    )
 
 
 class PreviewPortalSettingsStore:
@@ -2813,16 +3537,194 @@ def _active_admin(settings: Mapping[str, Any], employee_id: str) -> dict[str, st
     return None
 
 
-def _portal_access(request: Request) -> PortalAccess:
-    """Resolve a request identity and server-side administrator permission.
+class PortalSsoError(RuntimeError):
+    """Raised when the production-only HCP SSO adapter cannot be used."""
 
-    The temporary header adapter exists for the current preview.  In production
-    the same headers must be injected by a trusted SSO/proxy layer, which must
-    strip user-supplied copies before the request reaches this application.
+
+def _portal_auth_mode() -> str:
+    """Resolve the explicit identity adapter without weakening production.
+
+    An unknown value intentionally falls back to ``production``.  This makes
+    a typo fail closed instead of accidentally enabling the local adapter.
     """
 
-    employee_id = str(request.headers.get(_PORTAL_EMPLOYEE_ID_HEADER) or "").strip()
+    configured = str(
+        _portal_auth_mode_override
+        or _environment_value("PTMORE_PORTAL_AUTH_MODE", "production")
+    ).strip().lower()
+    return configured if configured in _PORTAL_AUTH_MODES else "production"
+
+
+def _effective_portal_settings(
+    settings: Mapping[str, Any] | None,
+    identity: PortalIdentity,
+) -> dict[str, Any]:
+    """Return safe settings with the fixed local developer administrator.
+
+    ``app_local.py`` intentionally uses one fixed identity.  Give that
+    identity administrator capability only in the explicit local adapter,
+    without changing a production MongoDB settings document or its admin list.
+    """
+
+    effective = _normalise_portal_settings(settings)
+    if (
+        _portal_auth_mode() != "local"
+        or identity.employee_id != _PORTAL_LOCAL_EMPLOYEE_ID
+    ):
+        return effective
+
+    existing_admins = effective.get("admins")
+    admins = existing_admins if isinstance(existing_admins, list) else []
+    # Replace a possibly inactive/stale local entry in the returned local
+    # view.  The MongoDB document remains untouched.
+    effective["admins"] = [
+        admin
+        for admin in admins
+        if not isinstance(admin, Mapping)
+        or str(admin.get("employee_id") or "").strip()
+        != _PORTAL_LOCAL_EMPLOYEE_ID
+    ]
+    effective["admins"].insert(0, copy.deepcopy(_PORTAL_LOCAL_ADMINISTRATOR))
+    return effective
+
+
+def _portal_session_secret() -> str:
+    """Read the production session secret without exposing it to a response."""
+
+    return _environment_value("PTMORE_SSO_SESSION_SECRET")
+
+
+def _production_sso_ready() -> bool:
+    return _portal_auth_mode() != "production" or bool(_portal_session_secret())
+
+
+def _identity_from_mapping(value: Any) -> PortalIdentity | None:
+    if not isinstance(value, Mapping):
+        return None
+    employee_id = str(value.get("employee_id") or "").strip()
+    name = str(value.get("name") or "").strip()
     if not employee_id:
+        return None
+    return PortalIdentity(employee_id=employee_id, name=name or employee_id)
+
+
+def _local_portal_identity() -> PortalIdentity:
+    """Return the deliberately fixed identity for ``app_local.py`` only."""
+
+    return PortalIdentity(
+        employee_id=_PORTAL_LOCAL_EMPLOYEE_ID,
+        name=_PORTAL_LOCAL_EMPLOYEE_NAME,
+    )
+
+
+def _test_header_identity(request: Request) -> PortalIdentity | None:
+    """Read test-only identity fixtures; never call this in production/local."""
+
+    employee_id = str(request.headers.get(_PORTAL_EMPLOYEE_ID_HEADER) or "").strip()
+    name = str(request.headers.get(_PORTAL_EMPLOYEE_NAME_HEADER) or "").strip()
+    if not employee_id:
+        return None
+    return PortalIdentity(employee_id=employee_id, name=name or employee_id)
+
+
+def _request_portal_identity(request: Request) -> PortalIdentity | None:
+    """Return the verified current identity for one request.
+
+    Production identity is set only by the signed Portal session after HCP
+    SSO login.  Browser headers are intentionally ignored in that mode.
+    """
+
+    identity = getattr(request.state, "portal_identity", None)
+    if isinstance(identity, PortalIdentity):
+        return identity
+
+    mode = _portal_auth_mode()
+    if mode == "local":
+        return _local_portal_identity()
+    if mode == "test":
+        return _test_header_identity(request)
+    return None
+
+
+def _portal_session_identity(request: Request) -> PortalIdentity | None:
+    """Read one signed SSO session without recording its cookie or contents."""
+
+    if not _production_sso_ready():
+        return None
+    try:
+        stored = request.session.get(_PORTAL_SESSION_IDENTITY_KEY)
+    except AssertionError:
+        # This can only happen if a deployment removes SessionMiddleware.  Do
+        # not fall back to request headers when the production session fails.
+        return None
+    return _identity_from_mapping(stored)
+
+
+def _safe_return_path(request: Request, sub_path: str = "") -> str:
+    """Keep post-login navigation on this Portal host only."""
+
+    raw = str(
+        request.query_params.get("next")
+        or request.query_params.get("ORIGIN")
+        or sub_path
+        or "/"
+    ).strip()
+    parsed = urlparse(raw)
+
+    if parsed.scheme or parsed.netloc:
+        if parsed.netloc != request.url.netloc:
+            return "/"
+    path = parsed.path or "/"
+    if not path.startswith("/") or path.startswith("//"):
+        return "/"
+    if "\\" in path:
+        return "/"
+    return f"{path}?{parsed.query}" if parsed.query else path
+
+
+def _new_hcp_sso(request: Request) -> Any:
+    """Create the HCP SSO helper lazily so local Python never imports it."""
+
+    if not _production_sso_ready():
+        raise PortalSsoError("PTMORE_SSO_SESSION_SECRET 설정이 필요합니다.")
+    try:
+        from hcputil.auth.sso import SSO
+    except ImportError as exc:
+        raise PortalSsoError(
+            "운영 환경에 hcputil.auth.sso SSO 모듈이 설치되어 있지 않습니다."
+        ) from exc
+    try:
+        return SSO(request)
+    except Exception as exc:
+        raise PortalSsoError("HCP SSO 초기화에 실패했습니다.") from exc
+
+
+def _sso_identity_from_cookie(sso: Any, cookie: str | None) -> PortalIdentity | None:
+    """Extract only the employee number/name returned by the HCP helper."""
+
+    if not cookie:
+        return None
+    try:
+        if sso.check_day_cookie(cookie) is not True:
+            return None
+        values = sso.get_sso_info(cookie)
+    except Exception as exc:
+        raise PortalSsoError("HCP SSO 사용자 정보를 확인할 수 없습니다.") from exc
+
+    if not isinstance(values, (list, tuple)) or len(values) < 2:
+        raise PortalSsoError("HCP SSO 사용자 정보 형식이 올바르지 않습니다.")
+    employee_id = str(values[0] or "").strip()
+    name = str(values[1] or "").strip()
+    if not employee_id:
+        raise PortalSsoError("HCP SSO에서 사용자 사번을 받지 못했습니다.")
+    return PortalIdentity(employee_id=employee_id, name=name or employee_id)
+
+
+def _portal_access(request: Request) -> PortalAccess:
+    """Resolve verified identity and server-side administrator permission."""
+
+    identity = _request_portal_identity(request)
+    if identity is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
@@ -2833,18 +3735,23 @@ def _portal_access(request: Request) -> PortalAccess:
 
     try:
         store = _get_portal_settings_store()
-        settings = store.read()
+        settings = _effective_portal_settings(store.read(), identity)
     except PortalSettingsStoreError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"code": "portal_settings_unavailable", "message": str(exc)},
         ) from exc
 
-    admin = _active_admin(settings, employee_id)
-    supplied_name = str(request.headers.get(_PORTAL_EMPLOYEE_NAME_HEADER) or "").strip()
+    admin = _active_admin(settings, identity.employee_id)
+    viewer_name = identity.name
+    # The legacy Portal contract suite uses synthetic header identities.  Keep
+    # its historical administrator display name only in the explicit test
+    # adapter; production/local always use their verified identity name.
+    if _portal_auth_mode() == "test" and admin is not None:
+        viewer_name = str(admin.get("name") or viewer_name)
     viewer = PortalViewer(
-        employee_id=employee_id,
-        name=str((admin or {}).get("name") or supplied_name or employee_id),
+        employee_id=identity.employee_id,
+        name=viewer_name,
         is_admin=admin is not None,
     )
     return PortalAccess(viewer=viewer, store=store, settings=settings)
@@ -2884,8 +3791,13 @@ def _require_active_admin_for_status(request: Request) -> PortalAccess:
         ):
             raise
 
-        employee_id = str(request.headers.get(_PORTAL_EMPLOYEE_ID_HEADER) or "").strip()
-        bootstrap_settings = _default_portal_settings()
+        identity = _request_portal_identity(request)
+        employee_id = identity.employee_id if identity is not None else ""
+        bootstrap_settings = (
+            _effective_portal_settings(_default_portal_settings(), identity)
+            if identity is not None
+            else _default_portal_settings()
+        )
         bootstrap_admin = _active_admin(bootstrap_settings, employee_id)
         if bootstrap_admin is None:
             raise HTTPException(
@@ -2896,11 +3808,10 @@ def _require_active_admin_for_status(request: Request) -> PortalAccess:
                 },
             ) from exc
 
-        supplied_name = str(request.headers.get(_PORTAL_EMPLOYEE_NAME_HEADER) or "").strip()
         return PortalAccess(
             viewer=PortalViewer(
                 employee_id=employee_id,
-                name=str(bootstrap_admin.get("name") or supplied_name or employee_id),
+                name=(identity.name if identity is not None else employee_id),
                 is_admin=True,
             ),
             store=PreviewPortalSettingsStore(),
@@ -2935,19 +3846,93 @@ def _admin_settings_response(
 _metadata_http_client: MetadataApiClient = UrlLibMetadataApiClient()
 
 def create_app() -> FastAPI:
-    """Create the portal application for both production and local Uvicorn runs."""
+    """Create the Portal with a production SSO or local identity adapter."""
+
     portal = FastAPI(
         title="PTMORE PKG Agent Portal",
         description="Portal preview with an optional external metadata authoring API adapter.",
         version="0.2.0-preview",
     )
+
+    @portal.middleware("http")
+    async def portal_identity_middleware(request: Request, call_next):
+        """Attach only server-verified identity before a protected route runs."""
+
+        path = request.url.path
+        is_public = (
+            path == "/health"
+            or path == "/login"
+            or path.startswith("/login/")
+            or path.startswith("/static/")
+            or path == "/docs"
+            or path == "/openapi.json"
+        )
+        mode = _portal_auth_mode()
+
+        if mode == "local":
+            request.state.portal_identity = _local_portal_identity()
+            return await call_next(request)
+
+        if mode == "test":
+            identity = _test_header_identity(request)
+            if identity is not None:
+                request.state.portal_identity = identity
+            return await call_next(request)
+
+        if is_public:
+            return await call_next(request)
+
+        identity = _portal_session_identity(request)
+        if identity is not None:
+            request.state.portal_identity = identity
+            return await call_next(request)
+
+        if path.startswith("/api/"):
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={
+                    "detail": {
+                        "code": "portal_identity_required",
+                        "message": "로그인 사용자 사번 정보를 확인할 수 없습니다.",
+                    }
+                },
+            )
+
+        origin = str(request.url)
+        return RedirectResponse(
+            url=f"/login?ORIGIN={quote(origin, safe='')}",
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+        )
+
+    # Add SessionMiddleware after the identity middleware registration so the
+    # signed session is decoded before the identity middleware reads it.
+    # Importing ``app`` in test/local tooling still keeps the app shape stable.
+    # When the production secret is missing, the fallback value never
+    # authorizes a user because _portal_session_identity() rejects every
+    # production session until the real secret is configured.
+    portal.add_middleware(
+        SessionMiddleware,
+        secret_key=_portal_session_secret() or _PORTAL_UNCONFIGURED_SESSION_SECRET,
+        session_cookie=_PORTAL_SESSION_COOKIE_NAME,
+        same_site="lax",
+        https_only=_bool_from_environment("PTMORE_SSO_SESSION_HTTPS_ONLY", True),
+    )
+
     portal.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
     return portal
 
 
+# Keep the existing ``create_app`` factory for compatibility with tests and
+# local tools, while exposing the common deployment factory name used by every
+# PTMORE server.
+def create_application() -> FastAPI:
+    return create_app()
+
+
 # Both names are intentional: "application" matches the fixed production
 # command, while "app" supports normal Uvicorn import syntax for local tests.
-application = create_app()
+application = create_application()
+app = application
 app = application
 
 
@@ -3887,6 +4872,83 @@ def _portal_data(preview_role: str = "admin") -> dict[str, Any]:
     }
 
 
+def _portal_data_for_access(access: PortalAccess) -> dict[str, Any]:
+    """Return the existing Portal payload with the authenticated viewer.
+
+    Metadata preview data remains available for its separate read-mode UI, but
+    schedules are deliberately empty here.  The browser must call the real
+    ``/api/schedules`` source endpoint rather than mistaking preview cards for
+    persisted automations.
+    """
+
+    payload = _portal_data(preview_role="admin")
+    settings = _normalise_portal_settings(access.settings)
+    payload["viewer"] = {
+        "employee_id": access.viewer.employee_id,
+        "name": access.viewer.name,
+        "role": "관리자" if access.viewer.is_admin else "일반 사용자",
+        "is_admin": access.viewer.is_admin,
+    }
+    payload["settings"]["usage_policy"] = copy.deepcopy(settings["usage_policy"])
+    payload["settings"]["admins"] = copy.deepcopy(settings["admins"])
+    payload["dashboard"] = _build_usage_dashboard(
+        payload["usage_history"],
+        settings["usage_policy"],
+    )
+    payload["schedules"] = []
+    return payload
+
+
+@application.get("/login", include_in_schema=False)
+@application.get("/login/{sub_path:path}", include_in_schema=False)
+async def login(request: Request, sub_path: str = ""):
+    """Establish a signed Portal session from the HCP SSO cookie.
+
+    Local/test adapters do not contact HCP.  The production helper is loaded
+    only here, so a developer PC can still run or test the Portal without the
+    HCP-only ``hcputil`` package.
+    """
+
+    destination = _safe_return_path(request, sub_path)
+    mode = _portal_auth_mode()
+    if mode in {"local", "test"}:
+        return RedirectResponse(destination, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+    try:
+        sso = _new_hcp_sso(request)
+        identity = _sso_identity_from_cookie(sso, request.headers.get("cookie"))
+    except PortalSsoError as exc:
+        logger.warning("Portal SSO login could not be completed: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "detail": {
+                    "code": "portal_sso_unavailable",
+                    "message": "SSO 로그인을 시작할 수 없습니다. 운영 환경 설정을 확인해 주세요.",
+                }
+            },
+        )
+
+    if identity is not None:
+        request.session[_PORTAL_SESSION_IDENTITY_KEY] = identity.as_session_value()
+        return RedirectResponse(destination, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+    redirect_url = str(getattr(sso, "redirect_url", "") or "").strip()
+    if not redirect_url:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "detail": {
+                    "code": "portal_sso_redirect_missing",
+                    "message": "SSO 로그인 주소를 확인할 수 없습니다.",
+                }
+            },
+        )
+    # ``SSO(request)`` receives the original ``ORIGIN`` query parameter added
+    # by the middleware, matching the HCP Flask reference integration.
+    return RedirectResponse(redirect_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+
+
 @application.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(STATIC_ROOT / "index.html")
@@ -3894,7 +4956,275 @@ async def index() -> FileResponse:
 
 @application.get("/health")
 async def health() -> dict[str, str]:
+    # Preserve the existing lightweight liveness contract.  Authentication
+    # readiness belongs to the protected Portal API, not this public probe.
     return {"status": "ok", "mode": "dummy-preview"}
+
+
+@application.get("/api/portal")
+async def portal_data(request: Request) -> dict[str, Any]:
+    """Return Portal UI data for the authenticated user only."""
+
+    return _portal_data_for_access(_portal_access(request))
+
+
+def _schedule_store_or_503() -> PortalScheduleStore:
+    try:
+        return _get_portal_schedule_store()
+    except PortalScheduleStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "schedule_storage_unavailable",
+                "message": str(exc),
+            },
+        ) from exc
+
+
+def _schedule_id_or_422(schedule_id: str) -> str:
+    try:
+        return _schedule_id(schedule_id)
+    except ScheduleValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_schedule_id", "message": str(exc)},
+        ) from exc
+
+
+def _schedule_values_or_422(values: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        return _schedule_storage_fields(values)
+    except ScheduleValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_schedule", "message": str(exc)},
+        ) from exc
+
+
+def _schedule_response_or_503(document: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        return _schedule_response(document)
+    except ScheduleValidationError as exc:
+        # A malformed source record must not expose raw MongoDB data.  It is a
+        # storage consistency problem rather than an end-user form error.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "schedule_storage_record_invalid",
+                "message": "저장된 스케줄 정보를 읽을 수 없습니다. 관리자에게 문의해 주세요.",
+            },
+        ) from exc
+
+
+def _schedule_sort_key(record: Mapping[str, Any]) -> tuple[int, str, str]:
+    active = 0 if record.get("status_code") == "active" else 1
+    next_run = str(record.get("next_run_at") or "9999-12-31T23:59:59+00:00")
+    return active, next_run, str(record.get("id") or "")
+
+
+@application.get("/api/schedules")
+def list_schedules(request: Request) -> dict[str, Any]:
+    """List all actual schedule sources; visibility is not an edit permission."""
+
+    _portal_access(request)
+    store = _schedule_store_or_503()
+    try:
+        documents = store.list_schedules()
+        records = [_schedule_response_or_503(document) for document in documents]
+    except PortalScheduleStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "schedule_storage_unavailable", "message": str(exc)},
+        ) from exc
+    finally:
+        _close_portal_schedule_store(store)
+
+    return {"schedules": sorted(records, key=_schedule_sort_key)}
+
+
+@application.get("/api/schedules/{schedule_id}")
+def get_schedule(schedule_id: str, request: Request) -> dict[str, Any]:
+    """Read one actual schedule source. Any signed-in Portal user may view it."""
+
+    _portal_access(request)
+    safe_schedule_id = _schedule_id_or_422(schedule_id)
+    store = _schedule_store_or_503()
+    try:
+        document = store.get_schedule(safe_schedule_id)
+    except PortalScheduleStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "schedule_storage_unavailable", "message": str(exc)},
+        ) from exc
+    finally:
+        _close_portal_schedule_store(store)
+
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "schedule_not_found", "message": "스케줄을 찾지 못했습니다."},
+        )
+    return {"schedule": _schedule_response_or_503(document)}
+
+
+@application.post("/api/schedules", status_code=status.HTTP_201_CREATED)
+def create_schedule(
+    request_body: ScheduleCreateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Create one schedule owned by the signed-in Portal user."""
+
+    access = _portal_access(request)
+    fields = _schedule_values_or_422(request_body.model_dump())
+    now = datetime.now(timezone.utc).isoformat()
+    document = {
+        "_id": _new_schedule_id(),
+        **fields,
+        "owner_id": access.viewer.employee_id,
+        "owner_name": access.viewer.name,
+        "created_at": now,
+        "updated_at": now,
+        "updated_by": access.viewer.as_audit_actor(),
+    }
+    store = _schedule_store_or_503()
+    try:
+        created = store.create_schedule(document)
+    except PortalScheduleStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "schedule_storage_unavailable", "message": str(exc)},
+        ) from exc
+    finally:
+        _close_portal_schedule_store(store)
+    return {"schedule": _schedule_response_or_503(created)}
+
+
+@application.patch("/api/schedules/{schedule_id}")
+def update_schedule(
+    schedule_id: str,
+    request_body: ScheduleUpdateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Update editable source fields for a schedule owned by the user/admin."""
+
+    access = _portal_access(request)
+    safe_schedule_id = _schedule_id_or_422(schedule_id)
+    patch = request_body.model_dump(exclude_unset=True)
+    if not patch:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "empty_schedule_update", "message": "변경할 스케줄 정보를 입력해 주세요."},
+        )
+    store = _schedule_store_or_503()
+    try:
+        existing = store.get_schedule(safe_schedule_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "schedule_not_found", "message": "스케줄을 찾지 못했습니다."},
+            )
+        _schedule_owner_or_admin(access, existing)
+        values = _schedule_editable_values(existing)
+        values.update(patch)
+        fields = _schedule_values_or_422(values)
+        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        fields["updated_by"] = access.viewer.as_audit_actor()
+        updated = store.update_schedule(safe_schedule_id, fields)
+    except PortalScheduleStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "schedule_storage_unavailable", "message": str(exc)},
+        ) from exc
+    finally:
+        _close_portal_schedule_store(store)
+
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "schedule_not_found", "message": "스케줄을 찾지 못했습니다."},
+        )
+    return {"schedule": _schedule_response_or_503(updated)}
+
+
+@application.patch("/api/schedules/{schedule_id}/status")
+def update_schedule_status(
+    schedule_id: str,
+    request_body: ScheduleStatusUpdateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Pause or resume a source schedule without changing its owner/target."""
+
+    access = _portal_access(request)
+    safe_schedule_id = _schedule_id_or_422(schedule_id)
+    try:
+        requested_status = _schedule_status_code(request_body.status)
+    except ScheduleValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "invalid_schedule_status", "message": str(exc)},
+        ) from exc
+
+    store = _schedule_store_or_503()
+    try:
+        existing = store.get_schedule(safe_schedule_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "schedule_not_found", "message": "스케줄을 찾지 못했습니다."},
+            )
+        _schedule_owner_or_admin(access, existing)
+        values = _schedule_editable_values(existing)
+        values["status"] = requested_status
+        fields = _schedule_values_or_422(values)
+        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        fields["updated_by"] = access.viewer.as_audit_actor()
+        updated = store.update_schedule(safe_schedule_id, fields)
+    except PortalScheduleStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "schedule_storage_unavailable", "message": str(exc)},
+        ) from exc
+    finally:
+        _close_portal_schedule_store(store)
+
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "schedule_not_found", "message": "스케줄을 찾지 못했습니다."},
+        )
+    return {"schedule": _schedule_response_or_503(updated)}
+
+
+@application.delete("/api/schedules/{schedule_id}")
+def delete_schedule(schedule_id: str, request: Request) -> dict[str, Any]:
+    """Delete a source schedule only for its owner or an active administrator."""
+
+    access = _portal_access(request)
+    safe_schedule_id = _schedule_id_or_422(schedule_id)
+    store = _schedule_store_or_503()
+    try:
+        existing = store.get_schedule(safe_schedule_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "schedule_not_found", "message": "스케줄을 찾지 못했습니다."},
+            )
+        _schedule_owner_or_admin(access, existing)
+        deleted = store.delete_schedule(safe_schedule_id)
+    except PortalScheduleStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "schedule_storage_unavailable", "message": str(exc)},
+        ) from exc
+    finally:
+        _close_portal_schedule_store(store)
+
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "schedule_not_found", "message": "스케줄을 찾지 못했습니다."},
+        )
+    return {"deleted": True, "schedule_id": safe_schedule_id}
 
 
 @application.get("/api/admin/settings")
@@ -3950,8 +5280,8 @@ async def metadata_authoring_status(request: Request) -> dict[str, Any]:
         metadata_settings,
         persistent=access.store.persistent,
     )
-    # Schedule collection names are configured here for the future scheduler,
-    # but this Portal intentionally does not perform schedule CRUD yet.
+    # Schedule source storage is independent from the external metadata Flow
+    # collections.  The separate Worker owns actual execution/run-history.
     response["portal_schedule_mongodb"] = _portal_schedule_mongodb_status(
         metadata_settings
     )

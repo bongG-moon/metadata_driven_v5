@@ -58,17 +58,14 @@ def build_message(payload_value: Any) -> str:
         if len(lines) > 1:
             sections.append("\n".join(lines))
     retry_example = str(authoring.get("retry_example") or "").strip()
-    retry_examples = _string_list(authoring.get("retry_examples"))
-    if retry_example and not retry_examples:
-        retry_examples = [retry_example]
-    if len(retry_examples) == 1:
-        sections.append("### 이렇게 다시 입력해 보세요\n```text\n" + retry_examples[0] + "\n```")
-    elif retry_examples:
-        lines = ["### 이렇게 다시 입력해 보세요", "실제 계약과 맞는 예시 하나를 통째로 복사해 다시 실행하세요."]
-        for index, example in enumerate(retry_examples, start=1):
-            lines.extend([f"#### 선택안 {index}", "```text", example, "```"])
-        sections.append("\n\n".join(lines))
+    retry_candidates = _string_list(authoring.get("retry_examples"))
+    # 구버전 payload가 여러 예시를 포함하더라도 화면에는 우선순위 1건만 표시한다.
+    primary_retry_example = retry_example or (retry_candidates[0] if retry_candidates else "")
+    if primary_retry_example:
+        sections.append("### 이렇게 다시 입력해 보세요\n```text\n" + primary_retry_example + "\n```")
     next_steps = _string_list(answer_sections.get("next_steps"))
+    if _is_failure_or_input_status(payload.get("status")):
+        next_steps = next_steps[:1]
     if next_steps:
         sections.append("### 다음 단계\n" + "\n".join(f"- {item}" for item in next_steps[:6]))
     return "\n\n".join(sections) if sections else json.dumps(payload, ensure_ascii=False, default=str)
@@ -113,6 +110,10 @@ def _row_list(value: Any) -> list[dict[str, Any]]:
 
 def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item or "").strip()] if isinstance(value, list) else []
+
+
+def _is_failure_or_input_status(value: Any) -> bool:
+    return str(value or "").strip().casefold() in {"error", "needs_input", "not_saved"}
 
 
 def _payload(value: Any) -> dict[str, Any]:

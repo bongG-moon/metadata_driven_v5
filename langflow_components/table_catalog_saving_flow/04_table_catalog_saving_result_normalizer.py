@@ -53,6 +53,25 @@ WORKER_DATASET_KEY_PATTERN = re.compile(
     r"(?im)(?:데이터\s*(?:셋\s*)?키|카탈로그\s*키|dataset\s*key)\s*[:：은는]?\s*([A-Za-z][A-Za-z0-9_-]*)"
 )
 CATALOG_UPDATE_CUES = ("기존", "수정", "변경", "바꿔", "업데이트", "update")
+# value_transform은 source 숫자 단위 자체를 바꿀 때만 필요한 선택 계약이다. 일반
+# metric 예시가 prompt에 있었던 탓에 근거 없는 빈/placeholder transform이 생성되는
+# 경우가 있어, 원문에 명시적인 변환 근거가 있을 때만 보존한다.
+VALUE_TRANSFORM_EVIDENCE_PATTERN = re.compile(
+    r"(?ix)"
+    r"value\s*[_-]?\s*transform|coerce\s*[_-]?\s*numeric|multiplier|"
+    r"\b(?:multiply|multiplied|scale|scaled|times)\b|"
+    r"(?:단위\s*(?:변환|환산)|(?:천|만|백만)\s*단위)|"
+    r"(?:\d[\d,]*(?:\.\d+)?\s*배)|"
+    r"(?:\d[\d,]*(?:\.\d+)?\s*(?:을|를|으로)?\s*곱)"
+)
+# 정제안에 명시된 ``CANONICAL -> PHYSICAL`` 표현은 새 Table Catalog의
+# source-local 실행 계약이다. 약한 추출 모델이 오른쪽 physical column까지
+# canonical 이름으로 되풀이해도, SQL 최종 SELECT가 physical column을 실제로
+# 반환한다는 것이 증명될 때만 아래 단서로 복원한다. 이 패턴만으로 임의의
+# 별칭을 추측하지 않도록, 복원 후보는 이후 projection 결과와 다시 대조한다.
+EXPLICIT_COLUMN_MAPPING_PATTERN = re.compile(
+    r"(?i)(?<![A-Z0-9_])([A-Z][A-Z0-9_]*)\s*(?:->|→)\s*([A-Z][A-Z0-9_]*)(?![A-Z0-9_])"
+)
 
 # 주요 함수: LLM 등록 후보 JSON을 추출·검증해 저장 전 표준 items 배열로 정리합니다.
 # Langflow 클래스와 단위 테스트가 같은 업무 규칙을 쓰도록 일반 Python 값 중심으로 처리합니다.
@@ -63,6 +82,7 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
     items = []
     errors = []
     assumptions: list[str] = []
+    sql_projection_traces: list[dict[str, Any]] = []
     request = _dict(payload.get("request"))
     refinement = _dict(payload.get("refinement"))
     source_text = str(refinement.get("refined_text") or request.get("raw_text") or "")
@@ -85,7 +105,18 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
                 source_config["query_template"] = item["payload"].pop(key)
         if source_config:
             item["payload"]["source_config"] = source_config
-        assumptions.extend(_normalize_natural_catalog_contract(item["payload"], source_text))
+        item_assumptions, projection_trace = _normalize_natural_catalog_contract(
+            item["payload"],
+            source_text,
+        )
+        assumptions.extend(item_assumptions)
+        if projection_trace:
+            sql_projection_traces.append(
+                {
+                    "dataset_key": str(item.get("dataset_key") or "").strip(),
+                    **projection_trace,
+                }
+            )
         partial_update = _usage_description_partial_update(item, source_text)
         if partial_update is not None:
             item = partial_update
@@ -121,7 +152,9 @@ def normalize_authoring(payload_value: Any, llm_response: Any) -> dict[str, Any]
     if not items and not next_payload["refinement"]["needs_more_input"] and not errors:
         errors.append({"type": "no_valid_items", "message": "저장할 수 있는 테이블 카탈로그 후보가 생성되지 않았습니다."})
     next_payload.setdefault("errors", []).extend(errors)
-    next_payload.setdefault("trace", {})["generated_items_preview"] = [{"key": item.get("dataset_key", ""), "payload_keys": sorted(item.get("payload", {}).keys())} for item in items]
+    trace = next_payload.setdefault("trace", {})
+    trace["generated_items_preview"] = [{"key": item.get("dataset_key", ""), "payload_keys": sorted(item.get("payload", {}).keys())} for item in items]
+    trace["sql_result_projection"] = sql_projection_traces
     return next_payload
 
 
@@ -210,19 +243,41 @@ def _is_partial_usage_update(item: Any) -> bool:
 
 # 함수 설명: `_normalize_natural_catalog_contract()`는 작업자가 기술 구조를 쓰지 않아도
 # 명확한 자연어의 파생 지표와 직전 결과 연계 의도를 실행 가능한 Catalog 계약으로 보강합니다.
-def _normalize_natural_catalog_contract(payload: dict[str, Any], source_text: str) -> list[str]:
+def _normalize_natural_catalog_contract(
+    payload: dict[str, Any],
+    source_text: str,
+) -> tuple[list[str], dict[str, Any]]:
     # LLM authoring responses occasionally repeat SELECT columns.  Keep the
     # Catalog schema deterministic before derived metric/default validation so
     # a repeated field cannot create a different contract for the same table.
     payload["columns"] = _catalog_columns(payload.get("columns"))
-    assumptions = _normalize_metric_semantics_from_natural_text(payload, source_text)
+    # Keep the LLM-declared identifier set as an ambiguity guard for natural
+    # count recovery.  Projection reconciliation may remove a stale/inner
+    # identifier, but that must not turn an otherwise ambiguous "건수" request
+    # into an unrequested nunique inference.
+    declared_identifier_guard_columns = list(payload["columns"])
+    projection_assumptions, projection_trace = _reconcile_sql_result_columns(payload, source_text)
+    # The projection reconciliation is intentionally first: metric/detail and
+    # follow-up binding inference must see the same final result schema that
+    # the retrieval query returns, not an inner CTE/subquery column list.
+    assumptions = _normalize_metric_semantics_from_natural_text(
+        payload,
+        source_text,
+        identifier_guard_columns=declared_identifier_guard_columns,
+    )
     _infer_previous_result_binding(payload, source_text)
-    return assumptions
+    assumptions.extend(projection_assumptions)
+    return _unique_texts(assumptions), projection_trace
 
 
 # 함수 설명: `_normalize_metric_semantics_from_natural_text()`는 "LOT_ID 고유 건수"처럼
 # 결과 이름이 아닌 실제 source 컬럼을 기준으로 metric_semantics를 정규화합니다.
-def _normalize_metric_semantics_from_natural_text(payload: dict[str, Any], source_text: str) -> list[str]:
+def _normalize_metric_semantics_from_natural_text(
+    payload: dict[str, Any],
+    source_text: str,
+    *,
+    identifier_guard_columns: list[str] | None = None,
+) -> list[str]:
     raw_semantics = payload.get("metric_semantics")
     if raw_semantics not in (None, "", {}) and not isinstance(raw_semantics, dict):
         return []
@@ -232,7 +287,11 @@ def _normalize_metric_semantics_from_natural_text(payload: dict[str, Any], sourc
     if not execution_columns:
         return []
 
-    count_columns = _count_identifier_columns(prose, execution_columns)
+    count_columns = _count_identifier_columns(
+        prose,
+        execution_columns,
+        identifier_guard_columns=identifier_guard_columns,
+    )
     sum_mentions = _sum_column_mentions(prose)
     sum_columns = [
         execution_columns[_column_key(column)]
@@ -251,29 +310,36 @@ def _normalize_metric_semantics_from_natural_text(payload: dict[str, Any], sourc
             # 형식 자체가 잘못된 계약은 Review Writer가 기존처럼 명확히 차단한다.
             normalized[metric] = deepcopy(raw_contract)
             continue
+        metric_contract, transform_assumption = _normalize_metric_value_transform(
+            raw_contract,
+            prose,
+            metric,
+        )
+        if transform_assumption:
+            assumptions.append(transform_assumption)
         target = execution_columns.get(_column_key(metric))
         source_hint = str(
-            raw_contract.get("source_column")
-            or raw_contract.get("column")
-            or raw_contract.get("source")
+            metric_contract.get("source_column")
+            or metric_contract.get("column")
+            or metric_contract.get("source")
             or ""
         ).strip()
         if not target and source_hint:
             target = execution_columns.get(_column_key(source_hint))
-        if not target and _looks_like_count_metric(metric, raw_contract) and len(count_columns) == 1:
+        if not target and _looks_like_count_metric(metric, metric_contract) and len(count_columns) == 1:
             target = count_columns[0]
-        if not target and _looks_like_quantity_metric(metric, raw_contract) and len(sum_columns) == 1:
+        if not target and _looks_like_quantity_metric(metric, metric_contract) and len(sum_columns) == 1:
             target = sum_columns[0]
         if target:
-            _merge_metric_contract(normalized, target, _sanitized_metric_contract(raw_contract))
+            _merge_metric_contract(normalized, target, _sanitized_metric_contract(metric_contract))
             continue
-        if _looks_like_derived_metric(metric, raw_contract) and (count_columns or sum_mentions):
+        if _looks_like_derived_metric(metric, metric_contract) and (count_columns or sum_mentions):
             assumptions.append(
                 f"'{metric}'은 결과 이름이므로 실제 조회 컬럼으로 저장하지 않았습니다. "
                 "쿼리에 포함된 실제 컬럼으로만 계산 규칙을 연결했습니다."
             )
             continue
-        normalized[metric] = deepcopy(raw_contract)
+        normalized[metric] = deepcopy(metric_contract)
 
     for column in count_columns:
         _merge_metric_contract(
@@ -312,6 +378,34 @@ def _normalize_metric_semantics_from_natural_text(payload: dict[str, Any], sourc
     else:
         payload.pop("metric_semantics", None)
     return _unique_texts(assumptions)
+
+
+# 함수 설명: `_normalize_metric_value_transform()`은 LLM이 일반 JSON 예시를 따라
+# value_transform을 채웠더라도 원문에 변환 근거가 없으면 제거합니다. 반대로 작업자가
+# 단위 환산/배수를 명시했으면 값이 잘못되어도 조용히 버리지 않고 Review Writer가
+# 정확한 계약 오류로 안내하도록 보존합니다.
+def _normalize_metric_value_transform(
+    raw_contract: dict[str, Any],
+    source_text: str,
+    metric: str,
+) -> tuple[dict[str, Any], str]:
+    contract = deepcopy(raw_contract)
+    if "value_transform" not in contract:
+        return contract, ""
+    if _source_text_declares_value_transform(source_text):
+        return contract, ""
+    contract.pop("value_transform", None)
+    metric_name = str(metric or "해당 metric").strip() or "해당 metric"
+    return (
+        contract,
+        f"'{metric_name}'의 value_transform은 원문에 단위 변환 근거가 없어 적용하지 않았습니다.",
+    )
+
+
+# 함수 설명: 단순 수량/집계 표현과 실제 source 값 변환 지시를 구분합니다. SQL 본문을
+# 제외한 작업자 설명에서만 확인하므로 SELECT 수식이나 컬럼명 때문에 transform을 유지하지 않습니다.
+def _source_text_declares_value_transform(source_text: str) -> bool:
+    return bool(VALUE_TRANSFORM_EVIDENCE_PATTERN.search(str(source_text or "")))
 
 
 # 함수 설명: `_infer_previous_result_binding()`은 "직전 결과의 LOT 번호로 후속 조회"처럼
@@ -395,8 +489,545 @@ def _execution_column_index(payload: dict[str, Any]) -> dict[str, str]:
             continue
         result.setdefault(_column_key(canonical_text), canonical_text)
         for alias in _as_string_list(aliases):
-            result.setdefault(_column_key(alias), canonical_text)
+            # An explicit filter mapping is this source's execution contract.
+            # Let it override the physical SELECT name above, so a model that
+            # emits both ``EQUIP_ID`` and ``EQP_ID`` produces one metric
+            # contract rather than two aliases for the same source column.
+            # Unmapped SELECT columns keep their original physical names.
+            result[_column_key(alias)] = canonical_text
     return result
+
+
+# 함수 설명: `_reconcile_sql_result_columns()`는 SQL 안의 모든 식별자를 섞어 쓰지 않고,
+# 가장 바깥 SELECT가 실제로 반환하는 컬럼만 안전하게 추출해 Table Catalog 결과 스키마를
+# 정리합니다. SELECT *·동적 SQL·해석 불가 표현은 기존 선언을 보존하는 fail-soft 경로입니다.
+def _reconcile_sql_result_columns(
+    payload: dict[str, Any],
+    source_text: str = "",
+) -> tuple[list[str], dict[str, Any]]:
+    source_config = _dict(payload.get("source_config"))
+    query = str(source_config.get("query_template") or "").strip()
+    if not query:
+        return [], {"status": "not_applicable"}
+
+    projection = _outer_select_projection(query)
+    if projection.get("status") != "resolved":
+        reason = str(projection.get("reason") or "unresolved").strip()
+        return (
+            [],
+            {"status": "preserved", "reason": reason},
+        )
+
+    projected_columns = _catalog_columns(projection.get("columns"))
+    if not projected_columns:
+        return [], {"status": "preserved", "reason": "projection_empty"}
+    declared_columns = _catalog_columns(payload.get("columns"))
+    source_to_output = _dict(projection.get("source_to_output"))
+    ambiguous_source_columns = _as_string_list(projection.get("ambiguous_source_columns"))
+    proposed_mappings, mapping_changes, query_only_changes, unresolved_mappings = _reconcile_filter_mappings_to_projection(
+        payload,
+        projected_columns,
+        source_to_output,
+        source_text,
+    )
+    unresolved_contract_columns = _projection_contract_columns_not_resolved(
+        payload,
+        projected_columns,
+        proposed_mappings,
+    )
+    if unresolved_mappings or unresolved_contract_columns:
+        details = _unique_texts([*unresolved_mappings, *unresolved_contract_columns])
+        return (
+            [],
+            {
+                "status": "preserved",
+                "reason": "unproven_output_contract",
+                "projected_columns": projected_columns,
+                "unresolved_columns": details,
+                "ambiguous_source_columns": ambiguous_source_columns,
+            },
+        )
+
+    assumptions: list[str] = []
+    # The final SELECT alias is the actual DataFrame schema.  A normalized-key
+    # comparison would incorrectly retain e.g. ``OPERNAME`` when the SQL
+    # returns ``OPER_NAME``; use the exact ordered projection instead.
+    if declared_columns != projected_columns:
+        payload["columns"] = projected_columns
+        assumptions.append(
+            "SQL의 최종 SELECT 반환 컬럼을 기준으로 columns 계약을 정리했습니다: "
+            + ", ".join(projected_columns)
+        )
+    if isinstance(payload.get("filter_mappings"), dict):
+        payload["filter_mappings"] = proposed_mappings
+    if mapping_changes:
+        assumptions.append(
+            "최종 SELECT alias를 반영해 조회 후 filter_mappings를 정리했습니다: "
+            + "; ".join(mapping_changes)
+        )
+    if query_only_changes:
+        assumptions.append(
+            "SQL 내부 필수 조회 조건은 최종 결과 컬럼이 아니어도 사용 가능하므로 "
+            "required_param_mappings에 유지하고 조회 후 filter_mappings에서는 제외했습니다: "
+            + "; ".join(query_only_changes)
+        )
+    return (
+        assumptions,
+        {
+            "status": "reconciled",
+            "projected_columns": projected_columns,
+            "mapping_changes": mapping_changes,
+            "query_only_mapping_changes": query_only_changes,
+            "ambiguous_source_columns": ambiguous_source_columns,
+        },
+    )
+
+
+# 함수 설명: `_reconcile_filter_mappings_to_projection()`는 조회 후 pandas filter에 필요한
+# mapping만 최종 SELECT 결과 컬럼으로 맞춥니다. SQL placeholder/WHERE용 required param은
+# 내부 subquery 컬럼을 참조할 수 있으므로 결과 스키마와 강제로 동일시하지 않습니다.
+def _reconcile_filter_mappings_to_projection(
+    payload: dict[str, Any],
+    projected_columns: list[str],
+    source_to_output: dict[str, Any],
+    source_text: str = "",
+) -> tuple[dict[str, list[str]], list[str], list[str], list[str]]:
+    raw_mappings = payload.get("filter_mappings")
+    if not isinstance(raw_mappings, dict):
+        return {}, [], [], []
+
+    output_by_key = {
+        _column_key(column): column
+        for column in projected_columns
+        if _column_key(column)
+    }
+    required_aliases = _required_param_aliases_by_canonical(payload)
+    explicit_source_mappings = _explicit_source_local_filter_mappings(source_text)
+    normalized: dict[str, list[str]] = {}
+    mapping_changes: list[str] = []
+    query_only_changes: list[str] = []
+    unresolved_mappings: list[str] = []
+
+    for raw_canonical, raw_aliases in raw_mappings.items():
+        canonical = str(raw_canonical or "").strip()
+        aliases = _as_string_list(raw_aliases)
+        if not canonical or not aliases:
+            normalized[canonical] = aliases
+            continue
+
+        canonical_key = _column_key(canonical)
+        query_param_keys = required_aliases.get(canonical_key, set())
+        explicit_output_aliases = _unique_texts(
+            [
+                output_by_key[_column_key(source_column)]
+                for source_column in explicit_source_mappings.get(canonical_key, [])
+                if _column_key(source_column) in output_by_key
+            ]
+        )
+        retained: list[str] = []
+        removed_query_only: list[str] = []
+        for alias in aliases:
+            alias_key = _column_key(alias)
+            output_alias = output_by_key.get(alias_key)
+            if output_alias:
+                retained.append(output_alias)
+                continue
+
+            projected_alias = str(source_to_output.get(alias_key) or "").strip()
+            if projected_alias and _column_key(projected_alias) in output_by_key:
+                output_alias = output_by_key[_column_key(projected_alias)]
+                retained.append(output_alias)
+                mapping_changes.append(f"{canonical}: {alias} → {output_alias}")
+                continue
+
+            # Some weak extraction responses preserve the canonical key but
+            # incorrectly repeat it on the right side (for example
+            # ``DEN -> DEN`` instead of ``DEN -> DENSITY``).  The refined
+            # authoring text can repair that safely only when it declares one
+            # source-local physical column and the final SELECT actually
+            # returns that column.  Ambiguous or unproven text is deliberately
+            # left to the normal validation path below.
+            if len(explicit_output_aliases) == 1:
+                output_alias = explicit_output_aliases[0]
+                retained.append(output_alias)
+                mapping_changes.append(
+                    f"{canonical}: {alias} → {output_alias} (정제안의 명시 source mapping)"
+                )
+                continue
+
+            if alias_key and alias_key in query_param_keys:
+                removed_query_only.append(alias)
+                continue
+            retained.append(alias)
+            unresolved_mappings.append(f"{canonical} -> {alias}")
+
+        retained = _unique_texts(retained)
+        if retained:
+            normalized[canonical] = retained
+        elif removed_query_only:
+            query_only_changes.append(f"{canonical}: {', '.join(removed_query_only)}")
+        else:
+            normalized[canonical] = aliases
+
+    return (
+        normalized,
+        _unique_texts(mapping_changes),
+        _unique_texts(query_only_changes),
+        _unique_texts(unresolved_mappings),
+    )
+
+
+# 함수 설명: `_explicit_source_local_filter_mappings()`는 정제안에 그대로 남은
+# ``CANONICAL -> PHYSICAL`` 매핑만 읽습니다. 이 값은 LLM 후보의 물리 컬럼이
+# canonical 이름으로 잘못 반복되었을 때의 복원 단서일 뿐, SQL projection으로
+# 확인되지 않으면 실행 계약을 변경하지 않습니다.
+def _explicit_source_local_filter_mappings(source_text: Any) -> dict[str, list[str]]:
+    mappings: dict[str, list[str]] = {}
+    for match in EXPLICIT_COLUMN_MAPPING_PATTERN.finditer(str(source_text or "")):
+        canonical = str(match.group(1) or "").strip()
+        physical = str(match.group(2) or "").strip()
+        canonical_key = _column_key(canonical)
+        if not canonical_key or not physical:
+            continue
+        values = mappings.setdefault(canonical_key, [])
+        if not any(_column_key(value) == _column_key(physical) for value in values):
+            values.append(physical)
+    return mappings
+
+
+# 함수 설명: `_projection_contract_columns_not_resolved()`는 최종 SELECT로 columns를
+# 바꿨을 때 기존 metric/detail 계약이 새 결과 schema에서 사라지는지 사전에 확인합니다.
+# 확실히 매핑할 수 없는 값은 오류를 새로 만들지 않고 기존 선언을 보존합니다.
+def _projection_contract_columns_not_resolved(
+    payload: dict[str, Any],
+    projected_columns: list[str],
+    proposed_mappings: dict[str, list[str]],
+) -> list[str]:
+    available_keys = {
+        _column_key(column)
+        for column in projected_columns
+        if _column_key(column)
+    }
+    canonical_keys = {
+        _column_key(canonical)
+        for canonical in proposed_mappings
+        if _column_key(canonical)
+    }
+    unresolved: list[str] = []
+    semantics = payload.get("metric_semantics")
+    if isinstance(semantics, dict):
+        for metric in semantics:
+            metric_key = _column_key(metric)
+            if metric_key and metric_key not in available_keys and metric_key not in canonical_keys:
+                unresolved.append(str(metric))
+    for column in _as_string_list(payload.get("default_detail_columns")):
+        column_key = _column_key(column)
+        if column_key and column_key not in available_keys and column_key not in canonical_keys:
+            unresolved.append(column)
+    return _unique_texts(unresolved)
+
+
+# 함수 설명: `_required_param_aliases_by_canonical()`는 SQL 조회 입력 계약만 모읍니다.
+# 이 목록은 최종 SELECT 결과에 없더라도 유효한 nested WHERE/placeholder 컬럼입니다.
+def _required_param_aliases_by_canonical(payload: dict[str, Any]) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    contracts = [payload, _dict(payload.get("source_config"))]
+    for contract in contracts:
+        mappings = contract.get("required_param_mappings")
+        if not isinstance(mappings, dict):
+            continue
+        for raw_canonical, raw_aliases in mappings.items():
+            canonical_key = _column_key(raw_canonical)
+            if not canonical_key:
+                continue
+            values = result.setdefault(canonical_key, set())
+            values.update(
+                _column_key(alias)
+                for alias in _as_string_list(raw_aliases)
+                if _column_key(alias)
+            )
+    return result
+
+
+# 함수 설명: `_outer_select_projection()`는 괄호·문자열·주석 깊이를 인식해 CTE/subquery
+# 내부 SELECT가 아닌 최상위 결과 SELECT의 projection만 읽습니다. 정확도가 보장되지 않는
+# 경우에는 상태만 반환해 호출자가 기존 Catalog 선언을 보존할 수 있게 합니다.
+def _outer_select_projection(query: str) -> dict[str, Any]:
+    select_index = _top_level_sql_keyword(query, "SELECT")
+    if select_index < 0:
+        return {"status": "unresolved", "reason": "최상위 SELECT를 찾지 못함"}
+    from_index = _top_level_sql_keyword(query, "FROM", start=select_index + len("SELECT"))
+    if from_index < 0:
+        return {"status": "unresolved", "reason": "최상위 FROM을 찾지 못함"}
+
+    select_body = query[select_index + len("SELECT") : from_index]
+    items = _split_top_level_sql_list(select_body)
+    if not items:
+        return {"status": "unresolved", "reason": "SELECT projection이 비어 있음"}
+
+    columns: list[str] = []
+    source_to_output: dict[str, str] = {}
+    ambiguous_source_keys: set[str] = set()
+    for item in items:
+        parsed = _select_item_projection(item)
+        if parsed is None:
+            return {
+                "status": "unresolved",
+                "reason": "SELECT * 또는 별칭을 확정할 수 없는 projection 포함",
+            }
+        output = str(parsed.get("output") or "").strip()
+        output_key = _column_key(output)
+        if not output or not output_key or any(_column_key(column) == output_key for column in columns):
+            return {
+                "status": "unresolved",
+                "reason": "중복되었거나 해석 불가한 최종 SELECT 컬럼",
+            }
+        columns.append(output)
+        source = str(parsed.get("source") or "").strip()
+        source_key = _column_key(source)
+        if source_key and source_key not in ambiguous_source_keys:
+            prior_output = source_to_output.get(source_key)
+            if prior_output and _column_key(prior_output) != output_key:
+                # The qualifier is intentionally removed for normal aliases,
+                # but that makes ``a.STATUS`` and ``b.STATUS`` indistinguish-
+                # able.  Do not guess which final alias a legacy STATUS
+                # mapping means; leave that mapping untouched instead.
+                source_to_output.pop(source_key, None)
+                ambiguous_source_keys.add(source_key)
+            else:
+                source_to_output.setdefault(source_key, output)
+
+    return {
+        "status": "resolved",
+        "columns": columns,
+        "source_to_output": source_to_output,
+        "ambiguous_source_columns": sorted(ambiguous_source_keys),
+    }
+
+
+# 함수 설명: `_top_level_sql_keyword()`는 quoted text/comment/괄호 안의 키워드를 무시하고
+# 0-depth SQL 키워드 위치만 반환합니다. 정규식으로 모든 SELECT를 훑어 서브쿼리 컬럼을
+# 결과 schema로 오인하던 문제를 피하기 위한 작은 parser입니다.
+def _top_level_sql_keyword(sql: str, keyword: str, start: int = 0) -> int:
+    target = str(keyword or "").upper()
+    index = max(0, int(start or 0))
+    depth = 0
+    length = len(sql)
+    while index < length:
+        character = sql[index]
+        if character in {"'", '"', "`"}:
+            index = _skip_sql_quote(sql, index, character)
+            continue
+        if character == "[":
+            index = _skip_sql_bracket_identifier(sql, index)
+            continue
+        if sql.startswith("--", index):
+            newline = sql.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if sql.startswith("/*", index):
+            closing = sql.find("*/", index + 2)
+            index = length if closing < 0 else closing + 2
+            continue
+        if character == "(":
+            depth += 1
+            index += 1
+            continue
+        if character == ")":
+            depth -= 1
+            if depth < 0:
+                return -1
+            index += 1
+            continue
+        if depth == 0 and (character.isalpha() or character == "_"):
+            end = index + 1
+            while end < length and (sql[end].isalnum() or sql[end] in {"_", "$", "#"}):
+                end += 1
+            if sql[index:end].upper() == target:
+                return index
+            index = end
+            continue
+        index += 1
+    return -1
+
+
+# 함수 설명: `_split_top_level_sql_list()`는 함수/CASE/subquery의 쉼표를 보존하면서
+# 최상위 SELECT projection 항목만 분리합니다.
+def _split_top_level_sql_list(value: str) -> list[str]:
+    result: list[str] = []
+    start = 0
+    index = 0
+    depth = 0
+    length = len(value)
+    while index < length:
+        character = value[index]
+        if character in {"'", '"', "`"}:
+            index = _skip_sql_quote(value, index, character)
+            continue
+        if character == "[":
+            index = _skip_sql_bracket_identifier(value, index)
+            continue
+        if value.startswith("--", index):
+            newline = value.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if value.startswith("/*", index):
+            closing = value.find("*/", index + 2)
+            index = length if closing < 0 else closing + 2
+            continue
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                return []
+        elif character == "," and depth == 0:
+            item = value[start:index].strip()
+            if item:
+                result.append(item)
+            start = index + 1
+        index += 1
+    if depth != 0:
+        return []
+    item = value[start:].strip()
+    if item:
+        result.append(item)
+    return result
+
+
+# 함수 설명: `_select_item_projection()`는 한 projection의 최종 alias와 직접 source 컬럼
+# (확실한 단순 identifier일 때만)를 분리합니다. 복합 expression은 AS/암시 alias가 있어야
+# 안전하게 최종 결과명을 알 수 있습니다.
+def _select_item_projection(item: str) -> dict[str, str] | None:
+    expression = _strip_sql_comments(item).strip()
+    expression = re.sub(r"(?is)^(?:DISTINCT|ALL)\s+", "", expression).strip()
+    if not expression or _is_select_wildcard(expression):
+        return None
+
+    as_index = _top_level_sql_keyword(expression, "AS")
+    if as_index >= 0:
+        source_expression = expression[:as_index].strip()
+        output = _parse_sql_identifier(expression[as_index + len("AS") :])
+        if not source_expression or not output or _is_select_wildcard(source_expression):
+            return None
+        return {"output": output, "source": _simple_sql_source_column(source_expression)}
+
+    source = _simple_sql_source_column(expression)
+    if source:
+        return {"output": source, "source": source}
+
+    implicit = _implicit_sql_alias(expression)
+    if implicit is None:
+        return None
+    source_expression, output = implicit
+    if _is_select_wildcard(source_expression):
+        return None
+    return {"output": output, "source": _simple_sql_source_column(source_expression)}
+
+
+def _implicit_sql_alias(expression: str) -> tuple[str, str] | None:
+    text = expression.strip()
+    match = re.match(
+        r'(?is)^(.*\S)\s+((?:"(?:[^"]|"")+")|(?:\[(?:[^\]]|\]\])+\])|(?:`[^`]+`)|(?:[A-Za-z_][A-Za-z0-9_$#]*))$',
+        text,
+    )
+    if not match:
+        return None
+    source_expression = str(match.group(1) or "").strip()
+    output = _parse_sql_identifier(match.group(2))
+    if not source_expression or not output:
+        return None
+    if re.search(r"[+\-*/=<>|,]\s*$", source_expression):
+        return None
+    return source_expression, output
+
+
+def _simple_sql_source_column(expression: str) -> str:
+    text = _strip_sql_comments(expression).strip()
+    pattern = r'(?:"(?:[^"]|"")+"|\[(?:[^\]]|\]\])+\]|`[^`]+`|[A-Za-z_][A-Za-z0-9_$#]*)(?:\s*\.\s*(?:"(?:[^"]|"")+"|\[(?:[^\]]|\]\])+\]|`[^`]+`|[A-Za-z_][A-Za-z0-9_$#]*))*'
+    if not re.fullmatch(pattern, text):
+        return ""
+    last = re.split(r"\s*\.\s*", text)[-1]
+    return _parse_sql_identifier(last)
+
+
+def _parse_sql_identifier(value: Any) -> str:
+    text = _strip_sql_comments(str(value or "")).strip()
+    if not text:
+        return ""
+    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+        return text[1:-1].replace('""', '"').strip()
+    if text.startswith("[") and text.endswith("]") and len(text) >= 2:
+        return text[1:-1].replace("]]", "]").strip()
+    if text.startswith("`") and text.endswith("`") and len(text) >= 2:
+        return text[1:-1].strip()
+    return text if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$#]*", text) else ""
+
+
+def _is_select_wildcard(expression: str) -> bool:
+    text = _strip_sql_comments(expression).strip()
+    if text == "*":
+        return True
+    return bool(
+        re.fullmatch(
+            r'(?:"(?:[^"]|"")+"|\[(?:[^\]]|\]\])+\]|`[^`]+`|[A-Za-z_][A-Za-z0-9_$#]*)\s*\.\s*\*',
+            text,
+        )
+    )
+
+
+def _strip_sql_comments(value: str) -> str:
+    result: list[str] = []
+    index = 0
+    length = len(value)
+    while index < length:
+        if value.startswith("--", index):
+            newline = value.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            result.append(" ")
+            continue
+        if value.startswith("/*", index):
+            closing = value.find("*/", index + 2)
+            index = length if closing < 0 else closing + 2
+            result.append(" ")
+            continue
+        quote = value[index]
+        if quote in {"'", '"', "`"}:
+            end = _skip_sql_quote(value, index, quote)
+            result.append(value[index:end])
+            index = end
+            continue
+        result.append(value[index])
+        index += 1
+    return "".join(result)
+
+
+def _skip_sql_quote(value: str, index: int, quote: str) -> int:
+    length = len(value)
+    index += 1
+    while index < length:
+        if value[index] != quote:
+            index += 1
+            continue
+        if index + 1 < length and value[index + 1] == quote:
+            index += 2
+            continue
+        return index + 1
+    return length
+
+
+def _skip_sql_bracket_identifier(value: str, index: int) -> int:
+    length = len(value)
+    index += 1
+    while index < length:
+        if value[index] != "]":
+            index += 1
+            continue
+        if index + 1 < length and value[index + 1] == "]":
+            index += 2
+            continue
+        return index + 1
+    return length
 
 
 # 함수 설명: `_identifier_mentions()`는 작업자 설명에 직접 적힌 식별자 컬럼 이름을
@@ -412,7 +1043,12 @@ def _identifier_mentions(prose: str) -> list[str]:
 
 # 함수 설명: `_count_identifier_columns()`는 고유/건수 표현 주변의 실제 *_ID 컬럼만 찾아
 # nunique metric으로 바꿉니다.
-def _count_identifier_columns(prose: str, execution_columns: dict[str, str]) -> list[str]:
+def _count_identifier_columns(
+    prose: str,
+    execution_columns: dict[str, str],
+    *,
+    identifier_guard_columns: list[str] | None = None,
+) -> list[str]:
     result: list[str] = []
     lowered = prose.casefold()
     for match in IDENTIFIER_PATTERN.finditer(prose):
@@ -445,7 +1081,23 @@ def _count_identifier_columns(prose: str, execution_columns: dict[str, str]) -> 
     ]
     if len(matches) == 1:
         return matches
-    if len(identifier_columns) == 1:
+    raw_guard_columns = (
+        identifier_guard_columns
+        if isinstance(identifier_guard_columns, list) and any(
+            _column_key(column).endswith("ID") for column in identifier_guard_columns
+        )
+        else list(execution_columns.values())
+    )
+    guard_identifiers = {
+        _column_key(column)
+        for column in raw_guard_columns
+        if _column_key(column).endswith("ID")
+    }
+    # A final SELECT correction must not erase a second identifier that was
+    # declared by the candidate and thereby make an unmentioned count target
+    # look uniquely determined.  Explicit LOT/DEVICE wording above still
+    # resolves against the actual final result schema.
+    if len(identifier_columns) == 1 and len(guard_identifiers) == 1:
         return [identifier_columns[0][1]]
     return result
 

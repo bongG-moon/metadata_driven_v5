@@ -69,6 +69,33 @@ def repair_candidate_response(payload_value: Any, llm_response: Any) -> dict[str
     unresolved = draft.get("unresolved_references") if isinstance(draft.get("unresolved_references"), list) else []
     missing = _string_list(draft.get("missing_information"))
     needs_input = bool(draft.get("needs_more_input")) or bool(unresolved) or bool(missing)
+    # A refinement model can ask for optional wording even when the extraction
+    # model has already produced a complete, self-contained Table Catalog
+    # candidate.  Let the existing normalizer/writer validate that candidate
+    # instead of deleting every item before its real source/query checks run.
+    # Concrete unresolved external references remain a hard stop.
+    if (
+        parsed
+        and needs_input
+        and str(payload.get("metadata_type") or "").strip() == "table_catalog"
+        and not unresolved
+        and _has_self_contained_table_catalog_candidate(parsed)
+    ):
+        payload.setdefault("warnings", []).append(
+            {
+                "type": "table_catalog_refinement_missing_deferred",
+                "message": "정제 단계의 보완 요청은 후보의 실제 source/query 계약 검증으로 넘겼습니다.",
+                "missing_information": deepcopy(missing),
+            }
+        )
+        draft["missing_information"] = []
+        draft["needs_more_input"] = False
+        payload["metadata_authoring_draft"] = draft
+        refinement = payload.get("refinement") if isinstance(payload.get("refinement"), dict) else {}
+        refinement["missing_information"] = []
+        refinement["needs_more_input"] = False
+        payload["refinement"] = refinement
+        needs_input = False
     if parsed and needs_input:
         suppressed_count = len(parsed.get("items")) if isinstance(parsed.get("items"), list) else 0
         parsed["items"] = []
@@ -178,6 +205,26 @@ def repair_candidate_response(payload_value: Any, llm_response: Any) -> dict[str
         "payload": payload,
         "llm_response": json.dumps(parsed, ensure_ascii=False, separators=(",", ":")) if parsed else str(getattr(llm_response, "text", llm_response) or ""),
     }
+
+
+def _has_self_contained_table_catalog_candidate(parsed: dict[str, Any]) -> bool:
+    """Return true only when a candidate already has Writer-required source facts."""
+
+    items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
+    for raw_item in items:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        dataset_key = str(item.get("dataset_key") or item.get("key") or "").strip()
+        body = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        source_config = body.get("source_config") if isinstance(body.get("source_config"), dict) else {}
+        source_type = str(body.get("source_type") or source_config.get("source_type") or "").strip().casefold()
+        if not dataset_key or not source_type:
+            continue
+        if source_type in {"oracle", "datalake"} and not str(source_config.get("query_template") or "").strip():
+            continue
+        if source_type == "goodocs" and not str(source_config.get("doc_id") or "").strip():
+            continue
+        return True
+    return False
 
 
 def _select_declared_identity_item(payload: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any] | None:
@@ -320,6 +367,25 @@ def _repair_table_catalog_candidates(
             canonical_key = _case_insensitive_mapping_key(mappings, canonical) or canonical
             aliases = _mapping_values(mappings.get(canonical_key))
             if any(_column_key(alias) == _column_key(physical) for alias in aliases):
+                continue
+            if aliases:
+                # The extraction candidate already declares a source-local
+                # binding for this canonical key (for example
+                # DATE -> WORK_DATE).  A broad registry reference must never
+                # append a different physical alias from an older dataset
+                # (for example WORK_DT) and silently widen/replace that new
+                # table's execution contract.  The review writer still owns
+                # validation that the declared local value exists in columns.
+                repairs.append(
+                    {
+                        "item_index": item_index,
+                        "field": "filter_mappings",
+                        "canonical_column": canonical,
+                        "source_column": physical,
+                        "action": "preserve_explicit_candidate_local_mapping",
+                        "existing_source_columns": deepcopy(aliases),
+                    }
+                )
                 continue
             mappings[canonical_key] = _unique_text([*aliases, physical])
             repairs.append(

@@ -403,19 +403,24 @@ def _metric_semantics_errors(value: Any, item_key: str) -> list[dict[str, Any]]:
                         "message": "value_transform.coerce_numeric은 boolean이어야 합니다.",
                         **location,
                     })
-                multiplier = transform.get("multiplier")
-                valid_multiplier = not isinstance(multiplier, bool)
-                if valid_multiplier:
-                    try:
-                        valid_multiplier = math.isfinite(float(multiplier))
-                    except (TypeError, ValueError, OverflowError):
-                        valid_multiplier = False
-                if not valid_multiplier:
-                    errors.append({
-                        "type": "invalid_metric_value_transform_multiplier",
-                        "message": "value_transform.multiplier는 유한한 숫자여야 합니다.",
-                        **location,
-                    })
+                # Runtime treats an omitted multiplier as one.  Therefore a
+                # source that explicitly needs only numeric coercion must not
+                # be blocked just because it has no scaling factor.  An
+                # explicitly supplied multiplier still needs to be finite.
+                if "multiplier" in transform:
+                    multiplier = transform.get("multiplier")
+                    valid_multiplier = not isinstance(multiplier, bool)
+                    if valid_multiplier:
+                        try:
+                            valid_multiplier = math.isfinite(float(multiplier))
+                        except (TypeError, ValueError, OverflowError):
+                            valid_multiplier = False
+                    if not valid_multiplier:
+                        errors.append({
+                            "type": "invalid_metric_value_transform_multiplier",
+                            "message": "value_transform.multiplier는 유한한 숫자여야 합니다.",
+                            **location,
+                        })
     return errors
 
 

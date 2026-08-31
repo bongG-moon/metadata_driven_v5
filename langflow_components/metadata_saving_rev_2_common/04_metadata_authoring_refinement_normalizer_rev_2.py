@@ -41,7 +41,9 @@ def normalize_refinement(payload_value: Any, llm_response: Any) -> dict[str, Any
     context = _dict(payload.get("metadata_authoring_context"))
     registry = _dict(context.get("registry"))
     raw_text = str(_dict(payload.get("request")).get("raw_text") or "").strip()
+    metadata_type = str(payload.get("metadata_type") or "").strip()
     errors: list[dict[str, Any]] = []
+    advisory_references: list[dict[str, Any]] = []
 
     if not parsed:
         errors.append(
@@ -53,14 +55,34 @@ def normalize_refinement(payload_value: Any, llm_response: Any) -> dict[str, Any
 
     resolved: list[dict[str, Any]] = []
     for raw in _list(parsed.get("resolved_references")):
-        checked, error = _validate_reference(raw, context, registry)
+        advisory = _table_catalog_optional_reference_advisory(
+            raw,
+            metadata_type,
+            raw_text,
+            from_unresolved=False,
+        )
+        if advisory:
+            advisory_references.append(advisory)
+            continue
+        checked, error = _validate_reference(raw, context, registry, metadata_type=metadata_type)
         if checked and _keep_reference(checked, context, raw_text):
             resolved.append(checked)
         if error:
             errors.append(error)
     resolved = _dedupe_references(resolved)
 
-    unresolved = _normalize_unresolved(parsed.get("unresolved_references"))
+    unresolved = []
+    for raw in _normalize_unresolved(parsed.get("unresolved_references")):
+        advisory = _table_catalog_optional_reference_advisory(
+            raw,
+            metadata_type,
+            raw_text,
+            from_unresolved=True,
+        )
+        if advisory:
+            advisory_references.append(advisory)
+            continue
+        unresolved.append(raw)
     for error in errors:
         if str(error.get("type") or "") not in {
             "unknown_metadata_reference",
@@ -103,7 +125,12 @@ def normalize_refinement(payload_value: Any, llm_response: Any) -> dict[str, Any
         resolved = [item for item in resolved if (item["kind"], _compact(item["input"])) not in conflicted]
 
     unresolved = _drop_resolved_unresolved(unresolved, resolved)
-    parsed_missing = _drop_resolved_missing(_string_list(parsed.get("missing_information")), resolved)
+    parsed_missing = _drop_table_catalog_optional_missing_information(
+        _string_list(parsed.get("missing_information")),
+        metadata_type,
+        advisory_references,
+    )
+    parsed_missing = _drop_resolved_missing(parsed_missing, resolved)
     missing = _unique_text(
         [
             *parsed_missing,
@@ -120,7 +147,20 @@ def normalize_refinement(payload_value: Any, llm_response: Any) -> dict[str, Any
     formatted_refined_text = refined_text if unsafe_refined_text else _format_refined_text(refined_text)
     formatting_applied = formatted_refined_text != refined_text
     refined_text = formatted_refined_text
-    needs_more_input = _truthy(parsed.get("needs_more_input")) or bool(missing) or bool(unresolved)
+    # A Table Catalog model occasionally marks ``needs_more_input`` solely
+    # because it treated a source-local column mapping as an unregistered
+    # main_filter/canonical reference.  Once every such reference has been
+    # converted to an advisory and no concrete missing detail remains, do not
+    # suppress the candidate.  The downstream writer still validates source
+    # type, query, declared columns and duplicate physical mappings.
+    reported_needs_input = _truthy(parsed.get("needs_more_input"))
+    advisory_only_needs_input = (
+        metadata_type == "table_catalog"
+        and bool(advisory_references)
+        and not missing
+        and not unresolved
+    )
+    needs_more_input = (reported_needs_input and not advisory_only_needs_input) or bool(missing) or bool(unresolved)
 
     current_refinement = _dict(payload.get("refinement"))
     current_refinement.update(
@@ -142,6 +182,8 @@ def normalize_refinement(payload_value: Any, llm_response: Any) -> dict[str, Any
         "needs_more_input": needs_more_input,
     }
     payload.setdefault("errors", []).extend(errors)
+    if advisory_references:
+        payload.setdefault("warnings", []).extend(advisory_references)
     payload.setdefault("trace", {})["contract_resolution"] = {
         "status": "needs_input" if needs_more_input else "resolved",
         "resolved_count": len(resolved),
@@ -153,6 +195,11 @@ def normalize_refinement(payload_value: Any, llm_response: Any) -> dict[str, Any
             "applied": formatting_applied,
             "style": "readable_multiline_v1",
         },
+        "table_catalog_reference_scope": {
+            "status": "advisory_local_mapping" if advisory_references else "not_needed",
+            "advisory_count": len(advisory_references),
+            "advisories": deepcopy(advisory_references),
+        },
     }
     return payload
 
@@ -161,6 +208,7 @@ def _validate_reference(
     value: Any,
     context: dict[str, Any],
     registry: dict[str, Any],
+    metadata_type: str = "",
     deterministic: bool = False,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not isinstance(value, dict):
@@ -170,7 +218,7 @@ def _validate_reference(
     target = str(value.get("target") or "").strip()
     if not kind or not source or not target:
         return None, {"type": "invalid_metadata_reference", "message": "확정 참조에는 kind, input, target이 모두 필요합니다."}
-    entries, target_field = _registry_spec(registry, kind)
+    entries, target_field = _registry_spec(registry, kind, metadata_type)
     actual_target = _case_insensitive_key(entries, target)
     if not actual_target:
         return None, {
@@ -243,10 +291,14 @@ def _validate_reference(
     )
 
 
-def _registry_spec(registry: dict[str, Any], kind: str) -> tuple[dict[str, Any], str]:
+def _registry_spec(registry: dict[str, Any], kind: str, metadata_type: str = "") -> tuple[dict[str, Any], str]:
     if kind == "dataset":
         return _dict(registry.get("datasets")), "dataset_key"
     if kind == "canonical_column":
+        if metadata_type == "table_catalog":
+            scoped = _dict(registry.get("table_catalog_canonical_columns"))
+            if scoped:
+                return scoped, "key"
         return _dict(registry.get("canonical_columns")), "key"
     if kind == "main_filter":
         return _dict(registry.get("filters")), "filter_key"
@@ -320,6 +372,148 @@ def _normalize_unresolved(value: Any) -> list[dict[str, Any]]:
                 "reason": str(item.get("reason") or "등록 계약을 하나로 확정하지 못했습니다.").strip(),
             }
         )
+    return result
+
+
+def _table_catalog_optional_reference_advisory(
+    value: Any,
+    metadata_type: str,
+    raw_text: str,
+    *,
+    from_unresolved: bool,
+) -> dict[str, Any] | None:
+    """Downgrade source-local mapping noise only for Table Catalog authoring.
+
+    ``filter_mappings`` establishes a new table's own canonical-to-physical
+    binding.  It is not a request to register or resolve a reusable
+    ``main_filter``.  Likewise, a physical identifier such as ``WORK_DT`` is
+    not a global canonical reference merely because an older dataset happened
+    to use it under multiple keys.  Domain and Main Flow Filter authoring keep
+    the existing strict reference behavior.
+    """
+
+    if metadata_type != "table_catalog" or not isinstance(value, dict):
+        return None
+    kind = KIND_ALIASES.get(str(value.get("kind") or "").strip().lower(), "")
+    source = str(value.get("input") or "").strip()
+    target = str(value.get("target") or value.get("suggested_target") or "").strip()
+    if not kind or not source:
+        return None
+    if kind == "main_filter" and not _requests_explicit_main_filter_reference(raw_text):
+        return {
+            "type": "table_catalog_optional_main_filter_reference",
+            "message": (
+                f"'{source}' → '{target or '미지정'}'은(는) 신규 Table Catalog의 컬럼 매핑으로 처리했습니다. "
+                "기존 main_filter 등록 여부는 저장을 막지 않습니다."
+            ),
+            "kind": kind,
+            "input": source,
+            "target": target,
+            "scope": "candidate_local_filter_mapping",
+        }
+    if (
+        from_unresolved
+        and kind == "canonical_column"
+        and _looks_like_source_identifier(source)
+        and _has_table_mapping_context(raw_text)
+        and not _requests_explicit_global_canonical_reference(raw_text)
+    ):
+        return {
+            "type": "table_catalog_source_column_reference",
+            "message": (
+                f"'{source}'은(는) 신규 Table Catalog의 source column 후보로 처리했습니다. "
+                "기존 데이터셋의 canonical alias 충돌은 저장을 막지 않습니다."
+            ),
+            "kind": kind,
+            "input": source,
+            "target": target,
+            "scope": "candidate_local_source_schema",
+        }
+    return None
+
+
+def _requests_explicit_main_filter_reference(raw_text: str) -> bool:
+    lowered = str(raw_text or "").casefold()
+    return any(
+        cue in lowered
+        for cue in (
+            "기존 main filter",
+            "기존 main_flow_filter",
+            "등록된 main filter",
+            "등록된 main_flow_filter",
+            "기존 메인 필터",
+            "등록된 메인 필터",
+            "활성 메인 필터",
+            "main_filter를 참조",
+            "main filter를 참조",
+        )
+    )
+
+
+def _requests_explicit_global_canonical_reference(raw_text: str) -> bool:
+    lowered = str(raw_text or "").casefold()
+    return any(
+        cue in lowered
+        for cue in (
+            "기존 표준 컬럼",
+            "등록된 표준 컬럼",
+            "활성 표준 컬럼",
+            "canonical_column을 참조",
+            "canonical column을 참조",
+        )
+    )
+
+
+def _has_table_mapping_context(raw_text: str) -> bool:
+    lowered = str(raw_text or "").casefold()
+    return any(
+        cue in lowered
+        for cue in (
+            "filter_mappings",
+            "filter mapping",
+            "컬럼 매핑",
+            "매핑",
+            "대응",
+            "실제 컬럼",
+            "source column",
+            "query_template",
+            "조회 sql",
+            "select ",
+        )
+    )
+
+
+def _looks_like_source_identifier(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", str(value or "").strip()))
+
+
+def _drop_table_catalog_optional_missing_information(
+    values: list[str],
+    metadata_type: str,
+    advisories: list[dict[str, Any]],
+) -> list[str]:
+    if metadata_type != "table_catalog" or not advisories:
+        return values
+    advisory_inputs = [_compact(item.get("input")) for item in advisories if _compact(item.get("input"))]
+    result = []
+    for value in values:
+        compact = _compact(value)
+        refers_to_advisory = any(source and source in compact for source in advisory_inputs)
+        registry_only_reason = any(
+            token in str(value or "").casefold()
+            for token in (
+                "main_filter",
+                "main filter",
+                "메인 필터",
+                "canonical",
+                "canonical alias",
+                "활성 계약",
+                "등록 계약",
+            )
+        )
+        if refers_to_advisory and registry_only_reason:
+            continue
+        result.append(value)
     return result
 
 

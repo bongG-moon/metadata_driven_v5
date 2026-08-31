@@ -849,6 +849,75 @@ def _metric_label(payload: dict[str, Any], column: str) -> str:
     return str(column)
 
 
+# 함수 설명: 후속 조건 변경으로 이전 분석 형식을 상속했는지 확인합니다.
+def _condition_only_followup_blueprint_applied(payload: dict[str, Any]) -> bool:
+    inspection = _dict(_dict(payload.get("trace")).get("inspection"))
+    intent = _dict(inspection.get("intent"))
+    blueprint = _dict(intent.get("condition_only_followup_blueprint"))
+    return str(blueprint.get("status") or "").strip().lower() == "applied"
+
+
+# 함수 설명: 조건 변경 후속에서 이전 범위를 가리키는 output contract 표시 라벨만 현재 결과 기준으로 바꿉니다.
+def _refresh_condition_only_followup_presentation_labels(payload: dict[str, Any]) -> None:
+    """Keep inherited execution shape but remove stale prior-scope wording."""
+
+    if not _condition_only_followup_blueprint_applied(payload):
+        return
+    plan = payload.get("intent_plan")
+    contract = plan.get("output_contract") if isinstance(plan, dict) else None
+    labels = contract.get("column_labels") if isinstance(contract, dict) else None
+    if not isinstance(labels, dict) or not labels:
+        return
+
+    def scope(plan_value: dict[str, Any]) -> tuple[set[str], set[str]]:
+        tokens, dates = set(), set()
+        for job in _list(plan_value.get("retrieval_jobs")):
+            if not isinstance(job, dict):
+                continue
+            for section in ("required_params", "filters"):
+                for field, binding in _dict(job.get(section)).items():
+                    values = binding.get("value", binding.get("values")) if isinstance(binding, dict) else binding
+                    values = values if isinstance(values, (list, tuple, set)) else [values]
+                    for value in values:
+                        token = re.sub(r"[^0-9A-Za-z가-힣]+", "", str(value or "")).casefold()
+                        if not token:
+                            continue
+                        field_name = str(field or "").upper()
+                        if "DATE" in field_name or field_name in {"LOAD_DT", "BASE_DT"}:
+                            dates.add(token)
+                        if len(token) >= (2 if "OPER" in field_name or "PROCESS" in field_name else 3):
+                            tokens.add(token)
+                        if "OPER" in field_name or "PROCESS" in field_name:
+                            prefix = re.sub(r"\d+$", "", token)
+                            if len(prefix) >= 2:
+                                tokens.add(prefix)
+        return tokens, dates
+
+    previous_tokens, previous_dates = scope(_dict(_dict(payload.get("state")).get("last_intent_plan")))
+    current_tokens, current_dates = scope(plan)
+    stale_tokens = previous_tokens.difference(current_tokens)
+    date_changed = bool(previous_dates and current_dates and previous_dates != current_dates)
+    neutral_labels = {"OPER": "공정명", "OPER_NAME": "공정명", "OPER_NM": "공정명", "PRODUCTION": "생산량", "WIP": "재공 수량", "UPH": "UPH"}
+    refreshed, reasons = dict(labels), {}
+    for column, label in labels.items():
+        label_text = str(label or "")
+        label_key = re.sub(r"[^0-9A-Za-z가-힣]+", "", label_text).casefold()
+        stale_scope = next((token for token in sorted(stale_tokens, key=len, reverse=True) if len(token) >= 2 and token in label_key), "")
+        stale_date = date_changed and any(token in label_text for token in ("오늘", "금일", "어제", "전일", "당일"))
+        if stale_scope or stale_date:
+            column_text = str(column)
+            refreshed[column_text] = neutral_labels.get(column_text.upper(), column_text)
+            reasons[column_text] = "prior_scope" if stale_scope else "prior_date"
+    if reasons:
+        contract["column_labels"] = refreshed
+    payload.setdefault("trace", {}).setdefault("inspection", {})["answer_presentation_labels"] = {
+        "stage": "20_hybrid_answer_builder",
+        "policy": "condition_only_followup_current_scope",
+        "refreshed_columns": sorted(reasons),
+        "refreshed_reasons": reasons,
+    }
+
+
 # 함수 설명: `_dedupe_numbers()`는 부동소수 비교 오차를 고려해 숫자 목록의 중복을 제거합니다.
 def _dedupe_numbers(values: list[float]) -> list[float]:
     result: list[float] = []
@@ -2237,6 +2306,7 @@ def build_hybrid_answer_response(
 
     started = perf_counter()
     payload = _payload(payload_value)
+    _refresh_condition_only_followup_presentation_labels(payload)
     contract = _dict(payload.get("simple_analysis_contract"))
     route = str(_dict(payload.get("analysis")).get("execution_route") or contract.get("route") or "complex").strip().lower()
     llm_answer_enabled = _bool(use_llm_answer, True)

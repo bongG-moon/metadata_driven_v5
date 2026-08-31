@@ -22,6 +22,9 @@ const state = {
   adminSettingsLoading: false,
   adminSettingsError: "",
   dashboardUsage: { state: "idle", source: null, message: "" },
+  schedulesData: { state: "idle", message: "" },
+  scheduleSubmitting: false,
+  scheduleMutationId: "",
   editingScheduleId: null,
 };
 
@@ -107,17 +110,9 @@ function viewerId() {
 }
 
 function portalRequestHeaders(headers = {}) {
-  const employeeId = String(viewerId() || "").trim();
-  const employeeName = String(state.portal?.viewer?.name || "").trim();
-  const result = { ...headers };
-
-  if (employeeId) result["X-PTMORE-Employee-Id"] = employeeId;
-  // Browser request-header values must be ASCII. The name header is optional,
-  // so retain it only when it can be sent safely without breaking a request.
-  if (employeeName && /^[\x20-\x7E]+$/.test(employeeName)) {
-    result["X-PTMORE-Employee-Name"] = employeeName;
-  }
-  return result;
+  // The Portal server now resolves the employee from its SSO session (or the
+  // fixed local adapter).  Never send browser-controlled employee headers.
+  return { ...headers };
 }
 
 function emptyUsageDashboard(message = "사용 이력을 아직 조회하지 않았습니다.") {
@@ -382,8 +377,19 @@ function applyAdminSettingsToPortal(adminSettings) {
   }
 }
 
+function scheduleOwnerId(schedule) {
+  const rawOwner = typeof schedule?.owner === "string" ? schedule.owner.trim() : "";
+  return String(
+    schedule?.owner_id
+      || schedule?.owner_employee_id
+      || (schedule?.owner && typeof schedule.owner === "object" ? schedule.owner.employee_id : "")
+      || (/^\d{5,}$/.test(rawOwner) ? rawOwner : "")
+      || "",
+  ).trim();
+}
+
 function canEditSchedule(schedule) {
-  return isAdmin() || schedule.owner === viewerId();
+  return isAdmin() || scheduleOwnerId(schedule) === viewerId();
 }
 
 function showToast(message) {
@@ -548,10 +554,145 @@ function buildDashboardFromHistory(history, policy) {
   };
 }
 
+function scheduleStatusCode(schedule) {
+  const value = String(schedule?.status_code || schedule?.status || schedule?.status_label || "").trim().toLowerCase();
+  return ["active", "활성"].includes(value) ? "active" : "inactive";
+}
+
+function scheduleOwnerLabel(schedule) {
+  const ownerId = scheduleOwnerId(schedule);
+  const rawOwner = typeof schedule?.owner === "string" ? schedule.owner.trim() : "";
+  const ownerName = String(
+    schedule?.owner_name
+      || (schedule?.owner && typeof schedule.owner === "object" ? schedule.owner.name : "")
+      || (rawOwner && rawOwner !== ownerId ? rawOwner : "")
+      || "",
+  ).trim();
+  if (ownerName && ownerId) return `${ownerName} (${ownerId})`;
+  return ownerName || ownerId || "등록자 정보 없음";
+}
+
+function formatScheduleDateTime(value, fallback) {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text;
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
+function scheduleResponseTime(record, displayKey, isoKey, fallback) {
+  const display = String(record?.[displayKey] || "").trim();
+  return display || formatScheduleDateTime(record?.[isoKey], fallback);
+}
+
+function normalizeScheduleRecord(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error("스케줄 API 응답 형식을 확인하지 못했습니다.");
+  }
+  const id = String(record.id || record.schedule_id || "").trim();
+  if (!id) throw new Error("스케줄 API 응답에 식별자가 없습니다.");
+
+  const statusCode = scheduleStatusCode(record);
+  const rawOwner = typeof record.owner === "string" ? record.owner.trim() : "";
+  const ownerId = String(
+    record.owner_id
+      || record.owner_employee_id
+      || (record.owner && typeof record.owner === "object" ? record.owner.employee_id : "")
+      || (/^\d{5,}$/.test(rawOwner) ? rawOwner : "")
+      || "",
+  ).trim();
+  const ownerName = String(
+    record.owner_name
+      || (record.owner && typeof record.owner === "object" ? record.owner.name : "")
+      || (rawOwner && rawOwner !== ownerId ? rawOwner : "")
+      || "",
+  ).trim();
+  const normalized = {
+    ...record,
+    id,
+    title: String(record.title || "").trim(),
+    question: String(record.question || "").trim(),
+    repeat: String(record.repeat || "매일").trim(),
+    time: String(record.time || "").trim(),
+    interval_minutes: record.interval_minutes ?? null,
+    start_time: String(record.start_time || "").trim(),
+    end_time: String(record.end_time || "").trim(),
+    target: SCHEDULE_DELIVERY_TARGET,
+    owner_id: ownerId,
+    owner_name: ownerName,
+    status_code: statusCode,
+    status: statusCode === "active" ? "활성" : "일시중지",
+    next_run: scheduleResponseTime(record, "next_run", "next_run_at", statusCode === "active" ? "다음 실행 계산 중" : "일시중지됨"),
+    last_run: scheduleResponseTime(record, "last_run", "last_run_at", "아직 실행 전"),
+  };
+  normalized.owner = scheduleOwnerLabel(normalized);
+  return normalized;
+}
+
+function schedulesFromResponse(payload) {
+  const records = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.schedules)
+      ? payload.schedules
+      : null;
+  if (!records) throw new Error("스케줄 목록 API 응답 형식을 확인하지 못했습니다.");
+  return records.map(normalizeScheduleRecord);
+}
+
+function scheduleFromResponse(payload) {
+  const record = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? (payload.schedule || payload)
+    : null;
+  return normalizeScheduleRecord(record);
+}
+
+function replaceScheduleInState(schedule) {
+  const index = state.portal.schedules.findIndex((item) => item.id === schedule.id);
+  if (index >= 0) state.portal.schedules.splice(index, 1, schedule);
+  else state.portal.schedules.unshift(schedule);
+}
+
+async function loadSchedules({ notifyOnError = false } = {}) {
+  if (!state.portal) return;
+  state.schedulesData = { state: "loading", message: "" };
+  // Do not leave portal preview values visible while the real schedule API is
+  // being requested. The backend is the only source of schedule state.
+  state.portal.schedules = [];
+  renderSchedules();
+
+  try {
+    const response = await fetch("/api/schedules", {
+      headers: portalRequestHeaders({ Accept: "application/json" }),
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageFromResponse(payload, "스케줄 목록을 불러오지 못했습니다."));
+    }
+    state.portal.schedules = schedulesFromResponse(payload);
+    state.schedulesData = { state: "ready", message: "" };
+  } catch (error) {
+    console.warn("schedule list request failed", error);
+    const message = error?.message || "스케줄 목록을 불러오지 못했습니다.";
+    state.portal.schedules = [];
+    state.schedulesData = { state: "error", message };
+    if (notifyOnError) showToast(message);
+  } finally {
+    renderSchedules();
+  }
+}
+
 function filteredSchedules() {
   const search = state.scheduleSearch.toLowerCase().trim();
-  return state.portal.schedules.filter((schedule) => {
-    const matchesScope = state.scheduleScope === "all" || schedule.owner === viewerId();
+  return (state.portal?.schedules || []).filter((schedule) => {
+    const matchesScope = state.scheduleScope === "all" || scheduleOwnerId(schedule) === viewerId();
     const matchesFilter = state.scheduleFilter === "all" || schedule.status === state.scheduleFilter;
     const haystack = `${schedule.title} ${schedule.question} ${schedule.owner}`.toLowerCase();
     return matchesScope && matchesFilter && (!search || haystack.includes(search));
@@ -566,14 +707,16 @@ function scheduleActions(schedule) {
   }
   return `
     <button class="edit-action" type="button" data-edit-schedule="${escapeHtml(schedule.id)}">수정</button>
-    <button class="pause-action" type="button" data-toggle-schedule="${escapeHtml(schedule.id)}">${schedule.status === "활성" ? "일시중지" : "재개"}</button>
+    <button class="pause-action" type="button" data-toggle-schedule="${escapeHtml(schedule.id)}">${scheduleStatusCode(schedule) === "active" ? "일시중지" : "재개"}</button>
     <button class="delete-action" type="button" data-delete-schedule="${escapeHtml(schedule.id)}">삭제</button>`;
 }
 
 function renderSchedules() {
+  if (!state.portal) return;
+  const allSchedules = Array.isArray(state.portal.schedules) ? state.portal.schedules : [];
   const schedules = filteredSchedules();
-  const mineCount = state.portal.schedules.filter((schedule) => schedule.owner === viewerId()).length;
-  const allCount = state.portal.schedules.length;
+  const mineCount = allSchedules.filter((schedule) => scheduleOwnerId(schedule) === viewerId()).length;
+  const allCount = allSchedules.length;
   $("#schedule-count").textContent = allCount;
   $("#my-schedule-count").textContent = mineCount;
   $("#all-schedule-count").textContent = allCount;
@@ -594,6 +737,9 @@ function renderSchedules() {
           const interval = isIntervalSchedule(schedule);
           const ruleLabel = scheduleRuleLabel(schedule);
           const timingLabel = interval ? scheduleWindowLabel(schedule) : schedule.next_run;
+          const intervalNextRun = interval
+            ? `<div><span>다음 실행</span><strong>${escapeHtml(schedule.next_run)}</strong></div>`
+            : "";
           return `
         <article class="schedule-card ${interval ? "interval-schedule" : ""} ${canEditSchedule(schedule) ? "" : "readonly-schedule"}">
           <div class="schedule-card-top">
@@ -605,6 +751,7 @@ function renderSchedules() {
           <div class="schedule-meta">
             <div><span>반복</span><strong>${escapeHtml(ruleLabel)}</strong></div>
             <div><span>${interval ? "실행 구간" : "다음 실행"}</span><strong class="${interval ? "interval-window" : ""}">${escapeHtml(timingLabel)}</strong></div>
+            ${intervalNextRun}
             <div><span>발송 대상</span><strong>${SCHEDULE_DELIVERY_LABEL}</strong></div>
             <div><span>등록자</span><strong>${escapeHtml(schedule.owner)}</strong></div>
           </div>
@@ -615,7 +762,13 @@ function renderSchedules() {
         </article>`;
         })
         .join("")
-    : `<div class="empty-state"><strong>조건에 맞는 스케줄이 없습니다.</strong><span>검색어 또는 상태 필터를 변경해 보세요.</span></div>`;
+    : `<div class="empty-state"><strong>${state.schedulesData?.state === "loading"
+      ? "스케줄 목록을 불러오는 중입니다."
+      : state.schedulesData?.state === "error"
+        ? "스케줄 목록을 불러오지 못했습니다."
+        : "조건에 맞는 스케줄이 없습니다."}</strong><span>${state.schedulesData?.state === "error"
+      ? escapeHtml(state.schedulesData.message || "잠시 후 다시 시도해 주세요.")
+      : "검색어 또는 상태 필터를 변경해 보세요."}</span></div>`;
 }
 
 function liveMetadataTypeInfo(metadataType = state.metadataType) {
@@ -2329,6 +2482,123 @@ function prepareScheduleDrawer(scheduleId = "") {
   syncScheduleTimingFields();
 }
 
+function scheduleRequestPayload(form) {
+  const timing = scheduleTimingFromForm(form);
+  return {
+    title: String(form.elements.title.value || "").trim(),
+    question: String(form.elements.question.value || "").trim(),
+    repeat: timing.repeat,
+    time: timing.time,
+    interval_minutes: timing.interval_minutes,
+    start_time: timing.start_time,
+    end_time: timing.end_time,
+  };
+}
+
+async function saveSchedule(form) {
+  if (!state.portal || state.scheduleSubmitting) return;
+  const timing = scheduleTimingFromForm(form);
+  if (!validateScheduleTiming(timing, form)) return;
+
+  const editingSchedule = state.portal.schedules.find((item) => item.id === state.editingScheduleId);
+  if (editingSchedule && !canEditSchedule(editingSchedule)) {
+    showToast("등록자 본인 또는 관리자만 스케줄을 수정할 수 있습니다.");
+    return;
+  }
+
+  const payload = scheduleRequestPayload(form);
+  if (!payload.title || !payload.question) {
+    showToast("스케줄 이름과 실행 질문을 입력해 주세요.");
+    return;
+  }
+
+  const isEdit = Boolean(editingSchedule);
+  const url = isEdit
+    ? `/api/schedules/${encodeURIComponent(editingSchedule.id)}`
+    : "/api/schedules";
+  const submitButton = $("#schedule-submit");
+  state.scheduleSubmitting = true;
+  submitButton.disabled = true;
+
+  try {
+    const response = await fetch(url, {
+      method: isEdit ? "PATCH" : "POST",
+      headers: portalRequestHeaders({ Accept: "application/json", "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+    });
+    const responsePayload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageFromResponse(responsePayload, isEdit
+        ? "스케줄을 수정하지 못했습니다."
+        : "스케줄을 등록하지 못했습니다."));
+    }
+    replaceScheduleInState(scheduleFromResponse(responsePayload));
+    if (!isEdit) state.scheduleScope = "mine";
+    closeDrawers();
+    renderSchedules();
+    switchView("schedules");
+    showToast(isEdit ? "스케줄 변경 사항을 저장했습니다." : "새 스케줄을 등록했습니다.");
+  } catch (error) {
+    console.error("schedule save request failed", error);
+    showToast(error?.message || "스케줄을 저장하지 못했습니다.");
+  } finally {
+    state.scheduleSubmitting = false;
+    submitButton.disabled = false;
+  }
+}
+
+async function updateScheduleStatus(schedule) {
+  if (!schedule || !canEditSchedule(schedule) || state.scheduleMutationId) return;
+  const nextStatus = scheduleStatusCode(schedule) === "active" ? "inactive" : "active";
+  state.scheduleMutationId = schedule.id;
+
+  try {
+    const response = await fetch(`/api/schedules/${encodeURIComponent(schedule.id)}/status`, {
+      method: "PATCH",
+      headers: portalRequestHeaders({ Accept: "application/json", "Content-Type": "application/json" }),
+      body: JSON.stringify({ status: nextStatus }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageFromResponse(payload, "스케줄 상태를 변경하지 못했습니다."));
+    }
+    const updated = scheduleFromResponse(payload);
+    replaceScheduleInState(updated);
+    renderSchedules();
+    showToast(`${updated.title} 스케줄을 ${scheduleStatusCode(updated) === "active" ? "재개" : "일시중지"}했습니다.`);
+  } catch (error) {
+    console.error("schedule status request failed", error);
+    showToast(error?.message || "스케줄 상태를 변경하지 못했습니다.");
+  } finally {
+    state.scheduleMutationId = "";
+  }
+}
+
+async function deleteSchedule(schedule) {
+  if (!schedule || !canEditSchedule(schedule) || state.scheduleMutationId) return;
+  state.scheduleMutationId = schedule.id;
+
+  try {
+    const response = await fetch(`/api/schedules/${encodeURIComponent(schedule.id)}`, {
+      method: "DELETE",
+      headers: portalRequestHeaders({ Accept: "application/json" }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageFromResponse(payload, "스케줄을 삭제하지 못했습니다."));
+    }
+    state.portal.schedules = state.portal.schedules.filter((item) => item.id !== schedule.id);
+    if (state.editingScheduleId === schedule.id) closeDrawers();
+    renderSchedules();
+    showToast(`${schedule.title} 스케줄을 삭제했습니다.`);
+  } catch (error) {
+    console.error("schedule delete request failed", error);
+    showToast(error?.message || "스케줄을 삭제하지 못했습니다.");
+  } finally {
+    state.scheduleMutationId = "";
+  }
+}
+
 function metadataFormMarkup() {
   const example = activeAuthoringExample();
   const rawText = escapeHtml(metadataExampleRawText(example));
@@ -2463,7 +2733,7 @@ async function submitMetadataAuthoring(form) {
 }
 
 function bindEvents() {
-  document.addEventListener("click", (event) => {
+  document.addEventListener("click", async (event) => {
     const nav = event.target.closest("[data-nav]");
     if (nav) {
       event.preventDefault();
@@ -2594,10 +2864,7 @@ function bindEvents() {
         showToast("등록자 본인 또는 관리자만 스케줄을 수정하거나 상태를 변경할 수 있습니다.");
         return;
       }
-      schedule.status = schedule.status === "활성" ? "일시중지" : "활성";
-      schedule.next_run = schedule.status === "활성" ? scheduleNextRun(schedule) : "일시중지됨";
-      renderSchedules();
-      showToast(`${schedule.title} 스케줄을 ${schedule.status === "활성" ? "재개" : "일시중지"}했습니다. (더미 화면)`);
+      await updateScheduleStatus(schedule);
       return;
     }
 
@@ -2608,10 +2875,7 @@ function bindEvents() {
         showToast("등록자 본인 또는 관리자만 스케줄을 삭제할 수 있습니다.");
         return;
       }
-      state.portal.schedules = state.portal.schedules.filter((item) => item.id !== schedule.id);
-      if (state.editingScheduleId === schedule.id) closeDrawers();
-      renderSchedules();
-      showToast(`${schedule.title} 스케줄을 목록에서 삭제했습니다. 실제 MongoDB에는 아직 반영하지 않았습니다.`);
+      await deleteSchedule(schedule);
       return;
     }
 
@@ -2686,64 +2950,9 @@ function bindEvents() {
     renderMetadata();
   });
 
-  $("#schedule-form").addEventListener("submit", (event) => {
+  $("#schedule-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = event.currentTarget;
-    const values = Object.fromEntries(new FormData(form));
-    const timing = scheduleTimingFromForm(form);
-    if (!validateScheduleTiming(timing, form)) return;
-    const editingSchedule = state.portal.schedules.find((item) => item.id === state.editingScheduleId);
-    if (editingSchedule) {
-      if (!canEditSchedule(editingSchedule)) {
-        showToast("등록자 본인 또는 관리자만 스케줄을 수정할 수 있습니다.");
-        return;
-      }
-      Object.assign(editingSchedule, {
-        title: values.title,
-        question: values.question,
-        ...timing,
-        rule_label: scheduleLabel(
-          timing.repeat,
-          timing.time,
-          timing.interval_minutes,
-          timing.start_time,
-          timing.end_time,
-        ),
-        next_run: editingSchedule.status === "활성"
-          ? nextRunLabel(timing.repeat, timing.time, timing.interval_minutes, timing.start_time, timing.end_time)
-          : "일시중지됨",
-        target: SCHEDULE_DELIVERY_TARGET,
-      });
-      closeDrawers();
-      renderSchedules();
-      showToast("스케줄 변경 사항을 저장했습니다. 실제 MongoDB에는 아직 저장하지 않았습니다.");
-      return;
-    }
-
-    const index = state.portal.schedules.length + 82;
-    state.portal.schedules.unshift({
-      id: `SCH-2026-${String(index).padStart(3, "0")}`,
-      title: values.title,
-      question: values.question,
-      ...timing,
-      rule_label: scheduleLabel(
-        timing.repeat,
-        timing.time,
-        timing.interval_minutes,
-        timing.start_time,
-        timing.end_time,
-      ),
-      next_run: nextRunLabel(timing.repeat, timing.time, timing.interval_minutes, timing.start_time, timing.end_time),
-      target: SCHEDULE_DELIVERY_TARGET,
-      owner: viewerId(),
-      status: "활성",
-      last_run: "아직 실행 전",
-    });
-    state.scheduleScope = "mine";
-    closeDrawers();
-    renderSchedules();
-    switchView("schedules");
-    showToast("새 스케줄을 등록했습니다. 실제 저장은 아직 연결되지 않았습니다.");
+    await saveSchedule(event.currentTarget);
   });
 
   $("#metadata-form").addEventListener("submit", async (event) => {
@@ -2778,18 +2987,16 @@ function bindEvents() {
 
 async function initialize() {
   try {
-    const previewRole = new URLSearchParams(window.location.search).get("preview_role");
-    const suffix = previewRole ? `?preview_role=${encodeURIComponent(previewRole)}` : "";
-    const response = await fetch(`/api/mock/portal${suffix}`);
-    if (!response.ok) throw new Error("dummy data request failed");
+    const response = await fetch("/api/portal", { cache: "no-store" });
+    if (!response.ok) throw new Error("portal data request failed");
     state.portal = await response.json();
   } catch (error) {
     console.error(error);
-    document.body.innerHTML = `<main class="fatal-error"><h1>미리보기 데이터를 불러오지 못했습니다.</h1><p>서버를 다시 실행한 뒤 새로고침해 주세요.</p></main>`;
+    document.body.innerHTML = `<main class="fatal-error"><h1>포털 정보를 불러오지 못했습니다.</h1><p>로그인 상태와 서버 실행 상태를 확인한 뒤 새로고침해 주세요.</p></main>`;
     return;
   }
 
-  const startupTasks = [loadDashboardUsage()];
+  const startupTasks = [loadDashboardUsage(), loadSchedules()];
   if (isAdmin()) {
     startupTasks.push(
       loadMetadataApiStatus(),

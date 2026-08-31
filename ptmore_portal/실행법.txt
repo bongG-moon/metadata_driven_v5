@@ -5,4 +5,9 @@ python -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
-python -m uvicorn app:application --host 127.0.0.1 --port 8002
+# 로컬 실행: 사번 2011111 / 이름 문봉건으로 고정됩니다.
+python -m uvicorn app_local:application --host 127.0.0.1 --port 8002
+
+# 운영 실행: HCP 환경에서만 사용합니다.
+# .env 또는 HCP Secret에 PTMORE_SSO_SESSION_SECRET을 입력한 뒤 실행합니다.
+python app.py

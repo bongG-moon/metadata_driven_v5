@@ -4509,6 +4509,112 @@ def test_complex_answer_builder_bool_toggle_controls_answer_model_call():
     assert enabled_trace["answer_model_response"]["llm_answer_enabled"] is True
 
 
+def test_condition_only_followup_drops_prior_scope_labels_for_llm_off_answer_and_table():
+    """D/A → W/B must keep the new data while never reusing a D/A label."""
+
+    _, _, answer = _modules()
+    first_turn = {
+        "request": {"question": "오늘 DA공정 생산량 알려줘"},
+        "simple_analysis_contract": {"route": "complex"},
+        "intent_plan": {
+            "analysis_kind": "production_quantity_by_process",
+            "retrieval_jobs": [
+                {
+                    "dataset_key": "production_today",
+                    "source_alias": "production_today",
+                    "required_params": {"DATE": "20260830"},
+                    "filters": {"OPER_NAME": {"operator": "in", "value": ["D/A1", "D/A2"]}},
+                }
+            ],
+            "pandas_execution_plan": [{"operation": "groupby_and_aggregate", "group_by": ["OPER_NAME"]}],
+            "output_contract": {
+                "grain_columns": ["OPER_NAME"],
+                "primary_metric": "PRODUCTION",
+                "metric_columns": ["PRODUCTION"],
+                "result_columns": ["OPER_NAME", "PRODUCTION"],
+                "column_labels": {"OPER_NAME": "공정명", "PRODUCTION": "DA공정 실적"},
+            },
+        },
+        "analysis": {"status": "ok", "execution_route": "complex", "row_count": 1},
+        "data": {
+            "columns": ["OPER_NAME", "PRODUCTION"],
+            "rows": [{"OPER_NAME": "D/A1", "PRODUCTION": 100}],
+            "row_count": 1,
+        },
+        "trace": {"inspection": {"fast_path": {"llm_calls": {"intent": 1, "pandas_generation": 1, "repair": 0, "answer": 0}}}},
+    }
+    first_result = answer.build_hybrid_answer_response(
+        first_turn,
+        model_invoker=lambda _prompt: (_ for _ in ()).throw(AssertionError("answer model must stay off")),
+        use_llm_answer=False,
+    )
+
+    followup_jobs = [
+        {
+            "dataset_key": "production_today",
+            "source_alias": "production_today",
+            "required_params": {"DATE": "20260830"},
+            "filters": {"OPER_NAME": {"operator": "in", "value": ["W/B1", "W/B2"]}},
+        }
+    ]
+    followup_steps = [{"operation": "groupby_and_aggregate", "group_by": ["OPER_NAME"]}]
+    followup_rows = [{"OPER_NAME": "W/B1", "PRODUCTION": 200}]
+    followup = {
+        "request": {"question": "WB공정은?"},
+        "state": deepcopy(first_result["state"]),
+        "simple_analysis_contract": {"route": "complex"},
+        "intent_plan": {
+            "analysis_kind": "production_quantity_by_process",
+            "request_scope": "followup_requery",
+            "reference_mode": "previous_filters",
+            "retrieval_jobs": deepcopy(followup_jobs),
+            "pandas_execution_plan": deepcopy(followup_steps),
+            # This is the inherited contract shape before Node 20 applies its
+            # presentation-only current-scope cleanup.
+            "output_contract": {
+                "grain_columns": ["OPER_NAME"],
+                "primary_metric": "PRODUCTION",
+                "metric_columns": ["PRODUCTION"],
+                "result_columns": ["OPER_NAME", "PRODUCTION"],
+                "column_labels": {"OPER_NAME": "공정명", "PRODUCTION": "DA공정 실적"},
+            },
+        },
+        "analysis": {"status": "ok", "execution_route": "complex", "row_count": 1},
+        "data": {
+            "columns": ["OPER_NAME", "PRODUCTION"],
+            "rows": deepcopy(followup_rows),
+            "row_count": 1,
+        },
+        "trace": {
+            "inspection": {
+                "intent": {"condition_only_followup_blueprint": {"status": "applied"}},
+                "fast_path": {"llm_calls": {"intent": 1, "pandas_generation": 1, "repair": 0, "answer": 0}},
+            }
+        },
+    }
+
+    result = answer.build_hybrid_answer_response(
+        followup,
+        model_invoker=lambda _prompt: (_ for _ in ()).throw(AssertionError("answer model must stay off")),
+        use_llm_answer=False,
+    )
+
+    assert "W/B1" in result["answer_message"]
+    assert "DA공정" not in result["answer_message"]
+    assert "D/A" not in result["answer_message"]
+    table = result["answer_sections"]["result_table"]
+    assert table["column_labels"]["OPER_NAME"] == "공정명"
+    assert table["column_labels"]["PRODUCTION"] == "생산량"
+    assert result["data"]["rows"] == followup_rows
+    assert result["analysis"]["execution_route"] == "complex"
+    assert result["intent_plan"]["retrieval_jobs"] == followup_jobs
+    assert result["intent_plan"]["pandas_execution_plan"] == followup_steps
+    presentation_trace = result["trace"]["inspection"]["answer_presentation_labels"]
+    assert presentation_trace["policy"] == "condition_only_followup_current_scope"
+    assert presentation_trace["refreshed_columns"] == ["PRODUCTION"]
+    assert result["trace"]["inspection"]["fast_path"]["llm_calls"]["answer"] == 0
+
+
 def test_complex_answer_llm_off_does_not_materialize_answer_prompt(monkeypatch):
     _, _, answer = _modules()
     payload = {

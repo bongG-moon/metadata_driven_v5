@@ -1,0 +1,8 @@
+httpx>=0.27,<1.0
+python-dotenv>=1.0,<2.0
+pymongo>=4.6,<5.0
+fastapi>=0.110,<1.0
+uvicorn>=0.27,<1.0
+pytest>=8.0,<9.0
+# 경량 Linux 컨테이너에 시스템 시간대 DB가 없을 때 Asia/Seoul 처리를 보완
+tzdata>=2024.1,<2027.0

@@ -11,6 +11,10 @@
 - 같은 문구가 둘 이상의 등록 계약과 정확히 대응하거나 등록 후보에 target이 없을 때만 unresolved_references와 missing_information에 넣고 needs_more_input=true로 반환한다.
 - 하나로 확정하지 못한 참조가 있으면 refined_text에서 임의의 후보 key를 선택하지 말고 사용자의 원래 업무 표현을 유지한다. 후보 선택은 재입력 안내 단계에 맡긴다.
 - 후보 목록에 여러 항목이 있더라도 문맥상 각 문구의 target을 등록된 후보 중 하나로 특정할 수 있으면 그 target을 반환한다.
+- Table Catalog를 등록할 때 `filter_mappings`의 왼쪽 canonical key와 오른쪽 실제 source column은 **새 테이블 내부의 실행 계약**이다. 실제 source column, SQL SELECT 컬럼, `DATE -> WORK_DATE` 같은 매핑 값은 기존 main_filter나 다른 Table Catalog의 canonical alias를 참조하는 것으로 해석하지 않는다.
+- Table Catalog의 컬럼 매핑을 설명하는 과정에서 기존 main_filter가 등록되어 있는지 확인하거나 `main_filter` resolved_references를 만들지 않는다. 사용자가 "기존 메인 필터를 참조"한다고 명시한 경우에만 main_filter 참조를 사용한다.
+- 새 Table Catalog 안에 명시한 filter_mappings·required_param_mappings·query SQL·columns가 서로 일치하면 그 source-local 계약을 우선한다. 다른 기존 데이터셋에 같은 이름의 물리 컬럼이 다른 canonical key로 등록되어 있어도 unresolved_references나 needs_more_input 사유로 만들지 않는다.
+- 반대로 새 Table Catalog 내부에서 같은 실제 source column을 서로 다른 canonical key에 매핑했거나, mapping 오른쪽 컬럼이 새 query 결과 columns에 없으면 이를 누락/확인 필요로 반환한다.
 - mean, sum, nunique 같은 집계와 add, subtract, multiply, divide 산술 계산을 구분한다.
 - refined_text는 저장 JSON이 아니라 사람이 읽고 그대로 복사해 다음 실행에 입력할 수 있는 완결된 한국어 등록 요청문이다. 설명문, 내부 검증 지시문, 선택 요청을 쓰지 않는다.
 - 사용자 원문을 단순 반복하지 말고, 확정된 실제 dataset_key와 표준 컬럼을 다음 저장 후보 생성기가 오해하지 않도록 업무 문장 안에 자연스럽게 반영한다.
