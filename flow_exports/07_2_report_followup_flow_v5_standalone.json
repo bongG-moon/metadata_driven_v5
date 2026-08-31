@@ -2484,6 +2484,142 @@
         },
         "selected": false,
         "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-report_followup-01-context-restore",
+          "node": {
+            "description": "## ① 이전 Report 문맥 복원\n\n- 세션 상태와 Report가 선언한 materialized query source를 읽습니다.\n- 이 Flow는 새 운영 원본 데이터를 직접 조회하지 않습니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 300,
+        "id": "note-auxiliary-report_followup-01-context-restore",
+        "position": {
+          "x": -50.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 750,
+        "positionAbsolute": {
+          "x": -50.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 300,
+          "width": 750
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-report_followup-02-plan-contract",
+          "node": {
+            "description": "## ② 제한형 계획·계약 검증\n\n- **Guarded Plan Router / 정규화기**: 허용된 select·filter·sort·top-N만 계획합니다.\n- 계획은 저장된 Report query-source 계약을 벗어날 수 없습니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 320,
+        "id": "note-auxiliary-report_followup-02-plan-contract",
+        "position": {
+          "x": 700.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1060,
+        "positionAbsolute": {
+          "x": 700.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 320,
+          "width": 1060
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-report_followup-03-snapshot-execution",
+          "node": {
+            "description": "## ③ Snapshot 실행\n\n- **결과 로더 / Snapshot Executor**: 저장된 원본·결과를 복원해 계획된 제한 연산을 결정론적으로 실행합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 280,
+        "id": "note-auxiliary-report_followup-03-snapshot-execution",
+        "position": {
+          "x": 1780.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 680,
+        "positionAbsolute": {
+          "x": 1780.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 280,
+          "width": 680
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-report_followup-04-response-output",
+          "node": {
+            "description": "## ④ 응답·세션 갱신\n\n- 표 기반 응답과 Report anchor를 유지한 채 세션 상태·API·Chat Output으로 결과를 전달합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 280,
+        "id": "note-auxiliary-report_followup-04-response-output",
+        "position": {
+          "x": 2500.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1420,
+        "positionAbsolute": {
+          "x": 2500.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 280,
+          "width": 1420
+        }
       }
     ],
     "edges": [
@@ -2870,9 +3006,9 @@
       }
     ],
     "viewport": {
-      "x": 0,
-      "y": 0,
-      "zoom": 0.55
+      "x": 170.0,
+      "y": 255.0,
+      "zoom": 0.29
     }
   },
   "description": "Same-session Report follow-up flow that restores a declared raw or pre-aggregated Report Snapshot view, validates its query-source contract, executes only bounded select/filter/sort/top-N operations, and never performs live source retrieval, groupby, joins, or metadata-catalog planning.",

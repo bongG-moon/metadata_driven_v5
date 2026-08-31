@@ -39,6 +39,416 @@ FLOW_DISPLAY_NAMES = {
     "realtime_production_report": "07-1. v5_realtime_production_report",
     "report_followup": "07-2. v5_report_followup",
 }
+AUXILIARY_NOTE_PREFIX = "note-auxiliary-"
+
+
+def _sticky_note_node(
+    note_id: str,
+    description: str,
+    *,
+    x: float,
+    y: float,
+    width: int,
+    height: int,
+    color: str,
+) -> dict[str, Any]:
+    """Build a Langflow 1.11.0 informational note without execution ports."""
+
+    return {
+        "data": {
+            "id": note_id,
+            "node": {
+                "description": description,
+                "display_name": "",
+                "documentation": "",
+                "template": {"backgroundColor": color},
+                "lf_version": TARGET_LANGFLOW_VERSION,
+            },
+            "type": "note",
+        },
+        "dragging": False,
+        "height": height,
+        "id": note_id,
+        "position": {"x": x, "y": y},
+        "resizing": False,
+        "selected": False,
+        "type": "noteNode",
+        "width": width,
+        "positionAbsolute": {"x": x, "y": y},
+        "style": {"height": height, "width": width},
+    }
+
+
+def _saving_note_specs(flow_key: str) -> list[dict[str, Any]]:
+    """Describe the shared authoring canvas while keeping each identity rule explicit."""
+
+    details = {
+        "domain_saving": ("도메인", "도메인 identity·별칭"),
+        "table_catalog_saving": ("테이블 카탈로그", "dataset_key"),
+        "main_flow_filter_saving": ("Main Flow Filter", "filter_key"),
+    }
+    label, identity = details[flow_key]
+    return [
+        {
+            "id": "01-request",
+            "description": (
+                f"## ① {label} 등록 요청 준비\n\n"
+                "- **Chat Input / 요청 로더**: 자연어 등록 요청과 테스트 실행 여부를 정리합니다.\n"
+                "- **중복 처리 정책**: skip·merge·replace·create_new 중 선택한 방식을 함께 전달합니다."
+            ),
+            "x": -40.0,
+            "y": -650.0,
+            "width": 660,
+            "height": 300,
+            "color": "blue",
+        },
+        {
+            "id": "02-extract-normalize",
+            "description": (
+                "## ② 후보 생성·정규화\n\n"
+                "- **변수 생성기 / Prompt / Language Model**: 원문에서 구조화된 등록 후보를 추출합니다.\n"
+                "- **정규화기**: 모델 표현 차이를 공통 저장 계약으로 정리합니다.\n\n"
+                "이 단계는 후보를 만들 뿐 아직 저장하지 않습니다."
+            ),
+            "x": 620.0,
+            "y": -650.0,
+            "width": 1200,
+            "height": 330,
+            "color": "amber",
+        },
+        {
+            "id": "03-review-write",
+            "description": (
+                "## ③ 중복 검토·저장 판단\n\n"
+                f"- **유사도 확인기**: 기존 항목을 `{identity}` 기준으로 비교합니다.\n"
+                "- **검수/저장 처리기**: 스키마·중복 action·권한을 확인해 테스트 실행 또는 실제 저장을 결정합니다."
+            ),
+            "x": 1840.0,
+            "y": -650.0,
+            "width": 600,
+            "height": 320,
+            "color": "amber",
+        },
+        {
+            "id": "04-response",
+            "description": (
+                "## ④ 결과 전달\n\n"
+                "- **응답 생성기**: 저장 후보·검수 결과·다음 조치를 정리합니다.\n"
+                "- **메시지 / API / Chat Output**: 같은 결과를 채팅과 API 응답으로 전달합니다."
+            ),
+            "x": 2440.0,
+            "y": -650.0,
+            "width": 1000,
+            "height": 300,
+            "color": "blue",
+        },
+    ]
+
+
+def _auxiliary_note_specs(flow_key: str) -> list[dict[str, Any]]:
+    """Return concise, non-executing stage explanations for each auxiliary Flow."""
+
+    if flow_key in {"domain_saving", "table_catalog_saving", "main_flow_filter_saving"}:
+        return _saving_note_specs(flow_key)
+    if flow_key == "metadata_qa":
+        return [
+            {
+                "id": "01-request-session",
+                "description": (
+                    "## ① 질문·세션 입력\n\n"
+                    "- **Chat Input / 세션 상태 로더**: 현재 질문과 같은 session의 compact 문맥을 준비합니다.\n"
+                    "- 세션 기록이 없거나 읽기에 실패해도 현재 메타데이터 QA는 계속 진행합니다."
+                ),
+                "x": -80.0,
+                "y": -650.0,
+                "width": 960,
+                "height": 300,
+                "color": "blue",
+            },
+            {
+                "id": "02-metadata-context",
+                "description": (
+                    "## ② 읽기 전용 메타데이터 문맥\n\n"
+                    "- **Snapshot / Context / Variables**: 도메인·테이블 카탈로그·Main Flow Filter 후보를 읽어 질문과 관련된 항목만 정리합니다.\n\n"
+                    "이 단계는 등록 정보를 변경하지 않습니다."
+                ),
+                "x": 920.0,
+                "y": -650.0,
+                "width": 940,
+                "height": 330,
+                "color": "blue",
+            },
+            {
+                "id": "03-qa-normalize",
+                "description": (
+                    "## ③ QA 응답 생성\n\n"
+                    "- **Prompt / Language Model**: 제공된 메타데이터 문맥 안에서만 답변 초안을 만듭니다.\n"
+                    "- **정규화기**: 답변을 표준 QA payload로 정리합니다."
+                ),
+                "x": 1860.0,
+                "y": -650.0,
+                "width": 880,
+                "height": 300,
+                "color": "amber",
+            },
+            {
+                "id": "04-state-output",
+                "description": (
+                    "## ④ 세션·채널 출력\n\n"
+                    "- **세션 상태 저장기**: 다음 질문에 필요한 compact 상태만 기록합니다.\n"
+                    "- **메시지 / API / Chat Output**: 같은 QA 결과를 각 채널로 전달합니다."
+                ),
+                "x": 2740.0,
+                "y": -650.0,
+                "width": 1000,
+                "height": 300,
+                "color": "blue",
+            },
+        ]
+    if flow_key == "agent_tool_router":
+        return [
+            {
+                "id": "01-gaia-session",
+                "description": (
+                    "## ① GaiA 요청·세션 문맥\n\n"
+                    "- **GaiA Input**: 질문과 metadata를 받습니다.\n"
+                    "- **외부 세션 ID 추출기 / Router 문맥 로더**: 직전 질문·답변·선택 Flow 한 세트만 복원합니다."
+                ),
+                "x": -100.0,
+                "y": -1340.0,
+                "width": 950,
+                "height": 330,
+                "color": "blue",
+            },
+            {
+                "id": "02-flow-selection",
+                "description": (
+                    "## ② 실행 Flow 선택\n\n"
+                    "- **Router Agent**: 실제 데이터 분석·메타데이터 QA·등록·실시간 Report 중 하나를 선택합니다.\n"
+                    "- **6개 Cached Flow Tool**: 선택된 하위 Flow만 실행하며, Report 후속 Flow는 Router에 노출하지 않습니다."
+                ),
+                "x": 900.0,
+                "y": -1340.0,
+                "width": 780,
+                "height": 350,
+                "color": "amber",
+            },
+            {
+                "id": "03-direct-result",
+                "description": (
+                    "## ③ 직접 결과 반환\n\n"
+                    "- **Direct Result Adapter**: 하위 Flow의 내부 이벤트 대신 사용자에게 보여줄 최종 답변만 선택합니다.\n"
+                    "- 하위 실행 오류도 Router의 채팅 출력 형식으로 정리합니다."
+                ),
+                "x": 1680.0,
+                "y": -1340.0,
+                "width": 640,
+                "height": 320,
+                "color": "blue",
+            },
+            {
+                "id": "04-router-state",
+                "description": (
+                    "## ④ Router 상태 저장·출력\n\n"
+                    "- 성공한 Flow와 최근 질문·답변만 저장합니다.\n"
+                    "- 상태 저장 실패는 현재 응답을 막지 않고 Chat Output으로 결과를 반환합니다."
+                ),
+                "x": 2020.0,
+                "y": -980.0,
+                "width": 760,
+                "height": 320,
+                "color": "blue",
+            },
+        ]
+    if flow_key == "realtime_production_report":
+        return [
+            {
+                "id": "01-input-scope",
+                "description": (
+                    "## ① 입력·공정 범위·판정 데이터\n\n"
+                    "- 질문, 활성 공정 그룹 목록, Report 판단용 데이터를 준비합니다.\n"
+                    "- 허용되지 않은 공정 그룹은 다음 단계에서 통과시키지 않습니다."
+                ),
+                "x": -80.0,
+                "y": -1060.0,
+                "width": 920,
+                "height": 310,
+                "color": "blue",
+            },
+            {
+                "id": "02-deterministic-selection",
+                "description": (
+                    "## ② 결정론 공정 선택\n\n"
+                    "- **Process Group Selection Gate**: 질문과 허용 목록을 비교해 단일 공정 그룹과 해당 데이터만 확정합니다.\n\n"
+                    "LLM 기본값 추측 없이 검증 가능한 선택만 사용합니다."
+                ),
+                "x": 920.0,
+                "y": -1060.0,
+                "width": 930,
+                "height": 330,
+                "color": "amber",
+            },
+            {
+                "id": "03-report-context",
+                "description": (
+                    "## ③ Report View·후속 문맥 저장\n\n"
+                    "- **View Bundle / Context Publisher**: Report 화면과 재사용 가능한 query-source 계약을 만듭니다.\n"
+                    "- **결과 저장소**: 후속 확인에 필요한 제한된 결과 참조를 저장합니다."
+                ),
+                "x": 1900.0,
+                "y": -1060.0,
+                "width": 1180,
+                "height": 330,
+                "color": "blue",
+            },
+            {
+                "id": "04-report-output",
+                "description": (
+                    "## ④ HTML Report·응답\n\n"
+                    "- **Report Builder**: HTML Report와 API 응답을 생성합니다.\n"
+                    "- **세션 상태 / API terminal / Chat Output**: 최종 링크와 응답을 각 채널에 전달합니다."
+                ),
+                "x": 3120.0,
+                "y": -1060.0,
+                "width": 1220,
+                "height": 310,
+                "color": "blue",
+            },
+        ]
+    if flow_key == "realtime_production_report_legacy":
+        return [
+            {
+                "id": "01-input-selection",
+                "description": (
+                    "## ① 입력·카탈로그·LLM 선택\n\n"
+                    "- 질문과 공정 그룹 허용 목록을 Prompt와 Language Model에 전달합니다.\n"
+                    "- 선택 결과는 다음 Gate에서 반드시 허용 목록과 다시 비교합니다."
+                ),
+                "x": -60.0,
+                "y": -1060.0,
+                "width": 1500,
+                "height": 310,
+                "color": "blue",
+            },
+            {
+                "id": "02-gate-report",
+                "description": (
+                    "## ② 선택 Gate·Report 생성\n\n"
+                    "- **Selection Gate**: LLM 선택을 공정 그룹 계약으로 검증합니다.\n"
+                    "- **Report Builder**: 통과한 데이터로 HTML Report를 만듭니다."
+                ),
+                "x": 1500.0,
+                "y": -1060.0,
+                "width": 840,
+                "height": 300,
+                "color": "amber",
+            },
+            {
+                "id": "03-output",
+                "description": (
+                    "## ③ 결과 출력\n\n"
+                    "- **Chat Output / API Terminal**: 생성된 Report 결과를 사용자와 API client에 전달합니다."
+                ),
+                "x": 2360.0,
+                "y": -1060.0,
+                "width": 720,
+                "height": 260,
+                "color": "blue",
+            },
+            {
+                "id": "04-legacy-scope",
+                "description": (
+                    "## 레거시 Flow 안내\n\n"
+                    "이 Flow는 LLM 공정 선택을 사용하는 호환 경로입니다. 신규 기본 경로는 07-1의 결정론 Selection Gate입니다."
+                ),
+                "x": 2360.0,
+                "y": -740.0,
+                "width": 760,
+                "height": 260,
+                "color": "amber",
+            },
+        ]
+    if flow_key == "report_followup":
+        return [
+            {
+                "id": "01-context-restore",
+                "description": (
+                    "## ① 이전 Report 문맥 복원\n\n"
+                    "- 세션 상태와 Report가 선언한 materialized query source를 읽습니다.\n"
+                    "- 이 Flow는 새 운영 원본 데이터를 직접 조회하지 않습니다."
+                ),
+                "x": -50.0,
+                "y": -650.0,
+                "width": 750,
+                "height": 300,
+                "color": "blue",
+            },
+            {
+                "id": "02-plan-contract",
+                "description": (
+                    "## ② 제한형 계획·계약 검증\n\n"
+                    "- **Guarded Plan Router / 정규화기**: 허용된 select·filter·sort·top-N만 계획합니다.\n"
+                    "- 계획은 저장된 Report query-source 계약을 벗어날 수 없습니다."
+                ),
+                "x": 700.0,
+                "y": -650.0,
+                "width": 1060,
+                "height": 320,
+                "color": "amber",
+            },
+            {
+                "id": "03-snapshot-execution",
+                "description": (
+                    "## ③ Snapshot 실행\n\n"
+                    "- **결과 로더 / Snapshot Executor**: 저장된 원본·결과를 복원해 계획된 제한 연산을 결정론적으로 실행합니다."
+                ),
+                "x": 1780.0,
+                "y": -650.0,
+                "width": 680,
+                "height": 280,
+                "color": "blue",
+            },
+            {
+                "id": "04-response-output",
+                "description": (
+                    "## ④ 응답·세션 갱신\n\n"
+                    "- 표 기반 응답과 Report anchor를 유지한 채 세션 상태·API·Chat Output으로 결과를 전달합니다."
+                ),
+                "x": 2500.0,
+                "y": -650.0,
+                "width": 1420,
+                "height": 280,
+                "color": "blue",
+            },
+        ]
+    raise ValueError(f"Unsupported auxiliary Flow note target: {flow_key}")
+
+
+def apply_auxiliary_sticky_notes(flow: dict[str, Any], flow_key: str) -> dict[str, Any]:
+    """Attach documentation-only stage notes without changing runtime nodes or edges."""
+
+    prefix = f"{AUXILIARY_NOTE_PREFIX}{flow_key}-"
+    nodes = flow.get("data", {}).get("nodes", [])
+    nodes[:] = [node for node in nodes if not str(node.get("id") or "").startswith(prefix)]
+    for spec in _auxiliary_note_specs(flow_key):
+        nodes.append(
+            _sticky_note_node(
+                f"{prefix}{spec['id']}",
+                spec["description"],
+                x=spec["x"],
+                y=spec["y"],
+                width=spec["width"],
+                height=spec["height"],
+                color=spec["color"],
+            )
+        )
+    if flow_key == "agent_tool_router":
+        flow["data"]["viewport"] = {"x": 170.0, "y": 380.0, "zoom": 0.27}
+    elif flow_key in {"realtime_production_report", "realtime_production_report_legacy"}:
+        flow["data"]["viewport"] = {"x": 160.0, "y": 300.0, "zoom": 0.27}
+    else:
+        flow["data"]["viewport"] = {"x": 170.0, "y": 255.0, "zoom": 0.29}
+    return flow
 
 
 def _require_target_runtime() -> None:
@@ -513,7 +923,7 @@ def build_saving_flow(donor: dict[str, Any], spec: SavingSpec) -> dict[str, Any]
     add_edge(flow, response, "payload_out", api, "payload")
     add_edge(flow, message, "message", api, "display_message")
     add_edge(flow, message, "message", output, "input_value")
-    return flow
+    return apply_auxiliary_sticky_notes(flow, f"{spec.slug}_saving")
 
 
 def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -613,7 +1023,7 @@ def build_metadata_qa_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, session_writer, "payload_out", api, "payload")
     add_edge(flow, message, "message", api, "display_message")
     add_edge(flow, message, "message", output, "input_value")
-    return flow
+    return apply_auxiliary_sticky_notes(flow, "metadata_qa")
 
 
 ROUTE_ENDPOINTS = {
@@ -823,7 +1233,7 @@ def build_agent_tool_router_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, agent, "response", session_writer, "agent_message")
     add_edge(flow, result_adapter, "message", session_writer, "answer_message")
     add_edge(flow, session_writer, "message", output, "input_value")
-    return flow
+    return apply_auxiliary_sticky_notes(flow, "agent_tool_router")
 
 
 def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -958,7 +1368,7 @@ def build_realtime_production_report_flow(donor: dict[str, Any]) -> dict[str, An
     add_edge(flow, session_writer, "payload_out", api_terminal, "report_result")
     add_edge(flow, report, "message", api_terminal, "report_message")
     add_edge(flow, api_terminal, "message", output, "input_value")
-    return flow
+    return apply_auxiliary_sticky_notes(flow, "realtime_production_report")
 
 
 def build_realtime_production_report_legacy_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -1058,7 +1468,7 @@ def build_realtime_production_report_legacy_flow(donor: dict[str, Any]) -> dict[
     add_edge(flow, gate, "selected_dataset", report, "dataset")
     add_edge(flow, report, "message", output, "input_value")
     add_edge(flow, report, "api_response", api_terminal, "report_result")
-    return flow
+    return apply_auxiliary_sticky_notes(flow, "realtime_production_report_legacy")
 
 
 def build_report_followup_flow(donor: dict[str, Any]) -> dict[str, Any]:
@@ -1223,7 +1633,7 @@ def build_report_followup_flow(donor: dict[str, Any]) -> dict[str, Any]:
     add_edge(flow, response_builder, "payload_out", session_writer, "response_payload")
     add_edge(flow, session_writer, "payload_out", terminal, "response_payload")
     add_edge(flow, terminal, "message", output, "input_value")
-    return flow
+    return apply_auxiliary_sticky_notes(flow, "report_followup")
 
 
 def write_flows() -> list[dict[str, Any]]:

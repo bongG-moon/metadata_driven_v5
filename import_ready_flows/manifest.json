@@ -6,7 +6,7 @@
   "flow_count": 9,
   "endpoint_prefix": "metadata-driven-v5-complete-20260710",
   "single_file_ui_import": "00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "b42463baf14f766c32f29f645a2878c7bbd70b6258bd50d441c6bcf4a6292dbe",
+  "single_file_ui_import_sha256": "87caa81f9a6b12ecede7eb5ccadd4840ee66d14c7517080b27c724a89ba26ddb",
   "mongodb_contract": {
     "configuration_source": "Langflow node input / MONGO_URL Credential Global Variable",
     "database": "datagov",
@@ -53,9 +53,9 @@
       "file": "02_domain_saving_flow_v5_standalone.json",
       "name": "02. v5_domain_saving",
       "endpoint_name": "metadata-driven-v5-complete-20260710-domain-saving",
-      "nodes": 12,
+      "nodes": 16,
       "edges": 13,
-      "sha256": "b54bc208e8622eacee47ef03072f155eeff38e38f7ebcd017b3c01dd254fea97"
+      "sha256": "0f48bd4fd59545fb5c89141a2314952842e8ef31199a82bbca694837aeff6390"
     },
     {
       "order": 3,
@@ -63,9 +63,9 @@
       "file": "03_table_catalog_saving_flow_v5_standalone.json",
       "name": "03. v5_table_catalog_saving",
       "endpoint_name": "metadata-driven-v5-complete-20260710-table-catalog-saving",
-      "nodes": 12,
+      "nodes": 16,
       "edges": 13,
-      "sha256": "625e771a96fdaf432581316eb31e2800991c90303f5e2f45da5675b51095507b"
+      "sha256": "8b9617598ab5119989f0857cef03e0c8ad140c740a52ad2e35b09455b4f63ff6"
     },
     {
       "order": 4,
@@ -73,9 +73,9 @@
       "file": "04_main_flow_filter_saving_flow_v5_standalone.json",
       "name": "04. v5_main_flow_filter_saving",
       "endpoint_name": "metadata-driven-v5-complete-20260710-main-flow-filter-saving",
-      "nodes": 12,
+      "nodes": 16,
       "edges": 13,
-      "sha256": "654c9095bb507fe0c17ee13c7eb498cbac7c1192d543765f8ff0ca4af911e89d"
+      "sha256": "7153ab99eccaea0a5ac78a0c946c785fc831fc85486b55d589ae5b286f97228b"
     },
     {
       "order": 5,
@@ -83,9 +83,9 @@
       "file": "05_metadata_qa_flow_v5_standalone.json",
       "name": "05. v5_metadata_qa",
       "endpoint_name": "metadata-driven-v5-complete-20260710-metadata-qa",
-      "nodes": 13,
+      "nodes": 17,
       "edges": 20,
-      "sha256": "a6369947ad04bacac17fd27110b9d957e5077676a675ff4456b9fff127544ec4"
+      "sha256": "621450387822dee32a407cd3a44b057aa3e8e836250d327fc7bfe16529f9d268"
     },
     {
       "order": 6,
@@ -93,9 +93,9 @@
       "file": "06_agent_tool_router_flow_v5_standalone.json",
       "name": "06. v5_agent_tool_router",
       "endpoint_name": "metadata-driven-v5-complete-20260710-agent-tool-router",
-      "nodes": 13,
+      "nodes": 17,
       "edges": 21,
-      "sha256": "0bcbd742653a33d38b9d1c7942388109588202c5982bf76caa1076ecf0da3086"
+      "sha256": "1ba92c767dd1b9757eca668e5011392eea6216391565a92cb757a989be5ab6a0"
     },
     {
       "order": 7,
@@ -103,9 +103,9 @@
       "file": "07_realtime_production_report_legacy_flow_v5_standalone.json",
       "name": "07. v5_realtime_production_report_legacy",
       "endpoint_name": "metadata-driven-v5-complete-20260710-realtime-production-report-legacy",
-      "nodes": 9,
+      "nodes": 13,
       "edges": 11,
-      "sha256": "f63c5ea7185534ec81af76ab401dc98d7043dc4c4f4df459424e94877318b4fa"
+      "sha256": "37f6f91a115755aeb3f4bc6b789c4afdb16ce3df6e1798d19a801022b13eed0a"
     },
     {
       "order": 8,
@@ -113,9 +113,9 @@
       "file": "07_1_realtime_production_report_flow_v5_standalone.json",
       "name": "07-1. v5_realtime_production_report",
       "endpoint_name": "metadata-driven-v5-complete-20260710-realtime-production-report",
-      "nodes": 11,
+      "nodes": 15,
       "edges": 15,
-      "sha256": "2f25ad955de4780b74622669478a6751cfd338a3a473a397bc4c0c19c3bfda1a"
+      "sha256": "a0392fd7a30785bf513447742b0572dd7abfb2ffd4afae0c1de255e5a11918a1"
     },
     {
       "order": 9,
@@ -123,9 +123,9 @@
       "file": "07_2_report_followup_flow_v5_standalone.json",
       "name": "07-2. v5_report_followup",
       "endpoint_name": "metadata-driven-v5-complete-20260710-report-followup",
-      "nodes": 11,
+      "nodes": 15,
       "edges": 13,
-      "sha256": "e338a9501557610700a7961df2a24c19cfe44524869840ae12a7fd5867807f55"
+      "sha256": "56db9f0892af3e77187a0211c641a5475ece9b5fe57205874203a880658f1a2d"
     }
   ]
 }

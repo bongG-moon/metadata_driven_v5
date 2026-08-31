@@ -50,6 +50,36 @@ def _all_active_flows() -> list[dict]:
     return [_load(IMPORT_ROOT / item["file"]) for item in manifest["flows"]]
 
 
+def _informational_notes(flow: dict) -> list[dict]:
+    return [node for node in flow["data"]["nodes"] if node.get("type") == "noteNode"]
+
+
+def test_auxiliary_flows_document_stages_with_non_executing_sticky_notes() -> None:
+    expected_prefix = "note-auxiliary-"
+    for flow in _all_active_flows():
+        if flow["name"] == "01. v5_data_analysis":
+            # Flow 01 owns its more detailed Fast/Complex note set and has a
+            # dedicated canvas regression test in test_data_analysis_flow_v2.
+            continue
+        notes = _informational_notes(flow)
+        note_ids = {str(node.get("id") or "") for node in notes}
+        execution_nodes = [node for node in flow["data"]["nodes"] if node.get("type") != "noteNode"]
+        min_execution_y = min(float(node["position"]["y"]) for node in execution_nodes)
+
+        assert len(notes) == 4
+        assert all(note_id.startswith(expected_prefix) for note_id in note_ids)
+        assert all(node["data"]["type"] == "note" for node in notes)
+        assert all(node["data"]["node"]["description"].startswith("## ") for node in notes)
+        assert all(
+            float(node["position"]["y"]) + float(node["height"]) <= min_execution_y
+            for node in notes
+        )
+        assert not any(
+            edge["source"] in note_ids or edge["target"] in note_ids
+            for edge in flow["data"]["edges"]
+        )
+
+
 def test_selected_flow_manifest_contains_only_supported_flows() -> None:
     manifest = _load(IMPORT_ROOT / "manifest.json")
     assert manifest["flow_count"] == 9
@@ -393,7 +423,7 @@ def test_realtime_report_flow_publishes_context_and_session_state() -> None:
     terminal_id = "RealtimeProductionReportApiTerminal-realtime-production-report"
     gate_id = "ProcessGroupSelectionGate-realtime-production-report"
 
-    assert len(nodes) == 11
+    assert len([node for node in nodes.values() if node["type"] != "noteNode"]) == 11
     assert len(flow["data"]["edges"]) == 15
     assert "ProcessGroupPrompt-realtime-production-report" not in nodes
     assert "LanguageModelProcessGroup-realtime-production-report" not in nodes
@@ -491,7 +521,7 @@ def test_legacy_realtime_report_preserves_original_direct_graph() -> None:
 
     assert flow["name"] == "07. v5_realtime_production_report_legacy"
     assert flow["endpoint_name"] == "metadata-driven-v5-realtime-production-report-legacy"
-    assert len(nodes) == 9
+    assert len([node for node in nodes.values() if node["type"] != "noteNode"]) == 9
     assert len(flow["data"]["edges"]) == 11
     assert f"ProcessGroupPrompt-{suffix}" in nodes
     assert f"LanguageModelProcessGroup-{suffix}" in nodes

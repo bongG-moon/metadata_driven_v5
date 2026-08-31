@@ -2155,6 +2155,142 @@
         },
         "selected": false,
         "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-realtime_production_report_legacy-01-input-selection",
+          "node": {
+            "description": "## ① 입력·카탈로그·LLM 선택\n\n- 질문과 공정 그룹 허용 목록을 Prompt와 Language Model에 전달합니다.\n- 선택 결과는 다음 Gate에서 반드시 허용 목록과 다시 비교합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 310,
+        "id": "note-auxiliary-realtime_production_report_legacy-01-input-selection",
+        "position": {
+          "x": -60.0,
+          "y": -1060.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1500,
+        "positionAbsolute": {
+          "x": -60.0,
+          "y": -1060.0
+        },
+        "style": {
+          "height": 310,
+          "width": 1500
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-realtime_production_report_legacy-02-gate-report",
+          "node": {
+            "description": "## ② 선택 Gate·Report 생성\n\n- **Selection Gate**: LLM 선택을 공정 그룹 계약으로 검증합니다.\n- **Report Builder**: 통과한 데이터로 HTML Report를 만듭니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 300,
+        "id": "note-auxiliary-realtime_production_report_legacy-02-gate-report",
+        "position": {
+          "x": 1500.0,
+          "y": -1060.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 840,
+        "positionAbsolute": {
+          "x": 1500.0,
+          "y": -1060.0
+        },
+        "style": {
+          "height": 300,
+          "width": 840
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-realtime_production_report_legacy-03-output",
+          "node": {
+            "description": "## ③ 결과 출력\n\n- **Chat Output / API Terminal**: 생성된 Report 결과를 사용자와 API client에 전달합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 260,
+        "id": "note-auxiliary-realtime_production_report_legacy-03-output",
+        "position": {
+          "x": 2360.0,
+          "y": -1060.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 720,
+        "positionAbsolute": {
+          "x": 2360.0,
+          "y": -1060.0
+        },
+        "style": {
+          "height": 260,
+          "width": 720
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-realtime_production_report_legacy-04-legacy-scope",
+          "node": {
+            "description": "## 레거시 Flow 안내\n\n이 Flow는 LLM 공정 선택을 사용하는 호환 경로입니다. 신규 기본 경로는 07-1의 결정론 Selection Gate입니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 260,
+        "id": "note-auxiliary-realtime_production_report_legacy-04-legacy-scope",
+        "position": {
+          "x": 2360.0,
+          "y": -740.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 760,
+        "positionAbsolute": {
+          "x": 2360.0,
+          "y": -740.0
+        },
+        "style": {
+          "height": 260,
+          "width": 760
+        }
       }
     ],
     "edges": [
@@ -2480,9 +2616,9 @@
       }
     ],
     "viewport": {
-      "x": 0,
-      "y": 0,
-      "zoom": 0.55
+      "x": 160.0,
+      "y": 300.0,
+      "zoom": 0.27
     }
   },
   "description": "Legacy realtime production report flow preserved for compatibility: Domain process-group selection, deterministic row filtering, direct Report publication, and no follow-up Snapshot or session-state side effects.",

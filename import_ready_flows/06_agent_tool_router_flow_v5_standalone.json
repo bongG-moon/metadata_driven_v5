@@ -4421,6 +4421,142 @@
         },
         "selected": false,
         "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-agent_tool_router-01-gaia-session",
+          "node": {
+            "description": "## ① GaiA 요청·세션 문맥\n\n- **GaiA Input**: 질문과 metadata를 받습니다.\n- **외부 세션 ID 추출기 / Router 문맥 로더**: 직전 질문·답변·선택 Flow 한 세트만 복원합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 330,
+        "id": "note-auxiliary-agent_tool_router-01-gaia-session",
+        "position": {
+          "x": -100.0,
+          "y": -1340.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 950,
+        "positionAbsolute": {
+          "x": -100.0,
+          "y": -1340.0
+        },
+        "style": {
+          "height": 330,
+          "width": 950
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-agent_tool_router-02-flow-selection",
+          "node": {
+            "description": "## ② 실행 Flow 선택\n\n- **Router Agent**: 실제 데이터 분석·메타데이터 QA·등록·실시간 Report 중 하나를 선택합니다.\n- **6개 Cached Flow Tool**: 선택된 하위 Flow만 실행하며, Report 후속 Flow는 Router에 노출하지 않습니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 350,
+        "id": "note-auxiliary-agent_tool_router-02-flow-selection",
+        "position": {
+          "x": 900.0,
+          "y": -1340.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 780,
+        "positionAbsolute": {
+          "x": 900.0,
+          "y": -1340.0
+        },
+        "style": {
+          "height": 350,
+          "width": 780
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-agent_tool_router-03-direct-result",
+          "node": {
+            "description": "## ③ 직접 결과 반환\n\n- **Direct Result Adapter**: 하위 Flow의 내부 이벤트 대신 사용자에게 보여줄 최종 답변만 선택합니다.\n- 하위 실행 오류도 Router의 채팅 출력 형식으로 정리합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 320,
+        "id": "note-auxiliary-agent_tool_router-03-direct-result",
+        "position": {
+          "x": 1680.0,
+          "y": -1340.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 640,
+        "positionAbsolute": {
+          "x": 1680.0,
+          "y": -1340.0
+        },
+        "style": {
+          "height": 320,
+          "width": 640
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-agent_tool_router-04-router-state",
+          "node": {
+            "description": "## ④ Router 상태 저장·출력\n\n- 성공한 Flow와 최근 질문·답변만 저장합니다.\n- 상태 저장 실패는 현재 응답을 막지 않고 Chat Output으로 결과를 반환합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 320,
+        "id": "note-auxiliary-agent_tool_router-04-router-state",
+        "position": {
+          "x": 2020.0,
+          "y": -980.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 760,
+        "positionAbsolute": {
+          "x": 2020.0,
+          "y": -980.0
+        },
+        "style": {
+          "height": 320,
+          "width": 760
+        }
       }
     ],
     "edges": [
@@ -5016,9 +5152,9 @@
       }
     ],
     "viewport": {
-      "x": 0,
-      "y": 0,
-      "zoom": 0.55
+      "x": 170.0,
+      "y": 380.0,
+      "zoom": 0.27
     }
   },
   "description": "LLM Agent router with the production GaiA A2A ingress, a dedicated metadata-derived external session ID extractor, a Router-specific one-turn MongoDB continuation context, six compact selected-ID-first cached Flow tools, deterministic realtime-analysis keyword gating, name fallback for standalone imports, explicit canonical session propagation, a silent direct-return Agent, a direct-result adapter that removes nested child events, and one final Chat Output.",

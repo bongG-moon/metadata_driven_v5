@@ -417,7 +417,8 @@ def _validate_base_flow(flow: dict[str, Any], item: dict[str, Any]) -> int:
             raise ValueError("Flow 07-1 must publish the same-session Report follow-up Context.")
 
     if item["name"] == FLOW_DISPLAY_NAMES["realtime_production_report_legacy"]:
-        if len(nodes) != 9 or len(edges) != 11:
+        execution_node_count = sum(node.get("type") != "noteNode" for node in nodes)
+        if execution_node_count != 9 or len(edges) != 11:
             raise ValueError("Legacy Report Flow 07 must preserve the original 9-node/11-edge graph.")
         node_ids = {str(node.get("id") or "") for node in nodes}
         if any(token in node_id for node_id in node_ids for token in ("ReportContext", "SessionStateWriter")):

@@ -9,14 +9,14 @@ Langflow Desktop에서 `00_metadata_driven_v5_complete_20260710_ALL_FLOWS.json` 
 | 번호 | 파일 | endpoint_name | 노드 | 엣지 |
 | ---: | --- | --- | ---: | ---: |
 | 01 | `01_data_analysis_flow_v2_standalone.json` | `metadata-driven-v5-complete-20260710-data-analysis` | 52 | 61 |
-| 02 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 12 | 13 |
-| 03 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 12 | 13 |
-| 04 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 12 | 13 |
-| 05 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 13 | 20 |
-| 06 | `06_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 13 | 21 |
-| 07 | `07_realtime_production_report_legacy_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report-legacy` | 9 | 11 |
-| 07-1 | `07_1_realtime_production_report_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report` | 11 | 15 |
-| 07-2 | `07_2_report_followup_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-report-followup` | 11 | 13 |
+| 02 | `02_domain_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-domain-saving` | 16 | 13 |
+| 03 | `03_table_catalog_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-table-catalog-saving` | 16 | 13 |
+| 04 | `04_main_flow_filter_saving_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-main-flow-filter-saving` | 16 | 13 |
+| 05 | `05_metadata_qa_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-metadata-qa` | 17 | 20 |
+| 06 | `06_agent_tool_router_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-agent-tool-router` | 17 | 21 |
+| 07 | `07_realtime_production_report_legacy_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report-legacy` | 13 | 11 |
+| 07-1 | `07_1_realtime_production_report_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-realtime-production-report` | 15 | 15 |
+| 07-2 | `07_2_report_followup_flow_v5_standalone.json` | `metadata-driven-v5-complete-20260710-report-followup` | 15 | 13 |
 
 ## 운영 설정
 

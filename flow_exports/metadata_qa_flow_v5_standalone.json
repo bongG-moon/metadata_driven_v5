@@ -3260,6 +3260,142 @@
         },
         "selected": false,
         "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-metadata_qa-01-request-session",
+          "node": {
+            "description": "## ① 질문·세션 입력\n\n- **Chat Input / 세션 상태 로더**: 현재 질문과 같은 session의 compact 문맥을 준비합니다.\n- 세션 기록이 없거나 읽기에 실패해도 현재 메타데이터 QA는 계속 진행합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 300,
+        "id": "note-auxiliary-metadata_qa-01-request-session",
+        "position": {
+          "x": -80.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 960,
+        "positionAbsolute": {
+          "x": -80.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 300,
+          "width": 960
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-metadata_qa-02-metadata-context",
+          "node": {
+            "description": "## ② 읽기 전용 메타데이터 문맥\n\n- **Snapshot / Context / Variables**: 도메인·테이블 카탈로그·Main Flow Filter 후보를 읽어 질문과 관련된 항목만 정리합니다.\n\n이 단계는 등록 정보를 변경하지 않습니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 330,
+        "id": "note-auxiliary-metadata_qa-02-metadata-context",
+        "position": {
+          "x": 920.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 940,
+        "positionAbsolute": {
+          "x": 920.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 330,
+          "width": 940
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-metadata_qa-03-qa-normalize",
+          "node": {
+            "description": "## ③ QA 응답 생성\n\n- **Prompt / Language Model**: 제공된 메타데이터 문맥 안에서만 답변 초안을 만듭니다.\n- **정규화기**: 답변을 표준 QA payload로 정리합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 300,
+        "id": "note-auxiliary-metadata_qa-03-qa-normalize",
+        "position": {
+          "x": 1860.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 880,
+        "positionAbsolute": {
+          "x": 1860.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 300,
+          "width": 880
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-metadata_qa-04-state-output",
+          "node": {
+            "description": "## ④ 세션·채널 출력\n\n- **세션 상태 저장기**: 다음 질문에 필요한 compact 상태만 기록합니다.\n- **메시지 / API / Chat Output**: 같은 QA 결과를 각 채널로 전달합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 300,
+        "id": "note-auxiliary-metadata_qa-04-state-output",
+        "position": {
+          "x": 2740.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1000,
+        "positionAbsolute": {
+          "x": 2740.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 300,
+          "width": 1000
+        }
       }
     ],
     "edges": [
@@ -3849,9 +3985,9 @@
       }
     ],
     "viewport": {
-      "x": 0,
-      "y": 0,
-      "zoom": 0.55
+      "x": 170.0,
+      "y": 255.0,
+      "zoom": 0.29
     }
   },
   "description": "Metadata QA flow with MongoDB projection, deterministic catalog comparison/scope answers, compact same-session inventory reuse, SQL-on-demand, and canonical API response.",

@@ -2712,6 +2712,142 @@
         },
         "selected": false,
         "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-realtime_production_report-01-input-scope",
+          "node": {
+            "description": "## ① 입력·공정 범위·판정 데이터\n\n- 질문, 활성 공정 그룹 목록, Report 판단용 데이터를 준비합니다.\n- 허용되지 않은 공정 그룹은 다음 단계에서 통과시키지 않습니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 310,
+        "id": "note-auxiliary-realtime_production_report-01-input-scope",
+        "position": {
+          "x": -80.0,
+          "y": -1060.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 920,
+        "positionAbsolute": {
+          "x": -80.0,
+          "y": -1060.0
+        },
+        "style": {
+          "height": 310,
+          "width": 920
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-realtime_production_report-02-deterministic-selection",
+          "node": {
+            "description": "## ② 결정론 공정 선택\n\n- **Process Group Selection Gate**: 질문과 허용 목록을 비교해 단일 공정 그룹과 해당 데이터만 확정합니다.\n\nLLM 기본값 추측 없이 검증 가능한 선택만 사용합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 330,
+        "id": "note-auxiliary-realtime_production_report-02-deterministic-selection",
+        "position": {
+          "x": 920.0,
+          "y": -1060.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 930,
+        "positionAbsolute": {
+          "x": 920.0,
+          "y": -1060.0
+        },
+        "style": {
+          "height": 330,
+          "width": 930
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-realtime_production_report-03-report-context",
+          "node": {
+            "description": "## ③ Report View·후속 문맥 저장\n\n- **View Bundle / Context Publisher**: Report 화면과 재사용 가능한 query-source 계약을 만듭니다.\n- **결과 저장소**: 후속 확인에 필요한 제한된 결과 참조를 저장합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 330,
+        "id": "note-auxiliary-realtime_production_report-03-report-context",
+        "position": {
+          "x": 1900.0,
+          "y": -1060.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1180,
+        "positionAbsolute": {
+          "x": 1900.0,
+          "y": -1060.0
+        },
+        "style": {
+          "height": 330,
+          "width": 1180
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-realtime_production_report-04-report-output",
+          "node": {
+            "description": "## ④ HTML Report·응답\n\n- **Report Builder**: HTML Report와 API 응답을 생성합니다.\n- **세션 상태 / API terminal / Chat Output**: 최종 링크와 응답을 각 채널에 전달합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 310,
+        "id": "note-auxiliary-realtime_production_report-04-report-output",
+        "position": {
+          "x": 3120.0,
+          "y": -1060.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1220,
+        "positionAbsolute": {
+          "x": 3120.0,
+          "y": -1060.0
+        },
+        "style": {
+          "height": 310,
+          "width": 1220
+        }
       }
     ],
     "edges": [
@@ -3156,9 +3292,9 @@
       }
     ],
     "viewport": {
-      "x": 0,
-      "y": 0,
-      "zoom": 0.55
+      "x": 160.0,
+      "y": 300.0,
+      "zoom": 0.27
     }
   },
   "description": "Realtime production report flow with Domain process-group catalog grounding, deterministic explicit process-group selection and row filtering, a Report View Bundle plus shared Context Publisher for no-code follow-up Snapshot contracts, clarification without HTML when no group is specified, and four fixed report sections.",

@@ -2477,6 +2477,142 @@
         },
         "selected": false,
         "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-table_catalog_saving-01-request",
+          "node": {
+            "description": "## ① 테이블 카탈로그 등록 요청 준비\n\n- **Chat Input / 요청 로더**: 자연어 등록 요청과 테스트 실행 여부를 정리합니다.\n- **중복 처리 정책**: skip·merge·replace·create_new 중 선택한 방식을 함께 전달합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 300,
+        "id": "note-auxiliary-table_catalog_saving-01-request",
+        "position": {
+          "x": -40.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 660,
+        "positionAbsolute": {
+          "x": -40.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 300,
+          "width": 660
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-table_catalog_saving-02-extract-normalize",
+          "node": {
+            "description": "## ② 후보 생성·정규화\n\n- **변수 생성기 / Prompt / Language Model**: 원문에서 구조화된 등록 후보를 추출합니다.\n- **정규화기**: 모델 표현 차이를 공통 저장 계약으로 정리합니다.\n\n이 단계는 후보를 만들 뿐 아직 저장하지 않습니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 330,
+        "id": "note-auxiliary-table_catalog_saving-02-extract-normalize",
+        "position": {
+          "x": 620.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1200,
+        "positionAbsolute": {
+          "x": 620.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 330,
+          "width": 1200
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-table_catalog_saving-03-review-write",
+          "node": {
+            "description": "## ③ 중복 검토·저장 판단\n\n- **유사도 확인기**: 기존 항목을 `dataset_key` 기준으로 비교합니다.\n- **검수/저장 처리기**: 스키마·중복 action·권한을 확인해 테스트 실행 또는 실제 저장을 결정합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "amber"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 320,
+        "id": "note-auxiliary-table_catalog_saving-03-review-write",
+        "position": {
+          "x": 1840.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 600,
+        "positionAbsolute": {
+          "x": 1840.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 320,
+          "width": 600
+        }
+      },
+      {
+        "data": {
+          "id": "note-auxiliary-table_catalog_saving-04-response",
+          "node": {
+            "description": "## ④ 결과 전달\n\n- **응답 생성기**: 저장 후보·검수 결과·다음 조치를 정리합니다.\n- **메시지 / API / Chat Output**: 같은 결과를 채팅과 API 응답으로 전달합니다.",
+            "display_name": "",
+            "documentation": "",
+            "template": {
+              "backgroundColor": "blue"
+            },
+            "lf_version": "1.11.0"
+          },
+          "type": "note"
+        },
+        "dragging": false,
+        "height": 300,
+        "id": "note-auxiliary-table_catalog_saving-04-response",
+        "position": {
+          "x": 2440.0,
+          "y": -650.0
+        },
+        "resizing": false,
+        "selected": false,
+        "type": "noteNode",
+        "width": 1000,
+        "positionAbsolute": {
+          "x": 2440.0,
+          "y": -650.0
+        },
+        "style": {
+          "height": 300,
+          "width": 1000
+        }
       }
     ],
     "edges": [
@@ -2859,9 +2995,9 @@
       }
     ],
     "viewport": {
-      "x": 0,
-      "y": 0,
-      "zoom": 0.55
+      "x": 170.0,
+      "y": 255.0,
+      "zoom": 0.29
     }
   },
   "description": "Optimized 테이블 카탈로그 metadata saving flow: one extraction LLM, candidate-targeted MongoDB duplicate lookup, one deterministic writer for dry-run/live execution, and one compact response terminal.",
