@@ -4,50 +4,80 @@ const state = {
   scheduleScope: "mine",
   scheduleSearch: "",
   metadataSearch: "",
-  metadataType: "table_catalog",
+  metadataType: "domain",
+  metadataPage: 1,
+  metadataPageSize: 10,
   metadataResultTab: "process",
   metadataResult: null,
   metadataApi: null,
+  metadataLive: { state: "idle", payload: null },
   metadataSubmitting: false,
+  metadataStatusTarget: null,
+  metadataStatusUpdating: false,
+  metadataStatusOpener: null,
+  metadataDetailTarget: null,
+  metadataDetailLoading: false,
+  metadataDetailOpener: null,
+  adminSettings: null,
+  adminSettingsLoading: false,
+  adminSettingsError: "",
+  dashboardUsage: { state: "idle", source: null, message: "" },
   editingScheduleId: null,
 };
 
+const SCHEDULE_DELIVERY_TARGET = "개인 DM";
+const SCHEDULE_DELIVERY_LABEL = "등록자 개인 DM";
+
 const viewTitles = {
   dashboard: ["활용 현황", "한눈에 보는 활용 현황"],
-  schedules: ["스케줄링", "내 스케줄 관리"],
+  schedules: ["스케줄링", "스케줄 등록·조회"],
   metadata: ["메타데이터", "Agent 메타데이터 관리"],
   settings: ["설정", "관리자 설정"],
 };
 
 const metadataTypes = {
-  table_catalog: {
-    label: "데이터 카탈로그",
-    kicker: "DATA CATALOG",
-    totalLabel: "등록 데이터셋",
-    description: "Agent가 어떤 데이터를 어디에서 어떤 조건으로 조회할 수 있는지 정의합니다.",
-    filterHint: "데이터셋 키, 연결 소스, 필수 표준 Filter를 함께 관리합니다.",
-    headers: ["데이터셋", "분류", "연결 소스", "필수 조건", "담당 조직", "최종 변경", "상태", ""],
-  },
-  main_flow_filters: {
-    label: "Main Flow Filters",
-    kicker: "MAIN FLOW FILTERS",
-    totalLabel: "표준 Filter",
-    description: "질문 속 일자·공정·LOT 같은 표현을 표준 키와 실제 데이터 컬럼으로 연결합니다.",
-    filterHint: "표준 Filter 키, 의미 역할, 후보 컬럼과 사용자 표현을 관리합니다.",
-    headers: ["표준 Filter", "의미 역할", "값 형식", "후보 컬럼", "사용자 표현", "담당 조직", "최종 변경", "상태"],
-  },
   domain: {
     label: "도메인 정보",
     kicker: "DOMAIN KNOWLEDGE",
     totalLabel: "도메인 항목",
     description: "공정 그룹, 업무 용어, 분석 레시피처럼 Agent가 질문을 해석할 때 쓰는 업무 지식을 관리합니다.",
-    filterHint: "도메인 구분, 키, 동의어, 질문 단서와 업무 설명을 관리합니다.",
-    headers: ["도메인 항목", "구분", "동의어", "질문 단서", "업무 설명", "담당 조직", "최종 변경", "상태"],
+    filterHint: "구분, 키, 표시명과 상태를 확인합니다.",
+    headers: ["구분", "키", "표시명", "상태", "조회 · 관리"],
+  },
+  table_catalog: {
+    label: "데이터 카탈로그",
+    kicker: "DATA CATALOG",
+    totalLabel: "등록 데이터셋",
+    description: "Agent가 어떤 데이터를 어디에서 어떤 조건으로 조회할 수 있는지 정의합니다.",
+    filterHint: "데이터셋 키, 연결 방식, 필수 표준 Filter를 확인합니다.",
+    headers: ["데이터셋 키", "데이터셋", "분류", "연결 방식", "필수 조건", "상태", "조회 · 관리"],
+  },
+  main_flow_filters: {
+    label: "메인 필터",
+    kicker: "MAIN FLOW FILTERS",
+    totalLabel: "표준 Filter",
+    description: "질문 속 일자·공정·LOT 같은 표현을 표준 키와 실제 데이터 컬럼으로 연결합니다.",
+    filterHint: "필터 키, 연산자와 값 형식을 확인합니다.",
+    headers: ["필터 키", "표시명", "연산자", "값 타입", "값 형태", "상태", "조회 · 관리"],
   },
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
+
+function svgIcon(name, className = "") {
+  const paths = {
+    check: '<circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.3 2.3 4.8-5.1"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>',
+    alert: '<circle cx="12" cy="12" r="8.5"/><path d="M12 8.3v4.4m0 3h.01"/>',
+    question: '<circle cx="12" cy="12" r="8.5"/><path d="M9.8 9.5a2.4 2.4 0 1 1 3.8 2l-1.2.9v1.1m0 2.4h.01"/>',
+    database: '<ellipse cx="12" cy="5.5" rx="6.7" ry="2.7"/><path d="M5.3 5.5v6c0 1.5 3 2.7 6.7 2.7s6.7-1.2 6.7-2.7v-6m-13.4 6v6c0 1.5 3 2.7 6.7 2.7s6.7-1.2 6.7-2.7v-6"/>',
+    calendar: '<rect x="4" y="5" width="16" height="15" rx="3"/><path d="M8 3v4m8-4v4M4 10h16"/>',
+  };
+  const body = paths[name] || paths.question;
+  const safeClassName = className ? ` class="${className}"` : "";
+  return `<svg${safeClassName} aria-hidden="true" viewBox="0 0 24 24" focusable="false">${body}</svg>`;
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -59,8 +89,8 @@ function escapeHtml(value) {
 }
 
 function statusClass(status) {
-  if (["성공", "활성", "정상", "연결됨"].includes(status)) return "status-success";
-  if (["일시중지", "재시도 예정", "검토 필요", "설정 필요", "연결 확인 필요"].includes(status)) return "status-paused";
+  if (["성공", "활성", "active", "정상", "연결됨", "요청 가능", "등록됨"].includes(status)) return "status-success";
+  if (["비활성", "inactive", "일시중지", "재시도 예정", "검토 필요", "확인 필요", "미설정", "설정 필요", "연결 확인 필요", "API URL 미설정", "인증 정보 필요", "호출 사번 필요", "MongoDB 설정 필요", "Flow 구성 확인"].includes(status)) return "status-paused";
   return "status-draft";
 }
 
@@ -74,6 +104,282 @@ function isAdmin() {
 
 function viewerId() {
   return state.portal?.viewer?.employee_id || "";
+}
+
+function portalRequestHeaders(headers = {}) {
+  const employeeId = String(viewerId() || "").trim();
+  const employeeName = String(state.portal?.viewer?.name || "").trim();
+  const result = { ...headers };
+
+  if (employeeId) result["X-PTMORE-Employee-Id"] = employeeId;
+  // Browser request-header values must be ASCII. The name header is optional,
+  // so retain it only when it can be sent safely without breaking a request.
+  if (employeeName && /^[\x20-\x7E]+$/.test(employeeName)) {
+    result["X-PTMORE-Employee-Name"] = employeeName;
+  }
+  return result;
+}
+
+function emptyUsageDashboard(message = "사용 이력을 아직 조회하지 않았습니다.") {
+  return {
+    unavailable: true,
+    period_label: "최근 3주",
+    range_label: "사용 이력 확인 전",
+    day_count: 21,
+    cumulative_user_count: 0,
+    total_chat_count: 0,
+    kpis: [
+      { label: "일 평균 사용자", value: "—", change: "이력 조회 필요", tone: "accent", detail: "Phoenix 연결 후 표시" },
+      { label: "일 평균 채팅", value: "—", change: "이력 조회 필요", tone: "positive", detail: "Phoenix 연결 후 표시" },
+      { label: "누적 사용자", value: "—", change: "이력 조회 필요", tone: "accent", detail: "Phoenix 연결 후 표시" },
+      { label: "누적 채팅", value: "—", change: "이력 조회 필요", tone: "positive", detail: "Phoenix 연결 후 표시" },
+      { label: "활성 사용자", value: "—", change: "이력 조회 필요", tone: "positive", detail: "Phoenix 연결 후 표시" },
+    ],
+    usage_by_day: [],
+    active_users: [],
+    active_user_count: 0,
+    active_user_rule: { min_distinct_days: 0, min_chat_count: 0 },
+    recent_usage_history: [],
+    recent_runs: [],
+    empty_message: message,
+  };
+}
+
+function dashboardUsageState() {
+  return state.dashboardUsage || { state: "idle", source: null, message: "" };
+}
+
+function usageRecordDate(record) {
+  const explicitDate = String(record?.date || "").trim();
+  if (explicitDate) return explicitDate;
+  const queriedAt = String(record?.occurred_at || record?.query_time || "").trim();
+  return queriedAt ? queriedAt.slice(0, 10) : "-";
+}
+
+function usageRecordEmployeeId(record) {
+  return String(record?.employee_id || record?.user_id || "").trim() || "-";
+}
+
+function usageRecordName(record) {
+  return String(record?.user_name || record?.employee_id || record?.user_id || "").trim() || "-";
+}
+
+function normalizeDashboardUsagePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("사용 이력 API 응답 형식을 확인하지 못했습니다.");
+  }
+  const source = payload.source;
+  const dashboard = payload.dashboard;
+  if (!source || typeof source !== "object" || !dashboard || typeof dashboard !== "object") {
+    throw new Error("사용 이력 API의 출처 또는 집계 결과가 없습니다.");
+  }
+
+  const configuredMode = String(source.mode || "").trim().toLowerCase();
+  const configuredStatus = String(source.status || "").trim().toLowerCase();
+  if (!["phoenix", "preview"].includes(configuredMode)) {
+    throw new Error("사용 이력 API의 조회 모드를 확인하지 못했습니다.");
+  }
+  if (!["connected", "preview"].includes(configuredStatus)) {
+    throw new Error("사용 이력 API의 연결 상태를 확인하지 못했습니다.");
+  }
+  const mode = configuredMode === "preview" || configuredStatus === "preview" ? "preview" : "phoenix";
+
+  const fallback = emptyUsageDashboard();
+  const rawUsageByDay = Array.isArray(dashboard.usage_by_day) ? dashboard.usage_by_day : [];
+  const maxUsers = Math.max(...rawUsageByDay.map((item) => Number(item?.unique_users) || 0), 1);
+  const maxChats = Math.max(...rawUsageByDay.map((item) => Number(item?.chat_count) || 0), 1);
+  const usageByDay = rawUsageByDay.map((item) => {
+    const uniqueUsers = Number(item?.unique_users) || 0;
+    const chatCount = Number(item?.chat_count) || 0;
+    const date = String(item?.date || "").trim();
+    return {
+      ...item,
+      date,
+      label: String(item?.label || (date.length >= 10 ? `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}` : "-")),
+      unique_users: uniqueUsers,
+      chat_count: chatCount,
+      user_height: Number.isFinite(Number(item?.user_height)) ? Number(item.user_height) : Math.round((uniqueUsers / maxUsers) * 1000) / 10,
+      chat_height: Number.isFinite(Number(item?.chat_height)) ? Number(item.chat_height) : Math.round((chatCount / maxChats) * 1000) / 10,
+    };
+  });
+  const normalizedDashboard = {
+    ...fallback,
+    ...dashboard,
+    unavailable: false,
+    kpis: Array.isArray(dashboard.kpis) ? dashboard.kpis : fallback.kpis,
+    usage_by_day: usageByDay,
+    active_users: Array.isArray(dashboard.active_users) ? dashboard.active_users : [],
+    recent_usage_history: Array.isArray(dashboard.recent_usage_history) ? dashboard.recent_usage_history : [],
+    recent_runs: Array.isArray(dashboard.recent_runs) ? dashboard.recent_runs : [],
+    active_user_rule: dashboard.active_user_rule && typeof dashboard.active_user_rule === "object"
+      ? dashboard.active_user_rule
+      : fallback.active_user_rule,
+  };
+  const history = Array.isArray(payload.usage_history)
+    ? payload.usage_history
+    : normalizedDashboard.recent_usage_history;
+
+  return { source, mode, dashboard: normalizedDashboard, usage_history: history };
+}
+
+function formatDashboardFetchedAt(value) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
+function renderDashboardSourceStatus() {
+  const container = $("#dashboard-source-status");
+  const icon = $("#dashboard-source-icon");
+  const title = $("#dashboard-source-title");
+  const detail = $("#dashboard-source-detail");
+  const retry = $("#dashboard-source-retry");
+  if (!container || !icon || !title || !detail || !retry) return;
+
+  const usage = dashboardUsageState();
+  const source = usage.source && typeof usage.source === "object" ? usage.source : {};
+  const sourceMode = String(source.mode || "").toLowerCase();
+  const sourceLabel = String(source.label || "Phoenix").trim() || "Phoenix";
+  const sourceDetail = String(source.detail || "").trim();
+  const projectCount = Number(source.project_count);
+  const fetchedAt = formatDashboardFetchedAt(source.fetched_at);
+  const supportDetails = [];
+  if (sourceDetail) supportDetails.push(sourceDetail);
+  if (Number.isInteger(projectCount) && projectCount > 0) supportDetails.push(`${projectCount}개 프로젝트 조회`);
+  if (fetchedAt) supportDetails.push(`마지막 조회 ${fetchedAt}`);
+
+  container.classList.remove("is-loading", "is-live", "is-preview", "is-error", "is-idle");
+  retry.disabled = usage.state === "loading";
+  retry.hidden = false;
+  retry.textContent = usage.state === "loading" ? "조회 중…" : "↻ 사용 이력 새로고침";
+
+  if (usage.state === "live") {
+    container.classList.add("is-live");
+    icon.innerHTML = svgIcon("check");
+    title.textContent = `${sourceLabel} 실시간 사용 이력`;
+    detail.textContent = supportDetails.join(" · ") || "최근 3주 사용 이력을 Phoenix에서 조회했습니다.";
+    return;
+  }
+  if (usage.state === "preview" || sourceMode === "preview") {
+    container.classList.add("is-preview");
+    icon.innerHTML = svgIcon("clock");
+    title.textContent = "미리보기 데이터";
+    detail.textContent = supportDetails.join(" · ") || "Phoenix 연동 전의 예시 사용 이력을 표시하고 있습니다.";
+    return;
+  }
+  if (usage.state === "error") {
+    container.classList.add("is-error");
+    icon.innerHTML = svgIcon("alert");
+    title.textContent = "Phoenix 사용 이력을 불러오지 못했습니다";
+    detail.textContent = usage.message || "연결 상태를 확인한 뒤 다시 시도해 주세요. 이전 미리보기 수치는 표시하지 않습니다.";
+    return;
+  }
+  if (usage.state === "loading") {
+    container.classList.add("is-loading");
+    icon.innerHTML = svgIcon("clock");
+    title.textContent = "Phoenix 사용 이력 조회 중";
+    detail.textContent = "최근 3주 이력을 조회하고 있습니다. 조회가 끝나면 실제 집계 결과로 표시됩니다.";
+    return;
+  }
+  container.classList.add("is-idle");
+  icon.innerHTML = svgIcon("question");
+  title.textContent = "사용 이력 조회 대기";
+  detail.textContent = "Phoenix 사용 이력 조회를 시작하면 실제 집계 결과가 표시됩니다.";
+}
+
+async function loadDashboardUsage({ notifyOnError = false } = {}) {
+  if (!state.portal) return;
+
+  state.dashboardUsage = { state: "loading", source: null, message: "" };
+  state.portal.dashboard = emptyUsageDashboard("Phoenix 사용 이력을 조회하고 있습니다.");
+  state.portal.usage_history = [];
+  renderDashboard();
+  renderMetadataApiIndicator();
+
+  try {
+    const response = await fetch("/api/dashboard/usage", {
+      headers: portalRequestHeaders(),
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const fallback = response.status === 503
+        ? "Phoenix 사용 이력을 현재 조회할 수 없습니다. 연결 설정을 확인한 뒤 다시 시도해 주세요."
+        : "사용 이력 API를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.";
+      throw new Error(errorMessageFromResponse(payload, fallback));
+    }
+
+    const normalized = normalizeDashboardUsagePayload(payload);
+    state.portal.dashboard = normalized.dashboard;
+    state.portal.usage_history = normalized.usage_history;
+    state.dashboardUsage = {
+      state: normalized.mode === "preview" ? "preview" : "live",
+      source: normalized.source,
+      message: "",
+    };
+  } catch (error) {
+    // A configured Phoenix failure must never leave dummy dashboard values in
+    // view.  Only an explicit server-side preview response can display them.
+    console.warn("dashboard usage unavailable", error);
+    const message = error?.message || "Phoenix 사용 이력을 불러오지 못했습니다. 다시 시도해 주세요.";
+    state.portal.dashboard = emptyUsageDashboard(message);
+    state.portal.usage_history = [];
+    state.dashboardUsage = { state: "error", source: null, message };
+    if (notifyOnError) showToast(message);
+  } finally {
+    renderDashboard();
+    renderMetadataApiIndicator();
+  }
+}
+
+function errorMessageForAdminResponse(status, payload, fallback) {
+  if (status === 401) return "로그인 사용자 정보를 확인할 수 없습니다. 다시 접속해 주세요.";
+  if (status === 403) return "관리자만 설정을 확인하거나 변경할 수 있습니다.";
+  return errorMessageFromResponse(payload, fallback);
+}
+
+function normalizeAdminSettings(payload) {
+  const value = payload && typeof payload === "object" ? (payload.settings || payload) : {};
+  const sourcePolicy = value.usage_policy && typeof value.usage_policy === "object"
+    ? value.usage_policy
+    : {};
+  const usagePolicy = {};
+  ["history_window_days", "active_user_min_distinct_days", "active_user_min_chat_count"].forEach((key) => {
+    const number = Number(sourcePolicy[key]);
+    if (Number.isInteger(number) && number > 0) usagePolicy[key] = number;
+  });
+  return {
+    gaia_api_caller_employee_id: String(value.gaia_api_caller_employee_id || "").trim(),
+    updated_at: String(value.updated_at || "").trim(),
+    updated_by: String(value.updated_by || "").trim(),
+    admins: Array.isArray(value.admins) ? value.admins : [],
+    usage_policy: usagePolicy,
+    storage: value.storage && typeof value.storage === "object" ? value.storage : {},
+  };
+}
+
+function gaiaApiCallerEmployeeId() {
+  return state.adminSettings?.gaia_api_caller_employee_id || "";
+}
+
+function applyAdminSettingsToPortal(adminSettings) {
+  if (!state.portal || !adminSettings) return;
+  state.portal.settings = state.portal.settings || {};
+  state.portal.settings.gaia_api_caller_employee_id = adminSettings.gaia_api_caller_employee_id || "";
+  state.portal.settings.usage_policy = {
+    ...(state.portal.settings.usage_policy || {}),
+    ...(adminSettings.usage_policy || {}),
+  };
+  if (Array.isArray(adminSettings.admins) && adminSettings.admins.length) {
+    state.portal.settings.admins = adminSettings.admins;
+  }
 }
 
 function canEditSchedule(schedule) {
@@ -97,10 +403,19 @@ function channelLabel(channel) {
 }
 
 function renderDashboard() {
-  const { dashboard } = state.portal;
-  $("#dashboard-period").textContent = dashboard.period_label;
-  $("#dashboard-range").textContent = dashboard.range_label;
-  $("#kpi-grid").innerHTML = dashboard.kpis
+  const dashboard = state.portal?.dashboard || emptyUsageDashboard();
+  const kpis = Array.isArray(dashboard.kpis) ? dashboard.kpis : [];
+  const usageByDay = Array.isArray(dashboard.usage_by_day) ? dashboard.usage_by_day : [];
+  const activeUsers = Array.isArray(dashboard.active_users) ? dashboard.active_users : [];
+  const usageHistory = Array.isArray(dashboard.recent_usage_history) ? dashboard.recent_usage_history : [];
+  const recentRuns = Array.isArray(dashboard.recent_runs) ? dashboard.recent_runs : [];
+  const rule = dashboard.active_user_rule && typeof dashboard.active_user_rule === "object"
+    ? dashboard.active_user_rule
+    : { min_distinct_days: 0, min_chat_count: 0 };
+
+  $("#dashboard-period").textContent = dashboard.period_label || "최근 3주";
+  $("#dashboard-range").textContent = dashboard.range_label || "사용 이력 확인 전";
+  $("#kpi-grid").innerHTML = kpis
     .map((item, index) => `
       <article class="kpi-card" style="--card-glow:${index === 1 ? "#e9fbf7" : index === 2 ? "#fff5de" : "#edf3ff"}">
         <span class="card-label">${escapeHtml(item.label)}</span>
@@ -109,8 +424,11 @@ function renderDashboard() {
       </article>`)
     .join("");
 
-  $("#usage-total").textContent = `누적 ${dashboard.total_chat_count.toLocaleString()}건`;
-  $("#usage-chart").innerHTML = dashboard.usage_by_day
+  $("#usage-total").textContent = dashboard.unavailable
+    ? "집계 대기"
+    : `누적 ${Number(dashboard.total_chat_count || 0).toLocaleString()}건`;
+  $("#usage-chart").innerHTML = usageByDay.length
+    ? usageByDay
     .map((item) => `
       <div class="bar-wrap">
         <div class="bar-pair">
@@ -119,32 +437,40 @@ function renderDashboard() {
         </div>
         <span>${escapeHtml(item.label)}</span>
       </div>`)
-    .join("");
+    .join("")
+    : `<div class="usage-chart-empty">${escapeHtml(dashboard.empty_message || "표시할 사용 이력이 없습니다.")}</div>`;
 
-  const rule = dashboard.active_user_rule;
   $("#active-user-summary").innerHTML = `
-    <div class="active-user-number"><strong>${dashboard.active_user_count}</strong><span>명</span></div>
-    <p>서로 다른 일자 <strong>${rule.min_distinct_days}일 이상</strong> · 누적 채팅 <strong>${rule.min_chat_count}건 이상</strong></p>`;
-  $("#active-user-list").innerHTML = dashboard.active_users.length
-    ? dashboard.active_users
+    <div class="active-user-number"><strong>${dashboard.unavailable ? "—" : Number(dashboard.active_user_count || 0)}</strong><span>명</span></div>
+    <p>${dashboard.unavailable
+      ? "Phoenix 사용 이력이 확인되면 활성 사용자 기준을 적용합니다."
+      : `서로 다른 일자 <strong>${rule.min_distinct_days}일 이상</strong> · 누적 채팅 <strong>${rule.min_chat_count}건 이상</strong>`}</p>`;
+  $("#active-user-list").innerHTML = activeUsers.length
+    ? activeUsers
         .map((user) => `
-          <li><div><strong>${escapeHtml(user.user_name)}</strong><span>${escapeHtml(user.employee_id)}</span></div><div><b>${user.distinct_days}일</b><span>${user.chat_count}건</span></div></li>`)
+          <li><div><strong>${escapeHtml(usageRecordName(user))}</strong><span>${escapeHtml(usageRecordEmployeeId(user))}</span></div><div><b>${escapeHtml(user.distinct_days ?? 0)}일</b><span>${escapeHtml(user.chat_count ?? 0)}건</span></div></li>`)
         .join("")
-    : `<li class="empty-list">현재 기준을 충족한 사용자가 없습니다.</li>`;
+    : `<li class="empty-list">${dashboard.unavailable ? "사용 이력을 확인하면 활성 사용자를 집계합니다." : "현재 기준을 충족한 사용자가 없습니다."}</li>`;
 
-  $("#usage-history-list").innerHTML = dashboard.recent_usage_history
+  $("#usage-history-list").innerHTML = usageHistory.length
+    ? usageHistory
     .map((record) => `
       <tr>
-        <td>${escapeHtml(record.date)}</td><td><strong>${escapeHtml(record.user_name)}</strong><span class="table-subtle">${escapeHtml(record.employee_id)}</span></td><td class="question-cell">${escapeHtml(record.question)}</td><td><span class="mini-tag">${escapeHtml(channelLabel(record.channel))}</span></td>
+        <td>${escapeHtml(usageRecordDate(record))}</td><td><strong>${escapeHtml(usageRecordName(record))}</strong><span class="table-subtle">${escapeHtml(usageRecordEmployeeId(record))}</span></td><td class="question-cell">${escapeHtml(record.question || "-")}</td><td><span class="mini-tag">${escapeHtml(channelLabel(record.channel || record.platform || "-"))}</span></td>
       </tr>`)
-    .join("");
+    .join("")
+    : `<tr><td colspan="4" class="dashboard-table-empty">${escapeHtml(dashboard.empty_message || "표시할 최근 사용 이력이 없습니다.")}</td></tr>`;
 
-  $("#recent-runs").innerHTML = dashboard.recent_runs
+  $("#recent-runs").innerHTML = recentRuns.length
+    ? recentRuns
     .map((run) => `
       <tr>
-        <td>${escapeHtml(run.time)}</td><td><strong>${escapeHtml(run.name)}</strong></td><td>${escapeHtml(run.owner)}</td><td>${escapeHtml(run.target)}</td><td>${statusPill(run.status)}</td>
+        <td>${escapeHtml(run.time)}</td><td><strong>${escapeHtml(run.name)}</strong></td><td>${escapeHtml(run.owner)}</td><td>${SCHEDULE_DELIVERY_LABEL}</td><td>${statusPill(run.status)}</td>
       </tr>`)
-    .join("");
+    .join("")
+    : `<tr><td colspan="5" class="dashboard-table-empty">최근 스케줄 실행 이력이 없습니다.</td></tr>`;
+
+  renderDashboardSourceStatus();
 }
 
 function buildDashboardFromHistory(history, policy) {
@@ -227,7 +553,7 @@ function filteredSchedules() {
   return state.portal.schedules.filter((schedule) => {
     const matchesScope = state.scheduleScope === "all" || schedule.owner === viewerId();
     const matchesFilter = state.scheduleFilter === "all" || schedule.status === state.scheduleFilter;
-    const haystack = `${schedule.title} ${schedule.question} ${schedule.target} ${schedule.owner}`.toLowerCase();
+    const haystack = `${schedule.title} ${schedule.question} ${schedule.owner}`.toLowerCase();
     return matchesScope && matchesFilter && (!search || haystack.includes(search));
   });
 }
@@ -240,7 +566,8 @@ function scheduleActions(schedule) {
   }
   return `
     <button class="edit-action" type="button" data-edit-schedule="${escapeHtml(schedule.id)}">수정</button>
-    <button class="pause-action" type="button" data-toggle-schedule="${escapeHtml(schedule.id)}">${schedule.status === "활성" ? "일시중지" : "재개"}</button>`;
+    <button class="pause-action" type="button" data-toggle-schedule="${escapeHtml(schedule.id)}">${schedule.status === "활성" ? "일시중지" : "재개"}</button>
+    <button class="delete-action" type="button" data-delete-schedule="${escapeHtml(schedule.id)}">삭제</button>`;
 }
 
 function renderSchedules() {
@@ -256,46 +583,97 @@ function renderSchedules() {
     button.setAttribute("aria-selected", String(isSelected));
   });
   $("#schedule-scope-note").textContent = state.scheduleScope === "mine"
-    ? "본인이 등록한 스케줄만 표시합니다. 이 목록에서는 수정과 활성 상태 변경이 가능합니다."
+    ? "본인이 등록한 스케줄만 표시합니다. 이 목록에서는 수정·일시중지·삭제가 가능합니다."
     : isAdmin()
-      ? "전체 스케줄을 보고 있습니다. 관리자는 모든 스케줄을 수정하거나 활성 상태를 변경할 수 있습니다."
-      : "전체 스케줄은 열람할 수 있습니다. 수정과 활성 상태 변경은 본인이 등록한 스케줄에만 가능합니다.";
+      ? "전체 스케줄을 보고 있습니다. 관리자는 모든 스케줄을 수정·일시중지·삭제할 수 있습니다."
+      : "전체 스케줄은 누구나 열람할 수 있습니다. 수정·일시중지·삭제는 등록자 본인 또는 관리자만 가능합니다.";
 
   $("#schedule-grid").innerHTML = schedules.length
     ? schedules
-        .map((schedule) => `
-        <article class="schedule-card ${canEditSchedule(schedule) ? "" : "readonly-schedule"}">
+        .map((schedule) => {
+          const interval = isIntervalSchedule(schedule);
+          const ruleLabel = scheduleRuleLabel(schedule);
+          const timingLabel = interval ? scheduleWindowLabel(schedule) : schedule.next_run;
+          return `
+        <article class="schedule-card ${interval ? "interval-schedule" : ""} ${canEditSchedule(schedule) ? "" : "readonly-schedule"}">
           <div class="schedule-card-top">
-            <span class="schedule-symbol">◷</span>
+            <span class="schedule-symbol" aria-hidden="true">${svgIcon("calendar")}</span>
             <div><h3>${escapeHtml(schedule.title)}</h3><span class="schedule-id">${escapeHtml(schedule.id)}</span></div>
             ${statusPill(schedule.status)}
           </div>
           <p class="schedule-question">${escapeHtml(schedule.question)}</p>
           <div class="schedule-meta">
-            <div><span>반복</span><strong>${escapeHtml(schedule.rule_label)}</strong></div>
-            <div><span>다음 실행</span><strong>${escapeHtml(schedule.next_run)}</strong></div>
-            <div><span>발송 대상</span><strong>${escapeHtml(schedule.target)}</strong></div>
+            <div><span>반복</span><strong>${escapeHtml(ruleLabel)}</strong></div>
+            <div><span>${interval ? "실행 구간" : "다음 실행"}</span><strong class="${interval ? "interval-window" : ""}">${escapeHtml(timingLabel)}</strong></div>
+            <div><span>발송 대상</span><strong>${SCHEDULE_DELIVERY_LABEL}</strong></div>
             <div><span>등록자</span><strong>${escapeHtml(schedule.owner)}</strong></div>
           </div>
           <div class="schedule-card-footer">
             <span class="last-run">최근 실행 · ${escapeHtml(schedule.last_run)}</span>
             <div class="schedule-actions">${scheduleActions(schedule)}</div>
           </div>
-        </article>`)
+        </article>`;
+        })
         .join("")
     : `<div class="empty-state"><strong>조건에 맞는 스케줄이 없습니다.</strong><span>검색어 또는 상태 필터를 변경해 보세요.</span></div>`;
 }
 
+function liveMetadataTypeInfo(metadataType = state.metadataType) {
+  const metadataTypes = state.metadataLive?.payload?.metadata_types;
+  if (!metadataTypes || typeof metadataTypes !== "object") return {};
+  const typeInfo = metadataTypes[metadataType];
+  return typeInfo && typeof typeInfo === "object" ? typeInfo : {};
+}
+
+function liveMetadataItems(metadataType = state.metadataType) {
+  const metadata = state.metadataLive?.payload?.metadata;
+  if (!metadata || typeof metadata !== "object" || !Array.isArray(metadata[metadataType])) return [];
+  return metadata[metadataType];
+}
+
+function metadataCollectionState(metadataType = state.metadataType) {
+  const live = state.metadataLive || { state: "idle", payload: null };
+  const previewItems = state.portal?.metadata?.[metadataType] || [];
+
+  if (live.state === "loading" || live.state === "idle") {
+    return { source: "loading", items: [], typeInfo: {}, payload: null };
+  }
+  if (live.state === "ready" && live.payload?.enabled === true) {
+    const typeInfo = liveMetadataTypeInfo(metadataType);
+    if (typeInfo.live === false) {
+      return { source: "unavailable", items: [], typeInfo, payload: live.payload };
+    }
+    return {
+      source: "live",
+      items: liveMetadataItems(metadataType),
+      typeInfo,
+      payload: live.payload,
+    };
+  }
+  if (live.state === "error") {
+    return { source: "fallback", items: previewItems, typeInfo: {}, payload: null };
+  }
+  return { source: "preview", items: previewItems, typeInfo: liveMetadataTypeInfo(metadataType), payload: live.payload };
+}
+
 function activeMetadataItems() {
-  return state.portal.metadata?.[state.metadataType] || [];
+  return metadataCollectionState().items;
+}
+
+function metadataCount() {
+  const collection = metadataCollectionState();
+  if (collection.source !== "live") return collection.items.length;
+  const count = Number(collection.typeInfo.count);
+  return Number.isFinite(count) && count >= 0 ? count : collection.items.length;
 }
 
 function metadataSearchText(item) {
-  return Object.values(item)
-    .flatMap((value) => Array.isArray(value) ? value : [value])
-    .filter((value) => typeof value === "string" || typeof value === "number")
-    .join(" ")
-    .toLowerCase();
+  const flatten = (value) => {
+    if (Array.isArray(value)) return value.flatMap(flatten);
+    if (value && typeof value === "object") return Object.values(value).flatMap(flatten);
+    return typeof value === "string" || typeof value === "number" ? [value] : [];
+  };
+  return flatten(item).join(" ").toLowerCase();
 }
 
 function filteredMetadata() {
@@ -303,58 +681,625 @@ function filteredMetadata() {
   return activeMetadataItems().filter((item) => !search || metadataSearchText(item).includes(search));
 }
 
-function metadataTableRow(item) {
+function metadataRecordId(item, metadataType = state.metadataType) {
+  const opaqueRecordId = item?._record_id;
+  if (typeof opaqueRecordId === "string" && opaqueRecordId.trim()) return opaqueRecordId.trim();
+  if (typeof opaqueRecordId === "number" && Number.isFinite(opaqueRecordId)) return String(opaqueRecordId);
+  const keysByType = {
+    domain: ["id", "_id", "key", "domain_key"],
+    table_catalog: ["id", "_id", "dataset_key", "key"],
+    main_flow_filters: ["id", "_id", "filter_key", "key"],
+  };
+  for (const key of keysByType[metadataType] || ["id", "_id", "key"]) {
+    const value = item?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return "";
+}
+
+function metadataValue(item, keys, fallback = "-") {
+  for (const key of keys) {
+    const value = item?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number") return String(value);
+  }
+  return fallback;
+}
+
+function metadataList(item, keys) {
+  for (const key of keys) {
+    const value = item?.[key];
+    if (Array.isArray(value)) return value.filter((entry) => entry !== null && entry !== undefined).map(String);
+    if (typeof value === "string" && value.trim()) return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function metadataStatusKey(item) {
+  const raw = metadataValue(item, ["status", "state", "record_status"], "active").trim().toLowerCase();
+  if (["inactive", "disabled", "deactivated", "비활성"].includes(raw)) return "inactive";
+  if (["draft", "초안"].includes(raw)) return "draft";
+  if (["review", "needs_input", "검토", "검토 필요"].includes(raw)) return "review";
+  return "active";
+}
+
+function metadataStatus(item) {
+  return {
+    active: "활성",
+    inactive: "비활성",
+    draft: "초안",
+    review: "검토 필요",
+  }[metadataStatusKey(item)] || "활성";
+}
+
+function displayRequiredFilters(values) {
+  const normalized = values.flatMap((value) => {
+    const text = String(value || "").trim();
+    const quoted = [...text.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+    return quoted.length ? quoted : (text ? [text] : []);
+  });
+  if (!normalized.length) return "없음";
+  if (normalized.length <= 4) return normalized.join(", ");
+  return `${normalized.slice(0, 4).join(", ")} 외 ${normalized.length - 4}개`;
+}
+
+function metadataDisplayName(item, metadataType = state.metadataType) {
+  if (metadataType === "table_catalog") {
+    return metadataValue(item, ["display_name", "dataset_name", "table_name", "name", "dataset_key"]);
+  }
+  if (metadataType === "main_flow_filters") {
+    return metadataValue(item, ["display_name", "filter_name", "name", "label", "filter_key"]);
+  }
+  return metadataValue(item, ["display_name", "domain_name", "name", "term", "key"]);
+}
+
+function metadataActionCell(item, collection) {
+  const itemId = metadataRecordId(item);
+  const displayName = metadataDisplayName(item);
+  const writable = isAdmin() && collection.source === "live";
+  if (!itemId) {
+    return `<td class="metadata-row-actions"><span class="metadata-readonly-label">상세 정보 없음</span></td>`;
+  }
+  const detailAction = `<button class="metadata-detail-button" type="button" data-metadata-detail="${escapeHtml(itemId)}" aria-label="${escapeHtml(displayName)} 상세 정보 보기">자세히 보기</button>`;
+  if (!writable) {
+    return `<td class="metadata-row-actions"><div class="metadata-row-action-buttons">${detailAction}<span class="metadata-readonly-label">읽기 전용</span></div></td>`;
+  }
+  const currentStatus = metadataStatusKey(item);
+  const nextStatus = currentStatus === "inactive" ? "active" : "inactive";
+  const actionLabel = nextStatus === "active" ? "활성화" : "비활성화";
+  const isUpdating = state.metadataStatusUpdating
+    && state.metadataStatusTarget?.metadataType === state.metadataType
+    && state.metadataStatusTarget?.recordId === itemId;
+  return `<td class="metadata-row-actions"><div class="metadata-row-action-buttons">${detailAction}<button class="metadata-status-button ${nextStatus}" type="button" data-metadata-status="${escapeHtml(itemId)}" data-next-metadata-status="${nextStatus}" aria-label="${escapeHtml(displayName)} ${actionLabel}" ${isUpdating ? "disabled" : ""}>${isUpdating ? "변경 중…" : actionLabel}</button></div></td>`;
+}
+
+const METADATA_DETAIL_HIDDEN_KEYS = new Set([
+  "_id", "_record_id", "id", "owner", "created_by", "updated_by",
+  "created_at", "updated_at", "last_modified", "last_run", "trace_id",
+  "request_id", "message_id", "registration_trace",
+]);
+
+function metadataDetailKeyIsRestricted(key) {
+  const normalized = String(key || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (METADATA_DETAIL_HIDDEN_KEYS.has(normalized)) return true;
+  return /(password|passwd|token|secret|api[_-]?key|authorization|credential|cookie|private|access[_-]?key|bearer|mongo(?:db)?[_-]?uri|connection[_-]?string)/i.test(normalized)
+    || /^(uri|url|api_url|endpoint|headers?|request_headers?|request_body)$/i.test(normalized);
+}
+
+function sanitizeMetadataDetail(value, depth = 0, key = "") {
+  if (metadataDetailKeyIsRestricted(key)) return undefined;
+  if (depth > 7) return "[중첩 정보 생략]";
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    return value.length > 20_000 ? `${value.slice(0, 20_000)}\n… [길이 제한으로 일부 생략]` : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    const rows = value
+      .slice(0, 100)
+      .map((entry) => sanitizeMetadataDetail(entry, depth + 1))
+      .filter((entry) => entry !== undefined);
+    if (value.length > 100) rows.push("… [항목 수 제한으로 일부 생략]");
+    return rows;
+  }
+  if (typeof value === "object") {
+    const result = {};
+    Object.entries(value).slice(0, 100).forEach(([entryKey, entryValue]) => {
+      const sanitized = sanitizeMetadataDetail(entryValue, depth + 1, entryKey);
+      if (sanitized !== undefined) result[entryKey] = sanitized;
+    });
+    if (Object.keys(value).length > 100) result._truncated = "[필드 수 제한으로 일부 생략]";
+    return result;
+  }
+  return String(value);
+}
+
+function metadataDetailFieldNames(metadataType = state.metadataType) {
+  const fields = {
+    domain: ["section", "key", "display_name", "status"],
+    table_catalog: ["dataset_key", "display_name", "dataset_family", "source_type", "status"],
+    main_flow_filters: ["filter_key", "display_name", "operator", "value_type", "value_shape", "status"],
+  };
+  return fields[metadataType] || [];
+}
+
+function metadataPayloadFieldNames(metadataType = state.metadataType) {
+  const fields = {
+    domain: [
+      "display_name", "aliases", "field", "processes", "values", "description", "summary",
+      "rules", "steps", "columns", "metric_semantics", "default_detail_columns", "analysis_steps",
+      "function_cases",
+    ],
+    table_catalog: [
+      "display_name", "dataset_family", "source_type", "source_config", "required_params",
+      "required_filters", "required_param_mappings", "filter_mappings", "standard_column_aliases",
+      "columns", "selection_criteria", "default_detail_columns", "metric_semantics",
+    ],
+    main_flow_filters: [
+      "display_name", "aliases", "operator", "value_type", "value_shape", "description",
+      "value_examples", "column_candidates", "candidate_columns", "standard_column_aliases",
+      "selection_criteria",
+    ],
+  };
+  return fields[metadataType] || [];
+}
+
+function metadataDetailRecordForDisplay(item, metadataType = state.metadataType) {
+  const record = {};
+  metadataDetailFieldNames(metadataType).forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(item || {}, field)) record[field] = item[field];
+  });
+  const payload = item?.payload;
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const safePayload = {};
+    metadataPayloadFieldNames(metadataType).forEach((field) => {
+      if (Object.prototype.hasOwnProperty.call(payload, field)) safePayload[field] = payload[field];
+    });
+    if (Object.keys(safePayload).length) record.payload = safePayload;
+  }
+  const sanitized = sanitizeMetadataDetail(record);
+  return sanitized && Object.keys(sanitized).length ? sanitized : { message: "표시할 안전한 상세 정보가 없습니다." };
+}
+
+function metadataDetailRecordFromResponse(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  for (const key of ["item", "record", "detail", "data"]) {
+    const value = payload[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  }
+  return payload;
+}
+
+function renderMetadataDetailModal(record, { source, message } = {}) {
+  const target = state.metadataDetailTarget;
+  const type = metadataTypes[target?.metadataType || state.metadataType];
+  const display = metadataDetailRecordForDisplay(record || {}, target?.metadataType || state.metadataType);
+  const json = JSON.stringify(display, null, 2);
+  const title = target?.displayName || metadataDisplayName(record || {}, target?.metadataType || state.metadataType);
+  const titleElement = $("#metadata-detail-title");
+  const sourceElement = $("#metadata-detail-source");
+  const messageElement = $("#metadata-detail-message");
+  const jsonElement = $("#metadata-detail-json");
+  const copyButton = $("#metadata-detail-copy");
+  if (titleElement) titleElement.textContent = `${title || type.label} 상세 정보`;
+  if (sourceElement) sourceElement.textContent = source || "상세 정보";
+  if (messageElement) messageElement.textContent = message || "Flow 기반 등록 정보를 JSON 형식으로 표시합니다. 인증값과 연결 비밀 정보는 표시하지 않습니다.";
+  if (jsonElement) jsonElement.textContent = json;
+  if (copyButton) copyButton.disabled = !json;
+}
+
+function metadataDetailModalIsOpen() {
+  const modal = $("#metadata-detail-modal");
+  return Boolean(modal && !modal.hidden);
+}
+
+function openMetadataDetailModal(recordId, opener) {
+  const collection = metadataCollectionState();
+  const item = collection.items.find((candidate) => metadataRecordId(candidate) === recordId);
+  if (!item) {
+    showToast("상세 정보를 확인할 메타데이터 항목을 찾지 못했습니다. 목록을 새로고침해 주세요.");
+    return;
+  }
+
+  const modal = $("#metadata-detail-modal");
+  const dialog = $(".metadata-detail-dialog", modal);
+  if (!modal || !dialog) return;
+  state.metadataDetailTarget = {
+    metadataType: state.metadataType,
+    recordId,
+    displayName: metadataDisplayName(item),
+  };
+  state.metadataDetailOpener = opener instanceof HTMLElement ? opener : document.activeElement;
+  state.metadataDetailLoading = collection.source === "live";
+  modal.hidden = false;
+  document.body.classList.add("dialog-open");
+  renderMetadataDetailModal(item, {
+    source: collection.source === "live" ? "실제 MongoDB 목록" : "예시 데이터",
+    message: collection.source === "live"
+      ? "상세 등록 정보를 불러오는 중입니다. 인증값과 연결 비밀 정보는 표시하지 않습니다."
+      : "예시 목록에 포함된 Flow 기반 등록 정보를 JSON 형식으로 표시합니다.",
+  });
+  window.setTimeout(() => dialog.focus(), 0);
+
+  if (collection.source !== "live") return;
+  void loadLiveMetadataDetail(state.metadataDetailTarget, item);
+}
+
+async function loadLiveMetadataDetail(target, fallbackItem) {
+  try {
+    const response = await fetch(
+      `/api/metadata/live/${encodeURIComponent(target.metadataType)}/${encodeURIComponent(target.recordId)}`,
+      { headers: portalRequestHeaders({ Accept: "application/json" }) },
+    );
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageFromResponse(payload, "메타데이터 상세 정보를 불러오지 못했습니다."));
+    }
+    if (!metadataDetailModalIsOpen()
+      || state.metadataDetailTarget?.metadataType !== target.metadataType
+      || state.metadataDetailTarget?.recordId !== target.recordId) return;
+    const detail = metadataDetailRecordFromResponse(payload);
+    if (!detail) throw new Error("메타데이터 상세 정보 형식을 확인하지 못했습니다.");
+    renderMetadataDetailModal(detail, {
+      source: "실제 MongoDB 상세",
+      message: "Flow가 저장한 등록 정보를 JSON 형식으로 표시합니다. 인증값과 연결 비밀 정보는 자동으로 제외됩니다.",
+    });
+  } catch (error) {
+    console.warn("metadata detail unavailable", error);
+    if (metadataDetailModalIsOpen()
+      && state.metadataDetailTarget?.metadataType === target.metadataType
+      && state.metadataDetailTarget?.recordId === target.recordId) {
+      renderMetadataDetailModal(fallbackItem, {
+        source: "목록 정보만 표시",
+        message: "상세 API를 확인하지 못해 현재 목록에 표시된 안전한 정보만 보여줍니다. 상세 API 연결 상태를 확인해 주세요.",
+      });
+    }
+  } finally {
+    if (state.metadataDetailTarget?.metadataType === target.metadataType
+      && state.metadataDetailTarget?.recordId === target.recordId) {
+      state.metadataDetailLoading = false;
+    }
+  }
+}
+
+function closeMetadataDetailModal() {
+  const modal = $("#metadata-detail-modal");
+  if (!modal || modal.hidden) return;
+  const opener = state.metadataDetailOpener;
+  modal.hidden = true;
+  state.metadataDetailTarget = null;
+  state.metadataDetailLoading = false;
+  state.metadataDetailOpener = null;
+  if ($("#metadata-status-modal")?.hidden !== false) document.body.classList.remove("dialog-open");
+  if (opener instanceof HTMLElement && opener.isConnected) {
+    window.setTimeout(() => opener.focus(), 0);
+  }
+}
+
+async function copyMetadataDetailJson() {
+  const text = String($("#metadata-detail-json")?.textContent || "").trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("상세 JSON을 복사했습니다.");
+  } catch (error) {
+    console.warn("metadata detail copy failed", error);
+    showToast("브라우저 복사 권한을 확인해 주세요.");
+  }
+}
+
+function metadataTableRow(item, collection) {
+  const status = metadataStatus(item);
   if (state.metadataType === "table_catalog") {
-    const filters = item.required_filters?.length ? item.required_filters.join(", ") : "없음";
+    const filters = metadataList(item, ["required_params", "required_filters", "required_conditions", "mandatory_filters"]);
+    const displayName = metadataDisplayName(item);
+    const datasetKey = metadataValue(item, ["dataset_key", "key", "dataset_id"]);
+    const sourceType = metadataValue(item, ["source_type", "connection_type", "db_type", "source"]);
+    const category = metadataValue(item, ["dataset_family", "category", "dataset_category", "data_type"]);
     return `
       <tr>
-        <td class="dataset-cell"><strong>${escapeHtml(item.display_name)}</strong><span>${escapeHtml(item.dataset_key)}</span></td>
-        <td><span class="mini-tag">${escapeHtml(item.dataset_family)}</span></td>
-        <td><strong>${escapeHtml(item.source_type)}</strong><span class="table-subtle">${escapeHtml(item.source_name)}</span></td>
-        <td>${escapeHtml(filters)}</td><td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.updated_at)}</td><td>${statusPill(item.status)}</td>
-        <td><button class="row-action" type="button" data-metadata-detail="${escapeHtml(item.id)}" aria-label="${escapeHtml(item.display_name)} 상세">⋯</button></td>
+        <td><code class="metadata-key">${escapeHtml(datasetKey)}</code></td>
+        <td>${escapeHtml(displayName)}</td>
+        <td><span class="mini-tag">${escapeHtml(category)}</span></td>
+        <td>${escapeHtml(sourceType)}</td>
+        <td>${escapeHtml(displayRequiredFilters(filters))}</td>
+        <td>${statusPill(status)}</td>
+        ${metadataActionCell(item, collection)}
       </tr>`;
   }
   if (state.metadataType === "main_flow_filters") {
+    const displayName = metadataDisplayName(item);
+    const filterKey = metadataValue(item, ["filter_key", "key", "id"]);
     return `
       <tr>
-        <td class="dataset-cell"><strong>${escapeHtml(item.display_name)}</strong><span>${escapeHtml(item.filter_key)}</span></td>
-        <td><span class="mini-tag">${escapeHtml(item.semantic_role)}</span></td><td>${escapeHtml(item.value_type)}</td>
-        <td>${escapeHtml((item.column_candidates || []).join(", ") || "-")}</td><td>${escapeHtml((item.aliases || []).join(", ") || "-")}</td>
-        <td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.updated_at)}</td><td>${statusPill(item.status)}</td>
+        <td><code class="metadata-key">${escapeHtml(filterKey)}</code></td>
+        <td>${escapeHtml(displayName)}</td>
+        <td>${escapeHtml(metadataValue(item, ["operator", "default_operator"]))}</td>
+        <td>${escapeHtml(metadataValue(item, ["value_type", "data_type", "type"]))}</td>
+        <td>${escapeHtml(metadataValue(item, ["value_shape", "value_mode", "shape"]))}</td>
+        <td>${statusPill(status)}</td>
+        ${metadataActionCell(item, collection)}
       </tr>`;
   }
+  const displayName = metadataDisplayName(item);
+  const section = metadataValue(item, ["section_label", "section", "category", "domain_type"]);
+  const domainKey = metadataValue(item, ["key", "domain_key", "id"]);
   return `
     <tr>
-      <td class="dataset-cell"><strong>${escapeHtml(item.display_name)}</strong><span>${escapeHtml(item.key)}</span></td>
-      <td><span class="mini-tag">${escapeHtml(item.section_label)}</span></td><td>${escapeHtml((item.aliases || []).join(", ") || "-")}</td>
-      <td>${escapeHtml((item.question_cues || []).join(", ") || "-")}</td><td class="domain-summary">${escapeHtml(item.summary)}</td>
-      <td>${escapeHtml(item.owner)}</td><td>${escapeHtml(item.updated_at)}</td><td>${statusPill(item.status)}</td>
+      <td><span class="mini-tag">${escapeHtml(section)}</span></td>
+      <td><code class="metadata-key">${escapeHtml(domainKey)}</code></td>
+      <td>${escapeHtml(displayName)}</td>
+      <td>${statusPill(status)}</td>
+      ${metadataActionCell(item, collection)}
     </tr>`;
 }
 
+function paginateMetadata(items) {
+  const pageSize = Math.max(1, Number(state.metadataPageSize) || 10);
+  const totalItems = items.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  state.metadataPage = Math.min(Math.max(1, Number(state.metadataPage) || 1), totalPages);
+  const start = totalItems ? (state.metadataPage - 1) * pageSize : 0;
+  const end = Math.min(start + pageSize, totalItems);
+  return {
+    items: items.slice(start, end),
+    totalItems,
+    totalPages,
+    page: state.metadataPage,
+    start,
+    end,
+  };
+}
+
+function paginationPageList(totalPages, currentPage) {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+  const pages = [1];
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+  if (start > 2) pages.push("…");
+  for (let page = start; page <= end; page += 1) pages.push(page);
+  if (end < totalPages - 1) pages.push("…");
+  pages.push(totalPages);
+  return pages;
+}
+
+function renderMetadataPagination(pagination) {
+  const element = $("#metadata-pagination");
+  if (!element) return;
+  if (pagination.totalPages <= 1) {
+    element.hidden = true;
+    element.innerHTML = "";
+    return;
+  }
+
+  element.hidden = false;
+  const pageButtons = paginationPageList(pagination.totalPages, pagination.page)
+    .map((entry) => {
+      if (entry === "…") return '<span class="pagination-ellipsis" aria-hidden="true">…</span>';
+      const selected = entry === pagination.page;
+      return `<button class="pagination-button ${selected ? "active" : ""}" type="button" data-metadata-page="${entry}" aria-label="${entry}페이지" ${selected ? 'aria-current="page"' : ""}>${entry}</button>`;
+    })
+    .join("");
+  element.innerHTML = `
+    <p class="metadata-pagination-summary">${pagination.start + 1}–${pagination.end} / ${pagination.totalItems}건</p>
+    <div class="metadata-pagination-controls">
+      <button class="pagination-button pagination-direction" type="button" data-metadata-page="previous" aria-label="이전 페이지" ${pagination.page === 1 ? "disabled" : ""}>이전</button>
+      ${pageButtons}
+      <button class="pagination-button pagination-direction" type="button" data-metadata-page="next" aria-label="다음 페이지" ${pagination.page === pagination.totalPages ? "disabled" : ""}>다음</button>
+    </div>`;
+}
+
+function renderMetadataDataNote(collection) {
+  const note = $("#metadata-data-note");
+  const copy = $("#metadata-data-note-copy");
+  const badge = $("#metadata-source-badge");
+  if (!note || !copy || !badge) return;
+
+  note.classList.remove("is-live", "is-preview", "is-loading", "is-fallback");
+  const typeInfo = collection.typeInfo || {};
+  if (collection.source === "loading") {
+    note.classList.add("is-loading");
+    badge.textContent = "목록 확인 중";
+    copy.innerHTML = "<strong>실제 목록을 불러오는 중입니다.</strong> MongoDB 읽기 전용 조회 상태를 확인하고 있습니다.";
+    return;
+  }
+  if (collection.source === "live") {
+    note.classList.add("is-live");
+    badge.textContent = "실제 데이터 · 관리자 상태 변경 가능";
+    const database = String(collection.payload?.source?.database || "").trim();
+    const collectionName = String(typeInfo.collection || "").trim();
+    const source = [database, collectionName].filter(Boolean).join(".") || "MongoDB 컬렉션";
+    const returned = Number(typeInfo.returned_count);
+    const count = Number(typeInfo.count);
+    const renderedCount = Number.isFinite(returned) ? returned : collection.items.length;
+    const fullCount = Number.isFinite(count) ? count : renderedCount;
+    const truncation = typeInfo.truncated ? " 일부 항목만 표시합니다." : "";
+    copy.innerHTML = `<strong>실제 MongoDB 목록을 표시합니다.</strong> <code>${escapeHtml(source)}</code>에서 ${escapeHtml(fullCount)}건 중 ${escapeHtml(renderedCount)}건을 불러왔습니다. 상태 변경은 관리자 확인 후에만 실행되며, 원본 항목은 유지됩니다.${truncation}`;
+    return;
+  }
+  if (collection.source === "fallback") {
+    note.classList.add("is-fallback");
+    badge.textContent = "예시 데이터";
+    copy.innerHTML = "<strong>실제 목록을 지금 확인하지 못했습니다.</strong> 화면 흐름 확인을 위해 예시 데이터를 표시하며, MongoDB의 실제 내용과 다를 수 있습니다.";
+    return;
+  }
+  if (collection.source === "unavailable") {
+    note.classList.add("is-fallback");
+    badge.textContent = "실조회 설정 필요";
+    copy.innerHTML = "<strong>이 유형의 실제 MongoDB 읽기 설정이 준비되지 않았습니다.</strong> 예시 데이터로 대체하지 않고 빈 목록으로 표시합니다.";
+    return;
+  }
+  note.classList.add("is-preview");
+  badge.textContent = "예시 데이터";
+  copy.innerHTML = "<strong>실제 목록 읽기가 아직 설정되지 않았습니다.</strong> 아래는 화면 확인용 예시이며, MongoDB에 저장된 실제 메타데이터 조회 결과가 아닙니다.";
+}
+
 function renderMetadata() {
+  if (!isAdmin()) return;
   const type = metadataTypes[state.metadataType];
-  const metadata = filteredMetadata();
+  const collection = metadataCollectionState();
+  const filteredItems = filteredMetadata();
+  const pagination = paginateMetadata(filteredItems);
   const allItems = activeMetadataItems();
   $("#metadata-type-title").textContent = type.label;
   $("#metadata-type-description").textContent = type.description;
   $("#metadata-total-label").textContent = type.totalLabel;
-  $("#metadata-total").textContent = allItems.length;
-  $("#metadata-active-total").textContent = allItems.filter((item) => item.status === "활성").length;
-  $("#metadata-review-total").textContent = allItems.filter((item) => item.status === "검토 필요").length;
-  $("#metadata-summary-note").textContent = `${type.label} 등록 전 필수 항목과 기존 항목을 확인하세요.`;
+  $("#metadata-total").textContent = metadataCount();
+  const hasExplicitStatus = allItems.some((item) => ["status", "state", "record_status"].some((key) => String(item?.[key] || "").trim()));
+  $("#metadata-active-total").textContent = hasExplicitStatus
+    ? allItems.filter((item) => metadataStatus(item) === "활성").length
+    : "-";
+  $("#metadata-review-total").textContent = hasExplicitStatus
+    ? allItems.filter((item) => metadataStatus(item) === "검토 필요").length
+    : "-";
+  $("#metadata-summary-note").textContent = collection.source === "live"
+    ? `${type.label} 실제 목록을 확인하고, 필요한 항목은 활성 또는 비활성 상태로 관리하세요.`
+    : `${type.label} 등록 전 필수 항목과 기존 항목을 확인하세요.`;
   $("#metadata-filter-hint").textContent = type.filterHint;
   $("#metadata-table-head").innerHTML = `<tr>${type.headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>`;
-  $("#metadata-list").innerHTML = metadata.length
-    ? metadata.map(metadataTableRow).join("")
-    : `<tr><td colspan="${type.headers.length}" class="empty-cell">조건에 맞는 ${escapeHtml(type.label)} 항목이 없습니다.</td></tr>`;
+  $("#metadata-list").innerHTML = pagination.items.length
+    ? pagination.items.map((item) => metadataTableRow(item, collection)).join("")
+    : `<tr><td colspan="${type.headers.length}" class="empty-cell">${collection.source === "loading" ? "실제 메타데이터 목록을 불러오는 중입니다." : `조건에 맞는 ${escapeHtml(type.label)} 항목이 없습니다.`}</td></tr>`;
+  renderMetadataPagination(pagination);
   $$("[data-metadata-type]").forEach((button) => {
     const isSelected = button.dataset.metadataType === state.metadataType;
     button.classList.toggle("active", isSelected);
     button.setAttribute("aria-selected", String(isSelected));
   });
+  renderMetadataDataNote(collection);
   renderMetadataAuthoring();
+}
+
+function openMetadataStatusModal(recordId, nextStatus, opener) {
+  if (!isAdmin()) {
+    showToast("관리자만 메타데이터 상태를 변경할 수 있습니다.");
+    return;
+  }
+  const collection = metadataCollectionState();
+  if (collection.source !== "live") {
+    showToast("예시 또는 미연결 목록은 상태를 변경할 수 없습니다. 실제 MongoDB 목록에서만 변경할 수 있습니다.");
+    return;
+  }
+  const item = collection.items.find((candidate) => metadataRecordId(candidate) === recordId);
+  if (!item) {
+    showToast("상태를 변경할 메타데이터 항목을 찾지 못했습니다. 목록을 새로고침해 주세요.");
+    return;
+  }
+
+  const normalizedNextStatus = nextStatus === "inactive" ? "inactive" : "active";
+  const modal = $("#metadata-status-modal");
+  const dialog = $(".metadata-status-dialog", modal);
+  const kicker = $("#metadata-status-kicker");
+  const title = $("#metadata-status-title");
+  const message = $("#metadata-status-message");
+  const confirmButton = $("#metadata-status-confirm");
+  if (!modal || !dialog || !kicker || !title || !message || !confirmButton) return;
+
+  const displayName = metadataDisplayName(item);
+  const actionLabel = normalizedNextStatus === "active" ? "활성화" : "비활성화";
+  state.metadataStatusTarget = {
+    metadataType: state.metadataType,
+    recordId,
+    displayName,
+    nextStatus: normalizedNextStatus,
+  };
+  state.metadataStatusOpener = opener instanceof HTMLElement ? opener : document.activeElement;
+  dialog.classList.toggle("is-activate", normalizedNextStatus === "active");
+  kicker.textContent = normalizedNextStatus === "active" ? "REACTIVATE METADATA" : "PAUSE METADATA";
+  title.textContent = `“${displayName}” 항목을 ${actionLabel}하시겠습니까?`;
+  message.textContent = normalizedNextStatus === "active"
+    ? "다시 활성 상태로 변경하면 일반 Agent 조회 대상에 포함됩니다. MongoDB의 원본 항목은 그대로 유지됩니다."
+    : "비활성 상태로 변경하면 일반 Agent 조회 대상에서 제외됩니다. MongoDB의 원본 항목은 그대로 유지됩니다.";
+  confirmButton.textContent = actionLabel;
+  confirmButton.classList.toggle("is-activate", normalizedNextStatus === "active");
+  modal.hidden = false;
+  document.body.classList.add("dialog-open");
+  window.setTimeout(() => dialog.focus(), 0);
+}
+
+function closeMetadataStatusModal({ force = false } = {}) {
+  if (state.metadataStatusUpdating && !force) return;
+  const modal = $("#metadata-status-modal");
+  if (!modal || modal.hidden) return;
+  const opener = state.metadataStatusOpener;
+  modal.hidden = true;
+  if ($("#metadata-detail-modal")?.hidden !== false) document.body.classList.remove("dialog-open");
+  state.metadataStatusTarget = null;
+  state.metadataStatusOpener = null;
+  if (opener instanceof HTMLElement && opener.isConnected) {
+    window.setTimeout(() => opener.focus(), 0);
+  }
+}
+
+function updateLiveMetadataRecordStatus(target, responsePayload) {
+  const payload = state.metadataLive?.payload;
+  const items = payload?.metadata?.[target.metadataType];
+  if (!Array.isArray(items)) return false;
+  const index = items.findIndex((item) => metadataRecordId(item, target.metadataType) === target.recordId);
+  if (index < 0) return false;
+  const updatedRecord = ["item", "record", "detail", "data"]
+    .map((key) => responsePayload?.[key])
+    .find((value) => value && typeof value === "object" && !Array.isArray(value));
+  if (updatedRecord && typeof updatedRecord === "object" && !Array.isArray(updatedRecord)) {
+    items[index] = { ...items[index], ...updatedRecord, status: target.nextStatus };
+  } else {
+    items[index] = { ...items[index], status: target.nextStatus };
+  }
+  return true;
+}
+
+async function confirmMetadataStatusUpdate() {
+  const target = state.metadataStatusTarget;
+  if (!target || state.metadataStatusUpdating) return;
+  const collection = metadataCollectionState(target.metadataType);
+  if (!isAdmin() || collection.source !== "live") {
+    closeMetadataStatusModal();
+    showToast("실제 MongoDB 목록에서 관리자만 메타데이터 상태를 변경할 수 있습니다.");
+    return;
+  }
+
+  const confirmButton = $("#metadata-status-confirm");
+  const actionLabel = target.nextStatus === "active" ? "활성화" : "비활성화";
+  state.metadataStatusUpdating = true;
+  if (confirmButton) {
+    confirmButton.disabled = true;
+    confirmButton.textContent = "변경 중…";
+  }
+
+  try {
+    const response = await fetch(
+      `/api/metadata-authoring/${encodeURIComponent(target.metadataType)}/${encodeURIComponent(target.recordId)}/status`,
+      {
+        method: "PATCH",
+        headers: portalRequestHeaders({ Accept: "application/json", "Content-Type": "application/json" }),
+        body: JSON.stringify({ status: target.nextStatus }),
+      },
+    );
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const fallback = response.status === 403
+        ? "관리자만 메타데이터 상태를 변경할 수 있습니다."
+        : "메타데이터 상태 변경에 실패했습니다.";
+      throw new Error(errorMessageFromResponse(payload, fallback));
+    }
+    updateLiveMetadataRecordStatus(target, payload);
+    state.metadataStatusUpdating = false;
+    closeMetadataStatusModal({ force: true });
+    renderMetadata();
+    showToast(`${target.displayName} 항목을 ${actionLabel}했습니다. 원본 항목은 유지됩니다.`);
+  } catch (error) {
+    console.error(error);
+    showToast(error?.message || "메타데이터 상태를 변경하지 못했습니다.");
+  } finally {
+    state.metadataStatusUpdating = false;
+    if (confirmButton && !$("#metadata-status-modal")?.hidden) {
+      confirmButton.disabled = false;
+      confirmButton.textContent = actionLabel;
+    }
+    renderMetadata();
+  }
 }
 
 function authoringData() {
@@ -365,6 +1310,77 @@ function activeAuthoringExample() {
   return authoringData().examples?.[state.metadataType] || null;
 }
 
+function metadataExampleRawText(example) {
+  const tableCatalogFallback = [
+    "dataset_key: production_today",
+    "표시명: Production Today",
+    "분류: production",
+    "source_type: oracle",
+    "db_key: PNT_RPT",
+    "",
+    "query_template:",
+    "SELECT",
+    "  WORK_DATE,",
+    "  OPER_NAME,",
+    "  PRODUCTION",
+    "FROM PROD_TABLE",
+    "WHERE WORK_DATE = {DATE}",
+    "  AND OPER_NAME = {PROCESS_GROUP}",
+    "",
+    "columns:",
+    "- WORK_DATE",
+    "- OPER_NAME",
+    "- PRODUCTION",
+    "",
+    "required_param_mappings:",
+    "- DATE -> WORK_DATE",
+    "- PROCESS_GROUP -> OPER_NAME",
+    "",
+    "filter_mappings:",
+    "- DATE -> WORK_DATE",
+    "- PROCESS_GROUP -> OPER_NAME",
+  ].join("\n");
+  const rawText = String(example?.raw_text || (state.metadataType === "table_catalog" ? tableCatalogFallback : "")).trim();
+  if (state.metadataType !== "table_catalog") return rawText;
+
+  const additions = [];
+  if (!/(query_template|조회\s*쿼리|\bselect\b)/i.test(rawText)) {
+    additions.push(
+      "조회 쿼리(query_template) 예시는 다음과 같습니다.\n"
+      + "SELECT\n"
+      + "  WORK_DATE,\n"
+      + "  OPER_NAME,\n"
+      + "  PRODUCTION\n"
+      + "FROM PROD_TABLE\n"
+      + "WHERE WORK_DATE = {DATE}\n"
+      + "  AND OPER_NAME = {PROCESS_GROUP}",
+    );
+  }
+  if (!/(filter_mappings|필터\s*[·/]?\s*컬럼\s*매핑|required_param_mappings)/i.test(rawText)) {
+    additions.push(
+      "필터·컬럼 매핑(filter_mappings)은 DATE → WORK_DATE, PROCESS_GROUP → OPER_NAME 입니다. "
+      + "필수 조건 매핑(required_param_mappings)도 DATE → WORK_DATE, PROCESS_GROUP → OPER_NAME으로 저장합니다. "
+      + "조회 컬럼(columns)은 WORK_DATE, OPER_NAME, PRODUCTION 입니다.",
+    );
+  }
+  if (!additions.length) return rawText;
+  return [rawText, ...additions].filter(Boolean).join("\n\n");
+}
+
+function metadataExampleRequiredInput(example) {
+  const fields = Array.isArray(example?.required_input) ? [...example.required_input] : [];
+  if (state.metadataType === "table_catalog") {
+    [
+      { field: "조회 쿼리(query_template)", pattern: /(query|쿼리)/i },
+      { field: "조회 컬럼(columns)", pattern: /(column|컬럼)/i },
+      { field: "필터·컬럼 매핑(filter_mappings)", pattern: /(mapping|매핑)/i },
+    ].forEach(({ field, pattern }) => {
+      if (!fields.some((value) => pattern.test(String(value)))) fields.push(field);
+    });
+  }
+  return fields.join(" · ");
+}
+
 function cloneValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -373,41 +1389,246 @@ function metadataApiState() {
   return state.metadataApi || { mode: "unavailable", ready: false, preview_only: false, missing: [] };
 }
 
-function metadataApiLabel() {
-  const api = metadataApiState();
-  if (api.preview_only || api.mode === "preview") return "미리보기";
-  if (api.ready) return "연결됨";
-  return "설정 필요";
+const metadataConnectionTypes = [
+  { key: "domain", label: "도메인 정보 등록 Flow" },
+  { key: "table_catalog", label: "데이터 카탈로그 등록 Flow" },
+  { key: "main_flow_filters", label: "메인 플로우 필터 등록 Flow" },
+];
+
+function metadataTypeStatus(api, metadataType) {
+  const types = api?.metadata_types;
+  if (types && typeof types === "object" && types[metadataType] && typeof types[metadataType] === "object") {
+    return types[metadataType];
+  }
+  return {};
 }
 
-function metadataApiDetail() {
+function endpointSourceLabel(source) {
+  return {
+    type_specific_url: "유형별 API 주소",
+    common_url: "공통 API 주소",
+  }[source] || "API 주소";
+}
+
+function metadataStorageDetail(metadataType, api, typeStatus) {
+  const livePayload = state.metadataLive?.payload;
+  const liveType = liveMetadataTypeInfo(metadataType);
+  if (state.metadataLive?.state === "ready" && livePayload?.enabled === true && liveType.live !== false) {
+    const database = String(livePayload?.source?.database || "").trim();
+    const collection = String(liveType.collection || "").trim();
+    const count = Number(liveType.count);
+    const destination = [database, collection].filter(Boolean).join(".") || "실제 MongoDB 컬렉션";
+    const countLabel = Number.isFinite(count) ? ` · ${count}건 확인` : "";
+    return `실제 목록 읽기 확인: ${destination}${countLabel} · 읽기 전용`;
+  }
+  const mongo = api?.flow_metadata_mongodb && typeof api.flow_metadata_mongodb === "object"
+    ? api.flow_metadata_mongodb
+    : (api?.mongodb && typeof api.mongodb === "object" ? api.mongodb : {});
+  const database = String(mongo.database || "").trim();
+  const expectedCollection = String(typeStatus.expected_flow_collection_name || "").trim();
+  const portalCollection = String(typeStatus.portal_configured_collection_name || "").trim();
+
+  if (typeStatus.writer_tweak_will_be_sent && expectedCollection) {
+    const destination = database ? `${database}.${expectedCollection}` : expectedCollection;
+    return `Flow에 MongoDB Writer 설정 전달 예정: ${destination} (컬렉션 존재·내용은 미확인)`;
+  }
+  if (portalCollection) {
+    return `포털 계산명: ${portalCollection} · Flow 전달 안 함 · 실제 저장 위치 미확인`;
+  }
+  return "MongoDB Writer 설정은 Flow에 전달하지 않으며, 포털은 실제 저장 내용을 확인하지 않습니다.";
+}
+
+function metadataConnectionItem(metadataType, label) {
   const api = metadataApiState();
+  const apiConfig = api?.api && typeof api.api === "object" ? api.api : {};
+  const typeStatus = metadataTypeStatus(api, metadataType);
+  const endpointConfigured = typeStatus.endpoint_configured === true
+    || apiConfig.endpoint_configured?.[metadataType] === true;
+  const endpointReady = typeStatus.endpoint_ready === true
+    || (Object.keys(typeStatus).length === 0 && api.ready === true && endpointConfigured);
+  const componentConfigured = apiConfig.component_map_configured?.[metadataType] === true
+    && apiConfig.api_terminal_configured?.[metadataType] === true;
+  const authenticationConfigured = Boolean(apiConfig.auth_key_configured || apiConfig.bearer_token_configured);
+  const callerConfigured = apiConfig.gaia_api_caller_employee_id_configured === true;
+  const mongo = api?.mongodb && typeof api.mongodb === "object" ? api.mongodb : {};
+
+  if (!state.metadataApi) {
+    return {
+      label,
+      detail: "서버의 메타데이터 상태 정보를 불러오지 못했습니다.",
+      status: "상태 확인 불가",
+      icon: "question",
+      tone: "unknown",
+    };
+  }
   if (api.preview_only || api.mode === "preview") {
-    return "미리보기 모드 · 외부 API와 MongoDB에는 요청하지 않습니다.";
+    return {
+      label,
+      detail: "미리보기 모드입니다. 외부 Flow와 MongoDB에는 요청하지 않습니다.",
+      status: "미리보기",
+      icon: "clock",
+      tone: "preview",
+    };
   }
-  if (api.ready) {
-    return "외부 메타데이터 API에 요청하고 구조화된 Flow 결과를 표시합니다.";
+  if (!endpointConfigured) {
+    return {
+      label,
+      detail: "이 Flow의 API 주소가 설정되지 않았습니다.",
+      status: "API URL 미설정",
+      icon: "alert",
+      tone: "attention",
+    };
   }
-  return "연결 설정을 확인한 뒤 등록 요청을 실행할 수 있습니다.";
+  if (!authenticationConfigured) {
+    return {
+      label,
+      detail: "공통 API 인증 키 또는 Bearer 토큰 설정이 필요합니다.",
+      status: "인증 정보 필요",
+      icon: "alert",
+      tone: "attention",
+    };
+  }
+  if (!callerConfigured) {
+    return {
+      label,
+      detail: "관리자 설정에서 GAIA API 호출 권한 사번을 등록해 주세요.",
+      status: "호출 사번 필요",
+      icon: "alert",
+      tone: "attention",
+    };
+  }
+  if (mongo.tweaks_enabled && !mongo.writer_tweaks_configured) {
+    return {
+      label,
+      detail: "MongoDB Writer 전달을 사용하도록 했지만 DB 연결 정보가 부족합니다.",
+      status: "MongoDB 설정 필요",
+      icon: "alert",
+      tone: "attention",
+    };
+  }
+  if (!componentConfigured) {
+    return {
+      label,
+      detail: "Langflow 입력 또는 API 응답 컴포넌트 설정을 확인해 주세요.",
+      status: "Flow 구성 확인",
+      icon: "alert",
+      tone: "attention",
+    };
+  }
+  if (!endpointReady || !api.ready) {
+    const missing = Array.isArray(api.missing) && api.missing.length
+      ? `확인 항목: ${api.missing.join(", ")}`
+      : "서버의 공통 API 설정을 확인해 주세요.";
+    return {
+      label,
+      detail: missing,
+      status: "설정 필요",
+      icon: "alert",
+      tone: "attention",
+    };
+  }
+  return {
+    label,
+      detail: `${endpointSourceLabel(typeStatus.endpoint_source)}·인증·호출 사번 설정 완료 · ${metadataStorageDetail(metadataType, api, typeStatus)}`,
+      status: "요청 가능",
+      icon: "check",
+    tone: "ready",
+  };
+}
+
+function mongodbConnectionItem() {
+  const api = metadataApiState();
+  // The server returns only safe connection facts here.  Never infer or show a
+  // MongoDB URI, credentials, collection contents, or other secret settings.
+  const connection = api?.portal_mongodb_connection && typeof api.portal_mongodb_connection === "object"
+    ? api.portal_mongodb_connection
+    // Keep the status row useful while a server update is rolling out.  The
+    // fallback is the older safe response shape and exposes the same facts.
+    : (api?.portal_settings_mongodb && typeof api.portal_settings_mongodb === "object"
+      ? api.portal_settings_mongodb
+      : {});
+  const configured = connection.configured === true;
+  const connected = connection.connected === true || connection.connection_read_verified === true;
+  const database = String(connection.database || "").trim();
+  const serverMessage = String(connection.message || "").trim();
+  const databaseDetail = database ? ` · ${database} 데이터베이스` : "";
+
+  if (!state.metadataApi) {
+    return {
+      label: "MongoDB 연결 상태",
+      detail: "서버의 MongoDB 연결 상태를 불러오지 못했습니다.",
+      status: "확인 필요",
+      icon: "question",
+      tone: "unknown",
+    };
+  }
+
+  if (!configured) {
+    return {
+      label: "MongoDB 연결 상태",
+      detail: `${serverMessage || "MongoDB 연결 정보가 설정되지 않았습니다."}${databaseDetail}`,
+      status: "미설정",
+      icon: "database",
+      tone: "attention",
+    };
+  }
+
+  if (!connected) {
+    return {
+      label: "MongoDB 연결 상태",
+      detail: `${serverMessage || "MongoDB 연결 정보를 확인했지만 현재 연결을 검증하지 못했습니다."}${databaseDetail}`,
+      status: "확인 필요",
+      icon: "alert",
+      tone: "attention",
+    };
+  }
+
+  return {
+    label: "MongoDB 연결 상태",
+    detail: `${serverMessage || "MongoDB 연결을 확인했습니다."}${databaseDetail}`,
+    status: "정상",
+    icon: "database",
+    tone: "ready",
+  };
+}
+
+function metadataConnectionItems() {
+  return [
+    mongodbConnectionItem(),
+    ...metadataConnectionTypes.map(({ key, label }) => metadataConnectionItem(key, label)),
+  ];
 }
 
 function renderMetadataApiIndicator() {
   const label = $("#portal-runtime-label");
   const copy = $("#portal-runtime-copy");
   if (!label || !copy) return;
+  const usage = dashboardUsageState();
+  const dashboardCopy = usage.state === "live"
+    ? "대시보드 사용 이력은 Phoenix에서 실제 조회합니다."
+    : usage.state === "preview"
+      ? "대시보드 사용 이력은 현재 미리보기 데이터입니다."
+      : usage.state === "error"
+        ? "Phoenix 사용 이력은 현재 표시하지 않습니다. 다시 조회해 주세요."
+        : "대시보드 사용 이력을 확인하고 있습니다.";
+  if (!isAdmin()) {
+    label.textContent = usage.state === "live" ? "Phoenix 사용 이력 연결됨" : "포털 화면 미리보기";
+    copy.textContent = `${dashboardCopy} 메타데이터와 설정은 관리자에게만 제공됩니다.`;
+    return;
+  }
   const api = metadataApiState();
   if (api.preview_only || api.mode === "preview") {
     label.textContent = "메타데이터 미리보기 모드";
-    copy.textContent = "대시보드·사번·이력·스케줄은 더미 화면이며, 메타데이터도 외부 API 없이 안전한 미리보기로 실행됩니다.";
+    copy.textContent = `${dashboardCopy} 메타데이터는 외부 API 없이 안전한 미리보기로 실행됩니다.`;
     return;
   }
   if (api.ready) {
-    label.textContent = "메타데이터 API 연결 준비됨";
-    copy.textContent = "대시보드·사번·이력·스케줄은 현재 더미 화면입니다. 메타데이터 등록만 외부 Flow API로 실행됩니다.";
+    label.textContent = usage.state === "live" ? "Phoenix 이력 · 메타데이터 API 연결됨" : "메타데이터 API 연결 준비됨";
+    copy.textContent = `${dashboardCopy} 메타데이터 등록은 외부 Flow API로 실행됩니다.`;
     return;
   }
   label.textContent = "메타데이터 API 설정 필요";
-  copy.textContent = "대시보드·사번·이력·스케줄은 현재 더미 화면입니다. 메타데이터 API는 서버 .env 설정 후 실행할 수 있습니다.";
+  copy.textContent = `${dashboardCopy} 메타데이터 API는 서버 .env 설정 후 실행할 수 있습니다.`;
 }
 
 function errorMessageFromResponse(payload, fallback) {
@@ -417,6 +1638,188 @@ function errorMessageFromResponse(payload, fallback) {
   if (detail && typeof detail === "object" && typeof detail.message === "string") return detail.message;
   if (typeof payload.message === "string") return payload.message;
   return fallback;
+}
+
+async function loadAdminSettings({ notifyOnError = false } = {}) {
+  if (!isAdmin()) {
+    state.adminSettings = null;
+    state.adminSettingsLoading = false;
+    state.adminSettingsError = "";
+    return;
+  }
+
+  state.adminSettingsLoading = true;
+  state.adminSettingsError = "";
+  renderSettings();
+  try {
+    const response = await fetch("/api/admin/settings", {
+      headers: portalRequestHeaders(),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageForAdminResponse(response.status, payload, "관리자 설정을 불러오지 못했습니다."));
+    }
+    state.adminSettings = normalizeAdminSettings(payload);
+    applyAdminSettingsToPortal(state.adminSettings);
+  } catch (error) {
+    console.error("admin settings request failed", error);
+    state.adminSettings = null;
+    state.adminSettingsError = error?.message || "관리자 설정을 불러오지 못했습니다.";
+    if (notifyOnError) showToast(state.adminSettingsError);
+  } finally {
+    state.adminSettingsLoading = false;
+    renderSettings();
+  }
+}
+
+async function loadMetadataApiStatus() {
+  if (!isAdmin()) {
+    state.metadataApi = null;
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/metadata-authoring/status", {
+      headers: portalRequestHeaders(),
+    });
+    if (!response.ok) throw new Error("metadata authoring status request failed");
+    state.metadataApi = await response.json();
+  } catch (error) {
+    // The existing dashboard, schedule, and employee-preview data must remain
+    // available even when only the metadata API status route is unavailable.
+    console.warn("metadata authoring status unavailable", error);
+    state.metadataApi = null;
+  }
+}
+
+async function loadLiveMetadata() {
+  if (!isAdmin()) {
+    state.metadataLive = { state: "idle", payload: null };
+    return;
+  }
+
+  state.metadataPage = 1;
+  state.metadataLive = { state: "loading", payload: null };
+  renderMetadata();
+  try {
+    const response = await fetch("/api/metadata/live", {
+      headers: portalRequestHeaders(),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || typeof payload !== "object") {
+      throw new Error("live metadata request failed");
+    }
+    state.metadataLive = { state: "ready", payload };
+  } catch (error) {
+    // Never surface infrastructure details in the browser. The screen keeps a
+    // clearly labelled preview fallback until the next successful refresh.
+    console.warn("live metadata unavailable", error);
+    state.metadataLive = { state: "error", payload: null };
+  } finally {
+    renderMetadata();
+  }
+}
+
+async function refreshAdminConfiguration() {
+  if (!isAdmin()) {
+    showToast("관리자만 설정을 확인할 수 있습니다.");
+    return;
+  }
+  await Promise.all([
+    loadAdminSettings({ notifyOnError: true }),
+    loadMetadataApiStatus(),
+    loadLiveMetadata(),
+  ]);
+  renderMetadataApiIndicator();
+  renderSettings();
+  if (!state.adminSettingsError) showToast("관리자 설정을 새로고침했습니다.");
+}
+
+async function saveUsagePolicy(form) {
+  if (!isAdmin()) {
+    showToast("관리자만 설정을 변경할 수 있습니다.");
+    return;
+  }
+
+  const values = Object.fromEntries(new FormData(form));
+  const usagePolicy = {
+    active_user_min_distinct_days: Math.max(1, Number(values.minDays) || 1),
+    active_user_min_chat_count: Math.max(1, Number(values.minChats) || 1),
+  };
+  const submitButton = form.querySelector("button[type='submit']");
+  submitButton.disabled = true;
+  submitButton.textContent = "저장 중…";
+  try {
+    const response = await fetch("/api/admin/settings", {
+      method: "PUT",
+      headers: portalRequestHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ usage_policy: usagePolicy }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageForAdminResponse(response.status, payload, "활성 사용자 기준을 저장하지 못했습니다."));
+    }
+
+    state.adminSettings = normalizeAdminSettings(payload);
+    applyAdminSettingsToPortal(state.adminSettings);
+    // Re-read the complete server-side Phoenix window after changing the
+    // policy.  Rebuilding from the recent table would drop zero-usage dates
+    // and turn a 21-day chart into a shorter, misleading period.
+    await loadDashboardUsage({ notifyOnError: true });
+    renderSettings();
+    showToast("활성 사용자 기준을 저장했습니다.");
+  } catch (error) {
+    console.error("usage policy update failed", error);
+    showToast(error?.message || "활성 사용자 기준을 저장하지 못했습니다.");
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = "기준 적용";
+  }
+}
+
+async function saveGaiaApiCaller(form) {
+  if (!isAdmin()) {
+    showToast("관리자만 설정을 변경할 수 있습니다.");
+    return;
+  }
+
+  const employeeId = String(new FormData(form).get("gaia_api_caller_employee_id") || "").trim();
+  if (!employeeId) {
+    showToast("GAIA API 호출 권한 사번을 입력해 주세요.");
+    $("#gaia-api-caller-employee-id")?.focus();
+    return;
+  }
+
+  const submitButton = $("#gaia-api-caller-save");
+  submitButton.disabled = true;
+  submitButton.textContent = "저장 중…";
+  state.adminSettingsError = "";
+  try {
+    const response = await fetch("/api/admin/settings", {
+      method: "PUT",
+      headers: portalRequestHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ gaia_api_caller_employee_id: employeeId }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageForAdminResponse(response.status, payload, "GAIA API 호출 권한 사번을 저장하지 못했습니다."));
+    }
+
+    state.adminSettings = normalizeAdminSettings(payload);
+    if (!state.adminSettings.gaia_api_caller_employee_id) {
+      state.adminSettings.gaia_api_caller_employee_id = employeeId;
+    }
+    applyAdminSettingsToPortal(state.adminSettings);
+    showToast("GAIA API 호출 권한 사번을 저장했습니다.");
+  } catch (error) {
+    console.error("admin settings update failed", error);
+    state.adminSettingsError = error?.message || "GAIA API 호출 권한 사번을 저장하지 못했습니다.";
+    showToast(state.adminSettingsError);
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = "권한 사번 저장";
+    renderSettings();
+  }
 }
 
 function defaultMetadataResult() {
@@ -443,6 +1846,8 @@ function activeMetadataResult() {
 function flowResultStatus(status) {
   const labels = {
     saved: "저장 완료",
+    completed: "처리 완료",
+    success: "처리 완료",
     dry_run: "테스트 실행",
     needs_input: "보완 필요",
     skipped: "저장 건너뜀",
@@ -451,6 +1856,8 @@ function flowResultStatus(status) {
   };
   const tone = {
     saved: "status-success",
+    completed: "status-success",
+    success: "status-success",
     dry_run: "status-draft",
     needs_input: "status-paused",
     skipped: "status-paused",
@@ -476,6 +1883,110 @@ function textList(items, emptyText) {
     : `<p class="result-empty">${escapeHtml(emptyText)}</p>`;
 }
 
+function compactFlowResultText(value, fallback = "") {
+  const text = String(value ?? "").trim();
+  if (!text) return fallback;
+
+  // The Flow message may be Markdown.  The compact summary intentionally uses
+  // plain text so a full table or link list does not turn into one long line.
+  const compact = text
+    .replace(/```[\s\S]*?```/g, " 코드 블록 ")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/[>*_`~]/g, " ")
+    .replace(/\|/g, " · ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!compact) return fallback;
+  return compact.length > 180 ? `${compact.slice(0, 177).trimEnd()}…` : compact;
+}
+
+function metadataResultCount(authoring, response) {
+  const candidates = [
+    authoring?.generated_count,
+    response?.data?.row_count,
+    Array.isArray(response?.data?.rows) ? response.data.rows.length : null,
+  ];
+  for (const value of candidates) {
+    const count = Number(value);
+    if (Number.isFinite(count) && count >= 0) return count;
+  }
+  return 0;
+}
+
+function metadataResultProcess(response, authoring, write, run) {
+  const status = String(response?.status || write?.status || authoring?.status || "").trim();
+  if (run?.requestedDryRun || write?.dry_run || authoring?.dry_run || status === "dry_run") return "저장 전 테스트 실행";
+  if (status === "saved" || Number(write?.saved_count || 0) > 0) return "MongoDB 저장 완료";
+  if (status === "needs_input") return "입력 보완 확인";
+  if (status === "skipped") return "중복 정책에 따라 저장 건너뜀";
+  if (status === "error") return "오류 내용 확인";
+  if (write?.ready_to_save) return "저장 요청 처리";
+  return "Flow 결과 검토";
+}
+
+function renderMetadataResultOverview(response, authoring, write, run, resultStatus) {
+  const overview = $("#metadata-result-message");
+  if (!overview) return;
+
+  const flowSummary = response?.answer_sections?.summary || {};
+  const message = compactFlowResultText(
+    flowSummary.description || flowSummary.headline || response?.message,
+    "등록 결과를 구조화해 표시합니다.",
+  );
+  const summaryItems = [
+    ["상태", resultStatus.label],
+    ["생성 후보", `${metadataResultCount(authoring, response)}건`],
+    ["처리", metadataResultProcess(response, authoring, write, run)],
+  ];
+
+  // Do not use the Flow response as HTML.  It is external text and is rendered
+  // only via textContent in this compact, human-readable overview.
+  overview.replaceChildren();
+  const messageElement = document.createElement("p");
+  messageElement.textContent = message;
+  const list = document.createElement("dl");
+  list.className = "metadata-result-summary-list";
+  summaryItems.forEach(([label, value]) => {
+    const item = document.createElement("div");
+    const term = document.createElement("dt");
+    const description = document.createElement("dd");
+    term.textContent = label;
+    description.textContent = value;
+    item.append(term, description);
+    list.append(item);
+  });
+  overview.append(messageElement, list);
+}
+
+function renderRawMetadataResponse(content, response) {
+  content.replaceChildren();
+
+  const heading = document.createElement("div");
+  heading.className = "result-section-heading";
+  const headingCopy = document.createElement("div");
+  const title = document.createElement("h4");
+  title.textContent = "원본 응답";
+  const description = document.createElement("p");
+  description.textContent = "구조화된 원본 JSON은 필요할 때만 펼쳐서 확인할 수 있습니다.";
+  const tag = document.createElement("span");
+  tag.className = "mini-tag";
+  tag.textContent = "api_response";
+  headingCopy.append(title, description);
+  heading.append(headingCopy, tag);
+
+  const details = document.createElement("details");
+  details.className = "raw-response-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "원본 JSON 펼쳐 보기";
+  const pre = document.createElement("pre");
+  pre.className = "api-json";
+  pre.textContent = JSON.stringify(response, null, 2);
+  details.append(summary, pre);
+  content.append(heading, details);
+}
+
 function renderMetadataResult() {
   const run = activeMetadataResult();
   const content = $("#metadata-result-content");
@@ -485,10 +1996,10 @@ function renderMetadataResult() {
   const authoring = response.metadata_authoring || {};
   const write = response.write_result || {};
   const validation = authoring.contract_validation || {};
-  const resultStatus = flowResultStatus(response.status);
+  const resultStatus = flowResultStatus(response.status || write.status || authoring.status);
   const isSaveRequestPreview = run.previewOnly && !run.requestedDryRun;
 
-  $("#metadata-result-message").textContent = response.message || "등록 결과를 확인합니다.";
+  renderMetadataResultOverview(response, authoring, write, run, resultStatus);
   const statusElement = $("#metadata-result-status");
   statusElement.className = `status-pill ${resultStatus.tone}`;
   statusElement.textContent = resultStatus.label;
@@ -513,9 +2024,7 @@ function renderMetadataResult() {
       <div class="operation-list">${operations.length ? operations.map((operation) => `<div><strong>${escapeHtml(operation.key || "-")}</strong><span>${escapeHtml(operation.operation || "-")}</span></div>`).join("") : `<p class="result-empty">처리 계획이 없습니다.</p>`}</div>
       <p class="storage-note">${escapeHtml(write.message || "저장 결과 메시지가 없습니다.")}</p>`;
   } else if (state.metadataResultTab === "raw") {
-    content.innerHTML = `
-      <div class="result-section-heading"><div><h4>API 응답</h4><p>실제 연동 시 포털 백엔드는 Chat Output 문자열이 아니라 이 구조화 응답을 보존해 표시합니다.</p></div><span class="mini-tag">api_response</span></div>
-      <pre class="api-json">${escapeHtml(JSON.stringify(response, null, 2))}</pre>`;
+    renderRawMetadataResponse(content, response);
   } else {
     const resolved = authoring.resolved_references || [];
     const notices = response.answer_sections?.notices || [];
@@ -550,31 +2059,66 @@ function renderMetadataAuthoring() {
   const contract = authoringData().contract || {};
   $("#metadata-contract-version").textContent = contract.version || "rev_2";
   $("#metadata-example-flow-title").textContent = example.flow_label || "등록 Flow 예시";
-  $("#metadata-example-fields").textContent = `입력에 포함: ${(example.required_input || []).join(" · ")}`;
-  $("#metadata-example-raw").textContent = example.raw_text || "";
+  $("#metadata-example-fields").textContent = `입력에 포함: ${metadataExampleRequiredInput(example)}`;
+  $("#metadata-example-raw").textContent = metadataExampleRawText(example);
   renderMetadataResult();
 }
 
 function renderSettings() {
-  const { settings } = state.portal;
-  const metadataStatus = metadataApiLabel();
-  const apiItems = [
-    { label: settings.api.gaia_endpoint, detail: "Agent 응답 생성 및 결과 수신", status: settings.api.status },
-    { label: settings.api.cube_endpoint, detail: "Rich Notification 결과 발송", status: settings.api.status },
-    { label: `메타데이터 등록 API  /api/metadata-authoring`, detail: metadataApiDetail(), status: metadataStatus },
-    { label: `Callback ${settings.api.callback_endpoint}`, detail: `최종 확인 · ${settings.api.last_checked}`, status: settings.api.status },
-  ];
+  if (!isAdmin()) return;
+  const settings = state.portal?.settings || {};
+  const usagePolicy = Object.keys(state.adminSettings?.usage_policy || {}).length
+    ? state.adminSettings.usage_policy
+    : (settings.usage_policy || {
+    active_user_min_distinct_days: 3,
+    active_user_min_chat_count: 10,
+    history_window_days: 21,
+    });
+  const admins = state.adminSettings?.admins?.length
+    ? state.adminSettings.admins
+    : (Array.isArray(settings.admins) ? settings.admins : []);
+  const apiItems = metadataConnectionItems();
   $("#api-status-list").innerHTML = apiItems
     .map((item) => `
-      <div class="api-status-item"><span class="api-status-icon">✓</span><div><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.detail)}</span></div>${statusPill(item.status)}</div>`)
+      <div class="api-status-item api-status-${escapeHtml(item.tone)}">
+        <span class="api-status-icon" aria-hidden="true">${svgIcon(item.icon)}</span>
+        <div class="api-status-copy"><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.detail)}</span></div>
+        ${statusPill(item.status)}
+      </div>`)
     .join("");
-  $("#admin-list").innerHTML = settings.admins
+  $("#admin-list").innerHTML = admins
     .map((admin) => `
       <tr><td>${escapeHtml(admin.employee_id)}</td><td><strong>${escapeHtml(admin.name)}</strong></td><td><span class="mini-tag">${escapeHtml(admin.role)}</span></td><td>${escapeHtml(admin.scope)}</td><td>${statusPill(admin.status)}</td><td><button class="row-action" type="button" aria-label="${escapeHtml(admin.name)} 관리자 설정">⋯</button></td></tr>`)
-    .join("");
-  $("#active-user-min-days").value = settings.usage_policy.active_user_min_distinct_days;
-  $("#active-user-min-chats").value = settings.usage_policy.active_user_min_chat_count;
-  $("#active-policy-summary").textContent = `최근 ${settings.usage_policy.history_window_days}일 중 서로 다른 일자 ${settings.usage_policy.active_user_min_distinct_days}일 이상, 누적 채팅 ${settings.usage_policy.active_user_min_chat_count}건 이상 사용자를 활성 사용자로 집계합니다.`;
+    .join("") || `<tr><td colspan="6" class="empty-cell">등록된 관리자 정보가 없습니다.</td></tr>`;
+  const adminAddButton = $(".admin-panel .panel-heading .secondary-button");
+  if (adminAddButton) {
+    adminAddButton.disabled = true;
+    adminAddButton.setAttribute("aria-disabled", "true");
+    adminAddButton.title = "관리자 명단 변경은 아직 지원하지 않습니다.";
+    adminAddButton.innerHTML = "관리자 추가 (준비 중)";
+  }
+  $("#active-user-min-days").value = usagePolicy.active_user_min_distinct_days;
+  $("#active-user-min-chats").value = usagePolicy.active_user_min_chat_count;
+  $("#active-policy-summary").textContent = `최근 ${usagePolicy.history_window_days}일 중 서로 다른 일자 ${usagePolicy.active_user_min_distinct_days}일 이상, 누적 채팅 ${usagePolicy.active_user_min_chat_count}건 이상 사용자를 활성 사용자로 집계합니다.`;
+
+  const callerInput = $("#gaia-api-caller-employee-id");
+  if (callerInput && document.activeElement !== callerInput) {
+    callerInput.value = gaiaApiCallerEmployeeId();
+  }
+  const callerSummary = $("#gaia-api-caller-summary");
+  if (!callerSummary) return;
+  if (state.adminSettingsLoading) {
+    callerSummary.textContent = "현재 설정을 불러오는 중입니다.";
+  } else if (state.adminSettingsError) {
+    callerSummary.textContent = state.adminSettingsError;
+  } else if (gaiaApiCallerEmployeeId()) {
+    const updated = state.adminSettings?.updated_at ? ` · 마지막 변경 ${state.adminSettings.updated_at}` : "";
+    callerSummary.textContent = `현재 ${gaiaApiCallerEmployeeId()} 사번이 GAIA API 호출에 사용됩니다.${updated}`;
+  } else if (state.adminSettings?.storage?.persistent === false) {
+    callerSummary.textContent = "현재는 미리보기 설정입니다. MongoDB 연결 후 변경 값을 저장할 수 있습니다.";
+  } else {
+    callerSummary.textContent = "등록된 GAIA API 호출 권한 사번이 없습니다.";
+  }
 }
 
 function renderAccessControls() {
@@ -616,16 +2160,143 @@ function switchView(viewName) {
   return true;
 }
 
-function scheduleLabel(repeat, time) {
+function isIntervalRepeat(repeat) {
+  return String(repeat || "").trim() === "interval";
+}
+
+function intervalMinutes(value) {
+  const minutes = Number(value);
+  return Number.isInteger(minutes) && minutes > 0 && minutes <= 1440 ? minutes : 10;
+}
+
+function intervalLabel(value) {
+  const minutes = intervalMinutes(value);
+  return minutes === 60 ? "1시간마다" : `${minutes}분마다`;
+}
+
+function formattedTime(value) {
+  const matched = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
+  if (!matched) return "시간 미설정";
+  const hour = Number(matched[1]);
+  const minute = matched[2];
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return "시간 미설정";
+  const meridiem = hour >= 12 ? "오후" : "오전";
+  const hour12 = String(hour % 12 || 12).padStart(2, "0");
+  return `${meridiem} ${hour12}:${minute}`;
+}
+
+function isIntervalSchedule(schedule) {
+  return isIntervalRepeat(schedule?.repeat)
+    || (Number.isInteger(Number(schedule?.interval_minutes)) && Number(schedule?.interval_minutes) > 0);
+}
+
+function scheduleIntervalMinutes(schedule) {
+  return intervalMinutes(schedule?.interval_minutes);
+}
+
+function scheduleWindowLabel(schedule) {
+  const start = formattedTime(schedule?.start_time);
+  const end = formattedTime(schedule?.end_time);
+  return `${start} ~ ${end}`;
+}
+
+function scheduleLabel(repeat, time, intervalMinutesValue = null, startTime = "", endTime = "") {
+  if (isIntervalRepeat(repeat)) {
+    const start = formattedTime(startTime);
+    const end = formattedTime(endTime);
+    return `${intervalLabel(intervalMinutesValue)} · ${start} ~ ${end}`;
+  }
   const labels = { "평일": "평일", "매일": "매일", "매주": "매주 월요일", "매월": "매월 1일", "한 번만": "한 번만" };
-  return `${labels[repeat] || repeat} · ${time}`;
+  return `${labels[repeat] || repeat} · ${formattedTime(time)}`;
+}
+
+function scheduleRuleLabel(schedule) {
+  if (isIntervalSchedule(schedule)) {
+    return intervalLabel(scheduleIntervalMinutes(schedule));
+  }
+  return schedule?.rule_label || scheduleLabel(schedule?.repeat, schedule?.time);
+}
+
+function nextRunLabel(repeat, time, intervalMinutesValue = null, startTime = "", endTime = "") {
+  if (isIntervalRepeat(repeat)) {
+    return `오늘 ${formattedTime(startTime)}부터 ${formattedTime(endTime)}까지 · ${intervalLabel(intervalMinutesValue)}`;
+  }
+  return `다음 ${scheduleLabel(repeat, time)}`;
+}
+
+function scheduleNextRun(schedule) {
+  return nextRunLabel(
+    isIntervalSchedule(schedule) ? "interval" : schedule?.repeat,
+    schedule?.time,
+    schedule?.interval_minutes,
+    schedule?.start_time,
+    schedule?.end_time,
+  );
+}
+
+function scheduleTimingFromForm(form) {
+  const repeat = String(form.elements.repeat.value || "").trim();
+  const interval = isIntervalRepeat(repeat);
+  return {
+    repeat,
+    time: interval ? "" : String(form.elements.time.value || "").trim(),
+    interval_minutes: interval ? intervalMinutes(form.elements.interval_minutes.value) : null,
+    start_time: interval ? String(form.elements.start_time.value || "").trim() : "",
+    end_time: interval ? String(form.elements.end_time.value || "").trim() : "",
+  };
+}
+
+function validateScheduleTiming(timing, form) {
+  const startInput = form.elements.start_time;
+  const endInput = form.elements.end_time;
+  startInput.setCustomValidity("");
+  endInput.setCustomValidity("");
+
+  if (!isIntervalRepeat(timing.repeat)) return Boolean(timing.time);
+  if (!timing.start_time || !timing.end_time) {
+    showToast("간격 반복은 시작 시간과 종료 시간을 모두 입력해 주세요.");
+    return false;
+  }
+  if (timing.start_time >= timing.end_time) {
+    endInput.setCustomValidity("종료 시간은 시작 시간보다 늦어야 합니다.");
+    endInput.reportValidity();
+    return false;
+  }
+  return true;
+}
+
+function syncScheduleTimingFields() {
+  const form = $("#schedule-form");
+  const interval = isIntervalRepeat(form.elements.repeat.value);
+  const singleTime = $("#schedule-single-time-field");
+  const intervalFields = $("#interval-schedule-fields");
+  const timeInput = form.elements.time;
+  const intervalInputs = [form.elements.interval_minutes, form.elements.start_time, form.elements.end_time];
+
+  singleTime.hidden = interval;
+  intervalFields.hidden = !interval;
+  timeInput.disabled = interval;
+  timeInput.required = !interval;
+  intervalInputs.forEach((input) => {
+    input.disabled = !interval;
+    input.required = interval;
+  });
+  $("#interval-mode-label").textContent = `${intervalLabel(form.elements.interval_minutes.value)} 반복 실행`;
+  updateSchedulePreview();
 }
 
 function updateSchedulePreview() {
   const form = $("#schedule-form");
-  const repeat = form.elements.repeat.value;
-  const time = form.elements.time.value;
-  $("#next-preview").textContent = `다음 ${scheduleLabel(repeat, time)}`;
+  form.elements.start_time.setCustomValidity("");
+  form.elements.end_time.setCustomValidity("");
+  const timing = scheduleTimingFromForm(form);
+  $("#next-preview").textContent = nextRunLabel(
+    timing.repeat,
+    timing.time,
+    timing.interval_minutes,
+    timing.start_time,
+    timing.end_time,
+  );
 }
 
 function prepareScheduleDrawer(scheduleId = "") {
@@ -639,24 +2310,30 @@ function prepareScheduleDrawer(scheduleId = "") {
     $("#schedule-submit").textContent = "변경 저장";
     form.elements.title.value = schedule.title;
     form.elements.question.value = schedule.question;
-    form.elements.repeat.value = schedule.repeat || "매일";
+    form.elements.repeat.value = isIntervalSchedule(schedule) ? "interval" : (schedule.repeat || "매일");
     form.elements.time.value = schedule.time || "09:30";
-    form.elements.target.value = schedule.target;
+    form.elements.interval_minutes.value = String(scheduleIntervalMinutes(schedule));
+    form.elements.start_time.value = schedule.start_time || "09:00";
+    form.elements.end_time.value = schedule.end_time || "18:00";
   } else {
     $("#schedule-drawer-kicker").textContent = "NEW AUTOMATION";
     $("#schedule-drawer-title").textContent = "새 스케줄 등록";
     $("#schedule-submit").textContent = "스케줄 등록";
     form.elements.repeat.value = "평일";
     form.elements.time.value = "09:30";
+    form.elements.interval_minutes.value = "10";
+    form.elements.start_time.value = "09:00";
+    form.elements.end_time.value = "18:00";
   }
   $("#schedule-drawer").setAttribute("aria-label", schedule ? "스케줄 수정" : "새 스케줄 등록");
-  updateSchedulePreview();
+  syncScheduleTimingFields();
 }
 
 function metadataFormMarkup() {
   const example = activeAuthoringExample();
-  const rawText = escapeHtml(example?.raw_text || "");
-  const requiredInput = (example?.required_input || []).join(" · ");
+  const rawText = escapeHtml(metadataExampleRawText(example));
+  const rawTextRows = state.metadataType === "table_catalog" ? 18 : 9;
+  const requiredInput = metadataExampleRequiredInput(example);
   const api = metadataApiState();
   const apiNotice = api.preview_only || api.mode === "preview"
     ? "현재는 미리보기 모드입니다. 외부 메타데이터 API와 MongoDB에는 요청하지 않습니다. 실제 연동은 서버의 .env에서 API 모드를 설정한 뒤 시작됩니다."
@@ -665,7 +2342,7 @@ function metadataFormMarkup() {
       : "메타데이터 API 연결 설정이 아직 준비되지 않았습니다. 서버의 .env 값을 확인한 뒤 다시 시도해 주세요.";
   return `
     <div class="drawer-flow-note"><strong>${escapeHtml(example?.flow_label || "메타데이터 등록 Flow")}</strong><span>Chat Input의 <code>input_value</code>가 등록 원문으로 전달됩니다.</span></div>
-    <label><span>등록 요청 원문</span><textarea name="raw_text" rows="9" required>${rawText}</textarea><small>포함하면 좋은 정보: ${escapeHtml(requiredInput)}</small></label>
+    <label><span>등록 요청 원문</span><textarea name="raw_text" rows="${rawTextRows}" required>${rawText}</textarea><small>포함하면 좋은 정보: ${escapeHtml(requiredInput)}</small></label>
     <label><span>중복 처리 방식</span><select name="duplicate_action"><option value="skip">skip · 기존 항목 유지</option><option value="merge">merge · 기존 항목에 병합</option><option value="replace">replace · 기존 항목 교체</option><option value="create_new">create_new · 새 키 생성</option></select><small>실제 Flow에서는 요청 로더의 <code>duplicate_action</code>에 전달됩니다.</small></label>
     <label class="dry-run-control"><input name="dry_run" type="checkbox" checked /><span><strong>먼저 테스트 실행으로 검토</strong><small>후보와 저장 계획만 확인하고 MongoDB에는 저장하지 않습니다.</small></span></label>
     <div class="drawer-contract-note"><span>i</span><p>${escapeHtml(apiNotice)}</p></div>`;
@@ -757,7 +2434,7 @@ async function submitMetadataAuthoring(form) {
   try {
     const response = await fetch("/api/metadata-authoring", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: portalRequestHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(requestBody),
     });
     const payload = await response.json().catch(() => null);
@@ -767,6 +2444,9 @@ async function submitMetadataAuthoring(form) {
 
     state.metadataResult = normalizeMetadataRun(payload);
     state.metadataResultTab = "process";
+    if (!state.metadataResult.previewOnly) {
+      await loadLiveMetadata();
+    }
     closeDrawers();
     renderMetadata();
     switchView("metadata");
@@ -791,6 +2471,36 @@ function bindEvents() {
       return;
     }
 
+    if (event.target.closest("[data-refresh-dashboard-usage]")) {
+      void loadDashboardUsage({ notifyOnError: true });
+      return;
+    }
+
+    if (event.target.closest("[data-refresh-admin-settings]")) {
+      void refreshAdminConfiguration();
+      return;
+    }
+
+    if (event.target.closest("[data-close-metadata-status]") || event.target.id === "metadata-status-modal") {
+      closeMetadataStatusModal();
+      return;
+    }
+
+    if (event.target.closest("[data-close-metadata-detail]") || event.target.id === "metadata-detail-modal") {
+      closeMetadataDetailModal();
+      return;
+    }
+
+    if (event.target.closest("[data-copy-metadata-detail]")) {
+      void copyMetadataDetailJson();
+      return;
+    }
+
+    if (event.target.closest("#metadata-status-confirm")) {
+      void confirmMetadataStatusUpdate();
+      return;
+    }
+
     const scheduleScope = event.target.closest("[data-schedule-scope]");
     if (scheduleScope) {
       state.scheduleScope = scheduleScope.dataset.scheduleScope;
@@ -806,9 +2516,28 @@ function bindEvents() {
       }
       state.metadataType = metadataType.dataset.metadataType;
       state.metadataSearch = "";
+      state.metadataPage = 1;
       state.metadataResultTab = "process";
+      closeMetadataDetailModal();
+      closeMetadataStatusModal();
       $("#metadata-search").value = "";
       renderMetadata();
+      return;
+    }
+
+    const metadataPageButton = event.target.closest("[data-metadata-page]");
+    if (metadataPageButton) {
+      const pagination = paginateMetadata(filteredMetadata());
+      const requested = metadataPageButton.dataset.metadataPage;
+      const nextPage = requested === "previous"
+        ? pagination.page - 1
+        : requested === "next"
+          ? pagination.page + 1
+          : Number(requested);
+      if (Number.isInteger(nextPage) && nextPage >= 1 && nextPage <= pagination.totalPages) {
+        state.metadataPage = nextPage;
+        renderMetadata();
+      }
       return;
     }
 
@@ -851,7 +2580,7 @@ function bindEvents() {
     if (editButton) {
       const schedule = state.portal.schedules.find((item) => item.id === editButton.dataset.editSchedule);
       if (!schedule || !canEditSchedule(schedule)) {
-        showToast("본인이 등록한 스케줄만 수정하거나 상태를 변경할 수 있습니다.");
+        showToast("등록자 본인 또는 관리자만 스케줄을 수정할 수 있습니다.");
         return;
       }
       openDrawer("schedule", schedule.id);
@@ -862,22 +2591,83 @@ function bindEvents() {
     if (pauseButton) {
       const schedule = state.portal.schedules.find((item) => item.id === pauseButton.dataset.toggleSchedule);
       if (!schedule || !canEditSchedule(schedule)) {
-        showToast("본인이 등록한 스케줄만 수정하거나 상태를 변경할 수 있습니다.");
+        showToast("등록자 본인 또는 관리자만 스케줄을 수정하거나 상태를 변경할 수 있습니다.");
         return;
       }
       schedule.status = schedule.status === "활성" ? "일시중지" : "활성";
-      schedule.next_run = schedule.status === "활성" ? `다음 ${schedule.rule_label}` : "일시중지됨";
+      schedule.next_run = schedule.status === "활성" ? scheduleNextRun(schedule) : "일시중지됨";
       renderSchedules();
       showToast(`${schedule.title} 스케줄을 ${schedule.status === "활성" ? "재개" : "일시중지"}했습니다. (더미 화면)`);
       return;
     }
 
-    if (event.target.closest("[data-schedule-restricted]")) {
-      showToast("본인이 등록한 스케줄만 수정하거나 상태를 변경할 수 있습니다.");
+    const deleteButton = event.target.closest("[data-delete-schedule]");
+    if (deleteButton) {
+      const schedule = state.portal.schedules.find((item) => item.id === deleteButton.dataset.deleteSchedule);
+      if (!schedule || !canEditSchedule(schedule)) {
+        showToast("등록자 본인 또는 관리자만 스케줄을 삭제할 수 있습니다.");
+        return;
+      }
+      state.portal.schedules = state.portal.schedules.filter((item) => item.id !== schedule.id);
+      if (state.editingScheduleId === schedule.id) closeDrawers();
+      renderSchedules();
+      showToast(`${schedule.title} 스케줄을 목록에서 삭제했습니다. 실제 MongoDB에는 아직 반영하지 않았습니다.`);
       return;
     }
-    if (event.target.closest("[data-metadata-detail]")) {
-      showToast("상세 편집은 실제 메타데이터 API 연동 단계에서 제공합니다.");
+
+    if (event.target.closest("[data-schedule-restricted]")) {
+      showToast("전체 스케줄은 열람할 수 있습니다. 수정·일시중지·삭제는 등록자 본인 또는 관리자만 가능합니다.");
+      return;
+    }
+
+    const metadataStatusButton = event.target.closest("[data-metadata-status]");
+    if (metadataStatusButton) {
+      openMetadataStatusModal(
+        metadataStatusButton.dataset.metadataStatus,
+        metadataStatusButton.dataset.nextMetadataStatus,
+        metadataStatusButton,
+      );
+      return;
+    }
+
+    const metadataDetailButton = event.target.closest("[data-metadata-detail]");
+    if (metadataDetailButton) {
+      openMetadataDetailModal(metadataDetailButton.dataset.metadataDetail, metadataDetailButton);
+      return;
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    const detailModal = $("#metadata-detail-modal");
+    const statusModal = $("#metadata-status-modal");
+    const modal = detailModal && !detailModal.hidden ? detailModal : statusModal;
+    if (!modal || modal.hidden) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (modal.id === "metadata-detail-modal") closeMetadataDetailModal();
+      else closeMetadataStatusModal();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = modal.id === "metadata-detail-modal"
+      ? $(".metadata-detail-dialog", modal)
+      : $(".metadata-status-dialog", modal);
+    const focusable = dialog
+      ? [...dialog.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")]
+      : [];
+    if (!focusable.length) {
+      event.preventDefault();
+      dialog?.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   });
 
@@ -892,26 +2682,37 @@ function bindEvents() {
   });
   $("#metadata-search").addEventListener("input", (event) => {
     state.metadataSearch = event.target.value;
+    state.metadataPage = 1;
     renderMetadata();
   });
 
   $("#schedule-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    const values = Object.fromEntries(new FormData(event.currentTarget));
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    const timing = scheduleTimingFromForm(form);
+    if (!validateScheduleTiming(timing, form)) return;
     const editingSchedule = state.portal.schedules.find((item) => item.id === state.editingScheduleId);
     if (editingSchedule) {
       if (!canEditSchedule(editingSchedule)) {
-        showToast("본인이 등록한 스케줄만 수정하거나 상태를 변경할 수 있습니다.");
+        showToast("등록자 본인 또는 관리자만 스케줄을 수정할 수 있습니다.");
         return;
       }
       Object.assign(editingSchedule, {
         title: values.title,
         question: values.question,
-        repeat: values.repeat,
-        time: values.time,
-        rule_label: scheduleLabel(values.repeat, values.time),
-        next_run: editingSchedule.status === "활성" ? `다음 ${scheduleLabel(values.repeat, values.time)}` : "일시중지됨",
-        target: values.target,
+        ...timing,
+        rule_label: scheduleLabel(
+          timing.repeat,
+          timing.time,
+          timing.interval_minutes,
+          timing.start_time,
+          timing.end_time,
+        ),
+        next_run: editingSchedule.status === "활성"
+          ? nextRunLabel(timing.repeat, timing.time, timing.interval_minutes, timing.start_time, timing.end_time)
+          : "일시중지됨",
+        target: SCHEDULE_DELIVERY_TARGET,
       });
       closeDrawers();
       renderSchedules();
@@ -924,11 +2725,16 @@ function bindEvents() {
       id: `SCH-2026-${String(index).padStart(3, "0")}`,
       title: values.title,
       question: values.question,
-      repeat: values.repeat,
-      time: values.time,
-      rule_label: scheduleLabel(values.repeat, values.time),
-      next_run: `다음 ${scheduleLabel(values.repeat, values.time)}`,
-      target: values.target,
+      ...timing,
+      rule_label: scheduleLabel(
+        timing.repeat,
+        timing.time,
+        timing.interval_minutes,
+        timing.start_time,
+        timing.end_time,
+      ),
+      next_run: nextRunLabel(timing.repeat, timing.time, timing.interval_minutes, timing.start_time, timing.end_time),
+      target: SCHEDULE_DELIVERY_TARGET,
       owner: viewerId(),
       status: "활성",
       last_run: "아직 실행 전",
@@ -950,26 +2756,24 @@ function bindEvents() {
     await submitMetadataAuthoring(event.currentTarget);
   });
 
-  $("#activity-policy-form").addEventListener("submit", (event) => {
+  $("#activity-policy-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!isAdmin()) {
-      showToast("관리자만 설정을 확인할 수 있습니다.");
-      return;
-    }
-    const values = Object.fromEntries(new FormData(event.currentTarget));
-    state.portal.settings.usage_policy.active_user_min_distinct_days = Math.max(1, Number(values.minDays) || 1);
-    state.portal.settings.usage_policy.active_user_min_chat_count = Math.max(1, Number(values.minChats) || 1);
-    state.portal.dashboard = buildDashboardFromHistory(
-      state.portal.usage_history,
-      state.portal.settings.usage_policy,
-    );
-    renderDashboard();
-    renderSettings();
-    showToast("활성 사용자 기준을 적용했습니다. 더미 이력을 다시 집계했습니다.");
+    await saveUsagePolicy(event.currentTarget);
   });
 
-  $("#schedule-form [name='repeat']").addEventListener("change", updateSchedulePreview);
+  $("#gaia-api-caller-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await saveGaiaApiCaller(event.currentTarget);
+  });
+
+  $("#schedule-form [name='repeat']").addEventListener("change", syncScheduleTimingFields);
   $("#schedule-form [name='time']").addEventListener("input", updateSchedulePreview);
+  $("#schedule-form [name='interval_minutes']").addEventListener("change", () => {
+    $("#interval-mode-label").textContent = `${intervalLabel($("#schedule-form [name='interval_minutes']").value)} 반복 실행`;
+    updateSchedulePreview();
+  });
+  $("#schedule-form [name='start_time']").addEventListener("input", updateSchedulePreview);
+  $("#schedule-form [name='end_time']").addEventListener("input", updateSchedulePreview);
 }
 
 async function initialize() {
@@ -985,23 +2789,24 @@ async function initialize() {
     return;
   }
 
-  try {
-    const response = await fetch("/api/metadata-authoring/status");
-    if (!response.ok) throw new Error("metadata authoring status request failed");
-    state.metadataApi = await response.json();
-  } catch (error) {
-    // The existing dashboard, schedule, and employee-preview data must remain
-    // available even when only the new metadata API status route is unavailable.
-    console.warn("metadata authoring status unavailable", error);
-    state.metadataApi = null;
+  const startupTasks = [loadDashboardUsage()];
+  if (isAdmin()) {
+    startupTasks.push(
+      loadMetadataApiStatus(),
+      loadAdminSettings(),
+      loadLiveMetadata(),
+    );
   }
+  await Promise.all(startupTasks);
 
   renderAccessControls();
   renderMetadataApiIndicator();
   renderDashboard();
   renderSchedules();
-  renderMetadata();
-  renderSettings();
+  if (isAdmin()) {
+    renderMetadata();
+    renderSettings();
+  }
   bindEvents();
 }
 

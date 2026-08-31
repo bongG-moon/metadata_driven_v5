@@ -1,0 +1,8 @@
+#가상환경 활성화
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+python -m uvicorn app:application --host 127.0.0.1 --port 8002
