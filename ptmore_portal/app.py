@@ -41,7 +41,7 @@ ROOT = Path(__file__).parent
 STATIC_ROOT = ROOT / "static"
 
 # Hosting platforms provide environment variables directly.  Loading `.env`
-# here additionally makes the same configuration usable for a local preview;
+# here additionally makes the same configuration usable for local execution;
 # existing process-level values always take precedence.
 load_dotenv(ROOT / ".env", override=False)
 
@@ -121,6 +121,10 @@ _PORTAL_AUTH_MODES = {"production", "local", "test"}
 _PORTAL_SESSION_IDENTITY_KEY = "ptmore_portal_identity"
 _PORTAL_SESSION_COOKIE_NAME = "ptmore_portal_session"
 _PORTAL_UNCONFIGURED_SESSION_SECRET = "ptmore-portal-session-not-configured"
+# The established environment variable name is retained for deployment
+# compatibility.  Its values are now permanent, environment-owned default
+# administrators: they are never copied into MongoDB and cannot be changed
+# through the Portal UI/API.
 _PORTAL_BOOTSTRAP_ADMINS_ENVIRONMENT = "PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON"
 _PORTAL_ADMIN_EMPLOYEE_ID_PATTERN = re.compile(r"^\d{7}$")
 _PORTAL_ADMIN_DEFAULT_ROLE = "관리자"
@@ -159,10 +163,10 @@ _SCHEDULE_STATUS_LABELS = {"active": "활성", "inactive": "일시중지"}
 _SCHEDULE_ID_PATTERN = re.compile(r"^SCH-[0-9a-f]{8}-[0-9a-f-]{27}$", re.IGNORECASE)
 
 # Dashboard usage data is intentionally independent of the metadata-authoring
-# Flow adapter.  ``phoenix`` must be explicitly selected in the environment;
-# otherwise the Portal remains in its clearly labelled local preview mode.
+# Flow adapter.  Production history always comes from Phoenix; missing
+# configuration is reported explicitly instead of being replaced with samples.
 _USAGE_HISTORY_WINDOW_DAYS = 21
-_USAGE_HISTORY_MODES = {"preview", "phoenix"}
+_USAGE_HISTORY_MODES = {"phoenix"}
 _USAGE_HISTORY_ARCHIVE_MODES = {"disabled", "configured"}
 _KST = timezone(timedelta(hours=9), name="Asia/Seoul")
 
@@ -474,8 +478,8 @@ class PhoenixUsageUnavailableError(RuntimeError):
 
 
 # These narrow seams keep the Portal route testable without a real Phoenix
-# server.  The defaults are lazy imports so the normal preview server can
-# still start before the optional live-integration dependency is installed.
+# server.  The defaults are lazy imports so the web server can still start and
+# expose an explicit readiness error before the integration is configured.
 _phoenix_usage_config_factory: Callable[[], Any] | None = None
 _phoenix_usage_fetcher: Callable[..., list[Mapping[str, Any]]] | None = None
 # The archive adapter is intentionally separate from the Phoenix fetch seam:
@@ -487,12 +491,7 @@ _usage_history_archive_factory: Callable[[], Any] | None = None
 def _usage_history_mode_from_env() -> str:
     """Return the explicit dashboard source mode without guessing a fallback."""
 
-    configured = _environment_value("PTMORE_USAGE_HISTORY_MODE", "preview").lower()
-    # ``mock`` was used in a few early Portal notes; accepting it only as an
-    # explicit preview alias keeps deployed preview environments compatible.
-    if configured == "mock":
-        return "preview"
-    return configured
+    return _environment_value("PTMORE_USAGE_HISTORY_MODE", "phoenix").lower()
 
 
 def _usage_history_archive_mode_from_env() -> str:
@@ -861,23 +860,6 @@ def _merge_usage_records(
     )
 
 
-def _preview_usage_records() -> list[dict[str, str]]:
-    """Adapt preview rows for CSV only; preview data is never archived."""
-
-    return [
-        {
-            "query_time": str(item.get("occurred_at") or ""),
-            "date": str(item.get("date") or ""),
-            "platform": str(item.get("channel") or ""),
-            "user_id": str(item.get("employee_id") or ""),
-            "question": str(item.get("question") or ""),
-            "project": "PREVIEW",
-            "trace_id": "",
-        }
-        for item in _build_dummy_usage_history()
-    ]
-
-
 def _usage_archive_not_ready_error(configuration: Any) -> HTTPException:
     try:
         missing = _usage_history_archive_configuration_errors(configuration)
@@ -1098,42 +1080,6 @@ def _load_recent_usage_snapshot(*, full_refresh: bool = False) -> dict[str, Any]
 
     mode = _usage_history_mode_from_env()
     fetched_at = datetime.now(_KST).isoformat()
-    if mode == "preview":
-        raw_records = _preview_usage_records()
-        preview_days = [
-            record_day
-            for record in raw_records
-            if (record_day := _usage_record_date(record)) is not None
-        ]
-        if preview_days:
-            start_day, end_day = min(preview_days), max(preview_days)
-        else:  # pragma: no cover - the deterministic preview fixture has rows
-            start_day, end_day = _recent_kst_period(days=_USAGE_HISTORY_WINDOW_DAYS)
-        history = _normalise_phoenix_usage_history(
-            raw_records,
-            start_day=start_day,
-            end_day=end_day,
-        )
-        return {
-            "start_day": start_day,
-            "end_day": end_day,
-            "raw_records": raw_records,
-            "usage_history": history,
-            "source": {
-                "mode": "preview",
-                "status": "preview",
-                "label": "예시 사용 이력",
-                "detail": "미리보기 모드의 예시 이력입니다. 실제 Phoenix 조회는 수행하지 않았습니다.",
-                "fetched_at": fetched_at,
-                "period": {"start": start_day.isoformat(), "end": end_day.isoformat()},
-                "project_count": 0,
-                "archive": {
-                    "mode": "disabled",
-                    "status": "not_used",
-                    "message": "미리보기 데이터는 MongoDB에 저장하지 않습니다.",
-                },
-            },
-        }
 
     if mode not in _USAGE_HISTORY_MODES:
         raise HTTPException(
@@ -1412,8 +1358,8 @@ def _metadata_settings_from_env() -> MetadataAuthoringSettings:
     """Read the API adapter configuration without ever exposing secret values."""
 
     errors: list[str] = []
-    configured_mode = _environment_value("PTMORE_METADATA_API_MODE", "preview").lower()
-    mode = {"mock": "preview", "preview": "preview", "api": "api"}.get(configured_mode, "invalid")
+    configured_mode = _environment_value("PTMORE_METADATA_API_MODE", "api").lower()
+    mode = "api" if configured_mode == "api" else "invalid"
     if mode == "invalid":
         errors.append("PTMORE_METADATA_API_MODE")
 
@@ -2663,7 +2609,7 @@ def _update_live_metadata_record_status(
 ) -> bool:
     """Set one already-rendered live metadata document's active state.
 
-    This function deliberately has no preview persistence path. It can only
+    This function deliberately has no in-memory persistence path. It can only
     use a configured live source, maps the caller's metadata type to the one
     environment-selected collection, and delegates an exact ``_id`` match to
     the narrow status-updater boundary. It never sends a browser-supplied
@@ -2934,25 +2880,6 @@ def _normalize_metadata_authoring_response(
     return result
 
 
-def _metadata_preview_response(
-    *,
-    metadata_type: str,
-    raw_text: str,
-    duplicate_action: str,
-    requested_dry_run: bool,
-) -> dict[str, Any]:
-    """Use sample data only when preview/mock mode was explicitly selected."""
-
-    preview = _metadata_authoring_preview()["examples"][metadata_type]["result"]
-    response = copy.deepcopy(preview)
-    response["message"] = "미리보기 모드입니다. 외부 API와 MongoDB에는 요청하지 않았습니다."
-    response["metadata_authoring"]["original_text"] = raw_text
-    response["metadata_authoring"]["duplicate_action"] = duplicate_action
-    response["metadata_authoring"]["requested_dry_run"] = requested_dry_run
-    response["trace"]["mode"] = "preview"
-    return response
-
-
 def _metadata_api_status(
     settings: MetadataAuthoringSettings,
     *,
@@ -3000,11 +2927,15 @@ def _metadata_api_status(
     )
     base_api_configuration_ready = not settings.configuration_errors and mongo_tweaks_ready
     any_endpoint_configured = any(endpoint_configured.values())
-    ready = (settings.mode == "preview" and not settings.configuration_errors) or (
-        settings.mode == "api" and base_api_configuration_ready and any_endpoint_configured
+    ready = bool(
+        settings.mode == "api"
+        and base_api_configuration_ready
+        and any_endpoint_configured
     )
-    all_metadata_types_ready = (settings.mode == "preview" and not settings.configuration_errors) or (
-        settings.mode == "api" and base_api_configuration_ready and all(endpoint_configured.values())
+    all_metadata_types_ready = bool(
+        settings.mode == "api"
+        and base_api_configuration_ready
+        and all(endpoint_configured.values())
     )
 
     metadata_types: dict[str, dict[str, Any]] = {}
@@ -3013,9 +2944,6 @@ def _metadata_api_status(
             settings.mode == "api"
             and base_api_configuration_ready
             and endpoint_configured[metadata_type]
-        )
-        preview_ready = bool(
-            settings.mode == "preview" and not settings.configuration_errors
         )
         writer_tweak_configured = bool(
             settings.payload_mode == "langflow"
@@ -3041,7 +2969,7 @@ def _metadata_api_status(
             # ``endpoint_ready`` only means the portal has enough information
             # to invoke this Flow. It is not a successful upstream health check.
             "endpoint_ready": endpoint_ready,
-            "current_mode_ready": preview_ready if settings.mode == "preview" else endpoint_ready,
+            "current_mode_ready": endpoint_ready,
             "portal_configured_collection_name": settings.collection_for(metadata_type),
             "collection_name_source": settings.collection_source_for(metadata_type),
             # This name is known only when the portal will pass it to the
@@ -3063,7 +2991,7 @@ def _metadata_api_status(
             "snapshot_tweak_will_be_sent": portal_will_send_snapshot_tweak,
             # A configured endpoint and a calculated collection name are not
             # evidence that the collection exists or that its contents match
-            # the static preview table.
+            # the live metadata source.
             "live_contents_checked": False,
         }
 
@@ -3089,7 +3017,7 @@ def _metadata_api_status(
             "실제 등록 정보는 관리자 전용 /api/metadata/live에서 읽을 수 있습니다."
             if portal_reads_metadata_collections
             else "현재 Portal은 메타데이터 컬렉션 내용을 직접 읽지 않습니다. "
-            "표시 중인 기본 메타데이터 목록은 미리보기 예시입니다."
+            "메타데이터 목록은 실조회 연결 전까지 비어 있습니다."
         ),
         "collections": {
             metadata_type: settings.collection_for(metadata_type)
@@ -3108,7 +3036,7 @@ def _metadata_api_status(
         "configured": ready,
         "ready": ready,
         "all_metadata_types_ready": all_metadata_types_ready,
-        "preview_only": settings.mode == "preview",
+        "preview_only": False,
         "missing": list(dict.fromkeys(missing)),
         "api": {
             "endpoint_configured": endpoint_configured,
@@ -3169,7 +3097,7 @@ def _portal_settings_mongodb_status(
     return {
         "role": "portal_settings_and_audit",
         "configured": bool(mongo_configured and collections.ready),
-        "backend": "mongodb" if mongo_read_verified else "preview_defaults",
+        "backend": "mongodb" if mongo_read_verified else "in_memory_defaults",
         "connection_read_verified": mongo_read_verified,
         "database": settings.mongo_database or None,
         "settings_collection": collections.settings_collection if mongo_read_verified else None,
@@ -3182,7 +3110,7 @@ def _portal_settings_mongodb_status(
             if mongo_read_verified
             else "Portal MongoDB 컬렉션 이름 설정을 확인해 주세요."
             if mongo_configured and not collections.ready
-            else "MongoDB 설정이 없어 Portal 설정은 미리보기 기본값으로만 동작합니다."
+            else "MongoDB 설정이 없어 Portal 설정은 저장되지 않는 기본값으로 동작합니다."
         ),
     }
 
@@ -3347,38 +3275,13 @@ def _portal_mongodb_connection_status(
     }
 
 
-_PREVIEW_PORTAL_ADMINISTRATORS = [
-    {
-        "employee_id": "2069026",
-        "name": "문봉건",
-        "role": "Super Admin",
-        "scope": "전체 설정 · 관리자 관리",
-        "status": "활성",
-    },
-    {
-        "employee_id": "2079411",
-        "name": "최은서",
-        "role": "Metadata Admin",
-        "scope": "메타데이터 등록 · 검토",
-        "status": "활성",
-    },
-    {
-        "employee_id": "2093012",
-        "name": "이도윤",
-        "role": "Schedule Admin",
-        "scope": "스케줄 모니터링 · 재실행",
-        "status": "활성",
-    },
-]
-
-
 def _default_portal_settings() -> dict[str, Any]:
     """Return a new, non-authoritative settings document.
 
     Production administrator authority must come from a persisted
-    ``portal_settings.admins`` list or the explicit one-time bootstrap
-    environment setting.  Never seed the sample preview administrators into a
-    real Portal MongoDB document.
+    ``portal_settings.admins`` list and/or the explicit environment default
+    administrator setting.  Environment defaults are merged at read time and
+    must never be seeded into a real Portal MongoDB document.
     """
 
     return {
@@ -3445,12 +3348,14 @@ def _administrator_audit_summary(admins: list[Mapping[str, Any]]) -> list[dict[s
     ]
 
 
-def _bootstrap_portal_administrators() -> list[dict[str, str]]:
-    """Read the explicit initial-admin list without ever persisting it.
+def _configured_default_portal_administrators() -> list[dict[str, str]]:
+    """Read environment-owned administrators without ever persisting them.
 
-    It is intentionally available only while the MongoDB settings document has
-    no real administrators.  Once an administrator is saved through the API,
-    the persisted list replaces these entries entirely.
+    ``PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON`` is kept as the deployment setting
+    name for backwards compatibility, but it now represents permanent default
+    authority.  The configured records are merged with MongoDB administrators
+    for every request; a MongoDB document can never replace, deactivate, or
+    overwrite them.
     """
 
     raw = _environment_value(_PORTAL_BOOTSTRAP_ADMINS_ENVIRONMENT)
@@ -3459,10 +3364,10 @@ def _bootstrap_portal_administrators() -> list[dict[str, str]]:
     try:
         decoded = json.loads(raw)
     except (TypeError, ValueError):
-        logger.warning("Portal bootstrap administrator configuration is invalid.")
+        logger.warning("Portal default administrator configuration is invalid.")
         return []
     if not isinstance(decoded, list):
-        logger.warning("Portal bootstrap administrator configuration must be a list.")
+        logger.warning("Portal default administrator configuration must be a list.")
         return []
 
     admins: list[dict[str, str]] = []
@@ -3483,13 +3388,115 @@ def _bootstrap_portal_administrators() -> list[dict[str, str]]:
             {
                 "employee_id": employee_id,
                 "name": name,
-                "role": "Bootstrap Admin",
-                "scope": "초기 관리자 등록",
+                "role": "환경 기본 관리자",
+                "scope": "환경변수 기본 권한",
                 "status": "활성",
             }
         )
         seen_employee_ids.add(employee_id)
     return admins
+
+
+def _portal_administrator_record(
+    administrator: Mapping[str, Any],
+    *,
+    source: Literal["default", "mongodb", "local"],
+) -> dict[str, Any]:
+    """Return one safe administrator record with its immutable source label."""
+
+    normalized = _normalise_portal_admin_list([administrator])
+    if not normalized:
+        raise ValueError("administrator record is invalid")
+
+    record: dict[str, Any] = normalized[0]
+    record.update(
+        {
+            "source": source,
+            "is_default": source == "default",
+            # Local identity is also virtual and must never be edited through
+            # the MongoDB-backed admin management APIs.
+            "locked": source in {"default", "local"},
+        }
+    )
+    return record
+
+
+def _merge_portal_administrators(
+    persisted_administrators: Any,
+    *,
+    include_local_administrator: bool = False,
+) -> list[dict[str, Any]]:
+    """Build the effective administrator list for one Portal response.
+
+    Environment defaults win over a MongoDB record with the same employee ID.
+    That protects a default administrator from accidental deactivation or
+    stale display data in MongoDB.  Local development identity is similarly
+    virtual and comes before all other sources only in explicit local mode.
+    """
+
+    merged: list[dict[str, Any]] = []
+    reserved_employee_ids: set[str] = set()
+
+    if include_local_administrator:
+        local = _portal_administrator_record(
+            _PORTAL_LOCAL_ADMINISTRATOR,
+            source="local",
+        )
+        merged.append(local)
+        reserved_employee_ids.add(local["employee_id"])
+
+    for administrator in _configured_default_portal_administrators():
+        if administrator["employee_id"] in reserved_employee_ids:
+            continue
+        default = _portal_administrator_record(administrator, source="default")
+        merged.append(default)
+        reserved_employee_ids.add(default["employee_id"])
+
+    for administrator in _normalise_portal_admin_list(persisted_administrators):
+        if administrator["employee_id"] in reserved_employee_ids:
+            continue
+        persisted = _portal_administrator_record(administrator, source="mongodb")
+        merged.append(persisted)
+        reserved_employee_ids.add(persisted["employee_id"])
+
+    return merged
+
+
+def _has_active_persistent_or_default_administrator(
+    persisted_administrators: Any,
+) -> bool:
+    """Return whether a production-safe administrator remains after a write.
+
+    The fixed local developer identity is intentionally *not* counted here:
+    local development must not be able to leave a shared MongoDB deployment
+    without a real administrator.  Environment defaults are production-owned
+    authority and may safely be the sole active administrator.
+    """
+
+    return any(
+        administrator["status"] == "활성"
+        for administrator in _merge_portal_administrators(persisted_administrators)
+    )
+
+
+def _effective_administrator_records_for_response(value: Any) -> list[dict[str, Any]]:
+    """Preserve trusted source labels while safely shaping response records."""
+
+    source_by_employee_id: dict[str, str] = {}
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            employee_id = str(item.get("employee_id") or "").strip()
+            source = str(item.get("source") or "").strip()
+            if employee_id and source in {"default", "mongodb", "local"}:
+                source_by_employee_id[employee_id] = source
+
+    records: list[dict[str, Any]] = []
+    for administrator in _normalise_portal_admin_list(value):
+        source = source_by_employee_id.get(administrator["employee_id"], "mongodb")
+        records.append(_portal_administrator_record(administrator, source=source))
+    return records
 
 
 def _normalise_portal_settings(document: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -4489,7 +4496,7 @@ def _schedule_owner_or_admin(access: PortalAccess, document: Mapping[str, Any]) 
     )
 
 
-class PreviewPortalSettingsStore:
+class InMemoryPortalSettingsStore:
     """Read-only defaults used only when MongoDB is intentionally not configured."""
 
     persistent = False
@@ -4508,7 +4515,7 @@ class PreviewPortalSettingsStore:
         actor: PortalViewer,
         details: Mapping[str, Any],
     ) -> None:
-        # Preview intentionally does not pretend to persist audit records.
+        # The nonpersistent adapter intentionally does not record audit rows.
         return None
 
 
@@ -4581,8 +4588,11 @@ class MongoPortalSettingsStore:
                     after["usage_policy"][key] = value
 
         if "admins" in update:
-            admins = _normalise_portal_admin_list(update.get("admins"))
-            if not admins or not any(admin["status"] == "활성" for admin in admins):
+            admins = _persistent_portal_administrator_list(update.get("admins"))
+            # The persisted list may be empty when an environment-owned
+            # default administrator remains active.  Do not write those
+            # defaults here; they are merged at read time only.
+            if not _has_active_persistent_or_default_administrator(admins):
                 raise PortalSettingsStoreError(
                     "활성 관리자 없이 관리자 명단을 저장할 수 없습니다."
                 )
@@ -4645,7 +4655,7 @@ def _get_portal_settings_store() -> PortalSettingsStore:
             database=settings.mongo_database,
             collections=_portal_mongodb_collection_settings_from_env(),
         )
-    return PreviewPortalSettingsStore()
+    return InMemoryPortalSettingsStore()
 
 
 def _active_admin(settings: Mapping[str, Any], employee_id: str) -> dict[str, str] | None:
@@ -4691,37 +4701,23 @@ def _effective_portal_settings(
     settings: Mapping[str, Any] | None,
     identity: PortalIdentity,
 ) -> dict[str, Any]:
-    """Return safe settings with the fixed local developer administrator.
+    """Return settings with virtual default/local authorities merged in.
 
-    ``app_local.py`` intentionally uses one fixed identity.  Give that
-    identity administrator capability only in the explicit local adapter,
-    without changing a production MongoDB settings document or its admin list.
+    Environment default administrators are always applied and take priority
+    over duplicate MongoDB records.  ``app_local.py`` adds one further virtual
+    developer administrator only in local mode.  Neither virtual source is
+    written to the MongoDB settings document.
     """
 
     effective = _normalise_portal_settings(settings)
-    if (
+    include_local_administrator = (
         _portal_auth_mode() == "local"
         and identity.employee_id == _PORTAL_LOCAL_EMPLOYEE_ID
-    ):
-        existing_admins = effective.get("admins")
-        admins = existing_admins if isinstance(existing_admins, list) else []
-        # Replace a possibly inactive/stale local entry in the returned local
-        # view. The MongoDB document remains untouched.
-        effective["admins"] = [
-            admin
-            for admin in admins
-            if not isinstance(admin, Mapping)
-            or str(admin.get("employee_id") or "").strip()
-            != _PORTAL_LOCAL_EMPLOYEE_ID
-        ]
-        effective["admins"].insert(0, copy.deepcopy(_PORTAL_LOCAL_ADMINISTRATOR))
-        return effective
-
-    # Production/test bootstrap authority exists only until the real MongoDB
-    # administrator list is saved. It is never written implicitly, so an
-    # ordinary user still cannot self-register as an administrator.
-    if not effective.get("admins"):
-        effective["admins"] = _bootstrap_portal_administrators()
+    )
+    effective["admins"] = _merge_portal_administrators(
+        effective.get("admins"),
+        include_local_administrator=include_local_administrator,
+    )
     return effective
 
 
@@ -4913,7 +4909,8 @@ def _require_active_admin_for_status(request: Request) -> PortalAccess:
     The normal administrator path always reads the persisted admin list.  The
     status view is the one place where that dependency would hide the very
     MongoDB outage an operator needs to see.  For this read-only endpoint only,
-    a trusted proxy identity may fall back to the fixed bootstrap admins.  This
+    a trusted proxy identity may fall back to the fixed environment-default
+    admins.  This
     never grants access to settings changes, metadata authoring, or live
     metadata documents.
     """
@@ -4951,7 +4948,7 @@ def _require_active_admin_for_status(request: Request) -> PortalAccess:
                 name=(identity.name if identity is not None else employee_id),
                 is_admin=True,
             ),
-            store=PreviewPortalSettingsStore(),
+            store=InMemoryPortalSettingsStore(),
             settings=bootstrap_settings,
         )
 
@@ -4964,11 +4961,17 @@ def _admin_settings_response(
     """Return administrator-managed values without API keys or MongoDB secrets."""
 
     normalized = _normalise_portal_settings(settings)
+    # ``settings`` normally comes from ``_effective_portal_settings``.  Keep
+    # its server-generated source/lock labels instead of flattening every
+    # record back into an editable MongoDB-looking administrator.
+    administrators = _effective_administrator_records_for_response(
+        settings.get("admins") if isinstance(settings, Mapping) else None
+    )
     collections = _portal_mongodb_collection_settings_from_env()
     return {
         "gaia_api_caller_employee_id": normalized["gaia_api_caller_employee_id"],
         "usage_policy": normalized["usage_policy"],
-        "admins": normalized["admins"],
+        "admins": administrators,
         "updated_at": normalized["updated_at"],
         "updated_by": normalized["updated_by"],
         "storage": {
@@ -5005,14 +5008,82 @@ def _administrator_employee_id_or_422(employee_id: str) -> str:
     return candidate
 
 
+def _locked_administrator_source(
+    access: PortalAccess,
+    employee_id: str,
+) -> Literal["default", "local"] | None:
+    """Return the virtual source that makes an administrator immutable."""
+
+    for administrator in _effective_administrator_records_for_response(
+        access.settings.get("admins")
+    ):
+        if administrator["employee_id"] != employee_id:
+            continue
+        source = administrator["source"]
+        if administrator["locked"] and source in {"default", "local"}:
+            return source
+    return None
+
+
+def _raise_locked_administrator(source: Literal["default", "local"]) -> None:
+    if source == "default":
+        message = "환경변수에 지정한 기본 관리자는 수정하거나 삭제할 수 없습니다."
+        code = "default_administrator_locked"
+    else:
+        message = "로컬 개발용 기본 관리자는 수정하거나 삭제할 수 없습니다."
+        code = "local_administrator_locked"
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail={"code": code, "message": message},
+    )
+
+
+def _is_configured_default_administrator(employee_id: str) -> bool:
+    return any(
+        administrator["employee_id"] == employee_id
+        for administrator in _configured_default_portal_administrators()
+    )
+
+
+def _persistent_portal_administrator_list(value: Any) -> list[dict[str, str]]:
+    """Keep only MongoDB-owned administrators in a settings write.
+
+    This is defensive in addition to the route-level checks: a future caller
+    that accidentally passes the effective response list cannot persist an
+    ENV default record.  Legacy duplicate records are cleaned up only as part
+    of a deliberate administrator-list save; read operations never mutate
+    MongoDB.
+    """
+
+    default_employee_ids = {
+        administrator["employee_id"]
+        for administrator in _configured_default_portal_administrators()
+    }
+    return [
+        administrator
+        for administrator in _normalise_portal_admin_list(value)
+        if administrator["employee_id"] not in default_employee_ids
+    ]
+
+
 def _save_administrator_list(
     access: PortalAccess,
     admins: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Persist only the server-built administrator list through Portal storage."""
 
+    normalized = _persistent_portal_administrator_list(admins)
+    if not _has_active_persistent_or_default_administrator(normalized):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "last_active_administrator_required",
+                "message": "기본 관리자 또는 MongoDB 활성 관리자가 최소 한 명 필요합니다.",
+            },
+        )
+
     try:
-        return access.store.update({"admins": copy.deepcopy(admins)}, access.viewer)
+        return access.store.update({"admins": copy.deepcopy(normalized)}, access.viewer)
     except PortalSettingsStoreError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -5024,21 +5095,30 @@ def _administrator_mutation_response(
     settings: Mapping[str, Any],
     *,
     employee_id: str,
-    persistent: bool,
+    access: PortalAccess,
 ) -> dict[str, Any]:
-    normalized = _normalise_portal_settings(settings)
+    effective = _effective_portal_settings(
+        settings,
+        PortalIdentity(
+            employee_id=access.viewer.employee_id,
+            name=access.viewer.name,
+        ),
+    )
+    administrators = _effective_administrator_records_for_response(
+        effective.get("admins")
+    )
     administrator = next(
         (
             admin
-            for admin in normalized["admins"]
+            for admin in administrators
             if admin["employee_id"] == employee_id
         ),
         None,
     )
     return {
         "administrator": administrator,
-        "admins": normalized["admins"],
-        "storage": {"persistent": persistent},
+        "admins": administrators,
+        "storage": {"persistent": access.store.persistent},
     }
 
 
@@ -5049,8 +5129,8 @@ def create_app() -> FastAPI:
 
     portal = FastAPI(
         title="PTMORE PKG Agent Portal",
-        description="Portal preview with an optional external metadata authoring API adapter.",
-        version="0.2.0-preview",
+        description="PTMORE usage, scheduling, and metadata administration portal.",
+        version="1.0.0",
     )
 
     @portal.middleware("http")
@@ -5138,86 +5218,6 @@ application = create_application()
 app = application
 
 
-_USAGE_USERS = [
-    ("2069026", "문봉건"),
-    ("2071044", "김민서"),
-    ("2093012", "이도윤"),
-    ("2084501", "박서윤"),
-    ("2057802", "최현우"),
-    ("2089017", "정하린"),
-    ("2076603", "윤태호"),
-    ("2098130", "한지민"),
-    ("2041218", "김도윤"),
-    ("2060049", "오수빈"),
-    ("2072206", "배지훈"),
-    ("2081442", "서유진"),
-    ("2059211", "임성호"),
-    ("2090842", "장예린"),
-    ("2075400", "류민재"),
-    ("2068804", "신예은"),
-    ("2083771", "권도형"),
-    ("2056173", "조아라"),
-]
-
-_USAGE_QUESTIONS = [
-    "오늘 DA 공정의 생산량과 목표 대비 달성률을 알려줘.",
-    "현재 WIP 체류 시간이 긴 LOT을 공정별로 보여줘.",
-    "설비 DOWN 현황과 예상 복구 시간을 정리해줘.",
-    "당일 수율 변동이 큰 제품과 원인을 분석해줘.",
-    "PKG 공정의 생산 현황을 요약해줘.",
-    "HOLD 상태 LOT의 주요 사유를 알려줘.",
-]
-
-_CHANNELS = ("CUBE", "CUBE", "CUBE", "CUBE_SCHEDULING", "ADMIN_TEST")
-
-
-def _build_dummy_usage_history() -> list[dict[str, str]]:
-    """Create deterministic 21-day records with employee, question, and date fields."""
-
-    end_day = date(2026, 8, 29)
-    core_users = _USAGE_USERS[:8]
-    occasional_users = _USAGE_USERS[8:]
-    history: list[dict[str, str]] = []
-    record_number = 0
-
-    for day_index in range(21):
-        usage_day = end_day - timedelta(days=20 - day_index)
-        # Core users are repeatedly active; the remaining users are occasional.
-        selected_users = [
-            core_users[(day_index + offset) % len(core_users)]
-            for offset in range(6 + (day_index % 3))
-        ]
-        selected_users.extend(
-            occasional_users[(day_index * 2 + offset) % len(occasional_users)]
-            for offset in range(2 + (day_index % 3))
-        )
-
-        for user_index, (employee_id, user_name) in enumerate(selected_users):
-            # One question is always present; a few records model repeat questions.
-            repeat_count = 1 + int((day_index + user_index) % 3 == 0)
-            if user_index < 3 and day_index % 2 == 0:
-                repeat_count += 1
-
-            for repeat_index in range(repeat_count):
-                record_number += 1
-                hour = 8 + ((user_index + repeat_index) % 9)
-                minute = (10 + day_index * 3 + repeat_index * 17) % 60
-                history.append(
-                    {
-                        "id": f"USE-2026-{record_number:04d}",
-                        "employee_id": employee_id,
-                        "user_name": user_name,
-                        "question": _USAGE_QUESTIONS[
-                            (day_index + user_index + repeat_index) % len(_USAGE_QUESTIONS)
-                        ],
-                        "date": usage_day.isoformat(),
-                        "occurred_at": f"{usage_day.isoformat()}T{hour:02d}:{minute:02d}:00+09:00",
-                        "channel": _CHANNELS[(day_index + user_index + repeat_index) % len(_CHANNELS)],
-                    }
-                )
-    return history
-
-
 def _channel_label(channel: str) -> str:
     return {
         "CUBE": "CUBE 직접 질의",
@@ -5235,7 +5235,7 @@ def _build_usage_dashboard(
     recent_runs: list[Mapping[str, Any]] | None = None,
     recent_runs_message: str = "최근 스케줄 실행 이력이 없습니다.",
 ) -> dict[str, Any]:
-    """Aggregate user/question/date history for both preview and Phoenix.
+    """Aggregate user/question/date history returned by Phoenix/MongoDB.
 
     Supplying an inclusive ``start_day`` / ``end_day`` zero-fills the graph.
     That is used by the live Phoenix path so a quiet day remains visible in
@@ -5423,672 +5423,50 @@ def _build_usage_dashboard(
     }
 
 
-def _authoring_preview_response(
-    *,
-    metadata_type: str,
-    metadata_label: str,
-    raw_text: str,
-    refined_text: str,
-    columns: list[str],
-    rows: list[dict[str, Any]],
-    keys: list[str],
-    database: str,
-    collection_name: str,
-    resolved_references: list[dict[str, str]] | None = None,
-) -> dict[str, Any]:
-    """Return a safe, representative `10 ... API 응답 생성기` result.
+def _portal_data_for_access(access: PortalAccess) -> dict[str, Any]:
+    """Return authenticated identity/settings and neutral initial UI state.
 
-    The portal is intentionally a dummy preview.  Its result object mirrors the
-    stable fields already returned by the three rev_2 metadata authoring Flows
-    so the UI can be connected to a real Flow response without redesigning the
-    screen later.
+    Actual usage, schedules, and metadata are loaded from their dedicated
+    Phoenix/MongoDB endpoints.  Keeping this bootstrap payload empty prevents
+    sample records from appearing while those requests are still in flight.
     """
 
-    operation_by_key = [{"key": key, "operation": "inserted"} for key in keys]
+    settings = _normalise_portal_settings(access.settings)
+    recent_runs, recent_runs_message = _load_dashboard_recent_schedule_runs()
+    start_day, end_day = _recent_kst_period(days=_USAGE_HISTORY_WINDOW_DAYS)
+    dashboard = _build_usage_dashboard(
+        [],
+        settings["usage_policy"],
+        start_day=start_day,
+        end_day=end_day,
+        recent_runs=recent_runs,
+        recent_runs_message=recent_runs_message,
+    )
+    dashboard.update(
+        {
+            "unavailable": True,
+            "empty_message": "Phoenix 사용 이력을 불러오는 중입니다.",
+        }
+    )
+
     return {
-        "response_type": "metadata_authoring",
-        "metadata_type": metadata_type,
-        "metadata_label": metadata_label,
-        "status": "dry_run",
-        "success": True,
-        "direct_response_ready": True,
-        "message": (
-            f"{metadata_label} 메타데이터 {len(keys)}건을 저장 전 검토했습니다. "
-            "현재는 테스트 실행 결과이므로 MongoDB에는 반영하지 않았습니다."
-        ),
-        "answer_sections": {
-            "summary": {
-                "headline": f"{metadata_label} 등록 후보를 검토했습니다.",
-                "description": "실제 저장 전에 후보, 계약 검증, 중복 처리 계획을 확인합니다.",
-            },
-            "key_points": [
-                f"생성된 등록 후보는 {len(rows)}건입니다.",
-                "테스트 실행 모드라 실제 MongoDB 저장은 수행하지 않았습니다.",
-            ],
-            "notices": [],
-            "next_steps": [
-                "후보와 중복 처리 계획을 확인합니다.",
-                "실제 운영에서는 테스트 실행을 해제한 뒤 같은 등록 Flow를 다시 실행합니다.",
-            ],
+        "viewer": {
+        "employee_id": access.viewer.employee_id,
+        "name": access.viewer.name,
+        "role": "관리자" if access.viewer.is_admin else "일반 사용자",
+        "is_admin": access.viewer.is_admin,
         },
-        "data": {"columns": columns, "rows": rows, "row_count": len(rows)},
+        "dashboard": dashboard,
+        "usage_history": [],
+        "schedules": [],
+        "metadata": {metadata_type: [] for metadata_type in _METADATA_TYPES},
         "metadata_authoring": {
-            "contract_version": "metadata_authoring.rev_2.v1",
-            "metadata_type": metadata_type,
-            "metadata_label": metadata_label,
-            "status": "dry_run",
-            "generated_count": len(rows),
-            "saved_count": 0,
-            "would_save_count": len(keys),
-            "existing_match_count": 0,
-            "dry_run": True,
-            "keys": keys,
-            "original_text": raw_text,
-            "refined_text": refined_text,
-            "resolved_references": resolved_references or [],
-            "unresolved_references": [],
-            "missing_information": [],
-            "assumptions": [],
-            "retry_example": "",
-            "retry_examples": [],
-            "contract_validation": {
-                "status": "validated",
-                "errors": [],
-                "warnings": [],
-            },
+            "contract": {"version": "metadata_authoring.rev_2.v1"},
+            "examples": {},
+            "recent_results": [],
         },
-        "write_result": {
-            "success": True,
-            "ready_to_save": True,
-            "dry_run": True,
-            "saved_count": 0,
-            "would_save_count": len(keys),
-            "skipped_count": 0,
-            "database": database,
-            "collection_name": collection_name,
-            "keys": keys,
-            "operation_by_key": operation_by_key,
-            "status": "dry_run",
-            "message": "테스트 실행입니다. MongoDB에는 저장하지 않았습니다.",
-            "errors": [],
-        },
-        "trace": {
-            "raw_text_preview": raw_text[:500],
-            "write_status": "dry_run",
-            "errors": [],
-        },
-    }
-
-
-def _metadata_authoring_preview() -> dict[str, Any]:
-    """Build examples from the input/output contract of the rev_2 saving Flows."""
-
-    table_raw_text = (
-        "dataset_key: production_today\n"
-        "표시명: Production Today\n"
-        "분류: production\n"
-        "source_type: oracle\n"
-        "db_key: PNT_RPT\n\n"
-        "query_template:\n"
-        "SELECT\n"
-        "  WORK_DATE,\n"
-        "  OPER_NAME,\n"
-        "  PRODUCTION\n"
-        "FROM PROD_TABLE\n"
-        "WHERE WORK_DATE = {DATE}\n"
-        "  AND OPER_NAME = {PROCESS_GROUP}\n\n"
-        "columns:\n"
-        "- WORK_DATE\n"
-        "- OPER_NAME\n"
-        "- PRODUCTION\n\n"
-        "required_params:\n"
-        "- DATE\n"
-        "- PROCESS_GROUP\n\n"
-        "required_param_mappings:\n"
-        "- DATE -> WORK_DATE\n"
-        "- PROCESS_GROUP -> OPER_NAME\n\n"
-        "filter_mappings:\n"
-        "- DATE -> WORK_DATE\n"
-        "- PROCESS_GROUP -> OPER_NAME\n\n"
-        "metric_semantics:\n"
-        "- PRODUCTION: sum"
-    )
-    filter_raw_text = (
-        "filter_key는 PROCESS_GROUP 입니다. 표시명은 공정 그룹이고, 사용자가 DA, "
-        "WB, SG라고 입력할 때 사용합니다. 값 형식은 string, 값 형태는 scalar, "
-        "기본 연산자는 eq이며 후보 표준 컬럼은 OPER_NAME입니다."
-    )
-    domain_raw_text = (
-        "section은 process_groups, key는 DA 입니다. 표시명은 DA 공정 그룹이며, "
-        "aliases는 DA와 Die Attach입니다. field는 OPER_NAME이고 processes는 "
-        "DA1, DA2, DA3입니다. DA 공정 또는 DA 생산량 질문을 해석할 때 사용합니다."
-    )
-
-    table_response = _authoring_preview_response(
-        metadata_type="table_catalog",
-        metadata_label="테이블 카탈로그",
-        raw_text=table_raw_text,
-        refined_text=(
-            "dataset_key=production_today인 생산 데이터셋을 등록한다.\n"
-            "source_config:\n"
-            "  source_type=oracle\n"
-            "  db_key=PNT_RPT\n"
-            "  query_template:\n"
-            "    SELECT\n"
-            "      WORK_DATE,\n"
-            "      OPER_NAME,\n"
-            "      PRODUCTION\n"
-            "    FROM PROD_TABLE\n"
-            "    WHERE WORK_DATE = {DATE}\n"
-            "      AND OPER_NAME = {PROCESS_GROUP}\n"
-            "columns=[WORK_DATE, OPER_NAME, PRODUCTION]\n"
-            "required_param_mappings={DATE:[WORK_DATE], PROCESS_GROUP:[OPER_NAME]}\n"
-            "filter_mappings={DATE:[WORK_DATE], PROCESS_GROUP:[OPER_NAME]}"
-        ),
-        columns=["데이터셋 키", "데이터셋", "분류", "연결 방식", "필수 조건", "상태"],
-        rows=[
-            {
-                "데이터셋 키": "production_today",
-                "데이터셋": "Production Today",
-                "분류": "생산",
-                "연결 방식": "Oracle",
-                "필수 조건": "DATE, PROCESS_GROUP",
-                "상태": "저장 예정",
-            }
-        ],
-        keys=["production_today"],
-        database="datagov",
-        collection_name="agent_v4_table_catalog_items",
-        resolved_references=[
-            {"kind": "canonical_column", "input": "DATE", "target": "DATE", "evidence": "declared"},
-            {"kind": "canonical_column", "input": "PROCESS_GROUP", "target": "PROCESS_GROUP", "evidence": "declared"},
-        ],
-    )
-    filter_response = _authoring_preview_response(
-        metadata_type="main_flow_filter",
-        metadata_label="메인 플로우 필터",
-        raw_text=filter_raw_text,
-        refined_text=(
-            "filter_key=PROCESS_GROUP 표준 Filter를 등록한다. 공정 그룹 질문에 사용하며 "
-            "aliases는 DA, WB, SG, operator는 eq, value_type은 string, value_shape은 scalar이다."
-        ),
-        columns=["필터 키", "표시명", "연산자", "값 타입", "값 형태", "상태"],
-        rows=[
-            {
-                "필터 키": "PROCESS_GROUP",
-                "표시명": "공정 그룹",
-                "연산자": "eq",
-                "값 타입": "string",
-                "값 형태": "scalar",
-                "상태": "저장 예정",
-            }
-        ],
-        keys=["PROCESS_GROUP"],
-        database="datagov",
-        collection_name="agent_v4_main_flow_filters",
-    )
-    domain_response = _authoring_preview_response(
-        metadata_type="domain",
-        metadata_label="도메인 정보",
-        raw_text=domain_raw_text,
-        refined_text=(
-            "process_groups section에 key=DA 도메인을 등록한다. field=OPER_NAME에 DA1, DA2, "
-            "DA3을 적용하고 aliases는 DA, Die Attach로 유지한다."
-        ),
-        columns=["구분", "키", "표시명", "상태", "처리"],
-        rows=[
-            {
-                "구분": "process_groups",
-                "키": "DA",
-                "표시명": "DA 공정 그룹",
-                "상태": "저장 예정",
-                "처리": "inserted",
-            }
-        ],
-        keys=["process_groups:DA"],
-        database="datagov",
-        collection_name="agent_v4_domain_items",
-    )
-
-    examples = {
-        "table_catalog": {
-            "flow_label": "테이블 카탈로그 저장 Flow",
-            "endpoint_name": "metadata-driven-v5-table-catalog-saving-rev-2",
-            "chat_input_id": "ChatInput-table_catalog-rev-2",
-            "request_loader_id": "Request-table_catalog-rev-2",
-            "required_input": ["dataset_key", "연결 소스", "필수 조건", "필터·컬럼 매핑"],
-            "raw_text": table_raw_text,
-            "duplicate_action": "skip",
-            "dry_run": True,
-            "result": table_response,
-        },
-        "main_flow_filters": {
-            "flow_label": "메인 플로우 필터 저장 Flow",
-            "endpoint_name": "metadata-driven-v5-main-flow-filter-saving-rev-2",
-            "chat_input_id": "ChatInput-main_flow_filter-rev-2",
-            "request_loader_id": "Request-main_flow_filter-rev-2",
-            "required_input": ["filter_key", "사용자 표현", "operator", "value_type·value_shape", "후보 컬럼"],
-            "raw_text": filter_raw_text,
-            "duplicate_action": "skip",
-            "dry_run": True,
-            "result": filter_response,
-        },
-        "domain": {
-            "flow_label": "도메인 저장 Flow",
-            "endpoint_name": "metadata-driven-v5-domain-saving-rev-2",
-            "chat_input_id": "ChatInput-domain-rev-2",
-            "request_loader_id": "Request-domain-rev-2",
-            "required_input": ["section", "key", "업무 표현·별칭", "적용 규칙 또는 설명"],
-            "raw_text": domain_raw_text,
-            "duplicate_action": "skip",
-            "dry_run": True,
-            "result": domain_response,
-        },
-    }
-
-    return {
-        "contract": {
-            "version": "metadata_authoring.rev_2.v1",
-            "request": {
-                "chat_input": "input_value",
-                "request_loader": ["raw_text", "duplicate_action", "dry_run"],
-                "defaults": {"duplicate_action": "skip", "dry_run": True},
-            },
-            "response": [
-                "status",
-                "data.columns/data.rows",
-                "metadata_authoring",
-                "write_result",
-                "trace",
-            ],
-        },
-        "examples": examples,
-        "recent_results": [
-            {
-                "id": "RUN-META-042",
-                "metadata_type": "table_catalog",
-                "requested_at": "오늘 10:22",
-                "requested_by": "문봉건 (2069026)",
-                "result": table_response,
-            },
-            {
-                "id": "RUN-META-041",
-                "metadata_type": "main_flow_filters",
-                "requested_at": "어제 16:40",
-                "requested_by": "최은서 (2079411)",
-                "result": filter_response,
-            },
-        ],
-    }
-
-
-def _preview_recent_schedule_runs() -> list[dict[str, str]]:
-    """Static cards used only by the explicit `/api/mock/portal` preview."""
-
-    return [
-        {
-            "time": "09:30",
-            "name": "DA 공정 오전 생산 현황",
-            "owner": "문봉건 (2069026)",
-            "status": "성공",
-            "target": _SCHEDULE_DELIVERY_TARGET,
-        },
-        {
-            "time": "09:15",
-            "name": "WIP 이상 LOT 알림",
-            "owner": "김민서 (2071044)",
-            "status": "성공",
-            "target": _SCHEDULE_DELIVERY_TARGET,
-        },
-        {
-            "time": "09:00",
-            "name": "설비 DOWN 현황",
-            "owner": "최은서 (2093012)",
-            "status": "실패",
-            "target": _SCHEDULE_DELIVERY_TARGET,
-        },
-        {
-            "time": "08:30",
-            "name": "일일 수율 요약",
-            "owner": "문봉건 (2069026)",
-            "status": "성공",
-            "target": _SCHEDULE_DELIVERY_TARGET,
-        },
-    ]
-
-
-def _portal_data(preview_role: str = "admin") -> dict[str, Any]:
-    """Return fresh dummy data so browser-only edits never become server state."""
-
-    is_standard_preview = str(preview_role or "").strip().lower() in {"user", "member", "standard"}
-    usage_policy = {
-        "history_window_days": 21,
-        "active_user_min_distinct_days": 3,
-        "active_user_min_chat_count": 10,
-    }
-    usage_history = _build_dummy_usage_history()
-    viewer = (
-        {
-            "employee_id": "2071044",
-            "name": "김민서",
-            "role": "일반 사용자",
-            "is_admin": False,
-        }
-        if is_standard_preview
-        else {
-            "employee_id": "2069026",
-            "name": "문봉건",
-            "role": "관리자",
-            "is_admin": True,
-        }
-    )
-
-    return {
-        "viewer": viewer,
-        "dashboard": _build_usage_dashboard(
-            usage_history,
-            usage_policy,
-            recent_runs=_preview_recent_schedule_runs(),
-        ),
-        "usage_history": usage_history,
-        "schedules": [
-            {
-                "id": "SCH-2026-081",
-                "title": "DA 공정 오전 생산 현황",
-                "question": "오늘 DA 공정의 생산량, 목표 대비 달성률, 주요 이슈를 요약해줘.",
-                "repeat": "평일",
-                "time": "09:30",
-                "rule_label": "평일 · 오전 09:30",
-                "next_run": "오늘 09:30",
-                "target": _SCHEDULE_DELIVERY_TARGET,
-                "owner": "2069026",
-                "status": "활성",
-                "last_run": "오늘 09:30 · 성공",
-            },
-            {
-                "id": "SCH-2026-064",
-                "title": "WIP 이상 LOT 알림",
-                "question": "현재 WIP 체류 시간이 기준을 초과한 LOT을 공정별로 알려줘.",
-                "repeat": "매일",
-                "time": "10:00",
-                "rule_label": "매일 · 오전 10:00, 오후 16:00",
-                "next_run": "오늘 16:00",
-                "target": _SCHEDULE_DELIVERY_TARGET,
-                "owner": "2069026",
-                "status": "활성",
-                "last_run": "오늘 10:00 · 성공",
-            },
-            {
-                "id": "SCH-2026-042",
-                "title": "주간 품질 리포트",
-                "question": "이번 주 주요 수율 지표와 전주 대비 변동 원인을 정리해줘.",
-                "repeat": "매주",
-                "time": "08:30",
-                "rule_label": "매주 월요일 · 오전 08:30",
-                "next_run": "9월 1일 08:30",
-                "target": _SCHEDULE_DELIVERY_TARGET,
-                "owner": "2071044",
-                "status": "일시중지",
-                "last_run": "8월 25일 · 성공",
-            },
-            {
-                "id": "SCH-2026-029",
-                "title": "설비 DOWN 현황",
-                "question": "현재 DOWN 상태인 설비와 예상 복구 시간을 알려줘.",
-                "repeat": "매일",
-                "time": "08:00",
-                "rule_label": "매일 · 오전 08:00",
-                "next_run": "내일 08:00",
-                "target": _SCHEDULE_DELIVERY_TARGET,
-                "owner": "2069026",
-                "status": "활성",
-                "last_run": "오늘 08:00 · 성공",
-            },
-            {
-                # Interval schedules are preview-only data.  The separate
-                # scheduler service will later interpret these optional
-                # fields; this portal does not schedule or persist anything.
-                "id": "SCH-2026-097",
-                "title": "DA 공정 실시간 생산 분석",
-                "question": "DA 공정 실시간 생산 분석을 진행해줘.",
-                "repeat": "10분마다",
-                "time": "08:00",
-                "interval_minutes": 10,
-                "start_time": "08:00",
-                "end_time": "18:00",
-                "rule_label": "10분마다 · 08:00 ~ 18:00",
-                "next_run": "오늘 10:10",
-                "target": _SCHEDULE_DELIVERY_TARGET,
-                "owner": "2069026",
-                "status": "활성",
-                "last_run": "오늘 10:00 · 성공",
-            },
-        ],
-        "metadata": {
-            "table_catalog": [
-                {
-                    "dataset_key": "production_today",
-                    "display_name": "Production Today",
-                    "dataset_family": "생산",
-                    "source_type": "oracle",
-                    "required_params": ["DATE", "PROCESS_GROUP"],
-                    "status": "활성",
-                    "payload": {
-                        "display_name": "Production Today",
-                        "dataset_family": "생산",
-                        "source_type": "oracle",
-                        "source_config": {
-                            "source_type": "oracle",
-                            "db_key": "PNT_RPT",
-                            "query_template": (
-                                "SELECT WORK_DATE, OPER_NAME, PRODUCTION "
-                                "FROM PROD_TABLE WHERE WORK_DATE = {DATE}"
-                            ),
-                        },
-                        "required_params": ["DATE", "PROCESS_GROUP"],
-                        "required_param_mappings": {
-                            "DATE": ["WORK_DATE"],
-                            "PROCESS_GROUP": ["OPER_NAME"],
-                        },
-                        "filter_mappings": {
-                            "DATE": ["WORK_DATE"],
-                            "PROCESS_GROUP": ["OPER_NAME"],
-                        },
-                        "columns": [
-                            {"name": "WORK_DATE", "data_type": "date"},
-                            {"name": "OPER_NAME", "data_type": "string"},
-                            {"name": "PRODUCTION", "data_type": "number"},
-                        ],
-                        "default_detail_columns": [
-                            "WORK_DATE",
-                            "OPER_NAME",
-                            "PRODUCTION",
-                        ],
-                        "metric_semantics": {
-                            "PRODUCTION": {"aggregation": "sum", "label": "생산 수량"}
-                        },
-                    },
-                },
-                {
-                    "dataset_key": "wip_today",
-                    "display_name": "WIP Today",
-                    "dataset_family": "재공",
-                    "source_type": "oracle",
-                    "required_params": ["DATE"],
-                    "status": "활성",
-                    "payload": {
-                        "display_name": "WIP Today",
-                        "dataset_family": "재공",
-                        "source_type": "oracle",
-                        "source_config": {
-                            "source_type": "oracle",
-                            "db_key": "PNT_RPT",
-                            "query_template": "SELECT WORK_DATE, OPER_NAME, WIP FROM WIP_TABLE WHERE WORK_DATE = {DATE}",
-                        },
-                        "required_params": ["DATE"],
-                        "required_param_mappings": {"DATE": ["WORK_DATE"]},
-                        "filter_mappings": {"DATE": ["WORK_DATE"], "PROCESS_GROUP": ["OPER_NAME"]},
-                        "columns": [
-                            {"name": "WORK_DATE", "data_type": "date"},
-                            {"name": "OPER_NAME", "data_type": "string"},
-                            {"name": "WIP", "data_type": "number"},
-                        ],
-                        "metric_semantics": {"WIP": {"aggregation": "sum", "label": "재공 수량"}},
-                    },
-                },
-                {
-                    "dataset_key": "eqp_down_list",
-                    "display_name": "Equipment Down List",
-                    "dataset_family": "설비",
-                    "source_type": "oracle",
-                    "required_params": [],
-                    "status": "검토 필요",
-                    "payload": {
-                        "display_name": "Equipment Down List",
-                        "dataset_family": "설비",
-                        "source_type": "oracle",
-                        "source_config": {
-                            "source_type": "oracle",
-                            "db_key": "GMS_DB",
-                            "query_template": "SELECT EQP_ID, DOWN_REASON, DOWN_START_TIME FROM EQP_DOWN_LIST",
-                        },
-                        "required_params": [],
-                        "filter_mappings": {"EQP_ID": ["EQP_ID"]},
-                        "columns": [
-                            {"name": "EQP_ID", "data_type": "string"},
-                            {"name": "DOWN_REASON", "data_type": "string"},
-                            {"name": "DOWN_START_TIME", "data_type": "datetime"},
-                        ],
-                    },
-                },
-                {
-                    "dataset_key": "target",
-                    "display_name": "PKG Target Goodocs Plan",
-                    "dataset_family": "계획",
-                    "source_type": "goodocs",
-                    "required_params": [],
-                    "status": "활성",
-                    "payload": {
-                        "display_name": "PKG Target Goodocs Plan",
-                        "dataset_family": "계획",
-                        "source_type": "goodocs",
-                        "source_config": {
-                            "source_type": "goodocs",
-                            "doc_id": "PKG_TARGET_PLAN",
-                            "sheet_name": "Target Plan",
-                        },
-                        "required_params": [],
-                        "columns": [
-                            {"name": "MONTH", "data_type": "string"},
-                            {"name": "TARGET", "data_type": "number"},
-                            {"name": "PLAN", "data_type": "string"},
-                        ],
-                    },
-                },
-            ],
-            "main_flow_filters": [
-                {
-                    "filter_key": "DATE",
-                    "display_name": "기준 일자",
-                    "operator": "eq",
-                    "value_type": "date",
-                    "value_shape": "scalar",
-                    "status": "활성",
-                    "payload": {
-                        "display_name": "기준 일자",
-                        "aliases": ["오늘", "금일", "작업일"],
-                        "operator": "eq",
-                        "value_type": "date",
-                        "value_shape": "scalar",
-                        "column_candidates": ["WORK_DATE", "WORK_DT"],
-                    },
-                },
-                {
-                    "filter_key": "PROCESS_GROUP",
-                    "display_name": "공정 그룹",
-                    "operator": "eq",
-                    "value_type": "string",
-                    "value_shape": "scalar",
-                    "status": "활성",
-                    "payload": {
-                        "display_name": "공정 그룹",
-                        "aliases": ["DA", "WB", "SG"],
-                        "operator": "eq",
-                        "value_type": "string",
-                        "value_shape": "scalar",
-                        "column_candidates": ["OPER_NAME", "OPER_NM"],
-                    },
-                },
-                {
-                    "filter_key": "LOT_ID",
-                    "display_name": "LOT 식별자",
-                    "operator": "eq",
-                    "value_type": "string",
-                    "value_shape": "scalar",
-                    "status": "검토 필요",
-                    "payload": {
-                        "display_name": "LOT 식별자",
-                        "aliases": ["LOT", "로트"],
-                        "operator": "eq",
-                        "value_type": "string",
-                        "value_shape": "scalar",
-                        "column_candidates": ["LOT_ID", "LOT_NO"],
-                    },
-                },
-            ],
-            "domain": [
-                {
-                    "section": "process_groups",
-                    "key": "DA",
-                    "display_name": "DA 공정 그룹",
-                    "status": "활성",
-                    "payload": {
-                        "display_name": "DA 공정 그룹",
-                        "aliases": ["DA", "Die Attach"],
-                        "field": "OPER_NAME",
-                        "processes": ["DA1", "DA2", "DA3"],
-                    },
-                },
-                {
-                    "section": "quantity_terms",
-                    "key": "production_qty",
-                    "display_name": "생산량",
-                    "status": "활성",
-                    "payload": {
-                        "display_name": "생산량",
-                        "aliases": ["생산 수량", "투입량"],
-                        "metric_semantics": {
-                            "PRODUCTION": {"aggregation": "sum", "label": "생산 수량"}
-                        },
-                    },
-                },
-                {
-                    "section": "analysis_recipes",
-                    "key": "wip_long_stay",
-                    "display_name": "장기 체류 WIP 분석",
-                    "status": "활성",
-                    "payload": {
-                        "display_name": "장기 체류 WIP 분석",
-                        "aliases": ["장기 재공", "체류 LOT"],
-                        "analysis_steps": ["WIP 조회", "기준 초과 필터", "공정별 집계"],
-                    },
-                },
-                {
-                    "section": "product_key_columns",
-                    "key": "product_join_key",
-                    "display_name": "제품 조인 키",
-                    "status": "초안",
-                    "payload": {
-                        "display_name": "제품 조인 키",
-                        "aliases": ["제품 코드", "제품명"],
-                        "columns": ["PRODUCT_ID", "PRODUCT_NAME"],
-                    },
-                },
-            ],
-        },
-        "metadata_authoring": _metadata_authoring_preview(),
         "settings": {
-            "usage_policy": usage_policy,
+            "usage_policy": copy.deepcopy(settings["usage_policy"]),
             "access_policy": {
                 "metadata_page": "admin_only",
                 "metadata_registration": "admin_only",
@@ -6096,49 +5474,13 @@ def _portal_data(preview_role: str = "admin") -> dict[str, Any]:
                 "schedule_delete": "owner_or_admin",
                 "all_schedule_view": "all_users",
             },
-            "api": {
-                "gaia_endpoint": "GAIA External API",
-                "cube_endpoint": "CUBE Rich Notification API",
-                "callback_endpoint": "/api/v1/receiver",
-                "metadata_endpoint": "/api/v1/metadata",
-                "status": "정상",
-                "last_checked": "오늘 09:42",
-            },
-            # This endpoint is an explicit browser-only preview. Its sample
-            # administrators must never be used to seed Portal MongoDB.
-            "admins": copy.deepcopy(_PREVIEW_PORTAL_ADMINISTRATORS),
+            "admins": (
+                _effective_administrator_records_for_response(access.settings.get("admins"))
+                if access.viewer.is_admin
+                else []
+            ),
         },
     }
-
-
-def _portal_data_for_access(access: PortalAccess) -> dict[str, Any]:
-    """Return the existing Portal payload with the authenticated viewer.
-
-    Metadata preview data remains available for its separate read-mode UI, but
-    schedules are deliberately empty here.  The browser must call the real
-    ``/api/schedules`` source endpoint rather than mistaking preview cards for
-    persisted automations.
-    """
-
-    payload = _portal_data(preview_role="admin")
-    settings = _normalise_portal_settings(access.settings)
-    payload["viewer"] = {
-        "employee_id": access.viewer.employee_id,
-        "name": access.viewer.name,
-        "role": "관리자" if access.viewer.is_admin else "일반 사용자",
-        "is_admin": access.viewer.is_admin,
-    }
-    payload["settings"]["usage_policy"] = copy.deepcopy(settings["usage_policy"])
-    payload["settings"]["admins"] = copy.deepcopy(settings["admins"])
-    recent_runs, recent_runs_message = _load_dashboard_recent_schedule_runs()
-    payload["dashboard"] = _build_usage_dashboard(
-        payload["usage_history"],
-        settings["usage_policy"],
-        recent_runs=recent_runs,
-        recent_runs_message=recent_runs_message,
-    )
-    payload["schedules"] = []
-    return payload
 
 
 @application.get("/login", include_in_schema=False)
@@ -6207,7 +5549,7 @@ async def chrome_devtools_probe() -> Response:
 async def health() -> dict[str, str]:
     # Preserve the existing lightweight liveness contract.  Authentication
     # readiness belongs to the protected Portal API, not this public probe.
-    return {"status": "ok", "mode": "dummy-preview"}
+    return {"status": "ok", "mode": "portal"}
 
 
 @application.get("/api/portal")
@@ -6492,35 +5834,38 @@ def create_portal_administrator(
 ) -> dict[str, Any]:
     """Register one real Portal administrator by employee ID.
 
-    Only a current active administrator can call this endpoint. During the
-    first-production bootstrap, the bootstrap administrator must register
-    their own employee ID first; this prevents a temporary bootstrap identity
-    from silently granting a different person permanent administrator access.
+    Only a current active administrator can call this endpoint.  Environment
+    default administrators are already authorized and deliberately never
+    copied into MongoDB, so they cannot be added as a duplicate mutable record.
     """
 
     access = _require_active_admin(request)
     stored = _stored_settings_for_administrator_mutation(access)
     admins = copy.deepcopy(stored["admins"])
     employee_id = request_body.employee_id
+    locked_source = _locked_administrator_source(access, employee_id)
+    if locked_source == "default" or _is_configured_default_administrator(employee_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "default_administrator_already_configured",
+                "message": "환경변수 기본 관리자로 이미 권한이 부여된 사번입니다.",
+            },
+        )
+    if locked_source == "local":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "local_administrator_already_configured",
+                "message": "로컬 개발용 기본 관리자는 MongoDB 관리자 명단에 추가할 수 없습니다.",
+            },
+        )
     if any(admin["employee_id"] == employee_id for admin in admins):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "code": "administrator_already_registered",
                 "message": "이미 등록된 관리자 사번입니다.",
-            },
-        )
-
-    if (
-        not admins
-        and _portal_auth_mode() != "local"
-        and employee_id != access.viewer.employee_id
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "code": "bootstrap_self_registration_required",
-                "message": "초기 관리자는 먼저 본인 사번을 실제 관리자 명단에 등록해 주세요.",
             },
         )
 
@@ -6537,7 +5882,7 @@ def create_portal_administrator(
     return _administrator_mutation_response(
         updated,
         employee_id=employee_id,
-        persistent=access.store.persistent,
+        access=access,
     )
 
 
@@ -6558,6 +5903,10 @@ def update_portal_administrator(
             detail={"code": "empty_administrator_update", "message": "변경할 값을 입력해 주세요."},
         )
 
+    locked_source = _locked_administrator_source(access, target_employee_id)
+    if locked_source is not None:
+        _raise_locked_administrator(locked_source)
+
     stored = _stored_settings_for_administrator_mutation(access)
     admins = copy.deepcopy(stored["admins"])
     target_index = next(
@@ -6573,16 +5922,9 @@ def update_portal_administrator(
     target = admins[target_index]
     next_status = str(change.get("status") or target["status"])
     if next_status == "비활성" and target["status"] == "활성":
-        active_admin_count = sum(admin["status"] == "활성" for admin in admins)
-        if target_employee_id == access.viewer.employee_id:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "code": "administrator_self_deactivation_forbidden",
-                    "message": "현재 로그인한 관리자는 직접 비활성화할 수 없습니다.",
-                },
-            )
-        if active_admin_count <= 1:
+        candidate_administrators = copy.deepcopy(admins)
+        candidate_administrators[target_index]["status"] = "비활성"
+        if not _has_active_persistent_or_default_administrator(candidate_administrators):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
@@ -6600,16 +5942,21 @@ def update_portal_administrator(
     return _administrator_mutation_response(
         updated,
         employee_id=target_employee_id,
-        persistent=access.store.persistent,
+        access=access,
     )
 
 
+@application.delete("/api/settings/admins/{employee_id}")
 @application.delete("/api/admin/settings/admins/{employee_id}")
 def delete_portal_administrator(employee_id: str, request: Request) -> dict[str, Any]:
-    """Remove a registered administrator while preserving one active owner."""
+    """Remove a MongoDB administrator while preserving active authority."""
 
     access = _require_active_admin(request)
     target_employee_id = _administrator_employee_id_or_422(employee_id)
+    locked_source = _locked_administrator_source(access, target_employee_id)
+    if locked_source is not None:
+        _raise_locked_administrator(locked_source)
+
     stored = _stored_settings_for_administrator_mutation(access)
     admins = copy.deepcopy(stored["admins"])
     target = next(
@@ -6621,17 +5968,13 @@ def delete_portal_administrator(employee_id: str, request: Request) -> dict[str,
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "administrator_not_found", "message": "관리자 정보를 찾지 못했습니다."},
         )
-    if target_employee_id == access.viewer.employee_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "code": "administrator_self_delete_forbidden",
-                "message": "현재 로그인한 관리자는 직접 삭제할 수 없습니다.",
-            },
-        )
-    if target["status"] == "활성" and sum(
-        admin["status"] == "활성" for admin in admins
-    ) <= 1:
+    remaining_administrators = [
+        admin for admin in admins if admin["employee_id"] != target_employee_id
+    ]
+    if (
+        target["status"] == "활성"
+        and not _has_active_persistent_or_default_administrator(remaining_administrators)
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
@@ -6642,12 +5985,12 @@ def delete_portal_administrator(employee_id: str, request: Request) -> dict[str,
 
     updated = _save_administrator_list(
         access,
-        [admin for admin in admins if admin["employee_id"] != target_employee_id],
+        remaining_administrators,
     )
     response = _administrator_mutation_response(
         updated,
         employee_id=target_employee_id,
-        persistent=access.store.persistent,
+        access=access,
     )
     response.update({"deleted": True, "employee_id": target_employee_id})
     return response
@@ -6674,7 +6017,14 @@ def update_admin_settings(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"code": "portal_settings_unavailable", "message": str(exc)},
         ) from exc
-    return _admin_settings_response(updated, persistent=access.store.persistent)
+    effective = _effective_portal_settings(
+        updated,
+        PortalIdentity(
+            employee_id=access.viewer.employee_id,
+            name=access.viewer.name,
+        ),
+    )
+    return _admin_settings_response(effective, persistent=access.store.persistent)
 
 
 @application.get("/api/metadata-authoring/status")
@@ -6832,9 +6182,8 @@ def update_live_metadata_record_status(
 ) -> dict[str, Any]:
     """Change one real Flow-backed metadata record between active/inactive.
 
-    The Portal never deletes Flow metadata. Browser preview data is not
-    persistent, so this route can only operate on an explicitly configured
-    live MongoDB source. The browser must pass the opaque ``_record_id``
+    The Portal never deletes Flow metadata. This route can only operate on an
+    explicitly configured live MongoDB source. The browser must pass the opaque ``_record_id``
     returned by ``/api/metadata/live`` and an exact ``active`` or ``inactive``
     status value.
     """
@@ -6911,9 +6260,8 @@ def submit_metadata_authoring(
 ) -> dict[str, Any]:
     """Submit a natural-language authoring request through the configured Flow API.
 
-    API mode never silently turns into a mock response: missing configuration,
-    call failures, and an unrecognised upstream response are returned as errors.
-    Preview/mock mode is the only branch that uses the current sample response.
+    Missing configuration, call failures, and an unrecognised upstream response
+    are returned as errors; this endpoint never fabricates a successful result.
     """
 
     access = _require_active_admin(request)
@@ -6933,7 +6281,7 @@ def submit_metadata_authoring(
             request_missing.append("MONGODB_URI")
         if not settings.mongo_database:
             request_missing.append("MONGODB_DATABASE")
-    if settings.mode not in {"preview", "api"}:
+    if settings.mode != "api":
         request_missing.append("PTMORE_METADATA_API_MODE")
     if request_missing:
         raise HTTPException(
@@ -6964,87 +6312,77 @@ def submit_metadata_authoring(
             detail={"code": "portal_settings_unavailable", "message": str(exc)},
         ) from exc
 
-    if settings.mode == "preview":
-        response = _metadata_preview_response(
-            metadata_type=request_body.metadata_type,
-            raw_text=raw_text,
-            duplicate_action=request_body.duplicate_action,
-            requested_dry_run=request_body.dry_run,
+    endpoint = settings.endpoint_for(request_body.metadata_type)
+    parsed_endpoint = urlparse(endpoint)
+    if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.netloc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "invalid_metadata_api_endpoint",
+                "message": "메타데이터 API 주소 형식을 확인해 주세요.",
+            },
         )
-        preview_only = True
-    else:
-        endpoint = settings.endpoint_for(request_body.metadata_type)
-        parsed_endpoint = urlparse(endpoint)
-        if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.netloc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "invalid_metadata_api_endpoint",
-                    "message": "메타데이터 API 주소 형식을 확인해 주세요.",
-                },
-            )
 
-        outbound_payload = _metadata_api_payload(
-            settings,
-            metadata_type=request_body.metadata_type,
-            raw_text=raw_text,
-            duplicate_action=request_body.duplicate_action,
-            dry_run=request_body.dry_run,
-        )
-        try:
-            upstream_response = _metadata_http_client.post_json(
-                endpoint,
-                payload=outbound_payload,
-                headers=_metadata_api_headers(
-                    settings,
-                    gaia_api_caller_employee_id=str(
-                        access.settings.get("gaia_api_caller_employee_id") or ""
-                    ),
+    outbound_payload = _metadata_api_payload(
+        settings,
+        metadata_type=request_body.metadata_type,
+        raw_text=raw_text,
+        duplicate_action=request_body.duplicate_action,
+        dry_run=request_body.dry_run,
+    )
+    try:
+        upstream_response = _metadata_http_client.post_json(
+            endpoint,
+            payload=outbound_payload,
+            headers=_metadata_api_headers(
+                settings,
+                gaia_api_caller_employee_id=str(
+                    access.settings.get("gaia_api_caller_employee_id") or ""
                 ),
-                timeout_seconds=settings.timeout_seconds,
-                verify_tls=settings.verify_tls,
-            )
-        except MetadataApiCallError as exc:
-            upstream_status = exc.upstream_status
-            response_status = (
-                status.HTTP_504_GATEWAY_TIMEOUT
-                if upstream_status in {408, 504}
-                else status.HTTP_502_BAD_GATEWAY
-            )
-            raise HTTPException(
-                status_code=response_status,
-                detail={
-                    "code": "metadata_api_request_failed",
-                    "message": "메타데이터 등록 API 호출에 실패했습니다.",
-                    "upstream_status": upstream_status,
-                },
-            ) from exc
-
-        authoring_response = _find_api_terminal_response(
-            upstream_response,
-            api_terminal=settings.component_for(request_body.metadata_type, "api_terminal"),
-        ) or _find_metadata_authoring_response(upstream_response)
-        if authoring_response is None:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail={
-                    "code": "metadata_api_response_unrecognized",
-                    "message": "메타데이터 API 응답에서 rev_2 등록 결과를 찾지 못했습니다.",
-                },
-            )
-        response = _normalize_metadata_authoring_response(
-            authoring_response,
-            metadata_type=request_body.metadata_type,
-            raw_text=raw_text,
+            ),
+            timeout_seconds=settings.timeout_seconds,
+            verify_tls=settings.verify_tls,
         )
-        preview_only = False
+    except MetadataApiCallError as exc:
+        upstream_status = exc.upstream_status
+        response_status = (
+            status.HTTP_504_GATEWAY_TIMEOUT
+            if upstream_status in {408, 504}
+            else status.HTTP_502_BAD_GATEWAY
+        )
+        raise HTTPException(
+            status_code=response_status,
+            detail={
+                "code": "metadata_api_request_failed",
+                "message": "메타데이터 등록 API 호출에 실패했습니다.",
+                "upstream_status": upstream_status,
+            },
+        ) from exc
+
+    authoring_response = _find_api_terminal_response(
+        upstream_response,
+        api_terminal=settings.component_for(request_body.metadata_type, "api_terminal"),
+    ) or _find_metadata_authoring_response(upstream_response)
+    if authoring_response is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "metadata_api_response_unrecognized",
+                "message": "메타데이터 API 응답에서 rev_2 등록 결과를 찾지 못했습니다.",
+            },
+        )
+    response = _normalize_metadata_authoring_response(
+        authoring_response,
+        metadata_type=request_body.metadata_type,
+        raw_text=raw_text,
+    )
 
     return {
         "run_id": run_id,
         "requested_at": requested_at,
         "requested_by": access.viewer.as_audit_actor(),
         "metadata_type": request_body.metadata_type,
-        "preview_only": preview_only,
+        "preview_only": False,
         "requested_dry_run": request_body.dry_run,
         "response": response,
     }
@@ -7438,41 +6776,6 @@ def dashboard_usage_export_csv(
         start_day=selected_start,
         end_day=selected_end,
     )
-
-
-@application.get("/api/mock/portal")
-async def portal_preview_data(preview_role: str = "admin") -> dict[str, Any]:
-    return _portal_data(preview_role=preview_role)
-
-
-@application.get("/api/mock/dashboard")
-async def dashboard_preview_data() -> dict[str, Any]:
-    return _portal_data()["dashboard"]
-
-
-@application.get("/api/mock/schedules")
-async def schedules_preview_data() -> list[dict[str, Any]]:
-    return _portal_data()["schedules"]
-
-
-@application.get("/api/mock/metadata")
-async def metadata_preview_data() -> dict[str, list[dict[str, Any]]]:
-    return _portal_data()["metadata"]
-
-
-@application.get("/api/mock/metadata-authoring")
-async def metadata_authoring_preview_data() -> dict[str, Any]:
-    return _portal_data()["metadata_authoring"]
-
-
-@application.get("/api/mock/usage-history")
-async def usage_history_preview_data() -> list[dict[str, str]]:
-    return _portal_data()["usage_history"]
-
-
-@application.get("/api/mock/settings")
-async def settings_preview_data() -> dict[str, Any]:
-    return _portal_data()["settings"]
 
 
 if __name__ == "__main__":

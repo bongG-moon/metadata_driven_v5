@@ -46,8 +46,8 @@
         </nav>
 
         <div class="sidebar-footer">
-          <div class="preview-pill"><span></span><strong id="portal-runtime-label">포털 화면 미리보기</strong></div>
-          <p id="portal-runtime-copy">대시보드·사번·이력·스케줄은 현재 더미 화면이며, 메타데이터 API 상태를 확인하고 있습니다.</p>
+          <div class="preview-pill"><span></span><strong id="portal-runtime-label">실제 연결 상태 확인 중</strong></div>
+          <p id="portal-runtime-copy">Phoenix·MongoDB·메타데이터 API의 실제 연결 상태를 확인하고 있습니다.</p>
         </div>
       </aside>
 
@@ -247,8 +247,8 @@
 
           <section class="authoring-result-panel" aria-labelledby="metadata-result-title">
             <div class="authoring-result-heading">
-              <div><p class="panel-label">FLOW RESULT</p><h3 id="metadata-result-title">입력한 내용이 어떻게 저장되는지 확인</h3><div class="metadata-result-overview" id="metadata-result-message" role="status" aria-live="polite"><p>등록 예시의 테스트 실행 결과를 표시합니다.</p></div></div>
-              <div class="result-status-stack"><span class="status-pill status-draft" id="metadata-result-status">테스트 실행</span><small id="metadata-result-run">RUN-META-042 · 오늘 10:22</small></div>
+              <div><p class="panel-label">FLOW RESULT</p><h3 id="metadata-result-title">입력한 내용이 어떻게 저장되는지 확인</h3><div class="metadata-result-overview" id="metadata-result-message" role="status" aria-live="polite"><p>메타데이터 등록 Flow를 실행하면 실제 응답을 표시합니다.</p></div></div>
+              <div class="result-status-stack"><span class="status-pill status-draft" id="metadata-result-status">실행 전</span><small id="metadata-result-run">실행 결과 없음</small></div>
             </div>
             <div class="result-tabs" role="tablist" aria-label="메타데이터 등록 결과 보기 방식">
               <button class="result-tab active" type="button" data-metadata-result-tab="process" role="tab" aria-selected="true">처리 과정</button>
@@ -328,9 +328,9 @@
 
             <article class="panel admin-panel">
               <div class="panel-heading"><div><p class="panel-label">ACCESS CONTROL</p><h3>관리자 명단</h3></div><button class="secondary-button" id="admin-add-button" type="button" data-open-admin-add data-requires-admin aria-haspopup="dialog"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg> 관리자 추가</button></div>
-              <p class="admin-panel-description">등록된 사번을 기준으로 메타데이터·설정·전체 스케줄 관리 권한을 판단합니다.</p>
+              <p class="admin-panel-description">등록된 사번을 기준으로 메타데이터·설정·전체 스케줄 관리 권한을 판단합니다. <strong>ENV 기본 관리자</strong>는 배포 환경에서 지정되므로 이 화면에서 변경하거나 삭제할 수 없습니다.</p>
             <div class="table-wrap">
-              <table><thead><tr><th>사번</th><th>이름</th><th>권한</th><th>관리 범위</th><th>상태</th><th></th></tr></thead><tbody id="admin-list"></tbody></table>
+              <table><thead><tr><th>사번</th><th>이름</th><th>권한</th><th>관리 범위</th><th>상태</th><th>관리</th></tr></thead><tbody id="admin-list"></tbody></table>
             </div>
           </article>
         </section>
@@ -414,6 +414,23 @@
             <button class="primary-button" type="submit" id="admin-add-submit">관리자 등록</button>
           </div>
         </form>
+      </section>
+    </div>
+
+    <div class="admin-delete-modal" id="admin-delete-modal" hidden>
+      <section class="admin-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-delete-title" aria-describedby="admin-delete-message" tabindex="-1">
+        <button class="admin-delete-close" type="button" aria-label="관리자 삭제 확인 창 닫기" data-close-admin-delete>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+        </button>
+        <span class="admin-delete-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8v5m0 3h.01" /><path d="M5.2 19h13.6c1.2 0 1.9-1.3 1.3-2.3l-6.8-11.4c-.6-1-2-1-2.6 0L3.9 16.7c-.6 1 .1 2.3 1.3 2.3Z" /></svg></span>
+        <p class="dialog-kicker">ACCESS CONTROL</p>
+        <h2 id="admin-delete-title">관리자를 삭제하시겠습니까?</h2>
+        <p><strong id="admin-delete-name">관리자 정보</strong></p>
+        <p id="admin-delete-message">삭제하면 해당 사번의 포털 관리자 권한이 즉시 해제됩니다. 이 작업은 되돌릴 수 없습니다.</p>
+        <div class="admin-delete-actions">
+          <button class="secondary-button" type="button" data-close-admin-delete>취소</button>
+          <button class="admin-delete-confirm-button" type="button" id="admin-delete-confirm">관리자 삭제</button>
+        </div>
       </section>
     </div>
 

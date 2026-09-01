@@ -5,7 +5,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import sys
 import types
 from datetime import date, timedelta
@@ -214,8 +213,8 @@ def test_chrome_devtools_probe_is_acknowledged_without_a_404() -> None:
     assert response.content == b""
 
 
-def test_dummy_portal_contract_has_all_design_sections() -> None:
-    response = client.get("/api/mock/portal")
+def test_portal_contract_starts_without_generated_business_data() -> None:
+    response = client.get("/api/portal", headers=ADMIN_HEADERS)
     assert response.status_code == 200
     payload = response.json()
     assert set(payload) == {
@@ -228,11 +227,19 @@ def test_dummy_portal_contract_has_all_design_sections() -> None:
         "usage_history",
     }
     assert payload["viewer"]["is_admin"] is True
-    assert len(payload["schedules"]) >= 1
+    assert payload["schedules"] == []
+    assert payload["usage_history"] == []
     assert set(payload["metadata"]) == {"table_catalog", "main_flow_filters", "domain"}
-    assert payload["metadata"]["table_catalog"]
-    assert payload["metadata"]["main_flow_filters"]
-    assert payload["metadata"]["domain"]
+    assert payload["metadata"] == {
+        "domain": [],
+        "table_catalog": [],
+        "main_flow_filters": [],
+    }
+    assert payload["metadata_authoring"] == {
+        "contract": {"version": "metadata_authoring.rev_2.v1"},
+        "examples": {},
+        "recent_results": [],
+    }
     assert len(payload["settings"]["admins"]) >= 1
     assert payload["settings"]["access_policy"] == {
         "metadata_page": "admin_only",
@@ -241,113 +248,65 @@ def test_dummy_portal_contract_has_all_design_sections() -> None:
         "schedule_delete": "owner_or_admin",
         "all_schedule_view": "all_users",
     }
+    assert payload["dashboard"]["recent_runs"] == []
+    assert payload["dashboard"]["total_chat_count"] == 0
+    assert payload["dashboard"]["cumulative_user_count"] == 0
+    assert len(payload["dashboard"]["usage_by_day"]) == 21
 
-    first_catalog = payload["metadata"]["table_catalog"][0]
-    assert {
-        "dataset_key",
-        "display_name",
-        "source_type",
-        "required_params",
-        "payload",
-    } <= first_catalog.keys()
-    assert first_catalog["payload"]["source_config"]["query_template"] == (
-        "SELECT WORK_DATE, OPER_NAME, PRODUCTION "
-        "FROM PROD_TABLE WHERE WORK_DATE = {DATE}"
-    )
-    assert first_catalog["payload"]["required_param_mappings"] == {
-        "DATE": ["WORK_DATE"],
-        "PROCESS_GROUP": ["OPER_NAME"],
-    }
-    assert first_catalog["payload"]["filter_mappings"] == {
-        "DATE": ["WORK_DATE"],
-        "PROCESS_GROUP": ["OPER_NAME"],
-    }
-    first_filter = payload["metadata"]["main_flow_filters"][0]
-    assert {"filter_key", "operator", "value_type", "value_shape", "payload"} <= first_filter.keys()
-    first_domain = payload["metadata"]["domain"][0]
-    assert {"section", "key", "payload"} <= first_domain.keys()
-    assert "question_cues" not in first_domain
-    assert all(
-        {"repeat", "time", "owner", "target"} <= schedule.keys()
-        for schedule in payload["schedules"]
-    )
-    assert {schedule["target"] for schedule in payload["schedules"]} == {"개인 DM"}
-    assert {run["target"] for run in payload["dashboard"]["recent_runs"]} == {"개인 DM"}
 
-    # One preview record demonstrates interval scheduling.  These fields are
-    # optional so existing daily/weekly schedule records remain valid.
-    interval_schedules = [
-        schedule
-        for schedule in payload["schedules"]
-        if "interval_minutes" in schedule
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/api/mock/portal",
+        "/api/mock/dashboard",
+        "/api/mock/schedules",
+        "/api/mock/metadata",
+        "/api/mock/metadata-authoring",
+        "/api/mock/usage-history",
+        "/api/mock/settings",
+    ),
+)
+def test_mock_api_routes_are_removed(path: str) -> None:
+    assert client.get(path).status_code == 404
+
+
+def test_usage_dashboard_aggregates_an_explicit_active_user_policy() -> None:
+    start_day = date(2026, 8, 1)
+    usage_policy = {
+        "active_user_min_distinct_days": 3,
+        "active_user_min_chat_count": 4,
+    }
+    usage_history = [
+        {
+            "employee_id": "2069026",
+            "user_name": "문봉건",
+            "date": (start_day + timedelta(days=index % 3)).isoformat(),
+            "occurred_at": (
+                f"{(start_day + timedelta(days=index % 3)).isoformat()}T09:{index:02d}:00+09:00"
+            ),
+            "channel": "CUBE",
+            "question": f"질문 {index}",
+        }
+        for index in range(4)
     ]
-    assert interval_schedules
-    for schedule in interval_schedules:
-        assert isinstance(schedule["interval_minutes"], int)
-        assert schedule["interval_minutes"] > 0
-        assert {"start_time", "end_time"} <= schedule.keys()
-        assert re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule["start_time"])
-        assert re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule["end_time"])
-        assert schedule["start_time"] < schedule["end_time"]
-
-    usage_history = payload["usage_history"]
-    assert isinstance(usage_history, list)
-    assert usage_history
-    assert all(
-        {"employee_id", "question", "date"} <= record.keys()
-        for record in usage_history
+    usage_history.append(
+        {
+            "employee_id": "2071044",
+            "user_name": "일반 사용자",
+            "date": start_day.isoformat(),
+            "occurred_at": f"{start_day.isoformat()}T10:00:00+09:00",
+            "channel": "GAIA",
+            "question": "한 번만 사용",
+        }
+    )
+    dashboard = portal_app._build_usage_dashboard(
+        usage_history,
+        usage_policy,
+        start_day=start_day,
+        end_day=start_day + timedelta(days=2),
     )
 
-
-def test_metadata_authoring_preview_matches_rev2_flow_contract() -> None:
-    portal_payload = client.get("/api/mock/portal").json()
-    response = client.get("/api/mock/metadata-authoring")
-
-    assert response.status_code == 200
-    authoring = response.json()
-    assert authoring == portal_payload["metadata_authoring"]
-    assert authoring["contract"] == {
-        "version": "metadata_authoring.rev_2.v1",
-        "request": {
-            "chat_input": "input_value",
-            "request_loader": ["raw_text", "duplicate_action", "dry_run"],
-            "defaults": {"duplicate_action": "skip", "dry_run": True},
-        },
-        "response": [
-            "status",
-            "data.columns/data.rows",
-            "metadata_authoring",
-            "write_result",
-            "trace",
-        ],
-    }
-
-    assert set(authoring["examples"]) == {"table_catalog", "main_flow_filters", "domain"}
-    for example in authoring["examples"].values():
-        assert example["raw_text"]
-        assert example["duplicate_action"] in {"skip", "merge", "replace", "create_new"}
-        assert example["dry_run"] is True
-        result = example["result"]
-        assert result["response_type"] == "metadata_authoring"
-        assert result["status"] == "dry_run"
-        assert result["data"]["row_count"] == len(result["data"]["rows"])
-        assert result["metadata_authoring"]["contract_validation"]["status"] == "validated"
-        assert result["write_result"]["dry_run"] is True
-
-    table_example = authoring["examples"]["table_catalog"]
-    assert "query_template:\nSELECT\n  WORK_DATE," in table_example["raw_text"]
-    assert "FROM PROD_TABLE\nWHERE WORK_DATE = {DATE}" in table_example["raw_text"]
-    assert "filter_mappings:\n- DATE -> WORK_DATE" in table_example["raw_text"]
-    assert "required_param_mappings" in table_example["result"]["metadata_authoring"]["refined_text"]
-
-
-def test_dashboard_usage_history_uses_active_user_policy() -> None:
-    payload = client.get("/api/mock/portal").json()
-    dashboard = payload["dashboard"]
-    usage_history = payload["usage_history"]
-    usage_policy = payload["settings"]["usage_policy"]
-
-    assert len(dashboard["usage_by_day"]) == 21
+    assert len(dashboard["usage_by_day"]) == 3
     assert len(dashboard["kpis"]) == 5
     kpis_by_label = {kpi["label"]: kpi for kpi in dashboard["kpis"]}
     assert set(kpis_by_label) == {
@@ -358,42 +317,28 @@ def test_dashboard_usage_history_uses_active_user_policy() -> None:
         "활성 사용자",
     }
 
-    min_distinct_days = usage_policy["active_user_min_distinct_days"]
-    min_chat_count = usage_policy["active_user_min_chat_count"]
-    assert min_distinct_days >= 1
-    assert min_chat_count >= 1
     assert dashboard["active_user_rule"] == {
-        "min_distinct_days": min_distinct_days,
-        "min_chat_count": min_chat_count,
+        "min_distinct_days": 3,
+        "min_chat_count": 4,
     }
-
-    expected_active_users = _active_user_count(
-        usage_history,
-        min_distinct_days=min_distinct_days,
-        min_chat_count=min_chat_count,
-    )
-    assert dashboard["active_user_count"] == expected_active_users
-    assert _kpi_number(kpis_by_label["활성 사용자"]["value"]) == expected_active_users
-
-
-def test_usage_history_endpoint_matches_portal_contract() -> None:
-    portal_payload = client.get("/api/mock/portal").json()
-    response = client.get("/api/mock/usage-history")
-
-    assert response.status_code == 200
-    assert response.json() == portal_payload["usage_history"]
+    assert dashboard["active_user_count"] == 1
+    assert dashboard["active_users"] == [
+        {
+            "employee_id": "2069026",
+            "user_name": "문봉건",
+            "distinct_days": 3,
+            "chat_count": 4,
+        }
+    ]
+    assert _kpi_number(kpis_by_label["활성 사용자"]["value"]) == 1
 
 
-def test_dashboard_usage_route_returns_explicit_preview_source() -> None:
+def test_dashboard_usage_route_reports_unconfigured_phoenix() -> None:
     response = client.get("/api/dashboard/usage", headers=STANDARD_USER_HEADERS)
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["source"]["mode"] == "preview"
-    assert payload["source"]["status"] == "preview"
-    assert payload["source"]["project_count"] == 0
-    assert len(payload["dashboard"]["usage_by_day"]) == 21
-    assert payload["usage_history"]
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "phoenix_usage_not_ready"
+    assert response.json()["detail"]["message"] == "Phoenix 사용 이력 조회 설정이 완료되지 않았습니다."
 
 
 def test_dashboard_usage_route_uses_phoenix_and_zero_fills_recent_three_weeks(
@@ -642,7 +587,33 @@ def test_dashboard_usage_archives_full_phoenix_result_after_fetch_and_exports_cs
     assert any("실시간 Phoenix 질문" in line for line in csv_lines)
 
 
-def test_recent_usage_csv_remains_available_to_an_ordinary_portal_user() -> None:
+def test_recent_usage_csv_remains_available_to_an_ordinary_portal_user(monkeypatch) -> None:
+    class FakePhoenixConfiguration:
+        is_configured = True
+        projects = ("router-runtime",)
+        configuration_errors = ()
+
+    def fake_fetcher(_configuration, *, days, today):
+        assert days == 21
+        return [
+            {
+                "query_time": f"{today.isoformat()}T11:22:33+09:00",
+                "platform": "CUBE",
+                "user_id": "2071044",
+                "question": "일반 사용자 CSV 확인",
+                "project": "router-runtime",
+                "trace_id": "ordinary-user-trace",
+            }
+        ]
+
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_MODE", "phoenix")
+    monkeypatch.setattr(
+        portal_app,
+        "_phoenix_usage_config_factory",
+        lambda: FakePhoenixConfiguration(),
+    )
+    monkeypatch.setattr(portal_app, "_phoenix_usage_fetcher", fake_fetcher)
+
     response = client.get(
         "/api/dashboard/usage/export.csv",
         headers=STANDARD_USER_HEADERS,
@@ -650,6 +621,10 @@ def test_recent_usage_csv_remains_available_to_an_ordinary_portal_user() -> None
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
+    csv_text = response.content.decode("utf-8-sig")
+    assert csv_text.splitlines()[0] == "PROJECT,일자,시간,플랫폼,사용자(사번),질문내용"
+    assert "router-runtime" in csv_text
+    assert "일반 사용자 CSV 확인" in csv_text
 
 
 def test_historical_usage_csv_reads_archive_without_live_phoenix(monkeypatch) -> None:
@@ -989,8 +964,8 @@ def test_dashboard_usage_full_refresh_requires_live_phoenix_and_archive(monkeypa
 
     assert response.status_code == 503
     assert response.json()["detail"] == {
-        "code": "phoenix_usage_not_ready",
-        "message": "최근 3주 전체 새로고침에는 Phoenix 조회 모드가 필요합니다.",
+        "code": "usage_history_archive_not_ready",
+        "message": "최근 3주 전체 새로고침에는 MongoDB 장기 보관 설정이 필요합니다.",
     }
 
 
@@ -1075,20 +1050,20 @@ def test_metadata_status_reports_usage_history_archive_readiness(monkeypatch) ->
     }
 
 
-def test_standard_user_preview_can_view_all_schedules_but_only_owns_some() -> None:
-    response = client.get("/api/mock/portal?preview_role=user")
+def test_standard_user_portal_contract_has_no_generated_schedules() -> None:
+    response = client.get("/api/portal", headers=STANDARD_USER_HEADERS)
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["viewer"] == {
         "employee_id": "2071044",
-        "name": "김민서",
+        "name": "Portal User",
         "role": "일반 사용자",
         "is_admin": False,
     }
-    viewer_employee_id = payload["viewer"]["employee_id"]
-    assert any(schedule["owner"] == viewer_employee_id for schedule in payload["schedules"])
-    assert any(schedule["owner"] != viewer_employee_id for schedule in payload["schedules"])
+    assert payload["schedules"] == []
+    assert payload["usage_history"] == []
+    assert all(items == [] for items in payload["metadata"].values())
     assert payload["settings"]["access_policy"] == {
         "metadata_page": "admin_only",
         "metadata_registration": "admin_only",
@@ -1098,18 +1073,20 @@ def test_standard_user_preview_can_view_all_schedules_but_only_owns_some() -> No
     }
 
 
-def test_health_describes_dummy_preview_mode() -> None:
-    assert client.get("/health").json() == {"status": "ok", "mode": "dummy-preview"}
+def test_health_describes_portal_mode() -> None:
+    assert client.get("/health").json() == {"status": "ok", "mode": "portal"}
 
 
-def test_metadata_authoring_status_defaults_to_safe_preview_mode(monkeypatch) -> None:
+def test_metadata_authoring_status_defaults_to_unconfigured_api_mode(monkeypatch) -> None:
     response = client.get("/api/metadata-authoring/status", headers=ADMIN_HEADERS)
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["mode"] == "preview"
-    assert payload["ready"] is True
-    assert payload["preview_only"] is True
+    assert payload["mode"] == "api"
+    assert payload["ready"] is False
+    assert payload["configured"] is False
+    assert payload["preview_only"] is False
+    assert payload["all_metadata_types_ready"] is False
     assert payload["api"]["endpoint_configured"] == {
         "table_catalog": False,
         "main_flow_filters": False,
@@ -1122,14 +1099,19 @@ def test_metadata_authoring_status_defaults_to_safe_preview_mode(monkeypatch) ->
         "domain",
     }
     assert all(
-        item["current_mode_ready"] is True
+        item["current_mode_ready"] is False
         and item["endpoint_ready"] is False
         and item["live_contents_checked"] is False
         for item in payload["metadata_types"].values()
     )
+    assert set(payload["missing"]) >= {
+        "endpoint:table_catalog",
+        "endpoint:main_flow_filters",
+        "endpoint:domain",
+    }
     assert payload["flow_metadata_mongodb"]["portal_reads_metadata_collections"] is False
     assert payload["flow_metadata_mongodb"]["live_metadata_contents_checked"] is False
-    assert payload["portal_settings_mongodb"]["backend"] == "preview_defaults"
+    assert payload["portal_settings_mongodb"]["backend"] == "in_memory_defaults"
     assert payload["portal_settings_mongodb"]["reads_flow_metadata_collections"] is False
     assert payload["portal_schedule_mongodb"] == {
         "role": "schedule_authoring_and_run_history",
@@ -2194,7 +2176,7 @@ def test_live_metadata_keeps_successful_collections_when_one_collection_fails(mo
     assert fake_reader.closed is True
 
 
-def test_metadata_authoring_preview_requires_explicit_preview_mode(
+def test_metadata_authoring_rejects_removed_preview_mode(
     monkeypatch,
     fake_portal_settings_store,
 ) -> None:
@@ -2211,20 +2193,13 @@ def test_metadata_authoring_preview_requires_explicit_preview_mode(
         headers=ADMIN_HEADERS,
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["run_id"].startswith("META-")
-    assert payload["preview_only"] is True
-    assert payload["requested_dry_run"] is False
-    assert payload["requested_by"]["employee_id"] == "2069026"
-    assert fake_portal_settings_store.audit_records[-1]["action"] == "metadata_authoring_requested"
-    assert fake_portal_settings_store.audit_records[-1]["actor"] == {
-        "employee_id": "2069026",
-        "name": "문봉건",
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "metadata_api_not_ready",
+        "message": "메타데이터 API 연결 설정이 완료되지 않았습니다.",
+        "missing": ["PTMORE_METADATA_API_MODE"],
     }
-    assert payload["response"]["metadata_authoring"]["original_text"].startswith("section은")
-    assert payload["response"]["metadata_authoring"]["duplicate_action"] == "merge"
-    assert payload["response"]["trace"]["mode"] == "preview"
+    assert fake_portal_settings_store.audit_records == []
 
 
 def test_metadata_authoring_api_calls_external_flow_and_normalizes_result(
@@ -2613,10 +2588,10 @@ def test_admin_can_read_and_update_settings_without_returning_secrets(
     assert reread["usage_policy"]["active_user_min_chat_count"] == 12
 
 
-def test_bootstrap_admin_must_register_self_before_adding_other_administrators(
+def test_environment_default_administrators_remain_authorized_and_unpersisted(
     fake_portal_settings_store,
 ) -> None:
-    """Sample admins are not persisted; bootstrap access has a safe first step."""
+    """ENV defaults merge with MongoDB admins without being copied into it."""
 
     assert fake_portal_settings_store.settings["admins"] == []
 
@@ -2626,60 +2601,192 @@ def test_bootstrap_admin_must_register_self_before_adding_other_administrators(
         {
             "employee_id": "2069026",
             "name": "문봉건",
-            "role": "Bootstrap Admin",
-            "scope": "초기 관리자 등록",
+            "role": "환경 기본 관리자",
+            "scope": "환경변수 기본 권한",
             "status": "활성",
+            "source": "default",
+            "is_default": True,
+            "locked": True,
         }
     ]
-
-    blocked = client.post(
-        "/api/settings/admins",
-        json={"employee_id": "2079411", "employee_name": "최은서"},
-        headers=ADMIN_HEADERS,
-    )
-    assert blocked.status_code == 422
-    assert blocked.json()["detail"]["code"] == "bootstrap_self_registration_required"
-    assert fake_portal_settings_store.settings["admins"] == []
+    # MongoDB may legitimately retain no mutable admins because the ENV
+    # default is independent, active authority.
+    assert portal_app._has_active_persistent_or_default_administrator([]) is True
 
     registered = client.post(
         "/api/settings/admins",
-        json={"employee_id": "2069026", "employee_name": "문봉건"},
+        json={"employee_id": "2079411", "employee_name": "최은서"},
         headers=ADMIN_HEADERS,
     )
     assert registered.status_code == 201
     payload = registered.json()
     assert payload["administrator"] == {
-        "employee_id": "2069026",
-        "name": "문봉건",
+        "employee_id": "2079411",
+        "name": "최은서",
         "role": "관리자",
         "scope": "포털 설정 · 메타데이터 · 스케줄 관리",
         "status": "활성",
+        "source": "mongodb",
+        "is_default": False,
+        "locked": False,
     }
-    assert fake_portal_settings_store.settings["admins"] == [payload["administrator"]]
+    assert fake_portal_settings_store.settings["admins"] == [
+        {
+            "employee_id": "2079411",
+            "name": "최은서",
+            "role": "관리자",
+            "scope": "포털 설정 · 메타데이터 · 스케줄 관리",
+            "status": "활성",
+        }
+    ]
+    # The same ENV administrator remains authorized after the MongoDB list is
+    # no longer empty, and remains an environment-owned/locked row.
+    reread = client.get("/api/admin/settings", headers=ADMIN_HEADERS)
+    assert reread.status_code == 200
+    assert reread.json()["admins"][0] == {
+        "employee_id": "2069026",
+        "name": "문봉건",
+        "role": "환경 기본 관리자",
+        "scope": "환경변수 기본 권한",
+        "status": "활성",
+        "source": "default",
+        "is_default": True,
+        "locked": True,
+    }
     assert fake_portal_settings_store.audit_records[-1]["action"] == "portal_administrators_updated"
+
+
+def test_environment_default_administrator_wins_and_cannot_be_mutated(
+    fake_portal_settings_store,
+) -> None:
+    """ENV default data wins over legacy MongoDB rows with the same employee ID."""
+
+    fake_portal_settings_store.settings["admins"] = [
+        {
+            "employee_id": "2069026",
+            "name": "MongoDB의 오래된 이름",
+            "role": "관리자",
+            "scope": "오래된 권한",
+            "status": "비활성",
+        }
+    ]
+
+    response = client.get("/api/admin/settings", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["admins"] == [
+        {
+            "employee_id": "2069026",
+            "name": "문봉건",
+            "role": "환경 기본 관리자",
+            "scope": "환경변수 기본 권한",
+            "status": "활성",
+            "source": "default",
+            "is_default": True,
+            "locked": True,
+        }
+    ]
+
+    duplicate = client.post(
+        "/api/settings/admins",
+        json={"employee_id": "2069026", "name": "문봉건"},
+        headers=ADMIN_HEADERS,
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "default_administrator_already_configured"
+
+    updated = client.patch(
+        "/api/admin/settings/admins/2069026",
+        json={"name": "수정 시도"},
+        headers=ADMIN_HEADERS,
+    )
+    assert updated.status_code == 422
+    assert updated.json()["detail"]["code"] == "default_administrator_locked"
+
+    deleted = client.delete(
+        "/api/settings/admins/2069026",
+        headers=ADMIN_HEADERS,
+    )
+    assert deleted.status_code == 422
+    assert deleted.json()["detail"]["code"] == "default_administrator_locked"
+    # No read or rejected mutation implicitly rewrites the legacy document.
+    assert fake_portal_settings_store.settings["admins"][0]["status"] == "비활성"
+
+
+def test_last_active_administrator_guard_remains_when_no_environment_default(
+    monkeypatch,
+    fake_portal_settings_store,
+) -> None:
+    """Removing MongoDB admins cannot leave production with no active authority."""
+
+    monkeypatch.setenv("PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON", "[]")
+    access = portal_app.PortalAccess(
+        viewer=portal_app.PortalViewer(
+            employee_id="2069026",
+            name="문봉건",
+            is_admin=True,
+        ),
+        store=fake_portal_settings_store,
+        settings=portal_app._default_portal_settings(),
+    )
+
+    with pytest.raises(portal_app.HTTPException) as raised:
+        portal_app._save_administrator_list(access, [])
+
+    assert raised.value.status_code == 422
+    assert raised.value.detail["code"] == "last_active_administrator_required"
+    assert fake_portal_settings_store.settings["admins"] == []
+
+
+def test_mongodb_administrator_can_remove_own_record_when_default_remains(
+    fake_portal_settings_store,
+) -> None:
+    """A removable MongoDB admin may remove themselves if ENV authority remains."""
+
+    added = client.post(
+        "/api/settings/admins",
+        json={"employee_id": "2079411", "name": "최은서"},
+        headers=ADMIN_HEADERS,
+    )
+    assert added.status_code == 201
+    mongo_admin_headers = {
+        "X-PTMORE-Employee-Id": "2079411",
+        # TestClient headers are ASCII-only; server-side admin lookup still
+        # resolves the stored Korean name by employee ID.
+        "X-PTMORE-Employee-Name": "Mongo Admin",
+    }
+
+    deleted = client.delete(
+        "/api/admin/settings/admins/2079411",
+        headers=mongo_admin_headers,
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert fake_portal_settings_store.settings["admins"] == []
+    assert client.get("/api/admin/settings", headers=mongo_admin_headers).status_code == 403
 
 
 def test_administrator_crud_persists_employee_id_authorization(
     fake_portal_settings_store,
 ) -> None:
-    """Only active admins can mutate a unique, server-built admin list."""
+    """Only active admins can add/delete MongoDB-owned administrator records."""
 
     first = client.post(
         "/api/admin/settings/admins",
-        json={"employee_id": "2069026", "name": "문봉건"},
+        json={"employee_id": "2079411", "name": "최은서"},
         headers=ADMIN_HEADERS,
     )
     assert first.status_code == 201
 
     second = client.post(
         "/api/admin/settings/admins",
-        json={"employee_id": "2079411", "name": "최은서"},
+        json={"employee_id": "2093012", "name": "이도윤"},
         headers=ADMIN_HEADERS,
     )
     assert second.status_code == 201
     assert {admin["employee_id"] for admin in second.json()["admins"]} == {
         "2069026",
         "2079411",
+        "2093012",
     }
 
     duplicate = client.post(
@@ -2706,7 +2813,7 @@ def test_administrator_crud_persists_employee_id_authorization(
     assert forged.json()["detail"]["code"] == "admin_required"
 
     inactive = client.patch(
-        "/api/admin/settings/admins/2079411",
+        "/api/admin/settings/admins/2093012",
         json={"status": "비활성"},
         headers=ADMIN_HEADERS,
     )
@@ -2715,27 +2822,34 @@ def test_administrator_crud_persists_employee_id_authorization(
     assert next(
         admin
         for admin in fake_portal_settings_store.settings["admins"]
-        if admin["employee_id"] == "2079411"
+        if admin["employee_id"] == "2093012"
     )["status"] == "비활성"
 
-    self_deactivate = client.patch(
+    default_deactivate = client.patch(
         "/api/admin/settings/admins/2069026",
         json={"status": "비활성"},
         headers=ADMIN_HEADERS,
     )
-    assert self_deactivate.status_code == 422
-    assert self_deactivate.json()["detail"]["code"] == "administrator_self_deactivation_forbidden"
+    assert default_deactivate.status_code == 422
+    assert default_deactivate.json()["detail"]["code"] == "default_administrator_locked"
 
     deleted = client.delete(
-        "/api/admin/settings/admins/2079411",
+        "/api/settings/admins/2079411",
         headers=ADMIN_HEADERS,
     )
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
     assert deleted.json()["administrator"] is None
     assert [admin["employee_id"] for admin in fake_portal_settings_store.settings["admins"]] == [
-        "2069026"
+        "2093012"
     ]
+
+    deleted_inactive = client.delete(
+        "/api/admin/settings/admins/2093012",
+        headers=ADMIN_HEADERS,
+    )
+    assert deleted_inactive.status_code == 200
+    assert fake_portal_settings_store.settings["admins"] == []
 
 
 def test_local_virtual_administrator_is_never_written_to_real_admin_list(

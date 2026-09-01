@@ -24,6 +24,9 @@ const state = {
   adminAdding: false,
   adminAddOpener: null,
   adminAddMessage: "",
+  adminDeletingId: "",
+  adminDeleteTarget: null,
+  adminDeleteOpener: null,
   dashboardUsage: { state: "idle", source: null, message: "" },
   dashboardUsageFullRefreshing: false,
   dashboardUsageExporting: false,
@@ -68,6 +71,59 @@ const metadataTypes = {
     description: "질문 속 일자·공정·LOT 같은 표현을 표준 키와 실제 데이터 컬럼으로 연결합니다.",
     filterHint: "필터 키, 연산자와 값 형식을 확인합니다.",
     headers: ["필터 키", "표시명", "연산자", "값 타입", "값 형태", "상태", "조회 · 관리"],
+  },
+};
+
+// These are form-writing guides, not stored records or simulated Flow results.
+// Keeping them in the browser bundle prevents instructional text from being
+// confused with data returned by MongoDB or the authoring API.
+const metadataAuthoringGuidance = {
+  table_catalog: {
+    flow_label: "테이블 카탈로그 저장 Flow",
+    required_input: ["dataset_key", "연결 소스", "조회 쿼리(query_template)", "조회 컬럼(columns)", "필터·컬럼 매핑(filter_mappings)"],
+    raw_text: [
+      "dataset_key: production_today",
+      "표시명: Production Today",
+      "분류: production",
+      "source_type: oracle",
+      "db_key: PNT_RPT",
+      "",
+      "query_template:",
+      "SELECT",
+      "  WORK_DATE,",
+      "  OPER_NAME,",
+      "  PRODUCTION",
+      "FROM PROD_TABLE",
+      "WHERE WORK_DATE = {DATE}",
+      "  AND OPER_NAME = {PROCESS_GROUP}",
+      "",
+      "columns:",
+      "- WORK_DATE",
+      "- OPER_NAME",
+      "- PRODUCTION",
+      "",
+      "required_params:",
+      "- DATE",
+      "- PROCESS_GROUP",
+      "",
+      "required_param_mappings:",
+      "- DATE -> WORK_DATE",
+      "- PROCESS_GROUP -> OPER_NAME",
+      "",
+      "filter_mappings:",
+      "- DATE -> WORK_DATE",
+      "- PROCESS_GROUP -> OPER_NAME",
+    ].join("\n"),
+  },
+  main_flow_filters: {
+    flow_label: "메인 플로우 필터 저장 Flow",
+    required_input: ["filter_key", "사용자 표현", "operator", "value_type·value_shape", "후보 컬럼"],
+    raw_text: "filter_key는 PROCESS_GROUP 입니다. 표시명은 공정 그룹이고, 사용자가 DA, WB, SG라고 입력할 때 사용합니다. 값 형식은 string, 값 형태는 scalar, 기본 연산자는 eq이며 후보 표준 컬럼은 OPER_NAME입니다.",
+  },
+  domain: {
+    flow_label: "도메인 저장 Flow",
+    required_input: ["section", "key", "업무 표현·별칭", "적용 규칙 또는 설명"],
+    raw_text: "section은 process_groups, key는 DA 입니다. 표시명은 DA 공정 그룹이며, aliases는 DA와 Die Attach입니다. field는 OPER_NAME이고 processes는 DA1, DA2, DA3입니다. DA 공정 또는 DA 생산량 질문을 해석할 때 사용합니다.",
   },
 };
 
@@ -158,7 +214,7 @@ function applyDashboardUsagePayload(payload) {
   state.portal.dashboard = normalized.dashboard;
   state.portal.usage_history = normalized.usage_history;
   state.dashboardUsage = {
-    state: normalized.mode === "preview" ? "preview" : "live",
+    state: "live",
     source: normalized.source,
     message: "",
   };
@@ -209,13 +265,13 @@ function normalizeDashboardUsagePayload(payload) {
 
   const configuredMode = String(source.mode || "").trim().toLowerCase();
   const configuredStatus = String(source.status || "").trim().toLowerCase();
-  if (!["phoenix", "preview"].includes(configuredMode)) {
+  if (configuredMode !== "phoenix") {
     throw new Error("사용 이력 API의 조회 모드를 확인하지 못했습니다.");
   }
-  if (!["connected", "preview"].includes(configuredStatus)) {
+  if (configuredStatus !== "connected") {
     throw new Error("사용 이력 API의 연결 상태를 확인하지 못했습니다.");
   }
-  const mode = configuredMode === "preview" || configuredStatus === "preview" ? "preview" : "phoenix";
+  const mode = "phoenix";
 
   const fallback = emptyUsageDashboard();
   const rawUsageByDay = Array.isArray(dashboard.usage_by_day) ? dashboard.usage_by_day : [];
@@ -280,7 +336,6 @@ function renderDashboardSourceStatus() {
 
   const usage = dashboardUsageState();
   const source = usage.source && typeof usage.source === "object" ? usage.source : {};
-  const sourceMode = String(source.mode || "").toLowerCase();
   const sourceLabel = String(source.label || "Phoenix").trim() || "Phoenix";
   const sourceDetail = String(source.detail || "").trim();
   const projectCount = Number(source.project_count);
@@ -306,15 +361,12 @@ function renderDashboardSourceStatus() {
 
   if (fullRefresh) {
     const admin = isAdmin();
-    const isPreview = sourceMode === "preview" || usage.state === "preview";
-    const canRefreshAll = admin && !isPreview && usage.state !== "loading" && !fullRefreshInProgress;
+    const canRefreshAll = admin && usage.state !== "loading" && !fullRefreshInProgress;
     fullRefresh.hidden = !admin;
     fullRefresh.disabled = !canRefreshAll;
     fullRefresh.classList.toggle("is-loading", fullRefreshInProgress);
     fullRefresh.setAttribute("aria-busy", String(fullRefreshInProgress));
-    fullRefresh.title = isPreview
-      ? "Phoenix 실사용 이력을 연결한 뒤 전체 새로고침을 사용할 수 있습니다."
-      : "관리자만 Phoenix 최근 3주 이력을 전체 다시 조회할 수 있습니다.";
+    fullRefresh.title = "관리자만 Phoenix 최근 3주 이력을 전체 다시 조회할 수 있습니다.";
     fullRefresh.textContent = fullRefreshInProgress
       ? "최근 3주 전체 새로고침 중…"
       : "↻ 최근 3주 전체 새로고침";
@@ -339,18 +391,11 @@ function renderDashboardSourceStatus() {
     detail.textContent = supportDetails.join(" · ") || "최근 3주 사용 이력을 Phoenix에서 조회했습니다.";
     return;
   }
-  if (usage.state === "preview" || sourceMode === "preview") {
-    container.classList.add("is-preview");
-    icon.innerHTML = svgIcon("clock");
-    title.textContent = "미리보기 데이터";
-    detail.textContent = supportDetails.join(" · ") || "Phoenix 연동 전의 예시 사용 이력을 표시하고 있습니다.";
-    return;
-  }
   if (usage.state === "error") {
     container.classList.add("is-error");
     icon.innerHTML = svgIcon("alert");
     title.textContent = "Phoenix 사용 이력을 불러오지 못했습니다";
-    detail.textContent = usage.message || "연결 상태를 확인한 뒤 다시 시도해 주세요. 이전 미리보기 수치는 표시하지 않습니다.";
+    detail.textContent = usage.message || "연결 상태를 확인한 뒤 다시 시도해 주세요. 실제 조회 전 수치는 표시하지 않습니다.";
     return;
   }
   if (usage.state === "loading") {
@@ -403,8 +448,7 @@ async function loadDashboardUsage({ notifyOnError = false } = {}) {
 
     applyDashboardUsagePayload(payload);
   } catch (error) {
-    // A configured Phoenix failure must never leave dummy dashboard values in
-    // view.  Only an explicit server-side preview response can display them.
+    // A configured Phoenix failure must never leave stale dashboard values in view.
     console.warn("dashboard usage unavailable", error);
     const message = error?.message || "Phoenix 사용 이력을 불러오지 못했습니다. 다시 시도해 주세요.";
     state.portal.dashboard = {
@@ -427,7 +471,6 @@ async function refreshDashboardUsageFull() {
     || !isAdmin()
     || state.dashboardUsageFullRefreshing
     || dashboardUsageState().state === "loading"
-    || dashboardUsageState().state === "preview"
   ) return;
 
   state.dashboardUsageFullRefreshing = true;
@@ -594,6 +637,52 @@ function normalizeAdministratorRecord(record, fallback = {}) {
   };
 }
 
+function administratorSource(admin) {
+  const raw = admin && typeof admin === "object" ? admin : {};
+  return String(
+    raw.source
+      || raw.admin_source
+      || raw.administrator_source
+      || raw.origin
+      || raw.managed_by
+      || "",
+  ).trim().toLowerCase();
+}
+
+function isDefaultAdministrator(admin) {
+  const raw = admin && typeof admin === "object" ? admin : {};
+  if (
+    raw.locked === true
+    || raw.is_locked === true
+    || raw.is_default === true
+    || raw.default === true
+    || raw.managed_externally === true
+  ) return true;
+
+  // The API normally sends `locked` / `is_default`.  These source aliases
+  // preserve the safe read-only behavior while older server responses roll out.
+  return [
+    "default",
+    "default_env",
+    "environment",
+    "env",
+    "bootstrap",
+    "dnv",
+    "sso_default",
+    "local",
+  ].includes(administratorSource(raw));
+}
+
+function administratorSourceLabel(admin) {
+  if (!isDefaultAdministrator(admin)) return "추가 관리자";
+  return administratorSource(admin) === "local" ? "로컬 기본 관리자" : "ENV 기본 관리자";
+}
+
+function administratorLockReason(admin) {
+  const raw = admin && typeof admin === "object" ? admin : {};
+  return String(raw.lock_reason || raw.locked_reason || "환경 설정에서 지정된 기본 관리자입니다.").trim();
+}
+
 function applyAdministratorResponse(payload, fallback) {
   if (!payload || typeof payload !== "object") return;
   if (payload.settings && typeof payload.settings === "object") {
@@ -614,6 +703,32 @@ function applyAdministratorResponse(payload, fallback) {
   else admins.push(administrator);
   state.adminSettings = { ...currentSettings, admins };
   applyAdminSettingsToPortal(state.adminSettings);
+}
+
+function displayedAdministrators() {
+  const settings = state.adminSettings && Array.isArray(state.adminSettings.admins)
+    ? state.adminSettings
+    : (state.portal?.settings || {});
+  const admins = Array.isArray(settings.admins) ? settings.admins : [];
+  return admins.map((admin) => normalizeAdministratorRecord(admin));
+}
+
+function administratorByEmployeeId(employeeId) {
+  const requestedId = String(employeeId || "").trim();
+  if (!requestedId) return null;
+  return displayedAdministrators().find((admin) => admin.employee_id === requestedId) || null;
+}
+
+function hasOpenPortalDialog() {
+  return [
+    "#metadata-detail-modal",
+    "#metadata-status-modal",
+    "#admin-add-modal",
+    "#admin-delete-modal",
+  ].some((selector) => {
+    const modal = $(selector);
+    return modal && modal.hidden === false;
+  });
 }
 
 function setAdminAddBusy(isBusy, message = "") {
@@ -644,7 +759,7 @@ function openAdminAddModal(opener) {
     showToast("관리자만 관리자 명단을 변경할 수 있습니다.");
     return;
   }
-  if (state.adminAdding) return;
+  if (state.adminAdding || state.adminDeletingId) return;
   const modal = $("#admin-add-modal");
   const dialog = $(".admin-add-dialog", modal);
   const form = $("#admin-add-form");
@@ -665,7 +780,7 @@ function closeAdminAddModal({ force = false } = {}) {
   if (!modal || modal.hidden) return;
   const opener = state.adminAddOpener;
   modal.hidden = true;
-  if ($("#metadata-detail-modal")?.hidden !== false && $("#metadata-status-modal")?.hidden !== false) {
+  if (!hasOpenPortalDialog()) {
     document.body.classList.remove("dialog-open");
   }
   state.adminAddOpener = null;
@@ -674,12 +789,134 @@ function closeAdminAddModal({ force = false } = {}) {
   }
 }
 
+function setAdminDeleteBusy(isBusy) {
+  const modal = $("#admin-delete-modal");
+  const dialog = $(".admin-delete-dialog", modal);
+  const confirmButton = $("#admin-delete-confirm");
+  if (modal) modal.setAttribute("aria-busy", String(isBusy));
+  if (dialog) {
+    $$("button", dialog).forEach((control) => {
+      control.disabled = isBusy;
+    });
+  }
+  if (confirmButton) {
+    confirmButton.innerHTML = isBusy
+      ? `${svgIcon("clock", "button-spinner")}<span>삭제 중…</span>`
+      : "관리자 삭제";
+  }
+}
+
+function openAdminDeleteModal(employeeId, opener) {
+  if (!isAdmin()) {
+    showToast("관리자만 관리자 명단을 변경할 수 있습니다.");
+    return;
+  }
+  if (state.adminDeletingId || state.adminAdding) return;
+
+  const administrator = administratorByEmployeeId(employeeId);
+  if (!administrator) {
+    showToast("삭제할 관리자 정보를 찾지 못했습니다. 목록을 새로고침해 주세요.");
+    return;
+  }
+  if (isDefaultAdministrator(administrator)) {
+    showToast("ENV 기본 관리자는 환경 설정에서 관리되며 이 화면에서 삭제할 수 없습니다.");
+    return;
+  }
+
+  const modal = $("#admin-delete-modal");
+  const dialog = $(".admin-delete-dialog", modal);
+  if (!modal || !dialog) return;
+
+  state.adminDeleteTarget = administrator;
+  state.adminDeleteOpener = opener instanceof HTMLElement ? opener : document.activeElement;
+  $("#admin-delete-name").textContent = `${administrator.name || "이름 미입력"} (${administrator.employee_id})`;
+  $("#admin-delete-message").textContent = "삭제하면 해당 사번의 포털 관리자 권한이 즉시 해제됩니다. 이 작업은 되돌릴 수 없습니다.";
+  setAdminDeleteBusy(false);
+  modal.hidden = false;
+  document.body.classList.add("dialog-open");
+  window.setTimeout(() => $("#admin-delete-confirm")?.focus(), 0);
+}
+
+function closeAdminDeleteModal({ force = false } = {}) {
+  if (state.adminDeletingId && !force) return;
+  const modal = $("#admin-delete-modal");
+  if (!modal || modal.hidden) return;
+  const opener = state.adminDeleteOpener;
+  modal.hidden = true;
+  state.adminDeleteTarget = null;
+  state.adminDeleteOpener = null;
+  if (!hasOpenPortalDialog()) {
+    document.body.classList.remove("dialog-open");
+  }
+  if (opener instanceof HTMLElement && opener.isConnected) {
+    window.setTimeout(() => opener.focus(), 0);
+  }
+}
+
+function applyAdministratorDeleteResponse(payload, employeeId) {
+  if (payload?.settings && typeof payload.settings === "object") {
+    state.adminSettings = normalizeAdminSettings(payload.settings);
+    applyAdminSettingsToPortal(state.adminSettings);
+    return;
+  }
+
+  const currentSettings = state.adminSettings || normalizeAdminSettings(state.portal?.settings || {});
+  const admins = (Array.isArray(currentSettings.admins) ? currentSettings.admins : [])
+    .filter((admin) => String(admin?.employee_id || admin?.emp_no || "").trim() !== employeeId);
+  state.adminSettings = { ...currentSettings, admins };
+  applyAdminSettingsToPortal(state.adminSettings);
+}
+
+async function deleteAdministrator() {
+  if (!isAdmin()) {
+    showToast("관리자만 관리자 명단을 변경할 수 있습니다.");
+    return;
+  }
+  const administrator = state.adminDeleteTarget;
+  const employeeId = String(administrator?.employee_id || "").trim();
+  if (!employeeId || state.adminDeletingId) return;
+  if (isDefaultAdministrator(administrator)) {
+    showToast("ENV 기본 관리자는 환경 설정에서 관리되며 이 화면에서 삭제할 수 없습니다.");
+    closeAdminDeleteModal({ force: true });
+    return;
+  }
+
+  state.adminDeletingId = employeeId;
+  setAdminDeleteBusy(true);
+  renderSettings();
+  try {
+    const response = await fetch(`/api/admin/settings/admins/${encodeURIComponent(employeeId)}`, {
+      method: "DELETE",
+      headers: portalRequestHeaders({ Accept: "application/json" }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageForAdminResponse(response.status, payload, "관리자 정보를 삭제하지 못했습니다."));
+    }
+
+    applyAdministratorDeleteResponse(payload, employeeId);
+    await loadAdminSettings();
+    const refreshFailed = Boolean(state.adminSettingsError);
+    closeAdminDeleteModal({ force: true });
+    showToast(refreshFailed
+      ? "관리자를 삭제했습니다. 목록을 새로고침해 최종 상태를 확인해 주세요."
+      : `${administrator.name || employeeId} 관리자를 삭제했습니다.`);
+  } catch (error) {
+    console.error("administrator delete request failed", error);
+    showToast(error?.message || "관리자 정보를 삭제하지 못했습니다.");
+  } finally {
+    state.adminDeletingId = "";
+    setAdminDeleteBusy(false);
+    renderSettings();
+  }
+}
+
 async function submitAdministrator(form) {
   if (!isAdmin()) {
     showToast("관리자만 관리자 명단을 변경할 수 있습니다.");
     return;
   }
-  if (state.adminAdding) return;
+  if (state.adminAdding || state.adminDeletingId) return;
 
   const formData = new FormData(form);
   const employeeId = String(formData.get("employee_id") || "").trim();
@@ -1015,8 +1252,7 @@ function replaceScheduleInState(schedule) {
 async function loadSchedules({ notifyOnError = false } = {}) {
   if (!state.portal) return;
   state.schedulesData = { state: "loading", message: "" };
-  // Do not leave portal preview values visible while the real schedule API is
-  // being requested. The backend is the only source of schedule state.
+  // Clear stale values while the backend-owned schedule source is requested.
   state.portal.schedules = [];
   renderSchedules();
 
@@ -1147,7 +1383,6 @@ function liveMetadataItems(metadataType = state.metadataType) {
 
 function metadataCollectionState(metadataType = state.metadataType) {
   const live = state.metadataLive || { state: "idle", payload: null };
-  const previewItems = state.portal?.metadata?.[metadataType] || [];
 
   if (live.state === "loading" || live.state === "idle") {
     return { source: "loading", items: [], typeInfo: {}, payload: null };
@@ -1165,9 +1400,9 @@ function metadataCollectionState(metadataType = state.metadataType) {
     };
   }
   if (live.state === "error") {
-    return { source: "fallback", items: previewItems, typeInfo: {}, payload: null };
+    return { source: "unavailable", items: [], typeInfo: {}, payload: null };
   }
-  return { source: "preview", items: previewItems, typeInfo: liveMetadataTypeInfo(metadataType), payload: live.payload };
+  return { source: "unavailable", items: [], typeInfo: liveMetadataTypeInfo(metadataType), payload: live.payload };
 }
 
 function activeMetadataItems() {
@@ -1432,10 +1667,10 @@ function openMetadataDetailModal(recordId, opener) {
   modal.hidden = false;
   document.body.classList.add("dialog-open");
   renderMetadataDetailModal(item, {
-    source: collection.source === "live" ? "실제 MongoDB 목록" : "예시 데이터",
+    source: collection.source === "live" ? "실제 MongoDB 목록" : "실조회 미연결",
     message: collection.source === "live"
       ? "상세 등록 정보를 불러오는 중입니다. 인증값과 연결 비밀 정보는 표시하지 않습니다."
-      : "예시 목록에 포함된 Flow 기반 등록 정보를 JSON 형식으로 표시합니다.",
+      : "실제 MongoDB 연결 후 상세 등록 정보를 확인할 수 있습니다.",
   });
   window.setTimeout(() => dialog.focus(), 0);
 
@@ -1613,7 +1848,7 @@ function renderMetadataDataNote(collection) {
   const badge = $("#metadata-source-badge");
   if (!note || !copy || !badge) return;
 
-  note.classList.remove("is-live", "is-preview", "is-loading", "is-fallback");
+  note.classList.remove("is-live", "is-loading", "is-fallback");
   const typeInfo = collection.typeInfo || {};
   if (collection.source === "loading") {
     note.classList.add("is-loading");
@@ -1635,21 +1870,9 @@ function renderMetadataDataNote(collection) {
     copy.innerHTML = `<strong>실제 MongoDB 목록을 표시합니다.</strong> <code>${escapeHtml(source)}</code>에서 ${escapeHtml(fullCount)}건 중 ${escapeHtml(renderedCount)}건을 불러왔습니다. 상태 변경은 관리자 확인 후에만 실행되며, 원본 항목은 유지됩니다.${truncation}`;
     return;
   }
-  if (collection.source === "fallback") {
-    note.classList.add("is-fallback");
-    badge.textContent = "예시 데이터";
-    copy.innerHTML = "<strong>실제 목록을 지금 확인하지 못했습니다.</strong> 화면 흐름 확인을 위해 예시 데이터를 표시하며, MongoDB의 실제 내용과 다를 수 있습니다.";
-    return;
-  }
-  if (collection.source === "unavailable") {
-    note.classList.add("is-fallback");
-    badge.textContent = "실조회 설정 필요";
-    copy.innerHTML = "<strong>이 유형의 실제 MongoDB 읽기 설정이 준비되지 않았습니다.</strong> 예시 데이터로 대체하지 않고 빈 목록으로 표시합니다.";
-    return;
-  }
-  note.classList.add("is-preview");
-  badge.textContent = "예시 데이터";
-  copy.innerHTML = "<strong>실제 목록 읽기가 아직 설정되지 않았습니다.</strong> 아래는 화면 확인용 예시이며, MongoDB에 저장된 실제 메타데이터 조회 결과가 아닙니다.";
+  note.classList.add("is-fallback");
+  badge.textContent = "실조회 설정 필요";
+  copy.innerHTML = "<strong>이 유형의 실제 MongoDB 읽기 설정이 준비되지 않았습니다.</strong> 다른 데이터로 대체하지 않고 빈 목록으로 표시합니다.";
 }
 
 function renderMetadata() {
@@ -1832,7 +2055,12 @@ async function confirmMetadataStatusUpdate() {
 }
 
 function authoringData() {
-  return state.portal?.metadata_authoring || { contract: {}, examples: {}, recent_results: [] };
+  const serverData = state.portal?.metadata_authoring || {};
+  return {
+    contract: serverData.contract || { version: "metadata_authoring.rev_2.v1" },
+    examples: metadataAuthoringGuidance,
+    recent_results: [],
+  };
 }
 
 function activeAuthoringExample() {
@@ -1910,10 +2138,6 @@ function metadataExampleRequiredInput(example) {
   return fields.join(" · ");
 }
 
-function cloneValue(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
 function metadataApiState() {
   return state.metadataApi || { mode: "unavailable", ready: false, preview_only: false, missing: [] };
 }
@@ -1988,15 +2212,6 @@ function metadataConnectionItem(metadataType, label) {
       status: "상태 확인 불가",
       icon: "question",
       tone: "unknown",
-    };
-  }
-  if (api.preview_only || api.mode === "preview") {
-    return {
-      label,
-      detail: "미리보기 모드입니다. 외부 Flow와 MongoDB에는 요청하지 않습니다.",
-      status: "미리보기",
-      icon: "clock",
-      tone: "preview",
     };
   }
   if (!endpointConfigured) {
@@ -2135,22 +2350,15 @@ function renderMetadataApiIndicator() {
   const usage = dashboardUsageState();
   const dashboardCopy = usage.state === "live"
     ? "대시보드 사용 이력은 Phoenix에서 실제 조회합니다."
-    : usage.state === "preview"
-      ? "대시보드 사용 이력은 현재 미리보기 데이터입니다."
-      : usage.state === "error"
-        ? "Phoenix 사용 이력은 현재 표시하지 않습니다. 다시 조회해 주세요."
-        : "대시보드 사용 이력을 확인하고 있습니다.";
+    : usage.state === "error"
+      ? "Phoenix 사용 이력은 현재 표시하지 않습니다. 다시 조회해 주세요."
+      : "대시보드 사용 이력을 확인하고 있습니다.";
   if (!isAdmin()) {
-    label.textContent = usage.state === "live" ? "Phoenix 사용 이력 연결됨" : "포털 화면 미리보기";
+    label.textContent = usage.state === "live" ? "Phoenix 사용 이력 연결됨" : "Phoenix 사용 이력 확인 중";
     copy.textContent = `${dashboardCopy} 메타데이터와 설정은 관리자에게만 제공됩니다.`;
     return;
   }
   const api = metadataApiState();
-  if (api.preview_only || api.mode === "preview") {
-    label.textContent = "메타데이터 미리보기 모드";
-    copy.textContent = `${dashboardCopy} 메타데이터는 외부 API 없이 안전한 미리보기로 실행됩니다.`;
-    return;
-  }
   if (api.ready) {
     label.textContent = usage.state === "live" ? "Phoenix 이력 · 메타데이터 API 연결됨" : "메타데이터 API 연결 준비됨";
     copy.textContent = `${dashboardCopy} 메타데이터 등록은 외부 Flow API로 실행됩니다.`;
@@ -2214,8 +2422,8 @@ async function loadMetadataApiStatus() {
     if (!response.ok) throw new Error("metadata authoring status request failed");
     state.metadataApi = await response.json();
   } catch (error) {
-    // The existing dashboard, schedule, and employee-preview data must remain
-    // available even when only the metadata API status route is unavailable.
+    // Keep the other independently loaded Portal sections available even when
+    // only the metadata API status route is unavailable.
     console.warn("metadata authoring status unavailable", error);
     state.metadataApi = null;
   }
@@ -2240,8 +2448,7 @@ async function loadLiveMetadata() {
     }
     state.metadataLive = { state: "ready", payload };
   } catch (error) {
-    // Never surface infrastructure details in the browser. The screen keeps a
-    // clearly labelled preview fallback until the next successful refresh.
+    // Never surface infrastructure details or substitute sample records.
     console.warn("live metadata unavailable", error);
     state.metadataLive = { state: "error", payload: null };
   } finally {
@@ -2351,25 +2558,9 @@ async function saveGaiaApiCaller(form) {
   }
 }
 
-function defaultMetadataResult() {
-  const recent = (authoringData().recent_results || []).find((run) => run.metadata_type === state.metadataType);
-  const example = activeAuthoringExample();
-  const response = recent?.result || example?.result;
-  if (!response) return null;
-  return {
-    metadataType: state.metadataType,
-    runId: recent?.id || "EXAMPLE-RUN",
-    requestedAt: recent?.requested_at || "기본 예시",
-    requestedBy: recent?.requested_by || "예시 데이터",
-    previewOnly: true,
-    requestedDryRun: true,
-    response: cloneValue(response),
-  };
-}
-
 function activeMetadataResult() {
   if (state.metadataResult?.metadataType === state.metadataType) return state.metadataResult;
-  return defaultMetadataResult();
+  return null;
 }
 
 function flowResultStatus(status) {
@@ -2519,14 +2710,31 @@ function renderRawMetadataResponse(content, response) {
 function renderMetadataResult() {
   const run = activeMetadataResult();
   const content = $("#metadata-result-content");
-  if (!run || !content) return;
+  if (!content) return;
+  if (!run) {
+    const overview = $("#metadata-result-message");
+    const statusElement = $("#metadata-result-status");
+    if (overview) overview.innerHTML = "<p>메타데이터 등록 Flow를 실행하면 실제 응답을 표시합니다.</p>";
+    if (statusElement) {
+      statusElement.className = "status-pill status-draft";
+      statusElement.textContent = "실행 전";
+    }
+    $("#metadata-result-run").textContent = "실행 결과 없음";
+    content.innerHTML = '<p class="result-empty">아직 실행된 메타데이터 등록 요청이 없습니다.</p>';
+    $$('[data-metadata-result-tab]').forEach((button) => {
+      button.disabled = true;
+      button.setAttribute("aria-selected", "false");
+    });
+    return;
+  }
+
+  $$('[data-metadata-result-tab]').forEach((button) => { button.disabled = false; });
 
   const response = run.response || {};
   const authoring = response.metadata_authoring || {};
   const write = response.write_result || {};
   const validation = authoring.contract_validation || {};
   const resultStatus = flowResultStatus(response.status || write.status || authoring.status);
-  const isSaveRequestPreview = run.previewOnly && !run.requestedDryRun;
 
   renderMetadataResultOverview(response, authoring, write, run, resultStatus);
   const statusElement = $("#metadata-result-status");
@@ -2543,7 +2751,6 @@ function renderMetadataResult() {
     const operations = Array.isArray(write.operation_by_key) ? write.operation_by_key : [];
     content.innerHTML = `
       <div class="result-section-heading"><div><h4>저장 처리 계획</h4><p>Writer가 반환한 <code>write_result</code>를 기준으로 저장 대상과 중복 처리 방식을 확인합니다.</p></div>${statusPill(write.dry_run ? "검토 전용" : "저장 요청")}</div>
-      ${isSaveRequestPreview ? `<div class="preview-disclaimer"><strong>더미 화면 안내</strong><span>이번 입력은 실제 저장 요청으로 선택했지만, 이 미리보기 서버는 MongoDB를 변경하지 않고 결과 위치만 보여 줍니다.</span></div>` : ""}
       <div class="storage-grid">
         <div><span>대상 DB</span><strong>${escapeHtml(write.database || "-")}</strong></div>
         <div><span>대상 컬렉션</span><strong>${escapeHtml(write.collection_name || "-")}</strong></div>
@@ -2603,9 +2810,7 @@ function renderSettings() {
     active_user_min_chat_count: 10,
     history_window_days: 21,
     });
-  const admins = state.adminSettings && Array.isArray(state.adminSettings.admins)
-    ? state.adminSettings.admins
-    : (Array.isArray(settings.admins) ? settings.admins : []);
+  const admins = displayedAdministrators();
   const apiItems = metadataConnectionItems();
   $("#api-status-list").innerHTML = apiItems
     .map((item) => `
@@ -2616,18 +2821,34 @@ function renderSettings() {
       </div>`)
     .join("");
   $("#admin-list").innerHTML = admins
-    .map((admin) => `
-      <tr><td>${escapeHtml(admin.employee_id || "-")}</td><td><strong>${escapeHtml(admin.name || admin.employee_name || "-")}</strong></td><td><span class="mini-tag">${escapeHtml(admin.role || "관리자")}</span></td><td>${escapeHtml(admin.scope || "포털 운영 관리")}</td><td>${statusPill(admin.status || "활성")}</td><td><span class="admin-row-note">사번 기준</span></td></tr>`)
+    .map((admin) => {
+      const locked = isDefaultAdministrator(admin);
+      const deleting = state.adminDeletingId === admin.employee_id;
+      const sourceLabel = administratorSourceLabel(admin);
+      const sourceClass = locked ? "is-default" : "is-mongodb";
+      const action = locked
+        ? `<span class="admin-locked-note" title="${escapeHtml(administratorLockReason(admin))}">${escapeHtml(sourceLabel)} · 변경 불가</span>`
+        : `<button class="delete-action admin-delete-action${deleting ? " is-loading" : ""}" type="button" data-delete-administrator="${escapeHtml(admin.employee_id)}"${deleting ? " disabled aria-busy=\"true\"" : ""}>${deleting ? `${svgIcon("clock", "button-spinner")}<span>삭제 중…</span>` : "삭제"}</button>`;
+      return `
+        <tr class="${locked ? "admin-default-row" : "admin-mongodb-row"}">
+          <td><code class="admin-employee-id">${escapeHtml(admin.employee_id || "-")}</code></td>
+          <td><div class="admin-name-cell"><strong>${escapeHtml(admin.name || admin.employee_name || "-")}</strong><span class="admin-source-badge ${sourceClass}">${escapeHtml(sourceLabel)}</span></div></td>
+          <td><span class="mini-tag">${escapeHtml(admin.role || "관리자")}</span></td>
+          <td>${escapeHtml(admin.scope || "포털 운영 관리")}</td>
+          <td>${statusPill(admin.status || "활성")}</td>
+          <td class="admin-action-cell">${action}</td>
+        </tr>`;
+    })
     .join("") || `<tr><td colspan="6" class="empty-cell">등록된 관리자 정보가 없습니다.</td></tr>`;
   const adminAddButton = $("#admin-add-button");
   if (adminAddButton) {
-    const isBusy = state.adminAdding;
+    const isBusy = state.adminAdding || Boolean(state.adminDeletingId);
     adminAddButton.disabled = isBusy;
     adminAddButton.classList.toggle("is-loading", isBusy);
     adminAddButton.setAttribute("aria-busy", String(isBusy));
-    adminAddButton.title = isBusy ? "관리자 정보를 저장하고 있습니다." : "사번과 이름을 입력해 관리자를 등록합니다.";
+    adminAddButton.title = isBusy ? "관리자 정보를 변경하고 있습니다." : "사번과 이름을 입력해 관리자를 등록합니다.";
     adminAddButton.innerHTML = isBusy
-      ? `${svgIcon("clock", "button-spinner")}<span>등록 중…</span>`
+      ? `${svgIcon("clock", "button-spinner")}<span>처리 중…</span>`
       : '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg><span>관리자 추가</span>';
   }
   $("#active-user-min-days").value = usagePolicy.active_user_min_distinct_days;
@@ -2648,7 +2869,7 @@ function renderSettings() {
     const updated = state.adminSettings?.updated_at ? ` · 마지막 변경 ${state.adminSettings.updated_at}` : "";
     callerSummary.textContent = `현재 ${gaiaApiCallerEmployeeId()} 사번이 GAIA API 호출에 사용됩니다.${updated}`;
   } else if (state.adminSettings?.storage?.persistent === false) {
-    callerSummary.textContent = "현재는 미리보기 설정입니다. MongoDB 연결 후 변경 값을 저장할 수 있습니다.";
+    callerSummary.textContent = "MongoDB가 연결되지 않아 변경 값을 영구 저장할 수 없습니다.";
   } else {
     callerSummary.textContent = "등록된 GAIA API 호출 권한 사번이 없습니다.";
   }
@@ -2990,11 +3211,9 @@ function metadataFormMarkup() {
   const rawTextRows = state.metadataType === "table_catalog" ? 18 : 9;
   const requiredInput = metadataExampleRequiredInput(example);
   const api = metadataApiState();
-  const apiNotice = api.preview_only || api.mode === "preview"
-    ? "현재는 미리보기 모드입니다. 외부 메타데이터 API와 MongoDB에는 요청하지 않습니다. 실제 연동은 서버의 .env에서 API 모드를 설정한 뒤 시작됩니다."
-    : api.ready
-      ? "입력은 포털 서버에서 외부 메타데이터 API로 전달됩니다. API 키와 MongoDB 연결 정보는 브라우저에 노출되지 않습니다."
-      : "메타데이터 API 연결 설정이 아직 준비되지 않았습니다. 서버의 .env 값을 확인한 뒤 다시 시도해 주세요.";
+  const apiNotice = api.ready
+    ? "입력은 포털 서버에서 외부 메타데이터 API로 전달됩니다. API 키와 MongoDB 연결 정보는 브라우저에 노출되지 않습니다."
+    : "메타데이터 API 연결 설정이 아직 준비되지 않았습니다. 서버의 .env 값을 확인한 뒤 다시 시도해 주세요.";
   return `
     <div class="drawer-flow-note"><strong>${escapeHtml(example?.flow_label || "메타데이터 등록 Flow")}</strong><span>Chat Input의 <code>input_value</code>가 등록 원문으로 전달됩니다.</span></div>
     <label><span>등록 요청 원문</span><textarea name="raw_text" rows="${rawTextRows}" required>${rawText}</textarea><small>포함하면 좋은 정보: ${escapeHtml(requiredInput)}</small></label>
@@ -3009,11 +3228,6 @@ function updateMetadataSubmitLabel() {
     return;
   }
   const dryRun = $("#metadata-form [name='dry_run']")?.checked !== false;
-  const api = metadataApiState();
-  if (api.preview_only || api.mode === "preview") {
-    $("#metadata-submit").textContent = dryRun ? "테스트 실행 미리보기" : "저장 요청 미리보기";
-    return;
-  }
   $("#metadata-submit").textContent = dryRun ? "테스트 실행" : "저장 요청 실행";
 }
 
@@ -3060,7 +3274,6 @@ function normalizeMetadataRun(payload) {
     runId: payload.run_id || "METADATA-RUN",
     requestedAt: payload.requested_at || "방금 전",
     requestedBy: payload.requested_by || `${state.portal.viewer.name} (${viewerId()})`,
-    previewOnly: Boolean(payload.preview_only),
     requestedDryRun: Boolean(payload.requested_dry_run),
     response: payload.response,
   };
@@ -3099,14 +3312,11 @@ async function submitMetadataAuthoring(form) {
 
     state.metadataResult = normalizeMetadataRun(payload);
     state.metadataResultTab = "process";
-    if (!state.metadataResult.previewOnly) {
-      await loadLiveMetadata();
-    }
+    await loadLiveMetadata();
     closeDrawers();
     renderMetadata();
     switchView("metadata");
-    const resultLabel = state.metadataResult.previewOnly ? "미리보기 결과" : "Flow 실행 결과";
-    showToast(`${metadataTypes[state.metadataType].label} ${resultLabel}를 받았습니다.`);
+    showToast(`${metadataTypes[state.metadataType].label} Flow 실행 결과를 받았습니다.`);
   } catch (error) {
     console.error(error);
     showToast(error?.message || "메타데이터 등록 요청을 완료하지 못했습니다.");
@@ -3156,6 +3366,16 @@ function bindEvents() {
 
     if (event.target.closest("[data-close-admin-add]") || event.target.id === "admin-add-modal") {
       closeAdminAddModal();
+      return;
+    }
+
+    if (event.target.closest("[data-close-admin-delete]") || event.target.id === "admin-delete-modal") {
+      closeAdminDeleteModal();
+      return;
+    }
+
+    if (event.target.closest("#admin-delete-confirm")) {
+      void deleteAdministrator();
       return;
     }
 
@@ -3307,23 +3527,32 @@ function bindEvents() {
       openMetadataDetailModal(metadataDetailButton.dataset.metadataDetail, metadataDetailButton);
       return;
     }
+
+    const adminDeleteButton = event.target.closest("[data-delete-administrator]");
+    if (adminDeleteButton) {
+      openAdminDeleteModal(adminDeleteButton.dataset.deleteAdministrator, adminDeleteButton);
+    }
   });
 
   document.addEventListener("keydown", (event) => {
     const detailModal = $("#metadata-detail-modal");
     const statusModal = $("#metadata-status-modal");
     const adminModal = $("#admin-add-modal");
+    const adminDeleteModal = $("#admin-delete-modal");
     const modal = detailModal && !detailModal.hidden
       ? detailModal
       : statusModal && !statusModal.hidden
         ? statusModal
-        : adminModal;
+        : adminModal && !adminModal.hidden
+          ? adminModal
+          : adminDeleteModal;
     if (!modal || modal.hidden) return;
     if (event.key === "Escape") {
       event.preventDefault();
       if (modal.id === "metadata-detail-modal") closeMetadataDetailModal();
       else if (modal.id === "metadata-status-modal") closeMetadataStatusModal();
-      else closeAdminAddModal();
+      else if (modal.id === "admin-add-modal") closeAdminAddModal();
+      else closeAdminDeleteModal();
       return;
     }
     if (event.key !== "Tab") return;
@@ -3331,7 +3560,9 @@ function bindEvents() {
       ? $(".metadata-detail-dialog", modal)
       : modal.id === "metadata-status-modal"
         ? $(".metadata-status-dialog", modal)
-        : $(".admin-add-dialog", modal);
+        : modal.id === "admin-add-modal"
+          ? $(".admin-add-dialog", modal)
+          : $(".admin-delete-dialog", modal);
     const focusable = dialog
       ? [...dialog.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")]
       : [];

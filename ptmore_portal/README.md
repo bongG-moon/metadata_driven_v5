@@ -1,8 +1,8 @@
 # PTMORE PKG Agent Portal
 
-이 포털은 메타데이터 등록을 외부 rev_2 Flow API로 실행할 수 있으며, 대시보드는 선택적으로 Phoenix의 실제 사용 이력을 조회할 수 있습니다.
+이 포털은 메타데이터 등록을 외부 rev_2 Flow API로 실행하고, 대시보드는 Phoenix의 실제 사용 이력을 조회합니다.
 
-- 대시보드 사용 이력은 기본적으로 더미 미리보기이며, Phoenix 모드를 명시적으로 켜면 최근 3주 실제 이력을 조회합니다.
+- 대시보드 사용 이력은 최근 3주 Phoenix/MongoDB 보관 이력만 표시합니다.
 - 로그인 사용자는 운영 HCP SSO 또는 로컬 고정 사용자로 구분합니다. 운영 권한은 사번을 기준으로 Portal MongoDB 설정에서 확인하며, 로컬 고정 사용자는 개발 편의를 위해 관리자입니다.
 - 메타데이터 등록 요청은 포털 서버가 외부 API로 전달합니다. 브라우저에는 API 키나 MongoDB URI가 내려가지 않습니다.
 - 스케줄 등록 정보는 Portal MongoDB에 저장하고, 별도 Scheduler Worker가 GAIA 실행과 CUBE 개인 DM 발송을 처리합니다.
@@ -39,7 +39,7 @@ python -m uvicorn app_local:application --host 127.0.0.1 --port 8002
 python app.py
 ```
 
-초기 `.env`는 `PTMORE_METADATA_API_MODE=preview`이므로 안전한 미리보기 결과만 보여 줍니다. 외부 API나 MongoDB에는 연결하지 않습니다.
+초기 `.env.example`은 실제 연동 모드 기준입니다. 예시 주소·키는 운영 값으로 교체해야 하며, 설정이 없으면 가짜 성공 결과 대신 명확한 연결 오류를 표시합니다.
 
 ## 사번·이름 로그인 방식
 
@@ -59,10 +59,9 @@ PTMORE_SSO_SESSION_HTTPS_ONLY=true
 
 ## Phoenix 실제 사용 이력 연결
 
-대시보드는 기본적으로 `preview` 모드입니다. 실제 Phoenix 이력을 조회하려면 `.env`에 아래 값을 입력합니다. API Key는 브라우저로 전달되지 않고 Portal 서버에서만 사용됩니다.
+대시보드는 Phoenix 실제 이력만 사용합니다. `.env`에 아래 값을 입력하며 API Key는 브라우저로 전달되지 않고 Portal 서버에서만 사용됩니다.
 
 ```dotenv
-# preview 대신 phoenix로 변경
 PTMORE_USAGE_HISTORY_MODE=phoenix
 
 PTMORE_PHOENIX_ENDPOINT=https://<phoenix-host>
@@ -115,7 +114,6 @@ PTMORE_USAGE_HISTORY_COLLECTION=portal_usage_history
 `.env`에서 다음 항목을 채웁니다. 실제 `.env` 파일은 Git에 올리지 않습니다.
 
 ```dotenv
-# preview 대신 api로 바꿉니다.
 PTMORE_METADATA_API_MODE=api
 
 # 세 rev_2 Flow가 같은 실행 API를 쓸 때 하나만 설정합니다.
@@ -153,7 +151,7 @@ API Key는 계속 서버의 `.env` 또는 Secret 관리 도구에서만 관리�
 
 ### MongoDB 값 전달 기준
 
-`MONGODB_URI`와 `MONGODB_DATABASE`는 관리자 설정 저장에도 사용합니다. 포털을 화면 미리보기로만 사용할 때는 비워 둘 수 있지만, 관리자 설정을 실제로 저장하려면 두 값을 반드시 설정해야 합니다.
+`MONGODB_URI`와 `MONGODB_DATABASE`는 관리자 설정 저장에도 사용합니다. 두 값이 없으면 설정 변경은 저장되지 않으므로 운영 환경에서는 반드시 입력합니다.
 
 ### 포털·스케줄 컬렉션 이름
 
