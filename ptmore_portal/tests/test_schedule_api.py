@@ -98,6 +98,12 @@ class FakeScheduleStore:
 
 @pytest.fixture(autouse=True)
 def isolated_schedule_runtime(monkeypatch):
+    # Keep test authorization explicit: production no longer carries sample
+    # administrators inside a default settings document.
+    monkeypatch.setenv(
+        "PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON",
+        '[{"employee_id":"2069026","name":"문봉건"}]',
+    )
     settings_store = FakePortalSettingsStore()
     schedule_store = FakeScheduleStore()
     monkeypatch.setattr(

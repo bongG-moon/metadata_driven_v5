@@ -21,11 +21,17 @@ const state = {
   adminSettings: null,
   adminSettingsLoading: false,
   adminSettingsError: "",
+  adminAdding: false,
+  adminAddOpener: null,
+  adminAddMessage: "",
   dashboardUsage: { state: "idle", source: null, message: "" },
+  dashboardUsageFullRefreshing: false,
+  dashboardUsageExporting: false,
   schedulesData: { state: "idle", message: "" },
   scheduleSubmitting: false,
   scheduleMutationId: "",
   editingScheduleId: null,
+  eventsBound: false,
 };
 
 const SCHEDULE_DELIVERY_TARGET = "개인 DM";
@@ -93,7 +99,9 @@ function escapeHtml(value) {
 
 function statusClass(status) {
   if (["성공", "활성", "active", "정상", "연결됨", "요청 가능", "등록됨"].includes(status)) return "status-success";
+  if (["실패"].includes(status)) return "status-review";
   if (["비활성", "inactive", "일시중지", "재시도 예정", "검토 필요", "확인 필요", "미설정", "설정 필요", "연결 확인 필요", "API URL 미설정", "인증 정보 필요", "호출 사번 필요", "MongoDB 설정 필요", "Flow 구성 확인"].includes(status)) return "status-paused";
+  if (["취소됨", "건너뜀"].includes(status)) return "status-paused";
   return "status-draft";
 }
 
@@ -136,12 +144,42 @@ function emptyUsageDashboard(message = "사용 이력을 아직 조회하지 않
     active_user_rule: { min_distinct_days: 0, min_chat_count: 0 },
     recent_usage_history: [],
     recent_runs: [],
+    recent_runs_message: "최근 스케줄 실행 이력이 없습니다.",
     empty_message: message,
   };
 }
 
 function dashboardUsageState() {
   return state.dashboardUsage || { state: "idle", source: null, message: "" };
+}
+
+function applyDashboardUsagePayload(payload) {
+  const normalized = normalizeDashboardUsagePayload(payload);
+  state.portal.dashboard = normalized.dashboard;
+  state.portal.usage_history = normalized.usage_history;
+  state.dashboardUsage = {
+    state: normalized.mode === "preview" ? "preview" : "live",
+    source: normalized.source,
+    message: "",
+  };
+  return normalized;
+}
+
+function usageArchiveDisplayDetail(source) {
+  const archive = source?.archive && typeof source.archive === "object" ? source.archive : {};
+  const archiveMode = String(archive.mode || "").trim().toLowerCase();
+  const archiveStatus = String(archive.status || "").trim().toLowerCase();
+  const usesMongoCache = archiveMode === "configured" || ["cached", "synchronized"].includes(archiveStatus);
+  if (!usesMongoCache) return "";
+
+  const updatedDayCount = Number(archive.updated_day_count);
+  const updatedDayLabel = Number.isInteger(updatedDayCount) && updatedDayCount > 0
+    ? `${updatedDayCount}개 일자`
+    : "선택 일자";
+  if (archive.full_refresh === true) {
+    return `MongoDB 최근 3주 캐시를 갱신하고 Phoenix 전체 범위를 다시 조회했습니다 (${updatedDayLabel}).`;
+  }
+  return `MongoDB 최근 3주 캐시를 먼저 표시하고 Phoenix ${updatedDayLabel}만 갱신했습니다.`;
 }
 
 function usageRecordDate(record) {
@@ -206,6 +244,7 @@ function normalizeDashboardUsagePayload(payload) {
     active_users: Array.isArray(dashboard.active_users) ? dashboard.active_users : [],
     recent_usage_history: Array.isArray(dashboard.recent_usage_history) ? dashboard.recent_usage_history : [],
     recent_runs: Array.isArray(dashboard.recent_runs) ? dashboard.recent_runs : [],
+    recent_runs_message: String(dashboard.recent_runs_message || fallback.recent_runs_message).trim(),
     active_user_rule: dashboard.active_user_rule && typeof dashboard.active_user_rule === "object"
       ? dashboard.active_user_rule
       : fallback.active_user_rule,
@@ -236,6 +275,7 @@ function renderDashboardSourceStatus() {
   const title = $("#dashboard-source-title");
   const detail = $("#dashboard-source-detail");
   const retry = $("#dashboard-source-retry");
+  const fullRefresh = $("#dashboard-full-refresh");
   if (!container || !icon || !title || !detail || !retry) return;
 
   const usage = dashboardUsageState();
@@ -245,20 +285,57 @@ function renderDashboardSourceStatus() {
   const sourceDetail = String(source.detail || "").trim();
   const projectCount = Number(source.project_count);
   const fetchedAt = formatDashboardFetchedAt(source.fetched_at);
+  const archiveDetail = usageArchiveDisplayDetail(source);
+  const archive = source.archive && typeof source.archive === "object" ? source.archive : {};
+  const hasFullRefreshResult = archive.full_refresh === true;
+  const fullRefreshInProgress = Boolean(state.dashboardUsageFullRefreshing);
   const supportDetails = [];
-  if (sourceDetail) supportDetails.push(sourceDetail);
+  if (archiveDetail) supportDetails.push(archiveDetail);
+  else if (sourceDetail) supportDetails.push(sourceDetail);
   if (Number.isInteger(projectCount) && projectCount > 0) supportDetails.push(`${projectCount}개 프로젝트 조회`);
   if (fetchedAt) supportDetails.push(`마지막 조회 ${fetchedAt}`);
 
   container.classList.remove("is-loading", "is-live", "is-preview", "is-error", "is-idle");
-  retry.disabled = usage.state === "loading";
+  retry.disabled = usage.state === "loading" || fullRefreshInProgress;
   retry.hidden = false;
-  retry.textContent = usage.state === "loading" ? "조회 중…" : "↻ 사용 이력 새로고침";
+  retry.textContent = usage.state === "loading"
+    ? "조회 중…"
+    : fullRefreshInProgress
+      ? "전체 갱신 중…"
+      : "↻ 사용 이력 새로고침";
+
+  if (fullRefresh) {
+    const admin = isAdmin();
+    const isPreview = sourceMode === "preview" || usage.state === "preview";
+    const canRefreshAll = admin && !isPreview && usage.state !== "loading" && !fullRefreshInProgress;
+    fullRefresh.hidden = !admin;
+    fullRefresh.disabled = !canRefreshAll;
+    fullRefresh.classList.toggle("is-loading", fullRefreshInProgress);
+    fullRefresh.setAttribute("aria-busy", String(fullRefreshInProgress));
+    fullRefresh.title = isPreview
+      ? "Phoenix 실사용 이력을 연결한 뒤 전체 새로고침을 사용할 수 있습니다."
+      : "관리자만 Phoenix 최근 3주 이력을 전체 다시 조회할 수 있습니다.";
+    fullRefresh.textContent = fullRefreshInProgress
+      ? "최근 3주 전체 새로고침 중…"
+      : "↻ 최근 3주 전체 새로고침";
+  }
+
+  if (fullRefreshInProgress) {
+    container.classList.add("is-loading");
+    icon.innerHTML = svgIcon("clock");
+    title.textContent = "최근 3주 전체 새로고침 중";
+    detail.textContent = "Phoenix 최근 3주 이력을 다시 조회해 MongoDB 캐시를 갱신하고 있습니다. 기존 집계는 완료될 때까지 유지됩니다.";
+    return;
+  }
 
   if (usage.state === "live") {
     container.classList.add("is-live");
     icon.innerHTML = svgIcon("check");
-    title.textContent = `${sourceLabel} 실시간 사용 이력`;
+    title.textContent = hasFullRefreshResult
+      ? "최근 3주 전체 새로고침 완료"
+      : archiveDetail
+        ? "MongoDB 캐시 + Phoenix 선택 갱신"
+        : `${sourceLabel} 실시간 사용 이력`;
     detail.textContent = supportDetails.join(" · ") || "최근 3주 사용 이력을 Phoenix에서 조회했습니다.";
     return;
   }
@@ -290,10 +367,23 @@ function renderDashboardSourceStatus() {
 }
 
 async function loadDashboardUsage({ notifyOnError = false } = {}) {
-  if (!state.portal) return;
+  if (!state.portal || state.dashboardUsageFullRefreshing) return;
 
+  // Schedule runs come from a separate MongoDB collection.  Retain the last
+  // safely loaded run slice while Phoenix usage refreshes, so an unrelated
+  // usage-history failure does not temporarily erase that table.
+  const previousRuns = Array.isArray(state.portal.dashboard?.recent_runs)
+    ? state.portal.dashboard.recent_runs
+    : [];
+  const previousRunsMessage = String(
+    state.portal.dashboard?.recent_runs_message || "최근 스케줄 실행 이력이 없습니다."
+  ).trim();
   state.dashboardUsage = { state: "loading", source: null, message: "" };
-  state.portal.dashboard = emptyUsageDashboard("Phoenix 사용 이력을 조회하고 있습니다.");
+  state.portal.dashboard = {
+    ...emptyUsageDashboard("Phoenix 사용 이력을 조회하고 있습니다."),
+    recent_runs: previousRuns,
+    recent_runs_message: previousRuns.length ? "" : previousRunsMessage,
+  };
   state.portal.usage_history = [];
   renderDashboard();
   renderMetadataApiIndicator();
@@ -311,26 +401,128 @@ async function loadDashboardUsage({ notifyOnError = false } = {}) {
       throw new Error(errorMessageFromResponse(payload, fallback));
     }
 
-    const normalized = normalizeDashboardUsagePayload(payload);
-    state.portal.dashboard = normalized.dashboard;
-    state.portal.usage_history = normalized.usage_history;
-    state.dashboardUsage = {
-      state: normalized.mode === "preview" ? "preview" : "live",
-      source: normalized.source,
-      message: "",
-    };
+    applyDashboardUsagePayload(payload);
   } catch (error) {
     // A configured Phoenix failure must never leave dummy dashboard values in
     // view.  Only an explicit server-side preview response can display them.
     console.warn("dashboard usage unavailable", error);
     const message = error?.message || "Phoenix 사용 이력을 불러오지 못했습니다. 다시 시도해 주세요.";
-    state.portal.dashboard = emptyUsageDashboard(message);
+    state.portal.dashboard = {
+      ...emptyUsageDashboard(message),
+      recent_runs: previousRuns,
+      recent_runs_message: previousRuns.length ? "" : previousRunsMessage,
+    };
     state.portal.usage_history = [];
     state.dashboardUsage = { state: "error", source: null, message };
     if (notifyOnError) showToast(message);
   } finally {
     renderDashboard();
     renderMetadataApiIndicator();
+  }
+}
+
+async function refreshDashboardUsageFull() {
+  if (
+    !state.portal
+    || !isAdmin()
+    || state.dashboardUsageFullRefreshing
+    || dashboardUsageState().state === "loading"
+    || dashboardUsageState().state === "preview"
+  ) return;
+
+  state.dashboardUsageFullRefreshing = true;
+  renderDashboard();
+
+  try {
+    const response = await fetch("/api/dashboard/usage/refresh", {
+      method: "POST",
+      headers: portalRequestHeaders({ Accept: "application/json" }),
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const fallback = response.status === 503
+        ? "Phoenix 최근 3주 사용 이력을 전체 새로고침할 수 없습니다. 연결 설정을 확인한 뒤 다시 시도해 주세요."
+        : "최근 3주 사용 이력을 전체 새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+      throw new Error(errorMessageForAdminResponse(response.status, payload, fallback));
+    }
+
+    applyDashboardUsagePayload(payload);
+    showToast("최근 3주 사용 이력을 전체 새로고침했습니다.");
+  } catch (error) {
+    console.error("dashboard usage full refresh failed", error);
+    showToast(error?.message || "최근 3주 사용 이력을 전체 새로고침하지 못했습니다.");
+  } finally {
+    state.dashboardUsageFullRefreshing = false;
+    renderDashboard();
+    renderMetadataApiIndicator();
+  }
+}
+
+function dashboardUsageExportFilename(response) {
+  const contentDisposition = String(response?.headers?.get("content-disposition") || "");
+  const encodedFilename = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encodedFilename) {
+    try {
+      return decodeURIComponent(encodedFilename).replaceAll(/[\\/:*?"<>|]/g, "_");
+    } catch {
+      // Fall through to the plain filename or the predictable Portal fallback.
+    }
+  }
+  const plainFilename = contentDisposition.match(/filename="?([^";]+)"?/i)?.[1];
+  return String(plainFilename || "ptmore_usage_history.csv").replaceAll(/[\\/:*?"<>|]/g, "_");
+}
+
+function setDashboardUsageExportBusy(isBusy) {
+  const button = $("#dashboard-usage-export");
+  if (!button) return;
+  state.dashboardUsageExporting = isBusy;
+  button.disabled = isBusy;
+  button.classList.toggle("is-loading", isBusy);
+  button.setAttribute("aria-busy", String(isBusy));
+  button.innerHTML = isBusy
+    ? `${svgIcon("clock", "button-spinner")}<span>CSV 준비 중…</span>`
+    : '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 18v2h14v-2" /></svg><span>CSV 다운로드</span>';
+}
+
+async function downloadDashboardUsageCsv() {
+  if (!state.portal || state.dashboardUsageExporting) return;
+  setDashboardUsageExportBusy(true);
+
+  try {
+    const response = await fetch("/api/dashboard/usage/export.csv", {
+      headers: portalRequestHeaders({ Accept: "text/csv, application/json" }),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        // A proxy may return a plain-text error page. Do not surface its raw
+        // HTML in the Portal; use the concise fallback below instead.
+      }
+      throw new Error(errorMessageFromResponse(payload, "사용 이력 CSV를 다운로드하지 못했습니다."));
+    }
+
+    const blob = await response.blob();
+    if (!blob.size) throw new Error("다운로드할 사용 이력 데이터가 없습니다.");
+
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = dashboardUsageExportFilename(response);
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    showToast("최근 사용 이력 CSV를 다운로드했습니다.");
+  } catch (error) {
+    console.error("dashboard usage CSV export failed", error);
+    showToast(error?.message || "사용 이력 CSV를 다운로드하지 못했습니다.");
+  } finally {
+    setDashboardUsageExportBusy(false);
   }
 }
 
@@ -374,6 +566,167 @@ function applyAdminSettingsToPortal(adminSettings) {
   };
   if (Array.isArray(adminSettings.admins) && adminSettings.admins.length) {
     state.portal.settings.admins = adminSettings.admins;
+  }
+}
+
+function normalizeAdministratorRecord(record, fallback = {}) {
+  const source = record && typeof record === "object" ? record : {};
+  const employeeId = String(
+    source.employee_id
+      || source.emp_no
+      || fallback.employee_id
+      || "",
+  ).trim();
+  const name = String(
+    source.name
+      || source.employee_name
+      || source.emp_name
+      || fallback.employee_name
+      || "",
+  ).trim();
+  return {
+    ...source,
+    employee_id: employeeId,
+    name,
+    role: String(source.role || "관리자").trim() || "관리자",
+    scope: String(source.scope || "포털 운영 관리").trim() || "포털 운영 관리",
+    status: String(source.status || "활성").trim() || "활성",
+  };
+}
+
+function applyAdministratorResponse(payload, fallback) {
+  if (!payload || typeof payload !== "object") return;
+  if (payload.settings && typeof payload.settings === "object") {
+    state.adminSettings = normalizeAdminSettings(payload.settings);
+    applyAdminSettingsToPortal(state.adminSettings);
+    return;
+  }
+
+  const record = payload.administrator || payload.admin;
+  if (!record || typeof record !== "object") return;
+  const administrator = normalizeAdministratorRecord(record, fallback);
+  if (!administrator.employee_id) return;
+  const currentSettings = state.adminSettings || normalizeAdminSettings(state.portal?.settings || {});
+  const currentAdmins = Array.isArray(currentSettings.admins) ? currentSettings.admins : [];
+  const index = currentAdmins.findIndex((item) => String(item?.employee_id || "").trim() === administrator.employee_id);
+  const admins = [...currentAdmins];
+  if (index >= 0) admins[index] = { ...admins[index], ...administrator };
+  else admins.push(administrator);
+  state.adminSettings = { ...currentSettings, admins };
+  applyAdminSettingsToPortal(state.adminSettings);
+}
+
+function setAdminAddBusy(isBusy, message = "") {
+  const modal = $("#admin-add-modal");
+  const form = $("#admin-add-form");
+  const submitButton = $("#admin-add-submit");
+  const hint = $("#admin-add-form-hint");
+  if (modal) modal.setAttribute("aria-busy", String(isBusy));
+  if (form) {
+    $$('input, button', form).forEach((control) => {
+      control.disabled = isBusy;
+    });
+  }
+  if (submitButton) {
+    submitButton.innerHTML = isBusy
+      ? `${svgIcon("clock", "button-spinner")}<span>등록 중…</span>`
+      : "관리자 등록";
+  }
+  if (hint) {
+    hint.textContent = message || (isBusy
+      ? "관리자 권한을 저장하고 있습니다. 잠시만 기다려 주세요."
+      : "관리자 권한은 사번 기준으로 적용됩니다.");
+  }
+}
+
+function openAdminAddModal(opener) {
+  if (!isAdmin()) {
+    showToast("관리자만 관리자 명단을 변경할 수 있습니다.");
+    return;
+  }
+  if (state.adminAdding) return;
+  const modal = $("#admin-add-modal");
+  const dialog = $(".admin-add-dialog", modal);
+  const form = $("#admin-add-form");
+  if (!modal || !dialog || !form) return;
+
+  form.reset();
+  state.adminAddMessage = "";
+  setAdminAddBusy(false);
+  state.adminAddOpener = opener instanceof HTMLElement ? opener : document.activeElement;
+  modal.hidden = false;
+  document.body.classList.add("dialog-open");
+  window.setTimeout(() => $("#admin-add-employee-id")?.focus(), 0);
+}
+
+function closeAdminAddModal({ force = false } = {}) {
+  if (state.adminAdding && !force) return;
+  const modal = $("#admin-add-modal");
+  if (!modal || modal.hidden) return;
+  const opener = state.adminAddOpener;
+  modal.hidden = true;
+  if ($("#metadata-detail-modal")?.hidden !== false && $("#metadata-status-modal")?.hidden !== false) {
+    document.body.classList.remove("dialog-open");
+  }
+  state.adminAddOpener = null;
+  if (opener instanceof HTMLElement && opener.isConnected) {
+    window.setTimeout(() => opener.focus(), 0);
+  }
+}
+
+async function submitAdministrator(form) {
+  if (!isAdmin()) {
+    showToast("관리자만 관리자 명단을 변경할 수 있습니다.");
+    return;
+  }
+  if (state.adminAdding) return;
+
+  const formData = new FormData(form);
+  const employeeId = String(formData.get("employee_id") || "").trim();
+  const employeeName = String(formData.get("employee_name") || "").trim();
+  if (!/^\d{7}$/.test(employeeId)) {
+    showToast("관리자 사번은 숫자 7자리로 입력해 주세요.");
+    $("#admin-add-employee-id")?.focus();
+    return;
+  }
+  if (!employeeName) {
+    showToast("관리자 이름을 입력해 주세요.");
+    $("#admin-add-employee-name")?.focus();
+    return;
+  }
+
+  state.adminAdding = true;
+  state.adminAddMessage = "";
+  setAdminAddBusy(true);
+  try {
+    const response = await fetch("/api/settings/admins", {
+      method: "POST",
+      headers: portalRequestHeaders({ Accept: "application/json", "Content-Type": "application/json" }),
+      body: JSON.stringify({ employee_id: employeeId, employee_name: employeeName }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(errorMessageForAdminResponse(response.status, payload, "관리자 정보를 저장하지 못했습니다."));
+    }
+
+    applyAdministratorResponse(payload, { employee_id: employeeId, employee_name: employeeName });
+    // The endpoint can return either the complete settings object or only the
+    // new administrator. Re-read the canonical settings record in both cases.
+    await loadAdminSettings();
+    const refreshFailed = Boolean(state.adminSettingsError);
+    closeAdminAddModal({ force: true });
+    renderSettings();
+    showToast(refreshFailed
+      ? "관리자를 등록했습니다. 목록을 새로고침해 최종 상태를 확인해 주세요."
+      : `${employeeName} (${employeeId}) 관리자를 등록했습니다.`);
+  } catch (error) {
+    console.error("administrator add request failed", error);
+    state.adminAddMessage = error?.message || "관리자 정보를 저장하지 못했습니다.";
+    showToast(state.adminAddMessage);
+  } finally {
+    state.adminAdding = false;
+    setAdminAddBusy(false, state.adminAddMessage);
+    renderSettings();
   }
 }
 
@@ -471,10 +824,10 @@ function renderDashboard() {
     ? recentRuns
     .map((run) => `
       <tr>
-        <td>${escapeHtml(run.time)}</td><td><strong>${escapeHtml(run.name)}</strong></td><td>${escapeHtml(run.owner)}</td><td>${SCHEDULE_DELIVERY_LABEL}</td><td>${statusPill(run.status)}</td>
+        <td>${escapeHtml(run.time)}</td><td><strong>${escapeHtml(run.name)}</strong></td><td>${escapeHtml(run.owner)}</td><td>${escapeHtml(run.target || SCHEDULE_DELIVERY_LABEL)}</td><td>${statusPill(run.status)}</td>
       </tr>`)
     .join("")
-    : `<tr><td colspan="5" class="dashboard-table-empty">최근 스케줄 실행 이력이 없습니다.</td></tr>`;
+    : `<tr><td colspan="5" class="dashboard-table-empty">${escapeHtml(dashboard.recent_runs_message || "최근 스케줄 실행 이력이 없습니다.")}</td></tr>`;
 
   renderDashboardSourceStatus();
 }
@@ -705,10 +1058,18 @@ function scheduleActions(schedule) {
       <span class="readonly-chip">열람 전용</span>
       <button class="restricted-action" type="button" data-schedule-restricted="${escapeHtml(schedule.id)}">권한 안내</button>`;
   }
+  const mutationInFlight = Boolean(state.scheduleMutationId);
+  const isMutatingThisSchedule = state.scheduleMutationId === schedule.id;
+  const disabledAttributes = mutationInFlight
+    ? ' disabled aria-disabled="true"'
+    : "";
+  const pauseLabel = isMutatingThisSchedule
+    ? "변경 중…"
+    : (scheduleStatusCode(schedule) === "active" ? "일시중지" : "재개");
   return `
-    <button class="edit-action" type="button" data-edit-schedule="${escapeHtml(schedule.id)}">수정</button>
-    <button class="pause-action" type="button" data-toggle-schedule="${escapeHtml(schedule.id)}">${scheduleStatusCode(schedule) === "active" ? "일시중지" : "재개"}</button>
-    <button class="delete-action" type="button" data-delete-schedule="${escapeHtml(schedule.id)}">삭제</button>`;
+    <button class="edit-action" type="button" data-edit-schedule="${escapeHtml(schedule.id)}"${disabledAttributes}>수정</button>
+    <button class="pause-action${isMutatingThisSchedule ? " is-loading" : ""}" type="button" data-toggle-schedule="${escapeHtml(schedule.id)}" aria-busy="${String(isMutatingThisSchedule)}"${disabledAttributes}>${pauseLabel}</button>
+    <button class="delete-action" type="button" data-delete-schedule="${escapeHtml(schedule.id)}"${disabledAttributes}>삭제</button>`;
 }
 
 function renderSchedules() {
@@ -921,10 +1282,12 @@ function metadataActionCell(item, collection) {
   const currentStatus = metadataStatusKey(item);
   const nextStatus = currentStatus === "inactive" ? "active" : "inactive";
   const actionLabel = nextStatus === "active" ? "활성화" : "비활성화";
-  const isUpdating = state.metadataStatusUpdating
+  const mutationInFlight = Boolean(state.metadataStatusUpdating);
+  const isUpdating = mutationInFlight
     && state.metadataStatusTarget?.metadataType === state.metadataType
     && state.metadataStatusTarget?.recordId === itemId;
-  return `<td class="metadata-row-actions"><div class="metadata-row-action-buttons">${detailAction}<button class="metadata-status-button ${nextStatus}" type="button" data-metadata-status="${escapeHtml(itemId)}" data-next-metadata-status="${nextStatus}" aria-label="${escapeHtml(displayName)} ${actionLabel}" ${isUpdating ? "disabled" : ""}>${isUpdating ? "변경 중…" : actionLabel}</button></div></td>`;
+  const disabledAttributes = mutationInFlight ? ' disabled aria-disabled="true"' : "";
+  return `<td class="metadata-row-actions"><div class="metadata-row-action-buttons">${detailAction}<button class="metadata-status-button ${nextStatus}${isUpdating ? " is-loading" : ""}" type="button" data-metadata-status="${escapeHtml(itemId)}" data-next-metadata-status="${nextStatus}" aria-label="${escapeHtml(displayName)} ${actionLabel}" aria-busy="${String(isUpdating)}"${disabledAttributes}>${isUpdating ? "변경 중…" : actionLabel}</button></div></td>`;
 }
 
 const METADATA_DETAIL_HIDDEN_KEYS = new Set([
@@ -1330,6 +1693,10 @@ function openMetadataStatusModal(recordId, nextStatus, opener) {
     showToast("관리자만 메타데이터 상태를 변경할 수 있습니다.");
     return;
   }
+  if (state.metadataStatusUpdating) {
+    showToast("메타데이터 상태를 변경하고 있습니다. 잠시만 기다려 주세요.");
+    return;
+  }
   const collection = metadataCollectionState();
   if (collection.source !== "live") {
     showToast("예시 또는 미연결 목록은 상태를 변경할 수 없습니다. 실제 MongoDB 목록에서만 변경할 수 있습니다.");
@@ -1414,11 +1781,17 @@ async function confirmMetadataStatusUpdate() {
   }
 
   const confirmButton = $("#metadata-status-confirm");
+  const statusMessage = $("#metadata-status-message");
   const actionLabel = target.nextStatus === "active" ? "활성화" : "비활성화";
   state.metadataStatusUpdating = true;
+  renderMetadata();
   if (confirmButton) {
     confirmButton.disabled = true;
+    confirmButton.setAttribute("aria-busy", "true");
     confirmButton.textContent = "변경 중…";
+  }
+  if (statusMessage) {
+    statusMessage.textContent = "상태 변경을 처리하고 있습니다. 완료될 때까지 잠시만 기다려 주세요.";
   }
 
   try {
@@ -1444,11 +1817,14 @@ async function confirmMetadataStatusUpdate() {
     showToast(`${target.displayName} 항목을 ${actionLabel}했습니다. 원본 항목은 유지됩니다.`);
   } catch (error) {
     console.error(error);
-    showToast(error?.message || "메타데이터 상태를 변경하지 못했습니다.");
+    const message = error?.message || "메타데이터 상태를 변경하지 못했습니다.";
+    if (statusMessage) statusMessage.textContent = message;
+    showToast(message);
   } finally {
     state.metadataStatusUpdating = false;
     if (confirmButton && !$("#metadata-status-modal")?.hidden) {
       confirmButton.disabled = false;
+      confirmButton.setAttribute("aria-busy", "false");
       confirmButton.textContent = actionLabel;
     }
     renderMetadata();
@@ -2227,7 +2603,7 @@ function renderSettings() {
     active_user_min_chat_count: 10,
     history_window_days: 21,
     });
-  const admins = state.adminSettings?.admins?.length
+  const admins = state.adminSettings && Array.isArray(state.adminSettings.admins)
     ? state.adminSettings.admins
     : (Array.isArray(settings.admins) ? settings.admins : []);
   const apiItems = metadataConnectionItems();
@@ -2241,14 +2617,18 @@ function renderSettings() {
     .join("");
   $("#admin-list").innerHTML = admins
     .map((admin) => `
-      <tr><td>${escapeHtml(admin.employee_id)}</td><td><strong>${escapeHtml(admin.name)}</strong></td><td><span class="mini-tag">${escapeHtml(admin.role)}</span></td><td>${escapeHtml(admin.scope)}</td><td>${statusPill(admin.status)}</td><td><button class="row-action" type="button" aria-label="${escapeHtml(admin.name)} 관리자 설정">⋯</button></td></tr>`)
+      <tr><td>${escapeHtml(admin.employee_id || "-")}</td><td><strong>${escapeHtml(admin.name || admin.employee_name || "-")}</strong></td><td><span class="mini-tag">${escapeHtml(admin.role || "관리자")}</span></td><td>${escapeHtml(admin.scope || "포털 운영 관리")}</td><td>${statusPill(admin.status || "활성")}</td><td><span class="admin-row-note">사번 기준</span></td></tr>`)
     .join("") || `<tr><td colspan="6" class="empty-cell">등록된 관리자 정보가 없습니다.</td></tr>`;
-  const adminAddButton = $(".admin-panel .panel-heading .secondary-button");
+  const adminAddButton = $("#admin-add-button");
   if (adminAddButton) {
-    adminAddButton.disabled = true;
-    adminAddButton.setAttribute("aria-disabled", "true");
-    adminAddButton.title = "관리자 명단 변경은 아직 지원하지 않습니다.";
-    adminAddButton.innerHTML = "관리자 추가 (준비 중)";
+    const isBusy = state.adminAdding;
+    adminAddButton.disabled = isBusy;
+    adminAddButton.classList.toggle("is-loading", isBusy);
+    adminAddButton.setAttribute("aria-busy", String(isBusy));
+    adminAddButton.title = isBusy ? "관리자 정보를 저장하고 있습니다." : "사번과 이름을 입력해 관리자를 등록합니다.";
+    adminAddButton.innerHTML = isBusy
+      ? `${svgIcon("clock", "button-spinner")}<span>등록 중…</span>`
+      : '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg><span>관리자 추가</span>';
   }
   $("#active-user-min-days").value = usagePolicy.active_user_min_distinct_days;
   $("#active-user-min-chats").value = usagePolicy.active_user_min_chat_count;
@@ -2551,6 +2931,8 @@ async function updateScheduleStatus(schedule) {
   if (!schedule || !canEditSchedule(schedule) || state.scheduleMutationId) return;
   const nextStatus = scheduleStatusCode(schedule) === "active" ? "inactive" : "active";
   state.scheduleMutationId = schedule.id;
+  renderSchedules();
+  showToast(`${schedule.title} 스케줄 상태를 변경하고 있습니다.`);
 
   try {
     const response = await fetch(`/api/schedules/${encodeURIComponent(schedule.id)}/status`, {
@@ -2571,12 +2953,14 @@ async function updateScheduleStatus(schedule) {
     showToast(error?.message || "스케줄 상태를 변경하지 못했습니다.");
   } finally {
     state.scheduleMutationId = "";
+    renderSchedules();
   }
 }
 
 async function deleteSchedule(schedule) {
   if (!schedule || !canEditSchedule(schedule) || state.scheduleMutationId) return;
   state.scheduleMutationId = schedule.id;
+  renderSchedules();
 
   try {
     const response = await fetch(`/api/schedules/${encodeURIComponent(schedule.id)}`, {
@@ -2596,6 +2980,7 @@ async function deleteSchedule(schedule) {
     showToast(error?.message || "스케줄을 삭제하지 못했습니다.");
   } finally {
     state.scheduleMutationId = "";
+    renderSchedules();
   }
 }
 
@@ -2733,6 +3118,9 @@ async function submitMetadataAuthoring(form) {
 }
 
 function bindEvents() {
+  if (state.eventsBound) return;
+  state.eventsBound = true;
+
   document.addEventListener("click", async (event) => {
     const nav = event.target.closest("[data-nav]");
     if (nav) {
@@ -2746,8 +3134,28 @@ function bindEvents() {
       return;
     }
 
+    if (event.target.closest("[data-refresh-dashboard-usage-full]")) {
+      void refreshDashboardUsageFull();
+      return;
+    }
+
+    if (event.target.closest("[data-dashboard-usage-export]")) {
+      void downloadDashboardUsageCsv();
+      return;
+    }
+
     if (event.target.closest("[data-refresh-admin-settings]")) {
       void refreshAdminConfiguration();
+      return;
+    }
+
+    if (event.target.closest("[data-open-admin-add]")) {
+      openAdminAddModal(event.target.closest("[data-open-admin-add]"));
+      return;
+    }
+
+    if (event.target.closest("[data-close-admin-add]") || event.target.id === "admin-add-modal") {
+      closeAdminAddModal();
       return;
     }
 
@@ -2904,18 +3312,26 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     const detailModal = $("#metadata-detail-modal");
     const statusModal = $("#metadata-status-modal");
-    const modal = detailModal && !detailModal.hidden ? detailModal : statusModal;
+    const adminModal = $("#admin-add-modal");
+    const modal = detailModal && !detailModal.hidden
+      ? detailModal
+      : statusModal && !statusModal.hidden
+        ? statusModal
+        : adminModal;
     if (!modal || modal.hidden) return;
     if (event.key === "Escape") {
       event.preventDefault();
       if (modal.id === "metadata-detail-modal") closeMetadataDetailModal();
-      else closeMetadataStatusModal();
+      else if (modal.id === "metadata-status-modal") closeMetadataStatusModal();
+      else closeAdminAddModal();
       return;
     }
     if (event.key !== "Tab") return;
     const dialog = modal.id === "metadata-detail-modal"
       ? $(".metadata-detail-dialog", modal)
-      : $(".metadata-status-dialog", modal);
+      : modal.id === "metadata-status-modal"
+        ? $(".metadata-status-dialog", modal)
+        : $(".admin-add-dialog", modal);
     const focusable = dialog
       ? [...dialog.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")]
       : [];
@@ -2975,6 +3391,11 @@ function bindEvents() {
     await saveGaiaApiCaller(event.currentTarget);
   });
 
+  $("#admin-add-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await submitAdministrator(event.currentTarget);
+  });
+
   $("#schedule-form [name='repeat']").addEventListener("change", syncScheduleTimingFields);
   $("#schedule-form [name='time']").addEventListener("input", updateSchedulePreview);
   $("#schedule-form [name='interval_minutes']").addEventListener("change", () => {
@@ -2996,6 +3417,17 @@ async function initialize() {
     return;
   }
 
+  // Bind user actions as soon as the Portal identity and initial data exist.
+  // Phoenix/MongoDB reads below can be slow; they must not delay button handling.
+  renderAccessControls();
+  renderDashboard();
+  renderSchedules();
+  if (isAdmin()) {
+    renderMetadata();
+    renderSettings();
+  }
+  bindEvents();
+
   const startupTasks = [loadDashboardUsage(), loadSchedules()];
   if (isAdmin()) {
     startupTasks.push(
@@ -3014,7 +3446,6 @@ async function initialize() {
     renderMetadata();
     renderSettings();
   }
-  bindEvents();
 }
 
 initialize();

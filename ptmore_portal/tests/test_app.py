@@ -1,12 +1,14 @@
 from collections import defaultdict
 import copy
+import csv
+import io
 import json
 import os
 from pathlib import Path
 import re
 import sys
 import types
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -61,8 +63,16 @@ class FakePortalSettingsStore:
         if isinstance(policy, dict):
             self.settings["usage_policy"].update(policy)
 
+        admins = changed.get("admins")
+        if isinstance(admins, list):
+            self.settings["admins"] = copy.deepcopy(admins)
+
         self.settings["updated_by"] = actor.as_audit_actor()
-        self.record_audit("admin_settings_updated", actor, {"update": changed})
+        self.record_audit(
+            "portal_administrators_updated" if "admins" in changed else "admin_settings_updated",
+            actor,
+            {"update": changed},
+        )
         return self.read()
 
     def record_audit(self, action, actor, details) -> None:
@@ -105,7 +115,10 @@ _METADATA_RUNTIME_ENVIRONMENT_NAMES = (
     "PTMORE_PORTAL_AUDIT_COLLECTION",
     "PTMORE_SCHEDULE_COLLECTION",
     "PTMORE_SCHEDULE_RUN_COLLECTION",
+    "PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON",
     "PTMORE_USAGE_HISTORY_MODE",
+    "PTMORE_USAGE_HISTORY_ARCHIVE_MODE",
+    "PTMORE_USAGE_HISTORY_COLLECTION",
     "PTMORE_PHOENIX_ENDPOINT",
     "PTMORE_PHOENIX_API_KEY",
     "PTMORE_PHOENIX_PROJECTS_JSON",
@@ -126,6 +139,14 @@ def isolated_portal_runtime(monkeypatch):
     for name in _METADATA_RUNTIME_ENVIRONMENT_NAMES:
         monkeypatch.delenv(name, raising=False)
 
+    # Test mode has no production SSO/MongoDB bootstrap document.  Keep the
+    # synthetic test administrator explicit instead of relying on a sample
+    # administrator baked into application defaults.
+    monkeypatch.setenv(
+        "PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON",
+        json.dumps([{"employee_id": "2069026", "name": "문봉건"}]),
+    )
+
     class SuccessfulMongoProbe:
         def ping(self, *, uri: str, database: str) -> None:
             return None
@@ -137,6 +158,7 @@ def isolated_portal_runtime(monkeypatch):
     monkeypatch.setattr(portal_app, "_metadata_live_detail_reader_factory", None)
     monkeypatch.setattr(portal_app, "_phoenix_usage_config_factory", None)
     monkeypatch.setattr(portal_app, "_phoenix_usage_fetcher", None)
+    monkeypatch.setattr(portal_app, "_usage_history_archive_factory", None)
     # Status tests must never attempt to dial a developer's local or example
     # URI. Individual tests replace this with a recording/failing probe.
     monkeypatch.setattr(
@@ -182,6 +204,14 @@ def test_design_preview_routes_are_available() -> None:
     assert "PTMORE PKG Agent Portal" in response.text
     assert client.get("/static/styles.css").status_code == 200
     assert client.get("/static/app.js").status_code == 200
+
+
+def test_chrome_devtools_probe_is_acknowledged_without_a_404() -> None:
+    """Chrome probes this optional well-known path when DevTools is open."""
+
+    response = client.get("/.well-known/appspecific/com.chrome.devtools.json")
+    assert response.status_code == 204
+    assert response.content == b""
 
 
 def test_dummy_portal_contract_has_all_design_sections() -> None:
@@ -474,6 +504,541 @@ def test_dashboard_usage_route_never_falls_back_to_preview_when_phoenix_fails(
     }
 
 
+def test_dashboard_usage_archives_full_phoenix_result_after_fetch_and_exports_csv(
+    monkeypatch,
+) -> None:
+    class FakePhoenixConfiguration:
+        is_configured = True
+        projects = ("router-runtime",)
+        configuration_errors = ()
+
+    calls: list[str] = []
+    covered_scopes: set[tuple[str, date]] = set()
+    stored_records: list[dict[str, str]] = [
+        {
+            "query_time": "2026-07-01T09:10:00+09:00",
+            "date": "2026-07-01",
+            "platform": "GAIA",
+            "user_id": "2040001",
+            "question": "과거 보관 질문",
+            "project": "router-runtime",
+            "trace_id": "old-trace",
+        }
+    ]
+
+    class FakeArchive:
+        def covered_scopes(self, *, start_day, end_day, source_projects=None):
+            calls.append("coverage")
+            projects = tuple(source_projects or ())
+            return {
+                (project, scope_day)
+                for project, scope_day in covered_scopes
+                if start_day <= scope_day <= end_day and (not projects or project in projects)
+            }
+
+        def refresh(
+            self,
+            records,
+            *,
+            start_day,
+            end_day,
+            source_projects,
+            refresh_started_at=None,
+        ):
+            calls.append("refresh")
+            assert tuple(source_projects) == ("router-runtime",)
+            assert all(record["trace_id"] == "live-trace" for record in records)
+            assert refresh_started_at
+            stored_records[:] = [
+                *[
+                    dict(record, date=str(record["query_time"])[:10])
+                    for record in records
+                ],
+                *[
+                    record
+                    for record in stored_records
+                    if record["date"] < start_day.isoformat()
+                ],
+            ]
+            current = start_day
+            while current <= end_day:
+                for project in source_projects:
+                    covered_scopes.add((str(project), current))
+                current += timedelta(days=1)
+            return types.SimpleNamespace(upserted_count=len(records), removed_count=0)
+
+        def read_records(self, *, start_day=None, end_day=None):
+            calls.append("read")
+            if start_day is None:
+                return copy.deepcopy(stored_records)
+            return [
+                copy.deepcopy(record)
+                for record in stored_records
+                if start_day.isoformat() <= record["date"] <= end_day.isoformat()
+            ]
+
+        def close(self):
+            calls.append("close")
+
+    def fake_fetcher(_configuration, *, days, today):
+        calls.append("fetch")
+        assert days == 21
+        return [
+            {
+                "query_time": f"{today.isoformat()}T10:20:30+09:00",
+                "platform": "CUBE",
+                "user_id": "2069026",
+                "question": "실시간 Phoenix 질문",
+                "project": "router-runtime",
+                "trace_id": "live-trace",
+            }
+        ]
+
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_MODE", "phoenix")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_ARCHIVE_MODE", "configured")
+    monkeypatch.setenv("MONGODB_URI", "mongodb://unit-test")
+    monkeypatch.setenv("MONGODB_DATABASE", "ptmore")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_COLLECTION", "portal_usage_history")
+    monkeypatch.setattr(
+        portal_app,
+        "_phoenix_usage_config_factory",
+        lambda: FakePhoenixConfiguration(),
+    )
+    monkeypatch.setattr(portal_app, "_phoenix_usage_fetcher", fake_fetcher)
+    monkeypatch.setattr(portal_app, "_usage_history_archive_factory", FakeArchive)
+
+    dashboard_response = client.get("/api/dashboard/usage", headers=STANDARD_USER_HEADERS)
+
+    assert dashboard_response.status_code == 200
+    payload = dashboard_response.json()
+    assert calls[:4] == ["read", "coverage", "close", "fetch"]
+    assert payload["source"]["archive"] == {
+        "mode": "configured",
+        "status": "synchronized",
+        "collection": "portal_usage_history",
+        "full_refresh": False,
+        "updated_day_count": 21,
+        "updated_range_count": 1,
+        "upserted_count": 1,
+        "removed_count": 0,
+        "message": "MongoDB 보관 이력을 표시하고 당일·누락 날짜만 Phoenix에서 갱신했습니다.",
+    }
+    assert payload["usage_history"][-1]["question"] == "실시간 Phoenix 질문"
+
+    export_response = client.get(
+        "/api/dashboard/usage/export.csv?scope=all",
+        headers=ADMIN_HEADERS,
+    )
+
+    assert export_response.status_code == 200
+    assert export_response.headers["content-type"].startswith("text/csv")
+    assert "attachment; filename=\"ptmore_usage_history_all_all.csv\"" == export_response.headers[
+        "content-disposition"
+    ]
+    csv_text = export_response.content.decode("utf-8-sig")
+    csv_lines = csv_text.splitlines()
+    assert csv_lines[0] == "PROJECT,일자,시간,플랫폼,사용자(사번),질문내용"
+    assert "router-runtime,2026-07-01,09:10:00,GAIA,2040001,과거 보관 질문" in csv_lines
+    assert any("실시간 Phoenix 질문" in line for line in csv_lines)
+
+
+def test_recent_usage_csv_remains_available_to_an_ordinary_portal_user() -> None:
+    response = client.get(
+        "/api/dashboard/usage/export.csv",
+        headers=STANDARD_USER_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+
+
+def test_historical_usage_csv_reads_archive_without_live_phoenix(monkeypatch) -> None:
+    historical_day = portal_app._recent_kst_period()[0] - timedelta(days=1)
+    calls: list[object] = []
+
+    class FakeArchive:
+        def read_records(self, *, start_day=None, end_day=None):
+            calls.append(("read", start_day, end_day))
+            return [
+                {
+                    "query_time": f"{historical_day.isoformat()}T09:10:00+09:00",
+                    "date": historical_day.isoformat(),
+                    "platform": "CUBE",
+                    "user_id": "2040001",
+                    "question": "Phoenix 없이 보관 이력 조회",
+                    "project": "router-runtime",
+                    "trace_id": "archived-trace",
+                }
+            ]
+
+        def close(self):
+            calls.append("close")
+
+    def unexpected_phoenix(*_args, **_kwargs):
+        raise AssertionError("fully historical export must not call Phoenix")
+
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_MODE", "phoenix")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_ARCHIVE_MODE", "configured")
+    monkeypatch.setenv("MONGODB_URI", "mongodb://unit-test")
+    monkeypatch.setenv("MONGODB_DATABASE", "ptmore")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_COLLECTION", "portal_usage_history")
+    monkeypatch.setattr(portal_app, "_phoenix_usage_config_factory", unexpected_phoenix)
+    monkeypatch.setattr(portal_app, "_usage_history_archive_factory", FakeArchive)
+
+    response = client.get(
+        "/api/dashboard/usage/export.csv"
+        f"?start_date={historical_day.isoformat()}&end_date={historical_day.isoformat()}",
+        headers=ADMIN_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert "Phoenix 없이 보관 이력 조회" in response.content.decode("utf-8-sig")
+    assert calls == [("read", historical_day, historical_day), "close"]
+
+
+def test_long_term_usage_csv_requires_an_administrator_before_archive_access(monkeypatch) -> None:
+    historical_day = portal_app._recent_kst_period()[0] - timedelta(days=1)
+    opened = False
+
+    def archive_factory():
+        nonlocal opened
+        opened = True
+        raise AssertionError("ordinary user must be blocked before archive access")
+
+    monkeypatch.setattr(portal_app, "_usage_history_archive_factory", archive_factory)
+
+    all_response = client.get(
+        "/api/dashboard/usage/export.csv?scope=all",
+        headers=STANDARD_USER_HEADERS,
+    )
+    historical_response = client.get(
+        "/api/dashboard/usage/export.csv"
+        f"?start_date={historical_day.isoformat()}&end_date={historical_day.isoformat()}",
+        headers=STANDARD_USER_HEADERS,
+    )
+
+    for response in (all_response, historical_response):
+        assert response.status_code == 403
+        assert response.json()["detail"]["code"] == "usage_history_export_admin_required"
+    assert opened is False
+
+
+def test_usage_csv_escapes_spreadsheet_formula_cells() -> None:
+    response = portal_app._usage_history_csv_response(
+        [
+            {
+                "project": "=PROJECT()",
+                "date": "2026-08-10",
+                "query_time": "2026-08-10T09:10:00+09:00",
+                "platform": "+CUBE",
+                "user_id": "-2040001",
+                "question": " @HYPERLINK(\"https://example.test\")",
+            }
+        ],
+        start_day=date(2026, 8, 10),
+        end_day=date(2026, 8, 10),
+    )
+
+    rows = list(csv.reader(io.StringIO(response.body.decode("utf-8-sig"))))
+    assert rows[0] == ["PROJECT", "일자", "시간", "플랫폼", "사용자(사번)", "질문내용"]
+    assert rows[1] == [
+        "'=PROJECT()",
+        "2026-08-10",
+        "09:10:00",
+        "'+CUBE",
+        "'-2040001",
+        "'@HYPERLINK(\"https://example.test\")",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("archive_collection", "metadata_map"),
+    [
+        ("portal_schedules", None),
+        ("metadata_collection_collision", {"table_catalog": "metadata_collection_collision"}),
+    ],
+)
+def test_usage_archive_collection_collision_is_rejected_before_fetch_or_write(
+    monkeypatch,
+    archive_collection,
+    metadata_map,
+) -> None:
+    class FakePhoenixConfiguration:
+        is_configured = True
+        projects = ("router-runtime",)
+        configuration_errors = ()
+
+    calls: list[str] = []
+
+    def unexpected_fetch(*_args, **_kwargs):
+        calls.append("fetch")
+        raise AssertionError("collection collision must stop before Phoenix fetch")
+
+    def unexpected_archive():
+        calls.append("archive")
+        raise AssertionError("collection collision must stop before archive open")
+
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_MODE", "phoenix")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_ARCHIVE_MODE", "configured")
+    monkeypatch.setenv("MONGODB_URI", "mongodb://unit-test")
+    monkeypatch.setenv("MONGODB_DATABASE", "ptmore")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_COLLECTION", archive_collection)
+    if metadata_map is not None:
+        monkeypatch.setenv("PTMORE_METADATA_MONGODB_COLLECTION_MAP_JSON", json.dumps(metadata_map))
+    monkeypatch.setattr(
+        portal_app,
+        "_phoenix_usage_config_factory",
+        lambda: FakePhoenixConfiguration(),
+    )
+    monkeypatch.setattr(portal_app, "_phoenix_usage_fetcher", unexpected_fetch)
+    monkeypatch.setattr(portal_app, "_usage_history_archive_factory", unexpected_archive)
+
+    response = client.get("/api/dashboard/usage", headers=STANDARD_USER_HEADERS)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "usage_history_archive_not_ready",
+        "message": "장기 사용 이력 보관 MongoDB 설정이 완료되지 않았습니다.",
+        "missing": ["PTMORE_USAGE_HISTORY_COLLECTION"],
+    }
+    assert calls == []
+
+
+def test_dashboard_usage_uses_archive_and_fetches_only_current_and_missing_days(
+    monkeypatch,
+) -> None:
+    class FakePhoenixConfiguration:
+        is_configured = True
+        projects = ("router-runtime", "analysis-runtime")
+        configuration_errors = ()
+
+    start_day, end_day = portal_app._recent_kst_period()
+    missing_day = start_day + timedelta(days=4)
+    calls: list[object] = []
+    coverage = {
+        (project, scope_day)
+        for project in FakePhoenixConfiguration.projects
+        for scope_day in portal_app._usage_days(start_day, end_day)
+        if scope_day != missing_day
+    }
+    stored_records = [
+        {
+            "query_time": f"{start_day.isoformat()}T09:00:00+09:00",
+            "date": start_day.isoformat(),
+            "platform": "CUBE",
+            "user_id": "2069026",
+            "question": "보관된 첫 질문",
+            "project": "router-runtime",
+            "trace_id": "archived-trace",
+        }
+    ]
+
+    class FakeArchive:
+        def covered_scopes(self, *, start_day, end_day, source_projects=None):
+            calls.append(("coverage", start_day, end_day))
+            projects = tuple(source_projects or ())
+            return {
+                (project, scope_day)
+                for project, scope_day in coverage
+                if start_day <= scope_day <= end_day and (not projects or project in projects)
+            }
+
+        def refresh(
+            self,
+            records,
+            *,
+            start_day,
+            end_day,
+            source_projects,
+            refresh_started_at=None,
+        ):
+            calls.append(("refresh", start_day, end_day))
+            assert tuple(source_projects) == FakePhoenixConfiguration.projects
+            assert refresh_started_at
+            current = start_day
+            while current <= end_day:
+                for project in source_projects:
+                    coverage.add((str(project), current))
+                current += timedelta(days=1)
+            stored_records.extend(
+                dict(record, date=str(record["query_time"])[:10])
+                for record in records
+            )
+            return types.SimpleNamespace(upserted_count=len(records), removed_count=0)
+
+        def read_records(self, *, start_day=None, end_day=None):
+            calls.append(("read", start_day, end_day))
+            if start_day is None:
+                return copy.deepcopy(stored_records)
+            return [
+                copy.deepcopy(record)
+                for record in stored_records
+                if start_day <= date.fromisoformat(record["date"]) <= end_day
+            ]
+
+        def close(self):
+            calls.append("close")
+
+    def fake_fetcher(_configuration, *, days, today):
+        calls.append(("fetch", days, today))
+        return [
+            {
+                "query_time": f"{today.isoformat()}T10:20:30+09:00",
+                "platform": "CUBE",
+                "user_id": "2069026",
+                "question": "선택 조회 Phoenix 질문",
+                "project": "router-runtime",
+                "trace_id": f"trace-{today.isoformat()}",
+            }
+        ]
+
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_MODE", "phoenix")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_ARCHIVE_MODE", "configured")
+    monkeypatch.setenv("MONGODB_URI", "mongodb://unit-test")
+    monkeypatch.setenv("MONGODB_DATABASE", "ptmore")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_COLLECTION", "portal_usage_history")
+    monkeypatch.setattr(
+        portal_app,
+        "_phoenix_usage_config_factory",
+        lambda: FakePhoenixConfiguration(),
+    )
+    monkeypatch.setattr(portal_app, "_phoenix_usage_fetcher", fake_fetcher)
+    monkeypatch.setattr(portal_app, "_usage_history_archive_factory", FakeArchive)
+
+    response = client.get("/api/dashboard/usage", headers=STANDARD_USER_HEADERS)
+
+    assert response.status_code == 200
+    assert [entry[1:] for entry in calls if isinstance(entry, tuple) and entry[0] == "fetch"] == [
+        (1, missing_day),
+        (1, end_day),
+    ]
+    archive = response.json()["source"]["archive"]
+    assert archive["full_refresh"] is False
+    assert archive["updated_day_count"] == 2
+    assert archive["updated_range_count"] == 2
+
+
+def test_dashboard_usage_full_refresh_is_admin_only_and_fetches_all_three_weeks(
+    monkeypatch,
+) -> None:
+    class FakePhoenixConfiguration:
+        is_configured = True
+        projects = ("router-runtime",)
+        configuration_errors = ()
+
+    start_day, end_day = portal_app._recent_kst_period()
+    calls: list[object] = []
+
+    class FakeArchive:
+        def covered_scopes(self, *, start_day, end_day, source_projects=None):
+            calls.append(("coverage", start_day, end_day))
+            return {
+                (project, scope_day)
+                for project in tuple(source_projects or ())
+                for scope_day in portal_app._usage_days(start_day, end_day)
+            }
+
+        def refresh(
+            self,
+            records,
+            *,
+            start_day,
+            end_day,
+            source_projects,
+            refresh_started_at=None,
+        ):
+            calls.append(("refresh", start_day, end_day, len(records)))
+            return types.SimpleNamespace(upserted_count=len(records), removed_count=0)
+
+        def read_records(self, *, start_day=None, end_day=None):
+            calls.append(("read", start_day, end_day))
+            return []
+
+        def close(self):
+            calls.append("close")
+
+    def fake_fetcher(_configuration, *, days, today):
+        calls.append(("fetch", days, today))
+        return []
+
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_MODE", "phoenix")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_ARCHIVE_MODE", "configured")
+    monkeypatch.setenv("MONGODB_URI", "mongodb://unit-test")
+    monkeypatch.setenv("MONGODB_DATABASE", "ptmore")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_COLLECTION", "portal_usage_history")
+    monkeypatch.setattr(portal_app, "_phoenix_usage_config_factory", lambda: FakePhoenixConfiguration())
+    monkeypatch.setattr(portal_app, "_phoenix_usage_fetcher", fake_fetcher)
+    monkeypatch.setattr(portal_app, "_usage_history_archive_factory", FakeArchive)
+
+    forbidden = client.post("/api/dashboard/usage/refresh", headers=STANDARD_USER_HEADERS)
+    assert forbidden.status_code == 403
+    assert calls == []
+
+    response = client.post("/api/dashboard/usage/refresh", headers=ADMIN_HEADERS)
+
+    assert response.status_code == 200
+    assert ("fetch", 21, end_day) in calls
+    assert ("refresh", start_day, end_day, 0) in calls
+    archive = response.json()["source"]["archive"]
+    assert archive["full_refresh"] is True
+    assert archive["updated_day_count"] == 21
+
+
+def test_dashboard_usage_full_refresh_requires_live_phoenix_and_archive(monkeypatch) -> None:
+    response = client.post("/api/dashboard/usage/refresh", headers=ADMIN_HEADERS)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "phoenix_usage_not_ready",
+        "message": "최근 3주 전체 새로고침에는 Phoenix 조회 모드가 필요합니다.",
+    }
+
+
+def test_dashboard_does_not_mutate_archive_when_required_phoenix_fetch_fails(monkeypatch) -> None:
+    class FakePhoenixConfiguration:
+        is_configured = True
+        projects = ("router-runtime",)
+        configuration_errors = ()
+
+    calls: list[str] = []
+
+    def failing_fetcher(*_args, **_kwargs):
+        raise portal_app.PhoenixUsageUnavailableError("not exposed")
+
+    class FakeArchive:
+        def covered_scopes(self, *, start_day, end_day, source_projects=None):
+            calls.append("coverage")
+            return set()
+
+        def read_records(self, *, start_day=None, end_day=None):
+            calls.append("read")
+            return []
+
+        def refresh(self, *_args, **_kwargs):
+            calls.append("refresh")
+            raise AssertionError("Phoenix failure must not begin an archive refresh")
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_MODE", "phoenix")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_ARCHIVE_MODE", "configured")
+    monkeypatch.setenv("MONGODB_URI", "mongodb://unit-test")
+    monkeypatch.setenv("MONGODB_DATABASE", "ptmore")
+    monkeypatch.setattr(
+        portal_app,
+        "_phoenix_usage_config_factory",
+        lambda: FakePhoenixConfiguration(),
+    )
+    monkeypatch.setattr(portal_app, "_phoenix_usage_fetcher", failing_fetcher)
+    monkeypatch.setattr(portal_app, "_usage_history_archive_factory", FakeArchive)
+
+    response = client.get("/api/dashboard/usage", headers=STANDARD_USER_HEADERS)
+
+    assert response.status_code == 503
+    assert "refresh" not in calls
+
+
 def test_dashboard_usage_route_reports_unconfigured_phoenix_without_dummy_data(
     monkeypatch,
 ) -> None:
@@ -487,6 +1052,27 @@ def test_dashboard_usage_route_reports_unconfigured_phoenix_without_dummy_data(
     assert "PTMORE_PHOENIX_ENDPOINT" in detail["missing"]
     assert "PTMORE_PHOENIX_API_KEY" in detail["missing"]
     assert "PTMORE_PHOENIX_PROJECTS_JSON" in detail["missing"]
+
+
+def test_metadata_status_reports_usage_history_archive_readiness(monkeypatch) -> None:
+    monkeypatch.setenv("MONGODB_URI", "mongodb://unit-test")
+    monkeypatch.setenv("MONGODB_DATABASE", "ptmore")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_ARCHIVE_MODE", "configured")
+    monkeypatch.setenv("PTMORE_USAGE_HISTORY_COLLECTION", "portal_usage_history")
+
+    response = client.get("/api/metadata-authoring/status", headers=ADMIN_HEADERS)
+
+    assert response.status_code == 200
+    archive_status = response.json()["usage_history_archive"]
+    assert archive_status == {
+        "mode": "configured",
+        "configured": True,
+        "ready": True,
+        "storage_status": "ready",
+        "collection": "portal_usage_history",
+        "configuration_errors": [],
+        "message": "Phoenix 최근 조회 결과를 MongoDB에 날짜별로 동기화해 장기 이력을 보관합니다.",
+    }
 
 
 def test_standard_user_preview_can_view_all_schedules_but_only_owns_some() -> None:
@@ -2025,3 +2611,148 @@ def test_admin_can_read_and_update_settings_without_returning_secrets(
     assert reread["gaia_api_caller_employee_id"] == "2093012"
     assert reread["usage_policy"]["active_user_min_distinct_days"] == 4
     assert reread["usage_policy"]["active_user_min_chat_count"] == 12
+
+
+def test_bootstrap_admin_must_register_self_before_adding_other_administrators(
+    fake_portal_settings_store,
+) -> None:
+    """Sample admins are not persisted; bootstrap access has a safe first step."""
+
+    assert fake_portal_settings_store.settings["admins"] == []
+
+    initial = client.get("/api/admin/settings", headers=ADMIN_HEADERS)
+    assert initial.status_code == 200
+    assert initial.json()["admins"] == [
+        {
+            "employee_id": "2069026",
+            "name": "문봉건",
+            "role": "Bootstrap Admin",
+            "scope": "초기 관리자 등록",
+            "status": "활성",
+        }
+    ]
+
+    blocked = client.post(
+        "/api/settings/admins",
+        json={"employee_id": "2079411", "employee_name": "최은서"},
+        headers=ADMIN_HEADERS,
+    )
+    assert blocked.status_code == 422
+    assert blocked.json()["detail"]["code"] == "bootstrap_self_registration_required"
+    assert fake_portal_settings_store.settings["admins"] == []
+
+    registered = client.post(
+        "/api/settings/admins",
+        json={"employee_id": "2069026", "employee_name": "문봉건"},
+        headers=ADMIN_HEADERS,
+    )
+    assert registered.status_code == 201
+    payload = registered.json()
+    assert payload["administrator"] == {
+        "employee_id": "2069026",
+        "name": "문봉건",
+        "role": "관리자",
+        "scope": "포털 설정 · 메타데이터 · 스케줄 관리",
+        "status": "활성",
+    }
+    assert fake_portal_settings_store.settings["admins"] == [payload["administrator"]]
+    assert fake_portal_settings_store.audit_records[-1]["action"] == "portal_administrators_updated"
+
+
+def test_administrator_crud_persists_employee_id_authorization(
+    fake_portal_settings_store,
+) -> None:
+    """Only active admins can mutate a unique, server-built admin list."""
+
+    first = client.post(
+        "/api/admin/settings/admins",
+        json={"employee_id": "2069026", "name": "문봉건"},
+        headers=ADMIN_HEADERS,
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        "/api/admin/settings/admins",
+        json={"employee_id": "2079411", "name": "최은서"},
+        headers=ADMIN_HEADERS,
+    )
+    assert second.status_code == 201
+    assert {admin["employee_id"] for admin in second.json()["admins"]} == {
+        "2069026",
+        "2079411",
+    }
+
+    duplicate = client.post(
+        "/api/admin/settings/admins",
+        json={"employee_id": "2079411", "name": "다른 이름"},
+        headers=ADMIN_HEADERS,
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "administrator_already_registered"
+
+    malformed = client.post(
+        "/api/admin/settings/admins",
+        json={"employee_id": "admin", "name": "잘못된 사번"},
+        headers=ADMIN_HEADERS,
+    )
+    assert malformed.status_code == 422
+
+    forged = client.post(
+        "/api/admin/settings/admins",
+        json={"employee_id": "2093012", "name": "이도윤"},
+        headers=STANDARD_USER_HEADERS,
+    )
+    assert forged.status_code == 403
+    assert forged.json()["detail"]["code"] == "admin_required"
+
+    inactive = client.patch(
+        "/api/admin/settings/admins/2079411",
+        json={"status": "비활성"},
+        headers=ADMIN_HEADERS,
+    )
+    assert inactive.status_code == 200
+    assert inactive.json()["administrator"]["status"] == "비활성"
+    assert next(
+        admin
+        for admin in fake_portal_settings_store.settings["admins"]
+        if admin["employee_id"] == "2079411"
+    )["status"] == "비활성"
+
+    self_deactivate = client.patch(
+        "/api/admin/settings/admins/2069026",
+        json={"status": "비활성"},
+        headers=ADMIN_HEADERS,
+    )
+    assert self_deactivate.status_code == 422
+    assert self_deactivate.json()["detail"]["code"] == "administrator_self_deactivation_forbidden"
+
+    deleted = client.delete(
+        "/api/admin/settings/admins/2079411",
+        headers=ADMIN_HEADERS,
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert deleted.json()["administrator"] is None
+    assert [admin["employee_id"] for admin in fake_portal_settings_store.settings["admins"]] == [
+        "2069026"
+    ]
+
+
+def test_local_virtual_administrator_is_never_written_to_real_admin_list(
+    monkeypatch,
+    fake_portal_settings_store,
+) -> None:
+    """The fixed local identity authorizes development but is not persisted."""
+
+    monkeypatch.setattr(portal_app, "_portal_auth_mode_override", "local")
+    response = client.post(
+        "/api/admin/settings/admins",
+        json={"employee_id": "2079411", "name": "최은서"},
+    )
+    assert response.status_code == 201
+    assert [admin["employee_id"] for admin in fake_portal_settings_store.settings["admins"]] == [
+        "2079411"
+    ]
+    assert "2011111" not in {
+        admin["employee_id"] for admin in fake_portal_settings_store.settings["admins"]
+    }

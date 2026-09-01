@@ -278,6 +278,7 @@ def test_fetch_recent_usage_merges_projects_paginates_and_deduplicates_each_proj
         "user_id": "2069026",
         "question": "DA 공정 현황 알려줘",
         "project": "project-a",
+        "trace_id": "shared-trace",
     }
     assert records[2]["platform"] == "CUBE_SCHEDULING"
     assert records[2]["user_id"] == "2071044"

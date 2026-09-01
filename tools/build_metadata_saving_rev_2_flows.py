@@ -48,6 +48,34 @@ REV2_CONTRACT_VERSION = "metadata_authoring.rev_2.v1"
 REV2_NOTE_PREFIX = "note-rev2-metadata-saving-"
 REV2_NOTE_COUNT = 5
 
+# Table Catalog와 Main Flow Filter는 기존 Writer가 이미 저장 스키마와
+# 중복 정책을 검증한다. 신규 정의를 활성 registry의 참조로 오인해 막지
+# 않도록, rev_2에서는 비차단 초기 변환 뒤에 해당 기존 저장 경로를 재사용한다.
+LEGACY_BACKED_REV2_CONFIG = {
+    "table_catalog": {
+        "label": "테이블 카탈로그",
+        "flow_label": "Table Catalog",
+        "legacy_flow_number": "03",
+        "transformer_file": "01_table_catalog_initial_transformer.py",
+        "transform_prompt_file": "01_table_catalog_initial_transform_prompt_ko.md",
+        "portal_file": "08a_table_catalog_portal_contract_enricher.py",
+        "preserved_contract_sentence": "SQL·placeholder·컬럼 mapping이 있으면",
+        "candidate_description": "dataset·source·컬럼 후보",
+        "identity": "dataset_key·물리 컬럼 매핑",
+    },
+    "main_flow_filter": {
+        "label": "Main Flow Filter",
+        "flow_label": "Main Flow Filter",
+        "legacy_flow_number": "04",
+        "transformer_file": "01_main_flow_filter_initial_transformer.py",
+        "transform_prompt_file": "01_main_flow_filter_initial_transform_prompt_ko.md",
+        "portal_file": "08a_main_flow_filter_portal_contract_enricher.py",
+        "preserved_contract_sentence": "filter_key·별칭·operator·값 타입/형태가 있으면",
+        "candidate_description": "공통 필터 후보",
+        "identity": "filter_key·표준 필터 정의",
+    },
+}
+
 REV2_DISPLAY_NAMES = {
     "domain": "02. v5_domain_saving_rev_2",
     "table_catalog": "03. v5_table_catalog_saving_rev_2",
@@ -63,17 +91,20 @@ REV2_FILE_NAMES = {
 def _rev2_sticky_note_specs(flow_key: str) -> list[dict[str, Any]]:
     """Describe the rev_2 authoring canvas without adding executable nodes."""
 
-    # Table Catalog authoring is deliberately lighter than the domain/main
-    # filter rev_2 paths.  Its operators already have a proven legacy writer
-    # flow, so rev_2 only adds a best-effort wording transform before that
-    # existing path.  Do not describe snapshot/guard nodes that are not on
-    # this graph: the canvas itself should make the non-blocking contract clear.
-    if flow_key == "table_catalog":
+    # Table Catalog와 Main Flow Filter는 검증 가능한 기존 Writer 경로를
+    # 유지한다. rev_2의 초기 변환은 설명만 정돈할 뿐 저장을 차단하지 않는다.
+    # Canvas 설명도 실제 그래프에 없는 snapshot/guard 노드를 언급하지 않는다.
+    if flow_key in LEGACY_BACKED_REV2_CONFIG:
+        config = LEGACY_BACKED_REV2_CONFIG[flow_key]
+        label = config["label"]
+        legacy_flow_number = config["legacy_flow_number"]
+        preserved_contract_sentence = config["preserved_contract_sentence"]
+        candidate_description = config["candidate_description"]
         return [
             {
                 "id": "01-request",
                 "description": (
-                    "## ① 테이블 카탈로그 등록 요청\n\n"
+                    f"## ① {label} 등록 요청\n\n"
                     "- **Chat Input / 요청 로더**: 자연어 등록 요청과 테스트 실행 여부를 정리합니다.\n"
                     "- **중복 처리 정책**: skip·merge·replace·create_new 중 선택한 방식을 기존 저장 경로에 전달합니다."
                 ),
@@ -88,7 +119,7 @@ def _rev2_sticky_note_specs(flow_key: str) -> list[dict[str, Any]]:
                 "description": (
                     "## ② 비차단 초기 변환\n\n"
                     "- **초기 변환 Prompt / LLM / 변환기**: 설명 문장을 읽기 쉽게 정리합니다.\n"
-                    "- SQL·placeholder·컬럼 mapping이 있으면 원문을 그대로 보존하며, 이 단계는 저장을 차단하지 않습니다."
+                    f"- {preserved_contract_sentence} 원문을 그대로 보존하며, 이 단계는 저장을 차단하지 않습니다."
                 ),
                 "x": 570.0,
                 "y": -760.0,
@@ -100,7 +131,7 @@ def _rev2_sticky_note_specs(flow_key: str) -> list[dict[str, Any]]:
                 "id": "03-legacy-extract",
                 "description": (
                     "## ③ 기존 후보 생성·정규화\n\n"
-                    "- **기존 Variables / Prompt / Language Model / 정규화기**: 기존 03번과 같은 방식으로 dataset·source·컬럼 후보를 생성합니다.\n"
+                    f"- **기존 Variables / Prompt / Language Model / 정규화기**: 기존 {legacy_flow_number}번과 같은 방식으로 {candidate_description}를 생성합니다.\n"
                     "- 새 사전 계약 Gate나 후보 차단 단계를 추가하지 않습니다."
                 ),
                 "x": 1410.0,
@@ -113,7 +144,7 @@ def _rev2_sticky_note_specs(flow_key: str) -> list[dict[str, Any]]:
                 "id": "04-legacy-write",
                 "description": (
                     "## ④ 기존 중복 검토·저장\n\n"
-                    "- **유사도 확인기 / Writer**: 기존 03번의 실제 필수 검증과 중복 처리 정책만 적용합니다.\n"
+                    f"- **유사도 확인기 / Writer**: 기존 {legacy_flow_number}번의 실제 필수 검증과 중복 처리 정책만 적용합니다.\n"
                     "- 테스트 실행 또는 실제 저장은 기존 MongoDB 계약을 그대로 사용합니다."
                 ),
                 "x": 2370.0,
@@ -126,7 +157,7 @@ def _rev2_sticky_note_specs(flow_key: str) -> list[dict[str, Any]]:
                 "id": "05-response",
                 "description": (
                     "## ⑤ 결과·채널 출력\n\n"
-                    "- **Response / Portal 계약 보강 / Message / API / Chat Output**: 기존 03번과 같은 등록 결과를 채팅과 API 응답으로 전달합니다.\n"
+                    f"- **Response / Portal 계약 보강 / Message / API / Chat Output**: 기존 {legacy_flow_number}번과 같은 등록 결과를 채팅과 API 응답으로 전달합니다.\n"
                     "- Portal이 사용하는 `metadata_authoring`·`data`·`write_result`·`trace` 필드는 출력 단계에서만 보강하며 저장 결과는 바꾸지 않습니다.\n"
                     "- 초기 변환 실패는 trace에만 남기며 결과를 막지 않습니다."
                 ),
@@ -239,15 +270,17 @@ def _is_note_node(node: dict[str, Any]) -> bool:
     return str(node.get("type") or "") == "noteNode"
 
 
-def _build_table_catalog_saving_flow_rev_2(donor: dict[str, Any], spec: Any) -> dict[str, Any]:
-    """Build the non-blocking Table Catalog variant on top of the proven legacy flow.
+def _build_legacy_backed_saving_flow_rev_2(donor: dict[str, Any], spec: Any) -> dict[str, Any]:
+    """Build a non-blocking rev_2 variant on top of its proven legacy flow.
 
-    Unlike the domain and main-filter rev_2 variants, Table Catalog requests often
-    contain a complete source-local SQL and mapping contract.  A second snapshot /
-    repair / global guard chain added more rejection points than value.  Keep the
-    original Request -> Variables -> Extract -> Normalizer -> Matcher -> Writer
-    path intact, with only an advisory text transform before it.
+    New Table Catalog mappings and Main Flow Filter definitions establish their
+    own local contract.  A snapshot / repair / global guard chain can mistake
+    those definitions for references to older aliases and reject valid saves.
+    Keep the original Request -> Variables -> Extract -> Normalizer -> Matcher
+    -> Writer path intact, with only an advisory wording transform before it.
     """
+
+    config = LEGACY_BACKED_REV2_CONFIG[spec.slug]
 
     proto = prototypes(donor)
     display_name = REV2_DISPLAY_NAMES[spec.slug]
@@ -256,7 +289,7 @@ def _build_table_catalog_saving_flow_rev_2(donor: dict[str, Any], spec: Any) -> 
         donor,
         display_name,
         (
-            "Isolated rev_2 Table Catalog saving flow: a non-blocking initial request "
+            f"Isolated rev_2 {config['flow_label']} saving flow: a non-blocking initial request "
             "transform followed by the existing legacy extraction, normalizer, matcher, "
             "writer, and response path."
         ),
@@ -289,7 +322,7 @@ def _build_table_catalog_saving_flow_rev_2(donor: dict[str, Any], spec: Any) -> 
         custom_node(
             proto["custom"],
             f"InitialSource-{suffix}",
-            base_folder / "01_table_catalog_initial_transformer.py",
+            base_folder / config["transformer_file"],
             650,
             0,
         ),
@@ -303,7 +336,7 @@ def _build_table_catalog_saving_flow_rev_2(donor: dict[str, Any], spec: Any) -> 
         prompt_node(
             proto["prompt"],
             f"PromptInitialTransform-{suffix}",
-            (base_folder / "01_table_catalog_initial_transform_prompt_ko.md").read_text(encoding="utf-8"),
+            (base_folder / config["transform_prompt_file"]).read_text(encoding="utf-8"),
             960,
             0,
         ),
@@ -324,7 +357,7 @@ def _build_table_catalog_saving_flow_rev_2(donor: dict[str, Any], spec: Any) -> 
         custom_node(
             proto["custom"],
             f"InitialTransformer-{suffix}",
-            base_folder / "01_table_catalog_initial_transformer.py",
+            base_folder / config["transformer_file"],
             1580,
             0,
         ),
@@ -367,7 +400,7 @@ def _build_table_catalog_saving_flow_rev_2(donor: dict[str, Any], spec: Any) -> 
         custom_node(
             proto["custom"],
             f"PortalContract-{suffix}",
-            base_folder / "08a_table_catalog_portal_contract_enricher.py",
+            base_folder / config["portal_file"],
             3990,
             0,
         ),
@@ -401,8 +434,8 @@ def _build_table_catalog_saving_flow_rev_2(donor: dict[str, Any], spec: Any) -> 
 
 
 def build_saving_flow_rev_2(donor: dict[str, Any], spec: Any) -> dict[str, Any]:
-    if spec.slug == "table_catalog":
-        return _build_table_catalog_saving_flow_rev_2(donor, spec)
+    if spec.slug in LEGACY_BACKED_REV2_CONFIG:
+        return _build_legacy_backed_saving_flow_rev_2(donor, spec)
 
     proto = prototypes(donor)
     display_name = REV2_DISPLAY_NAMES[spec.slug]
@@ -613,8 +646,8 @@ def _validate_flow(flow: dict[str, Any]) -> None:
     note_nodes = [node for node in nodes if _is_note_node(node)]
     note_ids = {str(node.get("id") or "") for node in note_nodes}
     endpoint_name = str(flow.get("endpoint_name") or "")
-    is_lightweight_table_catalog = endpoint_name.endswith("table-catalog-saving-rev-2")
-    expected_runtime_nodes, expected_edges = (17, 20) if is_lightweight_table_catalog else (20, 28)
+    is_legacy_backed = endpoint_name.endswith(("table-catalog-saving-rev-2", "main-flow-filter-saving-rev-2"))
+    expected_runtime_nodes, expected_edges = (17, 20) if is_legacy_backed else (20, 28)
     if (
         len(runtime_nodes) != expected_runtime_nodes
         or len(note_nodes) != REV2_NOTE_COUNT
@@ -637,13 +670,13 @@ def _validate_flow(flow: dict[str, Any]) -> None:
     if sum(node.get("data", {}).get("type") == "ChatOutput" for node in runtime_nodes) != 1:
         raise ValueError(f"rev_2 flow must contain one ChatOutput: {flow.get('name')}")
     runtime_ids = {str(node.get("id") or "") for node in runtime_nodes}
-    if is_lightweight_table_catalog:
+    if is_legacy_backed:
         if not any(node_id.startswith("InitialTransformer-") for node_id in runtime_ids):
-            raise ValueError(f"lightweight Table Catalog Flow is missing its initial transformer: {flow.get('name')}")
+            raise ValueError(f"legacy-backed rev_2 Flow is missing its initial transformer: {flow.get('name')}")
         if not any(node_id.startswith("InitialSource-") for node_id in runtime_ids):
-            raise ValueError(f"lightweight Table Catalog Flow is missing its initial source adapter: {flow.get('name')}")
+            raise ValueError(f"legacy-backed rev_2 Flow is missing its initial source adapter: {flow.get('name')}")
         if not any(node_id.startswith("PortalContract-") for node_id in runtime_ids):
-            raise ValueError(f"lightweight Table Catalog Flow is missing its Portal response adapter: {flow.get('name')}")
+            raise ValueError(f"legacy-backed rev_2 Flow is missing its Portal response adapter: {flow.get('name')}")
         prohibited_prefixes = (
             "MetadataSnapshot-",
             "AuthoringContext-",
@@ -654,7 +687,7 @@ def _validate_flow(flow: dict[str, Any]) -> None:
             "ResponseEnricher-",
         )
         if any(node_id.startswith(prohibited_prefixes) for node_id in runtime_ids):
-            raise ValueError(f"lightweight Table Catalog Flow contains a removed pre-write gate: {flow.get('name')}")
+            raise ValueError(f"legacy-backed rev_2 Flow contains a removed pre-write gate: {flow.get('name')}")
         initial_source = next(node for node in runtime_nodes if str(node.get("id") or "").startswith("InitialSource-"))
         initial_transformer = next(
             node for node in runtime_nodes if str(node.get("id") or "").startswith("InitialTransformer-")
@@ -696,11 +729,11 @@ Langflow Desktop 1.11.0에서 `{REV2_BUNDLE_FILE}` 하나를 import하거나 아
 ## 동작 계약
 
 - 기본값은 기존과 동일하게 테스트 실행입니다. 테스트 실행 중에는 MongoDB에 저장하지 않습니다.
-- `02` Domain 및 `04` Main Flow Filter rev_2는 `MONGO_URL` Credential Global Variable과 기존 `datagov` 컬렉션을 읽어 활성 계약을 확인합니다.
-- `03` Table Catalog rev_2는 기존 03번 저장 경로에 비차단 초기 문장 변환과 출력 전용 Portal 계약 보강만 추가한 경로입니다. 초기 변환은 SQL·컬럼 mapping 원문을 보존하며, snapshot·후보 복구·공통 Contract Guard로 저장을 선차단하지 않습니다.
-- 실제 저장 가능 여부는 각 Flow의 기존 normalizer와 writer가 판단합니다. `03`은 기존 03번의 필수 검증과 중복 처리 정책만 적용합니다.
+- `02` Domain rev_2만 `MONGO_URL` Credential Global Variable과 기존 `datagov` 컬렉션을 읽어 활성 계약을 확인합니다.
+- `03` Table Catalog와 `04` Main Flow Filter rev_2는 각 기존 저장 경로에 비차단 초기 문장 변환과 출력 전용 Portal 계약 보강만 추가한 경로입니다. 초기 변환은 사용자가 직접 쓴 실행/필터 계약을 보존하며, snapshot·후보 복구·공통 Contract Guard로 저장을 선차단하지 않습니다.
+- 실제 저장 가능 여부는 각 Flow의 기존 normalizer와 writer가 판단합니다. `03`과 `04`는 기존 필수 검증과 중복 처리 정책만 적용합니다.
 - 실제 저장은 기존 writer를 그대로 사용하므로 collection, `_id`, item payload, `registration_trace.raw_text` 형태는 기존과 같습니다.
-- `03`의 API terminal은 Portal 계약인 `status`, `data`, `metadata_authoring`, `write_result`, `trace`를 유지합니다. Portal 보강기는 Writer의 status·message·저장 결과를 변경하지 않습니다.
+- `03`과 `04`의 API terminal은 Portal 계약인 `status`, `data`, `metadata_authoring`, `write_result`, `trace`를 유지합니다. Portal 보강기는 Writer의 status·message·저장 결과를 변경하지 않습니다.
 - 각 Flow에는 실행과 연결되지 않은 5개 설명 Note가 있습니다. Note는 캔버스 안내용이며 실행 노드·엣지·저장 동작에는 영향을 주지 않습니다.
 - Sub Agent 내부에서 HITL resume을 사용하지 않습니다. 보완 응답을 받은 사용자가 입력을 수정해 새 요청으로 다시 실행합니다.
 - Router Tool은 계속 기존 02/03/04 Flow를 가리킵니다. rev_2 운영 전환은 별도 검증 후 명시적으로 수행해야 합니다.

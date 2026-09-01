@@ -11,7 +11,7 @@
 
 ## 처리 흐름
 
-`02` Domain과 `04` Main Flow Filter는 기존 rev_2의 계약 인지형 흐름을 유지합니다.
+`02` Domain만 기존 rev_2의 계약 인지형 흐름을 유지합니다.
 
 ```text
 사용자 원문
@@ -22,23 +22,23 @@
   -> 계약 검증 및 기존 writer
 ```
 
-반면 `03. v5_table_catalog_saving_rev_2`는 **기존 03 Table Catalog 저장 Flow를 기준으로** 아래처럼 단순화했습니다.
+반면 `03. v5_table_catalog_saving_rev_2`와 `04. v5_main_flow_filter_saving_rev_2`는 **각 기존 저장 Flow를 기준으로** 아래처럼 단순화했습니다.
 
 ```text
 사용자 원문
   -> 비차단 초기 문장 변환 LLM
-  -> 기존 03 Variables / 후보 추출 LLM / 결과 정규화기
+  -> 각 기존 03/04 Variables / 후보 추출 LLM / 결과 정규화기
   -> 기존 duplicate matcher
   -> 기존 writer
   -> 기존 응답
   -> Portal API 계약 보강(출력 전용)
 ```
 
-초기 변환기는 설명 문장만 정돈합니다. `query_template`, SQL placeholder, `filter_mappings`, `required_param_mappings`, 기본 표시 컬럼처럼 사용자가 직접 쓴 실행 계약은 원문을 그대로 다음 단계에 전달합니다. 초기 변환 LLM의 응답이 비어 있거나 형식이 달라도 원문으로 되돌아갈 뿐 저장을 차단하지 않습니다. 따라서 Table Catalog의 저장 가능 여부는 기존 03번처럼 결과 정규화기와 Writer의 실제 필수 계약만으로 결정합니다.
+초기 변환기는 설명 문장만 정돈합니다. Table Catalog의 `query_template`, SQL placeholder, `filter_mappings`, `required_param_mappings`, 기본 표시 컬럼과 Main Flow Filter의 `filter_key`, `column_candidates`, `operator`, `value_type`, `value_shape`처럼 사용자가 직접 쓴 계약은 원문을 그대로 다음 단계에 전달합니다. 초기 변환 LLM의 응답이 비어 있거나 형식이 달라도 원문으로 되돌아갈 뿐 저장을 차단하지 않습니다. 따라서 `03`과 `04`의 저장 가능 여부는 각 기존 결과 정규화기와 Writer의 실제 필수 계약만으로 결정합니다.
 
 마지막 Portal 계약 보강기는 이미 결정된 기존 Writer 결과 뒤에서만 동작합니다. Portal이 사용하는 `metadata_authoring.original_text`, `metadata_authoring.refined_text`, `metadata_authoring.contract_validation`, `data`, `write_result`, `trace`를 보완하지만, `status`, `success`, `message`, `answer_sections`, 후보 표와 저장 결과는 절대 바꾸지 않습니다. 따라서 Portal의 처리 과정·후보·저장 처리 탭을 유지하면서도 초기 변환 또는 API 표시용 필드 때문에 저장이 차단되지는 않습니다.
 
-Domain/Main Flow Filter의 정제 LLM은 snapshot에 포함된 후보를 설명에 사용하지만, 최종 승인은 Python 검증기가 수행합니다. 한 문장에 서로 다른 dataset·컬럼이 여러 개 등장하는 것은 모호성으로 보지 않고 각 표현을 따로 검증합니다. 같은 표현이 둘 이상의 활성 계약에 정확히 매칭되거나 등록된 후보가 없을 때만 저장을 보류합니다.
+Domain의 정제 LLM은 snapshot에 포함된 후보를 설명에 사용하지만, 최종 승인은 Python 검증기가 수행합니다. 한 문장에 서로 다른 dataset·컬럼이 여러 개 등장하는 것은 모호성으로 보지 않고 각 표현을 따로 검증합니다. 같은 표현이 둘 이상의 활성 계약에 정확히 매칭되거나 등록된 후보가 없을 때만 저장을 보류합니다. Main Flow Filter는 신규 `filter_key` 정의를 활성 Table Catalog의 물리 별칭 참조로 해석하지 않고 기존 04 Writer까지 전달합니다.
 
 사용자가 `section`, `key`, `dataset_key`, `filter_key`, `status`를 직접 적은 경우에는 해당 값을 등록 identity로 잠급니다. 후단 LLM이 비슷한 새 key를 만들더라도 원문 값을 복원하므로 기존 항목과의 중복을 피하기 위한 임의 이름 변경이 저장으로 이어지지 않습니다. 등록 대상 자체에 대한 domain 참조, 입력과 target이 같은 no-op 변환, 조건문에 단지 언급된 용어는 확정 변환 목록에서 제외합니다.
 
@@ -46,7 +46,7 @@ Domain/Main Flow Filter의 정제 LLM은 snapshot에 포함된 후보를 설명�
 
 산술 `derived_metrics.null_policy`는 사용자 원문이 결측값을 0으로 계산하라고 명시한 경우에만 `zero`를 사용합니다. 사용자가 결측값 처리 방식을 말하지 않았으면 추출 모델이 만든 값과 관계없이 `propagate`로 정규화합니다. 따라서 모델이 `null`, `preserve` 같은 비표준 값을 생성해도 사용자 원문에 별도 정책이 없는 CAPA 요청은 저장 계약 오류로 중단되지 않습니다.
 
-Table Catalog의 물리/표준 컬럼 보정은 기존 결과 정규화기 안의 source-local 규칙만 사용합니다. 예를 들어 원문과 최종 `SELECT`에 `OPER_NAME -> OPER_NM`이 명시되어 있고 약한 추출 후보가 `OPER_NAME -> OPER_NAME`으로 복사했다면, 원문과 SQL projection이 함께 증명하는 경우에만 `OPER_NM`으로 복원합니다. snapshot 기반 참조 확인, Candidate Repair, 공통 Contract Guard는 `03` 그래프에 연결하지 않습니다. 실제 SQL에 없는 매핑이나 같은 물리 컬럼의 상충 mapping처럼 기존 Writer가 판단해야 하는 오류만 기존 경로에서 안내합니다.
+Table Catalog의 물리/표준 컬럼 보정은 기존 결과 정규화기 안의 source-local 규칙만 사용합니다. 예를 들어 원문과 최종 `SELECT`에 `OPER_NAME -> OPER_NM`이 명시되어 있고 약한 추출 후보가 `OPER_NAME -> OPER_NAME`으로 복사했다면, 원문과 SQL projection이 함께 증명하는 경우에만 `OPER_NM`으로 복원합니다. snapshot 기반 참조 확인, Candidate Repair, 공통 Contract Guard는 `03`과 `04` 그래프에 연결하지 않습니다. 실제 SQL에 없는 매핑, 같은 물리 컬럼의 상충 mapping, Main Flow Filter의 필수 실행 필드 누락처럼 기존 Writer가 판단해야 하는 오류만 기존 경로에서 안내합니다.
 
 하나의 `section/key`가 명시된 요청은 최종 저장 item도 한 건이어야 합니다. 예를 들어 CAPA recipe 안의 장비 대수와 평균 UPH를 추출 모델이 별도 `quantity_terms`·`metric_terms`로 분해하더라도, rev_2는 명시된 recipe item을 선택하고 보조 item을 저장 대상에서 제외합니다. 기존 domain normalizer가 문장 속 일반적인 `Recipe`·`번호` 표현으로 별도 규칙을 추가한 경우에도 마지막 계약 가드에서 명시 identity 한 건만 유지합니다. 이 복구가 불가능한 경우는 사용자 입력 부족이 아니라 내부 후보 형태 오류로 처리하므로 같은 원문을 재입력 예시로 반복하지 않습니다.
 
@@ -138,7 +138,7 @@ mean, sum, nunique는 산술식이 아니라 각 입력 지표의 집계 기준�
 
 rev_2는 Sub Agent 내부 checkpoint/resume HITL을 사용하지 않습니다.
 
-1. 기존 metadata를 명시적으로 참조하는 모호성, 필수 source/query 누락, 실제 실행 컬럼 충돌은 writer 앞에서 fail-closed 처리합니다. 다만 self-contained Table Catalog의 모델 생성 별칭 중복·선택 설명 누락·활성 snapshot 읽기 실패는 자동 정리 또는 경고로 남기고 writer의 실제 계약 검증까지 진행합니다.
+1. Domain에서 기존 metadata를 명시적으로 참조하는 모호성, 필수 source/query 누락, 실제 실행 컬럼 충돌은 writer 앞에서 fail-closed 처리합니다. 반면 self-contained Table Catalog와 신규 Main Flow Filter 정의는 활성 alias 중복만으로 선차단하지 않고, 기존 Writer의 실제 계약 검증까지 진행합니다.
 2. Flow는 `needs_input`과 원문을 보존한 완성형 재입력 예시를 반환합니다.
 3. 후보가 여러 개면 사용자가 실제 계약과 맞는 완성 예시 하나를 그대로 복사합니다.
 4. 보완된 텍스트를 새 요청으로 다시 실행합니다.

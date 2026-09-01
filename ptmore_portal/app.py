@@ -12,6 +12,8 @@ from __future__ import annotations
 import base64
 import binascii
 import copy
+import csv
+import io
 import json
 import logging
 import os
@@ -27,10 +29,10 @@ from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from dotenv import load_dotenv
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -65,6 +67,7 @@ _DEFAULT_PORTAL_SETTINGS_COLLECTION = "portal_settings"
 _DEFAULT_PORTAL_AUDIT_COLLECTION = "portal_audit_log"
 _DEFAULT_SCHEDULE_COLLECTION = "portal_schedules"
 _DEFAULT_SCHEDULE_RUN_COLLECTION = "portal_schedule_runs"
+_DEFAULT_USAGE_HISTORY_COLLECTION = "portal_usage_history"
 _PORTAL_MONGODB_COLLECTION_ENVIRONMENTS = {
     "settings_collection": (
         "PTMORE_PORTAL_SETTINGS_COLLECTION",
@@ -100,6 +103,7 @@ _METADATA_LIVE_READ_RESERVED_COLLECTIONS = {
     _DEFAULT_PORTAL_AUDIT_COLLECTION,
     _DEFAULT_SCHEDULE_COLLECTION,
     _DEFAULT_SCHEDULE_RUN_COLLECTION,
+    _DEFAULT_USAGE_HISTORY_COLLECTION,
 }
 
 # The caller ID is a non-secret, administrator-managed value.  It is kept in
@@ -117,7 +121,11 @@ _PORTAL_AUTH_MODES = {"production", "local", "test"}
 _PORTAL_SESSION_IDENTITY_KEY = "ptmore_portal_identity"
 _PORTAL_SESSION_COOKIE_NAME = "ptmore_portal_session"
 _PORTAL_UNCONFIGURED_SESSION_SECRET = "ptmore-portal-session-not-configured"
-_PORTAL_LOCAL_EMPLOYEE_ID = "2069026"
+_PORTAL_BOOTSTRAP_ADMINS_ENVIRONMENT = "PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON"
+_PORTAL_ADMIN_EMPLOYEE_ID_PATTERN = re.compile(r"^\d{7}$")
+_PORTAL_ADMIN_DEFAULT_ROLE = "관리자"
+_PORTAL_ADMIN_DEFAULT_SCOPE = "포털 설정 · 메타데이터 · 스케줄 관리"
+_PORTAL_LOCAL_EMPLOYEE_ID = "2011111"
 _PORTAL_LOCAL_EMPLOYEE_NAME = "문봉건"
 # This administrator exists only in the local identity adapter.  It is never
 # written into the production MongoDB administrator list and therefore cannot
@@ -155,6 +163,7 @@ _SCHEDULE_ID_PATTERN = re.compile(r"^SCH-[0-9a-f]{8}-[0-9a-f-]{27}$", re.IGNOREC
 # otherwise the Portal remains in its clearly labelled local preview mode.
 _USAGE_HISTORY_WINDOW_DAYS = 21
 _USAGE_HISTORY_MODES = {"preview", "phoenix"}
+_USAGE_HISTORY_ARCHIVE_MODES = {"disabled", "configured"}
 _KST = timezone(timedelta(hours=9), name="Asia/Seoul")
 
 logger = logging.getLogger(__name__)
@@ -220,6 +229,62 @@ class PortalSettingsUpdateRequest(BaseModel):
 
     gaia_api_caller_employee_id: str | None = Field(default=None, max_length=64)
     usage_policy: ActiveUserPolicyUpdate | None = None
+
+
+class PortalAdministratorCreateRequest(BaseModel):
+    """Minimal, server-owned administrator registration input.
+
+    An active administrator decides who may be added. Role, scope, and status
+    are deliberately assigned by the server so a browser cannot grant itself
+    a hidden privilege level or arbitrary settings value.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    employee_id: str = Field(..., min_length=7, max_length=7)
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        validation_alias=AliasChoices("employee_name", "name"),
+    )
+
+    @field_validator("employee_id")
+    @classmethod
+    def validate_employee_id(cls, value: str) -> str:
+        if not _PORTAL_ADMIN_EMPLOYEE_ID_PATTERN.fullmatch(value):
+            raise ValueError("사번은 숫자 7자리로 입력해 주세요.")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not value or any(ord(character) < 32 for character in value):
+            raise ValueError("관리자 이름을 올바르게 입력해 주세요.")
+        return value
+
+
+class PortalAdministratorUpdateRequest(BaseModel):
+    """The safe, limited changes allowed for a registered administrator."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        validation_alias=AliasChoices("employee_name", "name"),
+    )
+    status: Literal["활성", "비활성"] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_optional_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value or any(ord(character) < 32 for character in value):
+            raise ValueError("관리자 이름을 올바르게 입력해 주세요.")
+        return value
 
 
 class ScheduleCreateRequest(BaseModel):
@@ -413,6 +478,10 @@ class PhoenixUsageUnavailableError(RuntimeError):
 # still start before the optional live-integration dependency is installed.
 _phoenix_usage_config_factory: Callable[[], Any] | None = None
 _phoenix_usage_fetcher: Callable[..., list[Mapping[str, Any]]] | None = None
+# The archive adapter is intentionally separate from the Phoenix fetch seam:
+# unit tests can prove that no MongoDB write starts before all Phoenix projects
+# have returned successfully.
+_usage_history_archive_factory: Callable[[], Any] | None = None
 
 
 def _usage_history_mode_from_env() -> str:
@@ -424,6 +493,194 @@ def _usage_history_mode_from_env() -> str:
     if configured == "mock":
         return "preview"
     return configured
+
+
+def _usage_history_archive_mode_from_env() -> str:
+    """Return the explicit long-term archive mode without an implicit fallback."""
+
+    return _environment_value("PTMORE_USAGE_HISTORY_ARCHIVE_MODE", "disabled").lower()
+
+
+def _usage_history_full_refresh_requires_live_archive() -> None:
+    """Require the configured Phoenix/MongoDB path for an admin full refresh."""
+
+    if _usage_history_mode_from_env() != "phoenix":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "phoenix_usage_not_ready",
+                "message": "최근 3주 전체 새로고침에는 Phoenix 조회 모드가 필요합니다.",
+            },
+        )
+    if _usage_history_archive_mode_from_env() != "configured":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "usage_history_archive_not_ready",
+                "message": "최근 3주 전체 새로고침에는 MongoDB 장기 보관 설정이 필요합니다.",
+            },
+        )
+
+
+def _usage_history_archive_config_from_env() -> Any:
+    """Load non-secret MongoDB archive settings only; do not connect yet."""
+
+    try:
+        from usage_history_archive import UsageHistoryArchiveConfig, UsageHistoryArchiveError
+    except ImportError as exc:
+        raise PhoenixUsageUnavailableError(
+            "사용 이력 보관 모듈을 불러올 수 없습니다."
+        ) from exc
+
+    try:
+        return UsageHistoryArchiveConfig.from_env()
+    except (UsageHistoryArchiveError, TypeError, ValueError) as exc:
+        raise PhoenixUsageUnavailableError(
+            "사용 이력 보관 설정을 해석할 수 없습니다."
+        ) from exc
+
+
+def _usage_history_archive_protected_collection_names() -> tuple[str, ...]:
+    """Collect every Portal/metadata MongoDB collection the archive must avoid."""
+
+    portal_collections = _portal_mongodb_collection_settings_from_env()
+    protected: set[str] = {
+        str(name).strip()
+        for name in portal_collections.all_collections
+        if str(name).strip()
+    }
+    metadata_settings = _metadata_settings_from_env()
+    for metadata_type in _METADATA_TYPES:
+        collection_name = metadata_settings.collection_for(metadata_type)
+        if collection_name:
+            protected.add(collection_name)
+    live_settings = _live_metadata_read_settings_from_env(metadata_settings)
+    for metadata_type in _METADATA_TYPES:
+        collection_name = live_settings.collection_for(metadata_type)
+        if collection_name:
+            protected.add(collection_name)
+    return tuple(sorted(protected))
+
+
+def _usage_history_archive_configuration_errors(configuration: Any) -> list[str]:
+    """Return safe archive setup errors, including cross-collection collisions."""
+
+    errors = [
+        str(item)
+        for item in getattr(configuration, "configuration_errors", ())
+        if str(item).strip()
+    ]
+    collection = str(getattr(configuration, "collection", "") or "").strip()
+    try:
+        from usage_history_archive import collection_name_conflicts
+    except ImportError as exc:
+        raise PhoenixUsageUnavailableError(
+            "사용 이력 보관 모듈을 불러올 수 없습니다."
+        ) from exc
+    if collection_name_conflicts(
+        collection,
+        _usage_history_archive_protected_collection_names(),
+    ):
+        errors.append("PTMORE_USAGE_HISTORY_COLLECTION")
+    return list(dict.fromkeys(errors))
+
+
+def _get_usage_history_archive() -> Any:
+    """Open the request-scoped MongoDB usage-history archive adapter."""
+
+    if _usage_history_archive_factory is not None:
+        return _usage_history_archive_factory()
+
+    try:
+        from usage_history_archive import MongoUsageHistoryArchive, UsageHistoryArchiveError
+    except ImportError as exc:
+        raise PhoenixUsageUnavailableError(
+            "사용 이력 보관 모듈을 불러올 수 없습니다."
+        ) from exc
+
+    try:
+        return MongoUsageHistoryArchive(
+            _usage_history_archive_config_from_env(),
+            protected_collections=_usage_history_archive_protected_collection_names(),
+        )
+    except (UsageHistoryArchiveError, TypeError, ValueError) as exc:
+        raise PhoenixUsageUnavailableError(
+            "MongoDB 사용 이력 보관소를 열 수 없습니다."
+        ) from exc
+
+
+def _close_usage_history_archive(archive: Any) -> None:
+    """Close request-scoped MongoDB clients without hiding a route result."""
+
+    closer = getattr(archive, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:  # pragma: no cover - cleanup must not mask success
+            logger.warning("Usage history archive did not close cleanly.")
+
+
+def _usage_history_archive_configuration_status(
+    *,
+    connection_status: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Expose archive readiness without leaking URI, credentials, or records."""
+
+    mode = _usage_history_archive_mode_from_env()
+    if mode == "disabled":
+        return {
+            "mode": "disabled",
+            "configured": False,
+            "ready": False,
+            "storage_status": "disabled",
+            "collection": None,
+            "message": "장기 사용 이력 보관이 비활성화되어 있습니다.",
+        }
+    if mode not in _USAGE_HISTORY_ARCHIVE_MODES:
+        return {
+            "mode": mode,
+            "configured": False,
+            "ready": False,
+            "storage_status": "invalid_mode",
+            "collection": None,
+            "message": "사용 이력 보관 모드를 확인해 주세요.",
+        }
+
+    try:
+        configuration = _usage_history_archive_config_from_env()
+    except PhoenixUsageUnavailableError:
+        return {
+            "mode": "configured",
+            "configured": False,
+            "ready": False,
+            "storage_status": "not_configured",
+            "collection": None,
+            "message": "사용 이력 보관 MongoDB 설정을 확인해 주세요.",
+        }
+
+    try:
+        missing = _usage_history_archive_configuration_errors(configuration)
+    except PhoenixUsageUnavailableError:
+        missing = ["PTMORE_USAGE_HISTORY_COLLECTION"]
+    configured = not missing
+    connected = bool((connection_status or {}).get("connected", False))
+    return {
+        "mode": "configured",
+        "configured": configured,
+        "ready": bool(configured and connected),
+        "storage_status": (
+            "ready" if configured and connected else "connection_error" if configured else "not_configured"
+        ),
+        "collection": (
+            str(getattr(configuration, "collection", "") or "").strip() or None
+        ),
+        "configuration_errors": missing,
+        "message": (
+            "Phoenix 최근 조회 결과를 MongoDB에 날짜별로 동기화해 장기 이력을 보관합니다."
+            if configured and connected
+            else "사용 이력 보관 MongoDB 연결 또는 설정을 확인해 주세요."
+        ),
+    }
 
 
 def _phoenix_usage_config_from_env() -> Any:
@@ -563,6 +820,489 @@ def _normalise_phoenix_usage_history(
         normalized,
         key=lambda item: (item["occurred_at"], item["id"]),
     )
+
+
+def _usage_record_identity(record: Mapping[str, Any]) -> str:
+    """Use the archive's project-plus-trace identity for safe live/archive merging."""
+
+    try:
+        from usage_history_archive import usage_record_identity
+    except ImportError as exc:
+        raise PhoenixUsageUnavailableError(
+            "사용 이력 보관 모듈을 불러올 수 없습니다."
+        ) from exc
+    return usage_record_identity(record)
+
+
+def _merge_usage_records(
+    archived_records: list[Mapping[str, Any]],
+    live_records: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge archive/history rows, letting a fresh Phoenix read win by identity."""
+
+    merged: dict[str, dict[str, Any]] = {}
+    for record in [*archived_records, *live_records]:
+        if not isinstance(record, Mapping):
+            continue
+        project = str(record.get("project") or record.get("source_project") or "").strip()
+        query_time = str(record.get("query_time") or record.get("occurred_at") or "").strip()
+        if not project or not query_time:
+            continue
+        value = dict(record)
+        value["project"] = project
+        value["query_time"] = query_time
+        merged[_usage_record_identity(value)] = value
+    return sorted(
+        merged.values(),
+        key=lambda item: (
+            str(item.get("query_time") or ""),
+            str(item.get("project") or ""),
+        ),
+    )
+
+
+def _preview_usage_records() -> list[dict[str, str]]:
+    """Adapt preview rows for CSV only; preview data is never archived."""
+
+    return [
+        {
+            "query_time": str(item.get("occurred_at") or ""),
+            "date": str(item.get("date") or ""),
+            "platform": str(item.get("channel") or ""),
+            "user_id": str(item.get("employee_id") or ""),
+            "question": str(item.get("question") or ""),
+            "project": "PREVIEW",
+            "trace_id": "",
+        }
+        for item in _build_dummy_usage_history()
+    ]
+
+
+def _usage_archive_not_ready_error(configuration: Any) -> HTTPException:
+    try:
+        missing = _usage_history_archive_configuration_errors(configuration)
+    except PhoenixUsageUnavailableError:
+        missing = ["PTMORE_USAGE_HISTORY_COLLECTION"]
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": "usage_history_archive_not_ready",
+            "message": "장기 사용 이력 보관 MongoDB 설정이 완료되지 않았습니다.",
+            "missing": missing,
+        },
+    )
+
+
+def _usage_days(start_day: date, end_day: date) -> list[date]:
+    """Return every inclusive KST calendar day in a validated period."""
+
+    if start_day > end_day:
+        raise ValueError("start_day must not be later than end_day")
+    result: list[date] = []
+    current = start_day
+    while current <= end_day:
+        result.append(current)
+        current += timedelta(days=1)
+    return result
+
+
+def _coalesce_usage_days(days: set[date]) -> list[tuple[date, date]]:
+    """Group date-only Phoenix backfills into the fewest contiguous queries."""
+
+    ordered = sorted(days)
+    if not ordered:
+        return []
+
+    ranges: list[tuple[date, date]] = []
+    range_start = ordered[0]
+    previous = ordered[0]
+    for current in ordered[1:]:
+        if current == previous + timedelta(days=1):
+            previous = current
+            continue
+        ranges.append((range_start, previous))
+        range_start = current
+        previous = current
+    ranges.append((range_start, previous))
+    return ranges
+
+
+def _fetch_phoenix_usage_range(
+    configuration: Any,
+    *,
+    start_day: date,
+    end_day: date,
+) -> list[Mapping[str, Any]]:
+    """Fetch one inclusive KST range through the existing Phoenix adapter."""
+
+    return _fetch_phoenix_usage_history(
+        configuration,
+        days=(end_day - start_day).days + 1,
+        today=end_day,
+    )
+
+
+def _normalise_archive_covered_scopes(
+    value: Any,
+) -> set[tuple[str, date]]:
+    """Validate a marker-only archive coverage result at the Portal boundary."""
+
+    if not isinstance(value, (set, list, tuple)):
+        raise PhoenixUsageUnavailableError("사용 이력 보관 범위 정보를 읽을 수 없습니다.")
+
+    scopes: set[tuple[str, date]] = set()
+    for item in value:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            continue
+        project = str(item[0] or "").strip()
+        raw_day = item[1]
+        try:
+            scope_day = raw_day if isinstance(raw_day, date) else date.fromisoformat(str(raw_day))
+        except (TypeError, ValueError):
+            continue
+        if project:
+            scopes.add((project, scope_day))
+    return scopes
+
+
+def _read_recent_usage_archive_snapshot(
+    *,
+    start_day: date,
+    end_day: date,
+    source_projects: tuple[str, ...],
+) -> tuple[list[Mapping[str, Any]], set[tuple[str, date]]]:
+    """Read dashboard rows plus complete project/day markers from MongoDB."""
+
+    archive: Any | None = None
+    try:
+        archive = _get_usage_history_archive()
+        records = list(archive.read_records(start_day=start_day, end_day=end_day))
+        coverage_reader = getattr(archive, "covered_scopes", None)
+        if not callable(coverage_reader):
+            raise PhoenixUsageUnavailableError("사용 이력 보관 범위 정보를 읽을 수 없습니다.")
+        covered_scopes = _normalise_archive_covered_scopes(
+            coverage_reader(
+                start_day=start_day,
+                end_day=end_day,
+                source_projects=source_projects,
+            )
+        )
+        return records, covered_scopes
+    except PhoenixUsageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "usage_history_archive_unavailable",
+                "message": "MongoDB 사용 이력 보관소를 조회할 수 없습니다. 연결 정보와 권한을 확인해 주세요.",
+            },
+        ) from exc
+    except Exception as exc:
+        logger.warning("Usage history archive read failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "usage_history_archive_unavailable",
+                "message": "MongoDB 사용 이력 보관소를 조회할 수 없습니다. 연결 정보와 권한을 확인해 주세요.",
+            },
+        ) from exc
+    finally:
+        if archive is not None:
+            _close_usage_history_archive(archive)
+
+
+def _refresh_usage_archive_ranges(
+    configuration: Any,
+    *,
+    ranges: list[tuple[date, date]],
+    source_projects: tuple[str, ...],
+) -> tuple[int, int, int]:
+    """Fetch all requested Phoenix ranges, then persist their complete snapshots.
+
+    Fetching finishes for every range before MongoDB writes start.  A transient
+    Phoenix failure therefore never turns a partially refreshed dashboard into
+    a seemingly complete recent-history period.
+    """
+
+    staged: list[tuple[date, date, list[Mapping[str, Any]], str]] = []
+    for range_start, range_end in ranges:
+        refresh_started_at = datetime.now(timezone.utc).isoformat()
+        try:
+            records = _fetch_phoenix_usage_range(
+                configuration,
+                start_day=range_start,
+                end_day=range_end,
+            )
+        except PhoenixUsageUnavailableError as exc:
+            logger.warning("Phoenix usage history request failed.")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "phoenix_usage_unavailable",
+                    "message": "Phoenix 사용 이력을 조회할 수 없습니다. 연결 정보와 API 권한을 확인해 주세요.",
+                },
+            ) from exc
+        staged.append((range_start, range_end, records, refresh_started_at))
+
+    if not staged:
+        return 0, 0, 0
+
+    archive: Any | None = None
+    try:
+        archive = _get_usage_history_archive()
+        upserted_count = 0
+        removed_count = 0
+        for range_start, range_end, records, refresh_started_at in staged:
+            refresh = archive.refresh(
+                records,
+                start_day=range_start,
+                end_day=range_end,
+                source_projects=source_projects,
+                refresh_started_at=refresh_started_at,
+            )
+            upserted_count += int(getattr(refresh, "upserted_count", 0) or 0)
+            removed_count += int(getattr(refresh, "removed_count", 0) or 0)
+        return upserted_count, removed_count, sum(
+            (range_end - range_start).days + 1
+            for range_start, range_end, _, _ in staged
+        )
+    except PhoenixUsageUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "usage_history_archive_unavailable",
+                "message": "MongoDB 사용 이력 보관소에 저장할 수 없습니다. 연결 정보와 권한을 확인해 주세요.",
+            },
+        ) from exc
+    except Exception as exc:
+        logger.warning("Usage history archive synchronization failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "usage_history_archive_unavailable",
+                "message": "MongoDB 사용 이력 보관소에 저장할 수 없습니다. 연결 정보와 권한을 확인해 주세요.",
+            },
+        ) from exc
+    finally:
+        if archive is not None:
+            _close_usage_history_archive(archive)
+
+
+def _load_recent_usage_snapshot(*, full_refresh: bool = False) -> dict[str, Any]:
+    """Load recent history from MongoDB and refresh only required Phoenix days.
+
+    In the configured archive mode the normal dashboard path always refreshes
+    the current KST day and only backfills historical project/day scopes that
+    have no successful snapshot marker.  An administrator can explicitly set
+    ``full_refresh`` to re-query the entire rolling 21-day range.
+    """
+
+    mode = _usage_history_mode_from_env()
+    fetched_at = datetime.now(_KST).isoformat()
+    if mode == "preview":
+        raw_records = _preview_usage_records()
+        preview_days = [
+            record_day
+            for record in raw_records
+            if (record_day := _usage_record_date(record)) is not None
+        ]
+        if preview_days:
+            start_day, end_day = min(preview_days), max(preview_days)
+        else:  # pragma: no cover - the deterministic preview fixture has rows
+            start_day, end_day = _recent_kst_period(days=_USAGE_HISTORY_WINDOW_DAYS)
+        history = _normalise_phoenix_usage_history(
+            raw_records,
+            start_day=start_day,
+            end_day=end_day,
+        )
+        return {
+            "start_day": start_day,
+            "end_day": end_day,
+            "raw_records": raw_records,
+            "usage_history": history,
+            "source": {
+                "mode": "preview",
+                "status": "preview",
+                "label": "예시 사용 이력",
+                "detail": "미리보기 모드의 예시 이력입니다. 실제 Phoenix 조회는 수행하지 않았습니다.",
+                "fetched_at": fetched_at,
+                "period": {"start": start_day.isoformat(), "end": end_day.isoformat()},
+                "project_count": 0,
+                "archive": {
+                    "mode": "disabled",
+                    "status": "not_used",
+                    "message": "미리보기 데이터는 MongoDB에 저장하지 않습니다.",
+                },
+            },
+        }
+
+    if mode not in _USAGE_HISTORY_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "usage_history_mode_invalid",
+                "message": "사용 이력 조회 모드를 확인해 주세요.",
+                "missing": ["PTMORE_USAGE_HISTORY_MODE"],
+            },
+        )
+
+    start_day, end_day = _recent_kst_period(days=_USAGE_HISTORY_WINDOW_DAYS)
+    try:
+        phoenix_configuration = _phoenix_usage_config_from_env()
+    except PhoenixUsageUnavailableError as exc:
+        logger.warning("Phoenix usage configuration is unavailable.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "phoenix_usage_not_ready",
+                "message": "Phoenix 사용 이력 조회 설정이 완료되지 않았습니다.",
+            },
+        ) from exc
+
+    configuration_errors = _phoenix_configuration_errors(phoenix_configuration)
+    if not bool(getattr(phoenix_configuration, "is_configured", False)):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "phoenix_usage_not_ready",
+                "message": "Phoenix 사용 이력 조회 설정이 완료되지 않았습니다.",
+                "missing": configuration_errors,
+            },
+        )
+
+    archive_mode = _usage_history_archive_mode_from_env()
+    archive_configuration: Any | None = None
+    if archive_mode not in _USAGE_HISTORY_ARCHIVE_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "usage_history_archive_mode_invalid",
+                "message": "사용 이력 보관 모드를 확인해 주세요.",
+                "missing": ["PTMORE_USAGE_HISTORY_ARCHIVE_MODE"],
+            },
+        )
+    if archive_mode == "configured":
+        try:
+            archive_configuration = _usage_history_archive_config_from_env()
+        except PhoenixUsageUnavailableError as exc:
+            raise _usage_archive_not_ready_error({}) from exc
+        if _usage_history_archive_configuration_errors(archive_configuration):
+            raise _usage_archive_not_ready_error(archive_configuration)
+
+    source_projects = tuple(
+        project
+        for project in (
+            str(value or "").strip()
+            for value in getattr(phoenix_configuration, "projects", ())
+        )
+        if project
+    )
+
+    # Without the optional MongoDB archive the established live-only behavior
+    # remains intact: Phoenix returns the whole dashboard window every time.
+    # The normal production configuration is ``phoenix + configured`` below.
+    if archive_mode != "configured":
+        try:
+            raw_records = _fetch_phoenix_usage_history(
+                phoenix_configuration,
+                days=_USAGE_HISTORY_WINDOW_DAYS,
+                today=end_day,
+            )
+        except PhoenixUsageUnavailableError as exc:
+            logger.warning("Phoenix usage history request failed.")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "phoenix_usage_unavailable",
+                    "message": "Phoenix 사용 이력을 조회할 수 없습니다. 연결 정보와 API 권한을 확인해 주세요.",
+                },
+            ) from exc
+        archive_source: dict[str, Any] = {
+            "mode": "disabled",
+            "status": "not_used",
+            "full_refresh": bool(full_refresh),
+            "updated_day_count": _USAGE_HISTORY_WINDOW_DAYS,
+            "updated_range_count": 1,
+            "message": "장기 보관이 비활성화되어 Phoenix 최근 3주 이력을 매번 조회했습니다.",
+        }
+    else:
+        # First read the compact archive and its marker-only coverage. A
+        # record-less day is still covered when its marker exists, so it is not
+        # needlessly queried on every Portal access.
+        _archived_records, covered_scopes = _read_recent_usage_archive_snapshot(
+            start_day=start_day,
+            end_day=end_day,
+            source_projects=source_projects,
+        )
+        all_days = set(_usage_days(start_day, end_day))
+        if full_refresh:
+            refresh_days = set(all_days)
+        else:
+            # The user specifically requested that the current KST day remain
+            # live. Historical days are fetched only while at least one
+            # configured project lacks a completed archive scope marker.
+            refresh_days = {end_day}
+            for candidate_day in all_days - {end_day}:
+                if any(
+                    (project, candidate_day) not in covered_scopes
+                    for project in source_projects
+                ):
+                    refresh_days.add(candidate_day)
+
+        refresh_ranges = _coalesce_usage_days(refresh_days)
+        upserted_count, removed_count, updated_day_count = _refresh_usage_archive_ranges(
+            phoenix_configuration,
+            ranges=refresh_ranges,
+            source_projects=source_projects,
+        )
+        # Re-read after every successful mutation. It lets the dashboard show
+        # the MongoDB-owned snapshot, including zero-result markers, rather
+        # than relying on a partial live response from one selected range.
+        raw_records, _ = _read_recent_usage_archive_snapshot(
+            start_day=start_day,
+            end_day=end_day,
+            source_projects=source_projects,
+        )
+        archive_source = {
+            "mode": "configured",
+            "status": "synchronized" if refresh_ranges else "cached",
+            "collection": str(getattr(archive_configuration, "collection", "") or "") or None,
+            "full_refresh": bool(full_refresh),
+            "updated_day_count": updated_day_count,
+            "updated_range_count": len(refresh_ranges),
+            "upserted_count": upserted_count,
+            "removed_count": removed_count,
+            "message": (
+                "관리자 요청으로 최근 3주 사용 이력을 Phoenix에서 전체 갱신했습니다."
+                if full_refresh
+                else "MongoDB 보관 이력을 표시하고 당일·누락 날짜만 Phoenix에서 갱신했습니다."
+            ),
+        }
+
+    history = _normalise_phoenix_usage_history(
+        list(raw_records),
+        start_day=start_day,
+        end_day=end_day,
+    )
+    return {
+        "start_day": start_day,
+        "end_day": end_day,
+        "raw_records": list(raw_records),
+        "usage_history": history,
+        "source": {
+            "mode": "phoenix",
+            "status": "connected",
+            "label": "Phoenix·MongoDB 사용 이력" if archive_mode == "configured" else "Phoenix 사용 이력",
+            "detail": (
+                "MongoDB 보관 이력을 우선 표시하고, 당일과 아직 보관되지 않은 날짜만 Phoenix에서 조회했습니다."
+                if archive_mode == "configured"
+                else "최근 3주 GaiA Input 기록을 요청 시점에 조회했습니다."
+            ),
+            "fetched_at": fetched_at,
+            "period": {"start": start_day.isoformat(), "end": end_day.isoformat()},
+            "project_count": _configured_phoenix_project_count(phoenix_configuration),
+            "archive": archive_source,
+        },
+    }
 
 
 def _valid_mongodb_collection_name(value: str) -> bool:
@@ -2607,7 +3347,7 @@ def _portal_mongodb_connection_status(
     }
 
 
-_DEFAULT_PORTAL_ADMINISTRATORS = [
+_PREVIEW_PORTAL_ADMINISTRATORS = [
     {
         "employee_id": "2069026",
         "name": "문봉건",
@@ -2633,7 +3373,13 @@ _DEFAULT_PORTAL_ADMINISTRATORS = [
 
 
 def _default_portal_settings() -> dict[str, Any]:
-    """Return a new settings document suitable for preview or MongoDB seeding."""
+    """Return a new, non-authoritative settings document.
+
+    Production administrator authority must come from a persisted
+    ``portal_settings.admins`` list or the explicit one-time bootstrap
+    environment setting.  Never seed the sample preview administrators into a
+    real Portal MongoDB document.
+    """
 
     return {
         "gaia_api_caller_employee_id": "",
@@ -2642,10 +3388,108 @@ def _default_portal_settings() -> dict[str, Any]:
             "active_user_min_distinct_days": 3,
             "active_user_min_chat_count": 10,
         },
-        "admins": copy.deepcopy(_DEFAULT_PORTAL_ADMINISTRATORS),
+        "admins": [],
         "updated_at": None,
         "updated_by": None,
     }
+
+
+def _normalise_portal_admin_list(value: Any) -> list[dict[str, str]]:
+    """Return de-duplicated, safe administrator records from stored data.
+
+    Existing records are treated as data, not as a browser request: malformed
+    records are skipped and an unknown status fails closed as ``비활성``.
+    """
+
+    if not isinstance(value, list):
+        return []
+
+    admins: list[dict[str, str]] = []
+    seen_employee_ids: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        employee_id = str(item.get("employee_id") or "").strip()
+        if not employee_id or employee_id in seen_employee_ids:
+            continue
+        name = str(item.get("name") or "").strip() or employee_id
+        status_value = str(item.get("status") or "").strip()
+        status_value = (
+            "활성" if status_value in {"활성", "active"} else "비활성"
+        )
+        admins.append(
+            {
+                "employee_id": employee_id,
+                "name": name,
+                "role": str(item.get("role") or _PORTAL_ADMIN_DEFAULT_ROLE).strip()
+                or _PORTAL_ADMIN_DEFAULT_ROLE,
+                "scope": str(item.get("scope") or "관리자 권한").strip()
+                or "관리자 권한",
+                "status": status_value,
+            }
+        )
+        seen_employee_ids.add(employee_id)
+    return admins
+
+
+def _administrator_audit_summary(admins: list[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Keep administrator-change audit records useful without storing secrets."""
+
+    return [
+        {
+            "employee_id": str(admin.get("employee_id") or ""),
+            "status": str(admin.get("status") or ""),
+        }
+        for admin in admins
+        if isinstance(admin, Mapping)
+    ]
+
+
+def _bootstrap_portal_administrators() -> list[dict[str, str]]:
+    """Read the explicit initial-admin list without ever persisting it.
+
+    It is intentionally available only while the MongoDB settings document has
+    no real administrators.  Once an administrator is saved through the API,
+    the persisted list replaces these entries entirely.
+    """
+
+    raw = _environment_value(_PORTAL_BOOTSTRAP_ADMINS_ENVIRONMENT)
+    if not raw:
+        return []
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("Portal bootstrap administrator configuration is invalid.")
+        return []
+    if not isinstance(decoded, list):
+        logger.warning("Portal bootstrap administrator configuration must be a list.")
+        return []
+
+    admins: list[dict[str, str]] = []
+    seen_employee_ids: set[str] = set()
+    for item in decoded:
+        if not isinstance(item, Mapping):
+            continue
+        employee_id = str(item.get("employee_id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if (
+            not _PORTAL_ADMIN_EMPLOYEE_ID_PATTERN.fullmatch(employee_id)
+            or not name
+            or any(ord(character) < 32 for character in name)
+            or employee_id in seen_employee_ids
+        ):
+            continue
+        admins.append(
+            {
+                "employee_id": employee_id,
+                "name": name,
+                "role": "Bootstrap Admin",
+                "scope": "초기 관리자 등록",
+                "status": "활성",
+            }
+        )
+        seen_employee_ids.add(employee_id)
+    return admins
 
 
 def _normalise_portal_settings(document: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -2672,24 +3516,7 @@ def _normalise_portal_settings(document: Mapping[str, Any] | None) -> dict[str, 
 
     stored_admins = document.get("admins")
     if isinstance(stored_admins, list):
-        admins: list[dict[str, str]] = []
-        for item in stored_admins:
-            if not isinstance(item, Mapping):
-                continue
-            employee_id = str(item.get("employee_id") or "").strip()
-            if not employee_id:
-                continue
-            admins.append(
-                {
-                    "employee_id": employee_id,
-                    "name": str(item.get("name") or "").strip() or employee_id,
-                    "role": str(item.get("role") or "관리자").strip(),
-                    "scope": str(item.get("scope") or "관리자 권한").strip(),
-                    "status": str(item.get("status") or "활성").strip(),
-                }
-            )
-        if admins:
-            settings["admins"] = admins
+        settings["admins"] = _normalise_portal_admin_list(stored_admins)
 
     for key in ("updated_at", "updated_by"):
         value = document.get(key)
@@ -2825,6 +3652,161 @@ _SCHEDULE_DOCUMENT_PROJECTION = {
     "last_run_status": 1,
 }
 
+# The Scheduler Worker owns this collection.  The Portal reads a deliberately
+# small projection to populate the dashboard; it must never return a stored
+# question, GAIA session ID, worker identifier, delivery diagnostic, or error
+# detail to a browser.
+_SCHEDULE_RUN_DOCUMENT_PROJECTION = {
+    "_id": 0,
+    "schedule_id": 1,
+    "owner_id": 1,
+    "status": 1,
+    "scheduled_for": 1,
+    "started_at": 1,
+    "completed_at": 1,
+}
+_SCHEDULE_RUN_SCHEDULE_PROJECTION = {
+    "_id": 1,
+    "title": 1,
+    "owner_id": 1,
+    "owner_name": 1,
+}
+_SCHEDULE_RUN_DASHBOARD_LIMIT = 8
+
+
+class PortalScheduleRunReader(Protocol):
+    """Read-only boundary for compact Scheduler Worker execution history."""
+
+    persistent: bool
+
+    def list_recent_runs(self, limit: int) -> list[dict[str, Any]]:
+        ...
+
+    def close(self) -> None:
+        ...
+
+
+class MongoPortalScheduleRunReader:
+    """Read recent Worker runs and attach only public schedule display fields."""
+
+    persistent = True
+
+    def __init__(
+        self,
+        *,
+        uri: str,
+        database: str,
+        collections: PortalMongoCollectionSettings,
+    ) -> None:
+        if not collections.ready:
+            raise PortalScheduleStoreError(
+                "Portal MongoDB 컬렉션 이름 설정을 확인해 주세요."
+            )
+        try:
+            from pymongo import MongoClient
+            from pymongo.errors import PyMongoError
+        except ImportError as exc:
+            raise PortalScheduleStoreError(
+                "스케줄 실행 이력 조회를 위해 pymongo 패키지가 필요합니다."
+            ) from exc
+
+        self._mongo_error = PyMongoError
+        try:
+            self._client = MongoClient(
+                uri,
+                serverSelectionTimeoutMS=3_000,
+                connectTimeoutMS=3_000,
+                socketTimeoutMS=5_000,
+            )
+            database_handle = self._client[database]
+            self._runs = database_handle[collections.schedule_run_collection]
+            self._schedules = database_handle[collections.schedule_collection]
+        except PyMongoError as exc:
+            raise PortalScheduleStoreError(
+                "MongoDB 스케줄 실행 이력 저장소를 초기화할 수 없습니다."
+            ) from exc
+
+    def _run(self, operation: Callable[[], Any]) -> Any:
+        try:
+            return operation()
+        except self._mongo_error as exc:
+            raise PortalScheduleStoreError(
+                "MongoDB 스케줄 실행 이력을 읽을 수 없습니다."
+            ) from exc
+
+    def list_recent_runs(self, limit: int) -> list[dict[str, Any]]:
+        if not 1 <= int(limit) <= 50:
+            raise ValueError("recent schedule run limit must be between 1 and 50")
+
+        documents = self._run(
+            lambda: list(
+                self._runs.find({}, _SCHEDULE_RUN_DOCUMENT_PROJECTION)
+                .sort([("started_at", -1), ("_id", -1)])
+                .limit(int(limit))
+            )
+        )
+        runs = [dict(document) for document in documents if isinstance(document, Mapping)]
+        schedule_ids = sorted(
+            {
+                str(document.get("schedule_id") or "").strip()
+                for document in runs
+                if str(document.get("schedule_id") or "").strip()
+            }
+        )
+        schedules_by_id: dict[str, Mapping[str, Any]] = {}
+        if schedule_ids:
+            schedule_documents = self._run(
+                lambda: list(
+                    self._schedules.find(
+                        {"_id": {"$in": schedule_ids}},
+                        _SCHEDULE_RUN_SCHEDULE_PROJECTION,
+                    )
+                )
+            )
+            schedules_by_id = {
+                str(document.get("_id") or "").strip(): document
+                for document in schedule_documents
+                if isinstance(document, Mapping) and str(document.get("_id") or "").strip()
+            }
+
+        # Keep the reader's public result compact too, so callers cannot
+        # accidentally forward Worker-only source fields to an API response.
+        projected_runs: list[dict[str, Any]] = []
+        for document in runs:
+            schedule = schedules_by_id.get(str(document.get("schedule_id") or "").strip(), {})
+            projected_runs.append(
+                {
+                    "schedule_id": str(document.get("schedule_id") or "").strip(),
+                    "owner_id": str(document.get("owner_id") or "").strip(),
+                    "status": str(document.get("status") or "").strip(),
+                    "scheduled_for": document.get("scheduled_for"),
+                    "started_at": document.get("started_at"),
+                    "completed_at": document.get("completed_at"),
+                    "schedule_title": (
+                        (schedule.get("title") or "")
+                        if isinstance(schedule, Mapping)
+                        else ""
+                    ),
+                    "schedule_owner_id": (
+                        (schedule.get("owner_id") or "")
+                        if isinstance(schedule, Mapping)
+                        else ""
+                    ),
+                    "schedule_owner_name": (
+                        (schedule.get("owner_name") or "")
+                        if isinstance(schedule, Mapping)
+                        else ""
+                    ),
+                }
+            )
+        return projected_runs
+
+    def close(self) -> None:
+        try:
+            self._client.close()
+        except Exception:  # pragma: no cover - cleanup must not hide a result
+            pass
+
 
 class MongoPortalScheduleStore:
     """Persist source schedules in the dedicated Portal MongoDB collection."""
@@ -2955,6 +3937,7 @@ class MongoPortalScheduleStore:
 
 
 _portal_schedule_store_factory: Callable[[], PortalScheduleStore] | None = None
+_portal_schedule_run_reader_factory: Callable[[], PortalScheduleRunReader] | None = None
 
 
 def _get_portal_schedule_store() -> PortalScheduleStore:
@@ -2989,6 +3972,45 @@ def _close_portal_schedule_store(store: PortalScheduleStore) -> None:
             closer()
         except Exception:  # pragma: no cover - cleanup must not hide a response
             logger.warning("Portal schedule store did not close cleanly.")
+
+
+def _get_portal_schedule_run_reader() -> PortalScheduleRunReader:
+    """Return the configured read-only Worker run-history reader.
+
+    The Portal never substitutes preview records here.  A missing or
+    unavailable MongoDB connection is represented by an empty dashboard state
+    with a clear message instead.
+    """
+
+    if _portal_schedule_run_reader_factory is not None:
+        return _portal_schedule_run_reader_factory()
+
+    settings = _metadata_settings_from_env()
+    collections = _portal_mongodb_collection_settings_from_env()
+    if not settings.mongo_uri or not settings.mongo_database:
+        raise PortalScheduleStoreError(
+            "스케줄 실행 이력을 위한 MongoDB 연결 정보가 설정되지 않았습니다."
+        )
+    if not collections.ready:
+        raise PortalScheduleStoreError(
+            "Portal MongoDB 컬렉션 이름 설정을 확인해 주세요."
+        )
+    return MongoPortalScheduleRunReader(
+        uri=settings.mongo_uri,
+        database=settings.mongo_database,
+        collections=collections,
+    )
+
+
+def _close_portal_schedule_run_reader(reader: PortalScheduleRunReader) -> None:
+    """Close the request-scoped reader without masking dashboard output."""
+
+    closer = getattr(reader, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:  # pragma: no cover - cleanup must not hide a response
+            logger.warning("Portal schedule-run reader did not close cleanly.")
 
 
 def _schedule_status_code(value: Any, *, default: str = "active") -> str:
@@ -3280,6 +4302,106 @@ def _display_schedule_timestamp(value: Any, *, now: datetime | None = None) -> s
     return f"{local.year}년 {local.month}월 {local.day}일 {local:%H:%M}"
 
 
+def _schedule_run_display_text(value: Any, *, fallback: str, maximum: int = 200) -> str:
+    """Return a short, single-line display value from a trusted DB projection."""
+
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return fallback
+    return text[:maximum]
+
+
+def _schedule_run_status_label(value: Any) -> str:
+    """Map Worker lifecycle values to the concise dashboard vocabulary."""
+
+    normalized = str(value or "").strip().lower()
+    return {
+        "running": "실행 중",
+        "success": "성공",
+        "failed": "실패",
+        "failure": "실패",
+        "cancelled": "취소됨",
+        "canceled": "취소됨",
+        "skipped": "건너뜀",
+    }.get(normalized, "완료")
+
+
+def _dashboard_recent_runs(
+    run_documents: list[Mapping[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> list[dict[str, str]]:
+    """Convert compact Worker records into the browser-safe run table shape."""
+
+    def event_timestamp(document: Mapping[str, Any]) -> float:
+        for key in ("completed_at", "started_at", "scheduled_for"):
+            parsed = _parse_schedule_timestamp(document.get(key))
+            if parsed is not None:
+                return parsed.timestamp()
+        return float("-inf")
+
+    cards: list[dict[str, str]] = []
+    for document in sorted(run_documents, key=event_timestamp, reverse=True):
+        if not isinstance(document, Mapping):
+            continue
+        owner_id = _schedule_run_display_text(
+            document.get("schedule_owner_id") or document.get("owner_id"),
+            fallback="등록자 정보 없음",
+            maximum=64,
+        )
+        owner_name = _schedule_run_display_text(
+            document.get("schedule_owner_name"),
+            fallback="",
+            maximum=100,
+        )
+        owner = f"{owner_name} ({owner_id})" if owner_name else owner_id
+        event_value = (
+            document.get("completed_at")
+            or document.get("started_at")
+            or document.get("scheduled_for")
+        )
+        cards.append(
+            {
+                "time": _display_schedule_timestamp(event_value, now=now)
+                or "시간 정보 없음",
+                "name": _schedule_run_display_text(
+                    document.get("schedule_title"),
+                    fallback="삭제된 스케줄",
+                    maximum=200,
+                ),
+                "owner": owner,
+                "status": _schedule_run_status_label(document.get("status")),
+                "target": _SCHEDULE_DELIVERY_TARGET,
+            }
+        )
+    return cards
+
+
+def _load_dashboard_recent_schedule_runs() -> tuple[list[dict[str, str]], str]:
+    """Load a non-fatal, real execution-history slice for the dashboard."""
+
+    reader: PortalScheduleRunReader | None = None
+    try:
+        reader = _get_portal_schedule_run_reader()
+        records = reader.list_recent_runs(_SCHEDULE_RUN_DASHBOARD_LIMIT)
+        if not isinstance(records, list):
+            raise PortalScheduleStoreError("스케줄 실행 이력 형식이 올바르지 않습니다.")
+        cards = _dashboard_recent_runs(
+            [record for record in records if isinstance(record, Mapping)]
+        )
+        if cards:
+            return cards, ""
+        return [], "최근 스케줄 실행 이력이 없습니다."
+    except PortalScheduleStoreError as exc:
+        logger.info("Dashboard schedule run history is unavailable: %s", exc)
+    except Exception:  # pragma: no cover - defensive boundary for a read-only panel
+        logger.exception("Dashboard schedule run history could not be loaded.")
+    finally:
+        if reader is not None:
+            _close_portal_schedule_run_reader(reader)
+    return [], "스케줄 실행 이력을 현재 불러오지 못했습니다. MongoDB 연결 상태를 확인해 주세요."
+
+
 def _schedule_last_run_label(document: Mapping[str, Any]) -> str:
     rendered = _display_schedule_timestamp(document.get("last_run_at"))
     if not rendered:
@@ -3458,6 +4580,14 @@ class MongoPortalSettingsStore:
                 if isinstance(value, int) and value > 0:
                     after["usage_policy"][key] = value
 
+        if "admins" in update:
+            admins = _normalise_portal_admin_list(update.get("admins"))
+            if not admins or not any(admin["status"] == "활성" for admin in admins):
+                raise PortalSettingsStoreError(
+                    "활성 관리자 없이 관리자 명단을 저장할 수 없습니다."
+                )
+            after["admins"] = admins
+
         after["updated_at"] = datetime.now(timezone.utc).isoformat()
         after["updated_by"] = actor.as_audit_actor()
         document = {"_id": _PORTAL_SETTINGS_DOCUMENT_ID, **after}
@@ -3467,16 +4597,18 @@ class MongoPortalSettingsStore:
             )
         )
         self.record_audit(
-            "admin_settings_updated",
+            "portal_administrators_updated" if "admins" in update else "admin_settings_updated",
             actor,
             {
                 "before": {
                     "gaia_api_caller_employee_id": before["gaia_api_caller_employee_id"],
                     "usage_policy": before["usage_policy"],
+                    "admins": _administrator_audit_summary(before["admins"]),
                 },
                 "after": {
                     "gaia_api_caller_employee_id": after["gaia_api_caller_employee_id"],
                     "usage_policy": after["usage_policy"],
+                    "admins": _administrator_audit_summary(after["admins"]),
                 },
             },
         )
@@ -3568,23 +4700,28 @@ def _effective_portal_settings(
 
     effective = _normalise_portal_settings(settings)
     if (
-        _portal_auth_mode() != "local"
-        or identity.employee_id != _PORTAL_LOCAL_EMPLOYEE_ID
+        _portal_auth_mode() == "local"
+        and identity.employee_id == _PORTAL_LOCAL_EMPLOYEE_ID
     ):
+        existing_admins = effective.get("admins")
+        admins = existing_admins if isinstance(existing_admins, list) else []
+        # Replace a possibly inactive/stale local entry in the returned local
+        # view. The MongoDB document remains untouched.
+        effective["admins"] = [
+            admin
+            for admin in admins
+            if not isinstance(admin, Mapping)
+            or str(admin.get("employee_id") or "").strip()
+            != _PORTAL_LOCAL_EMPLOYEE_ID
+        ]
+        effective["admins"].insert(0, copy.deepcopy(_PORTAL_LOCAL_ADMINISTRATOR))
         return effective
 
-    existing_admins = effective.get("admins")
-    admins = existing_admins if isinstance(existing_admins, list) else []
-    # Replace a possibly inactive/stale local entry in the returned local
-    # view.  The MongoDB document remains untouched.
-    effective["admins"] = [
-        admin
-        for admin in admins
-        if not isinstance(admin, Mapping)
-        or str(admin.get("employee_id") or "").strip()
-        != _PORTAL_LOCAL_EMPLOYEE_ID
-    ]
-    effective["admins"].insert(0, copy.deepcopy(_PORTAL_LOCAL_ADMINISTRATOR))
+    # Production/test bootstrap authority exists only until the real MongoDB
+    # administrator list is saved. It is never written implicitly, so an
+    # ordinary user still cannot self-register as an administrator.
+    if not effective.get("admins"):
+        effective["admins"] = _bootstrap_portal_administrators()
     return effective
 
 
@@ -3843,6 +4980,68 @@ def _admin_settings_response(
     }
 
 
+def _stored_settings_for_administrator_mutation(access: PortalAccess) -> dict[str, Any]:
+    """Read the persisted admin list, excluding virtual local/bootstrap data."""
+
+    try:
+        return _normalise_portal_settings(access.store.read())
+    except PortalSettingsStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "portal_settings_unavailable", "message": str(exc)},
+        ) from exc
+
+
+def _administrator_employee_id_or_422(employee_id: str) -> str:
+    candidate = str(employee_id or "").strip()
+    if not _PORTAL_ADMIN_EMPLOYEE_ID_PATTERN.fullmatch(candidate):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_administrator_employee_id",
+                "message": "관리자 사번은 숫자 7자리로 입력해 주세요.",
+            },
+        )
+    return candidate
+
+
+def _save_administrator_list(
+    access: PortalAccess,
+    admins: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Persist only the server-built administrator list through Portal storage."""
+
+    try:
+        return access.store.update({"admins": copy.deepcopy(admins)}, access.viewer)
+    except PortalSettingsStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "portal_settings_unavailable", "message": str(exc)},
+        ) from exc
+
+
+def _administrator_mutation_response(
+    settings: Mapping[str, Any],
+    *,
+    employee_id: str,
+    persistent: bool,
+) -> dict[str, Any]:
+    normalized = _normalise_portal_settings(settings)
+    administrator = next(
+        (
+            admin
+            for admin in normalized["admins"]
+            if admin["employee_id"] == employee_id
+        ),
+        None,
+    )
+    return {
+        "administrator": administrator,
+        "admins": normalized["admins"],
+        "storage": {"persistent": persistent},
+    }
+
+
 _metadata_http_client: MetadataApiClient = UrlLibMetadataApiClient()
 
 def create_app() -> FastAPI:
@@ -3866,6 +5065,10 @@ def create_app() -> FastAPI:
             or path.startswith("/static/")
             or path == "/docs"
             or path == "/openapi.json"
+            # Chrome DevTools probes this well-known URL automatically.  It
+            # is not a Portal API call, so answer quietly instead of logging a
+            # misleading 404/redirect on every local browser session.
+            or path == "/.well-known/appspecific/com.chrome.devtools.json"
         )
         mode = _portal_auth_mode()
 
@@ -3932,7 +5135,6 @@ def create_application() -> FastAPI:
 # Both names are intentional: "application" matches the fixed production
 # command, while "app" supports normal Uvicorn import syntax for local tests.
 application = create_application()
-app = application
 app = application
 
 
@@ -4030,6 +5232,8 @@ def _build_usage_dashboard(
     *,
     start_day: date | None = None,
     end_day: date | None = None,
+    recent_runs: list[Mapping[str, Any]] | None = None,
+    recent_runs_message: str = "최근 스케줄 실행 이력이 없습니다.",
 ) -> dict[str, Any]:
     """Aggregate user/question/date history for both preview and Phoenix.
 
@@ -4108,8 +5312,11 @@ def _build_usage_dashboard(
     ]
     active_users.sort(key=lambda item: (-item["chat_count"], -item["distinct_days"], item["employee_id"]))
 
-    max_users = max((item["unique_users"] for item in usage_by_day), default=1)
-    max_chats = max((item["chat_count"] for item in usage_by_day), default=1)
+    # A fully quiet, zero-filled 21-day period still has graph rows.  Keep the
+    # denominator at one so its bar heights stay at 0 instead of raising a
+    # division-by-zero error during a successful empty Phoenix refresh.
+    max_users = max(1, max((item["unique_users"] for item in usage_by_day), default=0))
+    max_chats = max(1, max((item["chat_count"] for item in usage_by_day), default=0))
     for item in usage_by_day:
         item["user_height"] = round(item["unique_users"] / max_users * 100, 1)
         item["chat_height"] = round(item["chat_count"] / max_chats * 100, 1)
@@ -4137,6 +5344,25 @@ def _build_usage_dashboard(
     last_date = usage_by_day[-1]["date"].replace("-", ".") if usage_by_day else "-"
     average_daily_users = sum(item["unique_users"] for item in usage_by_day) / day_count if day_count else 0
     average_daily_chats = total_chats / day_count if day_count else 0
+    safe_recent_runs = [
+        {
+            "time": _schedule_run_display_text(
+                run.get("time"), fallback="시간 정보 없음", maximum=80
+            ),
+            "name": _schedule_run_display_text(
+                run.get("name"), fallback="삭제된 스케줄", maximum=200
+            ),
+            "owner": _schedule_run_display_text(
+                run.get("owner"), fallback="등록자 정보 없음", maximum=160
+            ),
+            "status": _schedule_run_display_text(
+                run.get("status"), fallback="완료", maximum=40
+            ),
+            "target": _SCHEDULE_DELIVERY_TARGET,
+        }
+        for run in (recent_runs or [])
+        if isinstance(run, Mapping)
+    ]
 
     return {
         "period_label": f"최근 {day_count}일",
@@ -4192,36 +5418,8 @@ def _build_usage_dashboard(
         "recent_usage_history": sorted(
             usage_history, key=lambda item: item["occurred_at"], reverse=True
         )[:8],
-        "recent_runs": [
-            {
-                "time": "09:30",
-                "name": "DA 공정 오전 생산 현황",
-                "owner": "2069026",
-                "status": "성공",
-                "target": _SCHEDULE_DELIVERY_TARGET,
-            },
-            {
-                "time": "09:15",
-                "name": "WIP 이상 LOT 알림",
-                "owner": "2071044",
-                "status": "성공",
-                "target": _SCHEDULE_DELIVERY_TARGET,
-            },
-            {
-                "time": "09:00",
-                "name": "설비 DOWN 현황",
-                "owner": "2093012",
-                "status": "재시도 예정",
-                "target": _SCHEDULE_DELIVERY_TARGET,
-            },
-            {
-                "time": "08:30",
-                "name": "일일 수율 요약",
-                "owner": "2069026",
-                "status": "성공",
-                "target": _SCHEDULE_DELIVERY_TARGET,
-            },
-        ],
+        "recent_runs": safe_recent_runs,
+        "recent_runs_message": "" if safe_recent_runs else recent_runs_message,
     }
 
 
@@ -4524,6 +5722,41 @@ def _metadata_authoring_preview() -> dict[str, Any]:
     }
 
 
+def _preview_recent_schedule_runs() -> list[dict[str, str]]:
+    """Static cards used only by the explicit `/api/mock/portal` preview."""
+
+    return [
+        {
+            "time": "09:30",
+            "name": "DA 공정 오전 생산 현황",
+            "owner": "문봉건 (2069026)",
+            "status": "성공",
+            "target": _SCHEDULE_DELIVERY_TARGET,
+        },
+        {
+            "time": "09:15",
+            "name": "WIP 이상 LOT 알림",
+            "owner": "김민서 (2071044)",
+            "status": "성공",
+            "target": _SCHEDULE_DELIVERY_TARGET,
+        },
+        {
+            "time": "09:00",
+            "name": "설비 DOWN 현황",
+            "owner": "최은서 (2093012)",
+            "status": "실패",
+            "target": _SCHEDULE_DELIVERY_TARGET,
+        },
+        {
+            "time": "08:30",
+            "name": "일일 수율 요약",
+            "owner": "문봉건 (2069026)",
+            "status": "성공",
+            "target": _SCHEDULE_DELIVERY_TARGET,
+        },
+    ]
+
+
 def _portal_data(preview_role: str = "admin") -> dict[str, Any]:
     """Return fresh dummy data so browser-only edits never become server state."""
 
@@ -4552,7 +5785,11 @@ def _portal_data(preview_role: str = "admin") -> dict[str, Any]:
 
     return {
         "viewer": viewer,
-        "dashboard": _build_usage_dashboard(usage_history, usage_policy),
+        "dashboard": _build_usage_dashboard(
+            usage_history,
+            usage_policy,
+            recent_runs=_preview_recent_schedule_runs(),
+        ),
         "usage_history": usage_history,
         "schedules": [
             {
@@ -4867,7 +6104,9 @@ def _portal_data(preview_role: str = "admin") -> dict[str, Any]:
                 "status": "정상",
                 "last_checked": "오늘 09:42",
             },
-            "admins": copy.deepcopy(_DEFAULT_PORTAL_ADMINISTRATORS),
+            # This endpoint is an explicit browser-only preview. Its sample
+            # administrators must never be used to seed Portal MongoDB.
+            "admins": copy.deepcopy(_PREVIEW_PORTAL_ADMINISTRATORS),
         },
     }
 
@@ -4891,9 +6130,12 @@ def _portal_data_for_access(access: PortalAccess) -> dict[str, Any]:
     }
     payload["settings"]["usage_policy"] = copy.deepcopy(settings["usage_policy"])
     payload["settings"]["admins"] = copy.deepcopy(settings["admins"])
+    recent_runs, recent_runs_message = _load_dashboard_recent_schedule_runs()
     payload["dashboard"] = _build_usage_dashboard(
         payload["usage_history"],
         settings["usage_policy"],
+        recent_runs=recent_runs,
+        recent_runs_message=recent_runs_message,
     )
     payload["schedules"] = []
     return payload
@@ -4952,6 +6194,13 @@ async def login(request: Request, sub_path: str = ""):
 @application.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(STATIC_ROOT / "index.html")
+
+
+@application.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
+async def chrome_devtools_probe() -> Response:
+    """Silently acknowledge Chrome DevTools' optional local capability probe."""
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @application.get("/health")
@@ -5235,6 +6484,175 @@ async def admin_settings(request: Request) -> dict[str, Any]:
     return _admin_settings_response(access.settings, persistent=access.store.persistent)
 
 
+@application.post("/api/settings/admins", status_code=status.HTTP_201_CREATED)
+@application.post("/api/admin/settings/admins", status_code=status.HTTP_201_CREATED)
+def create_portal_administrator(
+    request_body: PortalAdministratorCreateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Register one real Portal administrator by employee ID.
+
+    Only a current active administrator can call this endpoint. During the
+    first-production bootstrap, the bootstrap administrator must register
+    their own employee ID first; this prevents a temporary bootstrap identity
+    from silently granting a different person permanent administrator access.
+    """
+
+    access = _require_active_admin(request)
+    stored = _stored_settings_for_administrator_mutation(access)
+    admins = copy.deepcopy(stored["admins"])
+    employee_id = request_body.employee_id
+    if any(admin["employee_id"] == employee_id for admin in admins):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "administrator_already_registered",
+                "message": "이미 등록된 관리자 사번입니다.",
+            },
+        )
+
+    if (
+        not admins
+        and _portal_auth_mode() != "local"
+        and employee_id != access.viewer.employee_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "bootstrap_self_registration_required",
+                "message": "초기 관리자는 먼저 본인 사번을 실제 관리자 명단에 등록해 주세요.",
+            },
+        )
+
+    admins.append(
+        {
+            "employee_id": employee_id,
+            "name": request_body.name,
+            "role": _PORTAL_ADMIN_DEFAULT_ROLE,
+            "scope": _PORTAL_ADMIN_DEFAULT_SCOPE,
+            "status": "활성",
+        }
+    )
+    updated = _save_administrator_list(access, admins)
+    return _administrator_mutation_response(
+        updated,
+        employee_id=employee_id,
+        persistent=access.store.persistent,
+    )
+
+
+@application.patch("/api/admin/settings/admins/{employee_id}")
+def update_portal_administrator(
+    employee_id: str,
+    request_body: PortalAdministratorUpdateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Change a registered administrator's display name or active status."""
+
+    access = _require_active_admin(request)
+    target_employee_id = _administrator_employee_id_or_422(employee_id)
+    change = request_body.model_dump(exclude_unset=True, exclude_none=True)
+    if not change:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "empty_administrator_update", "message": "변경할 값을 입력해 주세요."},
+        )
+
+    stored = _stored_settings_for_administrator_mutation(access)
+    admins = copy.deepcopy(stored["admins"])
+    target_index = next(
+        (index for index, admin in enumerate(admins) if admin["employee_id"] == target_employee_id),
+        None,
+    )
+    if target_index is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "administrator_not_found", "message": "관리자 정보를 찾지 못했습니다."},
+        )
+
+    target = admins[target_index]
+    next_status = str(change.get("status") or target["status"])
+    if next_status == "비활성" and target["status"] == "활성":
+        active_admin_count = sum(admin["status"] == "활성" for admin in admins)
+        if target_employee_id == access.viewer.employee_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "administrator_self_deactivation_forbidden",
+                    "message": "현재 로그인한 관리자는 직접 비활성화할 수 없습니다.",
+                },
+            )
+        if active_admin_count <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "last_active_administrator_required",
+                    "message": "최소 한 명의 활성 관리자가 필요합니다.",
+                },
+            )
+
+    if "name" in change:
+        target["name"] = str(change["name"])
+    if "status" in change:
+        target["status"] = str(change["status"])
+    admins[target_index] = target
+    updated = _save_administrator_list(access, admins)
+    return _administrator_mutation_response(
+        updated,
+        employee_id=target_employee_id,
+        persistent=access.store.persistent,
+    )
+
+
+@application.delete("/api/admin/settings/admins/{employee_id}")
+def delete_portal_administrator(employee_id: str, request: Request) -> dict[str, Any]:
+    """Remove a registered administrator while preserving one active owner."""
+
+    access = _require_active_admin(request)
+    target_employee_id = _administrator_employee_id_or_422(employee_id)
+    stored = _stored_settings_for_administrator_mutation(access)
+    admins = copy.deepcopy(stored["admins"])
+    target = next(
+        (admin for admin in admins if admin["employee_id"] == target_employee_id),
+        None,
+    )
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "administrator_not_found", "message": "관리자 정보를 찾지 못했습니다."},
+        )
+    if target_employee_id == access.viewer.employee_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "administrator_self_delete_forbidden",
+                "message": "현재 로그인한 관리자는 직접 삭제할 수 없습니다.",
+            },
+        )
+    if target["status"] == "활성" and sum(
+        admin["status"] == "활성" for admin in admins
+    ) <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "last_active_administrator_required",
+                "message": "최소 한 명의 활성 관리자가 필요합니다.",
+            },
+        )
+
+    updated = _save_administrator_list(
+        access,
+        [admin for admin in admins if admin["employee_id"] != target_employee_id],
+    )
+    response = _administrator_mutation_response(
+        updated,
+        employee_id=target_employee_id,
+        persistent=access.store.persistent,
+    )
+    response.update({"deleted": True, "employee_id": target_employee_id})
+    return response
+
+
 @application.put("/api/admin/settings")
 def update_admin_settings(
     request_body: PortalSettingsUpdateRequest,
@@ -5288,8 +6706,13 @@ async def metadata_authoring_status(request: Request) -> dict[str, Any]:
     # This is deliberately independent from Flow API readiness and from the
     # Portal settings-store read above.  A failed health probe is represented
     # in the response rather than turning the whole status page into an error.
-    response["portal_mongodb_connection"] = _portal_mongodb_connection_status(
-        metadata_settings
+    mongo_connection = _portal_mongodb_connection_status(metadata_settings)
+    response["portal_mongodb_connection"] = mongo_connection
+    # Phoenix keeps only a limited retention window.  Show the separate
+    # Portal-owned archive readiness here so an operator can confirm that
+    # historical export will continue to work without exposing its URI/key.
+    response["usage_history_archive"] = _usage_history_archive_configuration_status(
+        connection_status=mongo_connection
     )
     return response
 
@@ -5641,111 +7064,380 @@ def _dashboard_source_period(dashboard: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def _usage_record_date(record: Mapping[str, Any]) -> date | None:
+    value = str(record.get("date") or record.get("usage_date") or record.get("query_time") or "").strip()
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def _usage_export_period_or_422(
+    *,
+    start_date: str | None,
+    end_date: str | None,
+) -> tuple[date, date] | None:
+    """Parse an optional inclusive history range without accepting ambiguous input."""
+
+    if (start_date is None) != (end_date is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "usage_export_date_range_incomplete",
+                "message": "시작일과 종료일을 함께 YYYY-MM-DD 형식으로 입력해 주세요.",
+            },
+        )
+    if start_date is None or end_date is None:
+        return None
+    try:
+        start_day = date.fromisoformat(start_date)
+        end_day = date.fromisoformat(end_date)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "usage_export_date_invalid",
+                "message": "조회 일자는 YYYY-MM-DD 형식으로 입력해 주세요.",
+            },
+        ) from exc
+    if start_day > end_day:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "usage_export_date_range_invalid",
+                "message": "시작일은 종료일보다 늦을 수 없습니다.",
+            },
+        )
+    return start_day, end_day
+
+
+def _usage_export_scope_or_422(scope: str) -> str:
+    selected_scope = str(scope or "recent").strip().lower()
+    if selected_scope not in {"recent", "all"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "usage_export_scope_invalid",
+                "message": "내보내기 범위는 recent 또는 all로 입력해 주세요.",
+            },
+        )
+    return selected_scope
+
+
+def _usage_export_requires_archive_admin(
+    *,
+    scope: str,
+    requested_period: tuple[date, date] | None,
+    recent_start: date,
+    recent_end: date,
+) -> bool:
+    """Keep long-term history distinct from ordinary recent dashboard exports."""
+
+    if scope == "all":
+        return True
+    if requested_period is None:
+        return False
+    start_day, end_day = requested_period
+    return start_day < recent_start or end_day > recent_end
+
+
+def _require_usage_history_archive_admin(access: PortalAccess) -> None:
+    if access.viewer.is_admin:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": "usage_history_export_admin_required",
+            "message": "전체 또는 이전 사용 이력 다운로드는 관리자만 가능합니다.",
+        },
+    )
+
+
+def _filter_usage_records_to_period(
+    records: list[Mapping[str, Any]],
+    *,
+    start_day: date,
+    end_day: date,
+) -> list[dict[str, Any]]:
+    return [
+        dict(record)
+        for record in records
+        if isinstance(record, Mapping)
+        and (record_day := _usage_record_date(record)) is not None
+        and start_day <= record_day <= end_day
+    ]
+
+
+def _read_usage_archive_records_or_503(
+    *,
+    start_day: date | None = None,
+    end_day: date | None = None,
+) -> list[Mapping[str, Any]]:
+    """Read previously synchronized history only when archive mode is explicit."""
+
+    if _usage_history_archive_mode_from_env() != "configured":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "usage_history_archive_disabled",
+                "message": "이전 사용 이력을 조회하려면 장기 사용 이력 보관을 활성화해 주세요.",
+            },
+        )
+    try:
+        configuration = _usage_history_archive_config_from_env()
+    except PhoenixUsageUnavailableError as exc:
+        raise _usage_archive_not_ready_error({}) from exc
+    if _usage_history_archive_configuration_errors(configuration):
+        raise _usage_archive_not_ready_error(configuration)
+
+    archive: Any | None = None
+    try:
+        archive = _get_usage_history_archive()
+        return list(archive.read_records(start_day=start_day, end_day=end_day))
+    except PhoenixUsageUnavailableError:
+        raise
+    except Exception as exc:
+        logger.warning("Usage history archive read failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "usage_history_archive_unavailable",
+                "message": "MongoDB 사용 이력 보관소를 조회할 수 없습니다. 연결 정보와 권한을 확인해 주세요.",
+            },
+        ) from exc
+    finally:
+        if archive is not None:
+            _close_usage_history_archive(archive)
+
+
+def _usage_export_records(
+    snapshot: Mapping[str, Any],
+    *,
+    requested_period: tuple[date, date] | None,
+) -> tuple[list[dict[str, Any]], date | None, date | None]:
+    """Overlay an archive range with the fresh Phoenix snapshot when needed.
+
+    Callers use this only for the normal recent dashboard window or for a
+    date range that overlaps it.  A fully historical range is deliberately
+    read directly from MongoDB by the route, so it remains available if the
+    short-retention Phoenix endpoint is temporarily unavailable.
+    """
+
+    recent_start = snapshot["start_day"]
+    recent_end = snapshot["end_day"]
+    current_records = list(snapshot.get("raw_records") or [])
+
+    if requested_period is None:
+        return current_records, recent_start, recent_end
+
+    start_day, end_day = requested_period
+
+    if start_day >= recent_start and end_day <= recent_end:
+        return _filter_usage_records_to_period(
+            current_records,
+            start_day=start_day,
+            end_day=end_day,
+        ), start_day, end_day
+
+    archived_records = _read_usage_archive_records_or_503(
+        start_day=start_day,
+        end_day=end_day,
+    )
+    # A requested historical range can overlap the newest Phoenix read.  The
+    # fresh records win over archive copies of the same trace identity.
+    current_records = _filter_usage_records_to_period(
+        current_records,
+        start_day=start_day,
+        end_day=end_day,
+    )
+    records = _merge_usage_records(list(archived_records), current_records)
+    return records, start_day, end_day
+
+
+def _usage_export_time(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = f"{raw[:-1]}+00:00" if raw.endswith("Z") else raw
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_KST)
+        return parsed.astimezone(_KST).strftime("%H:%M:%S")
+    except ValueError:
+        return raw[11:19] if len(raw) >= 19 else ""
+
+
+def _csv_safe_cell(value: Any) -> str:
+    """Prevent spreadsheet applications from treating exported data as a formula.
+
+    Questions and user-derived metadata can legitimately begin with formula
+    prefix characters.  Prefixing a single apostrophe keeps the literal value
+    visible in Excel while preserving a standards-compliant CSV file.
+    """
+
+    text = str(value or "").strip()
+    formula_probe = text.lstrip(" \t\r\n\ufeff")
+    if formula_probe.startswith(("=", "+", "-", "@")):
+        return f"'{text}"
+    return text
+
+
+def _usage_history_csv_response(
+    records: list[Mapping[str, Any]],
+    *,
+    start_day: date | None,
+    end_day: date | None,
+) -> Response:
+    """Build an Excel-compatible UTF-8 BOM CSV with the agreed Korean columns."""
+
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(["PROJECT", "일자", "시간", "플랫폼", "사용자(사번)", "질문내용"])
+    ordered_records = sorted(
+        (record for record in records if isinstance(record, Mapping)),
+        key=lambda record: (
+            str(record.get("query_time") or record.get("occurred_at") or ""),
+            str(record.get("project") or record.get("source_project") or ""),
+        ),
+    )
+    for record in ordered_records:
+        query_time = str(record.get("query_time") or record.get("occurred_at") or "").strip()
+        usage_date = str(record.get("date") or record.get("usage_date") or query_time[:10]).strip()
+        writer.writerow(
+            [
+                _csv_safe_cell(record.get("project") or record.get("source_project")),
+                _csv_safe_cell(usage_date[:10]),
+                _csv_safe_cell(_usage_export_time(query_time)),
+                _csv_safe_cell(record.get("platform") or record.get("channel")),
+                _csv_safe_cell(record.get("user_id") or record.get("employee_id")),
+                _csv_safe_cell(record.get("question")),
+            ]
+        )
+    start_label = start_day.strftime("%Y%m%d") if start_day is not None else "all"
+    end_label = end_day.strftime("%Y%m%d") if end_day is not None else "all"
+    filename = f"ptmore_usage_history_{start_label}_{end_label}.csv"
+    return Response(
+        content="\ufeff" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @application.get("/api/dashboard/usage")
 def dashboard_usage_data(request: Request) -> dict[str, Any]:
-    """Return the 3-week dashboard plus its explicit data-source status.
-
-    ``PTMORE_USAGE_HISTORY_MODE=phoenix`` queries Phoenix at request time.
-    A missing configuration or a Phoenix failure returns a safe 503 response;
-    it never substitutes preview records for a failed production request.
-    """
+    """Return the cache-first 3-week dashboard plus source status."""
 
     access = _portal_access(request)
     usage_policy = _normalise_portal_settings(access.settings)["usage_policy"]
-    mode = _usage_history_mode_from_env()
-    fetched_at = datetime.now(_KST).isoformat()
+    snapshot = _load_recent_usage_snapshot()
+    return _dashboard_usage_response(snapshot, usage_policy)
 
-    if mode == "preview":
-        usage_history = _build_dummy_usage_history()
-        dashboard = _build_usage_dashboard(usage_history, usage_policy)
-        return {
-            "source": {
-                "mode": "preview",
-                "status": "preview",
-                "label": "예시 사용 이력",
-                "detail": "미리보기 모드의 예시 이력입니다. 실제 Phoenix 조회는 수행하지 않았습니다.",
-                "fetched_at": fetched_at,
-                "period": _dashboard_source_period(dashboard),
-                "project_count": 0,
-            },
-            "dashboard": dashboard,
-            "usage_history": usage_history,
-        }
 
-    if mode not in _USAGE_HISTORY_MODES:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "usage_history_mode_invalid",
-                "message": "사용 이력 조회 모드를 확인해 주세요.",
-                "missing": ["PTMORE_USAGE_HISTORY_MODE"],
-            },
-        )
+def _dashboard_usage_response(
+    snapshot: Mapping[str, Any],
+    usage_policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project one loaded snapshot to the stable browser dashboard contract."""
 
-    start_day, end_day = _recent_kst_period(days=_USAGE_HISTORY_WINDOW_DAYS)
-    try:
-        phoenix_configuration = _phoenix_usage_config_from_env()
-    except PhoenixUsageUnavailableError as exc:
-        logger.warning("Phoenix usage configuration is unavailable.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "phoenix_usage_not_ready",
-                "message": "Phoenix 사용 이력 조회 설정이 완료되지 않았습니다.",
-            },
-        ) from exc
-
-    configuration_errors = _phoenix_configuration_errors(phoenix_configuration)
-    if not bool(getattr(phoenix_configuration, "is_configured", False)):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "phoenix_usage_not_ready",
-                "message": "Phoenix 사용 이력 조회 설정이 완료되지 않았습니다.",
-                "missing": configuration_errors,
-            },
-        )
-
-    try:
-        phoenix_rows = _fetch_phoenix_usage_history(
-            phoenix_configuration,
-            days=_USAGE_HISTORY_WINDOW_DAYS,
-            today=end_day,
-        )
-    except PhoenixUsageUnavailableError as exc:
-        logger.warning("Phoenix usage history request failed.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "phoenix_usage_unavailable",
-                "message": "Phoenix 사용 이력을 조회할 수 없습니다. 연결 정보와 API 권한을 확인해 주세요.",
-            },
-        ) from exc
-
-    usage_history = _normalise_phoenix_usage_history(
-        phoenix_rows,
-        start_day=start_day,
-        end_day=end_day,
-    )
+    usage_history = snapshot["usage_history"]
+    recent_runs, recent_runs_message = _load_dashboard_recent_schedule_runs()
     dashboard = _build_usage_dashboard(
         usage_history,
         usage_policy,
-        start_day=start_day,
-        end_day=end_day,
+        start_day=snapshot["start_day"],
+        end_day=snapshot["end_day"],
+        recent_runs=recent_runs,
+        recent_runs_message=recent_runs_message,
     )
     return {
-        "source": {
-            "mode": "phoenix",
-            "status": "connected",
-            "label": "Phoenix 사용 이력",
-            "detail": "최근 3주 GaiA Input 기록을 요청 시점에 조회했습니다.",
-            "fetched_at": fetched_at,
-            "period": {"start": start_day.isoformat(), "end": end_day.isoformat()},
-            "project_count": _configured_phoenix_project_count(phoenix_configuration),
-        },
+        "source": snapshot["source"],
         "dashboard": dashboard,
         "usage_history": usage_history,
     }
+
+
+@application.post("/api/dashboard/usage/refresh")
+def dashboard_usage_full_refresh(request: Request) -> dict[str, Any]:
+    """Rebuild the rolling 21-day archive snapshot on explicit admin request."""
+
+    access = _require_active_admin(request)
+    _usage_history_full_refresh_requires_live_archive()
+    usage_policy = _normalise_portal_settings(access.settings)["usage_policy"]
+    snapshot = _load_recent_usage_snapshot(full_refresh=True)
+    return _dashboard_usage_response(snapshot, usage_policy)
+
+
+@application.get("/api/dashboard/usage/export.csv")
+def dashboard_usage_export_csv(
+    request: Request,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    scope: str = "recent",
+) -> Response:
+    """Download recent or archived usage history as Excel-compatible CSV.
+
+    The default is the same recent three-week period shown on the dashboard.
+    Administrators can use ``scope=all`` or a completed date range once the
+    long-term archive is enabled; ordinary users can download the same usage
+    history without receiving any secret configuration details.
+    """
+
+    access = _portal_access(request)
+    selected_scope = _usage_export_scope_or_422(scope)
+    requested_period = _usage_export_period_or_422(
+        start_date=start_date,
+        end_date=end_date,
+    )
+    recent_start, recent_end = _recent_kst_period(days=_USAGE_HISTORY_WINDOW_DAYS)
+    if _usage_export_requires_archive_admin(
+        scope=selected_scope,
+        requested_period=requested_period,
+        recent_start=recent_start,
+        recent_end=recent_end,
+    ):
+        _require_usage_history_archive_admin(access)
+
+    if selected_scope == "all":
+        # Long-term export is an archive-only read.  It intentionally does
+        # not call Phoenix, whose short retention must not block past reports.
+        return _usage_history_csv_response(
+            _read_usage_archive_records_or_503(),
+            start_day=None,
+            end_day=None,
+        )
+
+    if requested_period is not None:
+        requested_start, requested_end = requested_period
+        if requested_end < recent_start or requested_start > recent_end:
+            # A completed historical (or future-empty) period can be served
+            # directly from MongoDB without requiring the live Phoenix API.
+            return _usage_history_csv_response(
+                _read_usage_archive_records_or_503(
+                    start_day=requested_start,
+                    end_day=requested_end,
+                ),
+                start_day=requested_start,
+                end_day=requested_end,
+            )
+
+    # The default recent download, and a date range that overlaps it, uses the
+    # same cache-first dashboard snapshot.  It refreshes today and any missing
+    # historical scope before exporting without turning every CSV download
+    # into a full Phoenix re-query.
+    snapshot = _load_recent_usage_snapshot()
+    records, selected_start, selected_end = _usage_export_records(
+        snapshot,
+        requested_period=requested_period,
+    )
+    return _usage_history_csv_response(
+        records,
+        start_day=selected_start,
+        end_day=selected_end,
+    )
 
 
 @application.get("/api/mock/portal")

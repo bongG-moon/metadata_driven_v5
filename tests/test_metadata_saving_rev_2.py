@@ -18,6 +18,7 @@ from tools.validate_flow_component_sources import audit_rev2_repository
 
 
 REV2_ROOT = ROOT / "langflow_components" / "metadata_saving_rev_2_common"
+MAIN_FILTER_ROOT = ROOT / "langflow_components" / "main_flow_filters_saving_flow"
 ORIGINAL_FLOW_PATHS = [
     ROOT / "flow_exports" / "domain_saving_flow_v5_standalone.json",
     ROOT / "flow_exports" / "table_catalog_saving_flow_v5_standalone.json",
@@ -37,6 +38,16 @@ def _modules():
         load_module(REV2_ROOT / "06_metadata_authoring_contract_guard_rev_2.py"),
         load_module(REV2_ROOT / "08_metadata_authoring_response_enricher_rev_2.py"),
         load_module(REV2_ROOT / "09_metadata_authoring_message_adapter_rev_2.py"),
+    )
+
+
+def _main_filter_legacy_modules():
+    return (
+        load_module(MAIN_FILTER_ROOT / "01_main_flow_filter_initial_transformer.py"),
+        load_module(MAIN_FILTER_ROOT / "03_main_flow_filter_saving_variables_builder.py"),
+        load_module(MAIN_FILTER_ROOT / "04_main_flow_filter_saving_result_normalizer.py"),
+        load_module(MAIN_FILTER_ROOT / "07_main_flow_filter_review_writer.py"),
+        load_module(MAIN_FILTER_ROOT / "08a_main_flow_filter_portal_contract_enricher.py"),
     )
 
 
@@ -242,6 +253,89 @@ filter_key는 EQP_MODEL이고 status는 active야.
         "applied": True,
         "style": "readable_multiline_v1",
     }
+
+
+def test_main_filter_standard_definitions_use_the_legacy_writer_path_without_alias_gate() -> None:
+    """New filter definitions must not be mistaken for old canonical aliases.
+
+    ``DEN``/``DENSITY`` and ``PKG_TYPE1``/``PKG1`` can coexist in the active
+    snapshot.  The lightweight 04 rev_2 graph deliberately does not consult
+    that registry before letting the legacy normalizer and Writer validate the
+    actual filter fields.
+    """
+
+    transformer, variables, normalizer, writer, portal_contract = _main_filter_legacy_modules()
+    raw = (
+        "TECH는 제품 기술, DEN은 제품 용량, MODE는 제품 모드 필터야.\n"
+        "PKG_TYPE1은 package type 1, PKG_TYPE2는 package type 2 필터야."
+    )
+    payload = {
+        "metadata_type": "main_flow_filter",
+        "request": {"raw_text": raw, "duplicate_action": "skip", "dry_run": True},
+        "refinement": {"refined_text": "", "needs_more_input": False, "missing_information": [], "assumptions": []},
+        "items": [],
+        "existing_matches": [],
+        "trace": {},
+        "errors": [],
+        "warnings": [],
+    }
+    transformed = transformer.transform_initial_text(payload, {"refined_text": raw})
+    assert transformed["refinement"]["needs_more_input"] is False
+    assert transformed["trace"]["initial_transform"]["status"] == "applied"
+    assert variables.build_variables(transformed)["source_text"] == raw
+
+    keys = ["TECH", "DEN", "MODE", "PKG_TYPE1", "PKG_TYPE2"]
+    llm_candidates = {
+        "items": [
+            {
+                "filter_key": key,
+                "status": "active",
+                "payload": {
+                    "display_name": {
+                        "TECH": "제품 기술",
+                        "DEN": "제품 용량",
+                        "MODE": "제품 모드",
+                        "PKG_TYPE1": "Package Type 1",
+                        "PKG_TYPE2": "Package Type 2",
+                    }[key],
+                    "aliases": [key],
+                    "column_candidates": [key],
+                    "semantic_role": "product_attribute_filter",
+                    "value_type": "string",
+                    "value_shape": "scalar",
+                    "operator": "eq",
+                },
+            }
+            for key in keys
+        ],
+        "needs_more_input": False,
+        "missing_information": [],
+        "assumptions": [],
+    }
+    normalized = normalizer.normalize_authoring(transformed, llm_candidates)
+    assert normalized["errors"] == []
+    assert [item["filter_key"] for item in normalized["items"]] == keys
+
+    reviewed = writer.review_and_write(normalized)
+    assert reviewed["write_result"]["success"] is True
+    assert reviewed["write_result"]["dry_run"] is True
+    assert reviewed["write_result"]["would_save_count"] == len(keys)
+
+    response = {
+        "status": "dry_run",
+        "success": True,
+        "message": "기존 Writer의 테스트 실행 결과입니다.",
+        "data": {"columns": [], "rows": [], "row_count": 0},
+        "write_result": reviewed["write_result"],
+        "trace": {},
+    }
+    enriched = portal_contract.enrich_portal_contract(response, reviewed)
+    assert enriched["status"] == "dry_run"
+    assert enriched["success"] is True
+    assert enriched["message"] == "기존 Writer의 테스트 실행 결과입니다."
+    assert enriched["metadata_authoring"]["metadata_type"] == "main_flow_filter"
+    assert enriched["metadata_authoring"]["keys"] == keys
+    assert enriched["trace"]["response_contract"]["additive"] is True
 
 
 def test_existing_compact_sql_line_is_formatted_without_changing_literals_or_placeholders() -> None:
@@ -1827,7 +1921,9 @@ def test_rev_2_builder_is_isolated_and_preserves_original_flow_files(tmp_path: P
         # rev_2 additions are a non-blocking initial text transformer and a
         # final Portal-only response adapter; neither changes Writer decisions.
         "03_table_catalog_saving_flow_v5_rev_2_standalone.json": {"nodes": 17, "edges": 20},
-        "04_main_flow_filter_saving_flow_v5_rev_2_standalone.json": {"nodes": 20, "edges": 28},
+        # Main Flow Filter follows the same low-risk route.  New filter keys
+        # must reach the proven legacy Writer without a global alias gate.
+        "04_main_flow_filter_saving_flow_v5_rev_2_standalone.json": {"nodes": 17, "edges": 20},
     }
     for item in manifest["flows"]:
         expected = expected_graph_sizes[item["file"]]
@@ -1842,7 +1938,7 @@ def test_rev_2_builder_is_isolated_and_preserves_original_flow_files(tmp_path: P
         assert all(node["data"]["node"]["lf_version"] == "1.11.0" for node in flow["data"]["nodes"])
         node_ids = {node["id"] for node in flow["data"]["nodes"]}
         slug = next(key for key, name in REV2_DISPLAY_NAMES.items() if name == item["name"])
-        if slug == "table_catalog":
+        if slug in {"table_catalog", "main_flow_filter"}:
             initial_transformer = next(node for node in flow["data"]["nodes"] if node["id"].startswith("InitialTransformer-"))
             initial_source = next(node for node in flow["data"]["nodes"] if node["id"].startswith("InitialSource-"))
             assert initial_transformer["data"]["selected_output"] == "payload_out"
@@ -1908,13 +2004,17 @@ def test_rev_2_builder_is_isolated_and_preserves_original_flow_files(tmp_path: P
         writer = next(node for node in flow["data"]["nodes"] if node["id"] == f"Writer-{slug}-rev-2")
         embedded_writer = writer["data"]["node"]["template"]["code"]["value"]
         assert embedded_writer == (source_folder / writer_file).read_text(encoding="utf-8")
-        if slug == "table_catalog":
+        if slug in {"table_catalog", "main_flow_filter"}:
             portal_contract = next(
                 node for node in flow["data"]["nodes"] if node["id"] == f"PortalContract-{slug}-rev-2"
             )
             embedded_portal_contract = portal_contract["data"]["node"]["template"]["code"]["value"]
+            portal_file = {
+                "table_catalog": "08a_table_catalog_portal_contract_enricher.py",
+                "main_flow_filter": "08a_main_flow_filter_portal_contract_enricher.py",
+            }[slug]
             assert embedded_portal_contract == (
-                source_folder / "08a_table_catalog_portal_contract_enricher.py"
+                source_folder / portal_file
             ).read_text(encoding="utf-8")
             portal_contract_edges = [
                 edge

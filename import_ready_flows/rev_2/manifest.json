@@ -4,7 +4,7 @@
   "langflow_version": "1.11.0",
   "flow_count": 3,
   "single_file_ui_import": "00_metadata_saving_rev_2_ALL_FLOWS.json",
-  "single_file_ui_import_sha256": "0f78f952cebae4115946b7f9f865a18ee59c62fcfb2193f28b15cad53d18b1d8",
+  "single_file_ui_import_sha256": "96b48fab7d1b576bcdc14135de030d8a1c555b24ebaeed642c33bdb105f5224d",
   "canonical_bundle_unchanged": true,
   "router_targets_rev_2": false,
   "mongodb_document_shape": "unchanged_existing_writer_contract",
@@ -39,11 +39,11 @@
       "file": "04_main_flow_filter_saving_flow_v5_rev_2_standalone.json",
       "name": "04. v5_main_flow_filter_saving_rev_2",
       "endpoint_name": "metadata-driven-v5-main-flow-filter-saving-rev-2",
-      "nodes": 20,
+      "nodes": 17,
       "note_nodes": 5,
-      "canvas_nodes": 25,
-      "edges": 28,
-      "sha256": "354803a62363558f1fb8095962434ad42a90d3e810d75e28a4c6e96e35a3e88d"
+      "canvas_nodes": 22,
+      "edges": 20,
+      "sha256": "3f1163cab1be3023ef8bb57a6f33a527a99fff29d497ed7df014afda73cc2202"
     }
   ]
 }

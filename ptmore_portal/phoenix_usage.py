@@ -3,7 +3,8 @@
 This module deliberately has no FastAPI or Portal UI dependency.  It converts
 Phoenix ``GaiA Input`` spans into a small, dashboard-friendly record shape:
 
-``query_time``, ``platform``, ``user_id``, ``question``, and ``project``.
+``query_time``, ``platform``, ``user_id``, ``question``, ``project``, and the
+Phoenix ``trace_id`` used only for stable long-term archival identity.
 
 The date range is always interpreted in Korea Standard Time (UTC+09:00).  A
 single trace is treated as one chat request, even when Phoenix contains more
@@ -581,6 +582,7 @@ def _records_from_spans(
             "user_id": info["user_id"],
             "question": info["question"],
             "project": str(project),
+            "trace_id": trace_key if not trace_key.startswith("__span_") else "",
         }
         existing = traces.get(trace_key)
         if existing is None or row["query_time"] < existing["query_time"]:

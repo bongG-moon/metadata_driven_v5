@@ -97,6 +97,9 @@
             <button class="dashboard-refresh-button" id="dashboard-source-retry" type="button" data-refresh-dashboard-usage disabled>
               <span aria-hidden="true">↻</span> 사용 이력 새로고침
             </button>
+            <button class="dashboard-full-refresh-button" id="dashboard-full-refresh" type="button" data-refresh-dashboard-usage-full data-requires-admin hidden disabled title="관리자만 Phoenix 최근 3주 이력을 전체 다시 조회할 수 있습니다.">
+              <span aria-hidden="true">↻</span> 최근 3주 전체 새로고침
+            </button>
           </div>
 
           <div class="kpi-grid" id="kpi-grid" aria-label="주요 지표"></div>
@@ -124,7 +127,13 @@
           <article class="panel usage-history-panel">
             <div class="panel-heading">
               <div><p class="panel-label">RAW USAGE HISTORY</p><h3>최근 사용 이력</h3></div>
-              <span class="history-guide">필수 항목: 사용자 · 질문 · 일자</span>
+              <div class="panel-heading-actions">
+                <span class="history-guide">CSV: 프로젝트 · 일자 · 시간 · 플랫폼 · 사용자 · 질문</span>
+                <button class="usage-export-button" id="dashboard-usage-export" type="button" data-dashboard-usage-export aria-label="최근 사용 이력 CSV 다운로드" title="프로젝트, 일자, 시간, 플랫폼, 사용자 사번, 질문 내용을 CSV로 다운로드합니다.">
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 18v2h14v-2" /></svg>
+                  <span>CSV 다운로드</span>
+                </button>
+              </div>
             </div>
             <div class="table-wrap">
               <table>
@@ -318,7 +327,8 @@
           </article>
 
             <article class="panel admin-panel">
-              <div class="panel-heading"><div><p class="panel-label">ACCESS CONTROL</p><h3>관리자 명단</h3></div><button class="secondary-button" type="button" disabled title="관리자 명단 편집은 사번 연동 방식 확정 후 제공합니다."><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg> 관리자 추가 (준비 중)</button></div>
+              <div class="panel-heading"><div><p class="panel-label">ACCESS CONTROL</p><h3>관리자 명단</h3></div><button class="secondary-button" id="admin-add-button" type="button" data-open-admin-add data-requires-admin aria-haspopup="dialog"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg> 관리자 추가</button></div>
+              <p class="admin-panel-description">등록된 사번을 기준으로 메타데이터·설정·전체 스케줄 관리 권한을 판단합니다.</p>
             <div class="table-wrap">
               <table><thead><tr><th>사번</th><th>이름</th><th>권한</th><th>관리 범위</th><th>상태</th><th></th></tr></thead><tbody id="admin-list"></tbody></table>
             </div>
@@ -383,6 +393,27 @@
           <button class="secondary-button" type="button" data-close-metadata-status>취소</button>
           <button class="metadata-status-confirm-button" type="button" id="metadata-status-confirm">상태 변경</button>
         </div>
+      </section>
+    </div>
+
+    <div class="admin-add-modal" id="admin-add-modal" hidden>
+      <section class="admin-add-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-add-title" aria-describedby="admin-add-message" tabindex="-1">
+        <button class="admin-add-close" type="button" aria-label="관리자 추가 창 닫기" data-close-admin-add>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+        </button>
+        <span class="admin-add-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2" /><path d="M5.5 20c.7-3.4 3.1-5.1 6.5-5.1s5.8 1.7 6.5 5.1" /><path d="M18.5 5.5v4m-2-2h4" /></svg></span>
+        <p class="dialog-kicker">ACCESS CONTROL</p>
+        <h2 id="admin-add-title">관리자 추가</h2>
+        <p id="admin-add-message">등록 후 해당 사번으로 접속하면 관리자 권한이 적용됩니다. 실제 직원 정보 연동 전에는 입력한 이름을 표시합니다.</p>
+        <form class="admin-add-form" id="admin-add-form">
+          <label for="admin-add-employee-id"><span>관리자 사번</span><input id="admin-add-employee-id" name="employee_id" type="text" inputmode="numeric" autocomplete="off" pattern="[0-9]{7}" maxlength="7" placeholder="예: 2069026" required /></label>
+          <label for="admin-add-employee-name"><span>관리자 이름</span><input id="admin-add-employee-name" name="employee_name" type="text" autocomplete="name" maxlength="80" placeholder="예: 문봉건" required /></label>
+          <p class="admin-add-form-hint" id="admin-add-form-hint" role="status" aria-live="polite">관리자 권한은 사번 기준으로 적용됩니다.</p>
+          <div class="admin-add-actions">
+            <button class="secondary-button" type="button" data-close-admin-add>취소</button>
+            <button class="primary-button" type="submit" id="admin-add-submit">관리자 등록</button>
+          </div>
+        </form>
       </section>
     </div>
 

@@ -81,7 +81,7 @@ PTMORE_PHOENIX_FILTER_CONDITION=span_kind == 'CHAIN'
 PTMORE_PHOENIX_SPAN_NAME_PREFIX=GaiA Input
 ```
 
-`GET /api/dashboard/usage`는 요청 시점에 Phoenix를 조회합니다. 최근 **21일(KST)** 범위에서 `GaiA Input`으로 시작하는 span을 찾고, 하나의 trace를 하나의 질문으로 집계합니다. 각 기록에서는 다음 정보만 Portal에 전달합니다.
+`GET /api/dashboard/usage`는 최근 **21일(KST)** 범위에서 `GaiA Input`으로 시작하는 span을 찾고, 하나의 trace를 하나의 질문으로 집계합니다. `phoenix + configured` 운영 모드에서는 MongoDB 보관 이력을 먼저 읽고, 당일과 아직 보관되지 않은 날짜만 Phoenix에서 보완 조회합니다. 각 기록에서는 다음 정보만 Portal에 전달합니다.
 
 - `query_time`: 질문 시각(KST)
 - `platform`: 유입 경로
@@ -89,6 +89,26 @@ PTMORE_PHOENIX_SPAN_NAME_PREFIX=GaiA Input
 - `question`: 질문 원문
 
 Phoenix 설정이 비어 있거나 API 권한·네트워크 오류가 발생하면 Portal은 `503`으로 명확히 실패를 알립니다. 이때 실제 조회 실패를 더미 이력으로 바꿔 보여주지 않습니다. 설정을 바꾼 뒤에는 Portal 서버를 재시작하세요.
+
+### Phoenix 사용 이력 보관과 새로고침
+
+Phoenix는 최근 3주만 보관하므로, 실제 사용 이력은 Portal MongoDB 보관소에 함께 저장합니다. 사용 이력 보관만을 위한 HCP Cron, 별도 Worker, 서버 간 동기화 API/Secret은 필요하지 않습니다.
+
+```dotenv
+PTMORE_USAGE_HISTORY_MODE=phoenix
+PTMORE_USAGE_HISTORY_ARCHIVE_MODE=configured
+PTMORE_USAGE_HISTORY_COLLECTION=portal_usage_history
+```
+
+일반 대시보드 요청(`GET /api/dashboard/usage`)은 MongoDB의 최근 21일 보관 이력을 먼저 읽고, 아래 범위만 Phoenix에서 다시 조회해 보관소를 갱신합니다.
+
+- 당일(KST)은 접속할 때마다 갱신합니다.
+- 과거 날짜는 프로젝트별 정상 조회 완료 이력이 없을 때만 보완 조회합니다. 질문이 0건인 날도 완료로 기록되므로 계속 재조회하지 않습니다.
+- 처음 대시보드를 열 때는 보관 이력이 없으므로 최근 21일 전체를 조회해 초기화합니다.
+
+활성 관리자는 화면의 `최근 3주 전체 새로고침`으로 `POST /api/dashboard/usage/refresh`를 호출해 최근 21일 전체를 Phoenix 기준으로 다시 갱신할 수 있습니다. 일반 사용자는 이 작업을 실행할 수 없으며, 서버도 관리자 권한을 확인합니다.
+
+대시보드 활동이 21일을 넘게 없으면 그 사이 Phoenix에서 사라진 기록은 나중에 소급 복구할 수 없습니다. 최근 3주 이력이 필요할 때는 21일 안에 대시보드에 한 번 이상 접속하세요.
 
 ## 실제 메타데이터 API 연결
 
