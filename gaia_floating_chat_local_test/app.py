@@ -1,8 +1,8 @@
-"""Local A2A floating-chat integration test server.
+"""Local GaiA External API floating-chat integration test server.
 
 This project deliberately keeps the GaiA external authentication key on the
 server.  The browser talks only to this local FastAPI app, which adds the
-required X-Gaia-* headers before proxying the A2A message/stream request.
+required X-Gaia-* headers before proxying the GaiA External API request.
 """
 
 from __future__ import annotations
@@ -12,15 +12,13 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator
 from urllib.parse import urlparse
-from uuid import uuid4
 
 import httpx
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -41,7 +39,7 @@ class GaiaExternalSettings:
     api_key: str
     user_id: str
     fixed_session_id: str
-    a2a_method: str
+    input_tweak_name: str
     timeout_seconds: float
     verify_ssl: bool
 
@@ -95,6 +93,7 @@ def _settings_errors() -> list[str]:
     user_id = str(os.getenv("GAIA_TEST_USER_ID", "")).strip()
     api_key = str(os.getenv("GAIA_EXTERNAL_API_KEY", "")).strip()
     fixed_session_id = str(os.getenv("GAIA_TEST_SESSION_ID", "")).strip()
+    input_tweak_name = str(os.getenv("GAIA_INPUT_TWEAK_NAME", "GaiA Input")).strip()
 
     parsed = urlparse(agent_url)
     if not agent_url or parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -105,6 +104,8 @@ def _settings_errors() -> list[str]:
         errors.append("GAIA_TEST_USER_ID")
     if fixed_session_id and not SESSION_ID_PATTERN.fullmatch(fixed_session_id):
         errors.append("GAIA_TEST_SESSION_ID")
+    if not input_tweak_name:
+        errors.append("GAIA_INPUT_TWEAK_NAME")
     return errors
 
 
@@ -126,31 +127,31 @@ def load_settings() -> GaiaExternalSettings:
         api_key=str(os.getenv("GAIA_EXTERNAL_API_KEY", "")).strip(),
         user_id=str(os.getenv("GAIA_TEST_USER_ID", "")).strip(),
         fixed_session_id=str(os.getenv("GAIA_TEST_SESSION_ID", "")).strip(),
-        a2a_method=str(os.getenv("GAIA_A2A_METHOD", "message/stream")).strip()
-        or "message/stream",
+        input_tweak_name=str(os.getenv("GAIA_INPUT_TWEAK_NAME", "GaiA Input")).strip(),
         timeout_seconds=_env_float("GAIA_REQUEST_TIMEOUT_SECONDS", 300.0),
         verify_ssl=_env_bool("GAIA_VERIFY_SSL", True),
     )
 
 
-def _a2a_payload(message: str, session_id: str, settings: GaiaExternalSettings) -> dict:
-    """Build the standard A2A JSON-RPC message/stream request body."""
+def _external_payload(message: str, session_id: str, settings: GaiaExternalSettings) -> dict:
+    """Build the proven GaiA External API input body.
 
-    agent_message = {
-        "kind": "message",
-        "messageId": str(uuid4()),
-        "role": "user",
-        "parts": [{"kind": "text", "text": message}],
-    }
-    if session_id:
-        # GaiA's guide identifies sessionId as the A2A contextId.  Keeping it
-        # here gives repeated requests in this browser the same conversation.
-        agent_message["contextId"] = session_id
+    This deliberately matches the working request supplied for this Agent:
+    ``input_value``, ``session_id``, and the ``GaiA Input`` metadata tweak.
+    It does not send an inferred A2A JSON-RPC envelope or extra ``data``
+    field that could override this Flow's configured defaults.
+    """
+
     return {
-        "jsonrpc": "2.0",
-        "id": str(uuid4()),
-        "method": settings.a2a_method,
-        "params": {"message": agent_message},
+        "input_value": message,
+        "session_id": session_id,
+        "tweaks": {
+            settings.input_tweak_name: {
+                "metadata": json.dumps(
+                    {"user_id": settings.user_id}, ensure_ascii=False, separators=(",", ":")
+                )
+            }
+        },
     }
 
 
@@ -174,18 +175,6 @@ def _proxy_error_payload(response: httpx.Response, body: bytes) -> dict:
         "message": detail or "GaiA External Gateway 호출에 실패했습니다.",
         "upstream_status": response.status_code,
     }
-
-
-async def _stream_upstream(response: httpx.Response, client: httpx.AsyncClient) -> AsyncIterator[bytes]:
-    """Forward GaiA SSE bytes while ensuring the upstream client is closed."""
-
-    try:
-        async for chunk in response.aiter_raw():
-            if chunk:
-                yield chunk
-    finally:
-        await response.aclose()
-        await client.aclose()
 
 
 def create_app() -> FastAPI:
@@ -223,33 +212,28 @@ def create_app() -> FastAPI:
             "agent_url": settings.agent_url,
             "user_id": settings.user_id,
             "fixed_session_id": settings.fixed_session_id,
-            "a2a_method": settings.a2a_method,
+            "input_tweak_name": settings.input_tweak_name,
             "api_key_configured": True,
         }
 
-    @application.post("/api/chat/stream")
-    async def chat_stream(chat: ChatRequest, request: Request):
-        """Proxy one A2A stream request with server-held external credentials."""
+    @application.post("/api/chat/completion")
+    async def chat_completion(chat: ChatRequest):
+        """Proxy one proven GaiA External API request with server-held credentials."""
 
         settings = load_settings()
         session_id = settings.fixed_session_id or chat.session_id
-        payload = _a2a_payload(chat.message, session_id, settings)
+        payload = _external_payload(chat.message, session_id, settings)
         headers = {
-            "Accept": "text/event-stream, application/json",
             "Content-Type": "application/json",
             "X-Gaia-Auth-Key": settings.api_key,
             "X-Gaia-User-Id": settings.user_id,
         }
         timeout = httpx.Timeout(settings.timeout_seconds, connect=min(settings.timeout_seconds, 30.0))
-        client = httpx.AsyncClient(timeout=timeout, verify=settings.verify_ssl)
-        upstream_request = client.build_request(
-            "POST", settings.agent_url, headers=headers, json=payload
-        )
 
         try:
-            upstream = await client.send(upstream_request, stream=True)
+            async with httpx.AsyncClient(timeout=timeout, verify=settings.verify_ssl) as client:
+                upstream = await client.post(settings.agent_url, headers=headers, json=payload)
         except httpx.HTTPError as exc:
-            await client.aclose()
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail={
@@ -260,28 +244,20 @@ def create_app() -> FastAPI:
             ) from exc
 
         if upstream.status_code >= 400:
-            body = await upstream.aread()
-            await upstream.aclose()
-            await client.aclose()
             # Preserve client-actionable upstream statuses such as 401/403.
             response_status = upstream.status_code if upstream.status_code < 500 else 502
-            return JSONResponse(status_code=response_status, content={"detail": _proxy_error_payload(upstream, body)})
-
-        content_type = str(upstream.headers.get("content-type") or "").lower()
-        if "text/event-stream" not in content_type:
-            body = await upstream.aread()
-            await upstream.aclose()
-            await client.aclose()
             return JSONResponse(
-                status_code=upstream.status_code,
-                content={"response": _safe_json_or_text(body)},
+                status_code=response_status,
+                content={"detail": _proxy_error_payload(upstream, upstream.content)},
             )
 
-        return StreamingResponse(
-            _stream_upstream(upstream, client),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return {
+            "response": _safe_json_or_text(upstream.content),
+            "session_id": session_id,
+            # This is intentionally safe to show in the local diagnostic UI.
+            # It confirms the body shape but excludes the authentication key.
+            "request_payload": payload,
+        }
 
     return application
 

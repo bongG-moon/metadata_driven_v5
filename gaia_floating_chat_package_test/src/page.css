@@ -1,0 +1,25 @@
+:root {
+  color: #1e2a44;
+  background: #f5f7fb;
+  font-family: Pretendard, "Noto Sans KR", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; min-height: 100vh; }
+
+.test-page {
+  width: min(720px, calc(100% - 40px));
+  margin: 12vh auto;
+  padding: 40px;
+  border: 1px solid #e2e8f4;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 18px 50px rgba(22, 42, 86, 0.08);
+}
+
+.eyebrow { margin: 0 0 10px; color: #5268c8; font-size: 12px; font-weight: 800; letter-spacing: .12em; }
+h1 { margin: 0 0 16px; font-size: 32px; letter-spacing: -.04em; }
+#status { color: #53617a; line-height: 1.7; }
+.help { margin-top: 24px; color: #77839a; font-size: 14px; line-height: 1.7; }
+code { padding: 2px 6px; border-radius: 5px; background: #eef2ff; color: #3a50ad; }

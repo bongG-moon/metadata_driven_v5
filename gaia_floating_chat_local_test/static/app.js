@@ -80,36 +80,49 @@ function updateMessage(item, text) {
 
 function appendEventLog(event) {
   const log = $("#event-log");
-  const previous = log.textContent === "아직 수신한 이벤트가 없습니다." ? "" : `${log.textContent}\n`;
+  const previous = log.textContent === "아직 요청하거나 응답을 받지 않았습니다." ? "" : `${log.textContent}\n`;
   const serialized = typeof event === "string" ? event : JSON.stringify(event, null, 2);
   log.textContent = `${previous}${serialized}`.slice(-30_000);
 }
 
-function partText(parts) {
-  if (!Array.isArray(parts)) return "";
-  return parts
-    .map((part) => {
-      if (!part || typeof part !== "object") return "";
-      return typeof part.text === "string" ? part.text : "";
-    })
-    .filter(Boolean)
-    .join("\n");
+function mapping(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-function extractAgentText(event) {
-  if (!event || typeof event !== "object") return { text: "", replace: false };
-  const openAiDelta = event?.choices?.[0]?.delta?.content;
-  if (typeof openAiDelta === "string") return { text: openAiDelta, replace: false };
+function textValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
 
-  const result = event.result && typeof event.result === "object" ? event.result : null;
-  const resultText = partText(result?.parts) || partText(result?.message?.parts);
-  if (resultText) return { text: resultText, replace: true };
+function extractAgentText(payload) {
+  if (typeof payload === "string") return payload.trim();
+  const response = mapping(payload);
+  const direct = [
+    response.answer,
+    response.message,
+    response.text,
+    mapping(response.gaia_response).answer,
+    mapping(mapping(response.gaia_response).data).answer,
+  ];
+  for (const candidate of direct) {
+    const answer = textValue(candidate);
+    if (answer) return answer;
+  }
 
-  const params = event.params && typeof event.params === "object" ? event.params : null;
-  const paramsText = partText(params?.message?.parts) || partText(params?.delta?.parts);
-  if (paramsText) return { text: paramsText, replace: Boolean(params?.message) };
-
-  return { text: "", replace: false };
+  const outputs = Array.isArray(response.outputs) ? response.outputs : [];
+  for (const outer of [...outputs].reverse()) {
+    const components = Array.isArray(mapping(outer).outputs) ? mapping(outer).outputs : [];
+    for (const component of [...components].reverse()) {
+      const item = mapping(component);
+      const isChatOutput = item.component_display_name === "Chat Output"
+        || String(item.component_id || "").startsWith("ChatOutput-");
+      if (!isChatOutput) continue;
+      const results = mapping(item.results);
+      const answer = textValue(mapping(mapping(results.gaia_response).data).answer)
+        || textValue(mapping(mapping(results.message).data).text);
+      if (answer) return answer;
+    }
+  }
+  return "";
 }
 
 async function responseError(response) {
@@ -123,32 +136,6 @@ async function responseError(response) {
   }
 }
 
-async function consumeSse(body, onEvent) {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split(/\r?\n\r?\n/);
-    buffer = frames.pop() || "";
-    for (const frame of frames) {
-      const data = frame
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n");
-      if (!data || data === "[DONE]") continue;
-      try {
-        onEvent(JSON.parse(data));
-      } catch {
-        onEvent(data);
-      }
-    }
-  }
-}
-
 async function sendMessage(message) {
   if (!state.config?.configured || state.sending) return;
   setSending(true);
@@ -156,32 +143,17 @@ async function sendMessage(message) {
   const agentMessage = addMessage("agent", "응답을 기다리고 있습니다…", { pending: true });
   let displayed = "";
   try {
-    const response = await fetch("/api/chat/stream", {
+    const response = await fetch("/api/chat/completion", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, session_id: state.sessionId }),
     });
     if (!response.ok) throw new Error(await responseError(response));
 
-    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-    const receiveEvent = (event) => {
-      appendEventLog(event);
-      const extracted = extractAgentText(event);
-      if (!extracted.text) return;
-      displayed = extracted.replace ? extracted.text : `${displayed}${extracted.text}`;
-      updateMessage(agentMessage, displayed);
-    };
-
-    if (contentType.includes("text/event-stream") && response.body) {
-      await consumeSse(response.body, receiveEvent);
-    } else {
-      const payload = await response.json();
-      appendEventLog(payload);
-      const extracted = extractAgentText(payload.response || payload);
-      displayed = extracted.text || JSON.stringify(payload.response || payload, null, 2);
-      updateMessage(agentMessage, displayed);
-    }
-    if (!displayed) updateMessage(agentMessage, "응답 이벤트는 수신했지만 표시 가능한 텍스트를 찾지 못했습니다. ‘수신 이벤트 확인’에서 원문을 확인해 주세요.");
+    const payload = await response.json();
+    appendEventLog({ request_payload: payload.request_payload, response: payload.response });
+    displayed = extractAgentText(payload.response || payload);
+    updateMessage(agentMessage, displayed || "응답은 수신했지만 표시 가능한 답변을 찾지 못했습니다. ‘요청·응답 원문 확인’에서 원문을 확인해 주세요.");
   } catch (error) {
     updateMessage(agentMessage, `요청 실패: ${error?.message || "알 수 없는 오류"}`);
   } finally {

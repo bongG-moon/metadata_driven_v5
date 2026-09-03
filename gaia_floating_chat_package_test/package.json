@@ -1,0 +1,17 @@
+{
+  "name": "gaia-floating-chat-package-test",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "gaia-floating-chat": "latest"
+  },
+  "devDependencies": {
+    "vite": "^4.5.10"
+  }
+}

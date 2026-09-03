@@ -1,10 +1,22 @@
 # GaiA Floating Chat 로컬 테스트
 
-이 폴더는 현재 PTMORE Portal과 분리된 로컬 테스트용입니다. 브라우저에서 GaiA External 인증키를 노출하지 않고, FastAPI가 A2A `message/stream` 요청을 External Gateway로 전달합니다.
+이 폴더는 현재 PTMORE Portal과 분리된 로컬 테스트용입니다. 브라우저에서 GaiA External 인증키를 노출하지 않고, FastAPI가 실제 GaiA External API JSON 요청을 External Gateway로 전달합니다.
 
-`gaia-floating-chat` 공식 패키지는 아직 이 폴더에 포함하지 않았습니다. 배포 패키지나 저장소 주소를 받기 전에도 Gateway URL, 인증키, 사용자 사번, 세션, SSE 응답이 정상인지 먼저 검증할 수 있도록 간단한 플로팅 채팅 화면을 구현했습니다.
+`gaia-floating-chat` 공식 패키지는 아직 이 폴더에 포함하지 않았습니다. 배포 패키지나 저장소 주소를 받기 전에도 Gateway URL, 인증키, 사용자 사번, 세션, 일반 JSON 응답이 정상인지 먼저 검증할 수 있도록 간단한 플로팅 채팅 화면을 구현했습니다.
 
-현재 요청 본문은 안내문에 나온 A2A `message/stream` 방식으로 구성했습니다. 이 저장소에는 GaiA의 실제 JSON-RPC 요청·SSE 이벤트 명세가 없으므로, 연결 오류가 발생하면 AI Market 담당자에게 **A2A 요청 예시와 SSE 응답 예시**를 받아 그 형식에 맞춰 `app.py`의 `_a2a_payload()`만 조정하면 됩니다.
+현재 요청 본문은 다음과 같이 실제 동작 확인에 사용된 External API 형식으로 고정했습니다.
+
+```json
+{
+  "input_value": "사용자 질문",
+  "session_id": "portal-floating-사번-랜덤값",
+  "tweaks": {
+    "GaiA Input": {
+      "metadata": "{\"user_id\":\"사번\"}"
+    }
+  }
+}
+```
 
 ## 실행
 
@@ -36,7 +48,7 @@ GAIA_TEST_USER_ID=본인사번7자리
 http://127.0.0.1:8003
 ```
 
-오른쪽 아래의 `GaiA Agent` 버튼을 눌러 질문을 보냅니다. 응답 원문은 채팅창의 `수신 이벤트 확인`을 펼쳐 확인할 수 있습니다.
+오른쪽 아래의 `GaiA Agent` 버튼을 눌러 질문을 보냅니다. 실제 전송 본문과 응답 원문은 채팅창의 `요청·응답 원문 확인`을 펼쳐 확인할 수 있습니다.
 
 ## 확인 순서
 
@@ -56,4 +68,4 @@ http://127.0.0.1:8003
 
 - `.env`는 Git에 올리지 않습니다.
 - External 인증키는 브라우저로 반환하지 않습니다.
-- 이 화면은 로컬 연결 검증용이며, 실제 Portal 반영 전에는 AI Market 담당자에게 브라우저 직접 키 노출 허용 여부와 A2A Gateway의 CORS·프록시 정책을 확인해야 합니다.
+- 이 화면은 로컬 연결 검증용이며, 실제 Portal 반영 전에는 AI Market 담당자에게 브라우저 직접 키 노출 허용 여부와 External Gateway의 CORS·프록시 정책을 확인해야 합니다.
