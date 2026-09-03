@@ -1,0 +1,27 @@
+1. PowerShell을 엽니다.
+
+2. 아래 명령을 순서대로 실행합니다.
+
+cd C:\Users\qkekt\Desktop\metadata_driven_v5\gaia_floating_chat_local_test
+C:\Python313\python.exe -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+notepad .env
+
+3. .env에서 아래 3개 값을 입력하고 저장합니다.
+
+GAIA_EXTERNAL_AGENT_URL=AI Market의 External Gateway 전체 URL
+GAIA_EXTERNAL_API_KEY=AI Market의 External 인증키
+GAIA_TEST_USER_ID=본인 사번 7자리
+
+4. 서버를 실행합니다.
+
+.\.venv\Scripts\python.exe app.py
+
+5. 브라우저에서 아래 주소를 엽니다.
+
+http://127.0.0.1:8003
+
+6. 오른쪽 아래 GaiA Agent 버튼을 누르고 질문을 전송합니다.
+
+7. 종료하려면 실행 중인 PowerShell에서 Ctrl + C를 누릅니다.
