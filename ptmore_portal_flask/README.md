@@ -18,10 +18,15 @@ C:\Python313\python.exe -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env
-.\.venv\Scripts\python.exe app.py
 ```
 
-브라우저에서 `http://127.0.0.1:5000`을 엽니다. Flask 기본 실행 방식이므로 Uvicorn 명령은 사용하지 않습니다.
+운영 HCP WebApp은 `app.py`의 전역 `app` 객체를 직접 실행합니다. 따라서 이 폴더에는 `app.run(...)`, Uvicorn 명령, 고정 포트 설정이 없습니다.
+
+개발 PC에서 화면만 임시 확인해야 할 때는 아래처럼 원하는 포트를 직접 정해 Flask 개발 서버를 띄울 수 있습니다. 이는 운영 실행 방식이 아닙니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app app run --host 127.0.0.1 --port 8002
+```
 
 `portal_core.py`는 기존 Portal의 MongoDB·Phoenix·메타데이터 업무 규칙을 그대로 재사용하는 호환 모듈입니다. HTTP 서버는 `app.py`의 Flask뿐이며, 이 폴더에는 Uvicorn 실행 코드를 두지 않았습니다.
 
@@ -40,13 +45,7 @@ PTMORE_FLASK_SESSION_SECRET=충분히_긴_임의의_비밀값
 
 ## 실행 진입점
 
-`app.py`에는 일반 Flask 실행용 `app`과 WSGI 배포용 `application`이 모두 있습니다.
-
-```python
-application = app
-```
-
-HCP가 WSGI 객체를 요구하면 `app:application`을 지정하면 됩니다. 로컬 확인은 위의 `python app.py`만 사용하면 됩니다.
+주신 기본 Flask 코드와 동일하게 `app.py`의 `app = Flask(__name__)`가 실행 진입점입니다. HCP WebApp이 이 객체를 직접 서빙합니다.
 
 ## 설정
 

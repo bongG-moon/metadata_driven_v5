@@ -439,14 +439,6 @@ def pydantic_validation_exception(error: ValidationError):
     return jsonify(detail={"code": "request_validation_error", "message": "입력값을 확인해 주세요.", "errors": error.errors(include_url=False)}), 422
 
 
-# Both names are useful: ``app`` is Flask's normal entry point and
-# ``application`` supports WSGI hosting conventions.
-application = app
-
-
-if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.getenv("PTMORE_FLASK_PORT", "5000")),
-        debug=False,
-    )
+# HCP WebApp imports this module-level Flask object directly.  Keep the
+# supplied deployment shape: ``app = Flask(__name__)`` plus route functions.
+# In particular, do not add ``app.run(...)`` or a fixed port here.
