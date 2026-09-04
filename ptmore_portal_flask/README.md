@@ -17,10 +17,11 @@ cd C:\Users\qkekt\Desktop\metadata_driven_v5\ptmore_portal_flask
 C:\Python313\python.exe -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
 ```
 
 주신 HCP WebApp 기본 구조처럼 `index.py`가 `web_main.py`의 Flask 객체를 불러 실행합니다. `web_main.py`에는 별도 실행 코드나 포트 설정을 두지 않습니다.
+
+운영 WebApp은 HCP Secret/서버 환경변수만 사용합니다. `.env.example`은 필요한 환경변수 이름을 확인하는 참고 파일이며, 앱이 로컬 `.env`를 자동으로 읽지 않습니다.
 
 개발 PC에서 동일한 구조로 화면을 확인할 때도 `index.py`를 실행합니다.
 
@@ -34,7 +35,7 @@ Copy-Item .env.example .env
 
 ## 운영 SSO 전환
 
-운영 HCP 환경에 `hcputil.auth.sso`가 설치된 뒤 `.env` 또는 HCP Secret에서 아래처럼 바꿉니다.
+운영 HCP 환경에 `hcputil.auth.sso`가 설치된 뒤 HCP Secret에서 아래처럼 설정합니다.
 
 ```dotenv
 PTMORE_PORTAL_FLASK_AUTH_MODE=sso
@@ -59,4 +60,4 @@ if __name__ == "__main__":
 
 ## 설정
 
-기존 Portal과 같은 MongoDB·Phoenix·메타데이터 API 환경변수는 `.env.example`에 포함되어 있습니다. 실제 비밀번호·API 키는 `.env` 또는 HCP Secret에만 넣고 Git에 추가하지 않습니다.
+기존 Portal과 같은 MongoDB·Phoenix·메타데이터 API 환경변수 이름은 `.env.example`에 포함되어 있습니다. 실제 비밀번호·API 키는 HCP Secret 또는 서버 환경변수에만 넣고 Git에 추가하지 않습니다.

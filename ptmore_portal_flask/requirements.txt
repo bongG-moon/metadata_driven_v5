@@ -1,5 +1,4 @@
 Flask>=3.0,<4.0
-python-dotenv>=1.0,<2.0
 pydantic>=2.7,<3.0
 pymongo>=4.10,<5.0
 pandas>=2.2,<3.0

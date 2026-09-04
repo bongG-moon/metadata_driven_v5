@@ -24,7 +24,6 @@ from typing import Any, Mapping, TypeVar
 from urllib.parse import quote
 
 import requests
-from dotenv import load_dotenv
 from flask import (
     Flask,
     Response,
@@ -55,10 +54,9 @@ os.environ["NLS_LANG"] = [
     ".UTF8",
 ][-1]
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(ROOT, ".env"), override=False)
-
 # The imports above intentionally match the existing Flask deployment base.
+# HCP Secret/runtime environment variables are read directly with ``os.getenv``.
+# Do not load a local ``.env`` file during WebApp module import.
 # The Portal does not globally disable TLS warnings; API certificate policy is
 # still governed by the existing Portal environment configuration.
 _ = (requests, disable_warnings, InsecureRequestWarning, abort, url_for)

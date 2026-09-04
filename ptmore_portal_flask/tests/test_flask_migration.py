@@ -7,6 +7,7 @@ small in-memory doubles and exercise only Flask's test client.
 
 from __future__ import annotations
 
+import builtins
 import copy
 import importlib
 import json
@@ -185,6 +186,53 @@ def test_index_exports_the_exact_web_main_flask_application() -> None:
 
     assert index.application is flask_portal.app
     assert index.application is application
+
+
+def test_flask_entrypoint_imports_and_renders_without_python_dotenv(
+    monkeypatch,
+) -> None:
+    """HCP Flask deployment must not require an optional local .env loader.
+
+    Import the two actual WebApp entry modules from scratch while blocking every
+    ``dotenv`` import.  This catches a regression where either ``web_main`` or
+    its reused Portal business layer adds ``from dotenv import ...`` again.
+    The page request is deliberately limited to ``/`` so no MongoDB, Phoenix,
+    or SSO service can be contacted.
+    """
+
+    original_import = builtins.__import__
+    module_names = ("index", "web_main", "portal_core")
+    previous_modules = {name: sys.modules.pop(name, None) for name in module_names}
+
+    def block_dotenv_import(
+        name: str,
+        globals: Any = None,
+        locals: Any = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> Any:
+        if name == "dotenv" or name.startswith("dotenv."):
+            raise ModuleNotFoundError("No module named 'dotenv'", name="dotenv")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", block_dotenv_import)
+    try:
+        fresh_web_main = importlib.import_module("web_main")
+        fresh_index = importlib.import_module("index")
+
+        fresh_web_main.app.config.update(TESTING=True)
+        with fresh_web_main.app.test_client() as fresh_client:
+            response = fresh_client.get("/")
+
+        assert fresh_index.application is fresh_web_main.app
+        assert response.status_code == 200
+        assert "PTMORE PKG Agent Portal" in response.get_data(as_text=True)
+    finally:
+        for name in module_names:
+            sys.modules.pop(name, None)
+        for name, module in previous_modules.items():
+            if module is not None:
+                sys.modules[name] = module
 
 
 def test_chrome_devtools_probe_is_acknowledged_without_a_404(client) -> None:

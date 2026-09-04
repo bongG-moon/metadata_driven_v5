@@ -33,17 +33,16 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
-from dotenv import load_dotenv
 from starlette.middleware.sessions import SessionMiddleware
 
 
 ROOT = Path(__file__).parent
 STATIC_ROOT = ROOT / "static"
 
-# Hosting platforms provide environment variables directly.  Loading `.env`
-# here additionally makes the same configuration usable for local execution;
-# existing process-level values always take precedence.
-load_dotenv(ROOT / ".env", override=False)
+# Runtime settings are read directly from the HCP Secret/process environment.
+# Do not import or read a local `.env` during WebApp module import: a missing
+# optional package or an unreadable deployment file must not prevent Flask
+# from registering its routes.
 
 
 _METADATA_TYPES = ("domain", "table_catalog", "main_flow_filters")
