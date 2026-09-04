@@ -8,7 +8,7 @@ small in-memory doubles and exercise only Flask's test client.
 from __future__ import annotations
 
 import copy
-import importlib.util
+import importlib
 import json
 from pathlib import Path
 import sys
@@ -23,25 +23,24 @@ if str(FLASK_ROOT) not in sys.path:
 
 
 def _load_flask_portal_module():
-    """Load the Flask entry point under a name distinct from the FastAPI app."""
+    """Load the canonical Flask WebApp module used by ``index.py``."""
 
-    module_name = "ptmore_portal_flask_app_under_test"
+    module_name = "web_main"
     existing = sys.modules.get(module_name)
     if existing is not None:
         return existing
-
-    spec = importlib.util.spec_from_file_location(module_name, FLASK_ROOT / "app.py")
-    if spec is None or spec.loader is None:  # pragma: no cover - repository error
-        raise RuntimeError("Flask Portal app.py를 불러올 수 없습니다.")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module(module_name)
 
 
 flask_portal = _load_flask_portal_module()
 portal_core = flask_portal.portal_core
 application = flask_portal.app
+
+
+def _load_flask_index_module():
+    """Import the HCP WebApp entry module without executing its server block."""
+
+    return importlib.import_module("index")
 
 
 class FakePortalSettingsStore:
@@ -179,6 +178,13 @@ def test_index_renders_existing_portal_ui_and_employee_photo_marker(client) -> N
     assert "http://skynet.skhynix.com/portalWeb/uploadfile/pictures/2069026.jpg" in page
     assert client.get("/static/styles.css").status_code == 200
     assert client.get("/static/app.js").status_code == 200
+
+
+def test_index_exports_the_exact_web_main_flask_application() -> None:
+    index = _load_flask_index_module()
+
+    assert index.application is flask_portal.app
+    assert index.application is application
 
 
 def test_chrome_devtools_probe_is_acknowledged_without_a_404(client) -> None:

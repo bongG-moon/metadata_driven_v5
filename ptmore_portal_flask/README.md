@@ -20,15 +20,15 @@ C:\Python313\python.exe -m venv .venv
 Copy-Item .env.example .env
 ```
 
-운영 HCP WebApp은 `app.py`의 전역 `app` 객체를 직접 실행합니다. 따라서 이 폴더에는 `app.run(...)`, Uvicorn 명령, 고정 포트 설정이 없습니다.
+주신 HCP WebApp 기본 구조처럼 `index.py`가 `web_main.py`의 Flask 객체를 불러 실행합니다. `web_main.py`에는 별도 실행 코드나 포트 설정을 두지 않습니다.
 
-개발 PC에서 화면만 임시 확인해야 할 때는 아래처럼 원하는 포트를 직접 정해 Flask 개발 서버를 띄울 수 있습니다. 이는 운영 실행 방식이 아닙니다.
+개발 PC에서 동일한 구조로 화면을 확인할 때도 `index.py`를 실행합니다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m flask --app app run --host 127.0.0.1 --port 8002
+.\.venv\Scripts\python.exe index.py
 ```
 
-`portal_core.py`는 기존 Portal의 MongoDB·Phoenix·메타데이터 업무 규칙을 그대로 재사용하는 호환 모듈입니다. HTTP 서버는 `app.py`의 Flask뿐이며, 이 폴더에는 Uvicorn 실행 코드를 두지 않았습니다.
+`portal_core.py`는 기존 Portal의 MongoDB·Phoenix·메타데이터 업무 규칙을 그대로 재사용하는 호환 모듈입니다. HTTP 서버는 `web_main.py`의 Flask이며, 이 폴더에는 Uvicorn 실행 코드를 두지 않았습니다.
 
 이 Flask 버전은 사용자 이름을 MongoDB에서 다시 찾지 않습니다. 로그인에서 확보한 `session['emp_no']`, `session['emp_name']`만 권한·소유자·화면 표시의 기준으로 사용합니다.
 
@@ -45,7 +45,17 @@ PTMORE_FLASK_SESSION_SECRET=충분히_긴_임의의_비밀값
 
 ## 실행 진입점
 
-주신 기본 Flask 코드와 동일하게 `app.py`의 `app = Flask(__name__)`가 실행 진입점입니다. HCP WebApp이 이 객체를 직접 서빙합니다.
+주신 기본 Flask 코드와 동일하게 실행 구조는 아래와 같습니다.
+
+```python
+# index.py
+from web_main import app as application
+
+if __name__ == "__main__":
+    application.run(debug=True, host="0.0.0.0")
+```
+
+실제 Flask 앱과 모든 Route는 `web_main.py`의 `app = Flask(__name__)`에 있습니다.
 
 ## 설정
 

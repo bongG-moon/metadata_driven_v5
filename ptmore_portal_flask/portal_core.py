@@ -116,12 +116,11 @@ _PORTAL_EMPLOYEE_ID_HEADER = "X-PTMORE-Employee-Id"
 _PORTAL_EMPLOYEE_NAME_HEADER = "X-PTMORE-Employee-Name"
 _PORTAL_SETTINGS_DOCUMENT_ID = "global"
 
-# ``app.py`` is the production entry point.  In the current production
-# deployment, the browser's internal ``LASTUSER`` cookie supplies the employee
-# number.  ``sso`` remains available only for the previous HCP SSO-session
-# integration.  ``app_local.py`` selects the local adapter before importing
-# this module, while ``test`` is intentionally only for automated tests where
-# request headers remain useful fixtures.
+# ``web_main.py`` contains the Flask application and ``index.py`` is the HCP
+# WebApp execution entry point.  The legacy adapters below remain in this
+# reused business module, while Flask itself resolves identity from its server
+# session.  ``test`` is intentionally only for automated tests where request
+# headers remain useful fixtures.
 _PORTAL_AUTH_MODES = {"production", "lastuser", "sso", "local", "test"}
 _PORTAL_SESSION_IDENTITY_KEY = "ptmore_portal_identity"
 _PORTAL_SESSION_COOKIE_NAME = "ptmore_portal_session"

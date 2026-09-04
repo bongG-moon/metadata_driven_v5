@@ -1,9 +1,10 @@
-"""Flask entry point for the PTMORE PKG Agent Portal.
+"""Flask application module for the PTMORE PKG Agent Portal.
 
 The Portal's existing business rules remain in ``portal_core.py`` so the
 Flask migration can preserve the tested API contracts, MongoDB stores,
 metadata authoring, schedule ownership, and Phoenix dashboard behavior.
 Only Flask handles HTTP routes, sessions, and the current user identity.
+``index.py`` imports this module's ``app`` object to start the WebApp.
 
 For the first local check, every request receives the fixed Flask session
 identity requested by the operator: ``2069026 / 문봉건``.  Switching
@@ -439,6 +440,6 @@ def pydantic_validation_exception(error: ValidationError):
     return jsonify(detail={"code": "request_validation_error", "message": "입력값을 확인해 주세요.", "errors": error.errors(include_url=False)}), 422
 
 
-# HCP WebApp imports this module-level Flask object directly.  Keep the
-# supplied deployment shape: ``app = Flask(__name__)`` plus route functions.
-# In particular, do not add ``app.run(...)`` or a fixed port here.
+# ``index.py`` imports this module-level Flask object as ``application``.
+# Keep this module to Flask setup and route functions; its execution block is
+# intentionally located in the supplied ``index.py`` entry point.
