@@ -6,10 +6,9 @@ metadata authoring, schedule ownership, and Phoenix dashboard behavior.
 Only Flask handles HTTP routes, sessions, and the current user identity.
 ``index.py`` imports this module's ``app`` object to start the WebApp.
 
-For the first local check, every request receives the fixed Flask session
-identity requested by the operator: ``2069026 / 문봉건``.  Switching
-``PTMORE_PORTAL_FLASK_AUTH_MODE`` to ``sso`` enables the commented HCP SSO
-pattern once the production package is available.
+For a local check, explicitly set ``PTMORE_PORTAL_FLASK_AUTH_MODE`` to
+``mock`` to receive the fixed Flask session identity requested by the
+operator: ``2069026 / 문봉건``.  The safe default is ``sso``.
 """
 
 from __future__ import annotations
@@ -40,6 +39,7 @@ from urllib3 import disable_warnings
 from urllib3.exceptions import InsecureRequestWarning
 
 import portal_core
+from runtime_settings import get_setting
 
 
 os.environ["NLS_LANG"] = [
@@ -55,14 +55,17 @@ os.environ["NLS_LANG"] = [
 ][-1]
 
 # The imports above intentionally match the existing Flask deployment base.
-# HCP Secret/runtime environment variables are read directly with ``os.getenv``.
-# Do not load a local ``.env`` file during WebApp module import.
+# HCP Secret/process variables take precedence.  When the WebApp cannot load
+# a local ``.env``, the private ``portal_runtime_config.py`` module is used.
 # The Portal does not globally disable TLS warnings; API certificate policy is
 # still governed by the existing Portal environment configuration.
 _ = (requests, disable_warnings, InsecureRequestWarning, abort, url_for)
 
 app = Flask(__name__, static_folder="static", static_url_path="/static", template_folder="templates")
-app.config["SECRET_KEY"] = os.getenv("PTMORE_FLASK_SESSION_SECRET") or os.urandom(12)
+# The existing Flask deployment pattern intentionally creates its own session
+# signing key when this process starts.  A Portal runtime setting is therefore
+# unnecessary; active browser sessions naturally reset after a restart.
+app.config["SECRET_KEY"] = os.urandom(12)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -77,18 +80,18 @@ _MODEL = TypeVar("_MODEL", bound=BaseModel)
 
 
 def _auth_mode() -> str:
-    """Choose mock mode until the HCP-only SSO package is deployed."""
+    """Use SSO by default; mock identity must always be explicitly selected."""
 
-    return str(os.getenv("PTMORE_PORTAL_FLASK_AUTH_MODE", "mock")).strip().lower() or "mock"
+    return get_setting("PTMORE_PORTAL_FLASK_AUTH_MODE", "sso").lower() or "sso"
 
 
 # The first local run should expose the same administrator-only screens as the
-# original Portal preview.  This default exists only while the explicit Flask
-# mock login is selected; an operator's configured administrator list always
-# takes precedence, and SSO mode never receives this implicit default.
-if _auth_mode() == "mock" and not os.getenv("PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON"):
-    os.environ["PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON"] = (
-        '[{"employee_id":"2069026","name":"문봉건"}]'
+# original Portal preview.  This default exists only in process memory while
+# explicit Flask mock login is selected.  It never writes to ``os.environ``;
+# a configured Python/Secret administrator list always takes precedence.
+if _auth_mode() == "mock" and not get_setting("PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON"):
+    portal_core.set_default_portal_administrators_override(
+        [{"employee_id": _MOCK_EMPLOYEE_ID, "name": _MOCK_EMPLOYEE_NAME}]
     )
 
 

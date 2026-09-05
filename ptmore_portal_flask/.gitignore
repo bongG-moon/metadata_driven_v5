@@ -1,4 +1,5 @@
 .env
+portal_runtime_config.py
 .venv/
 __pycache__/
 .pytest_cache/

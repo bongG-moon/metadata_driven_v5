@@ -34,15 +34,14 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.sessions import SessionMiddleware
+from runtime_settings import get_setting
 
 
 ROOT = Path(__file__).parent
 STATIC_ROOT = ROOT / "static"
 
-# Runtime settings are read directly from the HCP Secret/process environment.
-# Do not import or read a local `.env` during WebApp module import: a missing
-# optional package or an unreadable deployment file must not prevent Flask
-# from registering its routes.
+# Runtime settings use HCP Secret/process values first and an optional private
+# Python configuration module second.  No `.env` loader is required.
 
 
 _METADATA_TYPES = ("domain", "table_catalog", "main_flow_filters")
@@ -51,17 +50,11 @@ _METADATA_TYPE_LABELS = {
     "table_catalog": "테이블 카탈로그",
     "main_flow_filters": "메인 플로우 필터",
 }
-_METADATA_COLLECTION_SUFFIXES = {
-    "domain": "domain_items",
-    "table_catalog": "table_catalog_items",
-    "main_flow_filters": "main_flow_filters",
-}
-
-# Portal-owned MongoDB collections are intentionally separate from the
-# Langflow metadata collections above.  Operators can use a test prefix or a
-# production-specific name without changing application code.  The Portal
-# owns source-schedule CRUD here; the separate Scheduler Worker owns execution
-# and the schedule run-history collection.
+# Portal-owned MongoDB collections are intentionally separate from metadata
+# documents that the external Langflow Flows own.  Operators can use a test
+# prefix or a production-specific name without changing application code.  The
+# Portal owns source-schedule CRUD here; the separate Scheduler Worker owns
+# execution and the schedule run-history collection.
 _DEFAULT_PORTAL_SETTINGS_COLLECTION = "portal_settings"
 _DEFAULT_PORTAL_AUDIT_COLLECTION = "portal_audit_log"
 _DEFAULT_SCHEDULE_COLLECTION = "portal_schedules"
@@ -153,6 +146,28 @@ _PORTAL_LOCAL_ADMINISTRATOR = {
 # environment, while focused unit tests can verify all three adapters without
 # importing HCP-only modules.
 _portal_auth_mode_override: str | None = None
+_portal_default_administrators_override: list[dict[str, Any]] | None = None
+
+
+def set_default_portal_administrators_override(
+    administrators: list[Mapping[str, Any]] | None,
+) -> None:
+    """Set a process-local default administrator list for Flask mock mode.
+
+    The Flask adapter uses this only when no configured administrator value is
+    available.  Keeping it in Python memory avoids changing the HCP process
+    environment while the application module is being imported.
+    """
+
+    global _portal_default_administrators_override
+    if administrators is None:
+        _portal_default_administrators_override = None
+        return
+    _portal_default_administrators_override = [
+        copy.deepcopy(dict(administrator))
+        for administrator in administrators
+        if isinstance(administrator, Mapping)
+    ]
 
 # 스케줄 실행 결과는 현재 스케줄을 등록한 사용자에게만 개인 DM으로
 # 전달한다. 채널 발송은 이 Portal의 스케줄 계약에 포함하지 않는다.
@@ -179,30 +194,20 @@ _KST = timezone(timedelta(hours=9), name="Asia/Seoul")
 
 logger = logging.getLogger(__name__)
 
-# Langflow applies tweaks by either node ID or display name.  We use stable,
-# human-readable display names by default so a Flow re-import does not require
-# configuration updates. The environment can override a key with an ID only
-# when an operator intentionally renamed a node.
+# Langflow applies tweaks by either node ID or display name.  These stable,
+# human-readable names are fixed by the supported rev_2 Flows so a deployment
+# needs no separate component-map setting.
 _DEFAULT_METADATA_COMPONENT_MAP = {
     "table_catalog": {
         "request_loader": "00 테이블 카탈로그 등록 요청 로더",
-        # Legacy 03 and the lightweight rev_2 03 have no Snapshot node.  Keep
-        # this blank by default so Mongo tweaks never target a nonexistent
-        # component when the Portal calls a Table Catalog Flow.
-        "snapshot_loader": "",
-        "writer": "07 테이블 카탈로그 검수/저장 처리기",
         "api_terminal": "10 테이블 카탈로그 등록 API 응답 생성기",
     },
     "main_flow_filters": {
         "request_loader": "00 메인 플로우 필터 등록 요청 로더",
-        "snapshot_loader": "01 메타데이터 QA 통합 Snapshot 로더",
-        "writer": "07 메인 플로우 필터 검수/저장 처리기",
         "api_terminal": "10 메인 플로우 필터 등록 API 응답 생성기",
     },
     "domain": {
         "request_loader": "00 도메인 등록 요청 로더",
-        "snapshot_loader": "01 메타데이터 QA 통합 Snapshot 로더",
-        "writer": "07 도메인 검수/저장 처리기",
         "api_terminal": "10 도메인 등록 API 응답 생성기",
     },
 }
@@ -420,52 +425,32 @@ class MetadataAuthoringSettings:
     """
 
     mode: str
-    api_url: str
     api_urls: Mapping[str, str]
     auth_header: str
     auth_key: str
-    bearer_token: str
-    extra_headers: Mapping[str, str]
     timeout_seconds: float
     verify_tls: bool
     payload_mode: str
     input_type: str
     output_type: str
     component_map: Mapping[str, Mapping[str, str]]
+    # Shared Portal storage connection.  It is never included in a Flow API
+    # request; the Flow owns its own MongoDB runtime configuration.
     mongo_uri: str
     mongo_database: str
-    mongo_collection_prefix: str
-    mongo_collections: Mapping[str, str]
-    send_mongodb_tweaks: bool
     configuration_errors: tuple[str, ...]
 
     def endpoint_for(self, metadata_type: str) -> str:
-        return str(self.api_urls.get(metadata_type) or self.api_url or "").strip()
+        """Return the dedicated endpoint for one metadata Flow."""
+
+        return str(self.api_urls.get(metadata_type) or "").strip()
 
     def endpoint_source_for(self, metadata_type: str) -> str:
         """Return the configured endpoint source without exposing its URL."""
 
         if str(self.api_urls.get(metadata_type) or "").strip():
             return "type_specific_url"
-        if self.api_url:
-            return "common_url"
         return "not_configured"
-
-    def collection_for(self, metadata_type: str) -> str:
-        configured = str(self.mongo_collections.get(metadata_type) or "").strip()
-        if configured:
-            return configured
-        suffix = _METADATA_COLLECTION_SUFFIXES[metadata_type]
-        return f"{self.mongo_collection_prefix}{suffix}" if self.mongo_collection_prefix else suffix
-
-    def collection_source_for(self, metadata_type: str) -> str:
-        """Describe how the portal calculated a collection name."""
-
-        if str(self.mongo_collections.get(metadata_type) or "").strip():
-            return "explicit_collection_map"
-        if self.mongo_collection_prefix:
-            return "collection_prefix"
-        return "built_in_suffix"
 
     def component_for(self, metadata_type: str, name: str) -> str:
         component = self.component_map.get(metadata_type, {})
@@ -473,7 +458,7 @@ class MetadataAuthoringSettings:
 
 
 def _environment_value(name: str, default: str = "") -> str:
-    return str(os.environ.get(name, default) or "").strip()
+    return get_setting(name, default)
 
 
 class PhoenixUsageUnavailableError(RuntimeError):
@@ -564,12 +549,7 @@ def _usage_history_archive_protected_collection_names() -> tuple[str, ...]:
     )
     if configured_directory_collection:
         protected.add(str(configured_directory_collection).strip())
-    metadata_settings = _metadata_settings_from_env()
-    for metadata_type in _METADATA_TYPES:
-        collection_name = metadata_settings.collection_for(metadata_type)
-        if collection_name:
-            protected.add(collection_name)
-    live_settings = _live_metadata_read_settings_from_env(metadata_settings)
+    live_settings = _live_metadata_read_settings_from_env()
     for metadata_type in _METADATA_TYPES:
         collection_name = live_settings.collection_for(metadata_type)
         if collection_name:
@@ -1394,48 +1374,13 @@ def _metadata_settings_from_env() -> MetadataAuthoringSettings:
         timeout_seconds = 60.0
         errors.append("PTMORE_METADATA_API_TIMEOUT_SECONDS")
 
-    extra_headers, header_errors = _json_object_from_environment(
-        "PTMORE_METADATA_API_EXTRA_HEADERS_JSON"
-    )
-    errors.extend(header_errors)
-    safe_extra_headers = {
-        str(key): str(value)
-        for key, value in extra_headers.items()
-        if str(key).strip() and value is not None
-    }
-
-    configured_components, component_errors = _json_object_from_environment(
-        "PTMORE_METADATA_FLOW_COMPONENT_MAP_JSON",
-        default=_DEFAULT_METADATA_COMPONENT_MAP,
-    )
-    errors.extend(component_errors)
+    # The three supported Flow definitions have fixed, versioned node names.
+    # Keep this map internal so operators only configure endpoint and
+    # authentication information instead of deployment-specific node IDs.
     component_map = copy.deepcopy(_DEFAULT_METADATA_COMPONENT_MAP)
-    for metadata_type, configured_value in configured_components.items():
-        if metadata_type not in component_map or not isinstance(configured_value, Mapping):
-            continue
-        for component_name in ("request_loader", "snapshot_loader", "writer", "api_terminal"):
-            # An omitted key means "use the default".  An explicitly supplied
-            # null/empty value means "this Flow has no such node".  This lets
-            # the Portal switch between Flow variants without hard-coding an
-            # endpoint or accidentally sending a tweak to a removed node.
-            if component_name not in configured_value:
-                continue
-            value = configured_value.get(component_name)
-            component_map[metadata_type][component_name] = "" if value is None else str(value).strip()
-
-    configured_collections, collection_errors = _json_object_from_environment(
-        "PTMORE_METADATA_MONGODB_COLLECTION_MAP_JSON"
-    )
-    errors.extend(collection_errors)
-    mongo_collections = {
-        metadata_type: str(value)
-        for metadata_type, value in configured_collections.items()
-        if metadata_type in _METADATA_TYPES and value
-    }
 
     return MetadataAuthoringSettings(
         mode=mode,
-        api_url=_environment_value("PTMORE_METADATA_API_URL"),
         api_urls={
             "table_catalog": _environment_value("PTMORE_METADATA_TABLE_CATALOG_API_URL"),
             "main_flow_filters": _environment_value("PTMORE_METADATA_MAIN_FLOW_FILTER_API_URL"),
@@ -1443,8 +1388,6 @@ def _metadata_settings_from_env() -> MetadataAuthoringSettings:
         },
         auth_header=_environment_value("PTMORE_METADATA_API_AUTH_HEADER", "X-API-Key"),
         auth_key=_environment_value("PTMORE_METADATA_API_AUTH_KEY"),
-        bearer_token=_environment_value("PTMORE_METADATA_API_BEARER_TOKEN"),
-        extra_headers=safe_extra_headers,
         timeout_seconds=timeout_seconds,
         verify_tls=_bool_from_environment("PTMORE_METADATA_API_VERIFY_TLS", True),
         payload_mode=payload_mode,
@@ -1456,9 +1399,6 @@ def _metadata_settings_from_env() -> MetadataAuthoringSettings:
         component_map=component_map,
         mongo_uri=_environment_value("MONGODB_URI"),
         mongo_database=_environment_value("MONGODB_DATABASE"),
-        mongo_collection_prefix=_environment_value("MONGODB_COLLECTION_PREFIX", "agent_v4_"),
-        mongo_collections=mongo_collections,
-        send_mongodb_tweaks=_bool_from_environment("PTMORE_METADATA_SEND_MONGODB_TWEAKS", False),
         configuration_errors=tuple(dict.fromkeys(errors)),
     )
 
@@ -1467,9 +1407,9 @@ def _metadata_settings_from_env() -> MetadataAuthoringSettings:
 class LiveMetadataReadSettings:
     """Explicit, read-only source settings for the Portal metadata list.
 
-    This is deliberately separate from the authoring Flow writer configuration.
-    A portal operator may use a read-only MongoDB account or a different source
-    database without changing the values passed to a Langflow Flow.
+    This is deliberately separate from the authoring Flow configuration.  A
+    portal operator may use a read-only MongoDB account or a different source
+    database without passing any MongoDB setting to a Langflow Flow.
     """
 
     mode: str
@@ -1543,17 +1483,14 @@ def _valid_live_metadata_collection_name(
     }
 
 
-def _live_metadata_read_settings_from_env(
-    metadata_settings: MetadataAuthoringSettings | None = None,
-) -> LiveMetadataReadSettings:
-    """Resolve a read source without guessing a different collection prefix.
+def _live_metadata_read_settings_from_env() -> LiveMetadataReadSettings:
+    """Resolve the explicit, read-only MongoDB source for metadata lists.
 
-    ``PTMORE_METADATA_LIVE_COLLECTION_MAP_JSON`` is the explicit way to select
-    a live collection set.  When it is omitted, the currently configured
-    Portal MongoDB collection map/prefix is used exactly as-is.
+    ``PTMORE_METADATA_LIVE_COLLECTION_MAP_JSON`` is required when live reading
+    is enabled.  The Portal deliberately does not infer a Flow collection name
+    or use this map to change a Flow's MongoDB configuration.
     """
 
-    metadata_settings = metadata_settings or _metadata_settings_from_env()
     mode, errors = _live_metadata_read_mode()
     item_limit, limit_errors = _live_metadata_item_limit()
     errors.extend(limit_errors)
@@ -1567,26 +1504,21 @@ def _live_metadata_read_settings_from_env(
     collection_sources: dict[str, str] = {}
     for metadata_type in _METADATA_TYPES:
         explicit_name = str(configured_collections.get(metadata_type) or "").strip()
-        collection_name = explicit_name or metadata_settings.collection_for(metadata_type)
-        collections[metadata_type] = collection_name
-        collection_sources[metadata_type] = (
-            "live_collection_map"
-            if explicit_name
-            else "portal_collection_configuration"
-        )
+        collections[metadata_type] = explicit_name
+        collection_sources[metadata_type] = "live_collection_map" if explicit_name else ""
         if mode == "configured" and not _valid_live_metadata_collection_name(
-            collection_name,
+            explicit_name,
             reserved_collections=portal_collections.all_collections,
         ):
             errors.append(f"collection:{metadata_type}")
 
     live_uri = (
         _environment_value("PTMORE_METADATA_LIVE_MONGODB_URI")
-        or metadata_settings.mongo_uri
+        or _environment_value("MONGODB_URI")
     )
     live_database = (
         _environment_value("PTMORE_METADATA_LIVE_MONGODB_DATABASE")
-        or metadata_settings.mongo_database
+        or _environment_value("MONGODB_DATABASE")
     )
     if mode == "configured":
         if not live_uri:
@@ -2679,14 +2611,11 @@ def _metadata_api_headers(
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json; charset=utf-8",
-        **settings.extra_headers,
     }
     if settings.auth_key and settings.auth_header:
-        headers.setdefault(settings.auth_header, settings.auth_key)
+        headers[settings.auth_header] = settings.auth_key
     if gaia_api_caller_employee_id:
-        headers.setdefault(_GAIA_CALLER_ID_HEADER, gaia_api_caller_employee_id)
-    if settings.bearer_token:
-        headers.setdefault("Authorization", f"Bearer {settings.bearer_token}")
+        headers[_GAIA_CALLER_ID_HEADER] = gaia_api_caller_employee_id
     return headers
 
 
@@ -2701,28 +2630,9 @@ def _metadata_api_payload(
     """Build either the standard Langflow Run API body or a generic JSON body."""
 
     request_loader = settings.component_for(metadata_type, "request_loader")
-    snapshot_loader = settings.component_for(metadata_type, "snapshot_loader")
-    writer = settings.component_for(metadata_type, "writer")
     request_tweak = {
         "duplicate_action": duplicate_action,
         "dry_run": dry_run,
-    }
-    mongo_tweaks = {
-        "mongo_uri": settings.mongo_uri,
-        "mongo_database": settings.mongo_database,
-        "table_collection_name": settings.collection_for("table_catalog"),
-        "filter_collection_name": settings.collection_for("main_flow_filters"),
-        "domain_collection_name": settings.collection_for("domain"),
-    }
-    mongo_tweaks = {key: value for key, value in mongo_tweaks.items() if value}
-    writer_tweak = {
-        key: value
-        for key, value in {
-            "mongo_uri": settings.mongo_uri,
-            "mongo_database": settings.mongo_database,
-            "collection_name": settings.collection_for(metadata_type),
-        }.items()
-        if value
     }
 
     if settings.payload_mode == "direct":
@@ -2731,23 +2641,15 @@ def _metadata_api_payload(
             "raw_text": raw_text,
             "duplicate_action": duplicate_action,
             "dry_run": dry_run,
-            "mongodb": {
-                "database": settings.mongo_database,
-                "collection_name": settings.collection_for(metadata_type),
-            },
         }
 
     # Default: Langflow's /api/v1/run/<flow-id> request shape.  The top-level
     # input_value drives Chat Input and its connected `raw_text` input.  Tweaks
-    # supplement the request loader and writer; Langflow applies them by node
-    # ID even when the fields are not displayed as API-editable in the canvas.
+    # supplement the request loader.  MongoDB runtime values are deliberately
+    # not included: each Flow owns its own MongoDB connection and collection.
     tweaks: dict[str, dict[str, Any]] = {}
     if request_loader:
         tweaks[request_loader] = request_tweak
-    if settings.send_mongodb_tweaks and snapshot_loader and mongo_tweaks:
-        tweaks[snapshot_loader] = mongo_tweaks
-    if settings.send_mongodb_tweaks and writer and writer_tweak:
-        tweaks[writer] = writer_tweak
     return {
         "input_value": raw_text,
         "input_type": settings.input_type,
@@ -2916,11 +2818,7 @@ def _metadata_api_status(
     administrator-configured read-only endpoint is available.
     """
 
-    live_read_settings = live_read_settings or _live_metadata_read_settings_from_env(settings)
-    portal_reads_metadata_collections = bool(
-        live_read_settings.enabled and live_read_settings.ready
-    )
-
+    live_read_settings = live_read_settings or _live_metadata_read_settings_from_env()
     endpoint_configured = {
         metadata_type: bool(settings.endpoint_for(metadata_type))
         for metadata_type in _METADATA_TYPES
@@ -2932,16 +2830,7 @@ def _metadata_api_status(
             for metadata_type, configured in endpoint_configured.items()
             if not configured
         )
-        if settings.send_mongodb_tweaks:
-            if not settings.mongo_uri:
-                missing.append("MONGODB_URI")
-            if not settings.mongo_database:
-                missing.append("MONGODB_DATABASE")
-    mongo_tweaks_ready = (
-        not settings.send_mongodb_tweaks
-        or bool(settings.mongo_uri and settings.mongo_database)
-    )
-    base_api_configuration_ready = not settings.configuration_errors and mongo_tweaks_ready
+    base_api_configuration_ready = not settings.configuration_errors
     any_endpoint_configured = any(endpoint_configured.values())
     ready = bool(
         settings.mode == "api"
@@ -2961,23 +2850,6 @@ def _metadata_api_status(
             and base_api_configuration_ready
             and endpoint_configured[metadata_type]
         )
-        writer_tweak_configured = bool(
-            settings.payload_mode == "langflow"
-            and settings.send_mongodb_tweaks
-            and settings.mongo_uri
-            and settings.mongo_database
-            and settings.component_for(metadata_type, "writer")
-        )
-        snapshot_tweak_configured = bool(
-            settings.payload_mode == "langflow"
-            and settings.send_mongodb_tweaks
-            and settings.mongo_uri
-            and settings.mongo_database
-            and settings.component_for(metadata_type, "snapshot_loader")
-        )
-        portal_will_send_writer_tweak = bool(endpoint_ready and writer_tweak_configured)
-        portal_will_send_snapshot_tweak = bool(endpoint_ready and snapshot_tweak_configured)
-
         metadata_types[metadata_type] = {
             "label": _METADATA_TYPE_LABELS[metadata_type],
             "endpoint_configured": endpoint_configured[metadata_type],
@@ -2986,66 +2858,11 @@ def _metadata_api_status(
             # to invoke this Flow. It is not a successful upstream health check.
             "endpoint_ready": endpoint_ready,
             "current_mode_ready": endpoint_ready,
-            "portal_configured_collection_name": settings.collection_for(metadata_type),
-            "collection_name_source": settings.collection_source_for(metadata_type),
-            # This name is known only when the portal will pass it to the
-            # Langflow writer. When tweaks are disabled, the Flow may use an
-            # entirely separate deployment-time MongoDB setting.
-            "expected_flow_collection_name": (
-                settings.collection_for(metadata_type)
-                if writer_tweak_configured
-                else None
-            ),
-            "expected_flow_collection_basis": (
-                "portal_writer_tweak"
-                if writer_tweak_configured
-                else "external_flow_runtime_not_observed"
-            ),
-            "writer_tweak_configured": writer_tweak_configured,
-            "writer_tweak_will_be_sent": portal_will_send_writer_tweak,
-            "snapshot_tweak_configured": snapshot_tweak_configured,
-            "snapshot_tweak_will_be_sent": portal_will_send_snapshot_tweak,
-            # A configured endpoint and a calculated collection name are not
-            # evidence that the collection exists or that its contents match
-            # the live metadata source.
+            # A configured endpoint is not evidence that a Flow has saved an
+            # item.  Live collection contents are confirmed only by the
+            # separate, read-only metadata source.
             "live_contents_checked": False,
         }
-
-    flow_metadata_mongodb = {
-        "role": "external_flow_metadata_configuration",
-        # Compatibility fields retained for older Portal UI clients.
-        "uri_configured": bool(settings.mongo_uri),
-        "portal_mongodb_configuration_present": bool(
-            settings.mongo_uri and settings.mongo_database
-        ),
-        "database": settings.mongo_database or None,
-        "collection_prefix": settings.mongo_collection_prefix or None,
-        "tweaks_enabled": settings.send_mongodb_tweaks,
-        "payload_mode": settings.payload_mode,
-        "portal_reads_metadata_collections": portal_reads_metadata_collections,
-        "live_metadata_contents_checked": False,
-        "contents_status": (
-            "available_via_metadata_live_api"
-            if portal_reads_metadata_collections
-            else "not_checked_by_portal"
-        ),
-        "message": (
-            "실제 등록 정보는 관리자 전용 /api/metadata/live에서 읽을 수 있습니다."
-            if portal_reads_metadata_collections
-            else "현재 Portal은 메타데이터 컬렉션 내용을 직접 읽지 않습니다. "
-            "메타데이터 목록은 실조회 연결 전까지 비어 있습니다."
-        ),
-        "collections": {
-            metadata_type: settings.collection_for(metadata_type)
-            for metadata_type in _METADATA_TYPES
-        },
-        "writer_tweaks_configured": bool(
-            settings.payload_mode == "langflow"
-            and settings.send_mongodb_tweaks
-            and settings.mongo_uri
-            and settings.mongo_database
-        ),
-    }
 
     return {
         "mode": settings.mode,
@@ -3058,18 +2875,9 @@ def _metadata_api_status(
             "endpoint_configured": endpoint_configured,
             "auth_key_configured": bool(settings.auth_key),
             "gaia_api_caller_employee_id_configured": bool(gaia_api_caller_employee_id),
-            "bearer_token_configured": bool(settings.bearer_token),
             "timeout_seconds": settings.timeout_seconds,
             "verify_tls": settings.verify_tls,
             "payload_mode": settings.payload_mode,
-            "component_map_configured": {
-                metadata_type: bool(settings.component_for(metadata_type, "request_loader"))
-                for metadata_type in _METADATA_TYPES
-            },
-            "api_terminal_configured": {
-                metadata_type: bool(settings.component_for(metadata_type, "api_terminal"))
-                for metadata_type in _METADATA_TYPES
-            },
         },
         "metadata_types": metadata_types,
         "live_metadata_read": {
@@ -3087,11 +2895,6 @@ def _metadata_api_status(
                 for metadata_type in _METADATA_TYPES
             },
         },
-        # Keep the existing key for callers already using it, but make the
-        # semantic role explicit. ``flow_metadata_mongodb`` is the preferred
-        # new name for the UI.
-        "mongodb": copy.deepcopy(flow_metadata_mongodb),
-        "flow_metadata_mongodb": flow_metadata_mongodb,
     }
 
 
@@ -3375,12 +3178,15 @@ def _configured_default_portal_administrators() -> list[dict[str, str]]:
     """
 
     raw = _environment_value(_PORTAL_BOOTSTRAP_ADMINS_ENVIRONMENT)
-    if not raw:
-        return []
-    try:
-        decoded = json.loads(raw)
-    except (TypeError, ValueError):
-        logger.warning("Portal default administrator configuration is invalid.")
+    if raw:
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("Portal default administrator configuration is invalid.")
+            return []
+    elif _portal_default_administrators_override is not None:
+        decoded = copy.deepcopy(_portal_default_administrators_override)
+    else:
         return []
     if not isinstance(decoded, list):
         logger.warning("Portal default administrator configuration must be a list.")
@@ -6364,7 +6170,7 @@ async def metadata_authoring_status(request: Request) -> dict[str, Any]:
 
     access = _require_active_admin_for_status(request)
     metadata_settings = _metadata_settings_from_env()
-    live_read_settings = _live_metadata_read_settings_from_env(metadata_settings)
+    live_read_settings = _live_metadata_read_settings_from_env()
     response = _metadata_api_status(
         metadata_settings,
         gaia_api_caller_employee_id=str(
@@ -6409,8 +6215,7 @@ async def live_metadata(request: Request) -> dict[str, Any]:
     """
 
     _require_active_admin(request)
-    metadata_settings = _metadata_settings_from_env()
-    live_settings = _live_metadata_read_settings_from_env(metadata_settings)
+    live_settings = _live_metadata_read_settings_from_env()
     if live_settings.mode == "invalid" or (
         live_settings.enabled and not live_settings.ready
     ):
@@ -6458,8 +6263,7 @@ def live_metadata_detail(
             },
         )
 
-    metadata_settings = _metadata_settings_from_env()
-    live_settings = _live_metadata_read_settings_from_env(metadata_settings)
+    live_settings = _live_metadata_read_settings_from_env()
     if live_settings.mode != "configured" or not live_settings.ready:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -6529,8 +6333,7 @@ def update_live_metadata_record_status(
             },
         )
 
-    metadata_settings = _metadata_settings_from_env()
-    live_settings = _live_metadata_read_settings_from_env(metadata_settings)
+    live_settings = _live_metadata_read_settings_from_env()
     if live_settings.mode != "configured" or not live_settings.ready:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -6607,11 +6410,6 @@ def submit_metadata_authoring(
     request_missing = list(settings.configuration_errors)
     if settings.mode == "api" and not settings.endpoint_for(request_body.metadata_type):
         request_missing.append(f"endpoint:{request_body.metadata_type}")
-    if settings.mode == "api" and settings.send_mongodb_tweaks:
-        if not settings.mongo_uri:
-            request_missing.append("MONGODB_URI")
-        if not settings.mongo_database:
-            request_missing.append("MONGODB_DATABASE")
     if settings.mode != "api":
         request_missing.append("PTMORE_METADATA_API_MODE")
     if request_missing:

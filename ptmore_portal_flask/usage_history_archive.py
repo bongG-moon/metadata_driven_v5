@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -20,9 +19,16 @@ from typing import Any, Callable, Protocol
 from time import monotonic, sleep
 from uuid import uuid4
 
+from runtime_settings import settings_mapping
+
 
 DEFAULT_USAGE_HISTORY_COLLECTION = "portal_usage_history"
 DEFAULT_TIMEOUT_MS = 5_000
+_RUNTIME_SETTING_NAMES = (
+    "MONGODB_URI",
+    "MONGODB_DATABASE",
+    "PTMORE_USAGE_HISTORY_COLLECTION",
+)
 # One sentinel document in the archive collection serializes full refreshes
 # across Uvicorn processes/instances.  It has no source_project/usage_date and
 # is therefore naturally excluded from dashboard reads and stale-row deletes.
@@ -66,7 +72,7 @@ class UsageHistoryArchiveConfig:
         cls,
         environ: Mapping[str, str] | None = None,
     ) -> "UsageHistoryArchiveConfig":
-        values = os.environ if environ is None else environ
+        values = settings_mapping(_RUNTIME_SETTING_NAMES) if environ is None else environ
         return cls(
             uri=str(values.get("MONGODB_URI", "") or "").strip(),
             database=str(values.get("MONGODB_DATABASE", "") or "").strip(),

@@ -2159,11 +2159,10 @@ function metadataTypeStatus(api, metadataType) {
 function endpointSourceLabel(source) {
   return {
     type_specific_url: "유형별 API 주소",
-    common_url: "공통 API 주소",
   }[source] || "API 주소";
 }
 
-function metadataStorageDetail(metadataType, api, typeStatus) {
+function metadataStorageDetail(metadataType) {
   const livePayload = state.metadataLive?.payload;
   const liveType = liveMetadataTypeInfo(metadataType);
   if (state.metadataLive?.state === "ready" && livePayload?.enabled === true && liveType.live !== false) {
@@ -2174,21 +2173,7 @@ function metadataStorageDetail(metadataType, api, typeStatus) {
     const countLabel = Number.isFinite(count) ? ` · ${count}건 확인` : "";
     return `실제 목록 읽기 확인: ${destination}${countLabel} · 읽기 전용`;
   }
-  const mongo = api?.flow_metadata_mongodb && typeof api.flow_metadata_mongodb === "object"
-    ? api.flow_metadata_mongodb
-    : (api?.mongodb && typeof api.mongodb === "object" ? api.mongodb : {});
-  const database = String(mongo.database || "").trim();
-  const expectedCollection = String(typeStatus.expected_flow_collection_name || "").trim();
-  const portalCollection = String(typeStatus.portal_configured_collection_name || "").trim();
-
-  if (typeStatus.writer_tweak_will_be_sent && expectedCollection) {
-    const destination = database ? `${database}.${expectedCollection}` : expectedCollection;
-    return `Flow에 MongoDB Writer 설정 전달 예정: ${destination} (컬렉션 존재·내용은 미확인)`;
-  }
-  if (portalCollection) {
-    return `포털 계산명: ${portalCollection} · Flow 전달 안 함 · 실제 저장 위치 미확인`;
-  }
-  return "MongoDB Writer 설정은 Flow에 전달하지 않으며, 포털은 실제 저장 내용을 확인하지 않습니다.";
+  return "Flow의 MongoDB 설정을 사용합니다. Portal은 실제 목록 조회 설정이 구성된 경우에만 읽기 전용으로 확인합니다.";
 }
 
 function metadataConnectionItem(metadataType, label) {
@@ -2199,11 +2184,8 @@ function metadataConnectionItem(metadataType, label) {
     || apiConfig.endpoint_configured?.[metadataType] === true;
   const endpointReady = typeStatus.endpoint_ready === true
     || (Object.keys(typeStatus).length === 0 && api.ready === true && endpointConfigured);
-  const componentConfigured = apiConfig.component_map_configured?.[metadataType] === true
-    && apiConfig.api_terminal_configured?.[metadataType] === true;
-  const authenticationConfigured = Boolean(apiConfig.auth_key_configured || apiConfig.bearer_token_configured);
+  const authenticationConfigured = apiConfig.auth_key_configured === true;
   const callerConfigured = apiConfig.gaia_api_caller_employee_id_configured === true;
-  const mongo = api?.mongodb && typeof api.mongodb === "object" ? api.mongodb : {};
 
   if (!state.metadataApi) {
     return {
@@ -2226,7 +2208,7 @@ function metadataConnectionItem(metadataType, label) {
   if (!authenticationConfigured) {
     return {
       label,
-      detail: "공통 API 인증 키 또는 Bearer 토큰 설정이 필요합니다.",
+      detail: "이 API의 인증 헤더 이름과 인증 키 설정이 필요합니다.",
       status: "인증 정보 필요",
       icon: "alert",
       tone: "attention",
@@ -2237,24 +2219,6 @@ function metadataConnectionItem(metadataType, label) {
       label,
       detail: "관리자 설정에서 GAIA API 호출 권한 사번을 등록해 주세요.",
       status: "호출 사번 필요",
-      icon: "alert",
-      tone: "attention",
-    };
-  }
-  if (mongo.tweaks_enabled && !mongo.writer_tweaks_configured) {
-    return {
-      label,
-      detail: "MongoDB Writer 전달을 사용하도록 했지만 DB 연결 정보가 부족합니다.",
-      status: "MongoDB 설정 필요",
-      icon: "alert",
-      tone: "attention",
-    };
-  }
-  if (!componentConfigured) {
-    return {
-      label,
-      detail: "Langflow 입력 또는 API 응답 컴포넌트 설정을 확인해 주세요.",
-      status: "Flow 구성 확인",
       icon: "alert",
       tone: "attention",
     };
@@ -2273,7 +2237,7 @@ function metadataConnectionItem(metadataType, label) {
   }
   return {
     label,
-      detail: `${endpointSourceLabel(typeStatus.endpoint_source)}·인증·호출 사번 설정 완료 · ${metadataStorageDetail(metadataType, api, typeStatus)}`,
+      detail: `${endpointSourceLabel(typeStatus.endpoint_source)}·인증·호출 사번 설정 완료 · ${metadataStorageDetail(metadataType)}`,
       status: "요청 가능",
       icon: "check",
     tone: "ready",
@@ -2365,7 +2329,7 @@ function renderMetadataApiIndicator() {
     return;
   }
   label.textContent = "메타데이터 API 설정 필요";
-  copy.textContent = `${dashboardCopy} 메타데이터 API는 서버 .env 설정 후 실행할 수 있습니다.`;
+  copy.textContent = `${dashboardCopy} 메타데이터 API는 서버 배포 설정 후 실행할 수 있습니다.`;
 }
 
 function errorMessageFromResponse(payload, fallback) {

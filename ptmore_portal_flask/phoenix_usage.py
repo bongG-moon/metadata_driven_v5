@@ -16,7 +16,6 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -24,6 +23,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
+from runtime_settings import settings_mapping
 
 
 KST = timezone(timedelta(hours=9), name="Asia/Seoul")
@@ -31,6 +31,18 @@ DEFAULT_FILTER_CONDITION = "span_kind == 'CHAIN'"
 DEFAULT_SPAN_NAME_PREFIX = "GaiA Input"
 DEFAULT_PAGE_SIZE = 500
 DEFAULT_TIMEOUT_SECONDS = 30.0
+_RUNTIME_SETTING_NAMES = (
+    "PTMORE_PHOENIX_ENDPOINT",
+    "PTMORE_PHOENIX_API_KEY",
+    "PTMORE_PHOENIX_PROJECTS_JSON",
+    "PTMORE_PHOENIX_PROJECT_IDS_JSON",
+    "PTMORE_PHOENIX_PROJECTS",
+    "PTMORE_PHOENIX_PROJECT_ID",
+    "PTMORE_PHOENIX_PAGE_SIZE",
+    "PTMORE_PHOENIX_TIMEOUT_SECONDS",
+    "PTMORE_PHOENIX_FILTER_CONDITION",
+    "PTMORE_PHOENIX_SPAN_NAME_PREFIX",
+)
 
 # These queries intentionally select only what the Portal dashboard needs.
 _PROJECT_BY_NAME_QUERY = """
@@ -165,7 +177,7 @@ class PhoenixUsageConfig:
         Portal deployments should use ``PTMORE_PHOENIX_PROJECTS_JSON``.
         """
 
-        values = os.environ if environ is None else environ
+        values = settings_mapping(_RUNTIME_SETTING_NAMES) if environ is None else environ
         projects_value = _first_nonempty(
             values,
             "PTMORE_PHOENIX_PROJECTS_JSON",
