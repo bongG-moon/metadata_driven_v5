@@ -8,7 +8,7 @@
 """
 
 # 로그인 방식입니다. 운영은 "sso", 임시 화면 확인만 "mock"을 사용합니다.
-PTMORE_PORTAL_FLASK_AUTH_MODE = "sso"
+PTMORE_PORTAL_FLASK_AUTH_MODE = "mock"
 
 # 초기 관리자 목록입니다. MongoDB에 관리자가 없을 때만 기본 권한을 부여합니다.
 PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON = [
