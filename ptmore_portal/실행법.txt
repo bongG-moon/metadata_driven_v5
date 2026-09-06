@@ -9,5 +9,6 @@ python -m pip install -r requirements.txt
 python -m uvicorn app_local:application --host 127.0.0.1 --port 8002
 
 # 운영 실행: HCP 환경에서만 사용합니다.
-# .env 또는 HCP Secret에 PTMORE_SSO_SESSION_SECRET을 입력한 뒤 실행합니다.
+# 기본 production 모드는 브라우저의 LASTUSER Cookie를 사용합니다.
+# MONGODB_URI, MONGODB_DATABASE, PTMORE_EMPLOYEE_DIRECTORY_COLLECTION을 설정합니다.
 python app.py

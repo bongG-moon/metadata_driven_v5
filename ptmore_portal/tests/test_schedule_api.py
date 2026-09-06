@@ -96,6 +96,25 @@ class FakeScheduleStore:
         self.closed += 1
 
 
+class SequenceEmployeeDirectory:
+    """Return one configured name result per lookup without using MongoDB."""
+
+    def __init__(self, results: list[object]) -> None:
+        self._results = list(results)
+        self.calls: list[str] = []
+        self.closed = 0
+
+    def resolve_name(self, employee_id: str) -> str | None:
+        self.calls.append(employee_id)
+        result = self._results.pop(0) if self._results else None
+        if isinstance(result, BaseException):
+            raise result
+        return str(result) if result else None
+
+    def close(self) -> None:
+        self.closed += 1
+
+
 @pytest.fixture(autouse=True)
 def isolated_schedule_runtime(monkeypatch):
     # Keep test authorization explicit: production no longer carries sample
@@ -133,6 +152,245 @@ def _daily_payload() -> dict[str, Any]:
         "repeat": "매일",
         "time": "09:30",
     }
+
+
+def test_lastuser_fallback_identity_is_read_only_for_schedule_mutations(
+    monkeypatch,
+    isolated_schedule_runtime: FakeScheduleStore,
+) -> None:
+    """A missing/invalid cookie must not create a shared ``0000000`` owner."""
+
+    monkeypatch.setattr(portal_app, "_portal_auth_mode_override", "lastuser")
+
+    response = client.post(
+        "/api/schedules",
+        json=_daily_payload(),
+        headers={"cookie": "LASTUSER=invalid"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "portal_employee_identity_required"
+    assert isolated_schedule_runtime.documents == {}
+    assert isolated_schedule_runtime.closed == 0
+
+
+def test_create_schedule_rechecks_directory_and_saves_name_when_it_appears(
+    monkeypatch,
+    isolated_schedule_runtime: FakeScheduleStore,
+) -> None:
+    """Creating a schedule re-queries a name that was absent at page lookup."""
+
+    directory = SequenceEmployeeDirectory([None, "문봉건"])
+    monkeypatch.setattr(portal_app, "_portal_auth_mode_override", "lastuser")
+    monkeypatch.setattr(
+        portal_app, "_employee_directory_store_factory", lambda: directory
+    )
+
+    response = client.post(
+        "/api/schedules",
+        json=_daily_payload(),
+        headers={"cookie": "LASTUSER=2071044"},
+    )
+
+    assert response.status_code == 201
+    schedule = response.json()["schedule"]
+    assert schedule["owner_id"] == "2071044"
+    assert schedule["owner_name"] == "문봉건"
+    assert isolated_schedule_runtime.documents[schedule["id"]]["owner_name"] == "문봉건"
+    # The first lookup creates the request viewer; the second one happens at
+    # save time, after the employee directory may have been populated.
+    assert directory.calls == ["2071044", "2071044"]
+
+
+def test_create_and_list_allow_blank_owner_name_when_directory_has_no_match(
+    monkeypatch,
+    isolated_schedule_runtime: FakeScheduleStore,
+) -> None:
+    """A valid Cookie employee number must not make a blank name invalid.
+
+    The employee directory may be imported after a user first starts using the
+    Portal.  In that period the schedule still needs to be usable and visible
+    by its required employee ID.
+    """
+
+    directory = SequenceEmployeeDirectory([None, None])
+    monkeypatch.setattr(portal_app, "_portal_auth_mode_override", "lastuser")
+    monkeypatch.setattr(
+        portal_app, "_employee_directory_store_factory", lambda: directory
+    )
+
+    created_response = client.post(
+        "/api/schedules",
+        json=_daily_payload(),
+        headers={"cookie": "LASTUSER=2071044"},
+    )
+
+    assert created_response.status_code == 201
+    created = created_response.json()["schedule"]
+    assert created["owner_id"] == "2071044"
+    assert created["owner_name"] == ""
+    assert isolated_schedule_runtime.documents[created["id"]]["owner_name"] == ""
+
+    listed_response = client.get(
+        "/api/schedules", headers={"cookie": "LASTUSER=2071044"}
+    )
+
+    assert listed_response.status_code == 200
+    listed = listed_response.json()["schedules"]
+    assert [(item["owner_id"], item["owner_name"]) for item in listed] == [
+        ("2071044", "")
+    ]
+    assert directory.calls == ["2071044", "2071044", "2071044"]
+
+
+def _stored_owner_schedule(
+    schedule_id: str,
+    *,
+    owner_name: str,
+) -> dict[str, Any]:
+    fields = portal_app._schedule_storage_fields(_daily_payload())
+    return {
+        "_id": schedule_id,
+        **fields,
+        "owner_id": "2071044",
+        "owner_name": owner_name,
+        "created_at": "2026-09-02T00:00:00+00:00",
+        "updated_at": "2026-09-02T00:00:00+00:00",
+        "updated_by": {"employee_id": "2071044", "name": owner_name},
+    }
+
+
+def test_schedule_response_allows_blank_owner_name_but_requires_owner_id(
+    isolated_schedule_runtime: FakeScheduleStore,
+) -> None:
+    """Only the display name is optional; schedule ownership is never optional."""
+
+    valid_schedule_id = "SCH-01010101-1111-2222-3333-444444444444"
+    isolated_schedule_runtime.documents[valid_schedule_id] = _stored_owner_schedule(
+        valid_schedule_id,
+        owner_name="",
+    )
+
+    valid_response = client.get("/api/schedules", headers=STANDARD_USER_HEADERS)
+
+    assert valid_response.status_code == 200
+    assert valid_response.json()["schedules"][0]["owner_id"] == "2071044"
+    assert valid_response.json()["schedules"][0]["owner_name"] == ""
+
+    missing_owner_schedule_id = "SCH-01010101-aaaa-bbbb-cccc-444444444444"
+    missing_owner = _stored_owner_schedule(
+        missing_owner_schedule_id,
+        owner_name="표시 이름은 있어도 소유자 사번은 없음",
+    )
+    missing_owner["owner_id"] = ""
+    isolated_schedule_runtime.documents[missing_owner_schedule_id] = missing_owner
+
+    invalid_response = client.get("/api/schedules", headers=STANDARD_USER_HEADERS)
+
+    assert invalid_response.status_code == 503
+    assert invalid_response.json()["detail"]["code"] == "schedule_storage_record_invalid"
+
+
+def test_update_schedule_rechecks_directory_and_refreshes_owner_name(
+    monkeypatch,
+    isolated_schedule_runtime: FakeScheduleStore,
+) -> None:
+    """Editing an existing schedule updates its stored name when found later."""
+
+    schedule_id = "SCH-12345678-1234-1234-1234-123456789abc"
+    isolated_schedule_runtime.documents[schedule_id] = _stored_owner_schedule(
+        schedule_id,
+        owner_name="",
+    )
+    directory = SequenceEmployeeDirectory([None, "문봉건"])
+    monkeypatch.setattr(portal_app, "_portal_auth_mode_override", "lastuser")
+    monkeypatch.setattr(
+        portal_app, "_employee_directory_store_factory", lambda: directory
+    )
+
+    response = client.patch(
+        f"/api/schedules/{schedule_id}",
+        json={"title": "이름 갱신 확인"},
+        headers={"cookie": "LASTUSER=2071044"},
+    )
+
+    assert response.status_code == 200
+    schedule = response.json()["schedule"]
+    assert schedule["owner_name"] == "문봉건"
+    assert isolated_schedule_runtime.documents[schedule_id]["owner_name"] == "문봉건"
+    assert directory.calls == ["2071044", "2071044"]
+
+
+def test_status_update_rechecks_directory_and_refreshes_owner_name(
+    monkeypatch,
+    isolated_schedule_runtime: FakeScheduleStore,
+) -> None:
+    """Changing activation state is also an owner-visible schedule update."""
+
+    schedule_id = "SCH-12345678-aaaa-bbbb-cccc-123456789abc"
+    isolated_schedule_runtime.documents[schedule_id] = _stored_owner_schedule(
+        schedule_id,
+        owner_name="",
+    )
+    directory = SequenceEmployeeDirectory([None, "문봉건"])
+    monkeypatch.setattr(portal_app, "_portal_auth_mode_override", "lastuser")
+    monkeypatch.setattr(
+        portal_app, "_employee_directory_store_factory", lambda: directory
+    )
+
+    response = client.patch(
+        f"/api/schedules/{schedule_id}/status",
+        json={"status": "inactive"},
+        headers={"cookie": "LASTUSER=2071044"},
+    )
+
+    assert response.status_code == 200
+    schedule = response.json()["schedule"]
+    assert schedule["status_code"] == "inactive"
+    assert schedule["owner_name"] == "문봉건"
+    assert isolated_schedule_runtime.documents[schedule_id]["owner_name"] == "문봉건"
+    assert directory.calls == ["2071044", "2071044"]
+
+
+@pytest.mark.parametrize(
+    "save_lookup_result",
+    [None, portal_app.EmployeeDirectoryStoreError("directory temporarily unavailable")],
+    ids=["blank-name", "directory-unavailable"],
+)
+def test_update_schedule_preserves_stored_owner_name_when_refresh_is_blank_or_unavailable(
+    monkeypatch,
+    isolated_schedule_runtime: FakeScheduleStore,
+    save_lookup_result: object,
+) -> None:
+    """A failed refresh must not erase an already stored schedule owner name."""
+
+    schedule_id = "SCH-87654321-4321-4321-4321-cba987654321"
+    isolated_schedule_runtime.documents[schedule_id] = _stored_owner_schedule(
+        schedule_id,
+        owner_name="기존 등록자 이름",
+    )
+    # The request viewer itself has no resolved name.  The second result is
+    # the fresh lookup done by the schedule update operation.
+    directory = SequenceEmployeeDirectory([None, save_lookup_result])
+    monkeypatch.setattr(portal_app, "_portal_auth_mode_override", "lastuser")
+    monkeypatch.setattr(
+        portal_app, "_employee_directory_store_factory", lambda: directory
+    )
+
+    response = client.patch(
+        f"/api/schedules/{schedule_id}",
+        json={"title": "이름 보존 확인"},
+        headers={"cookie": "LASTUSER=2071044"},
+    )
+
+    assert response.status_code == 200
+    schedule = response.json()["schedule"]
+    assert schedule["owner_name"] == "기존 등록자 이름"
+    assert (
+        isolated_schedule_runtime.documents[schedule_id]["owner_name"]
+        == "기존 등록자 이름"
+    )
+    assert directory.calls == ["2071044", "2071044"]
 
 
 def test_create_schedule_persists_server_owned_fields_and_projects_safe_response(

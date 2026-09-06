@@ -61,15 +61,23 @@ def _parse_llm_decision(value: Any) -> tuple[dict[str, Any], dict[str, str] | No
     return payload, None
 
 
-# 함수 설명: `_token_present()`는 짧은 key의 부분 문자열 오탐을 피하면서 질문에 Domain 표현이 실제로 있는지 검사합니다.
+# 함수 설명: `_token_present()`는 영숫자를 포함한 등록 표현의 부분 문자열 오탐을 피하면서 질문에 Domain 표현이 실제로 있는지 검사합니다.
 def _token_present(question: str, token: str, *, short_key: bool = False) -> bool:
     candidate = str(token or "").strip()
     if not candidate:
         return False
-    if short_key and re.fullmatch(r"[A-Za-z0-9]{1,3}", candidate):
+    # ``BM공정`` is a substring of ``SBM공정``.  The former legacy rule applied
+    # word boundaries only to a short key, so a display name or alias ending
+    # with Korean text could still incorrectly select BM for an SBM request.
+    # Apply the same generic ASCII-boundary rule used by the deterministic
+    # 07-1 gate to every registered token that contains an ASCII letter/digit.
+    # Korean-only aliases retain their existing exact substring behavior.
+    if short_key or re.search(r"[A-Za-z0-9]", candidate):
+        left_boundary = r"(?<![A-Za-z0-9])" if re.match(r"[A-Za-z0-9]", candidate) else ""
+        right_boundary = r"(?![A-Za-z0-9])" if re.search(r"[A-Za-z0-9]$", candidate) else ""
         return bool(
             re.search(
-                rf"(?<![A-Za-z0-9]){re.escape(candidate)}(?![A-Za-z0-9])",
+                rf"{left_boundary}{re.escape(candidate)}{right_boundary}",
                 question,
                 flags=re.IGNORECASE,
             )
@@ -172,6 +180,24 @@ def select_process_group_dataset(
     llm_response_value: Any,
     dataset_value: Any,
 ) -> dict[str, Any]:
+    # 00 노드에서 생산계획 미등록·조회 실패 같은 오류 계약을 보낸 경우에는
+    # 공정그룹 선택을 다시 시도하지 않고, 원래 오류를 다음 단계로 전달합니다.
+    # 이 경로는 Report를 열지 않으면서도 운영 오류의 원인을 보존합니다.
+    dataset_preview = _payload(dataset_value)
+    dataset_error = _text(dataset_preview.get("error"))
+    if dataset_error:
+        dataset_message = _text(dataset_preview.get("message")) or "데이터 조회에 실패했습니다."
+        return {
+            "contract_version": DATASET_CONTRACT_VERSION,
+            "status": "error",
+            "success": False,
+            "message": dataset_message,
+            "error": dataset_error,
+            "errors": [{"type": dataset_error, "message": dataset_message}],
+            "rows": [],
+            "row_count": 0,
+        }
+
     question = _text(question_value)
     catalog = _payload(catalog_value)
     groups = [

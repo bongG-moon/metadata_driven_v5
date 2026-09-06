@@ -3,7 +3,7 @@
 이 포털은 메타데이터 등록을 외부 rev_2 Flow API로 실행하고, 대시보드는 Phoenix의 실제 사용 이력을 조회합니다.
 
 - 대시보드 사용 이력은 최근 3주 Phoenix/MongoDB 보관 이력만 표시합니다.
-- 로그인 사용자는 운영 HCP SSO 또는 로컬 고정 사용자로 구분합니다. 운영 권한은 사번을 기준으로 Portal MongoDB 설정에서 확인하며, 로컬 고정 사용자는 개발 편의를 위해 관리자입니다.
+- 로그인 사용자는 운영 `LASTUSER` Cookie 또는 로컬 고정 사용자로 구분합니다. 운영 권한은 사번을 기준으로 Portal MongoDB 설정에서 확인하며, 로컬 고정 사용자는 개발 편의를 위해 관리자입니다. 이전 HCP SSO 세션 방식은 선택형 `sso` 모드로만 유지합니다.
 - 메타데이터 등록 요청은 포털 서버가 외부 API로 전달합니다. 브라우저에는 API 키나 MongoDB URI가 내려가지 않습니다.
 - 스케줄 등록 정보는 Portal MongoDB에 저장하고, 별도 Scheduler Worker가 GAIA 실행과 CUBE 개인 DM 발송을 처리합니다.
 
@@ -33,7 +33,7 @@ python -m uvicorn app_local:application --host 127.0.0.1 --port 8002
 
 브라우저에서 `http://127.0.0.1:8002`를 엽니다.
 
-운영 서버에서는 아래 고정 진입점을 사용합니다. 이 경우 포트는 `5000`입니다. 실행 전에 HCP Secret에 `PTMORE_SSO_SESSION_SECRET`을 입력하고, `.env`의 `PTMORE_PORTAL_AUTH_MODE=production`을 유지합니다.
+운영 서버에서는 아래 고정 진입점을 사용합니다. 이 경우 포트는 `5000`입니다. 현재 운영 기본값인 `.env`의 `PTMORE_PORTAL_AUTH_MODE=production`은 상위 사내 도메인에서 전달되는 `LASTUSER` Cookie를 사용합니다.
 
 ```powershell
 python app.py
@@ -43,19 +43,41 @@ python app.py
 
 ## 사번·이름 로그인 방식
 
-- 운영 `app.py`: HCP에서 제공하는 `hcputil.auth.sso.SSO`로 SSO 쿠키를 확인합니다. 성공하면 `emp_no`, `emp_name`만 서명된 Portal 세션에 저장합니다.
-- 로컬 `app_local.py`: HCP SSO 모듈을 불러오지 않으며 항상 `2011111 / 문봉건` 로컬 관리자로 실행합니다.
+- 운영 `app.py`: `LASTUSER` Cookie에서 숫자 7자리 사번만 읽습니다. Cookie 이름은 고정이며 브라우저가 자동으로 전송한 값 외의 사번 헤더는 사용하지 않습니다.
+- 이름은 `MONGODB_URI`/`MONGODB_DATABASE`의 `PTMORE_EMPLOYEE_DIRECTORY_COLLECTION`에서 읽습니다. 기본 컬렉션 이름은 `portal_employee_directory`입니다.
+- Cookie가 없거나 형식이 맞지 않으면 화면에는 `0000000 / 아무개`로 표시됩니다. 이 상태에서는 전체 스케줄 조회는 가능하지만 개인 스케줄 등록·수정·활성화·삭제는 할 수 없습니다.
+- 정상 사번이 있으나 이름 목록에 없거나 이름 조회 MongoDB가 일시적으로 연결되지 않으면 사번은 유지하고 이름은 빈 값으로 표시합니다. 이후 스케줄 등록·수정 시에는 직원 목록을 다시 조회해 이름이 생겼다면 스케줄 등록자 이름에 반영합니다.
+- 로컬 `app_local.py`: Cookie와 관계없이 항상 `2011111 / 문봉건` 로컬 관리자로 실행합니다.
 - 브라우저가 보내는 `X-PTMORE-Employee-Id`, `X-PTMORE-Employee-Name` 헤더는 운영·로컬 모두 사용자 식별에 사용하지 않습니다.
 
-운영 환경에는 아래 두 값이 필요합니다. 세션 Secret은 충분히 긴 임의 문자열로 만들고 HCP Secret으로 관리합니다.
+```dotenv
+# 운영 기본값: 상위 사내 도메인 Cookie LASTUSER 사용
+PTMORE_PORTAL_AUTH_MODE=production
+PTMORE_EMPLOYEE_DIRECTORY_COLLECTION=portal_employee_directory
+```
+
+Portal 배포 URL로 실제 `Cookie: LASTUSER=<사번>` 헤더가 전달되어야 합니다. Cookie의 `Path=/`만으로는 충분하지 않을 수 있으므로, Portal 호스트가 해당 Cookie의 Domain 범위에 포함되는지도 배포 후 브라우저 개발자 도구 Network 요청에서 확인하세요. Portal은 Cookie 원문을 로그·응답·감사 이력에 저장하지 않습니다.
+
+이전 HCP SSO 세션 방식이 꼭 필요한 환경만 아래처럼 선택할 수 있습니다. 이 모드에서만 HCP Secret의 세션 Secret과 `hcputil.auth.sso` 모듈이 필요합니다.
 
 ```dotenv
-PTMORE_PORTAL_AUTH_MODE=production
+PTMORE_PORTAL_AUTH_MODE=sso
 PTMORE_SSO_SESSION_SECRET=<HCP-Secret-세션-서명값>
 PTMORE_SSO_SESSION_HTTPS_ONLY=true
 ```
 
-실제 SSO 모듈과 로그인 리다이렉트는 HCP 운영 환경에서만 확인할 수 있습니다. 로컬 PC에서는 `app_local.py`로만 화면을 확인하세요.
+### 직원 목록 적재
+
+직원 이름 목록은 담당자가 이미 만든 Pandas DataFrame을 그대로 저장합니다. DataFrame에는 `empno`, `emp_nm`, `dept_nm` 세 컬럼이 필요합니다.
+
+```python
+from employee_directory_import import replace_employee_directory
+
+saved_count = replace_employee_directory(employee_dataframe)
+print(f"직원 {saved_count}명 저장 완료")
+```
+
+DataFrame에 행이 하나라도 있을 때만 기존 컬렉션 전체를 비우고 새 데이터를 저장합니다. 비어 있는 DataFrame이면 기존 MongoDB 직원 목록은 유지됩니다. Portal은 `empno`로 조회하고 `emp_nm`을 사용자 이름으로 표시합니다.
 
 ## Phoenix 실제 사용 이력 연결
 
@@ -162,14 +184,16 @@ PTMORE_PORTAL_SETTINGS_COLLECTION=portal_settings
 PTMORE_PORTAL_AUDIT_COLLECTION=portal_audit_log
 PTMORE_SCHEDULE_COLLECTION=portal_schedules
 PTMORE_SCHEDULE_RUN_COLLECTION=portal_schedule_runs
+PTMORE_EMPLOYEE_DIRECTORY_COLLECTION=portal_employee_directory
 ```
 
 - `PTMORE_PORTAL_SETTINGS_COLLECTION`: 관리자 설정
 - `PTMORE_PORTAL_AUDIT_COLLECTION`: 관리자 설정 변경 이력
 - `PTMORE_SCHEDULE_COLLECTION`: Portal이 등록·수정·활성화·삭제하는 스케줄 원본
 - `PTMORE_SCHEDULE_RUN_COLLECTION`: Worker가 남기는 실행 성공·실패 이력
+- `PTMORE_EMPLOYEE_DIRECTORY_COLLECTION`: `LASTUSER` 사번에 맞는 표시 이름을 읽는 직원 목록
 
-`MONGODB_URI`, `MONGODB_DATABASE`와 위 두 컬렉션을 설정하면 스케줄 화면은 더미를 사용하지 않고 실제 MongoDB를 조회합니다. 모든 로그인 사용자는 전체 목록을 볼 수 있지만, 수정·활성화/일시중지·삭제는 등록자 본인 또는 활성 관리자만 할 수 있습니다. MongoDB를 설정하지 않았거나 연결하지 못하면 스케줄 API는 더미로 대체하지 않고 `503`을 반환합니다.
+`MONGODB_URI`, `MONGODB_DATABASE`와 위 Portal 컬렉션을 설정하면 스케줄 화면은 더미를 사용하지 않고 실제 MongoDB를 조회합니다. 모든 로그인 사용자는 전체 목록을 볼 수 있지만, 수정·활성화/일시중지·삭제는 등록자 본인 또는 활성 관리자만 할 수 있습니다. MongoDB를 설정하지 않았거나 연결하지 못하면 스케줄 API는 더미로 대체하지 않고 `503`을 반환합니다.
 
 ### Scheduler Worker 실행
 

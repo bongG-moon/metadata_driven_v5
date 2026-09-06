@@ -21,6 +21,7 @@ import re
 import ssl
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Protocol
 from urllib import error as url_error
@@ -68,6 +69,7 @@ _DEFAULT_PORTAL_AUDIT_COLLECTION = "portal_audit_log"
 _DEFAULT_SCHEDULE_COLLECTION = "portal_schedules"
 _DEFAULT_SCHEDULE_RUN_COLLECTION = "portal_schedule_runs"
 _DEFAULT_USAGE_HISTORY_COLLECTION = "portal_usage_history"
+_DEFAULT_EMPLOYEE_DIRECTORY_COLLECTION = "portal_employee_directory"
 _PORTAL_MONGODB_COLLECTION_ENVIRONMENTS = {
     "settings_collection": (
         "PTMORE_PORTAL_SETTINGS_COLLECTION",
@@ -104,6 +106,7 @@ _METADATA_LIVE_READ_RESERVED_COLLECTIONS = {
     _DEFAULT_SCHEDULE_COLLECTION,
     _DEFAULT_SCHEDULE_RUN_COLLECTION,
     _DEFAULT_USAGE_HISTORY_COLLECTION,
+    _DEFAULT_EMPLOYEE_DIRECTORY_COLLECTION,
 }
 
 # The caller ID is a non-secret, administrator-managed value.  It is kept in
@@ -114,19 +117,26 @@ _PORTAL_EMPLOYEE_ID_HEADER = "X-PTMORE-Employee-Id"
 _PORTAL_EMPLOYEE_NAME_HEADER = "X-PTMORE-Employee-Name"
 _PORTAL_SETTINGS_DOCUMENT_ID = "global"
 
-# ``app.py`` is the production entry point.  ``app_local.py`` selects the
-# local adapter before importing this module.  ``test`` is intentionally only
-# for the automated test suite, where request headers remain useful fixtures.
-_PORTAL_AUTH_MODES = {"production", "local", "test"}
+# ``app.py`` is the production entry point.  In the current production
+# deployment, the browser's internal ``LASTUSER`` cookie supplies the employee
+# number.  ``sso`` remains available only for the previous HCP SSO-session
+# integration.  ``app_local.py`` selects the local adapter before importing
+# this module, while ``test`` is intentionally only for automated tests where
+# request headers remain useful fixtures.
+_PORTAL_AUTH_MODES = {"production", "lastuser", "sso", "local", "test"}
 _PORTAL_SESSION_IDENTITY_KEY = "ptmore_portal_identity"
 _PORTAL_SESSION_COOKIE_NAME = "ptmore_portal_session"
 _PORTAL_UNCONFIGURED_SESSION_SECRET = "ptmore-portal-session-not-configured"
+_PORTAL_LASTUSER_COOKIE_NAME = "LASTUSER"
+_PORTAL_EMPLOYEE_ID_PATTERN = re.compile(r"^\d{7}$")
+_PORTAL_FALLBACK_EMPLOYEE_ID = "0000000"
+_PORTAL_FALLBACK_EMPLOYEE_NAME = "아무개"
 # The established environment variable name is retained for deployment
 # compatibility.  Its values are now permanent, environment-owned default
 # administrators: they are never copied into MongoDB and cannot be changed
 # through the Portal UI/API.
 _PORTAL_BOOTSTRAP_ADMINS_ENVIRONMENT = "PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON"
-_PORTAL_ADMIN_EMPLOYEE_ID_PATTERN = re.compile(r"^\d{7}$")
+_PORTAL_ADMIN_EMPLOYEE_ID_PATTERN = _PORTAL_EMPLOYEE_ID_PATTERN
 _PORTAL_ADMIN_DEFAULT_ROLE = "관리자"
 _PORTAL_ADMIN_DEFAULT_SCOPE = "포털 설정 · 메타데이터 · 스케줄 관리"
 _PORTAL_LOCAL_EMPLOYEE_ID = "2011111"
@@ -548,6 +558,15 @@ def _usage_history_archive_protected_collection_names() -> tuple[str, ...]:
         for name in portal_collections.all_collections
         if str(name).strip()
     }
+    # The employee directory is a separate, read-only Portal collection.  Do
+    # not allow the Phoenix archive to overwrite it through a misconfigured
+    # collection name.
+    configured_directory_collection = _environment_value(
+        "PTMORE_EMPLOYEE_DIRECTORY_COLLECTION",
+        _DEFAULT_EMPLOYEE_DIRECTORY_COLLECTION,
+    )
+    if configured_directory_collection:
+        protected.add(str(configured_directory_collection).strip())
     metadata_settings = _metadata_settings_from_env()
     for metadata_type in _METADATA_TYPES:
         collection_name = metadata_settings.collection_for(metadata_type)
@@ -3553,16 +3572,19 @@ class PortalAccess:
 
 @dataclass(frozen=True)
 class PortalIdentity:
-    """Minimal server-verified identity used by Portal authorization.
+    """Minimal server-resolved identity used by Portal authorization.
 
-    Only the employee number and Korean display name are retained in the
-    Portal session.  Department, email, and the raw SSO cookie remain outside
-    this application because the current Portal authorization rules do not
-    need them.
+    The Portal keeps only an employee number and Korean display name.  The
+    raw browser cookie, department, and email never enter API responses or
+    audit records.  ``is_placeholder`` distinguishes the requested
+    ``0000000 / 아무개`` display fallback from a usable employee identity so
+    anonymous browser sessions cannot become one shared schedule owner.
     """
 
     employee_id: str
     name: str
+    source: str = "unknown"
+    is_placeholder: bool = False
 
     def as_session_value(self) -> dict[str, str]:
         return {"employee_id": self.employee_id, "name": self.name}
@@ -3589,6 +3611,26 @@ class PortalSettingsStore(Protocol):
         actor: PortalViewer,
         details: Mapping[str, Any],
     ) -> None:
+        ...
+
+
+class EmployeeDirectoryStoreError(RuntimeError):
+    """Raised when the optional employee-name lookup cannot be used."""
+
+
+class EmployeeDirectoryStore(Protocol):
+    """Read-only employee number to display-name lookup boundary.
+
+    The directory is intentionally separate from Portal settings and never
+    accepts browser-supplied MongoDB queries.  A failed display-name lookup is
+    non-fatal: the valid employee number is retained and its display name is
+    left blank until a later lookup succeeds.
+    """
+
+    def resolve_name(self, employee_id: str) -> str | None:
+        ...
+
+    def close(self) -> None:
         ...
 
 
@@ -4446,9 +4488,13 @@ def _schedule_response(document: Mapping[str, Any]) -> dict[str, Any]:
     owner_id = _schedule_text(
         document.get("owner_id"), field_label="등록자 사번", maximum=64
     )
-    owner_name = _schedule_text(
-        document.get("owner_name"), field_label="등록자 이름", maximum=200
-    )
+    # LASTUSER provides a valid employee number even when the optional
+    # employee-directory lookup has no display name yet.  Keep that schedule
+    # usable and render its owner by employee number until a later schedule
+    # update refreshes ``owner_name`` from the directory.
+    owner_name = str(document.get("owner_name") or "").strip()
+    if len(owner_name) > 200:
+        raise ScheduleValidationError("등록자 이름은 200자 이내로 입력해 주세요.")
     created_at = _parse_schedule_timestamp(document.get("created_at"))
     updated_at = _parse_schedule_timestamp(document.get("updated_at"))
     return {
@@ -4494,6 +4540,28 @@ def _schedule_owner_or_admin(access: PortalAccess, document: Mapping[str, Any]) 
             "message": "본인이 등록한 스케줄 또는 관리자 스케줄만 변경할 수 있습니다.",
         },
     )
+
+
+def _schedule_owner_name_for_save(employee_id: Any, current_name: Any = "") -> str:
+    """Refresh a schedule owner's name only when a Cookie identity can resolve it.
+
+    The employee-directory mapping can be imported after a user first opens
+    the Portal.  A schedule create/update therefore performs a fresh lookup:
+    if a name has since appeared it is saved with the schedule; if it is still
+    absent or the directory is unavailable, an existing stored name is never
+    erased.  Local, test, and legacy SSO adapters keep their supplied name and
+    do not make an unnecessary directory query.
+    """
+
+    fallback_name = str(current_name or "").strip()
+    safe_employee_id = str(employee_id or "").strip()
+    if _portal_auth_mode() not in {"production", "lastuser"}:
+        return fallback_name
+    if not _PORTAL_EMPLOYEE_ID_PATTERN.fullmatch(safe_employee_id):
+        return fallback_name
+
+    refreshed_name = _employee_name_or_blank(safe_employee_id)
+    return refreshed_name or fallback_name
 
 
 class InMemoryPortalSettingsStore:
@@ -4639,7 +4707,89 @@ class MongoPortalSettingsStore:
         self._run(lambda: self._audit.insert_one(record))
 
 
+class MongoEmployeeDirectoryStore:
+    """Read employee display names from one Portal-owned MongoDB collection."""
+
+    def __init__(self, *, uri: str, database: str, collection: str) -> None:
+        if not _valid_mongodb_collection_name(collection):
+            raise EmployeeDirectoryStoreError(
+                "직원 목록 MongoDB 컬렉션 이름 설정을 확인해 주세요."
+            )
+        try:
+            from pymongo import MongoClient
+            from pymongo.errors import PyMongoError
+        except ImportError as exc:
+            raise EmployeeDirectoryStoreError(
+                "직원 이름 조회를 위해 pymongo 패키지가 필요합니다."
+            ) from exc
+
+        self._mongo_error = PyMongoError
+        self._client: Any | None = None
+        try:
+            self._client = MongoClient(
+                uri,
+                serverSelectionTimeoutMS=3_000,
+                connectTimeoutMS=3_000,
+                socketTimeoutMS=3_000,
+            )
+            self._collection = self._client[database][collection]
+        except PyMongoError as exc:
+            raise EmployeeDirectoryStoreError(
+                "직원 이름 조회 MongoDB에 연결할 수 없습니다."
+            ) from exc
+
+    def _run(self, operation: Callable[[], Any]) -> Any:
+        try:
+            return operation()
+        except self._mongo_error as exc:
+            raise EmployeeDirectoryStoreError(
+                "직원 이름 조회 MongoDB에 연결할 수 없습니다."
+            ) from exc
+
+    def resolve_name(self, employee_id: str) -> str | None:
+        """Return only a safe display name for one 7-digit employee number."""
+
+        if not _PORTAL_EMPLOYEE_ID_PATTERN.fullmatch(str(employee_id or "").strip()):
+            return None
+        safe_employee_id = str(employee_id).strip()
+        document = self._run(
+            lambda: self._collection.find_one(
+                {
+                    "$or": [
+                        {"_id": safe_employee_id},
+                        {"employee_id": safe_employee_id},
+                        {"emp_no": safe_employee_id},
+                        {"empno": safe_employee_id},
+                    ]
+                },
+                {
+                    "_id": 0,
+                    "name": 1,
+                    "employee_name": 1,
+                    "emp_name": 1,
+                    "emp_nm": 1,
+                },
+            )
+        )
+        if not isinstance(document, Mapping):
+            return None
+        for key in ("name", "employee_name", "emp_name", "emp_nm"):
+            value = document.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:100]
+        return None
+
+    def close(self) -> None:
+        if self._client is None:
+            return
+        try:
+            self._client.close()
+        except Exception:  # pragma: no cover - cleanup must not mask a response
+            return
+
+
 _portal_settings_store_factory: Callable[[], PortalSettingsStore] | None = None
+_employee_directory_store_factory: Callable[[], EmployeeDirectoryStore] | None = None
 
 
 def _get_portal_settings_store() -> PortalSettingsStore:
@@ -4656,6 +4806,63 @@ def _get_portal_settings_store() -> PortalSettingsStore:
             collections=_portal_mongodb_collection_settings_from_env(),
         )
     return InMemoryPortalSettingsStore()
+
+
+def _employee_directory_collection_from_env() -> str:
+    """Resolve the dedicated read-only employee-directory collection name."""
+
+    collection = (
+        _environment_value(
+            "PTMORE_EMPLOYEE_DIRECTORY_COLLECTION",
+            _DEFAULT_EMPLOYEE_DIRECTORY_COLLECTION,
+        )
+        or _DEFAULT_EMPLOYEE_DIRECTORY_COLLECTION
+    ).strip()
+    if not _valid_mongodb_collection_name(collection):
+        raise EmployeeDirectoryStoreError(
+            "PTMORE_EMPLOYEE_DIRECTORY_COLLECTION 설정을 확인해 주세요."
+        )
+
+    portal_collections = _portal_mongodb_collection_settings_from_env()
+    protected_collections = {
+        *portal_collections.all_collections,
+        _environment_value(
+            "PTMORE_USAGE_HISTORY_COLLECTION", _DEFAULT_USAGE_HISTORY_COLLECTION
+        )
+        or _DEFAULT_USAGE_HISTORY_COLLECTION,
+    }
+    if collection in protected_collections:
+        raise EmployeeDirectoryStoreError(
+            "직원 목록 컬렉션은 Portal 설정·스케줄·사용 이력 컬렉션과 같을 수 없습니다."
+        )
+    return collection
+
+
+def _get_employee_directory_store() -> EmployeeDirectoryStore:
+    """Return one directory reader only when the shared MongoDB is configured."""
+
+    if _employee_directory_store_factory is not None:
+        return _employee_directory_store_factory()
+
+    settings = _metadata_settings_from_env()
+    if not settings.mongo_uri or not settings.mongo_database:
+        raise EmployeeDirectoryStoreError("직원 이름 조회 MongoDB 연결 정보가 설정되지 않았습니다.")
+    return MongoEmployeeDirectoryStore(
+        uri=settings.mongo_uri,
+        database=settings.mongo_database,
+        collection=_employee_directory_collection_from_env(),
+    )
+
+
+def _close_employee_directory_store(store: EmployeeDirectoryStore) -> None:
+    """Close a request-scoped directory reader without masking the identity."""
+
+    closer = getattr(store, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:  # pragma: no cover - cleanup is best effort only
+            logger.debug("Employee directory reader did not close cleanly.")
 
 
 def _active_admin(settings: Mapping[str, Any], employee_id: str) -> dict[str, str] | None:
@@ -4684,10 +4891,12 @@ class PortalSsoError(RuntimeError):
 
 
 def _portal_auth_mode() -> str:
-    """Resolve the explicit identity adapter without weakening production.
+    """Resolve the explicit identity adapter without weakening deployment.
 
-    An unknown value intentionally falls back to ``production``.  This makes
-    a typo fail closed instead of accidentally enabling the local adapter.
+    ``production`` and ``lastuser`` use the internal browser cookie requested
+    for this Portal.  ``sso`` is retained only for the legacy HCP SSO-session
+    deployment.  An unknown value intentionally falls back to ``production``
+    so a typo cannot enable local/test identity handling.
     """
 
     configured = str(
@@ -4722,13 +4931,13 @@ def _effective_portal_settings(
 
 
 def _portal_session_secret() -> str:
-    """Read the production session secret without exposing it to a response."""
+    """Read the legacy SSO session secret without exposing it to a response."""
 
     return _environment_value("PTMORE_SSO_SESSION_SECRET")
 
 
 def _production_sso_ready() -> bool:
-    return _portal_auth_mode() != "production" or bool(_portal_session_secret())
+    return _portal_auth_mode() != "sso" or bool(_portal_session_secret())
 
 
 def _identity_from_mapping(value: Any) -> PortalIdentity | None:
@@ -4738,7 +4947,11 @@ def _identity_from_mapping(value: Any) -> PortalIdentity | None:
     name = str(value.get("name") or "").strip()
     if not employee_id:
         return None
-    return PortalIdentity(employee_id=employee_id, name=name or employee_id)
+    return PortalIdentity(
+        employee_id=employee_id,
+        name=name or employee_id,
+        source="legacy_sso_session",
+    )
 
 
 def _local_portal_identity() -> PortalIdentity:
@@ -4747,6 +4960,7 @@ def _local_portal_identity() -> PortalIdentity:
     return PortalIdentity(
         employee_id=_PORTAL_LOCAL_EMPLOYEE_ID,
         name=_PORTAL_LOCAL_EMPLOYEE_NAME,
+        source="local",
     )
 
 
@@ -4757,14 +4971,83 @@ def _test_header_identity(request: Request) -> PortalIdentity | None:
     name = str(request.headers.get(_PORTAL_EMPLOYEE_NAME_HEADER) or "").strip()
     if not employee_id:
         return None
-    return PortalIdentity(employee_id=employee_id, name=name or employee_id)
+    return PortalIdentity(
+        employee_id=employee_id,
+        name=name or employee_id,
+        source="test_header",
+    )
+
+
+def _lastuser_from_request(request: Request) -> str:
+    """Read one valid employee number from the internal ``LASTUSER`` cookie.
+
+    Starlette normally parses the Cookie header into ``request.cookies``.  The
+    small ``SimpleCookie`` fallback covers proxies that preserve the raw header
+    while exposing no parsed cookie map.  Invalid values are deliberately
+    treated as absent, and neither the raw header nor the cookie value is
+    logged.
+    """
+
+    try:
+        value = str(request.cookies.get(_PORTAL_LASTUSER_COOKIE_NAME) or "").strip()
+    except Exception:  # pragma: no cover - defensive compatibility boundary
+        value = ""
+
+    if not value:
+        try:
+            raw_cookie = str(request.headers.get("cookie") or "")
+            parsed = SimpleCookie()
+            parsed.load(raw_cookie)
+            morsel = parsed.get(_PORTAL_LASTUSER_COOKIE_NAME)
+            value = str(morsel.value if morsel is not None else "").strip()
+        except Exception:  # pragma: no cover - malformed third-party header
+            value = ""
+
+    return value if _PORTAL_EMPLOYEE_ID_PATTERN.fullmatch(value) else ""
+
+
+def _employee_name_or_blank(employee_id: str) -> str:
+    """Resolve an optional display name without turning login into a failure."""
+
+    store: EmployeeDirectoryStore | None = None
+    try:
+        store = _get_employee_directory_store()
+        name = store.resolve_name(employee_id)
+        return str(name or "").strip()
+    except EmployeeDirectoryStoreError:
+        # The directory only enriches a valid cookie identity.  Do not record
+        # the employee number/cookie or expose Mongo connection details.
+        logger.debug("Employee directory lookup is unavailable for Portal identity.")
+        return ""
+    finally:
+        if store is not None:
+            _close_employee_directory_store(store)
+
+
+def _lastuser_portal_identity(request: Request) -> PortalIdentity:
+    """Build the current Portal identity from one validated LASTUSER cookie."""
+
+    employee_id = _lastuser_from_request(request)
+    if not employee_id:
+        return PortalIdentity(
+            employee_id=_PORTAL_FALLBACK_EMPLOYEE_ID,
+            name=_PORTAL_FALLBACK_EMPLOYEE_NAME,
+            source="lastuser_fallback",
+            is_placeholder=True,
+        )
+    return PortalIdentity(
+        employee_id=employee_id,
+        name=_employee_name_or_blank(employee_id),
+        source="lastuser_cookie",
+    )
 
 
 def _request_portal_identity(request: Request) -> PortalIdentity | None:
     """Return the verified current identity for one request.
 
-    Production identity is set only by the signed Portal session after HCP
-    SSO login.  Browser headers are intentionally ignored in that mode.
+    ``production``/``lastuser`` identity comes only from a validated internal
+    ``LASTUSER`` cookie; browser employee headers are ignored.  ``sso`` keeps
+    the previous signed HCP SSO session behavior for a legacy deployment.
     """
 
     identity = getattr(request.state, "portal_identity", None)
@@ -4776,11 +5059,13 @@ def _request_portal_identity(request: Request) -> PortalIdentity | None:
         return _local_portal_identity()
     if mode == "test":
         return _test_header_identity(request)
+    if mode in {"production", "lastuser"}:
+        return _lastuser_portal_identity(request)
     return None
 
 
 def _portal_session_identity(request: Request) -> PortalIdentity | None:
-    """Read one signed SSO session without recording its cookie or contents."""
+    """Read one signed legacy SSO session without recording its contents."""
 
     if not _production_sso_ready():
         return None
@@ -4850,11 +5135,15 @@ def _sso_identity_from_cookie(sso: Any, cookie: str | None) -> PortalIdentity | 
     name = str(values[1] or "").strip()
     if not employee_id:
         raise PortalSsoError("HCP SSO에서 사용자 사번을 받지 못했습니다.")
-    return PortalIdentity(employee_id=employee_id, name=name or employee_id)
+    return PortalIdentity(
+        employee_id=employee_id,
+        name=name or employee_id,
+        source="legacy_sso",
+    )
 
 
 def _portal_access(request: Request) -> PortalAccess:
-    """Resolve verified identity and server-side administrator permission."""
+    """Resolve the request identity and server-side administrator permission."""
 
     identity = _request_portal_identity(request)
     if identity is None:
@@ -4875,7 +5164,9 @@ def _portal_access(request: Request) -> PortalAccess:
             detail={"code": "portal_settings_unavailable", "message": str(exc)},
         ) from exc
 
-    admin = _active_admin(settings, identity.employee_id)
+    # A fallback browser view must never receive authority even if somebody
+    # accidentally enters the sentinel employee number into the admin list.
+    admin = None if identity.is_placeholder else _active_admin(settings, identity.employee_id)
     viewer_name = identity.name
     # The legacy Portal contract suite uses synthetic header identities.  Keep
     # its historical administrator display name only in the explicit test
@@ -4888,6 +5179,29 @@ def _portal_access(request: Request) -> PortalAccess:
         is_admin=admin is not None,
     )
     return PortalAccess(viewer=viewer, store=store, settings=settings)
+
+
+def _require_mutable_portal_access(request: Request) -> PortalAccess:
+    """Require a real employee identity before creating a personal schedule.
+
+    Missing/invalid cookies intentionally render the Portal as
+    ``0000000 / 아무개`` so the user can see the cause and public schedule
+    list.  Allowing that shared placeholder to mutate data would make every
+    such browser session look like the same schedule owner, so mutations are
+    rejected until a valid LASTUSER cookie is available.
+    """
+
+    access = _portal_access(request)
+    identity = _request_portal_identity(request)
+    if identity is None or identity.is_placeholder:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "portal_employee_identity_required",
+                "message": "사번 정보를 확인한 뒤 스케줄을 변경할 수 있습니다.",
+            },
+        )
+    return access
 
 
 def _require_active_admin(request: Request) -> PortalAccess:
@@ -4932,7 +5246,11 @@ def _require_active_admin_for_status(request: Request) -> PortalAccess:
             if identity is not None
             else _default_portal_settings()
         )
-        bootstrap_admin = _active_admin(bootstrap_settings, employee_id)
+        bootstrap_admin = (
+            None
+            if identity is None or identity.is_placeholder
+            else _active_admin(bootstrap_settings, employee_id)
+        )
         if bootstrap_admin is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -5125,7 +5443,7 @@ def _administrator_mutation_response(
 _metadata_http_client: MetadataApiClient = UrlLibMetadataApiClient()
 
 def create_app() -> FastAPI:
-    """Create the Portal with a production SSO or local identity adapter."""
+    """Create the Portal with cookie, legacy SSO, or local identity adapters."""
 
     portal = FastAPI(
         title="PTMORE PKG Agent Portal",
@@ -5165,6 +5483,13 @@ def create_app() -> FastAPI:
         if is_public:
             return await call_next(request)
 
+        if mode in {"production", "lastuser"}:
+            # A missing/invalid cookie intentionally receives the visible
+            # placeholder identity.  It may browse read-only data but cannot
+            # create a shared anonymous schedule or become an administrator.
+            request.state.portal_identity = _lastuser_portal_identity(request)
+            return await call_next(request)
+
         identity = _portal_session_identity(request)
         if identity is not None:
             request.state.portal_identity = identity
@@ -5187,12 +5512,10 @@ def create_app() -> FastAPI:
             status_code=status.HTTP_307_TEMPORARY_REDIRECT,
         )
 
-    # Add SessionMiddleware after the identity middleware registration so the
-    # signed session is decoded before the identity middleware reads it.
-    # Importing ``app`` in test/local tooling still keeps the app shape stable.
-    # When the production secret is missing, the fallback value never
-    # authorizes a user because _portal_session_identity() rejects every
-    # production session until the real secret is configured.
+    # Keep SessionMiddleware for the opt-in legacy ``sso`` adapter.  The
+    # default LASTUSER flow does not authorize from this session and therefore
+    # does not require a session secret.  Importing ``app`` in test/local
+    # tooling still keeps the ASGI application shape stable.
     portal.add_middleware(
         SessionMiddleware,
         secret_key=_portal_session_secret() or _PORTAL_UNCONFIGURED_SESSION_SECRET,
@@ -5486,16 +5809,16 @@ def _portal_data_for_access(access: PortalAccess) -> dict[str, Any]:
 @application.get("/login", include_in_schema=False)
 @application.get("/login/{sub_path:path}", include_in_schema=False)
 async def login(request: Request, sub_path: str = ""):
-    """Establish a signed Portal session from the HCP SSO cookie.
+    """Establish a signed Portal session only for the legacy ``sso`` mode.
 
-    Local/test adapters do not contact HCP.  The production helper is loaded
-    only here, so a developer PC can still run or test the Portal without the
-    HCP-only ``hcputil`` package.
+    LASTUSER/local/test adapters do not contact HCP.  The SSO helper is loaded
+    only for explicit legacy mode, so a developer PC can run the Portal
+    without the HCP-only ``hcputil`` package.
     """
 
     destination = _safe_return_path(request, sub_path)
     mode = _portal_auth_mode()
-    if mode in {"local", "test"}:
+    if mode in {"production", "lastuser", "local", "test"}:
         return RedirectResponse(destination, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
     try:
@@ -5665,14 +5988,17 @@ def create_schedule(
 ) -> dict[str, Any]:
     """Create one schedule owned by the signed-in Portal user."""
 
-    access = _portal_access(request)
+    access = _require_mutable_portal_access(request)
     fields = _schedule_values_or_422(request_body.model_dump())
     now = datetime.now(timezone.utc).isoformat()
     document = {
         "_id": _new_schedule_id(),
         **fields,
         "owner_id": access.viewer.employee_id,
-        "owner_name": access.viewer.name,
+        "owner_name": _schedule_owner_name_for_save(
+            access.viewer.employee_id,
+            access.viewer.name,
+        ),
         "created_at": now,
         "updated_at": now,
         "updated_by": access.viewer.as_audit_actor(),
@@ -5698,7 +6024,7 @@ def update_schedule(
 ) -> dict[str, Any]:
     """Update editable source fields for a schedule owned by the user/admin."""
 
-    access = _portal_access(request)
+    access = _require_mutable_portal_access(request)
     safe_schedule_id = _schedule_id_or_422(schedule_id)
     patch = request_body.model_dump(exclude_unset=True)
     if not patch:
@@ -5718,6 +6044,10 @@ def update_schedule(
         values = _schedule_editable_values(existing)
         values.update(patch)
         fields = _schedule_values_or_422(values)
+        fields["owner_name"] = _schedule_owner_name_for_save(
+            existing.get("owner_id"),
+            existing.get("owner_name"),
+        )
         fields["updated_at"] = datetime.now(timezone.utc).isoformat()
         fields["updated_by"] = access.viewer.as_audit_actor()
         updated = store.update_schedule(safe_schedule_id, fields)
@@ -5745,7 +6075,7 @@ def update_schedule_status(
 ) -> dict[str, Any]:
     """Pause or resume a source schedule without changing its owner/target."""
 
-    access = _portal_access(request)
+    access = _require_mutable_portal_access(request)
     safe_schedule_id = _schedule_id_or_422(schedule_id)
     try:
         requested_status = _schedule_status_code(request_body.status)
@@ -5767,6 +6097,10 @@ def update_schedule_status(
         values = _schedule_editable_values(existing)
         values["status"] = requested_status
         fields = _schedule_values_or_422(values)
+        fields["owner_name"] = _schedule_owner_name_for_save(
+            existing.get("owner_id"),
+            existing.get("owner_name"),
+        )
         fields["updated_at"] = datetime.now(timezone.utc).isoformat()
         fields["updated_by"] = access.viewer.as_audit_actor()
         updated = store.update_schedule(safe_schedule_id, fields)
@@ -5790,7 +6124,7 @@ def update_schedule_status(
 def delete_schedule(schedule_id: str, request: Request) -> dict[str, Any]:
     """Delete a source schedule only for its owner or an active administrator."""
 
-    access = _portal_access(request)
+    access = _require_mutable_portal_access(request)
     safe_schedule_id = _schedule_id_or_422(schedule_id)
     store = _schedule_store_or_503()
     try:

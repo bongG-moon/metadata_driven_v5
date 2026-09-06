@@ -368,6 +368,111 @@ def test_process_group_gate_requires_explicit_single_group_even_if_llm_guesses()
     assert {item["key"] for item in ambiguous["matched_process_groups"]} == {"WB", "BG"}
 
 
+def test_legacy_process_group_gate_avoids_overlapping_group_name_substrings():
+    """`BM공정` must not be inferred from the explicit token `SBM공정`.
+
+    The legacy 07 gate still validates an LLM decision, so it needs the same
+    token-boundary behavior as 07-1 before that decision is compared.  This
+    is deliberately a generic overlap test rather than a special SBM rule.
+    """
+
+    groups = [
+        {
+            "key": "BM",
+            "display_name": "BM공정",
+            "aliases": ["BM", "BM공정"],
+            "field": "OPER_NAME",
+            "processes": ["BM1"],
+        },
+        {
+            "key": "SBM",
+            "display_name": "SBM공정",
+            "aliases": ["SBM", "SBM공정"],
+            "field": "OPER_NAME",
+            "processes": ["SBM1"],
+        },
+        {
+            "key": "WBM",
+            "display_name": "WBM공정",
+            "aliases": ["WBM", "WBM공정"],
+            "field": "OPER_NAME",
+            "processes": ["WBM1"],
+        },
+    ]
+    catalog_value = {
+        "contract_version": "domain.process_group.catalog.v1",
+        "status": "ok",
+        "process_groups": groups,
+    }
+    dataset = {
+        "contract_version": "production.judgement.dataset.v1",
+        "columns": ["OPER_NAME"],
+        "rows": [
+            {"OPER_NAME": "BM1"},
+            {"OPER_NAME": "SBM1"},
+            {"OPER_NAME": "WBM1"},
+        ],
+    }
+
+    for key in ("BM", "SBM", "WBM"):
+        question = f"{key}공정 실시간 생산 분석 진행해줘"
+        assert set(gate.find_explicit_process_group_matches(question, groups)) == {key}
+
+    multi_question = "SBM공정과 BM공정의 실시간 생산 분석을 진행해줘"
+    assert set(gate.find_explicit_process_group_matches(multi_question, groups)) == {"BM", "SBM"}
+
+    selected = gate.select_process_group_dataset(
+        question_value=Question("SBM공정 실시간 생산 분석 진행해줘"),
+        catalog_value=catalog_value,
+        llm_response_value={
+            "status": "selected",
+            "process_group_key": "SBM",
+            "reason": "질문에 SBM공정이 명시되어 있습니다.",
+            "evidence": ["SBM공정"],
+        },
+        dataset_value=dataset,
+    )
+    assert selected["selected_process_group"]["key"] == "SBM"
+    assert selected["rows"] == [{"OPER_NAME": "SBM1"}]
+
+
+def test_legacy_process_group_gate_preserves_upstream_dataset_error():
+    """00C must not replace an upstream retrieval error with a group prompt."""
+    upstream_error = {
+        "contract_version": "production.judgement.dataset.v1",
+        "error": "production_plan_not_registered",
+        "message": "생산계획 데이터가 등록되지 않았습니다.",
+    }
+
+    result = gate.select_process_group_dataset(
+        question_value=Question("SBM공정 실시간 생산 분석 진행해줘"),
+        catalog_value=_process_group_catalog(),
+        llm_response_value={
+            "status": "selected",
+            "process_group_key": "SBM",
+            "reason": "질문에 SBM공정이 명시되어 있습니다.",
+            "evidence": ["SBM공정"],
+        },
+        dataset_value=upstream_error,
+    )
+
+    assert result == {
+        "contract_version": "production.judgement.dataset.v1",
+        "status": "error",
+        "success": False,
+        "message": "생산계획 데이터가 등록되지 않았습니다.",
+        "error": "production_plan_not_registered",
+        "errors": [
+            {
+                "type": "production_plan_not_registered",
+                "message": "생산계획 데이터가 등록되지 않았습니다.",
+            }
+        ],
+        "rows": [],
+        "row_count": 0,
+    }
+
+
 def test_deterministic_process_group_gate_matches_legacy_selected_rows_without_llm():
     dataset = _multi_group_dataset()
     question = Question("W/B2 공정의 실시간 생산 분석 Report를 만들어줘")

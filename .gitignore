@@ -4,6 +4,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest_*/
 .pytest_tmp/
 .pytest_tmp*/
 .pytest-tmp*/
@@ -14,6 +15,9 @@ __pycache__/
 .c01_intent_debug.json
 .pytest_v6*/
 .tmp/
+.codex-ppt-build/
+.codex-remote-attachments/
+outputs/
 validation_outputs/pytest_tmp*/
 validation_outputs/*.json
 validation_outputs/
